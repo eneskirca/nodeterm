@@ -21,6 +21,8 @@ import { findLimit } from '../../shared/usage-limits'
 import { mapUsageLimits } from './claude-usage-map'
 import { fetchCodexUsage } from './codex-usage'
 import { fetchGeminiUsage } from './gemini-usage'
+import { fetchGrokUsage } from './grok-usage'
+import { fetchKimiUsage } from './kimi-usage'
 import { usageCredsPaths } from '../claude-accounts-core'
 import { claudeConfigDirFor } from '../claude-config-dir'
 import { platform } from '../platform'
@@ -46,7 +48,9 @@ interface OAuthCreds {
  */
 const OTHER_PROVIDERS: { id: string; fetch: () => Promise<ProviderUsage> }[] = [
   { id: 'codex', fetch: fetchCodexUsage },
-  { id: 'gemini', fetch: fetchGeminiUsage }
+  { id: 'gemini', fetch: fetchGeminiUsage },
+  { id: 'grok', fetch: fetchGrokUsage },
+  { id: 'kimi', fetch: fetchKimiUsage }
 ]
 
 /** Parse a credentials JSON blob; tokens may sit at top level or under `claudeAiOauth`. */

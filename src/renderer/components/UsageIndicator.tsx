@@ -3,7 +3,13 @@ import type { ClaudeUsage, ProviderUsage, UsageLimit } from '@shared/types'
 import { AGENT_CONFIG } from '@shared/agents/config'
 import { useSettings } from '../state/settings'
 import { formatResetCountdown, formatTimeAgo, severityColor } from '../lib/usageFormat'
-import { limitKey, limitLabel, limitShortLabel, primaryLimit } from '@shared/usage-limits'
+import {
+  limitKey,
+  limitLabel,
+  limitShortLabel,
+  primaryLimit,
+  providerLabel
+} from '@shared/usage-limits'
 import { systemAccountDisplay } from '../state/workspace'
 
 /**
@@ -59,9 +65,10 @@ function AccountUsageBlock({ label, email, u }: { label: string; email?: string;
  */
 function ProviderBlock({ u }: { u: ProviderUsage }) {
   if (u.status === 'unavailable') return null
-  // AGENT_CONFIG is keyed by the builtin ids; `provider` is an open string, so a provider that
-  // is not a builtin agent (a billing-only one) falls back to its own id rather than blanking.
-  const label = (AGENT_CONFIG as Record<string, { label?: string } | undefined>)[u.provider]?.label ?? u.provider
+  // AGENT_CONFIG is keyed by the builtin ids; `provider` is an open string, so a billing-only
+  // provider (Grok, Kimi, …) has no entry and falls through to the shared label table.
+  const agentLabel = (AGENT_CONFIG as Record<string, { label?: string } | undefined>)[u.provider]?.label
+  const label = providerLabel(u.provider, agentLabel)
   return (
     <div className="usage-account">
       <div className="usage-account__label">{label}</div>

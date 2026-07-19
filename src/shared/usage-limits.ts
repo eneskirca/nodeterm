@@ -54,3 +54,24 @@ export function findLimit(limits: UsageLimit[], kind: string): UsageLimit | null
 export function limitKey(limit: UsageLimit): string {
   return `${limit.kind}:${limit.scopeLabel ?? ''}`
 }
+
+/**
+ * Display names for usage providers that are NOT builtin agents — Grok, Kimi and the rest are
+ * billing relationships we can read, not CLIs nodeterm spawns, so they have no AGENT_CONFIG
+ * entry to borrow a label from.
+ */
+const PROVIDER_LABELS: Record<string, string> = {
+  grok: 'Grok',
+  kimi: 'Kimi',
+  minimax: 'MiniMax',
+  opencode: 'opencode'
+}
+
+/**
+ * Label a provider for the popover. Prefers the builtin agent's own label (passed in by the
+ * renderer, which is where AGENT_CONFIG lives), then the table above, then the raw id — so a
+ * provider added to the registry always renders as something rather than a blank heading.
+ */
+export function providerLabel(provider: string, agentLabel?: string): string {
+  return agentLabel ?? PROVIDER_LABELS[provider] ?? provider
+}
