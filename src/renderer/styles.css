@@ -4707,9 +4707,12 @@ body,
   align-items: center;
   gap: 4px;
 }
-/* While the popover is open, rise above the sessions sidebar (z-index 12) — a tall
-   sidebar reaches the bottom-left corner and would cover the panel. Closed pill keeps
-   its low layer so it never draws over the sidebar itself. */
+/* While the popover is open, rise above the sessions sidebar (z-index 12) — a tall sidebar
+   reaches the bottom-left corner and would cover the panel. Closed pill keeps its low layer so
+   it never draws over the sidebar itself.
+   This ONLY works because the indicator is mounted OUTSIDE <ReactFlow> (see Canvas.tsx): the
+   library's wrapper carries inline `z-index: 0`, a stacking context that would trap any inner
+   z-index below the sidebar no matter its value. */
 .usage-indicator:has(.usage-popover) {
   z-index: 13;
 }

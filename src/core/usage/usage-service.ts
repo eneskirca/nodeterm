@@ -241,7 +241,16 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     last.set(key, u)
     lastFetchAt.set(key, u.updatedAt)
     // Only the system account feeds the push channel — the collapsed chip tracks it.
-    if (key === '') platform().broadcast(IPC.usageUpdate, u)
+    // Best-effort: a fetch launched before shutdown (or a test's platform reset) can land after
+    // the shell is gone, and this runs inside an un-awaited promise chain — throwing here is an
+    // unhandled rejection, not a signal. The cache above is still updated either way.
+    if (key === '') {
+      try {
+        platform().broadcast(IPC.usageUpdate, u)
+      } catch {
+        // shell gone — nobody left to notify
+      }
+    }
     // Notify the mirror (fail-open) so its phone-facing `usage` block re-assembles from the cache.
     try {
       opts.onCacheUpdate?.()

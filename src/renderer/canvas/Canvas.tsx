@@ -6105,13 +6105,21 @@ export function Canvas() {
               {canvasLocked ? <IconLock /> : <IconUnlock />}
             </ControlButton>
           </Controls>
-          <UsageIndicator />
           {/* Peer cursors live INSIDE <ReactFlow>: PresenceLayer uses ViewportPortal +
               useReactFlow, which throw outside the provider — and cursors are flow coordinates. */}
           <PresenceLayer />
           <StatusAwareMiniMap onNodeDoubleClick={goToNode} />
         </ReactFlow>
         </SessionProvider>
+
+        {/* MUST stay OUTSIDE <ReactFlow>. The library's wrapper carries inline
+            `position: relative; z-index: 0`, which makes the whole flow one stacking context
+            painted at 0 among flow-wrap's siblings — so no z-index INSIDE it, however large,
+            can ever rise above the sessions sidebar (z 12). Mounted here, the indicator's own
+            z-index (5 collapsed, 13 with the popover open) competes in the same context as the
+            sidebar and the open popover wins. It uses no React Flow hooks, and .flow-wrap is
+            position:relative, so its absolute left/bottom anchors are unchanged. */}
+        <UsageIndicator />
 
         <PresenceNamePrompt />
 
