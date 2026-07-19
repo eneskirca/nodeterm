@@ -608,6 +608,12 @@ export interface Settings {
   systemAccountLabel: string
   /** Agent ids hidden from the Add menus. */
   disabledAgents: AgentId[]
+  /** Usage providers hidden from the pill + popover (Settings → Usage toggles). Hiding is a
+   *  DISPLAY choice — credentials and fetchers are untouched, so re-enabling is instant. */
+  hiddenUsageProviders: string[]
+  /** Whether usage percentages render as consumed ("32% used") or remaining ("68% left").
+   *  'remaining' is the historical default; orca users tend to expect 'used'. */
+  usagePercentMode: 'used' | 'remaining'
   /** Which agent the ⌘⇧C shortcut / quick-add launches. Always a launchable builtin. */
   defaultAgent: AgentId
   /** The permission mode Claude TERMINAL (CLI) sessions START in — passed as `--permission-mode`
@@ -664,6 +670,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // All three builtin agents (Claude/Codex/Gemini) show in the Add menus out of the box.
   // Existing users keep whatever they've saved (their persisted disabledAgents overrides this).
   disabledAgents: [],
+  hiddenUsageProviders: [],
+  usagePercentMode: 'remaining',
   defaultAgent: 'claude',
   // Sessions start in auto mode out of the box. Existing users pick this up on hydrate
   // (settings hydrate merges over DEFAULT_SETTINGS) — a deliberate behavior change.

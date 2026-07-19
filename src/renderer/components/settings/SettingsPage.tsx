@@ -11,6 +11,7 @@ import { AppearanceSection } from './sections/AppearanceSection'
 import { PhoneSection } from './sections/PhoneSection'
 import { SpeechSection } from './sections/SpeechSection'
 import { AgentsSection } from './sections/AgentsSection'
+import { UsageSection } from './sections/UsageSection'
 import { AccountsSection } from './sections/AccountsSection'
 import { CustomAgentsSection } from './sections/CustomAgentsSection'
 import { NotificationsSection } from './sections/NotificationsSection'
@@ -71,6 +72,7 @@ export function SettingsPage({
             <PhoneSection isActive={active === 'phone'} />
             <SpeechSection isActive={active === 'speech'} onNavigate={setActive} />
             <AgentsSection isActive={active === 'agents'} />
+            <UsageSection isActive={active === 'usage'} />
             <AccountsSection isActive={active === 'accounts'} />
             <CustomAgentsSection isActive={active === 'custom-agents'} />
             <NotificationsSection isActive={active === 'notifications'} />

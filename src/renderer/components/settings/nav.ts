@@ -6,6 +6,7 @@ export type SettingsSectionId =
   | 'phone'
   | 'speech'
   | 'agents'
+  | 'usage'
   | 'accounts'
   | 'custom-agents'
   | 'notifications'
@@ -24,40 +25,44 @@ export interface SettingsGroup {
   sections: { id: SettingsSectionId; title: string }[]
 }
 
+// Grouped by what the user is DOING, not by where the code lives: AI work first (it is what
+// the app is for), then the workspace around it, then connectivity, then app housekeeping.
 export const SETTINGS_GROUPS: SettingsGroup[] = [
   {
-    id: 'general',
-    title: 'General',
-    sections: [
-      { id: 'terminal', title: 'Terminal' },
-      { id: 'shell', title: 'Shell' },
-      { id: 'behavior', title: 'Behavior' },
-      { id: 'appearance', title: 'Appearance' },
-      { id: 'phone', title: 'Phone' },
-      { id: 'speech', title: 'Speech' }
-    ]
-  },
-  {
-    id: 'agents',
-    title: 'Agents',
+    id: 'ai',
+    title: 'AI capabilities',
     sections: [
       { id: 'agents', title: 'Agents' },
       { id: 'accounts', title: 'Accounts' },
       { id: 'custom-agents', title: 'Custom agents' },
-      { id: 'notifications', title: 'Notifications' },
+      { id: 'usage', title: 'Usage' },
       { id: 'commit', title: 'Commit messages' }
     ]
   },
   {
-    id: 'sessions',
-    title: 'Sessions',
-    sections: [{ id: 'tmux', title: 'tmux' }]
+    id: 'workspace',
+    title: 'Workspace',
+    sections: [
+      { id: 'terminal', title: 'Terminal' },
+      { id: 'shell', title: 'Shell' },
+      { id: 'tmux', title: 'tmux' },
+      { id: 'behavior', title: 'Behavior' }
+    ]
   },
   {
-    id: 'account',
-    title: 'Account',
+    id: 'interface',
+    title: 'Interface',
     sections: [
-      { id: 'license', title: 'License' },
+      { id: 'appearance', title: 'Appearance' },
+      { id: 'notifications', title: 'Notifications' },
+      { id: 'speech', title: 'Speech' }
+    ]
+  },
+  {
+    id: 'connectivity',
+    title: 'Remote & team',
+    sections: [
+      { id: 'phone', title: 'Phone' },
       { id: 'remote', title: 'Remote access' },
       { id: 'team-access', title: 'Team Access' },
       { id: 'ssh', title: 'Remote (SSH)' }
@@ -67,13 +72,14 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     id: 'application',
     title: 'Application',
     sections: [
+      { id: 'license', title: 'License' },
       { id: 'updates', title: 'Updates' },
       { id: 'privacy', title: 'Privacy' }
     ]
   }
 ]
 
-export const FIRST_SECTION_ID: SettingsSectionId = 'terminal'
+export const FIRST_SECTION_ID: SettingsSectionId = 'agents'
 
 export function allSectionIds(): SettingsSectionId[] {
   return SETTINGS_GROUPS.flatMap((g) => g.sections.map((s) => s.id))

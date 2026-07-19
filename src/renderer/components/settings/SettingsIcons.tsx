@@ -38,6 +38,12 @@ const PATHS: Record<SettingsSectionId, React.JSX.Element> = {
   agents: (
     <path d="M8 2.3 9.4 5.9 13 7.3 9.4 8.7 8 12.3 6.6 8.7 3 7.3 6.6 5.9z" />
   ),
+  usage: (
+    <>
+      <path d="M2.5 12.5a5.5 5.5 0 1 1 11 0" />
+      <path d="M8 12.5 10.8 8" />
+    </>
+  ),
   accounts: (
     <>
       <circle cx="8" cy="5.5" r="2.6" />

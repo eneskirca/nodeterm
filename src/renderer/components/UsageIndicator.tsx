@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ClaudeUsage, ProviderUsage, UsageLimit } from '@shared/types'
 import { AGENT_CONFIG } from '@shared/agents/config'
 import { useSettings } from '../state/settings'
-import { formatResetCountdown, formatTimeAgo, severityColor } from '../lib/usageFormat'
+import { formatResetCountdown, formatTimeAgo, percentNumber, percentText, severityColor } from '../lib/usageFormat'
 import {
   enabledProviders,
   hasAnyUsage,
@@ -18,7 +18,7 @@ import { systemAccountDisplay } from '../state/workspace'
  * A single limit row in the popover: bar, "% left", reset countdown. Bars render REMAINING
  * quota (the limit carries percent USED), which is the convention this pill has always used.
  */
-function LimitRow({ limit }: { limit: UsageLimit }) {
+function LimitRow({ limit, mode }: { limit: UsageLimit; mode: 'used' | 'remaining' }) {
   const left = 100 - limit.usedPercent
   return (
     <div className="usage-row">
@@ -34,7 +34,7 @@ function LimitRow({ limit }: { limit: UsageLimit }) {
         />
       </div>
       <div className="usage-row__meta">
-        <span>{Math.round(left)}% left</span>
+        <span>{percentText(limit.usedPercent, mode)}</span>
         <span>{formatResetCountdown(limit.resetsAt)}</span>
       </div>
     </div>
@@ -45,13 +45,23 @@ function LimitRow({ limit }: { limit: UsageLimit }) {
  * One account's limit bars under a label, for the multi-account popover. Reuses LimitRow's
  * markup — `u` is null while its on-demand fetch is in flight.
  */
-function AccountUsageBlock({ label, email, u }: { label: string; email?: string; u: ClaudeUsage | null }) {
+function AccountUsageBlock({
+  label,
+  email,
+  u,
+  mode
+}: {
+  label: string
+  email?: string
+  u: ClaudeUsage | null
+  mode: 'used' | 'remaining'
+}) {
   return (
     <div className="usage-account">
       <div className="usage-account__label">{label}</div>
       {(email ?? u?.email) && <div className="usage-account__email">{email ?? u?.email}</div>}
       {u?.limits.map((l) => (
-        <LimitRow key={limitKey(l)} limit={l} />
+        <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
       {u && u.limits.length === 0 && <div className="usage-popover__empty">No usage data.</div>}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
@@ -71,7 +81,7 @@ function labelFor(provider: string): string {
   return providerLabel(provider, agentLabel)
 }
 
-function ProviderBlock({ u }: { u: ProviderUsage }) {
+function ProviderBlock({ u, mode }: { u: ProviderUsage; mode: 'used' | 'remaining' }) {
   if (u.status === 'unavailable') return null
   const label = labelFor(u.provider)
   return (
@@ -79,7 +89,7 @@ function ProviderBlock({ u }: { u: ProviderUsage }) {
       <div className="usage-account__label">{label}</div>
       {u.account && <div className="usage-account__email">{u.account}</div>}
       {u.limits.map((l) => (
-        <LimitRow key={limitKey(l)} limit={l} />
+        <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
       {u.limits.length === 0 && (
         <div className="usage-popover__empty">
@@ -106,6 +116,8 @@ export function UsageIndicator(): JSX.Element | null {
 
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
   const systemLabelSetting = useSettings((s) => s.settings.systemAccountLabel)
+  const hiddenProviders = useSettings((s) => s.settings.hiddenUsageProviders)
+  const percentMode = useSettings((s) => s.settings.usagePercentMode)
   // Local logged-in accounts get their own popover row; skip pending logins + remote (host) ones.
   const accounts = useMemo(
     () => claudeAccounts.filter((a) => !a.pending && !a.host),
@@ -156,14 +168,20 @@ export function UsageIndicator(): JSX.Element | null {
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
+  // Settings → Usage toggles are a display choice, applied before any other rule — a hidden
+  // provider is invisible here even when signed in and mid-limit.
+  const hidden = new Set(hiddenProviders)
+  const visibleProviders = providers.filter((p) => !hidden.has(p.provider))
+  const claudeUsage = hidden.has('claude') ? null : usage
+
   // Only providers the user has actually enabled reach the pill; render whenever ANY of them
   // (Claude included) has something to say. Both rules are pure and pinned by tests — gating on
   // Claude alone, which is what this did, left a Codex-only user with no pill at all.
-  const enabled = enabledProviders(providers)
-  if (!hasAnyUsage(usage, providers)) return null
+  const enabled = enabledProviders(visibleProviders)
+  if (!hasAnyUsage(claudeUsage, visibleProviders)) return null
 
-  const limits = usage?.limits ?? []
-  const status = usage?.status ?? 'unavailable'
+  const limits = claudeUsage?.limits ?? []
+  const status = claudeUsage?.status ?? 'unavailable'
   const hasData = limits.length > 0 || enabled.length > 0
   const fetching = refreshing
   const isError = status === 'error'
@@ -206,7 +224,7 @@ export function UsageIndicator(): JSX.Element | null {
           <span key={limitKey(l)}>
             {i > 0 && <span className="usage-pill__sep">·</span>}
             <span className="usage-pill__num">
-              {Math.round(100 - l.usedPercent)}% {limitShortLabel(l.kind, l.scopeLabel)}
+              {percentNumber(l.usedPercent, percentMode)}% {limitShortLabel(l.kind, l.scopeLabel)}
             </span>
           </span>
         ))}
@@ -216,10 +234,10 @@ export function UsageIndicator(): JSX.Element | null {
           const worst = primaryLimit(p.limits)
           if (!worst) return null
           return (
-            <span key={p.provider}>
+            <span key={p.provider} className="usage-pill__provider">
               {(limits.length > 0 || i > 0) && <span className="usage-pill__sep">·</span>}
               <span className="usage-pill__num">
-                {Math.round(100 - worst.usedPercent)}% {labelFor(p.provider)}
+                {percentNumber(worst.usedPercent, percentMode)}% {labelFor(p.provider)}
               </span>
             </span>
           )
@@ -244,13 +262,14 @@ export function UsageIndicator(): JSX.Element | null {
           {accounts.length > 0 && usage ? (
             <>
               <AccountUsageBlock
+                mode={percentMode}
                 label={systemAccountDisplay(systemLabelSetting, usage.email)}
                 // Avoid printing the email twice when it's already the display label.
                 email={systemLabelSetting.trim() ? (usage.email ?? undefined) : undefined}
                 u={usage}
               />
               {accounts.map((a) => (
-                <AccountUsageBlock key={a.id} label={a.label} email={a.email} u={acctUsage[a.id] ?? null} />
+                <AccountUsageBlock key={a.id} mode={percentMode} label={a.label} email={a.email} u={acctUsage[a.id] ?? null} />
               ))}
             </>
           ) : (
@@ -261,7 +280,7 @@ export function UsageIndicator(): JSX.Element | null {
                 <div className="usage-account__label">Claude</div>
               )}
               {limits.map((l) => (
-                <LimitRow key={limitKey(l)} limit={l} />
+                <LimitRow key={limitKey(l)} limit={l} mode={percentMode} />
               ))}
               {!hasData && <div className="usage-popover__empty">No usage data.</div>}
               {usage?.email && (
@@ -272,8 +291,8 @@ export function UsageIndicator(): JSX.Element | null {
               )}
             </>
           )}
-          {providers.map((p) => (
-            <ProviderBlock key={p.provider} u={p} />
+          {visibleProviders.map((p) => (
+            <ProviderBlock key={p.provider} u={p} mode={percentMode} />
           ))}
         </div>
       )}

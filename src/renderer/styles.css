@@ -4727,6 +4727,9 @@ body,
 .usage-pill__minibar-fill { display: block; height: 100%; border-radius: 3px; }
 .usage-pill__num { color: var(--label, #fff); }
 .usage-pill__sep { color: rgba(255, 255, 255, 0.4); }
+/* Non-Claude provider segments read one step quieter than the Claude numbers, so a long pill
+   still scans as "Claude first, others after" without needing separate icons per provider. */
+.usage-pill__provider .usage-pill__num { color: rgba(255, 255, 255, 0.75); font-size: 11px; }
 .usage-pill__dim { color: rgba(255, 255, 255, 0.5); }
 .usage-pill__pulse { animation: usage-pulse 1.2s ease-in-out infinite; }
 @keyframes usage-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }

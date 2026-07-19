@@ -79,6 +79,21 @@ export function hasAnyUsage(
 }
 
 /**
+ * Every usage provider the app can read, in display order — Claude first (the primary agent),
+ * then the rest alphabetically. The Settings toggles iterate this, so a new provider gets its
+ * on/off switch by being added here.
+ */
+export const USAGE_PROVIDER_IDS = [
+  'claude',
+  'codex',
+  'gemini',
+  'grok',
+  'kimi',
+  'minimax',
+  'opencode'
+] as const
+
+/**
  * Display names for usage providers that are NOT builtin agents — Grok, Kimi and the rest are
  * billing relationships we can read, not CLIs nodeterm spawns, so they have no AGENT_CONFIG
  * entry to borrow a label from.
