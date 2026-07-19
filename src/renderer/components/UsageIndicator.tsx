@@ -1,41 +1,50 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ClaudeUsage, ClaudeUsageWindow } from '@shared/types'
+import type { ClaudeUsage, UsageLimit } from '@shared/types'
 import { useSettings } from '../state/settings'
-import { barColor, formatResetCountdown, formatTimeAgo } from '../lib/usageFormat'
+import { formatResetCountdown, formatTimeAgo, severityColor } from '../lib/usageFormat'
+import { limitKey, limitLabel, limitShortLabel, primaryLimit } from '@shared/usage-limits'
 import { systemAccountDisplay } from '../state/workspace'
 
-const SESSION_LABEL = '5h'
-const WEEKLY_LABEL = 'wk'
-
-/** A single window row in the popover: bar, "% left", reset countdown. */
-function WindowRow({ title, w }: { title: string; w: ClaudeUsageWindow }) {
-  const left = Math.round(w.leftPercent)
+/**
+ * A single limit row in the popover: bar, "% left", reset countdown. Bars render REMAINING
+ * quota (the limit carries percent USED), which is the convention this pill has always used.
+ */
+function LimitRow({ limit }: { limit: UsageLimit }) {
+  const left = 100 - limit.usedPercent
   return (
     <div className="usage-row">
-      <div className="usage-row__title">{title}</div>
+      <div className="usage-row__title">
+        {limitLabel(limit.kind, limit.scopeLabel)}
+        {/* The server flags which window is actually gating the account right now. */}
+        {limit.isActive && <span className="usage-row__active" title="Currently limiting">●</span>}
+      </div>
       <div className="usage-bar">
-        <div className="usage-bar__fill" style={{ width: `${w.leftPercent}%`, background: barColor(w.leftPercent) }} />
+        <div
+          className="usage-bar__fill"
+          style={{ width: `${left}%`, background: severityColor(limit.severity, left) }}
+        />
       </div>
       <div className="usage-row__meta">
-        <span>{left}% left</span>
-        <span>{formatResetCountdown(w.resetsAt)}</span>
+        <span>{Math.round(left)}% left</span>
+        <span>{formatResetCountdown(limit.resetsAt)}</span>
       </div>
     </div>
   )
 }
 
 /**
- * One account's session/weekly bars under a label, for the multi-account popover. Reuses
- * WindowRow's markup — `u` is null while its on-demand fetch is in flight.
+ * One account's limit bars under a label, for the multi-account popover. Reuses LimitRow's
+ * markup — `u` is null while its on-demand fetch is in flight.
  */
 function AccountUsageBlock({ label, email, u }: { label: string; email?: string; u: ClaudeUsage | null }) {
   return (
     <div className="usage-account">
       <div className="usage-account__label">{label}</div>
       {(email ?? u?.email) && <div className="usage-account__email">{email ?? u?.email}</div>}
-      {u?.session && <WindowRow title="Session" w={u.session} />}
-      {u?.weekly && <WindowRow title="Weekly" w={u.weekly} />}
-      {u && !u.session && !u.weekly && <div className="usage-popover__empty">No usage data.</div>}
+      {u?.limits.map((l) => (
+        <LimitRow key={limitKey(l)} limit={l} />
+      ))}
+      {u && u.limits.length === 0 && <div className="usage-popover__empty">No usage data.</div>}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
     </div>
   )
@@ -44,7 +53,8 @@ function AccountUsageBlock({ label, email, u }: { label: string; email?: string;
 /**
  * Bottom-left Claude usage pill + popover. Renders to the right of the React Flow Controls.
  * States: hidden when 'unavailable'; '···' while first-fetching; '⚠' on error w/o data;
- * last-known data shown on stale/error. Compact pill = mini-bar + "62% 5h · 76% wk".
+ * last-known data shown on stale/error. Compact pill = mini-bar + one "N% label" per limit,
+ * e.g. "93% 5h · 39% wk · 13% Fable" — the bar tracks whichever limit is closest to biting.
  */
 export function UsageIndicator(): JSX.Element | null {
   const [usage, setUsage] = useState<ClaudeUsage | null>(null)
@@ -92,10 +102,13 @@ export function UsageIndicator(): JSX.Element | null {
 
   if (!usage || usage.status === 'unavailable') return null
 
-  const { session, weekly, status } = usage
-  const hasData = !!session || !!weekly
+  const { limits, status } = usage
+  const hasData = limits.length > 0
   const fetching = refreshing
   const isError = status === 'error'
+  // The pill leads with whatever is closest to biting, so a scoped model cap that is nearly
+  // exhausted can't hide behind a comfortable 5h window.
+  const primary = primaryLimit(limits)
 
   const refresh = async (e: React.MouseEvent): Promise<void> => {
     e.stopPropagation()
@@ -116,25 +129,25 @@ export function UsageIndicator(): JSX.Element | null {
   } else {
     pillBody = (
       <>
-        {session && (
+        {primary && (
           <span className="usage-pill__minibar" aria-hidden>
             <span
               className="usage-pill__minibar-fill"
-              style={{ width: `${session.leftPercent}%`, background: barColor(session.leftPercent) }}
+              style={{
+                width: `${100 - primary.usedPercent}%`,
+                background: severityColor(primary.severity, 100 - primary.usedPercent)
+              }}
             />
           </span>
         )}
-        {session && (
-          <span className="usage-pill__num">
-            {Math.round(session.leftPercent)}% {SESSION_LABEL}
+        {limits.map((l, i) => (
+          <span key={limitKey(l)}>
+            {i > 0 && <span className="usage-pill__sep">·</span>}
+            <span className="usage-pill__num">
+              {Math.round(100 - l.usedPercent)}% {limitShortLabel(l.kind, l.scopeLabel)}
+            </span>
           </span>
-        )}
-        {session && weekly && <span className="usage-pill__sep">·</span>}
-        {weekly && (
-          <span className="usage-pill__num">
-            {Math.round(weekly.leftPercent)}% {WEEKLY_LABEL}
-          </span>
-        )}
+        ))}
         {isError && hasData && <span className="usage-pill__dim">⚠</span>}
       </>
     )
@@ -162,8 +175,9 @@ export function UsageIndicator(): JSX.Element | null {
             </>
           ) : (
             <>
-              {session && <WindowRow title="Session" w={session} />}
-              {weekly && <WindowRow title="Weekly" w={weekly} />}
+              {limits.map((l) => (
+                <LimitRow key={limitKey(l)} limit={l} />
+              ))}
               {!hasData && <div className="usage-popover__empty">No usage data.</div>}
               {usage.email && (
                 <div className="usage-account">

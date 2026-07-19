@@ -1,6 +1,8 @@
-// Fetches Claude Code subscription usage (session + weekly) from Anthropic's OAuth usage
-// endpoint. Runs in the main process (Node) so the renderer CSP stays 'self' — the renderer
-// asks for the data over IPC. Display-only: we never write credentials or refresh tokens.
+// Fetches Claude Code subscription usage from Anthropic's OAuth usage endpoint — every limit
+// the plan exposes, including per-model scoped caps (Fable's weekly cap and whatever ships
+// next), which arrive as generic `limits[]` entries rather than fixed fields.
+// Runs in the main process (Node) so the renderer CSP stays 'self' — the renderer asks for the
+// data over IPC. Display-only: we never write credentials or refresh tokens.
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
@@ -8,7 +10,9 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { ipcMain, type BrowserWindow } from 'electron'
 import { IPC } from '../shared/ipc'
-import type { ClaudeUsage, ClaudeUsageWindow } from '../shared/types'
+import type { ClaudeUsage, ClaudeUsageWindow, UsageLimit } from '../shared/types'
+import { mapUsageLimits } from '../core/usage/claude-usage-map'
+import { findLimit } from '../shared/usage-limits'
 import { usageCredsPaths } from '../core/claude-accounts-core'
 import { claudeConfigDirFor } from './claude-accounts'
 
@@ -104,18 +108,25 @@ async function resolveCreds(accountId?: string): Promise<OAuthCreds> {
   return creds
 }
 
-function mapWindow(raw: any): ClaudeUsageWindow | null {
-  if (!raw || typeof raw.utilization !== 'number') return null
-  const leftPercent = Math.min(100, Math.max(0, 100 - raw.utilization))
-  const resetsAt = typeof raw.resets_at === 'string' ? Date.parse(raw.resets_at) || null : null
-  return { leftPercent, resetsAt }
+/** Back-compat view of one limit as the old remaining-percent window. */
+function asWindow(limit: UsageLimit | null): ClaudeUsageWindow | null {
+  if (!limit) return null
+  return { leftPercent: 100 - limit.usedPercent, resetsAt: limit.resetsAt }
+}
+
+function emptyUsage(
+  email: string | null,
+  now: number,
+  status: ClaudeUsage['status']
+): ClaudeUsage {
+  return { limits: [], session: null, weekly: null, email, updatedAt: now, status }
 }
 
 async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
   const now = Date.now()
   const { accessToken, email } = await resolveCreds(accountId)
   if (!accessToken) {
-    return { session: null, weekly: null, email, updatedAt: now, status: 'unavailable' }
+    return emptyUsage(email, now, 'unavailable')
   }
   try {
     const ctrl = new AbortController()
@@ -128,18 +139,20 @@ async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
     if (!res.ok) {
       // 401/403 → token is an API key or expired: no subscription windows to show.
       const status = res.status === 401 || res.status === 403 ? 'unavailable' : 'error'
-      return { session: null, weekly: null, email, updatedAt: now, status }
+      return emptyUsage(email, now, status)
     }
     const data = (await res.json()) as Record<string, any>
+    const limits = mapUsageLimits(data)
     return {
-      session: mapWindow(data.five_hour),
-      weekly: mapWindow(data.seven_day),
+      limits,
+      session: asWindow(findLimit(limits, 'session')),
+      weekly: asWindow(findLimit(limits, 'weekly_all')),
       email,
       updatedAt: now,
       status: 'ok'
     }
   } catch {
-    return { session: null, weekly: null, email, updatedAt: now, status: 'error' }
+    return emptyUsage(email, now, 'error')
   }
 }
 

@@ -50,3 +50,23 @@ export function barColor(leftPercent: number): string {
   if (leftPercent >= 20) return '#ffd60a'
   return '#ff453a'
 }
+
+/**
+ * Bar color for a usage limit. The server ships its own `severity` verdict, which knows the
+ * account's plan and how close the window really is to biting — prefer it, and fall back to
+ * our own percentage thresholds only for a severity we don't recognize (or a legacy payload
+ * that never carried one).
+ */
+export function severityColor(severity: string, leftPercent: number): string {
+  switch (severity) {
+    case 'normal':
+      return '#30d158'
+    case 'warning':
+      return '#ffd60a'
+    case 'critical':
+    case 'exceeded':
+      return '#ff453a'
+    default:
+      return barColor(leftPercent)
+  }
+}

@@ -928,8 +928,35 @@ export interface ClaudeUsageWindow {
   resetsAt: number | null
 }
 
+/**
+ * One entry from the usage endpoint's `limits[]` array — the current, open-ended contract.
+ * A per-model quota (Fable's weekly cap, say) is an ordinary entry whose model name rides in
+ * `scopeLabel`, so a new model needs no new field here. Percentages are portions USED, which
+ * is the server's own convention; the UI inverts for display where it shows "left".
+ */
+export interface UsageLimit {
+  /** Server-assigned kind: 'session' | 'weekly_all' | 'weekly_scoped' | future values. */
+  kind: string
+  /** Coarse grouping ('session' | 'weekly'), or null when the server omits it. */
+  group: string | null
+  /** 0–100, portion consumed. */
+  usedPercent: number
+  /** Server's severity call ('normal' | 'warning' | …). Drives colour; not derived locally. */
+  severity: string
+  resetsAt: number | null
+  /** Model display name for a scoped limit (e.g. 'Fable'), else null. */
+  scopeLabel: string | null
+  /** Server says this window is the one currently gating the account. */
+  isActive: boolean
+}
+
 /** Claude Code subscription usage snapshot for the bottom-left indicator. */
 export interface ClaudeUsage {
+  /**
+   * Every limit the plan exposes, including per-model scoped ones. Prefer this over the
+   * `session`/`weekly` fields below, which are kept only so older callers keep compiling.
+   */
+  limits: UsageLimit[]
   session: ClaudeUsageWindow | null
   weekly: ClaudeUsageWindow | null
   /** Signed-in account email, read-only and best-effort (null if unknown). */

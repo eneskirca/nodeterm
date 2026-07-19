@@ -4751,6 +4751,8 @@ body,
 .usage-popover__empty { font-size: 13px; color: rgba(255, 255, 255, 0.5); }
 .usage-row { margin-top: 14px; }
 .usage-row__title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+/* Marks the limit the server says is currently gating the account. */
+.usage-row__active { color: var(--accent); font-size: 9px; margin-left: 6px; vertical-align: 2px; }
 .usage-bar {
   height: 8px;
   border-radius: 4px;
