@@ -20,6 +20,7 @@ import type {
 import { findLimit } from '../../shared/usage-limits'
 import { mapUsageLimits } from './claude-usage-map'
 import { fetchCodexUsage } from './codex-usage'
+import { fetchGeminiUsage } from './gemini-usage'
 import { usageCredsPaths } from '../claude-accounts-core'
 import { claudeConfigDirFor } from '../claude-config-dir'
 import { platform } from '../platform'
@@ -44,7 +45,8 @@ interface OAuthCreds {
  * Adding a provider is one entry here plus its fetcher — no changes to the service or the UI.
  */
 const OTHER_PROVIDERS: { id: string; fetch: () => Promise<ProviderUsage> }[] = [
-  { id: 'codex', fetch: fetchCodexUsage }
+  { id: 'codex', fetch: fetchCodexUsage },
+  { id: 'gemini', fetch: fetchGeminiUsage }
 ]
 
 /** Parse a credentials JSON blob; tokens may sit at top level or under `claudeAiOauth`. */
