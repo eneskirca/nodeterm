@@ -23,6 +23,8 @@ import { fetchCodexUsage } from './codex-usage'
 import { fetchGeminiUsage } from './gemini-usage'
 import { fetchGrokUsage } from './grok-usage'
 import { fetchKimiUsage } from './kimi-usage'
+import { fetchMinimaxUsage } from './minimax-usage'
+import { readMinimaxCookie, writeMinimaxCookie, hasMinimaxCookie } from './minimax-cookie'
 import { usageCredsPaths } from '../claude-accounts-core'
 import { claudeConfigDirFor } from '../claude-config-dir'
 import { platform } from '../platform'
@@ -50,7 +52,9 @@ const OTHER_PROVIDERS: { id: string; fetch: () => Promise<ProviderUsage> }[] = [
   { id: 'codex', fetch: fetchCodexUsage },
   { id: 'gemini', fetch: fetchGeminiUsage },
   { id: 'grok', fetch: fetchGrokUsage },
-  { id: 'kimi', fetch: fetchKimiUsage }
+  { id: 'kimi', fetch: fetchKimiUsage },
+  // MiniMax has no on-disk CLI credential; its cookie is read from our own 0600 store.
+  { id: 'minimax', fetch: async () => fetchMinimaxUsage(await readMinimaxCookie()) }
 ]
 
 /** Parse a credentials JSON blob; tokens may sit at top level or under `claudeAiOauth`. */
@@ -293,6 +297,17 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
       providersInFlight = null
     }
   }
+
+  // The cookie is write-only from the UI's perspective: it can be set and cleared, and the UI
+  // can ask WHETHER one is stored, but there is no channel that hands the value back. A
+  // credential that never crosses the boundary cannot be leaked by whatever reads it.
+  platform().handle(IPC.usageSetMinimaxCookie, async (cookie: string) => {
+    await writeMinimaxCookie(typeof cookie === 'string' ? cookie : '')
+    // Drop the cache so the next read reflects the new cookie instead of the old snapshot.
+    providersAt = 0
+    return hasMinimaxCookie()
+  })
+  platform().handle(IPC.usageHasMinimaxCookie, () => hasMinimaxCookie())
 
   platform().handle(IPC.usageProviders, (force?: boolean) => {
     if (!force && providersAt && Date.now() - providersAt < REFETCH_DEBOUNCE_MS) {

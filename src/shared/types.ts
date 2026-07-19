@@ -1026,6 +1026,11 @@ export interface UsageApi {
    *  `force` to bypass the cache debounce. Providers that aren't signed in come back
    *  'unavailable' rather than being omitted, so the caller can tell "off" from "broken". */
   providers(force?: boolean): Promise<ProviderUsage[]>
+  /** Store (or, with an empty string, clear) the MiniMax browser cookie. Resolves to whether one
+   *  is now stored. Write-only by design — nothing reads the value back across this boundary. */
+  setMinimaxCookie(cookie: string): Promise<boolean>
+  /** Whether a MiniMax cookie is stored, so the UI can show state without handling the secret. */
+  hasMinimaxCookie(): Promise<boolean>
   /** Fires whenever main pushes a new snapshot (poll/refresh). Returns unsubscribe. */
   onUpdate(listener: (usage: ClaudeUsage) => void): () => void
 }

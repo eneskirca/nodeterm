@@ -227,6 +227,8 @@ export function buildStubApi(): Omit<
       // Empty, not a reject: "no providers configured" is a real answer and the popover
       // renders it as nothing. This one needs no cast — the honest type already fits.
       providers: () => Promise.resolve([]),
+      setMinimaxCookie: U('usage.setMinimaxCookie'),
+      hasMinimaxCookie: () => Promise.resolve(false),
       onUpdate: noopUnsub
     },
     claude: {

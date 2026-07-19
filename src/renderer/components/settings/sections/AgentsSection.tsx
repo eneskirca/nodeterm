@@ -45,6 +45,10 @@ const ROWS = {
       'claude',
       'shift tab'
     ]
+  },
+  minimax: {
+    title: 'MiniMax usage',
+    keywords: ['minimax', 'usage', 'quota', 'cookie', 'limits', 'provider']
   }
 }
 const ENTRIES = Object.values(ROWS)
@@ -52,6 +56,22 @@ const ENTRIES = Object.values(ROWS)
 export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const settings = useSettings((s) => s.settings)
   const update = useSettings((s) => s.update)
+  // The MiniMax cookie is write-only across the IPC boundary: we can ask WHETHER one is stored
+  // and set/clear it, but never read the value back — so the input starts empty even when one
+  // is configured, and is cleared the moment it is handed over.
+  const [minimaxCookie, setMinimaxCookie] = useState('')
+  const [minimaxSaved, setMinimaxSaved] = useState(false)
+  useEffect(() => {
+    if (!isActive) return
+    let cancelled = false
+    void window.nodeTerminal.usage.hasMinimaxCookie().then((v) => {
+      if (!cancelled) setMinimaxSaved(v)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isActive])
+
   const rows: { id: AgentId; label: string; isBuiltin: boolean }[] = [
     ...BUILTIN_AGENT_IDS.map((id) => ({ id, label: AGENT_CONFIG[id].label, isBuiltin: true })),
     ...settings.customAgents.map((c) => ({ id: c.id, label: c.label || c.id, isBuiltin: false }))
@@ -117,6 +137,50 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
             )
           })}
         </div>
+      </SearchableRow>
+      <SearchableRow {...ROWS.minimax}>
+        <FieldRow
+          label="Browser cookie"
+          description="MiniMax exposes no CLI credential, so its quota is read with your console session. In the browser, open platform.minimax.io/console/usage, copy the request's Cookie header, and paste it here."
+          note={
+            minimaxSaved
+              ? 'Stored outside settings.json, in a file only your user can read. It is never shown again — paste a fresh one when your session expires.'
+              : 'This is a live session credential. It is stored in a 0600 file, not in settings.json, and is never read back into the UI.'
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                className="input w-64"
+                placeholder={minimaxSaved ? '•••••••• stored' : 'Cookie: _token=…'}
+                value={minimaxCookie}
+                onChange={(e) => setMinimaxCookie(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <Button
+                onClick={async () => {
+                  setMinimaxSaved(await window.nodeTerminal.usage.setMinimaxCookie(minimaxCookie))
+                  // Never keep the secret in component state once it has been handed over.
+                  setMinimaxCookie('')
+                }}
+                disabled={!minimaxCookie.trim()}
+              >
+                Save
+              </Button>
+              {minimaxSaved && (
+                <Button
+                  onClick={async () => {
+                    setMinimaxSaved(await window.nodeTerminal.usage.setMinimaxCookie(''))
+                    setMinimaxCookie('')
+                  }}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          }
+        />
       </SearchableRow>
       <SearchableRow {...ROWS.permissionMode}>
         <FieldRow
