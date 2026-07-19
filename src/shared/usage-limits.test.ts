@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { limitLabel, limitShortLabel, primaryLimit, findLimit, limitKey } from './usage-limits'
-import type { UsageLimit } from './types'
+import {
+  limitLabel,
+  limitShortLabel,
+  primaryLimit,
+  findLimit,
+  limitKey,
+  enabledProviders,
+  hasAnyUsage,
+  providerLabel
+} from './usage-limits'
+import type { ProviderUsage, UsageLimit } from './types'
 
 function limit(over: Partial<UsageLimit>): UsageLimit {
   return {
@@ -88,5 +97,58 @@ describe('limitKey', () => {
     const a = limit({ kind: 'weekly_scoped', scopeLabel: 'Fable' })
     const b = limit({ kind: 'weekly_scoped', scopeLabel: 'Opus' })
     expect(limitKey(a)).not.toBe(limitKey(b))
+  })
+})
+
+function provider(over: Partial<ProviderUsage>): ProviderUsage {
+  return { provider: 'codex', limits: [], account: null, updatedAt: 0, status: 'ok', ...over }
+}
+
+describe('enabledProviders', () => {
+  it('keeps only signed-in providers that have something to report', () => {
+    const kept = enabledProviders([
+      provider({ provider: 'codex', limits: [limit({ usedPercent: 10 })] }),
+      provider({ provider: 'gemini', status: 'unavailable' }),
+      // 'ok' but empty: signed in with nothing to show is still nothing to show.
+      provider({ provider: 'grok', limits: [] })
+    ])
+    expect(kept.map((p) => p.provider)).toEqual(['codex'])
+  })
+})
+
+describe('hasAnyUsage', () => {
+  it('renders for a Codex-only user with no Claude at all', () => {
+    // The regression this exists for: gating on Claude left such a user with no indicator.
+    expect(
+      hasAnyUsage(null, [provider({ provider: 'codex', limits: [limit({ usedPercent: 5 })] })])
+    ).toBe(true)
+  })
+
+  it('renders when Claude alone is available', () => {
+    expect(hasAnyUsage({ status: 'ok' }, [])).toBe(true)
+  })
+
+  it('keeps rendering a failing Claude, so the pill does not flap between refreshes', () => {
+    expect(hasAnyUsage({ status: 'error' }, [])).toBe(true)
+  })
+
+  it('renders nothing when no provider is configured', () => {
+    expect(hasAnyUsage({ status: 'unavailable' }, [])).toBe(false)
+    expect(hasAnyUsage(null, [provider({ status: 'unavailable' })])).toBe(false)
+  })
+})
+
+describe('providerLabel', () => {
+  it('prefers a builtin agent label', () => {
+    expect(providerLabel('codex', 'Codex')).toBe('Codex')
+  })
+
+  it('names billing-only providers that have no agent entry', () => {
+    expect(providerLabel('grok')).toBe('Grok')
+    expect(providerLabel('minimax')).toBe('MiniMax')
+  })
+
+  it('falls back to the raw id so a new provider never renders blank', () => {
+    expect(providerLabel('whatever-next')).toBe('whatever-next')
   })
 })

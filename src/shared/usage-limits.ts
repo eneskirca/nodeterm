@@ -3,7 +3,7 @@
 //
 // The parsing that produces `UsageLimit[]` from a raw provider payload is service-side and
 // lives in core/usage — only the vocabulary lives here.
-import type { UsageLimit } from './types'
+import type { ProviderUsage, UsageLimit } from './types'
 
 /**
  * Human label for a limit. A scoped limit is named by its model ("Fable"); everything else
@@ -53,6 +53,29 @@ export function findLimit(limits: UsageLimit[], kind: string): UsageLimit | null
 /** Stable React key / dedupe key for a limit (kind alone repeats across scoped models). */
 export function limitKey(limit: UsageLimit): string {
   return `${limit.kind}:${limit.scopeLabel ?? ''}`
+}
+
+/**
+ * The providers the user has actually enabled: signed in AND with something to report. Anything
+ * else is noise in the pill for someone who has never used that service.
+ */
+export function enabledProviders(providers: ProviderUsage[]): ProviderUsage[] {
+  return providers.filter((p) => p.status === 'ok' && p.limits.length > 0)
+}
+
+/**
+ * Whether the usage indicator has anything to show at all.
+ *
+ * Deliberately NOT "is Claude available": gating on Claude alone leaves a Codex-only or
+ * Gemini-only user with no indicator whatsoever. An 'error' Claude still renders, because that
+ * is a configured provider failing and hiding it would make the pill flap between refreshes.
+ */
+export function hasAnyUsage(
+  claude: { status: string } | null | undefined,
+  providers: ProviderUsage[]
+): boolean {
+  if (claude && (claude.status === 'ok' || claude.status === 'error')) return true
+  return enabledProviders(providers).length > 0
 }
 
 /**

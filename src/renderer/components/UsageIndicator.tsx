@@ -4,6 +4,8 @@ import { AGENT_CONFIG } from '@shared/agents/config'
 import { useSettings } from '../state/settings'
 import { formatResetCountdown, formatTimeAgo, severityColor } from '../lib/usageFormat'
 import {
+  enabledProviders,
+  hasAnyUsage,
   limitKey,
   limitLabel,
   limitShortLabel,
@@ -63,12 +65,15 @@ function AccountUsageBlock({ label, email, u }: { label: string; email?: string;
  * run Codex is noise, not information. An 'error' provider IS shown, because that is a
  * configured provider failing and hiding it would make the popover flap between refreshes.
  */
+/** AGENT_CONFIG is keyed by builtin ids; billing-only providers fall through to the shared table. */
+function labelFor(provider: string): string {
+  const agentLabel = (AGENT_CONFIG as Record<string, { label?: string } | undefined>)[provider]?.label
+  return providerLabel(provider, agentLabel)
+}
+
 function ProviderBlock({ u }: { u: ProviderUsage }) {
   if (u.status === 'unavailable') return null
-  // AGENT_CONFIG is keyed by the builtin ids; `provider` is an open string, so a billing-only
-  // provider (Grok, Kimi, …) has no entry and falls through to the shared label table.
-  const agentLabel = (AGENT_CONFIG as Record<string, { label?: string } | undefined>)[u.provider]?.label
-  const label = providerLabel(u.provider, agentLabel)
+  const label = labelFor(u.provider)
   return (
     <div className="usage-account">
       <div className="usage-account__label">{label}</div>
@@ -112,10 +117,12 @@ export function UsageIndicator(): JSX.Element | null {
     return window.nodeTerminal.usage.onUpdate(setUsage)
   }, [])
 
-  // Other providers are fetched only while the popover is open — each costs a network call (and
-  // possibly a subprocess), so polling them for a collapsed pill would spend that for nothing.
+  // Fetched once on mount and again whenever the popover opens (the service caches, so the
+  // second call is usually free). On mount rather than popover-only because the pill itself
+  // surfaces enabled providers now — and a provider the user has never signed into costs no
+  // network call at all: every fetcher short-circuits to 'unavailable' on a missing credentials
+  // file. So the price of asking is one failed read per unused provider, not five round-trips.
   useEffect(() => {
-    if (!open) return
     let cancelled = false
     void window.nodeTerminal.usage.providers().then((ps) => {
       if (!cancelled) setProviders(ps)
@@ -149,15 +156,21 @@ export function UsageIndicator(): JSX.Element | null {
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
-  if (!usage || usage.status === 'unavailable') return null
+  // Only providers the user has actually enabled reach the pill; render whenever ANY of them
+  // (Claude included) has something to say. Both rules are pure and pinned by tests — gating on
+  // Claude alone, which is what this did, left a Codex-only user with no pill at all.
+  const enabled = enabledProviders(providers)
+  if (!hasAnyUsage(usage, providers)) return null
 
-  const { limits, status } = usage
-  const hasData = limits.length > 0
+  const limits = usage?.limits ?? []
+  const status = usage?.status ?? 'unavailable'
+  const hasData = limits.length > 0 || enabled.length > 0
   const fetching = refreshing
   const isError = status === 'error'
   // The pill leads with whatever is closest to biting, so a scoped model cap that is nearly
-  // exhausted can't hide behind a comfortable 5h window.
-  const primary = primaryLimit(limits)
+  // exhausted can't hide behind a comfortable 5h window. Considers every enabled provider, not
+  // just Claude, so an exhausted Codex window drives the bar too.
+  const primary = primaryLimit([...limits, ...enabled.flatMap((p) => p.limits)])
 
   const refresh = async (e: React.MouseEvent): Promise<void> => {
     e.stopPropagation()
@@ -197,6 +210,20 @@ export function UsageIndicator(): JSX.Element | null {
             </span>
           </span>
         ))}
+        {/* One segment per enabled provider, carrying only its worst limit — a provider's full
+            breakdown belongs in the popover, not in a pill that has to fit beside the canvas. */}
+        {enabled.map((p, i) => {
+          const worst = primaryLimit(p.limits)
+          if (!worst) return null
+          return (
+            <span key={p.provider}>
+              {(limits.length > 0 || i > 0) && <span className="usage-pill__sep">·</span>}
+              <span className="usage-pill__num">
+                {Math.round(100 - worst.usedPercent)}% {labelFor(p.provider)}
+              </span>
+            </span>
+          )
+        })}
         {isError && hasData && <span className="usage-pill__dim">⚠</span>}
       </>
     )
@@ -207,10 +234,14 @@ export function UsageIndicator(): JSX.Element | null {
       {open && (
         <div className="usage-popover">
           <div className="usage-popover__head">
-            <span className="usage-popover__title">✦ Claude</span>
-            <span className="usage-popover__ago">Updated {formatTimeAgo(usage.updatedAt)}</span>
+            <span className="usage-popover__title">✦ Usage</span>
+            {/* Timestamp tracks the Claude snapshot, the only one that is polled. Absent when
+                Claude is not signed in and the panel is showing other providers only. */}
+            {usage && (
+              <span className="usage-popover__ago">Updated {formatTimeAgo(usage.updatedAt)}</span>
+            )}
           </div>
-          {accounts.length > 0 ? (
+          {accounts.length > 0 && usage ? (
             <>
               <AccountUsageBlock
                 label={systemAccountDisplay(systemLabelSetting, usage.email)}
@@ -224,11 +255,16 @@ export function UsageIndicator(): JSX.Element | null {
             </>
           ) : (
             <>
+              {/* Claude's rows are bare when it is the only provider; once others share the
+                  panel they need a heading of their own to stay attributable. */}
+              {enabled.length > 0 && limits.length > 0 && (
+                <div className="usage-account__label">Claude</div>
+              )}
               {limits.map((l) => (
                 <LimitRow key={limitKey(l)} limit={l} />
               ))}
               {!hasData && <div className="usage-popover__empty">No usage data.</div>}
-              {usage.email && (
+              {usage?.email && (
                 <div className="usage-account">
                   <div className="usage-account__label">Claude Account</div>
                   <div className="usage-account__email">{usage.email}</div>
@@ -241,7 +277,7 @@ export function UsageIndicator(): JSX.Element | null {
           ))}
         </div>
       )}
-      <button className="usage-pill" onClick={() => setOpen((v) => !v)} title="Claude usage">
+      <button className="usage-pill" onClick={() => setOpen((v) => !v)} title="Agent usage">
         <span className="usage-pill__icon">✦</span>
         {pillBody}
       </button>
