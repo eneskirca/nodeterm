@@ -28,6 +28,7 @@ import {
   type PtyCreateOptions,
   type SettingsApi,
   type ClaudeUsage,
+  type ProviderUsage,
   type Settings,
   type SpeechApi,
   type SpeechModelInfo,
@@ -482,6 +483,8 @@ function buildUsageApi(client: RpcClient): Pick<NodeTerminalApi, 'usage'> {
         client.request(IPC.usageFetch, accountId) as Promise<ClaudeUsage>,
       refresh: (accountId?: string) =>
         client.request(IPC.usageRefresh, accountId) as Promise<ClaudeUsage>,
+      providers: (force?: boolean) =>
+        client.request(IPC.usageProviders, force) as Promise<ProviderUsage[]>,
       onUpdate: (listener) => client.subscribe(IPC.usageUpdate, listener as Listener)
     }
   }

@@ -52,12 +52,12 @@ export function barColor(leftPercent: number): string {
 }
 
 /**
- * Bar color for a usage limit. The server ships its own `severity` verdict, which knows the
+ * Bar color for a usage limit. A provider that ships its own `severity` verdict knows the
  * account's plan and how close the window really is to biting — prefer it, and fall back to
- * our own percentage thresholds only for a severity we don't recognize (or a legacy payload
- * that never carried one).
+ * our own percentage thresholds when it is null (most providers report none) or a value we
+ * don't recognize.
  */
-export function severityColor(severity: string, leftPercent: number): string {
+export function severityColor(severity: string | null, leftPercent: number): string {
   switch (severity) {
     case 'normal':
       return '#30d158'

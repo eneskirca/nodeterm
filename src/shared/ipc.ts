@@ -73,6 +73,8 @@ export const IPC = {
   usageFetch: 'usage:fetch',
   usageRefresh: 'usage:refresh',
   usageUpdate: 'usage:update',
+  /** Non-Claude providers (codex, …) as one list; Claude keeps its own account-aware channels. */
+  usageProviders: 'usage:providers',
   contextUpdate: 'context:update',
   contextEnsure: 'context:ensure',
   // Team presence (docs/team-presence.md). `presence:hello` is a REQUEST: its response tells the

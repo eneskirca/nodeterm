@@ -929,25 +929,57 @@ export interface ClaudeUsageWindow {
 }
 
 /**
- * One entry from the usage endpoint's `limits[]` array — the current, open-ended contract.
- * A per-model quota (Fable's weekly cap, say) is an ordinary entry whose model name rides in
- * `scopeLabel`, so a new model needs no new field here. Percentages are portions USED, which
- * is the server's own convention; the UI inverts for display where it shows "left".
+ * One usage window, normalized across providers. Claude's endpoint hands these over directly
+ * as its open-ended `limits[]` array — a per-model quota (Fable's weekly cap, say) is an
+ * ordinary entry whose model name rides in `scopeLabel`, so a new model needs no new field.
+ * Other providers (Codex's primary/secondary windows, …) are mapped into the same shape.
+ *
+ * Percentages are portions USED, which is the providers' own convention; the UI inverts for
+ * display where it shows "left".
  */
 export interface UsageLimit {
-  /** Server-assigned kind: 'session' | 'weekly_all' | 'weekly_scoped' | future values. */
+  /** Provider-assigned kind: 'session' | 'weekly_all' | 'weekly_scoped' | future values. */
   kind: string
-  /** Coarse grouping ('session' | 'weekly'), or null when the server omits it. */
+  /** Coarse grouping ('session' | 'weekly'), or null when the provider omits it. */
   group: string | null
   /** 0–100, portion consumed. */
   usedPercent: number
-  /** Server's severity call ('normal' | 'warning' | …). Drives colour; not derived locally. */
-  severity: string
+  /**
+   * The provider's own severity call ('normal' | 'warning' | 'critical' | …), or **null when
+   * the provider does not report one** — which is the common case (only Claude does today).
+   * Null means "derive from the percentage locally"; it must NOT be defaulted to 'normal',
+   * or every provider without severity would paint a permanently green bar.
+   */
+  severity: string | null
   resetsAt: number | null
+  /**
+   * The bucket's real duration in minutes, when the provider reports it (Codex sends
+   * `limit_window_seconds`), else null. Providers can and do vary this per plan, so labelling
+   * a window "5h" from its `kind` alone can be a lie.
+   */
+  windowMinutes: number | null
   /** Model display name for a scoped limit (e.g. 'Fable'), else null. */
   scopeLabel: string | null
-  /** Server says this window is the one currently gating the account. */
+  /** The provider says this window is the one currently gating the account. */
   isActive: boolean
+}
+
+/**
+ * One provider's usage snapshot. `ClaudeUsage` below is the Claude-shaped superset kept for the
+ * existing pill; new providers use this leaner shape (they have no per-account story yet).
+ */
+export interface ProviderUsage {
+  /** Agent id the limits belong to: 'claude' | 'codex' | … */
+  provider: string
+  limits: UsageLimit[]
+  /** Signed-in identity, when the provider exposes one cheaply (email / account label). */
+  account: string | null
+  updatedAt: number
+  /**
+   * 'unavailable' = not signed in / no subscription to report → hide this provider entirely.
+   * 'fetching' = request in flight. 'ok' = limits present. 'error' = the fetch failed.
+   */
+  status: 'unavailable' | 'fetching' | 'ok' | 'error'
 }
 
 /** Claude Code subscription usage snapshot for the bottom-left indicator. */
@@ -976,6 +1008,10 @@ export interface UsageApi {
   fetch(accountId?: string): Promise<ClaudeUsage>
   /** Forces a fresh fetch, bypassing the focus debounce. Optional account id as `fetch`. */
   refresh(accountId?: string): Promise<ClaudeUsage>
+  /** Snapshots for every non-Claude provider (codex, …). Fetched on demand, not polled — pass
+   *  `force` to bypass the cache debounce. Providers that aren't signed in come back
+   *  'unavailable' rather than being omitted, so the caller can tell "off" from "broken". */
+  providers(force?: boolean): Promise<ProviderUsage[]>
   /** Fires whenever main pushes a new snapshot (poll/refresh). Returns unsubscribe. */
   onUpdate(listener: (usage: ClaudeUsage) => void): () => void
 }

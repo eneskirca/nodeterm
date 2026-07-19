@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ClaudeUsage, UsageLimit } from '@shared/types'
+import type { ClaudeUsage, ProviderUsage, UsageLimit } from '@shared/types'
+import { AGENT_CONFIG } from '@shared/agents/config'
 import { useSettings } from '../state/settings'
 import { formatResetCountdown, formatTimeAgo, severityColor } from '../lib/usageFormat'
 import { limitKey, limitLabel, limitShortLabel, primaryLimit } from '@shared/usage-limits'
@@ -51,6 +52,33 @@ function AccountUsageBlock({ label, email, u }: { label: string; email?: string;
 }
 
 /**
+ * One non-Claude provider's section in the popover. Providers that aren't signed in report
+ * 'unavailable' and are skipped entirely — showing an empty Codex row to someone who has never
+ * run Codex is noise, not information. An 'error' provider IS shown, because that is a
+ * configured provider failing and hiding it would make the popover flap between refreshes.
+ */
+function ProviderBlock({ u }: { u: ProviderUsage }) {
+  if (u.status === 'unavailable') return null
+  // AGENT_CONFIG is keyed by the builtin ids; `provider` is an open string, so a provider that
+  // is not a builtin agent (a billing-only one) falls back to its own id rather than blanking.
+  const label = (AGENT_CONFIG as Record<string, { label?: string } | undefined>)[u.provider]?.label ?? u.provider
+  return (
+    <div className="usage-account">
+      <div className="usage-account__label">{label}</div>
+      {u.account && <div className="usage-account__email">{u.account}</div>}
+      {u.limits.map((l) => (
+        <LimitRow key={limitKey(l)} limit={l} />
+      ))}
+      {u.limits.length === 0 && (
+        <div className="usage-popover__empty">
+          {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * Bottom-left Claude usage pill + popover. Renders to the right of the React Flow Controls.
  * States: hidden when 'unavailable'; '···' while first-fetching; '⚠' on error w/o data;
  * last-known data shown on stale/error. Compact pill = mini-bar + one "N% label" per limit,
@@ -61,6 +89,7 @@ export function UsageIndicator(): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [acctUsage, setAcctUsage] = useState<Record<string, ClaudeUsage | null>>({})
+  const [providers, setProviders] = useState<ProviderUsage[]>([])
   const popRef = useRef<HTMLDivElement>(null)
 
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
@@ -75,6 +104,19 @@ export function UsageIndicator(): JSX.Element | null {
     void window.nodeTerminal.usage.fetch().then(setUsage)
     return window.nodeTerminal.usage.onUpdate(setUsage)
   }, [])
+
+  // Other providers are fetched only while the popover is open — each costs a network call (and
+  // possibly a subprocess), so polling them for a collapsed pill would spend that for nothing.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void window.nodeTerminal.usage.providers().then((ps) => {
+      if (!cancelled) setProviders(ps)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   // Fetch each account's usage on demand when the popover opens (system row uses `usage`).
   useEffect(() => {
@@ -187,6 +229,9 @@ export function UsageIndicator(): JSX.Element | null {
               )}
             </>
           )}
+          {providers.map((p) => (
+            <ProviderBlock key={p.provider} u={p} />
+          ))}
         </div>
       )}
       <button className="usage-pill" onClick={() => setOpen((v) => !v)} title="Claude usage">

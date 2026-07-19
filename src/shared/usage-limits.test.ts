@@ -9,6 +9,7 @@ function limit(over: Partial<UsageLimit>): UsageLimit {
     usedPercent: 0,
     severity: 'normal',
     resetsAt: null,
+    windowMinutes: null,
     scopeLabel: null,
     isActive: false,
     ...over

@@ -50,10 +50,13 @@ function mapLimit(raw: unknown): UsageLimit | null {
     kind,
     group: typeof l.group === 'string' && l.group ? l.group : null,
     usedPercent,
-    // Severity is the server's own call. Deriving it from percent thresholds locally would
-    // desync from the plan the account is actually on.
-    severity: typeof l.severity === 'string' && l.severity ? l.severity : 'normal',
+    // Severity is the server's own call — deriving it from percent thresholds locally would
+    // desync from the plan the account is actually on. Absent means "not reported", NOT
+    // 'normal': defaulting it green would hide an exhausted window on any payload that omits it.
+    severity: typeof l.severity === 'string' && l.severity ? l.severity : null,
     resetsAt: parseResetTimestamp(l.resets_at),
+    // Claude does not report bucket durations; `kind` is the only window hint it gives.
+    windowMinutes: null,
     scopeLabel: displayName || null,
     // Absent `is_active` means "unknown", not "inactive" — an older payload that omits the
     // field must not have every limit silently treated as dormant.
@@ -77,8 +80,10 @@ function legacyLimits(data: Record<string, any>): UsageLimit[] {
       kind,
       group,
       usedPercent,
-      severity: 'normal',
+      // Legacy payloads carry no severity — leave it to the local percentage thresholds.
+      severity: null,
       resetsAt: parseResetTimestamp(w.resets_at),
+      windowMinutes: null,
       scopeLabel: null,
       isActive: false
     })

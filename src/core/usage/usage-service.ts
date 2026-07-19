@@ -11,9 +11,15 @@ import path from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { IPC } from '../../shared/ipc'
-import type { ClaudeUsage, ClaudeUsageWindow, UsageLimit } from '../../shared/types'
+import type {
+  ClaudeUsage,
+  ClaudeUsageWindow,
+  ProviderUsage,
+  UsageLimit
+} from '../../shared/types'
 import { findLimit } from '../../shared/usage-limits'
 import { mapUsageLimits } from './claude-usage-map'
+import { fetchCodexUsage } from './codex-usage'
 import { usageCredsPaths } from '../claude-accounts-core'
 import { claudeConfigDirFor } from '../claude-config-dir'
 import { platform } from '../platform'
@@ -31,6 +37,15 @@ interface OAuthCreds {
   accessToken: string | null
   email: string | null
 }
+
+/**
+ * Providers other than Claude. Claude keeps its own channels because it alone is account-aware
+ * (managed config dirs, a per-account popover row); everything else answers one snapshot.
+ * Adding a provider is one entry here plus its fetcher — no changes to the service or the UI.
+ */
+const OTHER_PROVIDERS: { id: string; fetch: () => Promise<ProviderUsage> }[] = [
+  { id: 'codex', fetch: fetchCodexUsage }
+]
 
 /** Parse a credentials JSON blob; tokens may sit at top level or under `claudeAiOauth`. */
 export function parseCreds(raw: string): OAuthCreds {
@@ -220,6 +235,46 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     return run(accountId)
   })
   platform().handle(IPC.usageRefresh, (accountId?: string) => run(accountId))
+
+  // Non-Claude providers. Fetched on demand (when the popover opens) rather than polled: each
+  // one costs its own network round-trip — and, on the app-server fallback, a subprocess — so
+  // polling them all on the Claude cadence would multiply that cost for data nobody is looking
+  // at. Cached under the same debounce.
+  let providersAt = 0
+  let providersCache: ProviderUsage[] = []
+  let providersInFlight: Promise<ProviderUsage[]> | null = null
+
+  const runProviders = async (): Promise<ProviderUsage[]> => {
+    if (providersInFlight) return providersInFlight
+    // One slow provider must not withhold the others — settle each independently.
+    providersInFlight = Promise.all(
+      OTHER_PROVIDERS.map((p) =>
+        p.fetch().catch(
+          (): ProviderUsage => ({
+            provider: p.id,
+            limits: [],
+            account: null,
+            updatedAt: Date.now(),
+            status: 'error'
+          })
+        )
+      )
+    )
+    try {
+      providersCache = await providersInFlight
+      providersAt = Date.now()
+      return providersCache
+    } finally {
+      providersInFlight = null
+    }
+  }
+
+  platform().handle(IPC.usageProviders, (force?: boolean) => {
+    if (!force && providersAt && Date.now() - providersAt < REFETCH_DEBOUNCE_MS) {
+      return providersCache
+    }
+    return runProviders()
+  })
 
   // The warm-up fetch goes through the same gate as the poll: it IS a poll, just the first one.
   // On desktop a focused window warms the cache before the pill mounts; on the server, boot

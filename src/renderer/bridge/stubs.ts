@@ -224,6 +224,9 @@ export function buildStubApi(): Omit<
       // `Promise<ClaudeUsage | null>`, a public-API change tracked separately.
       fetch: (): Promise<ClaudeUsage> => Promise.resolve(null as unknown as ClaudeUsage),
       refresh: U('usage.refresh'),
+      // Empty, not a reject: "no providers configured" is a real answer and the popover
+      // renders it as nothing. This one needs no cast — the honest type already fits.
+      providers: () => Promise.resolve([]),
       onUpdate: noopUnsub
     },
     claude: {
