@@ -214,11 +214,14 @@ export function buildStubApi(): Omit<
       info: U('contextLink.info')
     },
     usage: {
-      // Boot path awaits this; null = "no usage snapshot" so the indicator hides. The consumer
-      // (UsageIndicator) does guard for it, but the value still lies about its type: the
-      // `null as unknown as ClaudeUsage` cast is exactly the pattern that hid the getPolicy
-      // TypeError above. Fixing it properly means widening `UsageApi.fetch` to
-      // `Promise<ClaudeUsage | null>` (a public-API change) — tracked separately.
+      // Superseded by the real WS-backed namespace in ws-bridge (the core usage service runs in
+      // the server shell too), so nothing reaches these in a live browser session. Kept only to
+      // satisfy `satisfies NodeTerminalApi`.
+      //
+      // The `null as unknown as ClaudeUsage` cast is retained on purpose: the boot path awaits
+      // `fetch`, and UsageIndicator treats a null snapshot as "nothing to show" and renders
+      // nothing. It still lies about its type — the honest fix is widening `UsageApi.fetch` to
+      // `Promise<ClaudeUsage | null>`, a public-API change tracked separately.
       fetch: (): Promise<ClaudeUsage> => Promise.resolve(null as unknown as ClaudeUsage),
       refresh: U('usage.refresh'),
       onUpdate: noopUnsub

@@ -27,6 +27,7 @@ import {
   type PtyApi,
   type PtyCreateOptions,
   type SettingsApi,
+  type ClaudeUsage,
   type Settings,
   type SpeechApi,
   type SpeechModelInfo,
@@ -465,6 +466,28 @@ export function buildSpeechApi(client: RpcClient): Pick<NodeTerminalApi, 'speech
 }
 
 /**
+ * Build the `usage` namespace over an RpcClient. The server shell runs the same core usage
+ * service the desktop does, so this is real end to end — including `onUpdate`, which subscribes
+ * to the poll's broadcast rather than the stub's no-op.
+ *
+ * `fetch` deliberately does NOT catch: `UsageApi.fetch` is typed as `Promise<ClaudeUsage>`, so
+ * swallowing a transport failure would mean inventing a snapshot. The one consumer
+ * (UsageIndicator) leaves `usage` null until a real one arrives and renders nothing meanwhile,
+ * which is the correct outcome for "we don't know".
+ */
+function buildUsageApi(client: RpcClient): Pick<NodeTerminalApi, 'usage'> {
+  return {
+    usage: {
+      fetch: (accountId?: string) =>
+        client.request(IPC.usageFetch, accountId) as Promise<ClaudeUsage>,
+      refresh: (accountId?: string) =>
+        client.request(IPC.usageRefresh, accountId) as Promise<ClaudeUsage>,
+      onUpdate: (listener) => client.subscribe(IPC.usageUpdate, listener as Listener)
+    }
+  }
+}
+
+/**
  * Build the `claude` namespace over an RpcClient. `cliCaps` is a REAL handler on the server
  * (`registerClaudeCliIpc` runs in the server shell too), so the browser resolves the very same
  * `--permission-mode auto` version gate as desktop instead of silently no-opping into "auto
@@ -595,6 +618,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildCanvasApi(client),
     ...buildPresenceApi(client),
     ...buildSpeechApi(client),
+    ...buildUsageApi(client),
     // Only `cliCaps` is real here — the rest of the namespace stays stubbed (see buildClaudeApi).
     claude: buildClaudeApi(client, stubApi.claude),
     // Web replacement for the Electron native dialog: an in-app server-directory browser over

@@ -4,6 +4,7 @@ import { GitService } from '../../core/git-service'
 import { generateCommitMessage } from '../../core/commit-message'
 import { registerFsHandlers } from '../../core/fs-handlers'
 import { claudeCliCaps, registerClaudeCliIpc } from '../../core/claude-cli'
+import { startUsageService } from '../../core/usage/usage-service'
 import { IPC } from '../../shared/ipc'
 
 /** Register the Phase-3a handler surface (fs + git + commit) on the server platform.
@@ -35,6 +36,11 @@ export function registerCoreHandlers(
   // claude CLI is the one that will run the terminal nodes. Warm it so the first call is cached.
   registerClaudeCliIpc()
   void claudeCliCaps()
+
+  // Claude subscription usage. Previously desktop-only — the browser bridge answered `null`, so
+  // the pill never rendered in the Server Edition. Poll only while a browser is attached: with
+  // no client there is nobody to show it to, and the usage endpoint's request budget is tight.
+  startUsageService({ shouldPoll: () => platform.clientIds().length > 0 })
 
   return { gitService }
 }
