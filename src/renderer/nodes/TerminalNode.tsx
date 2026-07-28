@@ -50,7 +50,15 @@ import {
   xtermScrollback,
   type SessionLife
 } from '../terminal/terminal-config'
-import { loseWebglContexts, registerWebglClient, type WebglClientHandle } from '../terminal/webgl-budget'
+import {
+  createWebglSurfaceResizeController,
+  estimateWebglSurfaceBytes,
+  loseWebglContexts,
+  registerWebglClient,
+  subscribeDevicePixelRatio,
+  type WebglClientHandle,
+  type WebglSurfaceResizeController
+} from '../terminal/webgl-budget'
 import { deliverCommand, type DeliveryIo } from '../terminal/command-delivery'
 import {
   guardConcurrentRestart,
@@ -377,6 +385,7 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
   // The live session's "measure my grid, render it, report it" routine (set by the lifecycle
   // effect), so effects outside that closure (font/cursor changes) resize through the same path.
   const applyFitRef = useRef<(() => void) | null>(null)
+  const surfaceResizeControllerRef = useRef<WebglSurfaceResizeController | null>(null)
   const dwellRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [showColors, setShowColors] = useState(false)
   const [armed, setArmed] = useState(true)
@@ -619,11 +628,19 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
     // holds far more terminals than that, so a context is NOT acquired per mounted node. The
     // module-level BUDGET COORDINATOR (`webgl-budget.ts`) owns the grant decision and all timing:
     // this node reports viewport visibility (via the IntersectionObserver below), and the
-    // coordinator calls back into `acquireWebgl`/`releaseWebgl`, keeping the total contexts WE hold
-    // under `WEBGL_BUDGET` so the browser never has to force-evict (which is what flashed the dead
-    // "lost context" placeholder). The callbacks stay dumb and idempotent.
+    // coordinator calls back into `acquireWebgl`/`releaseWebgl`, keeping both context count and
+    // estimated raw backing-surface bytes under budget. Count prevents browser force-eviction (the
+    // dead "lost context" placeholder); bytes bound intrinsically large high-DPI nodes even when
+    // React Flow zoom makes them look small. The callbacks stay dumb and idempotent.
     let webgl: WebglAddon | null = null
     let webglHandle: WebglClientHandle | null = null
+    const surfaceBytes = () =>
+      estimateWebglSurfaceBytes(
+        container.clientWidth,
+        container.clientHeight,
+        window.devicePixelRatio
+      )
+    const initialSurfaceBytes = surfaceBytes()
     const acquireWebgl = (): boolean => {
       if (webgl) return true
       try {
@@ -716,6 +733,32 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
       }
     }
     applyFitRef.current = applyFit
+
+    webglHandle = registerWebglClient(
+      id,
+      { acquire: acquireWebgl, release: releaseWebgl },
+      initialSurfaceBytes
+    )
+    const surfaceResizeController = createWebglSurfaceResizeController({
+      initialSurfaceBytes,
+      readSurfaceBytes: surfaceBytes,
+      applyFit,
+      reportSurfaceBytes: (bytes) => webglHandle?.setSurfaceBytes(bytes)
+    })
+    surfaceResizeControllerRef.current = surfaceResizeController
+    // This shared watcher must register before term.open installs xterm's own DPR listener.
+    // It stays installed across parked nodes and suspends GPU grants before xterm can resize them.
+    const stopWatchingDpr = subscribeDevicePixelRatio(window, () =>
+      surfaceResizeController.suspendAndScheduleFit()
+    )
+    // Node dragging fires per frame; each fit measures cells and redraws tmux. The controller
+    // preserves the existing trailing 80 ms fit while charging any surface growth immediately.
+    const observer = new ResizeObserver(() => surfaceResizeController.measureAndScheduleFit())
+    try {
+      observer.observe(container, { box: 'device-pixel-content-box' })
+    } catch {
+      observer.observe(container)
+    }
 
     if (parked) {
       // Reattach the parked xterm's DOM element: the PTY never detached, so the screen is
@@ -1267,27 +1310,16 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
       })
     )
 
-    // Coalesce observer bursts: dragging the NodeResizer fires per animation frame, and every
-    // call is a full cell-geometry measure + a resize IPC → node-pty → tmux (which redraws the
-    // whole pane). One trailing fit per settle is enough — the canvas node frame itself still
-    // tracks the drag live; only the terminal reflow waits for the pause.
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null
-    const observer = new ResizeObserver(() => {
-      if (resizeTimer) clearTimeout(resizeTimer)
-      resizeTimer = setTimeout(applyFit, 80)
-    })
-    observer.observe(container)
-
     // Viewport-scoped WebGL, coordinated by the module-level budget (`webgl-budget.ts`): the
     // IntersectionObserver only REPORTS visibility to the coordinator, which owns the grant decision
-    // and all timing (acquire debounce, release delay, and LRU-hidden reclaim so we never exceed the
-    // budget). IntersectionObserver measures against the rendered box, so React Flow's pan/zoom CSS
+    // and all timing (acquire debounce, release delay, surface-byte accounting, and LRU-hidden
+    // reclaim so neither budget is exceeded). IntersectionObserver measures against the rendered
+    // box, so React Flow's pan/zoom CSS
     // transform is accounted for natively — no coupling to the React Flow store, and it works
     // identically in the browser Server Edition. `rootMargin` pre-announces a node panning into
     // view. The observer's initial callback (queued shortly after `observe()`) is what reports
     // visibility on mount/adopt — this replaces the old unconditional `loadWebgl()` calls in both
     // the parked and fresh paths above; the DOM renderer covers the gap until a grant lands.
-    webglHandle = registerWebglClient(id, { acquire: acquireWebgl, release: releaseWebgl })
     const visibilityObserver = new IntersectionObserver(
       (entries) => {
         // disconnect() does not flush already-QUEUED notifications (Blink delivers them after),
@@ -1307,8 +1339,9 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
       // pass through here. A remount re-registers (superseding, so a stale unregister is inert).
       unregisterRestart()
       observer.disconnect()
+      stopWatchingDpr()
+      surfaceResizeController.dispose()
       visibilityObserver.disconnect()
-      if (resizeTimer) clearTimeout(resizeTimer)
       if (dwellRef.current) clearTimeout(dwellRef.current)
       useAgentStatus.getState().setActive(id, false)
       // Teammates stop seeing us in this node's header. releaseFocus, not reportFocus(null): on a
@@ -1326,6 +1359,9 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
       fitRef.current = null
       searchAddonRef.current = null
       if (applyFitRef.current === applyFit) applyFitRef.current = null
+      if (surfaceResizeControllerRef.current === surfaceResizeController) {
+        surfaceResizeControllerRef.current = null
+      }
       // Free the GPU context on unmount (park or teardown) either way, and unregister from the
       // budget coordinator (which releases any held grant + cancels its timers). The park path must
       // keep releasing it as it always has (contexts are capped ~16, and a parked terminal is
@@ -1389,11 +1425,23 @@ export function TerminalNode({ id, data, selected, parentId }: NodeProps<CanvasN
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    term.options.fontSize = fontSize
-    term.options.fontFamily = fontFamily
-    term.options.cursorBlink = cursorBlink
-    term.options.scrollback = xtermScrollback(tmuxScrollback)
-    applyFitRef.current?.()
+    const geometryChanged =
+      term.options.fontSize !== fontSize || term.options.fontFamily !== fontFamily
+    const applyOptions = () => {
+      term.options.fontSize = fontSize
+      term.options.fontFamily = fontFamily
+      term.options.cursorBlink = cursorBlink
+      term.options.scrollback = xtermScrollback(tmuxScrollback)
+    }
+    const surfaceController = surfaceResizeControllerRef.current
+    if (geometryChanged && surfaceController) {
+      // Drop WebGL before xterm applies the new font to its old grid, then fit on DOM and re-cost
+      // before the coordinator may grant a correctly sized GPU canvas again.
+      surfaceController.runGeometryChange(applyOptions)
+    } else {
+      applyOptions()
+      applyFitRef.current?.()
+    }
   }, [fontSize, fontFamily, cursorBlink, tmuxScrollback])
 
   const toggleCollapse = () =>

@@ -14,18 +14,23 @@
  * acquire immediately — so the browser force-evicts, and the dead placeholder flashes.
  *
  * This coordinator keeps the number of contexts WE hold at or under `WEBGL_BUDGET`, which sits
- * comfortably below the browser cap. If we never exceed it ourselves, the browser never has to
- * force-evict anyone, so the dead placeholder cannot appear. The coordinator owns ALL timing and
- * the grant decision; the per-node `acquire`/`release` callbacks stay dumb and idempotent.
+ * comfortably below the browser cap. It ALSO bounds their estimated raw backing-surface bytes:
+ * context count alone is not a memory budget, because one large high-DPI terminal canvas can cost
+ * tens of MiB and Metal/the compositor may keep several copies. React Flow zoom only transforms
+ * the canvas visually; it does not shrink xterm's intrinsic backing canvas. If we obey both limits,
+ * the browser never has to force-evict a context and a zoomed-out canvas cannot legally grant
+ * gigabytes of terminal-sized surfaces. The coordinator owns ALL timing and the grant decision;
+ * the per-node `acquire`/`release` callbacks stay dumb and idempotent.
  *
  * Grant rules:
  *  - A client that becomes visible is granted only after a short ACQUIRE DEBOUNCE
  *    (`WEBGL_ACQUIRE_DEBOUNCE_MS`), so a fast pan sweeping a node across the viewport for a couple
  *    of frames never acquires. (`rootMargin` on the observer already pre-announces approach.)
- *  - If granting would exceed the budget, the coordinator immediately RECLAIMS from the
- *    least-recently-visible HIDDEN holder (bypassing that holder's release delay). If every holder
- *    is currently visible (zoomed way out), the newcomer is NOT granted and stays on the DOM
- *    renderer. Either way we never push past the budget, so the browser never force-evicts.
+ *  - If granting would exceed either budget, the coordinator immediately RECLAIMS as many
+ *    least-recently-visible HIDDEN holders as needed (bypassing their release delay). If every
+ *    holder is currently visible (zoomed way out), the newcomer is NOT granted and stays on the
+ *    DOM renderer. Either way we never push past a budget, so the browser never force-evicts and
+ *    terminal backing surfaces cannot grow without an area bound.
  *  - A client that becomes hidden keeps its context for `WEBGL_RELEASE_DELAY_MS` (warm for a
  *    pan-back) but is the first reclaim candidate during that window.
  *  - `acquire()` returning false (WebGL2 unavailable / threw) does not count against the budget.
@@ -50,6 +55,235 @@
  * everywhere: our budget stays comfortably under whatever the platform cap actually is.
  */
 export const WEBGL_BUDGET = 12
+
+/**
+ * Aggregate estimate for ONE raw BGRA backing surface per granted terminal.
+ *
+ * This is deliberately not described as exact GPU memory: Chromium, Metal and the compositor may
+ * retain several copies. 128 MiB still fits all 24 ordinary 640x440 terminals at DPR 2 (about
+ * 103 MiB before subtracting node chrome), while large zoomed-out nodes consume their honest
+ * intrinsic high-DPI cost instead of each counting as the same single slot.
+ */
+export const WEBGL_SURFACE_BUDGET_BYTES = 128 * 1024 * 1024
+
+const BGRA_BYTES_PER_PIXEL = 4
+
+/**
+ * Estimate one terminal's raw backing-surface bytes from its UNTRANSFORMED CSS box. Callers must
+ * use clientWidth/clientHeight, not getBoundingClientRect(): React Flow zoom scales the latter but
+ * xterm's backing canvas remains intrinsic-size × DPR.
+ *
+ * Invalid/zero dimensions fail closed above the budget, so an unmeasured client stays on the DOM
+ * renderer until a real size arrives and cannot make area accounting disappear.
+ */
+export function estimateWebglSurfaceBytes(
+  cssWidth: number,
+  cssHeight: number,
+  devicePixelRatio: number
+): number {
+  if (
+    !Number.isFinite(cssWidth) ||
+    cssWidth <= 0 ||
+    !Number.isFinite(cssHeight) ||
+    cssHeight <= 0 ||
+    !Number.isFinite(devicePixelRatio) ||
+    devicePixelRatio <= 0
+  ) {
+    return Number.MAX_SAFE_INTEGER
+  }
+  const pixelWidth = Math.ceil(cssWidth * devicePixelRatio)
+  const pixelHeight = Math.ceil(cssHeight * devicePixelRatio)
+  const bytes = pixelWidth * pixelHeight * BGRA_BYTES_PER_PIXEL
+  return Number.isSafeInteger(bytes) ? bytes : Number.MAX_SAFE_INTEGER
+}
+
+export const WEBGL_SURFACE_RESIZE_SETTLE_MS = 80
+
+interface WebglSurfaceResizeControllerOptions {
+  initialSurfaceBytes: number
+  readSurfaceBytes(): number
+  applyFit(): void
+  reportSurfaceBytes(surfaceBytes: number): void
+  settleMs?: number
+}
+
+export interface WebglSurfaceResizeController {
+  measureAndScheduleFit(): void
+  suspendAndScheduleFit(): void
+  runGeometryChange(change: () => void): void
+  dispose(): void
+}
+
+/**
+ * Keep surface accounting conservative while terminal fitting is debounced.
+ *
+ * Growth is reported before xterm can enlarge its backing canvas. Shrink is reported only after
+ * the delayed fit has synchronously adopted the smaller grid, because reporting it earlier can
+ * immediately grant WebGL against an old, larger canvas.
+ */
+export function createWebglSurfaceResizeController(
+  options: WebglSurfaceResizeControllerOptions
+): WebglSurfaceResizeController {
+  let reportedSurfaceBytes = options.initialSurfaceBytes
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const settleMs = options.settleMs ?? WEBGL_SURFACE_RESIZE_SETTLE_MS
+  let disposed = false
+
+  const scheduleFitAndReport = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      options.applyFit()
+      const fittedSurfaceBytes = options.readSurfaceBytes()
+      if (fittedSurfaceBytes !== reportedSurfaceBytes) {
+        reportedSurfaceBytes = fittedSurfaceBytes
+        options.reportSurfaceBytes(reportedSurfaceBytes)
+      }
+    }, settleMs)
+  }
+
+  return {
+    measureAndScheduleFit() {
+      if (disposed) return
+      const nextSurfaceBytes = options.readSurfaceBytes()
+      if (nextSurfaceBytes > reportedSurfaceBytes) {
+        reportedSurfaceBytes = nextSurfaceBytes
+        options.reportSurfaceBytes(reportedSurfaceBytes)
+      }
+      scheduleFitAndReport()
+    },
+    suspendAndScheduleFit() {
+      if (disposed) return
+      reportedSurfaceBytes = Number.MAX_SAFE_INTEGER
+      options.reportSurfaceBytes(reportedSurfaceBytes)
+      scheduleFitAndReport()
+    },
+    runGeometryChange(change: () => void) {
+      if (disposed) {
+        change()
+        return
+      }
+      if (timer) clearTimeout(timer)
+      timer = null
+      reportedSurfaceBytes = Number.MAX_SAFE_INTEGER
+      options.reportSurfaceBytes(reportedSurfaceBytes)
+      try {
+        change()
+      } finally {
+        options.applyFit()
+        reportedSurfaceBytes = options.readSurfaceBytes()
+        options.reportSurfaceBytes(reportedSurfaceBytes)
+      }
+    },
+    dispose() {
+      disposed = true
+      if (timer) clearTimeout(timer)
+      timer = null
+    }
+  }
+}
+
+type DevicePixelRatioWindow = Pick<
+  Window,
+  'devicePixelRatio' | 'matchMedia' | 'addEventListener' | 'removeEventListener'
+>
+
+/**
+ * Watch DPR independently of element resizing. Ordinary ResizeObserver fallback does not fire
+ * when a fixed-size window moves between displays, while xterm still resizes its backing canvas.
+ * Re-arm the resolution query after every change so later transitions are also observed.
+ */
+export function watchDevicePixelRatio(
+  targetWindow: DevicePixelRatioWindow,
+  onChange: () => void
+): () => void {
+  let currentDpr = targetWindow.devicePixelRatio
+  let mediaQuery: MediaQueryList | null = null
+  let usingModernListener = false
+  let disposed = false
+
+  const removeMediaListener = () => {
+    if (!mediaQuery) return
+    if (usingModernListener) mediaQuery.removeEventListener('change', checkForChange)
+    else mediaQuery.removeListener(checkForChange)
+    mediaQuery = null
+  }
+
+  const armMediaQuery = () => {
+    removeMediaListener()
+    if (disposed || typeof targetWindow.matchMedia !== 'function') return
+    try {
+      mediaQuery = targetWindow.matchMedia(
+        `screen and (resolution: ${targetWindow.devicePixelRatio}dppx)`
+      )
+      usingModernListener = typeof mediaQuery.addEventListener === 'function'
+      if (usingModernListener) mediaQuery.addEventListener('change', checkForChange)
+      else mediaQuery.addListener(checkForChange)
+    } catch {
+      mediaQuery = null
+    }
+  }
+
+  function checkForChange(): void {
+    if (disposed || targetWindow.devicePixelRatio === currentDpr) return
+    currentDpr = targetWindow.devicePixelRatio
+    onChange()
+    armMediaQuery()
+  }
+
+  targetWindow.addEventListener('resize', checkForChange)
+  armMediaQuery()
+
+  return () => {
+    disposed = true
+    targetWindow.removeEventListener('resize', checkForChange)
+    removeMediaListener()
+  }
+}
+
+interface SharedDevicePixelRatioWatch {
+  subscribers: Set<() => void>
+  stop: () => void
+}
+
+const sharedDevicePixelRatioWatches = new WeakMap<
+  DevicePixelRatioWindow,
+  SharedDevicePixelRatioWatch
+>()
+
+/**
+ * Subscribe through one renderer-lifetime DPR watcher installed before xterm opens.
+ *
+ * The root watcher intentionally remains installed when the last node unsubscribes. Parked xterm
+ * instances keep their own older listeners, so tearing down and recreating our root watcher would
+ * let xterm enlarge a restored WebGL canvas before the budget can reclaim it.
+ */
+export function subscribeDevicePixelRatio(
+  targetWindow: DevicePixelRatioWindow,
+  onChange: () => void
+): () => void {
+  let shared = sharedDevicePixelRatioWatches.get(targetWindow)
+  if (!shared) {
+    const subscribers = new Set<() => void>()
+    shared = {
+      subscribers,
+      stop: watchDevicePixelRatio(targetWindow, () => {
+        for (const subscriber of Array.from(subscribers)) {
+          try {
+            subscriber()
+          } catch {
+            // One terminal must not prevent the remaining clients from charging the new DPR.
+          }
+        }
+      })
+    }
+    sharedDevicePixelRatioWatches.set(targetWindow, shared)
+  }
+  shared.subscribers.add(onChange)
+  return () => {
+    shared?.subscribers.delete(onChange)
+  }
+}
 
 /** Live ceiling — `WEBGL_BUDGET` unless the shell raised it (see `setWebglBudget`). */
 let budget = WEBGL_BUDGET
@@ -135,6 +369,8 @@ export interface WebglClientCallbacks {
 export interface WebglClientHandle {
   /** Report this node's viewport visibility (driven by its IntersectionObserver). */
   setVisible(visible: boolean): void
+  /** Report a changed intrinsic high-DPI backing-surface estimate. */
+  setSurfaceBytes(surfaceBytes: number): void
   /** Report that the addon's own `onContextLoss` fired: drop this grant from the accounting. */
   contextLost(): void
   /** Node unmount: release any held context, cancel timers, and forget this client. */
@@ -148,6 +384,8 @@ interface Client {
   visible: boolean
   /** Whether we believe this client currently holds a live context (counts against the budget). */
   granted: boolean
+  /** Estimated bytes for one raw BGRA backing surface at the intrinsic size and current DPR. */
+  surfaceBytes: number
   acquireTimer: ReturnType<typeof setTimeout> | null
   releaseTimer: ReturnType<typeof setTimeout> | null
   /**
@@ -168,6 +406,30 @@ function grantCount(): number {
   let n = 0
   for (const c of clients.values()) if (c.granted) n++
   return n
+}
+
+function normalizeSurfaceBytes(surfaceBytes: number): number {
+  if (!Number.isFinite(surfaceBytes) || surfaceBytes <= 0) return Number.MAX_SAFE_INTEGER
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(surfaceBytes))
+}
+
+function grantedSurfaceBytes(): number {
+  let bytes = 0
+  for (const c of clients.values()) if (c.granted) bytes += c.surfaceBytes
+  return bytes
+}
+
+function canGrant(c: Client): boolean {
+  const count = grantCount()
+  return (
+    count < budget &&
+    grantedSurfaceBytes() + c.surfaceBytes <= WEBGL_SURFACE_BUDGET_BYTES
+  )
+}
+
+function grantsFitBudgets(): boolean {
+  const count = grantCount()
+  return count <= budget && grantedSurfaceBytes() <= WEBGL_SURFACE_BUDGET_BYTES
 }
 
 function cancelAcquire(c: Client): void {
@@ -218,24 +480,44 @@ function doGrant(c: Client): void {
   if (ok) c.granted = true
 }
 
-/** Attempt to grant `c` a context, reclaiming a hidden holder's slot if the budget is full. */
+/** Attempt to grant `c`, reclaiming hidden holders until both count and surface budgets fit. */
 function tryGrant(c: Client): void {
   cancelAcquire(c)
   // Guard: the client may have gone hidden or been disposed between debounce start and fire.
   if (!clients.has(c.id) || !c.visible || c.granted) return
-  if (grantCount() < budget) {
-    doGrant(c)
-    return
+  // This client can never fit. Do not discard useful hidden warm contexts trying to make room.
+  if (c.surfaceBytes > WEBGL_SURFACE_BUDGET_BYTES) return
+  while (!canGrant(c)) {
+    // Full by context count or surface bytes: reclaim the LRU hidden holder and re-check. An area
+    // deficit can require more than one victim. If every holder is visible, preserve incumbents;
+    // the newcomer stays on the DOM renderer until a later transition or smaller size retries.
+    const victim = lruHiddenHolder()
+    if (!victim) return
+    reclaim(victim)
   }
-  // Full: reclaim the least-recently-visible hidden holder to free exactly one slot.
-  const victim = lruHiddenHolder()
-  if (!victim) {
-    // Every holder is currently visible (zoomed way out): do not push past the budget. The
-    // newcomer stays on the DOM renderer until a later visibility transition frees a slot.
-    return
-  }
-  reclaim(victim)
   doGrant(c)
+}
+
+/**
+ * Enforce both limits after a granted client's intrinsic size changes. Hidden warm holders remain
+ * the first victims. If all remaining holders are visible, the client that grew bears the
+ * downgrade instead of unexpectedly blanking another visible terminal.
+ */
+function enforceBudgetsAfterResize(c: Client): void {
+  if (c.surfaceBytes > WEBGL_SURFACE_BUDGET_BYTES) {
+    reclaim(c)
+    return
+  }
+  while (!grantsFitBudgets()) {
+    const victim = lruHiddenHolder()
+    if (victim) {
+      reclaim(victim)
+      if (victim === c) return
+      continue
+    }
+    reclaim(c)
+    return
+  }
 }
 
 function setVisible(c: Client, visible: boolean): void {
@@ -280,7 +562,11 @@ function setVisible(c: Client, visible: boolean): void {
  * or reclaim the GPU context; the node drives `handle.setVisible` from its IntersectionObserver,
  * reports external context loss via `handle.contextLost`, and calls `handle.dispose` on unmount.
  */
-export function registerWebglClient(id: string, callbacks: WebglClientCallbacks): WebglClientHandle {
+export function registerWebglClient(
+  id: string,
+  callbacks: WebglClientCallbacks,
+  surfaceBytes: number
+): WebglClientHandle {
   // A re-register under the same id (e.g. a remount that raced teardown) supersedes the old entry.
   // Release a still-granted predecessor: its handle's dispose() will short-circuit (stale-handle
   // guard), so without this the old WebglAddon would leak a real browser context while the
@@ -304,6 +590,7 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
     release: callbacks.release,
     visible: false,
     granted: false,
+    surfaceBytes: normalizeSurfaceBytes(surfaceBytes),
     acquireTimer: null,
     releaseTimer: null,
     hiddenAt: 0,
@@ -315,6 +602,20 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
     setVisible(visible: boolean) {
       const c = clients.get(id)
       if (c === client) setVisible(c, visible)
+    },
+    setSurfaceBytes(surfaceBytes: number) {
+      const c = clients.get(id)
+      if (c !== client) return
+      const next = normalizeSurfaceBytes(surfaceBytes)
+      if (next === c.surfaceBytes) return
+      c.surfaceBytes = next
+      if (c.granted) {
+        enforceBudgetsAfterResize(c)
+      } else if (c.visible && !c.acquireTimer) {
+        // A continuously visible client may have been refused only because its old size did not
+        // fit. It has already served the visibility debounce; a smaller measured size may retry.
+        tryGrant(c)
+      }
     },
     contextLost() {
       const c = clients.get(id)
