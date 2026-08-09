@@ -75,6 +75,7 @@ type RepositoryState = {
   subscribers: Map<string, Set<number>>
   timer?: TimerId
   refresh?: Promise<void>
+  cacheGeneration: number
 }
 
 function repositoryKey(context: GitHubIssueServiceContext): string {
@@ -148,6 +149,7 @@ export class GitHubIssueService {
   async subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage> {
     const context = await this.cacheContext(request.projectId)
     const { key, state } = await this.cachedState(context)
+    const firstSubscriber = this.subscriberCount(state) === 0
     let subscribers = state.subscribers.get(request.projectId)
     if (!subscribers) {
       subscribers = new Set()
@@ -161,8 +163,12 @@ export class GitHubIssueService {
         if (projectId) void this.refresh({ projectId }).catch(() => undefined)
       }, POLL_MS)
     }
-    if (!state.snapshot && !state.partialIssues) {
-      try { await this.refresh({ projectId: request.projectId }) } catch { /* offline cache remains readable */ }
+    if (firstSubscriber) {
+      if (!state.snapshot && !state.partialIssues) {
+        try { await this.refresh({ projectId: request.projectId }) } catch { /* offline cache remains readable */ }
+      } else {
+        void this.refresh({ projectId: request.projectId }).catch(() => undefined)
+      }
     }
     return this.query({ projectId: request.projectId, columnId: null, pageSize: 50 })
   }
@@ -197,7 +203,8 @@ export class GitHubIssueService {
     const captured = await this.options.contextForProject(request.projectId)
     const state = await this.state(captured)
     if (state.refresh) return state.refresh
-    const work = this.refreshRepository(captured, state, request.full === true)
+    const cacheGeneration = state.cacheGeneration
+    const work = this.refreshRepository(captured, state, request.full === true, cacheGeneration)
     state.refresh = work
     try { await work } finally { if (state.refresh === work) delete state.refresh }
   }
@@ -259,6 +266,7 @@ export class GitHubIssueService {
       const captured = await this.options.contextForProject(request.projectId)
       const capturedEpoch = epoch(captured)
       const state = await this.state(captured)
+      const cacheGeneration = state.cacheGeneration
       if (state.incomplete || !state.snapshot || !captured.config.completionColumnId) {
         return { status: 'read-only' }
       }
@@ -273,6 +281,7 @@ export class GitHubIssueService {
         .catch((error: unknown) => error instanceof ConfigurationChangedError ? null : Promise.reject(error))
       if (!latest) return { status: 'configuration-changed' }
       if (latest.updatedAt !== request.expectedUpdatedAt) {
+        if (cacheGeneration !== state.cacheGeneration) return { status: 'stale', issue: latest }
         state.snapshot = {
           ...state.snapshot,
           issues: state.snapshot.issues.map((item) => item.number === latest.number ? latest : item)
@@ -319,6 +328,9 @@ export class GitHubIssueService {
       }
       if (capturedEpoch !== epoch(await this.options.contextForProject(request.projectId))) {
         return { status: 'confirmed', issue: updated }
+      }
+      if (cacheGeneration !== state.cacheGeneration) {
+        return { status: 'refresh-pending', issue: updated }
       }
       const snapshot = state.snapshot ?? {
         issues: [], etags: {}, lastSuccessfulRefreshAt: this.now(), lastFullReconciliationAt: 0
@@ -436,14 +448,26 @@ export class GitHubIssueService {
     const context = this.options.projectContextForCacheDeletion
       ? await this.options.projectContextForCacheDeletion(request.projectId)
       : await this.cacheContext(request.projectId)
-    await this.options.cache.clearBound(context.localApprovalId, context.projectId, context.repository)
+    const affected: RepositoryState[] = []
     for (const [key, state] of this.repositories) {
       if (key.endsWith(`\0${context.repository}`) ||
           key === `unbound:${context.localApprovalId}\0${context.repository}`) {
-        state.snapshot = undefined
-        state.partialIssues = undefined
-        state.incomplete = false
+        state.cacheGeneration += 1
+        affected.push(state)
       }
+    }
+    const mutations = [...this.issueChains.entries()]
+      .filter(([key]) => key.startsWith(`${request.projectId}:`))
+      .map(([, work]) => work)
+    await Promise.allSettled([
+      ...affected.flatMap((state) => state.refresh ? [state.refresh] : []),
+      ...mutations
+    ])
+    await this.options.cache.clearBound(context.localApprovalId, context.projectId, context.repository)
+    for (const state of affected) {
+      state.snapshot = undefined
+      state.partialIssues = undefined
+      state.incomplete = false
     }
   }
 
@@ -461,7 +485,8 @@ export class GitHubIssueService {
         snapshot: cached.lastComplete,
         partialIssues: cached.lastAttempt?.partialIssues,
         incomplete: !!cached.lastAttempt,
-        subscribers: new Map()
+        subscribers: new Map(),
+        cacheGeneration: 0
       }
       this.repositories.set(key, state)
     }
@@ -500,7 +525,7 @@ export class GitHubIssueService {
       const key = `unbound:${context.localApprovalId}\0${context.repository}`
       let state = this.repositories.get(key)
       if (!state) {
-        state = { incomplete: false, subscribers: new Map() }
+        state = { incomplete: false, subscribers: new Map(), cacheGeneration: 0 }
         this.repositories.set(key, state)
       }
       this.projectKeys.set(context.projectId, key)
@@ -514,7 +539,8 @@ export class GitHubIssueService {
         snapshot: cached.lastComplete,
         partialIssues: cached.lastAttempt?.partialIssues,
         incomplete: !!cached.lastAttempt,
-        subscribers: new Map()
+        subscribers: new Map(),
+        cacheGeneration: 0
       }
       this.repositories.set(key, state)
     }
@@ -525,7 +551,8 @@ export class GitHubIssueService {
   private async refreshRepository(
     captured: GitHubIssueServiceContext,
     state: RepositoryState,
-    forceFull: boolean
+    forceFull: boolean,
+    cacheGeneration: number
   ): Promise<void> {
     const refreshStartedAt = this.now()
     const full = forceFull || !state.snapshot ||
@@ -535,7 +562,8 @@ export class GitHubIssueService {
     let page = 1
     const etags: Record<string, string> = {}
     while (true) {
-      if (epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
+      if (cacheGeneration !== state.cacheGeneration ||
+          epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
       const since = !full && previous?.lastSuccessfulRefreshAt
         ? new Date(Math.max(0, previous.lastSuccessfulRefreshAt - 2_000)).toISOString()
         : undefined
@@ -552,7 +580,9 @@ export class GitHubIssueService {
         }
       }
       if (byNumber.size > MAX_ISSUES) {
-        await this.incomplete(captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES))
+        await this.incomplete(
+          captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES), cacheGeneration
+        )
         return
       }
       if (!result.nextPage) break
@@ -560,10 +590,11 @@ export class GitHubIssueService {
     }
     const issues = [...byNumber.values()]
     if (Buffer.byteLength(JSON.stringify(issues), 'utf-8') > MAX_CACHE_BYTES) {
-      await this.incomplete(captured, state, 'byte-limit', issues)
+      await this.incomplete(captured, state, 'byte-limit', issues, cacheGeneration)
       return
     }
-    if (epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
+    if (cacheGeneration !== state.cacheGeneration ||
+        epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
     const snapshot: GitHubCompleteSnapshot = {
       issues,
       etags,
@@ -573,13 +604,19 @@ export class GitHubIssueService {
         : previous?.lastFullReconciliationAt ?? refreshStartedAt
     }
     await this.options.cache.saveComplete(captured.userId, captured.repository, snapshot)
+    if (cacheGeneration !== state.cacheGeneration) return
     const oldNumbers = new Map((previous?.issues ?? []).map((item) => [item.number, item.updatedAt]))
-    const changed = issues.filter((item) => oldNumbers.get(item.number) !== item.updatedAt)
-      .map((item) => item.number)
+    const nextNumbers = new Set(issues.map((item) => item.number))
+    const changed = [
+      ...issues.filter((item) => oldNumbers.get(item.number) !== item.updatedAt)
+        .map((item) => item.number),
+      ...(previous?.issues ?? []).filter((item) => !nextNumbers.has(item.number))
+        .map((item) => item.number)
+    ]
     state.snapshot = snapshot
     state.partialIssues = undefined
     state.incomplete = false
-    this.emitDelta(state, changed)
+    this.emitDelta(state, changed, true)
   }
 
   private subscriberCount(state: RepositoryState): number {
@@ -611,8 +648,12 @@ export class GitHubIssueService {
     }
   }
 
-  private emitDelta(state: RepositoryState, changedIssueNumbers: number[]): void {
-    if (changedIssueNumbers.length === 0) return
+  private emitDelta(
+    state: RepositoryState,
+    changedIssueNumbers: number[],
+    includeEmpty = false
+  ): void {
+    if (!includeEmpty && changedIssueNumbers.length === 0) return
     for (const [projectId, subscribers] of state.subscribers) {
       for (const uiId of subscribers) this.options.onDelta?.(uiId, projectId, changedIssueNumbers)
     }
@@ -622,15 +663,19 @@ export class GitHubIssueService {
     context: GitHubIssueServiceContext,
     state: RepositoryState,
     reason: 'issue-limit' | 'byte-limit',
-    issues: GitHubIssue[]
+    issues: GitHubIssue[],
+    cacheGeneration: number
   ): Promise<void> {
+    if (cacheGeneration !== state.cacheGeneration) return
     await this.options.cache.saveIncompleteAttempt(context.userId, context.repository, {
       reason,
       observedAt: this.now(),
       ...(!state.snapshot ? { partialIssues: issues } : {})
     })
+    if (cacheGeneration !== state.cacheGeneration) return
     if (!state.snapshot) state.partialIssues = issues
     state.incomplete = true
+    this.emitDelta(state, [], true)
   }
 }
 

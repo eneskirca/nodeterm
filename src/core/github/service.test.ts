@@ -116,6 +116,73 @@ afterEach(async () => {
 })
 
 describe('GitHubIssueService', () => {
+  it('renders a cached snapshot immediately and refreshes it in the background', async () => {
+    const client = new FixtureClient([issue(2)])
+    let release!: () => void
+    let started!: () => void
+    const refreshStarted = new Promise<void>((resolve) => { started = resolve })
+    client.listIssues = async () => {
+      started()
+      await new Promise<void>((resolve) => { release = resolve })
+      return { items: [issue(2)] }
+    }
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [issue(1)], etags: {}, lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
+    let refreshed!: () => void
+    const refreshFinished = new Promise<void>((resolve) => { refreshed = resolve })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      onDelta: () => refreshed()
+    })
+
+    const initial = await service.subscribe(1, { projectId: 'project-1' })
+    expect(initial.items.map((item) => item.number)).toEqual([1])
+    await refreshStarted
+    release()
+    await refreshFinished
+    expect((await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })).items
+      .map((item) => item.number)).toEqual([2])
+  })
+
+  it('does not repopulate private data when cache is cleared during a refresh', async () => {
+    const client = new FixtureClient([issue(2)])
+    let release!: () => void
+    let started!: () => void
+    const refreshStarted = new Promise<void>((resolve) => { started = resolve })
+    client.listIssues = async () => {
+      started()
+      await new Promise<void>((resolve) => { release = resolve })
+      return { items: [issue(2)] }
+    }
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [issue(1)], etags: {}, lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      projectContextForCacheDeletion: async () => context(client)
+    })
+
+    const refreshing = service.refresh({ projectId: 'project-1', full: true })
+    await refreshStarted
+    const clearing = service.clearCache({ projectId: 'project-1' })
+    release()
+    await Promise.all([refreshing, clearing])
+
+    expect(await cache.boundUserId('local-1', 'project-1', 'o/r')).toBeNull()
+    expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
+    expect((await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })).items)
+      .toEqual([])
+  })
+
   it('rebuilds every page unconditionally during a full reconciliation', async () => {
     const client = new FixtureClient([])
     const calls: Array<{ page: number; etag?: string }> = []
@@ -260,6 +327,43 @@ describe('GitHubIssueService', () => {
     service.dropClient(7)
     service.dropClient(8)
     expect(cleared).toEqual([2, 1])
+  })
+
+  it('notifies subscribers when a full refresh only removes issues', async () => {
+    const client = new FixtureClient([issue(1), issue(2)])
+    const deltas: number[][] = []
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      onDelta: (_uiId, _projectId, numbers) => deltas.push(numbers)
+    })
+    await service.subscribe(1, { projectId: 'project-1' })
+    deltas.length = 0
+    client.issues.delete(2)
+
+    await service.refresh({ projectId: 'project-1', full: true })
+
+    expect(deltas).toEqual([[2]])
+  })
+
+  it('notifies subscribers when a refresh changes completeness without issue changes', async () => {
+    const client = new FixtureClient([])
+    client.listIssues = async () => ({
+      items: Array.from({ length: 10_001 }, (_, index) => issue(index + 1))
+    })
+    const deltas: number[][] = []
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      onDelta: (_uiId, _projectId, numbers) => deltas.push(numbers)
+    })
+    await service.subscribe(1, { projectId: 'project-1' })
+
+    expect(deltas).toEqual([[]])
+    expect((await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })).readOnly)
+      .toBe(true)
   })
 
   it('calculates counts from the active search and GitHub label filter', async () => {

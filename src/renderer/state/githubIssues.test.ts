@@ -32,6 +32,57 @@ function api(): GitHubIssuesApi {
 beforeEach(() => useGitHubIssues.setState({ projects: {} }))
 
 describe('GitHub issue renderer state', () => {
+  it('lets only the newest overlapping connection publish or tear down project state', async () => {
+    const client = api()
+    let resolveFirst!: (value: ReturnType<typeof page>) => void
+    const first = new Promise<ReturnType<typeof page>>((resolve) => { resolveFirst = resolve })
+    vi.mocked(client.subscribe)
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(page(10, null))
+
+    const oldConnection = useGitHubIssues.getState().connect(client, 'p1', ['todo'])
+    const newDisconnect = await useGitHubIssues.getState().connect(client, 'p1', ['todo'])
+    resolveFirst(page(1, null))
+    const oldDisconnect = await oldConnection
+
+    expect(useGitHubIssues.getState().projects.p1.pages.ungrouped.items[0].number).toBe(10)
+    oldDisconnect()
+    expect(client.unsubscribe).not.toHaveBeenCalled()
+    expect(useGitHubIssues.getState().projects.p1.pages.ungrouped.items[0].number).toBe(10)
+
+    newDisconnect()
+    expect(client.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(useGitHubIssues.getState().projects.p1).toBeUndefined()
+  })
+
+  it('keeps a refresh delta that arrives while initial column queries are pending', async () => {
+    const client = api()
+    let changed!: (changedIssueNumbers: number[]) => void
+    vi.mocked(client.onChanged).mockImplementation((_projectId, callback) => {
+      changed = callback
+      return () => undefined
+    })
+    let resolveInitial!: (value: ReturnType<typeof page>) => void
+    let initialStarted!: () => void
+    const started = new Promise<void>((resolve) => { initialStarted = resolve })
+    vi.mocked(client.query).mockImplementationOnce(async () => {
+      initialStarted()
+      return new Promise((resolve) => { resolveInitial = resolve })
+    }).mockImplementation(async (request) =>
+      page(request.columnId === 'todo' ? 20 : 30, request.columnId))
+
+    const connecting = useGitHubIssues.getState().connect(client, 'p1', ['todo'])
+    await started
+    changed([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    resolveInitial(page(2, 'todo'))
+    const disconnect = await connecting
+
+    expect(useGitHubIssues.getState().projects.p1.pages.ungrouped.items[0].number).toBe(30)
+    expect(useGitHubIssues.getState().projects.p1.pages.todo.items[0].number).toBe(20)
+    disconnect()
+  })
+
   it('subscribes once and loads every visible column', async () => {
     const client = api()
     const disconnect = await useGitHubIssues.getState().connect(

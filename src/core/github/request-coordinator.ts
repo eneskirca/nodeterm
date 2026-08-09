@@ -138,7 +138,10 @@ export class GitHubRequestCoordinator {
   }
 
   private async waitForRate(state: IdentityState): Promise<void> {
-    const wait = state.retryAt - this.now()
-    if (wait > 0) await this.sleep(wait)
+    while (true) {
+      const wait = state.retryAt - this.now()
+      if (wait <= 0) return
+      await this.sleep(wait)
+    }
   }
 }

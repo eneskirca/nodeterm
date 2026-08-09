@@ -13,6 +13,7 @@ import { parseGitHubRepository } from './config'
 const API_ORIGIN = 'https://api.github.com'
 const API_VERSION = '2022-11-28'
 const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
+const MAX_ERROR_METADATA_BYTES = 4 * 1024
 
 export class GitHubClientError extends Error {
   constructor(
@@ -134,6 +135,38 @@ function nextPage(link: string | null): number | undefined {
     }
   }
   return undefined
+}
+
+async function boundedErrorMetadata(response: Response): Promise<string> {
+  const length = Number(response.headers.get('content-length'))
+  if (Number.isFinite(length) && length > MAX_ERROR_METADATA_BYTES) return ''
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const next = await reader.read()
+    if (next.done) break
+    total += next.value.byteLength
+    if (total > MAX_ERROR_METADATA_BYTES) {
+      await reader.cancel()
+      return ''
+    }
+    chunks.push(next.value)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  try {
+    const value = object(JSON.parse(new TextDecoder().decode(bytes)))
+    const message = value && string(value.message, 2_048) ? value.message : ''
+    const documentation = value && string(value.documentation_url, 2_048)
+      ? value.documentation_url
+      : ''
+    return `${message}\n${documentation}`.toLocaleLowerCase('en-US')
+  } catch {
+    return ''
+  }
 }
 
 export class GitHubIssuesClient {
@@ -304,9 +337,14 @@ export class GitHubIssuesClient {
     if (response.status === 403 || response.status === 429) {
       const retryAfter = Number(response.headers.get('retry-after'))
       const reset = Number(response.headers.get('x-ratelimit-reset')) * 1_000
-      const primary = response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0'
+      const remaining = response.headers.get('x-ratelimit-remaining')
+      const metadata = response.status === 403 ? await boundedErrorMetadata(response) : ''
+      const primary = response.status === 403 && remaining === '0'
+      const secondaryEvidence = /secondary rate limit|abuse detection|secondary-rate-limits/.test(metadata)
       const secondary = response.status === 429 ||
-        (response.status === 403 && Number.isFinite(retryAfter) && retryAfter > 0)
+        (response.status === 403 && !primary && (
+          (Number.isFinite(retryAfter) && retryAfter > 0) || secondaryEvidence
+        ))
       if (!primary && !secondary) {
         throw new GitHubClientError('insufficient-permission', response.status)
       }

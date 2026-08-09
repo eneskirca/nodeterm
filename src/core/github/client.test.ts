@@ -96,6 +96,16 @@ describe('GitHubIssuesClient', () => {
     } catch (error) {
       expect((error as { retryAt: number }).retryAt).toBeGreaterThanOrEqual(before + 2_000)
     }
+
+    const documentedSecondary = new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({
+        message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+        documentation_url: 'https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits'
+      }, { status: 403, headers: { 'x-ratelimit-remaining': '42' } })
+    })
+    await expect(documentedSecondary.getIssue('nodeterm/nodeterm', 1)).rejects.toMatchObject({
+      code: 'rate-limited', status: 403
+    })
   })
 
   it('returns the next page and ETag without arbitrary headers', async () => {

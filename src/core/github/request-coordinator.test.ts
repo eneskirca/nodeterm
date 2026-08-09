@@ -39,6 +39,27 @@ describe('GitHubRequestCoordinator', () => {
     expect(coordinator.canStart('user-1', 4_999)).toBe(false)
   })
 
+  it('rechecks an identity deadline that is extended while a request is sleeping', async () => {
+    let now = 1_000
+    const sleeps: number[] = []
+    const coordinator = new GitHubRequestCoordinator({
+      now: () => now,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds)
+        now += milliseconds
+        if (sleeps.length === 1) {
+          coordinator.noteRateLimit('user-1', { kind: 'secondary', retryAt: 8_000 })
+        }
+      }
+    })
+    coordinator.noteRateLimit('user-1', { kind: 'secondary', retryAt: 5_000 })
+
+    await coordinator.runRead('user-1', async () => 'ok')
+
+    expect(sleeps).toEqual([4_000, 3_000])
+    expect(now).toBe(8_000)
+  })
+
   it('serialises mutations and spaces their start times by one second', async () => {
     let now = 0
     const sleeps: number[] = []
