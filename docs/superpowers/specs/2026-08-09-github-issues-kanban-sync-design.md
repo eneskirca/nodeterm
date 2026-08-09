@@ -181,7 +181,7 @@ This proposed mapping is shared through `.nodeterm/project.json`. Local authoris
 
 ```ts
 export interface GitHubProjectApproval {
-  workspaceEntryId: string
+  localApprovalId: string
   projectId: string
   repository: string
   enabled: boolean
@@ -200,7 +200,7 @@ export interface IndexEntryV3 {
 }
 ```
 
-The workspace store generates `localApprovalId` when an entry is created or first loaded without one and keeps it only in the machine-local workspace index. The control store writes atomically, checks an expected revision on every update, and exposes dedicated transactional Approve, Revoke, Select provider, Save token, and Clear token handlers. A stale client receives a conflict and reloads instead of replacing the whole state or resurrecting a revoked approval.
+The workspace store generates `localApprovalId` when an entry is created or first loaded without one and keeps it only in the machine-local workspace index. It preserves this value across every index save and migration. Approval and issue execution require a non-empty `localApprovalId`; they never substitute the shared project id or `IndexEntryV3.id`. The control store writes atomically, checks an expected revision on every update, and exposes dedicated transactional Approve, Revoke, Select provider, Save token, and Clear token handlers. A stale client receives a conflict and reloads instead of replacing the whole state or resurrecting a revoked approval.
 
 Credentials, approvals for other machines, issue snapshots, comments, ETags, refresh metadata, provisional mutations, and safe errors never enter the shared project file or the general Settings save path.
 
@@ -274,6 +274,7 @@ interface GitHubIssuesClient {
   createIssue(repository: string, input: CreateIssueInput): Promise<GitHubIssue>
   updateIssue(repository: string, issueNumber: number, input: UpdateIssueInput): Promise<GitHubIssue>
   listComments(repository: string, issueNumber: number, page: PageRequest): Promise<CommentPageResult>
+  getComment(repository: string, commentId: number): Promise<GitHubComment>
   createComment(repository: string, issueNumber: number, body: string): Promise<GitHubComment>
   updateComment(repository: string, issueNumber: number, commentId: number, body: string): Promise<GitHubComment>
   deleteComment(repository: string, issueNumber: number, commentId: number): Promise<void>
@@ -286,7 +287,7 @@ interface GitHubIssuesClient {
 }
 ```
 
-Comment updates and deletes carry project id, issue number, and `expectedCommentUpdatedAt` through the service boundary. Inside the mutation chain, the host fetches the latest comment, validates that its `issue_url` belongs to the expected repository and issue, and compares its `updated_at` with the version shown to the user. A mismatch returns the latest comment as a stale-data result and requires a deliberate retry. Comment id alone is never sufficient authority [5].
+Comment updates and deletes carry project id, issue number, and `expectedCommentUpdatedAt` through the service boundary. Inside the mutation chain, the host calls `getComment` for the specific comment id, validates the response and confirms that its `issue_url` belongs to the expected repository and issue, then compares its `updated_at` with the version shown to the user. A mismatch returns the latest comment as a stale-data result and requires a deliberate retry. Comment id alone is never sufficient authority, and paginated discussion state is never used as proof that a comment is current [5].
 
 GitHub's issue API supports the core issue, label, assignee, milestone, comment, and lock operations in scope [1].
 
@@ -348,7 +349,7 @@ Markdown images in issue bodies and comments render as labelled links rather tha
 
 1. Opening the Kanban validates shared configuration and checks machine-local approval before reading even a private local cache.
 2. An approved project reads the machine-local cache and renders the first bounded pages immediately.
-3. If configuration and authentication are ready, the host service records a configuration epoch containing workspace entry id, project id, normalised repository, mapping revision, control-store revision, credential generation, and authenticated GitHub user id, then starts a refresh.
+3. If configuration and authentication are ready, the host service records a configuration epoch containing `localApprovalId`, project id, normalised repository, mapping revision, control-store revision, credential generation, and authenticated GitHub user id, then starts a refresh.
 4. An empty cache or a cache whose separate `lastFullReconciliationAt` is older than 24 hours receives a complete `state=all` paginated refresh.
 5. A recent full cache receives an incremental refresh using `since = lastSuccessfulRefreshAt - 2 seconds`. Results merge by issue number and `updated_at`, so the overlap is harmless and second-resolution boundary updates are not lost.
 6. Conditional requests use stored ETags where the request identity is stable. The ETag key includes normalised repository, endpoint, API version, complete query, page, and authenticated GitHub user id. It never includes credential material. Correctly authenticated `304` responses do not count against the primary REST limit [3].
@@ -458,7 +459,7 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 - repository parsing for HTTPS, SSH, missing, malformed, non-GitHub, and overridden remotes
 - machine-local approval, repository-change invalidation, and a hostile cloned project that cannot activate cache or network access
 - exact `Auto`, `GitHub CLI only`, and `Personal access token only` fallback behaviour, persisted provider choice, write-only behaviour, locked keyring handling, `basic_text`, restricted-file mode, migration, and redaction
-- control-store revision conflicts, atomic writes, workspace-entry binding, repository-change invalidation, and proof that a stale client cannot restore a revoked approval
+- control-store revision conflicts, atomic writes, `localApprovalId` generation and preservation through index saves and migrations, rejection when it is absent, repository-change invalidation, and proof that a copied project id or stale client cannot restore a revoked approval
 - canonical mapping normalisation, duplicate column ids, case-variant labels, empty labels, unknown columns, invalid completion id, and property preservation through every board transform
 - issue, comment, label, assignee, and milestone response validation
 - pagination, Link headers, pull-request filtering, periodic full reconciliation, overlapping incremental boundaries, identity-scoped ETags, `304`, epoch invalidation, timeouts, malformed JSON, and bounded responses
@@ -470,7 +471,7 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 - stable mixed-source ordering and namespaced local and GitHub label filtering
 - cache atomicity, mode, retention, corrupt-file recovery, last-complete preservation after an incomplete refresh, and an explicitly partial first refresh
 - repository support-limit behaviour, paged queries, delta broadcasts, and one poll timer across multiple subscribers
-- comment-to-issue association checks, comment-level `updated_at` conflicts, deliberate retry, and same-issue serialisation
+- direct comment fetch validation, comment-to-issue association checks, comment-level `updated_at` conflicts, deliberate retry, and same-issue serialisation
 - avatar host validation, disabled redirects, lazy loading, per-image and aggregate page limits, fallback initials, and blocked Markdown images
 - issue creation placement, disabled completion creation, missing-label colours, idempotent setup, and partial setup recovery
 - epoch revalidation before every queued network request, before every write, and before applying or persisting post-write data
