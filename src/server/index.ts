@@ -56,6 +56,7 @@ import { claudeConfigDirFor } from '../core/claude-config-dir'
 import { presenceHub } from '../core/presence/hub'
 import { initCanvasSync } from '../core/canvas-sync'
 import { wireAgentStatus } from './agent-status'
+import { initServerContextLink } from './context-link'
 import { registerTranscriptIpc } from '../core/transcript-ipc'
 import { IPC } from '@shared/ipc'
 import { WhisperModelStore } from '../core/speech/whisper-models'
@@ -403,6 +404,26 @@ export async function startServer(
   }
   await hookServer.start()
 
+  // Context Link: core owns the whole feature (read handler, shim, skill, instruction blocks) and
+  // writes everything under `dataDir`; what it needs from a shell is the link map. The desktop's
+  // renderer pushes it from the live canvas — headless there may be no browser attached at all, so
+  // we derive the same map from the persisted `bridges[]` of every canvas instead. See
+  // src/server/context-link.ts.
+  const contextLink = initServerContextLink({
+    ptyManager,
+    canvases: () => workspaceStore.persistedCanvases()
+  })
+  // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
+  // bridge edge reaches us as the workspace save it triggers.
+  workspaceStore.onPersist = () => void contextLink.refresh()
+  // Nothing has read the workspace index yet — the desktop gets its first load from the renderer,
+  // and this shell may never have one. Read it once so links are live before any browser connects.
+  // Read-only: boot must not sideline a conflict-marked project.json (that stays a renderer/probe
+  // decision). The onPersist above turns this load into the initial refresh.
+  await workspaceStore.load({ sideline: false }).catch((e) => {
+    console.warn('[nodeterm-server] context-link initial workspace load failed', e)
+  })
+
   // Session budget (docs/SERVER.md): reap long-idle DETACHED nt- tmux sessions under memory
   // pressure (10%-of-RAM watermark) or past a count cap, on BOTH the local socket and the
   // SSH-remote socket (`nodeterm-rmt`) — a host serving SSH projects accumulates sessions there,
@@ -423,6 +444,7 @@ export async function startServer(
       async close() {
         // Detach PTY clients — tmux sessions keep running (Phase 1 contract).
         sessionReaper.stop()
+        await contextLink.stop()
         await ptyManager.killAll()
         hookServer.stop()
       }
@@ -465,6 +487,7 @@ export async function startServer(
     async close() {
       // Detach PTY clients — tmux sessions keep running (Phase 1 contract; never kill the server).
       sessionReaper.stop()
+      await contextLink.stop()
       await ptyManager.killAll()
       // Close the loopback hook-server listener (it would otherwise die with the process anyway).
       hookServer.stop()

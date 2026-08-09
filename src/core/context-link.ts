@@ -259,6 +259,23 @@ export async function handleContextLinkRequest(req: {
   }
 }
 
+// Serialize writes: writeLinkFiles is a multi-step async clear-then-write; two overlapping
+// calls could interleave (B's clear runs before A's writes land) and leave a just-removed
+// link file behind — which is a read-authorization leak, not just a perf nit.
+let writeChain: Promise<void> = Promise.resolve()
+
+/**
+ * Replace the WHOLE link map (every project) and rewrite the per-node link files.
+ *
+ * The desktop reaches this over IPC, from the renderer that owns the canvas. The Server Edition
+ * has no such renderer — it derives the map from persisted project files and calls this directly
+ * (src/server/context-link.ts), which is why the map setter is a function and not only a handler.
+ */
+export function setContextLinks(map: ContextLinkMap): Promise<void> {
+  writeChain = writeChain.then(() => writeLinkFiles(map && typeof map === 'object' ? map : {}))
+  return writeChain
+}
+
 export function initContextLink(ptyManager: PtyManager, platformDeps: ContextLinkDeps = {}): void {
   pty = ptyManager
   deps = platformDeps
@@ -277,13 +294,6 @@ export function initContextLink(ptyManager: PtyManager, platformDeps: ContextLin
     console.error('[context-link] setup failed', e)
     return
   }
-  // Serialize writes: writeLinkFiles is a multi-step async clear-then-write; two overlapping
-  // calls could interleave (B's clear runs before A's writes land) and leave a just-removed
-  // link file behind — which is a read-authorization leak, not just a perf nit.
-  let writeChain: Promise<void> = Promise.resolve()
-  platform().handle(IPC.contextLinkSetLinks, (map: ContextLinkMap) => {
-    writeChain = writeChain.then(() => writeLinkFiles(map && typeof map === 'object' ? map : {}))
-    return writeChain
-  })
+  platform().handle(IPC.contextLinkSetLinks, (map: ContextLinkMap) => setContextLinks(map))
   platform().handle(IPC.contextLinkInfo, () => ({ shimPath: cliShimPath() }))
 }

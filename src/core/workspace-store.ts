@@ -5,10 +5,10 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
   DEFAULT_PROJECT_ID, EMPTY_WORKSPACE,
-  type CanvasNodeState, type Project, type Workspace, type WorkspaceV1
+  type BridgeLink, type CanvasNodeState, type Project, type Workspace, type WorkspaceV1
 } from '../shared/types'
 import {
-  PROJECT_DIR, PROJECT_FILE, fileToProject, projectToFile, sameProjectContent,
+  PROJECT_DIR, PROJECT_FILE, fileToProject, projectToFile, resolveNodes, sameProjectContent,
   serializeProjectFile, splitWorkspace, validKanban,
   type IndexEntryV3, type ProjectFileV1, type WorkspaceIndexV3
 } from './workspace-files'
@@ -468,6 +468,39 @@ export class WorkspaceStore {
       if (node) return node
     }
     return undefined
+  }
+
+  /**
+   * Every persisted canvas as {id, nodes, bridges} — the raw material the Server Edition derives
+   * its context-link map from (src/server/context-link.ts). Same three-entry-kind scan as
+   * `getNode`, but whole projects rather than one node, because a link edge only means anything
+   * alongside the nodes it joins.
+   *
+   * Sync + in-memory: it reads the loaded index and the last content written to each local ref's
+   * project.json, so a project whose file has never been read this run is simply absent (it
+   * appears after the next load/save, which is also what re-derives the map).
+   */
+  persistedCanvases(): Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> {
+    const out: Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> = []
+    for (const e of this.index?.entries ?? []) {
+      if (e.project) {
+        out.push({ id: e.project.id, nodes: e.project.nodes, bridges: e.project.bridges })
+      } else if (e.cache) {
+        out.push({ id: e.cache.id, nodes: e.cache.nodes, bridges: e.cache.bridges })
+      } else if (e.cwd) {
+        const raw = this.lastWritten.get(projectFilePath(e.cwd))
+        if (!raw) continue
+        try {
+          const f = JSON.parse(raw) as ProjectFileV1
+          // Node cwds are stored portable ("./sub"); resolve them the way `fileToProject` does, so
+          // a caller sees the same absolute paths the desktop's renderer would have handed it.
+          out.push({ id: f.id, nodes: resolveNodes(f.nodes, e.cwd), bridges: f.bridges })
+        } catch {
+          // Corrupt cached content: skip this entry, keep scanning the others.
+        }
+      }
+    }
+    return out
   }
 
   getNodeTitle(nodeId: string): string | undefined {
