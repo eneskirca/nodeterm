@@ -37,7 +37,7 @@ The feature must feel native to nodeterm, work through the existing Electron and
 - Offer a write-only fine-grained personal access token as a fallback.
 - Prefer the GitHub CLI credential when both are available unless the user deliberately chooses the stored token.
 - Store that provider choice as non-secret app configuration with `auto`, `gh`, and `token` values. `auto` is the default and prefers `gh`.
-- Store provider choice in the machine-local `Settings` schema and expose all three values in the GitHub Issues settings section.
+- Store provider choice in a dedicated machine-local GitHub control store and expose all three values in the GitHub Issues settings section.
 - The token needs repository Metadata read and Issues read and write permissions. The UI must explain that repository permission is also required for labels, assignees, and milestones.
 - A dedicated GitHub App device login is a future enhancement. GitHub recommends device flow for desktop applications [2].
 
@@ -144,7 +144,7 @@ The main pane holds body and discussion. A metadata sidebar holds status, labels
 ### Large repositories and narrow layouts
 
 - The host issue service retains the complete validated issue set up to a documented support limit of 10,000 issues and a 64 MiB cache document.
-- Exceeding either limit produces an explicit `Repository too large` incomplete state. Existing validated cache remains readable, but mutations are disabled because the board cannot prove that it has the complete mapped-label set.
+- Exceeding either limit produces an explicit `Repository too large` incomplete state. A failed refresh attempt never replaces or prunes the previous complete cache. That last complete snapshot remains readable, but mutations are disabled because its freshness can no longer be established. If the first refresh crosses a limit, its validated records may be exposed only as an explicitly partial, read-only snapshot and are stored separately from the complete-cache slot.
 - The renderer requests issue cards by column, filter, search query, cursor, and bounded page size. It never receives all issue bodies in one snapshot.
 - Each column initially requests 50 recent issues and offers `Show more`.
 - Search, counts, and filters execute against the complete host cache, not only the rendered page.
@@ -177,23 +177,32 @@ export interface ProjectKanban {
 }
 ```
 
-This proposed mapping is shared through `.nodeterm/project.json`. Local authorisation is not. Extend machine-local `Settings` with the provider choice and approvals.
+This proposed mapping is shared through `.nodeterm/project.json`. Local authorisation is not. Add a stable machine-local `localApprovalId` to each `IndexEntryV3` and keep provider choice plus approvals in a dedicated GitHub control store.
 
 ```ts
 export interface GitHubProjectApproval {
+  workspaceEntryId: string
   projectId: string
   repository: string
   enabled: boolean
   approvedAt: number
 }
 
-export interface Settings {
-  githubAuthProvider: 'auto' | 'gh' | 'token'
-  githubIssueApprovals: GitHubProjectApproval[]
+export interface GitHubControlState {
+  version: 1
+  revision: number
+  authProvider: 'auto' | 'gh' | 'token'
+  approvals: GitHubProjectApproval[]
+}
+
+export interface IndexEntryV3 {
+  localApprovalId?: string
 }
 ```
 
-Credentials, approvals for other machines, issue snapshots, comments, ETags, refresh metadata, provisional mutations, and safe errors never enter the shared project file.
+The workspace store generates `localApprovalId` when an entry is created or first loaded without one and keeps it only in the machine-local workspace index. The control store writes atomically, checks an expected revision on every update, and exposes dedicated transactional Approve, Revoke, Select provider, Save token, and Clear token handlers. A stale client receives a conflict and reloads instead of replacing the whole state or resurrecting a revoked approval.
+
+Credentials, approvals for other machines, issue snapshots, comments, ETags, refresh metadata, provisional mutations, and safe errors never enter the shared project file or the general Settings save path.
 
 One canonical `normaliseProjectKanbanGitHub` function validates every read and write. It
 
@@ -213,11 +222,13 @@ Readers validate every field defensively. A malformed GitHub block disables the 
 
 A focused credential resolver runs only in the trusted host process.
 
-Resolution order
+Resolution is exact.
 
-1. Use the explicitly selected stored token when present.
-2. Otherwise use `gh auth token` from a validated GitHub CLI installation.
-3. Otherwise report authentication required.
+| Selected provider | Behaviour |
+|---|---|
+| `auto` | Validate GitHub CLI authentication first. If unavailable or rejected, validate the stored token. Report authentication required only when neither is valid. |
+| `gh` | Use only a valid GitHub CLI credential. Never fall back to the stored token. |
+| `token` | Use only the stored token. Never fall back to GitHub CLI. |
 
 The renderer may save, clear, select, and query credential presence. It may never read a token. The service must redact bearer values and token-like query parameters from every error before logging or returning it.
 
@@ -233,7 +244,7 @@ Electron stores a pasted token encrypted with `safeStorage` only when encryption
 | Electron-managed SSH project | Existing remote Git executor reads the SSH repository remote | Electron host, using the desktop user's GitHub identity | Main local window only |
 | Inline project without a working directory | Manual repository override | Owning Electron or Server host | Owning host's settings client |
 
-The GitHub issue data namespace is core-bound, so a relay tab reads and mutates through the relay host. Credential Save, Clear, provider selection, and first-use approval remain host-control operations and are not callable by a relay peer. An already approved relay-hosted project may expose its bounded issue operations to authorised peers while its credential remains on the host. Electron-managed SSH support deliberately keeps the GitHub token off the SSH host. A future SSH-host credential mode would be a separate design.
+The GitHub issue data namespace is core-bound, so a relay tab reads and mutates through the relay host. Credential Save, Clear, provider selection, and first-use approval remain host-control operations. Electron registers them through local-window handlers that verify the sender is the main window. Server Edition registers revision-checked handlers for its authenticated settings client. Relay dispatch maintains an explicit deny set for every `githubControl:*` channel before generic RPC dispatch, so an approved peer cannot invoke them by constructing a raw request. An already approved relay-hosted project may expose its bounded issue operations to authorised peers while its credential remains on the host. Electron-managed SSH support deliberately keeps the GitHub token off the SSH host. A future SSH-host credential mode would be a separate design.
 
 ### GitHub issues client
 
@@ -275,7 +286,7 @@ interface GitHubIssuesClient {
 }
 ```
 
-Comment updates and deletes carry project id and issue number through the service boundary. Before mutation, the host fetches the comment or uses a trusted fresh cached record, validates that its `issue_url` belongs to the expected repository and issue, and enters the same repository-plus-issue mutation chain. Comment id alone is never sufficient authority [5].
+Comment updates and deletes carry project id, issue number, and `expectedCommentUpdatedAt` through the service boundary. Inside the mutation chain, the host fetches the latest comment, validates that its `issue_url` belongs to the expected repository and issue, and compares its `updated_at` with the version shown to the user. A mismatch returns the latest comment as a stale-data result and requires a deliberate retry. Comment id alone is never sufficient authority [5].
 
 GitHub's issue API supports the core issue, label, assignee, milestone, comment, and lock operations in scope [1].
 
@@ -286,6 +297,7 @@ The issue service owns
 - per-repository cache loading and atomic persistence
 - one in-flight refresh and one poll schedule per repository
 - subscription reference counting across attached Electron, Server Edition, and relay clients
+- one request coordinator per authenticated GitHub user id across every repository
 - one serial mutation chain per issue
 - full and incremental refresh scheduling
 - mapping issues to Kanban columns
@@ -296,6 +308,8 @@ The issue service owns
 The service accepts injected credential, client, clock, and storage dependencies. Core tests therefore perform no network or keyring access.
 
 The first visible subscriber starts the repository poll and the last unsubscribe stops it. Multiple clients share the same timer and in-flight refresh. Refresh completion broadcasts changed issue ids, totals, readiness, and timing only. Renderers requery affected visible pages rather than receiving the entire repository.
+
+The identity-wide request coordinator permits at most four concurrent reads, serialises mutative requests, and spaces mutations by at least one second. Primary or secondary rate-limit backoff from any repository pauses polls and queued network work for every repository using that GitHub identity. A primary-limit pause lasts until reset. A secondary-limit pause follows `retry-after` or bounded exponential backoff. Identity changes cancel old queued work rather than moving it to a new credential.
 
 ### Renderer state
 
@@ -315,7 +329,7 @@ Comments are fetched when a modal opens and are not persisted to disk. Closing t
 
 ### Remote media
 
-The renderer never loads GitHub media directly. The host may fetch assignee avatars only from validated `https://avatars.githubusercontent.com` URLs returned in authenticated GitHub user objects. It requests a small display size, accepts only supported image MIME types, enforces a 128 KiB response limit, caches the result briefly in memory, and exposes a bounded data URL through the issue view model. Failure falls back to the existing initials avatar.
+The renderer never loads GitHub media directly. The host may fetch assignee avatars only from validated `https://avatars.githubusercontent.com` URLs returned in authenticated GitHub user objects. It fetches lazily for visible cards and the open modal, disables redirects, requests a small display size, accepts only supported image MIME types, enforces a 128 KiB response limit, and caches the result briefly in memory. Each renderer page response has a 512 KiB aggregate avatar-data budget. Users beyond that budget receive initials. The host exposes only bounded data URLs through issue view models, and every failure falls back to the existing initials avatar.
 
 Markdown images in issue bodies and comments render as labelled links rather than remote images in this release. Ordinary links are sanitised, limited to safe schemes, and opened through the existing external-link boundary. This preserves the current renderer CSP and the host-only network rule.
 
@@ -334,32 +348,36 @@ Markdown images in issue bodies and comments render as labelled links rather tha
 
 1. Opening the Kanban validates shared configuration and checks machine-local approval before reading even a private local cache.
 2. An approved project reads the machine-local cache and renders the first bounded pages immediately.
-3. If configuration and authentication are ready, the host service records a configuration epoch containing project id, normalised repository, mapping revision, and authenticated GitHub user id, then starts a refresh.
+3. If configuration and authentication are ready, the host service records a configuration epoch containing workspace entry id, project id, normalised repository, mapping revision, control-store revision, credential generation, and authenticated GitHub user id, then starts a refresh.
 4. An empty cache or a cache whose separate `lastFullReconciliationAt` is older than 24 hours receives a complete `state=all` paginated refresh.
 5. A recent full cache receives an incremental refresh using `since = lastSuccessfulRefreshAt - 2 seconds`. Results merge by issue number and `updated_at`, so the overlap is harmless and second-resolution boundary updates are not lost.
 6. Conditional requests use stored ETags where the request identity is stable. The ETag key includes normalised repository, endpoint, API version, complete query, page, and authenticated GitHub user id. It never includes credential material. Correctly authenticated `304` responses do not count against the primary REST limit [3].
 7. Valid issues merge by repository and issue number.
 8. Pull-request records are discarded before reaching the cache or renderer.
 9. Before applying results, the service compares the captured configuration epoch with the current epoch. A repository, mapping, approval, or identity change discards the stale result.
-10. The service persists the validated cache atomically and broadcasts bounded change metadata.
+10. A complete result atomically replaces the complete-cache slot. An incomplete result records bounded attempt metadata separately and does not replace or prune the previous complete snapshot. The service then broadcasts bounded change metadata.
 
 The first visible subscriber starts one host-owned 60-second poll per repository. Refresh also occurs when the owning window regains focus after the snapshot is stale. The last unsubscribe stops polling. A manual refresh forces a complete reconciliation. Only a complete successful fetch may remove cache entries no longer returned upstream, and only a complete successful fetch advances `lastFullReconciliationAt`.
 
 ### Mutation flow
 
-1. Validate the project configuration, issue identity, requested fields, and input bounds.
+1. Validate the project configuration, issue identity, requested fields, and input bounds, then capture the complete configuration epoch.
 2. Enter the issue's local serial mutation chain.
-3. Fetch the latest issue.
-4. Compare its `updated_at` with the version shown to the user.
-5. Return a stale-data result when they differ. Refresh the card and require a deliberate retry.
-6. Compute the smallest safe mutation from the fresh record.
-7. Submit the GitHub request.
-8. Validate the confirmed response and compare fields that GitHub can silently ignore when repository permission is insufficient.
-9. Update the in-memory snapshot as confirmed.
-10. Refresh the affected issue.
-11. Persist the cache and broadcast the result.
+3. Recompute the epoch inside the chain before any network request. Reject the work if approval, repository, mapping, provider, credential generation, or authenticated identity changed.
+4. Fetch the latest issue through the identity-wide request coordinator.
+5. Compare its `updated_at` with the version shown to the user.
+6. Return a stale-data result when they differ. Refresh the card and require a deliberate retry.
+7. Compute the smallest safe mutation from the fresh record.
+8. Recompute and compare the epoch immediately before the write.
+9. Submit the GitHub request through the identity-wide mutation queue.
+10. Validate the confirmed response and compare fields that GitHub can silently ignore when repository permission is insufficient.
+11. Update the in-memory snapshot as confirmed.
+12. Revalidate the epoch before the post-write refresh. If it changed after GitHub confirmed the write, report the confirmed result without applying it to the new configuration.
+13. Refresh the affected issue, persist the cache, and broadcast the result.
 
 The UI may show a provisional location with a `Syncing` state. Failure restores the last confirmed position. A successful GitHub write followed by a cache failure returns the confirmed issue with `Refresh pending`, then heals on the next refresh without repeating the write.
+
+Every issue, comment, label-setup, creation, lock, unlock, and movement operation follows this epoch protocol. An epoch change cancels queued work before its next request. Multi-request setup actions revalidate immediately before every request and report confirmed partial completion without continuing under a changed epoch.
 
 ### Column movement
 
@@ -383,10 +401,10 @@ The create request sends title, body, destination mapped label, selected ordinar
 
 ## Cache and retention
 
-- Store one cache document per repository under the host's nodeterm user-data directory.
+- Store one cache document per repository under the host's nodeterm user-data directory, with separate `lastComplete` and `lastAttempt` sections.
 - Derive filenames from a stable hash rather than raw repository text.
 - Create and replace cache files atomically with mode `0600` because issue bodies may contain private project information.
-- Store bounded issue fields, identity-scoped ETags, last incremental and full refresh times, and rate-limit metadata.
+- Store bounded issue fields, identity-scoped ETags, last incremental and full refresh times, and rate-limit metadata in `lastComplete`. An incomplete `lastAttempt` stores only its status, limit reason, timing, and a bounded first-refresh partial snapshot when no complete snapshot exists.
 - Do not store comments, credentials, raw HTTP bodies, arbitrary response headers, provisional changes, or stack traces.
 - `Clear cached GitHub data` removes the active repository cache after confirmation.
 - Revoking this machine's approval stops network activity and cache reads for that project but retains the cache until the user clears it.
@@ -402,7 +420,7 @@ The create request sends title, body, destination mapped label, selected ordinar
 | Insufficient write permission | Mutation fails, confirmed card remains, and required permission is explained |
 | Network timeout | Cache remains with stale time and manual retry |
 | Malformed or oversized response | Reject that response and preserve the last valid cache |
-| Repository exceeds the 10,000 issue or 64 MiB support limit | Mark the cache incomplete, keep its validated portion read-only, and disable mutations |
+| Repository exceeds the 10,000 issue or 64 MiB support limit | Retain the previous complete cache without pruning, record the attempt as incomplete, and disable mutations. A first-refresh partial snapshot is labelled partial and remains read-only |
 | Primary rate limit | Stop polling until `x-ratelimit-reset` |
 | Secondary rate limit | Honour `retry-after` or exponential backoff and stop after a bounded retry count |
 | Stale displayed issue | Refresh the card and require deliberate retry |
@@ -439,21 +457,23 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 
 - repository parsing for HTTPS, SSH, missing, malformed, non-GitHub, and overridden remotes
 - machine-local approval, repository-change invalidation, and a hostile cloned project that cannot activate cache or network access
-- credential selection, persisted provider choice, write-only behaviour, locked keyring handling, `basic_text`, restricted-file mode, migration, and redaction
+- exact `Auto`, `GitHub CLI only`, and `Personal access token only` fallback behaviour, persisted provider choice, write-only behaviour, locked keyring handling, `basic_text`, restricted-file mode, migration, and redaction
+- control-store revision conflicts, atomic writes, workspace-entry binding, repository-change invalidation, and proof that a stale client cannot restore a revoked approval
 - canonical mapping normalisation, duplicate column ids, case-variant labels, empty labels, unknown columns, invalid completion id, and property preservation through every board transform
 - issue, comment, label, assignee, and milestone response validation
 - pagination, Link headers, pull-request filtering, periodic full reconciliation, overlapping incremental boundaries, identity-scoped ETags, `304`, epoch invalidation, timeouts, malformed JSON, and bounded responses
 - bounded same-host redirects and rejection of cross-host or protocol-changing redirects
-- primary and secondary rate-limit handling
+- identity-wide read concurrency, mutation spacing, primary and secondary rate-limit handling across repositories, identity changes, and queued-work cancellation
 - status mapping for open, closed, unlabelled, single-labelled, mapped-label conflicts, and externally reopened completion-label conflicts
 - unrelated-label preservation and exact mapped-label replacement
 - completion-label close and reopen transitions
 - stable mixed-source ordering and namespaced local and GitHub label filtering
-- cache atomicity, mode, retention, and corrupt-file recovery
+- cache atomicity, mode, retention, corrupt-file recovery, last-complete preservation after an incomplete refresh, and an explicitly partial first refresh
 - repository support-limit behaviour, paged queries, delta broadcasts, and one poll timer across multiple subscribers
-- comment-to-issue association checks and same-issue serialisation
-- avatar host validation, size and MIME limits, fallback initials, and blocked Markdown images
+- comment-to-issue association checks, comment-level `updated_at` conflicts, deliberate retry, and same-issue serialisation
+- avatar host validation, disabled redirects, lazy loading, per-image and aggregate page limits, fallback initials, and blocked Markdown images
 - issue creation placement, disabled completion creation, missing-label colours, idempotent setup, and partial setup recovery
+- epoch revalidation before every queued network request, before every write, and before applying or persisting post-write data
 - successful write followed by cache failure without duplicate mutation
 
 ### Renderer and DOM tests
@@ -483,7 +503,7 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 - Server Edition handler contract
 - remote clients can invoke allowed issue operations while credentials remain host-only
 - local Electron, Server Edition, relay-hosted, Electron-managed SSH, and inline-project locality follow the execution matrix
-- relay peers cannot save credentials or grant first-use approval
+- relay peers cannot save credentials or grant first-use approval, including attempts through raw generic RPC dispatch
 - settings and cache paths stay on the host that performs GitHub requests
 - no token appears in serialised RPC results or safe errors
 
