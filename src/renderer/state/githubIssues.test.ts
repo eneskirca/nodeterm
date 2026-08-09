@@ -67,6 +67,26 @@ describe('GitHub issue renderer state', () => {
     expect(client.unsubscribe).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps pending subscriptions separate when the project changes host API', async () => {
+    const oldApi = api()
+    const newApi = api()
+    let resolveOld!: (value: ReturnType<typeof page>) => void
+    vi.mocked(oldApi.subscribe).mockReturnValue(new Promise((resolve) => { resolveOld = resolve }))
+
+    const oldConnection = useGitHubIssues.getState().connect(oldApi, 'p1', ['todo'])
+    const newDisconnect = await useGitHubIssues.getState().connect(newApi, 'p1', ['todo'])
+    expect(oldApi.subscribe).toHaveBeenCalledTimes(1)
+    expect(newApi.subscribe).toHaveBeenCalledTimes(1)
+    resolveOld(page(1, null))
+    const oldDisconnect = await oldConnection
+
+    expect(oldApi.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(useGitHubIssues.getState().projects.p1.pages.ungrouped.items[0].number).toBe(3)
+    oldDisconnect()
+    newDisconnect()
+    expect(newApi.unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a refresh delta that arrives while initial column queries are pending', async () => {
     const client = api()
     let changed!: (changedIssueNumbers: number[]) => void

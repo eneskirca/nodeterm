@@ -245,6 +245,57 @@ describe('GitHubIssueService', () => {
       .toEqual([])
   })
 
+  it('waits for a cache writer from another project sharing the repository', async () => {
+    class PausingCache extends GitHubIssueCache {
+      pause = false
+      private releaseWrite!: () => void
+      private writeStarted!: () => void
+      readonly started = new Promise<void>((resolve) => { this.writeStarted = resolve })
+
+      release(): void { this.releaseWrite() }
+
+      override async saveComplete(
+        userId: string,
+        repository: string,
+        snapshot: Parameters<GitHubIssueCache['saveComplete']>[2]
+      ): Promise<void> {
+        if (this.pause) {
+          this.writeStarted()
+          await new Promise<void>((resolve) => { this.releaseWrite = resolve })
+        }
+        await super.saveComplete(userId, repository, snapshot)
+      }
+    }
+    const shown = issue(42)
+    const client = new FixtureClient([shown])
+    const cache = new PausingCache(userDataDir)
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async (projectId) => context(client, { projectId }),
+      projectContextForCacheDeletion: async (projectId) => context(client, { projectId })
+    })
+    await service.refresh({ projectId: 'project-1', full: true })
+    await service.refresh({ projectId: 'project-2', full: true })
+    cache.pause = true
+
+    const moving = service.moveIssue({
+      projectId: 'project-2', issueNumber: 42, toColumnId: 'doing',
+      expectedUpdatedAt: shown.updatedAt
+    })
+    await cache.started
+    let clearFinished = false
+    const clearing = service.clearCache({ projectId: 'project-1' })
+      .then(() => { clearFinished = true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(clearFinished).toBe(false)
+
+    cache.release()
+    await Promise.all([moving, clearing])
+
+    expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
+  })
+
   it('rebuilds every page unconditionally during a full reconciliation', async () => {
     const client = new FixtureClient([])
     const calls: Array<{ page: number; etag?: string }> = []

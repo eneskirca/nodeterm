@@ -41,13 +41,23 @@ type HostSubscription = {
   pending?: Promise<void>
 }
 
-const hostSubscriptions = new Map<string, HostSubscription>()
+const hostSubscriptions = new WeakMap<GitHubIssuesApi, Map<string, HostSubscription>>()
+
+function subscriptionsFor(api: GitHubIssuesApi): Map<string, HostSubscription> {
+  let subscriptions = hostSubscriptions.get(api)
+  if (!subscriptions) {
+    subscriptions = new Map()
+    hostSubscriptions.set(api, subscriptions)
+  }
+  return subscriptions
+}
 
 async function acquireHostSubscription(api: GitHubIssuesApi, projectId: string): Promise<() => void> {
-  let record = hostSubscriptions.get(projectId)
+  const subscriptions = subscriptionsFor(api)
+  let record = subscriptions.get(projectId)
   if (!record) {
     record = { api, refs: 0, subscribed: false }
-    hostSubscriptions.set(projectId, record)
+    subscriptions.set(projectId, record)
   }
   record.refs += 1
   try {
@@ -64,8 +74,8 @@ async function acquireHostSubscription(api: GitHubIssuesApi, projectId: string):
     }
   } catch (error) {
     record.refs -= 1
-    if (record.refs === 0 && hostSubscriptions.get(projectId) === record) {
-      hostSubscriptions.delete(projectId)
+    if (record.refs === 0 && subscriptions.get(projectId) === record) {
+      subscriptions.delete(projectId)
     }
     throw error
   }
@@ -74,8 +84,8 @@ async function acquireHostSubscription(api: GitHubIssuesApi, projectId: string):
     if (released) return
     released = true
     record!.refs -= 1
-    if (record!.refs !== 0 || hostSubscriptions.get(projectId) !== record) return
-    hostSubscriptions.delete(projectId)
+    if (record!.refs !== 0 || subscriptions.get(projectId) !== record) return
+    subscriptions.delete(projectId)
     if (record!.subscribed) void record!.api.unsubscribe(projectId)
   }
 }

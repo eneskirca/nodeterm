@@ -501,9 +501,7 @@ export class GitHubIssueService {
     try {
       const affected = this.repositoryStates(context.localApprovalId, context.repository)
       for (const state of affected) state.cacheGeneration += 1
-      const mutations = [...this.issueChains.entries()]
-        .filter(([key]) => key.startsWith(`${request.projectId}:`))
-        .map(([, work]) => work)
+      const mutations = [...this.issueChains.values()]
       await Promise.allSettled([
         ...this.statePreparations.get(context.repository) ?? [],
         ...affected.flatMap((state) => state.refresh ? [state.refresh] : []),
