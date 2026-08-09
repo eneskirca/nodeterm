@@ -28,6 +28,18 @@ describe('parseControlRequest', () => {
     })
   })
 
+  it('requires a target for notify and does not accept message text', () => {
+    expect(parseControlRequest('notify', {})).toEqual({ error: 'notify requires --node <id>' })
+    expect(parseControlRequest('notify', { node: 'n1' })).toEqual({
+      verb: 'notify',
+      args: { node: 'n1' }
+    })
+    expect(parseControlRequest('notify', { node: 'n1', text: 'custom prompt' })).toEqual({
+      error: 'notify does not accept --text'
+    })
+    expect(isDestructiveVerb('notify')).toBe(false)
+  })
+
   it('requires a source for show verbs', () => {
     expect(parseControlRequest('show-video', {})).toEqual({ error: 'show-video requires --path' })
     expect(parseControlRequest('show-web', {})).toEqual({
@@ -177,7 +189,7 @@ describe('parseControlRequest', () => {
 
   it('instructions cover the verb set and the confirm caveat', () => {
     const body = buildCanvasControlInstructions('/tmp/nodeterm.sh')
-    for (const verb of ['list', 'open-agent', 'spawn-team', 'group', 'ungroup', 'move', 'arrange', 'rename', 'write', 'close', 'board', 'assign']) {
+    for (const verb of ['list', 'open-agent', 'spawn-team', 'group', 'ungroup', 'move', 'arrange', 'rename', 'notify', 'write', 'close', 'board', 'assign']) {
       expect(body).toContain(verb)
     }
     expect(body.toLowerCase()).toContain('confirm')

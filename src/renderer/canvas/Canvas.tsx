@@ -657,6 +657,7 @@ export function Canvas() {
   const [controlEdges, setControlEdges] = useState<Edge[]>([])
   const controlEdgesRef = useRef<Edge[]>([])
   controlEdgesRef.current = controlEdges
+  const agentNotifyAtRef = useRef(new Map<string, number>())
   const [dirty, setDirty] = useState(false)
   // Bumped only when a save finished with `dirty` still set (an edit raced it). It exists purely to
   // give the debounced-autosave effect a dependency that CHANGES in that case — `dirty` stays true
@@ -6553,6 +6554,52 @@ export function Canvas() {
               },
               onCancel: () => reply({ ok: false, error: 'denied by user' })
             })
+            return
+          }
+          case 'notify': {
+            const targetId = args.node ?? ''
+            if (!useSettings.getState().settings.agentInboxNotifications) {
+              reply({ ok: false, error: 'linked agent inbox notifications are disabled in Settings' })
+              return
+            }
+            const target = nodesRef.current.find((node) => node.id === targetId)
+            const targetAgent = target?.data.agentId as AgentId | undefined
+            if (!target || target.type !== 'terminal' || !targetAgent || !canContextLink(targetAgent)) {
+              reply({ ok: false, error: `notify: ${targetId} is not a context-link-capable agent` })
+              return
+            }
+            const linked = linkEdgesRef.current.some(
+              (edge) =>
+                (edge.source === sourceNodeId && edge.target === targetId) ||
+                (edge.source === targetId && edge.target === sourceNodeId)
+            )
+            if (!linked) {
+              reply({ ok: false, error: `notify: ${targetId} is not context-linked to the source` })
+              return
+            }
+            const throttleKey = `${sourceNodeId}:${targetId}`
+            const now = Date.now()
+            const lastSentAt = agentNotifyAtRef.current.get(throttleKey) ?? 0
+            if (now - lastSentAt < 10_000) {
+              reply({ ok: false, error: 'notify: rate limited; wait 10 seconds between notifications' })
+              return
+            }
+            try {
+              const ok = await api.pty.sendText(
+                targetId,
+                '[nodeterm] A linked agent updated shared coordination context. Check your configured inbox before continuing.'
+              )
+              if (ok) {
+                agentNotifyAtRef.current.set(throttleKey, now)
+                console.info('[canvas-control] linked agent inbox notification', {
+                  sourceNodeId,
+                  targetNodeId: targetId
+                })
+              }
+              reply({ ok, message: ok ? 'notified' : 'failed', error: ok ? undefined : 'sendText failed' })
+            } catch (error) {
+              reply({ ok: false, error: String(error) })
+            }
             return
           }
           case 'close': {

@@ -23,6 +23,7 @@ export type ControlVerb =
   | 'close-worktree'
   | 'branch'
   | 'rename'
+  | 'notify'
   | 'write'
   | 'close'
   | 'board'
@@ -54,6 +55,7 @@ const VERBS: ControlVerb[] = [
   'close-worktree',
   'branch',
   'rename',
+  'notify',
   'write',
   'close',
   'board',
@@ -74,6 +76,8 @@ export function parseControlRequest(
   if (!VERBS.includes(verb as ControlVerb)) return { error: `Unknown verb: ${verb}` }
   const v = verb as ControlVerb
   if (v === 'close' && !args.node) return { error: 'close requires --node <id>' }
+  if (v === 'notify' && !args.node) return { error: 'notify requires --node <id>' }
+  if (v === 'notify' && args.text) return { error: 'notify does not accept --text' }
   if (v === 'write' && !args.node) return { error: 'write requires --node <id>' }
   if (v === 'write' && !args.text) return { error: 'write requires --text' }
   if ((v === 'show-image' || v === 'show-video') && !args.path) {
@@ -176,6 +180,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  the user to confirm deletion.',
     '- `branch --node <id>` — branch a Claude node\'s conversation (Claude nodes only).',
     '- `rename --node <id> --title "New Name"` — rename any node (terminals, groups, stickies…).',
+    '- `notify --node <id>` — tell a context-linked agent to check its configured coordination inbox.',
+    '  This fixed, rate-limited prompt requires the opt-in Settings toggle; it cannot carry arbitrary text.',
     '- `write --node <id> --text "..."` / `close --node <id>` — type into / close a node.',
     '  Both ask the user to confirm a dialog and may be denied.',
     '- `board` — the project\'s kanban board: every column (id + title) and the session cards in each,',

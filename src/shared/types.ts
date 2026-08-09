@@ -926,6 +926,8 @@ export interface Settings {
   seenOnboarding: boolean
   /** Notify (OS notification) when a Claude Code turn finishes while the app is in the background. */
   notifyOnClaudeDone: boolean
+  /** Allow linked agents to send one another Nodeterm's fixed inbox-check prompt. Default off. */
+  agentInboxNotifications: boolean
   /** Periodically `git fetch` while the Source Control panel is open, so ahead/behind stays
    *  accurate (remote/SSH projects fetch on the remote). */
   gitAutoFetch: boolean
@@ -1066,6 +1068,7 @@ export const DEFAULT_SETTINGS: Settings = {
   seenShortcuts: false,
   seenOnboarding: false,
   notifyOnClaudeDone: true,
+  agentInboxNotifications: false,
   gitAutoFetch: true,
   notifyConsentAsked: false,
   soundEffects: true,
