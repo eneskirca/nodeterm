@@ -416,6 +416,38 @@ Because the hook POST carries a `transcript_path`, a forged POST is defended by 
 that path to the system-default `~/.claude/projects` or a managed account dir
 (`isSafeLocalTranscriptPath`) before any tail reads it.
 
+### Context Link
+
+Context Link works in the Server Edition. The feature itself lives entirely in core
+(`src/core/context-link.ts`) and writes everything under `dataDir`; what it needs from a
+shell is the **link map** — who is linked to whom.
+
+The desktop gets that from its renderer, because React Flow holds the live canvas. That
+does not fit here: agents and their tmux sessions keep running with the browser closed,
+and a headless deployment may never have one attached. So the server derives the same map
+from the **persisted** `bridges[]` of every canvas (`workspaceStore.persistedCanvases()` →
+`buildBackgroundLinkMaps`, in `src/server/context-link.ts`). A workspace save re-derives
+immediately; a 15 s sweep also catches transcript paths, which arrive from the hooks
+rather than from any canvas change, and skips the write when nothing moved.
+
+Consequences worth knowing:
+
+- **Boot reads the workspace once** (`load({ sideline: false })`) so links are live before
+  the first browser connects. Read-only on purpose — sidelining a conflicted
+  `project.json` stays a renderer/probe decision.
+- **Boot also writes into agent configuration directories** when managed hook installation
+  is on: the `get-linked-context` Claude skill, plus marker-delimited instruction blocks in
+  `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` and opencode's `AGENTS.md`. The blocks are
+  idempotent and preserve surrounding content. Set **`installHooks: false`** to skip every
+  one of those writes — the Context Link read handler still works, agents simply have to be
+  told about the shim some other way.
+- **Local-only, deliberately.** No remote deps are injected (`initContextLink(pty, {})`):
+  the server runs ON the host whose transcripts and tmux it reads, and SSH projects are a
+  desktop-only concept.
+- `contextLink.info()` is still unsupported in the browser bridge, so the canvas note that
+  announces a new link cannot quote the shim path. The boot-installed instructions cover
+  discovery independently.
+
 **Deliberate scope skips (Phase 3b):**
 
 - The SDK **chat node** is still **deferred** — it is not wired into the server bridge.
