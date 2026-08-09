@@ -59,6 +59,7 @@ describe('normaliseProjectKanbanGitHub', () => {
       { columnId: 'todo', label: 'status:backlog' }
     ] }, 'duplicate-column'],
     [{ columnMappings: [], completionColumnId: 'missing' }, 'invalid-completion-column'],
+    [{ columnMappings: [{ columnId: 'todo', label: 'status:todo' }], completionColumnId: 'done' }, 'invalid-completion-column'],
     [{ repository: 'https://gitlab.com/o/r', columnMappings: [] }, 'invalid-repository']
   ])('rejects invalid configuration with %s', (input, reason) => {
     expect(normaliseProjectKanbanGitHub(input, columns)).toEqual({ ok: false, reason })

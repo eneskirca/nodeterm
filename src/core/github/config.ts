@@ -83,7 +83,7 @@ export function normaliseProjectKanbanGitHub(
       return { ok: false, reason: 'invalid-completion-column' }
     }
     completionColumnId = value.completionColumnId.trim()
-    if (!columnIds.has(completionColumnId)) {
+    if (!columnIds.has(completionColumnId) || !seenColumns.has(completionColumnId)) {
       return { ok: false, reason: 'invalid-completion-column' }
     }
   }

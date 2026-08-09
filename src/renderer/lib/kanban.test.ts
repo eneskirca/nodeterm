@@ -65,6 +65,23 @@ describe('columns', () => {
     expect(k.columns).toEqual([])
     expect(k.assignments).toEqual([])
   })
+  it('deleteColumn removes that column from GitHub mappings and clears it as completion', () => {
+    const configured: ProjectKanban = {
+      ...board(),
+      github: {
+        repository: 'nodeterm/nodeterm',
+        columnMappings: [
+          { columnId: 'a', label: 'status:todo' },
+          { columnId: 'b', label: 'status:doing' }
+        ],
+        completionColumnId: 'a'
+      }
+    }
+    expect(deleteColumn(configured, 'a').github).toEqual({
+      repository: 'nodeterm/nodeterm',
+      columnMappings: [{ columnId: 'b', label: 'status:doing' }]
+    })
+  })
 })
 
 describe('assignments', () => {

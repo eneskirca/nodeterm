@@ -115,3 +115,46 @@ export interface LabelPageResult {
   etag?: string
   notModified?: boolean
 }
+
+export type GitHubIssueConflict =
+  | 'multiple-mapped-labels'
+  | 'open-with-completion-label'
+  | null
+
+export interface GitHubIssueCardView extends GitHubIssue {
+  columnId: string | null
+  conflict: GitHubIssueConflict
+  avatarDataUrls?: Record<string, string>
+}
+
+export interface GitHubIssueQuery {
+  projectId: string
+  columnId: string | null
+  pageSize: number
+  cursor?: string
+  search?: string
+  labelFilter?: string[]
+}
+
+export interface GitHubIssuePage {
+  items: GitHubIssueCardView[]
+  counts: Record<string, number>
+  nextCursor?: string
+  partial: boolean
+  readOnly: boolean
+  lastSuccessfulRefreshAt?: number
+  lastFullReconciliationAt?: number
+}
+
+export type GitHubMutationResult =
+  | { status: 'confirmed'; issue: GitHubIssue }
+  | { status: 'refresh-pending'; issue: GitHubIssue }
+  | { status: 'stale'; issue: GitHubIssue }
+  | { status: 'configuration-changed' }
+  | { status: 'invalid-target' }
+
+export interface CreateMappedLabelsResult {
+  status: 'confirmed' | 'configuration-changed'
+  created: string[]
+  remaining: string[]
+}

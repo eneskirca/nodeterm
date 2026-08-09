@@ -55,10 +55,20 @@ export function moveColumn(k: ProjectKanban, columnId: string, beforeId: string 
  *  last-column rule (the virtual Ungrouped column always remains). */
 export function deleteColumn(k: ProjectKanban, columnId: string): ProjectKanban {
   if (!k.columns.some((c) => c.id === columnId)) return k
+  const github = (() => {
+    if (!k.github) return undefined
+    const { completionColumnId, ...rest } = k.github
+    return {
+      ...rest,
+      columnMappings: k.github.columnMappings.filter((mapping) => mapping.columnId !== columnId),
+      ...(completionColumnId && completionColumnId !== columnId ? { completionColumnId } : {})
+    }
+  })()
   return {
     ...k,
     columns: k.columns.filter((c) => c.id !== columnId),
-    assignments: k.assignments.filter((a) => a.columnId !== columnId)
+    assignments: k.assignments.filter((a) => a.columnId !== columnId),
+    ...(github ? { github } : {})
   }
 }
 
