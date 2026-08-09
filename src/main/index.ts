@@ -5,7 +5,7 @@ import { canRename, type AgentId } from '@shared/agents/config'
 import { readFile } from 'fs/promises'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
 import { IPC } from '../shared/ipc'
 import { registerFsHandlers } from '../core/fs-handlers'
 import { registerBoardLogHandlers, type BoardLogRoute } from '../core/board-log-handlers'
@@ -18,6 +18,9 @@ import { SettingsStore } from '../core/settings-store'
 import { presenceHub } from '../core/presence/hub'
 import { SshStore } from './ssh-store'
 import { GitService } from '../core/git-service'
+import { registerGitHubIntegration } from '../core/github/integration'
+import { runGitHubCliCommand } from '../core/github/credentials'
+import { ElectronGitHubSecretStore, registerElectronGitHubControl } from './github-control'
 import { generateCommitMessage, generateGroupName, generateTerminalName } from '../core/commit-message'
 import { initUpdater } from './updater'
 import { fetchCheck } from '../core/check'
@@ -703,6 +706,22 @@ app.whenReady().then(async () => {
   // the Server Edition, over the same pure core/fs-ops — so local, browser and peer filesystem
   // behaviour cannot drift. Registered on the platform, so a remote tab's Explorer/editor works.
   registerFsHandlers(corePlatform)
+
+  const githubSecret = new ElectronGitHubSecretStore(app.getPath('userData'), safeStorage)
+  const github = registerGitHubIntegration({
+    platform: corePlatform,
+    userDataDir: app.getPath('userData'),
+    project: (projectId) => workspaceStore.githubProject(projectId),
+    detectRepository: (project) =>
+      gitService.originUrl(project.ssh?.remoteCwd ?? project.cwd ?? ''),
+    secret: githubSecret,
+    run: runGitHubCliCommand
+  })
+  registerElectronGitHubControl(
+    ipcMain,
+    () => getMainWindow()?.webContents.id,
+    github.controller
+  )
 
   // SSH-project Explorer/Editor fs: the remote analog of the fs:* handlers above, scoped to a
   // project's ControlMaster. One SshFs bound to the SSH-project manager's own ssh runner (the SAME

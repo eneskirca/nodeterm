@@ -134,6 +134,31 @@ const api: NodeTerminalApi = {
     load: () => ipcRenderer.invoke(IPC.settingsLoad),
     save: (settings) => ipcRenderer.invoke(IPC.settingsSave, settings)
   },
+  githubIssues: {
+    subscribe: (projectId) => ipcRenderer.invoke(IPC.githubIssuesSubscribe, { projectId }),
+    unsubscribe: async (projectId) => {
+      ipcRenderer.send(IPC.githubIssuesUnsubscribe, projectId)
+    },
+    query: (request) => ipcRenderer.invoke(IPC.githubIssuesQuery, request),
+    refresh: (projectId, full) => ipcRenderer.invoke(IPC.githubIssuesRefresh, projectId, full),
+    moveIssue: (request) => ipcRenderer.invoke(IPC.githubIssuesMove, request),
+    createMissingLabels: (projectId) => ipcRenderer.invoke(IPC.githubIssuesCreateLabels, projectId),
+    clearCache: (projectId) => ipcRenderer.invoke(IPC.githubIssuesClearCache, projectId),
+    onChanged: (projectId, listener) => {
+      const channel = IPC.githubIssuesChanged(projectId)
+      const handler = (_event: unknown, changed: number[]) => listener(changed)
+      ipcRenderer.on(channel, handler)
+      return () => ipcRenderer.removeListener(channel, handler)
+    }
+  },
+  githubControl: {
+    status: (projectId) => ipcRenderer.invoke(IPC.githubControlStatus, projectId),
+    approve: (input) => ipcRenderer.invoke(IPC.githubControlApprove, input),
+    revoke: (input) => ipcRenderer.invoke(IPC.githubControlRevoke, input),
+    selectProvider: (input) => ipcRenderer.invoke(IPC.githubControlSelectProvider, input),
+    saveToken: (token) => ipcRenderer.invoke(IPC.githubControlSaveToken, token),
+    clearToken: () => ipcRenderer.invoke(IPC.githubControlClearToken)
+  },
   speech: {
     // IPC carries the raw Float32 samples as an ArrayBuffer (structured clone; decodePcmPayload's
     // ArrayBuffer branch reads it directly, no re-encoding). A Float32Array view doesn't always

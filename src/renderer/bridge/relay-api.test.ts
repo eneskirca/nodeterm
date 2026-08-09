@@ -44,6 +44,7 @@ function fakeLocalApi() {
     updates: { NAME: 'local-updates' },
     clipboard: { NAME: 'local-clipboard' },
     settings: { NAME: 'local-settings' },
+    githubControl: { NAME: 'local-github-control' },
     dialog: { NAME: 'local-dialog' },
     license: { NAME: 'local-license' },
     pty: { onData: ptyOnData },
@@ -91,6 +92,17 @@ describe('buildRelayApi', () => {
     expect(api.clipboard).toBe(local.clipboard)
     expect(api.settings).toBe(local.settings)
     expect(api.license).toBe(local.license)
+    expect(api.githubControl).toBe(local.githubControl)
+  })
+
+  it('routes GitHub issue data to the host while keeping control local', () => {
+    const { local } = fakeLocalApi()
+    ;(globalThis as Record<string, unknown>).window = { nodeTerminal: local }
+    const t = new FakeTransport()
+    const { api } = buildRelayApi('conn-1', t)
+
+    void api.githubIssues.query({ projectId: 'p1', columnId: null, pageSize: 50 })
+    expect(JSON.parse(t.sent[0])).toMatchObject({ t: 'req', method: IPC.githubIssuesQuery })
   })
 
   it('routes the folder/file picker to the HOST fs, not the local native dialog', () => {

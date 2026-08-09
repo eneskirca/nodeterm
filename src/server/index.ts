@@ -17,6 +17,9 @@ import { SettingsStore } from '../core/settings-store'
 import { WorkspaceStore } from '../core/workspace-store'
 import { PtyManager } from '../core/pty-manager'
 import { registerCoreHandlers } from './handlers'
+import { registerGitHubIntegration } from '../core/github/integration'
+import { runGitHubCliCommand } from '../core/github/credentials'
+import { registerServerGitHubControl, ServerGitHubSecretStore } from './github-control'
 import { DownloadTickets } from '../core/download-tickets'
 import { registerBoardLogHandlers, type BoardLogRoute } from '../core/board-log-handlers'
 import os from 'os'
@@ -215,7 +218,19 @@ export async function startServer(
   // between the RPC side (which mints) and the HTTP side (which redeems) — one instance, so a
   // ticket minted over the socket is redeemable by the GET that follows it.
   const downloadTickets = new DownloadTickets()
-  registerCoreHandlers(platform, { getSettings: () => settingsStore.get(), downloadTickets })
+  const { gitService } = registerCoreHandlers(platform, {
+    getSettings: () => settingsStore.get(),
+    downloadTickets
+  })
+  const github = registerGitHubIntegration({
+    platform,
+    userDataDir: config.dataDir,
+    project: (projectId) => workspaceStore.githubProject(projectId),
+    detectRepository: (project) => gitService.originUrl(project.cwd ?? ''),
+    secret: new ServerGitHubSecretStore(config.dataDir),
+    run: runGitHubCliCommand
+  })
+  registerServerGitHubControl(platform, github.controller)
 
   // Board-log: same CorePlatform registrar as desktop, but the Server Edition has no SSH projects
   // (terminals are local), so the router only ever resolves a local folder cwd or unsupported —

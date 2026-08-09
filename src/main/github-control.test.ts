@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ElectronGitHubSecretStore, type SafeStorageLike } from './github-control'
+import { vi } from 'vitest'
+import { IPC } from '../shared/ipc'
+import {
+  ElectronGitHubSecretStore,
+  registerElectronGitHubControl,
+  type SafeStorageLike
+} from './github-control'
 
 let userDataDir: string
 
@@ -60,5 +66,38 @@ describe('ElectronGitHubSecretStore', () => {
     await store.save('github_pat_secret')
     await store.clear()
     expect(await store.readForHost()).toBeNull()
+  })
+})
+
+describe('registerElectronGitHubControl', () => {
+  it('accepts only the current local main window and wires every control action', async () => {
+    const handlers = new Map<string, (event: { sender: { id: number } }, ...args: any[]) => unknown>()
+    const controller = {
+      status: vi.fn(async () => ({ ok: 'status' })),
+      approve: vi.fn(async () => ({ ok: 'approve' })),
+      revoke: vi.fn(async () => ({ ok: 'revoke' })),
+      selectProvider: vi.fn(async () => ({ ok: 'provider' })),
+      saveToken: vi.fn(async () => ({ ok: 'save' })),
+      clearToken: vi.fn(async () => ({ ok: 'clear' }))
+    }
+    registerElectronGitHubControl(
+      { handle: (channel, handler) => handlers.set(channel, handler) },
+      () => 7,
+      controller
+    )
+    expect([...handlers.keys()].sort()).toEqual([
+      IPC.githubControlApprove,
+      IPC.githubControlClearToken,
+      IPC.githubControlRevoke,
+      IPC.githubControlSaveToken,
+      IPC.githubControlSelectProvider,
+      IPC.githubControlStatus
+    ].sort())
+    await expect(Promise.resolve().then(() =>
+      handlers.get(IPC.githubControlStatus)!({ sender: { id: 8 } }, 'p1')))
+      .rejects.toMatchObject({ code: 'E_FORBIDDEN' })
+    await expect(handlers.get(IPC.githubControlStatus)!({ sender: { id: 7 } }, 'p1'))
+      .resolves.toEqual({ ok: 'status' })
+    expect(controller.status).toHaveBeenCalledWith('p1')
   })
 })

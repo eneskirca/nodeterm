@@ -1,0 +1,31 @@
+import { describe, expect, it } from 'vitest'
+import { fakePlatform } from '../platform-fake'
+import { IPC } from '../../shared/ipc'
+import { registerGitHubIssueHandlers } from './handlers'
+
+describe('registerGitHubIssueHandlers', () => {
+  it('attributes subscriptions to the sender and exposes only domain operations', async () => {
+    const calls: unknown[][] = []
+    const service = {
+      subscribe: async (...args: unknown[]) => { calls.push(['subscribe', ...args]); return { items: [] } },
+      unsubscribe: (...args: unknown[]) => { calls.push(['unsubscribe', ...args]) },
+      query: async (...args: unknown[]) => { calls.push(['query', ...args]); return { items: [] } },
+      refresh: async (...args: unknown[]) => { calls.push(['refresh', ...args]) },
+      moveIssue: async (...args: unknown[]) => { calls.push(['move', ...args]); return { status: 'confirmed' } },
+      createMissingLabels: async (...args: unknown[]) => { calls.push(['labels', ...args]); return { status: 'confirmed' } },
+      clearCache: async (...args: unknown[]) => { calls.push(['clear', ...args]) }
+    }
+    const platform = fakePlatform()
+    registerGitHubIssueHandlers(platform, service)
+
+    await platform.handlers[IPC.githubIssuesSubscribe](7, { projectId: 'p1' })
+    platform.senderListeners[IPC.githubIssuesUnsubscribe](7, 'p1')
+    await platform.handlers[IPC.githubIssuesQuery]({ projectId: 'p1', columnId: null, pageSize: 50 })
+    expect(calls).toEqual([
+      ['subscribe', 7, { projectId: 'p1' }],
+      ['unsubscribe', 7, 'p1'],
+      ['query', { projectId: 'p1', columnId: null, pageSize: 50 }]
+    ])
+    expect(Object.keys(platform.handlers).some((channel) => channel.startsWith('githubControl:'))).toBe(false)
+  })
+})

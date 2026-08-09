@@ -537,6 +537,14 @@ export class GitService {
     return files
   }
 
+  /** Read the origin through the same local or managed-SSH git executor as every other git read. */
+  async originUrl(cwd: string): Promise<string | null> {
+    if (!cwd) return null
+    const result = await git(cwd, ['remote', 'get-url', 'origin'])
+    const url = result.out.trim()
+    return result.ok && url ? url : null
+  }
+
   /** Build a provider web URL for a commit from the origin remote; null if unsupported. */
   async remoteCommitUrl(cwd: string, sha: string): Promise<string | null> {
     if (!cwd || !/^[0-9a-fA-F]{7,64}$/.test(sha)) return null

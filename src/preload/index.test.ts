@@ -36,6 +36,15 @@ import './index'
 const api = h.exposed.nodeTerminal as NodeTerminalApi
 
 describe('preload sshProject passphrase wiring', () => {
+  it('exposes GitHub issue data and host-control namespaces on their exact channels', async () => {
+    await api.githubIssues.query({ projectId: 'p1', columnId: null, pageSize: 50 })
+    await api.githubControl.saveToken('write-only-secret')
+    expect(h.invoke).toHaveBeenCalledWith(IPC.githubIssuesQuery, {
+      projectId: 'p1', columnId: null, pageSize: 50
+    })
+    expect(h.invoke).toHaveBeenCalledWith(IPC.githubControlSaveToken, 'write-only-secret')
+  })
+
   it('submitPassphrase invokes the submit channel with (requestId, value) in that order', async () => {
     await api.sshProject.submitPassphrase('req-1', 'hunter2')
     expect(h.invoke).toHaveBeenCalledWith(IPC.sshPassphraseSubmit, 'req-1', 'hunter2')

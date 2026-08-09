@@ -14,6 +14,7 @@ import {
   type RpcMessage
 } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
+import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   type BoardLogApi,
@@ -276,6 +277,53 @@ export function buildRealApi(
   const userDataDir = (): Promise<string> => client.request(IPC.appUserDataDir) as Promise<string>
 
   return { pty, workspace, settings, userDataDir }
+}
+
+export function buildGitHubApi(
+  client: RpcClient
+): Pick<NodeTerminalApi, 'githubIssues' | 'githubControl'> {
+  const githubIssues: GitHubIssuesApi = {
+    subscribe: (projectId) =>
+      client.request(IPC.githubIssuesSubscribe, { projectId }) as ReturnType<
+        GitHubIssuesApi['subscribe']
+      >,
+    unsubscribe: async (projectId) => {
+      client.cast(IPC.githubIssuesUnsubscribe, projectId)
+    },
+    query: (request) =>
+      client.request(IPC.githubIssuesQuery, request) as ReturnType<GitHubIssuesApi['query']>,
+    refresh: (projectId, full) =>
+      client.request(IPC.githubIssuesRefresh, projectId, full) as Promise<void>,
+    moveIssue: (request) =>
+      client.request(IPC.githubIssuesMove, request) as ReturnType<GitHubIssuesApi['moveIssue']>,
+    createMissingLabels: (projectId) =>
+      client.request(IPC.githubIssuesCreateLabels, projectId) as ReturnType<
+        GitHubIssuesApi['createMissingLabels']
+      >,
+    clearCache: (projectId) =>
+      client.request(IPC.githubIssuesClearCache, projectId) as Promise<void>,
+    onChanged: (projectId, listener) =>
+      client.subscribe(IPC.githubIssuesChanged(projectId), listener as Listener)
+  }
+
+  const githubControl: GitHubControlApi = {
+    status: (projectId) =>
+      client.request(IPC.githubControlStatus, projectId) as ReturnType<GitHubControlApi['status']>,
+    approve: (input) =>
+      client.request(IPC.githubControlApprove, input) as ReturnType<GitHubControlApi['approve']>,
+    revoke: (input) =>
+      client.request(IPC.githubControlRevoke, input) as ReturnType<GitHubControlApi['revoke']>,
+    selectProvider: (input) =>
+      client.request(IPC.githubControlSelectProvider, input) as ReturnType<
+        GitHubControlApi['selectProvider']
+      >,
+    saveToken: (token) =>
+      client.request(IPC.githubControlSaveToken, token) as ReturnType<GitHubControlApi['saveToken']>,
+    clearToken: () =>
+      client.request(IPC.githubControlClearToken) as ReturnType<GitHubControlApi['clearToken']>
+  }
+
+  return { githubIssues, githubControl }
 }
 
 /**
@@ -724,6 +772,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildPresenceApi(client),
     ...buildSpeechApi(client),
     ...buildUsageApi(client),
+    ...buildGitHubApi(client),
     // `claude` is assembled from two builders: `cliCaps` from the relay-shared one, and the
     // transcript reader from the Server-Edition-only one (which also supplies `chat`).
     ...(() => {

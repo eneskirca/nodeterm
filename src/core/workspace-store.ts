@@ -386,6 +386,18 @@ export class WorkspaceStore {
     return this.index?.entries.find((e) => e.id === projectId && e.cwd)?.cwd
   }
 
+  /** Resolve the shared project together with its machine-local trust identity. The approval id
+   *  never enters the shared project object or project.json. */
+  async githubProject(projectId: string): Promise<{
+    project: Project
+    localApprovalId: string
+  } | null> {
+    const workspace = await this.load({ sideline: false })
+    const project = workspace.projects.find((candidate) => candidate.id === projectId)
+    const localApprovalId = this.index?.entries.find((entry) => entry.id === projectId)?.localApprovalId
+    return project && localApprovalId ? { project, localApprovalId } : null
+  }
+
   /** The local ref cwds of the current index — the workspace half of the phone bridge's fs/git
    *  jail. The phone browses EVERY project over `projects.list`, so jailing to only the active
    *  canvas's node cwds denied any project the desktop didn't happen to have focused. */

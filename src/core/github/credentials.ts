@@ -3,9 +3,35 @@ import type {
   GitHubAuthStatus,
   GitHubSecretAvailability
 } from '../../shared/github-issues'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 export type CommandResult = { ok: boolean; stdout: string; stderr: string }
 export type CommandRunner = (command: string, args: string[]) => Promise<CommandResult>
+
+const execute = promisify(execFile)
+
+export const runGitHubCliCommand: CommandRunner = async (command, args) => {
+  if (command !== 'gh') return { ok: false, stdout: '', stderr: 'unsupported command' }
+  try {
+    const result = await execute(command, args, {
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+      env: {
+        ...process.env,
+        PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin${process.env.PATH ? `:${process.env.PATH}` : ''}`
+      }
+    })
+    return { ok: true, stdout: result.stdout, stderr: result.stderr }
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; message?: string }
+    return {
+      ok: false,
+      stdout: failure.stdout ?? '',
+      stderr: failure.stderr || failure.message || 'GitHub CLI failed'
+    }
+  }
+}
 
 export interface GitHubSecretStore {
   readonly availability: GitHubSecretAvailability

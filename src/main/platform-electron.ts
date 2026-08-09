@@ -87,6 +87,15 @@ export function electronPlatform(): ElectronPlatform {
       ipcMain.on(ch, (e, ...args) => fn(e.sender.id, ...args))
     },
     async dispatch(clientId, req) {
+      if (req.method.startsWith('githubControl:')) {
+        return {
+          t: 'res', id: req.id, ok: false,
+          error: {
+            code: 'E_FORBIDDEN',
+            message: 'host-control method is not available to relay peers'
+          }
+        }
+      }
       const h = handlers.get(req.method)
       if (!h) {
         return {

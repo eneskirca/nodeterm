@@ -158,3 +158,42 @@ export interface CreateMappedLabelsResult {
   created: string[]
   remaining: string[]
 }
+
+export interface GitHubControlView {
+  control: {
+    revision: number
+    authProvider: GitHubAuthProvider
+  }
+  auth: GitHubAuthStatus
+  project?: {
+    projectId: string
+    repository?: string
+    detectedRepository?: string
+    approved: boolean
+  }
+}
+
+export interface GitHubIssuesApi {
+  subscribe(projectId: string): Promise<GitHubIssuePage>
+  unsubscribe(projectId: string): Promise<void>
+  query(request: GitHubIssueQuery): Promise<GitHubIssuePage>
+  refresh(projectId: string, full?: boolean): Promise<void>
+  moveIssue(request: {
+    projectId: string
+    issueNumber: number
+    toColumnId: string | null
+    expectedUpdatedAt: string
+  }): Promise<GitHubMutationResult>
+  createMissingLabels(projectId: string): Promise<CreateMappedLabelsResult>
+  clearCache(projectId: string): Promise<void>
+  onChanged(projectId: string, listener: (changedIssueNumbers: number[]) => void): () => void
+}
+
+export interface GitHubControlApi {
+  status(projectId?: string): Promise<GitHubControlView>
+  approve(input: { projectId: string; repository: string; expectedRevision: number }): Promise<GitHubControlView>
+  revoke(input: { projectId: string; expectedRevision: number }): Promise<GitHubControlView>
+  selectProvider(input: { provider: GitHubAuthProvider; expectedRevision: number }): Promise<GitHubControlView>
+  saveToken(token: string): Promise<GitHubControlView>
+  clearToken(): Promise<GitHubControlView>
+}

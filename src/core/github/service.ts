@@ -340,6 +340,17 @@ export class GitHubIssueService {
     return { status: 'confirmed', created, remaining: [] }
   }
 
+  async clearCache(request: { projectId: string }): Promise<void> {
+    const context = await this.options.contextForProject(request.projectId)
+    await this.options.cache.clear(context.userId, context.repository)
+    const state = this.repositories.get(repositoryKey(context))
+    if (state) {
+      state.snapshot = undefined
+      state.partialIssues = undefined
+      state.incomplete = false
+    }
+  }
+
   private async state(context: GitHubIssueServiceContext): Promise<RepositoryState> {
     const key = repositoryKey(context)
     let state = this.repositories.get(key)

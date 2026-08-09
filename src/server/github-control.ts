@@ -1,6 +1,9 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { GitHubSecretStore } from '../core/github/credentials'
+import type { CorePlatform } from '../core/platform'
+import type { GitHubHostController } from '../core/github/host'
+import { IPC } from '../shared/ipc'
 
 const FILE_NAME = 'github-issues-token.json'
 
@@ -52,4 +55,19 @@ export class ServerGitHubSecretStore implements GitHubSecretStore {
       return null
     }
   }
+}
+
+type Controller = Pick<GitHubHostController,
+  'status' | 'approve' | 'revoke' | 'selectProvider' | 'saveToken' | 'clearToken'>
+
+export function registerServerGitHubControl(
+  platform: CorePlatform,
+  controller: Controller
+): void {
+  platform.handle(IPC.githubControlStatus, (projectId?: string) => controller.status(projectId))
+  platform.handle(IPC.githubControlApprove, (input) => controller.approve(input))
+  platform.handle(IPC.githubControlRevoke, (input) => controller.revoke(input))
+  platform.handle(IPC.githubControlSelectProvider, (input) => controller.selectProvider(input))
+  platform.handle(IPC.githubControlSaveToken, (token: string) => controller.saveToken(token))
+  platform.handle(IPC.githubControlClearToken, () => controller.clearToken())
 }

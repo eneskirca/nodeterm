@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ServerGitHubSecretStore } from './github-control'
+import { IPC } from '../shared/ipc'
+import { ServerPlatform } from './platform-server'
+import { registerServerGitHubControl, ServerGitHubSecretStore } from './github-control'
 
 let userDataDir: string
 
@@ -31,5 +33,25 @@ describe('ServerGitHubSecretStore', () => {
     await expect(store.save('')).rejects.toMatchObject({ code: 'invalid-token' })
     await expect(store.save('x'.repeat(4097))).rejects.toMatchObject({ code: 'invalid-token' })
     expect(await store.readForHost()).toBe('original-token')
+  })
+})
+
+describe('registerServerGitHubControl', () => {
+  it('registers control methods on the authenticated server RPC platform', async () => {
+    const platform = new ServerPlatform({ userDataDir, appVersion: '0' })
+    const controller = {
+      status: vi.fn(async () => ({ action: 'status' })),
+      approve: vi.fn(async () => ({ action: 'approve' })),
+      revoke: vi.fn(async () => ({ action: 'revoke' })),
+      selectProvider: vi.fn(async () => ({ action: 'provider' })),
+      saveToken: vi.fn(async () => ({ action: 'save' })),
+      clearToken: vi.fn(async () => ({ action: 'clear' }))
+    }
+    registerServerGitHubControl(platform, controller)
+    const response = await platform.dispatch(1, {
+      t: 'req', id: 1, method: IPC.githubControlStatus, args: ['p1']
+    })
+    expect(response).toMatchObject({ ok: true, result: { action: 'status' } })
+    expect(controller.status).toHaveBeenCalledWith('p1')
   })
 })

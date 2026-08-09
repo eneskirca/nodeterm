@@ -114,6 +114,17 @@ describe('electronPlatform', () => {
  * registered, bit-identical to the webContents-only code they replaced.
  */
 describe('electronPlatform + relay peers', () => {
+  it('denies every raw relay request to the GitHub host-control namespace', async () => {
+    const p = electronPlatform()
+    p.handle('githubControl:approve', () => 'must-not-run')
+    expect(await p.dispatch(PEER, {
+      t: 'req', id: 9, method: 'githubControl:approve', args: []
+    })).toEqual({
+      t: 'res', id: 9, ok: false,
+      error: { code: 'E_FORBIDDEN', message: 'host-control method is not available to relay peers' }
+    })
+  })
+
   it('clientIds = webContents ids ++ peer ids', () => {
     const p = electronPlatform()
     h.clientIds = [5]

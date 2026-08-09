@@ -39,7 +39,8 @@ import {
   buildAgentApi,
   buildCanvasApi,
   buildPresenceApi,
-  buildClaudeApi
+  buildClaudeApi,
+  buildGitHubApi
 } from './ws-bridge'
 import { buildStubApi } from './stubs'
 import { mountPickerRoot, openDirectoryPicker } from './dialog-picker'
@@ -69,6 +70,7 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
 
   const real = buildRealApi(client) // { pty, workspace, settings, userDataDir }
   const files = buildFilesApi(client) // { fs, git, files, context }
+  const github = buildGitHubApi(client)
   const stub = buildStubApi()
 
   const api: NodeTerminalApi = {
@@ -85,6 +87,8 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
     git: files.git,
     files: files.files,
     context: files.context,
+    githubIssues: github.githubIssues,
+    githubControl: local.githubControl,
     ...buildAgentApi(client), // onAgentStatus / onSubagentActivity — the host's agent hooks
     ...buildCanvasApi(client), // canvas sync against the host's reflector
     ...buildPresenceApi(client), // the host's presence hub

@@ -46,6 +46,10 @@ describe('save → load round trip (v3)', () => {
     expect(secondIndex.entries[0].localApprovalId).toBe(approvalId)
     expect(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
       .not.toContain('localApprovalId')
+    await expect(store.githubProject('p1')).resolves.toMatchObject({
+      project: { id: 'p1', cwd: projRoot },
+      localApprovalId: approvalId
+    })
   })
 
   it('writes <cwd>/.nodeterm/project.json + a v3 index, and loads it back assembled', async () => {

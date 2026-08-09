@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { GitHubSecretStore } from '../core/github/credentials'
 import type { GitHubSecretAvailability } from '../shared/github-issues'
+import { IPC } from '../shared/ipc'
+import type { GitHubHostController } from '../core/github/host'
 
 const FILE_NAME = 'github-issues-token.json'
 
@@ -108,4 +110,37 @@ export class ElectronGitHubSecretStore implements GitHubSecretStore {
       return null
     }
   }
+}
+
+export class GitHubControlAccessError extends Error {
+  readonly code = 'E_FORBIDDEN'
+
+  constructor() {
+    super('GitHub control is available only to the local main window')
+  }
+}
+
+type IpcMainLike = {
+  handle(channel: string, handler: (event: { sender: { id: number } }, ...args: any[]) => unknown): void
+}
+
+type Controller = Pick<GitHubHostController,
+  'status' | 'approve' | 'revoke' | 'selectProvider' | 'saveToken' | 'clearToken'>
+
+export function registerElectronGitHubControl(
+  ipc: IpcMainLike,
+  mainWindowId: () => number | undefined,
+  controller: Controller
+): void {
+  const local = <T extends unknown[]>(action: (...args: T) => unknown) =>
+    (event: { sender: { id: number } }, ...args: T): unknown => {
+      if (mainWindowId() !== event.sender.id) throw new GitHubControlAccessError()
+      return action(...args)
+    }
+  ipc.handle(IPC.githubControlStatus, local((projectId?: string) => controller.status(projectId)))
+  ipc.handle(IPC.githubControlApprove, local((input) => controller.approve(input)))
+  ipc.handle(IPC.githubControlRevoke, local((input) => controller.revoke(input)))
+  ipc.handle(IPC.githubControlSelectProvider, local((input) => controller.selectProvider(input)))
+  ipc.handle(IPC.githubControlSaveToken, local((token: string) => controller.saveToken(token)))
+  ipc.handle(IPC.githubControlClearToken, local(() => controller.clearToken()))
 }

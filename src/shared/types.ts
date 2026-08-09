@@ -1934,6 +1934,8 @@ export interface NodeTerminalApi {
   license: LicenseApi
   contextLink: ContextLinkApi
   boardLog: BoardLogApi
+  githubIssues: import('./github-issues').GitHubIssuesApi
+  githubControl: import('./github-issues').GitHubControlApi
   usage: UsageApi
   context: ContextApi
   canvas: CanvasApi
