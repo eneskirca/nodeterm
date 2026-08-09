@@ -25,6 +25,15 @@ type CoordinatorOptions = {
   sleep?: (milliseconds: number) => Promise<void>
 }
 
+function noteOperationRateLimit(state: IdentityState, error: unknown): void {
+  if (!error || typeof error !== 'object') return
+  const value = error as { code?: unknown; retryAt?: unknown }
+  if (value.code === 'rate-limited' && typeof value.retryAt === 'number' &&
+      Number.isFinite(value.retryAt)) {
+    state.retryAt = Math.max(state.retryAt, value.retryAt)
+  }
+}
+
 export class GitHubRequestCoordinator {
   private readonly states = new Map<string, IdentityState>()
   private readonly now: () => number
@@ -64,6 +73,7 @@ export class GitHubRequestCoordinator {
         state.lastMutationAt = this.now()
         resolveResult(await operation())
       } catch (error) {
+        noteOperationRateLimit(state, error)
         rejectResult(error)
       }
     })
@@ -113,6 +123,7 @@ export class GitHubRequestCoordinator {
           if (job.generation !== state.generation) throw new GitHubCoordinatorError('configuration-changed')
           job.resolve(await job.run())
         } catch (error) {
+          noteOperationRateLimit(state, error)
           job.reject(error)
         } finally {
           state.activeReads -= 1

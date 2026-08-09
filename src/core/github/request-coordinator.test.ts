@@ -31,6 +31,14 @@ describe('GitHubRequestCoordinator', () => {
     expect(coordinator.canStart('user-2', 1_000)).toBe(true)
   })
 
+  it('learns an identity-wide backoff directly from a failed GitHub operation', async () => {
+    const coordinator = new GitHubRequestCoordinator({ now: () => 1_000 })
+    await expect(coordinator.runRead('user-1', async () => {
+      throw Object.assign(new Error('rate-limited'), { code: 'rate-limited', retryAt: 5_000 })
+    })).rejects.toMatchObject({ code: 'rate-limited' })
+    expect(coordinator.canStart('user-1', 4_999)).toBe(false)
+  })
+
   it('serialises mutations and spaces their start times by one second', async () => {
     let now = 0
     const sleeps: number[] = []

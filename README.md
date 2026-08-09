@@ -139,6 +139,9 @@ opencode / custom) · 📝 **Sticky note** (link to an agent as context) · 🗂
   git, and even the board run there while the canvas stays local.
 - **Source control** — VS Code-style stage/unstage, discard, branch switch/create,
   commit, push/sync/publish, **worktrees**, and `gh` sign-in — backed by system `git`.
+- **GitHub Issues on Kanban** – opt-in issue cards, exact label-to-column mapping,
+  All / GitHub / Sessions filtering, and two-way move, close, and reopen sync. See
+  [setup and security details](./docs/github-issues-kanban.md).
 - **AI commit messages & terminal names** — bring-your-own local agent CLI run read-only
   on the staged diff or captured output.
 - **Your sessions, in your pocket** — **nodeterm mobile** (iOS) attaches to the same live
