@@ -7,6 +7,7 @@ import { FieldRow } from '../FieldRow'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
 import { Select } from '@renderer/ui/Select'
+import { uuid } from '@renderer/lib/uuid'
 
 const ROWS = {
   custom: { title: 'Custom agents', keywords: ['custom', 'agent', 'cli', 'byo', 'aider'] }
@@ -25,7 +26,7 @@ export function CustomAgentsSection({ isActive }: { isActive: boolean }): React.
       customAgents: [
         ...customAgents,
         {
-          id: 'custom:' + crypto.randomUUID(),
+          id: 'custom:' + uuid(),
           label: 'Custom agent',
           launchCmd: '',
           promptInjectionMode: 'argv'

@@ -50,6 +50,10 @@ export interface MirrorEntry {
    * events), left alone by identity-only (subagent/recurring) events and holdoff-ignored ones.
    */
   updatedAt: number
+  /** An unanswered Codex `request_user_input` is pending on this node: its turn-end `done`
+   *  must be held as `waiting` (see reduceEntry). Cleared by anything that supersedes the
+   *  ask — a new turn, other tool activity, an interrupt, or a session boundary. */
+  awaitingInput?: boolean
 }
 
 /** This host's Server-Edition install metadata (spec: server-update). Written by the installer
@@ -306,6 +310,21 @@ export function reduceEntry(
     // move a node that is still `working`. A node that is blocked/waiting is ALSO idle at the
     // prompt — clearing it there would drop a live approval — and one already done needs nothing.
     if (ev.idle && prev?.state !== 'working') return next
+    // An unanswered Codex `request_user_input`: the ask arrives as waiting+awaitingInput and the
+    // turn's OWN Stop follows as `done` before the user answers (the ask ends the turn; the answer
+    // opens a new one). That done must not flip the node green over a live question — hold
+    // `waiting`. Anything else supersedes the ask: a new turn (the answer), other tool activity,
+    // an interrupt (the user was right there), a session boundary — all drop the flag, keeping the
+    // stuck-NEEDS-YOU failure mode this file already defends against (see the `idle` rules) out.
+    if (ev.awaitingInput) {
+      next.awaitingInput = true
+    } else if (prev?.awaitingInput && ev.state === 'done' && !ev.interrupted) {
+      next.state = 'waiting'
+      next.updatedAt = now
+      return next
+    } else {
+      next.awaitingInput = undefined
+    }
     // Done-holdoff: a late, non-newTurn `working` (out-of-order parallel hook, or an in-flight
     // tool POST at interrupt) must not resurrect a turn that just finished. Only a genuine new
     // turn (UserPromptSubmit) may. Leave state + updatedAt untouched so the window keeps
@@ -322,6 +341,7 @@ export function reduceEntry(
   } else if (ev.kind === 'session') {
     // SessionStart / SessionEnd both reset the node to idle (renderer: setState(id, undefined)).
     next.state = undefined
+    next.awaitingInput = undefined
     next.updatedAt = now
   }
   // subagent-start / subagent-end / recurring: identity captured above, main state untouched.
@@ -1059,13 +1079,20 @@ export function recordAgentEvent(ev: NormalizedAgentEvent): NormalizedAgentEvent
   const prevState = prev?.state
   const next = reduceEntry(prev, ev, now)
   state.set(nodeId, next)
-  const classification = produceInboxFromState(nodeId, ev, prevState, next.state, now)
+  // reduceEntry held an unanswered `request_user_input` through its turn-end `done` — rewrite
+  // the broadcast to what the reducer decided, so every consumer (canvas store, notch, phone)
+  // agrees the node is still waiting rather than each re-deriving it from the raw done.
+  let out = ev
+  if (ev.kind === 'state' && ev.state === 'done' && next.awaitingInput && next.state === 'waiting') {
+    out = { ...ev, state: 'waiting' }
+  }
+  const classification = produceInboxFromState(nodeId, out, prevState, next.state, now)
   scheduleWrite()
-  if (!classification) return ev
+  if (!classification) return out
   // Enrich the broadcast event from the SAME classification the inbox used. A question drops
   // pendingId (approve/deny is wrong UX for a picker); an approval keeps ev.pendingId as-is.
-  if (classification.kind === 'question') return { ...ev, askKind: 'question', pendingId: undefined }
-  return { ...ev, askKind: 'approval' }
+  if (classification.kind === 'question') return { ...out, askKind: 'question', pendingId: undefined }
+  return { ...out, askKind: 'approval' }
 }
 
 /**

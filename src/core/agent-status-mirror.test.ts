@@ -1604,3 +1604,77 @@ describe('consecutive asks (answered on the desktop)', () => {
     un()
   })
 })
+
+describe('reduceEntry — codex request_user_input hold (awaitingInput)', () => {
+  const ask = (): NormalizedAgentEvent =>
+    ev({ agentId: 'codex', kind: 'state', state: 'waiting', awaitingInput: true })
+
+  it('holds waiting through the turn-end done that follows an unanswered ask', () => {
+    const a = reduceEntry(undefined, ask(), 1000)
+    expect(a.state).toBe('waiting')
+    expect(a.awaitingInput).toBe(true)
+    const b = reduceEntry(a, ev({ agentId: 'codex', kind: 'state', state: 'done' }), 2000)
+    expect(b.state).toBe('waiting')
+    expect(b.awaitingInput).toBe(true)
+  })
+
+  it('the answer (a genuine new turn) releases the hold; the NEXT done lands normally', () => {
+    let e = reduceEntry(undefined, ask(), 1000)
+    e = reduceEntry(e, ev({ agentId: 'codex', kind: 'state', state: 'done' }), 2000)
+    e = reduceEntry(e, ev({ agentId: 'codex', kind: 'state', state: 'working', newTurn: true }), 3000)
+    expect(e.state).toBe('working')
+    expect(e.awaitingInput).toBeFalsy()
+    e = reduceEntry(e, ev({ agentId: 'codex', kind: 'state', state: 'done' }), 4000)
+    expect(e.state).toBe('done')
+  })
+
+  it('an interrupt clears the ask (the user was right there)', () => {
+    const a = reduceEntry(undefined, ask(), 1000)
+    const b = reduceEntry(
+      a,
+      ev({ agentId: 'codex', kind: 'state', state: 'done', interrupted: true }),
+      2000
+    )
+    expect(b.state).toBe('done')
+    expect(b.awaitingInput).toBeFalsy()
+  })
+
+  it('other tool activity supersedes the ask', () => {
+    const a = reduceEntry(undefined, ask(), 1000)
+    const b = reduceEntry(a, ev({ agentId: 'codex', kind: 'state', state: 'working' }), 2000)
+    expect(b.awaitingInput).toBeFalsy()
+    const c = reduceEntry(b, ev({ agentId: 'codex', kind: 'state', state: 'done' }), 3000)
+    expect(c.state).toBe('done')
+  })
+
+  it('a session boundary resets the hold', () => {
+    const a = reduceEntry(undefined, ask(), 1000)
+    const b = reduceEntry(a, ev({ agentId: 'codex', kind: 'session', sessionPhase: 'end' }), 2000)
+    expect(b.state).toBeUndefined()
+    expect(b.awaitingInput).toBeFalsy()
+  })
+})
+
+describe('recordAgentEvent — codex request_user_input broadcast conversion', () => {
+  let dir: string
+  let file: string
+
+  beforeEach(() => {
+    _resetForTest()
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-status-'))
+    file = path.join(dir, 'agent-status.json')
+    initAgentStatusMirror(file)
+  })
+
+  afterEach(() => {
+    _resetForTest()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('rewrites the held turn-end done to waiting, so every consumer agrees', () => {
+    recordAgentEvent(ev({ agentId: 'codex', state: 'waiting', awaitingInput: true }))
+    const out = recordAgentEvent(ev({ agentId: 'codex', state: 'done' }))
+    expect(out.state).toBe('waiting')
+    expect(_snapshot().n1.state).toBe('waiting')
+  })
+})

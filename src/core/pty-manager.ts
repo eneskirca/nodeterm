@@ -50,7 +50,47 @@ const SCROLLBACK_SNAPSHOT_MS = 15_000
 // Async exec for tmux side-calls (capture / send-keys / kill-session) so they never block
 // the main event loop — a synchronous capture-pane of a large scrollback would stall every
 // other session's PTY streaming and all IPC for its duration.
-const runAsync = promisify(execFile)
+const execFileAsync = promisify(execFile)
+
+/**
+ * How long any subprocess this manager runs may take before it is killed.
+ *
+ * `execFile` defaults to NO timeout, and every remote call here goes out over an SSH
+ * ControlMaster — where the failure that matters is not a slow answer but a socket whose far end
+ * is GONE. After a machine restart or a network flap the control socket FILE is still on disk, so
+ * `ssh -S <controlpath> …` connects to it and then waits forever on a multiplexed channel nobody
+ * is serving.
+ *
+ * That is what wedged a terminal (reported 2026-08-09, after a restart, on a reconnected SSH
+ * project): the create path probes the remote for an existing tmux session, that probe never
+ * returned, so `pty:create` never resolved — and the renderer wires `term.onData`, the KEYBOARD
+ * INPUT path, in the continuation that never ran. The node sat showing "[connecting to …]",
+ * accepted nothing, and came back only on Refresh, which re-runs the effect. One or two nodes,
+ * unpredictably: only the ones whose create raced the half-dead master.
+ *
+ * Generous, because a live-but-slow link must not be cut off — a `capture-pane` of a long
+ * scrollback over a distant host is legitimately slow. The point is a ceiling, not a deadline.
+ */
+const PROC_TIMEOUT_MS = 15_000
+
+/**
+ * Shorter for the probes an interactive spawn WAITS ON. `hasRemoteSession` only decides warm vs
+ * cold attach, and its timeout already degrades to the safe answer ("cannot probe" is not evidence
+ * of absence — see `probeSaysAbsent`), so a long stall buys nothing and costs the user a terminal
+ * that appears frozen for that whole time.
+ */
+const PROBE_TIMEOUT_MS = 6_000
+
+/**
+ * `execFile`, bounded. Wrapped HERE rather than at the call sites so a new one cannot forget: the
+ * bug this exists for was one unbounded call out of twenty, and the next unbounded call would be
+ * just as invisible. Callers may still pass their own `timeout` for the rare op that needs longer.
+ */
+const runAsync = ((file: string, args: readonly string[], opts?: object) =>
+  execFileAsync(file, args as string[], {
+    timeout: PROC_TIMEOUT_MS,
+    ...(opts ?? {})
+  } as never)) as unknown as typeof execFileAsync
 
 // Minimal tmux config so the user's ~/.tmux.conf never interferes. The tmux server
 // (under our socket) keeps sessions alive while no client is attached, which is what
@@ -938,7 +978,9 @@ export class PtyManager {
     const ssh = findSsh()
     if (!ssh) return true // can't probe → not evidence of absence; warm attach types nothing
     try {
-      await runAsync(ssh, remoteTmuxHasSessionArgs(sshRemote.conn, sshRemote.controlPath, sessionId))
+      await runAsync(ssh, remoteTmuxHasSessionArgs(sshRemote.conn, sshRemote.controlPath, sessionId), {
+        timeout: PROBE_TIMEOUT_MS
+      })
       return true
     } catch (e) {
       return !probeSaysAbsent(e)
@@ -972,7 +1014,9 @@ export class PtyManager {
   private async tmuxSessionExists(persistKey: string): Promise<boolean> {
     if (!this.tmuxPath) return false
     try {
-      await runAsync(this.tmuxPath, ['-L', TMUX_SOCKET, 'has-session', '-t', sessionName(persistKey)])
+      await runAsync(this.tmuxPath, ['-L', TMUX_SOCKET, 'has-session', '-t', sessionName(persistKey)], {
+        timeout: PROBE_TIMEOUT_MS
+      })
       return true
     } catch (e) {
       // Same discrimination as the remote probe: tmux's exit 1 (no session / no server —

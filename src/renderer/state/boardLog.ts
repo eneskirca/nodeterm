@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { BOARD_LOG_TEXT_MAX, type BoardLogEntry, type NodeTerminalApi } from '@shared/types'
 import { loadIdentity } from './presence'
+import { uuid } from '../lib/uuid'
 
 /**
  * Board-log store — the renderer view of a project's append-only board history
@@ -77,7 +78,7 @@ export const useBoardLog = create<BoardLogState>((set, get) => ({
         ? input.text.slice(0, BOARD_LOG_TEXT_MAX) + '…'
         : input.text
     const entry: BoardLogEntry = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       ts: Date.now(),
       author,
       kind: input.kind,

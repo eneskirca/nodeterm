@@ -17,6 +17,12 @@ export interface NormalizedAgentEvent {
   // move a node that is still `working` (see reduceEntry / the Canvas listener), because a
   // pending approval/question is also "idle at the prompt" and must not be cleared by it.
   idle?: boolean
+  // waiting only (Codex `request_user_input`): the turn ENDS (Stop fires) with this question
+  // still unanswered — the answer arrives as a fresh UserPromptSubmit, not a tool result — so
+  // reduceEntry must hold `waiting` through that turn-end `done` instead of letting it flip
+  // the node to a green "done" over a blocked session. Cleared by the next genuine turn, any
+  // other tool activity, an interrupt, or a session boundary (see reduceEntry).
+  awaitingInput?: boolean
   // true only for a genuine new turn (Claude UserPromptSubmit), so the renderer can
   // clear per-turn fan-out without clearing on every mid-turn tool event.
   newTurn?: boolean
@@ -250,12 +256,15 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
 }
 
 // Codex hook payload. Event name is read defensively; codex emits a session id under
-// `session_id`.
+// `session_id`. Tool events carry `tool_name`/`tool_input` (same shape as Claude's —
+// codex-rs/hooks serializes them on pre_tool_use/post_tool_use).
 interface CodexPayload {
   hook_event_name?: string
   hookEventName?: string
   session_id?: string
   prompt?: string
+  tool_name?: string
+  tool_input?: { prompt?: string; question?: string; questions?: { question?: string }[] }
 }
 
 export function normalizeCodex(env: RawHookEnvelope): NormalizedAgentEvent | null {
@@ -267,6 +276,24 @@ export function normalizeCodex(env: RawHookEnvelope): NormalizedAgentEvent | nul
   // per-turn fan-out once per turn, not on every tool event.
   if (ev === 'UserPromptSubmit') {
     return { ...base, kind: 'state', state: 'working', newTurn: true }
+  }
+  // `request_user_input` is Codex's ask-the-user tool, and it is NOT a blocking tool: the
+  // turn ENDS (Stop fires) with the question still unanswered, and the answer arrives as a
+  // fresh UserPromptSubmit. Mapping its tool-start to `working` left the node lit green as
+  // "done" while the agent sat on a question (observed live, codex-cli 0.145.0). Emit
+  // `waiting` + `awaitingInput` so reduceEntry can hold the ask through the turn-end Stop.
+  if (p.tool_name === 'request_user_input' && (ev === 'PreToolUse' || ev === 'PostToolUse')) {
+    // A PostToolUse for the ask itself (an immediate ack) must not clear the ask.
+    if (ev === 'PostToolUse') return null
+    const q = p.tool_input
+    const question = q?.questions?.[0]?.question ?? q?.question ?? q?.prompt
+    return {
+      ...base,
+      kind: 'state',
+      state: 'waiting',
+      awaitingInput: true,
+      ...(question ? { lastMessage: question } : {})
+    }
   }
   // SessionStart + tool events keep the node "working".
   if (ev === 'SessionStart' || ev === 'PreToolUse' || ev === 'PostToolUse') {

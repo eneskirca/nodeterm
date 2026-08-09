@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeClaude, normalizeFor, type RawHookEnvelope } from './normalize'
+import { normalizeClaude, normalizeCodex, normalizeFor, type RawHookEnvelope } from './normalize'
 
 function env(payload: Record<string, unknown>): RawHookEnvelope {
   return { nodeId: 'n1', agentId: 'claude', payload }
@@ -239,5 +239,42 @@ describe('normalizeOpencode', () => {
 
   it('ignores unknown events', () => {
     expect(normalizeFor('opencode', ocEnv({ event: 'tui.toast.show' }))).toBeNull()
+  })
+})
+
+describe('normalizeCodex — request_user_input (ask-the-user)', () => {
+  function cenv(payload: Record<string, unknown>): RawHookEnvelope {
+    return { nodeId: 'n1', agentId: 'codex', payload }
+  }
+
+  it('PreToolUse(request_user_input) → waiting + awaitingInput, carrying the question', () => {
+    const e = normalizeCodex(
+      cenv({
+        hook_event_name: 'PreToolUse',
+        session_id: 's1',
+        tool_name: 'request_user_input',
+        tool_input: { questions: [{ question: 'Choose A or B?' }] }
+      })
+    )
+    expect(e).toMatchObject({
+      kind: 'state',
+      state: 'waiting',
+      awaitingInput: true,
+      lastMessage: 'Choose A or B?',
+      sessionId: 's1'
+    })
+  })
+
+  // The ask ends the turn; a PostToolUse for the ask itself is an immediate ack, not the
+  // user's answer (that arrives as a fresh UserPromptSubmit) — it must not clear the ask.
+  it('PostToolUse(request_user_input) → null (must not clear the ask)', () => {
+    const e = normalizeCodex(cenv({ hook_event_name: 'PostToolUse', tool_name: 'request_user_input' }))
+    expect(e).toBeNull()
+  })
+
+  it('other tool events still map to working, without the flag', () => {
+    const e = normalizeCodex(cenv({ hook_event_name: 'PreToolUse', tool_name: 'shell' }))
+    expect(e).toMatchObject({ kind: 'state', state: 'working' })
+    expect(e?.awaitingInput).toBeFalsy()
   })
 })

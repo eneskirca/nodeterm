@@ -6,6 +6,7 @@ import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
+import { uuid } from '@renderer/lib/uuid'
 
 const ROWS = {
   servers: {
@@ -44,7 +45,7 @@ export function SshSection({ isActive }: { isActive: boolean }): React.JSX.Eleme
       const fresh = withUser.filter((c) => !seen.has(key(c)))
       for (const c of fresh) {
         await useSshServers.getState().save({
-          id: crypto.randomUUID(),
+          id: uuid(),
           label: c.label,
           host: c.host,
           user: c.user as string,
@@ -206,7 +207,7 @@ export function SshSection({ isActive }: { isActive: boolean }): React.JSX.Eleme
               <Button
                 onClick={() =>
                   setSshDraft({
-                    id: crypto.randomUUID(),
+                    id: uuid(),
                     label: '',
                     host: '',
                     user: '',
