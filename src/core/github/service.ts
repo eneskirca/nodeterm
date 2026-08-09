@@ -78,6 +78,12 @@ type RepositoryState = {
   cacheGeneration: number
 }
 
+type RepositoryControl = {
+  generation: number
+  clearCutoff: number
+  deletion?: Promise<void>
+}
+
 function repositoryKey(context: GitHubIssueServiceContext): string {
   return `${context.userId}\0${context.repository}`
 }
@@ -136,6 +142,9 @@ export class GitHubIssueService {
   private readonly repositories = new Map<string, RepositoryState>()
   private readonly projectKeys = new Map<string, string>()
   private readonly issueChains = new Map<string, Promise<void>>()
+  private readonly repositoryControls = new Map<string, RepositoryControl>()
+  private readonly statePreparations = new Map<string, Set<Promise<RepositoryState>>>()
+  private operationSequence = 0
   private readonly now: () => number
   private readonly schedule: NonNullable<ServiceOptions['setInterval']>
   private readonly unschedule: NonNullable<ServiceOptions['clearInterval']>
@@ -157,12 +166,6 @@ export class GitHubIssueService {
     }
     subscribers.add(uiId)
     this.projectKeys.set(request.projectId, key)
-    if (!state.timer) {
-      state.timer = this.schedule(() => {
-        const projectId = state.subscribers.keys().next().value as string | undefined
-        if (projectId) void this.refresh({ projectId }).catch(() => undefined)
-      }, POLL_MS)
-    }
     if (firstSubscriber) {
       if (!state.snapshot && !state.partialIssues) {
         try { await this.refresh({ projectId: request.projectId }) } catch { /* offline cache remains readable */ }
@@ -170,6 +173,8 @@ export class GitHubIssueService {
         void this.refresh({ projectId: request.projectId }).catch(() => undefined)
       }
     }
+    const activeKey = this.projectKeys.get(request.projectId)
+    this.ensureTimer(activeKey ? this.repositories.get(activeKey) ?? state : state)
     return this.query({ projectId: request.projectId, columnId: null, pageSize: 50 })
   }
 
@@ -200,11 +205,23 @@ export class GitHubIssueService {
   }
 
   async refresh(request: { projectId: string; full?: boolean }): Promise<void> {
+    const operationId = ++this.operationSequence
     const captured = await this.options.contextForProject(request.projectId)
-    const state = await this.state(captured)
+    const control = this.repositoryControl(captured.repository)
+    if (control.deletion || operationId <= control.clearCutoff) return
+    const repositoryGeneration = control.generation
+    let state: RepositoryState
+    try {
+      state = await this.state(captured, operationId, repositoryGeneration)
+    } catch (error) {
+      if (error instanceof RepositoryClearedError) return
+      throw error
+    }
     if (state.refresh) return state.refresh
     const cacheGeneration = state.cacheGeneration
-    const work = this.refreshRepository(captured, state, request.full === true, cacheGeneration)
+    const work = this.refreshRepository(
+      captured, state, request.full === true, cacheGeneration, operationId, repositoryGeneration
+    )
     state.refresh = work
     try { await work } finally { if (state.refresh === work) delete state.refresh }
   }
@@ -262,10 +279,18 @@ export class GitHubIssueService {
     toColumnId: string | null
     expectedUpdatedAt: string
   }): Promise<GitHubMutationResult> {
+    const operationId = ++this.operationSequence
     return mutationChain(this.issueChains, `${request.projectId}:${request.issueNumber}`, async () => {
       const captured = await this.options.contextForProject(request.projectId)
       const capturedEpoch = epoch(captured)
-      const state = await this.state(captured)
+      const repositoryGeneration = this.repositoryControl(captured.repository).generation
+      let state: RepositoryState
+      try {
+        state = await this.state(captured, operationId, repositoryGeneration)
+      } catch (error) {
+        if (error instanceof RepositoryClearedError) return { status: 'read-only' }
+        throw error
+      }
       const cacheGeneration = state.cacheGeneration
       if (state.incomplete || !state.snapshot || !captured.config.completionColumnId) {
         return { status: 'read-only' }
@@ -281,7 +306,10 @@ export class GitHubIssueService {
         .catch((error: unknown) => error instanceof ConfigurationChangedError ? null : Promise.reject(error))
       if (!latest) return { status: 'configuration-changed' }
       if (latest.updatedAt !== request.expectedUpdatedAt) {
-        if (cacheGeneration !== state.cacheGeneration) return { status: 'stale', issue: latest }
+        if (cacheGeneration !== state.cacheGeneration ||
+            !this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration)) {
+          return { status: 'stale', issue: latest }
+        }
         state.snapshot = {
           ...state.snapshot,
           issues: state.snapshot.issues.map((item) => item.number === latest.number ? latest : item)
@@ -332,6 +360,9 @@ export class GitHubIssueService {
       if (cacheGeneration !== state.cacheGeneration) {
         return { status: 'refresh-pending', issue: updated }
       }
+      if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration)) {
+        return { status: 'refresh-pending', issue: updated }
+      }
       const snapshot = state.snapshot ?? {
         issues: [], etags: {}, lastSuccessfulRefreshAt: this.now(), lastFullReconciliationAt: 0
       }
@@ -351,9 +382,20 @@ export class GitHubIssueService {
   }
 
   async createMissingLabels(request: { projectId: string }): Promise<CreateMappedLabelsResult> {
+    const operationId = ++this.operationSequence
     const captured = await this.options.contextForProject(request.projectId)
     const capturedEpoch = epoch(captured)
-    const state = await this.state(captured)
+    const repositoryGeneration = this.repositoryControl(captured.repository).generation
+    let state: RepositoryState
+    try {
+      state = await this.state(captured, operationId, repositoryGeneration)
+    } catch (error) {
+      if (error instanceof RepositoryClearedError) {
+        return { status: 'read-only', created: [], remaining:
+          captured.config.columnMappings.map((item) => item.label) }
+      }
+      throw error
+    }
     if (state.incomplete || !captured.config.completionColumnId) {
       return {
         status: 'read-only',
@@ -445,42 +487,78 @@ export class GitHubIssueService {
   }
 
   async clearCache(request: { projectId: string }): Promise<void> {
+    const clearOperationId = ++this.operationSequence
     const context = this.options.projectContextForCacheDeletion
       ? await this.options.projectContextForCacheDeletion(request.projectId)
       : await this.cacheContext(request.projectId)
-    const affected: RepositoryState[] = []
-    for (const [key, state] of this.repositories) {
-      if (key.endsWith(`\0${context.repository}`) ||
-          key === `unbound:${context.localApprovalId}\0${context.repository}`) {
+    const control = this.repositoryControl(context.repository)
+    if (control.deletion) await control.deletion
+    let finishDeletion!: () => void
+    const deletion = new Promise<void>((resolve) => { finishDeletion = resolve })
+    control.clearCutoff = Math.max(control.clearCutoff, clearOperationId)
+    control.generation += 1
+    control.deletion = deletion
+    try {
+      const affected = this.repositoryStates(context.localApprovalId, context.repository)
+      for (const state of affected) state.cacheGeneration += 1
+      const mutations = [...this.issueChains.entries()]
+        .filter(([key]) => key.startsWith(`${request.projectId}:`))
+        .map(([, work]) => work)
+      await Promise.allSettled([
+        ...this.statePreparations.get(context.repository) ?? [],
+        ...affected.flatMap((state) => state.refresh ? [state.refresh] : []),
+        ...mutations
+      ])
+      await this.options.cache.clearBound(context.localApprovalId, context.projectId, context.repository)
+      for (const state of this.repositoryStates(context.localApprovalId, context.repository)) {
         state.cacheGeneration += 1
-        affected.push(state)
+        state.snapshot = undefined
+        state.partialIssues = undefined
+        state.incomplete = false
+        this.emitDelta(state, [], true)
       }
-    }
-    const mutations = [...this.issueChains.entries()]
-      .filter(([key]) => key.startsWith(`${request.projectId}:`))
-      .map(([, work]) => work)
-    await Promise.allSettled([
-      ...affected.flatMap((state) => state.refresh ? [state.refresh] : []),
-      ...mutations
-    ])
-    await this.options.cache.clearBound(context.localApprovalId, context.projectId, context.repository)
-    for (const state of affected) {
-      state.snapshot = undefined
-      state.partialIssues = undefined
-      state.incomplete = false
+    } finally {
+      if (control.deletion === deletion) delete control.deletion
+      finishDeletion()
     }
   }
 
-  private async state(context: GitHubIssueServiceContext): Promise<RepositoryState> {
+  private state(
+    context: GitHubIssueServiceContext,
+    operationId: number,
+    repositoryGeneration: number
+  ): Promise<RepositoryState> {
+    const work = this.prepareState(context, operationId, repositoryGeneration)
+    let preparations = this.statePreparations.get(context.repository)
+    if (!preparations) {
+      preparations = new Set()
+      this.statePreparations.set(context.repository, preparations)
+    }
+    preparations.add(work)
+    void work.finally(() => {
+      preparations!.delete(work)
+      if (preparations!.size === 0) this.statePreparations.delete(context.repository)
+    }).catch(() => undefined)
+    return work
+  }
+
+  private async prepareState(
+    context: GitHubIssueServiceContext,
+    operationId: number,
+    repositoryGeneration: number
+  ): Promise<RepositoryState> {
+    this.assertRepositoryWriteAllowed(context.repository, operationId, repositoryGeneration)
     await this.options.cache.bind(
       context.localApprovalId, context.projectId, context.repository, context.userId
     )
+    this.assertRepositoryWriteAllowed(context.repository, operationId, repositoryGeneration)
     const key = repositoryKey(context)
     const unboundKey = `unbound:${context.localApprovalId}\0${context.repository}`
     const unbound = this.repositories.get(unboundKey)
     let state = this.repositories.get(key)
     if (!state) {
       const cached = await this.options.cache.load(context.userId, context.repository)
+      this.assertRepositoryWriteAllowed(context.repository, operationId, repositoryGeneration)
       state = {
         snapshot: cached.lastComplete,
         partialIssues: cached.lastAttempt?.partialIssues,
@@ -500,11 +578,13 @@ export class GitHubIssueService {
         for (const uiId of subscribers) target.add(uiId)
       }
       if (unbound.timer) {
-        if (state.timer) this.unschedule(unbound.timer)
-        else state.timer = unbound.timer
+        this.unschedule(unbound.timer)
+        delete unbound.timer
       }
       this.repositories.delete(unboundKey)
+      this.ensureTimer(state)
     }
+    this.migrateProjectState(context.projectId, key, state)
     this.projectKeys.set(context.projectId, key)
     return state
   }
@@ -518,10 +598,15 @@ export class GitHubIssueService {
     key: string
     state: RepositoryState
   }> {
+    await this.waitForRepositoryDeletion(context.repository)
+    const repositoryGeneration = this.repositoryControl(context.repository).generation
     const userId = await this.options.cache.boundUserId(
       context.localApprovalId, context.projectId, context.repository
     )
     if (!userId) {
+      if (repositoryGeneration !== this.repositoryControl(context.repository).generation) {
+        return this.cachedState(context)
+      }
       const key = `unbound:${context.localApprovalId}\0${context.repository}`
       let state = this.repositories.get(key)
       if (!state) {
@@ -529,12 +614,18 @@ export class GitHubIssueService {
         this.repositories.set(key, state)
       }
       this.projectKeys.set(context.projectId, key)
+      if (repositoryGeneration !== this.repositoryControl(context.repository).generation) {
+        return this.cachedState(context)
+      }
       return { key, state }
     }
     const key = `${userId}\0${context.repository}`
     let state = this.repositories.get(key)
     if (!state) {
       const cached = await this.options.cache.load(userId, context.repository)
+      if (repositoryGeneration !== this.repositoryControl(context.repository).generation) {
+        return this.cachedState(context)
+      }
       state = {
         snapshot: cached.lastComplete,
         partialIssues: cached.lastAttempt?.partialIssues,
@@ -545,6 +636,9 @@ export class GitHubIssueService {
       this.repositories.set(key, state)
     }
     this.projectKeys.set(context.projectId, key)
+    if (repositoryGeneration !== this.repositoryControl(context.repository).generation) {
+      return this.cachedState(context)
+    }
     return { key, state }
   }
 
@@ -552,7 +646,9 @@ export class GitHubIssueService {
     captured: GitHubIssueServiceContext,
     state: RepositoryState,
     forceFull: boolean,
-    cacheGeneration: number
+    cacheGeneration: number,
+    operationId: number,
+    repositoryGeneration: number
   ): Promise<void> {
     const refreshStartedAt = this.now()
     const full = forceFull || !state.snapshot ||
@@ -562,7 +658,8 @@ export class GitHubIssueService {
     let page = 1
     const etags: Record<string, string> = {}
     while (true) {
-      if (cacheGeneration !== state.cacheGeneration ||
+      if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration) ||
+          cacheGeneration !== state.cacheGeneration ||
           epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
       const since = !full && previous?.lastSuccessfulRefreshAt
         ? new Date(Math.max(0, previous.lastSuccessfulRefreshAt - 2_000)).toISOString()
@@ -581,7 +678,8 @@ export class GitHubIssueService {
       }
       if (byNumber.size > MAX_ISSUES) {
         await this.incomplete(
-          captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES), cacheGeneration
+          captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES),
+          cacheGeneration, operationId, repositoryGeneration
         )
         return
       }
@@ -590,10 +688,13 @@ export class GitHubIssueService {
     }
     const issues = [...byNumber.values()]
     if (Buffer.byteLength(JSON.stringify(issues), 'utf-8') > MAX_CACHE_BYTES) {
-      await this.incomplete(captured, state, 'byte-limit', issues, cacheGeneration)
+      await this.incomplete(
+        captured, state, 'byte-limit', issues, cacheGeneration, operationId, repositoryGeneration
+      )
       return
     }
-    if (cacheGeneration !== state.cacheGeneration ||
+    if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration) ||
+        cacheGeneration !== state.cacheGeneration ||
         epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
     const snapshot: GitHubCompleteSnapshot = {
       issues,
@@ -603,8 +704,10 @@ export class GitHubIssueService {
         ? refreshStartedAt
         : previous?.lastFullReconciliationAt ?? refreshStartedAt
     }
+    if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration)) return
     await this.options.cache.saveComplete(captured.userId, captured.repository, snapshot)
-    if (cacheGeneration !== state.cacheGeneration) return
+    if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration) ||
+        cacheGeneration !== state.cacheGeneration) return
     const oldNumbers = new Map((previous?.issues ?? []).map((item) => [item.number, item.updatedAt]))
     const nextNumbers = new Set(issues.map((item) => item.number))
     const changed = [
@@ -623,6 +726,87 @@ export class GitHubIssueService {
     let count = 0
     for (const subscribers of state.subscribers.values()) count += subscribers.size
     return count
+  }
+
+  private ensureTimer(state: RepositoryState): void {
+    if (state.timer || this.subscriberCount(state) === 0) return
+    state.timer = this.schedule(() => this.poll(state), POLL_MS)
+  }
+
+  private async poll(state: RepositoryState): Promise<void> {
+    for (const projectId of [...state.subscribers.keys()]) {
+      try {
+        await this.refresh({ projectId })
+        return
+      } catch {
+        // Another approved project may still provide a valid context for the shared repository.
+      }
+    }
+  }
+
+  private migrateProjectState(projectId: string, key: string, target: RepositoryState): void {
+    const previousKey = this.projectKeys.get(projectId)
+    if (!previousKey || previousKey === key) return
+    const previous = this.repositories.get(previousKey)
+    const subscribers = previous?.subscribers.get(projectId)
+    if (!previous || !subscribers) return
+    let destination = target.subscribers.get(projectId)
+    if (!destination) {
+      destination = new Set()
+      target.subscribers.set(projectId, destination)
+    }
+    for (const uiId of subscribers) destination.add(uiId)
+    previous.subscribers.delete(projectId)
+    if (this.subscriberCount(previous) === 0 && previous.timer) {
+      this.unschedule(previous.timer)
+      delete previous.timer
+    }
+    this.ensureTimer(target)
+  }
+
+  private repositoryControl(repository: string): RepositoryControl {
+    let control = this.repositoryControls.get(repository)
+    if (!control) {
+      control = { generation: 0, clearCutoff: 0 }
+      this.repositoryControls.set(repository, control)
+    }
+    return control
+  }
+
+  private repositoryWriteAllowed(
+    repository: string,
+    operationId: number,
+    repositoryGeneration: number
+  ): boolean {
+    const control = this.repositoryControl(repository)
+    return !control.deletion && operationId > control.clearCutoff &&
+      repositoryGeneration === control.generation
+  }
+
+  private assertRepositoryWriteAllowed(
+    repository: string,
+    operationId: number,
+    repositoryGeneration: number
+  ): void {
+    if (!this.repositoryWriteAllowed(repository, operationId, repositoryGeneration)) {
+      throw new RepositoryClearedError()
+    }
+  }
+
+  private async waitForRepositoryDeletion(repository: string): Promise<void> {
+    while (this.repositoryControl(repository).deletion) {
+      await this.repositoryControl(repository).deletion
+    }
+  }
+
+  private repositoryStates(localApprovalId: string, repository: string): RepositoryState[] {
+    const states: RepositoryState[] = []
+    for (const [key, state] of this.repositories) {
+      if (key.endsWith(`\0${repository}`) || key === `unbound:${localApprovalId}\0${repository}`) {
+        states.push(state)
+      }
+    }
+    return states
   }
 
   private readWithEpoch<T>(captured: GitHubIssueServiceContext, operation: () => Promise<T>): Promise<T> {
@@ -664,15 +848,19 @@ export class GitHubIssueService {
     state: RepositoryState,
     reason: 'issue-limit' | 'byte-limit',
     issues: GitHubIssue[],
-    cacheGeneration: number
+    cacheGeneration: number,
+    operationId: number,
+    repositoryGeneration: number
   ): Promise<void> {
-    if (cacheGeneration !== state.cacheGeneration) return
+    if (!this.repositoryWriteAllowed(context.repository, operationId, repositoryGeneration) ||
+        cacheGeneration !== state.cacheGeneration) return
     await this.options.cache.saveIncompleteAttempt(context.userId, context.repository, {
       reason,
       observedAt: this.now(),
       ...(!state.snapshot ? { partialIssues: issues } : {})
     })
-    if (cacheGeneration !== state.cacheGeneration) return
+    if (!this.repositoryWriteAllowed(context.repository, operationId, repositoryGeneration) ||
+        cacheGeneration !== state.cacheGeneration) return
     if (!state.snapshot) state.partialIssues = issues
     state.incomplete = true
     this.emitDelta(state, [], true)
@@ -680,3 +868,4 @@ export class GitHubIssueService {
 }
 
 class ConfigurationChangedError extends Error {}
+class RepositoryClearedError extends Error {}

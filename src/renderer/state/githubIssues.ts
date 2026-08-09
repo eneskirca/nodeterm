@@ -34,6 +34,52 @@ interface GitHubIssuesState {
 const keyFor = (columnId: string | null): string => columnId ?? 'ungrouped'
 let nextConnectionGeneration = 0
 
+type HostSubscription = {
+  api: GitHubIssuesApi
+  refs: number
+  subscribed: boolean
+  pending?: Promise<void>
+}
+
+const hostSubscriptions = new Map<string, HostSubscription>()
+
+async function acquireHostSubscription(api: GitHubIssuesApi, projectId: string): Promise<() => void> {
+  let record = hostSubscriptions.get(projectId)
+  if (!record) {
+    record = { api, refs: 0, subscribed: false }
+    hostSubscriptions.set(projectId, record)
+  }
+  record.refs += 1
+  try {
+    if (!record.subscribed) {
+      if (!record.pending) {
+        const current = record
+        current.pending = current.api.subscribe(projectId).then(() => {
+          current.subscribed = true
+        }).finally(() => {
+          delete current.pending
+        })
+      }
+      await record.pending
+    }
+  } catch (error) {
+    record.refs -= 1
+    if (record.refs === 0 && hostSubscriptions.get(projectId) === record) {
+      hostSubscriptions.delete(projectId)
+    }
+    throw error
+  }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    record!.refs -= 1
+    if (record!.refs !== 0 || hostSubscriptions.get(projectId) !== record) return
+    hostSubscriptions.delete(projectId)
+    if (record!.subscribed) void record!.api.unsubscribe(projectId)
+  }
+}
+
 export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
   projects: {},
 
@@ -51,7 +97,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       }
     }))
     let live = true
-    let subscribed = false
+    let releaseHost: (() => void) | undefined
     const changed = api.onChanged(projectId, () => {
       if (live && ownsConnection()) void get().reload(api, projectId)
     })
@@ -59,8 +105,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       if (!live) return
       live = false
       changed()
+      releaseHost?.()
       if (!ownsConnection()) return
-      if (subscribed) void api.unsubscribe(projectId)
       set((state) => {
         if (state.projects[projectId]?.generation !== generation) return state
         const projects = { ...state.projects }
@@ -69,17 +115,16 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       })
     }
     try {
-      const ungrouped = await api.subscribe(projectId)
-      subscribed = true
+      releaseHost = await acquireHostSubscription(api, projectId)
       if (!ownsConnection()) {
         live = false
         changed()
-        if (!get().projects[projectId]) void api.unsubscribe(projectId)
+        releaseHost()
         return () => undefined
       }
       const loadGeneration = get().projects[projectId]?.loadGeneration ?? 0
-      const columnPages = await Promise.all(columns.map(async (columnId) => [
-        columnId,
+      const columnPages = await Promise.all([null, ...columns].map(async (columnId) => [
+        keyFor(columnId),
         await api.query({ projectId, columnId, pageSize: 50, labelFilter })
       ] as const))
       set((state) => state.projects[projectId]?.generation === generation &&
@@ -87,7 +132,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         projects: {
           ...state.projects,
           [projectId]: {
-            pages: { ungrouped, ...Object.fromEntries(columnPages) },
+            pages: Object.fromEntries(columnPages),
             columns,
             moving: state.projects[projectId]?.moving ?? {},
             issueStatus: state.projects[projectId]?.issueStatus ?? {},
@@ -114,6 +159,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
     if (!ownsConnection()) {
       live = false
       changed()
+      releaseHost?.()
       return () => undefined
     }
     return teardown
