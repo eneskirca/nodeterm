@@ -2,7 +2,7 @@
 
 **Date** 9 August 2026
 
-**Status** Approved conversational design awaiting written specification review
+**Status** Amended after Sol architecture review, awaiting final written specification review
 
 ## Purpose
 
@@ -37,6 +37,7 @@ The feature must feel native to nodeterm, work through the existing Electron and
 - Offer a write-only fine-grained personal access token as a fallback.
 - Prefer the GitHub CLI credential when both are available unless the user deliberately chooses the stored token.
 - Store that provider choice as non-secret app configuration with `auto`, `gh`, and `token` values. `auto` is the default and prefers `gh`.
+- Store provider choice in the machine-local `Settings` schema and expose all three values in the GitHub Issues settings section.
 - The token needs repository Metadata read and Issues read and write permissions. The UI must explain that repository permission is also required for labels, assignees, and milestones.
 - A dedicated GitHub App device login is a future enhancement. GitHub recommends device flow for desktop applications [2].
 
@@ -48,12 +49,17 @@ The feature must feel native to nodeterm, work through the existing Electron and
 - Renaming a Kanban column does not silently rename a repository-wide GitHub label.
 - A user may update the mapping deliberately in Settings.
 - A confirmed `Create missing labels` action creates absent mapped labels. Routine sync never creates, renames, or deletes repository labels.
-- Adding a Kanban column while integration is enabled creates a suggested local mapping from its title. GitHub issue movement to that column remains disabled until its repository label exists.
+- Adding a Kanban column while this machine has approved the integration creates a suggested local mapping from its title. GitHub issue movement to that column remains disabled until its repository label exists.
 - Deleting a Kanban column removes its mapping. Deleting the completion column marks configuration incomplete, places closed issues in `Ungrouped`, and disables GitHub mutations until another completion column is selected.
+- Closing through nodeterm removes every other mapped label, applies the completion label, and closes the issue in one update.
+- Closed state overrides mapped labels for placement. A closed issue always appears in the completion column.
+- An externally reopened issue that retains the completion label appears in `Ungrouped` as a state-label conflict. Nodeterm does not mutate it automatically.
+- Resolving a state-label conflict through `Move to` removes every mapped label, applies the chosen non-completion label, and keeps the issue open.
 
 ### Board placement
 
-- An open issue with exactly one mapped label appears in that column.
+- An open issue with exactly one mapped non-completion label appears in that column.
+- An open issue carrying the completion label appears in `Ungrouped` with a state-label conflict.
 - An open issue with no mapped label appears in `Ungrouped`.
 - An open issue with multiple mapped labels appears in `Ungrouped` with a conflict warning.
 - A closed issue appears in the completion column.
@@ -61,6 +67,7 @@ The feature must feel native to nodeterm, work through the existing Electron and
 - Moving an issue to the completion column closes it and preserves unrelated labels.
 - Native session ordering remains unchanged.
 - GitHub issue cards sort by most recent `updated_at`, then descending issue number for a stable tie-break.
+- Within a mixed column, native session cards render first in their existing stable assignment order. GitHub issue cards follow in the order above. Source filtering never changes either source's internal order.
 
 ## User experience
 
@@ -73,7 +80,7 @@ The section shows
 - connection status and authenticated GitHub login without exposing a credential
 - a `Sign in with GitHub CLI` action using nodeterm's existing in-app terminal flow
 - a write-only token field with Save and Clear actions
-- the active project and its enabled state
+- the active project and this machine's approval state
 - detected repository and manual override
 - one label field per current Kanban column
 - completion-column selection
@@ -82,9 +89,11 @@ The section shows
 
 Configuration follows the active project. Switching project tabs and reopening Settings shows that project's mapping.
 
+Shared configuration never authorises network access. The first enable action on each machine creates a machine-local approval keyed by the local workspace entry, project id, and normalised repository. A repository change invalidates that approval. Opening a cloned or collaborator-supplied `.nodeterm/project.json` may display its proposed mapping, but it cannot use local credentials, read a private repository, or start polling until the local user confirms access.
+
 ### Board header
 
-When GitHub integration is enabled, the board header adds
+When this machine has approved the GitHub integration, the board header adds
 
 - `All`, `GitHub`, and `Sessions` source controls
 - last successful GitHub refresh time
@@ -92,6 +101,8 @@ When GitHub integration is enabled, the board header adds
 - rate-limit, authentication, stale-cache, or configuration warnings when relevant
 
 Column counts follow the active source filter. Existing label filtering continues to apply after source filtering.
+
+Local and GitHub labels occupy separate namespaces. Filter keys use `local:<labelId>` and `github:<normalisedLabelName>`. The picker groups them by source and shows a GitHub mark for GitHub labels, so equal display names never merge implicitly.
 
 ### GitHub issue card
 
@@ -132,9 +143,11 @@ The main pane holds body and discussion. A metadata sidebar holds status, labels
 
 ### Large repositories and narrow layouts
 
-- The issue service retains the complete validated issue set.
-- Each column initially renders a bounded recent slice and offers `Show more` without changing search or filter results.
-- Search and filters operate over the complete cached set.
+- The host issue service retains the complete validated issue set up to a documented support limit of 10,000 issues and a 64 MiB cache document.
+- Exceeding either limit produces an explicit `Repository too large` incomplete state. Existing validated cache remains readable, but mutations are disabled because the board cannot prove that it has the complete mapped-label set.
+- The renderer requests issue cards by column, filter, search query, cursor, and bounded page size. It never receives all issue bodies in one snapshot.
+- Each column initially requests 50 recent issues and offers `Show more`.
+- Search, counts, and filters execute against the complete host cache, not only the rendered page.
 - At 390px, columns retain the existing horizontally scrollable Kanban behaviour.
 - The source filter, non-drag movement control, refresh state, and issue modal remain fully usable at 390px.
 - Pointer drag is an enhancement. Every movement is also available through an accessible `Move to` control.
@@ -147,7 +160,6 @@ Extend `ProjectKanban` with optional non-secret GitHub configuration.
 
 ```ts
 export interface ProjectKanbanGitHub {
-  enabled: boolean
   repository?: string
   columnMappings: Array<{
     columnId: string
@@ -165,9 +177,37 @@ export interface ProjectKanban {
 }
 ```
 
-This configuration is shared through `.nodeterm/project.json`. Credentials, issue snapshots, comments, ETags, refresh metadata, provisional mutations, and safe errors are not.
+This proposed mapping is shared through `.nodeterm/project.json`. Local authorisation is not. Extend machine-local `Settings` with the provider choice and approvals.
 
-Readers validate every field defensively. A malformed GitHub block disables the integration without dropping the rest of the Kanban. A missing mapping degrades that issue to `Ungrouped`.
+```ts
+export interface GitHubProjectApproval {
+  projectId: string
+  repository: string
+  enabled: boolean
+  approvedAt: number
+}
+
+export interface Settings {
+  githubAuthProvider: 'auto' | 'gh' | 'token'
+  githubIssueApprovals: GitHubProjectApproval[]
+}
+```
+
+Credentials, approvals for other machines, issue snapshots, comments, ETags, refresh metadata, provisional mutations, and safe errors never enter the shared project file.
+
+One canonical `normaliseProjectKanbanGitHub` function validates every read and write. It
+
+- trims and validates `owner/repository`
+- bounds every label to GitHub's supported length and rejects empty names
+- compares labels by trimmed Unicode-normalised case-folded name
+- requires unique column ids and unique normalised labels
+- removes mappings to unknown columns
+- accepts a completion id only when it names a live mapped column
+- returns explicit readiness errors rather than silently inventing a winner
+
+Every board transform must preserve unrelated `ProjectKanban` properties with object spread. Column addition and deletion update mappings through the same normaliser. Round-trip tests cover old project files, malformed shared input, every board transform, duplicate mappings, case variants, unknown columns, and invalid completion ids.
+
+Readers validate every field defensively. A malformed GitHub block disables the integration without dropping the rest of the Kanban. A missing mapping degrades that issue to `Ungrouped`. A repository change invalidates its machine-local approval before any request is made.
 
 ### Credential resolver
 
@@ -181,7 +221,19 @@ Resolution order
 
 The renderer may save, clear, select, and query credential presence. It may never read a token. The service must redact bearer values and token-like query parameters from every error before logging or returning it.
 
-Electron stores a pasted token encrypted with `safeStorage` when available. If a supported OS keyring is temporarily locked, the intact encrypted value is not overwritten. Server Edition and systems without available encryption use an atomic `0600` restricted file after explicit warning. Clearing a token removes the credential file but does not change the GitHub CLI login.
+Electron stores a pasted token encrypted with `safeStorage` only when encryption is available and `safeStorage.getSelectedStorageBackend()` does not report `basic_text`. Electron documents `basic_text` as an unprotected Linux fallback [6]. If a supported OS keyring is temporarily locked, the intact encrypted value is not overwritten. Server Edition, `basic_text`, and systems without available encryption use an atomic `0600` restricted file after explicit warning. Clearing a token removes the credential file but does not change the GitHub CLI login.
+
+### Execution locality
+
+| Project surface | Repository detection | Credential, cache, and GitHub HTTP | Approval authority |
+|---|---|---|---|
+| Local Electron project | Local Git service | Electron host | Main local window only |
+| Server Edition project | Server Git service | Server host | Authenticated server settings client |
+| Relay-hosted project | Relay host core service | Relay host | Host owner's local settings only |
+| Electron-managed SSH project | Existing remote Git executor reads the SSH repository remote | Electron host, using the desktop user's GitHub identity | Main local window only |
+| Inline project without a working directory | Manual repository override | Owning Electron or Server host | Owning host's settings client |
+
+The GitHub issue data namespace is core-bound, so a relay tab reads and mutates through the relay host. Credential Save, Clear, provider selection, and first-use approval remain host-control operations and are not callable by a relay peer. An already approved relay-hosted project may expose its bounded issue operations to authorised peers while its credential remains on the host. Electron-managed SSH support deliberately keeps the GitHub token off the SSH host. A future SSH-host credential mode would be a separate design.
 
 ### GitHub issues client
 
@@ -197,7 +249,10 @@ Create a focused REST client rather than a general arbitrary-URL proxy. It owns
 - response-size and collection-count bounds
 - runtime response validation
 - rate-limit interpretation and backoff
+- bounded manual redirect handling
 - safe error conversion
+
+Redirects are followed manually for at most three hops. Every target must remain HTTPS on `api.github.com`. The client refuses a cross-host or protocol-changing redirect and never forwards authorisation to another origin.
 
 Its interface exposes issue-domain methods only.
 
@@ -207,18 +262,20 @@ interface GitHubIssuesClient {
   getIssue(repository: string, issueNumber: number): Promise<GitHubIssue>
   createIssue(repository: string, input: CreateIssueInput): Promise<GitHubIssue>
   updateIssue(repository: string, issueNumber: number, input: UpdateIssueInput): Promise<GitHubIssue>
-  listComments(repository: string, issueNumber: number): Promise<GitHubComment[]>
+  listComments(repository: string, issueNumber: number, page: PageRequest): Promise<CommentPageResult>
   createComment(repository: string, issueNumber: number, body: string): Promise<GitHubComment>
-  updateComment(repository: string, commentId: number, body: string): Promise<GitHubComment>
-  deleteComment(repository: string, commentId: number): Promise<void>
-  listRepositoryLabels(repository: string): Promise<GitHubLabel[]>
+  updateComment(repository: string, issueNumber: number, commentId: number, body: string): Promise<GitHubComment>
+  deleteComment(repository: string, issueNumber: number, commentId: number): Promise<void>
+  listRepositoryLabels(repository: string, page: PageRequest): Promise<LabelPageResult>
   createLabel(repository: string, input: CreateLabelInput): Promise<GitHubLabel>
-  listAssignees(repository: string): Promise<GitHubUser[]>
-  listMilestones(repository: string): Promise<GitHubMilestone[]>
+  listAssignees(repository: string, page: PageRequest): Promise<UserPageResult>
+  listMilestones(repository: string, page: PageRequest): Promise<MilestonePageResult>
   lockIssue(repository: string, issueNumber: number): Promise<void>
   unlockIssue(repository: string, issueNumber: number): Promise<void>
 }
 ```
+
+Comment updates and deletes carry project id and issue number through the service boundary. Before mutation, the host fetches the comment or uses a trusted fresh cached record, validates that its `issue_url` belongs to the expected repository and issue, and enters the same repository-plus-issue mutation chain. Comment id alone is never sufficient authority [5].
 
 GitHub's issue API supports the core issue, label, assignee, milestone, comment, and lock operations in scope [1].
 
@@ -227,29 +284,40 @@ GitHub's issue API supports the core issue, label, assignee, milestone, comment,
 The issue service owns
 
 - per-repository cache loading and atomic persistence
-- one in-flight refresh per repository
+- one in-flight refresh and one poll schedule per repository
+- subscription reference counting across attached Electron, Server Edition, and relay clients
 - one serial mutation chain per issue
 - full and incremental refresh scheduling
 - mapping issues to Kanban columns
 - provisional mutation state
 - post-mutation verification
-- broadcasting bounded snapshots through the platform seam
+- paged card queries, full-cache search, and bounded change broadcasts through the platform seam
 
 The service accepts injected credential, client, clock, and storage dependencies. Core tests therefore perform no network or keyring access.
+
+The first visible subscriber starts the repository poll and the last unsubscribe stops it. Multiple clients share the same timer and in-flight refresh. Refresh completion broadcasts changed issue ids, totals, readiness, and timing only. Renderers requery affected visible pages rather than receiving the entire repository.
 
 ### Renderer state
 
 Renderer state is keyed by project id and contains
 
-- validated issue summaries
+- bounded visible issue pages and per-column cursors
+- complete counts and active query metadata returned by the host
 - connection and configuration readiness
 - last successful refresh
+- last full reconciliation time
 - current refresh and rate-limit state
 - provisional mutations
 - bounded safe error
 - in-memory comments for the open issue only
 
 Comments are fetched when a modal opens and are not persisted to disk. Closing the modal may keep them only for a short in-memory time-to-live.
+
+### Remote media
+
+The renderer never loads GitHub media directly. The host may fetch assignee avatars only from validated `https://avatars.githubusercontent.com` URLs returned in authenticated GitHub user objects. It requests a small display size, accepts only supported image MIME types, enforces a 128 KiB response limit, caches the result briefly in memory, and exposes a bounded data URL through the issue view model. Failure falls back to the existing initials avatar.
+
+Markdown images in issue bodies and comments render as labelled links rather than remote images in this release. Ordinary links are sanitised, limited to safe schemes, and opened through the existing external-link boundary. This preserves the current renderer CSP and the host-only network rule.
 
 ### Components
 
@@ -264,16 +332,18 @@ Comments are fetched when a modal opens and are not persisted to disk. Closing t
 
 ### Initial load and refresh
 
-1. Opening the Kanban reads the machine-local cache and renders it immediately.
-2. If configuration and authentication are ready, the service starts a refresh.
-3. An empty or older-than-24-hours cache receives a complete `state=all` paginated refresh.
-4. A recent cache receives an incremental refresh from the last successful timestamp.
-5. Conditional requests use stored ETags where the request identity is stable. Correctly authenticated `304` responses do not count against the primary REST limit [3].
-6. Valid issues merge by repository and issue number.
-7. Pull-request records are discarded before reaching the cache or renderer.
-8. The service persists the validated cache atomically and broadcasts the new snapshot.
+1. Opening the Kanban validates shared configuration and checks machine-local approval before reading even a private local cache.
+2. An approved project reads the machine-local cache and renders the first bounded pages immediately.
+3. If configuration and authentication are ready, the host service records a configuration epoch containing project id, normalised repository, mapping revision, and authenticated GitHub user id, then starts a refresh.
+4. An empty cache or a cache whose separate `lastFullReconciliationAt` is older than 24 hours receives a complete `state=all` paginated refresh.
+5. A recent full cache receives an incremental refresh using `since = lastSuccessfulRefreshAt - 2 seconds`. Results merge by issue number and `updated_at`, so the overlap is harmless and second-resolution boundary updates are not lost.
+6. Conditional requests use stored ETags where the request identity is stable. The ETag key includes normalised repository, endpoint, API version, complete query, page, and authenticated GitHub user id. It never includes credential material. Correctly authenticated `304` responses do not count against the primary REST limit [3].
+7. Valid issues merge by repository and issue number.
+8. Pull-request records are discarded before reaching the cache or renderer.
+9. Before applying results, the service compares the captured configuration epoch with the current epoch. A repository, mapping, approval, or identity change discards the stale result.
+10. The service persists the validated cache atomically and broadcasts bounded change metadata.
 
-While the Kanban is visible, refresh every 60 seconds. Refresh when the window regains focus after the snapshot is stale. Closing the board stops polling. A manual refresh forces a complete reconciliation, but only a complete successful fetch may remove cache entries no longer returned upstream.
+The first visible subscriber starts one host-owned 60-second poll per repository. Refresh also occurs when the owning window regains focus after the snapshot is stale. The last unsubscribe stops polling. A manual refresh forces a complete reconciliation. Only a complete successful fetch may remove cache entries no longer returned upstream, and only a complete successful fetch advances `lastFullReconciliationAt`.
 
 ### Mutation flow
 
@@ -301,32 +371,43 @@ For an open issue moved between non-completion columns
 4. Add the destination label.
 5. Send the resulting label set in one issue update.
 
-Moving to completion also sets state to closed. Moving out of completion sets state to open and applies the destination mapping. An open conflict card may be resolved by choosing one destination, which removes all other mapped labels.
+Moving to completion performs the same preservation and mapped-label replacement, applies the completion label, and sets state to closed in one issue update. Moving out of completion sets state to open, removes the completion and every other mapped label, and applies the destination mapping. An externally reopened issue that still carries the completion label remains an `Ungrouped` conflict until a user chooses a non-completion destination. Closed state always wins placement, even when the issue has no completion label or has stale mapped labels.
+
+### Issue creation and mapped-label setup
+
+The board header offers `New GitHub issue`, defaulting to the first mapped non-completion column. Each non-completion column also offers `New GitHub issue here`. Creation in the completion column is disabled because GitHub's create endpoint creates an open issue and a second close request would introduce a partial-write state.
+
+The create request sends title, body, destination mapped label, selected ordinary labels, assignees, and milestone in one GitHub operation. It is disabled until the destination label exists. If GitHub confirms creation but local cache persistence fails, the confirmed issue number is retained in memory as `Refresh pending` and the create request is never repeated automatically.
+
+`Create missing labels` lists every exact pending label and colour in its confirmation. Each label colour derives from the mapped Kanban column's six-digit hex colour without `#`; an invalid or non-hex column colour uses the fixed fallback `8b5cf6`. The action relists repository labels before every create, compares names case-insensitively, and treats an already-created match as success. Partial completion reports exactly which labels were created and which remain.
 
 ## Cache and retention
 
 - Store one cache document per repository under the host's nodeterm user-data directory.
 - Derive filenames from a stable hash rather than raw repository text.
 - Create and replace cache files atomically with mode `0600` because issue bodies may contain private project information.
-- Store bounded issue fields, ETags, last refresh time, and rate-limit metadata.
+- Store bounded issue fields, identity-scoped ETags, last incremental and full refresh times, and rate-limit metadata.
 - Do not store comments, credentials, raw HTTP bodies, arbitrary response headers, provisional changes, or stack traces.
 - `Clear cached GitHub data` removes the active repository cache after confirmation.
-- Disabling the integration stops network activity but retains the cache until the user clears it.
+- Revoking this machine's approval stops network activity and cache reads for that project but retains the cache until the user clears it.
 
 ## Error handling
 
 | Failure | Behaviour |
 |---|---|
+| Shared configuration lacks local approval | No cache read, credential use, or network request until explicit local confirmation |
 | No GitHub authentication | Cached board remains read-only with a Settings action |
 | Token rejected | Clear authentication guidance without returning token material |
 | Repository unavailable or private without access | Cached board remains and configuration is marked unavailable |
 | Insufficient write permission | Mutation fails, confirmed card remains, and required permission is explained |
 | Network timeout | Cache remains with stale time and manual retry |
 | Malformed or oversized response | Reject that response and preserve the last valid cache |
+| Repository exceeds the 10,000 issue or 64 MiB support limit | Mark the cache incomplete, keep its validated portion read-only, and disable mutations |
 | Primary rate limit | Stop polling until `x-ratelimit-reset` |
 | Secondary rate limit | Honour `retry-after` or exponential backoff and stop after a bounded retry count |
 | Stale displayed issue | Refresh the card and require deliberate retry |
 | Multiple mapped labels | Show an `Ungrouped` conflict card and block implicit movement |
+| Open issue retains the completion label | Show an `Ungrouped` state-label conflict until an explicit non-completion move |
 | GitHub write rejected | Restore provisional UI and show persistent actionable error |
 | GitHub write confirmed but cache write fails | Show confirmed data with `Refresh pending` and do not repeat the mutation |
 | Project mapping becomes invalid | Disable sync for that project without damaging native Kanban data |
@@ -336,15 +417,20 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 ## Security and privacy
 
 - All GitHub network requests run in the trusted host process.
+- Shared project configuration is treated as untrusted input and cannot activate credentials, cache reads, or requests without the matching machine-local approval.
 - The renderer receives domain objects, never bearer credentials or arbitrary GitHub responses.
 - IPC validates project id, repository, issue number, comment id, collection sizes, text lengths, enum values, and URLs.
+- Comment edit and delete requests bind project, repository, issue number, and comment id, verify the trusted comment's `issue_url`, and use the issue mutation chain.
 - The client permits only `api.github.com` and validates canonical links against `github.com/<owner>/<repository>`.
+- Redirects remain bounded to HTTPS on `api.github.com`; authorisation is never forwarded across origins.
 - Repository configuration cannot become an arbitrary server-side request URL.
 - HTML and Markdown originating on GitHub are sanitised through the existing renderer boundary before display.
 - Issue titles, bodies, labels, comments, assignee names, and avatars render as untrusted data.
+- Avatars pass through the bounded host fetcher. Markdown images never load remotely in the renderer.
 - Logs may include repository, issue number, operation, HTTP status, and rate-limit timing. They may not include token values, request bodies, issue bodies, comments, authentication headers, or raw GitHub error payloads.
 - Credential status reports presence and provider only.
 - PAT input is cleared from component state immediately after Save.
+- Electron's `basic_text` safeStorage backend is treated as unavailable and triggers the explicit restricted-file warning.
 - The PAT is never written to `settings.json`, `.nodeterm/project.json`, the issue cache, tests, screenshots, recordings, or pull-request text.
 
 ## Testing strategy
@@ -352,28 +438,38 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 ### Unit tests
 
 - repository parsing for HTTPS, SSH, missing, malformed, non-GitHub, and overridden remotes
-- credential selection, write-only behaviour, locked keyring handling, restricted-file mode, migration, and redaction
+- machine-local approval, repository-change invalidation, and a hostile cloned project that cannot activate cache or network access
+- credential selection, persisted provider choice, write-only behaviour, locked keyring handling, `basic_text`, restricted-file mode, migration, and redaction
+- canonical mapping normalisation, duplicate column ids, case-variant labels, empty labels, unknown columns, invalid completion id, and property preservation through every board transform
 - issue, comment, label, assignee, and milestone response validation
-- pagination, Link headers, pull-request filtering, full and incremental refresh, ETags, `304`, timeouts, malformed JSON, and bounded responses
+- pagination, Link headers, pull-request filtering, periodic full reconciliation, overlapping incremental boundaries, identity-scoped ETags, `304`, epoch invalidation, timeouts, malformed JSON, and bounded responses
+- bounded same-host redirects and rejection of cross-host or protocol-changing redirects
 - primary and secondary rate-limit handling
-- status mapping for open, closed, unlabelled, single-labelled, and conflicting issues
+- status mapping for open, closed, unlabelled, single-labelled, mapped-label conflicts, and externally reopened completion-label conflicts
 - unrelated-label preservation and exact mapped-label replacement
-- close and reopen transitions
-- stable sorting and source filtering
+- completion-label close and reopen transitions
+- stable mixed-source ordering and namespaced local and GitHub label filtering
 - cache atomicity, mode, retention, and corrupt-file recovery
+- repository support-limit behaviour, paged queries, delta broadcasts, and one poll timer across multiple subscribers
+- comment-to-issue association checks and same-issue serialisation
+- avatar host validation, size and MIME limits, fallback initials, and blocked Markdown images
+- issue creation placement, disabled completion creation, missing-label colours, idempotent setup, and partial setup recovery
 - successful write followed by cache failure without duplicate mutation
 
 ### Renderer and DOM tests
 
 - Settings navigation and search entry
 - GitHub CLI, token-present, unauthenticated, keyring-warning, and insufficient-permission states
+- explicit first-use approval and repository-change reapproval
 - token field clears after Save and cannot read back a secret
 - project repository override and per-column mapping
 - label setup confirmation
 - mixed card rendering and `All`, `GitHub`, and `Sessions` filtering
+- grouped namespaced label filtering when local and GitHub labels share a display name
 - filtered column counts
 - cached, refreshing, stale, rate-limited, conflict, provisional, confirmed, and failed card states
 - pointer drag and non-drag movement parity
+- open-with-completion-label conflict resolution
 - keyboard access and focus restoration after movement
 - issue creation and editing
 - comment create, edit, delete, and pagination
@@ -386,6 +482,8 @@ GitHub warns that continued requests during a rate limit may lead to an integrat
 - WebSocket bridge contract
 - Server Edition handler contract
 - remote clients can invoke allowed issue operations while credentials remain host-only
+- local Electron, Server Edition, relay-hosted, Electron-managed SSH, and inline-project locality follow the execution matrix
+- relay peers cannot save credentials or grant first-use approval
 - settings and cache paths stay on the host that performs GitHub requests
 - no token appears in serialised RPC results or safe errors
 
@@ -429,22 +527,39 @@ Capture screenshots of
 
 Record a short pointer journey covering refresh, create, edit, comment, move, close, reopen, filtering, and failed-mutation rollback. Record or capture a keyboard-only journey for the essential actions.
 
-Attach compressed screenshots and recordings to the pull request or its test evidence. Do not commit large binary captures. These complement behavioural tests. A new cross-platform pixel-diff framework is outside this pull request because nodeterm has no current visual-regression harness and Electron font rendering would make an initial baseline noisy.
+Attach compressed screenshots and recordings to the relevant pull request or its test evidence. Do not commit large binary captures. These complement behavioural tests. A new cross-platform pixel-diff framework is outside this feature series because nodeterm has no current visual-regression harness and Electron font rendering would make an initial baseline noisy.
 
 ## Delivery
 
-Deliver one feature branch and one pull request with reviewable commits for
+Deliver the approved design as two independently reviewable pull requests. Both remain opt-in through machine-local approval.
 
-1. shared types and project configuration
+### Pull request 1
+
+Build the complete Kanban sync foundation and the core two-way board journey.
+
+1. shared configuration, canonical normalisation, and machine-local trust overlay
 2. credential storage and resolution
-3. GitHub client and cache
-4. issue service and platform bridges
-5. Settings
-6. board cards and source filtering
-7. issue modal and mutations
-8. accessibility, responsive behaviour, documentation, and verification
+3. GitHub client, cache, paging, reconciliation, and host-owned subscriptions
+4. Electron, Server Edition, relay, and SSH locality contracts
+5. GitHub Settings
+6. read-only issue cards, counts, search, namespaced filters, and source filtering
+7. mapped-label setup, drag and `Move to`, conflict resolution, close, and reopen
+8. accessibility, responsive behaviour, documentation, screenshots, recording, and verification
 
-The per-project enable switch keeps the integration opt-in. The pull-request description records authentication behaviour, required permissions, cache retention, best-effort conflict limits, automated checks, live verification boundary, and visual evidence.
+This pull request satisfies the original two-way Kanban requirement without also asking reviewers to approve the full issue-discussion editor. Opening a card provides its safe summary, movement controls, and canonical GitHub link.
+
+### Pull request 2
+
+Build the full issue modal on the reviewed foundation.
+
+1. issue creation in mapped non-completion columns
+2. title and Markdown body editing
+3. paged comments with create, edit, and delete
+4. labels, assignees, milestone, state reason, and lock controls
+5. remote avatar handling and Markdown media restrictions
+6. complete modal accessibility, responsive behaviour, screenshots, recording, and live verification
+
+Pull request 2 starts only after pull request 1 is reviewed and merged. Each description records authentication behaviour, required permissions, cache retention, best-effort conflict limits, automated checks, live verification boundary, and visual evidence.
 
 ## Out of scope
 
@@ -463,17 +578,24 @@ The per-project enable switch keeps the integration opt-in. The pull-request des
 
 ## Completion evidence
 
-The feature is complete only when
+Pull request 1 is complete only when
 
-- every automated check passes from a fresh run
+- every foundation, trust, cache, paging, sync, mapping, and movement check passes from a fresh run
 - project configuration round-trips without damaging older project files
 - credentials never cross into shared or renderer-readable storage
-- all approved issue operations are verified with fixtures
 - a live GitHub read succeeds
-- a live write journey succeeds when an authorised test repository is available
+- a mapped-label move, close, and reopen journey succeeds when an authorised test repository is available
 - conflicts, rate limits, permission failures, network failures, and cache-write failures remain recoverable
-- pointer, keyboard, desktop, 390px, dark-theme, and light-theme evidence has been reviewed
+- pointer, keyboard, desktop, 390px, dark-theme, and light-theme evidence for Settings and the board has been reviewed
 - the pull-request diff contains no credentials, cache data, screenshots, recordings, or unrelated changes
+
+The full feature series is complete only when
+
+- every automated check passes from a fresh run
+- all approved issue operations are verified with fixtures
+- a live write journey succeeds when an authorised test repository is available
+- issue-modal pointer, keyboard, desktop, 390px, dark-theme, and light-theme evidence has been reviewed
+- both pull requests contain no credentials, cache data, screenshots, recordings, or unrelated changes
 
 ## References
 
@@ -481,3 +603,5 @@ The feature is complete only when
 2. GitHub. Generating a user access token for a GitHub App [Internet]. 2026 [cited 2026 Aug 9]. Available from: https://docs.github.com/en/enterprise-cloud@latest/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
 3. GitHub. Best practices for using the REST API [Internet]. 2026 [cited 2026 Aug 9]. Available from: https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
 4. GitHub. Rate limits for the REST API [Internet]. 2026 [cited 2026 Aug 9]. Available from: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2026-03-10
+5. GitHub. REST API endpoints for issue comments [Internet]. 2026 [cited 2026 Aug 9]. Available from: https://docs.github.com/en/rest/issues/comments?apiVersion=2026-03-10
+6. Electron. safeStorage [Internet]. 2026 [cited 2026 Aug 9]. Available from: https://www.electronjs.org/docs/latest/api/safe-storage
