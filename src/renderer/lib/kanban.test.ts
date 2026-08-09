@@ -47,9 +47,17 @@ describe('columns', () => {
     expect(moveColumn(board(), 'a', null).columns.map((c) => c.id)).toEqual(['b', 'a'])
   })
   it('deleteColumn drops the column AND its assignments (cards return to Ungrouped); unknown id no-op', () => {
-    const k = deleteColumn(board(), 'a')
+    const configured: ProjectKanban = {
+      ...board(),
+      github: {
+        repository: 'nodeterm/nodeterm',
+        columnMappings: [{ columnId: 'b', label: 'status:doing' }]
+      }
+    }
+    const k = deleteColumn(configured, 'a')
     expect(k.columns.map((c) => c.id)).toEqual(['b'])
     expect(k.assignments).toEqual([{ nodeId: 'n2', columnId: 'b' }])
+    expect(k.github).toEqual(configured.github)
     expect(deleteColumn(board(), 'nope')).toEqual(board())
   })
   it('deleting every user column is allowed (Ungrouped always remains)', () => {

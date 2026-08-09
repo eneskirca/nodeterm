@@ -39,6 +39,8 @@ export interface ProjectFileV1 {
  *  ProjectFileV1 seen/written — used while the server is unreachable. */
 export interface IndexEntryV3 {
   id: string
+  /** Stable machine-local trust identity. Never copied into the shared project file. */
+  localApprovalId?: string
   name: string
   color: string
   closed?: boolean

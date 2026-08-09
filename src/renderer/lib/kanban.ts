@@ -56,6 +56,7 @@ export function moveColumn(k: ProjectKanban, columnId: string, beforeId: string 
 export function deleteColumn(k: ProjectKanban, columnId: string): ProjectKanban {
   if (!k.columns.some((c) => c.id === columnId)) return k
   return {
+    ...k,
     columns: k.columns.filter((c) => c.id !== columnId),
     assignments: k.assignments.filter((a) => a.columnId !== columnId)
   }

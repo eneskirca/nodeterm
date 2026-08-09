@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs'
+import { randomUUID } from 'node:crypto'
 import path from 'path'
 import { IPC } from '../shared/ipc'
 import { platform } from './platform'
@@ -110,6 +111,7 @@ export class WorkspaceStore {
   }
 
   private async loadV3(index: WorkspaceIndexV3, sideline: boolean): Promise<Workspace> {
+    for (const entry of index.entries) entry.localApprovalId ||= randomUUID()
     this.index = index
     const projects: Project[] = []
     for (const e of index.entries) {
@@ -214,6 +216,11 @@ export class WorkspaceStore {
   async save(workspace: Workspace): Promise<void> {
     const savedAt = new Date().toISOString()
     const { index, files } = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
+
+    for (const entry of index.entries) {
+      const previous = this.index?.entries.find((candidate) => candidate.id === entry.id)
+      entry.localApprovalId = previous?.localApprovalId || randomUUID()
+    }
 
     // An unavailable placeholder carries no real data. splitWorkspace already dropped its file
     // and cache; here we restore the machine-local payload (ssh offline cache) from the previous

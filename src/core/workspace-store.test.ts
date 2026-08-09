@@ -32,6 +32,22 @@ afterEach(async () => {
 })
 
 describe('save → load round trip (v3)', () => {
+  it('creates and preserves a machine-local approval id outside the shared project file', async () => {
+    const store = new WorkspaceStore()
+    const workspace = ws([project({ cwd: projRoot })])
+
+    await store.save(workspace)
+    const firstIndex = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    const approvalId = firstIndex.entries[0].localApprovalId
+    expect(approvalId).toMatch(/^[0-9a-f-]{36}$/)
+
+    await store.save(workspace)
+    const secondIndex = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(secondIndex.entries[0].localApprovalId).toBe(approvalId)
+    expect(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+      .not.toContain('localApprovalId')
+  })
+
   it('writes <cwd>/.nodeterm/project.json + a v3 index, and loads it back assembled', async () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot }), project({ id: 'p2', name: 'inline' })]))
