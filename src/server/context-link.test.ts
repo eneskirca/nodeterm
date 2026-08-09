@@ -3,7 +3,7 @@
 // parsing, the local/remote split) are core's and are covered by src/core/context-link.handler.test.ts —
 // what is tested here is the wiring that was missing server-side.
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
-import { mkdtempSync, promises as fsPromises, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, promises as fsPromises, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deriveLinkMap, initServerContextLink } from './context-link'
@@ -162,6 +162,18 @@ describe('initServerContextLink', () => {
     await link.refresh()
     const out = await handler({ verb: 'list', nodeId: 'term-a', args: {} })
     expect(out).toContain('No linked nodes')
+    await link.stop()
+  })
+
+  it('respects installHooks false while keeping the read handler available', async () => {
+    const { link, registered } = start({
+      ptyManager: fakePty(),
+      canvases: () => [],
+      installAgentIntegrations: false
+    })
+    expect(registered).toBe(true)
+    expect(existsSync(join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md'))).toBe(false)
+    expect(existsSync(join(home, '.codex', 'AGENTS.md'))).toBe(false)
     await link.stop()
   })
 

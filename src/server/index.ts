@@ -411,7 +411,8 @@ export async function startServer(
   // src/server/context-link.ts.
   const contextLink = initServerContextLink({
     ptyManager,
-    canvases: () => workspaceStore.persistedCanvases()
+    canvases: () => workspaceStore.persistedCanvases(),
+    installAgentIntegrations: config.installHooks !== false
   })
   // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
   // bridge edge reaches us as the workspace save it triggers.

@@ -276,7 +276,11 @@ export function setContextLinks(map: ContextLinkMap): Promise<void> {
   return writeChain
 }
 
-export function initContextLink(ptyManager: PtyManager, platformDeps: ContextLinkDeps = {}): void {
+export function initContextLink(
+  ptyManager: PtyManager,
+  platformDeps: ContextLinkDeps = {},
+  options: { installAgentIntegrations?: boolean } = {}
+): void {
   pty = ptyManager
   deps = platformDeps
   linkDocs.clear()
@@ -288,8 +292,10 @@ export function initContextLink(ptyManager: PtyManager, platformDeps: ContextLin
       if (f.endsWith('.json')) fs.rmSync(path.join(d, f), { force: true })
     }
     writeCliFiles()
-    installSkill()
-    installAgentInstructions()
+    if (options.installAgentIntegrations !== false) {
+      installSkill()
+      installAgentInstructions()
+    }
   } catch (e) {
     console.error('[context-link] setup failed', e)
     return

@@ -41,6 +41,8 @@ export interface ServerContextLinkDeps {
   /** nodeId → hook-fed transcript path; part of the change signature, not of the map. */
   transcriptOf?: (nodeId: string) => string
   sweepMs?: number
+  /** Respect the server's installHooks gate for writes into agent configuration directories. */
+  installAgentIntegrations?: boolean
 }
 
 /**
@@ -82,7 +84,9 @@ export function initServerContextLink(deps: ServerContextLinkDeps): {
 
   // No remote deps: the Server Edition runs ON the host whose transcripts and tmux it reads, so
   // the local-only behavior is the complete answer (SSH projects are a desktop-only concept here).
-  initContextLink(deps.ptyManager)
+  initContextLink(deps.ptyManager, {}, {
+    installAgentIntegrations: deps.installAgentIntegrations
+  })
 
   // Skip a rewrite when nothing a link document depends on has changed. The map alone is not the
   // whole input — a link's transcript path is resolved at write time from the hook-fed table, and
