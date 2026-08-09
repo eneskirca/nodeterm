@@ -33,13 +33,22 @@ describe('arrangeNodes', () => {
     expect(out.find((x) => x.id === 'c')!.position).toEqual({ x: 0, y: 90 })
   })
 
-  it('skips unknown ids and parented nodes; empty selection is a no-op', () => {
+  it('refuses a set mixing containers, and no-ops an empty/ghost selection', () => {
+    // A top-level node + a group child cannot be co-arranged (their coordinate spaces differ),
+    // so a MIXED set is a deliberate no-op — NOT "silently arrange the top-level ones" (that
+    // silent subset-arrange was the surprise this replaced). Same for unknown ids.
     const child = { ...n('kid', 5, 5), parentId: 'g1' } as CanvasNode
     const nodes = [n('a', 7, 7), child]
-    const out = arrangeNodes(nodes, ['a', 'kid', 'ghost'], { layout: 'row', origin: { x: 0, y: 0 } })
-    expect(out.find((x) => x.id === 'kid')!.position).toEqual({ x: 5, y: 5 }) // untouched
-    expect(out.find((x) => x.id === 'a')!.position).toEqual({ x: 0, y: 0 })
+    expect(arrangeNodes(nodes, ['a', 'kid', 'ghost'], { layout: 'row', origin: { x: 0, y: 0 } })).toBe(nodes)
     expect(arrangeNodes(nodes, ['ghost'])).toBe(nodes) // nothing resolvable → same array
+    // Same-container sets still arrange: two children of one frame lay out in frame space.
+    const framed = [
+      { ...n('c1', 40, 40), parentId: 'g1' } as CanvasNode,
+      { ...n('c2', 300, 5), parentId: 'g1' } as CanvasNode
+    ]
+    const laid = arrangeNodes(framed, ['c1', 'c2'], { layout: 'row', gap: 20 })
+    expect(laid.find((x) => x.id === 'c1')!.position).toEqual({ x: 40, y: 5 })
+    expect(laid.find((x) => x.id === 'c2')!.position).toEqual({ x: 40 + 100 + 20, y: 5 })
   })
 })
 

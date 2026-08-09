@@ -95,6 +95,22 @@ export function assignedTo(k: ProjectKanban, columnId: string): string[] {
   return k.assignments.filter((a) => a.columnId === columnId).map((a) => a.nodeId)
 }
 
+/**
+ * Resolve a user-supplied column reference (from the canvas-control `assign` verb) to a column
+ * id. Empty or 'ungrouped' (case-insensitive) → `null` (the virtual Ungrouped column = unassign).
+ * Otherwise match by exact id first, then by case-insensitive title. Unknown → `undefined`, so the
+ * caller can distinguish "send to Ungrouped" (null) from "no such column" (undefined) and report
+ * the available columns. Agents naturally pass a title ("In Progress"); ids come from `board`.
+ */
+export function resolveColumnRef(k: ProjectKanban, ref: string): string | null | undefined {
+  const raw = ref.trim()
+  if (!raw || raw.toLowerCase() === 'ungrouped') return null
+  const byId = k.columns.find((c) => c.id === raw)
+  if (byId) return byId.id
+  const byTitle = k.columns.find((c) => c.title.toLowerCase() === raw.toLowerCase())
+  return byTitle ? byTitle.id : undefined
+}
+
 /** Ids from `sessionIds` with no live assignment — never assigned, or assigned to a column
  *  that no longer exists (e.g. a git merge kept the assignment but lost the column). Order
  *  follows `sessionIds` (= canvas order). */

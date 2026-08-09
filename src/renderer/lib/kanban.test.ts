@@ -6,7 +6,7 @@ import {
   setCardDue, setCardPriority, toggleAssignee, unassigned,
   boardLabels, cardMatchesLabelFilter, createLabel, deleteLabel, labelColor, labelsForCard,
   recolorLabel, renameLabel, reorderLabels, toggleCardLabel,
-  autoLabelColor, migrateProjectTags, migrateTagsToLabels, setCardLabels
+  autoLabelColor, migrateProjectTags, migrateTagsToLabels, setCardLabels, resolveColumnRef
 } from './kanban'
 import type { Project } from '@shared/types'
 
@@ -127,6 +127,16 @@ describe('assignments', () => {
     expect(k.assignments.map((a) => a.nodeId)).toEqual(['n1', 'n3'])
     const same = board()
     expect(pruneAssignments(same, ['n1', 'n2', 'n3'])).toBe(same)
+  })
+  it('resolveColumnRef: id, title (case-insensitive), ungrouped/empty → null, unknown → undefined', () => {
+    // The agent-facing `assign --column` resolver. An agent naturally passes a title.
+    expect(resolveColumnRef(board(), 'a')).toBe('a')
+    expect(resolveColumnRef(board(), 'doing')).toBe('b')
+    expect(resolveColumnRef(board(), '  To Do ')).toBe('a')
+    // null (unassign) and undefined (no such column) must stay distinguishable.
+    expect(resolveColumnRef(board(), '')).toBeNull()
+    expect(resolveColumnRef(board(), 'Ungrouped')).toBeNull()
+    expect(resolveColumnRef(board(), 'nope')).toBeUndefined()
   })
 })
 

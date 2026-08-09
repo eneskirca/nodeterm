@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
+  alignNodes,
+  arrangeNodes,
+  commonParentId,
   createAccountLoginNode,
   createAgentNode,
   createDinoNode,
+  fitGroupToChildren,
   flowToNodeStates,
   groupSelectedNodes,
   nodeStatesToFlow,
@@ -69,6 +73,95 @@ describe('reparentNode', () => {
     const nodes = [grp('g1', { x: 50, y: 50 }), term('t1', { x: 10, y: 10 })]
     expect(reparentNode(nodes, 'nope', 'g1')).toBe(nodes)
     expect(reparentNode(nodes, 't1', 't1')).toBe(nodes) // target is a terminal, not a group
+  })
+})
+
+describe('commonParentId', () => {
+  it('is null when every id is top-level', () => {
+    const nodes = [term('t1', { x: 0, y: 0 }), grp('g1', { x: 5, y: 5 })]
+    expect(commonParentId(nodes, ['t1', 'g1'])).toBeNull()
+  })
+  it('is the group id when every id is a child of the same group', () => {
+    const nodes = [grp('g1', { x: 0, y: 0 }), term('t1', { x: 10, y: 10 }, 'g1'), term('t2', { x: 20, y: 20 }, 'g1')]
+    expect(commonParentId(nodes, ['t1', 't2'])).toBe('g1')
+  })
+  it('is undefined for a mixed set (framed + loose, or two frames) or no matching ids', () => {
+    const nodes = [
+      grp('g1', { x: 0, y: 0 }),
+      term('t1', { x: 10, y: 10 }, 'g1'),
+      term('loose', { x: 500, y: 0 })
+    ]
+    expect(commonParentId(nodes, ['t1', 'loose'])).toBeUndefined()
+    expect(commonParentId(nodes, ['nope'])).toBeUndefined()
+  })
+})
+
+describe('arrange/align inside a frame', () => {
+  // Children of one frame arrange in the frame's coordinate space — the gap this closes: after
+  // grouping, the frame's contents could not be tidied from the canvas-control CLI.
+  const framed = () => [
+    grp('g1', { x: 100, y: 100 }),
+    term('a', { x: 5, y: 5 }, 'g1'),
+    term('b', { x: 400, y: 300 }, 'g1'), // scattered inside the frame
+    term('c', { x: 900, y: 40 }, 'g1')
+  ]
+
+  it('arranges a frame\'s children in a row without touching the frame or top-level nodes', () => {
+    const out = arrangeNodes(framed(), ['a', 'b', 'c'], { layout: 'row', gap: 40 })
+    const pos = (id: string) => out.find((n) => n.id === id)!.position
+    // Row starts at the bounding-box top-left of the children (relative coords), y shared.
+    expect(pos('a')).toEqual({ x: 5, y: 5 })
+    expect(pos('b')).toEqual({ x: 5 + 320 + 40, y: 5 })
+    expect(pos('c')).toEqual({ x: 5 + (320 + 40) * 2, y: 5 })
+  })
+
+  it('refuses a set spanning two containers (no-op)', () => {
+    const nodes = [
+      grp('g1', { x: 0, y: 0 }),
+      term('a', { x: 10, y: 10 }, 'g1'),
+      term('loose', { x: 800, y: 0 })
+    ]
+    expect(arrangeNodes(nodes, ['a', 'loose'], { layout: 'row' })).toBe(nodes)
+    expect(alignNodes(nodes, ['a', 'loose'], 'left')).toBe(nodes)
+  })
+
+  it('aligns a frame\'s children to a shared left edge', () => {
+    const out = alignNodes(framed(), ['a', 'b', 'c'], 'left')
+    const xs = ['a', 'b', 'c'].map((id) => out.find((n) => n.id === id)!.position.x)
+    expect(new Set(xs)).toEqual(new Set([5])) // all snapped to the leftmost (a.x = 5)
+  })
+})
+
+describe('fitGroupToChildren', () => {
+  it('shrinks the frame to hug its children and keeps them fixed on canvas', () => {
+    // Frame is oversized (400×300) but its two children sit in a small cluster.
+    const nodes = [
+      grp('g1', { x: 100, y: 100 }),
+      term('a', { x: 20, y: 40 }, 'g1'), // abs (120,140), 320×240
+      term('b', { x: 60, y: 20 }, 'g1') // abs (160,120)
+    ]
+    const out = fitGroupToChildren(nodes, 'g1')
+    const g = out.find((n) => n.id === 'g1')!
+    const a = out.find((n) => n.id === 'a')!
+    const b = out.find((n) => n.id === 'b')!
+    // Children keep their ABSOLUTE canvas positions (frame origin + relative pos unchanged).
+    expect({ x: g.position.x + a.position.x, y: g.position.y + a.position.y }).toEqual({ x: 120, y: 140 })
+    expect({ x: g.position.x + b.position.x, y: g.position.y + b.position.y }).toEqual({ x: 160, y: 120 })
+    // Frame hugs the child bbox with the standard pad (28) + header (34) on top.
+    const GROUP_PAD = 28
+    const GROUP_HEADER = 34
+    const minX = 120, minY = 120
+    const maxX = 160 + 320, maxY = 140 + 240
+    expect(g.position).toEqual({ x: minX - GROUP_PAD, y: minY - GROUP_PAD - GROUP_HEADER })
+    expect(g.width).toBe(maxX - minX + GROUP_PAD * 2)
+    expect(g.height).toBe(maxY - minY + GROUP_PAD * 2 + GROUP_HEADER)
+  })
+
+  it('is a no-op for a missing id, a non-group, or an empty frame', () => {
+    const nodes = [grp('g1', { x: 0, y: 0 }), term('t1', { x: 0, y: 0 })]
+    expect(fitGroupToChildren(nodes, 'nope')).toBe(nodes)
+    expect(fitGroupToChildren(nodes, 't1')).toBe(nodes)
+    expect(fitGroupToChildren(nodes, 'g1')).toBe(nodes) // g1 has no children
   })
 })
 

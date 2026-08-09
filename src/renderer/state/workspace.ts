@@ -692,11 +692,27 @@ const nodeH = (n: CanvasNode) => n.measured?.height ?? (n.height as number) ?? 0
 export type ArrangeLayout = 'grid' | 'row' | 'column'
 
 /**
- * Repositions the given top-level ids into a non-overlapping layout starting at `origin`
- * (default: the bounding-box top-left of their current positions). 'row' packs left-to-right,
- * 'column' top-to-bottom, 'grid' wraps at `cols` (default ~square) with each row advancing by
- * its tallest member. Unknown ids and parented (grouped) nodes are skipped; returns the input
- * array unchanged when nothing resolves. Pure and deterministic.
+ * The single container the given ids all live in: `null` (all top-level), a group id (all
+ * children of that one group), or `undefined` when they resolve to no node OR span more than
+ * one container (a group's children mixed with top-level, or two different groups). Positions
+ * are only comparable within one container — top-level positions are absolute, a group child's
+ * are relative to its frame — so arrange/align refuse a mixed set rather than scramble it.
+ */
+export function commonParentId(nodes: CanvasNode[], ids: string[]): string | null | undefined {
+  const set = new Set(ids)
+  const members = nodes.filter((nd) => set.has(nd.id))
+  if (members.length === 0) return undefined
+  const parents = new Set(members.map((m) => m.parentId ?? null))
+  return parents.size === 1 ? members[0].parentId ?? null : undefined
+}
+
+/**
+ * Repositions the given ids into a non-overlapping layout starting at `origin` (default: the
+ * bounding-box top-left of their current positions). 'row' packs left-to-right, 'column'
+ * top-to-bottom, 'grid' wraps at `cols` (default ~square) with each row advancing by its tallest
+ * member. The ids must share ONE container — all top-level, or all children of the same group
+ * (the layout then runs in that group's coordinate space); a mixed set is a no-op. Unknown ids
+ * are skipped; returns the input array unchanged when nothing resolves. Pure and deterministic.
  */
 export function arrangeNodes(
   nodes: CanvasNode[],
@@ -704,8 +720,9 @@ export function arrangeNodes(
   opts?: { layout?: ArrangeLayout; cols?: number; gap?: number; origin?: { x: number; y: number } }
 ): CanvasNode[] {
   const set = new Set(ids)
-  const members = nodes.filter((nd) => set.has(nd.id) && !nd.parentId)
-  if (members.length === 0) return nodes
+  const members = nodes.filter((nd) => set.has(nd.id))
+  // Only meaningful within one coordinate space (see commonParentId) — mixed containers → no-op.
+  if (members.length === 0 || new Set(members.map((m) => m.parentId ?? null)).size > 1) return nodes
   const layout = opts?.layout ?? 'grid'
   const gap = opts?.gap ?? 40
   const origin = opts?.origin ?? {
@@ -735,14 +752,15 @@ export function arrangeNodes(
 export type AlignEdge = 'left' | 'right' | 'top' | 'bottom' | 'hcenter' | 'vcenter'
 
 /**
- * Snaps the given top-level ids to a shared edge/center computed from their joint bounding box.
- * left/right/hcenter move x; top/bottom/vcenter move y. Unknown/parented ids are skipped;
- * returns the input array unchanged when nothing resolves. Pure.
+ * Snaps the given ids to a shared edge/center computed from their joint bounding box.
+ * left/right/hcenter move x; top/bottom/vcenter move y. The ids must share ONE container (all
+ * top-level, or all children of the same group — see `arrangeNodes`); a mixed set is a no-op.
+ * Unknown ids are skipped; returns the input array unchanged when nothing resolves. Pure.
  */
 export function alignNodes(nodes: CanvasNode[], ids: string[], edge: AlignEdge): CanvasNode[] {
   const set = new Set(ids)
-  const members = nodes.filter((nd) => set.has(nd.id) && !nd.parentId)
-  if (members.length === 0) return nodes
+  const members = nodes.filter((nd) => set.has(nd.id))
+  if (members.length === 0 || new Set(members.map((m) => m.parentId ?? null)).size > 1) return nodes
   const minX = Math.min(...members.map((m) => m.position.x))
   const maxR = Math.max(...members.map((m) => m.position.x + nodeW(m)))
   const minY = Math.min(...members.map((m) => m.position.y))
@@ -823,6 +841,40 @@ export function duplicateNode(node: CanvasNode, offset = 28): CanvasNode {
     extent: undefined,
     data: { ...node.data, initialCommand: undefined }
   }
+}
+
+/**
+ * Resizes a group frame to hug its current children (same padding as `groupSelectedNodes`), and
+ * re-anchors the frame + rewrites the children's relative positions so nothing moves on canvas.
+ * Used after arranging inside a frame: the frame's width came from wherever the children happened
+ * to sit when they were grouped, so a tidy inner layout still leaves an oversized box. No-op for a
+ * missing/non-group id or a frame with no children. Pure.
+ */
+export function fitGroupToChildren(nodes: CanvasNode[], groupId: string): CanvasNode[] {
+  const group = nodes.find((n) => n.id === groupId)
+  if (!group || group.type !== 'group') return nodes
+  const children = nodes.filter((n) => n.parentId === groupId)
+  if (children.length === 0) return nodes
+  // Child positions are group-relative; convert to absolute via the current frame origin.
+  const absX = (c: CanvasNode) => group.position.x + c.position.x
+  const absY = (c: CanvasNode) => group.position.y + c.position.y
+  const minX = Math.min(...children.map(absX))
+  const minY = Math.min(...children.map(absY))
+  const maxX = Math.max(...children.map((c) => absX(c) + nodeW(c)))
+  const maxY = Math.max(...children.map((c) => absY(c) + nodeH(c)))
+  const gx = minX - GROUP_PAD
+  const gy = minY - GROUP_PAD - GROUP_HEADER
+  const width = maxX - minX + GROUP_PAD * 2
+  const height = maxY - minY + GROUP_PAD * 2 + GROUP_HEADER
+  return nodes.map((n) => {
+    if (n.id === groupId) {
+      return { ...n, position: { x: gx, y: gy }, width, height, style: { ...n.style, width, height } }
+    }
+    if (n.parentId === groupId) {
+      return { ...n, position: { x: absX(n) - gx, y: absY(n) - gy } }
+    }
+    return n
+  })
 }
 
 /** Removes a group frame and restores its children to absolute positions. */

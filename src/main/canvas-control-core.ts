@@ -12,6 +12,8 @@ export type ControlVerb =
   | 'show-web'
   | 'open-browser'
   | 'group'
+  | 'ungroup'
+  | 'move'
   | 'arrange'
   | 'align'
   | 'link'
@@ -23,6 +25,8 @@ export type ControlVerb =
   | 'rename'
   | 'write'
   | 'close'
+  | 'board'
+  | 'assign'
 
 export interface ControlCommand {
   verb: ControlVerb
@@ -39,6 +43,8 @@ const VERBS: ControlVerb[] = [
   'show-web',
   'open-browser',
   'group',
+  'ungroup',
+  'move',
   'arrange',
   'align',
   'link',
@@ -49,7 +55,9 @@ const VERBS: ControlVerb[] = [
   'branch',
   'rename',
   'write',
-  'close'
+  'close',
+  'board',
+  'assign'
 ]
 
 const DESTRUCTIVE: ReadonlySet<ControlVerb> = new Set(['write', 'close'])
@@ -77,11 +85,14 @@ export function parseControlRequest(
   if (v === 'open-browser' && !args.url) return { error: 'open-browser requires --url' }
   if (v === 'open-agent' && !args.agent) return { error: 'open-agent requires --agent <id>' }
   if ((v === 'group' || v === 'arrange') && !args.nodes) return { error: `${v} requires --nodes <id,id>` }
+  if (v === 'ungroup' && !args.group) return { error: 'ungroup requires --group <id>' }
+  if (v === 'move' && !args.nodes) return { error: 'move requires --nodes <id,id>' }
   if (v === 'align' && !args.nodes) return { error: 'align requires --nodes <id,id>' }
   if (v === 'align' && !args.edge) return { error: 'align requires --edge' }
   if (v === 'link' && !args.to) return { error: 'link requires --to <id,id>' }
   if (v === 'verify' && !args.node) return { error: 'verify requires --node <id>' }
   if (v === 'spawn-team' && !args.team) return { error: 'spawn-team requires --team <json>' }
+  if (v === 'assign' && !args.node) return { error: 'assign requires --node <id>' }
   if (v === 'open-worktree' && !args.branch) return { error: 'open-worktree requires --branch <name>' }
   if (v === 'close-worktree' && !args.group) return { error: 'close-worktree requires --group <id>' }
   if (v === 'branch' && !args.node) return { error: 'branch requires --node <id>' }
@@ -140,8 +151,15 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `show-image <path>` / `show-video <path>` — open a media file as a node.',
     '- `show-web (--url U | --file P.html | --html "<...>")` — open a web viewer.',
     '- `open-browser --url U` — open a navigable browser node.',
-    '- `group --nodes <id,id> [--label L]` / `arrange --nodes <id,id> [--layout grid|row|column] [--cols N]` /',
-    '  `align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter` — organize the canvas.',
+    '- `group --nodes <id,id> [--label L]` — wrap TOP-LEVEL nodes in a new labeled frame (nodes already',
+    '  inside another frame are skipped — use `move` for those). `ungroup --group <id>` dissolves a frame,',
+    '  freeing its nodes to the top level. `move --nodes <id,id> [--group <id>]` reparents nodes INTO an',
+    '  existing frame (omit `--group`, or pass `top`/`none`, to pull them out to the top level) — this is',
+    '  how you move a node from one frame to another.',
+    '- `arrange --nodes <id,id> [--layout grid|row|column] [--cols N]` /',
+    '  `align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter` — tidy a layout. Works on',
+    '  top-level nodes OR on the children of ONE frame (all ids must share a container — you cannot',
+    '  arrange across frames in one call); arranging a frame\'s children also shrinks the frame to fit.',
     '- `link --to <id,id> [--from <id>]` — context-link nodes so each can READ the other\'s transcript',
     '  on demand (nodeterm linked-context CLI). `--from` defaults to you; nothing is pushed into the',
     '  linked sessions. Agent sessions you open are linked to you automatically — use `link` for nodes',
@@ -160,6 +178,13 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `rename --node <id> --title "New Name"` — rename any node (terminals, groups, stickies…).',
     '- `write --node <id> --text "..."` / `close --node <id>` — type into / close a node.',
     '  Both ask the user to confirm a dialog and may be denied.',
+    '- `board` — the project\'s kanban board: every column (id + title) and the session cards in each,',
+    '  plus the virtual Ungrouped column. Start here when you need a column id or want the board state.',
+    '- `assign --node <id> [--column <id|title>] [--before <nodeId>]` — move a session card to a column',
+    '  (match by column id or title). Omit `--column` (or pass `ungrouped`) to send it back to Ungrouped.',
+    '  `--before <nodeId>` drops it above that card within the column. This is board metadata only — it',
+    '  never moves the node on the canvas or changes its group. Use it to reflect progress: move a card',
+    '  to your "In Progress"/"Done" column as work advances.',
     '',
     'Orchestration ("Build with Nodeterm orchestration"): first decide what is genuinely',
     'independent — for every "and then", ask whether the next step READS the previous step\'s',
@@ -273,7 +298,7 @@ exit 1
 export function buildCanvasSkillBody(shimPath: string): string {
   return `---
 name: manage-nodeterm-canvas
-description: Create, organize and control nodes on the nodeterm canvas — open Claude Code / Codex / Gemini / terminal nodes, spawn a team of agents that divide up a task, create git worktrees as bound groups, wrap nodes in labeled groups, arrange/align/rename them, link nodes so you can read back what they produced, show an image/video/web page, write to or close a terminal. Use whenever the user says "Build with Nodeterm orchestration", asks to create or open nodes/sessions/terminals, split or parallelize work across subagents/agents/sessions/worktrees, delegate parts of a task to other agents, work on several things at once, build something using multiple Claude (or other agent) sessions, collect or synthesize the results of agents you opened, organize the canvas into groups by topic, or visualize code/output you produced. Only works inside a nodeterm agent session.
+description: Create, organize and control nodes on the nodeterm canvas — open Claude Code / Codex / Gemini / terminal nodes, spawn a team of agents that divide up a task, create git worktrees as bound groups, wrap nodes in labeled groups, arrange/align/rename them, move nodes between frames, link nodes so you can read back what they produced, move session cards between kanban columns to track progress, show an image/video/web page, write to or close a terminal. Use whenever the user says "Build with Nodeterm orchestration", asks to create or open nodes/sessions/terminals, split or parallelize work across subagents/agents/sessions/worktrees, delegate parts of a task to other agents, work on several things at once, build something using multiple Claude (or other agent) sessions, collect or synthesize the results of agents you opened, organize the canvas into groups by topic, move tasks across a kanban board, or visualize code/output you produced. Only works inside a nodeterm agent session.
 ---
 
 # Manage the nodeterm canvas
@@ -310,9 +335,22 @@ Verbs:
   render on the DESKTOP: \`show-image\` and \`show-video\` still work with a host path (the
   file is read/fetched back over the connection), but \`show-web --file/--html\` is refused —
   use \`--url\`, or copy the file to the desktop first.
-- \`group --nodes <id,id> [--label "Frontend Team"]\` — wrap nodes in a labeled group frame.
-- \`arrange --nodes <id,id> [--layout grid|row|column] [--cols N]\` — tidy layout, no overlap.
-- \`align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter\` — align edges/centers.
+- \`group --nodes <id,id> [--label "Frontend Team"]\` — wrap TOP-LEVEL nodes in a new labeled
+  group frame. Nodes that are ALREADY inside another frame are skipped (the reply says how many) —
+  use \`move\` to pull those across, not \`group\`.
+- \`ungroup --group <id>\` — dissolve a group frame, freeing its nodes back to the top level (the
+  nodes stay put; only the frame is removed).
+- \`move --nodes <id,id> [--group <id>]\` — reparent nodes INTO an existing group frame, keeping
+  each where it sits on the canvas. Omit \`--group\` (or pass \`top\`/\`none\`) to pull them OUT to the
+  top level. This is how you move a node from one frame to another: \`move --nodes n1,n2 --group g2\`.
+  (\`group\` only wraps loose top-level nodes; it will not steal a node out of its current frame.)
+- \`arrange --nodes <id,id> [--layout grid|row|column] [--cols N]\` — tidy layout, no overlap. Works
+  on top-level nodes OR on the children of ONE frame — every id must share a container (you cannot
+  arrange nodes from two different frames, or mix framed + loose, in one call). When the ids are a
+  frame's children, the frame is also shrunk to hug the tidied layout. Since grouping preserves each
+  node's scattered position, a fresh frame is usually too wide: \`arrange\` its children to fix that.
+- \`align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter\` — align edges/centers. Same
+  one-container rule as \`arrange\`.
 - \`link --to <id,id> [--from <id>]\` — context-link nodes, so each can READ the other's
   transcript on demand with the get-linked-context skill. \`--from\` defaults to you. Nothing is
   pushed into the linked sessions — reading is on demand, so linking never interrupts anyone.
@@ -341,9 +379,20 @@ Verbs:
 - \`rename --node <id> --title "New Name"\` — rename any node (terminals, groups, stickies…).
 - \`write --node <id> --text "..."\` — type text into a terminal node. (Asks the user to confirm.)
 - \`close --node <id>\` — close a node. (Asks the user to confirm.)
+- \`board\` — read the project's kanban board: every column (id + title) and the session cards
+  filed in each, plus the virtual Ungrouped column (unfiled sessions). Start here when you need
+  a column id, or to see how the work is currently laid out.
+- \`assign --node <id> [--column <id|title>] [--before <nodeId>]\` — file a session card under a
+  column, matching \`--column\` by id or (case-insensitive) title. Omit \`--column\`, or pass
+  \`ungrouped\`, to send it back to Ungrouped; \`--before <nodeId>\` drops it just above that card
+  within the column. This is board metadata ONLY — it never moves the node on the canvas, changes
+  its group, or touches the running session. Use it to reflect progress: as a station finishes,
+  move its card into your "In Progress" / "Done" column so the board tells the real story.
 
 Notes:
 - \`write\` and \`close\` require the user to approve a confirmation dialog; they may be denied.
+- \`board\` and \`assign\` act on the CURRENTLY OPEN project's board — the same one you see when you
+  toggle the kanban view. They need no confirmation.
 - If the CLI says canvas control is unavailable, you are not in a controllable nodeterm session — do not retry.
 
 To orchestrate a team: decide the roles + a concrete starting prompt for each, then one
@@ -355,7 +404,10 @@ Typical requests this skill covers:
   group), or \`open-claude\`/\`open-agent\` per node followed by \`group --nodes ... --label\`
   per subject and \`arrange\` inside each.
 - "Open a codex/gemini session" → \`open-agent --agent codex|gemini\`.
-- "Tidy up / group my terminals" → \`list\`, then \`group\` + \`arrange\` + \`align\`.
+- "Tidy up / group my terminals" → \`list\`, then \`group --nodes …\`, then \`arrange --nodes <those same ids>\`
+  to tidy the new frame's contents (grouping keeps each node's scattered spot, so arrange after grouping).
+- "Move this node into that group" → \`move --nodes <id> --group <targetGroupId>\` (not \`group\`, which only
+  wraps loose nodes). "Break up this group" → \`ungroup --group <id>\`.
 - "Rename this node/group" → \`rename\`.
 
 ## Nodeterm orchestration ("Build with Nodeterm orchestration")
