@@ -89,13 +89,22 @@ export class GitHubIssueCache {
 
   async load(userId: string, repository: string): Promise<GitHubCacheDocument> {
     const file = this.file(userId, repository)
+    // Measure and read through ONE open handle. Doing it as stat(path) + readFile(path) leaves a
+    // window between the size check and the read, and this cache races itself: `write` publishes
+    // by renaming a fresh file over this path, so a save landing mid-load would hand us a file the
+    // size guard never saw. A handle is bound to the inode it opened, so the bytes we read are the
+    // bytes we measured.
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined
     try {
-      const stat = await fs.stat(file)
+      handle = await fs.open(file, 'r')
+      const stat = await handle.stat()
       if (stat.size > this.maximum) return { version: 1 }
-      const parsed: unknown = JSON.parse(await fs.readFile(file, 'utf-8'))
+      const parsed: unknown = JSON.parse(await handle.readFile('utf-8'))
       return validDocument(parsed) ? structuredClone(parsed) : { version: 1 }
     } catch {
       return { version: 1 }
+    } finally {
+      await handle?.close().catch(() => undefined)
     }
   }
 

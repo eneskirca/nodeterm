@@ -84,6 +84,17 @@ describe('GitHubIssueCache', () => {
     expect((await cache.load('user-1', 'o/r')).lastComplete?.issues[0].number).toBe(1)
   })
 
+  it('refuses to load a stored document larger than the maximum', async () => {
+    // The write path caps size, but a document already on disk can exceed a LOWER cap — an older
+    // build's cache, or a cap tightened later. Loading it anyway would pull the whole file into
+    // memory, which is the reading half of the same budget saveComplete enforces.
+    await new GitHubIssueCache(userDataDir).saveComplete('user-1', 'o/r', complete([
+      { ...issue(1), body: 'x'.repeat(4_000) }
+    ]))
+    const tightened = new GitHubIssueCache(userDataDir, { maximumBytes: 500 })
+    expect(await tightened.load('user-1', 'o/r')).toEqual({ version: 1 })
+  })
+
   it('clears only the selected identity and repository cache', async () => {
     const cache = new GitHubIssueCache(userDataDir)
     await cache.saveComplete('user-1', 'o/r', complete([issue(1)]))
