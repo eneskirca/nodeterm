@@ -111,13 +111,14 @@ function fixture() {
 
 describe('GitHubHostController', () => {
   it('returns a status view without tokens, approvals, or the local approval id', async () => {
-    const { controller } = fixture()
+    const { controller, resolver } = fixture()
     const view = await controller.status('project-1')
     expect(view).toMatchObject({
       control: { revision: 0, authProvider: 'auto' },
       project: { repository: 'owner/repo', detectedRepository: 'owner/repo', approved: false }
     })
     expect(JSON.stringify(view)).not.toMatch(/secret|local-private-id|approvals/i)
+    expect(resolver.status).not.toHaveBeenCalled()
   })
 
   it('requires exact local approval before creating a service context', async () => {

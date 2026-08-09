@@ -37,6 +37,17 @@ describe('columns', () => {
     expect(k.columns).toHaveLength(3)
     expect(k.columns[2].title).toBe('Review')
   })
+  it('addColumn suggests a unique GitHub mapping when sync is configured', () => {
+    const configured: ProjectKanban = {
+      ...board(),
+      github: { columnMappings: [{ columnId: 'a', label: 'status:review' }] }
+    }
+    const next = addColumn(configured, 'Review', '#fff')
+    expect(next.github?.columnMappings.at(-1)).toEqual({
+      columnId: next.columns.at(-1)?.id,
+      label: 'status:review-2'
+    })
+  })
   it('renameColumn / recolorColumn touch only the target', () => {
     const k = recolorColumn(renameColumn(board(), 'b', 'WIP'), 'b', '#fff')
     expect(k.columns[1]).toMatchObject({ id: 'b', title: 'WIP', color: '#fff' })

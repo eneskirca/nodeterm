@@ -149,7 +149,11 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
 
   const enabled = !!githubConfig
   const repository = githubConfig?.repository ?? view?.project?.detectedRepository
-  const ready = enabled && !!view?.project?.approved && !!view.auth.activeProvider
+  const approved = enabled && !!view?.project?.approved
+  const authenticated = !!view?.auth.activeProvider
+  const completionReady = !!githubConfig?.completionColumnId &&
+    mappings.has(githubConfig.completionColumnId)
+  const ready = approved && authenticated && completionReady
 
   return (
     <SettingsSection
@@ -329,6 +333,7 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                       id={`github-label-${column.id}`}
                       className="w-56"
                       value={mappings.get(column.id) ?? ''}
+                      maxLength={50}
                       placeholder={`status:${column.title.toLocaleLowerCase('en-US')}`}
                       onChange={(event) => {
                         const label = event.target.value
@@ -360,7 +365,7 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                       completionColumnId: event.target.value || undefined
                     })}
                   >
-                    <option value="">None</option>
+                    <option value="" disabled>Choose a mapped column</option>
                     {board.columns.filter((column) => mappings.has(column.id)).map((column) => (
                       <option key={column.id} value={column.id}>{column.title}</option>
                     ))}
@@ -376,12 +381,12 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                 <Button disabled={!ready || busy !== ''} onClick={() => setConfirmation('labels')}>
                   Create missing labels
                 </Button>
-                <Button disabled={!ready || busy !== ''} onClick={() => void run('refresh',
+                <Button disabled={!approved || !authenticated || busy !== ''} onClick={() => void run('refresh',
                   () => window.nodeTerminal.githubIssues.refresh(projectId, true),
                   'GitHub issues refreshed.')}>
                   Refresh now
                 </Button>
-                <Button disabled={!ready || busy !== ''} onClick={() => setConfirmation('cache')}>
+                <Button disabled={!enabled || !repository || busy !== ''} onClick={() => setConfirmation('cache')}>
                   Clear cached data
                 </Button>
                 {view?.project?.approved && (
@@ -390,6 +395,11 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                   </Button>
                 )}
               </div>
+              {approved && !completionReady && (
+                <p className="text-[13px] text-warn" role="status">
+                  Choose a mapped completion column before GitHub issue changes are enabled.
+                </p>
+              )}
               {notice && <p role="status" className="text-[13px] text-muted">{notice}</p>}
             </div>
           </SearchableRow>

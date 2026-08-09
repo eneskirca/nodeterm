@@ -408,6 +408,56 @@ describe('relay host — workspace:load is scoped to the shared project', () => 
   })
 })
 
+describe('relay host — GitHub issue RPCs are scoped to the shared project', () => {
+  it('rejects every cross-project request before a GitHub handler can run', async () => {
+    const reached: string[] = []
+    const methods: Array<[string, unknown[]]> = [
+      [IPC.githubIssuesSubscribe, [{ projectId: 'proj-2' }]],
+      [IPC.githubIssuesQuery, [{ projectId: 'proj-2', columnId: null, pageSize: 50 }]],
+      [IPC.githubIssuesRefresh, ['proj-2', true]],
+      [IPC.githubIssuesMove, [{ projectId: 'proj-2', issueNumber: 7, toColumnId: null,
+        expectedUpdatedAt: '2026-08-09T00:00:00Z' }]],
+      [IPC.githubIssuesCreateLabels, ['proj-2']],
+      [IPC.githubIssuesClearCache, ['proj-2']]
+    ]
+    for (const [method] of methods) platform.handle(method, async () => { reached.push(method) })
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+
+    for (let index = 0; index < methods.length; index++) {
+      const [method, args] = methods[index]
+      s.peerSendsTunnelText(JSON.stringify({ t: 'req', id: 100 + index, method, args }))
+    }
+
+    await vi.waitFor(() => expect(s.textFrames.filter((frame) => {
+      const message = JSON.parse(frame)
+      return message.t === 'res' && message.id >= 100
+    })).toHaveLength(methods.length))
+    const responses = s.textFrames.map((frame) => JSON.parse(frame))
+      .filter((message) => message.t === 'res' && message.id >= 100)
+    expect(responses.every((response) =>
+      response.ok === false && response.error.code === 'E_FORBIDDEN')).toBe(true)
+    expect(reached).toEqual([])
+  })
+
+  it('drops cross-project unsubscribe casts but permits the shared project', async () => {
+    const calls: Array<[number, string]> = []
+    platform.onWithSender(IPC.githubIssuesUnsubscribe, (uiId, projectId) => calls.push([uiId, projectId]))
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+    const uiId = s.session.clientId()!
+
+    s.peerSendsTunnelText(JSON.stringify({
+      t: 'cast', method: IPC.githubIssuesUnsubscribe, args: ['proj-2']
+    }))
+    s.peerSendsTunnelText(JSON.stringify({
+      t: 'cast', method: IPC.githubIssuesUnsubscribe, args: ['proj-1']
+    }))
+
+    await vi.waitFor(() => expect(calls).toEqual([[uiId, 'proj-1']]))
+  })
+})
+
 describe('relay host — nothing is served before mutual approval', () => {
   it('a peer RPC BEFORE mutual approval is refused (no dispatch, no sink, no presence)', async () => {
     let created = 0

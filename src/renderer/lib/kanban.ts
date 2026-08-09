@@ -28,7 +28,25 @@ export function nextColumnColor(k: ProjectKanban): string {
 }
 
 export function addColumn(k: ProjectKanban, title: string, color: string): ProjectKanban {
-  return { ...k, columns: [...k.columns, { id: kid('kcol'), title, color }] }
+  const column = { id: kid('kcol'), title, color }
+  if (!k.github) return { ...k, columns: [...k.columns, column] }
+  const base = `status:${title.trim().toLocaleLowerCase('en-US')
+    .normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'column'}`
+  const used = new Set(k.github.columnMappings.map((mapping) =>
+    mapping.label.normalize('NFKC').toLocaleLowerCase('en-US')))
+  let label = base.slice(0, 50)
+  for (let suffix = 2; used.has(label.toLocaleLowerCase('en-US')); suffix++) {
+    const ending = `-${suffix}`
+    label = `${base.slice(0, 50 - ending.length)}${ending}`
+  }
+  return {
+    ...k,
+    columns: [...k.columns, column],
+    github: {
+      ...k.github,
+      columnMappings: [...k.github.columnMappings, { columnId: column.id, label }]
+    }
+  }
 }
 
 export function renameColumn(k: ProjectKanban, columnId: string, title: string): ProjectKanban {

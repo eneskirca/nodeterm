@@ -17,6 +17,8 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
   issue,
   columns,
   moving,
+  readOnly,
+  status,
   onOpen,
   onMove,
   onDragStart,
@@ -25,6 +27,8 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
   issue: GitHubIssueCardView
   columns: KanbanColumn[]
   moving: boolean
+  readOnly: boolean
+  status?: string
   onOpen: (issue: GitHubIssueCardView) => void
   onMove: (issue: GitHubIssueCardView, columnId: string | null) => void
   onDragStart: (issue: GitHubIssueCardView) => void
@@ -34,7 +38,10 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
   return (
     <article
       className={`kanban-card kanban-card--github${dragging ? ' kanban-card--dragging' : ''}`}
-      draggable={!moving}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open GitHub issue #${issue.number}: ${issue.title}`}
+      draggable={!moving && !readOnly}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'move'
         setDragging(true)
@@ -45,6 +52,12 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
         onDragEnd()
       }}
       onClick={() => onOpen(issue)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        if ((event.target as HTMLElement).closest('select')) return
+        event.preventDefault()
+        onOpen(issue)
+      }}
     >
       <div className="kanban-card__row">
         <span className={`github-issue-state github-issue-state--${issue.state}`} aria-hidden="true" />
@@ -88,7 +101,7 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
           <select
             aria-label={`Move issue #${issue.number}`}
             value={issue.columnId ?? ''}
-            disabled={moving}
+            disabled={moving || readOnly}
             onChange={(event) => onMove(issue, event.target.value || null)}
           >
             <option value="">Ungrouped</option>
@@ -98,6 +111,7 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
           </select>
         </label>
       </div>
+      {status && <div className="github-issue-card__status" role="status">{status}</div>}
     </article>
   )
 })

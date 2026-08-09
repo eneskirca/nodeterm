@@ -23,6 +23,7 @@ export type GitHubConfigError =
   | 'unknown-column'
   | 'duplicate-column'
   | 'empty-label'
+  | 'label-too-long'
   | 'duplicate-label'
   | 'invalid-completion-column'
 
@@ -151,10 +152,12 @@ export type GitHubMutationResult =
   | { status: 'refresh-pending'; issue: GitHubIssue }
   | { status: 'stale'; issue: GitHubIssue }
   | { status: 'configuration-changed' }
+  | { status: 'read-only' }
   | { status: 'invalid-target' }
+  | { status: 'failed'; message: string }
 
 export interface CreateMappedLabelsResult {
-  status: 'confirmed' | 'configuration-changed'
+  status: 'confirmed' | 'configuration-changed' | 'read-only' | 'partial'
   created: string[]
   remaining: string[]
 }

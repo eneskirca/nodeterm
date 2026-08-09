@@ -96,6 +96,10 @@ export class GitHubRequestCoordinator {
     for (const job of state.readQueue.splice(0)) job.reject(error)
   }
 
+  cancelAll(): void {
+    for (const identity of this.states.keys()) this.cancelIdentity(identity)
+  }
+
   private state(identity: string): IdentityState {
     let state = this.states.get(identity)
     if (!state) {

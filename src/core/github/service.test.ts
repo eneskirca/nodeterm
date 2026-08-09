@@ -9,7 +9,12 @@ import {
   type GitHubIssuesClientLike
 } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
-import type { GitHubIssue, NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
+import type {
+  GitHubIssue,
+  IssuePageResult,
+  ListIssueOptions,
+  NormalisedProjectKanbanGitHub
+} from '../../shared/github-issues'
 
 let userDataDir: string
 
@@ -51,7 +56,7 @@ class FixtureClient implements GitHubIssuesClientLike {
     for (const item of issues) this.issues.set(item.number, item)
   }
 
-  async listIssues() {
+  async listIssues(_repository: string, _options: ListIssueOptions): Promise<IssuePageResult> {
     return { items: [...this.issues.values()] }
   }
 
@@ -111,6 +116,52 @@ afterEach(async () => {
 })
 
 describe('GitHubIssueService', () => {
+  it('rebuilds every page unconditionally during a full reconciliation', async () => {
+    const client = new FixtureClient([])
+    const calls: Array<{ page: number; etag?: string }> = []
+    client.listIssues = async (_repository: string, options: { page: number; etag?: string }) => {
+      calls.push({ page: options.page, ...(options.etag ? { etag: options.etag } : {}) })
+      return options.page === 1
+        ? { items: [issue(1)], nextPage: 2, etag: 'page-one' }
+        : { items: [issue(2)], etag: 'page-two' }
+    }
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [issue(99)], etags: { old: 'etag' },
+      lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      now: () => 10_000
+    })
+
+    await service.refresh({ projectId: 'project-1', full: true })
+
+    expect(calls).toEqual([{ page: 1 }, { page: 2 }])
+    expect((await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })).items
+      .map((item) => item.number)).toEqual([2, 1])
+  })
+
+  it('advances the incremental watermark to refresh start, not completion', async () => {
+    const client = new FixtureClient([issue(1)])
+    const times = [1_000, 9_000, 12_000]
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [], etags: {}, lastSuccessfulRefreshAt: 500, lastFullReconciliationAt: 999
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      now: () => times.shift() ?? 12_000
+    })
+    await service.refresh({ projectId: 'project-1' })
+    const saved = await cache.load('user-1', 'o/r')
+    expect(saved.lastComplete?.lastSuccessfulRefreshAt).toBe(1_000)
+  })
+
   it('refreshes and maps open, closed, unmatched, and conflicting issues', async () => {
     const client = new FixtureClient([
       issue(1, { labels: [{ id: 1, name: 'status:todo', color: '0a84ff' }] }),
@@ -140,6 +191,30 @@ describe('GitHubIssueService', () => {
       .map((item) => item.number)).toEqual([4])
   })
 
+  it('reads and clears an approved private cache while signed out', async () => {
+    const client = new FixtureClient([issue(1)])
+    const cache = new GitHubIssueCache(userDataDir)
+    const online = new GitHubIssueService({
+      cache, coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    await online.refresh({ projectId: 'project-1', full: true })
+
+    const offline = new GitHubIssueService({
+      cache, coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => { throw new Error('not-authenticated') },
+      projectContextForCache: async () => {
+        const { credentialGeneration: _generation, userId: _userId, client: _client, ...base } = context(client)
+        return base
+      }
+    })
+    expect((await offline.query({ projectId: 'project-1', columnId: null, pageSize: 50 })).items
+      .map((item) => item.number)).toEqual([1])
+    await offline.clearCache({ projectId: 'project-1' })
+    expect(await cache.boundUserId('local-1', 'project-1', 'o/r')).toBeNull()
+    expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
+  })
+
   it('uses one poll timer for every visible subscriber to the same repository', async () => {
     const client = new FixtureClient([])
     const timers: Array<() => void> = []
@@ -160,6 +235,51 @@ describe('GitHubIssueService', () => {
     expect(cleared).toEqual([1])
   })
 
+  it('drops all subscriptions for a disconnected client and sends deltas only to subscribers', async () => {
+    const client = new FixtureClient([issue(1)])
+    const deltas: Array<[number, string, number[]]> = []
+    const timers: Array<() => void> = []
+    const cleared: unknown[] = []
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async (projectId) => context(client, { projectId }),
+      setInterval: (fn) => { timers.push(fn); return timers.length },
+      clearInterval: (id) => { cleared.push(id) },
+      onDelta: (uiId, projectId, numbers) => deltas.push([uiId, projectId, numbers])
+    })
+    await service.subscribe(7, { projectId: 'project-1' })
+    await service.subscribe(8, { projectId: 'project-2' })
+    client.issues.set(2, issue(2))
+    await service.refresh({ projectId: 'project-1', full: true })
+    expect(deltas.slice(-2)).toEqual([
+      [7, 'project-1', [2]],
+      [8, 'project-2', [2]]
+    ])
+
+    service.dropClient(7)
+    service.dropClient(8)
+    expect(cleared).toEqual([2, 1])
+  })
+
+  it('calculates counts from the active search and GitHub label filter', async () => {
+    const client = new FixtureClient([
+      issue(1, { title: 'Alpha bug', labels: [{ id: 1, name: 'bug', color: 'd73a4a' }] }),
+      issue(2, { title: 'Beta task', labels: [{ id: 2, name: 'feature', color: '0a84ff' }] })
+    ])
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir), coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    await service.refresh({ projectId: 'project-1', full: true })
+    const page = await service.query({
+      projectId: 'project-1', columnId: null, pageSize: 50,
+      search: 'alpha', labelFilter: ['github:bug']
+    })
+    expect(page.items.map((item) => item.number)).toEqual([1])
+    expect(page.counts).toEqual({ ungrouped: 1 })
+  })
+
   it('closes in completion, reopens outside it, and preserves unrelated labels', async () => {
     const shown = issue(42, {
       state: 'closed',
@@ -174,6 +294,7 @@ describe('GitHubIssueService', () => {
       coordinator: new GitHubRequestCoordinator({ sleep: async () => undefined }),
       contextForProject: async () => context(client)
     })
+    await service.refresh({ projectId: 'project-1', full: true })
     const result = await service.moveIssue({
       projectId: 'project-1', issueNumber: 42, toColumnId: 'todo', expectedUpdatedAt: shown.updatedAt
     })
@@ -190,6 +311,7 @@ describe('GitHubIssueService', () => {
       coordinator: new GitHubRequestCoordinator(),
       contextForProject: async () => context(client)
     })
+    await service.refresh({ projectId: 'project-1', full: true })
     const result = await service.moveIssue({
       projectId: 'project-1', issueNumber: 42, toColumnId: 'doing',
       expectedUpdatedAt: '2026-08-09T10:00:00Z'
@@ -198,17 +320,51 @@ describe('GitHubIssueService', () => {
     expect(client.updates).toEqual([])
   })
 
+  it('rejects mutation when the repository is incomplete or the issue is outside the complete snapshot', async () => {
+    const client = new FixtureClient([issue(42)])
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.saveIncompleteAttempt('user-1', 'o/r', {
+      reason: 'issue-limit', observedAt: 1, partialIssues: [issue(42)]
+    })
+    const service = new GitHubIssueService({
+      cache, coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    expect(await service.moveIssue({
+      projectId: 'project-1', issueNumber: 42, toColumnId: 'doing',
+      expectedUpdatedAt: issue(42).updatedAt
+    })).toEqual({ status: 'read-only' })
+    expect(client.updates).toEqual([])
+  })
+
+  it('verifies GitHub confirmed the requested state and labels', async () => {
+    const client = new FixtureClient([issue(42)])
+    client.updateIssue = async (_repository, number) => structuredClone(client.issues.get(number)!)
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir), coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    await service.refresh({ projectId: 'project-1', full: true })
+    await expect(service.moveIssue({
+      projectId: 'project-1', issueNumber: 42, toColumnId: 'doing',
+      expectedUpdatedAt: issue(42).updatedAt
+    })).rejects.toThrow('mutation-not-confirmed')
+  })
+
   it('cancels before the write when the approval epoch changes in the queue', async () => {
     const client = new FixtureClient([issue(42)])
-    let reads = 0
+    let moving = false
+    let moveReads = 0
     const service = new GitHubIssueService({
       cache: new GitHubIssueCache(userDataDir),
       coordinator: new GitHubRequestCoordinator(),
       contextForProject: async () => {
-        reads += 1
-        return context(client, { controlRevision: reads >= 4 ? 2 : 1 })
+        if (moving) moveReads += 1
+        return context(client, { controlRevision: moving && moveReads >= 3 ? 2 : 1 })
       }
     })
+    await service.refresh({ projectId: 'project-1', full: true })
+    moving = true
     const result = await service.moveIssue({
       projectId: 'project-1', issueNumber: 42, toColumnId: 'doing',
       expectedUpdatedAt: issue(42).updatedAt
@@ -237,14 +393,43 @@ describe('GitHubIssueService', () => {
     ])
   })
 
+  it('treats an exact concurrently created label as success and reports exact ownership', async () => {
+    const client = new FixtureClient([])
+    const original = client.createLabel.bind(client)
+    let raced = false
+    client.createLabel = async (repository, input) => {
+      if (!raced) {
+        raced = true
+        client.repositoryLabels.push({ id: 500, name: input.name.toUpperCase(),
+          color: input.color, description: null })
+        throw Object.assign(new Error('already exists'), { status: 422 })
+      }
+      return original(repository, input)
+    }
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator({ sleep: async () => undefined }),
+      contextForProject: async () => context(client)
+    })
+    expect(await service.createMissingLabels({ projectId: 'project-1' })).toEqual({
+      status: 'confirmed',
+      created: ['status:doing', 'status:done'],
+      remaining: []
+    })
+  })
+
   it('returns refresh-pending after one confirmed write when cache persistence fails', async () => {
     class FailingCache extends GitHubIssueCache {
       override async saveComplete(): Promise<void> { throw new Error('disk full') }
     }
     const shown = issue(42)
     const client = new FixtureClient([shown])
+    const cache = new FailingCache(userDataDir)
+    await GitHubIssueCache.prototype.saveComplete.call(cache, 'user-1', 'o/r', {
+      issues: [shown], etags: {}, lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
     const service = new GitHubIssueService({
-      cache: new FailingCache(userDataDir),
+      cache,
       coordinator: new GitHubRequestCoordinator(),
       contextForProject: async () => context(client)
     })

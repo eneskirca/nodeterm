@@ -48,13 +48,15 @@ Every card has a Move issue selector, so movement does not depend on drag and dr
 
 Use All, GitHub, or Sessions in the board header to choose which card sources are visible. The selection is temporary and does not change the project configuration.
 
+The label filter groups session labels and GitHub labels separately. GitHub selections are sent to the host with a `github:` namespace, while session selections remain local to the board.
+
 Issues are loaded in pages of up to 50 per column. Use Show more issues at the end of a column for the next page.
 
 ## Refresh and cache
 
 One repository poll runs every 60 seconds while at least one board view is visible. A complete reconciliation runs at least every 24 hours. Incremental refreshes overlap by two seconds to avoid missing boundary updates.
 
-The private host cache is stored under the nodeterm data directory in `github-issues-cache`. Clear cached data in Settings to remove the selected repository and identity cache. The next refresh rebuilds it.
+The private host cache is stored under the nodeterm data directory in `github-issues-cache`. Clear cached data in Settings to remove every identity cache linked to that local project and repository. This remains available while signed out and after revocation. The next authenticated refresh rebuilds it.
 
 nodeterm supports up to 10,000 issues and a 64 MiB cache document per repository. An incomplete refresh never replaces the last complete cache. If the first refresh exceeds a limit, the partial data is read only.
 

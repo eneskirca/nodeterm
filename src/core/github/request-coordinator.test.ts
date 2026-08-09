@@ -67,4 +67,23 @@ describe('GitHubRequestCoordinator', () => {
     await first
     await expect(queued).rejects.toMatchObject({ code: 'configuration-changed' })
   })
+
+  it('cancels queued work for every known identity at an authentication boundary', async () => {
+    const coordinator = new GitHubRequestCoordinator()
+    let releaseA: () => void = () => undefined
+    let releaseB: () => void = () => undefined
+    const activeA = coordinator.runMutation('user-a', () =>
+      new Promise<void>((resolve) => { releaseA = resolve }))
+    const activeB = coordinator.runMutation('user-b', () =>
+      new Promise<void>((resolve) => { releaseB = resolve }))
+    const queuedA = coordinator.runMutation('user-a', async () => 'must-not-run')
+    const queuedB = coordinator.runMutation('user-b', async () => 'must-not-run')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    coordinator.cancelAll()
+    releaseA()
+    releaseB()
+    await Promise.all([activeA, activeB])
+    await expect(queuedA).rejects.toMatchObject({ code: 'configuration-changed' })
+    await expect(queuedB).rejects.toMatchObject({ code: 'configuration-changed' })
+  })
 })

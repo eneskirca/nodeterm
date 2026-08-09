@@ -7072,14 +7072,19 @@ body,
   flex: 1;
   overflow-x: auto;
   overflow-y: hidden;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  /* Extra bottom room so the columns' cards clear the floating usage pill (bottom-left, z 26)
-     — the board's foot mirror of the top title strip. */
+  display: block;
   padding: 16px 16px 56px;
   height: 100%;
   box-sizing: border-box;
+}
+.kanban-board__columns {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  height: fit-content;
+  max-height: 100%;
 }
 .kanban-col {
   display: flex;
@@ -7299,6 +7304,12 @@ body,
 .github-issue-card__footer .kanban-card__avatars {
   margin-left: auto;
 }
+.github-issue-card__status {
+  margin-top: 7px;
+  color: rgba(var(--tint-rgb), 0.58);
+  font-size: 10px;
+  line-height: 1.35;
+}
 .github-issue-avatar {
   width: 18px;
   height: 18px;
@@ -7491,8 +7502,8 @@ body,
   background: rgba(var(--tint-rgb), 0.25);
 }
 .kanban-add-col {
-  flex: 0 0 auto;
   align-self: flex-start;
+  flex: 0 0 auto;
   background: rgba(var(--tint-rgb), 0.04);
   border: 1px dashed rgba(var(--tint-rgb), 0.15);
   border-radius: 10px;
@@ -8283,6 +8294,14 @@ body,
 }
 .kanban-filter-row:hover {
   background: rgba(var(--tint-rgb), 0.06);
+}
+.kanban-filter-group {
+  padding: 7px 10px 3px;
+  color: rgba(var(--tint-rgb), 0.42);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .kanban-filter-clear {
   margin-top: 4px;

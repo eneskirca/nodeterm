@@ -11,11 +11,13 @@ export interface GitHubProjectPages {
   moving: Record<number, true>
   loading: boolean
   error?: string
+  labelFilter: string[]
+  issueStatus: Record<number, string>
 }
 
 interface GitHubIssuesState {
   projects: Record<string, GitHubProjectPages>
-  connect(api: GitHubIssuesApi, projectId: string, columns: string[]): Promise<() => void>
+  connect(api: GitHubIssuesApi, projectId: string, columns: string[], labelFilter?: string[]): Promise<() => void>
   reload(api: GitHubIssuesApi, projectId: string): Promise<void>
   loadMore(api: GitHubIssuesApi, projectId: string, columnId: string | null): Promise<void>
   move(
@@ -32,12 +34,12 @@ const keyFor = (columnId: string | null): string => columnId ?? 'ungrouped'
 export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
   projects: {},
 
-  async connect(api, projectId, columns) {
+  async connect(api, projectId, columns, labelFilter = []) {
     set((state) => ({
       projects: {
         ...state.projects,
         [projectId]: {
-          pages: {}, columns, moving: {}, loading: true
+          pages: {}, columns, moving: {}, loading: true, labelFilter, issueStatus: {}
         }
       }
     }))
@@ -45,7 +47,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       const ungrouped = await api.subscribe(projectId)
       const columnPages = await Promise.all(columns.map(async (columnId) => [
         columnId,
-        await api.query({ projectId, columnId, pageSize: 50 })
+        await api.query({ projectId, columnId, pageSize: 50, labelFilter })
       ] as const))
       set((state) => ({
         projects: {
@@ -54,7 +56,9 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
             pages: { ungrouped, ...Object.fromEntries(columnPages) },
             columns,
             moving: state.projects[projectId]?.moving ?? {},
-            loading: false
+            issueStatus: state.projects[projectId]?.issueStatus ?? {},
+            loading: false,
+            labelFilter
           }
         }
       }))
@@ -63,7 +67,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         projects: {
           ...state.projects,
           [projectId]: {
-            pages: {}, columns, moving: {}, loading: false,
+            pages: {}, columns, moving: {}, loading: false, labelFilter, issueStatus: {},
             error: error instanceof Error ? error.message : 'GitHub issues are unavailable'
           }
         }
@@ -91,7 +95,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
     try {
       const pages = await Promise.all([null, ...current.columns].map(async (columnId) => [
         keyFor(columnId),
-        await api.query({ projectId, columnId, pageSize: 50 })
+        await api.query({ projectId, columnId, pageSize: 50, labelFilter: current.labelFilter })
       ] as const))
       set((state) => {
         const existing = state.projects[projectId]
@@ -127,7 +131,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       projectId,
       columnId,
       pageSize: 50,
-      cursor: current.nextCursor
+      cursor: current.nextCursor,
+      labelFilter: project.labelFilter
     })
     set((state) => {
       const existing = state.projects[projectId]
@@ -160,8 +165,47 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
     })
     try {
       const result = await api.moveIssue({ projectId, issueNumber, toColumnId, expectedUpdatedAt })
-      await get().reload(api, projectId)
+      const status = result.status === 'confirmed'
+        ? 'Synced with GitHub.'
+        : result.status === 'refresh-pending'
+          ? 'Updated on GitHub. Local refresh is pending.'
+          : result.status === 'stale'
+            ? 'Changed on GitHub. Review the latest issue and retry.'
+            : result.status === 'read-only'
+              ? 'This repository is read only until a complete refresh succeeds.'
+              : result.status === 'invalid-target'
+                ? 'This issue or destination is no longer available.'
+                : result.status === 'configuration-changed'
+                  ? 'GitHub settings changed. Refresh and retry.'
+                  : result.message
+      set((state) => {
+        const project = state.projects[projectId]
+        if (!project) return state
+        const pages = result.status === 'stale'
+          ? Object.fromEntries(Object.entries(project.pages).map(([key, page]) => [key, {
+            ...page,
+            items: page.items.map((item) => item.number === issueNumber
+              ? { ...item, ...result.issue }
+              : item)
+          }]))
+          : project.pages
+        return { projects: { ...state.projects, [projectId]: {
+          ...project, pages, issueStatus: { ...project.issueStatus, [issueNumber]: status }
+        } } }
+      })
+      if (result.status === 'confirmed' || result.status === 'refresh-pending' || result.status === 'stale') {
+        await get().reload(api, projectId)
+      }
       return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'GitHub sync failed'
+      set((state) => {
+        const project = state.projects[projectId]
+        return project ? { projects: { ...state.projects, [projectId]: {
+          ...project, issueStatus: { ...project.issueStatus, [issueNumber]: `Sync failed. ${message}` }
+        } } } : state
+      })
+      return { status: 'failed', message }
     } finally {
       set((state) => {
         const project = state.projects[projectId]

@@ -442,7 +442,10 @@ export async function startServer(
   attachWsServer(server, {
     platform,
     auth,
-    onClientGone: (uiId) => ptyManager.dropClient(uiId),
+    onClientGone: (uiId) => {
+      ptyManager.dropClient(uiId)
+      github.service.dropClient(uiId)
+    },
     trustProxy: config.trustProxy
   })
 

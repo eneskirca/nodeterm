@@ -208,10 +208,14 @@ const speechService = new SpeechService({ models: whisperModels, isPremium })
 // viewer. Inert with zero peers: the registry holds no sink, so none of this ever runs.
 // Wired once here — do not double-wire (4b Task 4). A second wirePeerRegistry() call would silently
 // overwrite these deps (last write wins), so keep this the sole call site in src/main.
+let dropGitHubRelayClient: ((id: number) => void) | undefined
 wirePeerRegistry({
   setFlow: (id, sid, resume, owner) => ptyManager.setFlow(id, sid, resume, owner),
   captureForResync: (sid) => ptyManager.captureForResync(sid),
-  onPeerGone: (id) => ptyManager.dropClient(id)
+  onPeerGone: (id) => {
+    ptyManager.dropClient(id)
+    dropGitHubRelayClient?.(id)
+  }
 })
 
 // Set once the app window is ready; used by the quit hooks to tear down SSH-project masters and
@@ -717,6 +721,7 @@ app.whenReady().then(async () => {
     secret: githubSecret,
     run: runGitHubCliCommand
   })
+  dropGitHubRelayClient = (id) => github.service.dropClient(id)
   registerElectronGitHubControl(
     ipcMain,
     () => getMainWindow()?.webContents.id,

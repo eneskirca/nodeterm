@@ -33,6 +33,7 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
     }
   }
   const controls = new GitHubControlStore(dependencies.userDataDir)
+  const coordinator = new GitHubRequestCoordinator()
   const resolver = new GitHubCredentialResolver({
     run: dependencies.run,
     secret: dependencies.secret,
@@ -45,15 +46,18 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
     resolver,
     secret: dependencies.secret,
     validateToken,
-    client: (token) => new GitHubIssuesClient({ token })
+    client: (token) => new GitHubIssuesClient({ token }),
+    onCredentialBoundaryChange: () => coordinator.cancelAll()
   })
   const service = new GitHubIssueService({
     cache: new GitHubIssueCache(dependencies.userDataDir),
-    coordinator: new GitHubRequestCoordinator(),
+    coordinator,
     contextForProject: (projectId) => controller.contextForProject(projectId),
+    projectContextForCache: (projectId) => controller.projectContextForCache(projectId),
+    projectContextForCacheDeletion: (projectId) => controller.projectContextForCacheDeletion(projectId),
     avatarFetcher: new GitHubAvatarFetcher(),
-    onDelta: (projectId, changedIssueNumbers) =>
-      dependencies.platform.broadcast(IPC.githubIssuesChanged(projectId), changedIssueNumbers)
+    onDelta: (uiId, projectId, changedIssueNumbers) =>
+      dependencies.platform.sendTo(uiId, IPC.githubIssuesChanged(projectId), changedIssueNumbers)
   })
   registerGitHubIssueHandlers(dependencies.platform, service)
   return { controller, service }

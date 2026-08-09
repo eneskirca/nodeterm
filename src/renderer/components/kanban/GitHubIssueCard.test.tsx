@@ -28,6 +28,7 @@ describe('GitHubIssueCard', () => {
           { id: 'done', title: 'Done', color: '#16a34a' }
         ]}
         moving={false}
+        readOnly={false}
         onOpen={vi.fn()}
         onMove={move}
         onDragStart={vi.fn()}
@@ -43,6 +44,14 @@ describe('GitHubIssueCard', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
     expect(move).toHaveBeenCalledWith(issue, 'done')
+    const card = host.querySelector<HTMLElement>('[role="button"]')!
+    const open = vi.fn()
+    act(() => root.render(
+      <GitHubIssueCard issue={issue} columns={[]} moving={false} readOnly={false}
+        onOpen={open} onMove={vi.fn()} onDragStart={vi.fn()} onDragEnd={vi.fn()} />
+    ))
+    act(() => card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(open).toHaveBeenCalledWith(issue)
     act(() => root.unmount())
   })
 })

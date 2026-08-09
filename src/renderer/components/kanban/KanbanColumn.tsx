@@ -14,6 +14,8 @@ interface KanbanColumnProps {
   githubCards?: GitHubIssueCardView[]
   githubColumns?: KanbanColumnT[]
   githubMoving?: Record<number, true>
+  githubReadOnly?: boolean
+  githubStatus?: Record<number, string>
   displayCount?: number
   // Column-scoped callbacks carry the column id (and card-scoped ones the node id) so KanbanView
   // can hand every column the SAME function references — that identity stability is what lets
@@ -49,6 +51,7 @@ interface KanbanColumnProps {
 
 export const KanbanColumn = memo(function KanbanColumn({
   column, cards, githubCards = [], githubColumns = [], githubMoving = {}, displayCount, metaOf, labelsOf,
+  githubReadOnly = false, githubStatus = {},
   onRename, onRecolor, onDelete, onOpenCard, onCardContext, onOpenGitHub, onMoveGitHub,
   onGitHubDragStart, onLoadMoreGitHub, hasMoreGitHub,
   createOptions, onCreate, onCardDragStart, onColumnDragStart, onDragEnd, onDropOnColumn,
@@ -176,6 +179,8 @@ export const KanbanColumn = memo(function KanbanColumn({
             issue={issue}
             columns={githubColumns}
             moving={!!githubMoving[issue.number]}
+            readOnly={githubReadOnly}
+            status={githubStatus[issue.number]}
             onOpen={(item) => onOpenGitHub?.(item)}
             onMove={(item, target) => onMoveGitHub?.(item, target)}
             onDragStart={(item) => onGitHubDragStart?.(item)}

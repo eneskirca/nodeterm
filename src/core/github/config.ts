@@ -66,10 +66,11 @@ export function normaliseProjectKanbanGitHub(
       return { ok: false, reason: 'invalid-shape' }
     }
     const columnId = mapping.columnId.trim()
-    const label = mapping.label.trim()
+    const label = mapping.label.trim().normalize('NFKC')
     if (!columnIds.has(columnId)) return { ok: false, reason: 'unknown-column' }
     if (seenColumns.has(columnId)) return { ok: false, reason: 'duplicate-column' }
     if (!label) return { ok: false, reason: 'empty-label' }
+    if (label.length > 50) return { ok: false, reason: 'label-too-long' }
     const folded = label.toLocaleLowerCase('en-US')
     if (seenLabels.has(folded)) return { ok: false, reason: 'duplicate-label' }
     seenColumns.add(columnId)

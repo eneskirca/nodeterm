@@ -92,4 +92,18 @@ describe('GitHubIssueCache', () => {
     expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
     expect((await cache.load('user-2', 'o/r')).lastComplete?.issues[0].number).toBe(2)
   })
+
+  it('persists a private approval binding so an offline session can locate and delete its cache', async () => {
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.saveComplete('user-1', 'o/r', complete([issue(1)]))
+    await cache.saveComplete('user-2', 'o/r', complete([issue(2)]))
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    expect(await cache.boundUserId('local-1', 'project-1', 'o/r')).toBe('user-1')
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-2')
+    expect(await cache.boundUserId('local-1', 'project-1', 'o/r')).toBe('user-2')
+    await cache.clearBound('local-1', 'project-1', 'o/r')
+    expect(await cache.boundUserId('local-1', 'project-1', 'o/r')).toBeNull()
+    expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
+    expect(await cache.load('user-2', 'o/r')).toEqual({ version: 1 })
+  })
 })

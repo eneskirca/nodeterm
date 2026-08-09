@@ -17,7 +17,7 @@ const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 export class GitHubClientError extends Error {
   constructor(
     readonly code: 'invalid-request' | 'malformed-response' | 'response-too-large' |
-      'request-failed' | 'rate-limited',
+      'request-failed' | 'rate-limited' | 'insufficient-permission',
     readonly status?: number,
     readonly retryAt?: number
   ) {
@@ -140,6 +140,7 @@ export class GitHubIssuesClient {
   private readonly fetcher: typeof fetch
   private readonly maximum: number
   private readonly timeoutMs: number
+  private secondaryBackoffMs = 1_000
 
   constructor(private readonly options: ClientOptions) {
     this.fetcher = options.fetch ?? fetch
@@ -193,7 +194,9 @@ export class GitHubIssuesClient {
   async getIssue(repository: string, issueNumber: number): Promise<GitHubIssue> {
     safeRepository(repository)
     if (!positiveInteger(issueNumber, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
-    const decoded = issueFrom(await this.json(await this.request(`/repos/${repository}/issues/${issueNumber}`, { method: 'GET' })))
+    const value = await this.json(await this.request(`/repos/${repository}/issues/${issueNumber}`, { method: 'GET' }))
+    if (object(value)?.pull_request !== undefined) throw new GitHubClientError('invalid-request')
+    const decoded = issueFrom(value)
     if (!decoded) throw new GitHubClientError('malformed-response')
     return decoded
   }
@@ -301,9 +304,20 @@ export class GitHubIssuesClient {
     if (response.status === 403 || response.status === 429) {
       const retryAfter = Number(response.headers.get('retry-after'))
       const reset = Number(response.headers.get('x-ratelimit-reset')) * 1_000
+      const primary = response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0'
+      const secondary = response.status === 429 ||
+        (response.status === 403 && Number.isFinite(retryAfter) && retryAfter > 0)
+      if (!primary && !secondary) {
+        throw new GitHubClientError('insufficient-permission', response.status)
+      }
       const retryAt = Number.isFinite(retryAfter) && retryAfter > 0
         ? Date.now() + retryAfter * 1_000
-        : Number.isFinite(reset) && reset > 0 ? reset : undefined
+        : primary && Number.isFinite(reset) && reset > 0
+          ? reset
+          : Date.now() + this.secondaryBackoffMs
+      if (secondary && !(Number.isFinite(retryAfter) && retryAfter > 0)) {
+        this.secondaryBackoffMs = Math.min(this.secondaryBackoffMs * 2, 60_000)
+      }
       throw new GitHubClientError('rate-limited', response.status, retryAt)
     }
     if (!response.ok) throw new GitHubClientError('request-failed', response.status)

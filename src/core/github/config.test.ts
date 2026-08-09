@@ -47,6 +47,22 @@ describe('normaliseProjectKanbanGitHub', () => {
     if (result.ok) expect(result.value.revision).toMatch(/^[0-9a-f]{64}$/)
   })
 
+  it('normalises Unicode labels before duplicate checks and persistence', () => {
+    const result = normaliseProjectKanbanGitHub({
+      columnMappings: [
+        { columnId: 'todo', label: ' status:cafe\u0301 ' },
+        { columnId: 'done', label: 'status:done' }
+      ],
+      completionColumnId: 'done'
+    }, columns)
+    expect(result).toMatchObject({ ok: true, value: {
+      columnMappings: [
+        { columnId: 'todo', label: 'status:café' },
+        { columnId: 'done', label: 'status:done' }
+      ]
+    } })
+  })
+
   it.each([
     [{ columnMappings: [{ columnId: 'missing', label: 'status:todo' }] }, 'unknown-column'],
     [{ columnMappings: [{ columnId: 'todo', label: '' }] }, 'empty-label'],
@@ -60,7 +76,8 @@ describe('normaliseProjectKanbanGitHub', () => {
     ] }, 'duplicate-column'],
     [{ columnMappings: [], completionColumnId: 'missing' }, 'invalid-completion-column'],
     [{ columnMappings: [{ columnId: 'todo', label: 'status:todo' }], completionColumnId: 'done' }, 'invalid-completion-column'],
-    [{ repository: 'https://gitlab.com/o/r', columnMappings: [] }, 'invalid-repository']
+    [{ repository: 'https://gitlab.com/o/r', columnMappings: [] }, 'invalid-repository'],
+    [{ columnMappings: [{ columnId: 'todo', label: 'x'.repeat(51) }] }, 'label-too-long']
   ])('rejects invalid configuration with %s', (input, reason) => {
     expect(normaliseProjectKanbanGitHub(input, columns)).toEqual({ ok: false, reason })
   })

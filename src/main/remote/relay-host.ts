@@ -196,6 +196,42 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
       ? { t: 'res', id, ok: true, result: { entries: [], unsupported: true } }
       : { t: 'res', id, ok: true, result: false }
 
+  const githubIssuesProject = (method: string, args: unknown[]): {
+    githubIssues: boolean
+    projectId: unknown
+  } => {
+    switch (method) {
+      case IPC.githubIssuesSubscribe:
+      case IPC.githubIssuesQuery:
+      case IPC.githubIssuesMove:
+        return {
+          githubIssues: true,
+          projectId: args[0] && typeof args[0] === 'object'
+            ? (args[0] as { projectId?: unknown }).projectId
+            : undefined
+        }
+      case IPC.githubIssuesRefresh:
+      case IPC.githubIssuesCreateLabels:
+      case IPC.githubIssuesClearCache:
+      case IPC.githubIssuesUnsubscribe:
+        return { githubIssues: true, projectId: args[0] }
+      default:
+        return { githubIssues: false, projectId: undefined }
+    }
+  }
+
+  const githubIssuesOutOfScope = (method: string, args: unknown[]): boolean => {
+    const target = githubIssuesProject(method, args)
+    return !!opts.sharedProjectId && target.githubIssues && target.projectId !== opts.sharedProjectId
+  }
+
+  const githubIssuesRefusal = (id: number): RpcErr => ({
+    t: 'res',
+    id,
+    ok: false,
+    error: { code: 'E_FORBIDDEN', message: 'GitHub Issues project is outside this relay session' }
+  })
+
   const socket = connectRelay({
     url: opts.url,
     token: opts.token,
@@ -249,6 +285,10 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
         return
       }
       if (m.t === 'req') {
+        if (githubIssuesOutOfScope(m.method, m.args)) {
+          socket.sendTunnelText(JSON.stringify(githubIssuesRefusal(m.id)))
+          return
+        }
         // Board-log read/append naming a project outside this session's scope: refuse WITHOUT
         // dispatching (the host router never resolves it), degrading exactly as an unknown project.
         if (
@@ -263,6 +303,7 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
           .dispatch(id, m)
           .then((res) => socket.sendTunnelText(JSON.stringify(scopeResponse(m.method, res))))
       } else if (m.t === 'cast') {
+        if (githubIssuesOutOfScope(m.method, m.args)) return
         // Board-log subscribe/unsubscribe: scope-jail out-of-scope projects, and track this
         // connection's net per-project count so a dropped guest's watch is released in detach().
         if (m.method === IPC.boardLogSubscribe || m.method === IPC.boardLogUnsubscribe) {

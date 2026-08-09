@@ -9,17 +9,22 @@ export function GitHubIssueSummaryModal({
   issue,
   columns,
   moving,
+  readOnly,
+  status,
   onMove,
   onClose
 }: {
   issue: GitHubIssueCardView
   columns: KanbanColumn[]
   moving: boolean
+  readOnly: boolean
+  status?: string
   onMove: (columnId: string | null) => void
   onClose: () => void
 }): React.JSX.Element {
   const { api } = useSession()
   const close = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLElement>(null)
   const opener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
   useEffect(() => {
     close.current?.focus()
@@ -28,6 +33,21 @@ export function GitHubIssueSummaryModal({
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
+      if (event.key === 'Tab' && dialog.current) {
+        const focusable = [...dialog.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+        )]
+        if (focusable.length === 0) return
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first.focus()
+        }
+      }
     }
     window.addEventListener('keydown', key)
     return () => window.removeEventListener('keydown', key)
@@ -35,6 +55,7 @@ export function GitHubIssueSummaryModal({
   return (
     <div className="kanban-modal-scrim" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialog}
         className="github-issue-modal"
         role="dialog"
         aria-modal="true"
@@ -54,7 +75,7 @@ export function GitHubIssueSummaryModal({
             <Select
               aria-label={`Move issue #${issue.number}`}
               value={issue.columnId ?? ''}
-              disabled={moving}
+              disabled={moving || readOnly}
               onChange={(event) => onMove(event.target.value || null)}
             >
               <option value="">Ungrouped</option>
@@ -68,6 +89,7 @@ export function GitHubIssueSummaryModal({
             This issue has conflicting mapped labels. Choose a column to replace them with one exact label.
           </p>
         )}
+        {status && <p className="github-issue-modal__warning" role="status">{status}</p>}
         <div className="github-issue-modal__body">
           {issue.body.trim() || 'No description provided.'}
         </div>

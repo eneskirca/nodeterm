@@ -60,6 +60,44 @@ describe('GitHubIssuesClient', () => {
     expect(page.items.map((item) => item.number)).toEqual([2])
   })
 
+  it('rejects a pull request returned by the single issue endpoint', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response(issue(7, { pull_request: { url: 'x' } }))
+    })
+    await expect(client.getIssue('nodeterm/nodeterm', 7))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
+  it('distinguishes permissions from primary and secondary rate limits', async () => {
+    const forbidden = new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'forbidden' }, { status: 403 })
+    })
+    await expect(forbidden.getIssue('nodeterm/nodeterm', 1))
+      .rejects.toMatchObject({ code: 'insufficient-permission', status: 403 })
+
+    const primary = new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'rate limit' }, {
+        status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2000000000' }
+      })
+    })
+    await expect(primary.getIssue('nodeterm/nodeterm', 1))
+      .rejects.toMatchObject({ code: 'rate-limited', status: 403, retryAt: 2_000_000_000_000 })
+
+    const before = Date.now()
+    const secondary = new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'slow down' }, { status: 429 })
+    })
+    await expect(secondary.getIssue('nodeterm/nodeterm', 1)).rejects.toMatchObject({
+      code: 'rate-limited', status: 429
+    })
+    try {
+      await secondary.getIssue('nodeterm/nodeterm', 1)
+    } catch (error) {
+      expect((error as { retryAt: number }).retryAt).toBeGreaterThanOrEqual(before + 2_000)
+    }
+  })
+
   it('returns the next page and ETag without arbitrary headers', async () => {
     const client = new GitHubIssuesClient({
       token: 'secret',

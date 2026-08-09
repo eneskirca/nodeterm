@@ -5,6 +5,7 @@ import type { GitHubIssue } from '../../shared/github-issues'
 import { parseGitHubRepository } from './config'
 
 const DIRECTORY = 'github-issues-cache'
+const BINDING_DIRECTORY = 'github-issues-bindings'
 const DEFAULT_MAXIMUM = 64 * 1024 * 1024
 
 export interface GitHubCompleteSnapshot {
@@ -142,6 +143,39 @@ export class GitHubIssueCache {
     await fs.rm(this.file(userId, repository), { force: true })
   }
 
+  async bind(
+    localApprovalId: string,
+    projectId: string,
+    repository: string,
+    userId: string
+  ): Promise<void> {
+    if (!userId || userId.length > 256) throw new GitHubCacheError('invalid-cache-key')
+    const file = this.bindingFile(localApprovalId, projectId, repository)
+    const existing = await this.readBinding(file)
+    const userIds = [...new Set([...(existing?.userIds ?? []), userId])]
+    await this.writePrivate(file, JSON.stringify({
+      version: 1,
+      activeUserId: userId,
+      userIds
+    }))
+  }
+
+  async boundUserId(
+    localApprovalId: string,
+    projectId: string,
+    repository: string
+  ): Promise<string | null> {
+    const binding = await this.readBinding(this.bindingFile(localApprovalId, projectId, repository))
+    return binding?.activeUserId ?? null
+  }
+
+  async clearBound(localApprovalId: string, projectId: string, repository: string): Promise<void> {
+    const binding = this.bindingFile(localApprovalId, projectId, repository)
+    const value = await this.readBinding(binding)
+    for (const userId of value?.userIds ?? []) await this.clear(userId, repository)
+    await fs.rm(binding, { force: true })
+  }
+
   private file(userId: string, repository: string): string {
     if (!userId || userId.length > 256 || parseGitHubRepository(repository) !== repository) {
       throw new GitHubCacheError('invalid-cache-key')
@@ -150,11 +184,55 @@ export class GitHubIssueCache {
     return path.join(this.userDataDir, DIRECTORY, `${digest}.json`)
   }
 
+  private bindingFile(localApprovalId: string, projectId: string, repository: string): string {
+    if (!localApprovalId || localApprovalId.length > 256 || !projectId || projectId.length > 256 ||
+        parseGitHubRepository(repository) !== repository) {
+      throw new GitHubCacheError('invalid-cache-key')
+    }
+    const digest = createHash('sha256')
+      .update(`${localApprovalId}\0${projectId}\0${repository}`)
+      .digest('hex')
+    return path.join(this.userDataDir, BINDING_DIRECTORY, `${digest}.json`)
+  }
+
+  private async readBinding(file: string): Promise<{
+    activeUserId: string
+    userIds: string[]
+  } | null> {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(file, 'utf-8'))
+      if (!parsed || typeof parsed !== 'object') return null
+      const value = parsed as {
+        version?: unknown
+        userId?: unknown
+        activeUserId?: unknown
+        userIds?: unknown
+      }
+      if (value.version !== 1) return null
+      const legacy = typeof value.userId === 'string' ? value.userId : undefined
+      const activeUserId = typeof value.activeUserId === 'string' ? value.activeUserId : legacy
+      const candidates = Array.isArray(value.userIds) ? value.userIds : legacy ? [legacy] : []
+      if (!activeUserId || activeUserId.length > 256 ||
+          candidates.some((userId) => typeof userId !== 'string' || !userId || userId.length > 256)) {
+        return null
+      }
+      const userIds = [...new Set(candidates as string[])]
+      if (!userIds.includes(activeUserId)) userIds.push(activeUserId)
+      return { activeUserId, userIds }
+    } catch {
+      return null
+    }
+  }
+
   private async write(file: string, document: GitHubCacheDocument): Promise<void> {
     const content = JSON.stringify(document)
     if (Buffer.byteLength(content, 'utf-8') > this.maximum) {
       throw new GitHubCacheError('cache-too-large')
     }
+    await this.writePrivate(file, content)
+  }
+
+  private async writePrivate(file: string, content: string): Promise<void> {
     await fs.mkdir(path.dirname(file), { recursive: true })
     const temporary = `${file}.tmp`
     await fs.writeFile(temporary, content, { encoding: 'utf-8', mode: 0o600 })

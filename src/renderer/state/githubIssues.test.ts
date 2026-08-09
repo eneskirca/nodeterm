@@ -34,15 +34,18 @@ beforeEach(() => useGitHubIssues.setState({ projects: {} }))
 describe('GitHub issue renderer state', () => {
   it('subscribes once and loads every visible column', async () => {
     const client = api()
-    const disconnect = await useGitHubIssues.getState().connect(client, 'p1', ['todo', 'done'])
+    const disconnect = await useGitHubIssues.getState().connect(
+      client, 'p1', ['todo', 'done'], ['github:bug']
+    )
     expect(client.subscribe).toHaveBeenCalledWith('p1')
     expect(client.query).toHaveBeenCalledTimes(2)
+    expect(client.query).toHaveBeenCalledWith(expect.objectContaining({ labelFilter: ['github:bug'] }))
     expect(useGitHubIssues.getState().projects.p1.pages.todo.items[0].number).toBe(2)
     disconnect()
     expect(client.unsubscribe).toHaveBeenCalledWith('p1')
   })
 
-  it('marks only the issue being moved and reloads columns afterwards', async () => {
+  it('marks only the issue being moved and exposes an actionable non-confirmed status', async () => {
     const client = api()
     await useGitHubIssues.getState().connect(client, 'p1', ['todo'])
     let resolveMove!: (value: { status: 'configuration-changed' }) => void
@@ -52,5 +55,16 @@ describe('GitHub issue renderer state', () => {
     resolveMove({ status: 'configuration-changed' })
     await moving
     expect(useGitHubIssues.getState().projects.p1.moving[2]).toBeUndefined()
+    expect(useGitHubIssues.getState().projects.p1.issueStatus[2]).toContain('settings changed')
+  })
+
+  it('catches a failed move so fire-and-forget UI calls do not reject', async () => {
+    const client = api()
+    await useGitHubIssues.getState().connect(client, 'p1', ['todo'])
+    vi.mocked(client.moveIssue).mockRejectedValue(new Error('network down'))
+    await expect(useGitHubIssues.getState().move(
+      client, 'p1', 2, 'done', '2026-08-09T00:00:00Z'
+    )).resolves.toEqual({ status: 'failed', message: 'network down' })
+    expect(useGitHubIssues.getState().projects.p1.issueStatus[2]).toContain('network down')
   })
 })
