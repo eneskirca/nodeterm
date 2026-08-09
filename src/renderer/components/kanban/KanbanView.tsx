@@ -21,6 +21,12 @@ import { useGitHubIssues } from '../../state/githubIssues'
 import { useSession } from '../../session/session'
 import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
 import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
+import { ConfirmDialog } from '../ConfirmDialog'
+import {
+  githubMoveConfirmation,
+  githubMoveIntent,
+  type GitHubMoveConfirmation
+} from '../../lib/githubIssueMove'
 
 /** One session node shown as a board card — derived LIVE from the canvas nodes; the board
  *  itself stores only column assignments. */
@@ -107,6 +113,10 @@ export const KanbanView = memo(function KanbanView({
   const [source, setSource] = useState<KanbanSource>('all')
   const [modalIssue, setModalIssue] = useState<GitHubIssueCardView | null>(null)
   const [githubRetry, setGitHubRetry] = useState(0)
+  // A move that would close or reopen the issue on GitHub waits here for an explicit confirmation.
+  const [pendingGitHubMove, setPendingGitHubMove] = useState<
+    { issue: GitHubIssueCardView; columnId: string | null; confirmation: GitHubMoveConfirmation } | null
+  >(null)
   // Primitive selectors (not one object) — an object selector would re-render on every store set.
   const projectId = useProjects((s) => s.activeProjectId)
   const projectName = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.name)
@@ -247,25 +257,38 @@ export const KanbanView = memo(function KanbanView({
     return d
   }
 
+  // The ONE path every GitHub card move takes — drag drop, the card's Move selector, and the
+  // summary modal — so none of them can skip the confirmation the others ask for.
+  const requestGitHubMove = useCallback(
+    (issue: GitHubIssueCardView, columnId: string | null) => {
+      if (githubReadOnly) return
+      const completion = board.github?.completionColumnId
+      const intent = githubMoveIntent(issue, columnId, completion)
+      // Dropping a card back where it already sits is not a write: sending it would spend an API
+      // call and let GitHub rewrite state_reason for no reason the user asked for.
+      if (intent.kind === 'noop') return
+      const confirmation = githubMoveConfirmation(issue, columnId, completion)
+      if (confirmation) {
+        setPendingGitHubMove({ issue, columnId, confirmation })
+        return
+      }
+      void moveGitHubState(api.githubIssues, projectId, issue.number, columnId, issue.updatedAt)
+    },
+    [api.githubIssues, board.github?.completionColumnId, githubReadOnly, moveGitHubState, projectId]
+  )
+
   // columnId null = the virtual Ungrouped column.
   const dropOnColumn = useCallback(
     (columnId: string | null) => {
       const drag = takeDrag()
       if (!drag) return
       if (drag.kind === 'github') {
-        if (githubReadOnly) return
-        void moveGitHubState(
-          api.githubIssues,
-          projectId,
-          drag.issue.number,
-          columnId,
-          drag.issue.updatedAt
-        )
+        requestGitHubMove(drag.issue, columnId)
       } else if (drag.kind === 'card') commit(assignNode(board, drag.id, columnId, null))
       else if (columnId !== null) commit(moveColumn(board, drag.id, columnId))
       // a column dropped on Ungrouped is a no-op — Ungrouped is always first
     },
-    [api.githubIssues, board, commit, githubReadOnly, moveGitHubState, projectId]
+    [board, commit, requestGitHubMove]
   )
 
   const dropAtCard = useCallback(
@@ -273,14 +296,7 @@ export const KanbanView = memo(function KanbanView({
       const drag = takeDrag()
       if (!drag) return
       if (drag.kind === 'github') {
-        if (githubReadOnly) return
-        void moveGitHubState(
-          api.githubIssues,
-          projectId,
-          drag.issue.number,
-          columnId,
-          drag.issue.updatedAt
-        )
+        requestGitHubMove(drag.issue, columnId)
         return
       }
       if (drag.kind === 'column') {
@@ -296,7 +312,7 @@ export const KanbanView = memo(function KanbanView({
       }
       commit(assignNode(board, drag.id, columnId, beforeId))
     },
-    [api.githubIssues, board, commit, githubReadOnly, moveGitHubState, projectId, sessionIds]
+    [board, commit, requestGitHubMove, sessionIds]
   )
 
   // Per-column card lists in one pass, so a board render doesn't re-derive (and re-allocate)
@@ -345,10 +361,7 @@ export const KanbanView = memo(function KanbanView({
     (columnId: string) => commit(deleteColumn(board, columnId)),
     [board, commit]
   )
-  const handleMoveGitHub = useCallback((issue: GitHubIssueCardView, columnId: string | null) => {
-    if (githubReadOnly) return
-    void moveGitHubState(api.githubIssues, projectId, issue.number, columnId, issue.updatedAt)
-  }, [api.githubIssues, githubReadOnly, moveGitHubState, projectId])
+  const handleMoveGitHub = requestGitHubMove
   const githubPage = useCallback((columnId: string | null) =>
     github?.pages[columnId ?? 'ungrouped'], [github])
   const sessionVisible = source !== 'github'
@@ -556,6 +569,21 @@ export const KanbanView = memo(function KanbanView({
           status={github?.issueStatus[modalIssue.number]}
           onMove={(columnId) => handleMoveGitHub(modalIssue, columnId)}
           onClose={() => setModalIssue(null)}
+        />
+      )}
+      {pendingGitHubMove && (
+        <ConfirmDialog
+          message={pendingGitHubMove.confirmation.message}
+          confirmLabel={pendingGitHubMove.confirmation.confirmLabel}
+          danger={pendingGitHubMove.confirmation.danger}
+          onCancel={() => setPendingGitHubMove(null)}
+          onConfirm={() => {
+            const { issue, columnId } = pendingGitHubMove
+            setPendingGitHubMove(null)
+            void moveGitHubState(
+              api.githubIssues, projectId, issue.number, columnId, issue.updatedAt
+            )
+          }}
         />
       )}
     </div>

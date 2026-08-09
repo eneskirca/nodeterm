@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CREDENTIAL_CACHE_MS,
   GitHubCredentialResolver,
   type CommandRunner,
   type GitHubSecretStore
@@ -39,6 +40,75 @@ function fixture(options: {
   })
   return { resolver, calls }
 }
+
+describe('GitHubCredentialResolver caching', () => {
+  function counted(now: () => number) {
+    let ghCalls = 0
+    let validations = 0
+    const run: CommandRunner = async (_command, args) => {
+      ghCalls += 1
+      if (args[1] === 'status') return { ok: true, stdout: '', stderr: '' }
+      return { ok: true, stdout: 'gh-token\n', stderr: '' }
+    }
+    const secret: GitHubSecretStore = {
+      availability: 'encrypted',
+      readForHost: async () => null,
+      save: async () => undefined,
+      clear: async () => undefined
+    }
+    const resolver = new GitHubCredentialResolver({
+      run,
+      secret,
+      validate: async () => {
+        validations += 1
+        return { userId: 'gh-user', login: 'octocat' }
+      },
+      now
+    })
+    return { resolver, counts: () => ({ ghCalls, validations }) }
+  }
+
+  it('resolves once for repeated calls inside the cache window', async () => {
+    // Every epoch re-check in the service calls resolve(). Uncached, each one spawns two `gh`
+    // processes AND spends a /user request that no rate-limit accounting can see.
+    let clock = 1_000
+    const { resolver, counts } = counted(() => clock)
+
+    await resolver.resolve('gh')
+    const first = counts()
+    expect(first.ghCalls).toBe(2)
+    expect(first.validations).toBe(1)
+
+    clock += 1_000
+    await resolver.resolve('gh')
+    await resolver.resolve('gh')
+    expect(counts()).toEqual(first)
+
+    clock += CREDENTIAL_CACHE_MS
+    await resolver.resolve('gh')
+    expect(counts().validations).toBe(2)
+  })
+
+  it('re-resolves immediately after the credential boundary moves', async () => {
+    let clock = 1_000
+    const { resolver, counts } = counted(() => clock)
+    await resolver.resolve('gh')
+    expect(counts().validations).toBe(1)
+
+    resolver.invalidate()
+
+    await resolver.resolve('gh')
+    expect(counts().validations).toBe(2)
+  })
+
+  it('caches each provider separately', async () => {
+    let clock = 1_000
+    const { resolver, counts } = counted(() => clock)
+    await resolver.resolve('gh')
+    await resolver.resolve('auto')
+    expect(counts().validations).toBe(2)
+  })
+})
 
 describe('GitHubCredentialResolver', () => {
   const providerCases = [

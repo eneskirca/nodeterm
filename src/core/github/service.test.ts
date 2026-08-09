@@ -4,7 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { GitHubIssueCache } from './cache'
 import {
+  FULL_REFRESH_MIN_INTERVAL_MS,
   GitHubIssueService,
+  REFRESH_MIN_INTERVAL_MS,
   type GitHubIssueServiceContext,
   type GitHubIssuesClientLike
 } from './service'
@@ -722,5 +724,121 @@ describe('GitHubIssueService', () => {
     })
     expect(result.status).toBe('refresh-pending')
     expect(client.updates).toHaveLength(1)
+  })
+
+  it('omits state from a move that does not change it, so GitHub keeps state_reason', async () => {
+    // A closed-as-not_planned issue maps into the completion column, so a drag that lands it back
+    // where it already is would PATCH state:'closed' again. GitHub rewrites state_reason to
+    // 'completed' for that write, silently destroying the "wontfix" record nobody asked to change.
+    const shelved = issue(5, {
+      state: 'closed',
+      stateReason: 'not_planned',
+      labels: [{ id: 1, name: 'status:doing', color: 'ffd60a' }]
+    })
+    const client = new FixtureClient([shelved])
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [shelved], etags: {}, lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+
+    const result = await service.moveIssue({
+      projectId: 'project-1', issueNumber: 5, toColumnId: 'done',
+      expectedUpdatedAt: shelved.updatedAt
+    })
+
+    expect(result.status).toBe('confirmed')
+    expect(client.updates).toHaveLength(1)
+    expect(client.updates[0].input.state).toBeUndefined()
+    expect(client.updates[0].input.labels).toEqual(['status:done'])
+  })
+
+  it('still sends state when the move really does change it', async () => {
+    const open = issue(6, { labels: [{ id: 1, name: 'status:doing', color: 'ffd60a' }] })
+    const client = new FixtureClient([open])
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [open], etags: {}, lastSuccessfulRefreshAt: 1, lastFullReconciliationAt: 1
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+
+    const result = await service.moveIssue({
+      projectId: 'project-1', issueNumber: 6, toColumnId: 'done',
+      expectedUpdatedAt: open.updatedAt
+    })
+
+    expect(result.status).toBe('confirmed')
+    expect(client.updates[0].input.state).toBe('closed')
+  })
+
+  it('skips a repeat refresh inside the minimum interval', async () => {
+    const client = new FixtureClient([issue(1)])
+    let listed = 0
+    client.listIssues = async () => {
+      listed += 1
+      return { items: [issue(1)] }
+    }
+    let clock = 1_000_000
+    let resolutions = 0
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => {
+        resolutions += 1
+        return context(client)
+      },
+      now: () => clock
+    })
+
+    await service.refresh({ projectId: 'project-1' })
+    expect(listed).toBe(1)
+    const afterFirst = resolutions
+
+    clock += 1_000
+    await service.refresh({ projectId: 'project-1' })
+    expect(listed).toBe(1)
+    // The throttle must run BEFORE the credential resolution, or the expensive half still happens.
+    expect(resolutions).toBe(afterFirst)
+
+    clock += REFRESH_MIN_INTERVAL_MS
+    await service.refresh({ projectId: 'project-1' })
+    expect(listed).toBe(2)
+  })
+
+  it('lets a full refresh through its own longer interval, not the incremental one', async () => {
+    const client = new FixtureClient([issue(1)])
+    const fullPages: Array<string | undefined> = []
+    client.listIssues = async (_repository, options: ListIssueOptions) => {
+      fullPages.push(options.since)
+      return { items: [issue(1)] }
+    }
+    let clock = 1_000_000
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      now: () => clock
+    })
+
+    await service.refresh({ projectId: 'project-1', full: true })
+    expect(fullPages).toHaveLength(1)
+
+    clock += REFRESH_MIN_INTERVAL_MS
+    await service.refresh({ projectId: 'project-1', full: true })
+    expect(fullPages).toHaveLength(1)
+
+    clock += FULL_REFRESH_MIN_INTERVAL_MS
+    await service.refresh({ projectId: 'project-1', full: true })
+    expect(fullPages).toHaveLength(2)
   })
 })

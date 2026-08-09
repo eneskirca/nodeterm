@@ -18,6 +18,8 @@ Repository overrides and label mappings are shared in `.nodeterm/project.json`. 
 
 ## Authentication
 
+A resolved credential is reused for up to 30 seconds so that reading issues does not re-run the GitHub CLI and re-validate the token on every request. Saving a token, clearing it, switching provider, or revoking the machine drops that immediately.
+
 Auto uses an authenticated GitHub CLI first and falls back to a saved token. GitHub CLI only and Personal access token only enforce the selected method exactly.
 
 For GitHub CLI, sign in to `github.com` with `gh auth login`.
@@ -38,7 +40,9 @@ Each configured column has one exact issue label. Matching is case insensitive, 
 - Issues with several mapped labels appear in Ungrouped with a conflict warning.
 - Closed issues appear in the completion column.
 - Moving an issue to the completion column closes it.
-- Moving a closed issue outside the completion column reopens it.
+- Moving a closed issue outside the completion column reopens it, including a drop on Ungrouped.
+- Closing and reopening ask for confirmation first. Both notify everyone watching the issue and neither can be undone from the board. Moves that only rewrite labels apply immediately, and a card dropped back where it already sits writes nothing.
+- A move never rewrites the GitHub close reason. Re-closing an issue that is already closed leaves a `not planned` close as it is.
 - Unrelated labels are preserved.
 - Pull requests are excluded.
 
@@ -54,7 +58,7 @@ Issues are loaded in pages of up to 50 per column. Use Show more issues at the e
 
 ## Refresh and cache
 
-One repository poll runs every 60 seconds while at least one board view is visible. A complete reconciliation runs at least every 24 hours. Incremental refreshes overlap by two seconds to avoid missing boundary updates.
+One repository poll runs every 60 seconds while at least one board view is visible. Requested refreshes are floored at one every 30 seconds per project, and a full reconciliation at one every 2 minutes, so a repeated request cannot spend the account's hourly API quota. A refresh that fails does not hold the floor, so Retry stays responsive. A complete reconciliation runs at least every 24 hours. Incremental refreshes overlap by two seconds to avoid missing boundary updates.
 
 The private host cache is stored under the nodeterm data directory in `github-issues-cache`. Clear cached data in Settings to remove every identity cache linked to that local project and repository. This remains available while signed out and after revocation. The next authenticated refresh rebuilds it.
 

@@ -54,12 +54,47 @@ type ResolverDependencies = {
   run: CommandRunner
   secret: GitHubSecretStore
   validate(token: string): Promise<ValidatedGitHubIdentity | null>
+  now?: () => number
 }
 
+/** How long one resolved credential is reused. The service re-checks its epoch before every read
+ *  and around every write, and each check calls resolve() — which, uncached, spawns `gh auth
+ *  status` + `gh auth token` AND spends a GET /user request. Those /user calls never pass through
+ *  the request coordinator, so they are neither rate-limited nor backed off: a single full sync of
+ *  a large repository could fire hundreds of them, trip GitHub's secondary limiter, and surface as
+ *  "not authenticated" to a user who is signed in perfectly well. Short enough that an external
+ *  `gh auth logout` is noticed promptly; every in-app credential change calls invalidate() instead
+ *  of waiting for it. */
+export const CREDENTIAL_CACHE_MS = 30_000
+
+type CacheEntry = { at: number; value: ResolvedGitHubCredential | null }
+
 export class GitHubCredentialResolver {
-  constructor(private readonly dependencies: ResolverDependencies) {}
+  private readonly cache = new Map<GitHubAuthProvider, CacheEntry>()
+  private readonly now: () => number
+
+  constructor(private readonly dependencies: ResolverDependencies) {
+    this.now = dependencies.now ?? Date.now
+  }
 
   async resolve(provider: GitHubAuthProvider): Promise<ResolvedGitHubCredential | null> {
+    const cached = this.cache.get(provider)
+    const at = this.now()
+    if (cached && at - cached.at < CREDENTIAL_CACHE_MS) return cached.value
+    const value = await this.resolveUncached(provider)
+    // A null answer is cached too: "gh is logged out" is exactly the state that would otherwise
+    // re-spawn two processes on every epoch check of every failing refresh.
+    this.cache.set(provider, { at, value })
+    return value
+  }
+
+  /** Drop the memo the moment the credential boundary moves (token saved/cleared, provider
+   *  switched, project revoked) so the next resolve reflects the new reality immediately. */
+  invalidate(): void {
+    this.cache.clear()
+  }
+
+  private async resolveUncached(provider: GitHubAuthProvider): Promise<ResolvedGitHubCredential | null> {
     if (provider === 'gh') return this.fromGitHubCli()
     if (provider === 'token') return this.fromStoredToken()
     return (await this.fromGitHubCli()) ?? this.fromStoredToken()

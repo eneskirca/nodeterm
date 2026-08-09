@@ -25,6 +25,16 @@ const MAX_CACHE_BYTES = 64 * 1024 * 1024
 const FULL_REFRESH_AGE = 24 * 60 * 60_000
 const POLL_MS = 60_000
 
+/** Floor between two caller-driven refreshes of one project, and the longer floor for a FULL
+ *  reconciliation. `refresh` is reachable from the renderer AND — for a shared project — from a
+ *  relay guest, and nothing else bounds it: `state.refresh` coalesces CONCURRENT calls but not
+ *  sequential ones, so an unthrottled caller can restart a whole-repository scan as fast as the
+ *  previous one completes and spend the host's entire hourly quota (which is the ACCOUNT's quota —
+ *  it degrades the user's `gh` CLI and github.com session too, not just nodeterm). Both floors sit
+ *  under POLL_MS so the background poll is never the thing they throttle. */
+export const REFRESH_MIN_INTERVAL_MS = 30_000
+export const FULL_REFRESH_MIN_INTERVAL_MS = 120_000
+
 export interface GitHubIssuesClientLike {
   listIssues(repository: string, options: ListIssueOptions): Promise<IssuePageResult>
   getIssue(repository: string, issueNumber: number): Promise<GitHubIssue>
@@ -144,6 +154,7 @@ export class GitHubIssueService {
   private readonly issueChains = new Map<string, Promise<void>>()
   private readonly repositoryControls = new Map<string, RepositoryControl>()
   private readonly statePreparations = new Map<string, Set<Promise<RepositoryState>>>()
+  private readonly refreshFloors = new Map<string, { any: number; full: number }>()
   private operationSequence = 0
   private readonly now: () => number
   private readonly schedule: NonNullable<ServiceOptions['setInterval']>
@@ -205,6 +216,37 @@ export class GitHubIssueService {
   }
 
   async refresh(request: { projectId: string; full?: boolean }): Promise<void> {
+    // The floor is checked BEFORE contextForProject on purpose: resolving a context runs the whole
+    // credential chain (gh subprocesses + a /user round trip), so a throttle placed after it would
+    // still pay the expensive half of every call it rejects.
+    const full = request.full === true
+    const startedAt = this.now()
+    const previousFloor = this.refreshFloors.get(request.projectId)
+    if (previousFloor && startedAt < (full ? previousFloor.full : previousFloor.any)) return
+    this.refreshFloors.set(request.projectId, {
+      any: startedAt + REFRESH_MIN_INTERVAL_MS,
+      // An incremental pass does not satisfy a full reconciliation, so it never moves that floor.
+      full: full ? startedAt + FULL_REFRESH_MIN_INTERVAL_MS : previousFloor?.full ?? 0
+    })
+    try {
+      // Reuse the clock read above as the refresh's own start stamp: one read per refresh keeps the
+      // incremental watermark anchored to when the work actually began.
+      return await this.refreshWithinFloor(request, startedAt)
+    } catch (error) {
+      // A refresh that FAILED bought nothing, so it must not hold the floor — otherwise the first
+      // network blip disables the board's own Retry button for the next 30 seconds.
+      if (this.refreshFloors.get(request.projectId)?.any === startedAt + REFRESH_MIN_INTERVAL_MS) {
+        if (previousFloor) this.refreshFloors.set(request.projectId, previousFloor)
+        else this.refreshFloors.delete(request.projectId)
+      }
+      throw error
+    }
+  }
+
+  private async refreshWithinFloor(
+    request: { projectId: string; full?: boolean },
+    startedAt = this.now()
+  ): Promise<void> {
     const operationId = ++this.operationSequence
     const captured = await this.options.contextForProject(request.projectId)
     const control = this.repositoryControl(captured.repository)
@@ -220,7 +262,8 @@ export class GitHubIssueService {
     if (state.refresh) return state.refresh
     const cacheGeneration = state.cacheGeneration
     const work = this.refreshRepository(
-      captured, state, request.full === true, cacheGeneration, operationId, repositoryGeneration
+      captured, state, request.full === true, cacheGeneration, operationId, repositoryGeneration,
+      startedAt
     )
     state.refresh = work
     try { await work } finally { if (state.refresh === work) delete state.refresh }
@@ -329,8 +372,16 @@ export class GitHubIssueService {
       const labels = latest.labels.map((label) => label.name)
         .filter((name) => !mappedNames.has(foldLabel(name)))
       if (destination) labels.push(destination.label)
+      const desiredState = request.toColumnId === captured.config.completionColumnId
+        ? 'closed'
+        : 'open'
       const input: UpdateIssueInput = {
-        state: request.toColumnId === captured.config.completionColumnId ? 'closed' : 'open',
+        // Send `state` ONLY when it actually changes. GitHub rewrites `state_reason` for any write
+        // that carries `state`, so re-closing an already-closed issue turns a deliberate
+        // 'not_planned' (wontfix) into 'completed'. Closed issues all map into the completion
+        // column, so a drag that lands one back where it already sits is a no-op the user never
+        // meant as a state change — and it must not be one on GitHub either.
+        ...(latest.state === desiredState ? {} : { state: desiredState }),
         labels
       }
       if (capturedEpoch !== epoch(await this.options.contextForProject(request.projectId))) {
@@ -350,7 +401,7 @@ export class GitHubIssueService {
         label.name.normalize('NFKC').toLocaleLowerCase('en-US')))
       const expectedLabels = new Set(labels.map((label) =>
         label.normalize('NFKC').toLocaleLowerCase('en-US')))
-      if (updated.state !== input.state || confirmedLabels.size !== expectedLabels.size ||
+      if (updated.state !== desiredState || confirmedLabels.size !== expectedLabels.size ||
           [...expectedLabels].some((label) => !confirmedLabels.has(label))) {
         throw new Error('mutation-not-confirmed')
       }
@@ -646,9 +697,9 @@ export class GitHubIssueService {
     forceFull: boolean,
     cacheGeneration: number,
     operationId: number,
-    repositoryGeneration: number
+    repositoryGeneration: number,
+    refreshStartedAt: number
   ): Promise<void> {
-    const refreshStartedAt = this.now()
     const full = forceFull || !state.snapshot ||
       this.now() - state.snapshot.lastFullReconciliationAt >= FULL_REFRESH_AGE
     const previous = state.snapshot
@@ -734,7 +785,12 @@ export class GitHubIssueService {
   private async poll(state: RepositoryState): Promise<void> {
     for (const projectId of [...state.subscribers.keys()]) {
       try {
-        await this.refresh({ projectId })
+        // Deliberately BELOW the caller floor: the floor bounds callers we don't control (the
+        // renderer, and a relay guest on a shared project), while the poll is already paced by
+        // POLL_MS. Routing it through the floor would also break this loop's fallback — a
+        // throttled call returns without throwing, which reads here as "this project worked" and
+        // would stop us ever trying the next subscriber's context.
+        await this.refreshWithinFloor({ projectId })
         return
       } catch {
         // Another approved project may still provide a valid context for the shared repository.
