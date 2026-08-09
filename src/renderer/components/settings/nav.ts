@@ -13,6 +13,7 @@ export type SettingsSectionId =
   | 'notifications'
   | 'commit'
   | 'tmux'
+  | 'github-issues'
   | 'license'
   | 'presence'
   | 'remote'
@@ -55,6 +56,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       { id: 'terminal', title: 'Terminal' },
       { id: 'shell', title: 'Shell' },
       { id: 'tmux', title: 'tmux' },
+      { id: 'github-issues', title: 'GitHub Issues' },
       { id: 'behavior', title: 'Behavior' }
     ]
   },

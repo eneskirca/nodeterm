@@ -347,6 +347,8 @@ export function buildStubApi(): Omit<
     | 'files'
     | 'context'
     | 'boardLog'
+    | 'githubIssues'
+    | 'githubControl'
     | 'canvas'
     | 'dialog'
     | 'onAgentStatus'

@@ -25,6 +25,7 @@ import { TeamAccessSection } from './sections/TeamAccessSection'
 import { SshSection } from './sections/SshSection'
 import { UpdatesSection } from './sections/UpdatesSection'
 import { PrivacySection } from './sections/PrivacySection'
+import { GitHubIssuesSection } from './sections/GitHubIssuesSection'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
 
@@ -83,6 +84,7 @@ export function SettingsPage({
             <NotificationsSection isActive={active === 'notifications'} />
             <CommitSection isActive={active === 'commit'} />
             <TmuxSection isActive={active === 'tmux'} />
+            <GitHubIssuesSection isActive={active === 'github-issues'} />
             <LicenseSection isActive={active === 'license'} />
             <PresenceIdentitySection isActive={active === 'presence'} />
             <RemoteSection isActive={active === 'remote'} onClose={onClose} />

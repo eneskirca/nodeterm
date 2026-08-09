@@ -39,19 +39,29 @@ describe('ServerGitHubSecretStore', () => {
 describe('registerServerGitHubControl', () => {
   it('registers control methods on the authenticated server RPC platform', async () => {
     const platform = new ServerPlatform({ userDataDir, appVersion: '0' })
+    const view = {
+      control: { revision: 0, authProvider: 'auto' as const },
+      auth: {
+        selectedProvider: 'auto' as const,
+        activeProvider: null,
+        ghAuthenticated: false,
+        tokenPresent: false,
+        storage: 'restricted-file' as const
+      }
+    }
     const controller = {
-      status: vi.fn(async () => ({ action: 'status' })),
-      approve: vi.fn(async () => ({ action: 'approve' })),
-      revoke: vi.fn(async () => ({ action: 'revoke' })),
-      selectProvider: vi.fn(async () => ({ action: 'provider' })),
-      saveToken: vi.fn(async () => ({ action: 'save' })),
-      clearToken: vi.fn(async () => ({ action: 'clear' }))
+      status: vi.fn(async () => view),
+      approve: vi.fn(async () => view),
+      revoke: vi.fn(async () => view),
+      selectProvider: vi.fn(async () => view),
+      saveToken: vi.fn(async () => view),
+      clearToken: vi.fn(async () => view)
     }
     registerServerGitHubControl(platform, controller)
     const response = await platform.dispatch(1, {
       t: 'req', id: 1, method: IPC.githubControlStatus, args: ['p1']
     })
-    expect(response).toMatchObject({ ok: true, result: { action: 'status' } })
+    expect(response).toMatchObject({ ok: true, result: view })
     expect(controller.status).toHaveBeenCalledWith('p1')
   })
 })

@@ -72,13 +72,23 @@ describe('ElectronGitHubSecretStore', () => {
 describe('registerElectronGitHubControl', () => {
   it('accepts only the current local main window and wires every control action', async () => {
     const handlers = new Map<string, (event: { sender: { id: number } }, ...args: any[]) => unknown>()
+    const view = {
+      control: { revision: 0, authProvider: 'auto' as const },
+      auth: {
+        selectedProvider: 'auto' as const,
+        activeProvider: null,
+        ghAuthenticated: false,
+        tokenPresent: false,
+        storage: 'encrypted' as const
+      }
+    }
     const controller = {
-      status: vi.fn(async () => ({ ok: 'status' })),
-      approve: vi.fn(async () => ({ ok: 'approve' })),
-      revoke: vi.fn(async () => ({ ok: 'revoke' })),
-      selectProvider: vi.fn(async () => ({ ok: 'provider' })),
-      saveToken: vi.fn(async () => ({ ok: 'save' })),
-      clearToken: vi.fn(async () => ({ ok: 'clear' }))
+      status: vi.fn(async () => view),
+      approve: vi.fn(async () => view),
+      revoke: vi.fn(async () => view),
+      selectProvider: vi.fn(async () => view),
+      saveToken: vi.fn(async () => view),
+      clearToken: vi.fn(async () => view)
     }
     registerElectronGitHubControl(
       { handle: (channel, handler) => handlers.set(channel, handler) },
@@ -97,7 +107,7 @@ describe('registerElectronGitHubControl', () => {
       handlers.get(IPC.githubControlStatus)!({ sender: { id: 8 } }, 'p1')))
       .rejects.toMatchObject({ code: 'E_FORBIDDEN' })
     await expect(handlers.get(IPC.githubControlStatus)!({ sender: { id: 7 } }, 'p1'))
-      .resolves.toEqual({ ok: 'status' })
+      .resolves.toEqual(view)
     expect(controller.status).toHaveBeenCalledWith('p1')
   })
 })

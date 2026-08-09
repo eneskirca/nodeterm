@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { SETTINGS_GROUPS, allSectionIds, FIRST_SECTION_ID, visibleSettingsGroups } from './nav'
 
 describe('SETTINGS_GROUPS', () => {
-  it('lists exactly 21 sections with no duplicates', () => {
+  it('lists exactly 22 sections with no duplicates', () => {
     const ids = allSectionIds()
-    expect(ids).toHaveLength(21)
-    expect(new Set(ids).size).toBe(21)
+    expect(ids).toHaveLength(22)
+    expect(new Set(ids).size).toBe(22)
   })
   it('starts at a section that exists in the groups', () => {
     expect(allSectionIds()).toContain(FIRST_SECTION_ID)
@@ -13,7 +13,7 @@ describe('SETTINGS_GROUPS', () => {
   it('hides mac-only sections off macOS, keeps them on', () => {
     const off = visibleSettingsGroups(false).flatMap((g) => g.sections.map((s) => s.id))
     expect(off).not.toContain('notch')
-    expect(off).toHaveLength(20)
+    expect(off).toHaveLength(21)
     expect(visibleSettingsGroups(true)).toEqual(SETTINGS_GROUPS)
     // No group is left empty by the filter.
     expect(visibleSettingsGroups(false).every((g) => g.sections.length > 0)).toBe(true)

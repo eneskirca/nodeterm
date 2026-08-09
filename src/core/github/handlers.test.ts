@@ -6,13 +6,18 @@ import { registerGitHubIssueHandlers } from './handlers'
 describe('registerGitHubIssueHandlers', () => {
   it('attributes subscriptions to the sender and exposes only domain operations', async () => {
     const calls: unknown[][] = []
+    const page = { items: [], counts: {}, partial: false, readOnly: false }
     const service = {
-      subscribe: async (...args: unknown[]) => { calls.push(['subscribe', ...args]); return { items: [] } },
+      subscribe: async (...args: unknown[]) => { calls.push(['subscribe', ...args]); return page },
       unsubscribe: (...args: unknown[]) => { calls.push(['unsubscribe', ...args]) },
-      query: async (...args: unknown[]) => { calls.push(['query', ...args]); return { items: [] } },
+      query: async (...args: unknown[]) => { calls.push(['query', ...args]); return page },
       refresh: async (...args: unknown[]) => { calls.push(['refresh', ...args]) },
-      moveIssue: async (...args: unknown[]) => { calls.push(['move', ...args]); return { status: 'confirmed' } },
-      createMissingLabels: async (...args: unknown[]) => { calls.push(['labels', ...args]); return { status: 'confirmed' } },
+      moveIssue: async (...args: unknown[]) => {
+        calls.push(['move', ...args]); return { status: 'configuration-changed' as const }
+      },
+      createMissingLabels: async (...args: unknown[]) => {
+        calls.push(['labels', ...args]); return { status: 'confirmed' as const, created: [], remaining: [] }
+      },
       clearCache: async (...args: unknown[]) => { calls.push(['clear', ...args]) }
     }
     const platform = fakePlatform()
