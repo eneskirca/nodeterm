@@ -44,6 +44,7 @@ const ROWS = {
       'approve',
       'ask',
       'claude',
+      'grok',
       'shift tab'
     ]
   },
@@ -80,7 +81,7 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
   // evidence of an old CLI, and guessing would be its own kind of wrong.
   const autoNote =
     settings.claudePermissionMode === 'auto' && cliCaps?.version && !cliCaps.autoPermissionMode
-      ? `Your Claude CLI (${cliCaps.version.split(/\s+/)[0]}) doesn't support Auto — sessions start in "${PERMISSION_MODE_LABELS.manual}". Requires Claude Code ${AUTO_PERMISSION_MODE_MIN_VERSION} or newer.`
+      ? `Your Claude CLI (${cliCaps.version.split(/\s+/)[0]}) doesn't support Auto — Claude sessions start in "${PERMISSION_MODE_LABELS.manual}". Requires Claude Code ${AUTO_PERMISSION_MODE_MIN_VERSION} or newer. Grok is unaffected.`
       : undefined
 
   return (
@@ -127,10 +128,10 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
         <FieldRow
           label="Permission mode"
           note={autoNote}
-          description="The mode Claude terminal sessions start in (chat nodes are not affected). Shift+Tab still switches modes at any time. Projects can override this from the tab ⌄ menu."
+          description="The mode Claude and Grok terminal sessions start in; other agents ignore it. Shift+Tab still switches modes at any time. Projects can override this from the tab ⌄ menu."
           control={
             <Select
-              aria-label="Claude permission mode"
+              aria-label="Agent permission mode"
               value={settings.claudePermissionMode}
               onChange={(e) =>
                 update({ claudePermissionMode: e.target.value as AgentPermissionMode })

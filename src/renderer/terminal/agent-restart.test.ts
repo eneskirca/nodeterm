@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { resumeCommand, withPermissionMode } from '../../shared/agents/config'
 import {
   __resetAgentRestartForTests,
   agentRestartFn,
@@ -17,9 +18,11 @@ import {
 } from './agent-restart'
 
 describe('exitSequence', () => {
-  it('knows claude and codex, refuses others', () => {
+  it('knows claude, codex and grok, refuses others', () => {
     expect(exitSequence('claude')).toBe('/exit')
     expect(exitSequence('codex')).toBe('/quit')
+    // grok's documented primary is `/quit` (`/exit` is its alias).
+    expect(exitSequence('grok')).toBe('/quit')
     expect(exitSequence('gemini')).toBeNull()
     expect(exitSequence('my-custom')).toBeNull()
   })
@@ -428,6 +431,82 @@ describe('performRestartResume', () => {
     await vi.advanceTimersByTimeAsync(2000)
     expect(await p).toBe('exit-timeout')
     expect(handles).toEqual([])
+  })
+})
+
+describe('performRestartResume — grok', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("quits with grok's own exit line and resumes by session id", async () => {
+    const { written, io } = fakeIo()
+    let pane = 'grok'
+    const p = performRestartResume({
+      agentId: 'grok',
+      sessionId: 'abc-1',
+      io,
+      paneCommand: async () => pane,
+      timeoutMs: 6000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(250) // a few polls while the CLI is still up
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('restarted')
+    // `/quit`, not claude's `/exit` — the table is per CLI.
+    expect(written.slice(0, 2)).toEqual(['\x15', '/quit\r'])
+    expect(written.join('')).toContain('grok --resume abc-1')
+  })
+
+  it("delivers the caller's permission-mode resume line, composed as TerminalNode composes it", async () => {
+    const { written, io } = fakeIo()
+    // The one place the two grok rules meet: `resumeCommand` builds the resume line and
+    // `withPermissionMode` appends the flag (no `--` separator here — the resume line carries no
+    // positional prompt). Pinned on the COMPOSED string, because that is what reaches the pane.
+    const command = withPermissionMode(resumeCommand('grok', 'abc-1')!, 'grok', 'plan')
+    expect(command).toBe('grok --resume abc-1 --permission-mode plan')
+    const p = performRestartResume({
+      agentId: 'grok',
+      sessionId: 'abc-1',
+      io,
+      command,
+      paneCommand: async () => 'zsh',
+      timeoutMs: 1000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('restarted')
+    expect(written.join('')).toContain('grok --resume abc-1 --permission-mode plan')
+  })
+})
+
+describe('restartEligibility — grok', () => {
+  it('is a target once it has a session id and is not busy', () => {
+    expect(restartEligibility('grok', 'done', 'abc-1')).toEqual({ ok: true })
+    expect(restartEligibility('grok', 'waiting', 'abc-1')).toEqual({ ok: true })
+    expect(restartEligibility('grok', 'done', undefined)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+  })
+
+  it('refuses a working OR blocked session — `/quit` typed into a prompt ANSWERS it', () => {
+    // Agent-agnostic by construction (BUSY_STATES), so grok needs no branch of its own.
+    for (const state of ['working', 'blocked'] as const)
+      expect(restartEligibility('grok', state, 'abc-1'), state).toEqual({
+        ok: false,
+        reason: 'working'
+      })
+  })
+
+  it('keeps a busy grok node out of the bulk run', () => {
+    const plan = planBulkRestart([
+      { id: 'idle', agentId: 'grok', state: 'done', sessionId: 'sid-1', wired: true },
+      { id: 'busy', agentId: 'grok', state: 'working', sessionId: 'sid-2', wired: true },
+      { id: 'prompt', agentId: 'grok', state: 'blocked', sessionId: 'sid-3', wired: true }
+    ])
+    expect(plan.runnable).toEqual(['idle'])
+    expect(plan.skipped).toEqual({ working: 2, noSession: 0 })
   })
 })
 

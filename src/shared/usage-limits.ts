@@ -109,9 +109,13 @@ export const USAGE_PROVIDER_IDS = [
 ] as const
 
 /**
- * Display names for usage providers that are NOT builtin agents — Grok, Kimi and the rest are
- * billing relationships we can read, not CLIs nodeterm spawns, so they have no AGENT_CONFIG
- * entry to borrow a label from.
+ * Display names for usage providers that have no `AGENT_CONFIG` entry to borrow a label from —
+ * Kimi, MiniMax and the rest are billing relationships we can read, not CLIs nodeterm spawns.
+ *
+ * `grok` is the exception, and its entry here is now DEAD: grok became a builtin agent, so
+ * `AGENT_CONFIG.grok.label` exists and `providerLabel` prefers it. The string is identical
+ * ('Grok'), so nothing visible changed — the row is kept as the fallback for a build where the
+ * agent is gone but the billing provider stays.
  */
 const PROVIDER_LABELS: Record<string, string> = {
   'claude-remote': 'Claude on SSH hosts',

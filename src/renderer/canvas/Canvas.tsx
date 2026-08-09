@@ -3087,7 +3087,7 @@ export function Canvas() {
           undefined,
           project?.ssh,
           account,
-          activePermissionMode()
+          activePermissionMode(agentId)
         )
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
@@ -4360,7 +4360,9 @@ export function Canvas() {
         // Inherit the source's Claude account (dropped by the factory unless the target is claude),
         // so a claude→claude transfer resumes the transcript from the right account dir.
         source.data.accountId,
-        activePermissionMode()
+        // The mode belongs to the node being OPENED, so it is gated on the TARGET agent — a
+        // handoff into grok must not inherit claude's version gate.
+        activePermissionMode(targetAgentId)
       )
       node.selected = true
       const placed = placeSpawned(node, at ?? besideNode(source))
@@ -5223,7 +5225,7 @@ export function Canvas() {
                   project,
                   useSettings.getState().settings.claudeAccounts
                 ),
-                activePermissionMode()
+                activePermissionMode(choice.agentId)
               )
       setNodes((ns) => [...ns, node])
       const board = project?.kanban ?? seedBoard
@@ -5701,7 +5703,7 @@ export function Canvas() {
                   args.prompt,
                   sshFor(agentCwd),
                   account,
-                  activePermissionMode()
+                  activePermissionMode(agentId)
                 ),
                 after ?? []
               )
@@ -5936,7 +5938,9 @@ export function Canvas() {
               vStore.getProject(vStore.activeProjectId ?? ''),
               useSettings.getState().settings.claudeAccounts
             )
-            const vMode = activePermissionMode()
+            // Every node in the panel (reviewers + judge) runs `reviewAgent`, so one resolution
+            // serves them all — gated on that agent, not on the caller's.
+            const vMode = activePermissionMode(reviewAgent)
             const reviewers = lenses.map((lens, i) => {
               const node = createAgentNode(
                 reviewAgent,
@@ -6049,15 +6053,18 @@ export function Canvas() {
             )
             // Build members; fixed role titles pin the node name (titleAuto off).
             const members = roles.map((r, i) => {
+              // Roles may name different agents, so the mode is resolved PER member: claude's
+              // `auto` version gate must not decide what a grok teammate launches with.
+              const memberAgent = (r.agent ?? 'claude') as AgentId
               const node = createAgentNode(
-                r.agent ?? 'claude',
+                memberAgent,
                 live.length + i,
                 srcCwd,
                 placeBelow(i),
                 r.prompt,
                 sshFor(srcCwd),
                 teamAccount,
-                activePermissionMode()
+                activePermissionMode(memberAgent)
               )
               return r.title ? { ...node, data: { ...node.data, title: r.title, titleAuto: false } } : node
             })

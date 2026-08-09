@@ -5,6 +5,7 @@ import path from 'path'
 import { ServerPlatform } from './platform-server'
 import { wireAgentStatus } from './agent-status'
 import { _resetForTest } from '../core/agent-status-mirror'
+import { forgetGrokSession, grokSessionDirFor, readGrokSessionName } from '../core/grok-session'
 import { IPC } from '../shared/ipc'
 import { decodePtyData } from '../shared/rpc'
 
@@ -174,5 +175,101 @@ describe('wireAgentStatus', () => {
       ['n1']
     )
     expect(ctx.calls.length + sub.calls.length).toBe(before)
+  })
+})
+
+/**
+ * The grok branch of the raw listener (`src/server/agent-status.ts`) had no coverage at all: a
+ * mutation to `if (false && agentId === 'grok')` left the whole suite green. It is the only place
+ * that records what grok's envelope never states — the node's session id and, from (cwd, sessionId),
+ * the session DIRECTORY that makes `readGrokSessionName` a direct open instead of a scan of grok's
+ * sessions tree — and it must run BEFORE the `if (agentId !== 'claude') return` guard that keeps grok
+ * payloads out of claude's transcript machinery. Both mutations (disable the branch, or move it below
+ * that guard) fail these tests.
+ */
+describe('wireAgentStatus — the grok raw-listener branch', () => {
+  let grokHome: string, prevGrokHome: string | undefined
+  beforeEach(() => {
+    // Pin $GROK_HOME so the derived path is the test's own, not the developer's ~/.grok. Read
+    // per-call by grokHomeDir(), so setting it here is enough.
+    prevGrokHome = process.env.GROK_HOME
+    grokHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-grok-'))
+    process.env.GROK_HOME = grokHome
+  })
+  afterEach(() => {
+    if (prevGrokHome === undefined) delete process.env.GROK_HOME
+    else process.env.GROK_HOME = prevGrokHome
+    fs.rmSync(grokHome, { recursive: true, force: true })
+  })
+
+  // Where grok stores a session: $GROK_HOME/sessions/<url-encoded cwd>/<id>/ (core/agents/grok-paths.ts).
+  // Spelled out literally rather than composed with grokSessionDir(), so the assertion is about the
+  // LAYOUT and not a restatement of the function under test.
+  const sessionDir = (cwd: string, id: string): string =>
+    path.join(grokHome, 'sessions', encodeURIComponent(cwd), id)
+
+  it('records nodeId → sessionId (proved by ptyDestroy untracking that grok session)', () => {
+    const fh = fakeHooks()
+    const ctx = recTail()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, contextTail: ctx.tail as never })
+    // grok's own dialect: camelCase keys, snake_case event VALUE, and no transcript_path at all.
+    fh.fireRaw('grok', 'g1', {
+      hookEventName: 'user_prompt_submit',
+      sessionId: 'gs-1',
+      cwd: '/w/project'
+    })
+    // The association is private, but `releaseNodeTails` reads it — so a node teardown untracking
+    // 'gs-1' can only mean the grok branch put it there.
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['g1'])
+    expect(ctx.calls.some((c) => c.m === 'untrack' && c.args[0] === 'gs-1')).toBe(true)
+  })
+
+  it('remembers the DERIVED session directory, so the session name is a direct open', async () => {
+    const fh = fakeHooks()
+    const ctx = recTail()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, contextTail: ctx.tail as never })
+    // A real session directory with a real summary.json, at the path grok's layout dictates.
+    const dir = sessionDir('/w/project', 'gs-2')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ generated_title: 'Ship the parser' }))
+    // Nothing is known before the hook: the map is fed ONLY here.
+    expect(grokSessionDirFor('gs-2')).toBeUndefined()
+    fh.fireRaw('grok', 'g2', { hookEventName: 'pre_tool_use', sessionId: 'gs-2', cwd: '/w/project' })
+    expect(grokSessionDirFor('gs-2')).toBe(dir)
+    expect(await readGrokSessionName('gs-2')).toBe('Ship the parser')
+    forgetGrokSession('gs-2')
+  })
+
+  it('reads the SDK snake_case dialect too (one decoder: grokRawFields)', () => {
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, contextTail: recTail().tail as never })
+    fh.fireRaw('grok', 'g3', {
+      hook_event_name: 'post_tool_use',
+      session_id: 'gs-3',
+      cwd: '/w/other'
+    })
+    expect(grokSessionDirFor('gs-3')).toBe(sessionDir('/w/other', 'gs-3'))
+    forgetGrokSession('gs-3')
+  })
+
+  it('forgets the session directory on session_end', () => {
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, contextTail: recTail().tail as never })
+    fh.fireRaw('grok', 'g4', { hookEventName: 'session_start', sessionId: 'gs-4', cwd: '/w/project' })
+    expect(grokSessionDirFor('gs-4')).toBe(sessionDir('/w/project', 'gs-4'))
+    fh.fireRaw('grok', 'g4', { hookEventName: 'session_end', sessionId: 'gs-4', cwd: '/w/project' })
+    expect(grokSessionDirFor('gs-4')).toBeUndefined()
+  })
+
+  it('learns nothing rather than half a path when the cwd is not reconstructible', () => {
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, contextTail: recTail().tail as never })
+    // Past GROK_ENCODED_CWD_MAX_BYTES grok switches to a slug+hash directory we cannot rebuild.
+    fh.fireRaw('grok', 'g5', {
+      hookEventName: 'pre_tool_use',
+      sessionId: 'gs-5',
+      cwd: `/w/${'x'.repeat(400)}`
+    })
+    expect(grokSessionDirFor('gs-5')).toBeUndefined()
   })
 })

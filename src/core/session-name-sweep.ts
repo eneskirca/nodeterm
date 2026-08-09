@@ -29,11 +29,15 @@ export interface SessionNameSweepDeps {
   /** The node's persisted record — `accountId` scopes the transcript root; `titleAuto === false`
    *  means the user named this node by hand, so its session name is not what should be shown. */
   node: (nodeId: string) => { accountId?: string; titleAuto?: boolean } | undefined
-  /** `readSessionName` — resolves the agent's own session name, local or remote. */
-  resolve: (sessionId: string, accountId?: string) => Promise<string | null>
+  /** Resolves the agent's own session name, local or remote — `core/agent-session-name.ts`, which
+   *  routes per agent (claude reads a transcript, grok its session metadata). `agentId` is trailing
+   *  and optional so a resolver that only knows claude still satisfies the type. It is not optional
+   *  in PRACTICE: without it a grok entry would be resolved by claude's reader, which scans
+   *  `~/.claude/projects` for an id that can never be there — once a minute, per node, forever. */
+  resolve: (sessionId: string, accountId?: string, agentId?: string) => Promise<string | null>
   /** Publish a changed name into the mirror. */
   publish: (nodeId: string, name: string) => void
-  /** Which agents carry a resolvable session name (RENAME_CAPABLE — claude today). */
+  /** Which agents carry a resolvable session name (RENAME_CAPABLE — claude and grok). */
   supports: (agentId?: string) => boolean
 }
 
@@ -51,7 +55,7 @@ export async function sweepSessionNames(deps: SessionNameSweepDeps): Promise<num
     if (node?.titleAuto === false) continue
     let name: string | null = null
     try {
-      name = await deps.resolve(e.sessionId, node?.accountId)
+      name = await deps.resolve(e.sessionId, node?.accountId, e.agentId)
     } catch {
       continue // transient read failure — try again next pass
     }

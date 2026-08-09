@@ -4,8 +4,8 @@
 // and/or a monthly money budget, so the two limits here are derived from billing figures rather
 // than read off rate-limit windows. Read-only — we never write `auth.json`.
 import { promises as fs } from 'fs'
-import os from 'os'
 import path from 'path'
+import { grokHomeDir } from '../agents/grok-paths'
 import type { ProviderUsage, UsageLimit } from '../../shared/types'
 
 const DEFAULT_PROXY_BASE = 'https://cli-chat-proxy.grok.com/v1'
@@ -20,8 +20,12 @@ function proxyBase(): string {
   return process.env.GROK_CLI_CHAT_PROXY_BASE_URL?.trim().replace(/\/$/, '') || DEFAULT_PROXY_BASE
 }
 
+/** Grok's config dir. Delegates to the ONE `$GROK_HOME` rule (`core/agents/grok-paths.ts`), which
+ *  the hook installer and the session-path helpers also read — two copies of this rule is how the
+ *  remote hook installer drifted for months. Kept as a named export because this module's callers
+ *  and tests use it. */
 export function grokHome(): string {
-  return process.env.GROK_HOME?.trim() || path.join(os.homedir(), '.grok')
+  return grokHomeDir()
 }
 
 interface GrokAuth {

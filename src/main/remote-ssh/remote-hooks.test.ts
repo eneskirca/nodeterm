@@ -3,13 +3,29 @@ import { RemoteHooks } from './remote-hooks'
 
 const conn = { host: 'h', user: 'u' }
 
-function mk(opts: { verifyAnswers?: string[] } = {}) {
-  const calls: { args: string[]; stdin?: string }[] = []
+function harness(
+  opts: {
+    verifyAnswers?: string[]
+    /** Command-substring → that run's stdout, matched (in declaration order) BEFORE the built-in
+     *  defaults below. This is how a test answers a host probe (`$HOME`, the host's own
+     *  `GROK_HOME`) or hands back a present-but-malformed remote config file. */
+    responses?: Record<string, string>
+    /** Command substring whose run REJECTS — the fail-open proof for one remote step. */
+    failOn?: string
+  } = {}
+) {
+  // One record per ssh child command. `args` is what the runner was handed; `cmd` is the joined
+  // line the assertions match on (both views of the SAME array, so `calls` and `runs` agree).
+  const calls: { args: string[]; stdin?: string; cmd: string }[] = []
   // Tunnel-verify curl answers, consumed in order (default: healthy on the first try).
   const verifyAnswers = [...(opts.verifyAnswers ?? ['204'])]
   const run = vi.fn(async (args: string[], stdin?: string) => {
-    calls.push({ args, stdin })
     const joined = args.join(' ')
+    calls.push({ args, stdin, cmd: joined })
+    if (opts.failOn && joined.includes(opts.failOn)) throw new Error(`fake ssh failed: ${opts.failOn}`)
+    for (const [needle, stdout] of Object.entries(opts.responses ?? {})) {
+      if (joined.includes(needle)) return { code: 0, stdout }
+    }
     // resolve the remote $HOME probe → absolute remote paths build from this.
     if (joined.includes('$HOME')) return { code: 0, stdout: '/home/u' }
     if (joined.includes('cat /home/u/.claude/settings.json')) return { code: 0, stdout: '{}' }
@@ -17,12 +33,12 @@ function mk(opts: { verifyAnswers?: string[] } = {}) {
     if (joined.includes('%{http_code}')) return { code: 0, stdout: verifyAnswers.shift() ?? '204' }
     return { code: 0, stdout: '' }
   })
-  return { rh: new RemoteHooks({ run }), calls, run }
+  return { rh: new RemoteHooks({ run }), calls, runs: calls, run, conn }
 }
 
 describe('RemoteHooks.setup', () => {
   it('opens a reverse forward, writes the endpoint file, and installs the managed hook for claude', async () => {
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     // Endpoint file is PER-PROJECT (was a single shared hook-endpoint.env): each connection —
     // real project OR a transient folder-picker browse — has its own reverse-tunnel socket, so a
@@ -58,7 +74,7 @@ describe('RemoteHooks.setup', () => {
   })
 
   it('installs codex too — hooks.json merge PLUS the config.toml trust write', async () => {
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     expect(res).not.toBeNull()
     const joined = calls.map((c) => c.args.join(' '))
@@ -107,7 +123,7 @@ describe('RemoteHooks.setup', () => {
   it('verifies the tunnel end-to-end and heals a stale forward with one rebind', async () => {
     // First verify sees a dead target (a reused live-orphan master serving a previous run's
     // forward — the field case that killed remote statuses for hours); the rebind fixes it.
-    const { rh, calls } = mk({ verifyAnswers: ['000', '204'] })
+    const { rh, calls } = harness({ verifyAnswers: ['000', '204'] })
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     expect(res?.endpointPath).toBe('/home/u/.nodeterm/hook-endpoint-p1.env')
     const joined = calls.map((c) => c.args.join(' '))
@@ -119,7 +135,7 @@ describe('RemoteHooks.setup', () => {
   })
 
   it('refuses to advertise a tunnel that never verifies — no endpoint file, null result', async () => {
-    const { rh, calls } = mk({ verifyAnswers: ['000', '000'] })
+    const { rh, calls } = harness({ verifyAnswers: ['000', '000'] })
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     expect(res).toBeNull()
     // The endpoint file must NOT be written: sessions would source a socket that answers nothing.
@@ -145,8 +161,8 @@ describe('RemoteHooks.setup', () => {
   })
 
   it('gives two different projects (or a browse) distinct endpoint files — no shared clobber', async () => {
-    const a = await mk().rh.setup('proj', conn, '/s', { port: 1, token: 't', version: '1' })
-    const { rh, calls } = mk()
+    const a = await harness().rh.setup('proj', conn, '/s', { port: 1, token: 't', version: '1' })
+    const { rh, calls } = harness()
     const b = await rh.setup('ssh-browse-xyz', conn, '/s', { port: 2, token: 't', version: '1' })
     expect(a?.endpointPath).toBe('/home/u/.nodeterm/hook-endpoint-proj.env')
     expect(b?.endpointPath).toBe('/home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env')
@@ -154,6 +170,96 @@ describe('RemoteHooks.setup', () => {
     const joined = calls.map((c) => c.args.join(' '))
     expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env'))).toBe(true)
     expect(joined.some((j) => j.includes('hook-endpoint-proj.env'))).toBe(false)
+  })
+})
+
+describe('RemoteHooks.setup — grok', () => {
+  // The host's $GROK_HOME is deliberately a path the `$HOME/.grok` fallback could NEVER produce.
+  // With the two byte-identical (`$HOME: /home/dev` + `GROK_HOME: /home/dev/.grok`) the whole
+  // resolution — probe, validation, override — can be deleted for `${home}/.grok` and every
+  // assertion still passes. The `/home/dev/.grok` negative assertions are what make that fail.
+  const GROK_EVENTS = [
+    'Notification',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'PreToolUse',
+    'SessionEnd',
+    'SessionStart',
+    'Stop',
+    'StopFailure',
+    'UserPromptSubmit'
+  ]
+
+  it('writes our hook file under the HOST\'s $GROK_HOME with the `.*` tool matcher', async () => {
+    const { rh, conn, runs } = harness({
+      // The host answers $HOME first (existing behavior), then its own $GROK_HOME.
+      responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home' }
+    })
+    await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
+    const write = runs.find((r) => r.cmd.includes('/opt/grok-home/hooks/nodeterm-status.json') && r.stdin)
+    expect(write).toBeTruthy()
+    // The HOST's answer wins outright: nothing may touch the $HOME/.grok default.
+    expect(runs.some((r) => r.cmd.includes('/home/dev/.grok'))).toBe(false)
+    const cfg = JSON.parse(write!.stdin!)
+    expect(cfg.hooks.PreToolUse[0].matcher).toBe('.*')
+    expect(cfg.hooks.Stop[0].matcher).toBeUndefined()
+    expect(cfg.hooks.SessionStart[0].hooks[0].command).toContain('/home/dev/.nodeterm/agent-hooks/grok.sh')
+    // The shared managed script is written on the host too, posting to /hook/grok through the tunnel.
+    const script = runs.find((r) => r.cmd.includes('agent-hooks/grok.sh') && r.stdin)
+    expect(script!.stdin).toContain('/hook/grok')
+  })
+
+  it('trims the probe answer, so a trailing newline still resolves to the host path', async () => {
+    // `printf %s` should emit no newline, but a shell wrapper or a login-shell banner can add one —
+    // and `isSafeRemoteGrokHome` REFUSES an untrimmed string by design (an embedded newline is a
+    // command separator). Without the trim at the read site every host silently gets the fallback.
+    const { rh, conn, runs } = harness({
+      responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home\n' }
+    })
+    await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
+    expect(runs.some((r) => r.cmd.includes("'/opt/grok-home/hooks/nodeterm-status.json'"))).toBe(true)
+    expect(runs.some((r) => r.cmd.includes('/home/dev/.grok'))).toBe(false)
+    // and no raw newline survives into any remote command line.
+    expect(runs.some((r) => r.cmd.includes('/opt/grok-home\n'))).toBe(false)
+  })
+
+  it('falls back to $HOME/.grok when the host reports an unusable GROK_HOME', async () => {
+    const { rh, conn, runs } = harness({ responses: { '$HOME': '/home/dev', 'GROK_HOME': 'relative/oops' } })
+    await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
+    expect(runs.some((r) => r.cmd.includes('/home/dev/.grok/hooks/nodeterm-status.json'))).toBe(true)
+    expect(runs.some((r) => r.cmd.includes('relative/oops'))).toBe(false)
+  })
+
+  it('HEALS a present-but-malformed remote hook file (the file is ours to rewrite)', async () => {
+    // The opposite of the codex/AGENT_TARGETS guard, on purpose: `nodeterm-status.json` is a file
+    // WE own by name and rewrite wholesale, so there is no user content to preserve — and skipping
+    // the write would leave that host's grok nodes dark forever with no in-app repair. The local
+    // installer (installHooksInto) already heals; this matches it.
+    const { rh, conn, runs } = harness({
+      responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home', 'nodeterm-status.json': '{ oops' }
+    })
+    await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    expect(write).toBeTruthy()
+    const cfg = JSON.parse(write!.stdin!)
+    expect(Object.keys(cfg.hooks).sort()).toEqual(GROK_EVENTS)
+  })
+
+  it('quotes the remote dirname, so a $GROK_HOME containing a space still installs', async () => {
+    // isSafeRemoteGrokHome deliberately permits spaces. An unquoted `mkdir -p $(dirname '…')`
+    // word-splits into two args, never creates the directory, and the correctly-quoted `cat >`
+    // then fails — fail-open, so the only symptom is a host with no hooks and no diagnostic.
+    const { rh, conn, runs } = harness({
+      responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/my grok' }
+    })
+    await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    expect(write!.cmd).toContain(`mkdir -p "$(dirname '/opt/my grok/hooks/nodeterm-status.json')"`)
+  })
+
+  it('a grok failure never breaks the connect (fail open)', async () => {
+    const { rh, conn } = harness({ failOn: 'nodeterm-status.json' })
+    await expect(rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })).resolves.toBeTruthy()
   })
 })
 
@@ -208,7 +314,7 @@ describe('RemoteHooks.ensureFullscreenTui', () => {
 
 describe('RemoteHooks.teardown', () => {
   it('cancels the reverse forward', async () => {
-    const { rh, run } = mk()
+    const { rh, run } = harness()
     await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 't', version: '1' })
     run.mockClear()
     await rh.teardown('p1', conn, '/s.sock')
@@ -225,7 +331,7 @@ describe('RemoteHooks.installCanvasControl', () => {
   const isWriteTo = (args: string[], p: string) => args.join(' ').includes('cat > ') && args.join(' ').includes(p)
 
   it('writes an executable shim + the skill, and merges the codex/gemini/opencode blocks', async () => {
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     await rh.installCanvasControl(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
     // The shim must land executable: the skill tells the agent to run it via `sh <path>`, but the
@@ -270,7 +376,7 @@ describe('RemoteHooks.installCanvasControl', () => {
   it('skips the write when the block is already current (idempotent reconnects)', async () => {
     // A connect happens on every app start and every reconnect; rewriting an unchanged file each
     // time would churn the user's instruction files (and their mtimes) for nothing.
-    const first = mk()
+    const first = harness()
     await first.rh.installCanvasControl(conn, '/s.sock', '/home/u')
     const merged = first.calls.find((c) => c.args.join(' ').includes('cat > \'/home/u/.gemini/GEMINI.md\''))?.stdin ?? ''
     expect(merged).toBeTruthy()
@@ -289,7 +395,7 @@ describe('RemoteHooks.installCanvasControl', () => {
   it('installs the skill into a remote managed-account config dir', async () => {
     // claude resolves user skills relative to CLAUDE_CONFIG_DIR, so an account session never sees
     // ~/.claude/skills — the same gap installIntoAccountDir exists for on the hook side.
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     await rh.installCanvasSkillIntoAccountDir(conn, '/s.sock', '/home/u', 'acc-1')
     const target = '/home/u/.nodeterm/claude-accounts/acc-1/skills/manage-nodeterm-canvas/SKILL.md'
     expect(calls.some((c) => isWriteTo(c.args, target))).toBe(true)
@@ -309,7 +415,7 @@ describe('RemoteHooks.installContextLink', () => {
   const isWriteTo = (args: string[], p: string) => args.join(' ').includes('cat > ') && args.join(' ').includes(p)
 
   it('writes an executable shim + the skill, and merges the instruction blocks', async () => {
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     await rh.installContextLink(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
     expect(joined.some((j) => j.includes("cat > '/home/u/.nodeterm/context.sh'") && j.includes('chmod 755'))).toBe(true)
@@ -346,7 +452,7 @@ describe('RemoteHooks.installContextLink', () => {
   })
 
   it('installs the skill into a remote managed-account config dir', async () => {
-    const { rh, calls } = mk()
+    const { rh, calls } = harness()
     await rh.installContextLinkSkillIntoAccountDir(conn, '/s.sock', '/home/u', 'acc-1')
     const target = '/home/u/.nodeterm/claude-accounts/acc-1/skills/get-linked-context/SKILL.md'
     expect(calls.some((c) => isWriteTo(c.args, target))).toBe(true)

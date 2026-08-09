@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildManagedHookCommand, mergeManagedHook } from './install-helper'
+import { CLAUDE_HOOK_EVENTS } from '@shared/agents/hook-events'
 
 const cmd = buildManagedHookCommand('/remote/.nodeterm/agent-hooks/claude.sh')
 
@@ -88,5 +89,25 @@ describe('mergeManagedHook — repair sweep', () => {
     const before = { hooks: { SubagentStop: [foreign, { hooks: [{ type: 'command', command: stale }] }] } }
     const out = mergeManagedHook(before, cmd, ['Stop'])
     expect(out.hooks!.SubagentStop).toEqual([foreign])
+  })
+})
+
+/**
+ * The matcher support grok needs must not change one byte of what the other agents emit: a
+ * `matcher` key appearing in claude's settings.json would be a silent behavior change in a file
+ * three other tools also write.
+ */
+describe('mergeManagedHook — matcher support is opt-in per event', () => {
+  it('emits NO matcher key for a plain string event list', () => {
+    const out = mergeManagedHook({}, 'CMD', CLAUDE_HOOK_EVENTS)
+    for (const [ev, defs] of Object.entries(out.hooks!)) {
+      expect(Object.keys(defs[0]), ev).toEqual(['hooks'])
+    }
+  })
+
+  it('emits the matcher only for the events that asked for one', () => {
+    const out = mergeManagedHook({}, 'CMD', ['Stop', { event: 'PreToolUse', matcher: '.*' }])
+    expect(out.hooks!.Stop[0]).toEqual({ hooks: [{ type: 'command', command: 'CMD' }] })
+    expect(out.hooks!.PreToolUse[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'CMD' }] })
   })
 })

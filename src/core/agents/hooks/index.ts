@@ -5,6 +5,7 @@ import { installClaudeHooks, ensureClaudeFullscreenTui, removeClaudeHooks } from
 import { installCodexHooks, removeCodexHooks } from './codex'
 import { installGeminiHooks, removeGeminiHooks } from './gemini'
 import { installOpencodeHooks, removeOpencodeHooks } from './opencode'
+import { installGrokHooks, removeGrokHooks } from './grok'
 
 type HookInstaller = readonly [string, () => void]
 
@@ -12,14 +13,16 @@ export const MANAGED_HOOK_INSTALLERS: readonly HookInstaller[] = [
   ['claude', installClaudeHooks],
   ['codex', installCodexHooks],
   ['gemini', installGeminiHooks],
-  ['opencode', installOpencodeHooks]
+  ['opencode', installOpencodeHooks],
+  ['grok', installGrokHooks]
 ]
 
 export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
   ['claude', removeClaudeHooks],
   ['codex', removeCodexHooks],
   ['gemini', removeGeminiHooks],
-  ['opencode', removeOpencodeHooks]
+  ['opencode', removeOpencodeHooks],
+  ['grok', removeGrokHooks]
 ]
 
 export function installManagedAgentHooks(): void {

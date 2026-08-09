@@ -7,22 +7,27 @@ function deps(
     names?: Record<string, string | null>
     nodes?: Record<string, { accountId?: string; titleAuto?: boolean }>
     throwFor?: string
+    /** The real `supports` is RENAME_CAPABLE, which now holds grok too. */
+    supportsGrok?: boolean
   } = {}
 ) {
   const published: [string, string][] = []
-  const resolve = vi.fn(async (sessionId: string) => {
+  const calls: [string, string | undefined, string | undefined][] = []
+  const resolve = vi.fn(async (sessionId: string, accountId?: string, agentId?: string) => {
+    calls.push([sessionId, accountId, agentId])
     if (opts.throwFor === sessionId) throw new Error('transient')
     return opts.names?.[sessionId] ?? null
   })
   return {
     published,
     resolve,
+    calls,
     d: {
       entries: () => entries,
       node: (id: string) => opts.nodes?.[id],
       resolve,
       publish: (nodeId: string, name: string) => published.push([nodeId, name]),
-      supports: (agentId?: string) => agentId === 'claude'
+      supports: (agentId?: string) => agentId === 'claude' || (opts.supportsGrok ? agentId === 'grok' : false)
     }
   }
 }
@@ -72,7 +77,30 @@ describe('sweepSessionNames', () => {
       nodes: { n1: { accountId: 'acct-2' } }
     })
     await sweepSessionNames(d)
-    expect(resolve).toHaveBeenCalledWith('s1', 'acct-2')
+    expect(resolve).toHaveBeenCalledWith('s1', 'acct-2', 'claude')
+  })
+
+  it('tells the resolver WHICH AGENT it is resolving', async () => {
+    // The resolver routes per agent (core/agent-session-name.ts): grok's name is in its own session
+    // metadata, claude's in a transcript. Not threading `agentId` does not merely lose grok's name —
+    // it sends every grok node through claude's resolver, which scans ~/.claude/projects for an id
+    // that can never be there, once a minute per node, forever.
+    const { d, calls, published } = deps(
+      [
+        { nodeId: 'g1', sessionId: 'gs1', agentId: 'grok' },
+        { nodeId: 'c1', sessionId: 'cs1', agentId: 'claude' }
+      ],
+      { names: { gs1: 'grok named it', cs1: 'claude named it' }, supportsGrok: true }
+    )
+    expect(await sweepSessionNames(d)).toBe(2)
+    expect(calls).toEqual([
+      ['gs1', undefined, 'grok'],
+      ['cs1', undefined, 'claude']
+    ])
+    expect(published).toEqual([
+      ['g1', 'grok named it'],
+      ['c1', 'claude named it']
+    ])
   })
 
   it('one failing read never stops the pass', async () => {

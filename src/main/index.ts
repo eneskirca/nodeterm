@@ -1,6 +1,6 @@
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
-import { readSessionName as readSessionNameForSweep } from '../core/transcript-reader'
+import { readAgentSessionName } from '../core/agent-session-name'
 import { canRename, type AgentId } from '@shared/agents/config'
 import { readFile } from 'fs/promises'
 import { homedir, hostname } from 'os'
@@ -75,9 +75,10 @@ import { retainUntilDismissed } from './notifications'
 import { installManagedAgentHooks } from '../core/agents/hooks'
 import { createSubagentTail } from '../core/subagent-tail'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
-import { isAsyncSubagentLaunch, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { grokRawFields, isAsyncSubagentLaunch, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { grokSessionDir, grokSessionsDir } from '../core/agents/grok-paths'
+import { forgetGrokSession, rememberGrokSessionDir } from '../core/grok-session'
 import {
-  readSessionName,
   setRemoteTranscriptReader,
   TITLE_TAIL_BYTES,
   SESSION_ID_RE
@@ -298,7 +299,9 @@ const browserGuests = new Map<number, string>()
 // Node → live tail bookkeeping, so closing a node (× → pty:destroy) releases its file tailers.
 // Without this, a node closed mid-run never emits SessionEnd/PostToolUse, so context-tail (1s
 // poll) and subagent-tail (400ms poll) would keep stat/read-ing forever. Keyed by node id.
-const nodeContextSession = new Map<string, string>() // nodeId → claude sessionId
+// nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
+// since the grok branch in the raw listener, grok's).
+const nodeContextSession = new Map<string, string>()
 const nodeSubagents = new Map<string, Set<string>>() // nodeId → active subagent tool_use_ids
 
 // Enforce a single instance. A second instance would re-attach every node's tmux session
@@ -553,8 +556,14 @@ app.whenReady().then(async () => {
     ptyManager.captureSession(persistKey, full)
   )
 
-  corePlatform.handle(IPC.ptyReadSessionName, (sessionId: string, accountId?: string) =>
-    readSessionName(sessionId ?? '', accountId)
+  // The reader is selected by the NODE's agent (core/agent-session-name.ts — the one copy of that
+  // rule, shared with the sweep below and with the Server Edition), so neither reader ever searches
+  // the other's tree. `agentId` is a TRAILING optional argument, so every pre-grok caller resolves
+  // through the claude reader unchanged.
+  corePlatform.handle(
+    IPC.ptyReadSessionName,
+    (sessionId: string, accountId?: string, agentId?: string) =>
+      readAgentSessionName(sessionId ?? '', accountId, agentId)
   )
 
   ipcMain.on(IPC.appCloseWindow, () => BrowserWindow.getFocusedWindow()?.close())
@@ -858,7 +867,10 @@ app.whenReady().then(async () => {
       const n = workspaceStore.getNode(nodeId)
       return n ? { accountId: n.accountId, titleAuto: n.titleAuto } : undefined
     },
-    resolve: (sessionId, accountId) => readSessionNameForSweep(sessionId, accountId),
+    // Same router the IPC handler above uses — the sweep sees every RENAME_CAPABLE agent, so
+    // resolving a grok node through claude's reader would scan ~/.claude/projects once a minute
+    // for an id that can never be there.
+    resolve: readAgentSessionName,
     publish: setNodeSessionName,
     supports: (agentId) => !!agentId && canRename(agentId as AgentId)
   })
@@ -1468,6 +1480,36 @@ app.whenReady().then(async () => {
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   hookServer.setRawListener((agentId, nodeId, payload) => {
+    if (agentId === 'grok') {
+      // This branch records two associations, neither of which grok's envelope states outright.
+      // Everything the claude path does below hangs off `transcript_path`, and grok has none.
+      // Read through `grokRawFields` so grok's two field dialects (camelCase and the SDK's
+      // snake_case) are decoded in exactly one place.
+      const g = grokRawFields(payload)
+      // 1. node → session: read by the phone's context ring and the ⌘K session lookup.
+      if (nodeId && g.sessionId) nodeContextSession.set(nodeId, g.sessionId)
+      // 2. session → its session DIRECTORY, derived from (cwd, sessionId) — the two fields every
+      // grok hook does carry — and remembered here, the one place they arrive together. That is
+      // what lets the session-name read (core/grok-session.ts) be a direct open rather than a scan
+      // of grok's sessions tree, which is how one node would end up adopting another's name.
+      // `grokSessionDir` returns null for a cwd grok stored under its slug+hash scheme instead, in
+      // which case we learn nothing about this session rather than build half a path.
+      if (g.sessionId && g.cwd) {
+        const dir = grokSessionDir({
+          sessionsDir: grokSessionsDir(),
+          cwd: g.cwd,
+          sessionId: g.sessionId
+        })
+        if (dir) rememberGrokSessionDir(g.sessionId, dir)
+      }
+      // The session is over, so nothing will read its directory again — and forgetting costs
+      // nothing even though grok IS resumable and `grok --resume <id>` reuses BOTH the id and the
+      // directory: a resumed session fires its own hooks, whose (cwd, sessionId) re-derive and
+      // re-remember the very same path. The map is bounded, so dropping now beats waiting for
+      // eviction to reach an entry nobody is asking about.
+      if (g.event === 'sessionend') forgetGrokSession(g.sessionId)
+      return
+    }
     if (agentId !== 'claude') return
     // Mirror the per-node "what it's doing now" activity line for the phone (mobile-usage-inbox).
     // Runs BEFORE the local/remote split so it covers remote (SSH) nodes too — it needs only

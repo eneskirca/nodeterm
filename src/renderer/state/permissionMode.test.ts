@@ -130,6 +130,58 @@ describe('activePermissionMode — the `auto` version gate', () => {
   })
 })
 
+// The gate exists because Claude Code < 2.1.71 EXITS 1 on `--permission-mode auto`, and it is fed
+// by a `claude --version` probe. grok has accepted `auto` since 1.0.0, its first release, so gating
+// it on a claude probe would launch grok sessions in `default` (ask each time) on any machine whose
+// claude is old — or absent — silently, and for a reason that has nothing to do with grok.
+describe("activePermissionMode — the auto gate is CLAUDE's, not every agent's", () => {
+  it('keeps `auto` for grok even when the local claude CLI is old or missing', () => {
+    useSettings.setState((s) => ({ settings: { ...s.settings, claudePermissionMode: 'auto' } }))
+    activeProject()
+    resetClaudeCliCapsForTests(UNKNOWN_CLAUDE_CLI_CAPS) // no claude on this machine
+
+    expect(activePermissionMode('grok')).toBe('auto')
+    expect(activePermissionMode('claude')).toBe('manual')
+    expect(activePermissionMode()).toBe('manual') // default argument = claude = unchanged behavior
+  })
+
+  it('still honors the project override and the global setting for grok', () => {
+    useSettings.setState((s) => ({ settings: { ...s.settings, claudePermissionMode: 'auto' } }))
+    const p = activeProject()
+    useProjects.getState().setProjectDefaultPermissionMode(p.id, 'plan')
+
+    expect(activePermissionMode('grok')).toBe('plan')
+  })
+
+  it('ensureActivePermissionMode does not wait on EITHER probe for a non-claude agent', async () => {
+    vi.useFakeTimers()
+    try {
+      // BOTH halves of "does not wait" have to be enforced, and each needs its own trap:
+      //  - the LOCAL probe: pointed at the never-resolving stub, so awaiting `ensureClaudeCliCaps()`
+      //    can only be escaped by its 3s timeout — which the assertion below does not allow. A
+      //    resolving mock would let a wrongly-placed await pass, because it settles in microtasks
+      //    that `advanceTimersByTimeAsync(0)` flushes. In the Server Edition this await is a real
+      //    WS-RPC round trip on every launch, so "it resolves eventually" is not good enough.
+      //  - the REMOTE probe: an SSH project whose answer never arrives, so awaiting it costs
+      //    SSH_AUTO_PROBE_WAIT_MS.
+      // Neither timer may be needed: `advanceTimersByTimeAsync(0)` runs no timer at all.
+      ;(globalThis as { window?: unknown }).window = {
+        nodeTerminal: { claude: { cliCaps: () => new Promise<never>(() => {}) } }
+      }
+      resetClaudeCliCapsForTests()
+      useSettings.setState((s) => ({ settings: { ...s.settings, claudePermissionMode: 'auto' } }))
+      activeProject('remote', { server: SSH_SERVER, remoteCwd: '/srv/app' })
+
+      const pending = ensureActivePermissionMode('grok')
+      await vi.advanceTimersByTimeAsync(0)
+
+      await expect(pending).resolves.toBe('auto')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 // An SSH project's terminals run on the REMOTE host, whose claude CLI can be older than the local
 // one. The local probe's answer must never be applied to a remote launch.
 describe('activePermissionMode — SSH projects', () => {

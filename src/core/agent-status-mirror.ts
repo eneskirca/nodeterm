@@ -74,7 +74,13 @@ export interface MirrorServer {
  *  Additive to MirrorFile v1 — absent on old files, ignored by old readers. */
 export interface MirrorSettings {
   claudePermissionMode?: string
-  /** Can `--permission-mode auto` be emitted for launches on THIS host? */
+  /** Can `--permission-mode auto` be emitted for **CLAUDE** launches on THIS host? It answers one
+   *  question only — is this host's *claude* CLI ≥ AUTO_PERMISSION_MODE_MIN_VERSION — because that
+   *  is the CLI that exits 1 on the value. It is NOT a per-host verdict on the `auto` mode itself:
+   *  grok has accepted every mode we emit since 1.0.0, so a reader that generalizes this flag to
+   *  every agent will silently start grok sessions in `default` on a host with an old claude. Gate
+   *  on it only for claude (the desktop does exactly that — activePermissionMode in
+   *  renderer/state/permissionMode.ts). */
   autoSupported?: boolean
   /** Managed accounts usable on THIS host; dirs are absolute on that host. */
   claudeAccounts?: { id: string; dir: string }[]

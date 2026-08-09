@@ -140,7 +140,9 @@ body {
   image-rendering: pixelated;
   will-change: background-position, transform;
 }
-.mascot--claude {
+/* Claude + Grok share the quadrant-sprite geometry (see lib/mascot.ts) — one rule block. */
+.mascot--claude,
+.mascot--grok {
   width: var(--mascot-w);
   height: var(--mascot-h);
   background-size: calc(var(--mascot-w) * 2) var(--mascot-h);

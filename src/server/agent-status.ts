@@ -17,7 +17,9 @@ import { createSubagentTail, type SubagentTail } from '../core/subagent-tail'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
 import { setNodeTranscript } from '../core/context-link'
 import { isSafeLocalTranscriptPath } from '../core/claude-accounts-core'
-import { isAsyncSubagentLaunch, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { grokRawFields, isAsyncSubagentLaunch, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { grokSessionDir, grokSessionsDir } from '../core/agents/grok-paths'
+import { forgetGrokSession, rememberGrokSessionDir } from '../core/grok-session'
 import { IPC } from '../shared/ipc'
 import type { ServerPlatform } from './platform-server'
 
@@ -49,7 +51,8 @@ export function wireAgentStatus(
   opts: WireAgentStatusOptions = {}
 ): { contextTail: ContextTail } {
   const hooks = opts.hooks ?? hookServer
-  // nodeId → claude sessionId
+  // nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
+  // since the grok branch below, grok's)
   const nodeContextSession = new Map<string, string>()
   // nodeId → active subagent tool_use_ids
   const nodeSubagents = new Map<string, Set<string>>()
@@ -141,6 +144,39 @@ export function wireAgentStatus(
 
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   hooks.setRawListener((agentId, nodeId, payload) => {
+    if (agentId === 'grok') {
+      // This branch records two associations, neither of which grok's envelope states outright.
+      // Everything the claude path does below hangs off `transcript_path`, and grok has none.
+      // Read through `grokRawFields` so grok's two field dialects (camelCase and the SDK's
+      // snake_case) are decoded in exactly one place.
+      const g = grokRawFields(payload)
+      // 1. node → session: read by the phone's context ring and the ⌘K session lookup.
+      if (nodeId && g.sessionId) nodeContextSession.set(nodeId, g.sessionId)
+      // 2. session → its session DIRECTORY, derived from (cwd, sessionId) — the two fields every
+      // grok hook does carry — and remembered here, the one place they arrive together. That is
+      // what lets the session-name read (core/grok-session.ts) be a direct open rather than a scan
+      // of grok's sessions tree, which is how one node would end up adopting another's name.
+      // `grokSessionDir` returns null for a cwd grok stored under its slug+hash scheme instead, in
+      // which case we learn nothing about this session rather than build half a path.
+      //
+      // The Server Edition populates it exactly as the desktop does; what it does not yet serve is
+      // the READ (IPC.ptyReadSessionName has no server handler — see the ws-bridge stub).
+      if (g.sessionId && g.cwd) {
+        const dir = grokSessionDir({
+          sessionsDir: grokSessionsDir(),
+          cwd: g.cwd,
+          sessionId: g.sessionId
+        })
+        if (dir) rememberGrokSessionDir(g.sessionId, dir)
+      }
+      // The session is over, so nothing will read its directory again — and forgetting costs
+      // nothing even though grok IS resumable and `grok --resume <id>` reuses BOTH the id and the
+      // directory: a resumed session fires its own hooks, whose (cwd, sessionId) re-derive and
+      // re-remember the very same path. The map is bounded, so dropping now beats waiting for
+      // eviction to reach an entry nobody is asking about.
+      if (g.event === 'sessionend') forgetGrokSession(g.sessionId)
+      return
+    }
     if (agentId !== 'claude') return
     // Mirror the per-node "what it's doing now" activity line for the phone (mobile-usage-inbox).
     // Independent of the transcript-tailing below (no path needed), so it runs first.

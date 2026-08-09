@@ -1,0 +1,13 @@
+<!--
+  PLACEHOLDER — this is NOT the official Grok / xAI mark.
+
+  It is a neutral "G" monogram drawn in this app's own line-icon style (16x16 display, 24x24
+  viewBox, 1.8 stroke, round caps — see src/renderer/components/icons.tsx). Replace it with the
+  official Grok asset from an official press/brand page, kept at its published proportions, when
+  one is available. Do not touch it up into something that resembles the official mark.
+
+  Colour is explicit (slate-500, the same #64748b as AGENT_CONFIG.grok) rather than currentColor,
+  because agentIcons.tsx loads this file as a URL into an <img>, where currentColor cannot
+  inherit the surrounding text colour (claude.svg / opencode.svg carry explicit colours too).
+-->
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><title>Grok (placeholder monogram)</title><path d="M18 8.6A7 7 0 1 0 18 15.4V12h-4.4"/></svg>

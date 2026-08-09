@@ -2,7 +2,7 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
-export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode'
+export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -13,10 +13,30 @@ export interface AgentConfig {
   color: string // node color
   launchCmd: string // base launch command
   promptInjectionMode: PromptInjectionMode
+  /**
+   * Put this between the command and an `argv` prompt — in practice `'--'`, and only for a CLI
+   * whose grammar has BOTH a positional prompt and subcommands.
+   *
+   * grok is the case that needs it: its usage is `grok [OPTIONS] [PROMPT] [COMMAND]`, so a
+   * one-word prompt collides with a subcommand name. Measured against the shipped binary, `grok
+   * version` PRINTS THE VERSION AND EXITS while `grok -- version` opens a session with "version"
+   * as the prompt — so without the separator a prompt of `help`, `version`, `login`, `models` or
+   * `export` is silently executed as a command and never reaches the model.
+   *
+   * Omitted for every other agent: claude takes a positional and has no subcommand that could
+   * shadow one, and adding a `--` there would change a command line that works today.
+   */
+  argvPromptSeparator?: string
   expectedProcess: string
 }
 
-export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = ['claude', 'codex', 'gemini', 'opencode']
+export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok'
+]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
   claude: {
@@ -48,13 +68,27 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // through --prompt (see createAgentNode's flag-prompt branch).
     promptInjectionMode: 'flag-prompt',
     expectedProcess: 'opencode'
+  },
+  grok: {
+    label: 'Grok',
+    color: '#64748b',
+    launchCmd: 'grok',
+    // Verified against the SHIPPED 1.0.0 binary: usage is `grok [OPTIONS] [PROMPT] [COMMAND]`, so
+    // the prompt is a positional — but one that shares its slot with the subcommand list, which is
+    // what the separator is for (see `argvPromptSeparator`). An earlier reading of this file said
+    // `stdin-after-start`, taken from grok 0.1.220, which had no positional at all; npm's `latest`
+    // tag on the platform package still points at that old build, so the first binary a `npm pack`
+    // hands you is NOT the one `@xai-official/grok` installs.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: '--',
+    expectedProcess: 'grok'
   }
 }
 
 // Capabilities = const membership lists. A custom agent is in no list, so it
 // automatically gets only spawn + terminal-title + process status.
-export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode'] as const
-export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode'] as const
+export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
 export const SUBAGENT_CAPABLE = ['claude'] as const
 export const RECURRING_CAPABLE = ['claude'] as const // /loop, /schedule, /cron
 export const BRANCH_CAPABLE = ['claude'] as const
@@ -65,17 +99,34 @@ export const CHAT_CAPABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
 export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini'] as const
 // Agents that support naming the session in two directions: they emit a session title we adopt
-// into the node title, and accept `/rename <name>` to push a renamed node title back. Claude-only.
-export const RENAME_CAPABLE = ['claude'] as const
+// into the node title, and accept `/rename <name>` to push a renamed node title back. Read legs are
+// per-agent (claude: the transcript .jsonl; grok: its session summary.json — see
+// core/grok-session.ts, routed at the readSessionName IPC handler); the write leg is the same
+// literal `/rename <name>` for both, which grok also accepts as `/title`.
+export const RENAME_CAPABLE = ['claude', 'grok'] as const
 // Agents allowed to drive the canvas via the `nodeterm` CLI (open/show/write/close).
 // Discovery differs per agent: claude gets the manage-nodeterm-canvas skill; codex/gemini/
 // opencode a marker block in ~/.codex/AGENTS.md / ~/.gemini/GEMINI.md /
 // ~/.config/opencode/AGENTS.md (see canvas-control.ts).
-export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode'] as const
+//
+// grok needs NO new installer: it scans `~/.claude/skills` by default for Claude Code
+// compatibility (its shipped docs, user-guide/08-skills.md; switched off only by
+// `[compat.claude] skills = false` or GROK_CLAUDE_SKILLS_ENABLED=false), and that is exactly
+// where the manage-nodeterm-canvas skill is already written — locally, and on an SSH host via
+// RemoteHooks.installCanvasControl. Membership here is what sets NODETERM_CANVAS_CONTROL in the
+// session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
+// other than a no-op.
+export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
-// Only claude's flag surface is verified. codex (--ask-for-approval) and gemini
+// claude and grok share the flag SPELLING and the value vocabulary
+// (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
+// `default`), which is the whole requirement for membership. codex (--ask-for-approval) and gemini
 // (--approval-mode) join by being added here with their own flag mapping.
-export const PERMISSION_MODE_CAPABLE = ['claude'] as const
+//
+// NOTE: the `auto` VERSION GATE is claude's alone — see activePermissionMode in
+// renderer/state/permissionMode.ts. grok has accepted every mode we emit since 1.0.0, its first
+// release, so it must never inherit a gate fed by a `claude --version` probe.
+export const PERMISSION_MODE_CAPABLE = ['claude', 'grok'] as const
 
 const includes = (list: readonly string[], id: AgentId): boolean => list.includes(id)
 
@@ -139,6 +190,7 @@ export function resumeCommand(id: AgentId, sessionId: string): string | null {
       return `opencode --session ${sid}`
     case 'claude':
     case 'gemini':
+    case 'grok':
       return `${id} --resume ${sid}`
     default:
       return null

@@ -476,7 +476,7 @@ export function TabBar({
                     // and applies the moment the host's CLI qualifies.
                     title={
                       m === 'bypassPermissions'
-                        ? 'Skips every permission prompt. This override is saved in the project file (.nodeterm/project.json), so if you commit it, everyone who clones the repo runs Claude without permission checks too.'
+                        ? 'Skips every permission prompt. This override is saved in the project file (.nodeterm/project.json), so if you commit it, everyone who clones the repo runs their Claude and Grok sessions without permission checks too.'
                         : m === 'auto'
                           ? (menuAutoHint ?? undefined)
                           : undefined

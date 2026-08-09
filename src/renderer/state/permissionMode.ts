@@ -2,6 +2,7 @@ import {
   AUTO_PERMISSION_MODE_MIN_VERSION,
   gatePermissionMode,
   resolvePermissionMode,
+  type AgentId,
   type AgentPermissionMode
 } from '@shared/agents/config'
 import { UNKNOWN_CLAUDE_CLI_CAPS, type ClaudeCliCaps, type Project } from '@shared/types'
@@ -77,14 +78,24 @@ function autoSupportedFor(project: Project | undefined): boolean {
  * when the CLI that will run it is too old to know the value (Claude Code < 2.1.71, which exits 1
  * on it) or hasn't been probed yet. The other four modes are never touched by the gate.
  *
+ * `agentId` defaults to `'claude'`, so every call site written before a second agent had a
+ * permission mode keeps its exact behavior.
+ *
  * Lives in its own module rather than in workspace.ts because projects.ts imports workspace.ts
  * (createProject) — importing the projects store from workspace.ts would close that cycle.
  */
-export function activePermissionMode(): AgentPermissionMode {
+export function activePermissionMode(agentId: AgentId = 'claude'): AgentPermissionMode {
   const { settings } = useSettings.getState()
   const { getProject, activeProjectId } = useProjects.getState()
   const project = getProject(activeProjectId)
-  return gatePermissionMode(resolvePermissionMode(project, settings), autoSupportedFor(project))
+  const mode = resolvePermissionMode(project, settings)
+  // The version gate is CLAUDE-specific BY CONSTRUCTION: it exists because Claude Code < 2.1.71
+  // exits 1 on `--permission-mode auto`, and it is fed by a `claude --version` probe (local, or the
+  // SSH host's). grok has accepted every mode we emit since 1.0.0, its first release, so applying
+  // the gate to it would downgrade a grok session to `default` on a machine whose CLAUDE is old —
+  // or absent entirely. An agent that needs its own gate adds it here, beside this one, rather than
+  // inheriting claude's.
+  return agentId === 'claude' ? gatePermissionMode(mode, autoSupportedFor(project)) : mode
 }
 
 /** How long a launch on an SSH project may wait for the REMOTE probe's first answer. The probe
@@ -122,8 +133,15 @@ function waitForSshAutoAnswer(projectId: string, ms: number): Promise<void> {
  * after connect, through a slow login shell) — so when the resolved mode is `auto`, this also
  * waits (bounded) for that probe's first answer. Any other mode never waits: the gate only ever
  * touches `auto`.
+ *
+ * BOTH waits are for claude's gate, and nothing else — so a non-claude agent waits on neither:
+ * blocking a grok launch on a `claude --version` probe (or on an SSH host's claude probe, which on
+ * a host without claude never answers at all) would be a delay bought for no decision.
  */
-export async function ensureActivePermissionMode(): Promise<AgentPermissionMode> {
+export async function ensureActivePermissionMode(
+  agentId: AgentId = 'claude'
+): Promise<AgentPermissionMode> {
+  if (agentId !== 'claude') return activePermissionMode(agentId)
   await ensureClaudeCliCaps()
   const { settings } = useSettings.getState()
   const { getProject, activeProjectId } = useProjects.getState()
@@ -131,13 +149,17 @@ export async function ensureActivePermissionMode(): Promise<AgentPermissionMode>
   if (project?.ssh && resolvePermissionMode(project, settings) === 'auto') {
     await waitForSshAutoAnswer(project.id, SSH_AUTO_PROBE_WAIT_MS)
   }
-  return activePermissionMode()
+  return activePermissionMode('claude')
 }
 
 /**
  * Why `auto` may not apply on this SSH project, for the tab menu's Auto rows — null when the
  * remote CLI is confirmed and Auto works as chosen. The silent fail-open degrade is correct for
  * launches but indistinguishable from "the dropdown is broken" without this.
+ *
+ * Every sentence names CLAUDE explicitly: the gate this describes is claude's alone (grok accepts
+ * `auto` on every version), so an unprefixed warning on a project that also runs grok sessions
+ * would read as a limitation of the mode itself.
  */
 export function sshAutoModeHint(
   answer: SshAutoPermAnswer,
@@ -147,8 +169,8 @@ export function sshAutoModeHint(
   if (answer === 'no') {
     const v = version?.match(/\d+\.\d+\.\d+/)?.[0]
     return v
-      ? `The server's Claude CLI is ${v} — Auto needs ${AUTO_PERMISSION_MODE_MIN_VERSION} or newer, so sessions start without a mode flag until it is upgraded.`
-      : 'Claude CLI was not found on the server, so Auto cannot apply — sessions start without a mode flag.'
+      ? `The server's Claude CLI is ${v} — Auto needs ${AUTO_PERMISSION_MODE_MIN_VERSION} or newer, so Claude sessions start without a mode flag until it is upgraded.`
+      : 'Claude CLI was not found on the server, so Auto cannot apply to Claude sessions — they start without a mode flag.'
   }
-  return `Not verified on this server yet — Auto applies once the server's Claude CLI (≥ ${AUTO_PERMISSION_MODE_MIN_VERSION}) is confirmed.`
+  return `Claude sessions: not verified on this server yet — Auto applies to them once the server's Claude CLI (≥ ${AUTO_PERMISSION_MODE_MIN_VERSION}) is confirmed.`
 }

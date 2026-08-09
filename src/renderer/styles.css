@@ -1313,7 +1313,10 @@ body,
 
 /* Claude: coral pixel critter, 2-frame walk (~2.5 steps/s ⇒ 0.8s/cycle) + an alternating bob.
    steps(1) holds each keyframe's value across its segment, giving two discrete frame+bob states. */
-.term-node__mascot--claude {
+/* Claude and Grok are both quadrant-block sprites from lib/mascot.ts: same 2-frame sheet, same
+   display geometry, so they share one rule block — the numbers must never be forked. */
+.term-node__mascot--claude,
+.term-node__mascot--grok {
   width: var(--mascot-w);
   height: var(--mascot-h);
   background-size: calc(var(--mascot-w) * 2) var(--mascot-h);

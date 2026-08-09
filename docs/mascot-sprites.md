@@ -28,6 +28,27 @@ Quadrant char → (UL, UR, LL, LR) sub-pixel bits:
 - **Walk**: frame index = `floor(t × 2.5) % 2` (≈ 2.5 steps/s).
 - **Bob**: vertical offset alternates with the frame (±0.5–1.5 px scaled to render size).
 
+## Grok mascot (same machinery, original critter)
+
+An ORIGINAL pixel critter — not a brand mark, and deliberately a different silhouette from the
+Claude one (narrow head with two antenna pixels that swap sides, wider body), on the same 9×3
+quadrant grid so the geometry and the walk are shared verbatim. The FEET row is byte-identical to
+Claude's in both frames — the shared walk is the point, and it is what keeps the two critters
+stepping in the same rhythm:
+
+```
+frame 0:  "▘ ▐███▌ ▝" / " ▙█████▟ " / "  ▘▘ ▝▝  "
+frame 1:  "▝ ▐███▌ ▘" / " ▙█████▟ " / "  ▝▝ ▘▘  "
+```
+
+- Color: `#8494a8`, a mid-tone. The badge lives in the node HEADER (`--panel-header`), which is
+  `#323232` dark but `#eae5db` LIGHT, so the sprite must survive both themes plus the notch
+  capsule's black. Measured contrast (dark / light / notch): this `4.14 / 2.47 / 6.78` vs Claude
+  coral's `4.11 / 2.49 / 6.73` — same balance. A light slate-300 reads 8.64 dark but **1.18
+  light**, i.e. invisible in a shipped theme; the node color `#64748b` reads only 2.69 dark.
+- Both sprites go through `buildQuadrantSprite(frames, color)` in `src/renderer/lib/mascot.ts`
+  and reuse `CLAUDE_FRAME_WIDTH/HEIGHT`, so they cannot drift on aspect ratio or smoothing.
+
 ## Codex pet (spritesheet asset)
 
 `pet-codex.webp` (checked into `resources/mascot/` here, `NodeTerm/Resources/Mascot/` on iOS):

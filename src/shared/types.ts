@@ -557,11 +557,13 @@ export interface PtyApi {
    *  node persistKey. null when it is unknown — no session, no tmux, or the query failed — which
    *  callers must read as "not observed", never as evidence of a particular command. */
   paneCommand(persistKey: string): Promise<string | null>
-  /** The agent session's display name (`/rename` name, else auto name) read from its transcript,
-   *  resolved strictly by sessionId; null if unknown. Keeps a node title in sync with the
-   *  `/resume` name (e.g. after resume) without cross-contaminating same-folder sessions.
-   *  `accountId` scopes the lookup to a managed Claude account's transcript root (default `~/.claude`). */
-  readSessionName(sessionId: string, accountId?: string): Promise<string | null>
+  /** The agent session's display name (`/rename` name, else auto name) read from the agent's own
+   *  session store, resolved strictly by sessionId; null if unknown. Keeps a node title in sync with
+   *  the `/resume` name (e.g. after resume) without cross-contaminating same-folder sessions.
+   *  `accountId` scopes the lookup to a managed Claude account's transcript root (default `~/.claude`).
+   *  `agentId` picks the reader — grok's name lives in its session metadata, not a claude transcript;
+   *  omitted (every pre-grok caller) means the claude transcript reader. */
+  readSessionName(sessionId: string, accountId?: string, agentId?: string): Promise<string | null>
   /** Listens for PTY output. Returns an unsubscribe function. */
   onData(sessionId: string, listener: (data: string) => void): () => void
   /** Fires when the PTY process exits. Returns an unsubscribe function. */

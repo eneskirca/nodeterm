@@ -37,3 +37,14 @@ describe('resumeCommand', () => {
     expect(resumeCommand('opencode', 'x; rm -rf /')).toBeNull()
   })
 })
+
+/**
+ * Grok's entry was read off the SHIPPED BINARY (`@xai-official/grok`, `grok --help`) rather than
+ * from a README or from the shape of the agents beside it — `-r, --resume [<SESSION_ID>]`, the same
+ * spelling claude and gemini use, which is why it shares their branch instead of getting its own.
+ */
+describe('resumeCommand — grok', () => {
+  it('builds grok resume', () => {
+    expect(resumeCommand('grok', 'abc-123')).toBe('grok --resume abc-123')
+  })
+})

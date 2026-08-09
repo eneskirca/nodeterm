@@ -1,5 +1,5 @@
 import fs from 'fs'
-import { readSessionName } from '../core/transcript-reader'
+import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { canRename, type AgentId } from '@shared/agents/config'
 import path from 'path'
@@ -257,7 +257,10 @@ export async function startServer(
       const n = workspaceStore.getNode(nodeId)
       return n ? { accountId: n.accountId, titleAuto: n.titleAuto } : undefined
     },
-    resolve: (sessionId, accountId) => readSessionName(sessionId, accountId),
+    // The per-agent router (core/agent-session-name.ts), same as the desktop's sweep and its
+    // ptyReadSessionName handler: a grok node's name is in its session metadata, and resolving it
+    // through claude's reader would scan ~/.claude/projects once a minute for a guaranteed miss.
+    resolve: readAgentSessionName,
     publish: setNodeSessionName,
     supports: (agentId) => !!agentId && canRename(agentId as AgentId)
   })

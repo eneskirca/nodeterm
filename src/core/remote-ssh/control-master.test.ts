@@ -247,6 +247,19 @@ describe('hook forwarding', () => {
     // Guard against a regression that passes sessionName(persistKey) = `nt-<id>`.
     expect(env).not.toContain(`NODETERM_NODE_ID=nt-${persistKey}`)
   })
+  it('arms canvas control on a remote grok session, and not on a plain terminal', () => {
+    // Same gate as the local hookServer.buildPtyEnv, so an SSH grok node gets the shim armed with
+    // no extra install: the skill is already written to the host's $HOME/.claude/skills, which grok
+    // scans by default.
+    expect(remoteHookEnvArgs('/ep', 'n1', '1', 'grok')).toEqual([
+      '-e', 'NODETERM_HOOK_ENDPOINT=/ep',
+      '-e', 'NODETERM_NODE_ID=n1',
+      '-e', 'NODETERM_HOOK_VERSION=1',
+      '-e', 'NODETERM_AGENT_ID=grok',
+      '-e', 'NODETERM_CANVAS_CONTROL=1'
+    ])
+    expect(remoteHookEnvArgs('/ep', 'n1', '1')).not.toContain('NODETERM_CANVAS_CONTROL=1')
+  })
   it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION', () => {
     expect(remoteEndpointFileContents('/r.sock', 'tok', '1')).toBe(
       'NODETERM_HOOK_SOCK=/r.sock\nNODETERM_HOOK_TOKEN=tok\nNODETERM_HOOK_VERSION=1\n'
