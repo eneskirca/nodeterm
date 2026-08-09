@@ -56,3 +56,62 @@ export interface GitHubAuthStatus {
   storage: GitHubSecretAvailability
   login?: string
 }
+
+export interface GitHubIssueLabel {
+  id: number
+  name: string
+  color: string
+}
+
+export interface GitHubIssueUser {
+  id: number
+  login: string
+  avatarUrl: string
+}
+
+export interface GitHubIssue {
+  id: number
+  number: number
+  title: string
+  body: string
+  state: 'open' | 'closed'
+  stateReason: 'completed' | 'not_planned' | 'reopened' | null
+  htmlUrl: string
+  apiUrl: string
+  labels: GitHubIssueLabel[]
+  assignees: GitHubIssueUser[]
+  createdAt: string
+  updatedAt: string
+  locked: boolean
+}
+
+export interface ListIssueOptions {
+  state: 'open' | 'closed' | 'all'
+  page: number
+  perPage: number
+  since?: string
+  etag?: string
+}
+
+export interface IssuePageResult {
+  items: GitHubIssue[]
+  nextPage?: number
+  etag?: string
+  notModified?: boolean
+}
+
+export interface UpdateIssueInput {
+  state?: 'open' | 'closed'
+  labels?: string[]
+}
+
+export interface GitHubRepositoryLabel extends GitHubIssueLabel {
+  description: string | null
+}
+
+export interface LabelPageResult {
+  items: GitHubRepositoryLabel[]
+  nextPage?: number
+  etag?: string
+  notModified?: boolean
+}
