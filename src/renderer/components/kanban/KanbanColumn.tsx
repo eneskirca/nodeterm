@@ -4,11 +4,17 @@ import { NODE_COLORS } from '../../state/workspace'
 import { SessionCard } from './SessionCard'
 import type { KanbanCardMeta, KanbanLabel } from '@shared/types'
 import type { KanbanCreateChoice, KanbanCreateOption, KanbanSession } from './KanbanView'
+import type { GitHubIssueCardView } from '@shared/github-issues'
+import { GitHubIssueCard } from './GitHubIssueCard'
 
 interface KanbanColumnProps {
   /** null = the virtual Ungrouped column: fixed label, no rename/recolor/delete, header not draggable. */
   column: KanbanColumnT | null
   cards: KanbanSession[]
+  githubCards?: GitHubIssueCardView[]
+  githubColumns?: KanbanColumnT[]
+  githubMoving?: Record<number, true>
+  displayCount?: number
   // Column-scoped callbacks carry the column id (and card-scoped ones the node id) so KanbanView
   // can hand every column the SAME function references — that identity stability is what lets
   // memo() skip columns/cards untouched by a render.
@@ -34,10 +40,17 @@ interface KanbanColumnProps {
   onDropAtCard: (columnId: string | null, nodeId: string, side: 'before' | 'after') => void
   /** Right-click on a card — bubbles the cursor position + node id up to the board menu. */
   onCardContext: (nodeId: string, x: number, y: number) => void
+  onOpenGitHub?: (issue: GitHubIssueCardView) => void
+  onMoveGitHub?: (issue: GitHubIssueCardView, columnId: string | null) => void
+  onGitHubDragStart?: (issue: GitHubIssueCardView) => void
+  onLoadMoreGitHub?: (columnId: string | null) => void
+  hasMoreGitHub?: boolean
 }
 
 export const KanbanColumn = memo(function KanbanColumn({
-  column, cards, metaOf, labelsOf, onRename, onRecolor, onDelete, onOpenCard, onCardContext,
+  column, cards, githubCards = [], githubColumns = [], githubMoving = {}, displayCount, metaOf, labelsOf,
+  onRename, onRecolor, onDelete, onOpenCard, onCardContext, onOpenGitHub, onMoveGitHub,
+  onGitHubDragStart, onLoadMoreGitHub, hasMoreGitHub,
   createOptions, onCreate, onCardDragStart, onColumnDragStart, onDragEnd, onDropOnColumn,
   onDropAtCard
 }: KanbanColumnProps) {
@@ -117,7 +130,7 @@ export const KanbanColumn = memo(function KanbanColumn({
             {column ? column.title : 'Ungrouped'}
           </span>
         )}
-        <span className="kanban-col__count">{cards.length}</span>
+        <span className="kanban-col__count">{displayCount ?? cards.length + githubCards.length}</span>
         {column && (
           <button
             className="kanban-col__close"
@@ -157,6 +170,23 @@ export const KanbanColumn = memo(function KanbanColumn({
             onDropAt={dropAtCard}
           />
         ))}
+        {githubCards.map((issue) => (
+          <GitHubIssueCard
+            key={`github:${issue.id}`}
+            issue={issue}
+            columns={githubColumns}
+            moving={!!githubMoving[issue.number]}
+            onOpen={(item) => onOpenGitHub?.(item)}
+            onMove={(item, target) => onMoveGitHub?.(item, target)}
+            onDragStart={(item) => onGitHubDragStart?.(item)}
+            onDragEnd={onDragEnd}
+          />
+        ))}
+        {hasMoreGitHub && (
+          <button className="kanban-github-more" onClick={() => onLoadMoreGitHub?.(colId)}>
+            Show more issues
+          </button>
+        )}
       </div>
       <div className="kanban-col__footer">
         {newMenuOpen && (

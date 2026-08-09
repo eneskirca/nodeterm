@@ -7027,6 +7027,47 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.kanban-source-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  padding: 2px;
+  border: 1px solid rgba(var(--tint-rgb), 0.1);
+  border-radius: 7px;
+  background: rgba(var(--tint-rgb), 0.04);
+}
+.kanban-source-filter__button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.55);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.kanban-source-filter__button:hover {
+  color: var(--text-strong);
+}
+.kanban-source-filter__button.is-active {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text-strong);
+}
+.kanban-github-status {
+  color: rgba(var(--tint-rgb), 0.5);
+  font-size: 11px;
+}
+.kanban-github-status--error {
+  color: var(--warn);
+}
+.kanban-github-retry {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.kanban-github-retry:hover {
+  text-decoration: underline;
+}
 .kanban-board {
   flex: 1;
   overflow-x: auto;
@@ -7194,6 +7235,202 @@ body,
 }
 .kanban-card:hover {
   border-color: rgba(var(--tint-rgb), 0.2);
+}
+.kanban-card--github {
+  border-left: 2px solid rgba(125, 133, 144, 0.7);
+}
+.github-issue-state {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.github-issue-state--open {
+  color: #3fb950;
+}
+.github-issue-state--closed {
+  color: #a371f7;
+}
+.github-issue-source {
+  flex: 0 0 auto;
+  border: 1px solid rgba(var(--tint-rgb), 0.15);
+  border-radius: 4px;
+  color: rgba(var(--tint-rgb), 0.5);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+}
+.github-issue-card__number {
+  margin: 4px 0 0 17px;
+  color: rgba(var(--tint-rgb), 0.42);
+  font-size: 10px;
+}
+.github-issue-card__labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.github-issue-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid rgba(var(--tint-rgb), 0.18);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 9px;
+  line-height: 1.4;
+}
+.github-issue-card__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: rgba(var(--tint-rgb), 0.45);
+  font-size: 10px;
+}
+.github-issue-conflict {
+  color: var(--warn);
+}
+.github-issue-card__footer .kanban-card__avatars {
+  margin-left: auto;
+}
+.github-issue-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid rgba(var(--tint-rgb), 0.16);
+}
+.github-issue-avatar--initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--tint-rgb), 0.15);
+  color: var(--text-strong);
+  font-size: 9px;
+  font-weight: 700;
+}
+.github-issue-move select {
+  max-width: 84px;
+  height: 23px;
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: rgba(var(--tint-rgb), 0.72);
+  font-size: 10px;
+}
+.kanban-github-more {
+  width: 100%;
+  border: 1px dashed rgba(var(--tint-rgb), 0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.52);
+  padding: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.kanban-github-more:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.github-issue-modal {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid rgba(var(--tint-rgb), 0.14);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, calc(0.65 * var(--shadow-k)));
+}
+.github-issue-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+.github-issue-modal__header h2 {
+  margin: 3px 0 0;
+  color: var(--text-strong);
+  font-size: 20px;
+  line-height: 1.3;
+}
+.github-issue-modal__eyebrow {
+  color: rgba(var(--tint-rgb), 0.48);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.github-issue-modal__close {
+  border: 0;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.55);
+  font-size: 24px;
+  cursor: pointer;
+}
+.github-issue-modal__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+.github-issue-modal__actions label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(var(--tint-rgb), 0.58);
+  font-size: 12px;
+}
+.github-issue-modal__warning {
+  margin: 14px 22px 0;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  color: var(--warn);
+  padding: 9px 11px;
+  font-size: 12px;
+}
+.github-issue-modal__body {
+  padding: 22px;
+  color: rgba(var(--tint-rgb), 0.78);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+@media (max-width: 520px) {
+  .kanban-header {
+    gap: 6px;
+    padding-left: 10px;
+    padding-right: 112px;
+  }
+  .kanban-header__name {
+    max-width: 84px;
+  }
+  .kanban-source-filter__button {
+    padding-inline: 6px;
+  }
+  .kanban-board {
+    padding-inline: 10px;
+  }
+  .kanban-col {
+    flex-basis: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px);
+  }
+  .github-issue-modal__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 .kanban-card__nodedot {
   width: 8px;

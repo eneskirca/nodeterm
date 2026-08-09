@@ -16,6 +16,11 @@ import { KanbanColumn } from './KanbanColumn'
 import type { ModalSpawn } from './ModalTerminal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
 import { IconAgent, IconExternal, IconNote, IconSwitch, IconTerminal, IconTrash, IconWeb } from '../icons'
+import type { GitHubIssueCardView } from '@shared/github-issues'
+import { useGitHubIssues } from '../../state/githubIssues'
+import { useSession } from '../../session/session'
+import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
+import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
 
 /** One session node shown as a board card — derived LIVE from the canvas nodes; the board
  *  itself stores only column assignments. */
@@ -70,7 +75,10 @@ export interface KanbanViewProps {
   onBrowserNav: (nodeId: string, patch: { url?: string; title?: string }) => void
 }
 
-type Drag = { kind: 'card' | 'column'; id: string } | null
+type Drag =
+  | { kind: 'card' | 'column'; id: string }
+  | { kind: 'github'; issue: GitHubIssueCardView }
+  | null
 
 /** Shared empty results — stable identities so memoized cards/columns see "no change". */
 const NO_LABELS: KanbanLabel[] = []
@@ -86,6 +94,7 @@ export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
   onModalNodeChange, onBrowserNav
 }: KanbanViewProps) {
+  const { api } = useSession()
   const dragRef = useRef<Drag>(null)
   // One card modal at a time; a deleted node closes it via the byId.has render guard.
   const [modalNodeId, setModalNodeId] = useState<string | null>(null)
@@ -95,6 +104,9 @@ export const KanbanView = memo(function KanbanView({
   // show everything; otherwise a card must carry at least one selected label (cardMatchesLabelFilter).
   const [labelFilter, setLabelFilter] = useState<string[]>([])
   const [filterOpen, setFilterOpen] = useState(false)
+  const [source, setSource] = useState<KanbanSource>('all')
+  const [modalIssue, setModalIssue] = useState<GitHubIssueCardView | null>(null)
+  const [githubRetry, setGitHubRetry] = useState(0)
   // Drop ids no longer in the palette so a deleted label can't keep the board filtered to nothing.
   const paletteLabels = useMemo(() => boardLabels(board), [board])
   const activeFilter = useMemo(
@@ -119,8 +131,42 @@ export const KanbanView = memo(function KanbanView({
     useViewMode.getState().clearCardRequest()
   }, [requestedCardNodeId])
   // Primitive selectors (not one object) — an object selector would re-render on every store set.
+  const projectId = useProjects((s) => s.activeProjectId)
   const projectName = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.name)
   const projectColor = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.color)
+  const github = useGitHubIssues((state) => state.projects[projectId])
+  const connectGitHub = useGitHubIssues((state) => state.connect)
+  const moveGitHubState = useGitHubIssues((state) => state.move)
+  const loadMoreGitHub = useGitHubIssues((state) => state.loadMore)
+  const githubConfigKey = JSON.stringify(board.github ?? null)
+  const columnIdsKey = board.columns.map((column) => column.id).join('\0')
+  useEffect(() => {
+    if (!board.github || !projectId) return
+    let disposed = false
+    let disconnect: (() => void) | undefined
+    void connectGitHub(api.githubIssues, projectId, board.columns.map((column) => column.id))
+      .then((teardown) => {
+        if (disposed) teardown()
+        else disconnect = teardown
+      })
+    return () => {
+      disposed = true
+      disconnect?.()
+    }
+    // The serialised config is the epoch visible to the renderer. Reconnect when mappings change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, projectId, githubConfigKey, columnIdsKey, connectGitHub, githubRetry])
+  useEffect(() => {
+    setSource('all')
+    setModalIssue(null)
+  }, [projectId])
+  useEffect(() => {
+    if (!modalIssue || !github) return
+    const latest = Object.values(github.pages)
+      .flatMap((page) => page.items)
+      .find((issue) => issue.number === modalIssue.number)
+    if (latest && latest.updatedAt !== modalIssue.updatedAt) setModalIssue(latest)
+  }, [github, modalIssue])
   const customAgents = useSettings((s) => s.settings.customAgents)
   // "+ New" menu entries: the builtin agents, the user's custom agents, then terminal + sticky
   // (same universe as the dock's add menu, minus canvas-only kinds). Memoized — a fresh array
@@ -182,17 +228,35 @@ export const KanbanView = memo(function KanbanView({
     (columnId: string | null) => {
       const drag = takeDrag()
       if (!drag) return
-      if (drag.kind === 'card') commit(assignNode(board, drag.id, columnId, null))
+      if (drag.kind === 'github') {
+        void moveGitHubState(
+          api.githubIssues,
+          projectId,
+          drag.issue.number,
+          columnId,
+          drag.issue.updatedAt
+        )
+      } else if (drag.kind === 'card') commit(assignNode(board, drag.id, columnId, null))
       else if (columnId !== null) commit(moveColumn(board, drag.id, columnId))
       // a column dropped on Ungrouped is a no-op — Ungrouped is always first
     },
-    [board, commit]
+    [api.githubIssues, board, commit, moveGitHubState, projectId]
   )
 
   const dropAtCard = useCallback(
     (columnId: string | null, targetNodeId: string, side: 'before' | 'after') => {
       const drag = takeDrag()
       if (!drag) return
+      if (drag.kind === 'github') {
+        void moveGitHubState(
+          api.githubIssues,
+          projectId,
+          drag.issue.number,
+          columnId,
+          drag.issue.updatedAt
+        )
+        return
+      }
       if (drag.kind === 'column') {
         if (columnId !== null) commit(moveColumn(board, drag.id, columnId))
         return
@@ -206,7 +270,7 @@ export const KanbanView = memo(function KanbanView({
       }
       commit(assignNode(board, drag.id, columnId, beforeId))
     },
-    [board, commit, sessionIds]
+    [api.githubIssues, board, commit, moveGitHubState, projectId, sessionIds]
   )
 
   // Per-column card lists in one pass, so a board render doesn't re-derive (and re-allocate)
@@ -230,6 +294,9 @@ export const KanbanView = memo(function KanbanView({
   const handleCardDragStart = useCallback((id: string) => {
     dragRef.current = { kind: 'card', id }
   }, [])
+  const handleGitHubDragStart = useCallback((issue: GitHubIssueCardView) => {
+    dragRef.current = { kind: 'github', issue }
+  }, [])
   const handleColumnDragStart = useCallback((columnId: string) => {
     dragRef.current = { kind: 'column', id: columnId }
   }, [])
@@ -252,6 +319,13 @@ export const KanbanView = memo(function KanbanView({
     (columnId: string) => commit(deleteColumn(board, columnId)),
     [board, commit]
   )
+  const handleMoveGitHub = useCallback((issue: GitHubIssueCardView, columnId: string | null) => {
+    void moveGitHubState(api.githubIssues, projectId, issue.number, columnId, issue.updatedAt)
+  }, [api.githubIssues, moveGitHubState, projectId])
+  const githubPage = useCallback((columnId: string | null) =>
+    github?.pages[columnId ?? 'ungrouped'], [github])
+  const sessionVisible = source !== 'github'
+  const githubVisible = source !== 'sessions' && !!board.github
 
   // Right-click menu for a card: open on canvas, move to another column, delete.
   const cardMenuItems = (nodeId: string): MenuItem[] => {
@@ -285,6 +359,16 @@ export const KanbanView = memo(function KanbanView({
       <div className="kanban-header">
         <span className="kanban-header__dot" style={{ background: projectColor }} />
         <span className="kanban-header__name">{projectName}</span>
+        {board.github && <KanbanSourceFilter value={source} onChange={setSource} />}
+        {board.github && github?.loading && <span className="kanban-github-status">Loading GitHub issues…</span>}
+        {board.github && github?.error && (
+          <button
+            className="kanban-github-status kanban-github-status--error kanban-github-retry"
+            onClick={() => setGitHubRetry((value) => value + 1)}
+          >
+            GitHub issues unavailable · Retry
+          </button>
+        )}
         {paletteLabels.length > 0 && (
           <div className="kanban-header__filter">
             <button
@@ -324,7 +408,12 @@ export const KanbanView = memo(function KanbanView({
       <div className="kanban-board">
         <KanbanColumn
           column={null}
-          cards={columnCards.ungrouped}
+          cards={sessionVisible ? columnCards.ungrouped : NO_CARDS}
+          githubCards={githubVisible ? githubPage(null)?.items ?? [] : []}
+          githubColumns={board.columns}
+          githubMoving={github?.moving}
+          displayCount={(sessionVisible ? columnCards.ungrouped.length : 0) +
+            (githubVisible ? githubPage(null)?.counts.ungrouped ?? 0 : 0)}
           metaOf={metaOf}
           labelsOf={labelsOf}
           onOpenCard={setModalNodeId}
@@ -335,12 +424,22 @@ export const KanbanView = memo(function KanbanView({
           onDropOnColumn={dropOnColumn}
           onDropAtCard={dropAtCard}
           onCardContext={handleCardContext}
+          onOpenGitHub={setModalIssue}
+          onMoveGitHub={handleMoveGitHub}
+          onGitHubDragStart={handleGitHubDragStart}
+          hasMoreGitHub={githubVisible && !!githubPage(null)?.nextCursor}
+          onLoadMoreGitHub={() => void loadMoreGitHub(api.githubIssues, projectId, null)}
         />
         {board.columns.map((col) => (
           <KanbanColumn
             key={col.id}
             column={col}
-            cards={columnCards.byColumn.get(col.id) ?? NO_CARDS}
+            cards={sessionVisible ? columnCards.byColumn.get(col.id) ?? NO_CARDS : NO_CARDS}
+            githubCards={githubVisible ? githubPage(col.id)?.items ?? [] : []}
+            githubColumns={board.columns}
+            githubMoving={github?.moving}
+            displayCount={(sessionVisible ? columnCards.byColumn.get(col.id)?.length ?? 0 : 0) +
+              (githubVisible ? githubPage(col.id)?.counts[col.id] ?? 0 : 0)}
             metaOf={metaOf}
             labelsOf={labelsOf}
             onRename={handleRenameColumn}
@@ -355,6 +454,11 @@ export const KanbanView = memo(function KanbanView({
             onDropOnColumn={dropOnColumn}
             onDropAtCard={dropAtCard}
             onCardContext={handleCardContext}
+            onOpenGitHub={setModalIssue}
+            onMoveGitHub={handleMoveGitHub}
+            onGitHubDragStart={handleGitHubDragStart}
+            hasMoreGitHub={githubVisible && !!githubPage(col.id)?.nextCursor}
+            onLoadMoreGitHub={() => void loadMoreGitHub(api.githubIssues, projectId, col.id)}
           />
         ))}
         <button
@@ -387,6 +491,15 @@ export const KanbanView = memo(function KanbanView({
           onRename={(t) => onRenameNode(modalNodeId, t)}
           onEditSticky={(t) => onEditSticky(modalNodeId, t)}
           onBrowserNav={(patch) => onBrowserNav(modalNodeId, patch)}
+        />
+      )}
+      {modalIssue && (
+        <GitHubIssueSummaryModal
+          issue={modalIssue}
+          columns={board.columns}
+          moving={!!github?.moving[modalIssue.number]}
+          onMove={(columnId) => handleMoveGitHub(modalIssue, columnId)}
+          onClose={() => setModalIssue(null)}
         />
       )}
     </div>
