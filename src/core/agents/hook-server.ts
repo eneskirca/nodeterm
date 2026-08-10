@@ -149,6 +149,13 @@ class HookServer {
             await readBody(req),
             String(req.headers['content-type'] ?? '')
           )
+          // Body fully received: disarm the slowloris guard. A destructive
+          // control verb legitimately parks here while the renderer waits for
+          // the user's confirmation (up to the 120s control timeout), and the
+          // receive-phase guard used to destroy the socket after 2s of that
+          // wait -- the caller saw "endpoint unreachable" while the dialog
+          // was still up.
+          req.setTimeout(0)
           const result = this.controlHandler
             ? await this.controlHandler({ verb, nodeId, args })
             : { ok: false, error: 'control unavailable' }
@@ -174,6 +181,9 @@ class HookServer {
           )
           // Always text: the caller is the sh shim, and the payload IS prose (a rendered
           // transcript). The handler owns the authorization — see context-link.ts.
+          // Disarm the receive-phase guard here too: a linked-transcript
+          // read over SSH can take longer than 2s to render its response.
+          req.setTimeout(0)
           const text = this.contextLinkHandler
             ? await this.contextLinkHandler({ verb, nodeId, args })
             : 'Context link is unavailable in this session.'

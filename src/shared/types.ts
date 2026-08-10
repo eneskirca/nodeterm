@@ -926,6 +926,12 @@ export interface Settings {
    *  hook holds briefly for a phone/canvas Approve/Deny before falling through to the normal
    *  interactive prompt. Off ⇒ the env var is absent ⇒ exact legacy behavior. Claude-only. */
   hookReplyApprovals: boolean
+  /** Seamless agent messaging (opt-in, default off): agent-to-node `write` control requests
+   *  deliver without the per-message confirmation dialog. With this on, any control-capable
+   *  agent node can type into any other node's terminal without the user seeing it first --
+   *  the same plumbing a cross-agent prompt injection would use. Intended for supervised
+   *  pair-programming flows. `close` keeps its confirmation regardless. */
+  agentSeamlessWrites: boolean
   /** macOS Notch HUD (docs/notch-hud.md): a transparent always-on-top strip by the notch showing
    *  walking agent mascots while agents work, expanding into a mini session panel. Default on;
    *  macOS + desktop only (ignored on other platforms / Server Edition). */
@@ -1012,6 +1018,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Deterministic hook-reply approvals default ON (existing users pick it up on hydrate). Only
   // affects Claude terminal sessions; off reproduces the pre-feature launch bit-for-bit.
   hookReplyApprovals: true,
+  // Seamless agent writes default OFF: skipping the per-message confirmation is an explicit
+  // trust decision the user makes in Settings -> Agents, never a default posture.
+  agentSeamlessWrites: false,
   // macOS Notch HUD default ON (guarded to darwin at runtime; a no-op elsewhere).
   notchHud: true,
   notchWidth: 168,
