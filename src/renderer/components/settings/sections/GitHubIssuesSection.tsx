@@ -154,6 +154,79 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
   const completionReady = !!githubConfig?.completionColumnId &&
     mappings.has(githubConfig.completionColumnId)
   const ready = approved && authenticated && completionReady
+  const ghSignedIn = !!view?.auth.ghAuthenticated
+
+  // The personal access token control, defined once and placed either prominently (when the GitHub
+  // CLI is NOT signed in — it's the only way in) or tucked inside "Advanced" (when gh already works,
+  // where a token is a rarely-needed override).
+  const tokenFieldRow = (
+    <FieldRow
+      label="Personal access token"
+      description="Use a fine-grained token with repository metadata read access and issues read and write access. The token is write only in this screen."
+      note={view?.auth.storage === 'restricted-file'
+        ? 'Encrypted key storage is unavailable. The token is protected in a mode 0600 local file.'
+        : undefined}
+      htmlFor="github-personal-access-token"
+      control={
+        <div className="flex items-center gap-2">
+          <Input
+            id="github-personal-access-token"
+            type="password"
+            autoComplete="off"
+            className="w-56"
+            value={token}
+            placeholder={view?.auth.tokenPresent ? 'Token saved' : 'github_pat_…'}
+            onChange={(event) => setToken(event.target.value)}
+          />
+          <Button
+            disabled={!token || busy !== ''}
+            onClick={() => void run('token', async () => {
+              await window.nodeTerminal.githubControl.saveToken(token)
+              setToken('')
+            }, 'Token saved securely.')}
+          >
+            Save token
+          </Button>
+          {view?.auth.tokenPresent && (
+            <Button
+              disabled={busy !== ''}
+              onClick={() => void run('clear-token', async () => {
+                await window.nodeTerminal.githubControl.clearToken()
+                setToken('')
+              }, 'Saved token cleared.')}
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      }
+    />
+  )
+
+  const providerFieldRow = (
+    <FieldRow
+      label="Authentication"
+      description="Auto prefers an authenticated GitHub CLI and otherwise uses the saved token."
+      control={
+        <Select
+          id="github-auth-provider"
+          value={view?.control.authProvider ?? 'auto'}
+          disabled={!view || busy !== ''}
+          onChange={(event) => void run('provider', async () => {
+            const current = await window.nodeTerminal.githubControl.status(projectId)
+            await window.nodeTerminal.githubControl.selectProvider({
+              provider: event.target.value as GitHubAuthProvider,
+              expectedRevision: current.control.revision
+            })
+          }, 'Authentication preference updated.')}
+        >
+          <option value="auto">Auto</option>
+          <option value="gh">GitHub CLI only</option>
+          <option value="token">Personal access token only</option>
+        </Select>
+      }
+    />
+  )
 
   return (
     <SettingsSection
@@ -245,73 +318,32 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
           </SearchableRow>
 
           <SearchableRow {...ROWS.authentication}>
-            <div className="space-y-4">
-              <FieldRow
-                label="Authentication"
-                description="Auto prefers an authenticated GitHub CLI and otherwise uses the saved token."
-                control={
-                  <Select
-                    id="github-auth-provider"
-                    value={view?.control.authProvider ?? 'auto'}
-                    disabled={!view || busy !== ''}
-                    onChange={(event) => void run('provider', async () => {
-                      const current = await window.nodeTerminal.githubControl.status(projectId)
-                      await window.nodeTerminal.githubControl.selectProvider({
-                        provider: event.target.value as GitHubAuthProvider,
-                        expectedRevision: current.control.revision
-                      })
-                    }, 'Authentication preference updated.')}
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="gh">GitHub CLI only</option>
-                    <option value="token">Personal access token only</option>
-                  </Select>
-                }
-              />
-              <FieldRow
-                label="Personal access token"
-                description="Use a fine-grained token with repository metadata read access and issues read and write access. The token is write only in this screen."
-                note={view?.auth.storage === 'restricted-file'
-                  ? 'Encrypted key storage is unavailable. The token is protected in a mode 0600 local file.'
-                  : undefined}
-                htmlFor="github-personal-access-token"
-                control={
-                  <div className="flex items-center gap-2">
-                    <Input
-                      id="github-personal-access-token"
-                      type="password"
-                      autoComplete="off"
-                      className="w-56"
-                      value={token}
-                      placeholder={view?.auth.tokenPresent ? 'Token saved' : 'github_pat_…'}
-                      onChange={(event) => setToken(event.target.value)}
-                    />
-                    <Button
-                      disabled={!token || busy !== ''}
-                      onClick={() => void run('token', async () => {
-                        await window.nodeTerminal.githubControl.saveToken(token)
-                        setToken('')
-                      }, 'Token saved securely.')}
-                    >
-                      Save token
-                    </Button>
-                    {view?.auth.tokenPresent && (
-                      <Button
-                        disabled={busy !== ''}
-                        onClick={() => void run('clear-token', async () => {
-                          await window.nodeTerminal.githubControl.clearToken()
-                          setToken('')
-                        }, 'Saved token cleared.')}
-                      >
-                        Clear
-                      </Button>
-                    )}
-                  </div>
-                }
-              />
-              <p className="text-[13px] text-muted">
-                GitHub CLI {view?.auth.ghAuthenticated ? 'is signed in' : 'is not signed in'}.
-              </p>
+            <div className="space-y-3">
+              {ghSignedIn ? (
+                // Happy path: the CLI already authenticates every request — no token, no dropdown.
+                // (Unless the user has explicitly pinned the provider to token-only, below.)
+                <p className="text-[13px] text-text">
+                  ✓ Signed in via GitHub CLI
+                  {view?.auth.activeProvider === 'gh' && view?.auth.login ? ` as @${view.auth.login}` : ''}.
+                  {view?.control.authProvider === 'token' ? '' : ' No token needed.'}
+                </p>
+              ) : (
+                <p className="text-[13px] text-muted">
+                  GitHub CLI is not signed in. Run <code>gh auth login</code> in a terminal, or paste a
+                  personal access token below.
+                </p>
+              )}
+
+              {/* Token is the only way in when gh is absent, so surface it; otherwise hide it away. */}
+              {!ghSignedIn && tokenFieldRow}
+
+              <details className="github-auth-advanced">
+                <summary>{ghSignedIn ? 'Advanced — use a personal access token instead' : 'Advanced'}</summary>
+                <div className="space-y-4" style={{ marginTop: 12 }}>
+                  {providerFieldRow}
+                  {ghSignedIn && tokenFieldRow}
+                </div>
+              </details>
             </div>
           </SearchableRow>
 
