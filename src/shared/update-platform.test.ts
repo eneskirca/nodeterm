@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import fs from 'fs'
+import path from 'path'
 import { isManualUpdatePlatform, shouldEnableUpdater, toUpdateAvailablePayload } from './update-platform'
 
 describe('isManualUpdatePlatform', () => {
@@ -29,6 +31,31 @@ describe('shouldEnableUpdater', () => {
   it('keeps updater behavior unchanged for normal packaged releases', () => {
     expect(shouldEnableUpdater(true, undefined)).toBe(true)
     expect(shouldEnableUpdater(true, 'enabled')).toBe(true)
+  })
+})
+
+/**
+ * `shouldEnableUpdater` is only half the fix — it reads a marker the BUILD has to set. A `dist*`
+ * script that forgets it produces a package indistinguishable from a release (`app.isPackaged` is
+ * true for both), which then polls the production feed for a version nobody published and logs a
+ * 404 on `latest*.yml` every six hours. That is a build-config mistake no unit test of the pure
+ * function can catch, so assert it against the real package.json — the same guard-test shape as
+ * `src/core/no-electron.test.ts`.
+ */
+describe('local dist scripts opt out of the production update feed', () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')
+  ) as { scripts: Record<string, string> }
+  const MARKER = '-c.extraMetadata.nodeTermUpdates=disabled'
+
+  it('every dist script carries the marker — not just the one whose 404 was noticed', () => {
+    const dist = Object.keys(pkg.scripts).filter((s) => s === 'dist' || s.startsWith('dist:'))
+    expect(dist.length).toBeGreaterThanOrEqual(3) // dist, dist:linux, dist:win
+    expect(dist.filter((s) => !pkg.scripts[s].includes(MARKER))).toEqual([])
+  })
+
+  it('release does NOT carry it — a promoted build must keep updating itself', () => {
+    expect(pkg.scripts.release).not.toContain(MARKER)
   })
 })
 
