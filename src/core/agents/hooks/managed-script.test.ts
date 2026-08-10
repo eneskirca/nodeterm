@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -98,6 +98,12 @@ describe('buildManagedScript', () => {
       expect(s).toContain('"$HOME/.config/node-terminal/hook-endpoint.env"')
       expect(s).toContain('"$HOME/Library/Application Support/node-terminal/hook-endpoint.env"')
     })
+    it('also globs the per-project SSH endpoints, with $HOME quoted but the pattern NOT', () => {
+      // A quoted glob never expands — the whole self-heal for a session left on a dead project
+      // id's endpoint file would silently do nothing.
+      expect(s).toContain('"$HOME"/.nodeterm/hook-endpoint-*.env')
+      expect(s).not.toContain('"$HOME/.nodeterm/hook-endpoint-*.env"')
+    })
     it('picks the FRESHEST existing candidate (ls -t | head -n 1)', () => {
       expect(s).toContain('nt_fresh=$(ls -t "$@" 2>/dev/null | head -n 1)')
     })
@@ -147,6 +153,76 @@ describe('buildManagedScript', () => {
       expect(s).toContain('--data-urlencode "nodeterm_pending_id=${nt_pending}"')
     })
   })
+})
+
+// Generated shell no compiler checks: run it for real against a fake $HOME + a fake curl, the
+// same discipline as the canvas-control shim and the remote-usage command. This is the ONLY thing
+// that proves the glob candidate actually expands (a quoted pattern passes every string assertion
+// above and still self-heals nothing).
+describe('buildManagedScript endpoint failover, executed under /bin/sh', () => {
+  const sh = spawnSync('sh', ['-c', 'exit 0'])
+  const shAvailable = sh.status === 0 && !sh.error
+  const dir = shAvailable ? mkdtempSync(join(tmpdir(), 'nt-hook-failover-')) : ''
+  afterAll(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it.skipIf(!shAvailable)(
+    'falls back to the freshest ~/.nodeterm/hook-endpoint-*.env when the primary tunnel is dead',
+    () => {
+      const home = join(dir, 'home')
+      const bin = join(dir, 'bin')
+      const log = join(dir, 'curl.log')
+      mkdirSync(join(home, '.nodeterm'), { recursive: true })
+      mkdirSync(bin, { recursive: true })
+      // A remote session left pointing at a DEAD project id's endpoint (the tunnel that socket
+      // named is long gone) — exactly the "active but idle forever" state.
+      const dead = join(home, '.nodeterm', 'hook-endpoint-oldproject.env')
+      writeFileSync(
+        dead,
+        `NODETERM_HOOK_SOCK=${join(home, '.nodeterm', 'hook-oldproject.sock')}\nNODETERM_HOOK_TOKEN=dead-token\nNODETERM_HOOK_VERSION=1\n`,
+        'utf8'
+      )
+      // The live project's endpoint, rewritten by the most recent connect.
+      writeFileSync(
+        join(home, '.nodeterm', 'hook-endpoint-liveproject.env'),
+        'NODETERM_HOOK_PORT=45999\nNODETERM_HOOK_TOKEN=live-token\nNODETERM_HOOK_VERSION=1\n',
+        'utf8'
+      )
+      // Fake curl: log every invocation, fail the unix-socket transport (dead tunnel), succeed on TCP.
+      writeFileSync(
+        join(bin, 'curl'),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\ncase "$*" in *--unix-socket*) exit 7 ;; esac\nexit 0\n`,
+        { encoding: 'utf8', mode: 0o755 }
+      )
+      const script = join(dir, 'claude.sh')
+      writeFileSync(script, buildManagedScript('claude'), { encoding: 'utf8', mode: 0o755 })
+      // The perm-wait branch sends the request POST in the FOREGROUND, so the run is deterministic
+      // (the normal branch backgrounds it and would race this assertion).
+      const res = spawnSync('sh', [script], {
+        encoding: 'utf8',
+        input: '{"hook_event_name":"PermissionRequest"}',
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          HOME: home,
+          NODETERM_NODE_ID: 'node-1',
+          NODETERM_HOOK_ENDPOINT: dead,
+          NODETERM_PERM_WAIT_SECS: '1'
+        }
+      })
+      expect(res.status).toBe(0)
+      const calls = readFileSync(log, 'utf8').trim().split('\n')
+      expect(calls).toHaveLength(2)
+      // 1st: the dead primary over its socket. 2nd: the retry against the live project's endpoint.
+      expect(calls[0]).toContain('--unix-socket')
+      expect(calls[0]).toContain('dead-token')
+      expect(calls[1]).toContain('http://127.0.0.1:45999/hook/claude')
+      expect(calls[1]).toContain('live-token')
+      expect(calls[1]).toContain('nodeId=node-1')
+      // The dead transport must not survive into the retry (SOCK/PORT are cleared before sourcing).
+      expect(calls[1]).not.toContain('--unix-socket')
+    }
+  )
 })
 
 describe('buildManagedScript generated shell is syntactically valid', () => {

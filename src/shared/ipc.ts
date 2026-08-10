@@ -163,6 +163,8 @@ export const IPC = {
   workspaceProbeFolder: 'workspace:probe-folder',
   // main → renderer events
   workspaceMigrated: 'workspace:migrated',
+  /** Payload: the `workspace.json.corrupt-<ts>` filename the unreadable index was preserved as. */
+  workspaceCorruptRecovered: 'workspace:corrupt-recovered',
   workspaceExternalChange: 'workspace:external-change',
   githubIssuesSubscribe: 'githubIssues:subscribe',
   githubIssuesUnsubscribe: 'githubIssues:unsubscribe',

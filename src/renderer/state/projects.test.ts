@@ -71,6 +71,46 @@ describe('toWorkspace', () => {
   })
 })
 
+// Regression (field bug 2026-08-10): `reloadActiveProject` used to re-run Canvas's load effect by
+// flipping the active id to '' and back on a microtask. React coalesces both writes into ONE
+// render, so the effect's dependency never changed and the reload silently never happened: the
+// store held disk's version while React Flow still showed the old nodes, and the next debounced
+// persist wrote those old nodes back over disk. A monotonic nonce is a dependency that always
+// changes, even for a reload of the SAME project.
+describe('requestReload', () => {
+  it('bumps a monotonic nonce on every call', () => {
+    const start = useProjects.getState().reloadNonce
+    useProjects.getState().requestReload()
+    expect(useProjects.getState().reloadNonce).toBe(start + 1)
+    useProjects.getState().requestReload()
+    useProjects.getState().requestReload()
+    expect(useProjects.getState().reloadNonce).toBe(start + 3)
+  })
+
+  it('leaves the active project (and the projects) untouched — it only nudges the effect', () => {
+    const p = useProjects.getState().openFolderProject('/Users/me/dev/my-app')
+    useProjects.getState().requestReload()
+    const s = useProjects.getState()
+    expect(s.activeProjectId).toBe(p.id)
+    expect(s.projects).toHaveLength(1)
+  })
+
+  // hydrate() replaces the persisted dimensions only: a nonce that reset on load would let a
+  // pre-hydrate reload request be re-delivered (or lost) after it.
+  it('survives hydrate, so the nonce never goes backwards', () => {
+    useProjects.getState().requestReload()
+    const n = useProjects.getState().reloadNonce
+    useProjects.getState().hydrate({ version: 2, activeProjectId: '', projects: [] })
+    expect(useProjects.getState().reloadNonce).toBe(n)
+  })
+
+  // The nonce is a RUNTIME nudge, never part of the shared workspace file.
+  it('is not persisted', () => {
+    useProjects.getState().requestReload()
+    expect(JSON.stringify(useProjects.getState().toWorkspace())).not.toMatch(/reloadNonce/)
+  })
+})
+
 describe('setDinoHighScore', () => {
   it('raises the project record and never lowers it', () => {
     const p = useProjects.getState().addProject('game', '/tmp/game')

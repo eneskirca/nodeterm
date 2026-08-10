@@ -132,6 +132,12 @@ import { Facepile } from '../components/Facepile'
 import { PresenceNamePrompt } from '../components/PresenceNamePrompt'
 import { nodeTravel, projectTravel } from '../lib/presenceTravel'
 import {
+  routeControlSource,
+  needsLiveCanvas,
+  sourceIsControlCapable,
+  storedNodeListing
+} from '../lib/controlRouting'
+import {
   FIT_NODE_OPTIONS,
   absolutePosition,
   isMeasured,
@@ -189,7 +195,6 @@ import {
   canRename,
   canTransferFrom,
   canContextLink,
-  canControlCanvas,
   createdAgentId,
   resumeCommand,
   AGENT_CONFIG,
@@ -241,6 +246,7 @@ import type {
 import type { KanbanCreateChoice, KanbanSession } from '../components/kanban/KanbanView'
 import { assignNode, assignedTo, defaultKanban, labelsForCard, migrateProjectTags, resolveColumnRef, unassigned } from '../lib/kanban'
 import { registerWorkspaceDirty } from '../state/workspaceDirty'
+import { canClearDirty, canCommitCanvas } from '../state/persistGuards'
 import { isHidden } from '../lib/ui-visibility'
 import { boardLogEvents } from '../lib/boardLogDiff'
 import { useBoardLog } from '../state/boardLog'
@@ -437,6 +443,24 @@ const offsetFrom = (
 const LAUNCH_DELIVERY_ATTEMPTS = 5
 const LAUNCH_RETRY_MS = 400
 
+// A canvas-control request whose source node lives in another project switches that project in
+// first, and the active-project effect hydrates React Flow ASYNCHRONOUSLY — so the handler waits
+// for the node to appear instead of reading an empty canvas one tick too early. Bounded well under
+// the CLI's 120s timeout: a canvas that never arrives becomes a plain "not on an open canvas".
+const CONTROL_TRAVEL_TIMEOUT_MS = 8000
+const CONTROL_TRAVEL_POLL_MS = 60
+async function waitForCanvasNode(
+  find: () => CanvasNode | undefined,
+  timeoutMs = CONTROL_TRAVEL_TIMEOUT_MS
+): Promise<CanvasNode | undefined> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const hit = find()
+    if (hit || Date.now() >= deadline) return hit
+    await new Promise((r) => setTimeout(r, CONTROL_TRAVEL_POLL_MS))
+  }
+}
+
 // A "spawned by" rope: control-capable agent → node it opened (or browser popup → opener).
 // Display-only (never a context link) but persisted per project as `ropes`, so the lineage
 // survives restarts. Selectable; removed with ⌫ / double-click like a context link.
@@ -617,6 +641,10 @@ export function Canvas() {
   const controlEdgesRef = useRef<Edge[]>([])
   controlEdgesRef.current = controlEdges
   const [dirty, setDirty] = useState(false)
+  // Bumped only when a save finished with `dirty` still set (an edit raced it). It exists purely to
+  // give the debounced-autosave effect a dependency that CHANGES in that case — `dirty` stays true
+  // throughout, so without it the effect would never re-arm. Rare, so a re-render costs nothing.
+  const [resaveTick, setResaveTick] = useState(0)
   // The active project's .nodeterm file changed on disk while we have unsaved local edits
   // (the user must pick a side). One-shot v2→v3 migration note (dismissible strip).
   const [conflict, setConflict] = useState<Project | null>(null)
@@ -904,6 +932,13 @@ export function Canvas() {
   const settings = useSettings((s) => s.settings)
   const viewportRef = useRef<Viewport>({ x: 0, y: 0, zoom: 1 })
   const nodesRef = useRef<CanvasNode[]>(nodes)
+  /**
+   * WHICH project's nodes `nodesRef` currently holds — the epoch tag that pairs with
+   * `activeProjectId` (see canCommitCanvas). Written only where the load effect installs a
+   * project's nodes, and invalidated (null) on its bail-out paths; null until the first load, so
+   * the initial empty `useNodesState([])` can never be committed as some project's canvas.
+   */
+  const nodesProjectIdRef = useRef<string | null>(null)
   // focusNodeById, for callbacks declared ABOVE its definition (openFile's dedupe focuses the
   // already-open node). Assigned right after the definition, same render-mirror idiom as nodesRef.
   const focusNodeRef = useRef<(nodeId: string) => void>(() => {})
@@ -982,6 +1017,9 @@ export function Canvas() {
   }, [getViewport, setViewport])
 
   const activeProjectId = useProjects((s) => s.activeProjectId)
+  // Bumped by `requestReload()`; a dependency of the project-load effect so an in-place reload of
+  // the ALREADY-active project actually re-runs it (see reloadActiveProject).
+  const reloadNonce = useProjects((s) => s.reloadNonce)
   // The ACTIVE session + its presence — what the canvas-sync publisher and onMutation subscriber
   // must follow (Task 4). `sessionForProject` / `presenceForProject` are plain, allocation-free
   // resolves of the memoized (per-core) session/presence — NOT reactive subscriptions to the peer
@@ -1564,7 +1602,8 @@ export function Canvas() {
     }
   }, [])
 
-  // 2) Whenever the active project changes, load its canvas into React Flow.
+  // 2) Whenever the active project changes — or an in-place reload is requested (`reloadNonce`,
+  //    which changes even when the SAME project is reloaded) — load its canvas into React Flow.
   useEffect(() => {
     // Team presence: tell the hub which canvas we are on (this effect fires on load AND on every
     // tab switch). Peers only draw each other's cursors and node chips when the project matches —
@@ -1578,9 +1617,17 @@ export function Canvas() {
     // (activeSessionApi() in scmDraft/worktrees) hit the active tab's core — the local session for
     // a local tab, the relay session for a remote tab. Resolution is by binding (never persisted).
     setActiveSession(sessionForProject(activeProjectId || '').id)
-    if (!activeProjectId) return
+    // Both bail-outs below leave the PREVIOUS project's nodes mounted in React Flow. Invalidate the
+    // epoch tag on the way out so nothing commits them under the new id (field bug 2026-08-10).
+    if (!activeProjectId) {
+      nodesProjectIdRef.current = null
+      return
+    }
     const project = useProjects.getState().getProject(activeProjectId)
-    if (!project) return
+    if (!project) {
+      nodesProjectIdRef.current = null
+      return
+    }
     // SSH project: (re)open its ControlMaster and record the controlPath so this project's
     // terminal nodes can run over it. Idempotent in main (a live master is reused), so a tab
     // switch back to a connected project is a no-op. Remote tmux is unaffected by the master.
@@ -1605,6 +1652,12 @@ export function Canvas() {
     loadingRef.current = true
     const flow = nodeStatesToFlow(project.nodes)
     setNodes(flow)
+    // React Flow now holds THIS project's canvas: the commit guard may pair it with the active id
+    // again. Both refs are assigned HERE, synchronously, because `setNodes` only lands on the next
+    // render — mirroring the nodes (same idiom as the peer-mutation path) keeps the array and its
+    // epoch tag atomic, so no timer firing in between can commit the previous project's nodes.
+    nodesRef.current = flow
+    nodesProjectIdRef.current = project.id
     // Worktree facts are per project: drop the previous project's (reset also clears its
     // statuses), then re-resolve from this project's cwd. SSH projects are skipped — local git
     // cannot reason about a remote path. Fire-and-forget: the store is epoch-guarded + fails open.
@@ -1683,11 +1736,24 @@ export function Canvas() {
     }, 0)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProjectId, setNodes, setViewport])
+  }, [activeProjectId, reloadNonce, setNodes, setViewport])
 
-  const markDirty = useCallback(() => {
-    if (!loadingRef.current) setDirty(true)
+  /**
+   * Counts EDITS (not saves). `writeDisk` captures it before it builds the snapshot and clears
+   * `dirty` only if it is unchanged after the await — see canClearDirty and the field bug it cites.
+   *
+   * A ref, not state, deliberately: this bumps on every drag FRAME, and a state counter would
+   * re-render the whole canvas that often (`setDirty(true)` is free once already dirty).
+   */
+  const dirtyGenRef = useRef(0)
+  /** Records one edit: bump the generation, flag the workspace dirty. */
+  const bumpDirty = useCallback(() => {
+    dirtyGenRef.current += 1
+    setDirty(true)
   }, [])
+  const markDirty = useCallback(() => {
+    if (!loadingRef.current) bumpDirty()
+  }, [bumpDirty])
   // Expose markDirty to surfaces outside Canvas (a canvas node editing its kanban labels), so they
   // ride the same debounced whole-file save.
   useEffect(() => registerWorkspaceDirty(markDirty), [markDirty])
@@ -1743,7 +1809,11 @@ export function Canvas() {
   // ---- persistence helpers ----
   const commitActiveToStore = useCallback(() => {
     const id = useProjects.getState().activeProjectId
-    if (id)
+    // Epoch pairing: only commit while the nodes React Flow holds belong to the ACTIVE project.
+    // The normal switch flow still commits — every caller commits BEFORE `setActive`, while the two
+    // ids still agree — but an autosave timer armed under the previous project now skips instead of
+    // writing its nodes under the new project's id (field bug 2026-08-10).
+    if (canCommitCanvas(nodesProjectIdRef.current, id))
       useProjects
         .getState()
         .commitCanvas(
@@ -1756,8 +1826,20 @@ export function Canvas() {
   }, [])
 
   const writeDisk = useCallback(async () => {
+    // Captured BEFORE the snapshot is built (`toWorkspace()` runs synchronously on this line), so
+    // it names exactly the edits this save carries. A save is not instant — an SSH mirror write
+    // takes seconds — and clearing `dirty` unconditionally afterwards marked edits made DURING the
+    // await as saved, which let the watcher's not-dirty branch clobber them (field bug 2026-08-10).
+    const gen = dirtyGenRef.current
     await api.workspace.save(useProjects.getState().toWorkspace())
-    setDirty(false)
+    if (canClearDirty(gen, dirtyGenRef.current)) {
+      setDirty(false)
+      return
+    }
+    // An edit raced the save: leave `dirty` set so nothing believes the canvas is on disk. But the
+    // debounce effect only re-arms when one of its deps changes, and `dirty` never went false —
+    // nudge it explicitly, or the racing edit would wait for an unrelated later edit to be saved.
+    setResaveTick((v) => v + 1)
   }, [])
 
   const persist = useCallback(async () => {
@@ -1772,8 +1854,13 @@ export function Canvas() {
     dirtyRef.current = dirty
   }, [dirty])
 
-  /** Re-runs the active-project load effect by nudging its dependency: flip the active id
-   *  to '' (the effect early-returns) then back to the same id on a microtask.
+  /** Re-runs the active-project load effect by bumping the store's `reloadNonce`.
+   *
+   *  This used to flip the active id to '' and back on a microtask. React coalesces both writes
+   *  into ONE render, so the effect's dependency never actually changed and the reload silently
+   *  never happened — the store held disk's version while React Flow still showed the old nodes,
+   *  and the next debounced persist wrote those old nodes straight back over disk (field bug
+   *  2026-08-10). A monotonic nonce always changes, so the reload always runs.
    *
    *  An in-place reload PRESERVES the current camera (preserveViewportRef): the incoming
    *  file's viewport is wherever ANOTHER machine/surface last left it, and SSH projects
@@ -1781,10 +1868,8 @@ export function Canvas() {
    *  the camera away mid-work, most visibly right after a cross-project focus (the sidebar
    *  click centered the node, then the connect-time reconcile teleported the view). */
   const reloadActiveProject = useCallback(() => {
-    const id = useProjects.getState().activeProjectId
     preserveViewportRef.current = true
-    useProjects.getState().setActive('')
-    queueMicrotask(() => useProjects.getState().setActive(id))
+    useProjects.getState().requestReload()
   }, [])
 
   // Outside edits to a project's .nodeterm file (git pull / sync / teammate / another machine).
@@ -1819,6 +1904,16 @@ export function Canvas() {
     })
   }, [])
 
+  // Same strip, same one-shot rule: the workspace list came up empty because the index file was
+  // unreadable. Nothing was lost — say where the backup is and how to get the projects back.
+  useEffect(() => {
+    return api.workspace.onCorruptRecovered((backupFile) => {
+      setMigrationNote(
+        `The workspace index was corrupted and has been backed up as ${backupFile}. No project data was lost — each project's canvas is still in its own folder. Use “Open folder…” to add them back.`
+      )
+    })
+  }, [])
+
   // A pending conflict is scoped to the project that was active when it fired. If the user
   // switches projects first, drop it: commitActiveToStore already preserved the local edits in
   // the store, so the next save keeps our version — resolving the stale bar against a different
@@ -1835,7 +1930,8 @@ export function Canvas() {
     if (!dirty || conflict) return
     const t = setTimeout(() => void persist(), 800)
     return () => clearTimeout(t)
-  }, [dirty, conflict, persist])
+    // `resaveTick` re-arms the timer after a save that could NOT clear dirty (an edit raced it).
+  }, [dirty, conflict, persist, resaveTick])
 
   // ---- remote canvas mirror (phone host side) ----
   // While phone access is on, push the serialized active-project canvas to main (debounced ~120ms)
@@ -2098,9 +2194,9 @@ export function Canvas() {
     committedRef.current = prev
     nodesRef.current = prev
     setNodes(prev)
-    setDirty(true)
+    bumpDirty() // an undo is an edit: it must count toward the in-flight-save generation too
     bumpHist((v) => v + 1)
-  }, [setNodes])
+  }, [setNodes, bumpDirty])
 
   const redo = useCallback(() => {
     if (!futureRef.current.length) return
@@ -2109,9 +2205,9 @@ export function Canvas() {
     committedRef.current = next
     nodesRef.current = next
     setNodes(next)
-    setDirty(true)
+    bumpDirty() // a redo is an edit: same reasoning as undo
     bumpHist((v) => v + 1)
-  }, [setNodes])
+  }, [setNodes, bumpDirty])
 
   // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y = redo (ignored while typing).
   useEffect(() => {
@@ -3959,6 +4055,10 @@ export function Canvas() {
     return () => setWorktreeActionHandler(null)
   }, [onWorktreeAction])
 
+  // Same reason as worktreeControlRef below: the agent-control handler needs the CURRENT
+  // travelToProject (defined far below, after the project actions it composes).
+  const travelToProjectRef = useRef<(projectId: string) => void>(() => {})
+
   // Latest worktree callbacks for the agent-control handler. That effect mounts ONCE (empty
   // deps) and these callbacks' identities change with the active project (activeProjectId /
   // isSshProject in their deps) — calling the first-render closures would run against project
@@ -5444,14 +5544,47 @@ export function Canvas() {
       const reply = (r: { ok: boolean; message?: string; result?: unknown; error?: string }) =>
         api.sendAgentControlResult({ requestId, ...r })
 
-      // Authorization boundary: the source must be a live, control-capable agent node.
-      // The `?? 'claude'` MIRRORS pty-manager's spawn-time default (`options.agentId ?? 'claude'`):
+      // Which canvas answers? React Flow holds only the ACTIVE project's nodes, but every OTHER
+      // project's tmux sessions keep running and are re-adopted on the next app start — so after a
+      // restart the agents of every project the app did NOT come up on were answered by a canvas
+      // that had never heard of them, and got the capability rejection below. Resolve the OWNING
+      // project and travel to it first (lib/controlRouting); `list` changes nothing, so it is
+      // answered out of that project's serialized nodes rather than yanking the user's view.
+      let src = nodesRef.current.find((n) => n.id === sourceNodeId)
+      if (!src) {
+        const { projects, activeProjectId: activeId } = useProjects.getState()
+        const route = routeControlSource(projects, activeId, sourceNodeId)
+        if (route.kind === 'switch' || route.kind === 'reopen') {
+          if (!needsLiveCanvas(verb)) {
+            const rows = storedNodeListing(projects.find((p) => p.id === route.projectId)?.nodes ?? [])
+            reply({
+              ok: true,
+              result: rows,
+              message: rows.map((n) => `${n.id} [${n.kind}] ${n.title}`).join('\n')
+            })
+            return
+          }
+          travelToProjectRef.current(route.projectId)
+        }
+        // Wait for the node to show up on the canvas: after a travel, because the active-project
+        // effect hydrates React Flow a tick later; on `active`, because a control call can land
+        // while the BOOT load of the owning project is still in flight — the very moment a
+        // re-adopted agent starts talking again. `unknown`/`blocked` have no canvas to wait for.
+        if (route.kind !== 'unknown' && route.kind !== 'blocked') {
+          src = await waitForCanvasNode(() => nodesRef.current.find((n) => n.id === sourceNodeId))
+        }
+      }
+      if (!src) {
+        reply({ ok: false, error: 'source node is not on an open canvas' })
+        return
+      }
+      // Authorization boundary: the source must be a control-capable agent node. The default for a
+      // node with no agentId MIRRORS pty-manager's spawn-time default (`options.agentId ?? 'claude'`):
       // a PLAIN terminal node (no agentId — including the account "Claude login" node) received
       // the claude hook env at spawn, so a manual `claude` there holds NODETERM_CANVAS_CONTROL —
       // rejecting it here contradicted the env it was handed and surfaced as a baffling
       // "not a control-capable agent" from a session that plainly runs claude.
-      const src = nodesRef.current.find((n) => n.id === sourceNodeId)
-      if (!src || !canControlCanvas((src.data.agentId as AgentId | undefined) ?? 'claude')) {
+      if (!sourceIsControlCapable(src.data.agentId)) {
         reply({ ok: false, error: 'source node is not a control-capable agent' })
         return
       }
@@ -6839,9 +6972,15 @@ export function Canvas() {
             const m = e.task.match(/^\s*\/(loop|schedule|cron)\b/)
             if (m) cs.setLoop(e.nodeId, true, m[1] as 'loop' | 'schedule' | 'cron', { task: e.task })
           }
-          if (e.state === 'done' && !e.interrupted) {
+          if (e.state === 'done' && !e.interrupted && !stuckRescueSkip) {
             // Interrupted turns (Esc/Ctrl-C) alert nobody: the user did it themselves, and
             // the turn didn't complete, so it isn't a loop iteration either.
+            // An IGNORED rescue is silent for the same reason it moves no badge: it claims a turn
+            // ended for a node this surface never saw running, so the "finished" is unfounded —
+            // and it arrives from a second source of truth (the main-process mirror drives the SSH
+            // reconnect resync, this store drives the alert), which can legitimately disagree after
+            // a renderer reload. Gating the badge but not the sound/notification would half-enforce
+            // the flag and leave the expensive error — a false completion — fully reachable.
             cs.bumpLoop(e.nodeId, e.lastMessage) // count loop iterations + summary (no-op if not looping)
             alert('finished', `${agentLabel} finished its turn.`, 'done')
           }
@@ -7227,6 +7366,11 @@ export function Canvas() {
     },
     [reopenProject, switchProject]
   )
+  // Latest project-travel callback for the agent-control handler: that effect mounts ONCE (empty
+  // deps), so it cannot close over this callback — same reason as worktreeControlRef.
+  useEffect(() => {
+    travelToProjectRef.current = travelToProject
+  })
 
   // Jump to the node a peer is focused on. focusNodeById already handles the same-project focus and
   // the switch to another OPEN project; the closed-project case has to reopen the tab first and let

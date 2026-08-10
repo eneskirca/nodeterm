@@ -216,6 +216,14 @@ export interface CanvasNodeState {
    * and immutable for the node's lifetime. Undefined = system default (~/.claude).
    */
   accountId?: string
+  /**
+   * Agents in `SESSION_ID_CAPABLE` (claude): the session id nodeterm minted and launched this
+   * node's CLI with (`--session-id`). Persisted so a cold restore can resume even when no hook
+   * ever delivered an id — the SSH reverse tunnel is the only path that carries one, and a node
+   * whose tunnel was down came back as a blank conversation with its transcript intact on disk.
+   * The hook-fed id still wins when known: `/clear` and `--fork-session` mint a new one in-CLI.
+   */
+  agentSessionId?: string
   /** When set, the terminal runs `ssh` to this host on the local PTY; persisted (auto-reconnects). */
   ssh?: import('./ssh').SshConnection
   /** When true (SSH-project terminals), the node runs in REMOTE tmux on `ssh` rather than `ssh`-on-local-PTY. */
@@ -602,6 +610,10 @@ export interface WorkspaceApi {
    *  project folders; `exec` = the custom shell / advanced ssh args of already-open projects moved
    *  out of the shared project file into this machine's own workspace index (@shared/node-exec). */
   onMigrated(cb: (kind: WorkspaceMigrationKind) => void): () => void
+  /** Fired once per run when a load found the workspace index unreadable and preserved it as
+   *  `workspace.json.corrupt-<ts>` (the payload). The projects themselves are untouched — their
+   *  canvases live in each <cwd>/.nodeterm/project.json — so the note tells the user to re-add them. */
+  onCorruptRecovered(cb: (backupFile: string) => void): () => void
   /** Fired when a project file changed on disk outside the app (git pull, sync, teammate). */
   onExternalChange(cb: (project: Project) => void): () => void
 }
@@ -812,6 +824,14 @@ export interface Settings {
    *  directly (grab cursor), for mouse users who pan constantly; box-select then moves to
    *  Shift+drag (React Flow's selectionKeyCode). */
   canvasDragMode: 'select' | 'pan'
+  /**
+   * Browser memory saver: release a browser/web node's page after it has been hidden for
+   * `BROWSER_DISCARD_MS` (5 min), reloading it from its URL when it is shown again. Each
+   * `<webview>` is a whole Chromium renderer process and the canvas caps nothing, so an
+   * afternoon of opened pages is otherwise permanently resident. On by default — the cost is a
+   * reload (and the lost back/forward stack, which a webview cannot serialize), not lost work.
+   */
+  browserMemorySaver: boolean
   accent: string
   tmuxEnabled: boolean
   /** GPU (WebGL) terminal rendering. 'off' routes every terminal to xterm's DOM renderer.
@@ -890,7 +910,8 @@ export interface Settings {
    *  install count also rides the /v1/check call and is NOT gated on this toggle — see core/check.ts. */
   telemetryEnabled: boolean
   /** Keep a standing relay host connection so a paired phone can reach this Mac from anywhere
-   *  (end-to-end encrypted). Default off. Toggle in Settings → Phone. */
+   *  (end-to-end encrypted). Default on — the host only admits SAS-approved, pinned devices, so
+   *  an un-paired install just keeps an idle listener. Toggle in Settings → Phone. */
   phoneAccessEnabled: boolean
   /** Send APNs push notifications to relay-paired phones when an agent needs approval, asks a
    *  question, or finishes a turn (spec: apns-push). Default on — it only fires for users who
@@ -962,6 +983,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalMiddleClickPaste: false,
   wheelZoom: false,
   canvasDragMode: 'select',
+  browserMemorySaver: true,
   accent: '#0a84ff',
   tmuxEnabled: true,
   terminalGpuRendering: 'auto',
@@ -994,7 +1016,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
   // no telemetryEnabled key yet; anyone who already saved settings keeps their stored value.
   telemetryEnabled: true,
-  phoneAccessEnabled: false,
+  phoneAccessEnabled: true,
   mobilePushEnabled: true,
   mobilePushNeedsYou: true,
   mobilePushDone: true,
@@ -1659,6 +1681,14 @@ export interface ClaudeCliCaps {
   /** `"tui": "fullscreen"` in settings.json is only understood by Claude Code >= 2.1.89. Gates
    *  whether nodeterm writes that key (write-if-absent) so sessions render fullscreen in tmux. */
   fullscreenTui: boolean
+  /**
+   * Whether this CLI accepts `--session-id <uuid>`, which lets nodeterm MINT a node's session id
+   * instead of waiting to learn it from a hook. Detected by reading `claude --help`, not by
+   * comparing versions: the version this flag first shipped in is not documented anywhere we can
+   * check, and a guessed floor is the one mistake that would be fatal here — an unknown flag makes
+   * the CLI exit, so a wrong guess kills every claude launch rather than degrading.
+   */
+  sessionIdFlag: boolean
 }
 
 /** The answer whenever the CLI version can't be determined: no `auto` flag → bare command, and no
@@ -1666,7 +1696,8 @@ export interface ClaudeCliCaps {
 export const UNKNOWN_CLAUDE_CLI_CAPS: ClaudeCliCaps = {
   version: null,
   autoPermissionMode: false,
-  fullscreenTui: false
+  fullscreenTui: false,
+  sessionIdFlag: false
 }
 
 export interface ClaudeApi {
@@ -1764,7 +1795,7 @@ export interface RemoteHostApi {
   reject(id: string): void
   /**
    * Start/stop the standing (phone) relay host so a paired phone can reach this Mac from anywhere.
-   * Mirrors `settings.phoneAccessEnabled`; the host also honors the Pro gate internally.
+   * Mirrors `settings.phoneAccessEnabled`.
    */
   setPhoneAccess(enabled: boolean): void
 }
@@ -1870,11 +1901,11 @@ export interface PairedDevice {
 /** Phone-pairing (nodeterm iOS "scan a QR" flow) bridge. */
 export interface PairingApi {
   /** Start the one-shot LAN listener; resolves with the QR payload + an SSH-reachable hint. */
-  start(): Promise<{ payload: string; sshOpen: boolean }>
+  start(): Promise<{ payload: string; sshOpen: boolean; relayPlan?: 'ok' | 'dev' | 'off' }>
   /** Cancel an in-flight pairing (e.g. when the settings section unmounts). */
   stop(): Promise<void>
   /** Fires once when pairing finishes (ok=true paired, ok=false timeout). Returns unsubscribe. */
-  onDone(cb: (result: { ok: boolean }) => void): () => void
+  onDone(cb: (result: { ok: boolean; relay?: 'ok' | 'off' | 'failed' | 'dev' }) => void): () => void
   /** Live re-probe of 127.0.0.1:22, so the Remote Login warning can clear the moment the user
    *  flips the toggle in System Settings (polled by the UI only while the warning is showing). */
   probeSsh(): Promise<boolean>

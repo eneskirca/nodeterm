@@ -9,6 +9,8 @@ import {
   probeSaysAbsent,
   remoteCapturePaneArgs,
   remotePaneCommandArgs,
+  remoteListSessionsArgs,
+  parseRemoteSessionNames,
   remoteTmuxPtyArgs,
   listDirArgs,
   mkDirArgs,
@@ -194,6 +196,33 @@ describe('remotePaneCommandArgs', () => {
     expect(args[args.length - 1]).toBe(
       `tmux -L ${RMT_TMUX_SOCKET} display-message -p -t nt-x '#{pane_current_command}'`
     )
+  })
+})
+
+describe('remoteListSessionsArgs', () => {
+  it('asks the remote nodeterm tmux socket for session names only', () => {
+    const args = remoteListSessionsArgs(conn, '/cm/p1')
+    const cmd = args[args.length - 1]
+    expect(cmd).toContain('tmux -L nodeterm-rmt list-sessions')
+    expect(cmd).toContain('#{session_name}')
+  })
+
+  it('routes over the given control path', () => {
+    expect(remoteListSessionsArgs(conn, '/cm/p1').join(' ')).toContain('/cm/p1')
+  })
+})
+
+describe('parseRemoteSessionNames', () => {
+  it('returns one entry per non-empty line, trimmed', () => {
+    expect(parseRemoteSessionNames('nt-a\nnt-b\n')).toEqual(['nt-a', 'nt-b'])
+  })
+
+  it('ignores blank lines and surrounding whitespace', () => {
+    expect(parseRemoteSessionNames('\n  nt-a  \n\n')).toEqual(['nt-a'])
+  })
+
+  it('is empty for empty output — a host with no sessions is an answer, not a failure', () => {
+    expect(parseRemoteSessionNames('')).toEqual([])
   })
 })
 

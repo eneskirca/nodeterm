@@ -120,6 +120,11 @@ const api: NodeTerminalApi = {
       ipcRenderer.on(IPC.workspaceMigrated, h)
       return () => ipcRenderer.removeListener(IPC.workspaceMigrated, h)
     },
+    onCorruptRecovered: (cb: (backupFile: string) => void) => {
+      const h = (_e: unknown, backupFile: string) => cb(backupFile)
+      ipcRenderer.on(IPC.workspaceCorruptRecovered, h)
+      return () => ipcRenderer.removeListener(IPC.workspaceCorruptRecovered, h)
+    },
     onExternalChange: (cb: (project: Project) => void) => {
       const h = (_e: unknown, p: Project) => cb(p)
       ipcRenderer.on(IPC.workspaceExternalChange, h)

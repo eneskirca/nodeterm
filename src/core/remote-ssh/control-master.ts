@@ -183,6 +183,32 @@ export function remoteTmuxHasSessionArgs(conn: SshConnection, controlPath: strin
   return childArgs(conn, controlPath, `tmux -L ${RMT_TMUX_SOCKET} has-session -t ${sessionId}`)
 }
 /**
+ * Every nodeterm tmux session on the host, by name.
+ *
+ * The host's own session list is the DURABLE record of which nodes run there. Our live pty map is
+ * not: `PtyManager.kill()` forgets a session on detach, so a backgrounded project's nodes vanish
+ * from it entirely — which is exactly the state the reconnect resync runs in. `list-sessions`
+ * exits non-zero when no server is running; the caller reads that as "no sessions", not an error.
+ * The format is single-quoted so `#{…}` reaches the remote tmux verbatim rather than being eaten
+ * by the remote shell (same idiom as `remotePaneCommandArgs`).
+ */
+export function remoteListSessionsArgs(conn: SshConnection, controlPath: string): string[] {
+  return childArgs(
+    conn,
+    controlPath,
+    `tmux -L ${RMT_TMUX_SOCKET} list-sessions -F '#{session_name}'`
+  )
+}
+
+/** One session name per non-empty line. */
+export function parseRemoteSessionNames(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
+/**
  * Send literal text (and optionally Enter) into a node's REMOTE tmux session — the remote
  * counterpart of `PtyManager.sendText`'s local `tmux send-keys` path (dictation insert, /rename,
  * /branch, note pushes). Built as ONE remote command so everything runs strictly in order on

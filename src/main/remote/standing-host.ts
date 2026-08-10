@@ -36,6 +36,8 @@ import {
   type HostSession
 } from './host-service'
 import { currentCanvas, initHostCanvasHub, subscribeCanvas } from './host-canvas-hub'
+import { hostIdFromPublicKeyB64 } from './relay-id'
+import { removeRelayAdvertisement, writeRelayAdvertisement } from './relay-advertise'
 import { isPinned, pinDevice } from './approved-devices-core'
 import { loadApprovedDevices, saveApprovedDevices } from './approved-devices'
 
@@ -340,6 +342,18 @@ export function initStandingHost(
       })
       pool.add(pooled)
       scheduleRefreshFor(pooled, token.exp)
+      // A listener is registered at the relay → advertise the identity for LATE ADOPTION
+      // (~/.nodeterm/relay.json — see relay-advertise.ts): a phone whose pairing predates the
+      // toggle reads it over its SSH bootstrap and gains a relay leg without re-pairing.
+      // Written here (not in start()) so it only exists while the host is genuinely reachable.
+      const pub = publicKeyToB64(keys.publicKey)
+      void writeRelayAdvertisement({
+        v: 1,
+        hostId: hostIdFromPublicKeyB64(pub),
+        hostPublicKeyB64: pub,
+        relayEndpoint: RELAY_URL,
+        hostDeviceId: getDeviceId()
+      })
     } finally {
       opening = false
       // If we're still short (e.g. TARGET_PENDING > 1, or one was consumed while minting), continue.
@@ -361,6 +375,9 @@ export function initStandingHost(
       reconnectTimer = null
     }
     for (const p of [...pool]) removeFromPool(p)
+    // Host gone from the relay → stop advertising, so phones don't mint tokens against a
+    // host that will never answer.
+    void removeRelayAdvertisement()
   }
 
   function reconcile(): void {

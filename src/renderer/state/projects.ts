@@ -14,8 +14,22 @@ import { applyCanvasMutation, createProject } from './workspace'
 interface ProjectsState {
   projects: Project[]
   activeProjectId: string
+  /**
+   * Monotonic counter the Canvas project-load effect depends on: bumping it re-runs the load, even
+   * for the project that is ALREADY active. Runtime-only (never persisted — see toWorkspace) and
+   * never reset, not even by hydrate.
+   *
+   * Field bug 2026-08-10: an in-place reload used to be faked by setting the active id to '' and
+   * back on a microtask. React coalesces both writes into one render, so the effect's dependency
+   * never changed and the reload never happened — the store held disk's version while React Flow
+   * still showed the old nodes, and the next debounced save wrote those old nodes back over disk.
+   */
+  reloadNonce: number
 
   hydrate(ws: Workspace): void
+  /** Asks Canvas to reload the active project's canvas from the store (external change adopted,
+   *  conflict resolved as "reload"). See `reloadNonce`. */
+  requestReload(): void
   getProject(id: string): Project | undefined
 
   setActive(id: string): void
@@ -133,9 +147,14 @@ function mapProjectNodes(
 export const useProjects = create<ProjectsState>((set, get) => ({
   projects: [],
   activeProjectId: '',
+  reloadNonce: 0,
 
   hydrate(ws) {
     set({ projects: ws.projects, activeProjectId: ws.activeProjectId })
+  },
+
+  requestReload() {
+    set((s) => ({ reloadNonce: s.reloadNonce + 1 }))
   },
 
   getProject(id) {

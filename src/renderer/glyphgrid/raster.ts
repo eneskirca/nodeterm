@@ -2,6 +2,76 @@ import { GUTTER_PX, partCells, slotPitch, type GlyphRasterizer } from './atlas'
 import { boxGlyphOps } from './box-glyphs'
 import { unpackColor } from './cells'
 
+/**
+ * THE SENTINEL TEXEL, and the blank-everything bug it exists to detect.
+ *
+ * The atlas page is an OffscreenCanvas 2D context created once, for the life of the shared context.
+ * A GPU reset — macOS sleep/wake, a driver hiccup, a GPU-process restart — BLANKS its backing store,
+ * and every layer above it keeps believing the page is full: `GlyphAtlas.slots` still holds every
+ * key, so not one glyph is re-rasterized, and `engine.reviveGpu` (whose comment says outright that
+ * the 2D source survived) re-uploads the empty page as the atlas texture. The result is every
+ * terminal on the canvas showing empty cells at the same instant, permanently, with the app
+ * otherwise alive — which is exactly the field report this answers.
+ *
+ * The WebGL half of that reset arrives as an event and has a policy. The 2D half may fire
+ * `contextlost` too (handled — see `onSourceLoss`), but it is not guaranteed to: a page can come back
+ * wiped with no event at all. So the revive path needs a way to ASK, and a 1-texel readback of a
+ * colour we painted ourselves is the cheapest honest answer — cheaper than hashing the page,
+ * and unlike "is any slot allocated" it distinguishes a page we filled from a page that was emptied.
+ *
+ * WHERE IT LIVES: page pixel (0,0), the top-left corner of SLOT 0's pitch cell, inside its gutter.
+ * That is the one texel on the page that no sampling can reach. Slot 0 is never inked (`glyphFor`
+ * returns it for blanks without drawing) and never sampled (the shader branches on the glyph lane
+ * being 0 and paints the cell's own background), and slot 1's ink starts `ceil(cellW) + 3*GUTTER_PX`
+ * texels away — several LOD-2 blocks clear, so it cannot bleed into a real glyph's mip either. Any
+ * other placement costs a slot or contaminates one.
+ *
+ * WHY IT IS REPAINTED BY `clearPage`: an atlas reset is a NORMAL event (the page is a working set,
+ * not a cache of everything), and a page that lost its sentinel to an ordinary reset would read as a
+ * lost context and rebuild the whole canvas on the next revive.
+ */
+export const ATLAS_SENTINEL_RGBA = [255, 0, 255, 255] as const
+
+/** The same colour as the canvas takes it. Exported so a test asserts the ONE op this adds. */
+export const SENTINEL_CSS = 'rgb(255,0,255)'
+
+/** How far a channel may drift and still count as the sentinel. The canvas is sRGB and the fill is
+ *  exact, so this absorbs colour-management rounding rather than any real difference — a wiped page
+ *  reads back 0,0,0,0 and misses by 255. */
+const SENTINEL_TOLERANCE = 8
+
+/** Does this 1px readback still hold the sentinel? Pure, so the rule is testable without a canvas.
+ *  A short buffer answers NO: a readback that gave us less than a pixel is not evidence of health. */
+export function sentinelIntact(px: ArrayLike<number>): boolean {
+  if (px.length < 4) return false
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(px[i] - ATLAS_SENTINEL_RGBA[i]) > SENTINEL_TOLERANCE) return false
+  }
+  return true
+}
+
+/** What the shared layer needs to hear from the atlas page — see `ATLAS_SENTINEL_RGBA`. */
+export interface AtlasPageLossHandlers {
+  /** The 2D context was lost. The page's pixels are gone; the caller waits for `restored`. */
+  lost(): void
+  /** The browser handed a fresh, EMPTY 2D context back. The caller's answer is a full rebuild:
+   *  there is no restoring the old pixels, only re-rasterizing them from a fresh page. */
+  restored(): void
+}
+
+/** The page-health surface `createCanvasRasterizer` adds on top of `GlyphRasterizer`. Kept OFF the
+ *  atlas's own interface deliberately: the atlas neither calls these nor should have to fake them,
+ *  and the only consumer is the shared layer that owns the context's lifetime. */
+export interface AtlasPageHealth {
+  /** Is the page still the one we rasterized into? False = the backing store was blanked or the
+   *  context was lost, and every cached slot now points at nothing. */
+  sourceIntact(): boolean
+  /** Subscribe to the page's own `contextlost`/`contextrestored`. Never cancels the loss event —
+   *  cancelling is how a page REFUSES automatic restoration, and the restore is the signal we
+   *  want. */
+  onSourceLoss(handlers: AtlasPageLossHandlers): { dispose(): void }
+}
+
 export interface RasterFont {
   family: string
   sizePx: number
@@ -342,16 +412,24 @@ function baselineIn(ctx: OffscreenCanvasRenderingContext2D, font: RasterFont): n
 export function createCanvasRasterizer(
   font: RasterFont,
   atlasSizePx: number
-): GlyphRasterizer | null {
+): (GlyphRasterizer & AtlasPageHealth) | null {
   if (typeof OffscreenCanvas === 'undefined') return null
   const canvas = new OffscreenCanvas(atlasSizePx, atlasSizePx)
   const ctx = canvas.getContext('2d', { alpha: true })
   if (!ctx) return null
   ctx.textBaseline = 'alphabetic'
-  // NOTHING is painted here. A fresh OffscreenCanvas is already transparent-black, which is the
+  /** One texel, in the one place nothing samples — see `ATLAS_SENTINEL_RGBA`. Unclipped and
+   *  unsaved, because it runs only where no clip is installed (construction and `clearPage`). */
+  const paintSentinel = (): void => {
+    ctx.fillStyle = SENTINEL_CSS
+    ctx.fillRect(0, 0, 1, 1)
+  }
+  // NOTHING ELSE is painted here. A fresh OffscreenCanvas is already transparent-black, which is the
   // page ground this atlas wants; the backdrop the platform rasterizer needs is per-slot and is
   // painted in `draw`. (Round 6's page-wide opaque black fill lived here — see the header for why
-  // it must not come back.)
+  // it must not come back.) The sentinel is one texel of slot 0's GUTTER, so every SAMPLED rect on
+  // the page — slot 0's cell box included — is still transparent-black.
+  paintSentinel()
   const baseline = baselineIn(ctx, font)
   // The slot pitch, from the SAME helper the atlas lays the page out with — the background fill
   // below has to cover exactly one pitch cell.
@@ -385,6 +463,49 @@ export function createCanvasRasterizer(
      *  never-allocated pitch cell) an opaque colour, and slot 0 is what every space samples. */
     clearPage() {
       ctx.clearRect(0, 0, atlasSizePx, atlasSizePx)
+      // ...and back to that state EXACTLY, sentinel included. A reset is a normal event, so a page
+      // left without one would read as a lost 2D context on the next revive and rebuild the whole
+      // canvas for nothing.
+      paintSentinel()
+    },
+    /** The health check the revive path runs. Two questions, cheapest first: has the context
+     *  declared itself lost, and — the case that fires no event at all — is the page still the one
+     *  we painted?
+     *
+     *  A readback that THROWS answers "intact". It tells us nothing about the page, and treating an
+     *  unavailable `getImageData` as a loss would rebuild the whole canvas on every restore, which
+     *  is worse than the bug. */
+    sourceIntact() {
+      const lost = (ctx as { isContextLost?: () => boolean }).isContextLost
+      if (typeof lost === 'function' && lost.call(ctx)) return false
+      try {
+        return sentinelIntact(ctx.getImageData(0, 0, 1, 1).data)
+      } catch {
+        return true
+      }
+    },
+    onSourceLoss(handlers) {
+      const target = canvas as unknown as {
+        addEventListener?: (type: string, fn: (e: Event) => void) => void
+        removeEventListener?: (type: string, fn: (e: Event) => void) => void
+      }
+      // An OffscreenCanvas that is not an EventTarget (an old runtime, a test double) degrades to
+      // "not watched" — `sourceIntact` is still the backstop, and it needs no events.
+      if (typeof target.addEventListener !== 'function') return { dispose: () => undefined }
+      // DELIBERATELY NOT `preventDefault()`. On a 2D canvas, cancelling `contextlost` tells the
+      // browser NOT to restore automatically — the opposite of the WebGL convention, where
+      // cancelling is how you ASK for the restore. The restore is what we are waiting for: it is
+      // the moment a fresh page can be rasterized into.
+      const onLost = (): void => handlers.lost()
+      const onRestored = (): void => handlers.restored()
+      target.addEventListener('contextlost', onLost)
+      target.addEventListener('contextrestored', onRestored)
+      return {
+        dispose: () => {
+          target.removeEventListener?.('contextlost', onLost)
+          target.removeEventListener?.('contextrestored', onRestored)
+        }
+      }
     },
     /** `x, y` is the INK origin the atlas hands us — already one gutter inside the pitch cell on
      *  each axis (`GlyphAtlas.cellXY`) — and `fg`/`bg` are the FINAL packed colour lanes for this

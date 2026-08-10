@@ -8,6 +8,12 @@
 import fs from 'fs'
 import path from 'path'
 
+// Per-tick read ceiling, the same discipline as context-tail's INITIAL_READ_CAP: without it the
+// first tick after track() (or any burst) allocates the entire delta in one Buffer. Unlike
+// context-tail, a capped read here loses nothing — the tail is offset-based, so the next 400ms
+// tick continues where this one stopped.
+export const SUBAGENT_READ_CAP = 1024 * 1024 // 1 MB
+
 interface Tracked {
   dir: string
   file: string | null
@@ -175,14 +181,15 @@ export function createSubagentTail(
       }
       const size = (await fs.promises.stat(e.file)).size
       if (size <= e.offset) return
-      const buf = Buffer.alloc(size - e.offset)
+      const len = Math.min(size - e.offset, SUBAGENT_READ_CAP)
+      const buf = Buffer.alloc(len)
       const fd = await fs.promises.open(e.file, 'r')
       try {
-        await fd.read(buf, 0, buf.length, e.offset)
+        await fd.read(buf, 0, len, e.offset)
       } finally {
         await fd.close()
       }
-      e.offset = size
+      e.offset += len
       const data = e.carry?.length ? Buffer.concat([e.carry, buf]) : buf
       const { text, carry } = splitCompleteLines(data)
       e.carry = carry

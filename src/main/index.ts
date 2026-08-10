@@ -32,7 +32,7 @@ import {
   isValidPendingId,
   syntheticAnsweredEvent
 } from '../core/agents/pending-approvals'
-import { setMainWindow, getMainWindow, sendToMain, shouldHideOnClose } from './main-window'
+import { setMainWindow, getMainWindow, sendToMain, shouldHideOnClose, createCrashReloadPolicy } from './main-window'
 import {
   initNotchHud,
   applyNotchHudSettings,
@@ -61,10 +61,12 @@ import {
   setNodeSessionName,
   sessionNameSweepEntries,
   nodeState,
-  nodeSessionName
+  nodeSessionName,
+  workingNodes
 } from '../core/agent-status-mirror'
 import { createPushNotify, createLiveUpdatePush } from '../core/push-notify'
-import { createGrantsAccessor } from '../core/push-grants'
+import { createGrantsAccessor, type PushGrant } from '../core/push-grants'
+import { createRemoteGrantsCache } from '../core/remote-push-grants'
 import { createAckSweeper } from '../core/ack-sweep'
 import { createSessionReaper } from '../core/session-budget'
 import { getDeviceId } from '../core/device-id'
@@ -94,7 +96,13 @@ import { registerTranscriptIpc, resolveTranscript } from '../core/transcript-ipc
 import { createRemoteContextTail } from './remote-context-tail'
 import { createRemoteSubagentTail } from './remote-subagent-tail'
 import { RemoteFile, type RemoteFileRef } from './remote-ssh/remote-file'
-import { childArgs } from '../core/remote-ssh/control-master'
+import {
+  childArgs,
+  parseRemoteSessionNames,
+  remoteListSessionsArgs,
+  remotePaneCommandArgs
+} from '../core/remote-ssh/control-master'
+import { sessionName } from '../core/tmux-naming'
 import { posixQuote } from '../shared/ssh'
 import { buildHandoff, type HandoffRemote } from './handoff'
 import { initContextLink, setNodeTranscript } from '../core/context-link'
@@ -135,6 +143,7 @@ import { connectRelayClient, type RelayClientSession } from './remote/relay-clie
 import { decodeOffer } from './remote/pairing'
 import { loadOrCreatePeerKeyPair } from './remote/peer-identity'
 import { initSshProject } from './remote-ssh/ssh-project'
+import { resyncProjectAgents, RESYNC_TRANSCRIPT_TAIL_BYTES } from './remote-ssh/agent-resync'
 import { setGitRemoteResolver, type GitRemoteRef } from '../core/remote-ssh/remote-git'
 import { SshFs, sshAppendArgs, sshTailArgs, sshSizeArgs, sshWriteArgs } from './ssh-fs'
 import { makeRemoteWorkspaceIO } from './remote-workspace-io'
@@ -400,7 +409,32 @@ function createWindow(): BrowserWindow {
   })
   // A crashed/killed renderer is the same story, minus the window: drop its subscriptions so the
   // reloaded renderer reattaches to live sessions instead of inheriting the dead one's state.
-  win.webContents.on('render-process-gone', () => ptyManager.dropClient(presenceId))
+  // And actually reload — a dead renderer otherwise leaves the window a permanent blank page
+  // (both projects, every terminal). Bounded by the policy so a boot-path crash can't loop;
+  // past the budget the user decides. The tmux sessions all live in this process, so a reload
+  // costs nothing but the canvas re-hydrating from the workspace store.
+  const crashReload = createCrashReloadPolicy()
+  win.webContents.on('render-process-gone', (_event, details) => {
+    ptyManager.dropClient(presenceId)
+    if (quitting || win.isDestroyed()) return
+    const action = crashReload(details.reason, Date.now())
+    if (action === 'reload') {
+      win.webContents.reload()
+    } else if (action === 'give-up') {
+      void dialog
+        .showMessageBox(win, {
+          type: 'error',
+          message: 'The window keeps crashing',
+          detail: `The interface process died repeatedly (${details.reason}). Your terminal sessions are still running.`,
+          buttons: ['Reload', 'Not Now'],
+          defaultId: 0,
+          cancelId: 1
+        })
+        .then(({ response }) => {
+          if (response === 0 && !win.isDestroyed()) win.webContents.reload()
+        })
+    }
+  })
 
   win.on('ready-to-show', () => win.show())
   // The main window is a regular app window; establishing its Dock presence explicitly means the
@@ -949,6 +983,19 @@ app.whenReady().then(async () => {
   // Mac-tracked sessions with NO QR pairing, and QR-pairing later flips `hasPairedPhone` true →
   // host-mode automatically (grants suppressed — no double-push to the same phone).
   const pushGrants = createGrantsAccessor()
+  // ...and the REMOTE half of the same idea. A Mac-driven SSH project's phone can only reach the
+  // HOST, so its grant is dropped there, not here — without this sweep an SSH-only user got no
+  // push at all (no paired phone, no local grant ⇒ `resolveTarget` silently returns null). Filled
+  // by a timer below; `get()` is sync so it can sit behind `getGrants`. See
+  // core/remote-push-grants.ts.
+  const remoteGrants = createRemoteGrantsCache()
+  /** Local grants first (this machine's own phone), then the hosts' — deduped per device inside. */
+  const allPushGrants = (): PushGrant[] => [...pushGrants.get(), ...remoteGrants.get()]
+  /** A 401/403 could be on either side's token; neither accessor knows the other's. */
+  const markPushGrantDead = (grant: string): void => {
+    pushGrants.markDead(grant)
+    remoteGrants.markDead(grant)
+  }
   let pushHostKeyB64: string | null = null
   let pushHasPairedPhone = false
   const refreshPushIdentity = async (): Promise<void> => {
@@ -1022,8 +1069,8 @@ app.whenReady().then(async () => {
         : null,
     // Granted-mode fallback (unpaired / no relay identity → push to SSH-dropped grants; see the
     // block comment above). resolveTarget keeps a single sender: host wins when paired.
-    getGrants: () => pushGrants.get(),
-    markGrantDead: (grant) => pushGrants.markDead(grant),
+    getGrants: allPushGrants,
+    markGrantDead: markPushGrantDead,
     hostLabel: () => hostname(),
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobilePushNeedsYou: () => settingsStore.get().mobilePushNeedsYou !== false,
@@ -1058,8 +1105,8 @@ app.whenReady().then(async () => {
             hasPairedPhone: pushHasPairedPhone
           }
         : null,
-    getGrants: () => pushGrants.get(),
-    markGrantDead: (grant) => pushGrants.markDead(grant),
+    getGrants: allPushGrants,
+    markGrantDead: markPushGrantDead,
     hostLabel: () => hostname(),
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobileLiveActivities: () => settingsStore.get().mobileLiveActivities !== false,
@@ -1256,18 +1303,24 @@ app.whenReady().then(async () => {
    * node id buys us; a hit is cached under the sessionId so the title poll and the next read get
    * it for free. Fail-open at every step: no node id / not an SSH session / no resolved home /
    * a failed ssh call all mean "not remote", which is the pre-existing local path.
+   *
+   * `remote` overrides the live-pty lookup for callers that already know which host the node runs
+   * on. `PtyManager.kill()` forgets a session on detach, so a backgrounded project's nodes are
+   * absent from that map — and the reconnect resync runs on exactly those nodes. Absent ⇒ the
+   * lookup, i.e. the pre-existing behavior byte for byte.
    */
   const remoteTranscriptRefFor = async (
     sessionId: string | undefined,
     cwd: string | undefined,
     accountId: string | undefined,
-    nodeId: string | undefined
+    nodeId: string | undefined,
+    remote?: { conn: import('../shared/ssh').SshConnection; controlPath: string }
   ): Promise<RemoteFileRef | undefined> => {
     if (!sessionId) return undefined
     const cached = remoteTranscriptBySession.get(sessionId)
     if (cached) return cached
     if (!nodeId) return undefined
-    const rt = ptyManager.sshRemoteForNode(nodeId)
+    const rt = remote ?? ptyManager.sshRemoteForNode(nodeId)
     if (!rt || !sshProjectManager) return undefined
     const remoteHome = sshProjectManager.remoteHomeForControlPath(rt.controlPath)
     if (!remoteHome) return undefined
@@ -1306,13 +1359,22 @@ app.whenReady().then(async () => {
 
   /**
    * Read a remote transcript through a ref, forgetting refs WE located once they stop reading.
+   * `cap` is the tail window in bytes; it defaults to the full reader's cap, so every caller that
+   * wants a transcript to READ is unchanged. A caller that only wants to know how the last few
+   * records look (the reconnect resync) passes a much smaller one — see
+   * RESYNC_TRANSCRIPT_TAIL_BYTES.
+   *
    * Without this the panel's Retry replays a dead path forever (the transcript was deleted, or the
    * session moved) because the cache lookup comes first. A hook-fed ref is deliberately left in
    * place on an empty read — that is usually a transient master hiccup, and dropping it would send
    * the next read down the LOCAL resolver, i.e. to the wrong machine.
    */
-  const readRemoteTranscript = async (sessionId: string, ref: RemoteFileRef): Promise<string> => {
-    const text = await remoteFile.readTail(ref, REMOTE_TRANSCRIPT_CAP)
+  const readRemoteTranscript = async (
+    sessionId: string,
+    ref: RemoteFileRef,
+    cap: number = REMOTE_TRANSCRIPT_CAP
+  ): Promise<string> => {
+    const text = await remoteFile.readTail(ref, cap)
     if (!text && locatedTranscriptSessions.delete(sessionId)) {
       remoteTranscriptBySession.delete(sessionId)
     }
@@ -1486,6 +1548,23 @@ app.whenReady().then(async () => {
       })
   }, 15_000)
   ackSweepTimer.unref?.()
+  // Push grants on the connected SSH hosts (core/remote-push-grants.ts). Its own, slower cadence:
+  // unlike an ack — which the phone waits on — a grant only has to be fresh by the time something
+  // is actually pushed, and the phone re-drops it long before it expires. One ssh exec per
+  // connected host per minute, and none at all with no SSH project open.
+  let remoteGrantSweepBusy = false
+  const grantSweepTimer = setInterval(() => {
+    if (remoteGrantSweepBusy || !sshProjectManager) return
+    remoteGrantSweepBusy = true
+    void sshProjectManager
+      .readRemoteGrants()
+      .then((grants) => remoteGrants.set(grants))
+      .catch(() => {})
+      .finally(() => {
+        remoteGrantSweepBusy = false
+      })
+  }, 60_000)
+  grantSweepTimer.unref?.()
   // Sweep stale request/answer files (~/.nodeterm/pending) on boot + hourly — orphans from killed
   // sessions that never got an answer. Local only; a remote host runs its own sweep if it hosts
   // nodeterm, else the files age out harmlessly.
@@ -1941,7 +2020,53 @@ app.whenReady().then(async () => {
         })
         .catch(() => {})
     },
-    askpassScriptPath
+    askpassScriptPath,
+    // The project's reverse hook tunnel is verified again on a freshly established master: every
+    // hook event fired while it was down is gone (the POSTs are fire-and-forget and nothing queues
+    // them on the host), so ask the host what is actually true for the nodes we still believe are
+    // working. Fire-and-forget — this must never delay or fail the connect that has already
+    // reported `connected`.
+    (_projectId, controlPath, conn) => {
+      void resyncProjectAgents({
+        workingNodes,
+        hostSessionNames: async () => {
+          if (!sshProjectManager) return new Set<string>()
+          const { code, stdout } = await sshProjectManager.sshRun(
+            remoteListSessionsArgs(conn, controlPath)
+          )
+          // `list-sessions` exits non-zero when no tmux server is running — that is "no sessions",
+          // not a failed read, and either way an empty set repairs nothing.
+          return new Set(code === 0 ? parseRemoteSessionNames(stdout) : [])
+        },
+        paneCommand: async (nodeId) => {
+          // The node's REMOTE pane, over this project's master. `PtyManager.paneCommand` would
+          // read our live session map, which a backgrounded project has already been dropped from.
+          if (!sshProjectManager) return null
+          const { code, stdout } = await sshProjectManager.sshRun(
+            remotePaneCommandArgs(conn, controlPath, sessionName(nodeId))
+          )
+          return code === 0 ? stdout.trim() || null : null
+        },
+        readTranscriptTail: async (nodeId, sessionId) => {
+          // cwd/accountId are unknown here: with no accountId there is exactly ONE transcript root
+          // (the system one), so a managed-account node without a hook-fed ref simply stays
+          // undecided. A hook-fed ref (the common case) is already cached by session id. The
+          // explicit `remote` is what keeps this working for a node with no live pty session.
+          const ref = await remoteTranscriptRefFor(sessionId, undefined, undefined, nodeId, {
+            conn,
+            controlPath
+          })
+          // A small tail, NOT the read path's 5 MB cap: the verdict is about the last few records,
+          // and a wider window only lets an ancient unmatched tool_use pin the node at `working`.
+          return ref
+            ? await readRemoteTranscript(sessionId, ref, RESYNC_TRANSCRIPT_TAIL_BYTES)
+            : null
+        },
+        emit: emitAgentStatus
+      }).catch(() => {
+        // best-effort: a failed resync leaves the stale sweep as the backstop, exactly as today
+      })
+    }
   )
   // Wake-from-sleep: re-validate every SSH master NOW instead of letting ServerAlive discover the
   // dead TCP ~60s later — until it does, every remote terminal looks alive and is dead (no echo,
@@ -2052,5 +2177,12 @@ app.on('before-quit', (e) => {
   // a master mid-write used to leave a truncated project.json on the server. The masters are
   // therefore kept up through the raced flush and dropped on the second before-quit pass.
   const flush = Promise.allSettled([remoteWorkspaceIO.flush(), ptyManager.killAll()])
-  void Promise.race([flush, new Promise((r) => setTimeout(r, 1500))]).finally(() => app.quit())
+  void Promise.race([flush, new Promise((r) => setTimeout(r, 1500))])
+    // Then let whisper go. A dictation still transcribing when Electron tears down the main
+    // process's node env aborts the WHOLE app from inside the native addon (SIGABRT in
+    // Napi::ThreadSafeFunction::CallJS) — see SpeechService.shutdown. It needs its own budget
+    // because the 1500ms cap above is shorter than a transcription, and it costs nothing at
+    // all when dictation is idle, which is nearly always.
+    .then(() => speechService.shutdown())
+    .finally(() => app.quit())
 })

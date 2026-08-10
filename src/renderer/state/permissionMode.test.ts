@@ -20,8 +20,20 @@ function mockCliCaps(caps: ClaudeCliCaps | Error): ReturnType<typeof vi.fn> {
   return fn
 }
 
-const MODERN: ClaudeCliCaps = { version: '2.1.207 (Claude Code)', autoPermissionMode: true, fullscreenTui: true }
-const OLD: ClaudeCliCaps = { version: '2.1.50 (Claude Code)', autoPermissionMode: false, fullscreenTui: false }
+// `sessionIdFlag` is unrelated to what these fixtures exercise (the `auto` version gate); it is
+// spelled out only because ClaudeCliCaps requires it.
+const MODERN: ClaudeCliCaps = {
+  version: '2.1.207 (Claude Code)',
+  autoPermissionMode: true,
+  fullscreenTui: true,
+  sessionIdFlag: true
+}
+const OLD: ClaudeCliCaps = {
+  version: '2.1.50 (Claude Code)',
+  autoPermissionMode: false,
+  fullscreenTui: false,
+  sessionIdFlag: false
+}
 
 const SSH_SERVER = { id: 's1', label: 'box', host: 'box', user: 'me' } as unknown as SshConnection
 

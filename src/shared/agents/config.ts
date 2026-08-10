@@ -89,6 +89,23 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
 // automatically gets only spawn + terminal-title + process status.
 export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
 export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+// Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it from
+// hook events. Claude only: it is the one CLI here that accepts a caller-chosen id.
+//
+// Why it matters: everything that resumes a conversation — cold restore after a reboot, the
+// session reaper's recovery path, the ⌘M transcript view — needs the id, and the id used to
+// arrive ONLY over the hook channel (agent fires a hook → POST → renderer stores it in
+// localStorage). For an SSH node that POST rides the reverse tunnel, so a node whose tunnel was
+// down, or that simply never ran a tool, never had an id at all. Measured on one host after a
+// reboot: 18 of 40 agent nodes relaunched as BLANK conversations because there was nothing to
+// resume with, while their transcripts sat intact on disk.
+//
+// Minting fixes the floor, not the whole problem: `/clear`, `--fork-session` and compaction all
+// mint a NEW id inside the CLI (claude's SessionStart hook reports these as source
+// clear/fork/compact), so hooks remain the only way to TRACK an id after launch. What minting
+// guarantees is that a node always has SOME resumable id, so the worst case degrades from "the
+// conversation is gone" to "continuity since the last /clear is gone".
+export const SESSION_ID_CAPABLE = ['claude'] as const
 export const SUBAGENT_CAPABLE = ['claude'] as const
 export const RECURRING_CAPABLE = ['claude'] as const // /loop, /schedule, /cron
 export const BRANCH_CAPABLE = ['claude'] as const
@@ -164,11 +181,21 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
 export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as const
+// Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
+// Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
+// paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
+// switches the WHOLE copy-feedback layer off for that agent's terminals: the receipt and the
+// one-time "Hold ⌥ to select text" hint alike, since a drag there is not swallowed at all.
+//
+// This is a list rather than a `=== 'claude'` for the usual reason: the next CLI to grow its own
+// copy notice joins by being added here, and nothing else changes.
+export const SELF_REPORTS_COPY = ['claude'] as const
 
 const includes = (list: readonly string[], id: AgentId): boolean => list.includes(id)
 
 export const hasHooks = (id: AgentId): boolean => includes(AGENT_HOOK_TARGETS, id)
 export const canResume = (id: AgentId): boolean => includes(RESUMABLE_AGENTS, id)
+export const mintsSessionId = (id: AgentId): boolean => includes(SESSION_ID_CAPABLE, id)
 export const canSubagent = (id: AgentId): boolean => includes(SUBAGENT_CAPABLE, id)
 export const canRecur = (id: AgentId): boolean => includes(RECURRING_CAPABLE, id)
 export const canBranch = (id: AgentId): boolean => includes(BRANCH_CAPABLE, id)
@@ -180,6 +207,10 @@ export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
+/** Does this agent's CLI report its own copies? Undefined (a plain terminal, a custom agent) is
+ *  `false` — nobody speaks for those, so nodeterm's own feedback is the only feedback there is. */
+export const reportsOwnCopy = (id: AgentId | undefined): boolean =>
+  !!id && includes(SELF_REPORTS_COPY, id)
 
 // Returns the builtin config for an id, or undefined for custom/unknown agents.
 export const agentConfig = (id: AgentId): AgentConfig | undefined =>
@@ -210,6 +241,27 @@ export function createdAgentId(
 // cold restart), so accept only the safe charset agents actually use (UUIDs etc.) — never a
 // flag-like or metacharacter-bearing value.
 const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * Appends the minted-session-id flag to a FIRST-LAUNCH command, for agents in
+ * `SESSION_ID_CAPABLE`. Anything else — another agent, an empty or unsafe id — returns `cmd`
+ * unchanged, so a command line that had no business carrying the flag stays byte-identical.
+ *
+ * First launch ONLY. `claude --session-id <uuid>` refuses an id that already exists ("Session ID
+ * … is already in use.", measured against claude 2.1.226), so a relaunch of the same node must
+ * resume instead — that is `resumeCommand`'s job, and the two shapes can never be collapsed into
+ * one idempotent command.
+ *
+ * Re-validated against SAFE_SESSION_ID at this interpolation site for the same reason
+ * `resumeCommand` is: the value ends up on a tmux `send-keys` line, and the caller's type is a
+ * compile-time promise, not a runtime one.
+ */
+export function withSessionId(cmd: string, id: AgentId, sessionId: string): string {
+  if (!mintsSessionId(id)) return cmd
+  const sid = sessionId.trim()
+  if (!sid || !SAFE_SESSION_ID.test(sid)) return cmd
+  return `${cmd} --session-id ${sid}`
+}
 
 /**
  * The command that resumes a resumable agent's prior conversation by its provider session id.

@@ -18,13 +18,27 @@ const PROBE_TIMEOUT_MS = 5000
 
 export { UNKNOWN_CLAUDE_CLI_CAPS, type ClaudeCliCaps }
 
-/** Pure: `claude --version` output → caps. The impure probe below is just plumbing around it. */
-export function claudeCliCapsFrom(versionOutput: string | null | undefined): ClaudeCliCaps {
+/**
+ * Pure: probe output → caps. The impure probe below is just plumbing around it.
+ *
+ * `--session-id` is FEATURE-detected from `--help` rather than gated on a version, because the
+ * release it first appeared in is not documented anywhere this repo can verify. Guessing a floor
+ * is uniquely dangerous for this flag: an unrecognised flag makes the CLI exit, so a floor set too
+ * low would kill every claude launch on the machines below it. Reading the help text asks the CLI
+ * in front of us what it actually accepts. Absent help output ⇒ false ⇒ no flag ⇒ today's command.
+ */
+export function claudeCliCapsFrom(
+  versionOutput: string | null | undefined,
+  helpOutput?: string | null
+): ClaudeCliCaps {
   const version = versionOutput?.trim() || null
   return {
     version,
     autoPermissionMode: supportsAutoPermissionMode(version),
-    fullscreenTui: supportsFullscreenTui(version)
+    fullscreenTui: supportsFullscreenTui(version),
+    // Anchored on a word boundary so `--session-id-file` or prose mentioning the flag inside
+    // another option's description cannot answer yes for it.
+    sessionIdFlag: /(^|\s)--session-id(\s|=|$)/m.test(helpOutput ?? '')
   }
 }
 
@@ -37,7 +51,13 @@ async function probe(): Promise<ClaudeCliCaps> {
     const bin = await findInLoginPath('claude')
     if (!bin) return UNKNOWN_CLAUDE_CLI_CAPS
     const { stdout } = await execFileP(bin, ['--version'], { timeout: PROBE_TIMEOUT_MS })
-    return claudeCliCapsFrom(stdout)
+    // `--help` is a second spawn, paid once per process (this whole probe is memoized). Its
+    // failure must not cost us the version answer, so it degrades on its own: no help text just
+    // means no minted session ids.
+    const help = await execFileP(bin, ['--help'], { timeout: PROBE_TIMEOUT_MS })
+      .then((r) => r.stdout)
+      .catch(() => null)
+    return claudeCliCapsFrom(stdout, help)
   } catch {
     // Missing CLI, timeout, non-zero exit — all mean "unknown", which means "omit the flag".
     return UNKNOWN_CLAUDE_CLI_CAPS

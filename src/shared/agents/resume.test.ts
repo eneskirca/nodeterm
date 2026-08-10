@@ -1,5 +1,30 @@
 import { describe, it, expect } from 'vitest'
-import { resumeCommand } from './config'
+import { resumeCommand, withSessionId } from './config'
+
+describe('withSessionId', () => {
+  it('appends the minted id for claude', () => {
+    expect(withSessionId('claude', 'claude', 'abc-123')).toBe('claude --session-id abc-123')
+  })
+
+  it('leaves a non-capable agent byte-identical', () => {
+    for (const id of ['codex', 'gemini', 'grok', 'opencode'] as const) {
+      expect(withSessionId(id, id, 'abc-123')).toBe(id)
+    }
+  })
+
+  // The value reaches a tmux send-keys line, so the type is not the guard — the same reason
+  // resumeCommand re-validates. A rejected id must yield the bare command, never a broken one.
+  it('refuses an unsafe or empty id and returns the command unchanged', () => {
+    for (const bad of ['', '   ', '-rf', 'a; rm -rf /', '$(id)', 'a b']) {
+      expect(withSessionId('claude', 'claude', bad)).toBe('claude')
+    }
+  })
+
+  it('accepts the uuid shape it will actually be given', () => {
+    const u = '32f2b123-6b25-4ef0-9e05-afc8705ae1f9'
+    expect(withSessionId('claude', 'claude', u)).toBe(`claude --session-id ${u}`)
+  })
+})
 
 describe('resumeCommand', () => {
   it('builds claude resume', () => {

@@ -68,4 +68,12 @@ describe('buildRealApi: workspace', () => {
     expect(c.calls[0]).toEqual({ kind: 'subscribe', method: IPC.workspaceMigrated, args: [] })
     expect(typeof un).toBe('function')
   })
+
+  it('onCorruptRecovered subscribes to the channel core actually broadcasts', () => {
+    const c = fakeClient()
+    const api = buildRealApi(c as never)
+    const un = api.workspace.onCorruptRecovered(() => {})
+    expect(c.calls[0]).toEqual({ kind: 'subscribe', method: IPC.workspaceCorruptRecovered, args: [] })
+    expect(typeof un).toBe('function')
+  })
 })

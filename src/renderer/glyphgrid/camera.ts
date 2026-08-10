@@ -53,6 +53,39 @@ export function snapPanToDevicePx(cam: Camera, dpr: number): Camera {
   }
 }
 
+/**
+ * The smallest zoom the glyph camera will hold — React Flow's own `minZoom` default, deliberately
+ * the same number, because the two cameras are supposed to describe the same view.
+ */
+export const MIN_CAMERA_ZOOM = 0.01
+
+/**
+ * Make a camera SAFE to compute with, whatever it came from.
+ *
+ * THE BLANK CANVAS THIS ANSWERS. A camera reaches this module from a persisted project viewport as
+ * well as from a live gesture, and a stored `zoom: 0` (or a viewport that reached the file as NaN
+ * through some earlier edit) is not caught anywhere on the way in: `visibleWorldRect` divides the
+ * viewport by the zoom, so the visible rect goes Infinity or NaN, `rectsIntersect` answers false for
+ * EVERY grid, and every terminal on the board is empty at once — permanently, since nothing
+ * recomputes the camera until the user pans. The DOM chrome looks perfect throughout, because React
+ * Flow clamps its own transform to `minZoom` and this camera did not, which is exactly the shape the
+ * "all my terminals went blank but the app is fine" reports have.
+ *
+ * Clamping rather than rejecting: a camera we refuse to adopt leaves the canvas drawing against the
+ * PREVIOUS project's view, which is the same blank screen by another road. A zoom of `MIN_CAMERA_ZOOM`
+ * draws the world microscopically small, which is at least honest about what was asked for, and one
+ * real gesture replaces it.
+ */
+export function sanitizeCamera(cam: Camera): Camera {
+  return {
+    x: Number.isFinite(cam.x) ? cam.x : 0,
+    y: Number.isFinite(cam.y) ? cam.y : 0,
+    // `!(zoom >= MIN)` rather than `<`, so NaN (which compares false against everything) lands on
+    // the floor instead of falling through as "big enough".
+    zoom: Number.isFinite(cam.zoom) && cam.zoom >= MIN_CAMERA_ZOOM ? cam.zoom : MIN_CAMERA_ZOOM
+  }
+}
+
 /** Strict overlap (shared edge does not count — an edge-touching grid draws zero pixels). */
 export function rectsIntersect(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h

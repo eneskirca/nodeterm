@@ -5,6 +5,7 @@ import {
   sendToMain,
   mainWindowClientIds,
   shouldHideOnClose,
+  createCrashReloadPolicy,
   type MainWindowLike
 } from './main-window'
 
@@ -107,6 +108,41 @@ describe('main-window tracking', () => {
     setMainWindow(w)
     w.emitClosed()
     expect(getMainWindow()).toBeNull()
+  })
+})
+
+// Field bug (2026-08-10): a dead renderer left the window permanently blank — the
+// render-process-gone handler dropped pty clients but nothing ever reloaded the page.
+describe('createCrashReloadPolicy', () => {
+  it('reloads after a crashed renderer', () => {
+    const onCrash = createCrashReloadPolicy()
+    expect(onCrash('crashed', 0)).toBe('reload')
+  })
+
+  it('reloads after an OOM kill', () => {
+    const onCrash = createCrashReloadPolicy()
+    expect(onCrash('oom', 0)).toBe('reload')
+  })
+
+  it('ignores a clean exit and spends no reload budget on it', () => {
+    const onCrash = createCrashReloadPolicy({ maxReloads: 1 })
+    expect(onCrash('clean-exit', 0)).toBe('ignore')
+    expect(onCrash('crashed', 1)).toBe('reload') // budget untouched
+  })
+
+  it('gives up when crashes keep coming inside the window (no reload loop)', () => {
+    const onCrash = createCrashReloadPolicy({ maxReloads: 2, windowMs: 60_000 })
+    expect(onCrash('crashed', 0)).toBe('reload')
+    expect(onCrash('crashed', 1_000)).toBe('reload')
+    expect(onCrash('crashed', 2_000)).toBe('give-up')
+  })
+
+  it('restores the budget once earlier reloads age out of the window', () => {
+    const onCrash = createCrashReloadPolicy({ maxReloads: 2, windowMs: 60_000 })
+    onCrash('crashed', 0)
+    onCrash('crashed', 1_000)
+    expect(onCrash('crashed', 2_000)).toBe('give-up')
+    expect(onCrash('crashed', 61_500)).toBe('reload') // both grants aged out
   })
 })
 

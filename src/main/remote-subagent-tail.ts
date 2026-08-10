@@ -7,9 +7,14 @@
 //
 // Unlike the local tail, the remote transcript path is resolved by the caller (the hook raw-
 // listener already learned it), so each entry is tracked directly by its RemoteFileRef.
+//
+// Each read is capped at SUBAGENT_READ_CAP (core's, shared with the local tail) so the first
+// tick after track() can't pull a whole transcript over ssh into one string; the cap costs
+// nothing, since the offset-based tail continues next tick. It goes through readFromCapped —
+// a capped read lands mid-multibyte routinely, and only base64 keeps the byte accounting exact.
 import { type BrowserWindow } from 'electron'
 import { IPC } from '../shared/ipc'
-import { formatSubagentChunk, splitCompleteLines } from '../core/subagent-tail'
+import { formatSubagentChunk, splitCompleteLines, SUBAGENT_READ_CAP } from '../core/subagent-tail'
 import type { RemoteFile, RemoteFileRef } from './remote-ssh/remote-file'
 
 const POLL_MS = 1000
@@ -41,10 +46,10 @@ export function createRemoteSubagentTail(win: BrowserWindow, remoteFile: RemoteF
     if (e.reading) return
     e.reading = true
     try {
-      const { text, newOffset } = await remoteFile.readFrom(e.ref, e.offset)
+      const { data, newOffset } = await remoteFile.readFromCapped(e.ref, e.offset, SUBAGENT_READ_CAP)
       e.offset = newOffset
-      if (text) {
-        const read = Buffer.from(text)
+      if (data.length) {
+        const read = data
         const { text: complete, carry } = splitCompleteLines(e.carry?.length ? Buffer.concat([e.carry, read]) : read)
         e.carry = carry
         const out = formatSubagentChunk(complete)

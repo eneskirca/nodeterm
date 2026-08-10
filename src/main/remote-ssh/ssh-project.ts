@@ -11,6 +11,8 @@ import { findExecutableSync, shellPathNow } from '../../core/exec-path'
 import { mediaCachePruneList, remoteMediaCacheName } from '../../core/remote-ssh/media-cache'
 import { allowMediaPath } from '../media-protocol'
 import { remoteAccountConfigDir, isSupportedClaudeVersion } from '../../core/claude-accounts-core'
+import type { PushGrant } from '../../core/push-grants'
+import { REMOTE_GRANT_SCAN_CMD, parseRemoteGrants } from '../../core/remote-push-grants'
 import { supportsAutoPermissionMode, supportsFullscreenTui } from '../../shared/agents/config'
 import {
   controlPathFor,
@@ -77,6 +79,14 @@ interface Runners {
   /** The last SSH connection just went away through a user-facing disconnect. Production schedules
    *  the app-private agent's shutdown, which is what "forget the key" actually means. */
   onIdle?: () => void
+  /** A project's reverse hook tunnel was just VERIFIED on a freshly established master. Production
+   *  resyncs that project's working agents: hook events lost while the tunnel was down are gone for
+   *  good, so a node can be stranded at `working` until the 20-minute stale sweep. Deliberately not
+   *  called on the reuse branch — a master that answered `-O check` never lost its tunnel. The
+   *  `conn` rides along because the resync builds its own remote commands (the host's tmux session
+   *  list, a pane probe) and the alternative — looking the connection back up by control path —
+   *  would add a public accessor for a fact this call site already holds. */
+  onTunnelVerified?: (projectId: string, controlPath: string, conn: SshConnection) => void
   /** Synchronous one-shot ssh, for `disconnectAll()` only: `before-quit` is sync, so an awaited
    *  `-O exit` never lands and the daemonized ControlPersist master survives the app. */
   runSync?: (args: string[]) => void
@@ -575,6 +585,34 @@ export class SshProjectManager {
           entry.remoteHome = remoteHome
           entry.tmuxConfPath = tmuxConfPath
           this.r.onStatus({ projectId, status: 'connected' })
+          // The tunnel is live again on a master we just established (the reuse branch returned long
+          // before this line), so this is exactly the moment the hook events lost while it was down
+          // can be reconstructed from the host.
+          //
+          // Position is load-bearing, and it is HERE rather than beside `setup()` for three reasons.
+          // (1) The resync's transcript leg resolves the host's transcript root through
+          // `remoteHomeForControlPath`, which reads `entry.remoteHome` — written one line above.
+          // Firing before that left the locator without a remote $HOME on EVERY connect (the entry
+          // is created at master spawn without the field), and that leg is the only one that can
+          // tell a finished agent sitting at its prompt from one still working. (2) It is past the
+          // ownership check, so a superseded attempt no longer resyncs against an entry it does not
+          // own. (3) It stays inside `if (hookEndpointPath)`, so a tunnel that failed verification
+          // still never fires it — there would be nothing to reconstruct through.
+          //
+          // Fire-and-forget: the resync runs several remote round trips and must never delay (or
+          // fail) the connect that is already reporting `connected`. The try/catch is the contract,
+          // not politeness: what this hook drives will grow, and a throw inside it would surface to
+          // the user as a dead SSH project — the connect fails, the entry is left half-built, and
+          // the reason is a repair job that was only ever best-effort. A resync must never cost the
+          // user the connection that is already reporting `connected`. (`onStatus` above carries the
+          // same guard for the same hard-won reason.) Do not tidy away.
+          if (hookEndpointPath) {
+            try {
+              this.r.onTunnelVerified?.(projectId, controlPath, conn)
+            } catch {
+              // undecided changes nothing: the stale sweep remains the backstop, as before this hook
+            }
+          }
         }
         // Probe the REMOTE claude CLI once per connect, `--permission-mode auto` only exists in
         // >= 2.1.71 and the host's CLI may be older than the local one. NOT awaited: the answer is
@@ -1034,6 +1072,37 @@ export class SshProjectManager {
   }
 
   /**
+   * Read the SSH-possession push grants the phone dropped on the connected hosts
+   * (`~/.nodeterm/push-grants/<deviceId>.grant`) — the remote counterpart of the local
+   * `push-grants` scan, and the reason an SSH-only user got no push notifications at all: in the
+   * phone→host→Mac topology the grant lands on the HOST, while the process with something to push
+   * (this one) only ever scanned its own `$HOME`. See core/remote-push-grants.ts.
+   *
+   * One command per connected HOST (deduped by host key — projects sharing a host share
+   * `$HOME/.nodeterm/push-grants`). The command is fully literal, and unlike the ack sweep it
+   * consumes nothing: a grant stays valid until the phone re-mints it. Best-effort per host; a
+   * disconnected/failed project simply contributes nothing (the cache keeps the last sweep).
+   */
+  async readRemoteGrants(): Promise<PushGrant[]> {
+    const seenHosts = new Set<string>()
+    const out: PushGrant[] = []
+    for (const c of this.conns.values()) {
+      const hk = sshHostKey(c.conn)
+      if (seenHosts.has(hk)) continue
+      seenHosts.add(hk)
+      try {
+        const { code, stdout } = await this.r.run(
+          childArgs(c.conn, c.controlPath, REMOTE_GRANT_SCAN_CMD)
+        )
+        if (code === 0 && stdout) out.push(...parseRemoteGrants(stdout))
+      } catch {
+        // best-effort per host — a failed read just keeps the previous sweep's grants
+      }
+    }
+    return out
+  }
+
+  /**
    * Deterministic hook-reply approvals (docs/hook-reply-approvals.md): write the one-line answer
    * file for a held REMOTE permission hook, on the project's host over its ControlMaster (atomic
    * tmp+mv, 0600 via umask). The hook is polling `~/.nodeterm/pending/<pendingId>.answer` on that
@@ -1381,7 +1450,11 @@ export function resolvePassphrasePrompt(requestId: string, value: string | null)
 
 export function initSshProject(
   onConnected?: (projectId: string) => void,
-  askpassScriptPath?: string
+  askpassScriptPath?: string,
+  /** Passed straight through to the manager's `onTunnelVerified` (see Runners). It lives on the
+   *  caller because the resync it drives needs main's agent-status funnel and transcript readers,
+   *  none of which this module knows about. */
+  onTunnelVerified?: (projectId: string, controlPath: string, conn: SshConnection) => void
 ): SshProjectManager {
   const ssh = sshBin()
   const scp = scpBin()
@@ -1436,6 +1509,7 @@ export function initSshProject(
     // see scheduleStop — the connect dialog's throwaway browse master disconnects right before the
     // real project connects).
     onIdle: () => appSshAgent.scheduleStop(),
+    onTunnelVerified,
     askpassWasCancelled: (masterPid) => askpassServer.wasCancelledBy(masterPid),
     askpassIsPrompting: () => askpassServer.isPromptingAny(),
     askpassAsked: (masterPid) => askpassServer.askedBy(masterPid),

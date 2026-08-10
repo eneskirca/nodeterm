@@ -9,10 +9,25 @@
 // is dead and the POST fails silently, so the session goes dark — even when the SAME host
 // runs an always-on headless Server Edition whose endpoint file is alive right next to it.
 // So the request POST captures curl's exit status and, on failure, retries ONCE against the
-// freshest OTHER endpoint file among the known candidates (server-edition dataDir + the
-// desktop userData dirs), sourcing its sock/port/token. The happy path (primary alive) is
+// freshest OTHER endpoint file among the known candidates (the SSH reverse-tunnel endpoints
+// `~/.nodeterm/hook-endpoint-*.env` + the server-edition dataDir + the desktop userData dirs),
+// sourcing its sock/port/token. The happy path (primary alive) is
 // unchanged — curl succeeds, no candidate scan, no re-POST. A host with no candidate files
 // behaves exactly as before (nothing posts).
+//
+// Stale-project self-heal (the glob candidate): a remote session's `NODETERM_HOOK_ENDPOINT` is
+// baked into its tmux session at CREATION (`new-session -A -e …`, which tmux ignores when the
+// session already exists), and the path carries the PROJECT id:
+// `~/.nodeterm/hook-endpoint-<projectId>.env`. Node ids (= tmux session names) deliberately
+// survive a project-id change — a re-added folder, a cross-lineage `.nodeterm/project.json`
+// adoption — but the endpoint file of the OLD project id is then never rewritten again, so those
+// long-lived sessions post into a file pointing at a dead tunnel forever while freshly created
+// nodes work. Without the glob the candidate list held only host-LOCAL nodeterm installs, so a
+// pure SSH host (no nodeterm of its own) had no self-heal at all: permanent "active but idle".
+// The glob makes the live project's endpoint — rewritten and VERIFIED on every connect, hence the
+// freshest — a valid fallback. Sending one project's node over another project's socket is
+// correct: both tunnels terminate at the SAME hook server, and the node id in the body is what
+// identifies the session.
 //
 // Empty-endpoint self-heal: a session spawned when NO endpoint file existed yet (a phone injects
 // NODETERM_NODE_ID + NODETERM_HOOK_ENDPOINT="$NT_EP" where $NT_EP resolved empty on a bare host)
@@ -79,6 +94,9 @@ export function buildManagedScript(agentId: string): string {
     '  nt_tried="$1"',
     '  set --',
     '  for nt_c in \\',
+    // Unquoted glob (with $HOME itself still quoted): the per-project SSH reverse-tunnel
+    // endpoints. On no match the pattern stays literal and the `-r` test below drops it.
+    '    "$HOME"/.nodeterm/hook-endpoint-*.env \\',
     '    "$HOME/.nodeterm-server/hook-endpoint.env" \\',
     '    "$HOME/.config/node-terminal/hook-endpoint.env" \\',
     '    "$HOME/Library/Application Support/node-terminal/hook-endpoint.env"; do',

@@ -13,6 +13,17 @@ export interface RemoteFileRef {
 export function tailFromOffsetArgs(conn: SshConnection, controlPath: string, path: string, offset: number): string[] {
   return childArgs(conn, controlPath, `tail -c +${offset + 1} ${posixQuote(path)}`)
 }
+export function tailFromOffsetCappedArgs(
+  conn: SshConnection,
+  controlPath: string,
+  path: string,
+  offset: number,
+  maxBytes: number
+): string[] {
+  // base64 wraps at 76 cols on GNU and not at all on BSD — the reader strips whitespace, so
+  // no -w flag is used (macOS/BSD base64 has none).
+  return childArgs(conn, controlPath, `tail -c +${offset + 1} ${posixQuote(path)} | head -c ${maxBytes} | base64`)
+}
 export function tailLastBytesArgs(conn: SshConnection, controlPath: string, path: string, bytes: number): string[] {
   return childArgs(conn, controlPath, `tail -c ${bytes} ${posixQuote(path)}`)
 }
@@ -28,6 +39,26 @@ export class RemoteFile {
       return { text: stdout, newOffset: offset + Buffer.byteLength(stdout) }
     } catch {
       return { text: '', newOffset: offset }
+    }
+  }
+
+  /** Capped, byte-exact read: base64 round-trips the bytes so a mid-multibyte cut cannot
+   *  corrupt the offset accounting (stdout is a decoded string — see tailFromOffsetCappedArgs).
+   *  Fail-open: errors → empty buffer, offset unchanged. */
+  async readFromCapped(
+    ref: RemoteFileRef,
+    offset: number,
+    maxBytes: number
+  ): Promise<{ data: Buffer; newOffset: number }> {
+    try {
+      const { code, stdout } = await this.run(
+        tailFromOffsetCappedArgs(ref.conn, ref.controlPath, ref.path, offset, maxBytes)
+      )
+      if (code !== 0) return { data: Buffer.alloc(0), newOffset: offset }
+      const data = Buffer.from(stdout.replace(/\s+/g, ''), 'base64')
+      return { data, newOffset: offset + data.length }
+    } catch {
+      return { data: Buffer.alloc(0), newOffset: offset }
     }
   }
 

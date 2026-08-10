@@ -1411,6 +1411,8 @@ body,
   gap: 4px;
 }
 
+/* Copy receipt (1.6 s) — green like the base chip, and deliberately quieter than RUNNING /
+   NEEDS YOU: this is a receipt, not an alert. */
 .term-node__queued-run {
   background: none;
   border: none;
@@ -1739,6 +1741,51 @@ body,
   background: color-mix(in srgb, var(--bg) 60%, transparent);
   border-radius: 6px;
   pointer-events: none;
+}
+
+/* Copy receipt / selection hint, shared by BOTH terminal surfaces (the canvas node's
+   `.term-node__body` and the kanban card modal's `.kanban-modal__termwrap`, which are both
+   `position: relative`). One class, so a session seen twice cannot speak in two voices.
+
+   Bottom-RIGHT is deliberate: every agent CLI writes its input line bottom-LEFT, and this used to
+   live in the node header, where one more chip pushed the × under `.term-node`'s overflow on a
+   narrow node.
+
+   `pointer-events: none` is load-bearing here in a way it was not in the header: the receipt now
+   sits ON the terminal and fires on EVERY copy, so without it each copy would eat clicks in that
+   corner for its whole dwell. */
+.term-copy-pill {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 5;
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  animation: nt-copy-pill-in 120ms ease-out;
+}
+
+/* The hint is instruction, not status: quieter border, neutral text. */
+.term-copy-pill--hint {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+@keyframes nt-copy-pill-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .term-node__upload.failed {
@@ -6101,6 +6148,21 @@ body,
   position: relative;
   width: 100%;
   height: 100%;
+}
+/* Memory saver plate: what stands in for a page whose Chromium process was released while the
+   node sat off-screen. Deliberately quiet — this is an ambient state that heals itself on view,
+   not an error. */
+.browser-node__discarded {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
 }
 .browser-node__error {
   position: absolute;

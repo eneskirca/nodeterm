@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { createSubagentTail, formatSubagentChunk, splitCompleteLines } from './subagent-tail'
+import {
+  createSubagentTail,
+  formatSubagentChunk,
+  splitCompleteLines,
+  SUBAGENT_READ_CAP
+} from './subagent-tail'
 
 const assistant = (text: string): string =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
@@ -111,5 +116,36 @@ describe('createSubagentTail', () => {
     tail.finish('tu1')
     await wait(200) // finish's final read + carry flush
     expect(streamed(send)).toContain('unterminated final line')
+  })
+})
+
+describe('subagent-tail read cap', () => {
+  it('reads at most SUBAGENT_READ_CAP bytes per tick and continues next tick', async () => {
+    expect(SUBAGENT_READ_CAP).toBe(1024 * 1024)
+    const { transcriptPath, subDir } = setup()
+    fs.writeFileSync(path.join(subDir, 'agent-1.meta.json'), JSON.stringify({ toolUseId: 'tu1' }))
+    // One assistant line ~2.5x the cap: it can only arrive whole if the tail keeps reading
+    // where the previous tick stopped.
+    const text = 'x'.repeat(Math.floor(SUBAGENT_READ_CAP * 2.5))
+    fs.writeFileSync(path.join(subDir, 'agent-1.jsonl'), assistant(text) + '\n')
+
+    const send = vi.fn()
+    const tail = createSubagentTail(send)
+    tail.track('tu1', transcriptPath)
+
+    // One tick in, the capped slice holds no newline, so there is no complete line to emit yet
+    // — an uncapped read would have swallowed the whole file here and emitted already.
+    await wait(700)
+    expect(send).not.toHaveBeenCalled()
+
+    // The remaining slices arrive on later ticks and the line lands intact.
+    await vi.waitFor(() => expect(send).toHaveBeenCalled(), { timeout: 5000, interval: 50 })
+    const out = streamed(send)
+    // Match by shape, not toBe: a multi-MB diff on failure is unreadable (and slow).
+    expect(out.length).toBe(text.length + 1)
+    expect(/^x+\n$/.test(out)).toBe(true)
+
+    tail.finish('tu1')
+    fs.rmSync(path.dirname(transcriptPath), { recursive: true, force: true })
   })
 })

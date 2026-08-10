@@ -16,6 +16,7 @@ import {
   hasHooks,
   hasPermissionMode,
   hasUsage,
+  reportsOwnCopy,
   RENAME_CAPABLE
 } from './config'
 
@@ -131,6 +132,25 @@ describe('grok capabilities', () => {
     expect(hasUsage('grok')).toBe(false)
     expect(canBranch('grok')).toBe(false)
     expect(canSubagent('grok')).toBe(false)
+  })
+})
+
+describe('copy feedback', () => {
+  it('stays quiet for claude, whose CLI announces its own copies', () => {
+    // Claude Code captures the mouse and prints "copied N chars to tmux buffer · paste with
+    // prefix + ]" itself, so nodeterm's pill would be a second message for one gesture.
+    expect(reportsOwnCopy('claude')).toBe(true)
+  })
+
+  it('speaks for every agent that says nothing itself', () => {
+    // codex leaves the mouse to tmux: the drag copies via OSC 52 and the highlight vanishes on
+    // release with no word from anyone. That silence is what the pill exists for.
+    for (const id of ['codex', 'gemini', 'opencode', 'grok']) expect(reportsOwnCopy(id)).toBe(false)
+  })
+
+  it('speaks for a plain terminal and a custom agent (no agent id at all)', () => {
+    expect(reportsOwnCopy(undefined)).toBe(false)
+    expect(reportsOwnCopy('my-custom-agent')).toBe(false)
   })
 })
 

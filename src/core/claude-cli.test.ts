@@ -6,7 +6,8 @@ describe('claudeCliCapsFrom', () => {
     expect(claudeCliCapsFrom('2.1.207 (Claude Code)\n')).toEqual({
       version: '2.1.207 (Claude Code)',
       autoPermissionMode: true,
-      fullscreenTui: true
+      fullscreenTui: true,
+      sessionIdFlag: false
     })
   })
 
@@ -14,7 +15,8 @@ describe('claudeCliCapsFrom', () => {
     expect(claudeCliCapsFrom('2.1.50 (Claude Code)')).toEqual({
       version: '2.1.50 (Claude Code)',
       autoPermissionMode: false,
-      fullscreenTui: false
+      fullscreenTui: false,
+      sessionIdFlag: false
     })
   })
 
@@ -37,5 +39,52 @@ describe('claudeCliCapsFrom', () => {
     // capability, which must stay false for anything that isn't a readable version.
     expect(claudeCliCapsFrom('claude: command not found').autoPermissionMode).toBe(false)
     expect(claudeCliCapsFrom('some unrelated banner').autoPermissionMode).toBe(false)
+  })
+})
+
+describe('claudeCliCapsFrom — --session-id is feature-detected, not version-gated', () => {
+  // Verbatim shape of the real help line (claude 2.1.226), including the two-space column gap
+  // the CLI actually emits.
+  const HELP = `Usage: claude [options] [command] [prompt]
+
+Options:
+  --model <model>                       Model for the current session.
+  --session-id <uuid>                   Use a specific session ID for the
+                                        conversation (must be a valid UUID)
+  --setting-sources <sources>           Comma-separated list of setting sources
+`
+
+  it('says yes when the CLI advertises the flag', () => {
+    expect(claudeCliCapsFrom('2.1.226 (Claude Code)', HELP).sessionIdFlag).toBe(true)
+  })
+
+  it('says no for help text without it — an old CLI would exit on an unknown flag', () => {
+    const old = 'Options:\n  --model <model>   Model for the current session.\n'
+    expect(claudeCliCapsFrom('2.1.50 (Claude Code)', old).sessionIdFlag).toBe(false)
+  })
+
+  it('says no when the help probe produced nothing (it degrades on its own)', () => {
+    expect(claudeCliCapsFrom('2.1.226 (Claude Code)', null).sessionIdFlag).toBe(false)
+    expect(claudeCliCapsFrom('2.1.226 (Claude Code)').sessionIdFlag).toBe(false)
+  })
+
+  // Matching a bare substring would let a DIFFERENT option, or prose describing one, answer yes
+  // for a flag the CLI does not accept — and being wrong here kills every launch.
+  it('does not mistake a longer flag or prose for the real one', () => {
+    expect(claudeCliCapsFrom('2.1.226', '  --session-id-file <path>\n').sessionIdFlag).toBe(false)
+    expect(claudeCliCapsFrom('2.1.226', '  --resume  overrides--session-id\n').sessionIdFlag).toBe(
+      false
+    )
+  })
+
+  it('accepts the `--session-id=<uuid>` spelling too', () => {
+    expect(claudeCliCapsFrom('2.1.226', '  --session-id=<uuid>  use it\n').sessionIdFlag).toBe(true)
+  })
+
+  // The two capabilities are independent: this flag says nothing about `auto`, and vice versa.
+  it('is orthogonal to the version-gated caps', () => {
+    const c = claudeCliCapsFrom('2.1.50 (Claude Code)', HELP)
+    expect(c.sessionIdFlag).toBe(true)
+    expect(c.autoPermissionMode).toBe(false)
   })
 })

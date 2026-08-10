@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { GlyphAtlas, GUTTER_PX } from './atlas'
 import { packColor } from './cells'
 import {
+  ATLAS_SENTINEL_RGBA,
+  SENTINEL_CSS,
   createCanvasRasterizer,
+  sentinelIntact,
   shrinkEligible,
   shrinkToFit,
   underlineThickness
@@ -62,6 +65,16 @@ function stubCanvas(
   pixelAt: (x: number, y: number) => string
   /** The page-wide `imageSmoothingEnabled` as it stands NOW — for asserting it was restored. */
   smoothingNow: () => boolean
+  /** Wipe every texel WITHOUT going through `clearPage` — what a GPU reset does to the backing
+   *  store behind the rasterizer's back, and the case the sentinel exists to detect. */
+  blankPage: () => void
+  /** Drive `ctx.isContextLost()`, the cheap check that runs before the readback. */
+  setContextLost: (lost: boolean) => void
+  /** Dispatch a canvas context event; returns whether a listener cancelled it. Cancelling
+   *  `contextlost` is how a page REFUSES automatic restoration, so "was it cancelled" is a
+   *  behavioural assertion, not a detail. */
+  fire: (type: 'contextlost' | 'contextrestored') => boolean
+  listenerCount: () => number
   restore: () => void
 } {
   const ops: Op[] = []
@@ -184,8 +197,20 @@ function stubCanvas(
       fontBoundingBoxDescent: 4,
       actualBoundingBoxLeft: 0,
       actualBoundingBoxRight: inkWidth
-    })
+    }),
+    isContextLost: () => contextLost,
+    /** Only the 1x1 form the sentinel check uses. The model stores CSS colour strings, so this is
+     *  the inverse of `rgb(r,g,b)` — and an unpainted texel is transparent-black, exactly as a real
+     *  fresh (or blanked) page reads back. */
+    getImageData(x: number, y: number): { data: number[] } {
+      const color = px[y * sizePx + x] ?? ''
+      const m = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(color)
+      if (!m) return { data: [0, 0, 0, 0] }
+      return { data: [Number(m[1]), Number(m[2]), Number(m[3]), 255] }
+    }
   }
+  const listeners = new Map<string, Set<(e: { preventDefault(): void }) => void>>()
+  let contextLost = false
   const prev = (globalThis as Record<string, unknown>).OffscreenCanvas
   ;(globalThis as Record<string, unknown>).OffscreenCanvas = class {
     constructor(
@@ -197,6 +222,14 @@ function stubCanvas(
     getContext(): unknown {
       return ctx
     }
+    addEventListener(type: string, fn: (e: { preventDefault(): void }) => void): void {
+      const set = listeners.get(type) ?? new Set()
+      set.add(fn)
+      listeners.set(type, set)
+    }
+    removeEventListener(type: string, fn: (e: { preventDefault(): void }) => void): void {
+      listeners.get(type)?.delete(fn)
+    }
   }
   return {
     ops,
@@ -205,6 +238,22 @@ function stubCanvas(
     },
     smoothingNow() {
       return ctx.imageSmoothingEnabled
+    },
+    blankPage() {
+      px.fill('')
+    },
+    setContextLost(lost: boolean) {
+      contextLost = lost
+    },
+    fire(type) {
+      let cancelled = false
+      for (const fn of listeners.get(type) ?? []) fn({ preventDefault: () => (cancelled = true) })
+      return cancelled
+    },
+    listenerCount() {
+      let n = 0
+      for (const set of listeners.values()) n += set.size
+      return n
     },
     restore() {
       ;(globalThis as Record<string, unknown>).OffscreenCanvas = prev
@@ -252,8 +301,13 @@ describe('createCanvasRasterizer', () => {
     createCanvasRasterizer(FONT, 256)
     // The old opaque-black page fill is GONE: the backdrop is now per-slot (the bg fill in
     // `draw`), and a page-wide fill would put an opaque colour in slot 0, which every space
-    // samples.
-    expect(stub.ops).toEqual([])
+    // samples. The ONE texel painted here is the sentinel, and it lands in slot 0's GUTTER —
+    // outside every sampled rect on the page. See `sentinelIntact`.
+    expect(stub.ops).toEqual([{ kind: 'fillRect', fill: SENTINEL_CSS, args: [0, 0, 1, 1] }])
+    // The part that actually matters: slot 0's SAMPLED cell box is untouched, so a space still
+    // samples transparent-black.
+    expect(stub.pixelAt(GUTTER_PX, GUTTER_PX)).toBe('')
+    expect(stub.pixelAt(GUTTER_PX + COLS_W - 1, GUTTER_PX + COLS_H - 1)).toBe('')
   })
 
   it('fills the FULL PITCH rect with bg, then clips the ink to the CELL rect and draws it in fg', () => {
@@ -573,8 +627,13 @@ describe('createCanvasRasterizer', () => {
     stub.ops.length = 0
     r.clearPage()
     // clearRect, NOT a fill: the page ground has to go back to transparent-black so slot 0 stays
-    // the blank slot every space samples.
-    expect(stub.ops).toEqual([{ kind: 'clearRect', args: [0, 0, 256, 256] }])
+    // the blank slot every space samples. The sentinel is then REPAINTED, because a reset is a
+    // normal event and a page missing its sentinel afterwards would read as a lost 2D context and
+    // rebuild the whole canvas on the next revive.
+    expect(stub.ops).toEqual([
+      { kind: 'clearRect', args: [0, 0, 256, 256] },
+      { kind: 'fillRect', fill: SENTINEL_CSS, args: [0, 0, 1, 1] }
+    ])
   })
 
   it('never draws slot 0, so the blank slot every space samples stays transparent', () => {
@@ -1143,5 +1202,98 @@ describe('font weight reaches the rasterized glyph', () => {
     // 400/700 is what "no token" and "bold" already meant, so nobody on defaults sees a change.
     expect(fontStringFor(400, 700, false)).toContain('400 16px')
     expect(fontStringFor(400, 700, true)).toContain('700 16px')
+  })
+})
+
+/**
+ * THE BLANK-EVERYTHING BUG the sentinel exists for.
+ *
+ * The atlas page is an OffscreenCanvas 2D context, and a GPU reset (sleep/wake, a driver hiccup)
+ * blanks its backing store. Nothing downstream notices: `GlyphAtlas.slots` still holds every key, so
+ * no glyph is ever re-rasterized, and `engine.reviveGpu` re-uploads the now-EMPTY page as the atlas
+ * texture. Every terminal on the canvas shows empty cells at once, for the rest of the session.
+ *
+ * One texel of known colour, checked with a 1px readback, is what turns that into a detectable
+ * event — including the silent case, where the 2D context fires no `contextlost` at all.
+ */
+describe('sentinelIntact', () => {
+  it('accepts the sentinel colour', () => {
+    expect(sentinelIntact([...ATLAS_SENTINEL_RGBA])).toBe(true)
+  })
+
+  it('REJECTS transparent-black, which is what a blanked page reads back as', () => {
+    expect(sentinelIntact([0, 0, 0, 0])).toBe(false)
+  })
+
+  it('rejects an opaque black or white page — a wipe need not be to transparent', () => {
+    expect(sentinelIntact([0, 0, 0, 255])).toBe(false)
+    expect(sentinelIntact([255, 255, 255, 255])).toBe(false)
+  })
+
+  it('tolerates a few units of colour-management rounding either way', () => {
+    expect(sentinelIntact([252, 3, 251, 255])).toBe(true)
+  })
+
+  it('rejects a short buffer rather than reading past the end', () => {
+    expect(sentinelIntact([255, 0, 255])).toBe(false)
+  })
+})
+
+describe('atlas page health', () => {
+  it('reports the page intact right after construction', () => {
+    const stub = stubCanvas()
+    active = stub
+    expect(createCanvasRasterizer(FONT, 256)!.sourceIntact()).toBe(true)
+  })
+
+  it('reports the page intact after a clearPage, because a reset repaints the sentinel', () => {
+    const stub = stubCanvas()
+    active = stub
+    const r = createCanvasRasterizer(FONT, 256)!
+    r.clearPage()
+    expect(r.sourceIntact()).toBe(true)
+  })
+
+  it('reports LOST when the backing store was wiped behind our back', () => {
+    // Exactly the silent case: no event fired, `slots` still full, and the next `reviveGpu` would
+    // upload an empty page over every terminal on the canvas.
+    const stub = stubCanvas()
+    active = stub
+    const r = createCanvasRasterizer(FONT, 256)!
+    stub.blankPage()
+    expect(r.sourceIntact()).toBe(false)
+  })
+
+  it('reports LOST on isContextLost() without needing the readback', () => {
+    const stub = stubCanvas()
+    active = stub
+    const r = createCanvasRasterizer(FONT, 256)!
+    stub.setContextLost(true)
+    expect(r.sourceIntact()).toBe(false)
+  })
+
+  it('routes contextlost / contextrestored to the caller and does NOT cancel the loss', () => {
+    // Cancelling `contextlost` tells the browser not to restore automatically, which is the
+    // opposite of what this wants: the restore is the signal that a fresh page can be built.
+    const stub = stubCanvas()
+    active = stub
+    const r = createCanvasRasterizer(FONT, 256)!
+    const seen: string[] = []
+    r.onSourceLoss({ lost: () => seen.push('lost'), restored: () => seen.push('restored') })
+    expect(stub.fire('contextlost')).toBe(false)
+    stub.fire('contextrestored')
+    expect(seen).toEqual(['lost', 'restored'])
+  })
+
+  it('dispose() unsubscribes, so a rebuilt context never hears the old page`s events', () => {
+    const stub = stubCanvas()
+    active = stub
+    const r = createCanvasRasterizer(FONT, 256)!
+    const seen: string[] = []
+    const sub = r.onSourceLoss({ lost: () => seen.push('lost'), restored: () => undefined })
+    sub.dispose()
+    expect(stub.listenerCount()).toBe(0)
+    stub.fire('contextlost')
+    expect(seen).toEqual([])
   })
 })

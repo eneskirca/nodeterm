@@ -30,6 +30,7 @@ import {
   onNodeNowChange,
   onInboxActionable,
   isEventUnresolved,
+  workingNodes,
   _resetForTest,
   _snapshot,
   _inboxSnapshot,
@@ -1676,5 +1677,22 @@ describe('recordAgentEvent — codex request_user_input broadcast conversion', (
     const out = recordAgentEvent(ev({ agentId: 'codex', state: 'done' }))
     expect(out.state).toBe('waiting')
     expect(_snapshot().n1.state).toBe('waiting')
+  })
+})
+
+describe('workingNodes', () => {
+  beforeEach(() => _resetForTest())
+  afterEach(() => _resetForTest())
+
+  it('lists only the nodes currently believed to be working, with their identity', () => {
+    recordAgentEvent(ev({ nodeId: 'n1', agentId: 'claude', state: 'working', sessionId: 's1' }))
+    recordAgentEvent(ev({ nodeId: 'n2', agentId: 'claude', state: 'done', sessionId: 's2' }))
+
+    expect(workingNodes()).toEqual([{ nodeId: 'n1', agentId: 'claude', sessionId: 's1' }])
+  })
+
+  it('is empty when nothing is working', () => {
+    recordAgentEvent(ev({ nodeId: 'n3', agentId: 'codex', state: 'done' }))
+    expect(workingNodes()).toEqual([])
   })
 })

@@ -52,6 +52,16 @@ export function ensureClaudeCliCaps(): Promise<ClaudeCliCaps> {
   return capsPromise
 }
 
+/**
+ * The last-known caps, synchronously. For callers that cannot await — node creation is a sync
+ * factory — and whose correct answer when nothing has been probed yet is simply "assume nothing"
+ * (UNKNOWN, i.e. the pre-feature command line). `ensureClaudeCliCaps` runs at boot, so by the time
+ * a user creates a node this is the real answer.
+ */
+export function claudeCliCapsNow(): ClaudeCliCaps {
+  return caps
+}
+
 /** Test seam: drop the memo (and optionally preload a known answer). */
 export function resetClaudeCliCapsForTests(next?: ClaudeCliCaps): void {
   caps = next ?? UNKNOWN_CLAUDE_CLI_CAPS

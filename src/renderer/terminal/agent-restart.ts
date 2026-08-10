@@ -5,6 +5,7 @@
  * filter and the restart choreography can all share exactly one set of rules.
  */
 import { canResume, resumeCommand } from '../../shared/agents/config'
+import { isShellCommand } from '@shared/agents/pane'
 import {
   DELIVERY_ATTEMPTS,
   KILL_LINE,
@@ -38,15 +39,9 @@ export function exitSequence(agentId: string): string | null {
   return EXIT_SEQUENCES[agentId] ?? null
 }
 
-/** Foreground commands that mean "the CLI is gone, a shell owns the pane". Login shells
- *  report as '-zsh'; tmux may report a full path. */
-const SHELLS = new Set(['zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'tcsh'])
-
-export function isShellCommand(cmd: string | null | undefined): boolean {
-  if (!cmd) return false
-  const base = cmd.replace(/^-/, '').split('/').pop() ?? ''
-  return SHELLS.has(base)
-}
+/** Re-exported, not redefined: it lives in `@shared/agents/pane` so the main process can ask the
+ *  same question, and `lib/sessionRename.ts` (plus this module's own tests) import it from here. */
+export { isShellCommand }
 
 export type IneligibleReason = 'working' | 'no-session' | 'not-resumable'
 

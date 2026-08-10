@@ -28,6 +28,10 @@ const ROWS = {
   dragMode: {
     title: 'Canvas left-drag',
     keywords: ['pan', 'drag', 'select', 'canvas', 'mouse', 'grab', 'figma', 'miro']
+  },
+  browserSaver: {
+    title: 'Browser memory saver',
+    keywords: ['browser', 'memory', 'saver', 'ram', 'webview', 'discard', 'page', 'web']
   }
 }
 const ENTRIES = Object.values(ROWS)
@@ -168,6 +172,19 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               <option value="select">Select (default)</option>
               <option value="pan">Pan the canvas</option>
             </Select>
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.browserSaver}>
+        <FieldRow
+          label="Browser memory saver"
+          description="Free a hidden browser page's memory after 5 minutes; it reloads when shown. Each page is a whole Chromium process."
+          control={
+            <Switch
+              checked={settings.browserMemorySaver}
+              onChange={(v) => update({ browserMemorySaver: v })}
+              ariaLabel="Browser memory saver"
+            />
           }
         />
       </SearchableRow>

@@ -1,8 +1,10 @@
 import type { Node } from '@xyflow/react'
 import type { CanvasMutation, CanvasNodeState, ClaudeAccount, NodeKind, PendingLaunch, Project } from '@shared/types'
 import type { AgentId, AgentPermissionMode } from '@shared/agents/config'
-import { agentConfig } from '@shared/agents/config'
+import { agentConfig, mintsSessionId, withSessionId } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
+import { uuid } from '@renderer/lib/uuid'
+import { claudeCliCapsNow } from './permissionMode'
 import { sshHostKey } from '@shared/ssh'
 import { useSettings } from './settings'
 
@@ -95,6 +97,14 @@ export interface NodeData {
    * Persisted so cold-restore resume reads the transcript from the right account dir.
    */
   accountId?: string
+  /**
+   * Agents in `SESSION_ID_CAPABLE` (claude): the session id nodeterm MINTED for this node and
+   * launched the CLI with. Persisted so a resume is possible even when no hook ever delivered an
+   * id — the case that turned 18 of 40 nodes into blank conversations after one host reboot.
+   * The live id from hooks still wins when present: `/clear` and `--fork-session` mint a new one
+   * inside the CLI, and this field only remembers the id we chose at first launch.
+   */
+  agentSessionId?: string
   /** group-only: the git worktree this group is bound to (single source of truth). */
   worktree?: import('@shared/worktree').GroupWorktree
   /**
@@ -354,9 +364,24 @@ export function createAgentNode(
       ? `${baseCmd} --prompt ${promptArg}`
       : `${baseCmd} ${promptArg}`
     : baseCmd
+  // The session id is DECIDED here rather than learned from a hook later, so this node always has
+  // something to resume with — see SESSION_ID_CAPABLE for the failure this closes. `uuid()` (not
+  // crypto.randomUUID) because the Server Edition serves plain HTTP on a LAN, where randomUUID is
+  // absent: that exact call already broke "Add agent" once.
+  //
+  // Gated on the CLI actually advertising `--session-id`, because an unknown flag does not degrade
+  // — it makes claude exit, taking the launch with it. Unprobed or older CLI ⇒ no mint ⇒ the
+  // command line stays byte-identical to what it has always been, and the node falls back to
+  // learning its id from hooks exactly as before.
+  const mintedSessionId =
+    mintsSessionId(agentId) && claudeCliCapsNow().sessionIdFlag ? uuid() : undefined
   // No mode passed (e.g. a legacy/test call site) = bare command, exactly as before this setting.
-  const flagged = (cmd: string): string =>
-    permissionMode ? withPermissionMode(cmd, agentId, permissionMode) : cmd
+  // Both flags ride the same helper so they land on the same side of an argv separator: for grok
+  // that is BEFORE `--` (end-of-options), and getting it wrong makes a flag part of the prompt.
+  const flagged = (cmd: string): string => {
+    const withMode = permissionMode ? withPermissionMode(cmd, agentId, permissionMode) : cmd
+    return mintedSessionId ? withSessionId(withMode, agentId, mintedSessionId) : withMode
+  }
   // WHERE the mode flag goes is decided by the agent's prompt convention, and the two conventions
   // are opposites:
   //  - No separator (claude): the prompt is a positional that must stay adjacent to the binary, so
@@ -388,6 +413,9 @@ export function createAgentNode(
       agentId,
       // Accounts are inherently Claude-only — never stamp one onto another agent's node.
       ...(accountId && agentId === 'claude' ? { accountId } : {}),
+      // Persisted alongside the node (unlike initialCommand, which is consumed on first open), so
+      // a cold restore months later still knows which conversation this node owns.
+      ...(mintedSessionId ? { agentSessionId: mintedSessionId } : {}),
       cwd: ssh ? ssh.remoteCwd : cwd,
       initialCommand,
       ...(ssh ? { ssh: ssh.server, sshRemoteTmux: true } : {})
@@ -1045,6 +1073,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         highScore: n.highScore,
         agentId,
         accountId: n.accountId,
+        agentSessionId: n.agentSessionId,
         pendingLaunch: n.pendingLaunch,
         ssh: n.ssh,
         sshRemoteTmux: n.sshRemoteTmux,
@@ -1108,6 +1137,7 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         highScore: n.data.highScore,
         agentId: n.data.agentId,
         accountId: n.data.accountId,
+        agentSessionId: n.data.agentSessionId,
         pendingLaunch: n.data.pendingLaunch,
         ssh: n.data.ssh,
         sshRemoteTmux: n.data.sshRemoteTmux,

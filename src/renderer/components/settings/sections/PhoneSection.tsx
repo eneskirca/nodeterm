@@ -45,12 +45,6 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
   const phoneAccessEnabled = useSettings((s) => s.settings.phoneAccessEnabled)
   const updateSettings = useSettings((s) => s.update)
 
-  const togglePhoneAccess = (next: boolean): void => {
-    updateSettings({ phoneAccessEnabled: next })
-    // Start/stop the standing relay host immediately.
-    window.nodeTerminal.remoteHost.setPhoneAccess(next)
-  }
-
   const refreshDevices = useCallback(async (): Promise<void> => {
     try {
       setDevices(await window.nodeTerminal.pairing.listDevices())
@@ -61,9 +55,20 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
 
   // The shared pairing machine (also behind the top-right quick-pair popover); a completed
   // pairing refreshes the device list below.
-  const { phase, qr, sshOpen, sshHealed, error, busy, start, stop, reset } = usePhonePairing(
+  const { phase, qr, sshOpen, sshHealed, relayResult, relayPlan, error, busy, start, stop, reset } = usePhonePairing(
     () => void refreshDevices()
   )
+
+  const togglePhoneAccess = (next: boolean): void => {
+    updateSettings({ phoneAccessEnabled: next })
+    // Start/stop the standing relay host immediately.
+    window.nodeTerminal.remoteHost.setPhoneAccess(next)
+    // The relay block is baked into the QR when the listener STARTS — a code already on
+    // screen doesn't know about this flip, and scanning it would still produce a LAN-only
+    // pairing (the field failure: works at home, dies on cellular). Regenerate; start()
+    // cancels the old listener silently.
+    if (phase === 'waiting') void start()
+  }
 
   // Load the paired-device list on mount.
   useEffect(() => {
@@ -168,6 +173,19 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
                     className="rounded-lg bg-white p-2"
                   />
                   <p className="text-sm text-muted">Waiting for your phone… (10 min)</p>
+                  {relayPlan === 'dev' ? (
+                    <p className="text-sm" style={{ color: '#ff9f0a' }}>
+                      Dev build: the relay is off regardless of the toggle, so this code pairs
+                      LAN-only. Run a packaged build — or set NODETERM_RELAY_URL — for remote
+                      access.
+                    </p>
+                  ) : !phoneAccessEnabled ? (
+                    <p className="text-sm" style={{ color: '#ff9f0a' }}>
+                      LAN-only code: the phone will reach this machine only on this network. Turn
+                      on <strong>Remote access from your phone</strong> above first to also
+                      connect from cellular — the QR refreshes by itself.
+                    </p>
+                  ) : null}
                   {sshHealed ? (
                     <p className="text-sm" style={{ color: '#30d158' }}>
                       ✓ Remote Login is on — scan away.
@@ -184,6 +202,27 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
               <p className="text-sm font-medium" style={{ color: '#30d158' }}>
                 ✓ Paired. Your phone can now connect with its own key.
               </p>
+              {relayResult === 'ok' ? (
+                <p className="text-sm" style={{ color: '#30d158' }}>
+                  Remote access is set up — the phone can reach this machine from anywhere.
+                </p>
+              ) : relayResult === 'failed' ? (
+                <p className="text-sm" style={{ color: '#ff9f0a' }}>
+                  ⚠ Remote-access setup failed, so this pairing is LAN-only for now. Check this
+                  machine&apos;s internet connection and pair again to retry — or the phone will
+                  pick it up by itself next time it connects on this network.
+                </p>
+              ) : relayResult === 'off' ? (
+                <p className="text-sm text-muted">
+                  LAN-only pairing — remote access is switched off above.
+                </p>
+              ) : relayResult === 'dev' ? (
+                <p className="text-sm text-muted">
+                  LAN-only pairing — this is an unpackaged (dev) build, where the relay is
+                  disabled regardless of the toggle. Set NODETERM_RELAY_URL to test remote
+                  access, or use a packaged build.
+                </p>
+              ) : null}
               <Button onClick={reset}>Pair another phone</Button>
             </div>
           ) : null}

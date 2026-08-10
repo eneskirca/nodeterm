@@ -7,8 +7,9 @@ import { SshProjectManager, lastSshErrorLine } from './ssh-project'
 import { AskpassServer } from './ssh-askpass'
 import { AppSshAgent } from './ssh-agent'
 import { controlPathFor } from '../../core/remote-ssh/control-master'
+import type { SshConnection } from '@shared/ssh'
 
-const conn = { host: 'h', user: 'u' }
+const conn: SshConnection = { host: 'h', user: 'u' }
 
 function makeMgr() {
   const statuses: string[] = []
@@ -756,6 +757,98 @@ describe('SshProjectManager', () => {
       expect(rmSpy).not.toHaveBeenCalled() // nothing to clean
       // Only the connect loop's `-O check` runs, no extra leftover-probe round-trip.
       expect(checks.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  // --- the reverse hook tunnel came back --------------------------------------------------------
+  //
+  // Hook POSTs are fire-and-forget, so every agent event fired while the master was down is gone.
+  // Production hangs the working-agent resync off this hook; the gate it needs is "a master was
+  // genuinely (re-)established", which connect()'s own control flow already answers.
+  describe('tunnel-verified hook', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    /** A manager whose remote hook tunnel VERIFIES: `$HOME` resolves and the verify curl answers
+     *  204, exactly as in the live-orphan tests above (the shared `makeMgr` runner answers neither,
+     *  so its tunnel never verifies and no endpoint path is ever produced). No leftover socket, so
+     *  connect() takes the ordinary fresh-master path — a genuine establish. */
+    function makeVerifiedMgr(
+      onTunnelVerified: (projectId: string, controlPath: string, conn: SshConnection) => void,
+      httpCode = '204'
+    ) {
+      vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined as never)
+      vi.spyOn(fs, 'stat').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+      const run = vi.fn(async (args: string[]) => {
+        const j = args.join(' ')
+        if (j.includes('$HOME')) return { code: 0, stdout: '/home/u' }
+        if (j.includes('%{http_code}')) return { code: 0, stdout: httpCode }
+        return { code: 0, stdout: '' }
+      })
+      return new SshProjectManager({
+        userDataDir: '/ud',
+        spawnMaster: vi.fn(() => ({ kill: vi.fn(), on: vi.fn() })),
+        run,
+        runScp: vi.fn(async () => ({ code: 0 })),
+        getHook: () => ({ port: 1, token: 't', version: '1' }),
+        onStatus: vi.fn(),
+        onTunnelVerified
+      })
+    }
+
+    it('fires after a genuine re-establish, naming the project, its control path and its connection', async () => {
+      const onTunnelVerified = vi.fn()
+      const mgr = makeVerifiedMgr(onTunnelVerified)
+      await mgr.connect('p1', conn, '/remote/cwd')
+      // The connection rides along because the resync builds its own remote commands with it.
+      expect(onTunnelVerified).toHaveBeenCalledWith('p1', controlPathFor('p1'), conn)
+    })
+
+    it('fires only once the project entry is written — the resync needs the cached remote $HOME', async () => {
+      // Ordering, not decoration. The resync's transcript leg resolves the host's transcript root
+      // through `remoteHomeForControlPath`, and that reads the field off the project entry — which
+      // is created at master spawn WITHOUT it. Firing before the entry update therefore handed the
+      // locator `undefined` every single time, not occasionally. That leg is the only one that can
+      // tell "the CLI still owns the pane but the turn ended" (a finished Claude sitting at its
+      // prompt) from "still working"; without it the feature degrades to catching an exited CLI.
+      let mgr: SshProjectManager | undefined
+      let homeAtHookTime: string | undefined | 'hook-never-fired' = 'hook-never-fired'
+      mgr = makeVerifiedMgr((_projectId, controlPath) => {
+        homeAtHookTime = mgr?.remoteHomeForControlPath(controlPath)
+      })
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(homeAtHookTime).toBe('/home/u')
+    })
+
+    it('does NOT fire on the reuse branch — a live master never lost its tunnel', async () => {
+      const onTunnelVerified = vi.fn()
+      const mgr = makeVerifiedMgr(onTunnelVerified)
+      await mgr.connect('p1', conn, '/remote/cwd')
+      onTunnelVerified.mockClear()
+      await mgr.connect('p1', conn, '/remote/cwd') // `-O check` answers → early return
+      expect(onTunnelVerified).not.toHaveBeenCalled()
+    })
+
+    it('does NOT fire when the tunnel failed verification (there is nothing to resync through)', async () => {
+      const onTunnelVerified = vi.fn()
+      const mgr = makeVerifiedMgr(onTunnelVerified, '000') // dead listener → setup() returns null
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(onTunnelVerified).not.toHaveBeenCalled()
+    })
+
+    it('a THROWING hook still leaves the connect successful — the resync is never load-bearing', async () => {
+      // The contract is structural, not a property of today's callback: what this hook drives will
+      // grow, and a throw inside it must never surface to the user as a dead SSH project. Same rule
+      // as `onStatus` above, which used to abort connect() mid-flight.
+      const mgr = makeVerifiedMgr(() => {
+        throw new Error('resync blew up')
+      })
+      const res = await mgr.connect('p1', conn, '/remote/cwd')
+      expect(res.controlPath).toBe(controlPathFor('p1'))
+      // Everything AFTER the hook still ran: the connect result is complete, not truncated.
+      expect(res.hookEndpointPath).toBe('/home/u/.nodeterm/hook-endpoint-p1.env')
+      expect(res.remoteHome).toBe('/home/u')
     })
   })
 

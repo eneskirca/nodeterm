@@ -1418,6 +1418,19 @@ export function nodeState(nodeId: string): AgentState | undefined {
   return state.get(nodeId)?.state
 }
 
+/**
+ * The nodes the mirror currently believes are `working`, with the identity a synthetic event needs.
+ * Read-only peek for the shells — the reconnect resync asks the host about exactly these, because
+ * `working` is the only state a lost hook event can strand (see remote-ssh/agent-resync-decide.ts).
+ */
+export function workingNodes(): { nodeId: string; agentId?: string; sessionId?: string }[] {
+  const out: { nodeId: string; agentId?: string; sessionId?: string }[] = []
+  for (const [nodeId, e] of state) {
+    if (e.state === 'working') out.push({ nodeId, agentId: e.agentId, sessionId: e.sessionId })
+  }
+  return out
+}
+
 /** The entries the session-name sweep walks: id + what it needs to resolve and dedupe. */
 export function sessionNameSweepEntries(): {
   nodeId: string

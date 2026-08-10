@@ -13,6 +13,7 @@ import type { GridHandle } from '../glyphgrid/engine'
 import { createFrameLoop, type FrameLoop, type FrameLoopHost } from '../glyphgrid/frame-driver'
 import {
   createBoardFrameGate,
+  createCellRebuildGuard,
   createContextLossPolicy,
   createCursorBlinkClock,
   createPixelRatioWatcher,
@@ -33,6 +34,7 @@ import {
   nodeOrderSig,
   nodeStackZ,
   nodeZFor,
+  cellsDisagree,
   opaqueNodeIds,
   pixelRatioChanged,
   primeOpaqueNodeIds,
@@ -2218,5 +2220,92 @@ describe('createContextLossPolicy', () => {
     expect(h.failures()).toEqual([])
     policy.onRestored()
     expect(h.revives()).toBe(1)
+  })
+})
+
+/**
+ * The 2026-08-10 crispness report, and the one measurement that ended it.
+ *
+ * `ensureLiveContext` fixes the atlas geometry from the FIRST terminal that registers, for the life
+ * of the context. In the field every node reported a device cell of 16.79998×36 while the atlas had
+ * latched to 16×36 — so every glyph was rasterized into a 16px box and drawn into a 16.8px cell, a
+ * 5% horizontal stretch. That is exactly the 4.9% wider advance measured off screenshots against
+ * xterm's own WebGL renderer, with the line spacing identical to the pixel because the heights
+ * agreed. A stretched glyph is wider, heavier AND softer, which is why the report read as "not
+ * crisp" and survived four other explanations.
+ *
+ * Nothing recovered from it: a font change rebuilt the context and a dpr change rebuilt it, but a
+ * cell that simply disagreed only logged a warning — and a project switch deliberately does not
+ * rebuild, so the wrong page outlived everything short of an app restart.
+ */
+describe('atlas cell drift', () => {
+  it('is a rebuild, not a warning', () => {
+    // The heights agreeing while the widths do not is the exact field shape, and the reason the
+    // symptom looked like blur rather than like geometry.
+    expect(cellsDisagree({ cellW: 16, cellH: 36 }, { cellW: 16.79998779296875, cellH: 36 })).toBe(
+      true
+    )
+  })
+
+  it('ignores float noise, so an ordinary canvas never rebuilds', () => {
+    // Two terminals measuring the same cell must not fight over it; the field dump had per-node
+    // residuals in the fourth decimal.
+    expect(cellsDisagree({ cellW: 16.8, cellH: 36 }, { cellW: 16.800001, cellH: 36 })).toBe(false)
+    expect(cellsDisagree({ cellW: 16.8, cellH: 36 }, { cellW: 16.8, cellH: 36 })).toBe(false)
+  })
+
+  it('catches a HEIGHT-only disagreement too', () => {
+    expect(cellsDisagree({ cellW: 16.8, cellH: 36 }, { cellW: 16.8, cellH: 38 })).toBe(true)
+  })
+})
+
+/**
+ * The drift rebuild's loop guard, and the half of it that was missing: it was reset ONLY by a font
+ * change, so the FIRST drift in a session spent the allowance for the rest of that session.
+ *
+ * The consequence is a terminal that stays resampled — soft, 5% wide — for as long as the app runs,
+ * even though the cause is long gone. The field shape: a webfont resolves after a dpr rebuild has
+ * latched a fallback face's cell, the drift is genuine, and it is answered with a console warning
+ * instead of the rebuild it deserves.
+ */
+describe('createCellRebuildGuard', () => {
+  it('allows one drift rebuild per epoch and refuses the second', () => {
+    const guard = createCellRebuildGuard()
+    expect(guard.allowRebuild()).toBe(true)
+    expect(guard.allowRebuild()).toBe(false)
+    expect(guard.allowRebuild()).toBe(false)
+  })
+
+  it('does NOT restore its own allowance — that is what stops a rebuild ping-pong', () => {
+    // The rebuild the guard permits goes through the same funnel a font change does, so if that
+    // funnel began a new epoch unconditionally the guard would re-arm itself and two terminals with
+    // genuinely different cells would hand the atlas back and forth forever, one rebuild per
+    // registration, with the canvas never painting.
+    const guard = createCellRebuildGuard()
+    guard.allowRebuild()
+    expect(guard.allowRebuild()).toBe(false)
+  })
+
+  it('re-arms on a new epoch, so a LATER genuine drift is still answered', () => {
+    const guard = createCellRebuildGuard()
+    expect(guard.allowRebuild()).toBe(true)
+    expect(guard.allowRebuild()).toBe(false)
+    // A font change, a dpr rebuild, the mode being switched back on: the old measurement is
+    // meaningless and the next terminal's cell is a fresh question.
+    guard.beginEpoch()
+    expect(guard.allowRebuild()).toBe(true)
+  })
+
+  it('logs the give-up once per epoch, not once per registration', () => {
+    const guard = createCellRebuildGuard()
+    guard.allowRebuild()
+    expect(guard.takeWarning()).toBe(true)
+    expect(guard.takeWarning()).toBe(false)
+    guard.beginEpoch()
+    expect(guard.takeWarning()).toBe(true)
+  })
+
+  it('starts an epoch armed, so the very first drift on a fresh context rebuilds', () => {
+    expect(createCellRebuildGuard().allowRebuild()).toBe(true)
   })
 })

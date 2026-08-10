@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createRemoteSubagentTail } from './remote-subagent-tail'
-import { formatSubagentChunk } from '../core/subagent-tail'
+import { formatSubagentChunk, SUBAGENT_READ_CAP } from '../core/subagent-tail'
 import type { RemoteFileRef } from './remote-ssh/remote-file'
 
 const ref: RemoteFileRef = { conn: { host: 'h', user: 'u' }, controlPath: '/s', path: '/abs/agent-1.jsonl' }
@@ -21,10 +21,11 @@ describe('createRemoteSubagentTail', () => {
     const raw = assistant('hello from subagent')
     let served = false
     const remoteFile = {
-      readFrom: vi.fn(async (_r: RemoteFileRef, o: number) => {
-        if (served) return { text: '', newOffset: o }
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number, _cap: number) => {
+        if (served) return { data: Buffer.alloc(0), newOffset: o }
         served = true
-        return { text: raw + '\n', newOffset: o + Buffer.byteLength(raw + '\n') }
+        const data = Buffer.from(raw + '\n')
+        return { data, newOffset: o + data.length }
       })
     }
     const tail = createRemoteSubagentTail(win, remoteFile as never)
@@ -35,6 +36,7 @@ describe('createRemoteSubagentTail', () => {
     expect(channel).toBe('agent:subagent-activity')
     expect(payload.toolUseId).toBe('tool-1')
     expect(payload.chunk).toContain(formatSubagentChunk(raw + '\n'))
+    expect(remoteFile.readFromCapped.mock.calls[0][2]).toBe(SUBAGENT_READ_CAP)
     tail.untrack('tool-1')
   })
 
@@ -45,10 +47,10 @@ describe('createRemoteSubagentTail', () => {
     const parts = [raw.slice(0, 15), raw.slice(15) + '\n']
     let i = 0
     const remoteFile = {
-      readFrom: vi.fn(async (_r: RemoteFileRef, o: number) => {
-        const text = parts[i] ?? ''
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number) => {
+        const data = Buffer.from(parts[i] ?? '')
         i++
-        return { text, newOffset: o + Buffer.byteLength(text) }
+        return { data, newOffset: o + data.length }
       })
     }
     const tail = createRemoteSubagentTail(win, remoteFile as never)
@@ -62,7 +64,7 @@ describe('createRemoteSubagentTail', () => {
   it('does not send when the chunk is empty', async () => {
     const { win, send } = fakeWin()
     const remoteFile = {
-      readFrom: vi.fn(async (_r: RemoteFileRef, o: number) => ({ text: '', newOffset: o }))
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number) => ({ data: Buffer.alloc(0), newOffset: o }))
     }
     const tail = createRemoteSubagentTail(win, remoteFile as never)
     tail.track('tool-2', ref)
@@ -70,4 +72,27 @@ describe('createRemoteSubagentTail', () => {
     expect(send).not.toHaveBeenCalled()
     tail.untrack('tool-2')
   })
+
+  it('reassembles a multibyte char the read cap split across two reads', async () => {
+    const { win, send } = fakeWin()
+    const raw = Buffer.from(assistant('emoji 🚀 survives') + '\n', 'utf-8')
+    // The cap lands inside the emoji's 4 bytes; the carry holds RAW bytes, so the halves rejoin.
+    const cut = raw.indexOf(Buffer.from('🚀', 'utf-8')) + 2
+    const parts = [raw.subarray(0, cut), raw.subarray(cut)]
+    let i = 0
+    const remoteFile = {
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number) => {
+        const data = parts[i] ?? Buffer.alloc(0)
+        i++
+        return { data, newOffset: o + data.length }
+      })
+    }
+    const tail = createRemoteSubagentTail(win, remoteFile as never)
+    tail.track('tool-4', ref)
+    await new Promise((r) => setTimeout(r, 1100)) // next poll (1s) delivers the rest
+    const streamed = send.mock.calls.map((c) => (c[1] as { chunk: string }).chunk).join('')
+    expect(streamed).toContain('emoji 🚀 survives')
+    expect(streamed).not.toContain('�')
+    tail.untrack('tool-4')
+  }, 5000)
 })

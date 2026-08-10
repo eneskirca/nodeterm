@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { promises as fs } from 'fs'
 import os from 'os'
 import path from 'path'
@@ -453,10 +453,48 @@ describe('localProjectCwds (the phone bridge jail roots)', () => {
   })
 })
 
-describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
-  it('appends into a local ref project file as an OUTSIDE edit (watcher must see it)', async () => {
+// Field bug 2026-08-10: `lastWritten` was populated on the READ paths with a RE-SERIALIZATION of
+// the parsed file, not with the bytes actually on disk. Any project.json whose formatting differs
+// (a teammate's editor, a git checkout, a trailing newline) therefore never matched isSelfWrite —
+// so EVERY fs event on it read as an external change, forever: spurious reloads and conflict bars.
+describe('watcher self-write detection compares the RAW file bytes', () => {
+  const reformat = async (file: string): Promise<string> => {
+    // Semantically identical, different bytes — exactly what another writer leaves behind.
+    const raw = (await fs.readFile(file, 'utf-8')) + '\n'
+    await fs.writeFile(file, raw)
+    return raw
+  }
+
+  it('load() records the bytes on disk, not a re-serialization of them', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm/project.json')
+    const raw = await reformat(file)
+
+    const store = new WorkspaceStore()
+    await store.load()
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+    // A genuine outside edit still reads as one.
+    expect(store.isSelfWrite(file, raw.replace('"name"', '"nAme"'))).toBe(false)
+  })
+
+  it('readLocalRef records the bytes on disk too (the watcher re-read path)', async () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm/project.json')
+    const raw = await reformat(file)
+
+    expect(await store.readLocalRefByPath(file)).toMatchObject({ id: 'p1' })
+    // Editors and git touch a file several times: the follow-up events for the SAME bytes must
+    // not each re-broadcast an "external change".
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+  })
+})
+
+describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
+  it('appends into a local ref project file and broadcasts the change itself', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    fake.sent.length = 0
     const ok = await store.appendRemoteNode('p1', { id: 'term-zz1-1', title: 'Mobile' })
     expect(ok).toBe(true)
     const file = path.join(projRoot, '.nodeterm/project.json')
@@ -464,9 +502,15 @@ describe('appendRemoteNode (phone-registered sessions over the relay)', () => {
     const f = JSON.parse(raw)
     expect(f.rev).toBe(2)
     expect(f.nodes.map((n: { id: string }) => n.id)).toContain('term-zz1-1')
-    // NOT a self-write: the workspace watcher must treat this as an outside edit and broadcast
-    // it, so the renderer adopts the node onto the live canvas.
-    expect(store.isSelfWrite(file, raw)).toBe(false)
+    // This write is OURS. It used to be left out of `lastWritten` on purpose, so the watcher would
+    // fire and notify the renderer — a side channel that only worked while the watcher's byte
+    // comparison happened to be reliable. The notification is now explicit, so the write is
+    // recorded like every other one of ours.
+    expect(store.isSelfWrite(file, raw)).toBe(true)
+    const broadcast = fake.sent.filter((s) => s.channel === 'workspace:external-change')
+    expect(broadcast).toHaveLength(1)
+    expect(broadcast[0].args[0]).toMatchObject({ id: 'p1', cwd: projRoot })
+    expect(broadcast[0].args[0].nodes.map((n: { id: string }) => n.id)).toContain('term-zz1-1')
   })
 
   it('refuses unknown / ssh / cwd-less projects and corrupt files (nothing written)', async () => {
@@ -823,5 +867,149 @@ describe('ssh lineage safety', () => {
     })
     const adopted = await store.refreshSshProject('ps', { pushIfStanding: false })
     expect(adopted?.nodes.map((n) => n.id)).toContain('term-mobile-1')
+  })
+})
+
+// Field bug (2026-08-10): two projects + rapid tab switching → both canvases wiped. Every switch
+// fires an un-awaited full save; save() was unserialized and writeAtomic used one fixed tmp path,
+// so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow
+// older save could land its stale index after a newer one. A corrupt index then silently became
+// EMPTY_WORKSPACE, which the renderer's unconditional boot save wrote back — zero entries, no backup.
+describe('save corruption hardening', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('overlapping saves land in call order — a slow earlier save cannot regress the index', async () => {
+    const store = new WorkspaceStore()
+    // Stall the FIRST project-file write so the first save is still in flight when the second lands.
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const realWrite = fs.writeFile.bind(fs)
+    let stalled = false
+    vi.spyOn(fs, 'writeFile').mockImplementation(async (p, data, enc) => {
+      if (!stalled && String(p).includes('project.json')) {
+        stalled = true
+        await gate
+      }
+      return realWrite(p as string, data as string, enc as BufferEncoding)
+    })
+    const first = store.save(ws([project({ cwd: projRoot })]))
+    const second = store.save(ws([project({ cwd: projRoot, name: 'renamed' })]))
+    await new Promise((r) => setTimeout(r, 100)) // unserialized, the second save finishes here
+    release()
+    await Promise.all([first, second])
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries[0].name).toBe('renamed')
+  })
+
+  it('no two atomic writes ever share a tmp path (concurrent writers cannot splice)', async () => {
+    const tmpPaths: string[] = []
+    const realWrite = fs.writeFile.bind(fs)
+    vi.spyOn(fs, 'writeFile').mockImplementation(async (p, data, enc) => {
+      if (String(p).includes('.tmp')) tmpPaths.push(String(p))
+      return realWrite(p as string, data as string, enc as BufferEncoding)
+    })
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    await store.save(ws([project({ cwd: projRoot, name: 'renamed' })]))
+    expect(tmpPaths.length).toBeGreaterThanOrEqual(2) // both saves really wrote
+    expect(new Set(tmpPaths).size).toBe(tmpPaths.length)
+  })
+
+  it('an empty canvas never blind-overwrites a populated project.json it has not read', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })])) // populated file on disk
+    // A different store (fresh boot, setProjectFolder, migration…) that never read that file:
+    const fresh = new WorkspaceStore()
+    await fresh.save(ws([project({ cwd: projRoot, nodes: [] })]))
+    const file = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(file.nodes.map((n: any) => n.id)).toEqual(['term-1'])
+    // The rest of the save still happened — only the destructive file write was skipped.
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries[0].cwd).toBe(projRoot)
+  })
+
+  it('a legitimately cleared canvas still persists for a store that has read the file', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    await store.save(ws([project({ cwd: projRoot, nodes: [] })])) // user deleted every node
+    const file = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(file.nodes).toEqual([])
+  })
+
+  it('an unparsable workspace.json is sidelined to .corrupt-<ts> on load, not silently emptied', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), '{"version":3,"entries":[{"id"')
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects).toEqual([])
+    const names = await fs.readdir(userData)
+    const sidelined = names.find((n) => /^workspace\.json\.corrupt-\d+$/.test(n))
+    expect(sidelined).toBeDefined()
+    expect(await fs.readFile(path.join(userData, sidelined!), 'utf-8')).toBe('{"version":3,"entries":[{"id"')
+    expect(names).not.toContain('workspace.json')
+  })
+
+  it('a read-only load (sideline: false) leaves an unparsable workspace.json in place', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), 'not json')
+    await new WorkspaceStore().load({ sideline: false })
+    expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe('not json')
+  })
+
+  // Sidelining alone left the user in an empty workspace with no explanation ("my projects are
+  // gone") even though every .nodeterm/project.json is intact. The load path says so, once.
+  it('a sidelined index broadcasts the recovery note once, with the backup filename', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), 'not json')
+    const store = new WorkspaceStore()
+    await store.load()
+    const notes = fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')
+    expect(notes).toHaveLength(1)
+    expect(notes[0].args[0]).toMatch(/^workspace\.json\.corrupt-\d+$/)
+    expect(await fs.readdir(userData)).toContain(notes[0].args[0])
+    // Second load of the same run (the sidelined copy is still there, index gone) stays quiet.
+    await store.load()
+    expect(fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')).toHaveLength(1)
+  })
+
+  it('a read-only load (sideline: false) never broadcasts the recovery note', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), 'not json')
+    await new WorkspaceStore().load({ sideline: false })
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+  })
+
+  // Crash between the sideline rename and the next index write: workspace.json is simply MISSING
+  // next to the backup, which is indistinguishable from a first run unless we look.
+  it('a missing index next to an existing .corrupt- backup still broadcasts (newest backup)', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json.corrupt-100'), 'old')
+    await fs.writeFile(path.join(userData, 'workspace.json.corrupt-900'), 'newer')
+    await new WorkspaceStore().load()
+    const notes = fake.sent.filter((m) => m.channel === 'workspace:corrupt-recovered')
+    expect(notes).toHaveLength(1)
+    expect(notes[0].args[0]).toBe('workspace.json.corrupt-900')
+  })
+
+  it('a normal load (and a first run) broadcasts nothing', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    await new WorkspaceStore().load() // healthy index
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+    await fs.rm(path.join(userData, 'workspace.json'))
+    await new WorkspaceStore().load() // first run: nothing on disk at all
+    expect(fake.sent.some((m) => m.channel === 'workspace:corrupt-recovered')).toBe(false)
+  })
+
+  it('a fresh store may not replace a populated index with an empty workspace', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    const before = await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')
+    // Boot-order accident: save(empty) from a store that never managed to load the index
+    // (transient read failure, or a hydrate that raced the load).
+    await new WorkspaceStore().save(ws([]))
+    expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(before)
+  })
+
+  it('closing every project after a successful load still persists the empty workspace', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    const store = new WorkspaceStore()
+    await store.load()
+    await store.save(ws([])) // the user really closed/deleted the last project
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries).toEqual([])
   })
 })

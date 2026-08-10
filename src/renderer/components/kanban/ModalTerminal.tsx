@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { reportsOwnCopy } from '@shared/agents/config'
+import type { AgentId } from '@shared/agents/config'
 import { readsClaudeTranscript } from '../../lib/transcriptGates'
 import { FindBar } from '../FindBar'
 import { useAgentStatus } from '../../state/agentStatus'
@@ -14,6 +16,7 @@ import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../../
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
 import { parseOsc52 } from '../../terminal/osc52'
 import { activateUnicode11 } from '../../terminal/unicode-width'
+import { useCopyFeedback } from '../../terminal/useCopyFeedback'
 import {
   attachReplay,
   cursorPlacementSeq,
@@ -88,6 +91,13 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
   const visual = useXtermVisualSettings()
   const [dropping, setDropping] = useState(false)
   const [uploading, setUploading] = useState(false)
+  // Same copy feedback as the canvas node — a copy here is the same act as a copy there, including
+  // the agent gate: a claude card stays silent because claude prints its own copy line.
+  const copy = useCopyFeedback({
+    hostRef,
+    hasSelection: () => !!termRef.current?.hasSelection(),
+    enabled: !reportsOwnCopy(spawn.agentId as AgentId | undefined)
+  })
 
   // Same search machinery as the canvas node: capture-indexed matches + xterm highlight.
   const readBuffer = useCallback((): string => {
@@ -164,7 +174,10 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     // can never read the local clipboard. Returning true swallows the sequence (also the read query).
     term.parser.registerOscHandler(52, (data) => {
       const text = parseOsc52(data)
-      if (text !== null) window.nodeTerminal.clipboard.writeText(text)
+      if (text !== null) {
+        window.nodeTerminal.clipboard.writeText(text)
+        copy.notifyCopy(text)
+      }
       return true
     })
 
@@ -412,6 +425,13 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
       onPasteCapture={onPaste}
     >
       {uploading && <div className="kanban-modal__upload">Uploading…</div>}
+      {/* Same pill, same class, same corner as the canvas node — one session seen twice should
+          not speak in two different voices. */}
+      {copy.feedback && (
+        <div className={`term-copy-pill term-copy-pill--${copy.feedback.kind}`}>
+          {copy.feedback.label}
+        </div>
+      )}
       {searchOpen && (
         <FindBar
           query={search.query}

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MIN_CAMERA_ZOOM,
   rectsIntersect,
+  sanitizeCamera,
   screenToWorld,
   snapPanToDevicePx,
   visibleWorldRect,
@@ -81,5 +83,56 @@ describe('snapPanToDevicePx', () => {
     expect(snapped).not.toBe(cam)
     cam.x = 999
     expect(snapped.x).toBe(1)
+  })
+})
+
+/**
+ * The WHOLE-CANVAS blank, from a persisted viewport. A project saved with `zoom: 0` (or a viewport
+ * that reached the file as NaN) makes `visibleWorldRect` infinite or NaN, `rectsIntersect` false for
+ * every grid, and every terminal on the board empty — while the DOM node chrome looks perfect,
+ * because React Flow clamps its own transform and the glyph camera used not to.
+ */
+describe('sanitizeCamera', () => {
+  it('passes an ordinary camera through unchanged', () => {
+    expect(sanitizeCamera({ x: -120.5, y: 40, zoom: 0.75 })).toEqual({
+      x: -120.5,
+      y: 40,
+      zoom: 0.75
+    })
+  })
+
+  it('clamps a zoom of 0 to the floor, which is what stops visibleWorldRect going infinite', () => {
+    const cam = sanitizeCamera({ x: 0, y: 0, zoom: 0 })
+    expect(cam.zoom).toBe(MIN_CAMERA_ZOOM)
+    const rect = visibleWorldRect(cam, 1600, 900)
+    expect(Number.isFinite(rect.w)).toBe(true)
+    expect(Number.isFinite(rect.h)).toBe(true)
+  })
+
+  it('clamps a NaN / non-finite / negative zoom, so culling never compares against NaN', () => {
+    for (const zoom of [NaN, Infinity, -Infinity, -1]) {
+      const cam = sanitizeCamera({ x: 0, y: 0, zoom })
+      expect(cam.zoom).toBe(MIN_CAMERA_ZOOM)
+      // The blank canvas IS this comparison: with a NaN rect every grid answers false and nothing
+      // is ever drawn.
+      const r = visibleWorldRect(cam, 1600, 900)
+      expect(rectsIntersect(r, { x: 0, y: 0, w: 800, h: 600 })).toBe(true)
+    }
+  })
+
+  it('replaces a non-finite PAN with 0 rather than letting it poison the rect origin', () => {
+    expect(sanitizeCamera({ x: NaN, y: Infinity, zoom: 1 })).toEqual({ x: 0, y: 0, zoom: 1 })
+  })
+
+  it('accepts the floor itself, and anything above it', () => {
+    expect(sanitizeCamera({ x: 0, y: 0, zoom: MIN_CAMERA_ZOOM }).zoom).toBe(MIN_CAMERA_ZOOM)
+    expect(sanitizeCamera({ x: 0, y: 0, zoom: 4 }).zoom).toBe(4)
+  })
+
+  it('is idempotent and returns a COPY', () => {
+    const cam: Camera = { x: 1, y: 2, zoom: 0 }
+    const once = sanitizeCamera(cam)
+    expect(sanitizeCamera(once)).toEqual(once)
+    expect(sanitizeCamera(cam)).not.toBe(cam)
   })
 })

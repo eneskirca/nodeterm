@@ -264,6 +264,8 @@ export function buildRealApi(
       client.request(IPC.workspaceProbeFolder, folder) as ReturnType<WorkspaceApi['probeFolder']>,
     // REAL: core broadcasts IPC.workspaceMigrated after a v2→v3 migration (workspace-store.ts).
     onMigrated: (cb) => client.subscribe(IPC.workspaceMigrated, cb as Listener),
+    // REAL: core broadcasts IPC.workspaceCorruptRecovered from the load path (workspace-store.ts).
+    onCorruptRecovered: (cb) => client.subscribe(IPC.workspaceCorruptRecovered, cb as Listener),
     // Deliberate degrade: the external-change WATCHER (core/workspace-watcher.ts) is only started
     // by the desktop shell (src/main/index.ts), so the server never broadcasts
     // IPC.workspaceExternalChange and there is nothing to subscribe to. Effect in the browser:

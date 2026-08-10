@@ -45,6 +45,28 @@ export function mainWindowClientIds(): number[] {
   return typeof id === 'number' ? [id] : []
 }
 
+export type CrashReloadAction = 'reload' | 'give-up' | 'ignore'
+
+// A dead renderer leaves the (single) window a permanent blank page — nothing in Electron
+// reloads it. Reload automatically, but bounded: a crash on the boot path would otherwise
+// reload forever. 'clean-exit' is a deliberate teardown (window close, navigation), never
+// reloaded; everything else — crashed, oom, abnormal-exit, launch-failed, and 'killed'
+// (macOS memory-pressure jetsam included) — deserves an attempt.
+export function createCrashReloadPolicy(
+  opts?: { maxReloads?: number; windowMs?: number }
+): (reason: string, now: number) => CrashReloadAction {
+  const maxReloads = opts?.maxReloads ?? 2
+  const windowMs = opts?.windowMs ?? 60_000
+  let granted: number[] = []
+  return (reason, now) => {
+    if (reason === 'clean-exit') return 'ignore'
+    granted = granted.filter((t) => now - t < windowMs)
+    if (granted.length >= maxReloads) return 'give-up'
+    granted.push(now)
+    return 'reload'
+  }
+}
+
 // macOS convention: closing the window hides it (the app — and its tmux sessions,
 // hook server, updater, license watchers — keeps running); a real close only happens
 // on quit. Other platforms quit on window close, so never intercept there.
