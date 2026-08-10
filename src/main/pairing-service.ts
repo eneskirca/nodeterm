@@ -534,12 +534,19 @@ export function createPairingService(relayDeps?: PairingRelayDeps): PairingServi
   }
 
   // One unit: agent.json and authorized_keys must not be revoked half-way by an interleaving writer.
+  //
+  // authorized_keys goes FIRST, and the order is load-bearing on partial failure. That file is full
+  // shell access; agent.json holds the host-agent bearer token and the device the UI lists. If the
+  // second step fails, revoking the SSH key first leaves the BIGGER capability already gone and the
+  // device still listed — visible to its owner, with the Revoke button still there to finish the
+  // job. The reverse order fails the other way: the device disappears from the list while its key
+  // is still live, so the owner believes it revoked and has no way left to retry.
   const revokeDevice = (id: string): Promise<void> =>
     serialize(async () => {
+      await removeAuthorizedKeysForDevice(id)
       const obj = await readAgentJson()
       const devices = removeDevice(readDevices(obj), id)
       await writeAgentJson({ ...obj, devices })
-      await removeAuthorizedKeysForDevice(id)
     })
 
   return { start, stop, listDevices, revokeDevice, probeSsh }

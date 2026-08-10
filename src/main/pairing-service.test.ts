@@ -232,6 +232,27 @@ describe('revokeDevice', () => {
     expect(deviceIds()).toEqual(['dev-a'])
   })
 
+  it('revokes the SSH key first, so a mid-revoke failure leaves access cut and the device retryable', async () => {
+    // Order matters on partial failure. authorized_keys is full shell access; agent.json is the
+    // host-agent bearer token and the visible device list. If the SSH key is removed FIRST, a
+    // failure on the second step leaves the bigger capability already revoked AND the device still
+    // listed — so the owner sees it and can retry. The reverse order (drop the listing first) would
+    // hide a device whose SSH key is still live, with no button left to finish the job.
+    const service = createPairingService()
+    const realRename = fs.rename.bind(fs)
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).includes('agent.json')) {
+        throw Object.assign(new Error('EXDEV: cross-device link'), { code: 'EXDEV' })
+      }
+      return realRename(from, to)
+    })
+
+    await expect(service.revokeDevice('dev-a')).rejects.toThrow(/EXDEV/)
+
+    expect(authKeys()).not.toContain('nodeterm-ios-dev-a') // SSH access really was cut
+    expect(deviceIds()).toContain('dev-a') // still listed, so the owner can retry
+  })
+
   it('a single revoke drops exactly its own device, leaving the file 0600', async () => {
     const service = createPairingService()
 
