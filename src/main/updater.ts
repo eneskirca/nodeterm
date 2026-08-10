@@ -5,15 +5,36 @@
 // requires a signed + notarized build; unsigned builds still surface the card for a manual
 // download.
 import { app, ipcMain, Notification } from 'electron'
+import fs from 'fs'
+import path from 'path'
 // Named import — the default-import + destructure pattern returns undefined under
 // electron-vite v5's CJS interop.
 import { autoUpdater } from 'electron-updater'
 import { IPC } from '../shared/ipc'
-import { isManualUpdatePlatform, toUpdateAvailablePayload } from '../shared/update-platform'
+import {
+  isManualUpdatePlatform,
+  shouldEnableUpdater,
+  toUpdateAvailablePayload
+} from '../shared/update-platform'
 import { getMainWindow, sendToMain } from './main-window'
 import { retainUntilDismissed } from './notifications'
 
 const SIX_HOURS = 6 * 60 * 60 * 1000
+
+/** Local unsigned packages carry this marker in their packaged package.json via extraMetadata. */
+function packagedUpdateMode(): unknown {
+  if (!app.isPackaged) return undefined
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'package.json'), 'utf8')) as {
+      nodeTermUpdates?: unknown
+    }
+    return pkg.nodeTermUpdates
+  } catch (err) {
+    // A normal release without the marker must preserve the established updater behavior.
+    console.warn('[updater] could not read packaged update mode:', err)
+    return undefined
+  }
+}
 
 /**
  * The window is resolved AT EVENT TIME (getMainWindow/sendToMain) — never captured in a closure.
@@ -37,9 +58,9 @@ export function initUpdater(onBeforeRestart?: () => void): void {
     autoUpdater.quitAndInstall()
   })
 
-  if (!app.isPackaged) {
-    // Dev: there is no update server. A manual check reports "up to date" so the Settings
-    // button still gives feedback; automatic checks are skipped entirely.
+  if (!shouldEnableUpdater(app.isPackaged, packagedUpdateMode())) {
+    // Dev and explicitly local/unsigned packages have no update channel. A manual check reports
+    // "up to date" for feedback; automatic networking and updater event wiring stay disabled.
     ipcMain.on(IPC.appCheckForUpdates, () => send(IPC.appUpdateNotAvailable))
     return
   }

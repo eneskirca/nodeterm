@@ -25,6 +25,7 @@
     "make-social": "node scripts/make-social.mjs",
     "dist": "npm run make-icon && electron-vite build && electron-builder --mac --arm64 -c.mac.identity=null -c.mac.notarize=false",
     "dist:linux": "npm run make-icon && electron-vite build && electron-builder --linux",
+    "dist:win": "npm run make-icon && electron-vite build && electron-builder --win --x64 --publish never -c.extraMetadata.nodeTermUpdates=disabled",
     "release": "npm run make-icon && electron-vite build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
     "postinstall": "electron-rebuild -f -w node-pty,smart-whisper"
   },
@@ -95,6 +96,17 @@
           ]
         }
       ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
     },
     "publish": {
       "provider": "generic",

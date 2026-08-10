@@ -15,6 +15,11 @@ export function isManualUpdatePlatform(platform: string, hasAppImage: boolean): 
   return platform === 'linux' && !hasAppImage
 }
 
+/** True when updater networking should be initialized for this runtime/build. */
+export function shouldEnableUpdater(isPackaged: boolean, updateMode: unknown): boolean {
+  return isPackaged && updateMode !== 'disabled'
+}
+
 /** Reduce an electron-updater update-available info to the renderer's UpdateInfo payload. */
 export function toUpdateAvailablePayload(
   info: { version: string; releaseNotes?: unknown },

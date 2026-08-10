@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isManualUpdatePlatform, toUpdateAvailablePayload } from './update-platform'
+import { isManualUpdatePlatform, shouldEnableUpdater, toUpdateAvailablePayload } from './update-platform'
 
 describe('isManualUpdatePlatform', () => {
   it('linux with APPIMAGE set → auto (self-installs)', () => {
@@ -17,6 +17,18 @@ describe('isManualUpdatePlatform', () => {
 
   it('win32 → auto', () => {
     expect(isManualUpdatePlatform('win32', false)).toBe(false)
+  })
+})
+
+describe('shouldEnableUpdater', () => {
+  it('disables checks in development and in explicitly local packaged builds', () => {
+    expect(shouldEnableUpdater(false, undefined)).toBe(false)
+    expect(shouldEnableUpdater(true, 'disabled')).toBe(false)
+  })
+
+  it('keeps updater behavior unchanged for normal packaged releases', () => {
+    expect(shouldEnableUpdater(true, undefined)).toBe(true)
+    expect(shouldEnableUpdater(true, 'enabled')).toBe(true)
   })
 })
 
