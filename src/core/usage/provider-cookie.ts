@@ -44,21 +44,74 @@ export async function readProviderCookie(provider: CookieProvider): Promise<stri
   }
 }
 
+/** Paired with `process.pid` in the temp name: the counter makes a name unique WITHIN this process,
+ *  the pid makes it unique ACROSS processes (it restarts at 0 in every new one — two
+ *  `nodeterm-server --data-dir X` processes share the dir with no lock). Same scheme as
+ *  agent-status-mirror's local write. */
+let writeSeq = 0
+
+/**
+ * Remove temp files no writer in THIS process owns: the legacy fixed `<file>.tmp` (written by
+ * builds before per-call names) and any `<file>.<pid>.<seq>.tmp` whose pid is not ours. Best
+ * effort — a failure here must never break a save.
+ *
+ * Unlike settings.json, an orphan here is a live credential at 0600 that nothing will ever
+ * overwrite, so it has to be collected rather than left. Temps bearing our own pid are untouchable:
+ * one may belong to a concurrent write sitting between its `writeFile` and its `rename`, and
+ * deleting it would recreate the exact race the unique names fixed. A foreign pid can in theory be
+ * a second LIVE process on the same data dir; that setup has no lock to begin with, and the worst
+ * case is that process's rename failing cleanly (ENOENT, rethrown to its caller) instead of a
+ * forgotten cookie sitting on disk forever.
+ */
+async function sweepStaleTmp(target: string): Promise<void> {
+  try {
+    const dir = path.dirname(target)
+    const base = path.basename(target)
+    for (const entry of await fs.readdir(dir)) {
+      if (!entry.startsWith(base) || !entry.endsWith('.tmp')) continue
+      const middle = entry.slice(base.length, -'.tmp'.length) // '' or '.<pid>.<seq>'
+      const owner = /^\.(\d+)\.\d+$/.exec(middle)?.[1]
+      if (middle === '' || (owner && owner !== String(process.pid))) {
+        await fs.rm(path.join(dir, entry), { force: true }).catch(() => undefined)
+      }
+    }
+  } catch {
+    // A dir we cannot read is not a reason to fail (or skip) the write below.
+  }
+}
+
 /**
  * Store (or, with an empty value, clear) a provider's cookie. Written to a temp file first and
  * renamed, so a crash mid-write cannot leave a half-written credential behind — and the temp
  * file is created with the restricted mode too, since a rename preserves the source's mode.
+ *
+ * The temp name is unique per call: `usage:set-provider-cookie` is reachable from the preload
+ * bridge and, on the Server Edition, from any WS client's frame (src/renderer/bridge/ws-bridge.ts
+ * over the concurrent dispatch in src/server/ws.ts), with nothing serializing them. A shared temp
+ * name lets one writer's rename publish the other's half-written cookie — or move the file out
+ * from under it, so the loser's rename fails.
  */
 export async function writeProviderCookie(provider: CookieProvider, cookie: string): Promise<void> {
   const target = file(provider)
+  // Both paths sweep: clearing a cookie that leaves an orphan temp behind has not cleared anything.
+  await sweepStaleTmp(target)
   if (!cookie.trim()) {
     await fs.rm(target, { force: true })
     return
   }
-  const tmp = `${target}.tmp`
-  await fs.writeFile(tmp, JSON.stringify({ cookie }), { encoding: 'utf-8', mode: MODE })
-  await fs.rename(tmp, target)
-  // Belt and braces: a temp file left by an earlier run would keep its own mode.
+  const tmp = `${target}.${process.pid}.${++writeSeq}.tmp`
+  try {
+    await fs.writeFile(tmp, JSON.stringify({ cookie }), { encoding: 'utf-8', mode: MODE })
+    await fs.rename(tmp, target)
+  } catch (e) {
+    // A failed write MUST remove its own temp, because here a leaked temp IS a leaked cookie: a
+    // unique name is never written again, so only this cleanup (or a later run's sweep above, once
+    // the pid is dead) will ever collect it. The error still propagates.
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw e
+  }
+  // Defense in depth on the PUBLISHED file: the temp is created 0600 and rename preserves the
+  // mode, so this is a second lock on the door — cheap, and the one thing an attacker would need.
   await fs.chmod(target, MODE).catch(() => undefined)
 }
 
