@@ -167,9 +167,26 @@ bind -T copy-mode-vi TripleClick1Pane send-keys -X select-line \\; send-keys -X 
  */
 const TMUX_BIN_NAMES = ['tmux', 'psmux'] as const
 
-/** Absolute locations a GUI app must check itself, since it inherits only a minimal PATH.
- *  POSIX-only by construction; on Windows every entry simply fails to exist. */
-const TMUX_WELL_KNOWN = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux', '/bin/tmux']
+/** Absolute locations a GUI app must check itself, since it inherits only a minimal PATH. */
+const TMUX_WELL_KNOWN_POSIX = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux', '/bin/tmux']
+
+/**
+ * The well-known list for a platform — empty on Windows, where these four paths cannot help and
+ * can only hurt. They are POSIX layout and rooted WITHOUT a drive letter, so Windows resolves them
+ * against whatever drive happens to be current (`/bin/tmux` is `E:\bin\tmux` from a checkout on
+ * E:). They also name an EXTENSIONLESS file, and the walk below is a bare `existsSync` with no
+ * PATHEXT expansion — so it can never match a real `tmux.exe`, however one got installed there
+ * (the same reason `execCandidates` in ./exec-path exists).
+ *
+ * What it CAN match is a directory: `existsSync` answers true for one. Since this list is
+ * consulted BEFORE the PATH, a stray `…\bin\tmux\` folder would be handed back as "the
+ * multiplexer", and every spawn after it would fail with an opaque EACCES/EISDIR instead of
+ * falling through to the psmux that actually works. Windows has no fixed install location for a
+ * multiplexer anyway, so asking only the PATH there loses nothing.
+ */
+export function wellKnownTmux(plat: NodeJS.Platform | string = process.platform): readonly string[] {
+  return plat === 'win32' ? [] : TMUX_WELL_KNOWN_POSIX
+}
 
 /** Resolve an absolute tmux path (GUI apps don't inherit the shell PATH). Subprocess-free:
  *  the old fallback here was a SYNC login-shell `command -v tmux` — sourcing the profile
@@ -181,7 +198,7 @@ const TMUX_WELL_KNOWN = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/
  *  Both arguments are injection seams for the tests ONLY — production always calls it bare. */
 export function findTmux(
   pathStr: string | null | undefined = shellPathNow() ?? process.env.PATH,
-  wellKnown: readonly string[] = TMUX_WELL_KNOWN
+  wellKnown: readonly string[] = wellKnownTmux()
 ): string | null {
   for (const c of wellKnown) {
     try {

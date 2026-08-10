@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { findTmux } from './pty-manager'
+import { findTmux, wellKnownTmux } from './pty-manager'
 
 /**
  * WHICH BINARY PROVIDES THE MULTIPLEXER.
@@ -76,5 +76,20 @@ describe('findTmux', () => {
     expect(binName(findTmux(dir, [path.join(dir, 'nope', 'tmux')]))).toBe(
       os.platform() === 'win32' ? 'psmux.exe' : 'psmux'
     )
+  })
+})
+
+describe('wellKnownTmux', () => {
+  it('offers the POSIX install locations on macOS and Linux', () => {
+    expect(wellKnownTmux('darwin')).toContain('/opt/homebrew/bin/tmux')
+    expect(wellKnownTmux('linux')).toContain('/usr/bin/tmux')
+  })
+
+  it('offers none on Windows, where a rooted path means the CURRENT DRIVE', () => {
+    // `/usr/bin/tmux` resolves to `C:\usr\bin\tmux` there — a path an MSYS2 install rooted at the
+    // drive root really creates. That tmux is real but does not speak ConPTY, and this list is
+    // consulted before the PATH, so keeping it would let a stray MSYS binary outrank the working
+    // psmux the user installed.
+    expect(wellKnownTmux('win32')).toEqual([])
   })
 })
