@@ -30,6 +30,62 @@ export function pollOutcome(available: boolean, elapsedMs: number): InstallPhase
   return elapsedMs >= INSTALL_CAP_MS ? 'failed' : 'installing'
 }
 
+/** What the multiplexer is CALLED on this host. `tmux` is the reference implementation and its own
+ *  name wherever it ships; it ships no Windows build, and the thing this banner offers there is
+ *  psmux — so naming it tmux on win32 would send the user looking for a package they cannot get.
+ *  Only the NAME differs: every behaviour described below is the same on both. */
+export function multiplexerName(platform: string): string {
+  return platform === 'win32' ? 'psmux' : 'tmux'
+}
+
+/**
+ * Title + body for a phase. Pure, and split out of the component for exactly one reason: the
+ * strings are now platform-dependent and the no-installer fallback is the branch that used to be
+ * WRONG on Windows. It advised `brew install tmux` — a package manager macOS-only by construction,
+ * naming a package with no Windows build — and it became reachable there the moment the win32 gate
+ * above was removed. That branch means "no one-click install exists here", which on Windows is
+ * specifically "winget was not found", not "use your package manager".
+ */
+export function bannerCopy(
+  phase: InstallPhase,
+  platform: string,
+  hasInstallCommand: boolean
+): { title: string; body: string } {
+  const name = multiplexerName(platform)
+  const win = platform === 'win32'
+  if (phase === 'installing')
+    return {
+      title: `Installing ${name}`,
+      body: 'Running the install in a terminal node — watch it for progress (it may ask for your password).'
+    }
+  if (phase === 'ready')
+    return {
+      title: `${name} ready`,
+      body: 'New terminals will survive restarts from now on. Terminals opened before the install stay on the plain shell.'
+    }
+  const title = `${name} not found`
+  if (phase === 'failed')
+    return {
+      title,
+      body: win
+        ? 'The install hasn’t completed. Check the terminal node for errors, or install psmux manually and restart nodeterm.'
+        : 'The install hasn’t completed. Check the terminal node for errors, or install tmux with your package manager and restart nodeterm.'
+    }
+  if (hasInstallCommand)
+    return {
+      title,
+      body: `Terminals won’t survive restarts and the mobile app can’t attach until ${name} is installed.`
+    }
+  return {
+    title,
+    body: win
+      ? // No winget, so there is no command to offer — and no honest one-liner to print either.
+        // Say what is missing and stop, rather than inventing an install path we did not verify.
+        'Terminals won’t survive restarts and the mobile app can’t attach. winget wasn’t found, so there is no one-click install — install psmux (a tmux-compatible multiplexer for Windows) and restart nodeterm.'
+      : 'Terminals won’t survive restarts and the mobile app can’t attach. Install tmux with your package manager (e.g. brew install tmux), then restart nodeterm.'
+  }
+}
+
 export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void }): JSX.Element | null {
   const [status, setStatus] = useState<TmuxStatus | null>(null)
   const [dismissed, setDismissed] = useState(false)
@@ -82,18 +138,7 @@ export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void
   if (!status || dismissed) return null
   if (status.available && phase === 'missing') return null
 
-  const title =
-    phase === 'installing' ? 'Installing tmux' : phase === 'ready' ? 'tmux ready' : 'tmux not found'
-  const body =
-    phase === 'installing'
-      ? 'Running the install in a terminal node — watch it for progress (it may ask for your password).'
-      : phase === 'ready'
-        ? 'New terminals will survive restarts from now on. Terminals opened before the install stay on the plain shell.'
-        : phase === 'failed'
-          ? 'The install hasn’t completed. Check the terminal node for errors, or install tmux with your package manager and restart nodeterm.'
-          : status.installCommand
-            ? 'Terminals won’t survive restarts and the mobile app can’t attach until tmux is installed.'
-            : 'Terminals won’t survive restarts and the mobile app can’t attach. Install tmux with your package manager (e.g. brew install tmux), then restart nodeterm.'
+  const { title, body } = bannerCopy(phase, status.platform, !!status.installCommand)
 
   const showInstall = (phase === 'missing' || phase === 'failed') && !!status.installCommand
   return (
