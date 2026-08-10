@@ -10,7 +10,13 @@ import { localSession } from '../session/localSession'
 // version, which dismissed the banner optimistically and left the user guessing (second field
 // report) — keeps the banner up as a status strip: installing → ready | failed. tmuxStatus()
 // re-probes on every call (ensureTmux), so `available` flipping true is also what makes NEW
-// terminals tmux-backed without a restart. Hidden on win32 and on any fetch error (fail-open).
+// terminals tmux-backed without a restart. Hidden on any fetch error (fail-open).
+//
+// It used to be hidden on win32 outright, because there was nothing to say: Windows has no tmux
+// and `tmuxInstall` had no command for it. That made Windows the ONE platform where the silent
+// degrade this banner exists to expose was itself invisible. psmux (a tmux-compatible multiplexer,
+// installable via winget) gives win32 both an answer and a button, so the platform gate is gone —
+// `status.available` already hides the banner wherever a multiplexer is present.
 
 export const INSTALL_POLL_MS = 3000
 export const INSTALL_CAP_MS = 5 * 60_000
@@ -73,7 +79,7 @@ export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void
     return () => clearTimeout(t)
   }, [phase])
 
-  if (!status || dismissed || status.platform === 'win32') return null
+  if (!status || dismissed) return null
   if (status.available && phase === 'missing') return null
 
   const title =

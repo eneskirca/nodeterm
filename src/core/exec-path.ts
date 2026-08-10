@@ -67,17 +67,71 @@ export function shellPathNow(): string | null | undefined {
   return cachedShellPath
 }
 
+/** Extensions to try when the environment declares no PATHEXT — the four that actually matter
+ *  for a CLI on PATH (a native exe, and the three shim flavours installers emit). */
+const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
+
+/**
+ * The filenames to try for `bin` inside one PATH directory, in order.
+ *
+ * POSIX: just `bin`. The name on disk IS the command name and the mode bits say the rest.
+ *
+ * Windows: there is no such thing as an extensionless command. What sits on PATH is `tmux.exe`,
+ * `psmux.cmd`, a WinGet shim — and PATHEXT is the list of suffixes that make a file runnable. So
+ * `path.join(dir, 'tmux')` matches NOTHING there no matter what is installed, which is why every
+ * lookup built on this module (tmux, ssh, claude, git) answered null on Windows.
+ *
+ * The bare name is deliberately NOT a Windows candidate. Windows has no execute permission bit, so
+ * `fs.accessSync(p, X_OK)` degrades to a plain existence check — and it succeeds for DIRECTORIES.
+ * A bare candidate would therefore resolve a directory called `…\tmux\` as "the tmux executable",
+ * and every spawn after that would fail with an opaque EACCES/EISDIR instead of the honest
+ * "not installed". An extension the caller already supplied is honored verbatim, matching
+ * CreateProcess: a name containing a dot is never PATHEXT-expanded.
+ */
+export function execCandidates(
+  bin: string,
+  plat: NodeJS.Platform | string = os.platform(),
+  pathext: string | undefined = process.env.PATHEXT
+): string[] {
+  if (plat !== 'win32') return [bin]
+  if (path.extname(bin)) return [bin]
+  return (pathext || DEFAULT_PATHEXT)
+    .split(';')
+    .map((e) => e.trim())
+    .filter((e) => e.startsWith('.') && e.length > 1)
+    .map((e) => `${bin}${e}`)
+}
+
+/**
+ * Is this path a runnable command? The ONE place that question is answered, so no caller has to
+ * re-derive it — and two callers previously got it wrong in opposite directions.
+ *
+ * `fs.accessSync(X_OK)`, not `fs.existsSync`. On POSIX that is simply the stronger and more
+ * accurate check (a file without the exec bit is not a command). On Windows it is the only one
+ * that WORKS: the commands that matter most there — `winget` above all — ship as APP EXECUTION
+ * ALIASES, zero-length reparse points under `…\AppData\Local\Microsoft\WindowsApps`.
+ * `fs.existsSync` answers FALSE for one (it resolves the link and gets EACCES) even though the
+ * file is on PATH and runs perfectly, so an `existsSync`-based lookup reports the only package
+ * manager Windows has as "not installed".
+ */
+export function isExecutable(p: string): boolean {
+  try {
+    fs.accessSync(p, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Walk a PATH string for an executable — sync but SUBPROCESS-FREE (one accessSync per entry),
  *  so it is safe on the main thread. Returns the first accessible match, or null. */
 export function findInPathString(bin: string, pathStr: string | null | undefined): string | null {
+  const names = execCandidates(bin)
   for (const dir of (pathStr ?? '').split(path.delimiter)) {
     if (!dir) continue
-    const candidate = path.join(dir, bin)
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK)
-      return candidate
-    } catch {
-      // not here — keep looking
+    for (const name of names) {
+      const candidate = path.join(dir, name)
+      if (isExecutable(candidate)) return candidate
     }
   }
   return null
@@ -90,13 +144,6 @@ export function findInPathString(bin: string, pathStr: string | null | undefined
 export function findExecutableSync(bin: string, fallbacks: string[] = []): string | null {
   const hit = findInPathString(bin, cachedShellPath ?? process.env.PATH)
   if (hit) return hit
-  for (const c of fallbacks) {
-    try {
-      fs.accessSync(c, fs.constants.X_OK)
-      return c
-    } catch {
-      // keep trying
-    }
-  }
+  for (const c of fallbacks) if (isExecutable(c)) return c
   return null
 }

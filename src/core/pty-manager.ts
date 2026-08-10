@@ -40,7 +40,13 @@ import { effectiveSize, type PtySize } from './pty-size'
 import { machOArch, archMismatch } from './macho-arch'
 import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-store'
 import { claudeConfigDirFor } from './claude-config-dir'
-import { findExecutableSync, findInPathString, resolveShellPath, shellPathNow } from './exec-path'
+import {
+  findExecutableSync,
+  findInPathString,
+  isExecutable,
+  resolveShellPath,
+  shellPathNow
+} from './exec-path'
 import { AUTH_ENV_STRIP, accountTmuxEnvArgs, remoteAccountConfigDirAbs } from './claude-accounts-core'
 import { presenceHub } from './presence/hub'
 
@@ -146,21 +152,49 @@ bind -T copy-mode-vi TripleClick1Pane send-keys -X select-line \\; send-keys -X 
 `
 }
 
+/**
+ * Executable names that provide the tmux command surface, in preference order.
+ *
+ * `tmux` is the reference implementation and always wins. `psmux` is a tmux-compatible
+ * multiplexer for Windows — where tmux does not exist at all, and without which the app degrades
+ * SILENTLY to a plain shell: no continuity across an app restart or a reboot, no scrollback
+ * restore, no resumable agent, and nothing telling the user why. It answers every subcommand this
+ * file issues (verified against psmux 3.3.7 — see `tmux-discovery.test.ts` for the list), so it
+ * needs no adapter: just another name to look for.
+ *
+ * The extra lookup is a plain PATH walk and only ever runs when `tmux` was NOT found, so a macOS
+ * or Linux host — which hits the well-known absolute paths below first — pays nothing.
+ */
+const TMUX_BIN_NAMES = ['tmux', 'psmux'] as const
+
+/** Absolute locations a GUI app must check itself, since it inherits only a minimal PATH.
+ *  POSIX-only by construction; on Windows every entry simply fails to exist. */
+const TMUX_WELL_KNOWN = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux', '/bin/tmux']
+
 /** Resolve an absolute tmux path (GUI apps don't inherit the shell PATH). Subprocess-free:
  *  the old fallback here was a SYNC login-shell `command -v tmux` — sourcing the profile
  *  (nvm/conda: 100-800ms) on the main thread, re-triggered every 3s by the tmux-missing
  *  banner's install poll, freezing all windows and IPC each time. Now it walks the cached
  *  login-shell PATH instead; before that async probe settles a nonstandard location can be
- *  missed, which init()'s post-probe ensureTmux() re-run and tmuxStatus()'s re-probe cover. */
-function findTmux(): string | null {
-  for (const c of ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux', '/bin/tmux']) {
+ *  missed, which init()'s post-probe ensureTmux() re-run and tmuxStatus()'s re-probe cover.
+ *
+ *  Both arguments are injection seams for the tests ONLY — production always calls it bare. */
+export function findTmux(
+  pathStr: string | null | undefined = shellPathNow() ?? process.env.PATH,
+  wellKnown: readonly string[] = TMUX_WELL_KNOWN
+): string | null {
+  for (const c of wellKnown) {
     try {
       if (fs.existsSync(c)) return c
     } catch {
       // ignore
     }
   }
-  return findInPathString('tmux', shellPathNow() ?? process.env.PATH)
+  for (const name of TMUX_BIN_NAMES) {
+    const hit = findInPathString(name, pathStr)
+    if (hit) return hit
+  }
+  return null
 }
 
 /** Resolve an absolute ssh path (GUI apps don't inherit the shell PATH). */
@@ -760,7 +794,10 @@ export class PtyManager {
     const available = !!this.tmuxPath
     const hint = available
       ? null
-      : tmuxInstall(process.platform, (cmd) => findCommand(cmd, process.env, fs.existsSync))
+      : // `isExecutable`, NOT `fs.existsSync`: on Windows the package manager we look for
+        // (`winget`) is an App Execution Alias, which existsSync reports as absent — see
+        // `isExecutable`. On POSIX it is also simply the more accurate question.
+        tmuxInstall(process.platform, (cmd) => findCommand(cmd, process.env, isExecutable))
     return {
       available,
       installCommand: hint?.command ?? null,

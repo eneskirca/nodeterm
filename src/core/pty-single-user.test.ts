@@ -209,7 +209,12 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(env.TERM).toBe('xterm-256color')
     expect(env.TMUX).toBeUndefined()
     expect(env.TMUX_PANE).toBeUndefined()
-    expect(env.PATH).toBe('/usr/bin:/bin')
+    // The login-shell PATH probe (stubbed above to answer `/usr/bin:/bin`) is a POSIX notion:
+    // `resolveShellPath` short-circuits to null on Windows, where there is no profile to source
+    // and a GUI process already inherits the user's full PATH. So the contract differs by
+    // platform and the assertion has to as well — asserting the POSIX string on Windows was
+    // testing the stub, not the manager.
+    expect(env.PATH).toBe(os.platform() === 'win32' ? process.env.PATH : '/usr/bin:/bin')
     fs.rmSync(cwd, { recursive: true, force: true })
   })
 
