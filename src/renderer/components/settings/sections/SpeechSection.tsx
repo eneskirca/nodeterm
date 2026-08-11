@@ -1,16 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { SpeechModelInfo } from '@shared/types'
 import { modelAfterDelete, modelAfterDownload } from '@shared/speech'
 import { DEFAULT_SETTINGS } from '@shared/types'
-import {
-  buildModifierChord,
-  captureToShortcut,
-  formatShortcut,
-  isHoldChord,
-  isModifierEventKey,
-  type ChordModifiers,
-  type ShortcutKeyEvent
-} from '@shared/shortcut'
 import { useSettings } from '../../../state/settings'
 import { useEntitlement } from '../../../state/entitlement'
 import { SettingsSection } from '../SettingsSection'
@@ -19,6 +10,8 @@ import { FieldRow } from '../FieldRow'
 import { Select } from '@renderer/ui/Select'
 import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { Button } from '@renderer/ui/Button'
+import { formatShortcut, isHoldChord } from '@shared/shortcut'
+import { ShortcutCaptureField } from '../ShortcutCaptureField'
 import type { SettingsSectionId } from '../nav'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
@@ -55,113 +48,10 @@ const ROWS = {
 const ENTRIES = Object.values(ROWS)
 
 /**
- * Focus -> "Press keys…" -> capture -> saves the canonical combo. Two shapes commit
- * differently (v3):
- *  - A real key (Cmd/Ctrl + a non-modifier key) commits IMMEDIATELY on keydown, same as before
- *    — toggle mode.
- *  - Modifier keys only (Cmd/Ctrl [+ Alt] [+ Shift], no other key yet) commit on KEYUP, once
- *    every key has been released — hold-to-talk mode. Each modifier keydown along the way
- *    remembers the strongest state seen (`modsRef`) and previews it, since the keyup event
- *    itself no longer carries that state once everything's up (see `buildModifierChord`'s doc).
- * Esc cancels; blur cancels; a separate Reset button restores the default (`Cmd+Alt`, itself a
- * hold-to-talk chord). Pure combo logic lives in `@shared/shortcut`.
+ * Dictation (desktop/server): engine, model, language, and the press/hold-to-talk shortcut.
+ * The ShortcutCaptureField is the shared settings capture control (also used by Keyboard
+ * Shortcuts); here it is wired hold-to-talk-capable (`allowChord`) with the speech default.
  */
-function ShortcutCaptureField({
-  value,
-  onChange
-}: {
-  value: string
-  onChange: (combo: string) => void
-}): React.JSX.Element {
-  const [capturing, setCapturing] = useState(false)
-  const [hint, setHint] = useState('')
-  const modsRef = useRef<ChordModifiers | null>(null)
-
-  const stopCapturing = (): void => {
-    setCapturing(false)
-    setHint('')
-    modsRef.current = null
-  }
-
-  const startCapturing = (): void => {
-    modsRef.current = null
-    setCapturing(true)
-    setHint('')
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>): void => {
-    if (!capturing) return
-    e.preventDefault()
-    if (e.key === 'Escape') {
-      stopCapturing()
-      return
-    }
-
-    if (isModifierEventKey(e.key)) {
-      // Only modifier keys pressed so far — remember the strongest state for a possible keyUp
-      // commit (hold-to-talk) and preview it; still lets the user continue on to press a real
-      // key instead (toggle mode) below.
-      const primaryPressed = isMac ? e.metaKey : e.ctrlKey
-      if (!primaryPressed) {
-        setHint(isMac ? `Hold ⌘…` : `Hold Ctrl…`)
-        return
-      }
-      const mods: ChordModifiers = { cmd: true, alt: e.altKey, shift: e.shiftKey }
-      modsRef.current = mods
-      const preview = buildModifierChord(mods)
-      setHint(preview ? `Release now for hold-to-talk (${formatShortcut(preview, isMac)}) — or press a key for toggle` : '')
-      return
-    }
-
-    const evt: ShortcutKeyEvent = {
-      metaKey: e.metaKey,
-      ctrlKey: e.ctrlKey,
-      shiftKey: e.shiftKey,
-      altKey: e.altKey,
-      key: e.key
-    }
-    const combo = captureToShortcut(evt, isMac)
-    if (!combo) {
-      setHint(isMac ? `Hold ⌘ and press a key` : `Hold Ctrl and press a key`)
-      return
-    }
-    onChange(combo)
-    stopCapturing()
-  }
-
-  const onKeyUp = (e: React.KeyboardEvent<HTMLButtonElement>): void => {
-    if (!capturing || !modsRef.current) return
-    const anyModDown = (isMac ? e.metaKey : e.ctrlKey) || e.altKey || e.shiftKey
-    if (anyModDown) return // not fully released yet — keep waiting
-    const combo = buildModifierChord(modsRef.current)
-    if (!combo) return
-    onChange(combo)
-    stopCapturing()
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        className="min-w-[140px] cursor-pointer rounded-md border border-border bg-panel-header px-3 py-1.5 text-[13px] font-medium text-text outline-none hover:bg-[rgba(255,255,255,0.06)]"
-        onClick={startCapturing}
-        onKeyDown={onKeyDown}
-        onKeyUp={onKeyUp}
-        onBlur={stopCapturing}
-      >
-        {capturing ? hint || 'Press keys…' : formatShortcut(value, isMac)}
-      </button>
-      <Button
-        variant="ghost"
-        disabled={value === DEFAULT_SHORTCUT}
-        onClick={() => onChange(DEFAULT_SHORTCUT)}
-      >
-        Reset
-      </Button>
-    </div>
-  )
-}
-
 const LANGUAGES: { value: string; label: string }[] = [
   { value: 'auto', label: 'Auto-detect' },
   { value: 'en', label: 'English' },
@@ -346,7 +236,14 @@ export function SpeechSection({
               ? `Currently hold-to-talk: hold ${formatShortcut(settings.speech.shortcut, isMac)}.`
               : `Currently toggle: press ${formatShortcut(settings.speech.shortcut, isMac)}.`
           }
-          control={<ShortcutCaptureField value={settings.speech.shortcut} onChange={setShortcut} />}
+          control={
+            <ShortcutCaptureField
+              value={settings.speech.shortcut}
+              onChange={setShortcut}
+              defaultValue={DEFAULT_SHORTCUT}
+              allowChord
+            />
+          }
         />
       </SearchableRow>
 

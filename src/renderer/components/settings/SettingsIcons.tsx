@@ -42,6 +42,13 @@ const PATHS: Record<SettingsSectionId, React.JSX.Element> = {
       <path d="M4 8.2a4 4 0 0 0 8 0M8 12.2v1.6M6.2 13.8h3.6" />
     </>
   ),
+  // A keycap — the obvious glyph for configurable keyboard shortcuts.
+  shortcuts: (
+    <>
+      <rect x="2.2" y="4" width="11.6" height="8" rx="1.8" />
+      <path d="M5.4 8h.01M8 8h.01M10.6 8h.01" />
+    </>
+  ),
   agents: (
     <path d="M8 2.3 9.4 5.9 13 7.3 9.4 8.7 8 12.3 6.6 8.7 3 7.3 6.6 5.9z" />
   ),

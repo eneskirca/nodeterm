@@ -7,6 +7,8 @@ import type { GroupWorktree } from './worktree'
 import type { ClientId, DinoSnapshot, PeerDiff, PeerIdentity, PeerState } from './presence'
 import type { WhisperModelInfo } from './speech'
 import type { ProjectKanbanGitHub } from './github-issues'
+import type { ShortcutMap } from './shortcuts'
+import { DEFAULT_SHORTCUTS } from './shortcuts'
 
 export interface PtyCreateOptions {
   shell?: string
@@ -1040,6 +1042,9 @@ export interface Settings {
   notchHoverExpand: boolean
   /** Dictation (desktop/server). Written as a whole object by the renderer. */
   speech: SpeechSettings
+  /** User-configurable keyboard shortcuts, keyed by action id. Seeded from DEFAULT_SHORTCUTS;
+   *  merged over defaults on load so a new action simply appears with its shipped combo. */
+  shortcuts: ShortcutMap
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -1128,6 +1133,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notchWidth: 168,
   notchHoverExpand: true,
   speech: { engine: 'whisper', model: 'tiny', language: 'auto', shortcut: 'Cmd+Alt' },
+  shortcuts: DEFAULT_SHORTCUTS,
 }
 
 export interface SettingsApi {

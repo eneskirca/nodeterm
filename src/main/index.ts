@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
 import { IPC } from '../shared/ipc'
 import { writeFilesToClipboard } from './clipboard-files'
+import { matchesShortcut } from '../shared/shortcut'
 import { registerFsHandlers } from '../core/fs-handlers'
 import { registerBoardLogHandlers, type BoardLogRoute } from '../core/board-log-handlers'
 import type { RemoteLogExec } from '../core/board-log'
@@ -192,6 +193,10 @@ app.commandLine.appendSwitch('max-active-webgl-contexts', String(WEBGL_CONTEXT_C
 // documented plaintext fallback. Never set this for a real build: it would silently downgrade
 // at-rest encryption of that key.
 if (NT_MULTI && process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain')
+
+// Platform-abstracted primary modifier target for shortcut matching in the main process
+// (⌘ on mac, Ctrl elsewhere) — mirrors the renderer's `isMac` reader.
+const isMacMain = process.platform === 'darwin'
 
 // First thing in bootstrap: install the Electron CorePlatform so anything in src/core
 // (wired in later tasks) can resolve platform() at boot. Placed after the NT_MULTI
@@ -467,14 +472,22 @@ function createWindow(): BrowserWindow {
   })
 
   // Intercept Cmd/Ctrl+M (default = minimize) and route it to the renderer for the
-  // markdown-view toggle instead.
+  // markdown-view toggle instead; and Cmd/Ctrl+W for closing the selected node. The combos come
+  // from settings.shortcuts (Keyboard Shortcuts section) so a rebind is honoured here too.
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || !(input.meta || input.control)) return
-    const key = input.key.toLowerCase()
-    if (key === 'm') {
+    if (input.type !== 'keyDown') return
+    const shortcuts = settingsStore.get().shortcuts
+    const evt = {
+      metaKey: input.meta,
+      ctrlKey: input.control,
+      shiftKey: input.shift,
+      altKey: input.alt,
+      key: input.key
+    }
+    if (matchesShortcut(evt, shortcuts.toggleMarkdown, isMacMain)) {
       event.preventDefault()
       win.webContents.send(IPC.appToggleMarkdown)
-    } else if (key === 'w' && !input.shift) {
+    } else if (matchesShortcut(evt, shortcuts.closeNode, isMacMain)) {
       // Repurpose Cmd/Ctrl+W: the renderer closes the selected node(s); if none are
       // selected it asks us to close the window (the standard behavior).
       event.preventDefault()
