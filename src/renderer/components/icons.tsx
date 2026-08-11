@@ -137,6 +137,12 @@ export const IconSwitch = () => (
   </svg>
 )
 
+export const IconPause = () => (
+  <svg {...S}>
+    <path d="M9 6v12M15 6v12" />
+  </svg>
+)
+
 export const IconJump = () => (
   <svg {...S}>
     <circle cx="11" cy="11" r="7" />

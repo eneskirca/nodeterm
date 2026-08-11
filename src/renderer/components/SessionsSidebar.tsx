@@ -7,7 +7,7 @@ import {
   type SessionNodeInput
 } from '../lib/sessionList'
 import { SessionRow } from './SessionRow'
-import { IconBellFilled, IconCircleCheck, IconPin } from './icons'
+import { IconBellFilled, IconCircleCheck, IconPause, IconPin } from './icons'
 import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 import { useAgentStatus } from '../state/agentStatus'
@@ -51,6 +51,10 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   const allProjects = useProjects((s) => s.projects)
   // Closed projects are hidden from the tab bar; hide them from the sidebar too.
   const projects = useMemo(() => allProjects.filter((p) => !p.closed), [allProjects])
+  const idleProjectIds = useMemo(
+    () => new Set(projects.filter((p) => p.idle).map((p) => p.id)),
+    [projects]
+  )
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const statusById = useAgentStatus((s) => s.byId)
   const namingById = useSessionNaming((s) => s.byId)
@@ -280,7 +284,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
               {...(dragProj ? projDropProps(g.projectId) : {})}
             >
               <div
-                className={`ss-group__head${dropClass(g.projectId, null)}`}
+                className={`ss-group__head${dropClass(g.projectId, null)}${idleProjectIds.has(g.projectId) ? ' is-idle' : ''}`}
                 // One click, one action (projectHeadClickAction documents why it is never both):
                 // an inactive project switches — through Canvas, so the outgoing project's live
                 // nodes are committed and the new active id is persisted — and the active one
@@ -322,6 +326,11 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                   {(g.projectName.trim() || '?').charAt(0).toUpperCase()}
                 </span>
                 <span className="ss-group__name">{g.projectName}</span>
+                {idleProjectIds.has(g.projectId) && (
+                  <span className="ss-group__idle-badge" title="Idle — click to switch, right-click to Resume">
+                    <IconPause />
+                  </span>
+                )}
                 {branches[g.projectId] && (
                   <span className="ss-group__branch">⎇ {branches[g.projectId]}</span>
                 )}

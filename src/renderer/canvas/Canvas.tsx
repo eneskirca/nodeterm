@@ -87,6 +87,7 @@ import {
   IconReload,
   IconPower,
   IconNote,
+  IconPause,
   IconPhone,
   IconProject,
   IconRemote,
@@ -1036,6 +1037,10 @@ export function Canvas() {
   }, [getViewport, setViewport])
 
   const activeProjectId = useProjects((s) => s.activeProjectId)
+  // Subscribed (not a `.getState()` snapshot) so marking the ACTIVE project idle from the sidebar
+  // context menu re-renders the idle banner immediately instead of waiting on an unrelated
+  // re-render to pick up the flag.
+  const activeProjectIdle = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.idle)
   // Bumped by `requestReload()`; a dependency of the project-load effect so an in-place reload of
   // the ALREADY-active project actually re-runs it (see reloadActiveProject).
   const reloadNonce = useProjects((s) => s.reloadNonce)
@@ -7582,6 +7587,12 @@ export function Canvas() {
             }
           },
           { label: 'Set folder…', icon: <IconProject />, onClick: () => setProjectFolder(projectId) },
+          {
+            label: project.idle ? 'Resume' : 'Mark idle',
+            icon: <IconPause />,
+            onClick: () =>
+              project.idle ? resumeProject(projectId) : useProjects.getState().setProjectIdle(projectId, true)
+          },
           { type: 'separator' },
           { type: 'colors', onPick: (color) => setProjectColor(projectId, color) },
           { type: 'separator' },
@@ -7594,7 +7605,7 @@ export function Canvas() {
         ]
       })
     },
-    [activeProjectId, switchProject, renameProject, setProjectFolder, setProjectColor, closeProject]
+    [activeProjectId, switchProject, renameProject, setProjectFolder, setProjectColor, closeProject, resumeProject]
   )
 
   // Reopen a previously closed project and make it active — the active-project effect reloads its
@@ -8296,18 +8307,14 @@ export function Canvas() {
         </ReactFlow>
         </SessionProvider>
 
-        {(() => {
-          const activeProject = activeProjectId ? useProjects.getState().getProject(activeProjectId) : undefined
-          if (!activeProject?.idle) return null
-          return (
-            <div className="idle-project-banner">
-              <span>Project idle</span>
-              <button type="button" onClick={() => resumeProject(activeProject.id)}>
-                Resume
-              </button>
-            </div>
-          )
-        })()}
+        {activeProjectIdle && activeProjectId && (
+          <div className="idle-project-banner">
+            <span>Project idle</span>
+            <button type="button" onClick={() => resumeProject(activeProjectId)}>
+              Resume
+            </button>
+          </div>
+        )}
 
         {/* MUST stay OUTSIDE <ReactFlow>. The library's wrapper carries inline
             `position: relative; z-index: 0`, which makes the whole flow one stacking context

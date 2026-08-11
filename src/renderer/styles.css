@@ -6443,6 +6443,8 @@ body,
 .ss-group__head:hover .ss-group__add { opacity: 0.7; }
 .ss-group__add:hover { opacity: 1 !important; color: var(--accent); }
 .ss-group__empty { padding: 4px 8px 6px 22px; font-size: 11px; color: var(--muted); }
+.ss-group__head.is-idle { opacity: 0.55; }
+.ss-group__idle-badge { display: inline-flex; margin-left: 4px; opacity: 0.8; }
 
 /* Canvas-group sub-section inside a project */
 .ss-subgroup {
