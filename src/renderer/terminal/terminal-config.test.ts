@@ -17,6 +17,7 @@ import {
   seedPaint,
   setFittedSize,
   shouldApplyResync,
+  shouldSkipSpawn,
   stripTrailingNewline,
   takeRecycled,
   terminalKey,
@@ -235,6 +236,15 @@ describe('recycleAction', () => {
 
   it('treats a payload-less/legacy notice as "no replacement" (never spawn in a stale cwd)', () => {
     expect(recycleAction(undefined)).toBe('ended')
+  })
+})
+
+describe('shouldSkipSpawn', () => {
+  it('skips when closed, ended, or the owning project is idle; spawns otherwise', () => {
+    expect(shouldSkipSpawn({ closed: false, ended: false, projectIdle: false })).toBe(false)
+    expect(shouldSkipSpawn({ closed: true, ended: false, projectIdle: false })).toBe(true)
+    expect(shouldSkipSpawn({ closed: false, ended: true, projectIdle: false })).toBe(true)
+    expect(shouldSkipSpawn({ closed: false, ended: false, projectIdle: true })).toBe(true)
   })
 })
 

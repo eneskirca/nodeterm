@@ -46,6 +46,7 @@ import {
   seedPaint,
   setFittedSize,
   shouldApplyResync,
+  shouldSkipSpawn,
   stripTrailingNewline,
   takeRecycled,
   terminalKey,
@@ -2265,7 +2266,11 @@ export function TerminalNode({
     // Prefetch the persisted scrollback in parallel with the spawn so it's ready to replay the
     // instant the session resolves (a cold restart after a reboot recreates the tmux session
     // empty — see the `fresh` handling below). Cheap no-op ('') when there's no snapshot.
-    const noSpawn = !!getCo(termKey).closed || getCo(termKey).ended
+    const noSpawn = shouldSkipSpawn({
+      closed: !!getCo(termKey).closed,
+      ended: !!getCo(termKey).ended,
+      projectIdle: !!data.projectIdle
+    })
     const scrollbackPromise =
       parked || noSpawn
         ? Promise.resolve('')

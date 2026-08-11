@@ -134,6 +134,14 @@ export function recycleAction(info: { ready: boolean } | undefined): 'restart' |
   return info?.ready ? 'restart' : 'ended'
 }
 
+/** Whether TerminalNode's spawn effect must skip `transport.create(...)` entirely: an ended/
+ *  killed session (`closed`/`ended` — see `noSpawn`'s original callers) OR the owning project
+ *  is idle. Pure, so the three reasons stay independently testable instead of an inline `||`
+ *  chain at the call site. */
+export function shouldSkipSpawn(opts: { closed: boolean; ended: boolean; projectIdle: boolean }): boolean {
+  return opts.closed || opts.ended || opts.projectIdle
+}
+
 /**
  * Should a `pty:resync` payload be painted? The server promises never to send an empty capture,
  * but the renderer guards anyway: a resync RESETS the emulator, and a screen reset on an empty
