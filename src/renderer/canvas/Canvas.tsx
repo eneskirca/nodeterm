@@ -309,6 +309,7 @@ import {
   duplicateNode,
   flowToNodeStates,
   groupSelectedNodes,
+  markNodesIdle,
   NODE_COLORS,
   nodeStatesToFlow,
   reorderNodeBefore,
@@ -1654,7 +1655,7 @@ export function Canvas() {
     // SSH project: (re)open its ControlMaster and record the controlPath so this project's
     // terminal nodes can run over it. Idempotent in main (a live master is reused), so a tab
     // switch back to a connected project is a no-op. Remote tmux is unaffected by the master.
-    if (project.ssh) {
+    if (project.ssh && !project.idle) {
       const ssh = project.ssh
       // SSH remote projects are free (Core). Only phone/relay remote access is Pro-gated.
       window.nodeTerminal.sshProject
@@ -1668,12 +1669,13 @@ export function Canvas() {
         .catch(() => {
           /* status surfaced via onStatus → the connection banner */
         })
-    } else {
+    } else if (!project.idle) {
       // Local active project: ensure all git ops run local (no stale remote from a prior SSH tab).
       void api.git.setActiveRemote(null)
     }
     loadingRef.current = true
-    const flow = nodeStatesToFlow(project.nodes)
+    let flow = nodeStatesToFlow(project.nodes)
+    if (project.idle) flow = markNodesIdle(flow)
     setNodes(flow)
     // React Flow now holds THIS project's canvas: the commit guard may pair it with the active id
     // again. Both refs are assigned HERE, synchronously, because `setNodes` only lands on the next
@@ -7538,6 +7540,18 @@ export function Canvas() {
       void writeDisk()
     },
     [commitActiveToStore, writeDisk, disposeRelayTabForProject]
+  )
+
+  // Resume an idle project: clear the flag and re-run the active-project effect (which now
+  // takes the SSH-connect / node-spawn branches it skipped while idle) via reloadNonce — the
+  // same mechanism an external-change reload already uses, so a resumed project materializes
+  // exactly like a fresh tab switch into it.
+  const resumeProject = useCallback(
+    (id: string) => {
+      useProjects.getState().setProjectIdle(id, false)
+      if (id === activeProjectId) useProjects.getState().requestReload()
+    },
+    [activeProjectId]
   )
 
   // Right-click on a sidebar project header: mostly the same project actions as the tab caret
