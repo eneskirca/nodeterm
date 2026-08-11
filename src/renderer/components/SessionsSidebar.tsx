@@ -46,6 +46,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // Closed projects are hidden from the tab bar; hide them from the sidebar too.
   const projects = useMemo(() => allProjects.filter((p) => !p.closed), [allProjects])
   const activeProjectId = useProjects((s) => s.activeProjectId)
+  const setActiveProject = useProjects((s) => s.setActive)
   const statusById = useAgentStatus((s) => s.byId)
   const namingById = useSessionNaming((s) => s.byId)
   // This sidebar's core api (a stable context read — the branch lookups run on the session's git).
@@ -275,7 +276,10 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
             >
               <div
                 className={`ss-group__head${dropClass(g.projectId, null)}`}
-                onClick={() => toggleCollapse(g.projectId, isCollapsed)}
+                onClick={() => {
+                  if (!g.isActive) setActiveProject(g.projectId)
+                  if (isCollapsed) toggleCollapse(g.projectId, isCollapsed)
+                }}
                 onContextMenu={(e) => props.onProjectContextMenu(e, g.projectId)}
                 title={drag?.projectId === g.projectId ? 'Drop here to remove from group' : undefined}
                 draggable
@@ -289,7 +293,16 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                 }}
                 {...dropProps(g.projectId, null)}
               >
-                <span className="ss-group__chev">{isCollapsed ? '▶' : '▼'}</span>
+                <span
+                  className="ss-group__chev"
+                  title={isCollapsed ? 'Expand' : 'Collapse'}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggleCollapse(g.projectId, isCollapsed)
+                  }}
+                >
+                  {isCollapsed ? '▶' : '▼'}
+                </span>
                 <span className="ss-group__monogram" style={{ background: g.projectColor }}>
                   {(g.projectName.trim() || '?').charAt(0).toUpperCase()}
                 </span>
