@@ -9,6 +9,7 @@ import {
   fitGroupToChildren,
   flowToNodeStates,
   groupSelectedNodes,
+  markNodesIdle,
   nodeStatesToFlow,
   nodeSshFor,
   reorderNodeBefore,
@@ -17,6 +18,7 @@ import {
   ungroupNodes
 } from './workspace'
 import type { CanvasNode } from './workspace'
+import type { CanvasNodeState } from '@shared/types'
 
 const term = (id: string, pos: { x: number; y: number }, parentId?: string): CanvasNode =>
   ({
@@ -525,5 +527,21 @@ describe('createAgentNode prompt injection', () => {
   it('keeps argv injection byte-identical for codex and gemini', () => {
     expect(createAgentNode('codex', 0, undefined, undefined, 'do X').data.initialCommand).toBe("codex 'do X'")
     expect(createAgentNode('gemini', 0, undefined, undefined, 'do X').data.initialCommand).toBe("gemini 'do X'")
+  })
+})
+
+describe('markNodesIdle', () => {
+  const node = (over: Partial<CanvasNodeState> = {}): CanvasNodeState => ({
+    id: 'term-1', kind: 'terminal', position: { x: 0, y: 0 },
+    size: { width: 400, height: 300 }, title: 't', color: '#fff', group: null, ...over
+  })
+
+  it('stamps data.projectIdle on every node, changes nothing else', () => {
+    const flow = nodeStatesToFlow([node(), node({ id: 'term-2' })])
+    const marked = markNodesIdle(flow)
+    expect(marked).toHaveLength(2)
+    for (const n of marked) expect(n.data.projectIdle).toBe(true)
+    expect(marked[0].id).toBe(flow[0].id)
+    expect(marked[0].position).toEqual(flow[0].position)
   })
 })

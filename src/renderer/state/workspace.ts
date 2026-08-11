@@ -71,6 +71,13 @@ export interface NodeData {
    * deliberately absent from flowToNodeStates, like initialCommand/expandedHeight.
    */
   respawnNonce?: number
+  /**
+   * Runtime-only, never persisted (like `respawnNonce` — deliberately absent from
+   * flowToNodeStates): set by Canvas's active-project effect when the owning project is
+   * `idle`. `TerminalNode`'s spawn guard treats this the same as an ended/killed session —
+   * see the `noSpawn` extension in terminal-config.ts.
+   */
+  projectIdle?: boolean
   shell?: string
   cwd?: string
   text?: string
@@ -1082,6 +1089,13 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
       }
     }
   })
+}
+
+/** Stamps every node's data with `projectIdle: true` — used when materializing an idle
+ *  project's canvas, so TerminalNode's spawn guard skips PTY/SSH connect. Pure; does not
+ *  mutate its input. */
+export function markNodesIdle(nodes: CanvasNode[]): CanvasNode[] {
+  return nodes.map((n) => ({ ...n, data: { ...n.data, projectIdle: true } }))
 }
 
 /** Serializes live React Flow nodes back into persisted node states. */
