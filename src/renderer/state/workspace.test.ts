@@ -15,6 +15,7 @@ import {
   reorderNodeBefore,
   reparentNode,
   resolveNewNodeAccount,
+  resumeIdleNodes,
   ungroupNodes
 } from './workspace'
 import type { CanvasNode } from './workspace'
@@ -543,5 +544,38 @@ describe('markNodesIdle', () => {
     for (const n of marked) expect(n.data.projectIdle).toBe(true)
     expect(marked[0].id).toBe(flow[0].id)
     expect(marked[0].position).toEqual(flow[0].position)
+  })
+})
+
+describe('resumeIdleNodes', () => {
+  const node = (over: Partial<CanvasNodeState> = {}): CanvasNodeState => ({
+    id: 'term-1', kind: 'terminal', position: { x: 0, y: 0 },
+    size: { width: 400, height: 300 }, title: 't', color: '#fff', group: null, ...over
+  })
+
+  it('clears projectIdle and bumps respawnNonce on every node that had it set', () => {
+    const flow = markNodesIdle(nodeStatesToFlow([node(), node({ id: 'term-2' })]))
+    for (const n of flow) expect(n.data.projectIdle).toBe(true)
+
+    const resumed = resumeIdleNodes(flow)
+    expect(resumed).toHaveLength(2)
+    for (const n of resumed) {
+      expect(n.data.projectIdle).toBe(false)
+      expect(n.data.respawnNonce).toBe(1)
+    }
+  })
+
+  it('increments an existing respawnNonce rather than resetting it', () => {
+    const flow = nodeStatesToFlow([node()])
+    const withNonce = flow.map((n) => ({ ...n, data: { ...n.data, respawnNonce: 3 } }))
+    const resumed = resumeIdleNodes(withNonce)
+    expect(resumed[0].data.respawnNonce).toBe(4)
+  })
+
+  it('changes nothing else about the node (id, position untouched)', () => {
+    const flow = nodeStatesToFlow([node()])
+    const resumed = resumeIdleNodes(flow)
+    expect(resumed[0].id).toBe(flow[0].id)
+    expect(resumed[0].position).toEqual(flow[0].position)
   })
 })

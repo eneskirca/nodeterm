@@ -311,6 +311,7 @@ import {
   flowToNodeStates,
   groupSelectedNodes,
   markNodesIdle,
+  resumeIdleNodes,
   NODE_COLORS,
   nodeStatesToFlow,
   reorderNodeBefore,
@@ -858,6 +859,11 @@ export function Canvas() {
   // One-shot: the next active-project load keeps the CURRENT camera instead of applying the
   // project's saved viewport. Set by reloadActiveProject (in-place external-change reload).
   const preserveViewportRef = useRef(false)
+  // One-shot: the next active-project load bumps every node's respawnNonce (via
+  // resumeIdleNodes) instead of loading the flow as-is. Set by resumeProject when resuming
+  // the ACTIVE project — its TerminalNode components stay mounted across the reload (same node
+  // ids), so clearing `idle` alone never reaches their spawn effect; the nonce bump does.
+  const resumePendingRef = useRef(false)
   const [consentOpen, setConsentOpen] = useState(false)
   // Drives WorktreeDialog. `groupId` null = create the group frame around the new worktree;
   // set = bind an existing group (the group context menu). `at` is the pane cursor, if any.
@@ -1674,13 +1680,20 @@ export function Canvas() {
         .catch(() => {
           /* status surfaced via onStatus → the connection banner */
         })
-    } else if (!project.idle) {
+    } else {
       // Local active project: ensure all git ops run local (no stale remote from a prior SSH tab).
+      // Unconditional (not gated on `!project.idle`): this branch only clears routing and spawns no
+      // connection, so it must run even for an idle local project — otherwise switching from an SSH
+      // project into an idle local one leaves remote git routing armed for the wrong project.
       void api.git.setActiveRemote(null)
     }
     loadingRef.current = true
     let flow = nodeStatesToFlow(project.nodes)
     if (project.idle) flow = markNodesIdle(flow)
+    if (resumePendingRef.current) {
+      resumePendingRef.current = false
+      flow = resumeIdleNodes(flow)
+    }
     setNodes(flow)
     // React Flow now holds THIS project's canvas: the commit guard may pair it with the active id
     // again. Both refs are assigned HERE, synchronously, because `setNodes` only lands on the next
@@ -7550,13 +7563,33 @@ export function Canvas() {
   // Resume an idle project: clear the flag and re-run the active-project effect (which now
   // takes the SSH-connect / node-spawn branches it skipped while idle) via reloadNonce — the
   // same mechanism an external-change reload already uses, so a resumed project materializes
-  // exactly like a fresh tab switch into it.
+  // exactly like a fresh tab switch into it. For the ACTIVE project, its TerminalNode components
+  // stay mounted across that reload (nodeStatesToFlow rebuilds the flow with the same node ids),
+  // so clearing `idle` alone never reaches the already-mounted spawn effect — resumePendingRef
+  // tells the reload to also bump every node's respawnNonce (via resumeIdleNodes), which does.
+  // A background (non-active) project needs no such bump: it materializes via a fresh mount the
+  // next time it becomes active, and a fresh mount always runs the spawn effect regardless of
+  // respawnNonce.
+  // The persist() is load-bearing: the store action alone never reaches project.json on disk.
   const resumeProject = useCallback(
     (id: string) => {
       useProjects.getState().setProjectIdle(id, false)
-      if (id === activeProjectId) useProjects.getState().requestReload()
+      if (id === activeProjectId) {
+        resumePendingRef.current = true
+        useProjects.getState().requestReload()
+      }
+      void persist()
     },
-    [activeProjectId]
+    [activeProjectId, persist]
+  )
+
+  // The persist() is load-bearing: the store action alone never reaches project.json on disk.
+  const markProjectIdle = useCallback(
+    (id: string) => {
+      useProjects.getState().setProjectIdle(id, true)
+      void persist()
+    },
+    [persist]
   )
 
   // Right-click on a sidebar project header: mostly the same project actions as the tab caret
@@ -7590,8 +7623,7 @@ export function Canvas() {
           {
             label: project.idle ? 'Resume' : 'Mark idle',
             icon: <IconPause />,
-            onClick: () =>
-              project.idle ? resumeProject(projectId) : useProjects.getState().setProjectIdle(projectId, true)
+            onClick: () => (project.idle ? resumeProject(projectId) : markProjectIdle(projectId))
           },
           { type: 'separator' },
           { type: 'colors', onPick: (color) => setProjectColor(projectId, color) },
@@ -7605,7 +7637,16 @@ export function Canvas() {
         ]
       })
     },
-    [activeProjectId, switchProject, renameProject, setProjectFolder, setProjectColor, closeProject, resumeProject]
+    [
+      activeProjectId,
+      switchProject,
+      renameProject,
+      setProjectFolder,
+      setProjectColor,
+      closeProject,
+      resumeProject,
+      markProjectIdle
+    ]
   )
 
   // Reopen a previously closed project and make it active — the active-project effect reloads its

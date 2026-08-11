@@ -1098,6 +1098,24 @@ export function markNodesIdle(nodes: CanvasNode[]): CanvasNode[] {
   return nodes.map((n) => ({ ...n, data: { ...n.data, projectIdle: true } }))
 }
 
+/** Resumes a previously-idle project's flow: clears the `projectIdle` stamp and bumps
+ *  `respawnNonce` on every node. Clearing `project.idle` alone does not reach an
+ *  already-mounted TerminalNode's lifecycle effect (it is keyed on `respawnNonce`, not
+ *  `projectIdle` — see the Resume-button bug this fixes); bumping the nonce is what makes
+ *  the effect re-run and actually spawn. A node that never spawned while idle has nothing to
+ *  tear down, so bumping it is harmless — the effect proceeds straight to a fresh spawn. Pure;
+ *  does not mutate its input. */
+export function resumeIdleNodes(nodes: CanvasNode[]): CanvasNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    data: {
+      ...n.data,
+      projectIdle: false,
+      respawnNonce: ((n.data.respawnNonce as number | undefined) ?? 0) + 1
+    }
+  }))
+}
+
 /** Serializes live React Flow nodes back into persisted node states. */
 export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
   const sizeFor = (kind: NodeKind) =>
