@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  ABORT_LINE,
   DELIVERY_ATTEMPTS,
   VERIFY_TIMEOUT_MS,
   cleanEcho,
@@ -80,23 +81,31 @@ describe('deliverCommand', () => {
     expect(f.writes).toEqual([CMD, '\r'])
   })
 
-  it('kills the line and rewrites when the echo never completes, then succeeds', () => {
+  // The abort MUST NOT be Ctrl-U. PSReadLine ships EditMode=Windows, where Ctrl-U is UNBOUND, so
+  // it self-inserts and renders as a literal `^U` — the rewrite then lands as `^Uclaude` and the
+  // shell reports an unknown command. Measured on a psmux/PowerShell pane; see the constant.
+  it('aborts the pending line with Ctrl-C, never with a Ctrl-U that PSReadLine self-inserts', () => {
+    expect(ABORT_LINE).toBe('\x03')
+    expect(ABORT_LINE).not.toBe('\x15')
+  })
+
+  it('aborts the line and rewrites when the echo never completes, then succeeds', () => {
     const f = fakeIo()
     deliverCommand(f.io, CMD)
     f.emit(CMD.slice(0, 30)) // the tty flush ate the rest
     vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
-    expect(f.writes).toEqual([CMD, '\x15', CMD])
+    expect(f.writes).toEqual([CMD, ABORT_LINE, CMD])
     f.emit(CMD) // clean echo on attempt 2
-    expect(f.writes).toEqual([CMD, '\x15', CMD, '\r'])
+    expect(f.writes).toEqual([CMD, ABORT_LINE, CMD, '\r'])
   })
 
   it('fails open: after the last attempt times out it submits unverified', () => {
     const f = fakeIo()
     deliverCommand(f.io, CMD)
     for (let i = 0; i < DELIVERY_ATTEMPTS; i++) vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
-    // attempt 1..N writes, N-1 kill-lines between them, final bare Enter.
+    // attempt 1..N writes, N-1 aborts between them, final bare Enter.
     expect(f.writes.filter((w) => w === CMD)).toHaveLength(DELIVERY_ATTEMPTS)
-    expect(f.writes.filter((w) => w === '\x15')).toHaveLength(DELIVERY_ATTEMPTS - 1)
+    expect(f.writes.filter((w) => w === ABORT_LINE)).toHaveLength(DELIVERY_ATTEMPTS - 1)
     expect(f.writes[f.writes.length - 1]).toBe('\r')
   })
 
@@ -177,10 +186,10 @@ describe('deliverCommand', () => {
   }
 
   it('settles the delivery when the retry write throws, instead of stranding it', () => {
-    const f = throwingIo((d) => d === '\x15')
+    const f = throwingIo((d) => d === ABORT_LINE)
     let ends = 0
     deliverCommand(f.io, CMD, () => (ends += 1))
-    vi.advanceTimersByTime(VERIFY_TIMEOUT_MS) // echo never came → kill-line → throw
+    vi.advanceTimersByTime(VERIFY_TIMEOUT_MS) // echo never came → abort → throw
     expect(ends).toBe(1)
     expect(vi.getTimerCount()).toBe(0) // no retry chain left behind
     vi.advanceTimersByTime(VERIFY_TIMEOUT_MS * DELIVERY_ATTEMPTS)

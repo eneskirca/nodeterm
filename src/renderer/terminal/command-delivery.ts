@@ -4,7 +4,7 @@
 // mangled line submitted anyway strands the shell at `quote>` (field report: 3 spawned
 // team agents, none started, each needed a manual `'` + Enter). So: write WITHOUT Enter,
 // wait until the shell has echoed the tail of the line back, THEN submit. A verify timeout
-// kills the pending line (Ctrl-U) and rewrites; the LAST attempt submits unverified —
+// aborts the pending line (Ctrl-C) and rewrites; the LAST attempt submits unverified —
 // fail-open, a terminal whose echo we can't recognize must never block the launch (that
 // worst case is exactly the pre-fix behavior).
 
@@ -14,8 +14,32 @@ export const DELIVERY_ATTEMPTS = 3
  *  sequence interleaved mid-line rarely lands inside the matched window. */
 export const ECHO_TAIL_CHARS = 24
 /** Ctrl-U — clear the pending input line before a rewrite. Exported because the in-place restart
- *  choreography clears the line the same way before typing its exit command (agent-restart.ts). */
+ *  choreography clears the line the same way before typing its exit command (agent-restart.ts),
+ *  where the pane is owned by an agent TUI reading raw stdin — its own kill-line binding, not the
+ *  host shell's line editor. Do NOT use it against a SHELL prompt; see ABORT_LINE. */
 export const KILL_LINE = '\x15'
+/**
+ * Ctrl-C — abandon whatever the previous attempt left in the SHELL's line editor, so the rewrite
+ * below starts from a clean prompt.
+ *
+ * This is deliberately not Ctrl-U, which is what a POSIX-only reading of "clear the line" asks
+ * for. PSReadLine — the line editor every Windows PowerShell pane runs — ships `EditMode=Windows`,
+ * and in that mode Ctrl-U is simply UNBOUND: it self-inserts and renders as a literal `^U`. The
+ * retry meant to repair a half-eaten line was therefore CREATING one, and the fail-open submit at
+ * the end of the attempts ran `^Uclaude` — an unknown command, the agent never launched. Measured
+ * on a psmux/PowerShell pane: `PS …> claude^Uclaude`.
+ *
+ * Ctrl-C is the one abort every line editor in scope honors — PSReadLine binds it to
+ * CopyOrCancelLine (cancels, with nothing selected), and POSIX shells discard the line on SIGINT.
+ * Keying this off the platform instead would be wrong twice over: the behavior belongs to the
+ * SHELL, not the OS, so a `win32` branch would hand ESC to a Git Bash pane on Windows (where ESC
+ * is readline's Meta prefix and would mangle the command's first character), and nothing the
+ * renderer can see at delivery time names the shell anyway.
+ *
+ * Safe on an already-empty prompt, which is the common case here — the attempt that timed out
+ * usually never reached the line editor at all: it prints a bare `^C` and redraws the prompt.
+ */
+export const ABORT_LINE = '\x03'
 
 // CSI (\x1b[...X), OSC (\x1b]...BEL|ST) and single-char ESC sequences.
 // eslint-disable-next-line no-control-regex
@@ -103,7 +127,7 @@ export function deliverCommand(io: DeliveryIo, cmd: string, onSettled?: () => vo
         submit() // fail-open: unverified submit beats a never-launched agent
         return
       }
-      if (!write(KILL_LINE)) return // transport gone — the delivery is over, not stuck
+      if (!write(ABORT_LINE)) return // transport gone — the delivery is over, not stuck
       tryOnce()
     }, VERIFY_TIMEOUT_MS)
     write(cmd, attempt === 1)
