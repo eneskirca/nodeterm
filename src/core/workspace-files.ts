@@ -44,6 +44,7 @@ export interface IndexEntryV3 {
   name: string
   color: string
   closed?: boolean
+  idle?: boolean
   cwd?: string
   ssh?: Project['ssh']
   cache?: ProjectFileV1
@@ -137,6 +138,7 @@ export function fileToProject(
     cwd?: string
     ssh?: Project['ssh']
     closed?: boolean
+    idle?: boolean
     /** This machine's own exec values for these nodes (from the local index entry). A file read
      *  WITHOUT them — an adopted/cloned folder, a probe — gets the safe defaults, never the file's
      *  own `shell`/`ssh.extraArgs`. */
@@ -159,7 +161,8 @@ export function fileToProject(
     ...(validKanban(f.kanban) ? { kanban: f.kanban } : {}),
     ...(base.cwd ? { cwd: base.cwd } : {}),
     ...(base.ssh ? { ssh: base.ssh } : {}),
-    ...(base.closed ? { closed: true } : {})
+    ...(base.closed ? { closed: true } : {}),
+    ...(base.idle ? { idle: true } : {})
   }
 }
 
@@ -182,7 +185,11 @@ export function splitWorkspace(
     // disk — it has no disk representation at all. Drop it entirely (no ref, no inline, no
     // cache) BEFORE the unavailable handling, so it leaks in none of the branches below.
     if (p.remote) continue
-    const header = { id: p.id, name: p.name, color: p.color, ...(p.closed ? { closed: true } : {}) }
+    const header = {
+      id: p.id, name: p.name, color: p.color,
+      ...(p.closed ? { closed: true } : {}),
+      ...(p.idle ? { idle: true } : {})
+    }
     if (p.unavailable) {
       // Placeholder (folder missing / server unreachable at load): its nodes:[] is not real
       // data. Emit a header-only ref preserving the ref shape — NEVER a file and NEVER an ssh

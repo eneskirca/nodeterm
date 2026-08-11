@@ -51,6 +51,16 @@ describe('projectToFile / fileToProject round-trip', () => {
     expect(back.nodes[0]).toMatchObject({ cwd: '/new/root/x', agentId: 'claude', accountId: 'acct1' })
     expect(back.unavailable).toBeUndefined()
   })
+
+  it('drops idle from the shared file, restores it from base like closed', () => {
+    const p = project({ idle: true, defaultAccountId: 'acct1' })
+    const f = projectToFile(p, 1, '2026-08-11T00:00:00.000Z')
+    expect((f as any).idle).toBeUndefined()
+    const back = fileToProject(f, { cwd: '/x', idle: true })
+    expect(back.idle).toBe(true)
+    const notIdle = fileToProject(f, { cwd: '/x' })
+    expect(notIdle.idle).toBeUndefined()
+  })
 })
 
 describe('sameProjectContent', () => {
@@ -135,6 +145,18 @@ describe('splitWorkspace', () => {
       () => 1, '2026-07-11T00:00:00.000Z')
     expect(remote.index.entries[0]).toMatchObject({ id: 'p1', ssh: { remoteCwd: '~/app' } })
     expect(remote.index.entries[0].cache).toBeUndefined() // no cache fabricated from the placeholder
+  })
+})
+
+describe('splitWorkspace', () => {
+  it('carries idle into the index header, like closed', () => {
+    const ws: Workspace = {
+      version: 2,
+      activeProjectId: 'p1',
+      projects: [project({ idle: true, cwd: '/a/b' })]
+    }
+    const { index } = splitWorkspace(ws, () => 1, '2026-08-11T00:00:00.000Z')
+    expect(index.entries[0].idle).toBe(true)
   })
 })
 

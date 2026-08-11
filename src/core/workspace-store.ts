@@ -214,7 +214,7 @@ export class WorkspaceStore {
           this.revs.set(p.id, p.rev)
           this.lastWritten.set(projectFilePath(e.cwd), read.raw)
           projects.push(
-            fileToProject(p, { cwd: e.cwd, closed: e.closed, localExec: this.execOverlay(e, p) })
+            fileToProject(p, { cwd: e.cwd, closed: e.closed, idle: e.idle, localExec: this.execOverlay(e, p) })
           )
         } else {
           this.deferExecMigration(e)
@@ -227,6 +227,7 @@ export class WorkspaceStore {
             fileToProject(e.cache, {
               ssh: e.ssh,
               closed: e.closed,
+              idle: e.idle,
               localExec: this.execOverlay(e, e.cache)
             })
           )
@@ -481,7 +482,7 @@ export class WorkspaceStore {
     if (!read) return null
     this.revs.set(read.file.id, read.file.rev)
     this.lastWritten.set(projectFilePath(e.cwd), read.raw)
-    return fileToProject(read.file, { cwd: e.cwd, closed: e.closed, localExec: e.localExec })
+    return fileToProject(read.file, { cwd: e.cwd, closed: e.closed, idle: e.idle, localExec: e.localExec })
   }
 
   /** Maps a watched file path back to its project and re-reads it. */
@@ -706,7 +707,7 @@ export class WorkspaceStore {
       this.revs.set(parsed.id, parsed.rev)
       platform().broadcast(
         IPC.workspaceExternalChange,
-        fileToProject(parsed, { cwd: e.cwd, closed: e.closed, localExec: e.localExec })
+        fileToProject(parsed, { cwd: e.cwd, closed: e.closed, idle: e.idle, localExec: e.localExec })
       )
     } catch { /* the file is written and cached; the next load/poll surfaces the node */ }
     return true
@@ -775,7 +776,7 @@ export class WorkspaceStore {
       this.revs.set(e.id, adopted.rev)
       if (owed) this.unmirrored.add(e.id)
       else this.unmirrored.delete(e.id) // pure adopt: the server copy IS the truth now — nothing owed
-      return fileToProject(adopted, { ssh: e.ssh, closed: e.closed, localExec: e.localExec })
+      return fileToProject(adopted, { ssh: e.ssh, closed: e.closed, idle: e.idle, localExec: e.localExec })
     }
     // Our cache stood. Before it clobbers the server, merge in any remote-only session nodes (the
     // phone's drifted append) so the push carries them instead of erasing them.
@@ -786,7 +787,7 @@ export class WorkspaceStore {
         e.cache = { ...e.cache, nodes: [...e.cache.nodes, ...rescued], rev: Math.max(cacheRev, remote.rev) + 1 }
         this.revs.set(e.id, e.cache.rev)
         this.unmirrored.add(e.id) // the merged set must land on the server
-        merged = fileToProject(e.cache, { ssh: e.ssh, closed: e.closed, localExec: e.localExec })
+        merged = fileToProject(e.cache, { ssh: e.ssh, closed: e.closed, idle: e.idle, localExec: e.localExec })
       }
     }
     if (e.cache && (pushIfStanding || this.unmirrored.has(e.id))) {
@@ -817,12 +818,13 @@ function nodesMissingFrom(base: CanvasNodeState[], from: CanvasNodeState[]): Can
 }
 
 /** A labeled grey placeholder for a ref whose file can't be read right now. */
-function unavailableProject(e: { id: string; name: string; color: string; closed?: boolean; cwd?: string; ssh?: Project['ssh'] }): Project {
+function unavailableProject(e: { id: string; name: string; color: string; closed?: boolean; idle?: boolean; cwd?: string; ssh?: Project['ssh'] }): Project {
   return {
     id: e.id, name: e.name, color: e.color,
     viewport: { x: 0, y: 0, zoom: 1 }, nodes: [],
     ...(e.cwd ? { cwd: e.cwd } : {}), ...(e.ssh ? { ssh: e.ssh } : {}),
     ...(e.closed ? { closed: true } : {}),
+    ...(e.idle ? { idle: true } : {}),
     unavailable: true
   }
 }

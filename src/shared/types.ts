@@ -483,6 +483,14 @@ export interface Project {
    */
   closed?: boolean
   /**
+   * Idle projects stay visible and selectable in the sidebar, but PTY spawn / SSH connect /
+   * tmux reattach are suppressed for them until the user explicitly resumes. Unlike `closed`,
+   * an idle project's tab still shows and can become `activeProjectId`. Passive: marking an
+   * already-live project idle does not kill its running sessions — it only blocks future
+   * auto-resume.
+   */
+  idle?: boolean
+  /**
    * Set at load time when the project's .nodeterm/project.json could not be read
    * (folder missing, server unreachable, corrupt file). Runtime-only — never persisted.
    * Unavailable projects show a greyed tab and cannot be activated.
