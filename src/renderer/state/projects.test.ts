@@ -193,3 +193,16 @@ describe('setProjectColor', () => {
     expect(useProjects.getState().projects).toHaveLength(0)
   })
 })
+
+describe('setProjectIdle', () => {
+  it('toggles idle on the target project only, leaves others untouched', () => {
+    const a = useProjects.getState().openFolderProject('/a')
+    const b = useProjects.getState().openFolderProject('/b')
+    useProjects.getState().setProjectIdle(a.id, true)
+    const s = useProjects.getState()
+    expect(s.projects.find((p) => p.id === a.id)?.idle).toBe(true)
+    expect(s.projects.find((p) => p.id === b.id)?.idle).toBeUndefined()
+    useProjects.getState().setProjectIdle(a.id, false)
+    expect(useProjects.getState().projects.find((p) => p.id === a.id)?.idle).toBe(false)
+  })
+})

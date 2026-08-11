@@ -59,6 +59,10 @@ interface ProjectsState {
    *  persisted (see the toWorkspace tripwire). Set true when a relay tab's socket drops (Stage 4
    *  Task 7) so it stays reconnectable; cleared when it reconnects. */
   setProjectUnavailable(id: string, unavailable: boolean): void
+  /** Marks (or clears) a project idle — visible/selectable but exempt from PTY spawn / SSH
+   *  connect until resumed. Persisted (unlike `unavailable`). Passive: does not touch any
+   *  already-live session for this project. */
+  setProjectIdle(id: string, idle: boolean): void
   /** Sets (or clears, with undefined) the project's default Claude account for new nodes. */
   setProjectDefaultAccount(id: string, accountId: string | undefined): void
   /** Sets (or clears, with undefined = fall back to the global setting) the project's default
@@ -243,6 +247,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   setProjectUnavailable(id, unavailable) {
     set((s) => ({
       projects: s.projects.map((p) => (p.id === id ? { ...p, unavailable } : p))
+    }))
+  },
+
+  setProjectIdle(id, idle) {
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === id ? { ...p, idle } : p))
     }))
   },
 
