@@ -8296,6 +8296,19 @@ export function Canvas() {
         </ReactFlow>
         </SessionProvider>
 
+        {(() => {
+          const activeProject = activeProjectId ? useProjects.getState().getProject(activeProjectId) : undefined
+          if (!activeProject?.idle) return null
+          return (
+            <div className="idle-project-banner">
+              <span>Project idle</span>
+              <button type="button" onClick={() => resumeProject(activeProject.id)}>
+                Resume
+              </button>
+            </div>
+          )
+        })()}
+
         {/* MUST stay OUTSIDE <ReactFlow>. The library's wrapper carries inline
             `position: relative; z-index: 0`, which makes the whole flow one stacking context
             painted at 0 among flow-wrap's siblings — so no z-index INSIDE it, however large,
