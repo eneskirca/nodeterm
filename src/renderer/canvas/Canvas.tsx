@@ -6356,6 +6356,28 @@ export function Canvas() {
               reply({ ok: false, error: 'write requires --node' })
               return
             }
+            const deliver = async () => {
+              try {
+                const ok = await api.pty.sendText(args.node, args.text ?? '')
+                reply({
+                  ok,
+                  message: ok ? 'sent' : 'failed',
+                  error: ok ? undefined : 'sendText failed'
+                })
+              } catch (e) {
+                reply({ ok: false, error: String(e) })
+              }
+            }
+            // Seamless agent messaging (Settings -> Agents, default off): the user has
+            // pre-approved every agent-to-node send, so deliver directly — no dialog, and no
+            // interaction with the one-confirm-at-a-time guard. This is a BLANKET grant that
+            // does not depend on WHICH node is calling, so it is safe against the hook token
+            // not being node-scoped; finer per-pair trust is intentionally deferred until the
+            // token identifies the calling node.
+            if (useSettings.getState().settings.agentSeamlessWrites) {
+              void deliver()
+              return
+            }
             // One confirm dialog at a time: setConfirm would replace a pending one, orphaning its
             // reply and hanging that earlier request to its 120s timeout — and a second dialog
             // mounted on top of a destructive one (the worktree-removal confirm) turned an Enter
@@ -6372,16 +6394,7 @@ export function Canvas() {
               requestedBy: srcTitle,
               onConfirm: async () => {
                 setConfirm(null)
-                try {
-                  const ok = await api.pty.sendText(args.node, args.text ?? '')
-                  reply({
-                    ok,
-                    message: ok ? 'sent' : 'failed',
-                    error: ok ? undefined : 'sendText failed'
-                  })
-                } catch (e) {
-                  reply({ ok: false, error: String(e) })
-                }
+                await deliver()
               },
               onCancel: () => reply({ ok: false, error: 'denied by user' })
             })
