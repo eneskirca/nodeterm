@@ -344,6 +344,33 @@ function reclaim(c: Client): void {
   c.granted = false
 }
 
+/**
+ * Memory-pressure lever: give back EVERY hidden holder's context, skipping the release delay's
+ * warm-for-a-pan-back window. Visible holders are untouched — the same invariant `lruHiddenHolder`
+ * applies, and for the same reason: taking a context off a terminal the user is looking at trades
+ * memory for a visible downgrade.
+ *
+ * The releases are QUEUED (`owed` + `drain`), not executed here — pressure wants the memory back
+ * SOON, not this frame. Releasing ~24 contexts in one synchronous loop is a swap storm: exactly
+ * what the zoom threshold's one-frame mass release turned out to be, and mid-gesture it lands in
+ * the GPU-pressure window where a swap dies midway and strands a terminal black. The drain path
+ * is what keeps "soon" honest: it no-ops while a gesture runs, re-checks `!c.visible` before each
+ * release (a client that came back keeps its warm context), and trickles at
+ * `WEBGL_SWAPS_PER_DRAIN` per `WEBGL_DRAIN_MS`.
+ *
+ * Idempotent: a client already queued with `releaseOwed` is simply re-added to a Set — the flag is
+ * never cleared here, so a second call cannot cancel a pending release.
+ */
+export function releaseAllHiddenGrants(): void {
+  for (const c of clients.values()) {
+    if (!c.granted || c.visible) continue
+    cancelRelease(c) // the delayed release is superseded by the queued one
+    c.releaseOwed = true
+    owed.add(c)
+  }
+  drain()
+}
+
 /** The least-recently-visible HIDDEN holder, or null if every holder is currently visible. */
 function lruHiddenHolder(): Client | null {
   let best: Client | null = null

@@ -22,6 +22,16 @@ export const IPC = {
    *  agent restart sees that the CLI has exited and a shell owns the pane again. */
   ptyPaneCommand: 'pty:pane-command',
   ptyReadSessionName: 'pty:read-session-name',
+  /** Shell → renderer: this MACHINE's pty-device pressure band changed (core/pty-pressure.ts).
+   *  Payload: `PtyPressure` — `{ level, usage, ceiling }`. Sent on band CHANGES only, and re-sent
+   *  for a held band at most once every five minutes; `level: 'none'` is what clears the banner.
+   *  Desktop only — see the Server Edition note beside the monitor in src/server/index.ts. */
+  ptyPressure: 'pty:pressure',
+  /** Renderer → main: the user clicked "Fix automatically…" on the pty-pressure banner. Raises
+   *  `kern.tty.ptmx_max` now AND installs a LaunchDaemon so it survives reboot, via ONE
+   *  administrator-privileges osascript (macOS's own password dialog). Resolves
+   *  `PtyLimitFixResult`. NEVER invoked on the app's own initiative — see main/ptmx-limit.ts. */
+  ptyRaiseDeviceLimit: 'pty:raise-device-limit',
   claudeReadTranscript: 'claude:read-transcript',
   chatReadTranscript: 'chat:read-transcript',
   claudeAccountsAdd: 'claude-accounts:add',
@@ -41,6 +51,10 @@ export const IPC = {
   appOpenNotificationSettings: 'app:open-notification-settings',
   appFocusNode: 'app:focus-node',
   appSetBadge: 'app:set-badge',
+  /** Main → renderer: the host (or this process's own RSS) crossed a memory-pressure watermark,
+   *  so the renderer should run its reclaim levers now (hidden WebGL contexts, parked terminals).
+   *  Payload: `'warning' | 'critical'`. Re-fired at most once a minute — see core/memory-pressure. */
+  appMemoryPressure: 'app:memory-pressure',
   agentStatus: 'agent:status',
   /** Renderer → main/server: answer a held Claude permission hook (deterministic approvals).
    *  Payload: `{ nodeId, pendingId, decision: 'allow'|'deny' }`; resolves boolean. See
@@ -115,6 +129,13 @@ export const IPC = {
   usageSetProviderCookie: 'usage:set-provider-cookie',
   /** Which cookie providers have one stored — lets the UI show state without handling secrets. */
   usageCookieProviders: 'usage:cookie-providers',
+  /** Per-session memory breakdown for the scoped machine. On demand only — never polled: the
+   *  local sweep walks the whole process table, and the SSH one is an exec on someone else's
+   *  host. */
+  sessionMemory: 'session-memory:read',
+  /** The scoped machine's RAM (available/total) — the cheap read behind the system-resource
+   *  pill. Safe to poll locally; NOT polled for an SSH scope. */
+  sessionMemoryHost: 'session-memory:host',
   contextUpdate: 'context:update',
   contextEnsure: 'context:ensure',
   // Team presence (docs/team-presence.md). `presence:hello` is a REQUEST: its response tells the

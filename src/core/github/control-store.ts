@@ -155,6 +155,11 @@ export class GitHubControlStore {
 
   private async write(state: GitHubControlState): Promise<void> {
     await fs.mkdir(this.userDataDir, { recursive: true })
+    // The fixed temp name is safe only because there is exactly ONE store instance per data dir and
+    // every write reaches here through THAT instance's mutate() writeQueue. A second instance on the
+    // same dir, or a caller that skips the queue, needs a unique `<file>.<pid>.<seq>.tmp` name (see
+    // workspace-store's writeAtomic) — otherwise two writers share this one temp and one rename
+    // publishes the other's half-written bytes.
     const temporary = `${this.filePath}.tmp`
     await fs.writeFile(temporary, JSON.stringify(state), { encoding: 'utf-8', mode: 0o600 })
     await fs.chmod(temporary, 0o600)

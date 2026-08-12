@@ -440,6 +440,21 @@ export function createLiveUpdatePush(deps: LiveUpdateDeps): LiveUpdateHandle {
   // Per-node coalescing of activity/context ticks.
   const lastNowSentAt = new Map<string, number>()
   const pendingNow = new Map<string, NodeNowChange>()
+  /**
+   * The last STATE we told the phone about, per node. A now-tick carries no state of its own
+   * (`NodeNowChange` has none — the notch HUD, the other consumer of that seam, correctly never
+   * reads one), yet it has to send something, and it used to hardcode `working`. Two producers
+   * fire a tick at exactly the wrong moment — the raw `Stop` hook clears the activity, and the
+   * context tail's 1 s poll lands the turn's final usage record — so a tick would be parked for up
+   * to `coalesceMs` and then assert "working" AFTER the end had already gone out, flipping the
+   * island back to Working with nothing left to end it.
+   *
+   * So ticks are now told what the node's state actually is, and are dropped entirely once it is
+   * no longer working. Undefined = we have not seen an edge for this node yet; a tick then still
+   * goes out as working, which is the pre-existing behaviour for a node whose activity we learn
+   * about before its first edge.
+   */
+  const lastStateSent = new Map<string, NodeStateChange['state']>()
   let batchTimer: ReturnType<typeof setTimeout> | null = null
   let coalesceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -479,6 +494,11 @@ export function createLiveUpdatePush(deps: LiveUpdateDeps): LiveUpdateHandle {
 
   function onStateChange(c: NodeStateChange): void {
     if (!resolveTarget()) return
+    // This edge is newer than anything coalescing for the node, and a tick asserts `working` —
+    // so a parked one must never be allowed to land after it and undo it. Drop it and record the
+    // state, which also gates any tick that arrives later in the same turn (see lastStateSent).
+    lastStateSent.set(c.nodeId, c.state)
+    pendingNow.delete(c.nodeId)
     const title = nodeTitleOf(c.nodeId)
     // kind/options/multiSelect/pendingId ride only a needsYou edge (spec:
     // interactive-push-live-activities addendum) — belt-and-braces gate on state so a working/done
@@ -549,6 +569,12 @@ export function createLiveUpdatePush(deps: LiveUpdateDeps): LiveUpdateHandle {
 
   function onNowChange(c: NodeNowChange): void {
     if (!resolveTarget()) return
+    // A tick describes work in progress. Once the node has left `working` (needs-you, or an end)
+    // there is nothing for it to say, and saying `working` would contradict the edge we just sent.
+    if ((lastStateSent.get(c.nodeId) ?? 'working') !== 'working') {
+      pendingNow.delete(c.nodeId)
+      return
+    }
     const t = now()
     const last = lastNowSentAt.get(c.nodeId) ?? -Infinity
     if (t - last >= coalesceMs) {

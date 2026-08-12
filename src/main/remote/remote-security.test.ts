@@ -2,6 +2,8 @@
 //   R1 — host serves no `pty.create`; `fs.*` is confined to the shared roots.
 //   R2 — the channel SAS is deterministic + identical on both peers.
 //   R3 — replayed/reordered encrypted boxes are dropped (per-direction monotonic counter).
+//   R4 — killing a stream forgets it in the SAME synchronous turn, so a late Input frame for that
+//        streamId can never be written into a session that is already released.
 import { describe, expect, it, vi } from 'vitest'
 import { createHostHandlers, type HostFsOps, type HostPtyManager, type HostRelaySocket } from './host-service'
 import { genKeyPair, deriveSharedKey, sasFromSharedKey, publicKeyToB64 } from './e2ee'
@@ -33,6 +35,8 @@ function makeHostFakes() {
     createDetached: vi.fn(() => 'sess'),
     attachDetached: vi.fn(() => 'sess'),
     captureSnapshot: vi.fn(async () => ''),
+    // Asked before every attach so the client learns whether the session had to be created.
+    sessionExists: vi.fn(async () => true),
     write: vi.fn(),
     resize: vi.fn(),
     setFlow: vi.fn(),
@@ -214,6 +218,54 @@ describe('R3: replayed encrypted frames are dropped', () => {
   })
 })
 
+// `attachDetached` goes through `tmux new-session -A`, so an attach to a node whose tmux session
+// is gone CREATES a bare login shell in $HOME. Without being told, a mirrored client showed that
+// empty shell under the node's own title — a phone tapping a Claude session after the host's tmux
+// server died got `~ %` and no agent. The attach reply now says which happened, so the client can
+// run its cold restore (cd + `claude --resume`) instead.
+describe('pty.attach reports whether it had to CREATE the session', () => {
+  const attach = (handlers: ReturnType<typeof createHostHandlers>): void => {
+    handlers.onRpc({ id: 'a', method: 'pty.attach', params: { nodeId: 'node-a', cols: 80, rows: 24 } })
+  }
+  const reply = async (responses: unknown[]): Promise<Record<string, unknown>> => {
+    // The probe precedes the response, so let the microtasks settle.
+    await vi.waitFor(() => expect(responses.length).toBeGreaterThan(0))
+    return responses.at(-1) as Record<string, unknown>
+  }
+
+  it('reports fresh=false when the session is already live (a warm join types nothing)', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(true)
+    attach(createHostHandlers(pty, socket, fs, () => ['/work']))
+    expect(await reply(responses)).toMatchObject({ ok: true, body: { fresh: false } })
+  })
+
+  it('reports fresh=true when the session is gone, so the client cold-restores', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    attach(createHostHandlers(pty, socket, fs, () => ['/work']))
+    expect(await reply(responses)).toMatchObject({ ok: true, body: { fresh: true } })
+  })
+
+  it('a probe that throws answers WARM — never invent a cold start over a live agent', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('tmux wedged'))
+    attach(createHostHandlers(pty, socket, fs, () => ['/work']))
+    expect(await reply(responses)).toMatchObject({ ok: true, body: { fresh: false } })
+  })
+
+  it('asks BEFORE attaching — after `new-session -A` the answer is always "exists"', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    attach(createHostHandlers(pty, socket, fs, () => ['/work']))
+    await reply(responses)
+    const probedAt = (pty.sessionExists as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    const attachedAt = (pty.attachDetached as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    expect(probedAt).toBeLessThan(attachedAt)
+  })
+})
+
 // Scrolling belongs to tmux (mouse on, alternate screen), and the phone cannot deliver the wheel
 // itself — its emulator swallows the gesture — so it asks the host to write it into the stream's
 // pty, which IS a tmux client. `lines` and the stream target both come off the wire.
@@ -248,5 +300,74 @@ describe('pty.scroll drives tmux through the session pty', () => {
     handlers.onRpc({ id: '3', method: 'pty.scroll', params: { streamId: 99, dir: 'up', lines: 2 } })
     expect(pty.write).not.toHaveBeenCalled()
     expect(responses.at(-1)).toMatchObject({ id: '3', ok: true })
+  })
+})
+
+// --- R4: kill → dropStream is ONE synchronous step ---------------------------
+
+// The invariant: a client's Input frame must never be written into a session the host has already
+// released. Nothing enforces that but the ADJACENCY of two statements — `pty.kill(null, sessionId)`
+// and the `dropStream` that forgets the streamId (handleKill; closeAll's `streams.clear()`). Put any
+// yield between them and every frame the relay delivers in that window is written into a session on
+// its way out (and, once a session is released, a background write can re-reach its tmux pane).
+//
+// So these tests pin the adjacency rather than the outcome: the late frame is queued as a microtask
+// BEFORE the kill turn runs, which is exactly the window an `await` between the two statements would
+// open. They pass only while the drop is synchronous with the kill.
+function inputFrame(streamId: number, data: string): Frame {
+  return { op: OP.Input, streamId, seq: 0, payload: new TextEncoder().encode(data) }
+}
+
+/** Attach a stream (id = n-th attach) and settle the async capture → attachDetached handoff. */
+async function attachStream(
+  handlers: ReturnType<typeof createHostHandlers>,
+  nodeId: string
+): Promise<void> {
+  handlers.onRpc({ id: `a-${nodeId}`, method: 'pty.attach', params: { nodeId, cols: 80, rows: 24 } })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+describe('R4: a killed stream stops accepting input in the same turn', () => {
+  it('drops an Input frame that lands one microtask after pty.kill', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    const writeMock = pty.write as ReturnType<typeof vi.fn>
+    const handlers = createHostHandlers(pty, socket, fs, () => ['/work'])
+    await attachStream(handlers, 'node-a')
+
+    // Control: while the stream lives, this exact frame IS written — so a later "not written"
+    // cannot be an artifact of a wrong streamId or an attach that never completed.
+    handlers.onFrame(inputFrame(1, 'echo live\n'))
+    expect(writeMock).toHaveBeenCalledWith(null, 'sess', 'echo live\n')
+    writeMock.mockClear()
+
+    // Queue the frame FIRST: its microtask runs immediately after the kill's synchronous turn,
+    // i.e. inside the gap any `await` between kill() and dropStream() would create.
+    const late = Promise.resolve().then(() => handlers.onFrame(inputFrame(1, 'echo late\n')))
+    handlers.onRpc({ id: 'k', method: 'pty.kill', params: { streamId: 1 } })
+    expect(pty.kill).toHaveBeenCalledWith(null, 'sess')
+    await late
+
+    expect(writeMock).not.toHaveBeenCalled()
+  })
+
+  it('drops Input frames for every stream that closeAll killed', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    const writeMock = pty.write as ReturnType<typeof vi.fn>
+    const handlers = createHostHandlers(pty, socket, fs, () => ['/work'])
+    await attachStream(handlers, 'node-a')
+    await attachStream(handlers, 'node-b')
+    handlers.onFrame(inputFrame(2, 'echo live\n')) // control: stream 2 is real and routable
+    expect(writeMock).toHaveBeenCalledTimes(1)
+    writeMock.mockClear()
+
+    const late = Promise.resolve().then(() => {
+      handlers.onFrame(inputFrame(1, 'echo late\n'))
+      handlers.onFrame(inputFrame(2, 'echo late\n'))
+    })
+    handlers.closeAll()
+    expect(pty.kill).toHaveBeenCalledTimes(2)
+    await late
+
+    expect(writeMock).not.toHaveBeenCalled()
   })
 })

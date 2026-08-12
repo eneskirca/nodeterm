@@ -1258,6 +1258,39 @@ function produceInboxFromState(
     })
     // A finished turn is no longer "doing" anything — clear its live activity line.
     clearActivity(nodeId, now)
+  } else if (
+    nextState === undefined &&
+    prevState !== undefined &&
+    prevState !== 'done' &&
+    ev.kind === 'session' &&
+    ev.sessionPhase === 'end'
+  ) {
+    // The CLI EXITED mid-turn (`/exit`, Ctrl-C, a crash) — the one transition that means "this
+    // session is over", and the only one that used to emit nothing at all.
+    //
+    // `reduceEntry` resets a session event to `state: undefined`, while every `end` above is keyed
+    // on the edge INTO `done` — so a node that was working or blocked when its agent quit produced
+    // none. It escaped the rescue too: `sweepStaleWorking` matches `state === 'working'`
+    // (isStaleWorking), which the reset had just stopped being true, so the 20-minute net written
+    // for exactly this failure was structurally bypassed. The phone was left holding a Live
+    // Activity nothing would ever end — a Lock Screen card stuck on "Working…", or worse on
+    // "Needs you" with Approve/Deny buttons whose hook ticket no longer exists — until iOS's own
+    // 8 h staleness.
+    //
+    // Deliberately narrow: only a session END (a SessionStart also resets to idle, and ending a
+    // card there would kill the activity of the turn just beginning), only when the node was
+    // actually mid-turn, and only when the done edge has not already spoken for it.
+    //
+    // No inbox card: a finished turn's card comes from the `done` edge, and this transition means
+    // the session went away, which is not itself news for the feed — the node's pending
+    // approval/question cards were already resolved by the leave-blocked/waiting branch above.
+    fireNodeStateChange({
+      ...stateBase,
+      event: 'end',
+      state: 'done',
+      message: 'Ended'
+    })
+    clearActivity(nodeId, now)
   }
 }
 

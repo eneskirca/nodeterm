@@ -19,7 +19,10 @@ export const CANVAS_CHROME_SELECTOR = [
   '.dock',
   '.minimap',
   '.react-flow__controls',
-  '.usage-indicator',
+  // The bottom-left pill cluster (usage + system resources) opts in via `data-canvas-chrome` on its
+  // wrapper, so the two pills are ONE obstacle rect instead of two overlapping inflated ones. The
+  // wrapper's border box is exactly their union (they are its only, in-flow, children), and an
+  // empty cluster measures 0 and is dropped by the size filter below.
   '.controls-cluster',
   '.sessions-sidebar',
   '.sessions-icon-cluster',

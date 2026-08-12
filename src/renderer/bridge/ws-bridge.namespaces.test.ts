@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { buildFilesApi, buildRealApi } from './ws-bridge'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { buildFilesApi, buildRealApi, buildSessionMemoryApi } from './ws-bridge'
 import { IPC } from '../../shared/ipc'
 
 function fakeClient() {
@@ -75,5 +77,58 @@ describe('buildRealApi: workspace', () => {
     const un = api.workspace.onCorruptRecovered(() => {})
     expect(c.calls[0]).toEqual({ kind: 'subscribe', method: IPC.workspaceCorruptRecovered, args: [] })
     expect(typeof un).toBe('function')
+  })
+})
+
+describe('buildRealApi: sessionMemory', () => {
+  // A real WS namespace, not a stub: the same core service (`startSessionMemoryService`) registers
+  // both channels in the server shell, so the browser gets a genuine per-session breakdown of the
+  // machine it is served from.
+  it('read/host hit the real channels', async () => {
+    const c = fakeClient()
+    const api = buildSessionMemoryApi(c as never)
+    await api.sessionMemory.read()
+    await api.sessionMemory.host()
+    expect(c.calls.map((x) => ({ kind: x.kind, method: x.method }))).toEqual([
+      { kind: 'request', method: IPC.sessionMemory },
+      { kind: 'request', method: IPC.sessionMemoryHost }
+    ])
+  })
+
+  // The query is the ONLY thing that decides which machine answers: `projectId` names the scope and
+  // `remote` is the renderer's own "this scope is an SSH host" claim, which the service ORs with its
+  // own `isRemoteProject`. A layer that drops or rewrites either one turns a remote query into a
+  // LOCAL sweep, and the panel publishes this machine's sessions under the host's name. So the
+  // query must arrive at the RPC call byte-identical, on BOTH channels.
+  it('passes projectId and the remote flag through unmodified', async () => {
+    const c = fakeClient()
+    const api = buildSessionMemoryApi(c as never)
+    const q = { projectId: 'p1', remote: true }
+    await api.sessionMemory.read(q)
+    await api.sessionMemory.host(q)
+    expect(c.calls).toEqual([
+      { kind: 'request', method: IPC.sessionMemory, args: [{ projectId: 'p1', remote: true }] },
+      { kind: 'request', method: IPC.sessionMemoryHost, args: [{ projectId: 'p1', remote: true }] }
+    ])
+  })
+
+  // `remote: false` is a claim too ("the renderer says this is NOT an SSH scope"), and it must not
+  // be normalized away into `undefined` — the shell's own predicate still gets to say otherwise,
+  // but the renderer's answer has to reach it as written.
+  it('keeps an explicit remote:false', async () => {
+    const c = fakeClient()
+    const api = buildSessionMemoryApi(c as never)
+    await api.sessionMemory.read({ projectId: 'p2', remote: false })
+    expect(c.calls[0].args).toEqual([{ projectId: 'p2', remote: false }])
+  })
+
+  // The builder above is dead code unless it is actually spread into the assembled api. It cannot
+  // be caught by the compiler: `buildStubApi()` already supplies a `sessionMemory`, so dropping the
+  // spread leaves `NodeTerminalApi` satisfied and the STUB silently wins in every live browser
+  // session. installWsBridge needs a socket + DOM to run, so the wiring is pinned by source text.
+  it('is spread into the assembled window.nodeTerminal', () => {
+    const src = readFileSync(join(__dirname, 'ws-bridge.ts'), 'utf8')
+    const install = src.slice(src.indexOf('export async function installWsBridge'))
+    expect(install).toContain('...buildSessionMemoryApi(client)')
   })
 })

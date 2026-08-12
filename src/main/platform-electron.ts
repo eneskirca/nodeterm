@@ -68,6 +68,11 @@ export function electronPlatform(): ElectronPlatform {
     get isPackaged() {
       return app.isPackaged
     },
+    // `<app>/Contents/Resources` when packaged; node_modules/electron/…/Resources in dev (which is
+    // why bundledTmuxPath falls back to the repo's own resources/bin).
+    get resourcesPath() {
+      return process.resourcesPath
+    },
     // The ipcMain half of each registration is UNCHANGED — the local window's call is bit-identical
     // to what it was before the table existed (same event-stripping, same sender id).
     handle: (ch, fn) => {

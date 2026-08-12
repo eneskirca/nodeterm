@@ -16,13 +16,15 @@ import {
   type Settings,
   type TmuxStatus
 } from '../shared/types'
-import { findCommand, tmuxInstall } from './tmux-hint'
+import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
 import {
   probeSaysAbsent,
   remoteHookEnvArgs,
   remoteTmuxHasSessionArgs,
   remoteTmuxKillArgs,
+  localKillSockets,
+  localTmuxKillArgs,
   remoteTmuxPtyArgs,
   remoteTmuxSendKeysArgs,
   remoteCapturePaneArgs,
@@ -31,7 +33,17 @@ import {
 } from './remote-ssh/control-master'
 import { parsePaneCursor } from './pane-cursor'
 import { readSpawnResources, spawnResourceNote } from './spawn-resources'
-import { TMUX_SOCKET, sessionName } from './tmux-naming'
+import {
+  primePtyCeiling,
+  ptyDevicesExhausted,
+  readPtyDevices,
+  spawnFailureHint,
+  type PtyDevices
+} from './pty-devices'
+import { REAP_SWEEP_MS, shouldReap } from './pty-reap'
+import { ControlModeClient, type ControlSpawn } from './tmux-control-client'
+import { TMUX_SOCKET, sessionName, isSessionName } from './tmux-naming'
+import { encodeSendKeysHex } from './tmux-control'
 import { bracketedInjection } from './paste-injection'
 import { releasePty, type ReleasablePty } from './pty-release'
 import { effectiveSize, type PtySize } from './pty-size'
@@ -144,21 +156,56 @@ bind -T copy-mode-vi TripleClick1Pane send-keys -X select-line \\; send-keys -X 
 `
 }
 
-/** Resolve an absolute tmux path (GUI apps don't inherit the shell PATH). Subprocess-free:
- *  the old fallback here was a SYNC login-shell `command -v tmux` — sourcing the profile
- *  (nvm/conda: 100-800ms) on the main thread, re-triggered every 3s by the tmux-missing
- *  banner's install poll, freezing all windows and IPC each time. Now it walks the cached
- *  login-shell PATH instead; before that async probe settles a nonstandard location can be
- *  missed, which init()'s post-probe ensureTmux() re-run and tmuxStatus()'s re-probe cover. */
-function findTmux(): string | null {
-  for (const c of ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux', '/bin/tmux']) {
-    try {
-      if (fs.existsSync(c)) return c
-    } catch {
-      // ignore
-    }
+/**
+ * Resolve an absolute tmux path (GUI apps don't inherit the shell PATH). Subprocess-free: the old
+ * fallback here was a SYNC login-shell `command -v tmux` — sourcing the profile (nvm/conda:
+ * 100-800ms) on the main thread, re-triggered every 3s by the tmux-missing banner's install poll,
+ * freezing all windows and IPC each time. Now it walks a fixed candidate list
+ * (`tmuxCandidatePaths` — Homebrew, MacPorts, Nix, Linuxbrew, the distro paths), then the
+ * cached login-shell PATH, and only THEN the tmux the macOS app bundles.
+ *
+ * THE BUNDLED COPY IS DELIBERATELY LAST. A tmux client attaches to a tmux SERVER that outlives the
+ * app and was started by whatever tmux the user has installed; preferring our binary could pair a
+ * new client with their old running server, which upstream refuses ("server version is too old").
+ * System-first means every user who already has tmux sees zero change, and the bundle only rescues
+ * the population that had none — where there is no server to be incompatible with. See
+ * `bundledTmuxPath` in tmux-hint.ts and scripts/build-tmux.mjs.
+ *
+ * BEFORE THAT ASYNC PATH PROBE SETTLES, a tmux living ONLY on the user's shell PATH is still
+ * invisible, and a session spawned in that window silently becomes a plain shell with no
+ * persistence — the window this candidate list narrows, and the reason issue #126 could bite a
+ * machine that has tmux installed. Two things close it after the fact: init()'s post-probe
+ * `ensureTmux()` re-run and `tmuxStatus()`'s re-probe, both of which upgrade NEW sessions without
+ * a restart. A session already spawned plain is NOT migrated (there is no way to move a running
+ * process into a tmux pane); its recovery is the node's own Refresh/respawn, which re-creates it
+ * through the now-resolved tmux.
+ */
+function findTmux(resourcesPath?: string): string | null {
+  // BOTH lookups inside the guard: `os.homedir()` throws the same SystemError as `userInfo()` when
+  // there is no passwd entry and no $HOME (some containers), and a thrown probe here would take
+  // out tmux discovery entirely — degrading a machine that HAS tmux to the plain-shell fallback,
+  // which is the failure this whole function is being hardened against. Unknown home/user simply
+  // drops the candidates derived from them.
+  let home: string | null = null
+  let user: string | null = null
+  try {
+    home = os.homedir()
+    user = os.userInfo().username
+  } catch {
+    // no home / no passwd entry — the fixed system paths below are still checked
   }
-  return findInPathString('tmux', shellPathNow() ?? process.env.PATH)
+  const fixed = findFixedTmux((p) => fs.existsSync(p), home, user)
+  if (fixed) return fixed
+  const onPath = findInPathString('tmux', shellPathNow() ?? process.env.PATH)
+  if (onPath) return onPath
+  // Last: the binary the macOS app ships. `process.cwd()` is the repo root under
+  // `electron-vite dev`, which is where scripts/build-tmux.mjs writes its artifact; in a packaged
+  // app it is meaningless and simply misses.
+  return bundledTmuxPath({
+    resourcesPath,
+    repoRoot: process.cwd(),
+    exists: (p) => fs.existsSync(p)
+  })
 }
 
 /** Resolve an absolute ssh path (GUI apps don't inherit the shell PATH). */
@@ -360,6 +407,14 @@ interface Session {
   sshRemote?: NonNullable<PtyCreateOptions['sshRemote']>
   /** Output arrived since the last scrollback snapshot — idle sessions skip the capture. */
   outputSinceSnapshot: boolean
+  /** A tmux session (local `nt-<id>`, or the remote one an SSH project attaches to) is holding this
+   *  session's work, so the pty client here is expendable: detaching it loses nothing and the next
+   *  create re-attaches with `new-session -A`. It is the precondition for the idle reap — see
+   *  pty-reap.ts — and it is exactly the condition `persisted` is computed from at spawn. */
+  tmuxBacked: boolean
+  /** When the reap sweep first saw this session with nobody attached (no live subscriber, no relay
+   *  sink); `null` while somebody is. See `reapTick`. */
+  unwatchedSince: number | null
   /**
    * The (client, owner) pairs that currently OWE us a resume — a ledger of FLOW TICKETS
    * (`flowTicket`), not of clients. The pty is paused while this set is non-empty and resumes only
@@ -460,6 +515,34 @@ export const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000
 export const PTY_END_BUDGET = { perSec: 20, burst: 200 }
 
 /**
+ * How long a command issued to a SHADOW may go unanswered before that shadow is torn down.
+ *
+ * `ControlModeClient` has no timers of its own, deliberately (tmux-control-client.ts): it pairs
+ * replies with commands POSITIONALLY, so a reply that never arrives does not merely stall one
+ * caller — every later reply pairs with the wrong command, permanently, and there is no recovery
+ * short of a new client. That is why the timeout disposes rather than retries.
+ *
+ * Five seconds is orders of magnitude past what it bounds: the only command a shadow issues today
+ * is a local `refresh-client -C` over a pipe to a tmux server on this machine (sub-millisecond).
+ * Hitting it means the server is wedged or the pipe is dead, not that it is busy.
+ */
+export const SHADOW_CMD_TIMEOUT_MS = 5_000
+
+/**
+ * How long the SHARED background-write control client stays attached after the last background
+ * write (see `backgroundWrite`).
+ *
+ * It exists so a BURST — an agent pushing a multi-line prompt, a run of slash commands — costs one
+ * `tmux -C` child instead of one per keystroke batch, and nothing more. Ten seconds is past any
+ * plausible gap inside one such burst and far short of every lifecycle it must not interfere with:
+ * the renderer's 5-minute park (`TERM_PARK_MS`), the 10-minute offscreen dispose
+ * (`offscreen-policy.ts`) and the 10-minute idle reap (`REAP_IDLE_MS`). That ordering is the point
+ * of picking a number this small: an idle client is a real tmux client on some session, and the
+ * shorter it lives the smaller the window in which anything has to reason about it at all.
+ */
+export const BACKGROUND_WRITE_LINGER_MS = 10_000
+
+/**
  * Manages all live PTY processes and bridges them to the renderer over IPC.
  *
  * On macOS/Linux with tmux available, each terminal node attaches to a persistent
@@ -524,6 +607,67 @@ export class PtyManager {
   /** ONE shared snapshot interval for all persisted sessions — a per-session interval spawned
    *  one tmux/ssh capture subprocess per session per tick, forever, even for idle terminals. */
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
+  /** ONE shared sweep for the idle reap (see `reapTick` / pty-reap.ts), armed by the first
+   *  tmux-backed session and cleared once no session is left. */
+  private reapTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * persistKey (node id) → the control-mode SHADOW attached to that node's tmux session.
+   *
+   * Keyed by persistKey rather than held on `Session`, because the nodes a shadow exists for are
+   * exactly the ones that HAVE no `Session`: `releaseClient` → `forget` drops the entry from
+   * `sessions` and `byPersistKey` the moment the pty client is released, and what survives is the
+   * tmux session — which is the thing a shadow attaches to.
+   *
+   * This map IS the invariant. An entry here means no painter pty client of ours is attached for
+   * that node: `shadowAttach` refuses while one is, and `spawnSession` disposes the entry before
+   * spawning one. Nothing else may put a client in here.
+   */
+  private shadows = new Map<string, ControlModeClient>()
+  /**
+   * persistKey (node id) → what a shadow needs to know about a session whose pty client this
+   * manager has RELEASED. Written by `releaseClient`, because `forget` then drops the `Session` and
+   * with it the only other record of any of these facts:
+   *  - `sessionId`: the id that session answered to. A caller can still be holding it — the relay
+   *    host keeps one per stream — and `write()` resolves it back to this node instead of dropping
+   *    the bytes, which is the only route a released session has left to an existing write path.
+   *  - `size`: the effective grid the painter last enforced. With only a control client attached
+   *    the pane follows `refresh-client -C <cols>x<rows>`, so this is what a shadow re-asserts.
+   *  - `remote`: this node's tmux ran on a REMOTE host (an SSH project) — over that project's
+   *    ControlMaster, on the `nodeterm-rmt` socket THERE. Our local socket holds no session for it;
+   *    at best nothing, at worst the local orphan a create issued with the master down once left
+   *    under the same name. Never shadow it locally.
+   *
+   * It deliberately outlives the `Session` (the tmux session outlives it too) and is dropped when
+   * the node is destroyed. The write is unconditional for every PERSISTED session released — local
+   * tmux-backed and remote alike, with or without a recorded size — so the map also holds records
+   * whose only content is "remote, do not shadow". Growth is therefore one small record per
+   * persisted node this process has ever released: the same order as the session map itself, and
+   * rewritten rather than appended on every subsequent release of the same node.
+   */
+  private released = new Map<string, { sessionId: string; size?: PtySize; remote: boolean }>()
+  /**
+   * The ONE control-mode client this manager keeps for background WRITES, plus the node whose tmux
+   * session it is attached to (see `backgroundWrite` / `sharedClientFor`).
+   *
+   * Shared rather than per-session because control-mode COMMANDS are server-wide: `send-keys -t X`
+   * reaches every session on the socket from whatever session the client happens to be attached to.
+   * Only `%output` streaming is scoped to the attachment, and this client streams nothing.
+   *
+   * `persistKey` is kept because the attachment is the one thing about it that is NOT server-wide:
+   * it makes this a real tmux client of THAT session, so it has to be subtracted from the session
+   * budget (`shadowedTmuxSessions`) and retired whenever something else wants to be that session's
+   * only client of ours — a painter spawning, or a per-session shadow attaching.
+   */
+  private shared: { client: ControlModeClient; persistKey: string } | null = null
+  /** Disposes `shared` once no background write has needed it for `BACKGROUND_WRITE_LINGER_MS`. */
+  private sharedLinger: ReturnType<typeof setTimeout> | null = null
+  /** The child-process seam for shadow clients. Undefined in production, where `ControlModeClient`
+   *  uses `child_process` (see tmux-control-client.ts); tests inject a fake spawner. */
+  private readonly controlSpawn: ControlSpawn | undefined
+
+  constructor(deps: { controlSpawn?: ControlSpawn } = {}) {
+    this.controlSpawn = deps.controlSpawn
+  }
 
   private ensureSnapshotTimer(): void {
     if (this.snapshotTimer) return
@@ -549,6 +693,454 @@ export class PtyManager {
     }
   }
 
+  private ensureReapTimer(): void {
+    if (this.reapTimer) return
+    this.reapTimer = setInterval(() => this.reapTick(), REAP_SWEEP_MS)
+    // Node keeps the process alive for a pending interval, and this one would otherwise outlive the
+    // work it sweeps (the snapshot timer clears itself the same way, in its own tick).
+    this.reapTimer.unref?.()
+  }
+
+  /**
+   * Release the client pty of every tmux-backed session nobody has been attached to for
+   * `REAP_IDLE_MS` — the safety net under the normal release paths. The tmux session, its processes
+   * and its scrollback are untouched: this is the SAME detach the last subscriber's departure does,
+   * and the next `pty:create` re-attaches to it. Read pty-reap.ts before changing any of it.
+   *
+   * "Attached" is decided against `platform().clientIds()`, not against the subscriber set: the
+   * whole point is the subscriber whose window/tab/peer is GONE and which therefore can never send
+   * the `pty:kill` that would release the pty. A client id is never reused (Electron webContents
+   * ids and the server's `nextUiId` both only go up), so a client that comes back comes back as a
+   * new id and creates its sessions afresh — there is no returning client to strand.
+   */
+  private reapTick(): void {
+    const live = new Set(platform().clientIds())
+    const now = Date.now()
+    for (const [sessionId, session] of [...this.sessions]) {
+      // A relay sink is a watcher (somebody's phone is mirroring this session); a parked terminal
+      // is still a subscriber, and its client is still attached.
+      const watched =
+        !!session.onData || [...session.subscribers].some((sub) => live.has(subClient(sub)))
+      if (watched) session.unwatchedSince = null
+      else session.unwatchedSince ??= now
+      const reap = shouldReap(
+        { tmuxBacked: session.tmuxBacked, watched, unwatchedSince: session.unwatchedSince },
+        now
+      )
+      if (reap) this.releaseClient(sessionId, session)
+    }
+    if (this.sessions.size === 0 && this.reapTimer) {
+      clearInterval(this.reapTimer)
+      this.reapTimer = null
+    }
+  }
+
+  /**
+   * Detach this process's pty CLIENT from a session and forget it: the final scrollback snapshot,
+   * `releasePty` (never a bare `proc.kill()` — a paused pty never reads EOF, so kill alone leaks
+   * the master fd; see pty-release.ts), and the index cleanup. Shared by the last subscriber's
+   * departure and the idle reap, which differ only in what made the session unwatched. A tmux
+   * session is NOT killed here, in either case — that is `destroySession`.
+   */
+  private releaseClient(sessionId: string, session: Session): void {
+    if (session.flushTimer) clearTimeout(session.flushTimer)
+    // Final snapshot on detach (node unmount / app quit) so the very latest scrollback survives
+    // a reboot. The tmux session itself keeps running, so this only races a same-instant capture.
+    // Skipped when nothing arrived since the last periodic capture (pane content is unchanged).
+    if (session.persistKey && session.outputSinceSnapshot)
+      void this.snapshotScrollback(session.persistKey, session.sshRemote)
+    // Remember what a later shadow would have no other way to learn — the grid the painter last
+    // enforced (so the pane is not left to reflow), and whether this node's tmux was REMOTE (so it
+    // is never shadowed against our local socket). The `Session` holding both goes with `forget`
+    // below; this is the record that survives it.
+    if (session.persistKey)
+      this.released.set(session.persistKey, {
+        sessionId,
+        size: session.appliedSize,
+        remote: !!session.sshRemote
+      })
+    releasePty(session.proc as ReleasablePty)
+    this.forget(sessionId, session)
+  }
+
+  /**
+   * Attach a control-mode SHADOW to the tmux session of a node whose painter pty client has been
+   * released — `tmux -C attach-session` over plain pipes, holding ZERO pty devices — so a
+   * background feature can reach a session nobody is watching without respawning the terminal (a
+   * pty device, a tmux client, an ssh child, and a full redraw the user never asked for).
+   *
+   * Attach-or-reuse; returns the live client, or null when there is nothing to shadow or nothing to
+   * shadow it with:
+   *  - tmux is unavailable or switched off: there is no tmux session to attach to, and a non-tmux
+   *    session's work lives in the pty client that is already gone.
+   *  - `ptyShadowClients` is off: the kill switch (see the setting's doc). This is ONE of the two
+   *    places it is read — the other is `backgroundWrite` — because these are the only two entry
+   *    points that can start a control client of ours.
+   *  - a PAINTER pty client is still attached for this node. A session never has both: the painter
+   *    attaches with `-D` (it would kick the shadow off a moment later anyway), and two clients of
+   *    ours on one pane would hand tmux the size negotiation that pty-size.ts exists to keep.
+   *  - the node is REMOTE (an SSH project): its tmux runs on the far host, not on our socket.
+   *  - the control client could not be spawned, or was torn down while its opening size push was
+   *    outstanding (see `shadowCommand`). This method never rejects; failure is always null.
+   *
+   * WHAT A SHADOW IS NOT: not a subscriber, not a `Session`, not a renderer client id. Nothing in
+   * this process that decides "is somebody watching" can see it — the reap sweep asks
+   * `platform().clientIds()` and walks `this.sessions`, and the renderer's park and offscreen
+   * dispose are per-node renderer state.
+   *
+   * It IS a real tmux client, so anything that asks TMUX "is this session attached" does see it,
+   * and must subtract it. There is one such consumer: the session budget (session-budget.ts) culls
+   * idle DETACHED sessions under memory pressure, and it takes `shadowedTmuxSessions` for exactly
+   * this reason. Any future `list-clients`/`session_attached` reader owes the same subtraction.
+   */
+  async shadowAttach(persistKey: string): Promise<ControlModeClient | null> {
+    // Both halves of "is there a tmux session at all": the binary, and the setting that decides
+    // whether sessions are spawned under it. With tmux switched OFF, `tmuxPath` is still set (the
+    // binary is installed) but every session is a plain shell — so a shadow would attach to a name
+    // nothing ever created and die on arrival, and its caller would read that as "reached it".
+    const settings = this.getSettings()
+    if (!this.tmuxPath || !settings.tmuxEnabled) return null
+    // The kill switch, read here rather than at each of the three places a shadow is USED: a caller
+    // that cannot get a client cannot use one, and a flag scattered over the tier guards would be a
+    // flag with three chances to be forgotten.
+    if (!settings.ptyShadowClients) return null
+    const live = this.shadows.get(persistKey)
+    if (live?.alive) return live
+    // Died since it was attached (its `onExit` normally clears the entry; this covers a caller that
+    // gets here first). Re-attaching is LAZY on purpose: nothing re-shadows a session nobody asked
+    // about, so a node that is never wanted again costs nothing.
+    if (live) this.shadows.delete(persistKey)
+    if (this.sessionByPersistKey(persistKey)) return null
+    const known = this.released.get(persistKey)
+    // A remote (SSH-project) node's tmux server is on the FAR host, reached over that project's
+    // ControlMaster on the `nodeterm-rmt` socket. A local `-C attach -t nt-<id>` here would find
+    // nothing — or, if a create once ran with the master down, the LOCAL orphan wearing this node's
+    // name, which is a different machine's idea of the node and must never be typed into. Routing
+    // control mode over ssh is a separate job; refusing is the honest answer until it exists.
+    if (known?.remote) return null
+    // At most ONE client of ours per tmux session. The shared background-write client may already
+    // be attached to this one (it attaches to whatever session first needed a background write);
+    // it is the one that yields, because it can be re-started against any session and a shadow
+    // cannot. Two of ours here would also break the session budget's "subtract one client per
+    // shadowed name" arithmetic, which has no way to know it should subtract two.
+    this.sharedDisposeOn(persistKey)
+    const client = new ControlModeClient({
+      tmuxBin: this.tmuxPath,
+      socket: TMUX_SOCKET,
+      sessionName: sessionName(persistKey),
+      // Nothing consumes a shadowed session's output yet (the first consumer, Task 4's background
+      // write path, only WRITES). This drops the bytes; it does NOT avoid their cost — an attached
+      // `-C` client is sent every `%output` line regardless, and the client octal-decodes then
+      // UTF-8-decodes each one on the main thread before this callback throws it away. All the drop
+      // buys is not forwarding it any further. STANDING OBLIGATION: before any first production
+      // caller, either run the wire-cost probe (measure that traffic on a busy session) or issue
+      // `refresh-client -fno-output` for write-only clients so tmux stops sending it at all
+      // (tmux >= 3.2 — the floor this feature would then require).
+      onOutput: () => {},
+      // An UNEXPECTED death only — `dispose()` is silent by design, so this can never fire for a
+      // swap-out we asked for. Forget the entry and stop there: the tmux session, its processes and
+      // its scrollback are untouched, and the next `shadowAttach` re-attaches.
+      onExit: () => {
+        if (this.shadows.get(persistKey) === client) this.shadows.delete(persistKey)
+      },
+      spawner: this.controlSpawn
+    })
+    this.shadows.set(persistKey, client)
+    try {
+      client.start()
+    } catch {
+      // `child_process.spawn` throws SYNCHRONOUSLY on EMFILE and friends — and a machine short of
+      // file descriptors is exactly the machine a background feature reaches for a shadow on. The
+      // contract is "null, never a rejection", so swallow it and leave no half-attached entry.
+      this.shadows.delete(persistKey)
+      return null
+    }
+    // One line per swap direction, in the field-report vocabulary of this feature ("shadow attach" /
+    // "painter attach", see `spawnSession`). Only when a client is actually STARTED: a re-used
+    // shadow swapped nothing, and a line per caller would say nothing about the session's state.
+    console.log(`[pty] shadow attach ${sessionName(persistKey)}`)
+    const size = this.released.get(persistKey)?.size
+    if (size) {
+      const line = `refresh-client -C ${size.cols}x${size.rows}`
+      const reply = await this.shadowCommand(persistKey, line)
+      // Only a torn-down shadow (timeout, or death under us) fails the attach. tmux REFUSING the
+      // size (`%error`) leaves a perfectly usable client and a pane at its standing size, which is
+      // the same outcome as having no size to push.
+      if (reply === null) return null
+    }
+    // NO recorded size pushes nothing, deliberately: the pane keeps the standing size it has had
+    // since its last painter, and inventing one here would reflow a pane that is perfectly fine.
+    // (A relay-served pty released without ever reporting a size is exactly that case.)
+    //
+    // Re-read the map rather than returning `client`: a `create()` may have swapped this shadow out
+    // for a painter across the await above, and handing back a disposed client would look live.
+    return this.shadows.get(persistKey) ?? null
+  }
+
+  /**
+   * The tmux sessions this manager currently shadows on `socket` — the subtraction the session
+   * budget needs (session-budget.ts): a held `-C attach` flips `#{session_attached}` to 1, and an
+   * attached session is never culled, so without this a shadowed session would be permanently
+   * exempt from the memory-pressure safety valve. A shadow is not a watcher; the budget may kill
+   * the session under it, and the shadow dies with it.
+   *
+   * Socket-scoped because `nt-<node>` is only unique within a socket: shadows are attached on the
+   * LOCAL socket only, and a genuinely attached session of the same name on `nodeterm-rmt` (an SSH
+   * host's own sessions) keeps its exemption.
+   */
+  shadowedTmuxSessions(socket: string): string[] {
+    if (socket !== TMUX_SOCKET) return []
+    const names: string[] = []
+    for (const [persistKey, client] of this.shadows)
+      if (client.alive) names.push(sessionName(persistKey))
+    // The shared background-write client is a tmux client of the session it attached to, exactly
+    // like a shadow, and is subtracted the same way. It can never DOUBLE with a shadow of that same
+    // session — `shadowAttach` retires it first — which is what keeps the budget's "minus one
+    // client per name" arithmetic (session-budget.ts) honest.
+    if (this.shared?.client.alive) names.push(sessionName(this.shared.persistKey))
+    return names
+  }
+
+  /** Retire a node's shadow, if it has one. Idempotent. The entry is dropped HERE because
+   *  `dispose()` is silent (it does not fire `onExit`) — a deliberate swap-out is not a death. */
+  shadowDispose(persistKey: string): void {
+    const client = this.shadows.get(persistKey)
+    if (!client) return
+    this.shadows.delete(persistKey)
+    client.dispose()
+  }
+
+  /**
+   * Run ONE control-mode command on a node's shadow, bounded by `SHADOW_CMD_TIMEOUT_MS`. EVERY
+   * command issued to a shadow must go through here: the client owns no timers, and a reply that
+   * never comes desyncs its positional FIFO for good — so the timeout is a teardown, not a retry.
+   *
+   * Returns the reply (`ok` is tmux's own verdict), or null when there is no shadow, when the line
+   * is not a single command, or when the command timed out / the client died — in the last case the
+   * shadow is gone and a caller that still wants one asks `shadowAttach` for a fresh client.
+   *
+   * Public because it is the sanctioned way to talk to a shadow: a caller reaching past it to
+   * `client.command()` would be issuing an unbounded command, which is the one thing this whole
+   * mechanism cannot survive.
+   */
+  async shadowCommand(
+    persistKey: string,
+    line: string
+  ): Promise<{ ok: boolean; body: string[] } | null> {
+    const client = this.shadows.get(persistKey)
+    if (!client) return null
+    return this.controlCommand(client, line, () => {
+      // Only if it is still OUR client: a shadow replaced across the await was already disposed by
+      // whoever replaced it, and disposing again would take down a healthy successor.
+      if (this.shadows.get(persistKey) === client) this.shadowDispose(persistKey)
+    })
+  }
+
+  /**
+   * The timeout that every control-mode command in this manager is issued under — the shared body
+   * of `shadowCommand` and of the shared background-write client's commands. `onBroken` is how the
+   * caller retires ITS client; this method never decides which registry a client lives in.
+   */
+  private async controlCommand(
+    client: ControlModeClient,
+    line: string,
+    onBroken: () => void
+  ): Promise<{ ok: boolean; body: string[] } | null> {
+    // Refuse a multi-line command HERE rather than letting the client refuse it below. Both answer
+    // null, but the difference is what happens to the shadow: the catch treats a rejection as
+    // evidence the channel is unusable and DISPOSES, which is right for a timeout or a death and
+    // pure collateral damage for a line that was never written (the FIFO cannot have desynced —
+    // see the same guard in tmux-control-client.ts). Screening it out up front is what makes the
+    // catch's blanket teardown safe: everything that can reject past this point has either reached
+    // the wire or lost the client.
+    if (/[\r\n]/.test(line)) return null
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        client.command(line),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`tmux control-mode command timed out: ${line}`)),
+            SHADOW_CMD_TIMEOUT_MS
+          )
+          timer.unref?.()
+        })
+      ])
+    } catch {
+      onBroken()
+      return null
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Type `data` into a node whose PAINTER pty client is gone, without spawning one.
+   *
+   * The fallthrough, in order:
+   *  1. **the painter**, if the node is on screen after all — the session's own pty, exactly as a
+   *     keystroke from its terminal. (A caller holding a stale session id can land here; it is the
+   *     same NODE either way, which is what the caller asked for.)
+   *  2. **the node's own shadow**, if one is already up. Never attaches one: a shadow exists to be
+   *     re-used by whoever attached it, and a write does not need a session-scoped client.
+   *  3. **the shared control client** (`sharedClientFor`) — one `tmux -C` child for the whole
+   *     server, because `send-keys -t <session>` is a server-wide command.
+   *
+   * Returns whether the keys were delivered. **A false is never retried on another client**: a
+   * timed-out `send-keys` may well have run — control mode loses the REPLY, not necessarily the
+   * command — so re-sending it elsewhere risks typing the input twice, which is worse than not
+   * typing it at all.
+   *
+   * REFUSALS, both of them the same rule — never write into a session this process cannot prove is
+   * the node's own local one:
+   *  - a node with no `released` record: this process never released it, so `nt-<id>` on our socket
+   *    is a name we have no claim to (a remote node's local orphan, another machine's idea of it, a
+   *    session someone else made). An unknown key is not evidence of a session.
+   *  - a node whose record says `remote`: its tmux is on the far host. Reaching it means the
+   *    project's ControlMaster (`remoteTmuxSendKeysArgs`), not this channel; refusing is the honest
+   *    answer until that exists.
+   */
+  async backgroundWrite(persistKey: string, data: string): Promise<boolean> {
+    // Nothing to type — and `encodeSendKeysHex` would build a `send-keys -H ` with no bytes after
+    // it, which is a command line worth not sending.
+    if (!data) return false
+    const live = this.sessionByPersistKey(persistKey)
+    if (live) {
+      try {
+        live.proc.write(data)
+      } catch {
+        // node-pty throws on a write to a process that has already exited (the same hazard
+        // `applySize` guards on resize). This method is called fire-and-forget from `write()`, so a
+        // throw would surface as an UNHANDLED rejection in the main process — the crash risk Task
+        // 2's handoff note 2 names. A dead painter is a delivery failure, not an exception.
+        return false
+      }
+      return true
+    }
+    const settings = this.getSettings()
+    if (!this.tmuxPath || !settings.tmuxEnabled) return false
+    // The kill switch, and the reason it sits BELOW tier 1: the painter is the session's own pty,
+    // which exists with or without this feature — gating it would turn "no control clients" into
+    // "background writes stop working", which is a different setting. Below here, every tier needs
+    // a `tmux -C` child, so this one check covers both of them (`shadowAttach` carries the other).
+    if (!settings.ptyShadowClients) return false
+    const known = this.released.get(persistKey)
+    if (!known || known.remote) return false
+    const target = sessionName(persistKey)
+    // Belt and braces: `encodeSendKeysHex` interpolates the target UNQUOTED (Task 2 handoff note
+    // 12), and this line reaches a tmux server holding every session on the socket. `sessionName`
+    // cannot produce anything else today — which is exactly why this stays cheap.
+    if (!isSessionName(target)) return false
+    const line = encodeSendKeysHex(target, data)
+    const shadow = this.shadows.get(persistKey)
+    // ALIVE, not merely present: `dispose()` is silent (it fires no `onExit`), so a shadow retired
+    // by whoever was handed it leaves its entry behind, and a dead client can deliver nothing.
+    // Falling through to tier 3 does not violate the never-retry rule either — a client that is not
+    // running rejects `command()` BEFORE writing a byte (tmux-control-client.ts), so the keys it
+    // refused cannot also have reached tmux.
+    if (shadow?.alive) return (await this.shadowCommand(persistKey, line))?.ok ?? false
+    const client = this.sharedClientFor(persistKey)
+    if (!client) return false
+    return (await this.controlCommand(client, line, () => this.sharedDispose(client)))?.ok ?? false
+  }
+
+  /**
+   * The shared background-write client, started on demand and attached to `persistKey`'s session.
+   *
+   * WHICH session it attaches to is deterministic and deliberately the least interesting choice
+   * available: the session of the background write that needed it. That session was just proved to
+   * be local, released and ours — so the attach cannot land on a foreign session, and cannot put a
+   * second client of ours on a pane a painter is already drawing. Every command it then issues
+   * carries its own explicit `-t`, so the attachment never decides where the keys go.
+   *
+   * It pushes NO size, unlike a per-session shadow: it displays nothing, and `refresh-client -C`
+   * would resize the pane for whoever IS watching that session (their own `tmux attach`). The pane
+   * keeps the standing size its last painter left it at.
+   *
+   * Null when tmux is unavailable or the child could not be spawned (`child_process.spawn` throws
+   * synchronously on EMFILE and friends — the machine a background feature reaches for a client on).
+   */
+  private sharedClientFor(persistKey: string): ControlModeClient | null {
+    // BOTH halves of "is there a tmux session at all", as `shadowAttach` carries them: with tmux
+    // switched off `tmuxPath` is still set (the binary is installed) but nothing ever created a
+    // session, so this would attach to a name that does not exist. Its only caller checks the same
+    // thing three lines earlier — this is here so a second caller cannot arrive without it.
+    if (!this.tmuxPath || !this.getSettings().tmuxEnabled) return null
+    this.armSharedLinger()
+    const live = this.shared
+    if (live?.client.alive) return live.client
+    if (live) this.shared = null // died since it was started; its onExit normally clears this
+    const client = new ControlModeClient({
+      tmuxBin: this.tmuxPath,
+      socket: TMUX_SOCKET,
+      sessionName: sessionName(persistKey),
+      // This client writes; it never reads — but dropping `%output` here saves none of its cost.
+      // While attached, tmux sends this client the pane output of the session it landed on, and it
+      // octal-decodes then UTF-8-decodes all of it on the main thread before this callback discards
+      // it; the drop
+      // only stops it going further. The linger bounds how long that is paid for. STANDING
+      // OBLIGATION (same as the per-session shadow above): before any first production caller,
+      // either run the wire-cost probe or issue `refresh-client -fno-output` for these write-only
+      // clients (tmux >= 3.2) so the bytes are never sent.
+      onOutput: () => {},
+      onExit: () => {
+        if (this.shared?.client === client) this.shared = null
+      },
+      spawner: this.controlSpawn
+    })
+    this.shared = { client, persistKey }
+    try {
+      client.start()
+    } catch {
+      this.shared = null
+      return null
+    }
+    // Same line as a per-session shadow, deliberately: from the outside these are the same event —
+    // a control client of ours became this session's attached client — and a field report should
+    // not have to know which of the two kinds it is looking at. The linger keeps it rare.
+    console.log(`[pty] shadow attach ${sessionName(persistKey)}`)
+    return client
+  }
+
+  /** (Re)arm the linger: the client goes `BACKGROUND_WRITE_LINGER_MS` after the LAST write wanted
+   *  it, so a burst keeps one child and a trickle does not churn one per write. */
+  private armSharedLinger(): void {
+    if (this.sharedLinger) clearTimeout(this.sharedLinger)
+    this.sharedLinger = setTimeout(() => this.sharedDispose(), BACKGROUND_WRITE_LINGER_MS)
+    // Node keeps the process alive for a pending timer, and this one must never be the reason a
+    // quitting app lingers (the other manager timers unref for the same reason).
+    this.sharedLinger.unref?.()
+  }
+
+  /** Retire the shared client AND its linger. Idempotent. `only` makes it a no-op while a DIFFERENT
+   *  client is the current one — a caller reacting to its own client's failure must take down
+   *  neither the successor nor the successor's timer. With nothing attached at all there is no
+   *  successor to protect, and the timer goes either way. */
+  private sharedDispose(only?: ControlModeClient): void {
+    const live = this.shared
+    // A SUCCESSOR is left entirely alone, linger included: `only` is passed by a caller reacting to
+    // its own client's failure, and by then a later write may already have started a new one.
+    if (only && live && live.client !== only) return
+    // Cleared even when nothing is attached — `onExit` clears `shared` on its own (a client that
+    // died under us), and the linger armed for it would otherwise stay pending, aimed at whatever
+    // is attached when it fires.
+    if (this.sharedLinger) {
+      clearTimeout(this.sharedLinger)
+      this.sharedLinger = null
+    }
+    if (!live) return
+    this.shared = null
+    live.client.dispose()
+  }
+
+  /** Retire the shared client if it is attached to THIS node's session — for the two events that
+   *  claim that session for another client of ours (a painter spawning, a shadow attaching) and for
+   *  the one that ends it (`endSession`). Elsewhere it keeps lingering; the attachment is
+   *  incidental, and it can be re-started against any session. */
+  private sharedDisposeOn(persistKey: string): void {
+    if (this.shared?.persistKey === persistKey) this.sharedDispose()
+  }
+
   /** Must run after app is ready (needs userData path). */
   init(getSettings: () => Settings): void {
     this.getSettings = getSettings
@@ -557,15 +1149,27 @@ export class PtyManager {
     // own, so a tmux living only on the user's shell PATH is invisible until this resolves.
     void resolveShellPath().then(() => this.ensureTmux())
     this.ensureTmux()
+    // Read the system pty-device ceiling now, while nothing is wrong. The spawn path that needs it
+    // is synchronous and already one failed spawn deep — it cannot await a `sysctl` there, and a
+    // machine at its device limit is exactly a machine where spawning one more process is a bad
+    // idea. See pty-devices.ts.
+    primePtyCeiling()
   }
 
   /** Probe tmux and write/push the generated config. Idempotent and safe to re-run: a later
-   *  successful probe (e.g. right after the banner's install command finishes) brings tmux
-   *  up for NEW sessions without an app restart — existing plain-shell sessions are left
-   *  alone. No-op while tmux is already resolved or before init() provided settings. */
+   *  successful probe (the banner's install command finishing, or init()'s post-PATH-probe re-run
+   *  finding a tmux only the login shell knew about) brings tmux up for NEW sessions without an
+   *  app restart — existing plain-shell sessions are left alone. There is deliberately no
+   *  migration: a process already running under a bare pty cannot be moved into a tmux pane, so
+   *  the recovery for one of those is the node's own refresh/respawn, which re-creates the session
+   *  through the now-resolved tmux (at the cost of that shell's state, as any respawn is).
+   *  No-op while tmux is already resolved or before init() provided settings. */
   ensureTmux(): void {
     if (this.tmuxPath || !this.getSettings) return
-    const found = findTmux()
+    // platform() is safe past the guard above: getSettings is only set by init(), which the shell
+    // calls after initPlatform(). resourcesPath is undefined on the Server Edition, so the bundled
+    // candidate is simply absent there (Linux keeps system-tmux-only).
+    const found = findTmux(platform().resourcesPath)
     if (!found) return
     this.confPath = path.join(platform().userDataDir, 'tmux.conf')
     try {
@@ -653,8 +1257,13 @@ export class PtyManager {
     // event they get has to name WHO did it ("closed by <name>" — see `destroySession`).
     // Registered ONLY here: `on` and `onWithSender` compose on the same channel, so a leftover
     // plain listener would run the destroy — and its `tmux kill-session` — twice.
-    platform().onWithSender(IPC.ptyDestroy, (senderId: number, persistKey: string) =>
-      this.endFromClient(senderId, IPC.ptyDestroy, persistKey, 'delete')
+    // Optional TRAILING `everySocket`: only the session-memory panel's SPECULATIVE kill sets it,
+    // and only for a row it holds no session for (see `localKillSockets`). `=== true` because the
+    // value arrives verbatim off the wire; absent ⇒ the narrow, historical single-socket kill.
+    platform().onWithSender(
+      IPC.ptyDestroy,
+      (senderId: number, persistKey: string, everySocket?: unknown) =>
+        this.endFromClient(senderId, IPC.ptyDestroy, persistKey, 'delete', everySocket === true)
     )
     // Sender-aware for the opposite reason: the client that RECYCLED the node drives its own
     // respawn, so it is the one client that must NOT be sent the restart notice.
@@ -744,12 +1353,13 @@ export class PtyManager {
     clientId: ClientId,
     channel: string,
     persistKey: string,
-    intent: EndIntent
+    intent: EndIntent,
+    everySocket = false
   ): Promise<void> {
     if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN)
       return Promise.resolve()
     if (!this.allowEnd(clientId, channel)) return Promise.resolve()
-    return this.endSession(clientId, persistKey, intent)
+    return this.endSession(clientId, persistKey, intent, everySocket)
   }
 
   /** Take one token from this client's bucket for a session-ending channel (see PTY_END_BUDGET).
@@ -902,9 +1512,12 @@ export class PtyManager {
     // our tmux always runs `mouse on`, so enabling these unconditionally matches its client state.
     // Rides `base` so it reaches the renderer on BOTH the resized and screen-painted branches.
     const coAttachMouse = existing.persistKey ? true : undefined
+    // Same source, different question (and different consumer): a joiner needs to know whether the
+    // session it landed on survives losing a client, because its own unmount may park it.
+    const persistent = !!existing.persistKey
     const base: PtyCreateResult = existing.accountFallback
-      ? { sessionId: existingId, fresh: false, accountFallback: true, coAttachMouse }
-      : { sessionId: existingId, fresh: false, coAttachMouse }
+      ? { sessionId: existingId, fresh: false, accountFallback: true, coAttachMouse, persistent }
+      : { sessionId: existingId, fresh: false, coAttachMouse, persistent }
     if (resized) return Promise.resolve(base) // tmux is redrawing this client — do not paint twice
     // An empty capture (plain shell — no tmux to capture; a tmux/ssh blip) is OMITTED, never sent
     // as '': the renderer must not reset a terminal for nothing. A plain-shell joiner therefore
@@ -962,9 +1575,16 @@ export class PtyManager {
     // so the session env below picks it up — awaiting keeps the event loop free either way.
     await resolveShellPath()
     const sessionId = this.spawnSession(options, clientId, undefined)
+    const spawned = this.sessions.get(sessionId)
     // Surface a missing-account-dir fallback so the renderer can flag the node's account chip.
-    const accountFallback = this.sessions.get(sessionId)?.accountFallback
-    return accountFallback ? { sessionId, fresh, accountFallback } : { sessionId, fresh }
+    const accountFallback = spawned?.accountFallback
+    // The session's `persistKey` is set iff the spawn actually landed on a tmux, local or remote
+    // (`persisted` in spawnSession) — i.e. exactly "this session survives losing its client",
+    // which is what the renderer's cache-dispose levers must not assume. See PtyCreateResult.
+    const persistent = !!spawned?.persistKey
+    return accountFallback
+      ? { sessionId, fresh, accountFallback, persistent }
+      : { sessionId, fresh, persistent }
   }
 
   /** Does the node's remote tmux session exist (over the project's ControlMaster)? Async so the
@@ -1006,6 +1626,21 @@ export class PtyManager {
     const s = this.sessionByPersistKey(nodeId)
     if (!s?.sshRemote) return undefined
     return { controlPath: s.sshRemote.controlPath, conn: s.sshRemote.conn }
+  }
+
+  /**
+   * Public read of the probe below, for callers that attach WITHOUT going through `create()` and
+   * so never receive its `fresh` flag — today the relay host's `pty.attach` (`host-service.ts`).
+   * `attachDetached` spawns through `tmux new-session -A`, which CREATES when the session is
+   * gone, so without asking first a mirrored client cannot tell "I joined your live agent" from
+   * "I just made you an empty login shell". That is what showed a phone a bare `~ %` prompt
+   * under a Claude node's title after the host's tmux server died.
+   *
+   * Same fail-safe direction as everywhere else here: an unprobeable tmux answers "exists", so
+   * the caller treats it as a warm join and types nothing into it.
+   */
+  async sessionExists(persistKey: string): Promise<boolean> {
+    return this.tmuxSessionExists(persistKey)
   }
 
   /** Whether a tmux session for this node id currently exists (server alive + session present).
@@ -1073,12 +1708,128 @@ export class PtyManager {
     }
   }
 
+  /**
+   * The sentence a caller sees when no terminal came back.
+   *
+   * One function because TWO paths now produce it: the spawn that failed (node-pty threw), and the
+   * spawn that was never attempted (the pre-flight in `spawnSession`). Both must say the same thing
+   * about the same machine — a user who is out of pty devices should not be able to tell which of
+   * the two refused them, and the exhaustion copy must exist exactly once (it lives in
+   * `spawnFailureHint`, and this is the only place that supplies its generic fallback).
+   *
+   * `archNote` is a parameter rather than a lookup because it is only ever true of a spawn that
+   * actually tried to exec the helper — see the call sites.
+   */
+  private spawnFailureError(
+    reason: string,
+    file: string,
+    cwd: string,
+    archNote: string | null,
+    devices: PtyDevices
+  ): Error {
+    // MEASURED, not guessed. node-pty discards the errno, so the old message ended every failure
+    // with the same advice — restart, or rebuild node-pty for the wrong architecture. Both are
+    // real causes and both are rare, and reading as authoritative sent at least one field report
+    // (2026-08-06) chasing an architecture that was fine. `spawnResourceNote` states what it
+    // actually counted and only names a remedy the numbers support.
+    const resources = spawnResourceNote(readSpawnResources(), this.sessions.size)
+    // ONE closing hint, picked by what was measured (`spawnFailureHint`): arch, else the system
+    // pty-device limit, else the generic guess of last resort.
+    const hint = spawnFailureHint(
+      archNote,
+      devices,
+      `If this persists, restart the app (tmux sessions survive a restart) or run ` +
+        `\`npm run rebuild\` in the repo — a release build may have rebuilt node-pty ` +
+        `for the wrong architecture.`
+    )
+    return new Error(
+      `Failed to spawn terminal (${reason}). Program: ${file}, cwd: ${cwd}, ${resources} ${hint}`
+    )
+  }
+
   private spawnSession(
     options: PtyCreateOptions,
     /** The client this session is spawned for, or null for a relay-served (detached) pty. */
     clientId: ClientId | null,
     sinks: DetachedSinks | undefined
   ): string {
+    // PRE-FLIGHT — refuse before node-pty is touched, not after it fails.
+    //
+    // node-pty's darwin spawn path LEAKS the pty it opened when `posix_spawn` fails:
+    // `pty_posix_spawn` (node_modules/node-pty/src/unix/pty.cc) opens the master with
+    // `posix_openpt` and the slave with `open()`, and the error branch in `PtyFork` throws without
+    // closing either — measured at 2 `/dev/ptmx` fds + 1 `/dev/ttys*` fd, i.e. 2 pty DEVICES, per
+    // failed spawn (there is a third, smaller leak of one device per SUCCESSFUL spawn from the
+    // `low_fds` cleanup loop's off-by-one). That makes exhaustion self-amplifying: at the ceiling
+    // every spawn fails, every failure eats two more devices, and each retry pushes the ceiling
+    // further away — a 31-minute-old main held 479 masters against 28 tmux panes and dozens of
+    // consecutive failed creates. The leak is node-pty's to fix; ours is to stop feeding it.
+    //
+    // FIRST STATEMENT IN THE FUNCTION, ahead of the swap-out below, because a refusal must leave
+    // the node exactly as it found it. Retiring the shadow first would trade a live background
+    // client for nothing at all: the painter it was making way for never arrives, and nothing
+    // re-attaches a shadow (`shadowAttach` is driven by release/reap, not by a failed create), so
+    // a node nobody is watching would go quietly dark on a machine that is merely full. Nothing
+    // between here and `pty.spawn` is needed to decide this — the reading is machine-wide.
+    //
+    // FAIL-OPEN is the rule here: `ptyDevicesExhausted` is false for anything unmeasured
+    // (non-darwin, a `sysctl` that failed, or a ceiling whose async prime — kicked in `init` — has
+    // not landed yet), so an unknown machine spawns exactly as it always did. Refusing a terminal
+    // on a machine that had room would be a worse bug than the leak this avoids.
+    //
+    // AND THAT IS THE WHOLE FIX — no backoff, no circuit breaker, deliberately. The bursts of
+    // consecutive failed creates in the field log are not a retry storm: NOTHING re-attempts a
+    // create that failed. The renderer's create rejection lands in one `.catch` that only records
+    // `spawnError` for the node's overlay (TerminalNode.tsx) — no timer, no respawn bump, and no
+    // `reportSshDrop`, so a failure cannot even feed the SSH reconnect coordinator (whose own loop
+    // is bounded anyway: 1→2→4→8→15s, then parked until a `connected` event, plus a 10s re-drop
+    // refusal). A burst is therefore N DISTINCT nodes each trying exactly once, fanned out by one
+    // moment — app boot, a project tab switch past the park window, an agent's bulk
+    // `open-terminal --count N`, or one reconnect flush. Rate-limiting that would only stagger
+    // failures the user asked for. What made it look like a storm was the amplification: 40
+    // one-shot creates used to cost 80 devices, and now cost none.
+    const devices = readPtyDevices()
+    if (ptyDevicesExhausted(devices)) {
+      // The REQUESTED program and cwd, not the resolved ones — resolution happens further down and
+      // deliberately has not run. Nothing was chosen, so nothing is claimed to have been.
+      //
+      // `archNote` is deliberately not consulted: it outranks the device note in
+      // `spawnFailureHint`, and no helper was exec'd here, so its architecture cannot be the
+      // reason. Saying "rebuild node-pty" to a machine that is simply full is the 2026-08-06
+      // mistake with a new cause.
+      throw this.spawnFailureError(
+        'not attempted',
+        options.shell ?? '(default shell)',
+        options.cwd ?? os.homedir(),
+        null,
+        devices
+      )
+    }
+
+    // SWAP-OUT, before anything at all is spawned: a painter pty client is arriving for this node,
+    // and a session never has both. The painter attaches with `-D` and would kick the shadow off by
+    // itself — but only once tmux has processed both attaches, leaving a window where two clients
+    // of ours negotiate one pane. Retiring it first (politely: `dispose()` sends `detach-client`)
+    // means exactly one client is ever attached, and because `dispose()` is silent this can never
+    // be mistaken for a shadow that died and wants re-attaching.
+    //
+    // Here rather than in `create()` so EVERY path to a painter is covered — the warm reattach, the
+    // relay host's `attachDetached`, and whatever spawns next — and so the ordering is provable:
+    // nothing between here and `pty.spawn` can fail, in the same synchronous function. (The
+    // pre-flight above is the one thing that CAN, which is exactly why it runs before this.)
+    // The shared background-write client goes too, for the same reason, when it is this node's
+    // session it happens to be attached to.
+    if (options.persistKey) {
+      // The other half of the swap log (see `shadowAttach`), and only when there is really
+      // something to retire: a painter arriving at a session no control client held swapped
+      // nothing, and a line per terminal anyone opens is noise in the report it exists for.
+      const held =
+        this.shadows.get(options.persistKey)?.alive ||
+        (this.shared?.persistKey === options.persistKey && this.shared.client.alive)
+      if (held) console.log(`[pty] painter attach ${sessionName(options.persistKey)}`)
+      this.shadowDispose(options.persistKey)
+      this.sharedDisposeOn(options.persistKey)
+    }
     const sessionId = `pty-${++this.counter}`
     // For a remote (ssh-project) node the local PTY just holds the ssh client, so its local cwd
     // must be a real LOCAL directory (options.cwd is a REMOTE path that wouldn't exist locally and
@@ -1308,25 +2059,15 @@ export class PtyManager {
       })
     } catch (err) {
       // node-pty surfaces the underlying failure as a bare "posix_spawnp failed." with no errno.
-      // The recurring field cause is a cross-arch `electron-builder --x64` run clobbering
-      // node-pty's spawn-helper in node_modules (arm64 app can't exec an x86_64 helper), so
-      // check the helper's Mach-O arch first and name the exact remedy when it mismatches.
-      const openPtys = this.sessions.size
+      // Two different field causes wear that same message, so BOTH are measured before anything is
+      // said: a cross-arch `electron-builder --x64` run clobbering node-pty's spawn-helper (arm64
+      // app can't exec an x86_64 helper), and the machine being out of pty DEVICES
+      // (`kern.tty.ptmx_max`, 2026-08-11 — 515 `/dev/ttys*` against a ceiling of 511).
       const reason = err instanceof Error ? err.message : String(err)
-      const archNote = spawnHelperArchMismatch()
-      // MEASURED, not guessed. node-pty discards the errno, so the old message ended every failure
-      // with the same advice — restart, or rebuild node-pty for the wrong architecture. Both are
-      // real causes and both are rare, and reading as authoritative sent at least one field report
-      // (2026-08-06) chasing an architecture that was fine. `spawnResourceNote` states what it
-      // actually counted and only names a remedy the numbers support.
-      const resources = spawnResourceNote(readSpawnResources(), openPtys)
-      throw new Error(
-        `Failed to spawn terminal (${reason}). Program: ${file}, cwd: ${cwd}, ${resources} ` +
-          (archNote ??
-            `If this persists, restart the app (tmux sessions survive a restart) or run ` +
-              `\`npm run rebuild\` in the repo — a release build may have rebuilt node-pty ` +
-              `for the wrong architecture.`)
-      )
+      // Re-read the devices rather than reusing the pre-flight's reading: this spawn just consumed
+      // (and, per the leak above, kept) devices of its own, so the number the user is shown should
+      // be the one that was true when the failure happened.
+      throw this.spawnFailureError(reason, file, cwd, spawnHelperArchMismatch(), readPtyDevices())
     }
 
     // tmux-backed sessions snapshot their scrollback to disk periodically so a machine reboot
@@ -1369,10 +2110,21 @@ export class PtyManager {
       persistKey: persisted ? options.persistKey : undefined,
       sshRemote: remote,
       outputSinceSnapshot: true, // capture the initial screen on the first tick
+      // `persisted` IS "a tmux session (local or remote) is holding this work" — the same condition
+      // that gates the scrollback snapshots. Recorded under its own name because the reap decision
+      // asks a different question of it: not "is it worth snapshotting" but "would releasing this
+      // pty client destroy anything" (pty-reap.ts).
+      tmuxBacked: persisted,
+      unwatchedSince: null,
       pausedBy: new Set<string>(),
       accountFallback
     }
-    if (persisted) this.ensureSnapshotTimer()
+    // Both shared timers are armed by the first session that needs them: the scrollback snapshots
+    // and the idle reap are both about tmux-backed sessions and nothing else.
+    if (persisted) {
+      this.ensureSnapshotTimer()
+      this.ensureReapTimer()
+    }
     this.sessions.set(sessionId, session)
     // Index by node id even when the session is NOT tmux-persisted (`persisted` only governs
     // scrollback snapshots): co-attach must work for a plain-shell session too. Detached
@@ -1655,10 +2407,34 @@ export class PtyManager {
    */
   write(clientId: ClientId | null, sessionId: string, data: string): void {
     const session = this.sessions.get(sessionId)
-    if (!session) return
+    if (!session) return this.backgroundWriteBySessionId(sessionId, data)
     if (clientId !== null && session.nodeId && presenceHub.peerCount() > 1)
       presenceHub.noteTyping(clientId, session.nodeId)
     session.proc.write(data)
+  }
+
+  /**
+   * The `write()` miss: no live session answers to this id. It may still be a session THIS process
+   * released — the pty client detached, the tmux session (and everything running in it) untouched —
+   * whose id a caller is still holding, which is what the relay host does for the lifetime of a
+   * stream. Those bytes used to go on the floor; now they take the background path, which reaches
+   * the node without respawning a pty client for it.
+   *
+   * A linear scan rather than a second index: the `released` map is one small record per node this
+   * process has released, this is the cold path (a stray write, not a keystroke stream), and two
+   * maps that have to agree about the same fact is precisely the shape of bug the session-budget
+   * subtraction already had to be fixed for once.
+   *
+   * Fire-and-forget, because `write()` is: `backgroundWrite` never rejects, and there is nobody to
+   * report a delivery failure to on this path. No typing badge either — a released session is one
+   * nobody is watching, so the badge would light up on a terminal that is not on anybody's screen.
+   */
+  private backgroundWriteBySessionId(sessionId: string, data: string): void {
+    for (const [persistKey, rec] of this.released) {
+      if (rec.sessionId !== sessionId) continue
+      void this.backgroundWrite(persistKey, data)
+      return
+    }
   }
 
   /**
@@ -1757,16 +2533,9 @@ export class PtyManager {
       this.applySize(sessionId, session)
       return
     }
-    if (session.flushTimer) clearTimeout(session.flushTimer)
-    // Final snapshot on detach (node unmount / app quit) so the very latest scrollback survives
-    // a reboot. The tmux session itself keeps running, so this only races a same-instant capture.
-    // Skipped when nothing arrived since the last periodic capture (pane content is unchanged).
-    if (session.persistKey && session.outputSinceSnapshot)
-      void this.snapshotScrollback(session.persistKey, session.sshRemote)
-    // releasePty (not proc.kill()): a paused pty never reads EOF, so kill() alone leaks the
-    // master fd on every detach until the process runs out of descriptors (see pty-release.ts).
-    releasePty(session.proc as ReleasablePty)
-    this.forget(sessionId, session)
+    // Nobody is left: detach this process's pty client (the tmux session keeps running, as always).
+    // Shared with the idle reap — see `releaseClient`.
+    this.releaseClient(sessionId, session)
   }
 
   /**
@@ -2121,8 +2890,12 @@ export class PtyManager {
    *
    * `clientId` is null when nothing/no-one attributable did it (an internal caller).
    */
-  destroySession(clientId: ClientId | null, persistKey: string): Promise<void> {
-    return this.endSession(clientId, persistKey, 'delete')
+  destroySession(
+    clientId: ClientId | null,
+    persistKey: string,
+    opts?: { everySocket?: boolean }
+  ): Promise<void> {
+    return this.endSession(clientId, persistKey, 'delete', opts?.everySocket === true)
   }
 
   /**
@@ -2159,7 +2932,8 @@ export class PtyManager {
   private async endSession(
     clientId: ClientId | null,
     persistKey: string,
-    intent: EndIntent
+    intent: EndIntent,
+    everySocket = false
   ): Promise<void> {
     // Both callers run while the session is still live, so its sshRemote is known. Capture it
     // synchronously before any await. The index is the co-attach one (UI sessions); the scan is
@@ -2173,6 +2947,12 @@ export class PtyManager {
     // Also drop any in-flight create for this node: a create racing the kill-session below must
     // spawn a fresh session, not await (and then join) the one we are ending.
     this.inflight.delete(persistKey)
+    // The tmux session is about to be killed, so everything attached to it goes now: a shadow would
+    // otherwise linger until tmux dropped its client, and what we remembered about the released
+    // session describes a pane that is about to stop existing.
+    this.shadowDispose(persistKey)
+    this.sharedDisposeOn(persistKey)
+    this.released.delete(persistKey)
     // A DELETE is remembered (the respawn guard for clients `pty:closed` cannot reach — see
     // `tombstones`); a RECYCLE explicitly forgets, because the node is not going anywhere and its
     // replacement session must be spawnable. Recorded even when no live session exists in this
@@ -2237,10 +3017,21 @@ export class PtyManager {
       // such session", which is already the ignored case below.
     }
     if (!this.tmuxPath) return
-    try {
-      await runAsync(this.tmuxPath, ['-L', TMUX_SOCKET, 'kill-session', '-t', sessionName(persistKey)])
-    } catch {
-      // session may not exist; ignore
+    // Which socket(s) to aim at. Holding the session ourselves means we KNOW: it is the local one,
+    // one kill, unchanged. Holding nothing means the name is all we have — and then the fan-out is
+    // the CALLER's to ask for, because on this machine a `nt-<id>` we hold nothing for can also be
+    // living on the `nodeterm-rmt` socket, where ANOTHER machine's nodeterm puts the sessions it
+    // SSHes in to spawn. Only the session-memory panel's speculative kill sets `everySocket`: it
+    // sweeps both sockets and offers to end what it found, so a kill that only tried
+    // `node-terminal` showed a confirm saying "this stops its tmux session" and did nothing. An
+    // ordinary node-× on a node never mounted in this process takes the same unheld branch and
+    // must NOT inherit that blast radius.
+    for (const socket of localKillSockets(dying ? TMUX_SOCKET : null, everySocket)) {
+      try {
+        await runAsync(this.tmuxPath, localTmuxKillArgs(socket, sessionName(persistKey)))
+      } catch {
+        // session may not exist on this socket; ignore
+      }
     }
   }
 
@@ -2256,6 +3047,10 @@ export class PtyManager {
       clearInterval(this.snapshotTimer)
       this.snapshotTimer = null
     }
+    if (this.reapTimer) {
+      clearInterval(this.reapTimer)
+      this.reapTimer = null
+    }
     const finals: Promise<unknown>[] = []
     for (const session of this.sessions.values()) {
       if (session.flushTimer) clearTimeout(session.flushTimer)
@@ -2265,6 +3060,12 @@ export class PtyManager {
         finals.push(this.snapshotScrollback(session.persistKey, session.sshRemote))
       releasePty(session.proc as ReleasablePty)
     }
+    // Shadows are child processes of OURS, so quitting takes them with us — the tmux sessions they
+    // were attached to keep running with no client at all, which is exactly what persistence means.
+    for (const persistKey of [...this.shadows.keys()]) this.shadowDispose(persistKey)
+    // …and so does the shared background-write client, along with its linger timer.
+    this.sharedDispose()
+    this.released.clear()
     this.sessions.clear()
     this.byPersistKey.clear()
     // Pending recycle notices die with the sessions they were waiting on (their timers would

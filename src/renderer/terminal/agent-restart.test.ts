@@ -3,18 +3,24 @@ import { resumeCommand } from '../../shared/agents/config'
 import { withPermissionMode } from '../../shared/agents/approval-mode'
 import {
   __resetAgentRestartForTests,
+  agentHibernateFns,
   agentRestartFn,
   exitSequence,
   guardConcurrentRestart,
   isShellCommand,
+  performExitPhase,
   performRestartResume,
+  performResumePhase,
   planBulkRestart,
+  registerAgentHibernate,
   registerAgentRestart,
   restartEligibility,
   settleRestart,
   summarizeBulkRestart,
   summarizeOutcomes,
+  type AgentHibernateFns,
   type BulkRestartCandidate,
+  type ExitPhaseOutcome,
   type RestartOutcome
 } from './agent-restart'
 
@@ -447,6 +453,243 @@ describe('performRestartResume', () => {
   })
 })
 
+describe('performExitPhase', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('quits the CLI and reports exited once the pane reports a shell — writing nothing after', async () => {
+    const { written, io } = fakeIo()
+    let pane = 'claude'
+    const p = performExitPhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => pane,
+      timeoutMs: 6000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(250) // a few polls while the CLI is still up
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('exited')
+    // The exit phase's ENTIRE output: clear the line, then the CLI's own exit command. The resume
+    // line belongs to the other phase, so nothing here may reach the pane after `/exit`.
+    expect(written).toEqual(['\x15', '/exit\r'])
+  })
+
+  it('writes NOTHING and refuses when the pre-flight probe answers null', async () => {
+    const { written, io } = fakeIo()
+    const p = performExitPhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => null, // tmux off / no binary — the poll could never end
+      timeoutMs: 1000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    // A pane we cannot WATCH must never be quit: the CLI would die with the resume never sent.
+    expect(await p).toBe('not-eligible')
+    expect(written).toEqual([])
+  })
+
+  it('reports exit-timeout, without a resume, when the CLI never lets go of the pane', async () => {
+    const { written, io } = fakeIo()
+    const p = performExitPhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'claude',
+      timeoutMs: 1000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(await p).toBe('exit-timeout')
+    expect(written).toEqual(['\x15', '/exit\r']) // never force-killed, never resumed
+  })
+
+  it('refuses a session we could never resume into — the exit alone would lose it', async () => {
+    const { written, io } = fakeIo()
+    expect(
+      await performExitPhase({
+        agentId: 'claude',
+        sessionId: '-bad', // rejected by resumeCommand's SAFE_SESSION_ID
+        io,
+        paneCommand: async () => 'zsh'
+      })
+    ).toBe('not-eligible')
+    expect(
+      await performExitPhase({
+        agentId: 'opencode', // resumable, but no exit sequence
+        sessionId: 's',
+        io,
+        paneCommand: async () => 'zsh'
+      })
+    ).toBe('not-eligible')
+    expect(written).toEqual([])
+  })
+
+  it('respects isLive: a session already gone is never written to', async () => {
+    const { written, io } = fakeIo()
+    expect(
+      await performExitPhase({
+        agentId: 'claude',
+        sessionId: 'sid-1',
+        io,
+        paneCommand: async () => 'zsh',
+        isLive: () => false
+      })
+    ).toBe('not-eligible')
+    expect(written).toEqual([])
+  })
+
+  it('needs the changed reading TWICE before it calls an unlisted shell an exit', async () => {
+    // The allowlist cannot know `nu` / `xonsh` / a hand-set defaultShell, so "the foreground
+    // command is no longer what it was" is the other exit signal — and it is required on two
+    // CONSECUTIVE polls, because a single changed reading can be a momentary foreground CHILD of a
+    // still-running CLI. Typing the resume line into a live CLI would send it as a message.
+    const { io } = fakeIo()
+    const panes = ['claude', 'git', 'claude', 'nu', 'nu']
+    let i = 0
+    const p = performExitPhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      // The pre-flight consumes the first reading, so `before` is 'claude'.
+      paneCommand: async () => panes[Math.min(i++, panes.length - 1)] ?? null,
+      timeoutMs: 5000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(150) // poll 1 → 'git': changed, but not yet twice
+    await vi.advanceTimersByTimeAsync(100) // poll 2 → 'claude': the CLI is still there
+    await vi.advanceTimersByTimeAsync(250) // polls 3+4 → 'nu' twice in a row
+    expect(await p).toBe('exited')
+  })
+
+  it('stops polling a pane that dies under the wait', async () => {
+    const { io } = fakeIo()
+    let live = true
+    const p = performExitPhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'claude',
+      timeoutMs: 5000,
+      pollMs: 100,
+      isLive: () => live
+    })
+    await vi.advanceTimersByTimeAsync(150)
+    live = false
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await p).toBe('not-eligible') // not a timeout: there is no pane left to time out in
+  })
+})
+
+describe('performResumePhase', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('delivers the bare resume command and reports resumed once the delivery settles', async () => {
+    const { written, io } = fakeIo()
+    const p = performResumePhase({ agentId: 'claude', sessionId: 'sid-1', io })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('resumed')
+    expect(written.join('')).toContain('claude --resume sid-1')
+    expect(written.join('')).not.toContain('/exit') // the exit belongs to the other phase
+  })
+
+  it("prefers the caller's command (permission mode) over the bare one", async () => {
+    const { written, io } = fakeIo()
+    const p = performResumePhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      command: 'claude --resume sid-1 --permission-mode plan'
+    })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('resumed')
+    expect(written.join('')).toContain('claude --resume sid-1 --permission-mode plan')
+  })
+
+  it('keeps the bare command as the gate even when the caller overrides it', async () => {
+    const { written, io } = fakeIo()
+    expect(
+      await performResumePhase({
+        agentId: 'claude',
+        sessionId: '-bad',
+        io,
+        command: 'claude --resume -bad --permission-mode plan'
+      })
+    ).toBe('not-eligible')
+    expect(written).toEqual([])
+  })
+
+  it('hands the delivery cancel out as the delivery starts', async () => {
+    const { written, io } = silentIo()
+    let cancel: (() => void) | undefined
+    const p = performResumePhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      onDelivery: (c) => {
+        cancel = c
+      }
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(typeof cancel).toBe('function')
+    const delivered = written.length
+    cancel?.()
+    expect(await p).toBe('resumed')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(written.length).toBe(delivered) // no retries into a torn-down transport
+  })
+
+  it('resolves only once the resume line has left the pane', async () => {
+    const { io } = silentIo()
+    let settled = false
+    const p = performResumePhase({ agentId: 'claude', sessionId: 'sid-1', io }).then((o) => {
+      settled = true
+      return o
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(settled).toBe(false) // written, but still un-submitted through the verify retries
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await p).toBe('resumed')
+  })
+
+  it('rejects when the transport throws after the delivery announced itself', async () => {
+    // The delivery can announce its end from INSIDE deliverCommand's synchronous body and THEN
+    // throw (a transport that rejects the very first write ends the delivery, then reports). A
+    // promise resolved on that announcement could no longer be rejected, and the caller would
+    // record a resume — a woken node, with a dead pane and nothing typed into it.
+    const io = {
+      write() {
+        throw new Error('socket CONNECTING')
+      },
+      onData() {
+        return () => {}
+      }
+    }
+    await expect(
+      performResumePhase({ agentId: 'claude', sessionId: 'sid-1', io })
+    ).rejects.toThrow('socket CONNECTING')
+  })
+
+  it('respects isLive: a session that died under the delivery is not a resume', async () => {
+    const { io } = fakeIo()
+    let live = true
+    const p = performResumePhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      isLive: () => live
+    })
+    live = false
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('not-eligible')
+  })
+})
+
 describe('performRestartResume — grok', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
@@ -514,9 +757,9 @@ describe('restartEligibility — grok', () => {
 
   it('keeps a busy grok node out of the bulk run', () => {
     const plan = planBulkRestart([
-      { id: 'idle', agentId: 'grok', state: 'done', sessionId: 'sid-1', wired: true },
-      { id: 'busy', agentId: 'grok', state: 'working', sessionId: 'sid-2', wired: true },
-      { id: 'prompt', agentId: 'grok', state: 'blocked', sessionId: 'sid-3', wired: true }
+      { id: 'idle', agentId: 'grok', state: 'done', sessionId: 'sid-1', wired: true, backgroundTask: false },
+      { id: 'busy', agentId: 'grok', state: 'working', sessionId: 'sid-2', wired: true, backgroundTask: false },
+      { id: 'prompt', agentId: 'grok', state: 'blocked', sessionId: 'sid-3', wired: true, backgroundTask: false }
     ])
     expect(plan.runnable).toEqual(['idle'])
     expect(plan.skipped).toEqual({ working: 2, noSession: 0 })
@@ -591,9 +834,9 @@ describe('restartEligibility — gemini', () => {
 
   it('keeps a busy gemini node out of the bulk run', () => {
     const plan = planBulkRestart([
-      { id: 'idle', agentId: 'gemini', state: 'done', sessionId: 'sid-1', wired: true },
-      { id: 'busy', agentId: 'gemini', state: 'working', sessionId: 'sid-2', wired: true },
-      { id: 'prompt', agentId: 'gemini', state: 'blocked', sessionId: 'sid-3', wired: true }
+      { id: 'idle', agentId: 'gemini', state: 'done', sessionId: 'sid-1', wired: true, backgroundTask: false },
+      { id: 'busy', agentId: 'gemini', state: 'working', sessionId: 'sid-2', wired: true, backgroundTask: false },
+      { id: 'prompt', agentId: 'gemini', state: 'blocked', sessionId: 'sid-3', wired: true, backgroundTask: false }
     ])
     expect(plan.runnable).toEqual(['idle'])
     expect(plan.skipped).toEqual({ working: 2, noSession: 0 })
@@ -736,6 +979,53 @@ describe('agent restart registry', () => {
   })
 })
 
+describe('agent hibernate registry', () => {
+  beforeEach(() => __resetAgentRestartForTests())
+
+  const pair = (tag: 'a' | 'b'): AgentHibernateFns => ({
+    exit: async () => (tag === 'a' ? 'exited' : 'exit-timeout'),
+    resume: async () => 'resumed'
+  })
+
+  it('registers, resolves and unregisters; re-register supersedes', () => {
+    const a = pair('a')
+    const un = registerAgentHibernate('n1', a)
+    expect(agentHibernateFns('n1')).toBe(a)
+    const b = pair('b')
+    registerAgentHibernate('n1', b)
+    un() // stale unregister from the superseded registration must be inert
+    expect(agentHibernateFns('n1')).toBe(b)
+  })
+
+  it('drops a live registration on unregister (node unmount)', () => {
+    registerAgentHibernate('n2', pair('a'))()
+    expect(agentHibernateFns('n2')).toBeUndefined()
+  })
+
+  it('is cleared by the test reset, like the restart registry', () => {
+    registerAgentHibernate('n3', pair('a'))
+    __resetAgentRestartForTests()
+    expect(agentHibernateFns('n3')).toBeUndefined()
+  })
+
+  it('shares one in-flight guard with restarts: a sweep cannot quit a pane mid-restart', async () => {
+    // Both halves go through `guardConcurrentRestart` with the NODE id, so the hibernation sweep,
+    // the wake and a user restart serialize against each other — two `/exit` lines into one pane
+    // is the exact accident the guard exists for.
+    let release: (o: RestartOutcome) => void = () => {}
+    const restart = guardConcurrentRestart(
+      'n-shared',
+      () => new Promise<RestartOutcome>((r) => (release = r))
+    )
+    const hibernateExit = guardConcurrentRestart('n-shared', async (): Promise<ExitPhaseOutcome> => 'exited')
+    const running = restart()
+    expect(await hibernateExit()).toBe('not-eligible')
+    release('restarted')
+    expect(await running).toBe('restarted')
+    expect(await hibernateExit()).toBe('exited') // pane free again
+  })
+})
+
 describe('summarizeOutcomes', () => {
   it('counts restarted / timeout / pre-skips into the toast line', () => {
     expect(
@@ -751,6 +1041,7 @@ describe('planBulkRestart', () => {
     state: 'waiting',
     sessionId: `sid-${over.id}`,
     wired: true,
+    backgroundTask: false,
     ...over
   })
 
@@ -786,6 +1077,36 @@ describe('planBulkRestart', () => {
   it('keeps canvas order', () => {
     const plan = planBulkRestart([cand({ id: 'z' }), cand({ id: 'm' }), cand({ id: 'a' })])
     expect(plan.runnable).toEqual(['z', 'm', 'a'])
+  })
+
+  it('bulk restart files a background-task node under the working skips', () => {
+    // A background shell dies with the CLI the exit line quits, and nothing about it is visible to
+    // the eligibility gate — the node reports `done` for as long as the task runs.
+    const plan = planBulkRestart([
+      cand({ id: 'a', state: 'done', backgroundTask: true }),
+      cand({ id: 'b', state: 'done', backgroundTask: false })
+    ])
+    expect(plan.runnable).toEqual(['b'])
+    expect(plan.skipped.working).toBe(1)
+    expect(plan.skipped.noSession).toBe(0)
+  })
+
+  it('leaves a NOT-RESUMABLE background-task node uncounted, as today', () => {
+    // The eligibility gate runs first, so a node the action never claimed stays out of the counts
+    // whatever else is true of it — the background check may not turn a non-target into a skip.
+    const plan = planBulkRestart([
+      cand({ id: 'shell', agentId: undefined, backgroundTask: true }),
+      cand({ id: 'oc', agentId: 'opencode', backgroundTask: true })
+    ])
+    expect(plan.runnable).toEqual([])
+    expect(plan.skipped).toEqual({ working: 0, noSession: 0 })
+  })
+
+  it('files a background task under working even when the node is unwired', () => {
+    // Ordering guard: the background check sits BEFORE the wired check, so a parked node with a
+    // live task reads as busy rather than as "no session".
+    const plan = planBulkRestart([cand({ id: 'a', wired: false, backgroundTask: true })])
+    expect(plan.skipped).toEqual({ working: 1, noSession: 0 })
   })
 })
 

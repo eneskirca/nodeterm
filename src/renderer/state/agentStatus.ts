@@ -6,8 +6,9 @@ import type { NodeTerminalApi } from '@shared/types'
 
 /**
  * Transient per-node status for agent (e.g. Claude Code) sessions, driven by the agent's hooks.
- * `unread`, `session`, `sessionId` and `agentId` are persisted to localStorage so they survive
- * a reload/restart; the live `state` (working/waiting/…) is not (it'd be stale on relaunch).
+ * `unread`, `session`, `sessionId`, `agentId`, `loop` and `hibernated` are persisted to
+ * localStorage so they survive a reload/restart; the live `state` (working/waiting/…) is not
+ * (it'd be stale on relaunch), and neither are its two clocks (`stateAt`, `lastEventAt`).
  * `agentId` is durable because a PLAIN terminal's agent identity exists nowhere else: an
  * explicit agent node re-derives it from `data.agentId`, but a hand-launched `claude` in a
  * plain terminal is only known here, and its context links must keep classifying across
@@ -42,6 +43,46 @@ export interface AgentNodeStatus {
    * interrupt-inference baseline. Same-state events refresh it in place (no re-render).
    */
   stateAt?: number
+  /**
+   * When this node last CHANGED state — the idle clock the hibernation policy reads
+   * (`terminal/hibernation-policy.ts`). Deliberately not `stateAt`: that one is refreshed by
+   * every same-state event (freshness), while "how long has this session been idle" means "how
+   * long since the turn ended". TRANSIENT — never persisted: a relaunch has seen no events yet,
+   * and a stale stamp read as "idle since before the restart" would hibernate a session the
+   * moment the app came back. Absent ⇒ unknown idle ⇒ never a hibernation candidate.
+   */
+  lastEventAt?: number
+  /**
+   * When this node last launched a BACKGROUND shell task (Claude's `Bash` with
+   * `run_in_background: true`). Such a task lives inside the CLI process, so `/exit` — Eco
+   * hibernation and the bulk in-place restart both type it — kills it silently, with no output and
+   * no error. The stamp is what those two exclude on.
+   *
+   * TRANSIENT — never persisted, same rationale as `lastEventAt`: after a relaunch Eco is inert
+   * until a turn happens anyway, and any turn's `working` would have cleared this. A stale stamp
+   * restored from disk would exempt the node from Eco for good.
+   */
+  backgroundTaskAt?: number
+  /**
+   * The agent CLI was exited to reclaim its RAM ("Eco" mode) and its conversation is waiting to be
+   * resumed when the node is next viewed. PERSISTED beside unread/session/sessionId: the tmux
+   * session outlives the app, so after a relaunch this flag is the only thing that knows the pane
+   * holds a shell rather than a live CLI.
+   */
+  hibernated?: boolean
+  /**
+   * What the pane's foreground command settled to once the CLI let go of it — recorded at the
+   * moment of hibernation, persisted beside the flag, and dropped with it.
+   *
+   * The wake refuses to type a launch line into a pane it does not recognize as a shell, and its
+   * allowlist (`isShellCommand`) knows zsh/bash/fish/… but not `nu`, `xonsh` or `pwsh`. The EXIT
+   * half has a second, allowlist-free signal for exactly those users (the foreground command
+   * stopped being the CLI, twice in a row) — so without this the wake is STRICTER than the exit,
+   * and a `nu` user could be hibernated and then never woken: the chip would refuse forever.
+   * Remembering what we exited TO closes that gap, and it is narrow by construction: it permits
+   * one specific string, on one specific node, recorded by us.
+   */
+  hibernatedPane?: string
   /** Which agent this node is running (claude/codex/gemini/…), when known. */
   agentId?: AgentId
   /** A turn finished / needs attention while the user wasn't looking. */
@@ -61,6 +102,20 @@ export interface AgentNodeStatus {
   loop?: {
     count: number
     kind: 'loop' | 'schedule' | 'cron'
+    /**
+     * The user dismissed the CARD, but the job itself is still out there. Only `cron`/`schedule`
+     * ever carry this: those outlive turns, sessions and app restarts, so "I don't want to look at
+     * this card" and "this job is gone" are different statements — and the card's × has always
+     * said so ("does not remove the job"). An in-session `/loop` still clears outright; it dies
+     * with its session anyway.
+     *
+     * It matters beyond the card: `loop` is the ONLY record that this node has a wakeup pending,
+     * and it is what stops Eco mode from hibernating it (`/exit` kills the CLI process, and the
+     * scheduled wakeup dies with it — a silently cancelled job). Clearing the entry on dismiss
+     * dropped that guard while the job lived on, so the fact is now retained and only the RENDER
+     * filters on it. A real end (CronDelete) still clears the entry.
+     */
+    dismissed?: boolean
     /** Schedule expression (cron) shown as a sub-label. */
     schedule?: string
     /** The task/prompt — shown in full and re-issued by the node's Play button. */
@@ -89,6 +144,16 @@ export interface AgentStatusStore {
   sweepStaleWorking(staleMs?: number): void
   setSession(id: string, session: string): void
   setSessionId(id: string, sessionId: string): void
+  /** Mark the node's agent CLI as exited-for-RAM (true) or live again (false). Persisted.
+   *  Waking also restarts the idle clock (`lastEventAt`), so a quiet resumed session is not
+   *  re-hibernated on the next sweep. */
+  setHibernated(id: string, on: boolean): void
+  /** Record what the pane settled to when this node's CLI let go of it (`null` = forget: a stale
+   *  value must never permit a wake into a pane we did not measure). See `hibernatedPane`. */
+  setHibernatedPane(id: string, pane: string | null): void
+  /** Record that this node just launched a background shell task (see `backgroundTaskAt`).
+   *  Transient — nothing is written to localStorage. */
+  markBackgroundTask(id: string): void
   markUnread(id: string): void
   /**
    * Drop a node's unread flag. By default a clear of a FINISHED (done) node also ACKs the read
@@ -104,6 +169,9 @@ export interface AgentStatusStore {
     kind?: 'loop' | 'schedule' | 'cron',
     opts?: { schedule?: string; task?: string }
   ): void
+  /** Hide a cron/schedule CARD while keeping the fact that the job exists (see `loop.dismissed`).
+   *  No-op if the node has no loop entry. */
+  dismissLoopCard(id: string): void
   /** Record a /loop iteration (count++ and append its summary). No-op if not looping. */
   bumpLoop(id: string, message?: string): void
   remove(id: string): void
@@ -178,6 +246,13 @@ export function createAgentStatusSession(
       const out: Record<string, AgentNodeStatus> = {}
       for (const [id, v] of Object.entries(data)) {
         out[id] = { unread: !!v.unread, session: v.session, sessionId: v.sessionId, agentId: v.agentId }
+        // Only when set: an absent flag stays absent, so an entry saved before this field
+        // existed hydrates byte-identically (and `hibernated: false` never grows in the file).
+        if (v.hibernated) out[id].hibernated = true
+        // Only alongside the flag: the pane we exited TO is meaningless (and, as a wake
+        // permission, unwanted) once the node is not hibernated any more.
+        if (v.hibernated && typeof v.hibernatedPane === 'string')
+          out[id].hibernatedPane = v.hibernatedPane
         // A recurring job (cron/schedule — and tmux keeps in-session loops alive too) outlives
         // the app: restore its card. Minimal shape check so a corrupt entry can't break load.
         if (v.loop && typeof v.loop === 'object' && v.loop.kind) {
@@ -188,6 +263,9 @@ export function createAgentStatusSession(
             task: v.loop.task,
             items: Array.isArray(v.loop.items) ? v.loop.items : []
           }
+          // A dismissed card must STAY dismissed across a restart — and the fact it hides
+          // (a live cron/schedule job) must stay readable to the hibernation guard.
+          if (v.loop.dismissed) out[id].loop.dismissed = true
         }
       }
       return out
@@ -202,13 +280,16 @@ export function createAgentStatusSession(
     try {
       const out: Record<string, Partial<AgentNodeStatus>> = {}
       for (const [id, v] of Object.entries(byId)) {
-        if (v.unread || v.session || v.sessionId || v.loop || v.agentId) {
+        if (v.unread || v.session || v.sessionId || v.loop || v.agentId || v.hibernated) {
           out[id] = {
             unread: v.unread,
             session: v.session,
             sessionId: v.sessionId,
             agentId: v.agentId,
-            loop: v.loop
+            loop: v.loop,
+            hibernated: v.hibernated,
+            // Never written without the flag it belongs to (see `hibernatedPane`).
+            hibernatedPane: v.hibernated ? v.hibernatedPane : undefined
           }
         }
       }
@@ -258,11 +339,61 @@ export function createAgentStatusSession(
           if (s.byId[id]) s.byId[id].stateAt = now
           return s
         }
-        const next = { ...prev, state, stateAt: now }
+        // The ONE place a state transition is recorded, so it is also the one place the idle
+        // clock is stamped (the same-state fast path above deliberately does not touch it —
+        // see `lastEventAt`).
+        const next = { ...prev, state, stateAt: now, lastEventAt: now }
         if (agentId !== undefined) next.agentId = agentId
         // Retain the approval ticket only while blocked; any other state clears it (transient).
         next.pendingId = state === 'blocked' ? (pendingId ?? prev.pendingId) : undefined
-        return { byId: { ...s.byId, [id]: next } }
+        // A LIVE state is proof the CLI is running, so the hibernated flag is simply wrong and is
+        // dropped here — the one self-heal this flag has. It is set by a controller that watched
+        // the CLI let go of the pane, but the world moves on without us: the user relaunches the
+        // agent by hand, a wake lands and its `--resume` starts reporting, or a resume we could
+        // not confirm turns out to have worked. Left standing, the flag is not cosmetic: it
+        // renders RUNNING and SLEEPING side by side, and (because a hibernated node is skipped by
+        // the sweep) exempts that session from Eco for good.
+        // `done` deliberately does NOT clear it — a hibernated node's last known state IS done,
+        // and a late Stop POST arriving after the exit would undo the hibernation we just did.
+        //
+        // ---- a different field, and the opposite rule ----
+        //
+        // The BACKGROUND-TASK guard is dropped at the START OF THE NEXT TURN — `done` → `working`,
+        // and nothing else.
+        //
+        // Not on `done` itself: that is the launching turn ending while the task runs on, which is
+        // precisely the window Eco / the bulk restart would kill it in. A turn start is safe
+        // because Claude delivers a finished background task back as a <task-notification>, whose
+        // own turn is exactly this `working` — so by the time one begins, the task has reported.
+        //
+        // Not on EVERY `working` transition either, because `blocked`/`waiting` → `working` is a
+        // MID-TURN RESUMPTION. A background Bash whose command needs approval runs
+        // UserPromptSubmit(working) → PreToolUse(stamp) → PermissionRequest(blocked) → approve →
+        // PostToolUse(working): that last edge would clear the stamp milliseconds after it was
+        // set, for exactly the task this guard exists for.
+        //
+        // And NOT from an unknown previous state, which is the same hole from the other side:
+        // `undefined` is reachable MID-TURN — a renderer reload starts with an empty table, and
+        // `sweepStaleWorking` blanks a working entry after the stale window — so post-reload a
+        // background launch would stamp an entry with no state, and the very next tool event's
+        // `working` would read as a turn start and delete it. Requiring `done` makes the miss
+        // fail SAFE: every real turn ends Stop → `done`, so the clear still happens, at most one
+        // turn late.
+        //
+        // Deliberately NOT keyed on `newTurn`: the <task-notification> prompt is explicitly not
+        // flagged as one (see normalizeClaude), so the intended clear would never fire.
+        if (state === 'working' && prev.state === 'done') next.backgroundTaskAt = undefined
+        const alive = state === 'working' || state === 'blocked' || state === 'waiting'
+        if (alive && prev.hibernated) {
+          next.hibernated = undefined
+          next.hibernatedPane = undefined // goes with the flag, always
+        }
+        const byId = { ...s.byId, [id]: next }
+        // `state` itself is transient, so a plain transition writes nothing — but dropping a
+        // PERSISTED flag has to reach disk, or a relaunch would restore a hibernated node that
+        // has been demonstrably running since.
+        if (alive && prev.hibernated) save(byId)
+        return { byId }
       }),
 
     sweepStaleWorking: (staleMs = STALE_WORKING_MS) =>
@@ -295,6 +426,51 @@ export function createAgentStatusSession(
         const byId = { ...s.byId, [id]: { ...prev, sessionId } }
         save(byId)
         return { byId }
+      }),
+
+    setHibernated: (id, on) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        if (!!prev.hibernated === on) return s
+        // Cleared by dropping the key, not by storing `false`: `save` skips entries that carry
+        // nothing durable, so a woken node leaves no residue behind in localStorage.
+        // The recorded pane belongs to THIS hibernation: it goes with the flag, in both
+        // directions. Kept past a wake it would be a standing permission to type into whatever
+        // that string names, long after we measured it.
+        const next: AgentNodeStatus = {
+          ...prev,
+          hibernated: on ? true : undefined,
+          // Hibernating KEEPS what the exit closure just recorded; waking drops it.
+          hibernatedPane: on ? prev.hibernatedPane : undefined
+        }
+        // Waking RESTARTS the idle clock. Without this, a node whose conversation was resumed but
+        // whose CLI then sits quiet (an agent that fires no hook until you talk to it) still
+        // carries the `lastEventAt` from before it was hibernated — hours old — so the very next
+        // sweep, 60 s later, would quit the session the user just came back to. Hibernating does
+        // not touch the clock: nothing happened in that session, and the flag itself is what keeps
+        // the sweep off it.
+        if (!on) next.lastEventAt = Date.now()
+        const byId = { ...s.byId, [id]: next }
+        save(byId)
+        return { byId }
+      }),
+
+    setHibernatedPane: (id, pane) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        const next = pane ?? undefined
+        if (prev.hibernatedPane === next) return s
+        const byId = { ...s.byId, [id]: { ...prev, hibernatedPane: next } }
+        save(byId)
+        return { byId }
+      }),
+
+    markBackgroundTask: (id) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        // Transient (see `backgroundTaskAt`) — no save(): a stamp restored from disk would exempt
+        // the node from Eco forever.
+        return { byId: { ...s.byId, [id]: { ...prev, backgroundTaskAt: Date.now() } } }
       }),
 
     markUnread: (id) =>
@@ -350,6 +526,15 @@ export function createAgentStatusSession(
         if (!prev.loop) return s
         const { loop: _drop, ...rest } = prev
         const byId = { ...s.byId, [id]: rest }
+        save(byId)
+        return { byId }
+      }),
+
+    dismissLoopCard: (id) =>
+      set((s) => {
+        const prev = s.byId[id]
+        if (!prev?.loop || prev.loop.dismissed) return s
+        const byId = { ...s.byId, [id]: { ...prev, loop: { ...prev.loop, dismissed: true } } }
         save(byId)
         return { byId }
       }),

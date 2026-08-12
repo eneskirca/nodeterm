@@ -34,6 +34,21 @@ vi.mock('node-pty', () => ({
 const ALICE = 1
 const BOB = 2
 
+/**
+ * A machine with pty devices to spare, always.
+ *
+ * Without this the real probe runs a `readdir('/dev')` against the DEVELOPER's host, and
+ * `spawnSession`'s pre-flight refuses every create once that host is within `PTY_DEVICE_HEADROOM`
+ * of its own `kern.tty.ptmx_max` — which a machine running this app all day genuinely reaches (511
+ * on macOS; this one sits in the 480s). Nothing below is about device pressure, so it is pinned
+ * healthy rather than left to depend on who is running the suite and how many terminals they have
+ * open. The pressure behaviour itself is tested in pty-spawn-preflight.test.ts.
+ */
+vi.mock('./pty-devices', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pty-devices')>()),
+  readPtyDevices: () => ({ ceiling: 511, inUse: 8 })
+}))
+
 describe('pty create: requireRemote never falls back to a local shell', () => {
   let fake: FakePlatform
 

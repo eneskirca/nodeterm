@@ -243,6 +243,18 @@ export function buildStubApi(): Omit<
       cookieProviders: () => Promise.resolve({}),
       onUpdate: noopUnsub
     },
+    sessionMemory: {
+      // Superseded by the real WS-backed namespace in ws-bridge (the core session-memory service
+      // runs in the server shell too), so nothing reaches these in a live browser session. Kept
+      // only to satisfy `satisfies NodeTerminalApi`.
+      //
+      // Where it DOES stay in force is the relay tab, which shares this stub surface: there the
+      // renderer runs on the guest while the sessions live on the host, so answering at all would
+      // describe the wrong machine. `ok:false` / `null` are the service's own words for "could not
+      // measure" — the one honest answer, and never mistakable for "nothing is using memory".
+      read: () => Promise.resolve({ ok: false, rows: [], mem: null }),
+      host: () => Promise.resolve(null)
+    },
     claude: {
       // Overridden by the real WS-backed namespace in ws-bridge; the stub still answers with the
       // fail-open caps (never rejects) because the permission-mode gate reads it on the boot path.
@@ -335,6 +347,22 @@ export function buildStubApi(): Omit<
     },
     openNotificationSettings: pnoop,
     onFocusNode: noopUnsub,
+    // Server Edition v1: the memory-pressure levers run HOST-side only (the session reaper, driven
+    // by the same core monitor in src/server/index.ts). A browser tab's own memory — its WebGL
+    // contexts and parked terminals — belongs to the browser, which already discards and reclaims
+    // on its own terms; pushing our levers over the wire would fight it, not help it. Deliberate
+    // no-op, not an oversight.
+    onMemoryPressure: noopUnsub,
+    // Same asymmetry, one step further: the desktop's pty-pressure banner exists to offer "Fix
+    // automatically…", which ends in macOS's admin-password dialog on the HOST's physical display.
+    // A browser tab cannot answer that prompt, so the host keeps the reaper leg and says nothing
+    // here (see the note beside createPtyPressureMonitor in src/server/index.ts). The fix itself
+    // rejects rather than pretending, so a stray call can never look like it worked.
+    onPtyPressure: noopUnsub,
+    raisePtyDeviceLimit: async () => ({
+      ok: false as const,
+      error: 'Raising the terminal limit must be done on the machine running the server.'
+    }),
     onAgentControl: noopUnsub,
     sendAgentControlResult: noop
   } satisfies Omit<

@@ -26,8 +26,12 @@ export interface TerminalTransport {
   /**
    * Permanently ends a node's persistent session because the node is being DELETED (× / delete).
    * Co-viewers are told "closed by <name>" and must never respawn it.
+   *
+   * `opts.everySocket` widens a kill for a session this process holds NOTHING for to every local
+   * tmux socket the name could be on. Opt-in for the session-memory panel's speculative kill only
+   * (see `localKillSockets`); an ordinary × leaves it unset.
    */
-  destroy(persistKey: string): void
+  destroy(persistKey: string, opts?: { everySocket?: boolean }): void
   /**
    * Ends a node's persistent session so the SAME node id can respawn in a new cwd ("move into
    * worktree"). The tmux kill is identical to `destroy` — without it the respawn would just

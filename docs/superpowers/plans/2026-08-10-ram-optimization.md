@@ -856,6 +856,7 @@ describe('planHibernation', () => {
 5. Kanban card modal co-attached while hibernation fires (modal viewer sees the exit; acceptable? decide + document).
 6. Managed-account node (CLAUDE_CONFIG_DIR) resumes into the right account dir.
 7. A `/loop` node (ScheduleWakeup) and a `/cron` node stay untouched through several sweeps while eligible-looking (done + offscreen + idle) — the `recurring` guard holds end-to-end, and their next scheduled wakeup fires on time.
+8. A node with a running **background shell task** (`Bash` with `run_in_background: true`) is not hibernated by an enabled Eco sweep; after the task completes and its turn runs, hibernation happens one idle window later. (Background-task guard — `docs/superpowers/specs/2026-08-12-background-task-hibernation-guard-design.md`.)
 
 ---
 

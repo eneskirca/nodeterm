@@ -66,6 +66,11 @@ describe('bridge stubs', () => {
     // UpdatePolicy — a `null` here was a TypeError on every Server Edition page load.
     await expect(s.updates.getPolicy()).resolves.toEqual({ minSupported: null, mandatory: false })
     await expect(s.usage.fetch()).resolves.toBeNull()
+    // `ok:false` is load-bearing: the stub means "we could not measure", and an `ok:true` with no
+    // rows would render as "nothing on this machine is using memory" — a confident wrong answer on
+    // exactly the surface (the relay tab) where the sessions live on somebody else's machine.
+    await expect(s.sessionMemory.read()).resolves.toEqual({ ok: false, rows: [], mem: null })
+    await expect(s.sessionMemory.host()).resolves.toBeNull()
     await expect(s.license.getStatus()).rejects.toMatchObject({ code: E_UNSUPPORTED })
   })
 

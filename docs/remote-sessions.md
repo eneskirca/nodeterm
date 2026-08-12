@@ -422,6 +422,16 @@ the dialect deletion orphaned, blanking the phone; that flag is gone).
   next live mutation. Re-running `api.workspace.load()` into the bound project on reconnect closes it.
 - **Change the shared project without dropping the session** — sharing is fixed per hosting session
   (change project = stop + restart hosting). A live "share a different project" control is a follow-up.
+- **Agent status is not routed into the per-session stores** — `SessionStores.agentStatus`
+  (`agentStatusForApi(api)`) is built for every session, but nothing writes the non-local
+  instances: Canvas's `agent:status` subscription sits above the per-project session provider and
+  writes the DEFAULT store, and `useSessionStores()` has no consumers. Cosmetic until #126's
+  plain-shell protection landed, which reads a node's own session store to decide whether killing
+  its terminal would end a running agent (`terminal/live-work.ts`) — so **relay parks/offscreen
+  releases are unprotected**: a relay node always reads `undefined` there, and `persistent:false`
+  can now legitimately arrive from a tmux-less relay HOST. The consumer side is already written
+  against the seam and needs no change; what is missing is a subscription per session feeding
+  `SessionStores.agentStatus`.
 - **SDK chat node over relay** — refuses (`E_UNSUPPORTED`) in a relay tab, matching Server Edition.
 - **The preload↔main relay IPC boundary is not covered by vitest** (it needs Electron). Two real
   send/handle + payload-shape bugs were found and fixed by inspection during 4c; the two-instance

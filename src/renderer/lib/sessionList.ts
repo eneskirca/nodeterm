@@ -129,7 +129,12 @@ function toRow(n: SessionNodeInput, status: AgentNodeStatus | undefined): Sessio
     stateLabel: STATE_LABEL[statusKind],
     unread: !!status?.unread,
     session: status?.session,
-    loop: status?.loop ? { kind: status.loop.kind, count: status.loop.count } : undefined,
+    // A dismissed cron/schedule entry is retained as a fact (the hibernation guard reads it) but
+    // shows nowhere it did not show before — this chip included.
+    loop:
+      status?.loop && !status.loop.dismissed
+        ? { kind: status.loop.kind, count: status.loop.count }
+        : undefined,
     cwd: n.cwd,
     sshHost: n.ssh?.host,
     sessionId: status?.sessionId,

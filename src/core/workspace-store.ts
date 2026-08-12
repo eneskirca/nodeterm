@@ -40,8 +40,36 @@ async function writeAtomic(filePath: string, content: string): Promise<void> {
   // poll's index write) must never share a tmp file — interleaved writes into one shared tmp
   // published spliced JSON under the atomic rename.
   const tmp = `${filePath}.${process.pid}.${++tmpSeq}.tmp`
-  await fs.writeFile(tmp, content, 'utf-8')
-  await fs.rename(tmp, filePath)
+  try {
+    await fs.writeFile(tmp, content, 'utf-8')
+    await fs.rename(tmp, filePath)
+  } catch (e) {
+    // A unique name never self-heals the way the old fixed one did (the next save just reused
+    // it), so a failed write removes its own temp — project.json temps live in the USER'S repo,
+    // where litter is visible. The error still propagates; per-file callers swallow it by design.
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw e
+  }
+}
+
+/** Remove tmp litter next to `target` left by writers that died mid-write: the legacy fixed
+ *  `<file>.tmp` name and any `<file>.<pid>.<seq>.tmp` from another (dead) pid. Our own pid's
+ *  temps are in-flight writes and stay. Same family rule as provider-cookie's sweep. */
+async function sweepStaleTmp(target: string): Promise<void> {
+  try {
+    const dir = path.dirname(target)
+    const base = path.basename(target)
+    for (const entry of await fs.readdir(dir)) {
+      if (!entry.startsWith(base) || !entry.endsWith('.tmp')) continue
+      const middle = entry.slice(base.length, -'.tmp'.length) // '' or '.<pid>.<seq>'
+      const owner = /^\.(\d+)\.\d+$/.exec(middle)?.[1]
+      if (middle === '' || (owner && owner !== String(process.pid))) {
+        await fs.rm(path.join(dir, entry), { force: true }).catch(() => undefined)
+      }
+    }
+  } catch {
+    // A dir we cannot read is not a reason to fail the load.
+  }
 }
 
 /**
@@ -108,6 +136,9 @@ export class WorkspaceStore {
   }
 
   private async loadInner(sideline: boolean): Promise<Workspace> {
+    // Read-only loads (sideline: false — the relay blob path) must not mutate the disk, so the
+    // litter sweep rides the same flag as the corrupt-file sideline.
+    if (sideline) await sweepStaleTmp(this.indexPath)
     let raw: string
     try {
       raw = await fs.readFile(this.indexPath, 'utf-8')
@@ -176,6 +207,7 @@ export class WorkspaceStore {
         const { kanban, ...rest } = e.project
         projects.push(validKanban(kanban) ? e.project : rest)
       } else if (e.cwd) {
+        if (sideline) await sweepStaleTmp(projectFilePath(e.cwd))
         const read = await this.readProjectFile(e.cwd, sideline)
         if (read) {
           const p = read.file

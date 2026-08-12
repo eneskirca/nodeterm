@@ -27,6 +27,7 @@ import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { Button } from '@renderer/ui/Button'
 import { Select } from '@renderer/ui/Select'
 import { Switch } from '@renderer/ui/Switch'
+import { NumberField } from '@renderer/ui/NumberField'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
@@ -60,6 +61,21 @@ const ROWS = {
     title: 'One-click approvals',
     keywords: ['approve', 'deny', 'approval', 'permission', 'hook', 'phone', 'canvas', 'one click', 'claude']
   },
+  hibernation: {
+    title: 'Hibernate idle agents',
+    keywords: [
+      'hibernate',
+      'eco',
+      'idle',
+      'memory',
+      'ram',
+      'exit',
+      'resume',
+      'offscreen',
+      'minutes',
+      'sleep'
+    ]
+  }
 }
 const ENTRIES = Object.values(ROWS)
 
@@ -199,6 +215,35 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               ariaLabel="One-click hook-reply approvals"
               onChange={(on) => update({ hookReplyApprovals: on })}
             />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.hibernation}>
+        <FieldRow
+          label="Hibernate idle agents"
+          description="Exit an agent CLI that has been idle and offscreen this long, freeing its memory; the conversation resumes automatically when you view the node. While this is on, the terminal view of an offscreen agent is kept until the agent hibernates, so the bigger saving happens first. Scheduled, /loop and /cron agents — and sessions with subagents still running — are never touched."
+          control={
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={settings.agentHibernationEnabled}
+                ariaLabel="Hibernate idle agents"
+                onChange={(on) => update({ agentHibernationEnabled: on })}
+              />
+              <NumberField
+                value={settings.agentHibernationIdleMinutes}
+                ariaLabel="Hibernate after minutes"
+                disabled={!settings.agentHibernationEnabled}
+                min={5}
+                max={600}
+                step={5}
+                // A cleared/invalid field falls back to the default rather than 0 (zero minutes
+                // would mean "the instant a turn ends"). Deliberately no floor mid-typing: a
+                // per-keystroke `Math.max(5, v)` makes 45 untypable (4 snaps to 5, then 55). The
+                // real guard is `planHibernation`, which refuses any non-positive window outright.
+                onChange={(v) => update({ agentHibernationIdleMinutes: v || 30 })}
+              />
+              <span className="text-[13px] text-muted">min</span>
+            </div>
           }
         />
       </SearchableRow>

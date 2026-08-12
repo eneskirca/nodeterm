@@ -210,6 +210,15 @@ export const IconSearch = () => (
   </svg>
 )
 
+/** Memory/resource glyph: a chip with pins. Used by the system-resource pill, whose collapsed
+ *  state is icon-only — the numbers appear on hover. */
+export const IconResource = () => (
+  <svg {...S}>
+    <rect x="7" y="7" width="10" height="10" rx="1.5" />
+    <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+  </svg>
+)
+
 export const IconWeb = () => (
   <svg {...S}>
     <circle cx="12" cy="12" r="9" />

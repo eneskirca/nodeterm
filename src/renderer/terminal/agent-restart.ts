@@ -88,8 +88,17 @@ export const RESTART_DELIVERY_TIMEOUT_MS = DELIVERY_ATTEMPTS * VERIFY_TIMEOUT_MS
  * One bounded pane query. Unbounded, a wedged tmux server (or a relay whose IPC never answers)
  * would hang the restart — and with it the bulk run's summary — forever. A lapsed, failed or
  * empty query reads as `null`: "we cannot see this pane right now".
+ *
+ * Exported for hibernation's WAKE, which asks the same question for a sharper reason: hours pass
+ * between the exit and the resume, so the pane may since have been given to vim, to `top`, or to a
+ * CLI the user launched by hand — and the resume's first write is un-KILL_LINE'd, so it would be
+ * spliced into whatever is there. One definition, not a second copy in the node (a duplicated rule
+ * drifts; see CLAUDE.md's "Adding a new agent" rule 10).
  */
-async function queryPane(fn: () => Promise<string | null>, ms: number): Promise<string | null> {
+export async function queryPaneWithin(
+  fn: () => Promise<string | null>,
+  ms: number
+): Promise<string | null> {
   let lapse: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
@@ -105,11 +114,18 @@ async function queryPane(fn: () => Promise<string | null>, ms: number): Promise<
   }
 }
 
+/** The exit half's own outcomes. `'exited'` means only that the CLI let go of the pane — the
+ *  conversation is not back until the resume half has delivered. */
+export type ExitPhaseOutcome = 'exited' | 'exit-timeout' | 'not-eligible'
+
+/** The resume half's own outcomes. `'not-eligible'` covers both refusals: a session id that could
+ *  never reach a command line, and a pane that stopped existing under the delivery. */
+export type ResumePhaseOutcome = 'resumed' | 'not-eligible'
+
 /**
- * In-place CLI restart: ask the agent to quit, wait until the CLI has let go of the pane, then
- * echo-deliver the resume command into it. Never force-kills — on timeout the CLI is left
- * running and the caller reports the node. Once the exit has been sent, `paneCommand` errors count
- * as "not a shell yet"; the timeout is the backstop.
+ * PHASE 1 — ask the agent to quit and wait until the CLI has let go of the pane. Never
+ * force-kills: on timeout the CLI is left running and the caller reports the node. Once the exit
+ * has been sent, `paneCommand` errors count as "not a shell yet"; the timeout is the backstop.
  *
  * NOTHING is written until one `paneCommand` has come back non-null. The exit command is
  * irreversible — the conversation is only recoverable through the `--resume` that follows it — so
@@ -118,53 +134,30 @@ async function queryPane(fn: () => Promise<string | null>, ms: number): Promise<
  * relaunch never sent, and the user told (after 6s of polling) that "the session was left
  * running". The pre-flight makes that state a plain `'not-eligible'`, with an untouched pane.
  *
- * Resolves only once the resume line has actually LEFT the pane (deliverCommand's echo-verify
- * retries run for up to DELIVERY_ATTEMPTS × VERIFY_TIMEOUT_MS after the first write). The
- * un-submitted line is the pane's most fragile moment — anything typed into it during that window
- * is spliced into the command — so "this restart is over" must mean the delivery settled, not that
- * it was started. `guardConcurrentRestart` frees the node on exactly that boundary.
+ * The bare `resumeCommand` is a gate HERE too, not only in the resume half: a session this app
+ * would refuse to resume must not be exited either, or the exit alone would lose it. Hibernation
+ * (which quits a pane it means to bring back later) depends on that refusal being decided before
+ * the first byte is written.
  */
-export async function performRestartResume(d: {
+export async function performExitPhase(d: {
   agentId: string
   sessionId: string
   io: DeliveryIo
   paneCommand: () => Promise<string | null>
-  /**
-   * The exact launch line to relaunch with, when the caller has one. `withPermissionMode` is the
-   * app's single funnel for every CLI launch, and it needs the ACTIVE mode — an async read that
-   * belongs to the node, not to this module. Without it a canvas running in `acceptEdits` / `plan`
-   * would come back from a bulk restart in the default mode and start prompting.
-   *
-   * Eligibility is still decided by the bare `resumeCommand` below: a session id this app would
-   * not put on a command line (SAFE_SESSION_ID) refuses the restart before anything is written,
-   * whatever the caller passes.
-   */
-  command?: string
   timeoutMs?: number
   pollMs?: number
-  /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
-  deliveryTimeoutMs?: number
   /**
-   * Handed `deliverCommand`'s cancel the moment a delivery starts — and only then. The delivery
-   * outlives this promise (it runs on its own echo-verify timers), so its lifetime belongs to
-   * whoever owns the transport: a node torn down mid-restart cancels it here instead of letting
-   * a retry rewrite, or the fail-open submit, land in a dead session.
-   */
-  onDelivery?: (cancel: () => void) => void
-  /**
-   * "Is the pane we are restarting still there?" — asked before the exit is written, on every
-   * poll, and once more after the delivery, before a restart is reported. A session can die under
-   * a restart (the node is deleted or respawned, or another client destroys the tmux session): its
-   * io then silently no-ops and reporting `'restarted'` would put a phantom in the bulk summary.
+   * "Is the pane we are quitting still there?" — asked before the exit is written and on every
+   * poll. A session can die under a restart (the node is deleted or respawned, or another client
+   * destroys the tmux session), and there is then no pane left to fail in.
    */
   isLive?: () => boolean
-}): Promise<RestartOutcome> {
+}): Promise<ExitPhaseOutcome> {
   const exit = exitSequence(d.agentId)
   const base = resumeCommand(d.agentId, d.sessionId)
-  // The BARE command is the gate even when the caller overrides it: `resumeCommand` is what
-  // validates the session id before it reaches a command line.
+  // The BARE command is the gate: `resumeCommand` is what validates the session id before it
+  // reaches a command line, and a session we could not resume must not be quit.
   if (!exit || !base) return 'not-eligible'
-  const cmd = d.command ?? base
   const timeoutMs = d.timeoutMs ?? RESTART_EXIT_TIMEOUT_MS
   const pollMs = d.pollMs ?? RESTART_POLL_MS
   // A dead session is not a restart that failed — there is no pane left to fail in. `'not-eligible'`
@@ -175,7 +168,7 @@ export async function performRestartResume(d: {
   // ── Pre-flight: prove we can SEE this pane before quitting anything in it (see the header).
   // Reported as `'not-eligible'`, the outcome that means "not a target right now" and is the one
   // the menu and the notice already have wording for. Nothing has been written at this point.
-  const before = await queryPane(d.paneCommand, timeoutMs)
+  const before = await queryPaneWithin(d.paneCommand, timeoutMs)
   if (before === null || gone()) return 'not-eligible'
   // Clear the prompt before typing the exit command. The pane is a REPL the user types into: a
   // half-written prompt left in it would otherwise be submitted as `…refactor the/exit` — the
@@ -194,7 +187,7 @@ export async function performRestartResume(d: {
   let last: string | null = null
   for (;;) {
     await new Promise((r) => setTimeout(r, pollMs))
-    const pane = await queryPane(d.paneCommand, Math.max(0, deadline - Date.now()))
+    const pane = await queryPaneWithin(d.paneCommand, Math.max(0, deadline - Date.now()))
     if (gone()) return 'not-eligible' // stop polling a pane that no longer exists
     // Two ways to know the CLI let go of the pane. The allowlist is the confident one and is
     // taken immediately. The other — "the foreground command is no longer what it was before the
@@ -203,11 +196,65 @@ export async function performRestartResume(d: {
     // already quit and never resumed. It is required on two CONSECUTIVE polls: a single changed
     // reading can be a momentary foreground child of a still-running CLI, and typing the resume
     // line into a live CLI would send it as a message.
-    if (isShellCommand(pane)) break
-    if (pane !== null && pane !== before && pane === last) break
+    if (isShellCommand(pane)) return 'exited'
+    if (pane !== null && pane !== before && pane === last) return 'exited'
     last = pane
     if (Date.now() > deadline) return 'exit-timeout'
   }
+}
+
+/**
+ * PHASE 2 — echo-deliver the resume command into a pane the CLI has already let go of.
+ *
+ * Deliberately NOT gated on `exitSequence`: this half only types a launch line into a pane that is
+ * already free, so a CLI we have no way to ASK to quit is still perfectly resumable here (the exit
+ * half owns that question). What gates this half is the bare `resumeCommand` below — the session id
+ * has to be one this app would put on a command line. Hibernation's wake path relies on the split:
+ * it drives this half alone, hours after the exit.
+ *
+ * Resolves only once the resume line has actually LEFT the pane (deliverCommand's echo-verify
+ * retries run for up to DELIVERY_ATTEMPTS × VERIFY_TIMEOUT_MS after the first write). The
+ * un-submitted line is the pane's most fragile moment — anything typed into it during that window
+ * is spliced into the command — so "this delivery is over" must mean it settled, not that it was
+ * started. `guardConcurrentRestart` frees the node on exactly that boundary.
+ */
+export async function performResumePhase(d: {
+  agentId: string
+  sessionId: string
+  io: DeliveryIo
+  /**
+   * The exact launch line to relaunch with, when the caller has one. `withPermissionMode` is the
+   * app's single funnel for every CLI launch, and it needs the ACTIVE mode — an async read that
+   * belongs to the node, not to this module. Without it a canvas running in `acceptEdits` / `plan`
+   * would come back from a bulk restart in the default mode and start prompting.
+   *
+   * Eligibility is still decided by the bare `resumeCommand` below: a session id this app would
+   * not put on a command line (SAFE_SESSION_ID) refuses the delivery before anything is written,
+   * whatever the caller passes.
+   */
+  command?: string
+  /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
+  deliveryTimeoutMs?: number
+  /**
+   * Handed `deliverCommand`'s cancel the moment a delivery starts — and only then. The delivery
+   * outlives this promise (it runs on its own echo-verify timers), so its lifetime belongs to
+   * whoever owns the transport: a node torn down mid-restart cancels it here instead of letting
+   * a retry rewrite, or the fail-open submit, land in a dead session.
+   */
+  onDelivery?: (cancel: () => void) => void
+  /**
+   * Asked once more after the delivery, before a resume is reported: a session that died under it
+   * had the delivery cancelled by the teardown, so nothing reached the pane and reporting success
+   * would put a phantom in the bulk summary.
+   */
+  isLive?: () => boolean
+}): Promise<ResumePhaseOutcome> {
+  const base = resumeCommand(d.agentId, d.sessionId)
+  // The BARE command is the gate even when the caller overrides it: `resumeCommand` is what
+  // validates the session id before it reaches a command line.
+  if (!base) return 'not-eligible'
+  const cmd = d.command ?? base
+  const gone = (): boolean => !!d.isLive && !d.isLive()
   // Awaited, not fire-and-forget: see the header. `deliverCommand` is started inside the executor
   // (synchronously, so `onDelivery` still hands the cancel out before any await) and announces the
   // end of the delivery — submitted, fail-open or cancelled — through `settle`.
@@ -244,8 +291,65 @@ export async function performRestartResume(d: {
     lapse = setTimeout(resolve, d.deliveryTimeoutMs ?? RESTART_DELIVERY_TIMEOUT_MS)
   })
   // The session can have died while the line was being verified — the delivery is then cancelled by
-  // the teardown and nothing reached the pane, so don't claim a restart.
-  return gone() ? 'not-eligible' : 'restarted'
+  // the teardown and nothing reached the pane, so don't claim a resume.
+  return gone() ? 'not-eligible' : 'resumed'
+}
+
+/**
+ * In-place CLI restart: the two phases above, in order. Ask the agent to quit, wait until the CLI
+ * has let go of the pane (`performExitPhase`), then echo-deliver the resume command into it
+ * (`performResumePhase`). Composition only — every rule lives in one of the two halves, and this
+ * function's four outcomes are unchanged: `'exited'` continues, anything else from the exit half
+ * is passed through as-is, and a `'resumed'` is what the caller reads as `'restarted'`.
+ *
+ * No gate of its own: `performExitPhase` refuses (writing nothing) on exactly the same two facts —
+ * no exit sequence, or a session id `resumeCommand` would not put on a command line — and it runs
+ * first, so a copy here could only drift. Both halves re-check for themselves because either can be
+ * driven directly: hibernation quits a pane in one phase and resumes it much later in the other.
+ */
+export async function performRestartResume(d: {
+  agentId: string
+  sessionId: string
+  io: DeliveryIo
+  paneCommand: () => Promise<string | null>
+  /** See `performResumePhase`: the caller's launch line (permission mode), gated by the bare one. */
+  command?: string
+  timeoutMs?: number
+  pollMs?: number
+  /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
+  deliveryTimeoutMs?: number
+  /** Handed `deliverCommand`'s cancel as the delivery starts; see `performResumePhase`. */
+  onDelivery?: (cancel: () => void) => void
+  /**
+   * "Is the pane we are restarting still there?" — asked before the exit is written, on every
+   * poll, and once more after the delivery, before a restart is reported. A session can die under
+   * a restart (the node is deleted or respawned, or another client destroys the tmux session): its
+   * io then silently no-ops and reporting `'restarted'` would put a phantom in the bulk summary.
+   */
+  isLive?: () => boolean
+}): Promise<RestartOutcome> {
+  const exited = await performExitPhase({
+    agentId: d.agentId,
+    sessionId: d.sessionId,
+    io: d.io,
+    paneCommand: d.paneCommand,
+    timeoutMs: d.timeoutMs,
+    pollMs: d.pollMs,
+    isLive: d.isLive
+  })
+  // `'exit-timeout'` / `'not-eligible'` mean the same things they always did, so they are the
+  // restart's outcome verbatim — nothing has been resumed and nothing more may be written.
+  if (exited !== 'exited') return exited
+  const resumed = await performResumePhase({
+    agentId: d.agentId,
+    sessionId: d.sessionId,
+    io: d.io,
+    command: d.command,
+    deliveryTimeoutMs: d.deliveryTimeoutMs,
+    onDelivery: d.onDelivery,
+    isLive: d.isLive
+  })
+  return resumed === 'resumed' ? 'restarted' : resumed
 }
 
 // ── One restart at a time, per node ──────────────────────────────────────────────────────
@@ -256,7 +360,13 @@ const inFlight = new Set<string>()
  * reach the same node, and two runs against one pane would write two `/exit` lines (the second
  * typed INTO the CLI the first is resuming) and two resume commands.
  *
- * The node is held for the WHOLE run, delivery included (see performRestartResume's header): a
+ * ONE set for every kind of run: a hibernation exit, a wake resume and a user restart all pass
+ * through here, so a sweep cannot quit the pane a menu restart is already resuming, and vice versa.
+ * Generic in the outcome so the two halves can be guarded on their own (`ExitPhaseOutcome` /
+ * `ResumePhaseOutcome`), which is what hibernation drives — the refusal is `'not-eligible'`, a
+ * member of every one of those unions.
+ *
+ * The node is held for the WHOLE run, delivery included (see performResumePhase's header): a
  * second `/exit` arriving while the resume line sits un-submitted in the pane would be spliced
  * into it and submit `claude --resume <sid>/exit` — the exact mangled line command-delivery.ts
  * exists to prevent, and likeliest precisely when echo verification is being slow.
@@ -266,10 +376,10 @@ const inFlight = new Set<string>()
  * does not count — so a doubled request is neither counted twice as restarted nor reported as a
  * failure the user could act on. (The alternative, a fifth outcome, would break that frozen line.)
  */
-export function guardConcurrentRestart(
+export function guardConcurrentRestart<T extends string>(
   nodeId: string,
-  fn: () => Promise<RestartOutcome>
-): () => Promise<RestartOutcome> {
+  fn: () => Promise<T>
+): () => Promise<T | 'not-eligible'> {
   return async () => {
     if (inFlight.has(nodeId)) return 'not-eligible'
     inFlight.add(nodeId)
@@ -298,12 +408,44 @@ export function agentRestartFn(nodeId: string): (() => Promise<RestartOutcome>) 
   return restartFns.get(nodeId)
 }
 
-/** TEST ONLY (house pattern: webgl-budget's `__resetWebglBudgetForTests`): both maps above are
+/**
+ * A node's two HIBERNATION halves, registered together because they are useless apart: the sweep
+ * quits the CLI now, and the wake resumes the same conversation minutes or hours later.
+ *
+ * Separate from `restartFns` on purpose — a restart is one indivisible action, hibernation is two
+ * that are deliberately far apart in time — but both are built by the SAME node from the same
+ * `io` / `paneCommand` / `isLive`, and both go through `guardConcurrentRestart`, so the sweep, the
+ * wake and a user restart can never write into one pane at once.
+ */
+export interface AgentHibernateFns {
+  /** Ask the CLI to quit and wait for the pane. `'exited'` is the only outcome that may be
+   *  recorded as hibernated — anything else leaves the node exactly as it was. */
+  exit: () => Promise<ExitPhaseOutcome>
+  /** Re-launch the conversation with the provider's own `--resume`. */
+  resume: () => Promise<ResumePhaseOutcome>
+}
+
+const hibernateFns = new Map<string, AgentHibernateFns>()
+
+/** Register a node's hibernate/wake pair; returns an unregister that is inert if superseded. */
+export function registerAgentHibernate(nodeId: string, fns: AgentHibernateFns): () => void {
+  hibernateFns.set(nodeId, fns)
+  return () => {
+    if (hibernateFns.get(nodeId) === fns) hibernateFns.delete(nodeId)
+  }
+}
+
+export function agentHibernateFns(nodeId: string): AgentHibernateFns | undefined {
+  return hibernateFns.get(nodeId)
+}
+
+/** TEST ONLY (house pattern: webgl-budget's `__resetWebglBudgetForTests`): the maps above are
  *  module-global, so a test that leaves a restart in flight would otherwise refuse the next
  *  test's restart of the same node id. */
 export function __resetAgentRestartForTests(): void {
   inFlight.clear()
   restartFns.clear()
+  hibernateFns.clear()
 }
 
 // ── Bulk run: who gets restarted, and how the run is summed up ──────────────────────────
@@ -320,6 +462,14 @@ export interface BulkRestartCandidate {
    *  is unconditional for every terminal node, so this answers only "can I reach this pane", never
    *  "is this an agent" — `agentId` above is the one that decides that. */
   wired: boolean
+  /** Is a background shell task running inside this node's CLI (Claude's `Bash` with
+   *  `run_in_background`)? It dies with the CLI the exit line quits — silently, with no output and
+   *  no error — and the eligibility gate cannot see it: the node reports `done` the whole time.
+   *
+   *  Required, not optional: typecheck is what forces every call site to answer the question (the
+   *  `remote` / `liveBackgroundTask` precedent), and an omitted field would read as "no task" —
+   *  the one wrong direction. Fed from `agentStatus.backgroundTaskAt`. */
+  backgroundTask: boolean
 }
 
 export interface BulkRestartPlan {
@@ -347,6 +497,17 @@ export function planBulkRestart(candidates: BulkRestartCandidate[]): BulkRestart
       if (gate.reason === 'working') plan.skipped.working++
       else if (gate.reason === 'no-session') plan.skipped.noSession++
       // 'not-resumable' — never a target, see above.
+      continue
+    }
+    // AFTER the eligibility gate, so a node that was never a target stays uncounted whatever else
+    // is true of it — and BEFORE the wired check, because a live background task is the sharper
+    // fact: "no session" would send the user looking for a pane that is fine.
+    //
+    // Counted as `working`, not as a fifth part: the summary line is spec-frozen at four, and
+    // `'working'`'s documented meaning — "busy, try again in a moment" — is exactly what a running
+    // background task is.
+    if (c.backgroundTask) {
+      plan.skipped.working++
       continue
     }
     if (!c.wired) {

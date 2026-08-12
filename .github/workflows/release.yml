@@ -33,6 +33,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The bundled tmux (resources/bin/tmux → <app>/Contents/Resources/bin/tmux via the mac
+      # extraResources entry). Without a tmux on the machine the app silently degrades to plain
+      # shells — no persistence across restarts, no mobile attach, and a park/dispose kills the
+      # agent CLI instead of detaching a client (issue #126). Shipping one removes that for the
+      # tmux-less; the SYSTEM tmux still takes precedence at runtime (see findTmux).
+      #
+      # A SEPARATE STEP, before electron-builder, on purpose: a missing extraResources source is
+      # only a WARNING to electron-builder, so a failure folded into the release command could
+      # publish a DMG with no tmux in it and nobody would notice. Here a build failure fails the
+      # job. Idempotent — a rerun with the binary already present is a no-op, so the retry loop in
+      # the next step costs nothing.
+      #
+      # RUNNER TOOLCHAIN: the Xcode command line tools and nothing else — curl, cc, make, ar, yacc,
+      # lipo, strip, otool, nm. Explicitly NOT needed: cmake (utf8proc is built through its plain
+      # Makefile, not its CMakeLists), autoconf (release tarballs ship a generated `configure`, and
+      # each arch is extracted fresh so no maintainer rule fires), pkg-config (deliberately
+      # disabled — a Homebrew .pc file would link the bundle to dylibs users don't have), Homebrew,
+      # Rosetta (the cross slice is configured with --host, so no test binary is ever executed) and
+      # npm packages (node stdlib only).
+      - name: Build bundled tmux (universal, static libevent + utf8proc)
+        run: node scripts/build-tmux.mjs
+
       - name: Build, sign & notarize
         run: |
           printf '%s' "$APPLE_API_KEY_B64" | base64 --decode > "$RUNNER_TEMP/notary-key.p8"

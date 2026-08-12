@@ -108,6 +108,67 @@ describe('interrupt inference (Esc/Ctrl-C with no final hook)', () => {
   })
 })
 
+describe('background-task stamp (Eco / bulk-restart guard)', () => {
+  it('markBackgroundTask stamps, and a non-working transition never clears it', () => {
+    const id = nid()
+    const s = useAgentStatus.getState()
+    s.setState(id, 'done', 'claude')
+    s.markBackgroundTask(id)
+    expect(useAgentStatus.getState().byId[id]?.backgroundTaskAt).toBeTypeOf('number')
+    // done → waiting is a transition, but the task is still running: the guard must hold.
+    s.setState(id, 'waiting', 'claude')
+    expect(useAgentStatus.getState().byId[id]?.backgroundTaskAt).toBeTypeOf('number')
+  })
+
+  // Only a turn START — a `working` arriving from `done` — clears the stamp. Everything else keeps
+  // it. blocked/waiting → working is a MID-TURN RESUMPTION (the same turn picking back up; see the
+  // approval walk-through below), and an UNKNOWN previous state is not evidence of a turn start
+  // at all: it is what a renderer reload or the stale-working sweeper leaves behind MID-TURN, so
+  // clearing there would delete the stamp for a task that is still running.
+  it('clears only on a turn start (done → working), never on a resumption or from an unknown state', () => {
+    for (const { from, cleared } of [
+      { from: 'blocked' as const, cleared: false },
+      { from: 'waiting' as const, cleared: false },
+      { from: undefined, cleared: false },
+      { from: 'done' as const, cleared: true }
+    ]) {
+      const id = nid()
+      const s = useAgentStatus.getState()
+      if (from) s.setState(id, from, 'claude')
+      s.markBackgroundTask(id)
+      // A `done` predecessor needs the holdoff to lapse, or the working event is dropped whole.
+      if (from === 'done') vi.advanceTimersByTime(DONE_HOLDOFF_MS + 500)
+      useAgentStatus.getState().setState(id, 'working', 'claude')
+      const label = String(from)
+      expect(useAgentStatus.getState().byId[id].state, label).toBe('working')
+      const stamp = useAgentStatus.getState().byId[id].backgroundTaskAt
+      if (cleared) expect(stamp, label).toBeUndefined()
+      else expect(stamp, label).toBeTypeOf('number')
+    }
+  })
+
+  // The scenario the predicate exists for: a background Bash whose command needs approval runs
+  // UserPromptSubmit(working) → PreToolUse(stamp) → PermissionRequest(blocked) → approve →
+  // PostToolUse(working). That last edge IS a transition, and clearing on it would drop the guard
+  // milliseconds after the stamp was set, while the task runs on.
+  it('a background task that needed approval keeps its stamp across the approve edge', () => {
+    const id = nid()
+    const s = useAgentStatus.getState()
+    s.setState(id, 'working', 'claude', true) // UserPromptSubmit — the turn starts
+    s.markBackgroundTask(id) // PreToolUse Bash, run_in_background
+    s.setState(id, 'blocked', 'claude') // PermissionRequest
+    s.setState(id, 'working', 'claude') // approved, the turn resumes
+    expect(useAgentStatus.getState().byId[id].backgroundTaskAt).toBeTypeOf('number')
+  })
+
+  it('stamps a node with no entry yet (the task can precede any state event)', () => {
+    const id = nid()
+    useAgentStatus.getState().markBackgroundTask(id)
+    expect(useAgentStatus.getState().byId[id]?.backgroundTaskAt).toBeTypeOf('number')
+    expect(useAgentStatus.getState().byId[id]?.unread).toBe(false)
+  })
+})
+
 describe('clearUnread — cross-surface ack vs. external (host-driven) clear', () => {
   it('a normal clear of a done+unread node ACKs the read (dismisses the phone activity)', () => {
     const acked: string[] = []

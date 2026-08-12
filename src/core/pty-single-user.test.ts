@@ -107,6 +107,21 @@ vi.mock('child_process', () => {
 
 const SOLO = 42
 
+/**
+ * A machine with pty devices to spare, always.
+ *
+ * Without this the real probe runs a `readdir('/dev')` against the DEVELOPER's host, and
+ * `spawnSession`'s pre-flight refuses every create once that host is within `PTY_DEVICE_HEADROOM`
+ * of its own `kern.tty.ptmx_max` — which a machine running this app all day genuinely reaches (511
+ * on macOS; this one sits in the 480s). Nothing below is about device pressure, so it is pinned
+ * healthy rather than left to depend on who is running the suite and how many terminals they have
+ * open. The pressure behaviour itself is tested in pty-spawn-preflight.test.ts.
+ */
+vi.mock('./pty-devices', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pty-devices')>()),
+  readPtyDevices: () => ({ ceiling: 511, inUse: 8 })
+}))
+
 describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () => {
   let fake: FakePlatform
   let userDataDir: string
@@ -364,8 +379,68 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     await create(80, 24)
     await m.destroySession(SOLO, 'solo-1')
     const kills = tmuxCalls('kill-session')
+    // ONE kill: we hold this session, so we know which socket it is on and the destroy aims only
+    // there. A destroy with NO live session cannot know, and fans out over both sockets
+    // (`localKillSockets`) — this length is what keeps that off the solo path.
     expect(kills).toHaveLength(1)
-    expect(kills[0].args[kills[0].args.indexOf('-t') + 1]).toBe(sessionName('solo-1'))
+    expect(kills[0].args[kills[0].args.indexOf('-L') + 1]).toBe('node-terminal')
+    // `=` forces an EXACT tmux target. Node ids end in a counter, so `nt-a-1` is a prefix of
+    // `nt-a-12`, and tmux falls back to prefix matching whenever the exact name is not found.
+    expect(kills[0].args[kills[0].args.indexOf('-t') + 1]).toBe(`=${sessionName('solo-1')}`)
+  })
+
+  // Destroying a name we hold NOTHING for is how the session-memory panel ends an ORPHAN row — a
+  // tmux session with no node on any canvas. We cannot know which socket carries it, and on this
+  // machine a `nt-<id>` may be on `nodeterm-rmt`: that is where ANOTHER machine's nodeterm puts the
+  // sessions it SSHes in to spawn, and the panel sweeps (and offers to end) both sockets. Aiming
+  // only at `node-terminal` meant a confirm reading "this stops its tmux session" that killed
+  // nothing at all.
+  it('destroying a session we do not hold tries EVERY socket when the caller asks', async () => {
+    const m = await tmuxManager()
+    await m.destroySession(SOLO, 'never-opened-here', { everySocket: true })
+    const kills = tmuxCalls('kill-session')
+    expect(kills.map((c) => c.args[c.args.indexOf('-L') + 1]).sort()).toEqual([
+      'node-terminal',
+      'nodeterm-rmt'
+    ])
+    for (const k of kills) {
+      expect(k.args[k.args.indexOf('-t') + 1]).toBe(`=${sessionName('never-opened-here')}`)
+    }
+  })
+
+  // ...but the fan-out is OPT-IN, and the unheld branch is not rare: an ordinary node-× on a node
+  // that was never mounted in this process takes it every time (the common case after an app
+  // restart, and every non-active project's node). Those callers know their own node and have no
+  // business speculating at `nodeterm-rmt`, which holds another machine's sessions.
+  it('destroying a session we do not hold stays on ONE socket by default', async () => {
+    const m = await tmuxManager()
+    await m.destroySession(SOLO, 'never-opened-here')
+    const kills = tmuxCalls('kill-session')
+    expect(kills.map((c) => c.args[c.args.indexOf('-L') + 1])).toEqual(['node-terminal'])
+  })
+
+  // The flag arrives verbatim from a renderer, so the wire path must demand a real `true` — and it
+  // must reach `endSession`, which is the half a `destroySession`-only test cannot see.
+  it('honours everySocket off the wire, and only for a literal true', async () => {
+    await tmuxManager()
+    await (fake.senderListeners[IPC.ptyDestroy](
+      SOLO,
+      'never-opened-here',
+      true
+    ) as unknown as Promise<void>)
+    expect(tmuxCalls('kill-session').map((c) => c.args[c.args.indexOf('-L') + 1]).sort()).toEqual([
+      'node-terminal',
+      'nodeterm-rmt'
+    ])
+    execCalls.length = 0
+    await (fake.senderListeners[IPC.ptyDestroy](
+      SOLO,
+      'never-opened-2',
+      'yes' as unknown as boolean
+    ) as unknown as Promise<void>)
+    expect(tmuxCalls('kill-session').map((c) => c.args[c.args.indexOf('-L') + 1])).toEqual([
+      'node-terminal'
+    ])
   })
 
   // ── recycle (move into worktree) = destroy, minus the "someone closed it" fan-out ─────────
@@ -379,8 +454,8 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     await (fake.senderListeners[IPC.ptyRecycle](SOLO, 'solo-1') as unknown as Promise<void>)
 
     const kills = tmuxCalls('kill-session')
-    expect(kills).toHaveLength(1)
-    expect(kills[0].args[kills[0].args.indexOf('-t') + 1]).toBe(sessionName('solo-1'))
+    expect(kills).toHaveLength(1) // we hold the session; one socket, one kill
+    expect(kills[0].args[kills[0].args.indexOf('-t') + 1]).toBe(`=${sessionName('solo-1')}`)
     expect(spawned[0].killed).toBe(true) // the old pty client is released
     expect(fake.sent).toEqual([]) // solo: nobody to tell, so nothing is sent
 

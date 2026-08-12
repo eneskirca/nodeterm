@@ -27,6 +27,7 @@ import {
   type FilesApi,
   type FsApi,
   type GitApi,
+  type MemInfo,
   type NodeTerminalApi,
   type PresenceApi,
   type PtyApi,
@@ -36,6 +37,8 @@ import {
   type ProviderUsage,
   type RemoteAccountUsage,
   type RemoteUsageQuery,
+  type SessionMemoryQuery,
+  type SessionMemoryReport,
   type Settings,
   type SpeechApi,
   type SpeechModelInfo,
@@ -209,7 +212,9 @@ export function buildRealApi(
       client.cast(IPC.ptyResize, sessionId, cols, rows, viewerId),
     setFlow: (sessionId, resume, viewerId) => client.cast(IPC.ptyFlow, sessionId, resume, viewerId),
     kill: (sessionId, viewerId) => client.cast(IPC.ptyKill, sessionId, viewerId),
-    destroy: (persistKey) => client.cast(IPC.ptyDestroy, persistKey),
+    // The trailing flag rides as a plain boolean; the core handler re-checks `=== true`.
+    destroy: (persistKey, opts) =>
+      client.cast(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
     recycle: (persistKey) => client.cast(IPC.ptyRecycle, persistKey),
     // No server handler — degrade gracefully (never reject the boot path).
     generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
@@ -611,6 +616,31 @@ function buildUsageApi(client: RpcClient): Pick<NodeTerminalApi, 'usage'> {
 }
 
 /**
+ * Real, not a stub: the same core service (`startSessionMemoryService`) registers these channels in
+ * the server shell, so the browser gets a genuine per-session breakdown of the machine it is served
+ * from — the one it is actually looking at.
+ *
+ * The query is forwarded VERBATIM. `remote` is the renderer's own "this scope is an SSH host"
+ * claim and is one of TWO independent sources the service ORs to decide which machine answers;
+ * `projectId` is the only thing naming that machine. A layer that drops or rewrites either turns a
+ * remote query into a local sweep, and this machine's sessions get published under the host's name.
+ *
+ * Neither member catches: a transport failure must not be laundered into `{ok:false}` / `null`,
+ * which are the service's own words for "the sweep could not run" and "RAM unreadable". The panel
+ * shows a failed request as a failed request.
+ */
+export function buildSessionMemoryApi(client: RpcClient): Pick<NodeTerminalApi, 'sessionMemory'> {
+  return {
+    sessionMemory: {
+      read: (q?: SessionMemoryQuery) =>
+        client.request(IPC.sessionMemory, q) as Promise<SessionMemoryReport>,
+      host: (q?: SessionMemoryQuery) =>
+        client.request(IPC.sessionMemoryHost, q) as Promise<MemInfo | null>
+    }
+  }
+}
+
+/**
  * Build the `claude` namespace over an RpcClient. `cliCaps` is a REAL handler on the server
  * (`registerClaudeCliIpc` runs in the server shell too), so the browser resolves the very same
  * `--permission-mode auto` version gate as desktop instead of silently no-opping into "auto
@@ -781,6 +811,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildPresenceApi(client),
     ...buildSpeechApi(client),
     ...buildUsageApi(client),
+    ...buildSessionMemoryApi(client),
     ...buildGitHubApi(client),
     // `claude` is assembled from two builders: `cliCaps` from the relay-shared one, and the
     // transcript reader from the Server-Edition-only one (which also supplies `chat`).

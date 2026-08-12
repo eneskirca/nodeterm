@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   planReap,
   parseSessionList,
   sessionBudgetConfig,
   createSessionReaper,
+  readMemInfo,
   type SessionInfo,
   type SessionBudgetConfig
 } from './session-budget'
@@ -19,10 +22,10 @@ const cfg = (over: Partial<SessionBudgetConfig> = {}): SessionBudgetConfig => ({
   ...over
 })
 
-/** A detached nt- session idle for `idleH` hours. */
-const idle = (name: string, idleH: number, attached = false): SessionInfo => ({
+/** An nt- session idle for `idleH` hours, with `clients` attached (0 = detached). */
+const idle = (name: string, idleH: number, clients = 0): SessionInfo => ({
   name,
-  attached,
+  clients,
   activitySec: NOW - idleH * 3600
 })
 
@@ -36,7 +39,7 @@ describe('planReap (pure policy)', () => {
   })
 
   it('never reaps an attached session, no matter how idle', () => {
-    const plan = planReap([idle('nt-watched', 500, true), idle('nt-idle', 500)], lowMem, NOW, cfg())
+    const plan = planReap([idle('nt-watched', 500, 1), idle('nt-idle', 500)], lowMem, NOW, cfg())
     expect(plan).toEqual(['nt-idle'])
   })
 
@@ -68,7 +71,7 @@ describe('planReap (pure policy)', () => {
   })
 
   it('attached sessions do not count toward freeing the cap, but are never the ones killed', () => {
-    const sessions = [idle('nt-live', 500, true), ...Array.from({ length: 5 }, (_, i) => idle(`nt-d${i}`, 100 + i))]
+    const sessions = [idle('nt-live', 500, 2), ...Array.from({ length: 5 }, (_, i) => idle(`nt-d${i}`, 100 + i))]
     const plan = planReap(sessions, okMem, NOW, cfg({ maxDetached: 4 }))
     expect(plan).toEqual(['nt-d4'])
   })
@@ -89,14 +92,34 @@ describe('planReap (pure policy)', () => {
     const plan = planReap(sessions, lowMem, NOW, cfg({ batchMax: 3 }))
     expect(plan).toHaveLength(3)
   })
+
+  // The 2026-08-11 profile: plenty of RAM, well under the detached cap, and the machine still
+  // could not open a terminal because it was out of pty DEVICES. Without an allowance of its own
+  // that reading plans nothing at all — the sweep the shell fires on critical pty pressure would
+  // be a no-op, which is exactly the bug this argument exists to close.
+  it('an external pressure reason earns the same allowance low memory does', () => {
+    const sessions = Array.from({ length: 20 }, (_, i) => idle(`nt-s${i}`, 100 + i))
+    expect(planReap(sessions, okMem, NOW, cfg({ batchMax: 3 }))).toHaveLength(0)
+    expect(planReap(sessions, okMem, NOW, cfg({ batchMax: 3 }), true)).toHaveLength(3)
+  })
+
+  it('external pressure widens NO safety gate: attached and in-grace sessions still live', () => {
+    const sessions = [idle('nt-watched', 500, 1), idle('nt-fresh', 1), idle('user-shell', 500)]
+    expect(planReap(sessions, okMem, NOW, cfg(), true)).toEqual([])
+  })
+
+  it('the kill switch still wins over an external pressure reason', () => {
+    const plan = planReap([idle('nt-a', 500)], okMem, NOW, cfg({ disabled: true }), true)
+    expect(plan).toEqual([])
+  })
 })
 
 describe('parseSessionList', () => {
-  it('parses names, attached counts and activity, skipping malformed lines', () => {
+  it('parses names, CLIENT COUNTS and activity, skipping malformed lines', () => {
     const out = parseSessionList('nt-a|0|1753000000\nnt-b|2|1753000100\n\njunk\nx|y|z\n')
     expect(out).toEqual([
-      { name: 'nt-a', attached: false, activitySec: 1_753_000_000 },
-      { name: 'nt-b', attached: true, activitySec: 1_753_000_100 }
+      { name: 'nt-a', clients: 0, activitySec: 1_753_000_000 },
+      { name: 'nt-b', clients: 2, activitySec: 1_753_000_100 }
     ])
   })
 })
@@ -235,6 +258,117 @@ describe('createSessionReaper (service)', () => {
       readMem: () => ({ availableMb: 30_000, totalMb: 64_000 }),
       tmuxBin: () => 'tmux',
       exec: w.exec
+    })
+    expect(await reaper.sweep()).toBe(0)
+    expect(w.calls.filter((c) => c.args[2] === 'kill-session')).toHaveLength(0)
+  })
+
+  it('…but the same host sweeps under an explicit external pressure reason', async () => {
+    const w = fakeWorld({ 'node-terminal': [`nt-x|0|${OLD}`] })
+    const reaper = createSessionReaper({
+      ...base,
+      readMem: () => ({ availableMb: 30_000, totalMb: 64_000 }),
+      tmuxBin: () => 'tmux',
+      sockets: ['node-terminal'],
+      exec: w.exec
+    })
+    expect(await reaper.sweep({ pressure: 'pty' })).toBe(1)
+  })
+
+  it('an external reason never overrides the attached/grace exemptions', async () => {
+    const w = fakeWorld({
+      'node-terminal': [`nt-watched|1|${OLD}`, `nt-fresh|0|${NOW - 60}`]
+    })
+    const reaper = createSessionReaper({
+      ...base,
+      readMem: () => ({ availableMb: 30_000, totalMb: 64_000 }),
+      tmuxBin: () => 'tmux',
+      sockets: ['node-terminal'],
+      exec: w.exec
+    })
+    expect(await reaper.sweep({ pressure: 'pty' })).toBe(0)
+    expect(w.calls.filter((c) => c.args[2] === 'kill-session')).toHaveLength(0)
+  })
+})
+
+describe('planReap with no memory signal (the darwin shape)', () => {
+  const idle = (name: string, hoursAgo: number): SessionInfo => ({
+    name,
+    clients: 0,
+    activitySec: 1_000_000 - hoursAgo * 3600
+  })
+
+  it('culls NOTHING on memory grounds when the reader reports null', () => {
+    // macOS: available BYTES is not the OS's pressure signal (measured: 82% used, 8.38 GB
+    // compressed, macOS's own graph GREEN). hostMemReader returns null there, and null must mean
+    // "no pressure signal", never "no memory". Absence of evidence may not cull a session.
+    const sessions = Array.from({ length: 20 }, (_, i) => idle(`nt-old-${i}`, 48))
+    const cfg = sessionBudgetConfig({}, 24576)
+    expect(planReap(sessions, null, 1_000_000, cfg)).toEqual([])
+  })
+
+  it('still culls past the detached-count cap without any memory signal', () => {
+    // The cap is not memory-based, so it survives — that is what keeps the reaper useful on macOS.
+    const sessions = Array.from({ length: 60 }, (_, i) => idle(`nt-old-${i}`, 48))
+    const cfg = sessionBudgetConfig({}, 24576)
+    expect(planReap(sessions, null, 1_000_000, cfg).length).toBeGreaterThan(0)
+  })
+})
+
+describe("the reaper's default memory reader", () => {
+  /**
+   * A SOURCE-level guard, deliberately, and here is why a behavioural one is not possible ON THIS
+   * PLATFORM: `hostMemReader` differs from `readMemInfo` ONLY on darwin, and CI runs on Linux,
+   * where the two are the same function. Reverting the default to `readMemInfo` therefore leaves
+   * every behavioural test green — measured, not assumed. The darwin-gated suite below IS the
+   * behavioural version of this guard; this string check is what stands in for it everywhere else.
+   *
+   * What it guards is the thing that actually broke: on macOS `readMemInfo` reports honest bytes,
+   * but available BYTES are not the OS's pressure signal (82% used with macOS's own graph GREEN,
+   * measured 2026-08-12), so a byte watermark culls sessions on a machine macOS says is fine.
+   */
+  it('defaults to hostMemReader, not readMemInfo', () => {
+    const src = readFileSync(join(__dirname, 'session-budget.ts'), 'utf8')
+    expect(src).toContain('opts.readMem ?? hostMemReader()')
+    expect(src).not.toContain('opts.readMem ?? readMemInfo')
+  })
+})
+
+describe('darwin default reader: no byte reading may ever reap (behavioural)', () => {
+  /**
+   * Gated to darwin because only there do `hostMemReader` and `readMemInfo` diverge — on Linux
+   * they are the same function, so this test would FAIL there for the wrong reason (the real
+   * `/proc/meminfo` reading legitimately trips the impossible watermark below). On a Mac it is
+   * the real guard the source-text check above merely approximates.
+   */
+  const onDarwin = it.skipIf(process.platform !== 'darwin')
+
+  onDarwin('readMemInfo yields an honest reading here — the discriminator is real, not vacuous', () => {
+    // If vm_stat parsing ever regressed to null on darwin, the reaping test below would pass for
+    // an empty reason (both readers null). This companion assertion is what keeps it meaningful.
+    const mem = readMemInfo()
+    expect(mem).not.toBeNull()
+    expect(mem!.totalMb).toBeGreaterThan(1024)
+    expect(mem!.availableMb).toBeGreaterThan(0)
+    expect(mem!.availableMb).toBeLessThan(mem!.totalMb)
+  })
+
+  onDarwin('without an injected readMem, sessions survive NO MATTER how full memory is', async () => {
+    // The watermark is set above any physically possible host (1 TB available), so ANY byte
+    // reading — however healthy the machine — counts as pressure. Only a reader that refuses to
+    // produce bytes at all (hostMemReader's darwin null) keeps these sessions alive. This encodes
+    // "memory fullness must never reap on macOS" without depending on the host's current load.
+    const w = fakeWorld({
+      'node-terminal': Array.from({ length: 20 }, (_, i) => `nt-idle-${i}|0|${OLD}`)
+    })
+    const reaper = createSessionReaper({
+      tmuxBin: () => 'tmux',
+      sockets: ['node-terminal'],
+      exec: w.exec,
+      env: { NODETERM_SESSION_MIN_AVAILABLE_MB: '1000000000' },
+      nowSec: () => NOW,
+      log: () => {}
+      // deliberately NO readMem: the default reader is the thing under test
     })
     expect(await reaper.sweep()).toBe(0)
     expect(w.calls.filter((c) => c.args[2] === 'kill-session')).toHaveLength(0)

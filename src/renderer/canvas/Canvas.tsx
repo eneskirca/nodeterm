@@ -26,7 +26,12 @@ import {
   setSshDropHandler,
   setSshRetryHandler,
   disposeTerminalOnUnmount,
-  disposeParkedTerminal
+  disposeParkedTerminal,
+  disposeAllParkedTerminals,
+  isNodeRemote,
+  isNodeWatched,
+  setWatchedNode,
+  wakeHibernatedNode
 } from '../nodes/TerminalNode'
 import { solveFitPadding } from './fit-view'
 import {
@@ -44,7 +49,12 @@ import {
 } from './SharedGlyphLayer'
 import { SshReconnector } from '../lib/sshReconnect'
 import { terminalKey } from '../terminal/terminal-config'
-import { setWebglGesture, setWebglZoom, WEBGL_GESTURE_SETTLE_MS } from '../terminal/webgl-budget'
+import {
+  setWebglGesture,
+  setWebglZoom,
+  releaseAllHiddenGrants,
+  WEBGL_GESTURE_SETTLE_MS
+} from '../terminal/webgl-budget'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
@@ -115,6 +125,7 @@ import { isSpaceRelease, spacePanKeydown } from '../lib/spacePan'
 import { UpdateCard } from '../components/UpdateCard'
 import { AnnouncementBanner } from '../components/AnnouncementBanner'
 import { TmuxBanner } from '../components/TmuxBanner'
+import { PtyPressureBanner } from '../components/PtyPressureBanner'
 import { ConflictBar } from '../components/ConflictBar'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { ConsentNotice } from '../remote/ConsentNotice'
@@ -127,6 +138,7 @@ import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
 import type { SessionNodeInput } from '../lib/sessionList'
 import { UsageIndicator } from '../components/UsageIndicator'
+import { SystemResourcePill } from '../components/SystemResourcePill'
 import { PresenceLayer } from '../components/PresenceLayer'
 import { Facepile } from '../components/Facepile'
 import { PresenceNamePrompt } from '../components/PresenceNamePrompt'
@@ -145,12 +157,14 @@ import {
   viewportForRect,
   type FocusableNode
 } from '../lib/nodeFocus'
+import { planSessionKill } from '../lib/sessionKill'
 import { RemoteAccessDialog } from '../components/RemoteAccessDialog'
 import { SshProjectDialog } from '../components/SshProjectDialog'
 import { SshPassphrasePrompt } from '../components/SshPassphrasePrompt'
 import { transport } from '../terminal/local-transport'
 import { sshFs } from '../terminal/ssh-fs'
 import {
+  agentHibernateFns,
   agentRestartFn,
   planBulkRestart,
   restartEligibility,
@@ -159,6 +173,9 @@ import {
   type BulkRestartPlan,
   type RestartOutcome
 } from '../terminal/agent-restart'
+import { planHibernation, HIBERNATE_SWEEP_MS } from '../terminal/hibernation-policy'
+import { buildHibernationCandidates } from '../lib/hibernationCandidates'
+import { applyLoopDismiss } from '../lib/loopCard'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
 import { opensInEditor } from '../lib/openTarget'
 import { newEntryPath, parentDir } from '../lib/explorerCreate'
@@ -1131,7 +1148,9 @@ export function Canvas() {
     let sig = ''
     for (const [id, st] of Object.entries(s.byId)) {
       if (!st.loop) continue
-      sig += `${id}|${st.loop.kind ?? ''}|${st.loop.count}|${st.loop.items?.length ?? 0}|${st.loop.task ?? ''}|${st.loop.schedule ?? ''}|${st.state === 'working' ? 1 : 0}|`
+      // `dismissed` rides the signature (it is what the card derivation filters on), so the ×
+      // removes the card on the next render rather than waiting for some other loop change.
+      sig += `${id}|${st.loop.kind ?? ''}|${st.loop.count}|${st.loop.items?.length ?? 0}|${st.loop.task ?? ''}|${st.loop.schedule ?? ''}|${st.state === 'working' ? 1 : 0}|${st.loop.dismissed ? 1 : 0}|`
     }
     return sig
   })
@@ -1216,7 +1235,10 @@ export function Canvas() {
     const eEdges: Edge[] = []
     // Loop nodes: one per terminal node currently running a /loop, placed below-left.
     for (const [pid, st] of Object.entries(claudeById)) {
-      if (!st.loop) continue
+      // A DISMISSED cron/schedule entry is kept on purpose (it is the hibernation guard's only
+      // evidence that a wakeup is pending — see agentStatus's `loop.dismissed`), so the filter
+      // lives here, in the render layer, and nowhere else.
+      if (!st.loop || st.loop.dismissed) continue
       const parent = nodes.find((n) => n.id === pid)
       if (!parent) continue
       const ph = parent.measured?.height ?? (parent.height as number) ?? 400
@@ -4321,7 +4343,10 @@ export function Canvas() {
         sessionId: byId[n.id]?.sessionId,
         // Registration is unconditional for every terminal node, so this says only "mounted and
         // wired", never "is an agent" — `agentId` above is what decides that.
-        wired: !!agentRestartFn(n.id)
+        wired: !!agentRestartFn(n.id),
+        // A background shell launched by this session is still running (no turn has started since):
+        // the exit line would kill it silently. Presence of the stamp is the whole signal.
+        backgroundTask: !!byId[n.id]?.backgroundTaskAt
       }))
     )
   }, [])
@@ -5001,15 +5026,15 @@ export function Canvas() {
       ...(isLoop
         ? ([
             {
-              // Same as the card's own ×: drops the CARD, never the cron/schedule job itself.
+              // Same as the card's own ×: drops the CARD, never the cron/schedule job itself —
+              // and literally the same code path (`applyLoopDismiss`), because these two surfaces
+              // are one user action and had already drifted apart once: this one cleared the
+              // durable `loop` entry, which is the only thing keeping Eco mode from quitting the
+              // CLI a live cron was going to fire in.
               label: 'Dismiss card',
               icon: <IconTrash />,
               danger: true,
-              onClick: () => {
-                const pid = id.slice('loop-'.length)
-                useAgentStatus.getState().setLoop(pid, false)
-                useAgentNodes.getState().clearLoop(pid)
-              }
+              onClick: () => applyLoopDismiss(id.slice('loop-'.length))
             }
           ] as MenuItem[])
         : [])
@@ -5424,6 +5449,16 @@ export function Canvas() {
   // whole board on every Canvas render.
   const setKanbanModalNode = useCallback((id: string | null) => {
     kanbanModalNodeRef.current = id
+    // The one place the "is anyone looking at this session" predicate learns about the modal —
+    // every asker (the sweep's plan, the node's fire-time re-ask, the nudge) reads it through
+    // `isNodeWatched`, so the modal clause cannot go missing from one of them.
+    setWatchedNode(id)
+    // Opening a card IS opening the session — the second way in, and the one the canvas
+    // visibility observer says nothing about. A hibernated node reached this way resumes its
+    // conversation just as it would on a pan-back, instead of showing the bare shell it was
+    // exited to with nothing on screen to explain it. No-op for every node that is not
+    // hibernated (the node re-reads the flag itself).
+    if (id) wakeHibernatedNode(id)
   }, [])
 
   const onPaletteQuery = useCallback((q: string) => {
@@ -6670,9 +6705,15 @@ export function Canvas() {
   // Close (end) a session. tmux sessions are keyed by node id, so destroy works for an
   // inactive project's node even though it isn't mounted; then drop it from the store.
   const closeSession = useCallback(
-    (projectId: string, id: string) => {
+    (projectId: string, id: string, alsoOnConfirm?: () => void) => {
       setConfirm({
-        message: 'End this session? This stops its tmux session.',
+        // Both halves, because this does both: the tmux session ends AND the node is removed from
+        // its canvas (either branch below). The wording came from the sessions sidebar, where the
+        // node going too is the obvious intent — but the session-memory panel reuses this path, and
+        // there the user's intent is reclaiming RAM, for which killing the node is a side effect
+        // they have to be told about. (Keeping the node would need a second destroy path, which is
+        // deliberately NOT what this is.)
+        message: 'End this session? This stops its tmux session and removes the node from its canvas.',
         confirmLabel: 'End session',
         danger: true,
         onConfirm: () => {
@@ -6685,11 +6726,74 @@ export function Canvas() {
             useProjects.getState().removeNode(projectId, id)
             void writeDisk()
           }
+          // The session-memory panel's remote leg (see `killSessionById`): the local destroy above
+          // cannot reach a HOST's tmux session unless a live client carries `sshRemote`. Runs only
+          // after the user confirmed, which is why it is a callback and not done at the call site.
+          alsoOnConfirm?.()
           setConfirm(null)
         }
       })
     },
     [activeProjectId, deleteNodes, writeDisk]
+  )
+
+  /**
+   * End a session picked from the session-memory panel, which lists tmux SESSIONS rather than
+   * canvas nodes — so a row may have no node behind it at all, and (on an SSH project) may not even
+   * be on this machine.
+   *
+   * Both halves of the plan are the pure `planSessionKill`:
+   *
+   * - **Who owns it** is resolved HERE, at click time, rather than taken from the row's `orphan`
+   *   flag: the rows are a snapshot of the last sweep, and a node created since would otherwise be
+   *   killed as an orphan. With an owner this goes through `closeSession` — the exact path the
+   *   sessions sidebar and the node's own × use — so the panel never invents a third one.
+   * - **Which machine** is the ACTIVE project's, because that is the machine the panel is showing.
+   *   `transport.destroy` reaches a REMOTE session only through a live client carrying `sshRemote`,
+   *   which an orphan and an unmounted node both lack — so on an SSH scope the kill would have
+   *   touched only the local socket while the host's `nt-<id>` kept running, after a confirm that
+   *   said otherwise. `sshProject.killSessions` runs `tmux kill-session` over that project's own
+   *   ControlMaster and needs no live session; it is best-effort per id, so running it for the
+   *   mounted case too (where `destroy` already ended it) is a harmless miss.
+   */
+  const killSessionById = useCallback(
+    (nodeId: string, orphan: boolean) => {
+      const store = useProjects.getState()
+      const plan = planSessionKill(nodeId, store.projects, store.activeProjectId)
+      // `everySocket` on BOTH legs, and only here: the panel's rows are swept off both of the
+      // machine's tmux sockets, so a row it offers to end genuinely can be on either. Every other
+      // caller (project deletion, an ordinary node-×) knows its own nodes and stays narrow.
+      const remoteKill = plan.remoteProjectId
+        ? () =>
+            void window.nodeTerminal.sshProject
+              .killSessions(plan.remoteProjectId!, [nodeId], { everySocket: true })
+              .catch(() => {})
+        : undefined
+      if (plan.ownerProjectId) {
+        closeSession(plan.ownerProjectId, nodeId, remoteKill)
+        return
+      }
+      setConfirm({
+        // The orphan wording stays as it is: there is no node to remove, which is the whole point
+        // of the row. The other branch is a node the sweep saw but this click could not resolve an
+        // owner for, so it says what the owner path says.
+        message: orphan
+          ? 'End this session? It has no node on any canvas — this stops its tmux session.'
+          : 'End this session? This stops its tmux session and removes the node from its canvas.',
+        confirmLabel: 'End session',
+        danger: true,
+        onConfirm: () => {
+          transport.destroy(nodeId, { everySocket: true })
+          remoteKill?.()
+          // Nothing else to clean up: with no node anywhere, there is no canvas entry to remove and
+          // no parked terminal to dispose. Persisted agent status is dropped anyway, since a
+          // session id can outlive the node it belonged to.
+          useAgentStatus.getState().remove(nodeId)
+          setConfirm(null)
+        }
+      })
+    },
+    [closeSession, setConfirm]
   )
 
   const renameSession = useCallback(
@@ -7008,6 +7112,13 @@ export function Canvas() {
               result: e.result
             })
           break
+        case 'background-task':
+          // A background shell task runs INSIDE the CLI process, so the `/exit` Eco hibernation
+          // and the bulk restart type would kill it silently. Stamp the node so both skip it.
+          // The write mints a new entry object, so whole-map subscribers (minimap, the node) do
+          // re-render — once per background launch, which is rarer than any state event.
+          cs.markBackgroundTask(e.nodeId)
+          break
         case 'recurring':
           if (e.recurringEnd) {
             // The recurring job itself was removed (CronDelete) — take the card down.
@@ -7019,7 +7130,18 @@ export function Canvas() {
           break
         case 'session':
           if (e.sessionTitle) cs.setSession(e.nodeId, e.sessionTitle)
-          if (e.sessionPhase === 'start') cs.setState(e.nodeId, undefined, e.agentId)
+          if (e.sessionPhase === 'start') {
+            cs.setState(e.nodeId, undefined, e.agentId)
+            // A SessionStart is proof a CLI just LAUNCHED in that pane, so a hibernated flag on
+            // this node is now false — our own `/exit` produces a SessionEnd, never a
+            // SessionStart. This is the residual `setState`'s live-state self-heal cannot reach:
+            // a user who relaunches the agent by hand and then takes no turn would keep a SLEEPING
+            // chip on a running CLI (and the sweep, which skips hibernated nodes, would leave that
+            // session exempt from Eco for good). Deliberately NOT the same as clearing on `done`,
+            // which would let a late Stop POST undo a hibernation we just performed. The setter
+            // bails when the flag is already unset, so this is free for every other session start.
+            cs.setHibernated(e.nodeId, false)
+          }
           if (e.sessionPhase === 'end') {
             cs.setState(e.nodeId, undefined, e.agentId)
             // In-session /loop dies with its session; cron (and scheduled cloud routines)
@@ -7042,6 +7164,101 @@ export function Canvas() {
     const t = setInterval(() => useAgentStatus.getState().sweepStaleWorking(), 60_000)
     return () => clearInterval(t)
   }, [])
+
+  /**
+   * ECO — hibernate idle, offscreen agent CLIs (`settings.agentHibernationEnabled`, off by
+   * default). The CLI is asked to `/exit` and its conversation is resumed (`--resume`) the next
+   * time the node is looked at; the tmux session, its pane and its scrollback are untouched. What
+   * is reclaimed is the agent process's RAM, which on a canvas of a dozen sessions is most of it.
+   *
+   * Every DECISION is in the pure `planHibernation`, and every FACT it reads is assembled by the
+   * pure `buildHibernationCandidates` — deliberately not inline here, because two of those facts
+   * (a dismissed cron card is still recurring; an unfinished subagent pins its parent) are the
+   * difference between Eco mode and a silently cancelled job, and an inline `.map()` is where a
+   * rule like that rots untested.
+   *
+   * Nothing is retried and nothing is remembered: an outcome other than `'exited'` simply leaves
+   * the node alone, and the next sweep re-asks with fresh facts. The batch cap lives in the policy.
+   */
+  const hibernationEnabled = useSettings((s) => s.settings.agentHibernationEnabled)
+  useEffect(() => {
+    if (!hibernationEnabled) return
+    let stopped = false
+    let sweeping = false
+    const sweep = async (): Promise<void> => {
+      // One sweep at a time. Each exit waits on a real pane (up to RESTART_EXIT_TIMEOUT_MS), so a
+      // slow pass can outlive its interval; overlapping passes would only be refused by the
+      // per-node guard, but re-planning against half-applied state is noise nobody needs.
+      if (sweeping) return
+      sweeping = true
+      try {
+        const s = useSettings.getState().settings
+        const candidates = buildHibernationCandidates({
+          nodes: nodesRef.current
+            .filter((n) => n.type === 'terminal')
+            .map((n) => ({ id: n.id, agentId: createdAgentId(n.data) })),
+          // Pass the store entries WHOLE: every optional field here (backgroundTaskAt,
+          // lastEventAt, loop) is read by the policy; narrowing this to a hand-picked literal
+          // would silently kill those guards with the suite still green.
+          statusById: useAgentStatus.getState().byId,
+          // Any card that has not finished pins its parent — see the adapter's header.
+          subagents: Object.values(useAgentNodes.getState().byId).map((v) => ({
+            parentNodeId: v.parentNodeId,
+            status: v.state
+          })),
+          // `isNodeWatched` is the ONE predicate for "the user is looking at this session" — the
+          // nodes' own visibility observers (Phase 2's) plus the open card modal, which no
+          // observer can see (it co-attaches the same tmux session over a canvas nobody is
+          // looking at). The node's exit closure re-asks the SAME function at fire time.
+          isOffscreen: (nodeId) => !isNodeWatched(nodeId),
+          // Remote (SSH / relay) sessions are excluded in v1 — here rather than only at the exit,
+          // or two of them could occupy both batch slots on every pass (see the policy).
+          isRemote: isNodeRemote,
+          // Wired = mounted with a live terminal that registered its hibernate pair. An
+          // offscreen-DISPOSED node (Phase 2) has already given its buffer back and has no pane
+          // to quit, so it drops out here.
+          isWired: (nodeId) => !!agentHibernateFns(nodeId)
+        })
+        const ids = planHibernation(candidates, Date.now(), {
+          enabled: s.agentHibernationEnabled,
+          idleMinutes: s.agentHibernationIdleMinutes
+        })
+        // Sequential, like the bulk restart: each exit is a real conversation being asked to quit
+        // in a real pane, and the cap keeps the pass short.
+        for (const nodeId of ids) {
+          if (stopped) return
+          const fns = agentHibernateFns(nodeId)
+          if (!fns) continue // unmounted between the plan and its turn
+          try {
+            if ((await fns.exit()) === 'exited') {
+              useAgentStatus.getState().setHibernated(nodeId, true)
+              // A batch can take ~12 s, and the user may have arrived during it. The node's own
+              // exit closure re-checks visibility before writing anything, but the pan can also
+              // land in the window between that check and this line — and by then the visible
+              // EDGE has passed, so no wake trigger is left and the node would sit SLEEPING in
+              // front of the user. Nudge it: the node re-reads the flag itself, so this is a
+              // no-op wherever the user did not arrive.
+              if (isNodeWatched(nodeId)) wakeHibernatedNode(nodeId)
+            }
+            // 'exit-timeout' / 'not-eligible': the CLI is still running and NOTHING is recorded —
+            // marking it hibernated would put a SLEEPING chip on a live session and suppress the
+            // wake's only trigger. The next sweep re-evaluates.
+          } catch (err) {
+            // The writes go unguarded down to the socket; one node's throw must not abandon the
+            // rest of the pass (nor the interval).
+            console.warn('[hibernate] exit failed for', nodeId, err)
+          }
+        }
+      } finally {
+        sweeping = false
+      }
+    }
+    const t = setInterval(() => void sweep(), HIBERNATE_SWEEP_MS)
+    return () => {
+      stopped = true
+      clearInterval(t)
+    }
+  }, [hibernationEnabled])
 
   // When the palette opens, capture each terminal's visible buffer (cached ~3s) so the
   // search can match text shown in terminals/Claude sessions.
@@ -7394,6 +7611,21 @@ export function Canvas() {
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
   useEffect(() => window.nodeTerminal.onFocusNode(travelToNode), [travelToNode])
 
+  // Memory pressure (core/memory-pressure.ts, pushed by the shell): run the renderer's reclaim
+  // levers. Both are idempotent and cost only warmth — a reclaimed hidden context re-grants on its
+  // next visibility transition, a dropped park re-mounts as an ordinary warm reattach — and the
+  // shell re-fires at most once a minute, so this never runs hot. Severity is not branched on
+  // (yet): the levers are cheap enough to run on 'warning', and the extra CRITICAL step (an early
+  // session-reaper sweep) belongs to the shell, not here. Optional-called because the Server
+  // Edition's bridge declares this a documented no-op.
+  useEffect(() => {
+    const off = window.nodeTerminal.onMemoryPressure?.(() => {
+      releaseAllHiddenGrants()
+      disposeAllParkedTerminals()
+    })
+    return () => off?.()
+  }, [])
+
   // Permanently remove a project (from the "Recently closed" list): end every terminal's tmux
   // session, drop persisted agent status, tear down any SSH master, then delete it from disk.
   const deleteProject = useCallback(
@@ -7661,6 +7893,9 @@ export function Canvas() {
       <div className="top-banners">
         <AnnouncementBanner />
         <TmuxBanner onInstall={runInTerminal} />
+        {/* This MACHINE is running out of pty devices — subscribes for itself; a failed
+            "Fix automatically…" lands in the same notice strip as every other async op. */}
+        <PtyPressureBanner onError={(text) => setNotice({ kind: 'error', text })} />
         {migrationNote && (
           <div className="announce-banner announce-banner--info">
             <span className="announce-banner__dot" />
@@ -8024,11 +8259,26 @@ export function Canvas() {
         {/* MUST stay OUTSIDE <ReactFlow>. The library's wrapper carries inline
             `position: relative; z-index: 0`, which makes the whole flow one stacking context
             painted at 0 among flow-wrap's siblings — so no z-index INSIDE it, however large,
-            can ever rise above the sessions sidebar (z 12). Mounted here, the indicator's own
+            can ever rise above the sessions sidebar (z 12). Mounted here, each pill's own
             z-index (5 collapsed, 13 with the popover open) competes in the same context as the
-            sidebar and the open popover wins. It uses no React Flow hooks, and .flow-wrap is
-            position:relative, so its absolute left/bottom anchors are unchanged. */}
-        <UsageIndicator overBoard={kanbanOpen} />
+            sidebar and the open popover wins. Neither uses React Flow hooks, and .flow-wrap is
+            position:relative, so the cluster's absolute left/bottom anchor is unchanged.
+            The cluster itself deliberately has NO z-index — see .canvas-pills in styles.css.
+            `data-canvas-chrome` is fit-view's own documented opt-in: it makes the whole cluster ONE
+            obstacle rect (instead of one per pill, overlapping after inflation), so fitView never
+            parks a node underneath either pill. */}
+        <div className="canvas-pills" data-canvas-chrome>
+          {/* `travelToNode`, not `focusNodeById`: the panel resolves sessions in CLOSED projects
+              too (their tmux sessions keep running), and reaching one means reopening its tab
+              first — the same path a notification click and a peer jump take. */}
+          <SystemResourcePill
+            overBoard={kanbanOpen}
+            onGoToNode={travelToNode}
+            onKillSession={killSessionById}
+          />
+        
+          <UsageIndicator overBoard={kanbanOpen} />
+</div>
 
         <PresenceNamePrompt />
 

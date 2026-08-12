@@ -15,6 +15,7 @@ function fakePty() {
   let lastOptions: PtyCreateOptions | null = null
   let counter = 0
   let snapshot = ''
+  let sessionLive = true
   const mgr: HostPtyManager = {
     createDetached(options, sinks) {
       lastOptions = options
@@ -33,6 +34,10 @@ function fakePty() {
       calls.push({ method: 'captureSnapshot', args: [persistKey] })
       return snapshot
     },
+    sessionExists: async (persistKey) => {
+      calls.push({ method: 'sessionExists', args: [persistKey] })
+      return sessionLive
+    },
     write: (clientId, sessionId, data) =>
       calls.push({ method: 'write', args: [clientId, sessionId, data] }),
     resize: (clientId, sessionId, cols, rows) =>
@@ -50,6 +55,9 @@ function fakePty() {
     options: () => lastOptions!,
     setSnapshot: (s: string) => {
       snapshot = s
+    },
+    setSessionLive: (live: boolean) => {
+      sessionLive = live
     }
   }
 }
@@ -104,10 +112,15 @@ describe('createHostHandlers', () => {
     const h = createHostHandlers(pty.mgr, sock.socket)
 
     h.onRpc({ id: 'r1', method: 'pty.attach', params: { nodeId: 'node-9', cols: 100, rows: 30 } })
-    // Responds with the streamId synchronously so the client can route frames.
-    expect(sock.responses).toEqual([{ id: 'r1', ok: true, body: { streamId: 1 } }])
+    // The stream is reserved SYNCHRONOUSLY — that, not the timing of the response, is what lets
+    // the host route this streamId's inbound frames right away. The response itself now waits on
+    // the `fresh` probe (a tmux side-call), because whether the attach CREATED the session has to
+    // be asked before `attachDetached` does it.
+    h.onFrame({ op: OP.Input, streamId: 1, seq: 0, payload: new TextEncoder().encode('x') })
+    expect(pty.calls.some((c) => c.method === 'write')).toBe(true)
     // Capture + attach are async (a tmux side-call).
     await new Promise((r) => setTimeout(r, 0))
+    expect(sock.responses).toEqual([{ id: 'r1', ok: true, body: { streamId: 1, fresh: false } }])
 
     expect(pty.calls).toContainEqual({ method: 'captureSnapshot', args: ['node-9'] })
     expect(pty.calls).toContainEqual({
@@ -126,6 +139,28 @@ describe('createHostHandlers', () => {
     const out = sock.frames.find((f) => f.op === OP.Output)
     expect(out).toBeDefined()
     expect(Buffer.from(out!.payload).toString('utf8')).toBe('live')
+  })
+
+  // A node whose tmux session died (host reboot, tmux server gone) still ATTACHES — the client
+  // needs a live pane to type its cold restore (`cd <cwd>; claude --resume <id>`) into, exactly as
+  // the SSH path gets one from `tmux new-session -A`. What changed is that the reply now SAYS it
+  // was a cold start, so the client runs that restore instead of presenting the bare login shell
+  // under the node's title, which is what a phone saw as `~ %` on a Claude session.
+  it('still creates on a cold node, but reports fresh=true so the client can restore', async () => {
+    const pty = fakePty()
+    pty.setSessionLive(false)
+    const sock = fakeSocket()
+    const h = createHostHandlers(pty.mgr, sock.socket)
+
+    h.onRpc({ id: 'r1', method: 'pty.attach', params: { nodeId: 'cold-1', cols: 80, rows: 24 } })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(sock.responses).toEqual([{ id: 'r1', ok: true, body: { streamId: 1, fresh: true } }])
+    // Deliberately NOT a refusal: refusing would leave the client with nowhere to resume.
+    expect(pty.calls).toContainEqual({
+      method: 'attachDetached',
+      args: ['cold-1', 'pty-1', { cols: 80, rows: 24 }]
+    })
   })
 
   it('attach sends an empty snapshot when the session has no current screen', async () => {

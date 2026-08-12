@@ -1004,6 +1004,49 @@ describe('save corruption hardening', () => {
     expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(before)
   })
 
+  it('a failed atomic write removes its own temp file (index write)', async () => {
+    // Force the rename to fail: the target is a directory. The unique temp name never self-heals
+    // the way the old fixed one did, so the failed write must clean up after itself.
+    await fs.mkdir(path.join(userData, 'workspace.json'))
+    await expect(new WorkspaceStore().save(ws([project({ cwd: projRoot })]))).rejects.toThrow()
+    const litter = (await fs.readdir(userData)).filter((n) => n.endsWith('.tmp'))
+    expect(litter).toEqual([])
+  })
+
+  it('a swallowed project-file write failure still leaves no temp litter in .nodeterm', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const file = path.join(projRoot, '.nodeterm', 'project.json')
+    await fs.rm(file)
+    await fs.mkdir(file) // rename now fails; save() swallows per-file errors by design
+    await store.save(ws([project({ cwd: projRoot, name: 'renamed' })]))
+    const litter = (await fs.readdir(path.join(projRoot, '.nodeterm'))).filter((n) => n.endsWith('.tmp'))
+    expect(litter).toEqual([])
+  })
+
+  it('load() sweeps stale tmp litter from dead writers, sparing this process and other files', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const nodeterm = path.join(projRoot, '.nodeterm')
+    await fs.writeFile(path.join(userData, 'workspace.json.tmp'), 'x') // legacy fixed name
+    await fs.writeFile(path.join(userData, 'workspace.json.99999.1.tmp'), 'x') // dead pid
+    await fs.writeFile(path.join(nodeterm, 'project.json.99999.2.tmp'), 'x') // dead pid
+    const mine = `project.json.${process.pid}.7.tmp` // a live writer of THIS process — never swept
+    await fs.writeFile(path.join(nodeterm, mine), 'x')
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects[0]?.nodes.map((n) => n.id)).toEqual(['term-1']) // real files untouched
+    expect((await fs.readdir(userData)).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    expect((await fs.readdir(nodeterm)).filter((n) => n.endsWith('.tmp'))).toEqual([mine])
+  })
+
+  it('a read-only load (sideline: false) sweeps nothing', async () => {
+    await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
+    await fs.writeFile(path.join(userData, 'workspace.json.99999.1.tmp'), 'x')
+    await new WorkspaceStore().load({ sideline: false })
+    expect((await fs.readdir(userData)).filter((n) => n.endsWith('.tmp')))
+      .toEqual(['workspace.json.99999.1.tmp'])
+  })
+
   it('closing every project after a successful load still persists the empty workspace', async () => {
     await new WorkspaceStore().save(ws([project({ cwd: projRoot })]))
     const store = new WorkspaceStore()

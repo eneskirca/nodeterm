@@ -47,12 +47,18 @@ export const SessionCard = memo(function SessionCard({
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     return e.clientY < r.top + r.height / 2 ? 'before' : 'after'
   }
+  // The board is the canvas's other view of the same sessions, and it reads the same store — so
+  // SLEEPING (Eco: the agent CLI was exited to reclaim its RAM) is one more branch here, not a
+  // follow-up. Ranked last: a hibernated node is idle by definition, so `working`/`waiting` can
+  // only mean the wake already landed and the hooks are ahead of the flag.
   const badge =
     session.kind !== 'sticky' && status?.state === 'working'
       ? 'running'
       : session.kind !== 'sticky' && (status?.state === 'waiting' || status?.state === 'blocked')
         ? 'needs'
-        : null
+        : session.kind !== 'sticky' && status?.hibernated
+          ? 'sleeping'
+          : null
   const stickyPreview = session.kind === 'sticky' ? (session.text ?? '').trim() : ''
   const assignees = meta?.assignees ?? []
   const due = meta?.dueAt
@@ -102,6 +108,14 @@ export const SessionCard = memo(function SessionCard({
         {session.kind === 'browser' && <span className="kanban-card__kind">web</span>}
         {badge === 'running' && <span className="kanban-badge kanban-badge--running">RUNNING</span>}
         {badge === 'needs' && <span className="kanban-badge kanban-badge--needs">NEEDS YOU</span>}
+        {badge === 'sleeping' && (
+          <span
+            className="kanban-badge kanban-badge--sleeping"
+            title="Agent hibernated to save memory — resumes when you open the session"
+          >
+            SLEEPING
+          </span>
+        )}
         {status?.unread && <span className="kanban-card__unread" />}
       </div>
       {(labels.length > 0 || assignees.length > 0 || due !== undefined || priority !== undefined) && (

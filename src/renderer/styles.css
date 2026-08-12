@@ -1396,6 +1396,25 @@ body,
   color: #bf7af0;
 }
 
+/* SLEEPING: the agent CLI was exited to reclaim its RAM (Eco); the session itself is fine, so
+   this is the quietest chip on the header — grey, no pulse. It is a <button> (click = resume),
+   which the base chip's styling does not cover. */
+.term-node__status--sleeping {
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.term-node__status--sleeping:hover {
+  color: var(--text);
+}
+
 .term-node__status--attention .term-node__status-dot {
   animation: nt-pulse 1.1s ease-in-out infinite;
 }
@@ -1950,6 +1969,24 @@ body,
 
 .term-node__xterm.letterboxed .xterm {
   height: auto;
+}
+
+/* Offscreen dispose (terminal/offscreen-policy.ts): this node's view was released after sitting
+   out of the viewport; the tmux session keeps running and re-entering the viewport reattaches.
+   Same geometry as `.term-node__closed` — it covers the (now empty) terminal body — but a quieter
+   fill and no action, because there is nothing for the user to do and nothing has gone wrong. */
+.term-node__offscreen {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(var(--card-rgb), 0.94);
 }
 
 /* Another client permanently destroyed this node's session (tmux kill-session): the terminal is
@@ -3150,6 +3187,12 @@ body,
   border-left-color: var(--warn);
 }
 
+/* One step past --warning, for a strip whose condition is already breaking things (the machine is
+   out of pty devices, so new terminals fail) rather than about to. */
+.announce-banner--danger {
+  border-left-color: var(--danger);
+}
+
 .announce-banner__dot {
   width: 8px;
   height: 8px;
@@ -3164,6 +3207,10 @@ body,
 
 .announce-banner--warning .announce-banner__dot {
   background: var(--warn);
+}
+
+.announce-banner--danger .announce-banner__dot {
+  background: var(--danger);
 }
 
 .announce-banner__content {
@@ -5453,11 +5500,28 @@ body,
   background: rgba(10, 132, 255, 0.14);
 }
 
-/* ---- Claude usage indicator (bottom-left, right of React Flow Controls) ---- */
-.usage-indicator {
+/* ---- Bottom-left pill cluster (usage + system resources) ----
+   ONE flex row, because neither pill can hard-code an offset for the other: the usage pill's width
+   changes with every number it prints, and it is absent altogether for a user with no agent
+   subscription at all.
+   Deliberately carries NO z-index: an absolutely positioned box with `z-index: auto` establishes no
+   stacking context, so each pill's own z-index (5 / 13 / 26 / 60) keeps competing with the sessions
+   sidebar and the kanban overlay exactly as it did when each was anchored on its own. Do not add
+   z-index, transform, filter or opacity here — any of them would trap both pills below the sidebar. */
+.canvas-pills {
   position: absolute;
   left: 60px; /* clear the React Flow Controls column */
   bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- Claude usage indicator (in the bottom-left cluster) ---- */
+.usage-indicator {
+  /* Positioned — so the z-index rules below still apply and the popover anchors here — but PLACED
+     by the cluster above rather than by its own left/bottom. */
+  position: relative;
   z-index: 5;
   display: flex;
   align-items: center;
@@ -5480,7 +5544,13 @@ body,
 .usage-indicator--board:has(.usage-popover) {
   z-index: 60; /* over the board + banners, below ConfirmDialog/palette (70) */
 }
-.usage-pill {
+/* The two pills share one shell so they read as a single control rather than as two widgets that
+   happen to be adjacent. Grouped rather than duplicated, so tuning one can never drift the other. */
+/* SHARED SHELL — both pills. Do not fold pill-specific sizing in here: the system-resource pill's
+   icon-only collapse lives in its OWN rule below, because putting it here silently shrank the usage
+   pill to a 26px circle too. */
+.usage-pill,
+.sysres-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -5494,6 +5564,20 @@ body,
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
+/* Icon-only at rest — this pill ONLY. It is ambient chrome on every canvas, so a permanent
+   "RAM 15.6 GB / 62.5 GB" is a row of numbers nobody asked for. Overrides the shared shell's
+   padding/gap; the detail is revealed on hover (and while the panel is open, so the control does
+   not shrink out from under the cursor that opened it). */
+.sysres-pill {
+  width: 26px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  transition:
+    width 140ms ease,
+    padding 140ms ease,
+    gap 140ms ease;
+}
 .usage-pill:hover { background: rgba(44, 44, 46, 0.95); }
 .usage-pill__icon { color: #d97757; font-size: 13px; }
 .usage-pill__minibar {
@@ -5505,15 +5589,85 @@ body,
   overflow: hidden;
 }
 .usage-pill__minibar-fill { display: block; height: 100%; border-radius: 3px; }
-.usage-pill__num { color: var(--text-strong); }
-.usage-pill__sep { color: rgba(var(--tint-rgb), 0.4); }
+.usage-pill__num,
+.sysres-pill__num { color: var(--text-strong); }
+.usage-pill__sep,
+.sysres-pill__sep { color: rgba(var(--tint-rgb), 0.4); }
 /* Non-Claude provider segments read one step quieter than the Claude numbers, so a long pill
    still scans as "Claude first, others after" without needing separate icons per provider. */
 .usage-pill__provider .usage-pill__num { color: rgba(var(--tint-rgb), 0.75); font-size: 11px; }
-.usage-pill__dim { color: rgba(var(--tint-rgb), 0.5); }
-.usage-pill__pulse { animation: usage-pulse 1.2s ease-in-out infinite; }
+.usage-pill__dim,
+.sysres-pill__dim { color: rgba(var(--tint-rgb), 0.5); }
+.usage-pill__pulse,
+.sysres-pill__pulse { animation: usage-pulse 1.2s ease-in-out infinite; }
 @keyframes usage-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
+/* Expanded: hover, keyboard focus, or an open panel. `width: auto` cannot be transitioned, so the
+   pill animates padding/gap only and the detail carries the width — enough to read as a reveal
+   rather than a jump, without a magic max-width that clips a wider number (a 1 TB host prints
+   more characters than a 16 GB one). */
+.sysres-pill:hover,
+.sysres-pill:focus-visible,
+.sysres-indicator:has(.sessmem-panel) .sysres-pill {
+  width: auto;
+  gap: 6px;
+  padding: 0 9px;
+}
+/* Present in the DOM at rest (so the accessible name and any assertion still see the number) but
+   taking no space until the pill expands. */
+.sysres-pill__detail {
+  display: inline-block;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition:
+    max-width 140ms ease,
+    opacity 140ms ease;
+}
+.sysres-pill:hover .sysres-pill__detail,
+.sysres-pill:focus-visible .sysres-pill__detail,
+.sysres-indicator:has(.sessmem-panel) .sysres-pill__detail {
+  max-width: 200px;
+  opacity: 1;
+}
+.sysres-pill__icon {
+  display: inline-flex;
+  color: rgba(var(--tint-rgb), 0.75);
+}
+
+/* ---- System-resource pill (RAM of the machine the active project runs on) ----
+   Shares the usage pill's shell above; only the bits that differ live here. */
+.sysres-indicator {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+}
+/* Kanban board is an opaque overlay at z 25; while it's open this pill must sit ABOVE it (same
+   layer as the controls cluster), or the board's bottom-left corner swallows it. Mirrors
+   `.usage-indicator--board`. */
+.sysres-indicator--board {
+  z-index: 26;
+}
+/* While the session-memory panel is open, rise above the sessions sidebar (z 12) — a tall sidebar
+   reaches the bottom-left corner and would cover the panel. Exactly the pairing
+   `.usage-indicator:has(.usage-popover)` uses, and it only works because the cluster is mounted
+   OUTSIDE <ReactFlow> (whose wrapper's inline `z-index: 0` would trap any inner value). */
+.sysres-indicator:has(.sessmem-panel) {
+  z-index: 13;
+}
+.sysres-indicator--board:has(.sessmem-panel) {
+  z-index: 60; /* over the board + banners, below ConfirmDialog/palette (70) */
+}
+/* Not a copy of `.usage-pill:hover`: that rule's literal is a dark-theme colour, which would read
+   as a black smear on the light theme. An ink overlay over the same card surface lifts it in BOTH
+   themes (the tint token flips with the theme). */
+.sysres-pill:hover {
+  background:
+    linear-gradient(rgba(var(--tint-rgb), 0.08), rgba(var(--tint-rgb), 0.08)),
+    rgba(var(--card-rgb), 0.92);
+}
 .usage-refresh {
   display: inline-flex;
   align-items: center;
@@ -5589,6 +5743,192 @@ body,
   background: rgba(var(--tint-rgb), 0.08);
   vertical-align: middle;
 }
+
+/* ---- Session-memory panel (opened by the system-resource pill) ----
+   Same surface, border and shadow as `.usage-popover` above — the two panels open from adjacent
+   pills in the same corner, so anything that made them read as different kinds of thing would be
+   an accident. Wider, because a row carries a title, a project, a command and a number. */
+.sessmem-panel {
+  position: absolute;
+  bottom: 34px;
+  left: 0;
+  width: 380px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(var(--popover-rgb), 0.98);
+  border: 1px solid rgba(var(--tint-rgb), 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, calc(0.5 * var(--shadow-k)));
+  color: var(--text-strong);
+}
+.sessmem-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sessmem-panel__title { font-size: 14px; font-weight: 600; }
+.sessmem-panel__scope {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.5);
+}
+.sessmem-panel__total {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+/* One voice for all four non-list states (relay / could-not-measure / measuring / nothing here).
+   They are different SENTENCES, deliberately, but they are the same kind of answer. */
+.sessmem-panel__note {
+  padding: 10px 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+.sessmem-panel__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Every row is rendered — the list SCROLLS rather than truncating. A cap would have to say so. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+.sessmem-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.sessmem-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.sessmem-row__main:hover:not(:disabled) { background: rgba(var(--tint-rgb), 0.08); }
+/* An orphan has nowhere to travel to, so the row is inert rather than misleadingly clickable —
+   but it keeps full contrast: it is still a session the user may want to end. */
+.sessmem-row__main:disabled { cursor: default; }
+.sessmem-row__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.sessmem-row__dot--working {
+  background: var(--success);
+  /* Reuse the terminal-header badge pulse rather than a bespoke keyframe. */
+  animation: nt-pulse 1.1s ease-in-out infinite;
+}
+.sessmem-row__dot--attention { background: var(--warn); }
+.sessmem-row__dot--idle { background: rgba(var(--tint-rgb), 0.3); }
+/* Hollow = orphan: there is no node to have a state, and a filled neutral dot would read "idle". */
+.sessmem-row__dot--hollow {
+  background: transparent;
+  border: 1px solid rgba(var(--tint-rgb), 0.35);
+  animation: none;
+}
+.sessmem-row__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Where this session lives, shown only when it is NOT the project you are looking at — most often
+   a closed project, whose sessions keep running. */
+.sessmem-row__project,
+.sessmem-row__orphan {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: rgba(var(--tint-rgb), 0.55);
+  background: rgba(var(--tint-rgb), 0.08);
+}
+.sessmem-row__cmd {
+  flex: 0 0 auto;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+.sessmem-row__mb {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+.sessmem-row__kill {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.45);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sessmem-row__kill:hover { color: var(--danger); background: rgba(var(--tint-rgb), 0.08); }
+/* The pane's descendants — the agent CLI itself included, since pane_pid is the pane's shell. */
+.sessmem-row__kids {
+  flex: 1 0 100%;
+  padding: 0 6px 4px 20px;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.45);
+  font-variant-numeric: tabular-nums;
+}
+/* The attribution line: quieter than a row, above the foot rule, and rendered in EVERY state — a
+   failed sweep is exactly when a user is most likely to be blaming the wrong process. */
+.sessmem-panel__attrib {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+.sessmem-panel__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.1);
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.5);
+}
+.sessmem-panel__refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.7);
+  font-size: 13px;
+  cursor: pointer;
+}
+.sessmem-panel__refresh:hover { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.08); }
+.sessmem-panel__refresh:disabled { opacity: 0.4; cursor: default; }
+/* Same spin as the usage panel's refresh. */
+.sessmem-panel__refresh.spin { animation: usage-spin 0.9s linear infinite; }
 
 /* ---- Claude context-window meter (per-node header pill + popover) ---- */
 .ctx-meter {
@@ -7588,6 +7928,11 @@ body,
 .kanban-badge--needs {
   color: var(--warn);
   background: rgba(255, 159, 10, 0.12);
+}
+/* Eco: the agent CLI was exited to reclaim RAM. Quiet — the session is fine. */
+.kanban-badge--sleeping {
+  color: var(--muted);
+  background: rgba(var(--tint-rgb), 0.08);
 }
 .kanban-card__unread {
   width: 7px;

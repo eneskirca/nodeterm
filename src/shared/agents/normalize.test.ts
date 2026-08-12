@@ -150,6 +150,57 @@ describe('normalizeClaude — recurring (cron/schedule/loop)', () => {
   })
 })
 
+describe('normalizeClaude — background shell tasks', () => {
+  // A background shell task lives INSIDE the CLI process, so `/exit` (Eco hibernation, the bulk
+  // restart) kills it silently. This event is the stamp those two exclude on.
+  it('claude PreToolUse Bash with run_in_background=true is a background-task event', () => {
+    const e = normalizeClaude(
+      env({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'sleep 999', run_in_background: true }
+      })
+    )
+    expect(e?.kind).toBe('background-task')
+  })
+
+  // The mutation guard: dropping the `tool_name` check, the `ev` check, or matching truthily
+  // instead of `=== true` each flips a row here — the truthy match flips two. Those two
+  // truthy-but-not-`true` rows are what pin the strict compare: the boolean rows below are both
+  // falsy, so on their own they would pass a `!!p.tool_input?.run_in_background` implementation.
+  it('foreground Bash, false/absent/truthy-non-true flags, PostToolUse and other tools stay generic working', () => {
+    for (const payload of [
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls', run_in_background: false }
+      },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        // A hand-rolled/forwarded payload could carry 1 or "true"; only a real boolean counts.
+        tool_input: { command: 'ls', run_in_background: 1 }
+      },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls', run_in_background: 'true' }
+      },
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls', run_in_background: true }
+      },
+      { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { run_in_background: true } }
+    ]) {
+      const e = normalizeClaude(env(payload))
+      expect(e?.kind, JSON.stringify(payload)).toBe('state')
+      expect(e?.state, JSON.stringify(payload)).toBe('working')
+    }
+  })
+})
+
 describe('normalizeClaude — permission signals', () => {
   it('PermissionRequest → blocked', () => {
     const e = normalizeClaude(env({ hook_event_name: 'PermissionRequest' }))

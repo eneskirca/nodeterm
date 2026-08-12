@@ -190,6 +190,38 @@ to its node: on next open it **cold-restores** (scrollback snapshot + `claude --
 kill switch via env: `NODETERM_SESSION_MIN_AVAILABLE_MB`, `NODETERM_SESSION_MAX_DETACHED`,
 `NODETERM_SESSION_GRACE_HOURS`, `NODETERM_SESSION_REAP_BATCH`, `NODETERM_SESSION_REAP_DISABLED=1`.
 
+### Session memory (the RAM pill + per-session panel)
+
+The reaper's counterpart for a human: `startSessionMemoryService` (`src/core/session-memory-service.ts`)
+is booted here too, beside the reaper in `src/server/index.ts`, and `window.nodeTerminal.sessionMemory`
+has a **real** ws-bridge implementation (not a stub). So the browser gets the bottom-left RAM pill and
+the per-session breakdown, and both describe **the machine the server is served from**: its
+`/proc/meminfo`, its `node-terminal` / `nodeterm-rmt` tmux sockets, its process table. Full write-up:
+`docs/session-memory.md`.
+
+**An SSH project's scope answers `ok:false` — "could not measure" — and that is deliberate.** The
+server has no ControlMaster, so it cannot read the other host; answering with its own sessions would
+publish this machine's memory under that host's name. Same degrade as remote usage, one step
+stricter:
+
+- The service is given **`isRemoteProject` but no `run`**. Knowing which projects are somebody
+  else's machine and being able to read them are different capabilities, and the option pair is
+  asymmetric to say so (`run` optional, `isRemoteProject` required).
+- The refusal is decided **by identity**, not by trusting the renderer's `remote` flag:
+  `sshScopePredicate({ sshProjectIds: () => workspaceStore.sshProjectIds() })`. A query arriving
+  without that flag — a client that has not learned the project is an SSH one yet — would otherwise
+  fall through to the LOCAL sweep, which is exactly the misattribution the refusal exists to prevent.
+- **That predicate depends on the boot-time `await workspaceStore.load(...)`** in `startServer` (a
+  line documented there as being for Context Link). Drop it — or stop awaiting it before
+  `server.listen()` — and every SSH project silently reads as local again;
+  `test/server/session-memory-e2e.test.ts` fails if that happens. What is **not** load-bearing is
+  where that load sits relative to the service boot: `isRemoteProject` is a closure evaluated per
+  QUERY, and no query can arrive before `startServer` reaches `listen()`. The requirement is that
+  the load completes before the server *serves*, not that it precedes any particular boot line.
+
+A **headless** host boots the service like every other core service, but with no UI attached nothing
+queries it.
+
 ## Security model
 
 Single-user auth. There is one password; sessions are per-browser.

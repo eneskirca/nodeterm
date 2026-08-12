@@ -66,6 +66,23 @@ describe('preload sshProject passphrase wiring', () => {
     expect(h.removeListener).toHaveBeenCalledWith(IPC.sshPassphraseRequest, handler)
   })
 
+  // The desktop half of the session-memory surface. `remote` is the renderer's own "this scope is
+  // an SSH host" claim and one of the TWO independent sources the core service ORs to decide which
+  // machine answers; `projectId` is the only thing naming that machine. A preload that normalized
+  // either (dropped a `false`, defaulted the object, reordered the args) would route a remote query
+  // into a LOCAL sweep and publish this machine's sessions under the host's name — invisible to
+  // every other test, since core is handed a perfectly well-formed query.
+  it('sessionMemory forwards the query verbatim on both channels', async () => {
+    const q = { projectId: 'p1', remote: true }
+    await api.sessionMemory.read(q)
+    await api.sessionMemory.host(q)
+    expect(h.invoke).toHaveBeenCalledWith(IPC.sessionMemory, { projectId: 'p1', remote: true })
+    expect(h.invoke).toHaveBeenCalledWith(IPC.sessionMemoryHost, { projectId: 'p1', remote: true })
+    // An explicit `remote: false` is a claim too, and must not be normalized away.
+    await api.sessionMemory.read({ projectId: 'p2', remote: false })
+    expect(h.invoke).toHaveBeenCalledWith(IPC.sessionMemory, { projectId: 'p2', remote: false })
+  })
+
   it('onPassphraseDismiss subscribes the dismiss channel and forwards the requestId', () => {
     const got: { requestId: string }[] = []
     const off = api.sshProject.onPassphraseDismiss((e) => got.push(e))

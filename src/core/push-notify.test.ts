@@ -824,6 +824,105 @@ describe('createLiveUpdatePush', () => {
     h.stop()
   })
 
+  // A now-tick carries no state of its own, so it used to hardcode `state: 'working'` — and it can
+  // sit parked for the whole coalesce window. Two producers fire one at exactly the wrong moment
+  // (the raw Stop hook clears the activity; the context tail's 1 s poll lands the turn's final
+  // usage record), so a tick would land AFTER the end and flip the island back to Working, with no
+  // further edge left to end it.
+  describe('a coalesced tick can never resurrect a finished session', () => {
+    it('drops a PARKED tick when the state edge that supersedes it goes out', async () => {
+      const { h, st, nw } = wire()
+      clock = 0
+      nw.emit({ nodeId: 'a', activity: 'Editing a.ts', ts: 0 }) // leading edge → sent
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      // A tick parked inside the window…
+      clock = 5000
+      nw.emit({ nodeId: 'a', activity: 'Editing b.ts', ts: 5000 })
+      // …then the turn ends.
+      st.emit({ nodeId: 'a', event: 'end', state: 'done', ts: 6000 } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(liveBodyOf(1).updates[0]).toMatchObject({ event: 'end', state: 'done' })
+      // Past the coalesce window: the parked tick must NOT flush behind the end.
+      clock = 30000
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      h.stop()
+    })
+
+    it('drops a tick that arrives AFTER the end (the 1 s context tail lands late)', async () => {
+      const { h, st, nw } = wire()
+      clock = 0
+      st.emit({ nodeId: 'a', event: 'end', state: 'done', ts: 0 } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      clock = 2000
+      nw.emit({ nodeId: 'a', activity: 'Editing late.ts', contextPercent: 42, ts: 2000 })
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(fetchMock).toHaveBeenCalledTimes(1) // nothing followed the end
+      h.stop()
+    })
+
+    it('also refuses a tick once the node is NEEDS-YOU (it would drop the buttons)', async () => {
+      const { h, st, nw } = wire()
+      clock = 0
+      st.emit({
+        nodeId: 'a',
+        event: 'update',
+        state: 'needsYou',
+        kind: 'approval',
+        pendingId: 'p1',
+        ts: 0
+      } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      clock = 2000
+      nw.emit({ nodeId: 'a', activity: 'Running tests', ts: 2000 })
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      h.stop()
+    })
+
+    it('a working node keeps ticking, and a re-entry into working resumes them', async () => {
+      const { h, st, nw } = wire()
+      clock = 0
+      st.emit({ nodeId: 'a', event: 'start', state: 'working', ts: 0 } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      // Still working → the tick goes out as before.
+      clock = 2000
+      nw.emit({ nodeId: 'a', activity: 'Editing a.ts', ts: 2000 })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(liveBodyOf(1).updates[0]).toMatchObject({ state: 'working', activity: 'Editing a.ts' })
+      // needsYou silences ticks…
+      clock = 30000
+      st.emit({ nodeId: 'a', event: 'update', state: 'needsYou', ts: 30000 } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      // …and answering it (back to working) lets them through again.
+      clock = 60000
+      st.emit({ nodeId: 'a', event: 'update', state: 'working', ts: 60000 } as NodeStateChange)
+      await vi.advanceTimersByTimeAsync(1000)
+      clock = 90000
+      nw.emit({ nodeId: 'a', activity: 'Editing c.ts', ts: 90000 })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+      expect(liveBodyOf(4).updates[0]).toMatchObject({ state: 'working', activity: 'Editing c.ts' })
+      h.stop()
+    })
+
+    it('a node we have seen no edge for still ticks (unchanged pre-edge behaviour)', async () => {
+      const { h, nw } = wire()
+      clock = 0
+      nw.emit({ nodeId: 'never-edged', activity: 'Editing a.ts', ts: 0 })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(liveBodyOf(0).updates[0]).toMatchObject({ state: 'working' })
+      h.stop()
+    })
+  })
+
   it('a state edge is NOT subject to the now-coalesce window', async () => {
     const { h, st, nw } = wire()
     clock = 0

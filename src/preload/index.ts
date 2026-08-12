@@ -6,9 +6,11 @@ import type {
   NodeTerminalApi,
   Project,
   PtyCreateOptions,
+  PtyPressure,
   RecycledInfo,
   RelayPeerPending,
   RemoteUsageQuery,
+  SessionMemoryQuery,
   UpdateInfo,
   UpdateProgress,
   Workspace,
@@ -60,7 +62,8 @@ const api: NodeTerminalApi = {
     setFlow: (sessionId, resume, viewerId) =>
       ipcRenderer.send(IPC.ptyFlow, sessionId, resume, viewerId),
     kill: (sessionId, viewerId) => ipcRenderer.send(IPC.ptyKill, sessionId, viewerId),
-    destroy: (persistKey) => ipcRenderer.send(IPC.ptyDestroy, persistKey),
+    destroy: (persistKey, opts) =>
+      ipcRenderer.send(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
     recycle: (persistKey) => ipcRenderer.send(IPC.ptyRecycle, persistKey),
     generateName: (persistKey, cwd) => ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd),
     generateGroupName: (memberKeys, cwd) =>
@@ -195,8 +198,8 @@ const api: NodeTerminalApi = {
     connect: (projectId, conn, remoteCwd) =>
       ipcRenderer.invoke(IPC.sshConnectProject, projectId, conn, remoteCwd),
     disconnect: (projectId) => ipcRenderer.invoke(IPC.sshDisconnectProject, projectId),
-    killSessions: (projectId, nodeIds) =>
-      ipcRenderer.invoke(IPC.sshKillSessions, projectId, nodeIds),
+    killSessions: (projectId, nodeIds, opts) =>
+      ipcRenderer.invoke(IPC.sshKillSessions, projectId, nodeIds, opts),
     listDir: (projectId, dir) => ipcRenderer.invoke(IPC.sshListDir, projectId, dir),
     mkdir: (projectId, dir) => ipcRenderer.invoke(IPC.sshMkdir, projectId, dir),
     uploadFile: (projectId, localPath, fileName) =>
@@ -383,6 +386,14 @@ const api: NodeTerminalApi = {
       return () => ipcRenderer.removeListener(IPC.usageUpdate, handler)
     }
   },
+  // The query is forwarded VERBATIM: `remote` is the renderer's own "this scope is an SSH host"
+  // claim, which the core service ORs with its own `isRemoteProject`. Normalizing it here (say,
+  // dropping a `false`, or defaulting the object) would silently re-open the misattribution this
+  // surface exists to prevent — one machine's sessions published under another's name.
+  sessionMemory: {
+    read: (q?: SessionMemoryQuery) => ipcRenderer.invoke(IPC.sessionMemory, q),
+    host: (q?: SessionMemoryQuery) => ipcRenderer.invoke(IPC.sessionMemoryHost, q)
+  },
   context: {
     onUpdate: (listener) => {
       const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)
@@ -550,6 +561,17 @@ const api: NodeTerminalApi = {
     ipcRenderer.on(IPC.appFocusNode, handler)
     return () => ipcRenderer.removeListener(IPC.appFocusNode, handler)
   },
+  onMemoryPressure: (listener) => {
+    const handler = (_e: unknown, severity: 'warning' | 'critical') => listener(severity)
+    ipcRenderer.on(IPC.appMemoryPressure, handler)
+    return () => ipcRenderer.removeListener(IPC.appMemoryPressure, handler)
+  },
+  onPtyPressure: (listener) => {
+    const handler = (_e: unknown, reading: PtyPressure) => listener(reading)
+    ipcRenderer.on(IPC.ptyPressure, handler)
+    return () => ipcRenderer.removeListener(IPC.ptyPressure, handler)
+  },
+  raisePtyDeviceLimit: () => ipcRenderer.invoke(IPC.ptyRaiseDeviceLimit),
   answerPermission: (payload) => ipcRenderer.invoke(IPC.agentAnswerPermission, payload),
   ackDone: (nodeId) => {
     void ipcRenderer.invoke(IPC.agentAckDone, nodeId)

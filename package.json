@@ -1,6 +1,6 @@
 {
   "name": "node-terminal",
-  "version": "0.2.43",
+  "version": "0.3.0",
   "description": "node-based terminal manager — multiple draggable, zoomable terminals on a single canvas.",
   "author": {
     "name": "enes",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:unit": "vitest run test/remote",
-    "rebuild": "electron-rebuild -f -w node-pty,smart-whisper",
+    "rebuild": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper",
     "server:build": "esbuild src/server/main.ts --bundle --platform=node --format=cjs --outfile=out/server/main.cjs --external:node-pty --external:ws --external:smart-whisper --tsconfig=tsconfig.node.json",
     "server:start": "node out/server/main.cjs",
     "server:dev": "npm run build && npm run server:build && node out/server/main.cjs",
@@ -26,7 +26,7 @@
     "dist": "npm run make-icon && electron-vite build && electron-builder --mac --arm64 -c.mac.identity=null -c.mac.notarize=false",
     "dist:linux": "npm run make-icon && electron-vite build && electron-builder --linux",
     "release": "npm run make-icon && electron-vite build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
-    "postinstall": "electron-rebuild -f -w node-pty,smart-whisper"
+    "postinstall": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper"
   },
   "build": {
     "appId": "com.nodeterm.app",
@@ -76,6 +76,16 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": true,
+      "extraResources": [
+        {
+          "from": "resources/bin/tmux",
+          "to": "bin/tmux"
+        },
+        {
+          "from": "resources/licenses",
+          "to": "licenses"
+        }
+      ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "nodeterm uses the microphone so you can dictate into your terminals."
       },

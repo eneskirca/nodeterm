@@ -4,6 +4,7 @@ import os from 'os'
 import path from 'path'
 import { createHash } from 'crypto'
 import { posixQuote, quoteRemotePath, remoteTmuxCommand, type SshConnection } from '../../shared/ssh'
+import { TMUX_SOCKET } from '../tmux-naming'
 import { canControlCanvas } from '../../shared/agents/config'
 import { bracketedInjection } from '../paste-injection'
 // Dependency-free (no node-pty): safe to import from these pure builders.
@@ -252,8 +253,89 @@ export function remoteTmuxSendKeysArgs(
 export function probeSaysAbsent(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === 1
 }
-export function remoteTmuxKillArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
-  return childArgs(conn, controlPath, `tmux -L ${RMT_TMUX_SOCKET} kill-session -t ${sessionId}`)
+/**
+ * Every tmux socket a nodeterm session can be living on, on ONE machine — used when we are asked to
+ * end a session by NAME and do not know which socket holds it.
+ *
+ * Both exist on the same host all the time: `node-terminal` is what a nodeterm running ON that
+ * machine uses (desktop or Server Edition), `nodeterm-rmt` is what a nodeterm SSH-ing INTO it uses.
+ * The session-memory sweep lists both (`session-memory.ts`, `session-memory-remote.ts`) — so a kill
+ * that only ever targeted one of them promised something it could not do for every row that came
+ * off the other. That is not exotic: a host that runs its own `nodeterm-server` and is also SSH'd
+ * into is exactly this shape.
+ *
+ * Deliberately NOT the same constant the sweep and the reaper use, even though it holds the same two
+ * names: for THEM the order is load-bearing (the sweep's `bySession` is first-wins, so the order
+ * decides which socket a duplicate name is attributed to), and for a kill it means nothing. Sharing
+ * one array would silently couple a de-duplication preference to a kill list.
+ */
+export const KILL_TMUX_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
+
+/**
+ * Which local sockets a destroy must attempt.
+ *
+ * `liveSocket` is the socket of the session we actually HOLD, which we know is the right one: one
+ * kill, and the fan-out below can never reach the ordinary path.
+ *
+ * With no live session the name is all we have, and then it depends on who is asking:
+ *  - `everySocket: false` (the default, and every ordinary caller) → the local socket only. An
+ *    ordinary node-× on a node that was never mounted in THIS process — the common case after an
+ *    app restart — has no business speculating at `nodeterm-rmt`, which carries the sessions
+ *    ANOTHER machine's nodeterm SSHed in to spawn here.
+ *  - `everySocket: true` → every socket the name could be on. Only the session-memory panel's
+ *    speculative kill asks for this, and it is the one caller that has earned it: the panel sweeps
+ *    BOTH sockets, so an orphan row genuinely can be on either, and a kill aimed at one of them
+ *    showed a confirm reading "this stops its tmux session" and then killed nothing at all.
+ */
+export function localKillSockets(
+  liveSocket: string | null,
+  everySocket = false
+): readonly string[] {
+  if (liveSocket) return [liveSocket]
+  return everySocket ? KILL_TMUX_SOCKETS : [TMUX_SOCKET]
+}
+
+/**
+ * `=` forces tmux to match the target EXACTLY. Without it tmux falls back to fnmatch and then to
+ * PREFIX matching when the name is not found — and "not found" is the normal case for every kill we
+ * fire speculatively at a socket. Node ids end in a counter (`term-<base36 ms>-1`), so `nt-…-1` is a
+ * prefix of `nt-…-12`: a miss could kill a DIFFERENT session. The reaper already kills this way
+ * (`session-budget.ts`) for the same reason.
+ */
+function exactTarget(sessionId: string): string {
+  return `=${sessionId}`
+}
+
+/** Local `tmux kill-session` argv (the binary is resolved by the caller). */
+export function localTmuxKillArgs(socket: string, sessionId: string): string[] {
+  return ['-L', socket, 'kill-session', '-t', exactTarget(sessionId)]
+}
+
+export function remoteTmuxKillArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string,
+  socket: string = RMT_TMUX_SOCKET
+): string[] {
+  return childArgs(conn, controlPath, `tmux -L ${socket} kill-session -t ${exactTarget(sessionId)}`)
+}
+
+/**
+ * One kill per socket, for a caller that knows only the session NAME and does not know which socket
+ * carries it — i.e. `SshProjectManager.killSessions({ everySocket: true })`, which is the
+ * session-memory panel's route. Project deletion does NOT use this: it knows its own nodes, they
+ * are all on the SSH project's own socket, and speculating at the host's `node-terminal` would aim
+ * at sessions a nodeterm running ON that host owns.
+ *
+ * Best-effort by contract: tmux exits non-zero with "can't find session" on every socket that does
+ * not hold it, and that is an expected, ignored outcome rather than a failure.
+ */
+export function remoteTmuxKillEverySocketArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string
+): string[][] {
+  return KILL_TMUX_SOCKETS.map((socket) => remoteTmuxKillArgs(conn, controlPath, sessionId, socket))
 }
 export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, sessionId: string, full: boolean): string[] {
   return childArgs(

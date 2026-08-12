@@ -8,6 +8,11 @@ export interface CorePlatform {
   readonly userDataDir: string
   readonly appVersion: string
   readonly isPackaged: boolean
+  /** Electron's `process.resourcesPath` — `<app>/Contents/Resources` in a packaged build, where
+   *  extraResources (today: the bundled tmux, see tmux-hint.ts `bundledTmuxPath`) land. OPTIONAL
+   *  because it is an Electron notion: the Server Edition has no such directory and simply omits
+   *  it, which is also how src/core stays Electron-free (no-electron.test.ts). */
+  readonly resourcesPath?: string
   /** Register a request/response RPC handler (Electron: ipcMain.handle, event stripped). */
   handle(channel: string, fn: (...args: any[]) => unknown): void
   /** Register a fire-and-forget handler (Electron: ipcMain.on, event stripped). */

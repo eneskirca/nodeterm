@@ -57,8 +57,8 @@ export class LocalTransport implements TerminalTransport {
     this.pty.kill(sessionId, this.viewerId)
   }
 
-  destroy(persistKey: string): void {
-    this.pty.destroy(persistKey)
+  destroy(persistKey: string, opts?: { everySocket?: boolean }): void {
+    this.pty.destroy(persistKey, opts)
   }
 
   recycle(persistKey: string): void {

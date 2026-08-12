@@ -7,7 +7,7 @@ export type AgentState = 'working' | 'waiting' | 'blocked' | 'done'
 export interface NormalizedAgentEvent {
   nodeId: string
   agentId: AgentId
-  kind: 'state' | 'subagent-start' | 'subagent-end' | 'recurring' | 'session'
+  kind: 'state' | 'subagent-start' | 'subagent-end' | 'recurring' | 'session' | 'background-task'
   state?: AgentState
   // done only: the turn ended because the user interrupted (Esc/Ctrl-C) — the renderer
   // skips the completion alert/unread for these (the user was right there).
@@ -95,6 +95,8 @@ interface ClaudePayload {
     prompt?: string
     skill?: string
     cron?: string
+    /** Bash only: the task was launched as a background shell (`run_in_background: true`). */
+    run_in_background?: boolean
   }
   tool_response?: {
     status?: string
@@ -184,6 +186,14 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
           task: p.tool_input?.prompt
         }
       }
+    }
+    // A background shell task lives INSIDE the CLI process: /exit kills it silently. This event
+    // is the stamp Eco hibernation and the bulk restart exclude on (see hibernation-policy /
+    // planBulkRestart). PreToolUse only, and `=== true` — an absent or false flag is a foreground
+    // command, which the generic "working" below already covers. Claude-only: no other dialect
+    // carries the field (closed set, CLAUDE.md agent rule 7).
+    if (ev === 'PreToolUse' && tool === 'Bash' && p.tool_input?.run_in_background === true) {
+      return { ...base, kind: 'background-task' }
     }
     // Any other tool use is just "working".
     return { ...base, kind: 'state', state: 'working' }

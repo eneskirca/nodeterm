@@ -127,6 +127,21 @@ export interface PtyCreateResult {
    */
   coAttachMouse?: boolean
   /**
+   * This session is TMUX-BACKED (local or remote) — it survives losing this client, so killing our
+   * pty client only detaches us and everything running in the session keeps going.
+   *
+   * False = the plain-shell fallback (no tmux installed, tmux switched off, or a node with no
+   * persistKey): the pty IS the shell, and killing it kills the shell and every process under it —
+   * an agent CLI mid-task included. The renderer needs the difference because several of its
+   * levers dispose a terminal purely as a CACHE (the park window, the park LRU cap, the
+   * memory-pressure drop), a call that is only cheap when tmux is underneath. See
+   * `renderer/terminal/park-budget.ts` (`canDisposePark`) and issue #126.
+   *
+   * Absent = unknown (a core older than this field, over the relay): the renderer must then assume
+   * the historical behavior (persistent), never protect on a guess.
+   */
+  persistent?: boolean
+  /**
    * REFUSED: this node's session was permanently destroyed by ANOTHER client, so nothing was
    * spawned (`sessionId` is empty) — the terminal shows the "closed by <name>" state instead.
    *
@@ -518,6 +533,30 @@ export interface TmuxStatus {
   platform: string
 }
 
+/**
+ * How close THIS MACHINE is to `kern.tty.ptmx_max`, the system-wide pty-device ceiling that took
+ * the whole app down in the 2026-08-11 field report (every spawn failing with a bare
+ * `posix_spawnp failed.`). See core/pty-pressure.ts for the bands.
+ */
+export type PtyPressureLevel = 'none' | 'elevated' | 'critical'
+
+/** A pty-pressure reading, as broadcast on `IPC.ptyPressure`. `null` = could not be measured. */
+export interface PtyPressure {
+  level: PtyPressureLevel
+  /** `/dev/ttys*` entries in existence right now. */
+  usage: number | null
+  /** `kern.tty.ptmx_max`. */
+  ceiling: number | null
+}
+
+/** Outcome of the banner's "Fix automatically…" button (macOS only) — see main/ptmx-limit.ts. */
+export type PtyLimitFixResult =
+  | { ok: true; ceiling: number }
+  /** `canceled` = the user dismissed macOS's own admin-password dialog. Not an error to retry.
+   *  `busy` = a password dialog from another window/reload is already up. Both are SILENT for the
+   *  renderer: nothing failed, so neither may raise an error toast. */
+  | { ok: false; error: string; canceled?: boolean; busy?: boolean }
+
 export interface PtyApi {
   /** Starts a new PTY session; returns its sessionId and whether the session was freshly
    *  created (cold start) vs reattached to a still-running tmux session (warm). */
@@ -540,8 +579,14 @@ export interface PtyApi {
    *  node attached; absent ⇒ the PRIMARY view. */
   kill(sessionId: string, viewerId?: string): void
   /** Permanently ends the persistent session for a node (kills its tmux session) because the node
-   *  is being DELETED. Co-viewers get `onClosed` and must not respawn it. */
-  destroy(persistKey: string): void
+   *  is being DELETED. Co-viewers get `onClosed` and must not respawn it.
+   *
+   *  `everySocket` (optional, trailing) widens a kill for a session we hold NOTHING for to every
+   *  local tmux socket the name could be on. Opt-in for one caller — the session-memory panel's
+   *  speculative kill of a row it swept off either socket. An ordinary node-× must not set it: it
+   *  takes the same unheld branch after an app restart, and `nodeterm-rmt` holds sessions another
+   *  machine's nodeterm SSHed in to spawn. */
+  destroy(persistKey: string, opts?: { everySocket?: boolean }): void
   /** Ends a node's persistent session so the SAME node id respawns in a new cwd ("move into
    *  worktree"). Same tmux kill as `destroy`, opposite intent: the node stays on the canvas, so
    *  co-viewers get `onRecycled` (restart + re-attach), never the permanent closed state. */
@@ -834,6 +879,20 @@ export interface Settings {
   browserMemorySaver: boolean
   accent: string
   tmuxEnabled: boolean
+  /**
+   * Reach a released tmux session with a control-mode (`tmux -C`) client instead of respawning its
+   * terminal — the shadow clients in pty-manager.ts (`shadowAttach`) and the shared background-write
+   * client behind `backgroundWrite`. A control client holds ZERO pty devices, which is the whole
+   * point: the machine-wide `kern.tty.ptmx_max` ceiling is what a canvas of idle terminals runs into
+   * first (see pty-devices.ts).
+   *
+   * ON by default, and read at those two entry points only: switching it off means this process
+   * spawns no `tmux -C` child at all, and a released session is simply unreachable again — exactly
+   * the behavior of the release before it. It is a kill switch for one soak release, not a feature
+   * toggle: nothing user-visible depends on it (the mechanism has no production caller yet), so it
+   * has no settings row and is flipped in settings.json.
+   */
+  ptyShadowClients: boolean
   /** GPU (WebGL) terminal rendering. 'off' routes every terminal to xterm's DOM renderer.
    *  'auto' (default) = one WebGL context PER TERMINAL everywhere except macOS, where it is
    *  'shared'. Repeated macOS field reports (whole-window flicker; terminals compositing black
@@ -850,6 +909,9 @@ export interface Settings {
    *  renderer. See `resolveTerminalRenderer` (shared/webgl.ts) for the full history. */
   terminalGpuRendering: 'auto' | 'on' | 'off' | 'shared'
   tmuxScrollback: number
+  /** Minutes a terminal may sit fully offscreen before its xterm+PTY client is torn down in
+   *  place (tmux keeps the session; re-approach reattaches and redraws). 0 = never. */
+  offscreenTerminalMinutes: number
   /** AI commit message agent: a local coding-agent CLI run read-only. */
   commitAgent: 'claude' | 'codex' | 'custom'
   /** For commitAgent='custom': command template; {prompt} placeholder optional (else stdin). */
@@ -904,6 +966,14 @@ export interface Settings {
    *  driver runs in `default`). Overridable per project via Project.defaultPermissionMode.
    *  `auto` is version-gated: CLIs below 2.1.71 reject the value, so it degrades to no flag. */
   claudePermissionMode: AgentPermissionMode
+  /** "Eco": exit the agent CLI of a session that has been idle AND offscreen for
+   *  `agentHibernationIdleMinutes`, reclaiming its RAM; the conversation is resumed automatically
+   *  when the node is viewed again. Default OFF — opt-in, because it stops a real process.
+   *  Scheduled/loop agents and sessions with live subagents are never touched
+   *  (renderer/terminal/hibernation-policy.ts explains why). */
+  agentHibernationEnabled: boolean
+  /** How long a session must be idle + offscreen before "Eco" hibernates it (minutes). */
+  agentHibernationIdleMinutes: number
   /** Send anonymous usage data (version/OS) to the telemetry backend. Opt-OUT (default on):
    *  version/OS only, nothing personal, client IP never stored. Turn it off in Settings → Privacy
    *  (or hard-disable with DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED). Note: a lighter anonymous
@@ -986,8 +1056,10 @@ export const DEFAULT_SETTINGS: Settings = {
   browserMemorySaver: true,
   accent: '#0a84ff',
   tmuxEnabled: true,
+  ptyShadowClients: true,
   terminalGpuRendering: 'auto',
   tmuxScrollback: 50000,
+  offscreenTerminalMinutes: 10,
   commitAgent: 'claude',
   commitAgentCommand: '',
   commitExtraPrompt: '',
@@ -1013,6 +1085,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // Sessions start in auto mode out of the box. Existing users pick this up on hydrate
   // (settings hydrate merges over DEFAULT_SETTINGS) — a deliberate behavior change.
   claudePermissionMode: 'auto',
+  // Opt-in: hibernation exits a live CLI, so nobody gets it without asking. The 30-minute floor
+  // is deliberately long — shorter windows exit sessions the user is between turns on.
+  agentHibernationEnabled: false,
+  agentHibernationIdleMinutes: 30,
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
   // no telemetryEnabled key yet; anyone who already saved settings keeps their stored value.
   telemetryEnabled: true,
@@ -1124,8 +1200,17 @@ export interface SshProjectApi {
    * Authoritative teardown on project delete: works regardless of whether the nodes are
    * mounted, and must be awaited BEFORE disconnect (which kills the master). `nodeIds` are
    * raw node ids; main maps them to `nt-<id>` session names.
+   *
+   * `everySocket` widens the kill to every tmux socket on the host rather than the `nodeterm-rmt`
+   * one an SSH project spawns on. Opt-in for ONE caller — the session-memory panel, whose rows are
+   * swept off both sockets. Project deletion stays narrow: `node-terminal` on that host belongs to
+   * a nodeterm running ON it, not to us.
    */
-  killSessions(projectId: string, nodeIds: string[]): Promise<void>
+  killSessions(
+    projectId: string,
+    nodeIds: string[],
+    opts?: { everySocket?: boolean }
+  ): Promise<void>
   /** List remote sub-directories of `path` (default ~). */
   listDir(projectId: string, path: string): Promise<{ path: string; dirs: string[] }>
   /** Create a remote directory (mkdir -p). Resolves false when not connected or the mkdir fails. */
@@ -1470,6 +1555,72 @@ export interface ProviderUsage {
    * 'fetching' = request in flight. 'ok' = limits present. 'error' = the fetch failed.
    */
   status: 'unavailable' | 'fetching' | 'ok' | 'error'
+}
+
+/** Host memory snapshot in MB. `null` from any reader means "could not read" — never "zero".
+ *  Shared because it crosses the wire for the system-resource pill; core reads it, the renderer
+ *  renders it. */
+export interface MemInfo {
+  availableMb: number
+  totalMb: number
+}
+
+/** One nt- session's memory, as the panel renders it. */
+export interface SessionMemoryRow {
+  /** tmux session name, `nt-<nodeId>`. */
+  session: string
+  /** The canvas node id — the session name minus the `nt-` prefix. */
+  nodeId: string
+  panePid: number
+  /** The pane's own process. */
+  selfMb: number
+  /** Everything below it (MCP servers, headless browsers, …). */
+  childrenMb: number
+  childCount: number
+  totalMb: number
+  /** `#{pane_current_command}` — the agent/shell label. */
+  command: string
+}
+
+/**
+ * `ok: false` means the sweep could not run (no tmux binary, unreadable process table). It is NOT
+ * the same as an empty `rows` with `ok: true`, which means "we looked and there are no sessions".
+ * Collapsing the two would make the panel report "nothing is using memory" at exactly the moment
+ * it failed to measure.
+ */
+export interface SessionMemoryReport {
+  ok: boolean
+  rows: SessionMemoryRow[]
+  mem: MemInfo | null
+}
+
+/**
+ * What the renderer asks for: the machine a project runs ON, never "this machine" implicitly.
+ * `remote: true` is the renderer saying it already knows (from `usageScope`) that the active
+ * project is an SSH one; the shell's own `isRemoteProject` is a second, independent confirmation,
+ * so a project the shell has not (yet) registered as connected still cannot be answered with the
+ * local machine's sessions.
+ */
+export interface SessionMemoryQuery {
+  projectId?: string
+  remote?: boolean
+}
+
+/**
+ * Per-session memory for the machine the ACTIVE PROJECT runs on — the same scoping rule the usage
+ * indicator follows (`usageScope`), for the same reason: a number is meaningless without the
+ * machine it describes.
+ *
+ * Both members are on-demand only, never polled: a remote answer costs an ssh exec plus a `ps` of
+ * somebody else's whole process table. Pass the query through verbatim — `remote` is one of the two
+ * independent sources the service uses to decide which host answers.
+ */
+export interface SessionMemoryApi {
+  /** Per-session breakdown for the scoped machine. `ok:false` = the sweep could not run, which is
+   *  NOT an empty `rows` with `ok:true` ("we looked, there are none"). */
+  read(q?: SessionMemoryQuery): Promise<SessionMemoryReport>
+  /** The scoped machine's RAM. `null` = could not read (never "zero"). */
+  host(q?: SessionMemoryQuery): Promise<MemInfo | null>
 }
 
 /** Claude Code subscription usage snapshot for the bottom-left indicator. */
@@ -1970,6 +2121,7 @@ export interface NodeTerminalApi {
   githubIssues: import('./github-issues').GitHubIssuesApi
   githubControl: import('./github-issues').GitHubControlApi
   usage: UsageApi
+  sessionMemory: SessionMemoryApi
   context: ContextApi
   canvas: CanvasApi
   claude: ClaudeApi
@@ -2007,6 +2159,23 @@ export interface NodeTerminalApi {
   openNotificationSettings(): Promise<void>
   /** Fires when a notification is clicked, asking the renderer to focus a node. Returns unsubscribe. */
   onFocusNode(listener: (nodeId: string) => void): () => void
+  /** Fires when the shell's memory-pressure monitor (core/memory-pressure.ts) sees the host — or
+   *  this process's own RSS — cross a watermark: the renderer answers by running its reclaim
+   *  levers (hidden WebGL contexts, parked terminals). At most one fire a minute, so the levers
+   *  need only be idempotent, not cheap. Returns unsubscribe. Server Edition: never fires (the
+   *  pressure levers run host-side there; a browser tab's memory belongs to the browser). */
+  onMemoryPressure(listener: (severity: 'warning' | 'critical') => void): () => void
+  /** Fires when THIS MACHINE's pty-device pressure band changes (core/pty-pressure.ts): the
+   *  renderer raises/lowers the banner that warns before `kern.tty.ptmx_max` stops every new
+   *  terminal from opening. Band changes only, re-sent for a held band at most once every five
+   *  minutes; `level: 'none'` means the banner should come down. Returns unsubscribe.
+   *  Server Edition: never fires — the reaper leg runs host-side only (see src/server/index.ts). */
+  onPtyPressure(listener: (reading: PtyPressure) => void): () => void
+  /** Raise this Mac's pty-device ceiling (`kern.tty.ptmx_max`) now AND across reboots, behind
+   *  macOS's own administrator-password dialog. Called ONLY from the banner's explicit
+   *  "Fix automatically…" click — never on the app's initiative. macOS only; a dismissed password
+   *  dialog resolves `{ ok: false, canceled: true }`, which is not an error to report or retry. */
+  raisePtyDeviceLimit(): Promise<PtyLimitFixResult>
   /** Answer a Claude permission request via the deterministic hook-reply channel (spec:
    *  docs/hook-reply-approvals.md). Writes the one-line answer file the held hook is polling
    *  (`~/.nodeterm/pending/<pendingId>.answer`) on the host the agent runs on — the LOCAL fs for a

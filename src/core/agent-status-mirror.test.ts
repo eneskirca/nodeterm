@@ -492,6 +492,63 @@ describe('inbox event production (via recordAgentEvent)', () => {
     expect(_inboxSnapshot().events[0].resolved).toBe(true)
   })
 
+  // A CLI that exits mid-turn (`/exit`, Ctrl-C, a crash) is the one transition that MEANS "this
+  // session is over", and it used to emit nothing: `reduceEntry` resets it to `state: undefined`
+  // while every `end` was keyed on the edge into `done`. It escaped the rescue too, because
+  // `sweepStaleWorking` matches `state === 'working'` — which the reset had just stopped being
+  // true. The phone was left holding a card nothing would ever end.
+  describe('a session that ends mid-turn ends its Live Activity', () => {
+    const edgesFor = (fn: () => void): NodeStateChange[] => {
+      const edges: NodeStateChange[] = []
+      const un = onNodeStateChange((c) => edges.push(c))
+      fn()
+      un()
+      return edges
+    }
+
+    it('emits an end when the agent quits while WORKING', () => {
+      recordAgentEvent(ev({ state: 'working', newTurn: true }))
+      const edges = edgesFor(() => recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end' })))
+      expect(edges).toHaveLength(1)
+      expect(edges[0]).toMatchObject({ event: 'end', state: 'done' })
+    })
+
+    it('emits an end when the agent quits while it was BLOCKED on an approval', () => {
+      // The worst case: the card carries Approve/Deny buttons for a hook ticket that is now gone.
+      recordAgentEvent(ev({ state: 'blocked', lastMessage: 'Approve write' }))
+      const edges = edgesFor(() => recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end' })))
+      expect(edges).toHaveLength(1)
+      expect(edges[0]).toMatchObject({ event: 'end', state: 'done' })
+    })
+
+    it('stays silent when the turn already finished — the done edge spoke for it', () => {
+      recordAgentEvent(ev({ state: 'working', newTurn: true }))
+      recordAgentEvent(ev({ state: 'done' }))
+      const edges = edgesFor(() => recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end' })))
+      expect(edges).toEqual([])
+    })
+
+    it('stays silent for an idle node and for a session START', () => {
+      // Nothing was live → nothing to end.
+      expect(edgesFor(() => recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end' })))).toEqual(
+        []
+      )
+      // A SessionStart also resets to idle, but ending there would kill the activity of the turn
+      // that is just beginning.
+      recordAgentEvent(ev({ state: 'working', newTurn: true }))
+      expect(edgesFor(() => recordAgentEvent(ev({ kind: 'session', sessionPhase: 'start' })))).toEqual(
+        []
+      )
+    })
+
+    it('adds no inbox card — the session going away is not news for the feed', () => {
+      recordAgentEvent(ev({ state: 'working', newTurn: true }))
+      const before = _inboxSnapshot().events.length
+      recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end' }))
+      expect(_inboxSnapshot().events.length).toBe(before)
+    })
+  })
+
   it('synthetic "answered" working transition resolves the open approval and adds no new ask', () => {
     // The deterministic-approval answered signal (built exactly as the hook POST / desktop optimistic
     // flip does) is a working state → it goes through the same blocked→working path a normal resume

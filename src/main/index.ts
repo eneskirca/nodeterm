@@ -69,6 +69,10 @@ import { createGrantsAccessor, type PushGrant } from '../core/push-grants'
 import { createRemoteGrantsCache } from '../core/remote-push-grants'
 import { createAckSweeper } from '../core/ack-sweep'
 import { createSessionReaper } from '../core/session-budget'
+import { startSessionMemoryService, sshScopePredicate } from '../core/session-memory-service'
+import { createMemoryPressureMonitor } from '../core/memory-pressure'
+import { createPtyPressureMonitor } from '../core/pty-pressure'
+import { registerPtmxLimitHandler } from './ptmx-limit'
 import { getDeviceId } from '../core/device-id'
 import { initRemoteStatusPush } from './remote-ssh/remote-status-push'
 import { initCanvasSync } from '../core/canvas-sync'
@@ -1525,7 +1529,101 @@ app.whenReady().then(async () => {
   // budget). Attached sessions are never touched; a reaped node cold-restores on next open.
   // Local sockets only — a remote SSH host's sessions are reaped by that host's own
   // nodeterm-server, never across the wire. Timer is unref'd; no explicit stop needed.
-  createSessionReaper({ tmuxBin: () => ptyManager.getTmuxBin() }).start()
+  // `shadowed` subtracts our own control-mode shadows from tmux's attached flag: a shadow is a real
+  // tmux client but NOT a watcher, so a shadowed session must stay exactly as cullable as an idle
+  // detached one (see PtyManager.shadowedTmuxSessions).
+  // `readMem: hostMemReader()` — the SAME platform-aware reader the memory-pressure monitor uses,
+  // and for the same reason. On darwin it returns null, so `planReap` sees no pressure signal and
+  // only the detached-count cap can trigger a cull.
+  //
+  // Available BYTES is not macOS's pressure signal. Measured on a 24 GB Mac (2026-08-12): 82% used,
+  // 8.38 GB compressed, 1.77 GB swap in use — and macOS's own Memory Pressure graph GREEN. A
+  // 10%-available watermark fires in states the OS itself calls healthy, so a byte trigger there
+  // culls sessions on a machine macOS says is fine. Fixing readMemInfo made the bytes HONEST; it
+  // did not make them the right instrument.
+  //
+  // This is not a regression of the reaper's purpose on macOS: the count cap still bounds
+  // accumulation, the pty-pressure monitor covers the resource that actually ran out, and the
+  // session-memory panel gives the user the visibility to cull deliberately.
+  const sessionReaper = createSessionReaper({
+    tmuxBin: () => ptyManager.getTmuxBin(),
+    shadowed: (socket) => ptyManager.shadowedTmuxSessions(socket)
+  })
+  sessionReaper.start()
+  // Memory pressure (core/memory-pressure.ts): the reaper's own 10-minute timer is the steady
+  // state; this is the fast path. On a watermark crossing the renderer runs its reclaim levers
+  // (hidden WebGL contexts, parked terminals) and a CRITICAL reading also sweeps the reaper NOW
+  // rather than waiting out its timer. Both levers are idempotent and the monitor re-fires at most
+  // once a minute. The send goes through `sendToMain`, which resolves the window AT SEND TIME and
+  // no-ops while it is closed (macOS keeps the app alive without one) — the monitor's own
+  // try/catch is the backstop, not the primary.
+  createMemoryPressureMonitor({
+    onPressure: (severity) => {
+      sendToMain(IPC.appMemoryPressure, severity)
+      if (severity === 'critical') void sessionReaper.sweep()
+    }
+  }).start()
+  // Pty-device pressure (core/pty-pressure.ts): the OTHER way this machine runs out, and the one
+  // that actually happened. The memory monitor above could not see it — during the 2026-08-11
+  // incident RAM was plentiful while `/dev/ttys*` was full, so the reaper never woke and the user
+  // got no warning at all, just terminals that stopped opening. Same shape as the memory leg: tell
+  // the renderer (which raises a banner) on every band change, and sweep the reaper NOW on
+  // critical — a reaped detached session returns its pty device, which is exactly the resource in
+  // short supply. Transitions only, re-announced at most every five minutes.
+  //
+  // The sweep is passed `pressure: 'pty'` because a bare `sweep()` here would plan NOTHING: the
+  // budget's own triggers are memory and a detached-count cap, and the incident profile clears
+  // both (healthy RAM, under the cap). The reason grants the same batch allowance low memory
+  // would and widens no exemption — attached and in-grace sessions stay untouchable.
+  const ptyPressure = createPtyPressureMonitor({
+    onLevel: (reading) => {
+      sendToMain(IPC.ptyPressure, reading)
+      if (reading.level === 'critical') void sessionReaper.sweep({ pressure: 'pty' })
+    }
+  })
+  ptyPressure.start()
+  // The banner's "Fix automatically…" button. Registered, never called on our own initiative: it
+  // raises `kern.tty.ptmx_max` behind macOS's own admin-password dialog. Its success re-announces
+  // through the monitor's funnel, so the banner clears without waiting out the next tick.
+  registerPtmxLimitHandler(corePlatform, { announce: (reading) => ptyPressure.announce(reading) })
+  // Session memory (docs/superpowers/specs/2026-08-10-session-memory-panel-design.md): the pill's
+  // cheap RAM read plus the on-demand per-session breakdown. An SSH project's sessions live on ITS
+  // host, so they are read THERE over the project's ControlMaster — the same injection Context Link
+  // and remote usage use (core owns the command + the parsing, main owns the master).
+  // `sshProjectManager` is assigned far below, so both closures resolve it lazily; they only ever
+  // run after a project has connected.
+  startSessionMemoryService({
+    tmuxBin: () => ptyManager.getTmuxBin(),
+    remote: {
+      // Identity, not liveness: a DISCONNECTED SSH project is still someone else's machine, and
+      // `connectedHosts()` alone would answer "local" for it — exactly the window the service's
+      // refusal exists for. The workspace index is the connection-independent source; the live
+      // masters are OR-ed in for a project the index has not (yet) listed. See sshScopePredicate.
+      isRemoteProject: sshScopePredicate({
+        sshProjectIds: () => workspaceStore.sshProjectIds(),
+        connectedProjectIds: () =>
+          (sshProjectManager?.connectedHosts() ?? []).map((h) => h.projectId)
+      }),
+      run: async (projectId, command) => {
+        const mgr = sshProjectManager
+        const ref = mgr?.refForProject(projectId)
+        if (!mgr || !ref) return null
+        try {
+          const { code, stdout } = await mgr.sshRun(childArgs(ref.conn, ref.controlPath, command))
+          // Gated on the exit code, unlike the usage runner: every command in the generated script
+          // ends `|| true`, so a completed read exits 0 unconditionally. A non-zero code therefore
+          // means ssh itself could not run it — a dead ControlMaster reports exactly that, with an
+          // EMPTY stdout ("Control socket connect(…): No such file or directory" goes to stderr).
+          // Passing that empty string on would leave "the host answered nothing" to be inferred
+          // from a missing marker; `null` says "we could not look" outright.
+          if (code !== 0) return null
+          return stdout
+        } catch {
+          return null
+        }
+      }
+    }
+  })
   const ackSweeper = createAckSweeper({
     handlers: { ackDone, onUnreadClear: (id) => sendToMain(IPC.agentUnreadClear, id) }
   })
