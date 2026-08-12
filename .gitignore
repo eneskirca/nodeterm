@@ -31,7 +31,6 @@ build/icon.png
 # local publish helper — never exported to the public repo
 /publish.sh
 /kanban-launch.mp4
-/CLAUDE.md
 /agents-tour.mp4
 /unplug-tour.mp4
 /remote-tour.mp4
