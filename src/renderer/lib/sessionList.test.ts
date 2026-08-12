@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildSessionList,
+  buildStatusList,
   groupSessionCount,
   groupSessionRows,
   liveCollapseKeys,
@@ -397,5 +398,90 @@ describe('projectSignalCounts', () => {
     const [p1] = buildSessionList(proj, null, 'p1', status, '')
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['a1', 'a2']) // sanity: sessions really live under group.groups
     expect(projectSignalCounts(p1)).toEqual({ attention: 1, unread: 0, working: 1 })
+  })
+})
+
+describe('buildStatusList', () => {
+  // Two projects, sessions in various states spread across them.
+  const status: Record<string, AgentNodeStatus> = {
+    a1: { unread: false, state: 'waiting' }, // attention
+    a2: { unread: false, state: 'blocked' }, // attention
+    d1: { unread: false, state: 'done' }, // done
+    w1: { unread: false, state: 'working' }, // working
+    i1: { unread: false } // idle (no state)
+  }
+  const proj: ProjectInput[] = [
+    {
+      id: 'p1',
+      name: 'Alpha',
+      color: '#111',
+      cwd: '/a',
+      nodes: [node('a1', { title: 'zebra' }), node('d1', { title: 'apple' }), node('i1', { title: 'idle1' })]
+    },
+    {
+      id: 'p2',
+      name: 'Beta',
+      color: '#222',
+      nodes: [node('a2', { title: 'mid' }), node('w1', { title: 'runner' }), node('s1', { kind: 'sticky' })]
+    }
+  ]
+
+  it('groups by status in the fixed order attention → idle → done → working', () => {
+    const sections = buildStatusList(proj, null, 'p1', status, '')
+    expect(sections.map((s) => s.kind)).toEqual(['attention', 'idle', 'done', 'working'])
+  })
+
+  it('flattens across projects and tags each row with its project', () => {
+    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const attention = sections.find((s) => s.kind === 'attention')!
+    expect(attention.rows.map((r) => r.id).sort()).toEqual(['a1', 'a2'])
+    const a1 = attention.rows.find((r) => r.id === 'a1')!
+    expect(a1.projectId).toBe('p1')
+    expect(a1.projectName).toBe('Alpha')
+    expect(a1.projectColor).toBe('#111')
+    const a2 = attention.rows.find((r) => r.id === 'a2')!
+    expect(a2.projectId).toBe('p2')
+  })
+
+  it('sorts rows within a section by project store-order then title', () => {
+    const sections = buildStatusList(proj, null, 'p1', status, '')
+    // attention: p1/zebra then p2/mid (project order wins over title — zebra before mid)
+    expect(sections.find((s) => s.kind === 'attention')!.rows.map((r) => r.id)).toEqual(['a1', 'a2'])
+  })
+
+  it('keeps only terminal nodes (drops stickies/editors)', () => {
+    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const ids = sections.flatMap((s) => s.rows.map((r) => r.id))
+    expect(ids).not.toContain('s1')
+  })
+
+  it('uses live nodes for the active project', () => {
+    const live = [node('a1', { title: 'renamed live', agentId: 'claude' })]
+    const sections = buildStatusList(proj, live, 'p1', status, '')
+    const a1 = sections.flatMap((s) => s.rows).find((r) => r.id === 'a1')!
+    expect(a1.title).toBe('renamed live')
+  })
+
+  it('omits empty sections and filters by title/session', () => {
+    // 'runner' only matches w1 (working)
+    const filtered = buildStatusList(proj, null, 'p1', status, 'runner')
+    expect(filtered.map((s) => s.kind)).toEqual(['working'])
+    expect(filtered[0].rows.map((r) => r.id)).toEqual(['w1'])
+  })
+
+  it('returns only non-empty sections (no empty headers)', () => {
+    // Only attention + done present, no idle/working sessions.
+    const onlyTwo: ProjectInput[] = [
+      { id: 'p1', name: 'Alpha', color: '#111', nodes: [node('a1'), node('d1')] }
+    ]
+    const two: Record<string, AgentNodeStatus> = { a1: { unread: false, state: 'waiting' }, d1: { unread: false, state: 'done' } }
+    const sections = buildStatusList(onlyTwo, null, 'p1', two, '')
+    expect(sections.map((s) => s.kind)).toEqual(['attention', 'done'])
+  })
+
+  it('falls through to idle when state is unknown', () => {
+    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const idle = sections.find((s) => s.kind === 'idle')!
+    expect(idle.rows.map((r) => r.id)).toEqual(['i1'])
   })
 })

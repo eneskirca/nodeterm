@@ -881,6 +881,11 @@ export interface Settings {
    *  `project:<id>:group:<groupId>` (true = collapsed). Pruned on every write against the live
    *  tree, so a deleted frame or project cannot grow settings.json forever. */
   sidebarCollapsedItems: Record<string, boolean>
+  /** Sessions sidebar top-level grouping. 'project' (the default, the historical behavior) groups
+   *  sessions under their project; 'status' flattens across projects and regroups by live agent
+   *  status so sessions needing attention float to the top. Remote/relay sessions have no live
+   *  status in the sidebar and show as idle in either mode. */
+  sidebarGrouping: 'project' | 'status'
   /** Fallback view for projects the user hasn't explicitly toggled (canvas or the kanban board).
    *  Personal machine-local preference; per-project explicit choices override it. */
   defaultProjectView: 'canvas' | 'kanban'
@@ -1095,6 +1100,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultNodeHeight: 440,
   sidebarAutoCollapse: true,
   sidebarCollapsedItems: {},
+  sidebarGrouping: 'project',
   defaultProjectView: 'canvas',
   panHoverDelay: 600,
   doubleClickFocus: true,

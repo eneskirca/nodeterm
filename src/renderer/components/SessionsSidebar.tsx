@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   buildSessionList,
+  buildStatusList,
   groupCollapseKey,
   groupSessionCount,
   groupSessionRows,
@@ -11,9 +12,12 @@ import {
   projectSignalCounts,
   pruneCollapsedItems,
   type GroupBucket,
-  type SessionNodeInput
+  type SessionNodeInput,
+  type SessionRowVM,
+  type StatusSection
 } from '../lib/sessionList'
 import { SessionRow } from './SessionRow'
+import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { IconBellFilled, IconCircleCheck, IconPin } from './icons'
 import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
@@ -98,6 +102,8 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // sidebarAutoCollapse now only supplies the DEFAULT for a row nobody ever toggled.
   const autoCollapse = useSettings((s) => s.settings.sidebarAutoCollapse)
   const collapsedItems = useSettings((s) => s.settings.sidebarCollapsedItems)
+  const grouping = useSettings((s) => s.settings.sidebarGrouping)
+  const updateSettings = useSettings((s) => s.update)
 
   // Look up the current git branch for each project cwd (best-effort, cached). Gated on `open`
   // and caches a NEGATIVE result too — without the '' fallback a non-git cwd re-fired a git
@@ -131,6 +137,15 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
     () =>
       open ? buildSessionList(projects, liveActiveNodes, activeProjectId, statusById, filter) : [],
     [open, projects, liveActiveNodes, activeProjectId, statusById, filter]
+  )
+  // Status-grouped sections (only computed in status mode — flattens all projects' sessions by
+  // live agent status so attention floats to the top). Same inputs as `groups`.
+  const statusSections = useMemo(
+    () =>
+      open && grouping === 'status'
+        ? buildStatusList(projects, liveActiveNodes, activeProjectId, statusById, filter)
+        : [],
+    [open, grouping, projects, liveActiveNodes, activeProjectId, statusById, filter]
   )
 
   const projectCount = (g: (typeof groups)[number]): number =>
@@ -403,6 +418,26 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
     )
   }
 
+  // A status-mode row. Unlike project mode, the row carries its own project id (rows are flattened
+  // across projects), so the project-scoped callbacks read it off the row. Drag/drop reorder and
+  // move-to-group are project-mode concepts — their drop targets (project headers, sub-groups)
+  // aren't rendered in status mode, so the row is not draggable here. It stays clickable,
+  // closable, renameable, and right-clickable.
+  const renderStatusRow = (row: SessionRowVM): JSX.Element => (
+    <div key={row.id} className="ss-rowdrop">
+      <SessionRow
+        row={row}
+        onClick={() => props.onFocusNode(row.id)}
+        onClose={() => props.onCloseSession(row.projectId!, row.id)}
+        onRename={(title) => props.onRenameSession(row.projectId!, row.id, title)}
+        onAiName={() => props.onAiNameSession(row.projectId!, row.id, row.cwd)}
+        onContextMenu={(e) => props.onRowContextMenu(e, row.projectId!, row.id)}
+        onDragStart={() => {}}
+        onDragEnd={() => {}}
+      />
+    </div>
+  )
+
   if (!open) return null
 
   return (
@@ -414,6 +449,15 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
       <div className="sessions-sidebar__head">
         <span className="sessions-sidebar__title">Sessions</span>
         <span className="sessions-sidebar__count">{total}</span>
+        <SegmentedPill<'project' | 'status'>
+          value={grouping}
+          ariaLabel="Group sessions by"
+          options={[
+            { value: 'project', label: 'Project' },
+            { value: 'status', label: 'Status' }
+          ]}
+          onChange={(v) => updateSettings({ sidebarGrouping: v })}
+        />
         <div className="sessions-sidebar__head-actions">
           <button
             className={pinned ? 'is-on' : ''}
@@ -453,8 +497,34 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
           setDropProj(null)
         }}
       >
-        {groups.length === 0 && <div className="sessions-sidebar__empty">No sessions yet.</div>}
-        {groups.map((g) => {
+        {groups.length === 0 && grouping !== 'status' && (
+          <div className="sessions-sidebar__empty">No sessions yet.</div>
+        )}
+        {grouping === 'status' ? (
+          statusSections.length === 0 ? (
+            <div className="sessions-sidebar__empty">No sessions yet.</div>
+          ) : (
+            statusSections.map((section: StatusSection) => (
+              <div key={section.kind} className="ss-status">
+                <div className="ss-status__head">
+                  {section.kind === 'attention' ? (
+                    <span className="ss-status__icon ss-status__icon--attention">
+                      <IconBellFilled />
+                    </span>
+                  ) : (
+                    <span className={`ss-status__icon ss-status__icon--${section.kind}`} />
+                  )}
+                  <span className="ss-status__label">{section.label}</span>
+                  <span className="ss-status__count">{section.rows.length}</span>
+                </div>
+                <div className="ss-status__rows">
+                  {section.rows.map((row) => renderStatusRow(row))}
+                </div>
+              </div>
+            ))
+          )
+        ) : (
+          groups.map((g) => {
           const collapseKey = projectCollapseKey(g.projectId)
           // While filtering, never collapse — a collapsed project would hide its own matches.
           const isCollapsed = filter
@@ -596,7 +666,8 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
               )}
             </div>
           )
-        })}
+        })
+        )}
       </div>
     </aside>
   )

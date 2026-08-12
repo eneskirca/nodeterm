@@ -5,6 +5,7 @@ import { FieldRow } from '../FieldRow'
 import { Switch } from '@renderer/ui/Switch'
 import { NumberField } from '@renderer/ui/NumberField'
 import { Select } from '@renderer/ui/Select'
+import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { hintLabel } from '@shared/platform-utils'
 
 const ROWS = {
@@ -27,6 +28,10 @@ const ROWS = {
   sidebarCollapse: {
     title: 'Sidebar: collapse inactive by default',
     keywords: ['sidebar', 'sessions', 'collapse', 'expand', 'project', 'switch', 'group', 'tree']
+  },
+  sidebarGrouping: {
+    title: 'Sidebar: group by',
+    keywords: ['sidebar', 'sessions', 'group', 'status', 'project', 'attention']
   },
   wheelZoom: { title: 'Scroll wheel zooms', keywords: ['zoom', 'wheel', 'scroll', 'mouse', 'pan'] },
   trackpadPan: {
@@ -163,6 +168,23 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               checked={settings.sidebarAutoCollapse}
               onChange={(v) => update({ sidebarAutoCollapse: v })}
               ariaLabel="Sidebar: collapse inactive by default"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.sidebarGrouping}>
+        <FieldRow
+          label="Sidebar: group sessions by"
+          description="Group the sessions sidebar by project (the default) or by live status, so sessions needing attention float to the top across all projects. Status reflects local-core sessions; remote sessions show as idle."
+          control={
+            <SegmentedPill<'project' | 'status'>
+              value={settings.sidebarGrouping}
+              ariaLabel="Group sessions by"
+              options={[
+                { value: 'project', label: 'Project' },
+                { value: 'status', label: 'Status' }
+              ]}
+              onChange={(v) => update({ sidebarGrouping: v })}
             />
           }
         />

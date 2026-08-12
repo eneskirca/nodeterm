@@ -6538,6 +6538,42 @@ body,
 .ss-group { position: relative; }
 .ss-group.is-drop-before::before { content: ''; position: absolute; top: -1px; left: 6px; right: 6px; height: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; z-index: 1; }
 
+/* Sidebar head grouping toggle: a compact SegmentedPill (Project | Status). */
+.sessions-sidebar__head .seg-pill { padding: 1px; gap: 1px; }
+.sessions-sidebar__head .seg-pill-opt { font-size: 10.5px; padding: 2px 8px; }
+
+/* Status-grouped sections (sidebar grouped by status). Always expanded — no chevron, no
+   collapse; the whole point is that needs-attention sessions are visible at a glance. */
+.ss-status { margin: 2px 0; }
+.ss-status + .ss-status { margin-top: 8px; }
+.ss-status__head { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; background: rgba(var(--tint-rgb), 0.035); }
+.ss-status__label { font-size: 12px; font-weight: 600; color: var(--text); }
+.ss-status__count { font-size: 10px; color: var(--muted); }
+.ss-status__icon { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.ss-status__icon--attention { width: auto; height: auto; border-radius: 0; color: var(--danger); display: inline-flex; }
+.ss-status__icon--attention svg { width: 11px; height: 11px; }
+.ss-status__icon--working { background: var(--accent); }
+.ss-status__icon--done { background: var(--muted); }
+.ss-status__icon--idle { background: rgba(var(--tint-rgb), 0.25); }
+.ss-status__rows { padding: 2px 0 2px 2px; }
+
+/* Status-mode row: project monogram in place of the plain color mark. */
+.ss-mark--project {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: rgba(var(--tint-rgb), 0.95);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+  flex: 0 0 auto;
+}
+.ss-meta__project { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-meta__project + .ss-meta__cwd::before { content: '· '; }
+
 .sessions-icon-cluster { position: absolute; top: 54px; left: 14px; z-index: 11; }
 .sessions-icon-cluster button { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; background: rgba(var(--menu-rgb), 0.92); border: 1px solid var(--border); border-radius: 9px; color: var(--text); cursor: pointer; box-shadow: 0 6px 20px rgba(0, 0, 0, calc(0.3 * var(--shadow-k))); }
 .sessions-icon-cluster button:hover { background: var(--panel-header); }
