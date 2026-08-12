@@ -1,8 +1,8 @@
 import type { Node } from '@xyflow/react'
 import type { CanvasMutation, CanvasNodeState, ClaudeAccount, NodeKind, PendingLaunch, Project } from '@shared/types'
 import type { AgentId, AgentPermissionMode } from '@shared/agents/config'
-import { agentConfig, agentLaunchProgram, mintsSessionId, withSessionId } from '@shared/agents/config'
-import { withPermissionMode } from '@shared/agents/approval-mode'
+import { agentConfig, mintsSessionId } from '@shared/agents/config'
+import { assembleLaunchCommand } from '@shared/agents/launch'
 import { uuid } from '@renderer/lib/uuid'
 import { claudeCliCapsNow } from './permissionMode'
 import { codexSharedIdentity } from './codexIdentity'
@@ -130,10 +130,11 @@ export interface NodeData {
 /** React Flow node type string mirrors the persisted NodeKind. */
 export type CanvasNode = Node<NodeData, NodeKind>
 
-/** Single-quote a string for safe use as one shell argument (POSIX). */
-export function shellSingleQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`
-}
+/** Single-quote a string for safe use as one shell argument (POSIX).
+ *  Imported from `@shared/shell-quote` so the renderer and the shared command-assembly layer share
+ *  one definition, and re-exported so the renderer keeps its historical import path. */
+import { shellSingleQuote } from '@shared/shell-quote'
+export { shellSingleQuote }
 
 let idCounter = 0
 function nextId(prefix: string): string {
@@ -338,40 +339,7 @@ export function createAgentNode(
   accountId?: string,
   permissionMode?: AgentPermissionMode
 ): CanvasNode {
-  const { label, color, launchCmd } = resolveAgent(agentId)
-  // A SHARED_IDENTITY_CAPABLE agent (codex) launches through its managed launcher when this
-  // machine actually has one — otherwise the bare CLI, byte-identical to before. Asked through the
-  // capability helper, never `agentId === 'codex'`; `codexSharedIdentity` folds in the SSH answer
-  // (a host has no launcher installed yet, so a remote node must stay on the bare command).
-  const baseCmd =
-    agentId === 'claude'
-      ? claudeLaunchCommand()
-      : agentLaunchProgram(agentId, launchCmd, codexSharedIdentity(ssh))
-  // A flag-prompt agent (opencode) takes the initial prompt via its flag — a bare positional
-  // would be misread (opencode treats it as a project path). Everything else keeps the
-  // historical argv append, INCLUDING stdin-after-start agents (gemini has always launched
-  // via argv here; changing that is a separate decision).
-  const promptArg = initialPrompt
-    ? shellSingleQuote(initialPrompt.replace(/\s+/g, ' ').trim())
-    : null
-  // A CLI whose positional prompt shares its slot with subcommands needs a separator, or a
-  // one-word prompt runs as a command instead (grok: `grok version` prints the version, `grok --
-  // version` asks the model about "version"). Absent for everyone else, so their command line is
-  // byte-identical to what it was.
-  const sep = agentConfig(agentId)?.argvPromptSeparator
-  const isFlagPrompt = agentConfig(agentId)?.promptInjectionMode === 'flag-prompt'
-  // The separator only participates when there is actually a prompt to separate (no dangling `--`),
-  // and never for a flag-prompt agent, whose prompt is not a positional at all.
-  const usesSep = !!promptArg && !!sep && !isFlagPrompt
-  // `withPrompt` is the NO-separator shape, and only that: it is read at exactly one place below,
-  // in the `!usesSep` arm. Reaching it with a prompt and no flag-prompt mode means `sep` was falsy,
-  // so an inline `${sep ? … : ''}` here could only ever expand to '' — the separator's one home is
-  // the `usesSep` arm, which spells it out.
-  const withPrompt = promptArg
-    ? isFlagPrompt
-      ? `${baseCmd} --prompt ${promptArg}`
-      : `${baseCmd} ${promptArg}`
-    : baseCmd
+  const { label, color } = resolveAgent(agentId)
   // The session id is DECIDED here rather than learned from a hook later, so this node always has
   // something to resume with — see SESSION_ID_CAPABLE for the failure this closes. `uuid()` (not
   // crypto.randomUUID) because the Server Edition serves plain HTTP on a LAN, where randomUUID is
@@ -380,29 +348,46 @@ export function createAgentNode(
   // Gated on the CLI actually advertising `--session-id`, because an unknown flag does not degrade
   // — it makes claude exit, taking the launch with it. Unprobed or older CLI ⇒ no mint ⇒ the
   // command line stays byte-identical to what it has always been, and the node falls back to
-  // learning its id from hooks exactly as before.
-  const mintedSessionId =
-    mintsSessionId(agentId) && claudeCliCapsNow().sessionIdFlag ? uuid() : undefined
-  // No mode passed (e.g. a legacy/test call site) = bare command, exactly as before this setting.
-  // Both flags ride the same helper so they land on the same side of an argv separator: for grok
-  // that is BEFORE `--` (end-of-options), and getting it wrong makes a flag part of the prompt.
-  const flagged = (cmd: string): string => {
-    const withMode = permissionMode ? withPermissionMode(cmd, agentId, permissionMode) : cmd
-    return mintedSessionId ? withSessionId(withMode, agentId, mintedSessionId) : withMode
+  // learning its id from hooks exactly as before. Inheritance-aware: a custom agent with
+  // baseAgent:'claude' mints an id too (capabilityAgentId resolves it to claude).
+  const cliCaps = claudeCliCapsNow()
+  const mintedSessionId = mintsSessionId(agentId) && cliCaps.sessionIdFlag ? uuid() : undefined
+  // Command assembly is delegated to the ONE shared builder (src/shared/agents/launch.ts), used by
+  // fresh launch AND cold-restore resume, so a custom agent's baseAgent/args/expansion are applied
+  // identically in both paths. The renderer has no process.env, so expansion here runs against an
+  // empty snapshot — but the FIRST-LAUNCH command typed into the shell only carries ${env:...} when
+  // the user put it in launchCmd/args, and the real env merge happens main-side in pty-manager
+  // (env values are injected as process env, NOT typed into the shell, so they never needed
+  // renderer-side expansion). For a builtin with no custom args this is byte-identical to the old
+  // hand-built command line.
+  const customAgent = agentConfig(agentId)
+    ? undefined
+    : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+  const { command: initialCommand, missingEnv } = assembleLaunchCommand(
+    {
+      agentId,
+      customAgent,
+      initialPrompt,
+      permissionMode,
+      sessionId: mintedSessionId,
+      sessionIdFlagSupported: cliCaps.sessionIdFlag,
+      // A SHARED_IDENTITY_CAPABLE agent (codex) launches through its managed launcher when this
+      // machine actually has one — otherwise the bare CLI, byte-identical to before. `codexSharedIdentity`
+      // folds in the SSH answer (a host has no launcher installed yet, so a remote node stays bare).
+      sharedIdentity: codexSharedIdentity(ssh)
+    },
+    // The renderer has no process.env; pass an empty record. ${env:...} in launchCmd/args resolves
+    // to empty here, but that only affects the TYPED command — env-var VALUES are injected as
+    // process env by pty-manager (main-side, against the real env), not typed into the shell.
+    {}
+  )
+  if (missingEnv.length) {
+    // A missing var in the typed command (launchCmd/args) would launch with a blank — surface it,
+    // matching the preview. Env-var VALUES (the env map) are merged main-side and warned there.
+    console.warn(
+      `[custom-agent] ${label}: ${missingEnv.map((m) => '${env:' + m + '}').join(', ')} unset in launch command — expanded to empty.`
+    )
   }
-  // WHERE the mode flag goes is decided by the agent's prompt convention, and the two conventions
-  // are opposites:
-  //  - No separator (claude): the prompt is a positional that must stay adjacent to the binary, so
-  //    the flag goes LAST — `claude 'fix the bug' --permission-mode auto`, byte-identical to what
-  //    nodeterm has always emitted.
-  //  - With a separator (grok): `--` means END OF OPTIONS, which is the whole reason it is there
-  //    (`grok -- version` sends "version" to the model instead of running the subcommand). By that
-  //    same convention anything AFTER it is a positional, so a flag appended last would either be
-  //    swallowed into the prompt text or rejected by clap as an unexpected argument — the setting
-  //    would silently do nothing, or the launch would die on a usage message. It therefore goes
-  //    BEFORE the separator: `grok --permission-mode plan -- 'explain this repo'`, matching grok's
-  //    own usage line `grok [OPTIONS] [PROMPT] [COMMAND]`.
-  const initialCommand = usesSep ? `${flagged(baseCmd)} ${sep} ${promptArg}` : flagged(withPrompt)
   const size = terminalNodeSize()
   return {
     id: nextId('term'),
@@ -419,7 +404,8 @@ export function createAgentNode(
       group: null,
       tags: [],
       agentId,
-      // Accounts are inherently Claude-only — never stamp one onto another agent's node.
+      // Accounts are inherently Claude-only — never stamp one onto another agent's node. A custom
+      // agent inheriting claude is still its own agent; account binding stays claude-the-builtin.
       ...(accountId && agentId === 'claude' ? { accountId } : {}),
       // Persisted alongside the node (unlike initialCommand, which is consumed on first open), so
       // a cold restore months later still knows which conversation this node owns.

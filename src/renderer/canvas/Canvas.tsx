@@ -843,9 +843,6 @@ export function Canvas() {
   // When pinned the sidebar is docked and stays open (mouse-leave never closes it); `dismissed`
   // hides it until the next hover/click. When unpinned it is a pure hover-peek.
   const sessionsOpen = sessionsPinned ? !sessionsDismissed : sessionsHover
-  // When set, add a terminal to this project once its nodes have loaded into React Flow
-  // (cross-project "add" from the sidebar, which must switch projects first).
-  const pendingAddRef = useRef<string | null>(null)
   // Live relay tabs, keyed by relay connectionId, so a host/relay drop can dispose the right one
   // (a remote connection is now a project TAB, not a full-surface overlay — Stage 4 Task 6).
   const relayTabsRef = useRef<Map<string, RelayTab>>(new Map())
@@ -1820,12 +1817,6 @@ export function Canvas() {
           useAgentStatus.getState().setActive(pending, true)
           useAgentStatus.getState().clearUnread(pending)
         }
-      }
-      // Consume a cross-project "add terminal" request from the sessions sidebar (which had
-      // to switch projects first). Only act if we landed on the requested project.
-      if (pendingAddRef.current === useProjects.getState().activeProjectId) {
-        pendingAddRef.current = null
-        addTerminal()
       }
     }, 0)
     return () => clearTimeout(t)
@@ -5222,9 +5213,11 @@ export function Canvas() {
   const agentCreationItems = useCallback(
     (at?: { x: number; y: number }, groupId?: string): MenuItem[] => {
       const disabled = useSettings.getState().settings.disabledAgents
-      // Accounts selectable in the active project: local accounts for a local project, or this
-      // host's accounts for an SSH project (pending logins always excluded).
-      const project = useProjects.getState().getProject(activeProjectId)
+      // Read the active project LIVE from the store (not the closure value) so a menu built right
+      // after a `switchProject` — e.g. the sessions-sidebar "+" opening this menu on a non-active
+      // project — resolves accounts against the project the user clicked, not the one that was
+      // active when this callback was created. `switchProject` sets the store synchronously.
+      const project = useProjects.getState().getProject(useProjects.getState().activeProjectId)
       const accounts = accountsForProject(useSettings.getState().settings.claudeAccounts, project)
       // The system entry shows the user's custom label / detected email so it stays
       // distinguishable from managed accounts (falls back to "System account").
@@ -5296,7 +5289,7 @@ export function Canvas() {
           )
       ]
     },
-    [activeProjectId, addAgentNode]
+    [addAgentNode]
   )
 
   const groupItems = useCallback(
@@ -7258,16 +7251,34 @@ export function Canvas() {
   )
 
   const addToProject = useCallback(
-    (projectId: string) => {
-      if (projectId === activeProjectId) {
-        addTerminal()
-      } else {
-        // Add once the project's nodes have loaded into React Flow (load effect consumes this).
-        pendingAddRef.current = projectId
-        switchProject(projectId)
-      }
+    (projectId: string, e?: { clientX: number; clientY: number }) => {
+      // The sessions-sidebar "+" used to open a bare terminal. It now opens the SAME agent menu
+      // the canvas right-click uses (with "New terminal" kept on top so the old behavior is a
+      // deliberate pick, not lost) — so adding to a project picks an agent instead of always a
+      // shell. For a non-active project, switch FIRST (synchronous) so the menu's account rows
+      // resolve against the clicked project; the node is only added on the user's later click,
+      // well after the project's canvas has loaded, so there is no load-race.
+      if (projectId !== activeProjectId) switchProject(projectId)
+      const pos = e ? { x: e.clientX, y: e.clientY } : { x: 80, y: 120 }
+      setMenu({
+        x: pos.x,
+        y: pos.y,
+        items: [
+          {
+            label: 'New terminal',
+            icon: <IconTerminal />,
+            onClick: () => {
+              // For a non-active project the switch happened above; addTerminal targets the
+              // active project, which is now this one.
+              addTerminal()
+            }
+          },
+          { type: 'separator' },
+          ...agentCreationItems()
+        ]
+      })
     },
-    [activeProjectId, addTerminal, switchProject]
+    [activeProjectId, addTerminal, switchProject, agentCreationItems]
   )
 
   // Sidebar drag-to-group: reparent a session into a canvas group (groupId) or out (null).

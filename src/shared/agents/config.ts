@@ -204,7 +204,54 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as 
 // copy notice joins by being added here, and nothing else changes.
 export const SELF_REPORTS_COPY = ['claude'] as const
 
-const includes = (list: readonly string[], id: AgentId): boolean => list.includes(id)
+/** Fallback color for custom / unknown agents that have no config-provided color. */
+export const FALLBACK_AGENT_COLOR = '#888888'
+
+// ---------------------------------------------------------------------------------------------
+// Custom-agent harness inheritance.
+//
+// A custom agent (`CustomAgent`, id `'custom:<uuid>'`) may declare a `baseAgent` — one of the
+// builtins — to inherit that harness's CAPABILITIES (hooks, resume, permission modes, canvas
+// control, session-id minting) and prompt convention. The use case is a harness-compatible CLI
+// (e.g. a claude wrapper pointed at your own inference proxy) where you want to KEEP nodeterm's
+// integration while redirecting the calls.
+//
+// The capability predicates below take only an `AgentId`. `src/shared/agents/config.ts` cannot
+// import the settings store (renderer) or `settings-store` (core) without a cycle / platform
+// split, so the custom-id → baseAgent lookup is INJECTED: each runtime registers a resolver at
+// init that reads its own live settings. This mirrors the existing mutable-accessor idiom
+// (`claudeCliCapsNow`, `shellPathNow`): module-level state, set once at boot, read on every call.
+//
+// Tests register a resolver (or null) via `setCustomAgentBaseResolverForTests`.
+type BaseResolver = (id: AgentId) => BuiltinAgentId | undefined
+let customBaseResolver: BaseResolver | null = null
+
+/** Register the custom-id → baseAgent resolver. Called once at app init by the renderer
+ *  (`state/agent-resolver.ts`) and by main/core (`pty-manager`) and the server shell, each
+ *  reading its own settings store. Pass `null` to clear (tests). */
+export function setCustomAgentBaseResolver(fn: BaseResolver | null): void {
+  customBaseResolver = fn
+}
+
+/** The builtin harness a custom agent inherits from, or `undefined` for builtins and vanilla
+ *  (no-`baseAgent`) custom agents. Builtins never resolve through the registry — they ARE the
+ *  harness — so a custom agent whose id accidentally collides with a builtin name still resolves
+ *  as the builtin, never as itself. */
+export function baseAgentOf(id: AgentId): BuiltinAgentId | undefined {
+  if (!customBaseResolver) return undefined
+  if ((AGENT_CONFIG as Record<string, AgentConfig>)[id]) return undefined
+  return customBaseResolver(id)
+}
+
+/** The id whose capabilities apply to `id`: the base harness for an inheriting custom agent, else
+ *  `id` itself. This is what every capability predicate resolves through, so inheritance is
+ *  automatic everywhere a predicate is called — no per-call-site plumbing. */
+export function capabilityAgentId(id: AgentId): AgentId {
+  return baseAgentOf(id) ?? id
+}
+
+const includes = (list: readonly string[], id: AgentId): boolean =>
+  list.includes(capabilityAgentId(id))
 
 export const hasHooks = (id: AgentId): boolean => includes(AGENT_HOOK_TARGETS, id)
 export const canResume = (id: AgentId): boolean => includes(RESUMABLE_AGENTS, id)
@@ -307,18 +354,54 @@ export function withSessionId(cmd: string, id: AgentId, sessionId: string): stri
  * client. Default false = the bare command this has always emitted (see `agentLaunchProgram`).
  */
 export function resumeCommand(id: AgentId, sessionId: string, sharedIdentity = false): string | null {
-  if (!canResume(id)) return null
+  const builtin = agentConfig(id)
+  // A builtin resumes with its own command; a custom agent has no resume grammar here (its
+  // baseAgent-aware path is `resumeCommandWith`, called by the shared launcher).
+  if (!builtin) return null
+  // Route a SHARED_IDENTITY_CAPABLE builtin (codex) through its managed launcher when this machine
+  // has one, so the resumed session re-claims its own thread instead of joining as an anonymous
+  // client. Default false = the bare command this has always emitted.
+  const program = agentLaunchProgram(id, builtin.launchCmd, sharedIdentity)
+  return resumeCommandWith(program, id, sessionId)
+}
+
+/**
+ * Is `sessionId` one this app would put on a `--resume` command line for `id`? The eligibility GATE
+ * the restart/hibernation choreography uses — WITHOUT building the command (which for a custom agent
+ * needs its `launchCmd` from settings, unavailable here). Inheritance-aware via `canResume`, so a
+ * claude-base custom agent is resumable; the SAFE_SESSION_ID check is the same one `resumeCommand`
+ * applies. Pure companion to `resumeCommand` for the gate-only call sites.
+ */
+export function canResumeWith(id: AgentId, sessionId: string): boolean {
+  if (!canResume(id)) return false
+  const sid = sessionId.trim()
+  return !!sid && SAFE_SESSION_ID.test(sid)
+}
+
+/**
+ * Resume by provider session id, using `launchCmd` as the binary and `grammarId` to pick the
+ * resume flag grammar (`--resume` vs `resume` vs `--session`). `grammarId` is the BASE harness
+ * for an inheriting custom agent (`capabilityAgentId(agentId)`), so a claude-base custom agent
+ * resumes as `<customLaunchCmd> --resume <sid>` — its own binary, claude's flag. Returns null for
+ * a non-resumable base or an unsafe/empty session id.
+ */
+export function resumeCommandWith(
+  launchCmd: string,
+  grammarId: AgentId,
+  sessionId: string
+): string | null {
+  if (!canResume(grammarId)) return null
   const sid = sessionId.trim()
   if (!sid || !SAFE_SESSION_ID.test(sid)) return null
-  switch (id) {
+  switch (grammarId) {
     case 'codex':
-      return `${agentLaunchProgram('codex', 'codex', sharedIdentity)} resume ${sid}`
+      return `${launchCmd} resume ${sid}`
     case 'opencode':
-      return `opencode --session ${sid}`
+      return `${launchCmd} --session ${sid}`
     case 'claude':
     case 'gemini':
     case 'grok':
-      return `${id} --resume ${sid}`
+      return `${launchCmd} --resume ${sid}`
     default:
       return null
   }

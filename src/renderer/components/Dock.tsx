@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
+import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId, type BuiltinAgentId } from '@shared/agents/config'
+import type { CustomAgent } from '@shared/types'
 import { formatShortcut, isHoldChord } from '@shared/shortcut'
 import { hintLabel } from '@shared/platform-utils'
 import { AgentIcon } from '../lib/agentIcons'
@@ -57,6 +58,10 @@ export function Dock({
   dictateActive
 }: DockProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  // Which builtin's flyout submenu is open (at most one). A builtin earns a flyout only when it has
+  // ≥1 inheriting custom agent (one with a `baseAgent` matching it); otherwise it stays a flat
+  // button, byte-identical to before this nesting existed.
+  const [openSub, setOpenSub] = useState<BuiltinAgentId | null>(null)
   const dictationShortcut = useSettings((s) => s.settings.speech.shortcut)
   const customAgents = useSettings((s) => s.settings.customAgents)
   const disabledAgents = useSettings((s) => s.settings.disabledAgents)
@@ -71,6 +76,20 @@ export function Dock({
   const defaultAccountId = localAccounts.some((a) => a.id === activeProject?.defaultAccountId)
     ? activeProject?.defaultAccountId
     : undefined
+
+  // Group enabled custom agents by their declared base harness. A builtin with a non-empty group
+  // gets a flyout submenu (the base itself + its inheriting customs, and for Claude the account
+  // rows); a builtin with an empty group stays flat. Baseless custom agents render flat after the
+  // builtins, exactly as they did before.
+  const enabledCustoms = customAgents.filter((c) => !disabledAgents.includes(c.id))
+  const inheritingByBase = new Map<BuiltinAgentId, CustomAgent[]>()
+  for (const c of enabledCustoms) {
+    if (!c.baseAgent) continue
+    const arr = inheritingByBase.get(c.baseAgent) ?? []
+    arr.push(c)
+    inheritingByBase.set(c.baseAgent, arr)
+  }
+  const baselessCustoms = enabledCustoms.filter((c) => !c.baseAgent)
 
   const pick = (fn: () => void) => () => {
     fn()
@@ -93,48 +112,103 @@ export function Dock({
               <span>Remote…</span>
             </button>
             {BUILTIN_AGENT_IDS.filter((aid) => !disabledAgents.includes(aid)).flatMap((aid) => {
-              const base = (
-                <button key={aid} onClick={pick(() => onAddAgent(aid))}>
-                  <AgentIcon agentId={aid} size={18} />
-                  <span>{AGENT_CONFIG[aid].label}</span>
-                </button>
-              )
-              if (aid !== 'claude') return [base]
-              // SSH project with no accounts on its host: a disabled row saying where this
-              // host's accounts come from (local accounts are correctly invisible here).
-              const acctHint = sshAccountsHint(activeProject, localAccounts)
-              if (acctHint) {
+              const inheriting = inheritingByBase.get(aid) ?? []
+              // No inheriting customs → the builtin stays a flat button (with Claude's account
+              // rows), byte-identical to before nesting existed.
+              if (inheriting.length === 0) {
+                const base = (
+                  <button key={aid} onClick={pick(() => onAddAgent(aid))}>
+                    <AgentIcon agentId={aid} size={18} />
+                    <span>{AGENT_CONFIG[aid].label}</span>
+                  </button>
+                )
+                if (aid !== 'claude') return [base]
+                // SSH project with no accounts on its host: a disabled row saying where this
+                // host's accounts come from (local accounts are correctly invisible here).
+                const acctHint = sshAccountsHint(activeProject, localAccounts)
+                if (acctHint) {
+                  return [
+                    base,
+                    <button key={`${aid}-acct-hint`} disabled title={acctHint}>
+                      <AgentIcon agentId={aid} size={18} />
+                      <span>No accounts on this host yet</span>
+                    </button>
+                  ]
+                }
+                // Claude picks up one flat entry per logged-in local account.
+                if (localAccounts.length === 0) return [base]
                 return [
                   base,
-                  <button key={`${aid}-acct-hint`} disabled title={acctHint}>
-                    <AgentIcon agentId={aid} size={18} />
-                    <span>No accounts on this host yet</span>
-                  </button>
+                  ...localAccounts.map((a) => (
+                    <button key={`${aid}-${a.id}`} onClick={pick(() => onAddAgent(aid, a.id))}>
+                      <AgentIcon agentId={aid} size={18} />
+                      <span>
+                        Claude — {a.label}
+                        {a.id === defaultAccountId ? ' ✓' : ''}
+                      </span>
+                    </button>
+                  ))
                 ]
               }
-              // Claude picks up one flat entry per logged-in local account (dock can't nest).
-              if (localAccounts.length === 0) return [base]
+              // Has inheriting customs → render as a flyout submenu. The parent button still
+              // launches the base harness in one click (preserving today's behavior); hovering it
+              // reveals the base's variants — its account rows (Claude) and the inheriting customs.
+              const acctHint = sshAccountsHint(activeProject, localAccounts)
               return [
-                base,
-                ...localAccounts.map((a) => (
-                  <button key={`${aid}-${a.id}`} onClick={pick(() => onAddAgent(aid, a.id))}>
+                <div
+                  key={aid}
+                  className="dock-menu__has-sub"
+                  onMouseEnter={() => setOpenSub(aid)}
+                  onMouseLeave={() => setOpenSub((cur) => (cur === aid ? null : cur))}
+                >
+                  <button onClick={pick(() => onAddAgent(aid))}>
                     <AgentIcon agentId={aid} size={18} />
-                    <span>
-                      Claude — {a.label}
-                      {a.id === defaultAccountId ? ' ✓' : ''}
-                    </span>
+                    <span>{AGENT_CONFIG[aid].label}</span>
+                    <span className="dock-menu__chevron">▸</span>
                   </button>
-                ))
+                  {openSub === aid && (
+                    <div className="dock-menu__sub">
+                      {aid === 'claude' && localAccounts.length > 0 && (
+                        <>
+                          <div className="dock-menu__sub-label">Accounts</div>
+                          {localAccounts.map((a) => (
+                            <button
+                              key={a.id}
+                              onClick={pick(() => onAddAgent(aid, a.id))}
+                            >
+                              <AgentIcon agentId={aid} size={18} />
+                              <span>
+                                {a.label}
+                                {a.id === defaultAccountId ? ' ✓' : ''}
+                              </span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                      {aid === 'claude' && acctHint && (
+                        <button disabled title={acctHint}>
+                          <AgentIcon agentId={aid} size={18} />
+                          <span>No accounts on this host yet</span>
+                        </button>
+                      )}
+                      <div className="dock-menu__sub-label">Custom</div>
+                      {inheriting.map((c) => (
+                        <button key={c.id} onClick={pick(() => onAddAgent(c.id))}>
+                          <AgentIcon agentId={c.id} size={18} />
+                          <span>{c.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ]
             })}
-            {customAgents
-              .filter((c) => !disabledAgents.includes(c.id))
-              .map((c) => (
-                <button key={c.id} onClick={pick(() => onAddAgent(c.id))}>
-                  <AgentIcon agentId={c.id} size={18} />
-                  <span>{c.label}</span>
-                </button>
-              ))}
+            {baselessCustoms.map((c) => (
+              <button key={c.id} onClick={pick(() => onAddAgent(c.id))}>
+                <AgentIcon agentId={c.id} size={18} />
+                <span>{c.label}</span>
+              </button>
+            ))}
             <button onClick={pick(onAddSticky)}>
               <NoteIcon />
               <span>Sticky Note</span>

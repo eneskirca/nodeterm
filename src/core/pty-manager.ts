@@ -58,7 +58,9 @@ import {
   forgetCodexThreadIdentitiesForNode,
   installCodexLauncher
 } from './codex-identity-proxy'
-import { hasSharedIdentity, type AgentId } from '../shared/agents/config'
+import { hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
+import { findCustomAgent } from '../shared/agents/custom-agent'
+import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 
 // How often we snapshot a live tmux session's scrollback to disk, so a machine reboot (which
 // kills the tmux server) can still replay recent output on cold restart. A final snapshot also
@@ -1150,6 +1152,13 @@ export class PtyManager {
   /** Must run after app is ready (needs userData path). */
   init(getSettings: () => Settings): void {
     this.getSettings = getSettings
+    // Register the custom-id → baseAgent resolver so the capability predicates in
+    // shared/agents/config (hasHooks, canResume, mintsSessionId, hasPermissionMode,
+    // canControlCanvas, …) resolve a custom agent's INHERITED harness. config.ts takes only an id
+    // (it cannot import the settings store without a cycle/platform split), so the lookup is
+    // injected here: the closure reads LIVE settings, so registering once at init is enough — a
+    // settings update is reflected on the next predicate call.
+    setCustomAgentBaseResolver((id) => findCustomAgent(this.getSettings().customAgents, id)?.baseAgent)
     // Prewarm the login-shell PATH probe now so the first terminal spawn doesn't wait on it —
     // and re-run the tmux probe once it lands: findTmux no longer spawns a login shell of its
     // own, so a tmux living only on the user's shell PATH is invisible until this resolves.
@@ -1929,6 +1938,18 @@ export class PtyManager {
       for (const k of AUTH_ENV_STRIP) delete env[k]
     }
 
+    // Custom-agent env: merged LAST so it wins over hook + account + PATH/LANG env (required for
+    // the proxy use case — the user's ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL must beat whatever
+    // the account path set). ${env:VAR} is expanded against the live process env. Only the LOCAL
+    // path merges into `env` here; the remote (ssh) path threads the same vars into the tmux `-e`
+    // list below (the local ssh client's env does not propagate to the remote tmux session).
+    if (!options.sshRemote) {
+      const custom = findCustomAgent(this.getSettings().customAgents, options.agentId ?? '')
+      const merged = applyCustomAgentEnv(env, custom, process.env as Record<string, string | undefined>)
+      for (const [k, v] of Object.entries(merged.env)) env[k] = v
+      for (const w of merged.warnings) console.warn(w)
+    }
+
     const settings = this.getSettings()
     let file: string
     let args: string[]
@@ -1996,6 +2017,19 @@ export class PtyManager {
         options.accountId && options.sshRemote.remoteHome
           ? accountTmuxEnvArgs(remoteAccountConfigDirAbs(options.sshRemote.remoteHome, options.accountId))
           : []
+      // Custom-agent env for a REMOTE node: expand ${env:VAR} against the LOCAL process env (the
+      // key stays local; only the resolved VALUE travels over SSH) and thread the results into the
+      // remote tmux `-e` list. PATH is skipped — the local machine can't see the remote box's PATH,
+      // so a locally-resolved PATH would break CLI resolution on the host (recovering it is out of
+      // scope). Applied AFTER the account env so custom env still wins, mirroring the local path.
+      const remoteCustom = findCustomAgent(this.getSettings().customAgents, options.agentId ?? '')
+      const remoteCustomEnv = customAgentEnvArgs(
+        remoteCustom,
+        process.env as Record<string, string | undefined>,
+        { skipPath: true }
+      )
+      for (const w of remoteCustomEnv.warnings) console.warn(w)
+      const remoteCustomEnvArgs = remoteCustomEnv.args.flatMap((kv) => ['-e', kv])
       args = remoteTmuxPtyArgs(
         options.sshRemote.conn,
         options.sshRemote.controlPath,
@@ -2007,7 +2041,7 @@ export class PtyManager {
         // place a foreign value is most at home.
         reqShell,
         options.shellArgs,
-        [...hookExtraEnv, ...remoteAccountEnv],
+        [...hookExtraEnv, ...remoteAccountEnv, ...remoteCustomEnvArgs],
         // Source nodeterm's remote tmux.conf via `-f` (written on connect, Task 2) so a cold-start
         // session gets mouse/clipboard/scrollback. Fail-open: undefined → remote tmux host defaults.
         options.sshRemote.tmuxConfPath

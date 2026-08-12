@@ -3,8 +3,13 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ensureClaudeCliCaps } from './state/permissionMode'
 import { ensureCodexIdentityCaps } from './state/codexIdentity'
+import { initAgentResolver } from './state/agent-resolver'
 import './styles.css'
 import './tailwind.css'
+
+// Register the custom-agent → baseAgent resolver so the capability predicates (hasHooks, canResume,
+// canControlCanvas, …) resolve a custom agent's inherited harness. Reads the live settings store.
+initAgentResolver()
 
 // Probe the local Claude CLI once, up front (never awaited — a launch is never blocked on it):
 // `--permission-mode auto` only exists in Claude Code >= 2.1.71, and until we know the version we

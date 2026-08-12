@@ -2,7 +2,7 @@
 
 import type { CloneProgress } from './clone-url'
 import type { NormalizedAgentEvent } from './agents/normalize'
-import type { AgentId, AgentPermissionMode, PromptInjectionMode } from './agents/config'
+import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { GroupWorktree } from './worktree'
 import type { ClientId, DinoSnapshot, PeerDiff, PeerIdentity, PeerState } from './presence'
 import type { WhisperModelInfo } from './speech'
@@ -757,14 +757,31 @@ export interface BrowserApi {
   onBrowserNewWindow(listener: (e: { url: string; sourceNodeId: string }) => void): () => void
 }
 
-/** A user-defined agent (BYO CLI). In no capability list, so it gets only spawn +
- * terminal-title + process status (no hooks/branch/loop/bridge). */
+/** A user-defined agent (BYO CLI). With no `baseAgent` it is in no capability list, so it gets
+ * only spawn + terminal-title + process status (no hooks/branch/loop/bridge). With a `baseAgent`
+ * it inherits that builtin harness's capabilities (hooks, resume, permission modes, canvas
+ * control) and prompt convention — the use case being a harness-compatible CLI pointed at your
+ * own inference proxy, where you want to KEEP nodeterm's integration while redirecting the calls. */
 export interface CustomAgent {
   /** Stable id of the form 'custom:<uuid>'. Used as the node's agentId. */
   id: string
   label: string
+  /** Base launch command. Blank when `baseAgent` is set means "use the base harness's command"
+   * (so a claude-compatible proxy needs zero launch config). */
   launchCmd: string
-  promptInjectionMode: PromptInjectionMode
+  /** Prompt convention. Optional: inherited from `baseAgent` when set, else defaults to 'argv'. */
+  promptInjectionMode?: PromptInjectionMode
+  /** Optional builtin harness to inherit capabilities + prompt convention from. */
+  baseAgent?: BuiltinAgentId
+  /** Env vars injected at spawn, merged LAST so they win over hook/account env (required for the
+   *  proxy case — your ANTHROPIC_AUTH_TOKEN must beat any account env). Values support
+   *  `${env:VAR}` / `${env:VAR:fallback}` expansion at spawn time against the live OS env. */
+  env?: Record<string, string>
+  /** Extra argv inserted after `launchCmd`, before the prompt/flags. Free-text, shell-split.
+   *  Supports `${env:…}` expansion. Blank = none. */
+  args?: string
+  /** Node color. Falls back to `baseAgent`'s color (or the default grey). */
+  color?: string
 }
 
 /**
@@ -1943,6 +1960,27 @@ export interface ClaudeApi {
 
 export type HandoffResult = { filePath: string } | { error: string }
 
+/** Agent launch/preview IPC. The renderer has no `process.env`, so env-var expansion for the
+ *  custom-agent settings preview is done main-side against the real OS environment — guaranteeing
+ *  the preview matches what `pty-manager` will actually run. */
+export interface AgentApi {
+  /** A string-only snapshot of the main process environment (undefined entries omitted), for
+   *  expanding `${env:VAR}` tokens in the preview. */
+  envSnapshot(): Promise<Record<string, string>>
+  /** Assemble + expand a custom agent's FIRST-LAUNCH command against the main env. Returns the
+   *  command string and any env vars that were referenced but unset (no fallback) — surfaced as
+   *  `<unset>` markers in the preview. `inputs` is structurally `LaunchInputs`
+   *  (src/shared/agents/launch.ts); typed loosely here to avoid a types↔launch import cycle. */
+  previewCommand(inputs: {
+    agentId: AgentId
+    customAgent?: CustomAgent
+    initialPrompt?: string
+    permissionMode?: AgentPermissionMode
+    sessionId?: string
+    sessionIdFlagSupported?: boolean
+  }): Promise<{ command: string; missingEnv: string[] }>
+}
+
 export interface HandoffApi {
   /**
    * Render the source agent's full conversation transcript (located by `sessionId`)
@@ -2196,6 +2234,8 @@ export interface NodeTerminalApi {
   canvas: CanvasApi
   codex: CodexApi
   claude: ClaudeApi
+  /** Custom-agent launch/preview (env-var expansion + command assembly). */
+  agent: AgentApi
   chat: ChatApi
   claudeAccounts: ClaudeAccountsApi
   transcripts: TranscriptsApi

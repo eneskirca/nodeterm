@@ -14,6 +14,7 @@ import type { ServerConfig } from './config'
 import { initPlatform } from '../core/platform'
 import { SettingsStore } from '../core/settings-store'
 import { WorkspaceStore } from '../core/workspace-store'
+import { registerAgentEnvIpc } from '../core/agent-env-ipc'
 import { PtyManager } from '../core/pty-manager'
 import { registerCoreHandlers } from './handlers'
 import { registerGitHubIntegration } from '../core/github/integration'
@@ -157,6 +158,8 @@ export async function startServer(
 
   settingsStore.init()
   settingsStore.registerIpc()
+  // Custom-agent preview/expansion IPC (browser has no process.env; expansion runs server-side).
+  registerAgentEnvIpc()
   ptyManager.init(() => settingsStore.get())
   ptyManager.registerIpc()
   workspaceStore.registerIpc()

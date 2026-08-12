@@ -140,8 +140,9 @@ import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { accountChipLabel, COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
-import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, reportsOwnCopy, resumeCommand, agentConfig, agentLaunchProgram } from '@shared/agents/config'
+import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, reportsOwnCopy, agentConfig } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
+import { assembleResumeCommand } from '@shared/agents/launch'
 import { ensureActivePermissionMode } from '../state/permissionMode'
 import { buildSshArgs, sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import { hintLabel } from '@shared/platform-utils'
@@ -2755,24 +2756,30 @@ export function TerminalNode({
           // relaunched empty while their transcripts sat on disk, unreachable.
           const st = useAgentStatus.getState().byId[id]
           const priorId = st?.sessionId || data.agentSessionId
-          // Shared-identity agents resume THROUGH their launcher, so the cold-restored node
-          // re-claims its own thread instead of joining as an anonymous client. `data.ssh` is what
-          // keeps a remote node on the bare command (no launcher on the host).
-          const shared = codexSharedIdentity(data.ssh || data.sshRemoteTmux)
-          const base =
-            (priorId && resumeCommand(agentId, priorId, shared)) ||
-            (agentConfig(agentId) &&
-              agentLaunchProgram(agentId, agentConfig(agentId)!.launchCmd, shared))
           // Re-resolve the mode at relaunch: it's a property of how a session is launched, not
-          // a persisted property of the node, so the current setting wins after a reboot. `base`
-          // is always freshly built here — never a command string read back from node data — so
-          // it can never end up double-flagged. Awaited (not the sync `activePermissionMode`)
-          // because this fires on mount: right after a machine reboot it can beat the CLI version
-          // probe, and an unanswered probe would conservatively drop `auto`.
-          // Gated on THIS node's agent: claude's `auto` version gate must not decide what a grok
-          // (or any other permission-mode-capable agent's) relaunch is flagged with.
-          const cmd =
-            base && withPermissionMode(base, agentId, await ensureActivePermissionMode(agentId))
+          // a persisted property of the node, so the current setting wins after a reboot. Awaited
+          // (not the sync `activePermissionMode`) because this fires on mount: right after a machine
+          // reboot it can beat the CLI version probe, and an unanswered probe would conservatively
+          // drop `auto`. Gated on THIS node's agent: claude's `auto` version gate must not decide
+          // what a grok (or any other permission-mode-capable agent's) relaunch is flagged with.
+          //
+          // Inheritance-aware: assembleResumeCommand resolves a custom agent's baseAgent/args, so a
+          // claude-base proxy resumes with its own binary + claude's --resume grammar + its custom
+          // args — the SAME builder fresh launch uses, so cold restore and first launch can't drift.
+          // For a builtin this is byte-identical to the old resumeCommand + withPermissionMode path.
+          //
+          // Shared-identity agents (codex) resume THROUGH their launcher, so the cold-restored node
+          // re-claims its own thread instead of joining as an anonymous client. `data.ssh` /
+          // `data.sshRemoteTmux` keep a remote node on the bare command (no launcher on the host).
+          const mode = await ensureActivePermissionMode(agentId)
+          const shared = codexSharedIdentity(data.ssh || data.sshRemoteTmux)
+          const customAgent = agentConfig(agentId)
+            ? undefined
+            : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+          const { command: cmd } = assembleResumeCommand(
+            { agentId, customAgent, sessionId: priorId || undefined, permissionMode: mode, sharedIdentity: shared },
+            {}
+          )
           if (cmd) writeWhenShellReady(cmd) // same shell-startup race as initialCommand
         }
       })
@@ -2829,16 +2836,25 @@ export function TerminalNode({
         const agentSessionId = st?.sessionId
         const gate = restartEligibility(agentId, st?.state, agentSessionId)
         if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
-        // Built HERE, not inside the choreography: `withPermissionMode` is the single funnel for
-        // every CLI launch path (shared/agents/config.ts) and the mode is a renderer-side, async
+        // Built HERE, not inside the choreography: the shared assembly builder is the single funnel
+        // for every CLI launch path (shared/agents/launch.ts) and the mode is a renderer-side, async
         // read — exactly as the cold-restore relaunch above does it. Without it a canvas running
         // in acceptEdits/plan would come back from a restart in the default mode, silently.
         // Re-resolved at call time for the same reason as there: the mode is a property of how a
-        // session is launched, not of the node.
-        const base = resumeCommand(agentId, agentSessionId)
-        const command = base
-          ? withPermissionMode(base, agentId, await ensureActivePermissionMode(agentId))
-          : undefined
+        // session is launched, not of the node. Inheritance-aware: a custom agent's baseAgent/args
+        // are re-applied so a restart of a claude-base proxy resumes correctly.
+        const customAgent = agentConfig(agentId)
+          ? undefined
+          : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+        const { command } = assembleResumeCommand(
+          {
+            agentId,
+            customAgent,
+            sessionId: agentSessionId,
+            permissionMode: await ensureActivePermissionMode(agentId)
+          },
+          {}
+        )
         return performRestartResume({
           agentId,
           sessionId: agentSessionId,
@@ -2925,25 +2941,34 @@ export function TerminalNode({
         // version probe behind `ensureActivePermissionMode` most of all), and whatever is asked
         // first is stale by the time the delivery runs — so the fact that must be freshest is the
         // one asked last: what owns the pane we are about to type into.
-        // Same funnel, same await, same reasoning as the restart closure above: the permission
+        // Same builder, same await, same reasoning as the restart closure above: the permission
         // mode is a property of how a session is LAUNCHED, so it is re-resolved now (a wake can be
-        // hours after the exit, and days after the node was created).
+        // hours after the exit, and days after the node was created). Inheritance-aware via the
+        // shared assembler, so a custom agent's baseAgent/args are re-applied on wake.
+        //
         // Deliberately the BARE command, with no shared-identity launcher: this types into a pane
         // that already exists, and a tmux session created before the launcher was installed does
         // not carry its directory on PATH — naming it there would be `command not found` where a
         // plain `codex resume` works. A restarted codex node therefore rejoins as a plain client
         // until its next cold start. Fail open, same rule as everywhere else in this feature.
-        const base = resumeCommand(agentId, agentSessionId)
+        const customAgent = agentConfig(agentId)
+          ? undefined
+          : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+        const { command } = assembleResumeCommand(
+          {
+            agentId,
+            customAgent,
+            sessionId: agentSessionId,
+            permissionMode: await ensureActivePermissionMode(agentId),
+            sharedIdentity: false
+          },
+          {}
+        )
         // Refused BEFORE anything is written. `performResumePhase` gates on this same bare command
         // and would refuse too — but the KILL_LINE below is ours, so leaving this check to it
         // meant an unusable session id erased the pane's line (three times, once per wake trigger)
         // and then declined to resume.
-        if (!base) return 'not-eligible'
-        const command = withPermissionMode(
-          base,
-          agentId,
-          await ensureActivePermissionMode(agentId)
-        )
+        if (!command) return 'not-eligible'
         // THE load-bearing gate of the wake half. Hours can pass between the exit and this
         // resume, and the pane is a REPL the user can type into: by now it may belong to vim, to
         // `top`, or to a claude the user launched by hand — and a launch line typed into a live

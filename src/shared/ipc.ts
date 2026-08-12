@@ -44,6 +44,15 @@ export const IPC = {
   /** main/server → renderer: a Codex node's identity mode changed ('shared' | 'plain'). The
    *  'plain' events are what make the launcher's fallback visible instead of silent. */
   codexIdentity: 'codex-identity:event',
+  /** Renderer → main: a snapshot of the main process's `process.env`, used to expand `${env:VAR}`
+   *  tokens in the custom-agent settings preview (the renderer has no `process.env` of its own).
+   *  Values are strings; undefined entries are omitted. */
+  envSnapshot: 'env:snapshot',
+  /** Renderer → main: assemble + `${env:…}`-expand a custom agent's launch command against the
+   *  main process env, returning the exact string nodeterm will type into the shell. Powers the
+   *  live preview in Settings → Custom agents. Payload: `LaunchInputs`; resolves
+   *  `{ command, missingEnv }`. */
+  agentPreviewCommand: 'agent:preview-command',
   transcriptSearch: 'transcript:search',
   appToggleMarkdown: 'app:toggle-markdown',
   appCloseNode: 'app:close-node',

@@ -272,6 +272,13 @@ export function buildStubApi(): Omit<
       cliCaps: () => Promise.resolve(UNKNOWN_CLAUDE_CLI_CAPS),
       readTranscript: U('claude.readTranscript')
     },
+    agent: {
+      // The preview/expansion IPC runs main-side (the renderer has no process.env). In the browser
+      // (Server Edition) ws-bridge overrides this with the real handler; the stub returns an empty
+      // env + unexpanded command so the preview degrades to "unavailable" rather than throwing.
+      envSnapshot: () => Promise.resolve({}),
+      previewCommand: U('agent.previewCommand')
+    },
     chat: {
       readTranscript: U('chat.readTranscript')
     },
