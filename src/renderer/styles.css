@@ -7678,7 +7678,7 @@ body,
   cursor: pointer;
   list-style: none;
   font-size: 13px;
-  color: var(--text-muted, rgba(235, 235, 245, 0.6));
+  color: var(--muted);
   user-select: none;
 }
 .github-auth-advanced > summary::-webkit-details-marker {
@@ -7691,7 +7691,7 @@ body,
   content: '▾ ';
 }
 .github-auth-advanced > summary:hover {
-  color: var(--text-strong, #fff);
+  color: var(--text-strong);
 }
 
 .kanban-col__newmenu {
