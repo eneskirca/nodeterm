@@ -235,43 +235,6 @@ async function sweepStaleAgentTmp(): Promise<void> {
   }
 }
 
-/**
- * Write agent.json atomically (0600), creating ~/.nodeterm (0700) if needed.
- *
- * The temp name is unique per call because nothing serializes the writers: `persistDevice` runs
- * when the phone POSTs its key to the open pairing listener (an inbound HTTP request) while
- * `revokeDevice` runs from a renderer IPC — independent event sources — and two rapid revokes
- * interleave with each other. With one shared `agent.json.tmp`, a writer's rename publishes the
- * other's half-written file, or moves the file out from under it so the loser's rename fails. The
- * pid covers the other direction: the host agent is a separate PROCESS writing into this same
- * ~/.nodeterm, and every process's counter starts at 0.
- */
-async function writeAgentJson(obj: Record<string, unknown>): Promise<void> {
-  await fs.mkdir(AGENT_DIR, { recursive: true, mode: 0o700 })
-  await fs.chmod(AGENT_DIR, 0o700).catch(() => {})
-  await sweepStaleAgentTmp()
-  const tmp = `${AGENT_JSON_PATH}.${process.pid}.${++writeSeq}.tmp`
-  try {
-    await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 })
-    await fs.chmod(tmp, 0o600).catch(() => {})
-    await fs.rename(tmp, AGENT_JSON_PATH)
-  } catch (e) {
-    // A unique name never self-heals the way the fixed one did (the next write just reused it), and
-    // here a leaked temp IS a leaked credential: only this cleanup — or a later run's sweep above,
-    // once this pid is dead — will ever collect it. The error still propagates.
-    await fs.rm(tmp, { force: true }).catch(() => {})
-    throw e
-  }
-  await fs.chmod(AGENT_JSON_PATH, 0o600).catch(() => {})
-}
-
-/** Persist a device into agent.json, preserving all other fields the host agent wrote. */
-async function persistDevice(entry: DeviceEntry): Promise<void> {
-  const obj = await readAgentJson()
-  const devices = upsertDevice(readDevices(obj), entry)
-  await writeAgentJson({ ...obj, devices })
-}
-
 /** Detect the machine's display name (macOS ComputerName, else hostname). */
 async function computerName(): Promise<string> {
   if (process.platform === 'darwin') {
@@ -329,40 +292,6 @@ async function appendAuthorizedKey(keyLine: string): Promise<void> {
   await fs.chmod(AUTH_KEYS_PATH, 0o600)
 }
 
-/**
- * Delete every authorized_keys line stamped for `deviceId`, rewriting the file atomically (0600).
- *
- * Unique temp name for the same reason as writeAgentJson: two `revokeDevice` calls from the
- * renderer IPC overlap with nothing serializing them, and a shared `authorized_keys.tmp` lets one
- * writer's rename publish the other's half-written key file — a spliced line is a key sshd rejects,
- * i.e. the keys that were supposed to SURVIVE the revoke stop working — or steal the tmp so the
- * loser's rename fails. No orphan sweep here (unlike agent.json above): these are PUBLIC keys, so a
- * stray temp is litter rather than a credential.
- */
-async function removeAuthorizedKeysForDevice(deviceId: string): Promise<void> {
-  let content: string
-  try {
-    content = await fs.readFile(AUTH_KEYS_PATH, 'utf8')
-  } catch {
-    return // no file → nothing to revoke
-  }
-  const next = filterAuthorizedKeys(content, deviceId)
-  if (next === content) return
-  const tmp = `${AUTH_KEYS_PATH}.${process.pid}.${++writeSeq}.tmp`
-  try {
-    await fs.writeFile(tmp, next, { mode: 0o600 })
-    await fs.chmod(tmp, 0o600).catch(() => {})
-    await fs.rename(tmp, AUTH_KEYS_PATH)
-  } catch (e) {
-    // A unique name never self-heals the way the fixed one did (the next write just reused it), so
-    // a failed write has to remove its own temp — otherwise every failed revoke leaves another
-    // orphan copy of the user's key file in ~/.ssh forever. The error still propagates.
-    await fs.rm(tmp, { force: true }).catch(() => {})
-    throw e
-  }
-  await fs.chmod(AUTH_KEYS_PATH, 0o600).catch(() => {})
-}
-
 /** Read the whole request body (capped), rejecting oversized payloads. */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -403,6 +332,75 @@ export function createPairingService(relayDeps?: PairingRelayDeps): PairingServi
     // …nor surface on them, while the caller still sees ITS OWN failure.
     mutateChain = run.then(() => undefined, () => undefined)
     return run
+  }
+
+  /**
+   * Write agent.json atomically (0600), creating ~/.nodeterm (0700) if needed.
+   *
+   * Lives INSIDE the factory, below `serialize`, so no code path outside this closure can reach
+   * it unchained — the same by-construction guarantee as GitHubControlStore's private write().
+   * Overlapping entry points (the pairing POST, renderer revokes) are ordered by the chain; the
+   * per-call temp name covers the writers the chain cannot see — the host agent is a separate
+   * PROCESS writing this same ~/.nodeterm (`writeSeq` stays module-level so a second service
+   * instance in THIS process keeps counting instead of restarting into colliding names), and a
+   * crash between tmp-write and rename.
+   */
+  async function writeAgentJson(obj: Record<string, unknown>): Promise<void> {
+    await fs.mkdir(AGENT_DIR, { recursive: true, mode: 0o700 })
+    await fs.chmod(AGENT_DIR, 0o700).catch(() => {})
+    await sweepStaleAgentTmp()
+    const tmp = `${AGENT_JSON_PATH}.${process.pid}.${++writeSeq}.tmp`
+    try {
+      await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 })
+      await fs.chmod(tmp, 0o600).catch(() => {})
+      await fs.rename(tmp, AGENT_JSON_PATH)
+    } catch (e) {
+      // A unique name never self-heals the way the fixed one did (the next write just reused it),
+      // and here a leaked temp IS a leaked credential: only this cleanup — or a later run's sweep,
+      // once this pid is dead — will ever collect it. The error still propagates.
+      await fs.rm(tmp, { force: true }).catch(() => {})
+      throw e
+    }
+    await fs.chmod(AGENT_JSON_PATH, 0o600).catch(() => {})
+  }
+
+  /** Persist a device into agent.json, preserving all other fields the host agent wrote. */
+  async function persistDevice(entry: DeviceEntry): Promise<void> {
+    const obj = await readAgentJson()
+    const devices = upsertDevice(readDevices(obj), entry)
+    await writeAgentJson({ ...obj, devices })
+  }
+
+  /**
+   * Delete every authorized_keys line stamped for `deviceId`, rewriting the file atomically
+   * (0600). In the closure below `serialize` for the same by-construction reason as
+   * writeAgentJson; the per-call temp name covers the chain-invisible writers and the crash
+   * window — a spliced line is a key sshd rejects, i.e. the keys that were supposed to SURVIVE
+   * the revoke stop working. No orphan sweep here (unlike agent.json): these are PUBLIC keys, so
+   * a stray temp is litter rather than a credential.
+   */
+  async function removeAuthorizedKeysForDevice(deviceId: string): Promise<void> {
+    let content: string
+    try {
+      content = await fs.readFile(AUTH_KEYS_PATH, 'utf8')
+    } catch {
+      return // no file → nothing to revoke
+    }
+    const next = filterAuthorizedKeys(content, deviceId)
+    if (next === content) return
+    const tmp = `${AUTH_KEYS_PATH}.${process.pid}.${++writeSeq}.tmp`
+    try {
+      await fs.writeFile(tmp, next, { mode: 0o600 })
+      await fs.chmod(tmp, 0o600).catch(() => {})
+      await fs.rename(tmp, AUTH_KEYS_PATH)
+    } catch (e) {
+      // A unique name never self-heals the way the fixed one did (the next write just reused it),
+      // so a failed write has to remove its own temp — otherwise every failed revoke leaves
+      // another orphan copy of the user's key file in ~/.ssh forever. The error still propagates.
+      await fs.rm(tmp, { force: true }).catch(() => {})
+      throw e
+    }
+    await fs.chmod(AUTH_KEYS_PATH, 0o600).catch(() => {})
   }
 
   const cleanup = (): void => {
