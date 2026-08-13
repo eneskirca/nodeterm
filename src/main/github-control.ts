@@ -68,13 +68,11 @@ async function sweepStaleTmp(target: string): Promise<void> {
 async function atomicWrite(file: string, document: TokenDocument): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true })
   await sweepStaleTmp(file)
-  // The temp name is unique per call because nothing serializes `IPC.githubControlSaveToken`: the
-  // handler is reachable from the preload bridge (src/preload/index.ts) AND from a remote client
-  // over the ws bridge (src/renderer/bridge/ws-bridge.ts), and GitHubHostController.saveToken
-  // awaits a NETWORK validateToken before it reaches this write (src/core/github/host.ts), so two
-  // saves overlap for as long as a round trip to github.com. With a shared name one writer's
-  // rename publishes the other's half-written PAT, or moves the file out from under it entirely
-  // and the loser's rename fails.
+  // The store's per-instance chain orders this write against its sibling mutations; the per-call
+  // temp name covers the writers the chain cannot see — a second app process on the same
+  // userDataDir (every process's counter starts at 0, hence the pid) and a crash between
+  // tmp-write and rename. With a shared name one writer's rename publishes the other's
+  // half-written PAT, or moves the file out from under it entirely and the loser's rename fails.
   const temporary = `${file}.${process.pid}.${++writeSeq}.tmp`
   try {
     await fs.writeFile(temporary, JSON.stringify(document), { encoding: 'utf-8', mode: 0o600 })
@@ -91,10 +89,22 @@ async function atomicWrite(file: string, document: TokenDocument): Promise<void>
 }
 
 export class ElectronGitHubSecretStore implements GitHubSecretStore {
+  /** Mutations run FIFO (the WorkspaceStore.saveChain idiom): a clear's rm must never land inside
+   *  an in-flight save's write-to-rename window — the parked rename would resurrect the PAT the
+   *  UI just reported cleared — and save's read-modify-write of the document kind stays
+   *  consistent. Each caller still sees only its own mutation's failure. */
+  private chain: Promise<unknown> = Promise.resolve()
+
   constructor(
     private readonly userDataDir: string,
     private readonly safeStorage: SafeStorageLike
   ) {}
+
+  private chained<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn)
+    this.chain = run.catch(() => {})
+    return run
+  }
 
   get availability(): GitHubSecretAvailability {
     return this.canEncrypt() ? 'encrypted' : 'restricted-file'
@@ -104,7 +114,11 @@ export class ElectronGitHubSecretStore implements GitHubSecretStore {
     return path.join(this.userDataDir, FILE_NAME)
   }
 
-  async save(token: string): Promise<void> {
+  save(token: string): Promise<void> {
+    return this.chained(() => this.saveNow(token))
+  }
+
+  private async saveNow(token: string): Promise<void> {
     if (!validToken(token)) throw new GitHubSecretError('invalid-token')
     const current = await this.readDocument()
     if (current?.kind === 'safe-storage' && !this.canEncrypt()) {
@@ -120,10 +134,12 @@ export class ElectronGitHubSecretStore implements GitHubSecretStore {
     await atomicWrite(this.filePath, document)
   }
 
-  async clear(): Promise<void> {
-    // Sweep here too: clearing a token that leaves an orphan temp behind has not cleared anything.
-    await sweepStaleTmp(this.filePath)
-    await fs.rm(this.filePath, { force: true })
+  clear(): Promise<void> {
+    return this.chained(async () => {
+      // Sweep here too: clearing a token that leaves an orphan temp behind has not cleared anything.
+      await sweepStaleTmp(this.filePath)
+      await fs.rm(this.filePath, { force: true })
+    })
   }
 
   async readForHost(): Promise<string | null> {

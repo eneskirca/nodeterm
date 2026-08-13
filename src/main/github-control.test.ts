@@ -83,56 +83,54 @@ describe('ElectronGitHubSecretStore atomic write', () => {
   // as wide as a round trip to github.com. One fixed `${file}.tmp` name means two writers share a
   // single tmp file: one writer's rename publishes the other's half-written PAT, or moves the file
   // out from under it entirely and the loser's rename fails.
-  it('two overlapping token saves never share a tmp file (no torn write, no leftovers)', async () => {
+  it('overlapping token saves never reuse a tmp name (no torn write, no leftovers)', async () => {
     const store = new ElectronGitHubSecretStore(userDataDir, safeStorage())
-    // Payloads that differ in LENGTH and in every byte: a spliced result then keeps a tail of the
-    // longer write and fails JSON.parse, instead of quietly parsing as the shorter one.
+    // The store's chain serializes its own mutations, so the writes arrive one after the other —
+    // uniqueness is carried by the `<pid>.<seq>` name alone. That name is what protects writers
+    // the chain cannot see (a second app process on the same userDataDir) and the crash window
+    // between tmp-write and rename, so it stays pinned here.
     const long = `github_pat_${'a'.repeat(600)}`
     const short = `github_pat_${'b'.repeat(7)}`
-    // Hold every writer between its tmp write and its rename, so BOTH tmp files are on disk before
-    // either rename runs — the overlap window a real crash tears open.
     const tmps: string[] = []
-    let open!: () => void
-    let timer!: ReturnType<typeof setTimeout>
-    // If a future change serializes the writers, the second write never arrives and the barrier
-    // would hang to an opaque 5s vitest timeout. Fail loudly, naming what this test pins.
-    const bothWritten = Promise.race([
-      new Promise<void>((r) => (open = r)),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('second concurrent tmp write never arrived — writers appear ' +
-            'serialized; this test pins the unique-tmp-name design')),
-          2000
-        )
-      })
-    ])
     const realWriteFile = fs.writeFile
     vi.spyOn(fs, 'writeFile').mockImplementation((async (p: any, ...rest: any[]) => {
-      const out = await (realWriteFile as any)(p, ...rest)
-      if (String(p).startsWith(tokenFile())) {
-        tmps.push(String(p))
-        if (tmps.length >= 2) {
-          clearTimeout(timer)
-          open()
-        }
-        await bothWritten
-      }
-      return out
+      if (String(p).startsWith(tokenFile())) tmps.push(String(p))
+      return (realWriteFile as any)(p, ...rest)
     }) as any)
 
-    // allSettled, not all: with a shared name the LOSER's rename fails (ENOENT — the winner already
-    // moved the file away), and letting that reject here would report the symptom before the cause.
-    const settled = await Promise.allSettled([store.save(long), store.save(short)])
+    await Promise.all([store.save(long), store.save(short)])
     vi.restoreAllMocks()
 
-    expect(new Set(tmps).size).toBe(2) // each writer owned its own tmp file
-    expect(settled.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']) // …so neither lost it
-    // One COMPLETE document won — parsing at all proves it is not a prefix of the other.
+    expect(new Set(tmps).size).toBe(2) // each write owned its own tmp file
+    // One COMPLETE document won — parsing at all proves it is not a prefix of the other — and
+    // FIFO makes it the last call.
     expect(JSON.parse(await fs.readFile(tokenFile(), 'utf-8')))
       .toMatchObject({ version: 1, kind: 'safe-storage' })
-    expect([long, short]).toContain(await store.readForHost())
+    expect(await store.readForHost()).toBe(short)
     // …and no tmp survives: a leaked one here is a live PAT at 0600 that nothing overwrites.
     expect(await tmpsLeft()).toEqual([])
+  })
+
+  it('a clear is never undone by an in-flight save — mutations run in call order', async () => {
+    const store = new ElectronGitHubSecretStore(userDataDir, safeStorage())
+    // Park the save's rename: unserialized, the clear's rm runs while the save sits between its
+    // tmp write and its rename — then the parked rename lands and resurrects the PAT the UI just
+    // reported cleared. Chained, the clear waits its turn and the last call is the last word.
+    const realRename = fs.rename
+    let delayed = false
+    vi.spyOn(fs, 'rename').mockImplementation((async (a: any, b: any) => {
+      if (String(b).startsWith(tokenFile()) && !delayed) {
+        delayed = true
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return (realRename as any)(a, b)
+    }) as any)
+
+    await Promise.all([store.save(`github_pat_${'c'.repeat(30)}`), store.clear()])
+    vi.restoreAllMocks()
+
+    expect(await store.readForHost()).toBeNull() // cleared means CLEARED
+    expect(existsSync(tokenFile())).toBe(false)
   })
 
   it('sweeps orphan temps left by dead writers, but never one bearing our own pid', async () => {

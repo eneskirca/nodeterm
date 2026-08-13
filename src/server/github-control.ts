@@ -56,23 +56,36 @@ async function sweepStaleTmp(target: string): Promise<void> {
 export class ServerGitHubSecretStore implements GitHubSecretStore {
   readonly availability = 'restricted-file' as const
 
+  /** Mutations run FIFO (the WorkspaceStore.saveChain idiom): a clear's rm must never land inside
+   *  an in-flight save's write-to-rename window — the parked rename would resurrect the PAT the
+   *  UI just reported cleared. Each caller still sees only its own mutation's failure. */
+  private chain: Promise<unknown> = Promise.resolve()
+
   constructor(private readonly userDataDir: string) {}
+
+  private chained<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn)
+    this.chain = run.catch(() => {})
+    return run
+  }
 
   private get filePath(): string {
     return path.join(this.userDataDir, FILE_NAME)
   }
 
-  async save(token: string): Promise<void> {
+  save(token: string): Promise<void> {
+    return this.chained(() => this.saveNow(token))
+  }
+
+  private async saveNow(token: string): Promise<void> {
     if (!validToken(token)) throw new ServerGitHubSecretError('invalid-token')
     await fs.mkdir(this.userDataDir, { recursive: true })
     await sweepStaleTmp(this.filePath)
-    // The temp name is unique per call because nothing serializes `IPC.githubControlSaveToken`: it
-    // is registered through `platform.handle` and reached over the concurrent WS dispatch in
-    // src/server/ws.ts with no queue in front of it, and GitHubHostController.saveToken awaits a
-    // NETWORK validateToken before it reaches this write (src/core/github/host.ts), so two saves
-    // overlap for as long as a round trip to github.com. With a shared name one writer's rename
-    // publishes the other's half-written PAT, or moves the file out from under it entirely and the
-    // loser's rename fails.
+    // The store's per-instance chain orders this write against its sibling mutations; the per-call
+    // temp name covers the writers the chain cannot see — a second `nodeterm-server --data-dir X`
+    // process on the same dir (every process's counter starts at 0, hence the pid) and a crash
+    // between tmp-write and rename. With a shared name one writer's rename publishes the other's
+    // half-written PAT, or moves the file out from under it entirely and the loser's rename fails.
     const temporary = `${this.filePath}.${process.pid}.${++writeSeq}.tmp`
     try {
       await fs.writeFile(temporary, JSON.stringify({ version: 1, token }), {
@@ -91,10 +104,12 @@ export class ServerGitHubSecretStore implements GitHubSecretStore {
     await fs.chmod(this.filePath, 0o600)
   }
 
-  async clear(): Promise<void> {
-    // Sweep here too: clearing a token that leaves an orphan temp behind has not cleared anything.
-    await sweepStaleTmp(this.filePath)
-    await fs.rm(this.filePath, { force: true })
+  clear(): Promise<void> {
+    return this.chained(async () => {
+      // Sweep here too: clearing a token that leaves an orphan temp behind has not cleared anything.
+      await sweepStaleTmp(this.filePath)
+      await fs.rm(this.filePath, { force: true })
+    })
   }
 
   async readForHost(): Promise<string | null> {
