@@ -142,36 +142,54 @@ export class WorkspaceStore {
     let raw: string
     try {
       raw = await fs.readFile(this.indexPath, 'utf-8')
-    } catch {
-      // No index. Usually a first run — but it is also what a crash BETWEEN the sideline rename
-      // below and the next index write leaves behind, and that case owes the user the note. Only
-      // this branch pays for the readdir, and only for a load that may touch disk anyway.
-      if (sideline) this.noteCorruptIndex(await this.newestSidelined())
-      return EMPTY_WORKSPACE
+    } catch (e) {
+      // No file is usually a first run — but it is also what a crash BETWEEN the sideline rename
+      // below and the next index write leaves behind, and that case owes the user the note. Any
+      // OTHER read failure (EACCES, EIO) is transient, and "a failed read is never evidence of
+      // absence" applies to our own index too: degrading to an empty workspace here is written
+      // straight back by the renderer's unconditional post-load save, turning one unreadable boot
+      // into permanent loss of the inline projects. Propagate instead — every caller already
+      // catches it, and the renderer's `.then()` simply never runs: no hydrate, no save, file
+      // intact next boot.
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        if (sideline) this.noteCorruptIndex(await this.newestSidelined())
+        return EMPTY_WORKSPACE
+      }
+      throw e
     }
     let parsed: unknown
     try {
       parsed = JSON.parse(raw)
     } catch {
-      // Same rule as a corrupt project.json: sideline the only copy so the boot flow's
-      // unconditional save cannot replace it with an empty index. Read-only callers must not
-      // mutate the disk (sideline: false).
-      if (sideline) {
-        const backup = `${path.basename(this.indexPath)}.corrupt-${Date.now()}`
-        try {
-          await fs.rename(this.indexPath, path.join(platform().userDataDir, backup))
-          // Only AFTER the rename succeeded: the note promises a backup exists.
-          this.noteCorruptIndex(backup)
-        } catch { /* best effort — never destroy data */ }
-      }
-      return EMPTY_WORKSPACE
+      return this.sidelineIndex(sideline)
     }
     const anyParsed = parsed as { version?: number }
     if (anyParsed?.version === 3) return this.loadV3(parsed as WorkspaceIndexV3, sideline)
     // v1/v2: assemble in memory now; the first save() performs the actual migration.
     const legacy = migrateLegacy(parsed)
+    if (!legacy) return this.sidelineIndex(sideline) // parses, but no version ever wrote this shape
     if (legacy.projects.length) this.pendingV2Backup = raw
     return legacy
+  }
+
+  /**
+   * The index is present but unusable (unparsable, or a shape no version wrote). Sideline the
+   * only copy — exactly what readProjectFile does for a project file — so neither the empty
+   * workspace we return nor the save the renderer fires right after it can overwrite it: an
+   * inline (folderless) project exists NOWHERE else on disk. Read-only callers (`sideline:
+   * false` — the relay projects.list blob, server boot) mutate nothing, same as the per-project
+   * path.
+   */
+  private async sidelineIndex(sideline: boolean): Promise<Workspace> {
+    if (sideline) {
+      const backup = `${path.basename(this.indexPath)}.corrupt-${Date.now()}`
+      try {
+        await fs.rename(this.indexPath, path.join(platform().userDataDir, backup))
+        // Only AFTER the rename succeeded: the note promises a backup exists.
+        this.noteCorruptIndex(backup)
+      } catch { /* best effort — never destroy data */ }
+    }
+    return EMPTY_WORKSPACE
   }
 
   /** Newest `workspace.json.corrupt-<ts>` sitting in userData, or null. */
@@ -827,8 +845,10 @@ function unavailableProject(e: { id: string; name: string; color: string; closed
   }
 }
 
-/** Normalize legacy on-disk shapes (v1 single canvas, v2 projects) into a v2-shaped workspace. */
-function migrateLegacy(parsed: unknown): Workspace {
+/** Normalize legacy on-disk shapes (v1 single canvas, v2 projects) into a v2-shaped workspace.
+ *  `null` = not a shape any version of the app ever wrote, i.e. the file is corrupt — the caller
+ *  sidelines it rather than degrading to empty on top of it. */
+function migrateLegacy(parsed: unknown): Workspace | null {
   const ws = parsed as Partial<Workspace> & Partial<WorkspaceV1>
   if (ws?.version === 2 && Array.isArray(ws.projects)) {
     const active = ws.projects.some((p) => p.id === ws.activeProjectId)
@@ -846,5 +866,5 @@ function migrateLegacy(parsed: unknown): Workspace {
       }]
     }
   }
-  return EMPTY_WORKSPACE
+  return null
 }

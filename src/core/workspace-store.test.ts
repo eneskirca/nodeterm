@@ -26,6 +26,7 @@ beforeEach(async () => {
   initPlatform(fake)
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
   resetPlatformForTests()
   await fs.rm(userData, { recursive: true, force: true })
   await fs.rm(projRoot, { recursive: true, force: true })
@@ -313,6 +314,118 @@ describe('unavailable & corrupt refs', () => {
     expect(loaded.projects[0].unavailable).toBe(true)
     const dir = await fs.readdir(path.join(projRoot, '.nodeterm'))
     expect(dir.some((f) => f.startsWith('project.json.corrupt-'))).toBe(false) // left in place
+  })
+})
+
+// The INDEX itself (workspace.json), not the per-project files above. The renderer fires an
+// unconditional save right after load (Canvas.tsx), so anything load() quietly degrades to an empty
+// workspace is written straight back over the real file on that same boot — and an inline
+// (folderless) project lives ONLY in this file, so there is no second copy to recover it from.
+// Same rule as a corrupt project.json: set it aside first, THEN degrade.
+describe('corrupt workspace index (the boot-save overwrite)', () => {
+  const indexPath = (): string => path.join(userData, 'workspace.json')
+  const sidelines = async (): Promise<string[]> =>
+    (await fs.readdir(userData)).filter((f) => f.startsWith('workspace.json.corrupt-'))
+
+  it('sets aside a corrupt index before returning empty — the boot save cannot destroy it', async () => {
+    // A truncated index (what a torn write leaves behind) still holding the ONLY copy of an inline
+    // project's canvas.
+    await new WorkspaceStore().save(ws([project({ id: 'inline1', name: 'only-copy' })]))
+    const whole = await fs.readFile(indexPath(), 'utf-8')
+    await fs.writeFile(indexPath(), whole.slice(0, -12))
+    const torn = await fs.readFile(indexPath(), 'utf-8')
+    expect(torn).toContain('only-copy') // the data is still in there, hand-recoverable
+
+    const store = new WorkspaceStore()
+    const loaded = await store.load()
+    expect(loaded.projects).toEqual([]) // still degrades — the canvas has to open
+
+    const [sidelined] = await sidelines()
+    expect(sidelined).toBeTruthy()
+    expect(await fs.readFile(path.join(userData, sidelined), 'utf-8')).toBe(torn) // bytes intact
+
+    await store.save(loaded) // the renderer's unconditional post-load save lands here
+    expect(await fs.readFile(path.join(userData, sidelined), 'utf-8')).toBe(torn) // still recoverable
+    expect(JSON.parse(await fs.readFile(indexPath(), 'utf-8')).entries).toEqual([]) // empty took its place
+  })
+
+  it('sets aside a valid-JSON but unrecognized index too (hand-edited / future version)', async () => {
+    await fs.writeFile(indexPath(), '{"version": 99, "entries": []}')
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects).toEqual([])
+    expect(await sidelines()).toHaveLength(1)
+  })
+
+  it('a missing index is a fresh start: empty workspace, nothing set aside', async () => {
+    await expect(fs.access(indexPath())).rejects.toThrow() // never written
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects).toEqual([])
+    expect(await sidelines()).toEqual([])
+  })
+
+  it('an EMPTY but well-formed legacy index is not corrupt — no sideline', async () => {
+    await fs.writeFile(indexPath(), JSON.stringify({ version: 2, activeProjectId: '', projects: [] }))
+    expect((await new WorkspaceStore().load()).projects).toEqual([])
+    expect(await sidelines()).toEqual([])
+  })
+
+  it('a non-ENOENT read failure propagates instead of degrading (EACCES must not become an empty index)', async () => {
+    // A failed read is never evidence of absence — the same rule reconcileSsh applies to a remote
+    // read. Degrading to empty here would hand the renderer an empty workspace whose unconditional
+    // post-load save then replaces the real index: one unreadable boot and the inline projects are
+    // gone for good. Rejecting instead means Canvas.tsx's `.then()` never runs — nothing is
+    // hydrated, nothing is saved, and the file is still there on the next boot.
+    await new WorkspaceStore().save(ws([project({ id: 'inline1', name: 'only-copy' })]))
+    const before = await fs.readFile(indexPath(), 'utf-8')
+    const realReadFile = fs.readFile
+    vi.spyOn(fs, 'readFile').mockImplementation(((p: any, ...rest: any[]) =>
+      String(p) === indexPath()
+        ? Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+        : (realReadFile as any)(p, ...rest)) as any)
+
+    await expect(new WorkspaceStore().load()).rejects.toThrow(/EACCES/)
+
+    vi.restoreAllMocks()
+    expect(await fs.readFile(indexPath(), 'utf-8')).toBe(before) // never clobbered
+    expect(await sidelines()).toEqual([]) // and not sidelined — nothing is wrong with the file
+  })
+})
+
+// workspace.json has TWO writers in production — the debounced renderer save() and the SSH poll's
+// refreshSshProject — so one fixed `${file}.tmp` name means they share a single tmp file: one
+// writer's rename publishes (or deletes) the other's bytes. The sibling scrollback-store already
+// names its tmp per call for exactly this reason, and the torn index this otherwise leaves behind
+// is precisely what the corrupt-index recovery above then has to clean up.
+describe('writeAtomic under concurrent writers', () => {
+  it('overlapping index saves never reuse a tmp name (no torn write, no leftovers)', async () => {
+    const indexPath = path.join(userData, 'workspace.json')
+    // save() calls are serialized by the store's saveChain, so their writes arrive one after the
+    // other — uniqueness is carried by the `<pid>.<seq>` name alone. That name is what protects
+    // the writers that BYPASS the chain (a second app instance, the SSH poll's index write) and
+    // the crash window between tmp-write and rename, so it stays pinned here.
+    const tmps: string[] = []
+    const realWriteFile = fs.writeFile
+    vi.spyOn(fs, 'writeFile').mockImplementation((async (p: any, ...rest: any[]) => {
+      if (String(p).startsWith(indexPath)) tmps.push(String(p))
+      return (realWriteFile as any)(p, ...rest)
+    }) as any)
+
+    const store = new WorkspaceStore()
+    // Inline (cwd-less) projects, so save() does nothing but write the index.
+    await Promise.all([
+      store.save(ws([project({ id: 'a', name: 'first' })])),
+      store.save(ws([project({ id: 'b', name: 'second' })]))
+    ])
+    vi.restoreAllMocks()
+
+    expect(new Set(tmps).size).toBe(2) // each writer owned its own tmp file
+    // One COMPLETE write won — not a prefix of one and not a missing file.
+    const final = JSON.parse(await fs.readFile(indexPath, 'utf-8'))
+    expect(final.version).toBe(3)
+    expect(final.entries).toHaveLength(1)
+    expect(['a', 'b']).toContain(final.entries[0].id)
+    // …and nothing is left for the next writer to inherit.
+    expect((await fs.readdir(userData)).filter((f) => f.endsWith('.tmp'))).toEqual([])
   })
 })
 
