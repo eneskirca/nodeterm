@@ -45,7 +45,8 @@ function buildSections(dictationKeys: string[], dictationLabel: string): { title
         { keys: ['Left-drag'], label: 'Box-select (touch to select)' },
         { keys: ['Middle / Right-drag'], label: 'Pan the canvas' },
         { keys: ['Double-click'], label: 'Center & focus a node' },
-        { keys: ['⌘', 'wheel'], label: 'Zoom in / out' }
+        { keys: ['⌘', 'wheel'], label: 'Zoom in / out' },
+        { keys: ['⌘', '0'], label: 'Fit view' }
       ]
     },
     {

@@ -4682,6 +4682,12 @@ export function Canvas() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '/') {
         e.preventDefault()
         setShortcutsOpen((v) => !v)
+      } else if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.code === 'Digit0') {
+        // Fit view. Matched on `e.code` (physical key), same as the Cmd/Ctrl+1-9 project-jump
+        // chord, so it fires from a non-US keyboard layout too. Digit0 is deliberately excluded
+        // from that chord's regex, so the two can never collide.
+        e.preventDefault()
+        fitAll()
       } else if (projectJumpDigit(e) !== null) {
         // Cmd/Ctrl+1-9 jumps to the Nth project — but only when the app actually owns the key
         // (desktop shell, and the digit addresses an open project). `liveProjectJumpTarget`
@@ -4702,7 +4708,7 @@ export function Canvas() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleSessionsPin, switchProject])
+  }, [toggleSessionsPin, switchProject, fitAll])
 
   // Apply the accent color as a CSS variable.
   useEffect(() => {
