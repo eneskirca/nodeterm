@@ -859,7 +859,16 @@ export interface Settings {
   /** Empty string = use the system default shell. */
   defaultShell: string
   gridSize: number
+  /** Drag-time snap: while ON, dragging a node rounds its position to the grid. A live editor in
+   *  BehaviorSection; the canvas reads it for the React Flow `snapToGrid` prop. Distinct from
+   *  `autoAlignGrid` (a one-shot arrange-all), which is a mode, not a drag constraint. */
   snapToGrid: boolean
+  /** Snap-to-grid MODE (like a desktop "Auto arrange"): while ON, every node is snapped to the
+   *  grid at the moment the mode is turned on (the existing one-shot `alignToGrid` run over all
+   *  node ids). Toggled from the native View menu (with a checkmark) and Settings → Behavior.
+   *  Distinct from `snapToGrid` (drag-time snap) — turning this on arranges once; it does not
+   *  constrain future drags. v1: arrange-all-on-enable only. */
+  autoAlignGrid: boolean
   /** Default size (px) for NEW terminal/agent nodes on the canvas. Existing nodes keep
    *  whatever size they were saved with; other node kinds keep their own defaults. */
   defaultNodeWidth: number
@@ -1081,6 +1090,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultShell: '',
   gridSize: 24,
   snapToGrid: false,
+  autoAlignGrid: false,
   defaultNodeWidth: 640,
   defaultNodeHeight: 440,
   sidebarAutoCollapse: true,
@@ -2249,6 +2259,12 @@ export interface NodeTerminalApi {
   onMarkdownToggle(listener: () => void): () => void
   /** Fires when the user presses Cmd/Ctrl+W (close selected node). Returns unsubscribe. */
   onCloseNode(listener: () => void): () => void
+  /** Native View menu → Snap to Grid toggle. Returns unsubscribe. */
+  onToggleAutoAlign(listener: () => void): () => void
+  /** Native View menu → Fit View. Returns unsubscribe. */
+  onFitView(listener: () => void): () => void
+  /** Native View menu → Toggle Kanban / Canvas view. Returns unsubscribe. */
+  onToggleKanban(listener: () => void): () => void
   /** Fires when the native app menu's "Settings…" item (⌘,) is clicked. Returns unsubscribe. */
   onOpenSettings(listener: () => void): () => void
   /** Close the application window (Cmd/Ctrl+W fallback when no node is selected). */

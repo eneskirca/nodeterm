@@ -39,8 +39,8 @@ export interface SessionsSidebarProps {
    *  or the outgoing project's unsaved edits are dropped by the active-project reload and the
    *  new activeProjectId never reaches disk (the app reopens on the old project). */
   onSwitchProject(projectId: string): void
-  /** "+" on a project header: open the agent-creation menu at the cursor (switching to the
-   *  project first if it isn't active). The event positions the menu. */
+  /** "+" on a project header: open the add-node menu at the cursor (switching to the project
+   *  first if it isn't active). The event positions the menu. */
   onAddToProject(projectId: string, e: { clientX: number; clientY: number }): void
   /** Move a node into a canvas group (groupId) or out to the top level (null). */
   onMoveToGroup(projectId: string, nodeId: string, groupId: string | null): void
@@ -537,7 +537,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                 <span className="ss-group__count">{projectCount(g)}</span>
                 <button
                   className="ss-group__add"
-                  title="New agent in this project"
+                  title="Add a node to this project"
                   onClick={(e) => {
                     e.stopPropagation()
                     props.onAddToProject(g.projectId, { clientX: e.clientX, clientY: e.clientY })

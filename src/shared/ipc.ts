@@ -61,6 +61,12 @@ export const IPC = {
    *  renderer opens the settings page — same path as the in-canvas gear button / Cmd+, keydown. */
   appOpenSettings: 'app:open-settings',
   appFocusWindow: 'app:focus-window',
+  /** Native View menu → renderer: toggle the Snap-to-Grid arrange mode. */
+  appToggleAutoAlign: 'app:toggle-auto-align',
+  /** Native View menu → renderer: fit the canvas to its nodes. */
+  appFitView: 'app:fit-view',
+  /** Native View menu → renderer: toggle the kanban / canvas view. */
+  appToggleKanban: 'app:toggle-kanban',
   /** Write text to the system clipboard from the MAIN process. Renderer-side `clipboard` access is
    *  deprecated in Electron; the renderer sends this instead (fire-and-forget). */
   clipboardWrite: 'clipboard:write',

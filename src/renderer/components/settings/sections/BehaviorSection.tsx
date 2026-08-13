@@ -18,6 +18,10 @@ const ROWS = {
     keywords: ['node', 'size', 'width', 'height', 'terminal', 'default']
   },
   snap: { title: 'Snap to grid', keywords: ['snap', 'grid', 'align'] },
+  autoAlign: {
+    title: 'Snap to grid mode (auto-arrange)',
+    keywords: ['snap', 'grid', 'align', 'arrange', 'auto', 'mode']
+  },
   panHover: { title: 'Pan-hover delay (ms)', keywords: ['pan', 'hover', 'delay', 'focus', 'guard'] },
   doubleClick: { title: 'Double-click to focus', keywords: ['double', 'click', 'focus'] },
   sidebarCollapse: {
@@ -107,6 +111,19 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               checked={settings.snapToGrid}
               onChange={(v) => update({ snapToGrid: v })}
               ariaLabel="Snap to grid"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.autoAlign}>
+        <FieldRow
+          label="Snap to grid mode"
+          description="Arranges every node to the grid at the moment you turn it on — like a desktop “Auto arrange”. Distinct from the drag-snap toggle above, which only constrains dragging."
+          control={
+            <Switch
+              checked={settings.autoAlignGrid}
+              onChange={(v) => update({ autoAlignGrid: v })}
+              ariaLabel="Snap to grid mode"
             />
           }
         />

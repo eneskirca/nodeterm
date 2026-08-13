@@ -364,31 +364,49 @@ if (process.platform !== 'win32' && typeof process.setFdLimit === 'function') {
 }
 
 /**
- * The native application menu. macOS-idiomatic: the app-name menu (About/Quit) first, then an
- * Edit menu with the standard text-editing roles (Undo/Redo/Cut/Copy/Paste/Select All — these
- * make keyboard shortcuts work in inputs and the webview), then a Window menu, with a
- * "Settings…" item (⌘,) in the app menu that opens the settings page.
+ * Build the native application menu. The View submenu is the home of the Snap-to-Grid mode
+ * toggle (with a real native checkmark — `checked` reflects `settings.autoAlignGrid`), plus Fit
+ * View and the Kanban / Canvas view toggle. Menu clicks send IPC to the renderer, which owns the
+ * canvas state.
  *
- * Until now the app shipped with Electron's DEFAULT menu (which has no Settings item, and whose
- * Edit roles only covered the main webContents). The only way to reach Settings was the in-canvas
- * gear button. This adds the menu entry Mac users look for reflexively (⌘, → app menu → Settings).
- *
- * The Settings item sends `IPC.appOpenSettings` to the renderer, which opens the same settings page
- * the gear button and the Cmd+, keydown do — one IPC, the renderer owns the open/close state.
- * `before-input-event` already routes a typed ⌘, to the renderer, so this menu item is what makes
- * the MENU route (clicking the item, or focusing the menu bar and pressing ⌘,) reach the same
- * place: a menu click does NOT fire before-input-event, so without this the menu would be inert.
+ * Rebuilt on every settings change (see the `settingsStore.onChange` hook in `whenReady`) so the
+ * Snap-to-Grid checkmark and the Kanban/Canvas label stay live — the renderer is the sole settings
+ * writer, so a change persists through `settingsStore` and fires this rebuild. No reverse IPC.
  */
-function buildAppMenu(): void {
+function buildAppMenu(win: BrowserWindow): void {
   const isMac = process.platform === 'darwin'
-  const settingsItem = {
+  const s = settingsStore.get()
+  const send = (channel: string): void => {
+    if (!win.isDestroyed()) win.webContents.send(channel)
+  }
+  const settingsItem: Electron.MenuItemConstructorOptions = {
     label: isMac ? 'Settings…' : 'Settings',
     accelerator: 'CmdOrCtrl+,',
-    click: () => {
-      const win = getMainWindow()
-      if (win && !win.isDestroyed()) win.webContents.send(IPC.appOpenSettings)
-    }
+    click: () => send(IPC.appOpenSettings)
   }
+  // The kanban toggle's label depends on which view is active. The renderer owns that state; main
+  // can't read it, so the label is generic and the renderer's handler decides direction. (A live
+  // label would need a reverse-IPC the renderer drives on toggle — out of scope for this change.)
+  const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
+    { role: 'toggleDevTools' },
+    { type: 'separator' },
+    {
+      label: 'Snap to Grid',
+      type: 'checkbox',
+      checked: s.autoAlignGrid === true,
+      click: () => send(IPC.appToggleAutoAlign)
+    },
+    {
+      label: 'Fit View',
+      accelerator: 'CmdOrCtrl+0',
+      click: () => send(IPC.appFitView)
+    },
+    {
+      label: 'Toggle Kanban Board',
+      accelerator: 'CmdOrCtrl+Shift+B',
+      click: () => send(IPC.appToggleKanban)
+    }
+  ]
   const template: Electron.MenuItemConstructorOptions[] = isMac
     ? [
         {
@@ -421,25 +439,14 @@ function buildAppMenu(): void {
             { role: 'selectAll' }
           ]
         },
-        {
-          label: 'View',
-          submenu: [{ role: 'toggleDevTools' }]
-        },
+        { label: 'View', submenu: viewSubmenu },
         {
           label: 'Window',
-          submenu: [
-            { role: 'minimize' },
-            { role: 'zoom' },
-            { type: 'separator' },
-            { role: 'front' }
-          ]
+          submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }]
         }
       ]
     : [
-        {
-          label: 'File',
-          submenu: [{ role: 'quit' }]
-        },
+        { label: 'File', submenu: [{ role: 'quit' }] },
         {
           label: 'Edit',
           submenu: [
@@ -453,18 +460,9 @@ function buildAppMenu(): void {
             { role: 'selectAll' }
           ]
         },
-        {
-          label: 'View',
-          submenu: [{ role: 'toggleDevTools' }]
-        },
-        {
-          label: 'Settings',
-          submenu: [settingsItem]
-        },
-        {
-          label: 'Window',
-          submenu: [{ role: 'minimize' }, { role: 'close' }]
-        }
+        { label: 'View', submenu: viewSubmenu },
+        { label: 'Settings', submenu: [settingsItem] },
+        { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'close' }] }
       ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -1069,7 +1067,6 @@ app.whenReady().then(async () => {
     console.error('[ssh-askpass] script generation failed, relay disabled:', e)
     return undefined
   })
-  buildAppMenu()
   const win = createWindow()
   // NT_MULTI instances are throwaway dev sandboxes. The dock badge is the one marker that is
   // always visible on macOS (the window title is hidden by titleBarStyle: 'hiddenInset', and the
@@ -1130,7 +1127,14 @@ app.whenReady().then(async () => {
     initNotchHud({ getNodeTitle: displayTitleFor }, notchTunables())
   if (win.isVisible()) startNotchHud()
   else win.once('show', startNotchHud)
-  settingsStore.onChange(() => applyNotchHudSettings(notchTunables()))
+  buildAppMenu(win)
+  // Rebuild the native menu on every settings change so the View → Snap to Grid checkmark (and
+  // any future live label) tracks the renderer's setting. The renderer is the sole settings
+  // writer; a change persists through `settingsStore`, which fires this hook. No reverse IPC.
+  settingsStore.onChange(() => {
+    applyNotchHudSettings(notchTunables())
+    buildAppMenu(win)
+  })
   // Advertise launch settings to the mobile companion through the mirror. The provider is
   // consulted at every flush (heartbeat ≤60s), so a settings change propagates without extra
   // plumbing. Caps arrive async: re-flush once the memoized probe answers.

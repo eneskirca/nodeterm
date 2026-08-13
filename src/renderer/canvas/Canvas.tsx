@@ -132,6 +132,12 @@ import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunc
 import type { DictationTarget } from '../components/DictationOverlay'
 import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
+import {
+  CONTENT_ADD_ITEMS,
+  contentAddItemsToMenuItems,
+  type AddHandlers
+} from '../lib/addMenuSpec'
+import { transferConversationItems } from '../lib/transferItems'
 import { viewportAtZoom1 } from '../lib/zoomReset'
 import { isSpaceRelease, spacePanKeydown } from '../lib/spacePan'
 import { UpdateCard } from '../components/UpdateCard'
@@ -240,7 +246,6 @@ import {
   hasHooks,
   canBranch,
   canRename,
-  canTransferFrom,
   canContextLink,
   createdAgentId,
   resumeCommand,
@@ -3889,16 +3894,31 @@ export function Canvas() {
     })
   }, [deleteNodes])
 
-  // The native app menu's "Settings…" item (⌘,) → open settings, same as the gear button and the
-  // Cmd+, keydown. Main sends IPC.appOpenSettings when the menu item is clicked (a menu click does
-  // not fire before-input-event, so the typed-⌘, path alone would leave the menu item inert).
+  // Native View menu → renderer. The menu item click sends IPC; these listeners fire the canvas
+  // action. Snap-to-Grid flips the setting (the `autoAlignGrid` effect above runs the arrange on
+  // the false→true edge), and main rebuilds the menu on the settings change so the checkmark moves.
+  useEffect(() => {
+    return window.nodeTerminal.onToggleAutoAlign(() => {
+      useSettings.getState().update({ autoAlignGrid: !useSettings.getState().settings.autoAlignGrid })
+    })
+  }, [])
+  useEffect(() => {
+    return window.nodeTerminal.onFitView(() => fitAll())
+  }, [fitAll])
+  useEffect(() => {
+    return window.nodeTerminal.onToggleKanban(() => {
+      const id = useProjects.getState().activeProjectId
+      if (id) useViewMode.getState().toggle(id)
+    })
+  }, [])
+  // Native app menu → open Settings (⌘,). A menu click does not fire before-input-event, so the
+  // Cmd+, keydown handler alone would leave the menu item inert — main forwards it as IPC.
   useEffect(() => {
     return window.nodeTerminal.onOpenSettings(() => {
       setSettingsSection(undefined)
       setSettingsOpen(true)
     })
   }, [])
-
   const groupSelection = useCallback(
     (ids: string[]) => {
       const groupCount = nodesRef.current.filter((n) => n.type === 'group').length
@@ -4803,6 +4823,25 @@ export function Canvas() {
     [setNodes, markDirty]
   )
 
+  // Snap-to-grid MODE (like a desktop "Auto arrange"): when `autoAlignGrid` flips ON, snap EVERY
+  // node to the grid at that moment (not just the selection — the one-shot `alignToGrid` is no
+  // longer exposed in the UI; this is its replacement). `nodesRef.current` holds only the active
+  // project's persistent nodes (subagent/loop ephemeral cards live in a separate array), so this
+  // is safe to run over the whole list. v1: arrange-all-on-enable only — it does not re-snap on
+  // later drags. Turning OFF is a no-op (nodes stay where they were snapped). The transition is
+  // tracked with a ref so a re-render that preserves the ON value doesn't re-arrange.
+  const prevAutoAlignRef = useRef(false)
+  useEffect(() => {
+    const on = settings.autoAlignGrid
+    if (on && !prevAutoAlignRef.current) {
+      const ids = nodesRef.current
+        .filter((n) => n.type !== 'subagent' && n.type !== 'loop')
+        .map((n) => n.id)
+      if (ids.length) alignToGrid(ids)
+    }
+    prevAutoAlignRef.current = on
+  }, [settings.autoAlignGrid, alignToGrid])
+
   const selectAll = useCallback(() => {
     setNodes((ns) => ns.map((n) => ({ ...n, selected: true })))
   }, [setNodes])
@@ -5093,40 +5132,14 @@ export function Canvas() {
             }
           ] as MenuItem[])
         : []),
-      ...(ids.length === 1 &&
-      (() => {
-        const a = agentIdOf(ids[0])
-        return !!a && canTransferFrom(a) && !!useAgentStatus.getState().byId[ids[0]]?.sessionId
-      })()
-        ? (() => {
-            const src = agentIdOf(ids[0]) as AgentId
-            const disabled = useSettings.getState().settings.disabledAgents
-            const settings = useSettings.getState().settings
-            const targets: { id: AgentId; label: string }[] = [
-              ...BUILTIN_AGENT_IDS.filter((aid) => aid !== src && !disabled.includes(aid)).map(
-                (aid) => ({ id: aid as AgentId, label: AGENT_CONFIG[aid].label })
-              ),
-              ...settings.customAgents
-                .filter((c) => c.id !== src && !disabled.includes(c.id))
-                .map((c) => ({ id: c.id, label: c.label }))
-            ]
-            return [
-              { type: 'label', label: 'Transfer conversation to' },
-              ...targets.map(
-                (tg): MenuItem => ({
-                  label: tg.label,
-                  icon: <AgentIcon agentId={tg.id} />,
-                  onClick: () => void transferConversation(ids[0], tg.id, at)
-                })
-              )
-            ] as MenuItem[]
-          })()
+      ...(ids.length === 1
+        ? transferConversationItems(ids[0], at, {
+            sourceAgentId: agentIdOf(ids[0]),
+            sessionId: useAgentStatus.getState().byId[ids[0]]?.sessionId,
+            disabledAgents: useSettings.getState().settings.disabledAgents,
+            customAgents: useSettings.getState().settings.customAgents
+          }, transferConversation)
         : []),
-      ...(isHidden('align-grid', hidden)
-        ? []
-        : ([
-            { label: 'Align to grid', icon: <IconGrid />, onClick: () => alignToGrid(ids) }
-          ] as MenuItem[])),
       ...(isHidden('collapse', hidden)
         ? []
         : ([
@@ -5427,44 +5440,66 @@ export function Canvas() {
     ]
   }, [])
 
+  // The shared bag of creation callbacks + project context that every "add" menu derives its
+  // CONTENT items from (see lib/addMenuSpec.ts). Built once here so the pane menu, the sidebar
+  // project-header "+", and any other ContextMenu-based surface pass the same handlers and can no
+  // longer drift on which kinds are addable. Agent entries are layered on by each surface from
+  // `agentCreationItems` (already shared) — the spec owns the content list only.
+  const addCtx = useMemo(
+    () => ({
+      hasCwd: !!(useProjects.getState().getProject(activeProjectId)?.ssh?.remoteCwd ??
+        useProjects.getState().getProject(activeProjectId)?.cwd),
+      isSshProject
+    }),
+    [activeProjectId, isSshProject]
+  )
+  const addHandlers = useMemo<AddHandlers>(
+    () => ({
+      terminal: (at) => addTerminal(at),
+      remote: (screenPos) => openRemotePicker(screenPos),
+      browser: (at) => addBrowser(at),
+      web: (at) => void addWebView(at),
+      sticky: (at) => addSticky(at),
+      dino: (at) => addDino(at),
+      openFile: (at) => void openFileDialog(at),
+      newFile: (at) => void newProjectFile(at),
+      worktree: (at) => openWorktreeDialog(null, at)
+    }),
+    [
+      addTerminal,
+      openRemotePicker,
+      addBrowser,
+      addWebView,
+      addSticky,
+      addDino,
+      openFileDialog,
+      newProjectFile,
+      openWorktreeDialog
+    ]
+  )
+
   const onPaneContextMenu = useCallback(
     (e: MouseEvent | React.MouseEvent) => {
       e.preventDefault()
       const at = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      // "New file…" needs a project folder to create into — hidden when the project has no cwd.
-      const project = useProjects.getState().getProject(activeProjectId)
-      const hasCwd = !!(project?.ssh?.remoteCwd ?? project?.cwd)
+      const screenPos = { x: e.clientX, y: e.clientY }
+      // Split the canonical content list around the agent block: the pane menu shows terminal,
+      // THEN agents, THEN the rest (remote, browser, …, worktree). The spec is still the single
+      // source for WHICH kinds appear and in what order — only the agent interleaving is local.
+      const [terminalItem, ...restContent] = contentAddItemsToMenuItems(
+        CONTENT_ADD_ITEMS,
+        addHandlers,
+        addCtx,
+        at,
+        screenPos
+      )
       setMenu({
         x: e.clientX,
         y: e.clientY,
         items: [
-          // Sessions: local terminal, agent CLIs, remote host.
-          { label: 'New terminal', icon: <IconTerminal />, onClick: () => addTerminal(at) },
+          terminalItem,
           ...agentCreationItems(at),
-          {
-            label: 'New remote…',
-            icon: <IconTerminal />,
-            onClick: () => openRemotePicker({ x: e.clientX, y: e.clientY })
-          },
-          { type: 'separator' },
-          // Content nodes.
-          { label: 'New browser', icon: <IconRemote />, onClick: () => addBrowser(at) },
-          { label: 'New sticky note', icon: <IconNote />, onClick: () => addSticky(at) },
-          { label: 'New dino game', icon: <IconDino />, onClick: () => addDino(at) },
-          { label: 'Open file…', icon: <IconEditor />, onClick: () => void openFileDialog(at) },
-          ...(hasCwd
-            ? [{ label: 'New file…', icon: <IconEditor />, onClick: () => void newProjectFile(at) }]
-            : []),
-          { type: 'separator' },
-          // A worktree lands as a group frame bound to it; nodes created inside inherit its path.
-          // Disabled (with the reason) on an SSH project — see WORKTREE_SSH_HINT.
-          {
-            label: 'New worktree…',
-            icon: <IconBranch />,
-            disabled: isSshProject,
-            hint: isSshProject ? WORKTREE_SSH_HINT : undefined,
-            onClick: () => openWorktreeDialog(null, at)
-          },
+          ...restContent,
           { type: 'separator' },
           // Canvas actions.
           { label: 'Select all', icon: <IconSelectAll />, onClick: selectAll },
@@ -5486,19 +5521,11 @@ export function Canvas() {
     },
     [
       screenToFlowPosition,
-      activeProjectId,
-      addTerminal,
       agentCreationItems,
-      addSticky,
-      addDino,
-      addBrowser,
-      openFileDialog,
-      newProjectFile,
-      openRemotePicker,
-      openWorktreeDialog,
-      isSshProject,
+      addHandlers,
+      addCtx,
       selectAll,
-      fitView,
+      fitAll,
       hasRestartableAgents,
       restartIdleAgents
     ]
@@ -7260,35 +7287,36 @@ export function Canvas() {
     [renameSession]
   )
 
+  // The sessions-sidebar project-header "+": opens the SAME content menu the pane right-click
+  // uses (terminal + agents + browser/web/sticky/dino/file/worktree), so adding to a project from
+  // the sidebar is no longer a bare-terminal-only affordance that lags the canvas menu. For a
+  // non-active project, switch FIRST (synchronous) so the menu's account rows resolve against the
+  // clicked project; the node is only added on the user's later click, well after that project's
+  // canvas has loaded, so there is no load-race.
   const addToProject = useCallback(
     (projectId: string, e?: { clientX: number; clientY: number }) => {
-      // The sessions-sidebar "+" used to open a bare terminal. It now opens the SAME agent menu
-      // the canvas right-click uses (with "New terminal" kept on top so the old behavior is a
-      // deliberate pick, not lost) — so adding to a project picks an agent instead of always a
-      // shell. For a non-active project, switch FIRST (synchronous) so the menu's account rows
-      // resolve against the clicked project; the node is only added on the user's later click,
-      // well after the project's canvas has loaded, so there is no load-race.
+      // The sessions-sidebar "+" used to open a bare terminal. It now opens the SAME content menu
+      // the pane right-click uses (terminal + agents + browser/web/sticky/dino/file/worktree), so
+      // adding to a project from the sidebar is no longer a bare-terminal-only affordance that
+      // lags the canvas menu. For a non-active project, switch FIRST (synchronous) so the menu's
+      // account rows resolve against the clicked project; the node is only added on the user's
+      // later click, well after that project's canvas has loaded, so there is no load-race.
       if (projectId !== activeProjectId) switchProject(projectId)
       const pos = e ? { x: e.clientX, y: e.clientY } : { x: 80, y: 120 }
+      const [terminalItem, ...restContent] = contentAddItemsToMenuItems(
+        CONTENT_ADD_ITEMS,
+        addHandlers,
+        addCtx,
+        undefined,
+        pos
+      )
       setMenu({
         x: pos.x,
         y: pos.y,
-        items: [
-          {
-            label: 'New terminal',
-            icon: <IconTerminal />,
-            onClick: () => {
-              // For a non-active project the switch happened above; addTerminal targets the
-              // active project, which is now this one.
-              addTerminal()
-            }
-          },
-          { type: 'separator' },
-          ...agentCreationItems()
-        ]
+        items: [terminalItem, ...agentCreationItems(), ...restContent]
       })
     },
-    [activeProjectId, addTerminal, switchProject, agentCreationItems]
+    [activeProjectId, switchProject, addHandlers, addCtx, agentCreationItems]
   )
 
   // Sidebar drag-to-group: reparent a session into a canvas group (groupId) or out (null).
@@ -7374,6 +7402,19 @@ export function Canvas() {
               }
             }
           },
+          // Transfer conversation to another agent — the SAME submenu the canvas node right-click
+          // has. Only valid for the ACTIVE project's canvas: transferConversation reads the source
+          // node out of `nodesRef.current` (the live React Flow nodes), which only holds the active
+          // project. For a non-active project the block is empty (no submenu appears), matching the
+          // Duplicate guard's active-project branch.
+          ...(projectId === activeProjectId
+            ? transferConversationItems(id, undefined, {
+                sourceAgentId: agentIdOf(id),
+                sessionId: useAgentStatus.getState().byId[id]?.sessionId,
+                disabledAgents: useSettings.getState().settings.disabledAgents,
+                customAgents: useSettings.getState().settings.customAgents
+              }, transferConversation)
+            : []),
           {
             label: 'Close',
             icon: <IconTrash />,
@@ -7383,7 +7424,16 @@ export function Canvas() {
         ]
       })
     },
-    [activeProjectId, focusNodeById, renameSession, duplicateNodes, closeSession, writeDisk]
+    [
+      activeProjectId,
+      focusNodeById,
+      renameSession,
+      duplicateNodes,
+      closeSession,
+      writeDisk,
+      agentIdOf,
+      transferConversation
+    ]
   )
 
   // Stream live subagent transcript chunks into the agent-nodes store.
@@ -9127,6 +9177,10 @@ export function Canvas() {
         onOpenFile={() => void openFileDialog()}
         onAddRemote={() => openRemotePicker({ x: window.innerWidth / 2, y: window.innerHeight / 2 })}
         onConnectRemote={() => void connectRemote()}
+        onAddBrowser={() => addBrowser()}
+        onAddWeb={() => void addWebView()}
+        onNewFile={() => void newProjectFile()}
+        onAddWorktree={() => openWorktreeDialog(null)}
         onSave={persist}
         onFitView={fitAll}
         onZoomIn={() => zoomIn({ duration: 150 })}

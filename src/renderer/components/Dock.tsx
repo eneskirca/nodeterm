@@ -7,6 +7,7 @@ import { AgentIcon } from '../lib/agentIcons'
 import { useSettings } from '../state/settings'
 import { useProjects } from '../state/projects'
 import { accountsForProject, sshAccountsHint } from '../state/workspace'
+import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
 
@@ -22,6 +23,12 @@ interface DockProps {
   onOpenFile: () => void
   onAddRemote: () => void
   onConnectRemote: () => void
+  // Content nodes the Dock used to omit (it lagged the pane menu). Now derived from the same
+  // spec as every other add-menu, so the Dock "+" and the canvas right-click stay in parity.
+  onAddBrowser: () => void
+  onAddWeb: () => void
+  onNewFile: () => void
+  onAddWorktree: () => void
   onUndo: () => void
   onRedo: () => void
   onSave: () => void
@@ -48,6 +55,10 @@ export function Dock({
   onOpenFile,
   onAddRemote,
   onConnectRemote,
+  onAddBrowser,
+  onAddWeb,
+  onNewFile,
+  onAddWorktree,
   onUndo,
   onRedo,
   onSave,
@@ -95,6 +106,28 @@ export function Dock({
     fn()
     setMenuOpen(false)
   }
+
+  // Derive the content rows from the shared add-menu spec (the same list the pane right-click and
+  // the sidebar "+" use), so the Dock can no longer lag the canvas menu on which kinds are addable.
+  // Terminal + agents + "New Remote Connection" stay Dock-local (agents have bespoke flyouts;
+  // remote-connection is a different flow than the pane menu's remote picker).
+  const hasCwd = !!(activeProject?.ssh?.remoteCwd ?? activeProject?.cwd)
+  const isSshProject = !!activeProject?.ssh
+  const dockAddHandlers: AddHandlers = {
+    terminal: onAddTerminal,
+    remote: onAddRemote,
+    browser: onAddBrowser,
+    web: onAddWeb,
+    sticky: onAddSticky,
+    dino: onAddDino,
+    openFile: onOpenFile,
+    newFile: onNewFile,
+    worktree: onAddWorktree
+  }
+  const contentRows = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, dockAddHandlers, {
+    hasCwd,
+    isSshProject
+  })
 
   return (
     <>
@@ -209,18 +242,17 @@ export function Dock({
                 <span>{c.label}</span>
               </button>
             ))}
-            <button onClick={pick(onAddSticky)}>
-              <NoteIcon />
-              <span>Sticky Note</span>
-            </button>
-            <button onClick={pick(onAddDino)}>
-              <DinoIcon />
-              <span>Dino Game</span>
-            </button>
-            <button onClick={pick(onOpenFile)}>
-              <EditorIcon />
-              <span>Open file…</span>
-            </button>
+            {contentRows.map((row) => (
+              <button
+                key={row.kind}
+                disabled={row.disabled}
+                title={row.hint}
+                onClick={pick(row.onClick)}
+              >
+                {row.icon}
+                <span>{row.label}</span>
+              </button>
+            ))}
             <button onClick={pick(onConnectRemote)}>
               <RemoteIcon />
               <span>New Remote Connection</span>
@@ -338,34 +370,6 @@ function TerminalIcon() {
     <svg {...S}>
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <path d="M7 9l3 3-3 3M13 15h4" />
-    </svg>
-  )
-}
-function NoteIcon() {
-  return (
-    <svg {...S}>
-      <path d="M4 4h16v11l-5 5H4z" />
-      <path d="M20 15h-5v5" />
-    </svg>
-  )
-}
-function DinoIcon() {
-  return (
-    <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor" stroke="none">
-      <rect x="3" y="11" width="6" height="3" />
-      <rect x="8" y="9" width="11" height="7" />
-      <rect x="14" y="3" width="7" height="7" />
-      <rect x="21" y="7" width="2" height="2" />
-      <rect x="18" y="12" width="2" height="3" />
-      <rect x="9" y="16" width="2" height="5" />
-      <rect x="14" y="16" width="2" height="5" />
-    </svg>
-  )
-}
-function EditorIcon() {
-  return (
-    <svg {...S}>
-      <path d="M9 8l-4 4 4 4M15 8l4 4-4 4" />
     </svg>
   )
 }

@@ -565,6 +565,10 @@ const api: NodeTerminalApi = {
   // ipcRenderer listeners and trip the MaxListeners warning.
   onMarkdownToggle: subscribe(IPC.appToggleMarkdown),
   onCloseNode: subscribe(IPC.appCloseNode),
+  // Native View menu → renderer.
+  onToggleAutoAlign: subscribe(IPC.appToggleAutoAlign),
+  onFitView: subscribe(IPC.appFitView),
+  onToggleKanban: subscribe(IPC.appToggleKanban),
   onOpenSettings: subscribe(IPC.appOpenSettings),
   closeWindow: () => ipcRenderer.send(IPC.appCloseWindow),
   focusWindow: () => ipcRenderer.send(IPC.appFocusWindow),
