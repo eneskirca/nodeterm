@@ -18,7 +18,7 @@ import type { SshServer } from '@shared/ssh'
 
 const SERVER: SshServer = { id: 's1', label: 'testbox', host: 'h.example.com', user: 'u' }
 
-describe('SshProjectDialog browse-master teardown', () => {
+describe('SshProjectDialog', () => {
   let root: Root | undefined
   let host: HTMLElement
   let connect: ReturnType<typeof vi.fn>
@@ -65,6 +65,82 @@ describe('SshProjectDialog browse-master teardown', () => {
     if (!b) throw new Error(`no button containing "${text}"`)
     return b
   }
+  const setInputValue = (input: HTMLInputElement, value: string): void => {
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+  const serverButtons = (): HTMLButtonElement[] =>
+    [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Saved SSH servers"] button')]
+
+  it('keeps a large server collection in its own scroll region above the actions', () => {
+    useSshServers.setState({
+      servers: Array.from({ length: 25 }, (_, index) => ({
+        id: `server-${index}`,
+        label: `Server ${index}`,
+        host: `host-${index}.example.com`,
+        user: 'matt'
+      }))
+    })
+    render()
+
+    const list = document.querySelector<HTMLElement>('[aria-label="Saved SSH servers"]')
+    expect(list).not.toBeNull()
+    if (!list) return
+    const cancel = buttonByText('Cancel')
+    expect(serverButtons()).toHaveLength(25)
+    expect(list.style.flex).toBe('1 1 auto')
+    expect(list.style.minHeight).toBe('0px')
+    expect(list.style.overflowY).toBe('auto')
+    expect(serverButtons().every((button) => button.style.flexShrink === '0')).toBe(true)
+    expect(list.contains(cancel)).toBe(false)
+    expect(cancel.parentElement?.style.flexShrink).toBe('0')
+    expect(list.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('filters saved servers by label, host, user, and user-at-host without case sensitivity', () => {
+    useSshServers.setState({
+      servers: [
+        { id: 'prod', label: 'Production', host: 'api.example.com', user: 'deploy' },
+        { id: 'stage', label: 'Staging', host: 'stage.internal', user: 'ubuntu' }
+      ]
+    })
+    render()
+    const filter = document.querySelector<HTMLInputElement>('[aria-label="Filter saved SSH servers"]')
+    expect(filter).not.toBeNull()
+    if (!filter) return
+
+    setInputValue(filter, 'PRODUCTION')
+    expect(serverButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Production')
+    ])
+    setInputValue(filter, '  API.EXAMPLE.COM  ')
+    expect(serverButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Production')
+    ])
+    setInputValue(filter, 'UBUNTU')
+    expect(serverButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Staging')
+    ])
+    setInputValue(filter, 'ubuntu@stage.internal')
+    expect(serverButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Staging')
+    ])
+    setInputValue(filter, '')
+    expect(serverButtons()).toHaveLength(2)
+  })
+
+  it('shows a no-results message instead of server rows when the filter has no match', () => {
+    render()
+    const filter = document.querySelector<HTMLInputElement>('[aria-label="Filter saved SSH servers"]')
+    expect(filter).not.toBeNull()
+    if (!filter) return
+    setInputValue(filter, 'missing-host')
+    expect(serverButtons()).toHaveLength(0)
+    expect(document.body.textContent).toContain('No saved servers match')
+  })
 
   it('cancelling DURING connecting still tears the browse master down (mark-before-await)', () => {
     const onClose = render()
