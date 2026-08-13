@@ -91,7 +91,20 @@ async function sweepStaleTmp(target: string): Promise<void> {
  * name lets one writer's rename publish the other's half-written cookie — or move the file out
  * from under it, so the loser's rename fails.
  */
-export async function writeProviderCookie(provider: CookieProvider, cookie: string): Promise<void> {
+export function writeProviderCookie(provider: CookieProvider, cookie: string): Promise<void> {
+  // FIFO per provider (the WorkspaceStore.saveChain idiom): without it a clear's rm can run while
+  // an earlier set sits between tmp-write and rename — the parked rename then resurrects the
+  // credential the UI just reported cleared. Unique tmp names cannot fix that; only ordering can.
+  // Each caller still sees only its own write's failure.
+  const prev = writeChains.get(provider) ?? Promise.resolve()
+  const run = prev.then(() => writeCookieNow(provider, cookie))
+  writeChains.set(provider, run.catch(() => {}))
+  return run
+}
+
+const writeChains = new Map<CookieProvider, Promise<unknown>>()
+
+async function writeCookieNow(provider: CookieProvider, cookie: string): Promise<void> {
   const target = file(provider)
   // Both paths sweep: clearing a cookie that leaves an orphan temp behind has not cleared anything.
   await sweepStaleTmp(target)

@@ -25,45 +25,20 @@ describe('provider cookie atomic write', () => {
   const tmpsLeft = async (): Promise<string[]> =>
     (await fs.readdir(dir)).filter((f) => f.endsWith('.tmp'))
 
-  // Nothing serializes `usage:set-provider-cookie`: it is reachable from the preload bridge and,
-  // on the Server Edition, from any WS client's frame (src/renderer/bridge/ws-bridge.ts over the
-  // concurrent dispatch in src/server/ws.ts). One fixed `${file}.tmp` name means two writers share
-  // a single tmp file: one writer's rename publishes the other's half-written credential, or moves
-  // the file out from under it entirely and the loser's rename fails.
-  it('two overlapping cookie writes never share a tmp file (no torn write, no leftovers)', async () => {
+  // `usage:set-provider-cookie` writes are serialized per provider by the writeChain, so their
+  // writes arrive one after the other — uniqueness is carried by the `<pid>.<seq>` name alone.
+  // That name is what protects writers that bypass the chain (a second server process on the same
+  // data dir) and the crash window between tmp-write and rename, so it stays pinned here.
+  it('overlapping cookie writes never reuse a tmp name (no torn write, no leftovers)', async () => {
     // Payloads that differ in LENGTH and in every byte: a spliced result then keeps a tail of the
     // longer write and fails JSON.parse, instead of quietly parsing as the shorter one.
     const long = 'a'.repeat(4096)
     const short = 'b'.repeat(17)
-    // Hold every cookie writer between its tmp write and its rename, so BOTH tmp files are on disk
-    // before either rename runs — the overlap window a real crash tears open.
     const tmps: string[] = []
-    let open!: () => void
-    let timer!: ReturnType<typeof setTimeout>
-    // If a future change serializes the writers, the second write never arrives and the barrier
-    // would hang to an opaque 5s vitest timeout. Fail loudly, naming what this test pins.
-    const bothWritten = Promise.race([
-      new Promise<void>((r) => (open = r)),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('second concurrent tmp write never arrived — writers appear ' +
-            'serialized; this test pins the unique-tmp-name design')),
-          2000
-        )
-      })
-    ])
     const realWriteFile = fs.writeFile
     vi.spyOn(fs, 'writeFile').mockImplementation((async (p: any, ...rest: any[]) => {
-      const out = await (realWriteFile as any)(p, ...rest)
-      if (String(p).startsWith(cookiePath)) {
-        tmps.push(String(p))
-        if (tmps.length >= 2) {
-          clearTimeout(timer)
-          open()
-        }
-        await bothWritten
-      }
-      return out
+      if (String(p).startsWith(cookiePath)) tmps.push(String(p))
+      return (realWriteFile as any)(p, ...rest)
     }) as any)
 
     await Promise.all([
@@ -72,11 +47,36 @@ describe('provider cookie atomic write', () => {
     ])
     vi.restoreAllMocks()
 
-    expect(new Set(tmps).size).toBe(2) // each writer owned its own tmp file
+    expect(new Set(tmps).size).toBe(2) // each write owned its own tmp file
     const final = JSON.parse(await fs.readFile(cookiePath, 'utf-8'))
-    expect([long, short]).toContain(final.cookie) // one COMPLETE credential won, not a splice
+    expect(final.cookie).toBe(short) // one COMPLETE credential won — FIFO makes it the last call
     // …and no tmp survives: a leaked one here is a live cookie nothing will ever overwrite.
     expect(await tmpsLeft()).toEqual([])
+  })
+
+  it('a clear is never undone by an in-flight set — writes run in call order per provider', async () => {
+    // Park the set's rename: unserialized, the clear's rm runs while the set sits between its tmp
+    // write and its rename — then the parked rename lands and resurrects the credential the UI
+    // just reported cleared. Chained per provider, the clear waits its turn and the last call is
+    // the last word.
+    const realRename = fs.rename
+    let delayed = false
+    vi.spyOn(fs, 'rename').mockImplementation((async (a: any, b: any) => {
+      if (String(b).startsWith(cookiePath) && !delayed) {
+        delayed = true
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return (realRename as any)(a, b)
+    }) as any)
+
+    await Promise.all([
+      writeProviderCookie('minimax', 'secret'),
+      writeProviderCookie('minimax', '')
+    ])
+    vi.restoreAllMocks()
+
+    expect(await readProviderCookie('minimax')).toBeNull() // cleared means CLEARED
+    expect(existsSync(cookiePath)).toBe(false)
   })
 
   it('sweeps orphan temps left by dead writers, but never one bearing our own pid', async () => {
