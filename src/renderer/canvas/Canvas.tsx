@@ -3889,6 +3889,16 @@ export function Canvas() {
     })
   }, [deleteNodes])
 
+  // The native app menu's "Settings…" item (⌘,) → open settings, same as the gear button and the
+  // Cmd+, keydown. Main sends IPC.appOpenSettings when the menu item is clicked (a menu click does
+  // not fire before-input-event, so the typed-⌘, path alone would leave the menu item inert).
+  useEffect(() => {
+    return window.nodeTerminal.onOpenSettings(() => {
+      setSettingsSection(undefined)
+      setSettingsOpen(true)
+    })
+  }, [])
+
   const groupSelection = useCallback(
     (ids: string[]) => {
       const groupCount = nodesRef.current.filter((n) => n.type === 'group').length

@@ -5,7 +5,7 @@ import { readFile } from 'fs/promises'
 import { statSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
 import { IPC } from '../shared/ipc'
 import { writeFilesToClipboard } from './clipboard-files'
 import { registerFsHandlers } from '../core/fs-handlers'
@@ -361,6 +361,112 @@ if (process.platform !== 'win32' && typeof process.setFdLimit === 'function') {
   } catch (e) {
     console.warn('[main] could not raise fd limit', e)
   }
+}
+
+/**
+ * The native application menu. macOS-idiomatic: the app-name menu (About/Quit) first, then an
+ * Edit menu with the standard text-editing roles (Undo/Redo/Cut/Copy/Paste/Select All — these
+ * make keyboard shortcuts work in inputs and the webview), then a Window menu, with a
+ * "Settings…" item (⌘,) in the app menu that opens the settings page.
+ *
+ * Until now the app shipped with Electron's DEFAULT menu (which has no Settings item, and whose
+ * Edit roles only covered the main webContents). The only way to reach Settings was the in-canvas
+ * gear button. This adds the menu entry Mac users look for reflexively (⌘, → app menu → Settings).
+ *
+ * The Settings item sends `IPC.appOpenSettings` to the renderer, which opens the same settings page
+ * the gear button and the Cmd+, keydown do — one IPC, the renderer owns the open/close state.
+ * `before-input-event` already routes a typed ⌘, to the renderer, so this menu item is what makes
+ * the MENU route (clicking the item, or focusing the menu bar and pressing ⌘,) reach the same
+ * place: a menu click does NOT fire before-input-event, so without this the menu would be inert.
+ */
+function buildAppMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const settingsItem = {
+    label: isMac ? 'Settings…' : 'Settings',
+    accelerator: 'CmdOrCtrl+,',
+    click: () => {
+      const win = getMainWindow()
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.appOpenSettings)
+    }
+  }
+  const template: Electron.MenuItemConstructorOptions[] = isMac
+    ? [
+        {
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            settingsItem,
+            { type: 'separator' },
+            { role: 'services' },
+            { type: 'separator' },
+            { role: 'hide' },
+            { role: 'hideOthers' },
+            { role: 'unhide' },
+            { type: 'separator' },
+            { role: 'quit' }
+          ]
+        },
+        {
+          label: 'Edit',
+          submenu: [
+            { role: 'undo' },
+            { role: 'redo' },
+            { type: 'separator' },
+            { role: 'cut' },
+            { role: 'copy' },
+            { role: 'paste' },
+            { role: 'pasteAndMatchStyle' },
+            { role: 'delete' },
+            { role: 'selectAll' }
+          ]
+        },
+        {
+          label: 'View',
+          submenu: [{ role: 'toggleDevTools' }]
+        },
+        {
+          label: 'Window',
+          submenu: [
+            { role: 'minimize' },
+            { role: 'zoom' },
+            { type: 'separator' },
+            { role: 'front' }
+          ]
+        }
+      ]
+    : [
+        {
+          label: 'File',
+          submenu: [{ role: 'quit' }]
+        },
+        {
+          label: 'Edit',
+          submenu: [
+            { role: 'undo' },
+            { role: 'redo' },
+            { type: 'separator' },
+            { role: 'cut' },
+            { role: 'copy' },
+            { role: 'paste' },
+            { role: 'delete' },
+            { role: 'selectAll' }
+          ]
+        },
+        {
+          label: 'View',
+          submenu: [{ role: 'toggleDevTools' }]
+        },
+        {
+          label: 'Settings',
+          submenu: [settingsItem]
+        },
+        {
+          label: 'Window',
+          submenu: [{ role: 'minimize' }, { role: 'close' }]
+        }
+      ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 function createWindow(): BrowserWindow {
@@ -963,6 +1069,7 @@ app.whenReady().then(async () => {
     console.error('[ssh-askpass] script generation failed, relay disabled:', e)
     return undefined
   })
+  buildAppMenu()
   const win = createWindow()
   // NT_MULTI instances are throwaway dev sandboxes. The dock badge is the one marker that is
   // always visible on macOS (the window title is hidden by titleBarStyle: 'hiddenInset', and the

@@ -196,11 +196,17 @@ function AgentCard({
           <Button onClick={addEnvEntry}>Add var</Button>
         </div>
         <p className="text-[13px] leading-relaxed text-muted">
-          Merged at spawn and win over nodeterm’s own env (so a proxy token beats an account login).
           Values expand <code className="text-text">${'{env:VAR}'}</code> and
-          <code className="text-text"> ${'{env:VAR:fallback}'}</code> against your shell. A custom
-          PATH should reference <code className="text-text">{'${env:PATH}'}</code> or CLI resolution
-          may break; custom PATH is not applied to remote sessions.
+          <code className="text-text"> ${'{env:VAR:fallback}'}</code> against your shell environment.
+          <br />
+          These win over values nodeterm sets, so they can override an account login — e.g. set
+          <code className="text-text"> ANTHROPIC_AUTH_TOKEN</code> /<code className="text-text"> ANTHROPIC_BASE_URL</code>
+          to point a Claude-wrapping agent at your own proxy.
+          <br />
+          A custom <code className="text-text">PATH</code> should reference
+          <code className="text-text"> {'${env:PATH}'}</code>, or CLI resolution may break.
+          <br />
+          Custom <code className="text-text">PATH</code> is not applied to remote sessions.
         </p>
         {Object.entries(agent.env ?? {}).map(([key, value]) => (
           <EnvRow
@@ -281,7 +287,8 @@ function CommandPreview({ agent }: { agent: CustomAgent }): React.JSX.Element | 
         .previewCommand({
           agentId: agent.id as AgentId,
           customAgent: agent,
-          initialPrompt: '<your prompt>',
+          // No prompt: nodeterm launches the agent BARE and you type the prompt into it after it
+          // starts. The preview shows exactly the launch line that gets typed into the shell.
           sessionIdFlagSupported: true
         })
         .then((r) => {
@@ -300,7 +307,9 @@ function CommandPreview({ agent }: { agent: CustomAgent }): React.JSX.Element | 
   if (!preview) return null
   return (
     <div className="rounded-md bg-bg-2 p-2">
-      <div className="mb-1 text-[12px] font-medium text-muted">Command preview</div>
+      <div className="mb-1 text-[12px] font-medium text-muted">
+        Launch command <span className="text-muted-2">(the agent starts here; you type the prompt after)</span>
+      </div>
       <code className="block break-all text-[12px] text-text">
         {preview.command || <span className="text-muted">(empty)</span>}
       </code>
