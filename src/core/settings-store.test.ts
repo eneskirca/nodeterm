@@ -158,37 +158,17 @@ describe('settings:save atomic write', () => {
   // concurrently (src/server/ws.ts). One fixed `${file}.tmp` name means two of them share a single
   // tmp file: one writer's rename publishes the other's half-written bytes, or moves the file out
   // from under it entirely and the loser's rename fails.
-  it('two overlapping saves never share a tmp file (no torn write, no leftovers)', async () => {
+  it('overlapping saves never reuse a tmp name (no torn write, no leftovers)', async () => {
     const settingsPath = path.join(dir, 'settings.json')
-    // Hold every settings writer between its tmp write and its rename, so BOTH tmp files are on
-    // disk before either rename runs — the overlap window a real crash tears open.
+    // save() calls are serialized by the store's saveChain, so their writes arrive one after the
+    // other — uniqueness is carried by the `<pid>.<seq>` name alone. That name is what protects
+    // writers that bypass the chain (a second `nodeterm-server --data-dir X` process on the same
+    // dir) and the crash window between tmp-write and rename, so it stays pinned here.
     const tmps: string[] = []
-    let open!: () => void
-    let timer!: ReturnType<typeof setTimeout>
-    // If a future change serializes the writers, the second write never arrives and the barrier
-    // would hang to an opaque 5s vitest timeout. Fail loudly, naming what this test pins.
-    const bothWritten = Promise.race([
-      new Promise<void>((r) => (open = r)),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('second concurrent tmp write never arrived — writers appear ' +
-            'serialized; this test pins the unique-tmp-name design')),
-          2000
-        )
-      })
-    ])
     const realWriteFile = fs.writeFile
     vi.spyOn(fs, 'writeFile').mockImplementation((async (p: any, ...rest: any[]) => {
-      const out = await (realWriteFile as any)(p, ...rest)
-      if (String(p).startsWith(settingsPath)) {
-        tmps.push(String(p))
-        if (tmps.length >= 2) {
-          clearTimeout(timer)
-          open()
-        }
-        await bothWritten
-      }
-      return out
+      if (String(p).startsWith(settingsPath)) tmps.push(String(p))
+      return (realWriteFile as any)(p, ...rest)
     }) as any)
 
     new SettingsStore().registerIpc()
@@ -199,11 +179,39 @@ describe('settings:save atomic write', () => {
     await Promise.all([save(9), save(100)])
     vi.restoreAllMocks()
 
-    expect(new Set(tmps).size).toBe(2) // each writer owned its own tmp file
+    expect(new Set(tmps).size).toBe(2) // each write owned its own tmp file
     const final = JSON.parse(await fs.readFile(settingsPath, 'utf-8'))
-    expect([9, 100]).toContain(final.fontSize) // one COMPLETE snapshot won, not a blend of both
+    expect(final.fontSize).toBe(100) // one COMPLETE snapshot won — and FIFO makes it the last call
     // …and nothing is left for the next writer to inherit.
     expect(await tmpsLeft()).toEqual([])
+  })
+
+  it('overlapping saves land in call order — the disk and the cache agree afterwards', async () => {
+    const settingsPath = path.join(dir, 'settings.json')
+    // Slow down only the FIRST settings write: unserialized, the second save completes and renames
+    // first, and the delayed first rename lands LAST — the disk says 9 while the cache (and every
+    // listener) says 100, and they disagree until the next boot re-reads the file. Serialized,
+    // the second save waits its turn and the last CALL wins both.
+    const realWriteFile = fs.writeFile
+    let delayed = false
+    vi.spyOn(fs, 'writeFile').mockImplementation((async (p: any, ...rest: any[]) => {
+      if (String(p).startsWith(settingsPath) && !delayed) {
+        delayed = true
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return (realWriteFile as any)(p, ...rest)
+    }) as any)
+
+    const store = new SettingsStore()
+    store.registerIpc()
+    const save = (fontSize: number): Promise<void> =>
+      fake.handlers[IPC.settingsSave]({ ...DEFAULT_SETTINGS, fontSize }) as Promise<void>
+    await Promise.all([save(9), save(100)])
+    vi.restoreAllMocks()
+
+    const final = JSON.parse(await fs.readFile(settingsPath, 'utf-8'))
+    expect(final.fontSize).toBe(100) // the LAST save wins the disk…
+    expect(store.get().fontSize).toBe(100) // …and memory agrees with it
   })
 
   it('a failed rename removes its own temp, rejects the save, and fires no listener', async () => {

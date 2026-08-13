@@ -43,6 +43,12 @@ let writeSeq = 0
 export class SettingsStore {
   private cache: Settings = DEFAULT_SETTINGS
   private listeners = new Set<(s: Settings) => void>()
+  /** In-flight save chain: saves run FIFO (same idiom as WorkspaceStore.saveChain). The handler
+   *  has overlapping callers in both builds (the renderer's coalesced timer save, the
+   *  `beforeunload` flush, concurrent WS frames on the Server Edition); unordered, the last RENAME
+   *  wins the disk while the last CALL wins the cache — and they can disagree until next boot.
+   *  Each caller still sees only ITS OWN save's failure. */
+  private saveChain: Promise<unknown> = Promise.resolve()
 
   private get filePath(): string {
     return path.join(platform().userDataDir, 'settings.json')
@@ -72,7 +78,15 @@ export class SettingsStore {
 
   registerIpc(): void {
     platform().handle(IPC.settingsLoad, () => this.cache)
-    platform().handle(IPC.settingsSave, async (settings: Settings) => {
+    platform().handle(IPC.settingsSave, (settings: Settings) => {
+      const run = this.saveChain.then(() => this.saveNow(settings))
+      this.saveChain = run.catch(() => {})
+      return run
+    })
+  }
+
+  private async saveNow(settings: Settings): Promise<void> {
+    {
       this.cache = mergeSettings(settings)
       // Atomic write (temp + rename) so a mid-write crash can't corrupt settings.json. The temp
       // name is unique per call because nothing serializes this handler and its callers overlap:
@@ -109,6 +123,6 @@ export class SettingsStore {
           // A listener must never break a settings save (or its siblings).
         }
       }
-    })
+    }
   }
 }
