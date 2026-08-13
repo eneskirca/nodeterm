@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
+import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
@@ -140,8 +141,8 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
       }}
     >
       <NodeResizer
-        minWidth={200}
-        minHeight={140}
+        minWidth={NODE_MIN_SIZES.group.width}
+        minHeight={NODE_MIN_SIZES.group.height}
         isVisible={selected}
         color={data.color}
         lineStyle={{ borderColor: 'transparent' }}

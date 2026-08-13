@@ -289,6 +289,7 @@ import type { SshServer, SshConnection } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
 import type {
   CanvasNodeState,
+  NodeKind,
   Project,
   ProjectKanban,
   SshPassphraseRequest,
@@ -298,6 +299,7 @@ import type {
 import type { KanbanCreateChoice, KanbanSession } from '../components/kanban/KanbanView'
 import { assignNode, assignedTo, defaultKanban, labelsForCard, migrateProjectTags, resolveColumnRef, unassigned } from '../lib/kanban'
 import { registerWorkspaceDirty } from '../state/workspaceDirty'
+import { snapNodeToGrid } from '../lib/nodeSizing'
 import { canClearDirty, canCommitCanvas } from '../state/persistGuards'
 import { isHidden } from '../lib/ui-visibility'
 import { boardLogEvents } from '../lib/boardLogDiff'
@@ -4806,17 +4808,28 @@ export function Canvas() {
       const g = useSettings.getState().settings.gridSize || GRID
       const set = new Set(ids)
       setNodes((ns) =>
-        ns.map((n) =>
-          set.has(n.id)
-            ? {
-                ...n,
-                position: {
-                  x: Math.round(n.position.x / g) * g,
-                  y: Math.round(n.position.y / g) * g
-                }
-              }
-            : n
-        )
+        ns.map((n) => {
+          if (!set.has(n.id)) return n
+          // Snap all four corners to the grid: each edge rounds to its nearest grid
+          // line, so the node is moved AND resized to land every corner on a grid
+          // intersection. Size is clamped to the kind's minimum (the resizer's mins
+          // don't apply to programmatic changes). A collapsed node keeps its collapsed
+          // bar height — only its position and width snap; expanding still restores the
+          // saved height.
+          const kind = (n.type ?? 'terminal') as NodeKind
+          const w = n.measured?.width ?? (n.width as number) ?? 0
+          const h = n.measured?.height ?? (n.height as number) ?? 0
+          const snapped = snapNodeToGrid(g, kind, { x: n.position.x, y: n.position.y, width: w, height: h })
+          const height = n.data?.collapsed ? h : snapped.height
+          return {
+            ...n,
+            position: { x: snapped.x, y: snapped.y },
+            width: snapped.width,
+            height,
+            measured: { width: snapped.width, height },
+            style: { ...n.style, width: snapped.width, height }
+          }
+        })
       )
       markDirty()
     },
@@ -5223,7 +5236,6 @@ export function Canvas() {
     branchClaude,
     transferConversation,
     agentIdOf,
-    alignToGrid,
     toggleCollapseNodes,
     toggleMarkdown,
     reloadTerminals,
@@ -5503,7 +5515,7 @@ export function Canvas() {
           { type: 'separator' },
           // Canvas actions.
           { label: 'Select all', icon: <IconSelectAll />, onClick: selectAll },
-          { label: 'Fit view', icon: <IconFit />, onClick: fitAll },
+          { label: 'Fit view', icon: <IconFit />, onClick: fitView },
           // Project-wide: restart every idle agent CLI in place (new model pickup). Hidden on a
           // canvas with no restartable agent node — there it could only ever report "0 restarted".
           ...(hasRestartableAgents()
@@ -5525,7 +5537,7 @@ export function Canvas() {
       addHandlers,
       addCtx,
       selectAll,
-      fitAll,
+      fitView,
       hasRestartableAgents,
       restartIdleAgents
     ]
@@ -8737,6 +8749,12 @@ export function Canvas() {
             variant={BackgroundVariant.Dots}
             gap={settings.gridSize || GRID}
             size={2.5}
+            /* React Flow centers each dot in its pattern tile, so by default dots sit at cell
+               centers (n·g + g/2) while every grid snap — drag snapGrid and align-to-grid —
+               targets cell corners (n·g). That mismatch makes snapped nodes look half a cell off
+               the dots. offset = size/2 shifts the tiling so dots render exactly on the grid
+               lines (n·g), aligning the visible grid with what snaps to it. */
+            offset={1.25}
             /* React Flow paints the dots from a JS prop, so this can't be a rule — it reads the
                token instead. On white the dark-mode grey reads as noise rather than as a grid. */
             color="var(--canvas-dot)"
