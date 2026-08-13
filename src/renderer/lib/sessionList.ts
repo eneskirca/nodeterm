@@ -380,20 +380,62 @@ export function buildStatusList(
   const needle = filter.trim().toLowerCase()
   const keep = (r: SessionRowVM): boolean => !needle || matches(r, needle)
 
-  // Flatten every project's terminal nodes into status-tagged rows. The active project reads its
-  // live React Flow nodes (same rule as buildSessionList); the rest read their serialized nodes.
-  // Canvas sub-group frames are ignored here — status mode is flat by design. The project index
-  // rides alongside (not on the VM) so we can sort by project store-order without a scratch field.
+  // Flatten every project's terminal nodes into status-tagged rows. Canvas sub-group frames are
+  // ignored here — status mode is flat by design. The project index rides alongside (not on the
+  // VM) so we can sort by project store-order without a scratch field.
+  //
+  // OWNERSHIP & DEDUP: a node belongs to the project whose persisted `p.nodes` contains it. The
+  // active project layers its live React Flow nodes (`liveActiveNodes`) on TOP of its persisted
+  // nodes (live wins for up-to-the-frame title/status), but the persisted set is the source of
+  // truth for which nodes are the active project's. This closes a duplication window during a
+  // cross-project focus: focusNodeById → switchProject flips `activeProjectId` synchronously, but
+  // React Flow's nodes (and thus `liveActiveNodes`) still hold the PREVIOUS project's nodes until
+  // the load effect's setNodes flushes on a later render. In that window a naive "active project =
+  // liveActiveNodes" read would tag the stale nodes with the new project's id AND the previous
+  // project's `p.nodes` (just committed) would emit them again — the same node twice, under two
+  // project tags. Keying off the persisted owner map and unioning live nodes only for the active
+  // project means each node id is emitted at most once, owned by its real project, throughout the
+  // switch. (project mode hides the dupe behind collapse, which is why it only surfaced here.)
+  const ownerById = new Map<string, { p: ProjectInput; pidx: number }>()
+  projects.forEach((p, pidx) => {
+    for (const n of p.nodes) ownerById.set(n.id, { p, pidx })
+  })
+
   const tagged: { row: SessionRowVM; pidx: number }[] = []
-  projects.forEach((p, projectIndex) => {
+  const seen = new Set<string>()
+  // Live title/status overrides for the active project's nodes (newer than the persisted snapshot).
+  const liveById = new Map<string, SessionNodeInput>()
+  if (liveActiveNodes) for (const n of liveActiveNodes) liveById.set(n.id, n)
+
+  projects.forEach((p, pidx) => {
     const isActive = p.id === activeProjectId
-    const source = isActive && liveActiveNodes ? liveActiveNodes : p.nodes
-    for (const n of source) {
+    for (const n of p.nodes) {
       if (n.kind !== 'terminal') continue
-      const row = toRow(n, statusById[n.id], p)
-      if (keep(row)) tagged.push({ row, pidx: projectIndex })
+      // For the active project, prefer the live node (fresh title/agent) when one exists; for the
+      // rest, the persisted node is already current. This mirrors buildSessionList's live-vs-store
+      // choice without ever dropping the persisted set as the ownership key.
+      const node = isActive && liveById.has(n.id) ? liveById.get(n.id)! : n
+      if (seen.has(node.id)) continue
+      seen.add(node.id)
+      const row = toRow(node, statusById[node.id], p)
+      if (keep(row)) tagged.push({ row, pidx })
     }
   })
+  // A node in `liveActiveNodes` that isn't in any project's persisted set (brand-new, not yet
+  // committed) would be missed above. Emit it under the active project as a fallback — it's live
+  // on the active canvas, so that's the only project it can belong to.
+  if (liveActiveNodes) {
+    const active = projects.find((p) => p.id === activeProjectId)
+    if (active) {
+      const activePidx = projects.indexOf(active)
+      for (const n of liveActiveNodes) {
+        if (n.kind !== 'terminal' || seen.has(n.id) || ownerById.has(n.id)) continue
+        seen.add(n.id)
+        const row = toRow(n, statusById[n.id], active)
+        if (keep(row)) tagged.push({ row, pidx: activePidx })
+      }
+    }
+  }
 
   // Bucket by status, then stable-sort each bucket by project store-order then title.
   const byStatus = new Map<StatusKind, { row: SessionRowVM; pidx: number }[]>()

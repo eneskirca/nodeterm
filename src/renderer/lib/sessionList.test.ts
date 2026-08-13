@@ -484,4 +484,23 @@ describe('buildStatusList', () => {
     const idle = sections.find((s) => s.kind === 'idle')!
     expect(idle.rows.map((r) => r.id)).toEqual(['i1'])
   })
+
+  it('never emits a node twice during a cross-project switch window', () => {
+    // Simulates the duplication bug: `activeProjectId` has already flipped to p2 (the focus
+    // target), but `liveActiveNodes` still holds p1's nodes (React Flow hasn't flushed yet).
+    // The naive "active = liveActiveNodes" read tagged the stale nodes with p2 while p1's
+    // just-committed p.nodes emitted them again — same node under two project tags.
+    const p1Nodes = [node('a1', { title: 'Align to Grid', agentId: 'claude' })]
+    const proj2: ProjectInput[] = [
+      { id: 'p1', name: 'nodeterm', color: '#111', nodes: p1Nodes },
+      { id: 'p2', name: 'ImmyBot', color: '#222', nodes: [node('b1', { title: 'other' })] }
+    ]
+    // activeProjectId is now p2, but liveActiveNodes still carries p1's a1 (stale window).
+    const sections = buildStatusList(proj2, p1Nodes, 'p2', { a1: { unread: false } }, '')
+    const allRows = sections.flatMap((s) => s.rows)
+    // a1 appears exactly once…
+    expect(allRows.filter((r) => r.id === 'a1')).toHaveLength(1)
+    // …owned by its real project (p1), NOT mis-tagged as p2.
+    expect(allRows.find((r) => r.id === 'a1')!.projectId).toBe('p1')
+  })
 })
