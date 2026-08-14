@@ -242,6 +242,226 @@ describe('canvas-control shim over a unix socket', () => {
   })
 })
 
+// The per-node token (task A10). The shim's job is only to PRESENT it: read the file the endpoint
+// advertises, keyed by this node's id, and put it on every request — on BOTH transports.
+//
+// One environment fact, stated once: curl DROPS a header whose value is empty (`-H "X: ${empty}"`
+// sends nothing at all). That is the contract we want — absent and empty are the same `legacy` to
+// the server — so "empty header" below is read as `headers[...] ?? ''`.
+describe('canvas-control shim presents the per-node token', () => {
+  const seen: { path: string; nodeToken: string }[] = []
+  let tcp: import('node:http').Server
+  let unix: import('node:http').Server
+  let tcpPort = 0
+  let sock = ''
+  let tokenDir = ''
+
+  beforeAll(async () => {
+    const http = await import('node:http')
+    const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void => {
+      req.resume()
+      req.on('end', () => {
+        seen.push({
+          path: req.url ?? '',
+          nodeToken: String(req.headers['x-nodeterm-node-token'] ?? '')
+        })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('ok\n')
+      })
+    }
+    tcp = http.createServer(handler)
+    unix = http.createServer(handler)
+    await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', r))
+    tcpPort = (tcp.address() as { port: number }).port
+    sock = path.join(dir, 'token-probe.sock')
+    await new Promise<void>((r) => unix.listen(sock, r))
+    tokenDir = path.join(dir, 'node-tokens')
+    fs.mkdirSync(tokenDir, { recursive: true })
+    fs.writeFileSync(path.join(tokenDir, 'node-1'), 'CANVAS-NODE-TOKEN\n', { mode: 0o600 })
+  })
+
+  afterAll(() => {
+    tcp.close()
+    unix.close()
+  })
+
+  it('sends it over the TCP branch when the file exists', async () => {
+    seen.length = 0
+    await callShim(['list'], { NODETERM_HOOK_PORT: String(tcpPort), NODETERM_NODE_TOKEN_DIR: tokenDir })
+    expect(seen).toEqual([{ path: '/control/list', nodeToken: 'CANVAS-NODE-TOKEN' }])
+  })
+
+  it('sends it over the unix-socket branch too (the SSH path)', async () => {
+    seen.length = 0
+    await callShim(['list'], {
+      NODETERM_HOOK_PORT: '',
+      NODETERM_HOOK_SOCK: sock,
+      NODETERM_NODE_TOKEN_DIR: tokenDir
+    })
+    expect(seen).toEqual([{ path: '/control/list', nodeToken: 'CANVAS-NODE-TOKEN' }])
+  })
+
+  it('reads the dir out of the endpoint file, not only the env', async () => {
+    seen.length = 0
+    const endpoint = path.join(dir, 'token-endpoint.env')
+    fs.writeFileSync(
+      endpoint,
+      `NODETERM_HOOK_PORT=${tcpPort}\nNODETERM_HOOK_TOKEN=whatever\nNODETERM_HOOK_VERSION=2\nNODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+    )
+    await callShim(['list'], {
+      NODETERM_HOOK_PORT: '',
+      NODETERM_HOOK_TOKEN: '',
+      NODETERM_HOOK_ENDPOINT: endpoint
+    })
+    expect(seen).toEqual([{ path: '/control/list', nodeToken: 'CANVAS-NODE-TOKEN' }])
+  })
+
+  it('still calls, with an empty token, when no token file exists', async () => {
+    seen.length = 0
+    const empty = path.join(dir, 'no-tokens')
+    fs.mkdirSync(empty, { recursive: true })
+    await callShim(['list'], { NODETERM_HOOK_PORT: String(tcpPort), NODETERM_NODE_TOKEN_DIR: empty })
+    expect(seen).toEqual([{ path: '/control/list', nodeToken: '' }])
+  })
+
+  it('never presents ANOTHER node\'s token file — the path is keyed by $NODETERM_NODE_ID', async () => {
+    seen.length = 0
+    await callShim(['list'], {
+      NODETERM_HOOK_PORT: String(tcpPort),
+      NODETERM_NODE_TOKEN_DIR: tokenDir,
+      NODETERM_NODE_ID: 'node-9'
+    })
+    expect(seen).toEqual([{ path: '/control/list', nodeToken: '' }])
+  })
+})
+
+// A command line is not private: `ps` and /proc/<pid>/cmdline are world-readable, so `curl -H
+// "X-Nodeterm-Node-Token: …"` published this node's capability (and the app-wide bearer) to every
+// other account on the machine — and this shim is installed on SSH hosts, where "every other
+// account" is a stranger. Both headers therefore go in on stdin as a curl config.
+//
+// The shim below is a PASSTHROUGH — it records argv + stdin, then execs the REAL curl — so each
+// case proves the credential left argv AND that the server still received it. Asserting only the
+// server's headers would pass with the leak completely intact.
+describe('canvas-control shim keeps credentials off curl\'s command line', () => {
+  const seen: { hookToken: string; nodeToken: string }[] = []
+  let tcp: import('node:http').Server
+  let unix: import('node:http').Server
+  let tcpPort = 0
+  let sock = ''
+  let binDir = ''
+  let tokenDir = ''
+  const argvLog = (): string => path.join(binDir, 'argv.log')
+  const stdinLog = (): string => path.join(binDir, 'stdin.log')
+
+  beforeAll(async () => {
+    const http = await import('node:http')
+    const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void => {
+      req.resume()
+      req.on('end', () => {
+        seen.push({
+          hookToken: String(req.headers['x-nodeterm-hook-token'] ?? ''),
+          nodeToken: String(req.headers['x-nodeterm-node-token'] ?? '')
+        })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('ok\n')
+      })
+    }
+    tcp = http.createServer(handler)
+    unix = http.createServer(handler)
+    await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', r))
+    tcpPort = (tcp.address() as { port: number }).port
+    sock = path.join(dir, 'argv-probe.sock')
+    await new Promise<void>((r) => unix.listen(sock, r))
+    tokenDir = path.join(dir, 'argv-node-tokens')
+    fs.mkdirSync(tokenDir, { recursive: true })
+    fs.writeFileSync(path.join(tokenDir, 'node-1'), 'SECRET-NODE-TOKEN\n', { mode: 0o600 })
+    binDir = path.join(dir, 'argv-bin')
+    fs.mkdirSync(binDir, { recursive: true })
+    const realCurl = (await run('/bin/sh', ['-c', 'command -v curl'])).stdout.trim()
+    fs.writeFileSync(
+      path.join(binDir, 'curl'),
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> ${JSON.stringify(argvLog())}`,
+        // Only a curl that was told to read its config from stdin gets a reader. A regression that
+        // put the headers back on argv would otherwise leave `tee` waiting on a stdin nobody ever
+        // closes, and the failure would read as a timeout instead of the assertion it really is.
+        'case "$*" in',
+        `  *"--config -"*) tee -a ${JSON.stringify(stdinLog())} | ${JSON.stringify(realCurl)} "$@" ;;`,
+        `  *) ${JSON.stringify(realCurl)} "$@" </dev/null ;;`,
+        'esac',
+        ''
+      ].join('\n'),
+      { mode: 0o755 }
+    )
+  })
+
+  afterAll(() => {
+    tcp.close()
+    unix.close()
+  })
+
+  /** Runs the shim with the recording curl first on PATH and returns both captured channels. */
+  async function record(env: Record<string, string>): Promise<{ argv: string; stdin: string }> {
+    // Truncated, not deleted: a regression must fail on the assertion below, not on a missing file.
+    fs.writeFileSync(argvLog(), '')
+    fs.writeFileSync(stdinLog(), '')
+    seen.length = 0
+    await callShim(['list'], {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      NODETERM_HOOK_TOKEN: 'SECRET-BEARER',
+      NODETERM_NODE_TOKEN_DIR: tokenDir,
+      ...env
+    })
+    return { argv: fs.readFileSync(argvLog(), 'utf8'), stdin: fs.readFileSync(stdinLog(), 'utf8') }
+  }
+
+  it('names no credential header in the generated source at all', () => {
+    expect(CONTROL_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Hook-Token')
+    expect(CONTROL_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Node-Token')
+    expect((CONTROL_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(2)
+  })
+
+  it('over TCP: neither token is in argv, both arrive on stdin and reach the server', async () => {
+    const { argv, stdin } = await record({ NODETERM_HOOK_PORT: String(tcpPort) })
+    expect(seen).toEqual([{ hookToken: 'SECRET-BEARER', nodeToken: 'SECRET-NODE-TOKEN' }])
+    expect(argv).not.toContain('SECRET-BEARER')
+    expect(argv).not.toContain('SECRET-NODE-TOKEN')
+    expect(argv).not.toContain('X-Nodeterm-Hook-Token')
+    expect(argv).not.toContain('X-Nodeterm-Node-Token')
+    expect(stdin).toContain('header = "X-Nodeterm-Hook-Token: SECRET-BEARER"')
+    expect(stdin).toContain('header = "X-Nodeterm-Node-Token: SECRET-NODE-TOKEN"')
+  })
+
+  // The SSH transport — the one where the process table belongs to somebody else.
+  it('over the unix socket: neither token is in argv, both arrive on stdin', async () => {
+    const { argv, stdin } = await record({ NODETERM_HOOK_PORT: '', NODETERM_HOOK_SOCK: sock })
+    expect(seen).toEqual([{ hookToken: 'SECRET-BEARER', nodeToken: 'SECRET-NODE-TOKEN' }])
+    expect(argv).toContain('--unix-socket')
+    expect(argv).not.toContain('SECRET-BEARER')
+    expect(argv).not.toContain('SECRET-NODE-TOKEN')
+    expect(stdin).toContain('header = "X-Nodeterm-Hook-Token: SECRET-BEARER"')
+    expect(stdin).toContain('header = "X-Nodeterm-Node-Token: SECRET-NODE-TOKEN"')
+  })
+
+  // Belt and braces on the config-file quoting: a curl config is line-based, so a value carrying a
+  // `"`, a `\` or a line break could end its header line and inject a directive of its own. None of
+  // those can occur today — the token is kid.mac over [A-Za-z0-9._-] and the bearer is a UUID —
+  // which is exactly why they are STRIPPED rather than escaped: nothing legitimate is altered.
+  it('cannot be broken out of the config file by a quote or a newline in a credential', async () => {
+    const { argv, stdin } = await record({
+      NODETERM_HOOK_PORT: String(tcpPort),
+      NODETERM_HOOK_TOKEN: 'ab"\nuser-agent = "pwned'
+    })
+    // The whole hostile value collapses onto the one header line it was given.
+    expect(stdin).toContain('header = "X-Nodeterm-Hook-Token: abuser-agent = pwned"')
+    expect(stdin.split('\n').some((l) => l.trim().startsWith('user-agent'))).toBe(false)
+    expect(argv).not.toContain('pwned')
+    expect(seen).toHaveLength(1)
+  })
+})
+
 describe('parseControlBody', () => {
   it('reads the shim dialect: nodeId plus arg.<name> fields', () => {
     expect(

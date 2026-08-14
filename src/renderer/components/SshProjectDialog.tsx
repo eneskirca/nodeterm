@@ -109,6 +109,21 @@ export function SshProjectDialog({ onCreate, onManage, onClose }: SshProjectDial
   // Disconnect the browse master if the dialog unmounts without an explicit close.
   useEffect(() => () => disconnectBrowse(), [disconnectBrowse])
 
+  /** Does `dir` exist on the remote? Asked of its PARENT's listing, because a `listDir` of a
+   *  missing directory succeeds and answers `{ path: dir, dirs: [] }`. `~` is taken on faith. */
+  const dirExists = useCallback(async (dir: string): Promise<boolean> => {
+    if (dir === '~') return true
+    try {
+      const parent = await window.nodeTerminal.sshProject.listDir(
+        browseIdRef.current,
+        parentDir(dir)
+      )
+      return parent.dirs.includes(baseName(dir))
+    } catch {
+      return false
+    }
+  }, [])
+
   const list = useCallback(async (dir: string) => {
     const res = await window.nodeTerminal.sshProject.listDir(browseIdRef.current, dir)
     setPath(res.path)
@@ -144,7 +159,16 @@ export function SshProjectDialog({ onCreate, onManage, onClose }: SshProjectDial
         // outlived the dialog for the rest of the app run.
         connectBegunRef.current = true
         await window.nodeTerminal.sshProject.connect(browseIdRef.current, srv)
-        await list('~')
+        // Land in the machine's DEFAULT folder when it has one (Settings → Remote (SSH)); the
+        // point of configuring it is not to browse from `~` to the same place every time.
+        //
+        // A stale default must not dead-end the dialog, and `listDir` cannot say so on its own:
+        // it echoes the path back and returns `dirs: []` whether the folder is missing or merely
+        // empty (`ls` failing is not an error it surfaces). So EXISTENCE is checked against the
+        // parent's listing before landing there — which also keeps a real, empty default working,
+        // unlike treating an empty listing as the failure signal.
+        const start = srv.remoteCwd?.trim() || '~'
+        await list((await dirExists(start)) ? start : '~')
         setStep('browse')
       } catch (err) {
         setError((err as Error)?.message || 'Could not connect to the server.')

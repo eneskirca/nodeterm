@@ -1040,6 +1040,16 @@ export interface Settings {
   notchHoverExpand: boolean
   /** Dictation (desktop/server). Written as a whole object by the renderer. */
   speech: SpeechSettings
+  /** Per-node hook identity enforcement (src/core/agents/node-identity-policy.ts).
+   *
+   *  The ONLY optional key in this interface, and deliberately so: it is a TRI-state, and the two
+   *  non-default states are opposite escape hatches. Absent (the default — it is not in
+   *  DEFAULT_SETTINGS) follows `NODE_IDENTITY_STRICT_AFTER`, so the rollout has one schedule for
+   *  everybody. `true` opts in to strict enforcement before that date. `false` keeps the warning
+   *  window open past it and releases the trust-on-first-proof latch, so a user whose upgrade
+   *  strands a live session gets their canvas back without downgrading the app. Neither value ever
+   *  admits a forged token. */
+  hookIdentityStrict?: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -1286,6 +1296,8 @@ export interface SshFsApi {
   write(projectId: string, path: string, content: string): Promise<boolean>
   mkdir(projectId: string, path: string): Promise<boolean>
   exists(projectId: string, path: string): Promise<boolean>
+  /** ⌘K Quick Open index of the project's remoteCwd: root-relative `/`-paths ([] on failure). */
+  quickOpen(projectId: string, cwd: string): Promise<string[]>
 }
 
 export interface GitFileChange {
@@ -1873,6 +1885,52 @@ export const UNKNOWN_CLAUDE_CLI_CAPS: ClaudeCliCaps = {
   sessionIdFlag: false
 }
 
+/** Whether a Codex node launched on this machine right now would get a managed shared identity.
+ *  Fed by core/codex-identity-caps.ts; the unknown answer is `false`, i.e. plain `codex`. */
+export interface CodexIdentityCaps {
+  shared: boolean
+  /** Absolute path of the installed launcher, or null when it could not be written. */
+  launcherPath: string | null
+  /** Does the installed `codex` accept `--remote`? Feature-detected from its own `--help`. The one
+   *  precondition that cannot be recovered from at runtime: the launcher execs, and a CLI without
+   *  the flag dies on a usage error where no fallback is left. Unknown ⇒ false ⇒ plain codex, and
+   *  "not probed" counts as unknown: when `appServer` is false the help spawns are skipped, so this
+   *  reads false whatever the CLI's help page would have said. */
+  remoteFlag: boolean
+  /** Can this INSTALL run a shared app-server at all? `codex app-server daemon start` needs the
+   *  standalone runtime the Codex installer manages; an npm (or snap) install has the `--remote`
+   *  flag in its help and no such runtime, so it can never serve a shared identity. Unknown ⇒
+   *  false ⇒ plain codex. */
+  appServer: boolean
+}
+
+/** The answer before the probe has run, and the one the Server Edition gives on purpose. */
+export const UNKNOWN_CODEX_IDENTITY_CAPS: CodexIdentityCaps = {
+  shared: false,
+  launcherPath: null,
+  remoteFlag: false,
+  appServer: false
+}
+
+/** A Codex node's identity mode, as reported by the node's own launcher at spawn time.
+ *  `plain` carries the machine-readable reason the managed identity was unavailable. */
+export interface CodexIdentityEvent {
+  nodeId: string
+  mode: 'shared' | 'plain'
+  reason?: string
+}
+
+/** The Codex-specific surface. Small on purpose: everything else a Codex node needs already goes
+ *  through the shared agent/pty APIs. */
+export interface CodexApi {
+  /** Would a Codex node launched right now get a managed shared identity on this machine?
+   *  Never rejects — the unknown answer is `{ shared: false }`, i.e. plain `codex`. */
+  identityCaps(): Promise<CodexIdentityCaps>
+  /** Fires when a Codex node's launcher reports its identity mode. `plain` is the fallback, and
+   *  this event is what stops that fallback being silent. Returns unsubscribe. */
+  onIdentity(listener: (e: CodexIdentityEvent) => void): () => void
+}
+
 export interface ClaudeApi {
   /** Capabilities of the local Claude CLI (memoized in the shell; safe to call repeatedly).
    *  Never rejects — an unknown version resolves to the fail-open caps. */
@@ -2146,6 +2204,7 @@ export interface NodeTerminalApi {
   sessionMemory: SessionMemoryApi
   context: ContextApi
   canvas: CanvasApi
+  codex: CodexApi
   claude: ClaudeApi
   chat: ChatApi
   claudeAccounts: ClaudeAccountsApi
@@ -2160,6 +2219,10 @@ export interface NodeTerminalApi {
   onMarkdownToggle(listener: () => void): () => void
   /** Fires when the user presses Cmd/Ctrl+W (close selected node). Returns unsubscribe. */
   onCloseNode(listener: () => void): () => void
+  /** Fires when the user presses Cmd/Ctrl+0 (zoom the canvas back to 100%). Desktop only: the
+   *  key is intercepted in main because Electron's default View menu owns the accelerator. In the
+   *  Server Edition the renderer's own keydown handler sees the key and this is a no-op stub. */
+  onZoomActualSize(listener: () => void): () => void
   /** Close the application window (Cmd/Ctrl+W fallback when no node is selected). */
   closeWindow(): void
   /** Bring the app window to the foreground (show + OS focus). Called after a file is DROPPED

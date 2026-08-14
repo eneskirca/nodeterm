@@ -17,9 +17,15 @@ export interface RemoteNodeInput {
   agentId?: string
 }
 
-/** The desktop id shape (`term-<base36 ms>-<n>`). Anything else is refused — the id is
- *  interpolated into tmux session names, so the alphabet stays strictly boring. */
-const SAFE_NODE_ID = /^term-[a-z0-9]+-\d{1,6}$/
+/** The desktop id shape (`term-<base36 ms>-<token>`). Anything else is refused — the id is
+ *  interpolated into tmux session names, so the alphabet stays strictly boring.
+ *
+ *  The tail was `\d{1,6}` while the desktop minted a monotonic counter. That counter restarted at
+ *  zero on every renderer start (and every HMR reload), so it was a collision generator and is now
+ *  a random hex token — and this guard, which is what the PHONE's ids are checked against, would
+ *  have refused every id the phone mints once nodeterm-ios adopts the same shape. Widened to the
+ *  same boring alphabet; an empty tail (`term-abc-`) is still refused. */
+const SAFE_NODE_ID = /^term-[a-z0-9]+-[a-z0-9]{1,16}$/
 
 const TITLE_MAX = 120
 

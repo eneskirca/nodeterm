@@ -1,10 +1,11 @@
 import type { Node } from '@xyflow/react'
 import type { CanvasMutation, CanvasNodeState, ClaudeAccount, NodeKind, PendingLaunch, Project } from '@shared/types'
 import type { AgentId, AgentPermissionMode } from '@shared/agents/config'
-import { agentConfig, mintsSessionId, withSessionId } from '@shared/agents/config'
+import { agentConfig, agentLaunchProgram, mintsSessionId, withSessionId } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { uuid } from '@renderer/lib/uuid'
 import { claudeCliCapsNow } from './permissionMode'
+import { codexSharedIdentity } from './codexIdentity'
 import { sshHostKey } from '@shared/ssh'
 import { useSettings } from './settings'
 
@@ -134,9 +135,31 @@ export function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
-let idCounter = 0
+/**
+ * 8 hex characters of CSPRNG — the unique tail of every node and project id.
+ *
+ * It replaces a module-level `let idCounter = 0`, which was a latent collision generator: the
+ * counter restarted at 0 on every renderer start AND on every HMR reload, so `term-<ms36>-1` was
+ * minted again and again and only `Date.now()` (millisecond resolution) kept the ids apart. A node
+ * id IS the tmux session name and the persistence key, so a repeat means two nodes co-attached to
+ * one terminal.
+ *
+ * Kept inside `[A-Za-z0-9._-]` and short, because these ids become tmux session names and are
+ * charset-validated on several paths (tmux-naming, hook-server, codex-identity-proxy,
+ * project-node-append). No `Math.random()`: bulk flows (duplicate, "spawn a team") mint many ids in
+ * one tick, which is exactly where a weak generator repeats.
+ */
+function randomToken(): string {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c?.getRandomValues) {
+    return Array.from(c.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('')
+  }
+  // Non-browser, non-Node-19 fallback (never taken in the app or in tests): still 8 chars.
+  return Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, '0')
+}
+
 function nextId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${++idCounter}`
+  return `${prefix}-${Date.now().toString(36)}-${randomToken()}`
 }
 
 /** Stagger placement so new nodes don't overlap. */
@@ -338,7 +361,14 @@ export function createAgentNode(
   permissionMode?: AgentPermissionMode
 ): CanvasNode {
   const { label, color, launchCmd } = resolveAgent(agentId)
-  const baseCmd = agentId === 'claude' ? claudeLaunchCommand() : launchCmd
+  // A SHARED_IDENTITY_CAPABLE agent (codex) launches through its managed launcher when this
+  // machine actually has one — otherwise the bare CLI, byte-identical to before. Asked through the
+  // capability helper, never `agentId === 'codex'`; `codexSharedIdentity` folds in the SSH answer
+  // (a host has no launcher installed yet, so a remote node must stay on the bare command).
+  const baseCmd =
+    agentId === 'claude'
+      ? claudeLaunchCommand()
+      : agentLaunchProgram(agentId, launchCmd, codexSharedIdentity(ssh))
   // A flag-prompt agent (opencode) takes the initial prompt via its flag — a bare positional
   // would be misread (opencode treats it as a project path). Everything else keeps the
   // historical argv append, INCLUDING stdin-after-start agents (gemini has always launched

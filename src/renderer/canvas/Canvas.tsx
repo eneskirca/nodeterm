@@ -56,10 +56,14 @@ import {
   useSharedGlyphActive
 } from './SharedGlyphLayer'
 import { SshReconnector } from '../lib/sshReconnect'
+import {
+  hostAttachmentsFor,
+  connectHostAttachment,
+  type SshConnectFn
+} from '../lib/sshAttachments'
 import { terminalKey } from '../terminal/terminal-config'
 import {
   setWebglGesture,
-  setWebglZoom,
   releaseAllHiddenGrants,
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
@@ -146,6 +150,12 @@ import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
 import type { SessionNodeInput } from '../lib/sessionList'
 import { liveProjectJumpTarget, projectJumpDigit } from '../lib/projectJump'
+import {
+  liveZoomShortcutAction,
+  liveZoomShortcutContext,
+  zoomShortcutAllowed,
+  zoomShortcutChord
+} from '../lib/zoomShortcut'
 import { UsageIndicator } from '../components/UsageIndicator'
 import { SystemResourcePill } from '../components/SystemResourcePill'
 import { PresenceLayer } from '../components/PresenceLayer'
@@ -186,10 +196,19 @@ import { planHibernation, HIBERNATE_SWEEP_MS } from '../terminal/hibernation-pol
 import { buildHibernationCandidates } from '../lib/hibernationCandidates'
 import { applyLoopDismiss } from '../lib/loopCard'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
+import { isSafeQuickOpenRelPath } from '@shared/quick-open-filter'
+
+/** The real `sshProject.connect`, bound once. Passed into `connectHostAttachment` rather than
+ *  reached for inside it, so that helper stays testable without an Electron preload. */
+const sshConnect: SshConnectFn = (scopeId, conn, remoteCwd) =>
+  window.nodeTerminal.sshProject.connect(scopeId, conn, remoteCwd)
+const sshDisconnect = (scopeId: string): Promise<unknown> =>
+  window.nodeTerminal.sshProject.disconnect(scopeId)
 import { opensInEditor } from '../lib/openTarget'
 import { newEntryPath, parentDir } from '../lib/explorerCreate'
 import { useProjects } from '../state/projects'
 import { useAgentStatus } from '../state/agentStatus'
+import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
 import { SubagentNode } from '../nodes/SubagentNode'
@@ -691,9 +710,10 @@ export function Canvas() {
   // told here rather than being left with a note their teammates never see. Dismissible; re-armed
   // by the next refused cast (the publisher keeps retrying that node, so it syncs once trimmed).
   const [syncNote, setSyncNote] = useState<string | null>(null)
-  // Copy-to-clipboard failure (browser build only): the bridge clipboard stub dispatches
-  // `nodeterm:toast` when neither the Clipboard API nor execCommand can copy — typically a
-  // non-secure context (plain http over a LAN). It must be seen, not swallowed.
+  // A transient warning banner. Two producers, both of which must be SEEN rather than swallowed:
+  // a copy-to-clipboard failure (browser build only — the bridge clipboard stub dispatches
+  // `nodeterm:toast` when neither the Clipboard API nor execCommand can copy, typically a
+  // non-secure context over a LAN), and a Codex node reporting that it fell back to plain codex.
   const [copyError, setCopyError] = useState<string | null>(null)
   // Cmd+V only drops an image on the canvas when the LAST pointer press was on the pane itself —
   // otherwise a paste aimed at a panel or a dialog would spawn a node behind it. See
@@ -948,6 +968,20 @@ export function Canvas() {
     }
     window.addEventListener('nodeterm:toast', onToast)
     return () => window.removeEventListener('nodeterm:toast', onToast)
+  }, [])
+  // A Codex node's launcher reporting what it actually got. The 'plain' case is the fallback, and
+  // this is what stops it being silent: the node keeps a chip (see TerminalNode's header) and the
+  // FIRST fallback per node also raises a toast, because a chip on a node you are not looking at
+  // teaches nothing. Deliberately NOT written into the pane — text pushed into an agent's terminal
+  // is prompt injection, which this repo forbids.
+  useEffect(() => {
+    const seen = new Set<string>()
+    return window.nodeTerminal.codex.onIdentity((e) => {
+      useCodexIdentity.getState().setMode(e.nodeId, e.mode, e.reason)
+      if (e.mode !== 'plain' || seen.has(e.nodeId)) return
+      seen.add(e.nodeId)
+      setCopyError(codexFallbackText(e.reason))
+    })
   }, [])
   // Terminal node id awaiting confirmation to move into its group's worktree.
   const [moveTarget, setMoveTargetState] = useState<string | null>(null)
@@ -1695,6 +1729,29 @@ export function Canvas() {
       // Local active project: ensure all git ops run local (no stale remote from a prior SSH tab).
       void api.git.setActiveRemote(null)
     }
+    // HOST ATTACHMENTS: remote nodes on this canvas whose machine is not the project's own — every
+    // remote node when the project is LOCAL. They have no project row to be connected from, so
+    // their masters are opened here, alongside the project's, under the stable attachment scope
+    // their terminals resolve (`sshConnectionIdForProject`). This is a PRE-WARM only: a node added
+    // at runtime dials for itself from `resolveSshRemote`, and `connectHostAttachment` collapses
+    // both into one connect. Failures are silent by design — the node's own 20s wait then its
+    // offline overlay is the user-visible half, and `requireRemote` guarantees nothing starts
+    // locally.
+    // NOTE: git routing is deliberately NOT armed for an attachment. The project's own cwd is what
+    // the Source Control panel is about, and an attached node must not repoint it at another host.
+    for (const attachment of hostAttachmentsFor(project.id, project.nodes, project.ssh?.server)) {
+      void connectHostAttachment(
+        attachment.scopeId,
+        {
+          conn: attachment.conn,
+          hostKey: attachment.hostKey,
+          remoteCwd: attachment.remoteCwd,
+          ownerProjectId: project.id
+        },
+        sshConnect,
+        sshDisconnect
+      )
+    }
     loadingRef.current = true
     const flow = nodeStatesToFlow(project.nodes)
     setNodes(flow)
@@ -1737,9 +1794,6 @@ export function Canvas() {
       setViewport(project.viewport)
       setZoomPct(Math.round(project.viewport.zoom * 100))
       setGroupLabelBoost(project.viewport.zoom)
-      // A project can load already zoomed way out (saved viewport) — seed the WebGL zoom gate
-      // before the mount-time IntersectionObserver reports make every node request a context.
-      setWebglZoom(project.viewport.zoom)
       // Seed the shared glyph camera from the same viewport: `onMove` only fires once the user
       // actually pans, so without this a project that loads scrolled away would draw its grids
       // against the previous project's camera until the first gesture.
@@ -1945,7 +1999,7 @@ export function Canvas() {
       setMigrationNote(
         kind === 'exec'
           ? 'Custom shells and advanced SSH options (e.g. a ProxyCommand jump host) are no longer stored in the shared .nodeterm/project.json — a cloned repo could use them to run code. They still work here: they moved to this machine only, and your teammates no longer receive them.'
-          : 'Projects now live in a .nodeterm folder inside each project directory — commit it to share the canvas, or add it to .gitignore.'
+          : 'Projects now live in a .nodeterm folder inside each project directory. It holds the canvas only — no ids, camera or accounts from this machine — so committing it shares the canvas cleanly, or add it to .gitignore.'
       )
     })
   }, [])
@@ -3100,33 +3154,44 @@ export function Canvas() {
     }
   }, [hasProjects, kanbanOpen, placeCanvasImages, screenToFlowPosition, viewCenter, welcomeOpen])
 
-  // Load the quick-open file index when the palette opens.
+  // Load the quick-open file index when the palette opens. An SSH project indexes its remoteCwd
+  // over the ControlMaster (sshFs.quickOpen); the browser client's sshFs is a stub, so the catch
+  // fails open to an empty index there instead of surfacing an "unsupported" error.
   useEffect(() => {
     if (!paletteOpen) return
-    const cwd = useProjects.getState().getProject(activeProjectId ?? '')?.cwd
-    if (!cwd) {
+    const project = useProjects.getState().getProject(activeProjectId ?? '')
+    const cwd = project?.ssh?.remoteCwd ?? project?.cwd
+    if (!project || !cwd) {
       setFileIndex([])
       return
     }
     let cancelled = false
-    void window.nodeTerminal.files.quickOpen(cwd).then((files) => {
-      if (!cancelled) setFileIndex(prepareQuickOpenFiles(files))
-    })
+    const index = project.ssh
+      ? window.nodeTerminal.sshFs.quickOpen(project.id, cwd)
+      : window.nodeTerminal.files.quickOpen(cwd)
+    void index
+      .catch(() => [] as string[])
+      .then((files) => {
+        if (!cancelled) setFileIndex(prepareQuickOpenFiles(files))
+      })
     return () => {
       cancelled = true
     }
   }, [paletteOpen, activeProjectId])
 
   /** Open a quick-open file result by root-relative path: editor node for text/images,
-   *  OS default app for binaries (e.g. .dmg). */
+   *  OS default app for binaries (e.g. .dmg). On an SSH project everything opens as a canvas
+   *  node routed over `sshFs` (there is no OS to hand a remote path to). */
   const openProjectFile = useCallback(
     (relPath: string) => {
-      const cwd = useProjects.getState().getProject(activeProjectId ?? '')?.cwd
+      const project = useProjects.getState().getProject(activeProjectId ?? '')
+      const cwd = project?.ssh?.remoteCwd ?? project?.cwd
       if (!cwd) return
-      // relPath comes from the trusted local file index (always cwd-relative), so the
-      // `cwd + relPath` join needs no traversal guard in v1; a future remote/untrusted source would.
+      // An SSH project's index is remote-supplied, so guard the join against traversal.
+      if (!isSafeQuickOpenRelPath(relPath)) return
       const abs = `${cwd.replace(/\/$/, '')}/${relPath}`
-      if (opensInEditor(relPath)) openFile(abs)
+      if (project?.ssh) openFile(abs, undefined, true)
+      else if (opensInEditor(relPath)) openFile(abs)
       else window.nodeTerminal.shell.openPath(abs)
     },
     [activeProjectId, openFile]
@@ -3287,9 +3352,21 @@ export function Canvas() {
   const cloneRepo = useCallback(() => setCloneDialogOpen(true), [])
 
   const onRepoCloned = useCallback(
-    (clonedPath: string, name: string) => {
+    async (clonedPath: string, name: string) => {
       commitActiveToStore()
-      const project = useProjects.getState().addProject(name, clonedPath)
+      // A cloned repo may SHIP its canvas: `.nodeterm/project.json` is a git-shared file (the
+      // migration banner asks users to commit it). Minting a brand-new empty project for the folder
+      // ignored that canvas entirely, so a clone came up blank. Same probe→adopt path as "Open
+      // folder…" — the probe reads the canvas and mints this machine's id for it.
+      //
+      // The probe may NOT be allowed to fail the clone: `onCloned` is typed `=> void` and the
+      // dialog does not await it, so a rejected IPC would leave the freshly cloned repo with no
+      // tab at all (plus an unhandled rejection) where the old code always created one. A failed
+      // probe simply means "we learned nothing about this folder" → the virgin-folder path.
+      const probed = await api.workspace.probeFolder(clonedPath).catch(() => null)
+      const project = probed
+        ? useProjects.getState().adoptProject({ ...probed, closed: false })
+        : useProjects.getState().addProject(name, clonedPath)
       useProjects.getState().setActive(project.id)
       // The welcome screen stays up behind the clone dialog; dismiss it now that a
       // project actually exists (no-op when the dialog was opened elsewhere).
@@ -4869,6 +4946,18 @@ export function Canvas() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '/') {
         e.preventDefault()
         setShortcutsOpen((v) => !v)
+      } else if (zoomShortcutChord(e) !== null) {
+        // ⌘/Ctrl+0 = back to 100%, Shift+1 = fit everything. `liveZoomShortcutAction` is the
+        // whole decision (see `lib/zoomShortcut.ts`), and the ⌘0 desktop route below asks the same
+        // one, so the two paths can never disagree about when the chord is allowed to move the
+        // camera. A null answer means "leave the key alone" — no `preventDefault`, which is what
+        // keeps Shift+1 typing a `!` wherever the user is actually typing.
+        const action = liveZoomShortcutAction(e)
+        if (action) {
+          e.preventDefault()
+          if (action === 'zoom-100') zoomTo100()
+          else fitAll()
+        }
       } else if (projectJumpDigit(e) !== null) {
         // Cmd/Ctrl+1-9 jumps to the Nth project — but only when the app actually owns the key
         // (desktop shell, and the digit addresses an open project). `liveProjectJumpTarget`
@@ -4925,7 +5014,22 @@ export function Canvas() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleSessionsPin, switchProject])
+  }, [toggleSessionsPin, switchProject, fitAll, zoomTo100])
+
+  // ⌘/Ctrl+0 on the DESKTOP never reaches the keydown handler above: Electron's default View menu
+  // binds the accelerator to `resetZoom`, and a menu accelerator is handled before the page sees
+  // the key. `main/index.ts` intercepts it in `before-input-event` — exactly as it already does for
+  // ⌘M (else macOS minimizes) and ⌘W — and forwards it here, so the chord zooms the CANVAS to 100%
+  // instead of resetting the WINDOW's page zoom, which is not what a canvas app's user means by
+  // "actual size". The forwarded signal carries no event, so the refusals are re-asked here from
+  // the same module rather than re-derived. Server Edition has no menu and no intercept: there the
+  // keydown branch above is the whole path (the browser's own ⌘0 means the same thing, so the two
+  // agree rather than fight, and the bridge stubs this subscription out).
+  useEffect(() => {
+    return window.nodeTerminal.onZoomActualSize(() => {
+      if (zoomShortcutAllowed(liveZoomShortcutContext())) zoomTo100()
+    })
+  }, [zoomTo100])
 
   // Apply the accent color as a CSS variable.
   useEffect(() => {
@@ -5604,9 +5708,6 @@ export function Canvas() {
           zoomRafRef.current = null
           setZoomPct(Math.round(viewportRef.current.zoom * 100))
           setGroupLabelBoost(viewportRef.current.zoom)
-          // Feed the WebGL budget's zoom gate (suspend GPU rendering when zoomed way out).
-          // Idempotent + hysteresis inside; per-frame call cost is a float compare.
-          setWebglZoom(viewportRef.current.zoom)
         })
       }
     },
@@ -7659,7 +7760,14 @@ export function Canvas() {
   const sshReconnectorRef = useRef<SshReconnector | null>(null)
   useEffect(() => {
     const rec = new SshReconnector({
-      connect: async (projectId) => {
+      connect: async (scopeId) => {
+        // A HOST ATTACHMENT has no project row to read its endpoint from — `registerAttachment`
+        // put it on record before the first dial, precisely so a connect that never succeeded is
+        // still reachable here. Reconnect it on its own loop (its master is its own) and leave git
+        // routing alone: the owning project is local, or points somewhere else entirely.
+        const attached = useSshConn.getState().getAttachment(scopeId)
+        if (attached) return connectHostAttachment(scopeId, attached, sshConnect, sshDisconnect)
+        const projectId = scopeId
         const project = useProjects.getState().getProject(projectId)
         if (!project?.ssh) return false
         const ssh = project.ssh
@@ -7672,7 +7780,9 @@ export function Canvas() {
         useSshConn.getState().setConn(projectId, info)
         return true
       },
-      respawn: (projectId, nodeIds) => {
+      respawn: (scopeId, nodeIds) => {
+        // The nodes live on the OWNING canvas, which for an attachment is not the scope id.
+        const projectId = useSshConn.getState().ownerProjectId(scopeId)
         if (useProjects.getState().activeProjectId !== projectId) {
           // The project was switched away between the drop and the reconnect: nothing is mounted,
           // and any park is holding the DEAD pty (the node unmount-parked before the master came
@@ -8009,6 +8119,21 @@ export function Canvas() {
           .catch(() => {})
           .finally(() => void window.nodeTerminal.sshProject.disconnect(id))
         useSshConn.getState().clear(id)
+      }
+      // Host attachments this project owns: nothing else knows they exist (no project row), so
+      // deleting the canvas is the only chance to tear their masters down. Same order as above —
+      // kill the remote sessions over the live master, then drop it.
+      for (const scopeId of useSshConn.getState().attachmentScopesOf(id)) {
+        const nodeIds = project
+          ? hostAttachmentsFor(id, project.nodes, project.ssh?.server).find(
+              (a) => a.scopeId === scopeId
+            )?.nodeIds ?? []
+          : []
+        void window.nodeTerminal.sshProject
+          .killSessions(scopeId, nodeIds)
+          .catch(() => {})
+          .finally(() => void window.nodeTerminal.sshProject.disconnect(scopeId))
+        useSshConn.getState().clearAttachment(scopeId)
       }
       disposeRelayTabForProject(id)
       store.deleteProject(id)

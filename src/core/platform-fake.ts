@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'fs'
+import os from 'os'
+import path from 'path'
 import type { CorePlatform } from './platform'
 
 export interface FakePlatform extends CorePlatform {
@@ -10,10 +13,20 @@ export interface FakePlatform extends CorePlatform {
   clients: number[]
 }
 
-/** In-memory CorePlatform for tests. Not a mock library — plain recording object. */
+/**
+ * In-memory CorePlatform for tests. Not a mock library — plain recording object.
+ *
+ * `userDataDir` defaults to a FRESH `mkdtemp` directory, never a fixed path. It used to be the
+ * literal `/tmp/nodeterm-test`, which was wrong twice over: two test files running in parallel
+ * shared one directory (so one could see or clobber the other's state), and every production
+ * write that resolves through `platform().userDataDir` — the scrollback store, the workspace
+ * store, context-link, the token files — statically reads as a write to a PREDICTABLE temp path,
+ * which is a real symlink-attack shape and which CodeQL flags as `js/insecure-temporary-file`.
+ * Tests that want their own directory still pass one in; this only fixes what they inherit.
+ */
 export function fakePlatform(overrides: Partial<CorePlatform> = {}): FakePlatform {
   const f: FakePlatform = {
-    userDataDir: '/tmp/nodeterm-test',
+    userDataDir: mkdtempSync(path.join(os.tmpdir(), 'nodeterm-fake-')),
     appVersion: '0.0.0-test',
     isPackaged: false,
     handlers: {},

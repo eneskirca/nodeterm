@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { quantizeCharSize } from '../../terminal/char-size-quantize'
 import { reportsOwnCopy } from '@shared/agents/config'
 import type { AgentId } from '@shared/agents/config'
 import { readsClaudeTranscript } from '../../lib/transcriptGates'
@@ -31,7 +32,7 @@ import {
   CO_ATTACH_MOUSE_SEQ
 } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
-import { resolveSshRemote, reportSshDrop } from '../../nodes/TerminalNode'
+import { resolveSshRemote, reportSshDrop, sshConnectionScope } from '../../nodes/TerminalNode'
 import { buildSshArgs, type SshConnection } from '@shared/ssh'
 
 /** The subset of a node's `data` a SECOND client needs to attach to its session the same way the
@@ -163,6 +164,9 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     fitRef.current = fit
     transportRef.current = transport
     term.open(hostRef.current!)
+    // Renderer-parity with the canvas terminals (see char-size-quantize): the modal co-views
+    // the same session, so its column math must match what the canvas draws.
+    quantizeCharSize(term)
     fit.fit()
 
     let sessionId: string | null = null
@@ -200,8 +204,13 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
 
     void (async () => {
       // Read here, not at click time: a modal only ever opens over the ACTIVE project, and the
-      // reconnect coordinator is keyed by project (same assumption as resolveSshRemote's).
-      const projectId = useProjects.getState().activeProjectId
+      // reconnect coordinator is keyed by CONNECTION SCOPE (same choice resolveSshRemote makes) —
+      // the project's own id, or the host attachment when this card's session is on a machine the
+      // project isn't.
+      const projectId =
+        spawn.sshRemoteTmux && spawn.ssh
+          ? sshConnectionScope(spawn.ssh)
+          : useProjects.getState().activeProjectId
       // SSH-project node: resolve the live ControlMaster (may not be up yet on a cold load).
       const sshRemote =
         spawn.sshRemoteTmux && spawn.ssh
@@ -367,7 +376,10 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     const needsWrite = files.some((f) => !window.nodeTerminal.getPathForFile(f))
     let paths: string[]
     if (spawn.sshRemoteTmux) {
-      const projectId = useProjects.getState().activeProjectId
+      // Uploads go over the master this card's PTY runs on — its scope, not the project's.
+      const projectId = spawn.ssh
+        ? sshConnectionScope(spawn.ssh)
+        : useProjects.getState().activeProjectId
       setUploading(true)
       try {
         paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })

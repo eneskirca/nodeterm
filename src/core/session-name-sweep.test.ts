@@ -150,22 +150,25 @@ describe('the default supports gate (TITLE_READ_CAPABLE)', () => {
     const { published, asked } = await sweepWithDefaultGate([
       { nodeId: 'c', sessionId: 'cs', agentId: 'claude' },
       { nodeId: 'g', sessionId: 'gs', agentId: 'grok' },
-      { nodeId: 'm', sessionId: 'ms', agentId: 'gemini' }
+      { nodeId: 'm', sessionId: 'ms', agentId: 'gemini' },
+      // codex joined the same way: with the shared app-server its node owns a thread, and that
+      // thread's `Thread.name` is readable over the server's socket. Read-only, like gemini.
+      { nodeId: 'x', sessionId: 'xs', agentId: 'codex' }
     ])
-    expect(asked).toEqual(['cs', 'gs', 'ms'])
+    expect(asked).toEqual(['cs', 'gs', 'ms', 'xs'])
     expect(published).toEqual([
       ['c', 'name of cs'],
       ['g', 'name of gs'],
-      ['m', 'name of ms']
+      ['m', 'name of ms'],
+      ['x', 'name of xs']
     ])
   })
 
   it('never asks about an agent whose name we cannot read', async () => {
-    // codex is in neither list (its command set was not enumerable, so neither leg has a measured
-    // basis) and a custom agent has no reader at all. Asking anyway would send them through
-    // claude's resolver, which SCANS ~/.claude/projects for an id that can never be there.
+    // A custom agent has no reader at all, and an entry with no agentId cannot be routed. Asking
+    // anyway would send them through claude's resolver, which SCANS ~/.claude/projects for an id
+    // that can never be there — once a minute, per node, forever.
     const { published, asked } = await sweepWithDefaultGate([
-      { nodeId: 'x', sessionId: 'xs', agentId: 'codex' },
       { nodeId: 'y', sessionId: 'ys', agentId: 'custom:mine' },
       { nodeId: 'z', sessionId: 'zs' }
     ])

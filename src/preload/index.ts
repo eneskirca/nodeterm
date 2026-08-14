@@ -232,7 +232,9 @@ const api: NodeTerminalApi = {
     write: (projectId: string, path: string, content: string) =>
       ipcRenderer.invoke(IPC.sshFsWrite, projectId, path, content),
     mkdir: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsMkdir, projectId, p),
-    exists: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsExists, projectId, p)
+    exists: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsExists, projectId, p),
+    quickOpen: (projectId: string, cwd: string) =>
+      ipcRenderer.invoke(IPC.sshFsQuickOpen, projectId, cwd)
   },
   git: {
     status: (cwd) => ipcRenderer.invoke(IPC.gitStatus, cwd),
@@ -422,6 +424,14 @@ const api: NodeTerminalApi = {
       return () => ipcRenderer.removeListener(IPC.canvasMut, handler)
     }
   },
+  codex: {
+    identityCaps: () => ipcRenderer.invoke(IPC.codexIdentityCaps),
+    onIdentity: (listener) => {
+      const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)
+      ipcRenderer.on(IPC.codexIdentity, handler)
+      return () => ipcRenderer.removeListener(IPC.codexIdentity, handler)
+    }
+  },
   claude: {
     cliCaps: () => ipcRenderer.invoke(IPC.claudeCliCaps),
     readTranscript: (sessionId, cwd, accountId, nodeId) =>
@@ -551,6 +561,7 @@ const api: NodeTerminalApi = {
   // ipcRenderer listeners and trip the MaxListeners warning.
   onMarkdownToggle: subscribe(IPC.appToggleMarkdown),
   onCloseNode: subscribe(IPC.appCloseNode),
+  onZoomActualSize: subscribe(IPC.appZoomActualSize),
   closeWindow: () => ipcRenderer.send(IPC.appCloseWindow),
   focusWindow: () => ipcRenderer.send(IPC.appFocusWindow),
   setBadgeCount: (count) => ipcRenderer.send(IPC.appSetBadge, count),

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { sshListArgs, sshReadArgs, sshReadBinaryArgs, sshWriteArgs, sshMkdirArgs, sshExistsArgs, sshCheckIgnoreArgs, sshAppendArgs, sshTailArgs, sshSizeArgs, parseLsEntries, SshFs } from './ssh-fs'
+import { sshListArgs, sshReadArgs, sshReadBinaryArgs, sshWriteArgs, sshMkdirArgs, sshExistsArgs, sshCheckIgnoreArgs, sshAppendArgs, sshTailArgs, sshSizeArgs, sshQuickOpenArgs, parseQuickOpenListing, parseLsEntries, SshFs, SSH_QUICK_OPEN_MAX_BYTES } from './ssh-fs'
 
 const conn = { host: 'h', user: 'u' }
 const ref = { conn, controlPath: '/s.sock' }
@@ -132,5 +132,66 @@ describe('SshFs (injected runner)', () => {
     expect(await new SshFs(async () => ({ code: 1, stdout: '' })).readTextChecked(ref, '/x')).toEqual({ status: 'absent' })
     expect(await new SshFs(async () => ({ code: 255, stdout: '' })).readTextChecked(ref, '/x')).toEqual({ status: 'error' })
     expect(await new SshFs(async () => { throw new Error('spawn') }).readTextChecked(ref, '/x')).toEqual({ status: 'error' })
+  })
+})
+
+// ⌘K Quick Open over SSH: one remote round-trip that mirrors the local fallback chain
+// (rg two passes → git ls-files two passes → find), parsed with the same shared filter.
+describe('sshQuickOpenArgs', () => {
+  const cmd = (): string => sshQuickOpenArgs(conn, '/s.sock', '/re po').join(' ')
+  it('cds into the quoted cwd so every lister emits cwd-relative paths', () => {
+    expect(cmd()).toContain(`cd '/re po' && `)
+  })
+  it('leaves a leading ~/ unquoted so the remote shell tilde-expands the cwd', () => {
+    expect(sshQuickOpenArgs(conn, '/s.sock', '~/projects').join(' ')).toContain(`cd ~/'projects' && `)
+  })
+  it('prefers rg: two passes (ignore-respecting + --no-ignore-vcs), pruning node_modules', () => {
+    const c = cmd()
+    expect(c).toContain('command -v rg')
+    expect(c).toContain(`rg --files --hidden '--glob' '!**/node_modules'`)
+    expect(c).toContain('--no-ignore-vcs')
+  })
+  it('falls back to git ls-files (NUL-delimited, tracked+untracked then ignored pass)', () => {
+    const c = cmd()
+    expect(c).toContain('git ls-files -z --cached --others --exclude-standard')
+    expect(c).toContain('git ls-files -z --others --ignored --exclude-standard')
+  })
+  it('falls back to a pruned find for non-git roots without rg', () => {
+    const c = cmd()
+    expect(c).toContain('find .')
+    expect(c).toContain(`-name 'node_modules'`)
+    expect(c).toContain('-prune')
+  })
+  it('caps the transfer with head -c so a huge repo cannot flood the master', () => {
+    expect(cmd()).toContain(`| head -c ${SSH_QUICK_OPEN_MAX_BYTES}`)
+  })
+})
+
+describe('parseQuickOpenListing', () => {
+  it('splits on newline (rg/find) and NUL (git -z), normalizes ./ prefixes, sorts', () => {
+    expect(parseQuickOpenListing('./src/b.ts\nsrc/a.ts\n')).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(parseQuickOpenListing('a.ts\0b with space.ts\0')).toEqual(['a.ts', 'b with space.ts'])
+  })
+  it('dedupes the two rg/git passes', () => {
+    expect(parseQuickOpenListing('src/a.ts\nsrc/a.ts\n')).toEqual(['src/a.ts'])
+  })
+  it('drops blocklisted dirs and root escapes — the remote listing is untrusted', () => {
+    expect(parseQuickOpenListing('node_modules/x.js\n../up\n/abs\na/../b\nok.ts\n')).toEqual(['ok.ts'])
+  })
+  it('drops the (possibly truncated) last entry when output hit the head -c cap', () => {
+    const filler = 'y'.repeat(SSH_QUICK_OPEN_MAX_BYTES - 8)
+    expect(parseQuickOpenListing(`good.ts\n${filler}`)).toEqual(['good.ts'])
+  })
+})
+
+describe('SshFs.listQuickOpenFiles', () => {
+  it('returns the parsed listing on exit 0', async () => {
+    const fs = new SshFs(async () => ({ code: 0, stdout: './src/a.ts\nREADME.md\n' }))
+    expect(await fs.listQuickOpenFiles(ref, '~/p')).toEqual(['README.md', 'src/a.ts'])
+  })
+  it('fail-open: [] on non-zero exit (bad cwd / connection down) and on a runner throw', async () => {
+    expect(await new SshFs(async () => ({ code: 1, stdout: '' })).listQuickOpenFiles(ref, '/p')).toEqual([])
+    expect(await new SshFs(async () => ({ code: 255, stdout: '' })).listQuickOpenFiles(ref, '/p')).toEqual([])
+    expect(await new SshFs(async () => { throw new Error('spawn') }).listQuickOpenFiles(ref, '/p')).toEqual([])
   })
 })

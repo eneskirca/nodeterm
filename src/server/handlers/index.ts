@@ -7,6 +7,8 @@ import { GitService } from '../../core/git-service'
 import { generateCommitMessage } from '../../core/commit-message'
 import { registerFsHandlers } from '../../core/fs-handlers'
 import { claudeCliCaps, registerClaudeCliIpc } from '../../core/claude-cli'
+import { registerCodexIdentityIpc } from '../../core/codex-identity-caps'
+import { UNKNOWN_CODEX_IDENTITY_CAPS } from '@shared/types'
 import { startUsageService } from '../../core/usage/usage-service'
 import {
   setMirrorUsageProvider,
@@ -67,6 +69,21 @@ export function registerCoreHandlers(
   // claude CLI is the one that will run the terminal nodes. Warm it so the first call is cached.
   registerClaudeCliIpc()
   void claudeCliCaps()
+
+  // ---- Codex shared identity: a DELIBERATE degrade, not an omission ----------------------------
+  // The Server Edition answers "no shared identity", so every Codex node here launches the bare
+  // `codex` it always did — a working node with its own app-server, just without the shared one.
+  //
+  // The secret question that used to block this is ANSWERED: src/server/index.ts arms
+  // `hookServer.setNodeAuthSecret(await loadOrCreateNodeAuthSecret())` at boot, which on a headless
+  // host is raw 0600 bytes in the data dir — a decision taken explicitly, not quietly (see
+  // src/core/agents/node-auth-secret.ts). What is still missing is only the codex-specific
+  // plumbing: `setCodexThreadIdentityAuthSecret(secret)`, `refreshCodexIdentityCaps()`, and the two
+  // `setCodexThread*Handler` registrations src/main/index.ts makes. Everything they call already
+  // lives in src/core and boots from CorePlatform, so this stays a scope line, not a blocker —
+  // until it is drawn differently, saying "no" here keeps the browser's Codex nodes identical to
+  // what they are today rather than half-armed.
+  registerCodexIdentityIpc(() => UNKNOWN_CODEX_IDENTITY_CAPS)
 
   // Claude subscription usage. Previously desktop-only — the browser bridge answered `null`, so
   // the pill never rendered in the Server Edition. The poll runs UNGATED here (the default), not

@@ -23,11 +23,19 @@
  *    (`WEBGL_ACQUIRE_DEBOUNCE_MS`), so a fast pan sweeping a node across the viewport for a couple
  *    of frames never acquires. (`rootMargin` on the observer already pre-announces approach.)
  *  - If granting would exceed the budget, the coordinator immediately RECLAIMS from the
- *    least-recently-visible HIDDEN holder (bypassing that holder's release delay). If every holder
- *    is currently visible (zoomed way out), the newcomer is NOT granted and stays on the DOM
- *    renderer. Either way we never push past the budget, so the browser never force-evicts.
- *  - A client that becomes hidden keeps its context for `WEBGL_RELEASE_DELAY_MS` (warm for a
- *    pan-back) but is the first reclaim candidate during that window.
+ *    least-recently-visible HIDDEN holder. If every holder is currently visible, the newcomer
+ *    is NOT granted and stays on the DOM renderer. Either way we never push past the budget,
+ *    so the browser never force-evicts.
+ *  - A client that becomes hidden KEEPS its context — warm for a pan-back of any length, so
+ *    re-entering the viewport costs no renderer swap. Reclaim is strictly ON DEMAND: the LRU
+ *    hidden holder gives its slot to a visible newcomer when the budget is full, and
+ *    `releaseAllHiddenGrants` gives every hidden context back under memory pressure. (A
+ *    proactive time-based release used to exist; it bought nothing those two levers don't,
+ *    and its DOM→WebGL re-upgrade was a visible rendering flicker on every pan-back. Same
+ *    story for the old zoom-out suspend gate: measured A/B under load, the gate COST
+ *    main-thread time — half-second swap-wave stalls at its band plus 2.4× the work for
+ *    streaming terminals forced onto the DOM renderer at far zoom — while the budget already
+ *    bounds the context count at any zoom.)
  *  - `acquire()` returning false (WebGL2 unavailable / threw) does not count against the budget.
  *  - A context lost from outside (the addon's own `onContextLoss`) is reported via
  *    `handle.contextLost()`: the grant is dropped from the accounting, and for a STILL-VISIBLE
@@ -99,62 +107,13 @@ export function getWebglBudget(): number {
 }
 
 /**
- * Below this canvas zoom the coordinator holds NO contexts at all. At such scale terminal text
- * is unreadable anyway, and a zoom-out is exactly the moment a BURST of newly-visible clients
- * would be granted fresh contexts — which is the observed macOS-compositor failure (terminals
- * compositing black with zero JS-visible errors; see WEBGL_BUDGET_DESKTOP_MAC). The DOM renderer
- * carries the thumbnails; zooming back in re-grants within the budget as usual.
- */
-export const WEBGL_SUSPEND_BELOW_ZOOM = 0.4
-/** Resume threshold, ABOVE the suspend threshold on purpose (hysteresis): a pinch hovering at
- *  one boundary must not thrash dispose/create cycles — context churn is itself the hazard. */
-export const WEBGL_RESUME_AT_ZOOM = 0.45
-
-/** True while the canvas is zoomed below the suspend threshold — grants are blocked. */
-let zoomSuspended = false
-
-/**
- * Report the canvas zoom (React Flow viewport scale). Cheap and idempotent — call it from the
- * zoom/pan handler; state only changes when a hysteresis boundary is crossed. Crossing DOWN
- * marks every held context release-OWED and drains (rest-time, staggered — see the gesture
- * latch below; a zoom crossing happens mid-gesture by definition, and a one-frame mass release
- * was itself a swap storm); crossing UP forgives owed releases still held (kept warm through
- * the dip) and re-attempts budget-gated grants for visible clients.
- */
-export function setWebglZoom(zoom: number): void {
-  if (!Number.isFinite(zoom)) return
-  const next = zoomSuspended ? zoom < WEBGL_RESUME_AT_ZOOM : zoom < WEBGL_SUSPEND_BELOW_ZOOM
-  if (next === zoomSuspended) return
-  zoomSuspended = next
-  if (zoomSuspended) {
-    for (const c of clients.values()) {
-      cancelAcquire(c)
-      cancelRelease(c)
-      if (c.granted) {
-        c.releaseOwed = true
-        owed.add(c)
-      }
-    }
-    drain()
-    return
-  }
-  if (!enabled) return
-  for (const c of clients.values()) {
-    // A dip below the threshold that came back before the drain got to this client: keep the
-    // context — releasing and re-granting it back-to-back is the churn this design forbids.
-    if (c.granted && c.releaseOwed) c.releaseOwed = false
-    if (c.visible && !c.granted) tryGrant(c) // defers itself while a gesture is running
-  }
-}
-
-/**
  * THE GESTURE LATCH — the load-bearing rule of this coordinator: renderer swaps NEVER run
  * while the user is panning/zooming.
  *
  * A WebGL grant/release is a heavyweight, NON-ATOMIC renderer swap (shader compile + atlas
  * build + full repaint on grant; renderer teardown/rebuild on release). The old design executed
  * them the moment visibility flipped — which is precisely MID-GESTURE, in bursts (a zoom-out
- * makes dozens of nodes visible in one frame; the zoom threshold used to mass-release in one
+ * makes dozens of nodes visible in one frame; the since-removed zoom gate used to mass-release in one
  * frame). Those bursts both janked the gesture (main thread stalls while compositing is already
  * under load) and created the GPU-pressure window in which swaps die midway and strand
  * terminals black (see TerminalNode's swap safety net).
@@ -200,7 +159,7 @@ function drain(): void {
       c.releaseOwed = false
       // Only release if the reason still holds — a client that came back (visible again, zoom
       // resumed) keeps its warm context instead of paying a release+re-grant round trip.
-      if (c.granted && (zoomSuspended || !c.visible || !enabled)) {
+      if (c.granted && (!c.visible || !enabled)) {
         reclaim(c)
         ops++
       }
@@ -253,14 +212,6 @@ export function loseWebglContexts(canvases: ArrayLike<HTMLCanvasElement> | null)
  */
 export const WEBGL_ACQUIRE_DEBOUNCE_MS = 150
 
-/**
- * How long a client that scrolled out of the viewport keeps its context before the coordinator
- * releases it on its own. The context stays warm for a quick pan-back; a re-visible transition
- * within the window cancels the pending release. A hidden holder is also the first candidate to be
- * reclaimed on demand when a newly visible client needs a slot, bypassing this delay.
- */
-export const WEBGL_RELEASE_DELAY_MS = 2000
-
 /** Delay before a visible client whose context was lost EXTERNALLY (sleep/wake GPU reset) retries
  *  through the normal budget-gated grant path. Longer than the acquire debounce on purpose: right
  *  after a wake the GPU is still settling, and an immediate retry tends to lose again. */
@@ -294,7 +245,6 @@ interface Client {
   /** Whether we believe this client currently holds a live context (counts against the budget). */
   granted: boolean
   acquireTimer: ReturnType<typeof setTimeout> | null
-  releaseTimer: ReturnType<typeof setTimeout> | null
   /**
    * Monotonic tick recorded each time the client becomes hidden. Among hidden holders, the
    * SMALLEST value became hidden earliest (was visible least recently) → reclaimed first.
@@ -325,16 +275,8 @@ function cancelAcquire(c: Client): void {
   }
 }
 
-function cancelRelease(c: Client): void {
-  if (c.releaseTimer) {
-    clearTimeout(c.releaseTimer)
-    c.releaseTimer = null
-  }
-}
-
 /** Release a client's context now, bypassing any pending release delay. */
 function reclaim(c: Client): void {
-  cancelRelease(c)
   if (!c.granted) return
   try {
     c.release()
@@ -345,14 +287,15 @@ function reclaim(c: Client): void {
 }
 
 /**
- * Memory-pressure lever: give back EVERY hidden holder's context, skipping the release delay's
- * warm-for-a-pan-back window. Visible holders are untouched — the same invariant `lruHiddenHolder`
+ * Memory-pressure lever: give back EVERY hidden holder's context — the one PROACTIVE release
+ * in the lifecycle (hidden contexts otherwise stay warm until a visible newcomer needs the
+ * slot). Visible holders are untouched — the same invariant `lruHiddenHolder`
  * applies, and for the same reason: taking a context off a terminal the user is looking at trades
  * memory for a visible downgrade.
  *
  * The releases are QUEUED (`owed` + `drain`), not executed here — pressure wants the memory back
  * SOON, not this frame. Releasing ~24 contexts in one synchronous loop is a swap storm: exactly
- * what the zoom threshold's one-frame mass release turned out to be, and mid-gesture it lands in
+ * what the removed zoom gate's one-frame mass release turned out to be, and mid-gesture it lands in
  * the GPU-pressure window where a swap dies midway and strands a terminal black. The drain path
  * is what keeps "soon" honest: it no-ops while a gesture runs, re-checks `!c.visible` before each
  * release (a client that came back keeps its warm context), and trickles at
@@ -364,7 +307,6 @@ function reclaim(c: Client): void {
 export function releaseAllHiddenGrants(): void {
   for (const c of clients.values()) {
     if (!c.granted || c.visible) continue
-    cancelRelease(c) // the delayed release is superseded by the queued one
     c.releaseOwed = true
     owed.add(c)
   }
@@ -400,8 +342,6 @@ function tryGrant(c: Client): void {
   if (!clients.has(c.id) || !c.visible || c.granted) return
   // Master switch off → never grant; every terminal stays on the DOM renderer.
   if (!enabled) return
-  // Zoomed below the suspend threshold → never grant (see setWebglZoom).
-  if (zoomSuspended) return
   // Mid-gesture → park the attempt; the rest-time drain re-runs it (see the gesture latch).
   if (gestureActive) {
     c.releaseOwed = false
@@ -430,9 +370,8 @@ function setVisible(c: Client, visible: boolean): void {
   // external losses lasts only until the user pans away and back (the pre-existing recovery).
   c.lossStreak = 0
   if (visible) {
-    // Re-visible before the release fired: keep the warm context, cancel the pending release —
-    // including one already parked in the deferred-drain queue (releaseOwed).
-    cancelRelease(c)
+    // Re-visible: keep the warm context, and forgive a release parked in the deferred-drain
+    // queue (a pressure sweep that queued this client before it came back).
     c.releaseOwed = false
     if (c.granted) return
     // Debounce the acquire so a fast pan-through never grabs a context for a two-frame flash.
@@ -444,27 +383,10 @@ function setVisible(c: Client, visible: boolean): void {
     }
     return
   }
-  // Became hidden.
+  // Became hidden. The context is deliberately KEPT (see the header): warm for a pan-back of
+  // any length, and the LRU reclaim candidate the moment a visible newcomer needs the slot.
   c.hiddenAt = ++visibilityClock
   cancelAcquire(c)
-  if (c.granted && !c.releaseTimer) {
-    c.releaseTimer = setTimeout(() => {
-      c.releaseTimer = null
-      if (!c.granted) return
-      // Mid-gesture → park the release; a swap must never run while the user pans/zooms.
-      if (gestureActive) {
-        c.releaseOwed = true
-        owed.add(c)
-        return
-      }
-      try {
-        c.release()
-      } catch {
-        // best-effort
-      }
-      c.granted = false
-    }, WEBGL_RELEASE_DELAY_MS)
-  }
 }
 
 /**
@@ -480,7 +402,6 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
   const existing = clients.get(id)
   if (existing) {
     cancelAcquire(existing)
-    cancelRelease(existing)
     if (existing.granted) {
       try {
         existing.release()
@@ -497,7 +418,6 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
     visible: false,
     granted: false,
     acquireTimer: null,
-    releaseTimer: null,
     hiddenAt: 0,
     lossStreak: 0,
     releaseOwed: false
@@ -513,7 +433,6 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
       const c = clients.get(id)
       if (c !== client) return
       // The browser (or our own dispose) already tore the context down; drop the accounting.
-      cancelRelease(c)
       c.granted = false
       // Sleep/wake GPU resets lose every context at once with no visibility change, so a
       // still-visible client schedules ONE delayed, budget-gated re-grant attempt (see the
@@ -531,7 +450,6 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
       const c = clients.get(id)
       if (c !== client) return
       cancelAcquire(c)
-      cancelRelease(c)
       owed.delete(c)
       if (c.granted) {
         try {
@@ -548,15 +466,11 @@ export function registerWebglClient(id: string, callbacks: WebglClientCallbacks)
 
 /** Test-only: clear all coordinator state between cases. */
 export function __resetWebglBudgetForTests(): void {
-  for (const c of clients.values()) {
-    cancelAcquire(c)
-    cancelRelease(c)
-  }
+  for (const c of clients.values()) cancelAcquire(c)
   clients.clear()
   visibilityClock = 0
   budget = WEBGL_BUDGET
   enabled = true
-  zoomSuspended = false
   gestureActive = false
   owed.clear()
   if (drainTimer) {

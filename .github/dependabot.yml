@@ -22,6 +22,14 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: node-pty
         update-types: [version-update:semver-major]
+      # The @xterm family must move in LOCKSTEP, by hand: the addons reach into the core's
+      # internals, so an addon bump against an older core crashes at runtime with no compile
+      # error. addon-webgl 0.19.0 on the 5.5 core read `_core._store` (a 5.6+ field) in its
+      # dispose path and aborted the DOM-renderer restore — every context release left a
+      # renderer-less, permanently black terminal (the zoom-out blackout). Guarded by
+      # src/renderer/terminal/webgl-addon-pair.test.ts; upgrade the whole family together
+      # (next vehicle: the xterm 6.x major).
+      - dependency-name: "@xterm/*"
 
   # Keep the GitHub Actions pinned in the workflows current (security patches to
   # checkout / setup-node / codeql-action land here).

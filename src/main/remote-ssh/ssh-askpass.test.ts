@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { request as httpRequest } from 'http'
+import { execFile } from 'child_process'
 import { promises as fsp } from 'fs'
 import os from 'os'
 import path from 'path'
-import { AskpassServer, buildAskpassScript, classifyPrompt, type AskpassPromptRequest } from './ssh-askpass'
+import {
+  AskpassServer,
+  buildAskpassScript,
+  classifyPrompt,
+  ensureAskpassScript,
+  type AskpassPromptRequest
+} from './ssh-askpass'
 
 /** ssh's real passphrase prompt (sshconnect2.c), byte-identical on every retry. */
 const passphrasePrompt = (key: string) => `Enter passphrase for key '${key}': `
@@ -69,6 +76,173 @@ describe('buildAskpassScript', () => {
     // (ssh reuses the byte-identical prompt on retries, so wording can never carry it), and it is
     // what cancel attribution (wasCancelledBy) scopes by.
     expect(script).toContain('caller=$PPID')
+  })
+})
+
+// A command line is not private: `ps` and /proc/<pid>/cmdline are world-readable, so
+// `curl -H "X-Nodeterm-Askpass-Token: …"` published this app instance's askpass bearer to every
+// other account on the machine. And this is the longest-lived curl nodeterm generates — it waits
+// out `--max-time 300` for a human to type a passphrase — so the window was minutes, not the
+// milliseconds a hook POST takes. The bearer therefore goes in on stdin as a curl config.
+//
+// The recording curl below is a PASSTHROUGH — it logs argv + stdin, then execs the REAL curl —
+// so each case proves the bearer left argv AND that the socket still accepted the request.
+// Asserting only that the server got its header would pass with the leak completely intact.
+describe('the askpass helper keeps its bearer off curl\'s command line', () => {
+  let dir = ''
+  let script = ''
+  let binDir = ''
+  const argvLog = (): string => path.join(binDir, 'argv.log')
+  const stdinLog = (): string => path.join(binDir, 'stdin.log')
+
+  /** Run a command, resolving (never rejecting) with its exit code: the failure paths below are
+   *  the point of the test, and a non-zero exit is data here, not an error. */
+  function run(
+    cmd: string,
+    args: string[],
+    env?: Record<string, string>
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise((resolve) => {
+      execFile(cmd, args, env ? { env } : {}, (err, stdout, stderr) => {
+        const code = err ? Number((err as NodeJS.ErrnoException).code ?? 1) : 0
+        resolve({ code, stdout, stderr })
+      })
+    })
+  }
+
+  beforeAll(async () => {
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nt-askpass-argv-'))
+    // The real generator + the real 0700 write, not a hand-rolled copy of the script.
+    script = await ensureAskpassScript(dir)
+    binDir = path.join(dir, 'bin')
+    await fsp.mkdir(binDir, { recursive: true })
+    const realCurl = (await run('/bin/sh', ['-c', 'command -v curl'])).stdout.trim()
+    await fsp.writeFile(
+      path.join(binDir, 'curl'),
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> ${JSON.stringify(argvLog())}`,
+        // Only a curl that was told to read its config from stdin gets a reader. A regression that
+        // put the header back on argv would otherwise leave `tee` waiting on a stdin nobody ever
+        // closes, and the failure would read as a timeout instead of the assertion it really is.
+        // `tee | curl` also keeps the shim's exit status curl's own, which is what -f depends on.
+        'case "$*" in',
+        `  *"--config -"*) tee -a ${JSON.stringify(stdinLog())} | ${JSON.stringify(realCurl)} "$@" ;;`,
+        `  *) ${JSON.stringify(realCurl)} "$@" </dev/null ;;`,
+        'esac',
+        ''
+      ].join('\n'),
+      { mode: 0o755 }
+    )
+  })
+
+  afterAll(async () => {
+    await fsp.rm(dir, { recursive: true, force: true })
+  })
+
+  /** Runs the real script under the real /bin/sh, with the recording curl first on PATH. */
+  async function record(
+    s: AskpassServer,
+    opts: { token?: string; prompt?: string; identity?: string } = {}
+  ): Promise<{ code: number; stdout: string; stderr: string; argv: string; stdin: string }> {
+    // Truncated, not deleted: a regression must fail on the assertion below, not a missing file.
+    await fsp.writeFile(argvLog(), '')
+    await fsp.writeFile(stdinLog(), '')
+    const identity = opts.identity ?? '/home/u/.ssh/id_ed25519'
+    const res = await run('/bin/sh', [script, opts.prompt ?? passphrasePrompt(identity)], {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      NODETERM_ASKPASS_SOCK: s.getSockPath(),
+      NODETERM_ASKPASS_TOKEN: opts.token ?? s.getToken(),
+      NODETERM_ASKPASS_IDENTITY: identity
+    })
+    return {
+      ...res,
+      argv: await fsp.readFile(argvLog(), 'utf8'),
+      stdin: await fsp.readFile(stdinLog(), 'utf8')
+    }
+  }
+
+  let server: AskpassServer | undefined
+  afterEach(() => {
+    server?.stop()
+    server = undefined
+  })
+  async function serve(handler: (req: AskpassPromptRequest) => Promise<string | null>) {
+    const s = new AskpassServer()
+    s.setPromptHandler(handler)
+    await s.start(tmpSock())
+    server = s
+    return s
+  }
+
+  it('names the header nowhere on the command line, and is valid POSIX sh', async () => {
+    const src = buildAskpassScript()
+    expect(src).not.toContain('-H "X-Nodeterm-Askpass-Token')
+    expect((src.match(/--config -/g) ?? []).length).toBe(1)
+    // The long wait is exactly what made an argv header so bad here; it must survive the change.
+    expect(src).toContain('--max-time 300')
+    // dash, not bash: the helper runs under whatever /bin/sh the user (or the SSH host) has.
+    expect((await run('/usr/bin/env', ['dash', '-n', script])).code).toBe(0)
+  })
+
+  it('sends the bearer on stdin, not in argv, and still gets the passphrase back', async () => {
+    const s = await serve(async () => 'correct horse battery staple')
+    const r = await record(s)
+    // End to end: the socket accepted the request and the answer reached ssh's stdout unchanged.
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('correct horse battery staple')
+    // THE assertion. Reverting the fix to `-H "X-Nodeterm-Askpass-Token: …"` fails right here.
+    expect(r.argv).not.toContain(s.getToken())
+    expect(r.argv).not.toContain('X-Nodeterm-Askpass-Token')
+    expect(r.stdin).toContain(`header = "X-Nodeterm-Askpass-Token: ${s.getToken()}"`)
+    // The rest of the request is unchanged, and the socket is still what it talks to.
+    expect(r.argv).toContain('--unix-socket')
+    expect(r.argv).toContain('identity=/home/u/.ssh/id_ed25519')
+  })
+
+  it('works identically with the plain system curl, no recording shim in the way', async () => {
+    const s = await serve(async () => 'plain-curl-answer')
+    const r = await run('/bin/sh', [script, passphrasePrompt('/home/u/.ssh/id_ed25519')], {
+      PATH: process.env.PATH ?? '',
+      NODETERM_ASKPASS_SOCK: s.getSockPath(),
+      NODETERM_ASKPASS_TOKEN: s.getToken(),
+      NODETERM_ASKPASS_IDENTITY: '/home/u/.ssh/id_ed25519'
+    })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('plain-curl-answer')
+  })
+
+  it('still reports a rejected bearer as a non-zero exit with the breadcrumb', async () => {
+    // The exit code now comes out of a PIPELINE (`nt_askpass_headers | curl`). POSIX makes a
+    // pipeline's status its last command's, so -f's 403 must still reach `[ $? -eq 0 ]` — if it
+    // did not, a stale token would read to ssh as "no passphrase" and die silently.
+    const s = await serve(async () => 'never-reached')
+    const r = await record(s, { token: 'a-stale-token-from-another-instance' })
+    expect(r.code).toBe(1)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('nodeterm-askpass: no answer from the app')
+  })
+
+  it('passes a decline through as the empty answer ssh needs, exit 0', async () => {
+    const s = await serve(async () => null)
+    const r = await record(s)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('')
+  })
+
+  // Belt and braces on the config-file quoting: a curl config is line-based, so a value carrying
+  // a `"`, a `\` or a line break could end its header line and inject a directive of its own.
+  // None can occur today — the bearer is a randomUUID() — which is exactly why they are STRIPPED
+  // rather than escaped: nothing legitimate is ever altered.
+  it('cannot be broken out of the config file by a quote or a newline in the bearer', async () => {
+    const s = await serve(async () => 'never-reached')
+    const r = await record(s, { token: 'ab"\nuser-agent = "pwned' })
+    // The whole hostile value collapses onto the one header line it was given.
+    expect(r.stdin).toContain('header = "X-Nodeterm-Askpass-Token: abuser-agent = pwned"')
+    expect(r.stdin.split('\n').some((l) => l.trim().startsWith('user-agent'))).toBe(false)
+    expect(r.argv).not.toContain('pwned')
+    // And it is still just a wrong token: rejected, loudly.
+    expect(r.code).toBe(1)
   })
 })
 

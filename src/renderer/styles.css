@@ -1117,7 +1117,10 @@ body,
 }
 
 /* Bridge link handles (Claude nodes): dots on the header row, on top of the node so they're
-   never buried under the terminal body. Subtle until you hover the node, then prominent. */
+   never buried under the terminal body. Subtle until you hover the node, then prominent.
+   Never set `transform` on a React Flow handle: the side classes (.react-flow__handle-left/right/
+   top/bottom) POSITION the dot with translate(±50%, ±50%), so any transform override replaces
+   that and shifts the dot away from the cursor mid-hover. Hover feedback is a ring, not a scale. */
 .react-flow__handle.bridge-handle {
   width: 13px;
   height: 13px;
@@ -1126,15 +1129,17 @@ body,
   box-shadow: 0 1px 4px rgba(0, 0, 0, calc(0.5 * var(--shadow-k)));
   opacity: 0.4;
   z-index: 20;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease, box-shadow 0.12s ease;
 }
 .react-flow__node:hover .react-flow__handle.bridge-handle,
 .react-flow__node.selected .react-flow__handle.bridge-handle {
   opacity: 1;
 }
 .react-flow__handle.bridge-handle:hover {
-  transform: scale(1.6);
   opacity: 1;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, calc(0.5 * var(--shadow-k))),
+    0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* Hover explanation for the bridge handles (CSS tooltip via the data-tip attribute). */
@@ -1867,6 +1872,19 @@ body,
 
 .term-node__xterm .xterm {
   height: 100%;
+}
+
+/* Renderer parity, macOS: the app sets `-webkit-font-smoothing: antialiased` on :root (grayscale
+   AA — the right call for the chrome's UI font), and the DOM renderer's rows INHERIT it, while the
+   WebGL renderer never sees it: its glyphs are rasterized into a canvas atlas, which uses the
+   platform default. So the same text renders thinner/paler the moment a terminal falls back to the
+   DOM renderer, and a budget swap flashes that difference. Terminal rows opt back out to the
+   platform default so both renderers lay down comparable ink. Scoped to the rows only — the app
+   chrome keeps its grayscale AA — and inert on Linux/Windows Chromium, which ignores this property
+   (measured: DOM ink coverage unchanged there), so it is a macOS-targeted correction by
+   construction. */
+.xterm-rows {
+  -webkit-font-smoothing: auto;
 }
 
 /* Shared glyph renderer (experimental, `glyphgrid`): a glyph-attached terminal becomes a
@@ -4448,6 +4466,7 @@ body,
 }
 .clone-dialog__progress {
   margin-top: 10px;
+  margin-bottom: 14px;
 }
 .clone-dialog__progress-label {
   font-size: 11px;

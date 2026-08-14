@@ -923,13 +923,17 @@ describe('destroy/recycle: bounded, validated, rate-limited', () => {
 
   it('refuses a persistKey longer than REF_MAX_LEN (no tombstone, no subprocess)', async () => {
     const { REF_MAX_LEN } = await import('../shared/presence')
-    await manager()
+    const m = await manager()
     const huge = 'x'.repeat(REF_MAX_LEN + 1)
 
     await destroy(ALICE, huge)
-    // Nothing was recorded, so this is not a node anyone can be locked out of.
-    const other = await create(BOB, huge)
-    expect(other.closed).toBeUndefined()
+    // Nothing was recorded, so this is not a node anyone can be locked out of. Read the map
+    // DIRECTLY rather than probing with `create`: an over-long id is now refused at the create
+    // choke point too (the node-id guard, added with the remote-injection fix), so a create's
+    // outcome no longer distinguishes "no tombstone" from "refused for another reason".
+    expect((m as unknown as { tombstones: Map<string, unknown> }).tombstones.size).toBe(0)
+    // And the second layer, on the same value: it can never be spent on a spawn either.
+    await expect(create(BOB, huge)).rejects.toThrow(/node id/i)
   })
 
   it('bounds the tombstone map: the oldest entries are evicted, the newest still refuse', async () => {

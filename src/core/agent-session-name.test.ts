@@ -28,8 +28,18 @@ describe('readAgentSessionName', () => {
     rememberGrokSessionDir('shared-id', path.join(root, 'gs1'))
     expect(await readAgentSessionName('shared-id', undefined, 'claude')).toBeNull()
     expect(await readAgentSessionName('shared-id')).toBeNull()
-    expect(await readAgentSessionName('shared-id', undefined, 'codex')).toBeNull()
     forgetGrokSession('shared-id')
+  })
+
+  it("routes codex to its app-server reader, never to claude's transcript scan", async () => {
+    // codex's name lives in the shared app-server's Thread.name — there is no file to find. With
+    // no server listening the honest answer is null; what matters is that it did not fall through
+    // to claude's resolver, which SCANS ~/.claude/projects on a cache miss (once a minute, per
+    // node, for a guaranteed miss) and can hand back a stranger's session name via its cwd leg.
+    process.env.CODEX_HOME = path.join(root, 'no-such-codex-home')
+    expect(await readAgentSessionName('thread-1', undefined, 'codex')).toBeNull()
+    expect(await readAgentSessionName('thread-1', 'acct-2', 'codex')).toBeNull()
+    delete process.env.CODEX_HOME
   })
 
   it('answers null for an empty session id without asking either reader', async () => {

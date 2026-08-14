@@ -1,5 +1,8 @@
+import { execFileSync } from 'child_process'
 import { describe, expect, it, vi } from 'vitest'
-import { RemoteHooks } from './remote-hooks'
+import { RemoteHooks, openCodeInstructionsTarget } from './remote-hooks'
+import { isSafeRemoteHome } from '../../core/remote-safety'
+import { hookServer } from '../../core/agents/hook-server'
 
 const conn = { host: 'h', user: 'u' }
 
@@ -49,7 +52,7 @@ describe('RemoteHooks.setup', () => {
     // reverse forward binds the ABSOLUTE remote socket (no unexpanded ~).
     expect(joined.some((j) => j.includes('-O forward') && j.includes('/home/u/.nodeterm/hook-p1.sock:127.0.0.1:51234'))).toBe(true)
     // endpoint file written to the absolute PER-PROJECT path, with the absolute sock + token.
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/hook-endpoint-p1.env'))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/home/u/.nodeterm/hook-endpoint-p1.env'`))).toBe(true)
     expect(
       calls.some(
         (c) =>
@@ -58,8 +61,8 @@ describe('RemoteHooks.setup', () => {
       )
     ).toBe(true)
     // managed script written to the absolute path + config merged with the guarded command.
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/agent-hooks/claude.sh'))).toBe(true)
-    expect(joined.some((j) => j.includes('cat > /home/u/.claude/settings.json'))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/home/u/.nodeterm/agent-hooks/claude.sh'`))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/home/u/.claude/settings.json'`))).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('--unix-socket'))).toBe(true)
     // The merged command guards on the script still existing — a removed ~/.nodeterm must not
     // make every prompt fail the hook (a non-zero UserPromptSubmit hook blocks the prompt).
@@ -130,8 +133,26 @@ describe('RemoteHooks.setup', () => {
     expect(joined.filter((j) => j.includes('-O forward')).length).toBe(2)
     // The retry clears our own possibly-registered spec before rebinding.
     expect(joined.some((j) => j.includes('-O cancel'))).toBe(true)
-    // The verify curl runs on the HOST through the sock with the fresh token.
-    expect(joined.some((j) => j.includes('--unix-socket') && j.includes('x-nodeterm-hook-token: tok'))).toBe(true)
+    // The verify curl runs on the HOST through the sock, reading the fresh token off stdin.
+    const probes = calls.filter((c) => c.cmd.includes('--unix-socket') && c.cmd.includes('%{http_code}'))
+    expect(probes).toHaveLength(2)
+    for (const p of probes) expect(p.stdin).toBe('header = "x-nodeterm-hook-token: tok"\n')
+  })
+
+  it('never puts the hook bearer on the remote probe command line', async () => {
+    // A remote command line is argv on BOTH ends: anything here is readable in the host's `ps` by
+    // every other user on that host, for as long as the curl lives. The bearer therefore rides
+    // stdin (`curl --config -`), which is the whole point of this probe's shape.
+    const secret = 'b3ar3r-9f2c-4a71-8e05-c0ffee000001'
+    const { rh, calls } = harness()
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: secret, version: '1' })
+    expect(res).not.toBeNull()
+    // Not one ARGUMENT of any ssh child command mentions it — not the probe, not anything else.
+    for (const c of calls) for (const a of c.args) expect(a).not.toContain(secret)
+    // ...and the probe still presents it, over stdin, as a curl config header.
+    const probe = calls.find((c) => c.cmd.includes('%{http_code}'))
+    expect(probe?.cmd).toContain('--config -')
+    expect(probe?.stdin).toBe(`header = "x-nodeterm-hook-token: ${secret}"\n`)
   })
 
   it('refuses to advertise a tunnel that never verifies — no endpoint file, null result', async () => {
@@ -168,8 +189,119 @@ describe('RemoteHooks.setup', () => {
     expect(b?.endpointPath).toBe('/home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env')
     // the browse writes ITS OWN endpoint file, never the real project's.
     const joined = calls.map((c) => c.args.join(' '))
-    expect(joined.some((j) => j.includes('cat > /home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env'))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/home/u/.nodeterm/hook-endpoint-ssh-browse-xyz.env'`))).toBe(true)
     expect(joined.some((j) => j.includes('hook-endpoint-proj.env'))).toBe(false)
+  })
+})
+
+/**
+ * SECURITY — the remote `$HOME` is a HOST ANSWER, i.e. data, not truth. `setup()` splices it into
+ * `mkdir -p <remoteDir> && rm -f <sock>` and into every `cat > <config>`, and those are remote
+ * SHELL LINES. A `$HOME` carrying a newline therefore appends a second command; a `$HOME` carrying
+ * a space silently breaks the install (the unquoted `mkdir` word-splits). Two layers, matching the
+ * fix in `remoteTmuxPtyArgs`: validate the answer, then quote every path built from it. Same
+ * fail-open direction the surrounding code already takes — an unusable answer returns null and the
+ * host simply runs without hooks.
+ */
+describe('RemoteHooks.setup — a hostile remote $HOME', () => {
+  it('returns null and interpolates NOTHING when $HOME carries a newline', async () => {
+    const { rh, conn, runs } = harness({ responses: { $HOME: '/home/u\nid > /tmp/pwned' } })
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
+    expect(res).toBeNull()
+    // Nothing beyond the probe itself may have run — no forward, no mkdir, no write.
+    expect(runs.some((r) => r.cmd.includes('id > /tmp/pwned'))).toBe(false)
+    expect(runs.some((r) => r.cmd.includes('mkdir'))).toBe(false)
+    expect(runs.some((r) => r.cmd.includes('-O forward'))).toBe(false)
+  })
+
+  it('quotes every path it builds from $HOME, so a home with a space still installs', async () => {
+    const { rh, conn, runs } = harness({ responses: { $HOME: '/Users/Enes K' } })
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
+    expect(res?.endpointPath).toBe('/Users/Enes K/.nodeterm/hook-endpoint-p1.env')
+    const joined = runs.map((r) => r.cmd)
+    expect(joined.some((j) => j.includes(`mkdir -p '/Users/Enes K/.nodeterm'`))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/Users/Enes K/.nodeterm/hook-endpoint-p1.env'`))).toBe(true)
+    expect(joined.some((j) => j.includes(`cat > '/Users/Enes K/.claude/settings.json'`))).toBe(true)
+    // No path derived from $HOME survives UNQUOTED in any remote SHELL LINE (the last argv element
+    // of an ssh child is the command the remote shell parses; the `-R` forward spec is an ssh
+    // OPTION, not a shell word, so it is excluded by construction).
+    const shellLines = runs.map((r) => r.args[r.args.length - 1])
+    expect(shellLines.some((line) => /(?<!')\/Users\/Enes K/.test(line))).toBe(false)
+  })
+})
+
+/**
+ * SECURITY — the opencode instructions target is the ONE remote path that must stay
+ * shell-expandable (`$XDG_CONFIG_HOME` belongs to the HOST), so it cannot be a quoted literal like
+ * its codex/gemini siblings. Written the obvious way it interpolated the host-reported `$HOME`
+ * inside DOUBLE quotes, where `$` and backticks are still live.
+ *
+ * `isSafeRemoteHome` refuses `/home/u$(id)` since the per-node identity series consolidated the two
+ * home predicates onto the stricter one, so this value no longer reaches here through `setup`. The
+ * expression is still proven inert against a real `/bin/sh` — it must stay ONE argument and must
+ * never run anything — because "the validator upstream is strict" is not a property this expression
+ * can be built on.
+ */
+describe('RemoteHooks — the opencode XDG path expression', () => {
+  const HOSTILE = '/home/u$(id)`id`;id;#'
+
+  /** `set --` so the shell reports how many WORDS the expression became, and what the first is. */
+  const probe = (home: string, env: Record<string, string> = {}): string => {
+    const { prelude, pathExpr } = openCodeInstructionsTarget(home)
+    return execFileSync('/bin/sh', ['-c', `${prelude}set -- ${pathExpr}; echo "ARGC=$#|$1"`], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin', ...env }
+    }).trim()
+  }
+
+  it('a hostile $HOME stays inert and the expression stays ONE word (real /bin/sh)', () => {
+    expect(isSafeRemoteHome(HOSTILE), 'refused at the boundary now — but not RELIED on here').toBe(false)
+    expect(probe(HOSTILE)).toBe(`ARGC=1|${HOSTILE}/.config/opencode/AGENTS.md`)
+  })
+
+  it("still honours the HOST's $XDG_CONFIG_HOME, including one containing a space", () => {
+    expect(probe('/home/u', { XDG_CONFIG_HOME: '/o p/cfg' })).toBe('ARGC=1|/o p/cfg/opencode/AGENTS.md')
+    expect(probe('/home/u')).toBe('ARGC=1|/home/u/.config/opencode/AGENTS.md')
+  })
+
+  for (const [what, install] of [
+    ['canvas control', (rh: RemoteHooks, c: typeof conn) => rh.installCanvasControl(c, '/s.sock', HOSTILE)],
+    ['context link', (rh: RemoteHooks, c: typeof conn) => rh.installContextLink(c, '/s.sock', HOSTILE)]
+  ] as const) {
+    it(`${what} routes the opencode target through that safe form`, async () => {
+      const { rh, conn: c, runs } = harness()
+      await install(rh, c)
+      const lines = runs
+        .map((r) => r.args[r.args.length - 1])
+        .filter((l) => l.includes('opencode/AGENTS.md'))
+      expect(lines.length).toBeGreaterThan(0)
+      for (const line of lines) {
+        // The untrusted half is bound to a single-quoted shell variable; it never appears raw
+        // inside the double-quoted expansion, where `$`/backticks would still be live.
+        expect(line).toContain(`NT_H='${HOSTILE}'`)
+        expect(line).toContain('"${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md"')
+        expect(line).not.toContain(`{XDG_CONFIG_HOME:-${HOSTILE}`)
+      }
+    })
+  }
+})
+
+describe('RemoteHooks.ensureFullscreenTui — the fourth $(dirname …) site', () => {
+  it('quotes the substitution, so a home with a space gets ONE mkdir argument', async () => {
+    // Unquoted, `$(dirname '/Users/Enes Kirca/.claude/settings.json')` word-splits into two mkdir
+    // args (measured ARGC=2): junk directories, then the quoted `cat >` fails and the catch
+    // swallows it — fullscreen-TUI silently never written for any macOS user with a spaced home.
+    const { rh, conn: c, runs } = harness({ responses: { 'settings.json': '{}' } })
+    await rh.ensureFullscreenTui(c, '/s.sock', '/Users/Enes Kirca')
+    const write = runs.map((r) => r.args[r.args.length - 1]).find((l) => l.includes('mkdir -p'))
+    expect(write).toBeTruthy()
+    expect(write).toContain(`mkdir -p "$(dirname '/Users/Enes Kirca/.claude/settings.json')"`)
+    const argc = execFileSync(
+      '/bin/sh',
+      ['-c', `set -- "$(dirname '/Users/Enes Kirca/.claude/settings.json')"; echo "ARGC=$#|$1"`],
+      { encoding: 'utf8' }
+    ).trim()
+    expect(argc).toBe('ARGC=1|/Users/Enes Kirca/.claude')
   })
 })
 
@@ -351,7 +483,10 @@ describe('RemoteHooks.installCanvasControl', () => {
     // the desktop's XDG_CONFIG_HOME says nothing about the host's.
     expect(joined.some((j) => j.includes('/home/u/.codex/AGENTS.md'))).toBe(true)
     expect(joined.some((j) => j.includes('/home/u/.gemini/GEMINI.md'))).toBe(true)
-    expect(joined.some((j) => j.includes('${XDG_CONFIG_HOME:-/home/u/.config}/opencode/AGENTS.md'))).toBe(true)
+    // …with the remote $HOME bound to a shell variable first, so it is never live inside the
+    // double-quoted expansion (see "the opencode XDG path expression" below).
+    expect(joined.some((j) => j.includes(`NT_H='/home/u'`))).toBe(true)
+    expect(joined.some((j) => j.includes('${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md'))).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:manage-canvas:start'))).toBe(true)
     // no unexpanded tilde survives in any remote path.
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
@@ -464,5 +599,186 @@ describe('RemoteHooks.installContextLink', () => {
       throw new Error('ssh died')
     })
     await expect(new RemoteHooks({ run }).installContextLink(conn, '/s.sock', '/home/u')).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * The per-node token files ON THE HOST. Until this existed, `control-master.ts` advertised
+ * `$HOME/.nodeterm/node-tokens` in the endpoint file and NOTHING ever wrote it, so every remote
+ * node was permanently `legacy`.
+ */
+describe('RemoteHooks.writeNodeTokens', () => {
+  /** A stand-in for `nodeAuthToken(secret, id)` — the shape matters (kid.mac), not the bytes. */
+  const mint = (id: string): string => `kid12345.mac-of-${id}`
+
+  function tokenHarness(opts: { code?: number; throws?: boolean } = {}) {
+    const calls: { args: string[]; stdin?: string; cmd: string }[] = []
+    const run = vi.fn(async (args: string[], stdin?: string) => {
+      const cmd = args.join(' ')
+      calls.push({ args, stdin, cmd })
+      if (opts.throws) throw new Error('ssh died')
+      return { code: opts.code ?? 0, stdout: '' }
+    })
+    return { rh: new RemoteHooks({ run }), calls, run }
+  }
+
+  it('writes every token through STDIN — a credential never rides an ssh command line', async () => {
+    const { rh, calls } = tokenHarness()
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1', 'node-2'], mint)
+    // THE INVARIANT: the host's process table is readable by its other users, so not one arg of
+    // not one child ssh may contain a token — not the write, not the mkdir, not anything.
+    for (const c of calls)
+      for (const a of c.args) {
+        expect(a).not.toContain('mac-of-node-1')
+        expect(a).not.toContain('mac-of-node-2')
+      }
+    const writes = calls.filter((c) => c.cmd.includes('cat >'))
+    expect(writes).toHaveLength(2)
+    // tmp + rename, the local writer's shape: `cat >` truncates, so writing straight at the file
+    // leaves an EMPTY token behind when the host is out of quota or disk.
+    expect(writes[0].cmd).toContain("cat > '/home/u/.nodeterm/node-tokens/.node-1.tmp'")
+    expect(writes[0].cmd).toContain("mv -f '/home/u/.nodeterm/node-tokens/.node-1.tmp' '/home/u/.nodeterm/node-tokens/node-1'")
+    // ...and the token is on stdin, newline-terminated (the client reads it with `head -n 1`).
+    expect(writes[0].stdin).toBe(`${mint('node-1')}\n`)
+    expect(writes.at(-1)?.stdin).toBe(`${mint('node-2')}\n`)
+  })
+
+  it('creates the dir and each file under umask 077 (0700 dir, 0600 files)', async () => {
+    const { rh, calls } = tokenHarness()
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+    const mkdir = calls.find((c) => c.cmd.includes('mkdir -p'))
+    expect(mkdir?.cmd).toContain('umask 077')
+    expect(mkdir?.cmd).toContain("'/home/u/.nodeterm/node-tokens'")
+    for (const w of calls.filter((c) => c.cmd.includes('cat >'))) expect(w.cmd).toContain('umask 077')
+  })
+
+  it('fails open when the host refuses (exit 1) — the connect is never at risk', async () => {
+    const { rh, calls } = tokenHarness({ code: 1 })
+    await expect(
+      rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+    ).resolves.toBeUndefined()
+    // A dir we could not create is not a dir we write tokens into.
+    expect(calls.some((c) => c.cmd.includes('cat >'))).toBe(false)
+  })
+
+  it('fails open when the runner throws', async () => {
+    const { rh } = tokenHarness({ throws: true })
+    await expect(
+      rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+    ).resolves.toBeUndefined()
+  })
+
+  it('fails open per node: one unwritable token does not cost the others theirs', async () => {
+    const calls: string[] = []
+    const run = vi.fn(async (args: string[]) => {
+      const cmd = args.join(' ')
+      calls.push(cmd)
+      if (cmd.includes('node-1')) throw new Error('EACCES')
+      return { code: 0, stdout: '' }
+    })
+    await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1', 'node-2'], mint)
+    expect(calls.some((c) => c.includes("node-tokens/node-2'"))).toBe(true)
+  })
+
+  it('an unsafe node id reaches no path and no command AT ALL', async () => {
+    // A hostile project.json supplies these; `..` under the token dir resolves to its PARENT.
+    const { rh, calls } = tokenHarness()
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['../x', '..', '.', 'a b', ''], mint)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('still serves the safe ids when a hostile one rides along', async () => {
+    const { rh, calls } = tokenHarness()
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['../x', 'node-1'], mint)
+    const writes = calls.filter((c) => c.cmd.includes('cat >'))
+    expect(writes).toHaveLength(1)
+    expect(writes[0].cmd).toContain("node-tokens/node-1'")
+    expect(calls.every((c) => !c.cmd.includes('../x'))).toBe(true)
+  })
+
+  it('refuses a host $HOME that is not a plain path — no interpolation, fail open', async () => {
+    // `printf %s "$HOME"` is the host's answer, i.e. DATA. A newline in it is a command separator
+    // in every `mkdir -p ${remoteDir}` this file builds.
+    const { rh, calls } = tokenHarness()
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u\ntouch /tmp/pwn', ['node-1'], mint)
+    expect(calls).toHaveLength(0)
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/$(id)', ['node-1'], mint)
+    expect(calls).toHaveLength(0)
+    await rh.writeNodeTokens(conn, '/s.sock', '', ['node-1'], mint)
+    expect(calls).toHaveLength(0)
+  })
+
+  /**
+   * INVARIANT 7 — a sweep releases the latch. Every OTHER path that takes a token away calls
+   * `hookServer.forgetProvenNode` (`sweepToken` in node-token-service); this one did not, and the
+   * latch is instance-global and keyed by node id, so a remote node whose write did not land was
+   * refused permanently at the desktop — told to restart to pick up an identity that is not on the
+   * host to pick up.
+   *
+   * The failure is a `code`, not a throw: the runner RESOLVES on a non-zero exit, which is why
+   * reading only the `catch` left this invisible.
+   */
+  describe('a write that does not land releases the latch', () => {
+    it('un-proves the node when the host exits non-zero', async () => {
+      const forget = vi.spyOn(hookServer, 'forgetProvenNode')
+      const run = vi.fn(async (args: string[]) => ({
+        code: args.join(' ').includes('cat >') ? 1 : 0,
+        stdout: ''
+      }))
+      await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+      expect(forget).toHaveBeenCalledWith('node-1')
+      forget.mockRestore()
+    })
+
+    it('un-proves the node when the runner throws', async () => {
+      const forget = vi.spyOn(hookServer, 'forgetProvenNode')
+      const run = vi.fn(async (args: string[]) => {
+        if (args.join(' ').includes('cat >')) throw new Error('EACCES')
+        return { code: 0, stdout: '' }
+      })
+      await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+      expect(forget).toHaveBeenCalledWith('node-1')
+      forget.mockRestore()
+    })
+
+    it('leaves a node whose write DID land alone — the latch is what protects it', async () => {
+      const forget = vi.spyOn(hookServer, 'forgetProvenNode')
+      const { rh } = tokenHarness()
+      await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+      expect(forget).not.toHaveBeenCalled()
+      forget.mockRestore()
+    })
+  })
+
+  it('sweeps a token the minter REFUSES (case-fold collision) instead of leaving it on the host', async () => {
+    // The refusal is the local sweep's remote twin: a file an earlier connect wrote for a
+    // colliding id is exactly the token its twin would read.
+    const { rh, calls } = tokenHarness()
+    const refusing = (id: string): string => (id === 'Node-1' ? '' : mint(id))
+    await rh.writeNodeTokens(conn, '/s.sock', '/home/u', ['Node-1', 'node-2'], refusing)
+    expect(calls.some((c) => c.cmd.includes("rm -f '/home/u/.nodeterm/node-tokens/Node-1'"))).toBe(true)
+    expect(calls.some((c) => c.cmd.includes("cat > '/home/u/.nodeterm/node-tokens/.Node-1.tmp'"))).toBe(false)
+    expect(calls.some((c) => c.cmd.includes("cat > '/home/u/.nodeterm/node-tokens/.node-2.tmp'"))).toBe(true)
+  })
+})
+
+describe('RemoteHooks.setup — the host $HOME is data, not truth', () => {
+  it('refuses a $HOME carrying shell syntax and installs nothing', async () => {
+    const { rh, calls } = harness({ responses: { 'printf %s "$HOME"': '/home/u\ntouch /tmp/pwn' } })
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
+    expect(res).toBeNull()
+    // Only the $HOME probe itself ran — nothing interpolated the answer.
+    expect(calls).toHaveLength(1)
+  })
+
+  // The counterpart to the refusal above, and the reason this predicate was rewritten: a home
+  // directory named in a non-ASCII script is a NORMAL home, and the old allowlist turned it into a
+  // total, silent loss of every remote hook for that user.
+  it('installs hooks for a host whose $HOME is not spelled in ASCII', async () => {
+    const { rh, calls } = harness({ responses: { 'printf %s "$HOME"': '/home/gökhan' } })
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
+    expect(res?.endpointPath).toBe('/home/gökhan/.nodeterm/hook-endpoint-p1.env')
+    const joined = calls.map((c) => c.args.join(' '))
+    expect(joined.some((j) => j.includes(`cat > '/home/gökhan/.claude/settings.json'`))).toBe(true)
   })
 })

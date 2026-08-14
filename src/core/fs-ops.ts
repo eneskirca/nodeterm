@@ -19,7 +19,8 @@ import {
   buildGitLsFilesArgs,
   normalizeQuickOpenRgLine,
   shouldIncludeQuickOpenPath,
-  HIDDEN_DIR_BLOCKLIST
+  HIDDEN_DIR_BLOCKLIST,
+  QUICK_OPEN_FILE_CAP
 } from '../shared/quick-open-filter'
 
 const run = promisify(execFile)
@@ -119,7 +120,6 @@ export async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-const QUICK_OPEN_FILE_CAP = 50_000
 const QUICK_OPEN_TIMEOUT_MS = 10_000
 
 // Spawn a lister command, stream stdout split on `splitChar`, normalize+filter each path into

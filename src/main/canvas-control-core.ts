@@ -1,6 +1,7 @@
 // Pure core for agent canvas control: the verb model, request validation, and the standalone
 // CLI source. No electron imports, so this module + CONTROL_CLI_SCRIPT are unit-testable.
 // Electron/ipc/server wiring lives in canvas-control.ts + index.ts + hook-server.ts.
+import { HOOK_CURL_HEADERS_SH } from '../core/agents/hook-curl-config-sh'
 
 export type ControlVerb =
   | 'list'
@@ -229,6 +230,17 @@ if [ -n "$NODETERM_HOOK_ENDPOINT" ] && [ -r "$NODETERM_HOOK_ENDPOINT" ]; then
   . "$NODETERM_HOOK_ENDPOINT" 2>/dev/null || :
 fi
 
+# The PER-NODE capability: the endpoint file (v2) advertises the directory, the token is one file
+# in it named for THIS node id — a lookup by name, never a scan, so a session can only ever present
+# its own. Missing (pre-v2 endpoint, a node whose token was never materialised) leaves it empty,
+# which the server reads as legacy — the request still goes, exactly as before.
+nt_node_token=""
+if [ -n "$NODETERM_NODE_TOKEN_DIR" ] && [ -n "$NODETERM_NODE_ID" ]; then
+  nt_node_token=$(head -n 1 "$NODETERM_NODE_TOKEN_DIR/$NODETERM_NODE_ID" 2>/dev/null)
+fi
+
+${HOOK_CURL_HEADERS_SH}
+
 nt_verb="list"
 if [ $# -gt 0 ]; then nt_verb="$1"; shift; fi
 
@@ -262,16 +274,16 @@ done
 
 nt_out=$(mktemp 2>/dev/null || echo "/tmp/nodeterm-control.$$")
 if [ -n "$NODETERM_HOOK_SOCK" ]; then
-  nt_code=$(curl -sS -o "$nt_out" -w '%{http_code}' -X POST \\
+  nt_code=$(nt_hook_headers |
+    curl -sS -o "$nt_out" -w '%{http_code}' -X POST --config - \\
     --unix-socket "$NODETERM_HOOK_SOCK" "http://localhost/control/$nt_verb" \\
     -H "Accept: text/plain" \\
-    -H "X-Nodeterm-Hook-Token: \${NODETERM_HOOK_TOKEN}" \\
     --data-urlencode "nodeId=\${NODETERM_NODE_ID}" "$@" 2>/dev/null)
 elif [ -n "$NODETERM_HOOK_PORT" ]; then
-  nt_code=$(curl -sS -o "$nt_out" -w '%{http_code}' -X POST \\
+  nt_code=$(nt_hook_headers |
+    curl -sS -o "$nt_out" -w '%{http_code}' -X POST --config - \\
     "http://127.0.0.1:\${NODETERM_HOOK_PORT}/control/$nt_verb" \\
     -H "Accept: text/plain" \\
-    -H "X-Nodeterm-Hook-Token: \${NODETERM_HOOK_TOKEN}" \\
     --data-urlencode "nodeId=\${NODETERM_NODE_ID}" "$@" 2>/dev/null)
 else
   rm -f "$nt_out"

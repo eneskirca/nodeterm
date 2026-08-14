@@ -135,7 +135,16 @@ Persistence has two layers:
   `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty.
   Unreadable refs render as greyed **unavailable** tabs (never dropped); corrupt project files
   are set aside as `project.json.corrupt-<ts>`. "Open folder…" adopts an existing
-  `.nodeterm/project.json` (fresh project id on collision; node ids — tmux names — kept).
+  `.nodeterm/project.json` — the probe MINTS the project id (node ids — tmux names — kept), and
+  re-opening the folder is answered by the cwd lookup, not a second adoption.
+  **The shared file carries content, not identity**: no project `id`, no `viewport`, no
+  `defaultAccountId` — those are machine-local and ride the index entry (`IndexEntryV3`), beside
+  `localApprovalId`/`localExec`. Two folders holding the same committed canvas (worktree, branch
+  checkout) are two independent projects, and the committed file is byte-identical on every
+  machine. The file still carries a machine-INDEPENDENT legacy `id` (`legacyFileId`, derived from
+  the canvas name) for one release, because a pre-change build sidelines an id-less file to
+  `.corrupt-<ts>` inside the user's repo; it is ignored on read. Residual: node ids are still
+  shared, so two worktrees still attach the same tmux sessions.
   **SSH mirror safety** (the ".nodeterm reset itself" bug — 12 fresh project ids and 45 orphaned
   tmux sessions in one field report): remote writes are atomic (`cat > f.tmp && mv`, `sshWriteArgs`);
   a mirror is never blind-written before the entry has read-compared the server file once
@@ -789,6 +798,33 @@ persisted — only `unread`/`session`/`sessionId` go to localStorage under
   installer needs is why events are typed `ManagedHookEvent` (`string | {event, matcher}`): grok's
   tool matcher is a REGEX and must be `.*` — a bare `*` is invalid and silently stops tool events
   firing. Plain-string events keep their byte-identical output for every other agent.
+- **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
+  `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
+  "a session on this machine", never *which* session, so every node also gets a capability derived
+  from one restart-stable secret (`kid.mac`, domain-separated HMAC over the node id), handed to the
+  client as a 0600 file and verified three ways: `verified` / `legacy` / `forged`. `legacy` is "we
+  cannot judge this", not a failure. Two invariants come out of this series and both cost real
+  incidents to learn:
+  - **A credential never rides argv — local or SSH.** Measured 2026-08-13: `buildPtyEnv` put the hook
+    bearer in the tmux `-e` argv, which lands in a long-lived tmux client's `/proc/<pid>/cmdline`
+    at **mode 444** on a stock Linux with no `hidepid`; combined with `open-terminal --cmd` not being
+    in the confirm-gated `DESTRUCTIVE` set, that was arbitrary command execution as the victim from
+    any account on the box. A remote command line is argv on **both** ends, so the same rule binds
+    every `ssh`/`curl` we generate. Credentials travel by 0600 file or by **stdin**
+    (`curl --config -`, already house style in `usage/remote-claude-usage.ts` and
+    `codex-identity-proxy.ts`). Never add an argv fallback "for old curl" — that undoes the fix.
+  - **Both raw listeners change together** — `src/main/index.ts` and `src/server/agent-status.ts`.
+    A new field on the hook event (the `verified` flag was one) that reaches only the desktop leaves
+    the Server Edition silently without the feature; the boundary tests cannot tell you a field is
+    *missing*. `hook-verified-parity.test.ts` asserts it at source level because this repo has
+    shipped a one-shell hook-server change three times.
+
+  Enforcement is dated (`NODE_IDENTITY_STRICT_AFTER`, 2026-10-13, read through `isStrictInstant` so a
+  clock years ahead cannot enter strict mode early) with a `settings.hookIdentityStrict` escape hatch
+  in Settings → Agents. **Trust on first proof latches a node the moment it authenticates, so it
+  refuses TODAY, not on the cutoff** — which is why every token sweep must also call
+  `hookServer.forgetProvenNode`. `/hook/*` never 403s a missing token: the phone, the cross-instance
+  failover and every pre-token session legitimately have none.
 - **Fullscreen TUI (Claude)** — through the SAME `settings.json` seam the hook installer uses,
   nodeterm ensures Claude's `"tui": "fullscreen"` so a session takes the alternate screen + mouse
   and behaves natively in tmux (else a drag falls into copy-mode). Two guardrails: **write-if-absent**
@@ -1425,6 +1461,18 @@ again; the grace window was never the thing that was wrong.
   pan = middle-drag or trackpad two-finger (`panOnScroll`, `zoomOnScroll:false`); pinch
   zoom. Right mouse is free for the context menu.
 - **Delete** (Delete/Backspace) opens `ConfirmDialog` before removing selected nodes.
+- **Zoom chords** (`renderer/lib/zoomShortcut.ts`): **⌘/Ctrl+0 → `zoomTo100`** (actual size — what
+  the browser AND Electron's default View menu already mean by that key) and **Shift+1 → `fitAll`**
+  (the Figma/tldraw/Excalidraw "zoom to fit"). Matched on `e.code`, like the project-jump chord,
+  which excludes `Digit0` so the two can never collide. The module is a PURE decision because both
+  chords move the camera and a camera move here is not read-only — `onMove` → `markDirty` persists
+  the viewport and casts it to the team session — so it refuses while the kanban board is up and
+  while focus is in a text surface (input/textarea/contenteditable/Monaco/xterm, where Shift+1 is
+  just the `!` key), and on auto-repeat (both actions animate; a held chord would restart the tween).
+  Desktop ⌘0 does NOT arrive as a keydown: the default menu's `resetZoom` accelerator wins, so
+  `main/index.ts` intercepts it in `before-input-event` and forwards `app:zoom-actual-size`, which
+  re-asks the same refusals. Server Edition needs no intercept (no menu; Chrome/Firefox hand ⌘0 to
+  the page) and stubs the subscription.
 - **"Go to node" (`goToNode`)** — the one camera-travel path (notification click, sessions
   sidebar, ⌘K jump, presence travel, minimap double-click, double-click focus). It frames the node
   with `fitView({nodes:[{id}]})` **only when React Flow has MEASURED it**: `getFitViewNodes` filters
@@ -1637,7 +1685,11 @@ again; the grace window was never the thing that was wrong.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. Cmd+M is intercepted in `main/index.ts` `before-input-event` (else macOS minimizes)
-  and forwarded to the renderer via `app:toggle-markdown`.
+  and forwarded to the renderer via `app:toggle-markdown`; Cmd+W (`app:close-node`) and Cmd+0
+  (`app:zoom-actual-size`) are taken back from the same default menu the same way. We never call
+  `Menu.setApplicationMenu`, so Electron's DEFAULT menu is live and owns every accelerator in it —
+  a chord that collides with one never reaches the renderer at all
+  (`main/menu-accelerator-intercepts.test.ts` pins the three we steal).
 - **Theme**: macOS dark palette as CSS tokens in `styles.css` `:root` (`--accent` = systemBlue,
   label/separator opacities, SF font stack). Canvas background is black with dot grid.
 

@@ -108,10 +108,17 @@ describe('appendProjectNode', () => {
     expect(appendProjectNode(baseFile([sibling]), { id: 'term-aaa-1' }, NOW)).toBeNull()
   })
 
-  it('refuses an id that is not a safe term-<ts36>-<n> shape (it becomes a tmux session name)', () => {
-    for (const bad of ['x', 'term-a b-1', "term-a'b-1", 'term--1', 'sticky-abc-1', 'term-abc-']) {
+  it('refuses an id that is not a safe term-<ts36>-<token> shape (it becomes a tmux session name)', () => {
+    for (const bad of [
+      'x', 'term-a b-1', "term-a'b-1", 'term--1', 'sticky-abc-1', 'term-abc-',
+      'term-abc-../x', 'term-abc-A1', 'term-abc-1-2', `term-abc-${'a'.repeat(17)}`
+    ]) {
       expect(appendProjectNode(baseFile([]), { id: bad }, NOW)).toBeNull()
     }
+  })
+
+  it('accepts the random-token tail the desktop now mints (the counter was a collision generator)', () => {
+    expect(appendProjectNode(baseFile([]), { id: 'term-m1a2b3c-4f8a2c1b' }, NOW)).not.toBeNull()
   })
 
   it('sanitizes title/agentId: non-strings dropped, title capped', () => {
