@@ -13,9 +13,24 @@ import { join } from 'node:path'
 
 const CSS = readFileSync(join(__dirname, 'styles.css'), 'utf8')
 
+/**
+ * Where the light block actually starts. This MUST be anchored to the selector at the start of a
+ * line: a plain `indexOf(":root[data-theme='light']")` matches the *doc comment* inside the `:root`
+ * block that points at it (styles.css line ~6), which is 90 lines too early. That is not a
+ * cosmetic slip — it silently hollowed out two suites below. `dark` collapsed to three lines, so
+ * "the light theme overrides every themeable token" passed with an EMPTY token list for every
+ * token added since; and `LIGHT` resolved to the tail of the DARK block, so the contrast floors
+ * were measuring the dark palette against itself. Keep the `^` anchor.
+ */
+const LIGHT_BLOCK_START = CSS.search(/^:root\[data-theme='light'\]\s*\{/m)
+
 /** Everything before the end of the `:root[data-theme='light']` block — where literals belong. */
-const TOKEN_BLOCK_END = CSS.indexOf('\n}\n', CSS.indexOf(":root[data-theme='light']")) + 3
+const TOKEN_BLOCK_END = CSS.indexOf('\n}\n', LIGHT_BLOCK_START) + 3
 const RULES = CSS.slice(TOKEN_BLOCK_END)
+
+/** The two token blocks, sliced once. */
+const DARK = CSS.slice(CSS.indexOf(':root {'), LIGHT_BLOCK_START)
+const LIGHT = CSS.slice(LIGHT_BLOCK_START, TOKEN_BLOCK_END)
 
 function luminance(r: number, g: number, b: number): number {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
@@ -107,14 +122,14 @@ describe('the light theme overrides every themeable token', () => {
   // A token defined in `:root` but absent from the light block keeps its DARK value on a light
   // page. Colour-valued tokens must appear in both; geometry (radii, fonts) is theme-independent.
   it('covers every colour token', () => {
-    const dark = CSS.slice(CSS.indexOf(':root {'), CSS.indexOf(":root[data-theme='light']"))
-    const light = CSS.slice(CSS.indexOf(":root[data-theme='light']"), TOKEN_BLOCK_END)
+    const dark = DARK
+    const light = LIGHT
     const colourish = (decl: string): boolean =>
       /#[0-9a-f]{3,8}|rgba?\(|^\s*\d+,\s*\d+,\s*\d+\s*$/i.test(decl)
 
     const darkTokens = Array.from(dark.matchAll(/^\s*(--[a-z0-9-]+)\s*:\s*([^;]+);/gm))
       .filter(([, , v]) => colourish(v))
-      .map(([, k]) => k)
+      .map(([, k, v]) => [k, v] as const)
     const lightTokens = new Set(
       Array.from(light.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm), (x) => x[1])
     )
@@ -122,7 +137,18 @@ describe('the light theme overrides every themeable token', () => {
     // The git-graph lane hues are branch IDENTITY, not chrome: they must stay the same colour in
     // both themes or a graph would change meaning when the theme flips.
     const themeIndependent = (k: string): boolean => k.startsWith('--git-graph-')
-    const missing = darkTokens.filter((k) => !lightTokens.has(k) && !themeIndependent(k))
+    // A token mixed ONLY from `--tint-rgb` already flips with the theme by construction — that
+    // triple is itself overridden in the light block, which is the whole point of routing ~280
+    // overlays through it. `--text: rgba(var(--tint-rgb), 0.85)` is the live example: it is
+    // deliberately NOT restated in the light block (only `--muted`/`--border`, whose alphas had to
+    // be raised to buy back the contrast warmth costs). Requiring a redundant restatement here
+    // would teach the next person to copy tokens that are already correct.
+    const followsTint = (v: string): boolean =>
+      /^\s*rgba?\(\s*var\(--tint-rgb\)[^)]*\)\s*$/.test(v)
+    const missing = darkTokens
+      .filter(([k]) => !lightTokens.has(k) && !themeIndependent(k))
+      .filter(([, v]) => !followsTint(v))
+      .map(([k]) => k)
     expect(missing).toEqual([])
   })
 })
@@ -137,11 +163,17 @@ describe('the light theme overrides every themeable token', () => {
  * quietly drops body text under the floor.
  */
 describe('light palette contrast', () => {
-  const LIGHT = CSS.slice(CSS.indexOf(":root[data-theme='light']"), TOKEN_BLOCK_END)
-
+  /**
+   * A light-palette token — falling back to the dark block when light does not restate it.
+   * That fall-back is not laxity: the only tokens light omits are the ones mixed purely from
+   * `--tint-rgb` (`--text` is the live example), which read as the LIGHT ink here because
+   * `--tint-rgb` itself is overridden. And a hue that genuinely went missing would resolve to its
+   * dark-field value and fail the contrast floor below — loudly, which is the point.
+   */
   function token(name: string): string {
-    const m = new RegExp(`^\\s*${name}\\s*:\\s*([^;]+);`, 'm').exec(LIGHT)
-    if (!m) throw new Error(`light block has no ${name}`)
+    const re = new RegExp(`^\\s*${name}\\s*:\\s*([^;]+);`, 'm')
+    const m = re.exec(LIGHT) ?? re.exec(DARK)
+    if (!m) throw new Error(`neither token block defines ${name}`)
     return m[1].trim()
   }
 
@@ -191,7 +223,10 @@ describe('light palette contrast', () => {
   })
 
   it.each(SURFACES)('the status hues and link accent stay legible on %s', (_name, bg) => {
-    for (const t of ['--accent-text', '--danger', '--warn', '--caution', '--success']) {
+    // `--agent-working` is on this list because the sidebar's project badge paints its COUNT with
+    // it (`.ss-group__sig--working`) — it is text, so it owes the text floor, not the 3:1 one.
+    const HUES = ['--accent-text', '--danger', '--warn', '--caution', '--success', '--agent-working']
+    for (const t of HUES) {
       expect(contrast(hex(token(t)), bg), `${t}`).toBeGreaterThanOrEqual(4.3)
     }
   })

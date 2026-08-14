@@ -2,10 +2,12 @@ import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile } from 'fs/promises'
+import { statSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, shell, systemPreferences } from 'electron'
 import { IPC } from '../shared/ipc'
+import { writeFilesToClipboard } from './clipboard-files'
 import { registerFsHandlers } from '../core/fs-handlers'
 import { registerBoardLogHandlers, type BoardLogRoute } from '../core/board-log-handlers'
 import type { RemoteLogExec } from '../core/board-log'
@@ -122,6 +124,15 @@ import { SpeechService } from '../core/speech/speech-service'
 import { registerSpeechIpc } from '../core/speech/register-ipc'
 import { initClaudeAccounts } from './claude-accounts'
 import { claudeCliCaps, registerClaudeCliIpc, type ClaudeCliCaps } from '../core/claude-cli'
+import { refreshCodexIdentityCaps, registerCodexIdentityIpc } from '../core/codex-identity-caps'
+import {
+  bindCodexThreadIdentity,
+  setCodexThreadIdentityAuthSecret,
+  writeCodexThreadIdentity
+} from '../core/codex-identity-proxy'
+import { codexThreadExists, startCodexThread } from '../core/codex-session-name'
+import { loadOrCreateNodeAuthSecret } from '../core/agents/node-auth-secret'
+import { initNodeTokens, refreshNodeTokens } from '../core/agents/node-token-service'
 import { claudeConfigDirFor } from '../core/claude-config-dir'
 import {
   isSafeLocalTranscriptPath,
@@ -263,7 +274,10 @@ const workspaceWatcher = new WorkspaceWatcher({
     })
   }
 })
-workspaceStore.onPersist = () => workspaceWatcher.sync()
+workspaceStore.onPersist = () => {
+  workspaceWatcher.sync()
+  refreshNodeTokens()
+}
 const gitService = new GitService()
 
 // Markers delimiting the `projects.list` relay blob. The iOS client splits on these exact
@@ -469,6 +483,17 @@ function createWindow(): BrowserWindow {
       // selected it asks us to close the window (the standard behavior).
       event.preventDefault()
       win.webContents.send(IPC.appCloseNode)
+    } else if (input.code === 'Digit0' && !input.shift && !input.alt) {
+      // Repurpose Cmd/Ctrl+0 the same way. We never call `Menu.setApplicationMenu`, so Electron
+      // installs its DEFAULT menu, whose View → Actual Size binds this accelerator to `resetZoom`
+      // — the window's page zoom, not the canvas's. A menu accelerator is handled before the page
+      // sees the key, so without this the renderer's Digit0 branch would simply never run on the
+      // desktop. `before-input-event`'s preventDefault suppresses both the menu item and the page
+      // event, so exactly one thing happens: the canvas goes to 100%.
+      event.preventDefault()
+      // Auto-repeat is dropped here rather than in the renderer, so a held chord cannot restart
+      // the 200ms zoom tween — the same rule `zoomShortcutChord` applies to the keydown path.
+      if (!input.isAutoRepeat) win.webContents.send(IPC.appZoomActualSize)
     }
   })
 
@@ -546,6 +571,7 @@ app.whenReady().then(async () => {
     process.platform === 'darwin' ? systemPreferences.askForMediaAccess('microphone') : true
   )
   registerClaudeCliIpc()
+  registerCodexIdentityIpc()
   // Warm the `claude --version` probe now (it spawns a login shell + node, ~sub-second) so the
   // renderer's first `claude.cliCaps()` — awaited on the launch path of a cold-restored agent
   // node — resolves from cache instead of racing the probe into a conservative "no auto".
@@ -645,6 +671,13 @@ app.whenReady().then(async () => {
   ipcMain.on(IPC.clipboardWrite, (_e, text: string) => {
     if (typeof text === 'string') clipboard.writeText(text)
   })
+  ipcMain.handle(IPC.clipboardWriteFiles, (_e, paths: unknown) =>
+    writeFilesToClipboard(paths, {
+      platform: process.platform,
+      isFile: (path) => statSync(path).isFile(),
+      writeBuffer: (format, buffer) => clipboard.writeBuffer(format, buffer)
+    })
+  )
 
   // Dock badge: number of Claude nodes with unread output (macOS only). '' clears it.
   ipcMain.on(IPC.appSetBadge, (_e, count: number) => {
@@ -775,7 +808,12 @@ app.whenReady().then(async () => {
   // The Explorer/Editor fs surface: ONE registrar (core/fs-handlers.ts) shared by this shell and
   // the Server Edition, over the same pure core/fs-ops — so local, browser and peer filesystem
   // behaviour cannot drift. Registered on the platform, so a remote tab's Explorer/editor works.
-  registerFsHandlers(corePlatform)
+  // `localProjectCwd` is how a canvas image finds the project's own `.nodeterm/images/`. It
+  // answers undefined for an SSH project (its cwd is on the host, and the image node reads
+  // locally) and for a relay tab (not in this index at all) — both take the app-local fallback.
+  registerFsHandlers(corePlatform, {
+    localProjectCwd: (projectId: string) => workspaceStore.localCwdForProject(projectId)
+  })
 
   const githubSecret = new ElectronGitHubSecretStore(app.getPath('userData'), safeStorage)
   const github = registerGitHubIntegration({
@@ -826,6 +864,10 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.sshFsExists, (_e, projectId: string, p: string) => {
     const ref = sshFsRefFor(projectId)
     return ref ? sshFs.exists(ref, p) : Promise.resolve(false)
+  })
+  ipcMain.handle(IPC.sshFsQuickOpen, (_e, projectId: string, cwd: string) => {
+    const ref = sshFsRefFor(projectId)
+    return ref ? sshFs.listQuickOpenFiles(ref, cwd) : Promise.resolve([])
   })
 
   // Board-log: same CorePlatform registrar as the Server Edition (core/board-log-handlers.ts), with
@@ -880,6 +922,58 @@ app.whenReady().then(async () => {
   // listeners (setListener/setRawListener/setControlHandler) attach later, which the server
   // tolerates — early hook POSTs are simply dropped, never mis-routed.
   await hookServer.start()
+  // ---- Node identity (src/core/agents/node-auth-secret.ts) ------------------------------------
+  // One secret does two jobs: it arms the hook server's per-node capability (closing the "shared
+  // bearer can name any sibling node" hole) and it signs the codex thread → node records the hook
+  // prelude reads back. On the desktop it is sealed via safeStorage; if secure storage is
+  // unavailable the load rejects and we FAIL OPEN — identity stays unavailable (legacy mode),
+  // `codexIdentityCaps()` answers `shared: false`, every launch line stays the bare `codex`, and
+  // nothing is half-armed. Never throws up the boot path.
+  // The escape hatch for per-route enforcement, read LIVE so flipping it in Settings takes effect
+  // on the next request. Wired OUTSIDE the try: it is not part of arming the secret, and a machine
+  // running in legacy mode is precisely one whose owner may need it.
+  hookServer.setIdentityStrictOverride(() => settingsStore.get().hookIdentityStrict)
+  try {
+    const nodeAuthSecret = await loadOrCreateNodeAuthSecret()
+    hookServer.setNodeAuthSecret(nodeAuthSecret)
+    // Keep signing bound codex thread records with the same secret so they keep verifying.
+    setCodexThreadIdentityAuthSecret(nodeAuthSecret)
+    // Materialise a token file for every node in every persisted project. This is what makes the
+    // upgrade invisible: an already-running session becomes verified at its next hook event, no
+    // restart. Safe if the secret is absent — the service no-ops into legacy mode.
+    initNodeTokens({ canvases: () => workspaceStore.persistedCanvases() })
+  } catch (error) {
+    console.warn('[node-identity] no secret — hook identity unavailable, running legacy', error)
+  }
+  // Probes the CLI for `--remote`, installs the launcher, and publishes the construction-time
+  // answer. MUST stay after the secret above and before the window: it is what unblocks
+  // `codexIdentityCaps()`, which the renderer's first Codex launch line waits on. NOT awaited —
+  // the probe is a login-shell lookup plus up to two `--help` spawns, and nothing in the boot
+  // chain should queue behind it; callers of `codexIdentityCaps()` wait for it instead of being
+  // told "no". Reordering it later only delays that answer; leaving it out would stall those
+  // callers until their own timeout, so it is not optional.
+  void refreshCodexIdentityCaps()
+  hookServer.setCodexIdentityListener((ev) => sendToMain(IPC.codexIdentity, ev))
+  // A node still on a canvas is "live". A thread whose recorded owner is gone (node deleted, or a
+  // workspace that no longer holds it) is free to be re-claimed; one whose owner is still there is
+  // not, and the launcher then falls back rather than putting two clients on one conversation.
+  const codexNodeIsLive = (nodeId: string): boolean => !!workspaceStore.getNode(nodeId)
+  hookServer.setCodexThreadStartHandler(async ({ nodeId, cwd, hookEndpoint }) => {
+    const threadId = await startCodexThread(cwd)
+    writeCodexThreadIdentity(threadId, nodeId, hookEndpoint)
+    return threadId
+  })
+  hookServer.setCodexThreadBindHandler(async ({ nodeId, threadId, hookEndpoint }) => {
+    // Ask the app-server whether this conversation exists BEFORE recording that a node owns it.
+    // The id reaching us is whatever the node persisted — it can be stale, or from a session that
+    // ran under plain codex and the shared server has never heard of. Binding it anyway writes a
+    // record and then execs `codex --remote unix:// resume <id>`, which dies with "no rollout
+    // found" AFTER exec, where nothing can fall back any more. Refusing here IS the fallback.
+    if (!(await codexThreadExists(threadId))) {
+      throw new Error('Codex thread is unknown to the shared app-server')
+    }
+    bindCodexThreadIdentity(threadId, nodeId, hookEndpoint, codexNodeIsLive)
+  })
   // SSH_ASKPASS relay (ssh-project.ts): lets the ControlMaster, which has no tty, route a
   // passphrase-protected identity file's prompt back through the app instead of failing auth.
   // MUST NOT be fatal: binding a unix socket under ~/.nodeterm can fail for filesystem reasons
@@ -1004,14 +1098,21 @@ app.whenReady().then(async () => {
   let pushHasPairedPhone = false
   const refreshPushIdentity = async (): Promise<void> => {
     try {
-      pushHostKeyB64 = publicKeyToB64((await loadOrCreateKeyPair()).publicKey)
-    } catch {
-      // Keyring locked / transient read error: keep the last-known key (never clobber identity).
-    }
-    try {
       pushHasPairedPhone = (await loadApprovedDevices()).pubkeys.length > 0
     } catch {
       pushHasPairedPhone = false
+    }
+    // No paired destination means no host-mode push can be sent. Avoid touching macOS
+    // Safe Storage at boot in that state: locally signed development builds otherwise trigger
+    // a Keychain ACL prompt even though there is nobody to notify.
+    if (!pushHasPairedPhone) {
+      pushHostKeyB64 = null
+      return
+    }
+    try {
+      pushHostKeyB64 = publicKeyToB64((await loadOrCreateKeyPair()).publicKey)
+    } catch {
+      // Keyring locked / transient read error: keep the last-known key (never clobber identity).
     }
   }
   void refreshPushIdentity()
@@ -1697,7 +1798,12 @@ app.whenReady().then(async () => {
     return isSafeRemoteTranscriptPath(abs, remoteHome) ? abs : undefined
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
-  hookServer.setRawListener((agentId, nodeId, payload) => {
+  // `meta` carries the per-node `verified` flag and is deliberately UNUSED here: A13 moved
+  // enforcement into the hook server, which refuses before a listener is ever called. This shell
+  // used to keep a `nodeVerified` map written on every event and read by nothing. The parameter
+  // stays because the flag is part of the listener contract and both shells must take it
+  // (invariant 4, pinned by hook-verified-parity.test.ts); a second copy of the answer is not.
+  hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
       // Everything the claude path does below hangs off `transcript_path`, and grok has none.

@@ -22,6 +22,37 @@ const EXT_BY_TYPE: Record<string, string> = {
   'text/plain': 'txt'
 }
 
+const CANVAS_IMAGE_EXTENSIONS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'ico',
+  'svg',
+  'avif'
+])
+const CANVAS_IMAGE_MIME = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+  'image/x-icon',
+  'image/svg+xml',
+  'image/avif'
+])
+
+/** Only image files become canvas preview nodes; other dropped files keep the existing no-op. */
+export function canvasImageFiles(files: File[]): File[] {
+  return files.filter((file) => {
+    if (CANVAS_IMAGE_MIME.has(file.type.toLowerCase())) return true
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    return CANVAS_IMAGE_EXTENSIONS.has(ext)
+  })
+}
+
 /** The name to store a file under. Clipboard bytes usually have none, so one is generated from
  *  the MIME type + a timestamp — recognizable in a prompt and unique enough to read back. */
 export function uploadNameFor(file: { name: string; type: string }): string {
@@ -108,12 +139,47 @@ const readAsBase64 = (file: File): Promise<string | null> =>
  * anywhere, and a browser client's file lives on a different machine entirely — so the bytes are
  * written into the managed uploads dir over there and THAT path is what the terminal gets.
  */
-async function localPathFor(file: File): Promise<string | null> {
+/**
+ * Where bytes with no usable path get written. The default is the managed uploads staging area,
+ * which is right for a terminal paste — the path is consumed within seconds. A CANVAS image is
+ * remembered in project.json instead, so it passes a sink that writes somewhere equally durable
+ * (`canvasImageSink`); the choice belongs to the caller because only it knows how long the path
+ * has to stay true.
+ */
+export type UploadSink = (name: string, dataBase64: string) => Promise<string | null>
+
+const uploadsSink: UploadSink = (name, data) => window.nodeTerminal.files.saveUpload(name, data)
+
+/** Store into the project's own `.nodeterm/images/` — see core/canvas-images.ts for the fallbacks
+ *  (SSH project / relay tab / cwd-less canvas all land in a durable app-local folder instead). */
+export const canvasImageSink =
+  (projectId: string): UploadSink =>
+  (name, data) =>
+    window.nodeTerminal.files.saveCanvasImage(projectId, name, data)
+
+async function localPathFor(file: File, sink: UploadSink): Promise<string | null> {
   const direct = window.nodeTerminal.getPathForFile(file)
   if (direct) return direct
   const data = await readAsBase64(file)
   if (!data) return null
-  return window.nodeTerminal.files.saveUpload(uploadNameFor(file), data).catch(() => null)
+  return sink(uploadNameFor(file), data).catch(() => null)
+}
+
+async function localFilesWithPaths(
+  files: File[],
+  sink: UploadSink
+): Promise<Array<{ file: File; path: string }>> {
+  const local = await Promise.all(files.map((f) => localPathFor(f, sink).catch(() => null)))
+  return files
+    .map((file, i) => ({ file, path: local[i] }))
+    .filter((pair): pair is { file: File; path: string } => !!pair.path)
+}
+
+/** Resolve local/clipboard/browser files to raw local paths for non-terminal consumers. `sink` is
+ *  required: only the caller knows how long the returned path has to stay true, and defaulting it
+ *  to the 7-day staging area is exactly the wrong answer for the one caller there is. */
+export async function localPathsForFiles(files: File[], sink: UploadSink): Promise<string[]> {
+  return (await localFilesWithPaths(files, sink)).map((pair) => pair.path)
 }
 
 /**
@@ -126,10 +192,7 @@ export async function droppedPaths(
   files: File[],
   opts: { sshRemoteTmux: boolean; projectId: string }
 ): Promise<string[]> {
-  const local = await Promise.all(files.map((f) => localPathFor(f).catch(() => null)))
-  const pairs = files
-    .map((f, i) => ({ file: f, path: local[i] }))
-    .filter((p): p is { file: File; path: string } => !!p.path)
+  const pairs = await localFilesWithPaths(files, uploadsSink)
   if (!opts.sshRemoteTmux) return pairs.map((p) => escapeDroppedPath(p.path))
   const uploaded = await Promise.all(
     pairs.map((p) =>

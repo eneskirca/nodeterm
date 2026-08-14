@@ -17,6 +17,10 @@
      (A white that sits on a saturated ACCENT fill is a different thing and stays `#fff`.) */
   --text-strong: #fff;
 
+  /* Working (agent mid-turn) accent: the clay spinner/glow color, shared by every "working"
+     indicator (node glow, sidebar dot, project-header badge) so it only has to be edited once. */
+  --agent-working: #d97757;
+
   --bg: #1e1e1e; /* content / canvas / terminal (controlBackground) */
   --panel: #282828; /* bars, panels, node chrome (underPage) */
   --panel-header: #323232; /* elevated / hover (windowBackground) */
@@ -151,6 +155,11 @@
   --warn: #a85c00;
   --caution: #806100;
   --success: #1f7a38;
+  /* Same story for the working clay: #d97757 is tuned for a dark field and measures 2.7:1 against
+     these surfaces — under this palette's 4.3 floor, and it is rendered as TEXT (the badge count),
+     not just a dot. Darkened at the same hue (15°) into the band the other status hues occupy,
+     so "working" still reads as the same colour in both themes. */
+  --agent-working: #b04a28;
 
   /* Dots must read as a grid, not as noise: the dark-mode grey is far too heavy on a pale field,
      and a neutral one would be the only cold thing on screen. */
@@ -1108,7 +1117,10 @@ body,
 }
 
 /* Bridge link handles (Claude nodes): dots on the header row, on top of the node so they're
-   never buried under the terminal body. Subtle until you hover the node, then prominent. */
+   never buried under the terminal body. Subtle until you hover the node, then prominent.
+   Never set `transform` on a React Flow handle: the side classes (.react-flow__handle-left/right/
+   top/bottom) POSITION the dot with translate(±50%, ±50%), so any transform override replaces
+   that and shifts the dot away from the cursor mid-hover. Hover feedback is a ring, not a scale. */
 .react-flow__handle.bridge-handle {
   width: 13px;
   height: 13px;
@@ -1117,15 +1129,17 @@ body,
   box-shadow: 0 1px 4px rgba(0, 0, 0, calc(0.5 * var(--shadow-k)));
   opacity: 0.4;
   z-index: 20;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease, box-shadow 0.12s ease;
 }
 .react-flow__node:hover .react-flow__handle.bridge-handle,
 .react-flow__node.selected .react-flow__handle.bridge-handle {
   opacity: 1;
 }
 .react-flow__handle.bridge-handle:hover {
-  transform: scale(1.6);
   opacity: 1;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, calc(0.5 * var(--shadow-k))),
+    0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* Hover explanation for the bridge handles (CSS tooltip via the data-tip attribute). */
@@ -1858,6 +1872,19 @@ body,
 
 .term-node__xterm .xterm {
   height: 100%;
+}
+
+/* Renderer parity, macOS: the app sets `-webkit-font-smoothing: antialiased` on :root (grayscale
+   AA — the right call for the chrome's UI font), and the DOM renderer's rows INHERIT it, while the
+   WebGL renderer never sees it: its glyphs are rasterized into a canvas atlas, which uses the
+   platform default. So the same text renders thinner/paler the moment a terminal falls back to the
+   DOM renderer, and a budget swap flashes that difference. Terminal rows opt back out to the
+   platform default so both renderers lay down comparable ink. Scoped to the rows only — the app
+   chrome keeps its grayscale AA — and inert on Linux/Windows Chromium, which ignores this property
+   (measured: DOM ink coverage unchanged there), so it is a macOS-targeted correction by
+   construction. */
+.xterm-rows {
+  -webkit-font-smoothing: auto;
 }
 
 /* Shared glyph renderer (experimental, `glyphgrid`): a glyph-attached terminal becomes a
@@ -4439,6 +4466,7 @@ body,
 }
 .clone-dialog__progress {
   margin-top: 10px;
+  margin-bottom: 14px;
 }
 .clone-dialog__progress-label {
   font-size: 11px;
@@ -4949,7 +4977,20 @@ body,
   border: 1.5px dashed;
   border-radius: 14px;
   box-sizing: border-box;
-  cursor: grab;
+}
+
+/* A frame is a background CONTAINER, not a giant drag target. Its body passes pointer input
+   through to React Flow's pane (pan / rubber-band select), and — since frames nest — an outer
+   frame no longer swallows the clicks meant for a frame drawn inside it. The label pill, the
+   actions and the resize handles explicitly opt back in; the pill is also the node's
+   `dragHandle`, so dragging a frame means dragging its label. */
+.react-flow__node-group {
+  pointer-events: none !important;
+}
+.react-flow__node-group .group-node__label,
+.react-flow__node-group .group-node__actions,
+.react-flow__node-group .react-flow__resize-control {
+  pointer-events: auto;
 }
 
 /* Bound to a git worktree: a checkout, not a loose grouping. Solid, thicker border (the tint is
@@ -4986,6 +5027,10 @@ body,
   border: 1px solid var(--border);
   border-radius: 999px;
   user-select: none;
+  cursor: grab;
+}
+.group-node__label:active {
+  cursor: grabbing;
 }
 
 /* Zoomed far out (boost ≥ 2, toggled in Canvas.setGroupLabelBoost), the pill keeps only the
@@ -6282,7 +6327,7 @@ body,
 .ss-bell svg { width: 13px; height: 13px; }
 .ss-dot--working {
   background: transparent;
-  border: 2px solid #d97757;
+  border: 2px solid var(--agent-working);
   border-top-color: transparent;
   animation: nt-spin 1s steps(12, end) infinite;
 }
@@ -6355,7 +6400,26 @@ body,
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
   flex: 0 0 auto;
 }
-.ss-group__chev { font-size: 9px; color: var(--muted); width: 10px; }
+/* The chevron is the ONLY collapse toggle on an inactive project row (the row itself switches),
+   so it is a real button with a clickable box around the 9px glyph, not the glyph alone. */
+.ss-group__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: -3px -2px -3px -3px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+.ss-group__chev:hover { background: rgba(var(--tint-rgb), 0.12); color: var(--text); }
 .ss-group__dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .ss-group__name { font-size: 12px; font-weight: 600; color: var(--text); }
 .ss-group.is-active .ss-group__name { color: var(--accent); }
@@ -6367,6 +6431,24 @@ body,
 .ss-group__sig svg { width: 11px; height: 11px; }
 .ss-group__sig--attention { color: var(--danger); }
 .ss-group__sig--unread { color: var(--accent); }
+.ss-group__sig--working { color: var(--agent-working); }
+.ss-group__sig-spin {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--agent-working);
+  border-top-color: transparent;
+  animation: nt-spin 1s steps(12, end) infinite;
+}
+/* Respect the OS setting: spinning ring/arc badges freeze in place rather than
+   keep animating forever. */
+@media (prefers-reduced-motion: reduce) {
+  .ss-dot--working,
+  .ss-group__sig-spin {
+    animation: none;
+  }
+}
 .ss-group__add { margin-left: auto; opacity: 0; border: none; background: transparent; color: var(--text); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px; }
 .ss-group__head:hover .ss-group__add { opacity: 0.7; }
 .ss-group__add:hover { opacity: 1 !important; color: var(--accent); }
@@ -6378,6 +6460,13 @@ body,
   padding-left: 6px;
   border-left: 1px solid rgba(var(--tint-rgb), 0.08);
 }
+/* Sibling-reorder drop zones for group rows in the sessions tree (a thin accent rule marks
+   where the dragged frame would land). */
+.ss-subgroup__reorder-zone,
+.ss-subgroup__reorder-end { position: relative; height: 5px; }
+.ss-subgroup__reorder-end--root { margin-left: 15px; }
+.ss-subgroup__reorder-zone.is-drop-before::before,
+.ss-subgroup__reorder-end.is-drop-before::before { content: ''; position: absolute; top: 1px; left: 2px; right: 6px; height: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
 .ss-subgroup__head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; }
 .ss-subgroup__head:hover { background: var(--panel-header); }
 .ss-subgroup__dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 auto; }
@@ -8037,6 +8126,14 @@ body,
 }
 .github-auth-advanced > summary:hover {
   color: var(--text-strong);
+}
+/* `list-style: none` above removes the native marker, and with it the browser's own focus ring on
+   some engines — a keyboard user must still be able to see where they are. */
+.github-auth-advanced > summary:focus-visible {
+  color: var(--text-strong);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .kanban-col__newmenu {

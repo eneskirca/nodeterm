@@ -17,7 +17,10 @@ import {
   hasPermissionMode,
   hasUsage,
   reportsOwnCopy,
-  RENAME_CAPABLE
+  RENAME_CAPABLE,
+  hasSharedIdentity,
+  agentLaunchProgram,
+  resumeCommand
 } from './config'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
@@ -178,10 +181,33 @@ describe('title read vs rename write', () => {
     for (const id of RENAME_CAPABLE) expect(canReadTitle(id), id).toBe(true)
   })
 
-  it('codex claims neither, for want of evidence', () => {
-    // Its slash-command set was not enumerable from the CLI, so neither leg has a measured basis.
-    expect(canReadTitle('codex')).toBe(false)
+  it('codex reads but does not write — the same split gemini forced', () => {
+    // With the shared app-server a codex node owns a THREAD, and that thread has a `Thread.name`
+    // we can read over the server's own socket (core/codex-session-name.ts). There is still no
+    // measured rename command, and one list for both legs would light the rename UI on a node
+    // where the write silently does nothing.
+    expect(canReadTitle('codex')).toBe(true)
     expect(canRename('codex')).toBe(false)
+  })
+
+  it('only codex has a shared identity, and it is asked through the helper', () => {
+    expect(hasSharedIdentity('codex')).toBe(true)
+    for (const id of ['claude', 'gemini', 'grok', 'opencode', 'custom:abc'] as const) {
+      expect(hasSharedIdentity(id), id).toBe(false)
+    }
+  })
+
+  it('the launch program is the bare CLI unless the caller says shared identity is available', () => {
+    // The default is the pre-feature command, byte for byte: an unprobed machine, an SSH project,
+    // a test, a call site that never opted in — all emit `codex`. Same shape as gatePermissionMode.
+    expect(agentLaunchProgram('codex', 'codex')).toBe('codex')
+    expect(agentLaunchProgram('codex', 'codex', false)).toBe('codex')
+    expect(agentLaunchProgram('codex', 'codex', true)).toBe('nodeterm-codex')
+    // A non-member never gets rerouted, whatever the caller claims.
+    expect(agentLaunchProgram('claude', 'claude', true)).toBe('claude')
+    expect(resumeCommand('codex', 'thread-1')).toBe('codex resume thread-1')
+    expect(resumeCommand('codex', 'thread-1', true)).toBe('nodeterm-codex resume thread-1')
+    expect(resumeCommand('claude', 'abc', true)).toBe('claude --resume abc')
   })
 
   it('a custom agent claims neither', () => {

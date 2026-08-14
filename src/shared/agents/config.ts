@@ -145,9 +145,22 @@ export const RENAME_CAPABLE = ['claude', 'grok'] as const
 // INVARIANT (pinned in config.capabilities.test.ts): every RENAME_CAPABLE agent is also here. The
 // write leg pushes a name and the read leg is what confirms it settled.
 //
-// codex is in NEITHER: its slash-command set could not be enumerated from the CLI, so neither leg
-// has a measured basis — and a guess here costs a wrong node title, not a missing one.
-export const TITLE_READ_CAPABLE = ['claude', 'grok', 'gemini'] as const
+// codex joined the READ leg only, and for the same reason gemini did: with the shared app-server
+// (SHARED_IDENTITY_CAPABLE below) a node owns a THREAD, and that thread carries a `Thread.name` we
+// can read over the server's own socket (core/codex-session-name.ts). There is still no measured
+// rename command, so it stays out of RENAME_CAPABLE — the read⊇write invariant holds either way.
+export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini'] as const
+// Agents whose canvas nodes share ONE managed CLI server per machine and keep a stable per-node
+// identity inside it, instead of each node owning a whole process tree.
+//
+// Membership is what makes `buildPtyEnv` mint the per-node capability token, what makes
+// `pty-manager` install + PATH-expose the generated launcher, and what lets a launch line address
+// that launcher at all. Everything downstream asks `hasSharedIdentity(agentId)`; nothing may ask
+// `agentId === 'codex'`, which is how this started and is what CLAUDE.md forbids.
+//
+// Only codex today: it is the only builtin with an app-server mode NodeTerm can attach many
+// clients to. A second agent joins by being added here and writing its own launcher body.
+export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // Agents allowed to drive the canvas via the `nodeterm` CLI (open/show/write/close).
 // Discovery differs per agent: claude gets the manage-nodeterm-canvas skill; codex/gemini/
 // opencode a marker block in ~/.codex/AGENTS.md / ~/.gemini/GEMINI.md /
@@ -207,6 +220,26 @@ export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
+export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
+
+/**
+ * The program a launch line should name for `id`.
+ *
+ * `sharedIdentity` is the caller's answer to "will the managed launcher actually be there?", and
+ * it is FALSE by default on purpose: every call site that has not opted in emits the bare CLI
+ * command it always did, byte for byte. This is the same shape as `gatePermissionMode` — an
+ * unknown or failed probe degrades to the bare command, never to a launch that cannot run.
+ *
+ * The launcher is addressed by NAME, not by path: `pty-manager` puts its directory first on the
+ * session's PATH for exactly the agents in SHARED_IDENTITY_CAPABLE, so the pane shows a readable
+ * command and a plain terminal's PATH is untouched.
+ */
+export const SHARED_IDENTITY_LAUNCHERS: Partial<Record<AgentId, string>> = { codex: 'nodeterm-codex' }
+
+export function agentLaunchProgram(id: AgentId, base: string, sharedIdentity = false): string {
+  if (!sharedIdentity || !hasSharedIdentity(id)) return base
+  return SHARED_IDENTITY_LAUNCHERS[id] ?? base
+}
 /** Does this agent's CLI report its own copies? Undefined (a plain terminal, a custom agent) is
  *  `false` — nobody speaks for those, so nodeterm's own feedback is the only feedback there is. */
 export const reportsOwnCopy = (id: AgentId | undefined): boolean =>
@@ -268,14 +301,18 @@ export function withSessionId(cmd: string, id: AgentId, sessionId: string): stri
  * Used on a cold restart (machine reboot) where the tmux session — and the live agent — are
  * gone, so the conversation must be reconstructed via the agent CLI's own `--resume`.
  * Returns null for non-resumable/custom agents or an unsafe/empty session id.
+ *
+ * `sharedIdentity` routes a SHARED_IDENTITY_CAPABLE agent's resume through the managed launcher,
+ * so the resumed session re-claims the node's own thread instead of opening it as an anonymous
+ * client. Default false = the bare command this has always emitted (see `agentLaunchProgram`).
  */
-export function resumeCommand(id: AgentId, sessionId: string): string | null {
+export function resumeCommand(id: AgentId, sessionId: string, sharedIdentity = false): string | null {
   if (!canResume(id)) return null
   const sid = sessionId.trim()
   if (!sid || !SAFE_SESSION_ID.test(sid)) return null
   switch (id) {
     case 'codex':
-      return `codex resume ${sid}`
+      return `${agentLaunchProgram('codex', 'codex', sharedIdentity)} resume ${sid}`
     case 'opencode':
       return `opencode --session ${sid}`
     case 'claude':

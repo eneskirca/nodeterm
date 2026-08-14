@@ -13,7 +13,14 @@ import { decodePtyData } from '../shared/rpc'
 // fire raw + normalized events without binding a real port.
 function fakeHooks() {
   let listener: ((e: unknown) => void) | undefined
-  let raw: ((agentId: string, nodeId: string, payload: Record<string, unknown>) => void) | undefined
+  let raw:
+    | ((
+        agentId: string,
+        nodeId: string,
+        payload: Record<string, unknown>,
+        meta: { verified: boolean }
+      ) => void)
+    | undefined
   return {
     hooks: {
       setListener: (cb: (e: unknown) => void) => {
@@ -24,8 +31,14 @@ function fakeHooks() {
       }
     },
     fireNormalized: (e: unknown) => listener?.(e),
-    fireRaw: (agentId: string, nodeId: string, payload: Record<string, unknown>) =>
-      raw?.(agentId, nodeId, payload)
+    // `verified` defaults to false — the unlabelled/legacy POST, which is the ordinary case and the
+    // one every existing expectation in this file was written against.
+    fireRaw: (
+      agentId: string,
+      nodeId: string,
+      payload: Record<string, unknown>,
+      verified = false
+    ) => raw?.(agentId, nodeId, payload, { verified })
   }
 }
 

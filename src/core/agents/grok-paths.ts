@@ -20,6 +20,7 @@
 //     summary.json  updates.jsonl  chat_history.jsonl  signals.json  plan.json  subagents/
 import path from 'path'
 import { homedir } from 'os'
+import { isSafeRemoteHome } from '../remote-safety'
 
 export const GROK_HOOK_FILE = 'nodeterm-status.json'
 export const GROK_SUMMARY_FILE = 'summary.json'
@@ -31,8 +32,6 @@ export const GROK_CHAT_HISTORY_FILE = 'chat_history.jsonl'
  *  slug+hash directory instead, which we cannot reconstruct — so we resolve nothing there. */
 export const GROK_ENCODED_CWD_MAX_BYTES = 255
 const GROK_SESSION_ID_MAX = 128
-/** Generous cap on a host-reported $GROK_HOME; longer than any real path, short enough to bound. */
-const REMOTE_HOME_MAX = 4096
 
 // Deliberately narrow — ONE known key, so a typo'd `{ GROK_HOM: … }` is a compile error instead of
 // a silent fall back to `~/.grok`. The cast on the default argument is what that costs: GrokEnv is a
@@ -117,11 +116,7 @@ export function grokSessionDir(a: { sessionsDir: string; cwd: string; sessionId:
  *  trim at the READ site — `ssh-project.ts`'s remote `$HOME` probe does — so the caller passes an
  *  already-trimmed string and a leftover newline means the read went wrong, not that we should cope. */
 export function isSafeRemoteGrokHome(p: string | undefined): boolean {
-  const v = p?.trim()
-  if (!v || v !== p) return false
-  if (!v.startsWith('/') || v.includes('\\') || v.length > REMOTE_HOME_MAX) return false
-  return !Array.from(v).some((ch) => {
-    const c = ch.charCodeAt(0)
-    return c <= 0x1f || c === 0x7f
-  })
+  // One rule for every host-reported home (`$HOME` and `$GROK_HOME` are the same kind of answer,
+  // interpolated into the same kind of remote command line) — see `isSafeRemoteHome`.
+  return isSafeRemoteHome(p)
 }

@@ -5,6 +5,14 @@
 // interpolated). check-ignore entry NAMES are bare filenames, so they stay posixQuote'd.
 import { childArgs } from '../core/remote-ssh/control-master'
 import { posixQuote, quoteRemotePath, type SshConnection } from '../shared/ssh'
+import {
+  buildHiddenDirExcludeGlobs,
+  isSafeQuickOpenRelPath,
+  normalizeQuickOpenRgLine,
+  quickOpenPruneNames,
+  shouldIncludeQuickOpenPath,
+  QUICK_OPEN_FILE_CAP
+} from '../shared/quick-open-filter'
 import type { DirEntry } from '../shared/types'
 
 export interface SshFsRef {
@@ -60,6 +68,45 @@ export function sshSizeArgs(conn: SshConnection, cp: string, path: string): stri
 export function sshExistsArgs(conn: SshConnection, cp: string, path: string): string[] {
   return childArgs(conn, cp, `test -e ${quoteRemotePath(path)}`)
 }
+/** Transfer cap for the quick-open listing (`head -c`): ~50k paths fit comfortably. */
+export const SSH_QUICK_OPEN_MAX_BYTES = 4_194_304
+
+export function sshQuickOpenArgs(conn: SshConnection, cp: string, cwd: string): string[] {
+  // The remote analog of fs-ops.listQuickOpenFiles' fallback chain, folded into ONE round-trip:
+  // rg two passes (tracked + git-ignored build output) → git ls-files two passes → pruned find.
+  // Local falls to git when rg yields nothing; remotely that extra round-trip isn't worth it, so
+  // the chain branches on `command -v rg` alone. git output is NUL-delimited (-z) so paths never
+  // come back C-quoted; the parser splits on both \n and \0.
+  const globs = buildHiddenDirExcludeGlobs().map(posixQuote).join(' ')
+  const prunes = quickOpenPruneNames().map((n) => `-name ${posixQuote(n)}`).join(' -o ')
+  const rg = `rg --files --hidden ${globs} . ; rg --files --hidden --no-ignore-vcs ${globs} .`
+  const git = `git ls-files -z --cached --others --exclude-standard ; git ls-files -z --others --ignored --exclude-standard`
+  const find = `find . \\( ${prunes} \\) -prune -o -type f -print`
+  const chain = `if command -v rg >/dev/null 2>&1; then ${rg}; elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then ${git}; else ${find}; fi`
+  return childArgs(
+    conn,
+    cp,
+    `cd ${quoteRemotePath(cwd)} && { ${chain}; } 2>/dev/null | head -c ${SSH_QUICK_OPEN_MAX_BYTES}`
+  )
+}
+
+/**
+ * Remote lister stdout → sorted, deduped, root-relative quick-open index. The listing is
+ * REMOTE-SUPPLIED, so beyond the shared noise filter every entry must also pass the traversal
+ * guard. Output that hit the head -c cap drops its (possibly cut mid-path) last entry.
+ */
+export function parseQuickOpenListing(stdout: string): string[] {
+  const lines = stdout.split(/[\n\0]/)
+  if (Buffer.byteLength(stdout, 'utf8') >= SSH_QUICK_OPEN_MAX_BYTES) lines.pop()
+  const out = new Set<string>()
+  for (const line of lines) {
+    if (out.size >= QUICK_OPEN_FILE_CAP) break
+    const rel = normalizeQuickOpenRgLine(line)
+    if (rel && isSafeQuickOpenRelPath(rel) && shouldIncludeQuickOpenPath(rel)) out.add(rel)
+  }
+  return [...out].sort()
+}
+
 export function sshCheckIgnoreArgs(conn: SshConnection, cp: string, dir: string, names: string[]): string[] {
   // The dir is a remote path (may be tilde-prefixed) → quoteRemotePath; the entry NAMES are bare
   // filenames with no tilde → posixQuote literally (and inject-safe).
@@ -153,6 +200,15 @@ export class SshFs {
       return code === 0
     } catch {
       return false
+    }
+  }
+
+  async listQuickOpenFiles(ref: SshFsRef, cwd: string): Promise<string[]> {
+    try {
+      const { code, stdout } = await this.run(sshQuickOpenArgs(ref.conn, ref.controlPath, cwd))
+      return code === 0 ? parseQuickOpenListing(stdout) : []
+    } catch {
+      return []
     }
   }
 

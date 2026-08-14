@@ -232,7 +232,9 @@ const api: NodeTerminalApi = {
     write: (projectId: string, path: string, content: string) =>
       ipcRenderer.invoke(IPC.sshFsWrite, projectId, path, content),
     mkdir: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsMkdir, projectId, p),
-    exists: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsExists, projectId, p)
+    exists: (projectId: string, p: string) => ipcRenderer.invoke(IPC.sshFsExists, projectId, p),
+    quickOpen: (projectId: string, cwd: string) =>
+      ipcRenderer.invoke(IPC.sshFsQuickOpen, projectId, cwd)
   },
   git: {
     status: (cwd) => ipcRenderer.invoke(IPC.gitStatus, cwd),
@@ -287,7 +289,8 @@ const api: NodeTerminalApi = {
   },
   clipboard: {
     // Route to the MAIN process: renderer-side `clipboard` access is deprecated in Electron.
-    writeText: (text: string) => ipcRenderer.send(IPC.clipboardWrite, text)
+    writeText: (text: string) => ipcRenderer.send(IPC.clipboardWrite, text),
+    writeFiles: (paths: string[]) => ipcRenderer.invoke(IPC.clipboardWriteFiles, paths)
   },
   shell: {
     reveal: (path: string) => ipcRenderer.send(IPC.shellReveal, path),
@@ -325,7 +328,9 @@ const api: NodeTerminalApi = {
     // already on this machine" (local project).
     downloadTicket: (p: string) => ipcRenderer.invoke(IPC.filesDownloadTicket, p),
     saveUpload: (name: string, dataBase64: string) =>
-      ipcRenderer.invoke(IPC.filesSaveUpload, name, dataBase64)
+      ipcRenderer.invoke(IPC.filesSaveUpload, name, dataBase64),
+    saveCanvasImage: (projectId: string, name: string, dataBase64: string) =>
+      ipcRenderer.invoke(IPC.filesSaveCanvasImage, projectId, name, dataBase64)
   },
   updates: {
     onAvailable: (listener) => {
@@ -417,6 +422,14 @@ const api: NodeTerminalApi = {
       ): void => listener(projectId, mutation)
       ipcRenderer.on(IPC.canvasMut, handler)
       return () => ipcRenderer.removeListener(IPC.canvasMut, handler)
+    }
+  },
+  codex: {
+    identityCaps: () => ipcRenderer.invoke(IPC.codexIdentityCaps),
+    onIdentity: (listener) => {
+      const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)
+      ipcRenderer.on(IPC.codexIdentity, handler)
+      return () => ipcRenderer.removeListener(IPC.codexIdentity, handler)
     }
   },
   claude: {
@@ -548,6 +561,7 @@ const api: NodeTerminalApi = {
   // ipcRenderer listeners and trip the MaxListeners warning.
   onMarkdownToggle: subscribe(IPC.appToggleMarkdown),
   onCloseNode: subscribe(IPC.appCloseNode),
+  onZoomActualSize: subscribe(IPC.appZoomActualSize),
   closeWindow: () => ipcRenderer.send(IPC.appCloseWindow),
   focusWindow: () => ipcRenderer.send(IPC.appFocusWindow),
   setBadgeCount: (count) => ipcRenderer.send(IPC.appSetBadge, count),

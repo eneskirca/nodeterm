@@ -39,14 +39,25 @@ export const IPC = {
   claudeAccountsCancelWait: 'claude-accounts:cancel-wait',
   claudeAccountsRemove: 'claude-accounts:remove',
   claudeCliCaps: 'claude-cli:caps',
+  /** Can a node on this machine get a managed Codex identity? See core/codex-identity-caps.ts. */
+  codexIdentityCaps: 'codex-identity:caps',
+  /** main/server → renderer: a Codex node's identity mode changed ('shared' | 'plain'). The
+   *  'plain' events are what make the launcher's fallback visible instead of silent. */
+  codexIdentity: 'codex-identity:event',
   transcriptSearch: 'transcript:search',
   appToggleMarkdown: 'app:toggle-markdown',
   appCloseNode: 'app:close-node',
+  /** main → renderer: ⌘/Ctrl+0 ("actual size"). Intercepted in `before-input-event` because
+   *  Electron's default View menu binds that accelerator to `resetZoom`, which resets the WINDOW's
+   *  page zoom rather than the canvas's. */
+  appZoomActualSize: 'app:zoom-actual-size',
   appCloseWindow: 'app:close-window',
   appFocusWindow: 'app:focus-window',
   /** Write text to the system clipboard from the MAIN process. Renderer-side `clipboard` access is
    *  deprecated in Electron; the renderer sends this instead (fire-and-forget). */
   clipboardWrite: 'clipboard:write',
+  /** Copy local files as file references (not bytes/text) to the macOS system clipboard. */
+  clipboardWriteFiles: 'clipboard:write-files',
   appNotify: 'app:notify',
   appOpenNotificationSettings: 'app:open-notification-settings',
   appFocusNode: 'app:focus-node',
@@ -216,6 +227,8 @@ export const IPC = {
   filesDownloadTicket: 'files:download-ticket',
   /** Persist pasted/dropped bytes that have no path here, and answer their absolute path. */
   filesSaveUpload: 'files:save-upload',
+  /** Write a canvas image into the project's own `.nodeterm/images/` (see core/canvas-images.ts). */
+  filesSaveCanvasImage: 'files:save-canvas-image',
   settingsLoad: 'settings:load',
   settingsSave: 'settings:save',
   sshList: 'ssh:list',
@@ -238,6 +251,7 @@ export const IPC = {
   sshFsWrite: 'sshFs:write',
   sshFsMkdir: 'sshFs:mkdir',
   sshFsExists: 'sshFs:exists',
+  sshFsQuickOpen: 'sshFs:quick-open',
   sshProjectStatus: 'ssh-project:status',
   /** main → renderer: an SSH project's identity file is passphrase-protected and the ssh-agent
    *  does not hold the key (or the last answer was wrong), so show a prompt.

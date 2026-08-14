@@ -59,6 +59,26 @@ for v1: a low ceiling OOM-kills a long-context session, which is worse than the 
 **Do not re-derive these numbers.** They are here so the next person does not spend an afternoon on
 `/proc` arithmetic to reach the same conclusion.
 
+### A fractional `NODETERM_SESSION_*` value must not disarm the guard
+
+Found while running the live reaper experiment with `NODETERM_SESSION_GRACE_HOURS=1`.
+
+`envInt` used `Math.floor(n)` behind `n > 0`, so a fractional setting became **zero** — and a zero
+here is not a smaller setting, it is the removal of a safety:
+
+| Input | Before | Effect |
+|---|---|---|
+| `GRACE_HOURS=0.5` | 0 s | a session was reapable the moment it detached |
+| `MAX_DETACHED=0.5` | cap 0 | every detached session counted as over-cap: a full batch died every sweep |
+
+The asymmetry is what made it dangerous rather than merely wrong: `abc`, `''`, `0` and `-3` all fell
+back to the safe default, while `0.5` — the most PLAUSIBLE thing an operator would type, meaning
+"half" — silently disarmed the guard. **A hand-editable value must degrade to the safe default,
+never to something more destructive than the default.**
+
+`envInt` now requires `>= 1`, and sub-hour grace (a legitimate wish) is served properly by
+`envHours`, which keeps the fraction: `0.5` is 1800 seconds, not zero.
+
 ## 2. Why the reaper is deliberately untouched
 
 `src/core/session-budget.ts` reaps only **detached** sessions idle past a grace window. On the

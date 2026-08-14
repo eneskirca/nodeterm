@@ -104,3 +104,46 @@ describe.skipIf(!hasTmux)('server e2e: login → ws → pty echo round-trip', ()
     ws.close()
   }, 30_000)
 })
+
+describe('server shutdown with a live websocket', () => {
+  it('terminates the upgraded client before closing the HTTP server', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-e2e-shutdown-'))
+    const srv = await startServer({
+      port: 0, host: '127.0.0.1', dataDir,
+      rendererDir: path.join(dataDir, 'no-renderer'), insecureHttp: false,
+      passwordSeed: 'e2e-shutdown-password-123', installHooks: false
+    })
+    const res = await fetch(`http://127.0.0.1:${srv.port}/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=e2e-shutdown-password-123',
+      redirect: 'manual'
+    })
+    const cookie = res.headers.get('set-cookie')!.split(';')[0]
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { headers: { cookie } })
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    const clientClosed = new Promise<void>((resolve) => ws.once('close', () => resolve()))
+    let closeTimer: ReturnType<typeof setTimeout> | undefined
+
+    try {
+      await Promise.race([
+        srv.close(),
+        new Promise<never>((_resolve, reject) => {
+          closeTimer = setTimeout(
+            () => reject(new Error('server close hung on upgraded websocket')),
+            2_000
+          )
+        })
+      ])
+      await clientClosed
+      expect(ws.readyState).toBe(WebSocket.CLOSED)
+    } finally {
+      if (closeTimer) clearTimeout(closeTimer)
+      ws.terminate()
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+  }, 10_000)
+})

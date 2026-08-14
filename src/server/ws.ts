@@ -101,7 +101,7 @@ function upgradeAllowed(
   return true
 }
 
-export function attachWsServer(server: http.Server, opts: WsServerOpts): void {
+export function attachWsServer(server: http.Server, opts: WsServerOpts): WebSocketServer {
   const { platform, auth, onClientGone, heartbeatMs = WS_HEARTBEAT_MS, trustProxy } = opts
   const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD })
 
@@ -211,4 +211,5 @@ export function attachWsServer(server: http.Server, opts: WsServerOpts): void {
 
     ws.on('close', () => teardown(uiId))
   })
+  return wss
 }

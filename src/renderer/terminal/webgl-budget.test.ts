@@ -8,16 +8,12 @@ import {
   setWebglBudget,
   setWebglEnabled,
   setWebglGesture,
-  setWebglZoom,
   WEBGL_ACQUIRE_DEBOUNCE_MS,
   WEBGL_DRAIN_MS,
-  WEBGL_RESUME_AT_ZOOM,
-  WEBGL_SUSPEND_BELOW_ZOOM,
   WEBGL_SWAPS_PER_DRAIN,
   WEBGL_BUDGET,
   WEBGL_LOSS_STREAK_MAX,
   WEBGL_REACQUIRE_AFTER_LOSS_MS,
-  WEBGL_RELEASE_DELAY_MS,
   type WebglClientHandle
 } from './webgl-budget'
 
@@ -149,26 +145,24 @@ describe('webgl-budget coordinator', () => {
     expect(a.rec.releases).toBe(1)
   })
 
-  it('releases a hidden holder after the release delay', () => {
+  it('a hidden holder keeps its context indefinitely (reclaim is on-demand, never timed)', () => {
     const a = fakeClient('a')
     grant(a)
     a.handle.setVisible(false)
-    vi.advanceTimersByTime(WEBGL_RELEASE_DELAY_MS - 1)
+    vi.advanceTimersByTime(60 * 60 * 1000) // an hour off-screen
     expect(a.rec.releases).toBe(0)
-    vi.advanceTimersByTime(1)
-    expect(a.rec.releases).toBe(1)
-    expect(a.rec.held).toBe(false)
+    expect(a.rec.held).toBe(true)
   })
 
-  it('cancels the pending release when a hidden holder becomes visible again', () => {
+  it('a pan-back of any length costs no renderer swap (no release, no re-acquire)', () => {
     const a = fakeClient('a')
     grant(a)
     a.handle.setVisible(false)
-    vi.advanceTimersByTime(WEBGL_RELEASE_DELAY_MS - 100)
-    a.handle.setVisible(true) // pan-back before the release fired
-    vi.advanceTimersByTime(WEBGL_RELEASE_DELAY_MS * 2)
+    vi.advanceTimersByTime(10 * 60 * 1000)
+    a.handle.setVisible(true)
+    vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS * 2)
     expect(a.rec.releases).toBe(0)
-    expect(a.rec.acquires).toBe(1) // still held, not re-acquired
+    expect(a.rec.acquires).toBe(1) // the original grant, still live
     expect(a.rec.held).toBe(true)
   })
 
@@ -318,72 +312,6 @@ describe('webgl-budget coordinator', () => {
     expect(getWebglBudget()).toBe(WEBGL_BUDGET)
   })
 
-  describe('zoom gate', () => {
-    it('crossing below the suspend threshold reclaims every held context immediately', () => {
-      const a = fakeClient('a')
-      const b = fakeClient('b')
-      grant(a)
-      grant(b)
-      expect(a.rec.held).toBe(true)
-      expect(b.rec.held).toBe(true)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
-      expect(a.rec.held).toBe(false)
-      expect(b.rec.held).toBe(false)
-    })
-
-    it('blocks grants while suspended, re-grants visible clients on resume', () => {
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
-      const a = fakeClient('a')
-      grant(a)
-      expect(a.rec.held).toBe(false)
-      // Below the resume threshold nothing changes (hysteresis).
-      setWebglZoom(WEBGL_RESUME_AT_ZOOM - 0.01)
-      vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS * 2)
-      expect(a.rec.held).toBe(false)
-      setWebglZoom(WEBGL_RESUME_AT_ZOOM)
-      expect(a.rec.held).toBe(true)
-    })
-
-    it('hysteresis: hovering between the two thresholds never churns contexts', () => {
-      const a = fakeClient('a')
-      grant(a)
-      const before = a.rec.releases
-      // Not suspended: dipping to just above the SUSPEND threshold does nothing…
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM + 0.01)
-      setWebglZoom(WEBGL_RESUME_AT_ZOOM - 0.01)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM + 0.01)
-      expect(a.rec.releases).toBe(before)
-      expect(a.rec.held).toBe(true)
-      // …and once suspended, wobbling below the RESUME threshold does not re-grant.
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
-      expect(a.rec.held).toBe(false)
-      const acquires = a.rec.acquires
-      setWebglZoom(WEBGL_RESUME_AT_ZOOM - 0.01)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
-      vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS * 2)
-      expect(a.rec.acquires).toBe(acquires)
-    })
-
-    it('resume respects the master switch: disabled stays DOM-only', () => {
-      const a = fakeClient('a')
-      grant(a)
-      setWebglEnabled(false)
-      expect(a.rec.held).toBe(false)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
-      setWebglZoom(WEBGL_RESUME_AT_ZOOM)
-      vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS * 2)
-      expect(a.rec.held).toBe(false)
-    })
-
-    it('ignores non-finite zoom values', () => {
-      const a = fakeClient('a')
-      grant(a)
-      setWebglZoom(NaN)
-      setWebglZoom(Infinity)
-      expect(a.rec.held).toBe(true)
-    })
-  })
-
   describe('gesture latch (no swaps mid-gesture, staggered drain at rest)', () => {
     it('defers grants while a gesture runs and executes them at rest', () => {
       setWebglGesture(true)
@@ -395,12 +323,12 @@ describe('webgl-budget coordinator', () => {
       expect(a.rec.held).toBe(true) // drained at rest
     })
 
-    it('defers the hidden-release while a gesture runs; a re-visible client keeps its context', () => {
+    it('defers a pressure-queued release while a gesture runs; a re-visible client keeps it', () => {
       const a = fakeClient('a')
       grant(a)
       a.handle.setVisible(false)
       setWebglGesture(true)
-      vi.advanceTimersByTime(WEBGL_RELEASE_DELAY_MS + 1)
+      releaseAllHiddenGrants()
       expect(a.rec.held).toBe(true) // release parked, not executed mid-gesture
       // Pans back before the gesture ends: the owed release is forgiven, context stays warm.
       a.handle.setVisible(true)
@@ -410,12 +338,12 @@ describe('webgl-budget coordinator', () => {
       expect(a.rec.releases).toBe(0)
     })
 
-    it('executes a deferred release at rest when the client stayed hidden', () => {
+    it('executes a deferred pressure release at rest when the client stayed hidden', () => {
       const a = fakeClient('a')
       grant(a)
       a.handle.setVisible(false)
       setWebglGesture(true)
-      vi.advanceTimersByTime(WEBGL_RELEASE_DELAY_MS + 1)
+      releaseAllHiddenGrants()
       expect(a.rec.held).toBe(true)
       setWebglGesture(false)
       expect(a.rec.held).toBe(false)
@@ -424,10 +352,11 @@ describe('webgl-budget coordinator', () => {
     it('drains a mass release as a trickle, WEBGL_SWAPS_PER_DRAIN per tick', () => {
       const clients = ['a', 'b', 'c', 'd', 'e'].map((id) => fakeClient(id))
       clients.forEach(grant)
+      clients.forEach((c) => c.handle.setVisible(false))
       expect(clients.every((c) => c.rec.held)).toBe(true)
-      // Zoom-out below the threshold mid-gesture: nothing releases until rest…
+      // Pressure sweep mid-gesture: nothing releases until rest…
       setWebglGesture(true)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
+      releaseAllHiddenGrants()
       expect(clients.every((c) => c.rec.held)).toBe(true)
       // …then the drain releases them a batch per tick, never all in one frame.
       setWebglGesture(false)
@@ -444,8 +373,9 @@ describe('webgl-budget coordinator', () => {
     it('a gesture starting mid-drain pauses the trickle until the next rest', () => {
       const clients = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => fakeClient(id))
       clients.forEach(grant)
+      clients.forEach((c) => c.handle.setVisible(false))
       setWebglGesture(true)
-      setWebglZoom(WEBGL_SUSPEND_BELOW_ZOOM - 0.01)
+      releaseAllHiddenGrants()
       setWebglGesture(false) // first batch drains
       const afterFirst = clients.filter((c) => c.rec.held).length
       setWebglGesture(true) // user grabs the canvas again
@@ -458,7 +388,7 @@ describe('webgl-budget coordinator', () => {
   })
 
   describe('releaseAllHiddenGrants (memory-pressure lever)', () => {
-    it('gives back a hidden holder without waiting out the release delay', () => {
+    it('gives back a hidden holder immediately at rest (the one proactive release)', () => {
       const a = fakeClient('a')
       grant(a)
       a.handle.setVisible(false)

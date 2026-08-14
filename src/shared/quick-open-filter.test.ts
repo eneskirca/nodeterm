@@ -4,7 +4,8 @@ import {
   buildHiddenDirExcludeGlobs,
   buildRgArgsForQuickOpen,
   buildGitLsFilesArgs,
-  normalizeQuickOpenRgLine
+  normalizeQuickOpenRgLine,
+  isSafeQuickOpenRelPath
 } from './quick-open-filter'
 
 describe('shouldIncludeQuickOpenPath', () => {
@@ -32,6 +33,25 @@ describe('normalizeQuickOpenRgLine', () => {
   })
   it('forces forward slashes', () => {
     expect(normalizeQuickOpenRgLine('src\\main\\a.ts')).toBe('src/main/a.ts')
+  })
+})
+
+// The quick-open index used to be a trusted LOCAL listing; with SSH projects it is
+// remote-supplied, so the `cwd + relPath` join in the renderer needs a traversal guard.
+describe('isSafeQuickOpenRelPath', () => {
+  it('accepts normal root-relative paths', () => {
+    expect(isSafeQuickOpenRelPath('src/main/index.ts')).toBe(true)
+    expect(isSafeQuickOpenRelPath('docs/codex-shared-identity.md')).toBe(true)
+    expect(isSafeQuickOpenRelPath('a b/dotted..name.ts')).toBe(true)
+  })
+  it('rejects escapes: absolute, drive-letter, .. segments (either separator), empty', () => {
+    expect(isSafeQuickOpenRelPath('')).toBe(false)
+    expect(isSafeQuickOpenRelPath('/etc/passwd')).toBe(false)
+    expect(isSafeQuickOpenRelPath('C:/Windows/system32')).toBe(false)
+    expect(isSafeQuickOpenRelPath('..')).toBe(false)
+    expect(isSafeQuickOpenRelPath('../escape')).toBe(false)
+    expect(isSafeQuickOpenRelPath('a/../../etc/passwd')).toBe(false)
+    expect(isSafeQuickOpenRelPath('a\\..\\b')).toBe(false)
   })
 })
 

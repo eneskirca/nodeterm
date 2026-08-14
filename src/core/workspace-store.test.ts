@@ -56,7 +56,8 @@ describe('save → load round trip (v3)', () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot }), project({ id: 'p2', name: 'inline' })]))
     const file = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
-    expect(file).toMatchObject({ version: 1, id: 'p1', rev: 1 })
+    expect(file).toMatchObject({ version: 1, rev: 1, name: 'foo' })
+    expect(file.id).not.toBe('p1') // the file names no project — the index does
     const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
     expect(index.version).toBe(3)
     expect(index.entries[0].cwd).toBe(projRoot)
@@ -91,7 +92,7 @@ describe('v2 → v3 migration', () => {
     await store.save(loaded)
     expect(JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).version).toBe(3)
     expect(JSON.parse(await fs.readFile(path.join(userData, 'workspace.v2.bak'), 'utf-8')).version).toBe(2)
-    expect((await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))).toContain('"id": "p1"')
+    expect((await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))).toContain('"term-1"')
     expect(fake.sent.some((s) => s.channel === 'workspace:migrated')).toBe(true)
   })
 
@@ -359,6 +360,46 @@ describe('unavailable projects never overwrite real data on save', () => {
     const after = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
     expect(after.entries[0].cache).toEqual(cache) // good offline cache survived verbatim
   })
+
+  // The rest of the entry's MACHINE-LOCAL half has the same problem as the cache: a placeholder
+  // carries none of it (its viewport is the {0,0,1} of an empty stand-in canvas, its nodes are
+  // gone), so an index rewrite while a folder is briefly unmounted would forget where the user was
+  // looking, which account this project runs on, and their own custom shell — none of which is
+  // recoverable from the project file, because none of it is IN the project file any more.
+  it('save() of an unavailable ref keeps the entry\'s camera, account and exec values', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({
+      cwd: projRoot,
+      viewport: { x: -640, y: 55, zoom: 1.75 },
+      defaultAccountId: 'acct-7',
+      nodes: [{
+        id: 'term-1', kind: 'terminal', position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+        title: 't', color: '#fff', group: null, shell: '/bin/zsh'
+      }]
+    })]))
+    const readEntry = async () =>
+      JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).entries[0]
+    expect(await readEntry()).toMatchObject({
+      viewport: { x: -640, y: 55, zoom: 1.75 },
+      defaultAccountId: 'acct-7',
+      localExec: { 'term-1': { shell: '/bin/zsh' } }
+    })
+
+    // The folder goes away: the next load hands the renderer a grey placeholder, and the renderer
+    // hands it straight back to save().
+    await fs.rm(projRoot, { recursive: true, force: true })
+    const store2 = new WorkspaceStore()
+    const loaded = await store2.load()
+    expect(loaded.projects[0].unavailable).toBe(true)
+    expect(loaded.projects[0].viewport).toEqual({ x: 0, y: 0, zoom: 1 }) // the placeholder's
+    await store2.save(loaded)
+
+    expect(await readEntry()).toMatchObject({
+      viewport: { x: -640, y: 55, zoom: 1.75 },
+      defaultAccountId: 'acct-7',
+      localExec: { 'term-1': { shell: '/bin/zsh' } }
+    })
+  })
 })
 
 describe('probeFolder', () => {
@@ -366,7 +407,10 @@ describe('probeFolder', () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot })]))
     const probed = await store.probeFolder(projRoot)
-    expect(probed).toMatchObject({ id: 'p1', cwd: projRoot })
+    // A probe ADOPTS a folder, so it mints an id — the file has none to hand out.
+    expect(probed).toMatchObject({ name: 'foo', cwd: projRoot })
+    expect(probed!.id).not.toBe('p1')
+    expect(probed!.nodes.map((n) => n.id)).toEqual(['term-1'])
     expect(await store.probeFolder(path.join(projRoot, 'nope'))).toBeNull()
   })
 
@@ -1054,5 +1098,574 @@ describe('save corruption hardening', () => {
     await store.save(ws([])) // the user really closed/deleted the last project
     const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
     expect(index.entries).toEqual([])
+  })
+})
+
+// THE duplicate-id bug (field report: ~1500 React "two children with the same key,
+// 'project-ms4zdpc0-1'" warnings from TabBar). `.nodeterm/project.json` is a GIT-SHARED file — the
+// migration banner asks users to commit it — so `git worktree add`, a branch checkout, `reset
+// --hard` or a `stash pop` re-materialises one committed project id into a SECOND folder. Two tabs
+// then answer to one id, and `commitCanvas` (which maps by id) writes the ACTIVE canvas into BOTH
+// projects, so the next save flushes it into the other folder's project.json. Silent cross-folder
+// data loss on every autosave, plus co-attached tmux sessions and a delete that kills both.
+//
+// The ssh branch has defended against exactly this since the "reset bug" fix (see 'ssh lineage
+// safety' above): a DIFFERENT lineage is adopted RE-KEYED to our entry id. These tests pin the
+// same rule for local folder refs, plus the repair for a store that is already corrupt.
+describe('a git-shared project.json must not give two folders one project id', () => {
+  let otherRoot: string
+  beforeEach(async () => {
+    otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-proj2-'))
+  })
+  afterEach(async () => {
+    await fs.rm(otherRoot, { recursive: true, force: true })
+  })
+
+  const projectFile = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      version: 1, rev: 3, savedAt: 'then', id: 'project-ms4zdpc0-1', name: 'one', color: '#7aa2f7',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: [{
+        id: 'term-a', kind: 'terminal', position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+        title: 'a', color: '#fff', group: null
+      }],
+      ...over
+    }, null, 2)
+
+  /** Both folders carry the SAME committed id — a worktree/checkout of a repo that ships its
+   *  canvas — and the index (written by an earlier save) records that one id twice. */
+  const seedCollision = async (over: Record<string, unknown> = {}): Promise<void> => {
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.mkdir(path.join(otherRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), projectFile())
+    await fs.writeFile(
+      path.join(otherRoot, '.nodeterm/project.json'),
+      projectFile({ name: 'two', nodes: [{
+        id: 'term-b', kind: 'terminal', position: { x: 9, y: 9 }, size: { width: 1, height: 1 },
+        title: 'b', color: '#fff', group: null
+      }], ...over })
+    )
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({
+      version: 3,
+      activeProjectId: 'project-ms4zdpc0-1',
+      entries: [
+        { id: 'project-ms4zdpc0-1', name: 'one', color: '#7aa2f7', cwd: projRoot },
+        { id: 'project-ms4zdpc0-1', name: 'two', color: '#7aa2f7', cwd: otherRoot }
+      ]
+    }))
+  }
+
+  const readIndex = async () =>
+    JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+
+  it('loads two colliding folders as two projects with DIFFERENT ids, each keeping its own cwd and canvas', async () => {
+    await seedCollision()
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects).toHaveLength(2)
+    const [a, b] = loaded.projects
+    expect(a.id).not.toBe(b.id)
+    expect(new Set(loaded.projects.map((p) => p.id)).size).toBe(2)
+    // First holder keeps the id; the loser is re-keyed. Neither canvas moved folders.
+    expect(a).toMatchObject({ id: 'project-ms4zdpc0-1', cwd: projRoot, name: 'one' })
+    expect(a.nodes.map((n) => n.id)).toEqual(['term-a'])
+    expect(b).toMatchObject({ cwd: otherRoot, name: 'two' })
+    expect(b.nodes.map((n) => n.id)).toEqual(['term-b'])
+    // The active project still resolves (the surviving holder of the active id).
+    expect(loaded.activeProjectId).toBe('project-ms4zdpc0-1')
+  })
+
+  it('REPAIRS the corrupt store in the INDEX, and touches neither folder\'s file', async () => {
+    await seedCollision()
+    const before = await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')
+    const loaded = await new WorkspaceStore().load()
+    const newId = loaded.projects[1].id
+
+    // The id is a machine-local mistake; the files hold content, and content did not change.
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')).toBe(before)
+    expect(loaded.projects[1].nodes.map((n) => n.id)).toEqual(['term-b'])
+
+    const index = await readIndex()
+    expect(index.entries.map((e: { id: string }) => e.id)).toEqual(['project-ms4zdpc0-1', newId])
+  })
+
+  it('the repair is IDEMPOTENT: a second (and third) load returns the same ids and rewrites nothing', async () => {
+    await seedCollision()
+    const first = (await new WorkspaceStore().load()).projects.map((p) => p.id)
+    expect(new Set(first).size).toBe(2)
+    const fileAfterRepair = await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')
+    const indexAfterRepair = await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')
+
+    const second = (await new WorkspaceStore().load()).projects.map((p) => p.id)
+    const third = (await new WorkspaceStore().load()).projects.map((p) => p.id)
+    expect(new Set(second).size).toBe(2)
+    expect(second).toEqual(first)
+    expect(third).toEqual(first)
+    // Converges: no churn in the user's repo (and no git diff) on every boot.
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')).toBe(fileAfterRepair)
+    expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(indexAfterRepair)
+  })
+
+  it('a save after the repair keeps both canvases in their own folders (no cross-folder overwrite)', async () => {
+    await seedCollision()
+    const store = new WorkspaceStore()
+    const loaded = await store.load()
+    await store.save(loaded)
+    const a = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    const b = JSON.parse(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(a.nodes.map((n: { id: string }) => n.id)).toEqual(['term-a'])
+    expect(b.nodes.map((n: { id: string }) => n.id)).toEqual(['term-b'])
+    expect(a.id).not.toBe(b.id)
+  })
+
+  it('announces the repair once per project, naming the folder (a silent edit of the user\'s data is worse)', async () => {
+    await seedCollision()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await new WorkspaceStore().load()
+    const lines = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('project id'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain(otherRoot)
+    expect(lines[0]).toContain('project-ms4zdpc0-1')
+    warn.mockRestore()
+  })
+
+  it('a read-only load (sideline: false — the relay blob) repairs in memory but never touches the disk', async () => {
+    await seedCollision()
+    const before = await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')
+    const indexBefore = await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')
+    const loaded = await new WorkspaceStore().load({ sideline: false })
+    expect(new Set(loaded.projects.map((p) => p.id)).size).toBe(2) // the phone never sees a dup
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')).toBe(before)
+    expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(indexBefore)
+  })
+
+  it('THE PREVENTION: the index entry — not the git-shared file — owns the project id', async () => {
+    // One project, saved normally. Then a branch checkout drops a DIFFERENT committed id into its
+    // project.json (this is how the second folder gets the first folder's id in the first place).
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'mine', cwd: projRoot })]))
+    const file = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    await fs.writeFile(
+      path.join(projRoot, '.nodeterm/project.json'),
+      JSON.stringify({ ...file, id: 'theirs', name: 'renamed-upstream' }, null, 2)
+    )
+
+    const next = new WorkspaceStore()
+    const loaded = await next.load()
+    // Our tab keeps ITS identity (node ids — tmux session names — and every id-keyed lookup that
+    // hangs off it), while the file's CONTENT is adopted. Exactly the ssh branch's rule.
+    expect(loaded.projects[0]).toMatchObject({ id: 'mine', name: 'renamed-upstream', cwd: projRoot })
+    // …and the next save scrubs the foreign id instead of replacing it with OURS: what lands is
+    // the machine-independent legacy field, so the committed file stops naming anybody's project.
+    await next.save(loaded)
+    const written = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(written.name).toBe('renamed-upstream')
+    expect(written.id).not.toBe('theirs')
+    expect(written.id).not.toBe('mine')
+  })
+
+  it('readLocalRef (the watcher\'s re-read after a checkout) comes back under the ENTRY id too', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'mine', cwd: projRoot })]))
+    await store.load()
+    const file = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    await fs.writeFile(
+      path.join(projRoot, '.nodeterm/project.json'),
+      JSON.stringify({ ...file, id: 'theirs', rev: 99 }, null, 2)
+    )
+    // A project handed to replaceProject() under a foreign id would silently match nothing.
+    await expect(store.readLocalRef('mine')).resolves.toMatchObject({ id: 'mine', cwd: projRoot })
+  })
+
+  it('leaves a healthy store completely alone (no re-key, no rewrite, no warning)', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'a', cwd: projRoot }), project({ id: 'b', cwd: otherRoot })]))
+    const before = await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects.map((p) => p.id)).toEqual(['a', 'b'])
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')).toBe(before)
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  // THE REAL SHAPE. The fixtures above give the two folders different canvases, which makes the
+  // assertions readable — but a `git worktree add` / branch checkout produces two project.json
+  // files that are the SAME BYTES: same project id, same node ids, same rev. Nothing distinguishes
+  // them except which folder they sit in, so the folder is the only thing the repair can key on.
+  it('two BYTE-IDENTICAL project.json files (what a worktree actually produces) still split cleanly', async () => {
+    const bytes = projectFile()
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.mkdir(path.join(otherRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), bytes)
+    await fs.writeFile(path.join(otherRoot, '.nodeterm/project.json'), bytes)
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({
+      version: 3,
+      activeProjectId: 'project-ms4zdpc0-1',
+      entries: [
+        { id: 'project-ms4zdpc0-1', name: 'one', color: '#7aa2f7', cwd: projRoot },
+        { id: 'project-ms4zdpc0-1', name: 'one', color: '#7aa2f7', cwd: otherRoot }
+      ]
+    }))
+
+    const store = new WorkspaceStore()
+    const loaded = await store.load()
+    const [a, b] = loaded.projects
+    expect(a.id).toBe('project-ms4zdpc0-1')
+    expect(b.id).not.toBe(a.id)
+    expect(a.cwd).toBe(projRoot)
+    expect(b.cwd).toBe(otherRoot)
+    // KNOWN RESIDUAL, asserted so it is a decision and not a surprise: the NODE ids are still
+    // shared, so both tabs still attach the same tmux sessions and first-match-wins lookups
+    // (getNodeTitle, context-link) still resolve to one of them. That was true before this fix
+    // too; only the cross-folder canvas corruption is repaired here.
+    expect(a.nodes.map((n) => n.id)).toEqual(b.nodes.map((n) => n.id))
+
+    // The corruption itself IS gone: editing one canvas leaves the other folder's file alone.
+    await store.save({
+      ...loaded,
+      projects: [
+        { ...a, nodes: [...a.nodes, {
+          id: 'term-new', kind: 'terminal' as const, position: { x: 5, y: 5 },
+          size: { width: 1, height: 1 }, title: 'new', color: '#fff', group: null
+        }] },
+        b
+      ]
+    })
+    const fileA = JSON.parse(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    const fileB = JSON.parse(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(fileA.nodes.map((n: { id: string }) => n.id)).toEqual(['term-a', 'term-new'])
+    expect(fileB.nodes.map((n: { id: string }) => n.id)).toEqual(['term-a'])
+    // The two files are told apart by their CONTENT and their folder — never by an id.
+    expect(fileA.id).toBe(fileB.id)
+  })
+
+  // The repair is one index write now, so there is no half-applied state to crash into — but the
+  // property that made the old two-write repair survivable still has to hold, because a lost index
+  // write leaves the SAME collision on disk: the derivation is deterministic, so the next load
+  // derives the same ids again rather than inventing new ones.
+  it('survives a crash mid-repair (file re-keyed, index write lost) and converges on the same ids', async () => {
+    await seedCollision()
+    const indexBefore = await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')
+    const repaired = (await new WorkspaceStore().load()).projects.map((p) => p.id)
+    expect(new Set(repaired).size).toBe(2)
+
+    // The crash: the index write never landed, so the old (still colliding) index is what boots.
+    await fs.writeFile(path.join(userData, 'workspace.json'), indexBefore)
+
+    const after = await new WorkspaceStore().load()
+    expect(after.projects.map((p) => p.id)).toEqual(repaired)
+    expect(after.projects[0].nodes.map((n) => n.id)).toEqual(['term-a'])
+    expect(after.projects[1].nodes.map((n) => n.id)).toEqual(['term-b'])
+    expect((await readIndex()).entries.map((e: { id: string }) => e.id)).toEqual(repaired)
+  })
+
+  // Two windows / a second app instance booting at once. Both stores see the same collision; the
+  // derivation is deterministic, so they agree instead of racing to two different repairs.
+  it('two concurrent loads repair to the SAME ids (no split-brain)', async () => {
+    await seedCollision()
+    const [first, second] = await Promise.all([
+      new WorkspaceStore().load(),
+      new WorkspaceStore().load()
+    ])
+    expect(first.projects.map((p) => p.id)).toEqual(second.projects.map((p) => p.id))
+    expect(new Set(first.projects.map((p) => p.id)).size).toBe(2)
+    // Whichever write landed last, the file is intact JSON keyed to the entry that owns it.
+    const index = await readIndex()
+    const file = JSON.parse(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8'))
+    expect(file.nodes.map((n: { id: string }) => n.id)).toEqual(['term-b'])
+  })
+
+  // A read-only folder (EROFS, a mounted share, a permissions mistake) must not fail the load or
+  // lose the repair — the in-memory ids are still unique and the ENTRY re-key still persists, so
+  // the file is simply re-keyed by a later save instead.
+  it('a READ-ONLY repo still repairs — the fix lives entirely in userData', async () => {
+    // The repair used to need a write inside the user's repo, so a read-only checkout (or a
+    // permissions problem) left it half-done. It is now an index edit and nothing else.
+    await seedCollision()
+    const loserFile = path.join(otherRoot, '.nodeterm/project.json')
+    const before = await fs.readFile(loserFile, 'utf-8')
+    const rename = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).startsWith(otherRoot)) {
+        throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' })
+      }
+      await fs.copyFile(String(from), String(to))
+      await fs.rm(String(from), { force: true })
+    })
+    const loaded = await new WorkspaceStore().load()
+    const ids = loaded.projects.map((p) => p.id)
+    expect(new Set(ids).size).toBe(2)
+    expect(loaded.projects[1].nodes.map((n) => n.id)).toEqual(['term-b'])
+    rename.mockRestore()
+
+    expect((await readIndex()).entries.map((e: { id: string }) => e.id)).toEqual(ids)
+    expect(await fs.readFile(loserFile, 'utf-8')).toBe(before)
+    const next = new WorkspaceStore()
+    const again = await next.load()
+    expect(again.projects.map((p) => p.id)).toEqual(ids) // no second repair, no churn
+  })
+
+  it('a THREE-way collision splits into three ids, each keyed to its own folder', async () => {
+    const thirdRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-proj3-'))
+    try {
+      await seedCollision()
+      await fs.mkdir(path.join(thirdRoot, '.nodeterm'), { recursive: true })
+      await fs.writeFile(path.join(thirdRoot, '.nodeterm/project.json'), projectFile({
+        name: 'three',
+        nodes: [{
+          id: 'term-c', kind: 'terminal', position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+          title: 'c', color: '#fff', group: null
+        }]
+      }))
+      const index = await readIndex()
+      index.entries.push({ id: 'project-ms4zdpc0-1', name: 'three', color: '#7aa2f7', cwd: thirdRoot })
+      await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify(index))
+
+      const loaded = await new WorkspaceStore().load()
+      const ids = loaded.projects.map((p) => p.id)
+      expect(new Set(ids).size).toBe(3)
+      expect(ids[0]).toBe('project-ms4zdpc0-1')
+      expect(loaded.projects.map((p) => p.cwd)).toEqual([projRoot, otherRoot, thirdRoot])
+      expect(loaded.projects.map((p) => p.nodes.map((n) => n.id)))
+        .toEqual([['term-a'], ['term-b'], ['term-c']])
+      // Each folder keeps its own canvas, and the repair rewrote none of them (it is an index
+      // edit now — the pre-change `id` these fixtures still carry is inert).
+      for (const [i, root] of [projRoot, otherRoot, thirdRoot].entries()) {
+        const file = JSON.parse(await fs.readFile(path.join(root, '.nodeterm/project.json'), 'utf-8'))
+        expect(file.id).toBe('project-ms4zdpc0-1')
+        expect(file.nodes.map((n: { id: string }) => n.id))
+          .toEqual(loaded.projects[i].nodes.map((n) => n.id))
+      }
+      // Idempotent at three, too.
+      expect((await new WorkspaceStore().load()).projects.map((p) => p.id)).toEqual(ids)
+    } finally {
+      await fs.rm(thirdRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('two same-CWD tabs (the inline escape hatch) still round-trip — that dedupe is by cwd, not id', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([
+      project({ id: 'a', name: 'first', cwd: projRoot }),
+      project({ id: 'b', name: 'second', cwd: projRoot })
+    ]))
+    const loaded = await new WorkspaceStore().load()
+    expect(loaded.projects.map((p) => p.id).sort()).toEqual(['a', 'b'])
+  })
+})
+
+// The completion of the fix above: #192 made a shared id SURVIVABLE (the index entry became the
+// authority, and a collision was repaired). This is the cause itself — a git-shared document may
+// not carry machine identity at all, so `git worktree add` / a checkout has nothing to copy.
+describe('the shared project file carries content, not machine identity', () => {
+  let otherRoot: string
+  beforeEach(async () => {
+    otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-proj2-'))
+  })
+  afterEach(async () => {
+    await fs.rm(otherRoot, { recursive: true, force: true })
+  })
+
+  const readFile = async (root: string) =>
+    JSON.parse(await fs.readFile(path.join(root, '.nodeterm/project.json'), 'utf-8'))
+
+  it('a saved project.json carries none of it: not the project id, not the camera, not the account', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({
+      id: 'project-ms4zdpc0-1',
+      cwd: projRoot,
+      viewport: { x: -1200, y: 340, zoom: 0.75 },
+      defaultAccountId: 'acct-9f3c'
+    })]))
+    const raw = await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')
+    expect(raw).not.toContain('project-ms4zdpc0-1') // this machine's project id
+    expect(raw).not.toContain('acct-9f3c') // a config dir under THIS userData
+    // The `viewport` that survives is derived from the canvas, not from where THIS user looked:
+    // it frames the nodes, identically on every machine (a pre-change build requires the field).
+    expect(JSON.parse(raw).viewport).toEqual({ x: 80, y: 80, zoom: 1 })
+    // …and the machine-local half is remembered in the machine-local index.
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries[0]).toMatchObject({
+      id: 'project-ms4zdpc0-1',
+      cwd: projRoot,
+      viewport: { x: -1200, y: 340, zoom: 0.75 },
+      defaultAccountId: 'acct-9f3c'
+    })
+    // The canvas itself is still there — this is a file worth committing.
+    expect(JSON.parse(raw).nodes.map((n: { id: string }) => n.id)).toEqual(['term-1'])
+  })
+
+  it('two machines writing the SAME canvas produce byte-identical files (nothing to churn in git)', async () => {
+    // Only Date is faked (the store stamps `savedAt` with it); the fs promises below still resolve.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-14T00:00:00.000Z'))
+    const mine = new WorkspaceStore()
+    await mine.save(ws([project({
+      id: 'project-mine-1', cwd: projRoot,
+      viewport: { x: 10, y: 20, zoom: 2 }, defaultAccountId: 'acct-mine'
+    })]))
+    const theirs = new WorkspaceStore()
+    await theirs.save(ws([project({
+      id: 'project-theirs-7', cwd: otherRoot,
+      viewport: { x: -900, y: 5, zoom: 0.5 }, defaultAccountId: 'acct-theirs'
+    })]))
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8'))
+      .toBe(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8'))
+    vi.useRealTimers()
+  })
+
+  it('load → save → load leaves the committed file byte-identical (no churn per boot)', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'p1', cwd: projRoot })]))
+    const written = await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')
+    const next = new WorkspaceStore()
+    const loaded = await next.load()
+    await next.save(loaded)
+    expect(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')).toBe(written)
+    const third = new WorkspaceStore()
+    await third.save(await third.load())
+    expect(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')).toBe(written)
+  })
+
+  it('THE WORKTREE CASE: two byte-identical files open as two projects, each keeping its own canvas', async () => {
+    // What `git worktree add` actually produces: the same committed bytes in two folders. With no
+    // id in them, nothing even suggests they are one project — only the index says who is who.
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'a', name: 'repo', cwd: projRoot })]))
+    const bytes = await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')
+    await fs.mkdir(path.join(otherRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(otherRoot, '.nodeterm/project.json'), bytes)
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({
+      version: 3,
+      activeProjectId: 'a',
+      entries: [
+        { id: 'a', name: 'repo', color: '#7aa2f7', cwd: projRoot },
+        { id: 'b', name: 'repo (worktree)', color: '#7aa2f7', cwd: otherRoot }
+      ]
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const next = new WorkspaceStore()
+    const loaded = await next.load()
+    expect(loaded.projects.map((p) => p.id)).toEqual(['a', 'b']) // no collision, no repair
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+    // Each canvas stays in its own folder across a save.
+    await next.save(ws([
+      { ...loaded.projects[0], nodes: [] },
+      loaded.projects[1]
+    ], 'a'))
+    expect((await readFile(projRoot)).nodes).toEqual([])
+    expect((await readFile(otherRoot)).nodes.map((n: { id: string }) => n.id)).toEqual(['term-1'])
+  })
+
+  it('a file written by an OLD build is read fine — its id is IGNORED, never adopted', async () => {
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), JSON.stringify({
+      version: 1, rev: 4, savedAt: 'then', id: 'project-someone-else-3', name: 'shared',
+      color: '#7aa2f7', viewport: { x: 7, y: 8, zoom: 3 },
+      nodes: [{ id: 'term-a', kind: 'terminal', position: { x: 0, y: 0 },
+        size: { width: 1, height: 1 }, title: 'a', color: '#fff', group: null }]
+    }, null, 2))
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({
+      version: 3, activeProjectId: 'mine',
+      entries: [{ id: 'mine', name: 'shared', color: '#7aa2f7', cwd: projRoot }]
+    }))
+    const store = new WorkspaceStore()
+    const loaded = await store.load()
+    expect(loaded.projects[0]).toMatchObject({ id: 'mine', name: 'shared', cwd: projRoot })
+    expect(loaded.projects[0].nodes.map((n) => n.id)).toEqual(['term-a'])
+    // The old file's camera is the only thing we DO take from it: as this machine's starting
+    // viewport, once, on the way into the index.
+    expect(loaded.projects[0].viewport).toEqual({ x: 7, y: 8, zoom: 3 })
+    await store.save(loaded)
+    expect((await readFile(projRoot)).id).not.toBe('project-someone-else-3')
+    expect((await readFile(projRoot)).id).not.toBe('mine')
+    expect((await readFile(projRoot)).viewport).toEqual({ x: 80, y: 80, zoom: 1 }) // not {7,8,3}
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries[0].viewport).toEqual({ x: 7, y: 8, zoom: 3 })
+  })
+
+  it('still carries an `id` an OLD build can read — machine-independent, so it never churns', async () => {
+    // Compatibility, one release: a build that predates this change REFUSES a project.json with no
+    // `id` and sidelines it to `.corrupt-<ts>` — inside the user's repo. So the field stays, derived
+    // from the canvas's own name, identical on every machine, and ignored by this build.
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'project-mine-1', name: 'shared', cwd: projRoot })]))
+    const file = await readFile(projRoot)
+    expect(file.version).toBe(1)
+    expect(typeof file.id).toBe('string')
+    expect(file.id).not.toBe('project-mine-1')
+    // …and the other field that build dereferences unguarded.
+    expect(file.viewport).toMatchObject({ zoom: 1 })
+  })
+
+  it('adoption (a folder with no index entry) mints a fresh id — the file no longer names one', async () => {
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), JSON.stringify({
+      version: 1, rev: 2, savedAt: 'then', id: 'project-theirs-9', name: 'cloned',
+      color: '#7aa2f7',
+      nodes: [{ id: 'term-a', kind: 'terminal', position: { x: 400, y: 300 },
+        size: { width: 1, height: 1 }, title: 'a', color: '#fff', group: null }]
+    }, null, 2))
+    const store = new WorkspaceStore()
+    const probed = await store.probeFolder(projRoot)
+    expect(probed).toBeTruthy()
+    expect(probed!.id).not.toBe('project-theirs-9')
+    expect(probed!.id).toMatch(/^project-[a-z0-9-]+$/)
+    expect(probed!.cwd).toBe(projRoot)
+    expect(probed!.nodes.map((n) => n.id)).toEqual(['term-a'])
+    // A second probe of the same folder is a different candidate id — which is exactly why the
+    // caller must key by cwd (it does; see projects.openFolderProject) and never probe twice.
+    const again = await store.probeFolder(projRoot)
+    expect(again!.id).not.toBe(probed!.id)
+    // The minted id is what the index remembers, and a reload comes back under it.
+    await store.save(ws([{ ...probed!, closed: false }]))
+    const index = JSON.parse(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8'))
+    expect(index.entries.map((e: { id: string }) => e.id)).toEqual([probed!.id])
+    const reloaded = await new WorkspaceStore().load()
+    expect(reloaded.projects.map((p) => p.id)).toEqual([probed!.id])
+    expect(reloaded.projects[0].nodes.map((n) => n.id)).toEqual(['term-a'])
+  })
+
+  it('an adopted canvas with no camera is framed onto its nodes, not left staring at the origin', async () => {
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), JSON.stringify({
+      version: 1, rev: 2, savedAt: 'then', name: 'cloned', color: '#7aa2f7',
+      nodes: [{ id: 'term-a', kind: 'terminal', position: { x: 4000, y: 2000 },
+        size: { width: 1, height: 1 }, title: 'a', color: '#fff', group: null }]
+    }, null, 2))
+    const probed = await new WorkspaceStore().probeFolder(projRoot)
+    expect(probed!.viewport.zoom).toBe(1)
+    // The node lands on screen instead of 4000px off it.
+    expect(probed!.viewport.x + 4000).toBeGreaterThan(0)
+    expect(probed!.viewport.x + 4000).toBeLessThan(400)
+    expect(probed!.viewport.y + 2000).toBeGreaterThan(0)
+    expect(probed!.viewport.y + 2000).toBeLessThan(400)
+  })
+
+  it('a duplicate-id repair no longer writes to the user\'s repo at all (the index owns the id)', async () => {
+    // A store corrupted BEFORE this fix: both entries under one id. The repair still runs — but it
+    // has nothing to fix in the files, because they no longer claim an identity.
+    await fs.mkdir(path.join(projRoot, '.nodeterm'), { recursive: true })
+    await fs.mkdir(path.join(otherRoot, '.nodeterm'), { recursive: true })
+    const bytes = JSON.stringify({
+      version: 1, rev: 3, savedAt: 'then', id: 'project-legacy', name: 'one', color: '#7aa2f7',
+      nodes: [{ id: 'term-a', kind: 'terminal', position: { x: 0, y: 0 },
+        size: { width: 1, height: 1 }, title: 'a', color: '#fff', group: null }]
+    }, null, 2)
+    await fs.writeFile(path.join(projRoot, '.nodeterm/project.json'), bytes)
+    await fs.writeFile(path.join(otherRoot, '.nodeterm/project.json'), bytes)
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({
+      version: 3, activeProjectId: 'dup',
+      entries: [
+        { id: 'dup', name: 'one', color: '#7aa2f7', cwd: projRoot },
+        { id: 'dup', name: 'two', color: '#7aa2f7', cwd: otherRoot }
+      ]
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const loaded = await new WorkspaceStore().load()
+    expect(new Set(loaded.projects.map((p) => p.id)).size).toBe(2)
+    warn.mockRestore()
+    expect(await fs.readFile(path.join(projRoot, '.nodeterm/project.json'), 'utf-8')).toBe(bytes)
+    expect(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8')).toBe(bytes)
   })
 })

@@ -11,11 +11,15 @@
 //   grok   → `summary.json` in the session directory a hook told us about (core/grok-session.ts)
 //   gemini → its own transcript `.jsonl`, at the path the context tail already tracks, read for the
 //            `update_topic` tool call that carries the name (core/gemini-session.ts)
+//   codex  → `Thread.name`, read over the shared app-server's own socket (core/codex-session-name.ts).
+//            There is no file to read: with the shared server the name lives in the server, and the
+//            node's session id IS the thread id.
 // Anything else has no readable session name; the claude reader answers null for it, which is what
 // every pre-grok caller already got.
 import { readSessionName, readSmallTail, TITLE_TAIL_BYTES } from './transcript-reader'
 import { readGrokSessionName } from './grok-session'
 import { pickGeminiTitle } from './gemini-session'
+import { readCodexSessionName } from './codex-session-name'
 
 /**
  * Per-agent associations this router cannot own itself, injected by the shell.
@@ -69,5 +73,8 @@ export function readAgentSessionName(
   if (!sessionId) return Promise.resolve(null)
   if (agentId === 'grok') return readGrokSessionName(sessionId)
   if (agentId === 'gemini') return readGeminiSessionName(sessionId, deps?.geminiPathFor)
+  // Never falls through to claude's reader: that one SCANS ~/.claude/projects on a cache miss, so
+  // an unrouted codex node would pay that scan once a minute for a guaranteed null.
+  if (agentId === 'codex') return readCodexSessionName(sessionId)
   return readSessionName(sessionId, accountId)
 }

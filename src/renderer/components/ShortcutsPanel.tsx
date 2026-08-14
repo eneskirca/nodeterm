@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { isHoldChord, shortcutKeyParts } from '@shared/shortcut'
+import { isBrowserRuntime } from '../bridge/runtime'
 import { useSettings } from '../state/settings'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
@@ -26,6 +27,9 @@ function buildSections(dictationKeys: string[], dictationLabel: string): { title
         { keys: ['⌘', 'K'], label: 'Command palette' },
         { keys: ['⌘', ','], label: 'Settings' },
         { keys: ['⌘', '/'], label: 'This shortcuts panel' },
+        // Desktop only: browsers own Cmd/Ctrl+1-9 for tab switching and a page cannot take it
+        // back, so listing it in the Server Edition would promise a shortcut that never fires.
+        ...(isBrowserRuntime() ? [] : [{ keys: ['⌘', '1-9'], label: 'Jump to project' }]),
         { keys: dictationKeys, label: dictationLabel },
         { keys: ['⌘', 'Z'], label: 'Undo' },
         { keys: ['⌘', '⇧', 'Z'], label: 'Redo' }
@@ -41,7 +45,14 @@ function buildSections(dictationKeys: string[], dictationLabel: string): { title
         { keys: ['Left-drag'], label: 'Box-select (touch to select)' },
         { keys: ['Middle / Right-drag'], label: 'Pan the canvas' },
         { keys: ['Double-click'], label: 'Center & focus a node' },
-        { keys: ['⌘', 'wheel'], label: 'Zoom in / out' }
+        { keys: ['⌘', 'wheel'], label: 'Zoom in / out' },
+        // Advertised on BOTH surfaces, unlike "Jump to project" above. ⌘1-9 is dropped there
+        // because the browser RESERVES it (tab switching, un-preventable) for something unrelated;
+        // ⌘0 is neither — it is not in the reserved set, so the page gets the keydown, and even
+        // where a browser insists on handling it too it means the same thing we do ("actual size")
+        // instead of fighting us. Shift+1 is nobody else's key on any surface.
+        { keys: ['⌘', '0'], label: 'Zoom to 100%' },
+        { keys: ['⇧', '1'], label: 'Fit view' }
       ]
     },
     {

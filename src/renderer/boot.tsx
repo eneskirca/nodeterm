@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ensureClaudeCliCaps } from './state/permissionMode'
+import { ensureCodexIdentityCaps } from './state/codexIdentity'
 import './styles.css'
 import './tailwind.css'
 
@@ -10,6 +11,11 @@ import './tailwind.css'
 // conservatively omit the flag. The shell warms the same memo at startup, so this normally
 // resolves immediately.
 void ensureClaudeCliCaps()
+
+// Same shape, same reason: a Codex launch line names the managed shared-identity launcher only if
+// this machine has one installed and armed. Unprobed ⇒ plain `codex`, which is what every Codex
+// node ran before this feature — never a launcher path that might not resolve.
+void ensureCodexIdentityCaps()
 
 // Note: StrictMode is intentionally not used — its double mount in dev would open
 // two PTY sessions per terminal node.

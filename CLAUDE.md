@@ -135,7 +135,16 @@ Persistence has two layers:
   `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty.
   Unreadable refs render as greyed **unavailable** tabs (never dropped); corrupt project files
   are set aside as `project.json.corrupt-<ts>`. "Open folder…" adopts an existing
-  `.nodeterm/project.json` (fresh project id on collision; node ids — tmux names — kept).
+  `.nodeterm/project.json` — the probe MINTS the project id (node ids — tmux names — kept), and
+  re-opening the folder is answered by the cwd lookup, not a second adoption.
+  **The shared file carries content, not identity**: no project `id`, no `viewport`, no
+  `defaultAccountId` — those are machine-local and ride the index entry (`IndexEntryV3`), beside
+  `localApprovalId`/`localExec`. Two folders holding the same committed canvas (worktree, branch
+  checkout) are two independent projects, and the committed file is byte-identical on every
+  machine. The file still carries a machine-INDEPENDENT legacy `id` (`legacyFileId`, derived from
+  the canvas name) for one release, because a pre-change build sidelines an id-less file to
+  `.corrupt-<ts>` inside the user's repo; it is ignored on read. Residual: node ids are still
+  shared, so two worktrees still attach the same tmux sessions.
   **SSH mirror safety** (the ".nodeterm reset itself" bug — 12 fresh project ids and 45 orphaned
   tmux sessions in one field report): remote writes are atomic (`cat > f.tmp && mv`, `sshWriteArgs`);
   a mirror is never blind-written before the entry has read-compared the server file once
@@ -172,9 +181,17 @@ project's nodes only.** The contract:
   sidebar (the sidebar no longer hoists the active project to the top). Both surfaces reorder
   via drag-drop through `reorderProject(draggedId, beforeId|null)` (null = to the end; tab
   strip empty area and sidebar body are the end-drop zones), persisted like any node reorder.
-  Sidebar collapse behavior is `settings.sidebarAutoCollapse` (default on = historical: a
-  project switch resets manual toggles and collapses inactive projects; off = everything
-  defaults to expanded and switches never touch the user's choices — `isGroupCollapsed`).
+  Sidebar disclosure is **persisted**, for group frames as well as projects:
+  `settings.sidebarCollapsedItems` maps `project:<id>` / `project:<id>:group:<groupId>` → collapsed
+  (`isGroupCollapsed`), and `settings.sidebarAutoCollapse` (default on) now only supplies the
+  DEFAULT for a project row nobody has toggled (on = active expanded / others collapsed, off =
+  everything expanded). **This deliberately replaced the old "a project switch resets every manual
+  toggle" effect** (2026-08, with the nested sidebar tree): a tree the user shaped by hand should
+  still be that shape after a restart, and one transient rule for projects plus a sticky one for
+  frames would have been two contracts in one list. `projectHeadClickAction` is unchanged — an
+  inactive project row switches, the active one toggles its own (now persisted) collapse — and
+  every write **prunes** keys that no longer address a live project/frame (`pruneCollapsedItems` /
+  `liveCollapseKeys`), because settings.json is forever and a canvas churns through group ids.
 - The bottom-left **canvas lock** freezes the CAMERA only (pan/zoom): nodes stay draggable,
   resizable and connectable while locked — the point is "stop the map sliding", not "freeze
   the work".
@@ -522,11 +539,30 @@ session.
   process/terminal-title status only.
 - **sticky** (`StickyNode.tsx`) — colored note, free text, collapsible. Has link handles:
   connect a sticky to any terminal node to attach the note as context (see Context Link).
-- **group** (`GroupNode.tsx`) — real React Flow parent/child frame; `groupSelectedNodes`
-  reparents children (`parentId` + `extent:'parent'`, relative positions), `ungroupNodes`
-  restores absolute. `nodeStatesToFlow` sorts parents first (React Flow requirement).
-  Visually: a dashed rounded frame in the group color with a floating label pill (color dot
-  + editable name) on the top border and ungroup/× top-right (on hover/selected). The
+- **group** (`GroupNode.tsx`) — real React Flow parent/child frame, and frames **nest** (2026-08):
+  a group may contain other groups to any depth. `groupSelectedNodes` wraps objects that share ONE
+  container — frames included — creating the wrapper inside that container; a mixed-container set,
+  or an ancestor selected together with its own descendant, is **refused** rather than scrambled
+  (positions are only comparable within one container, and the descendant would be torn out of the
+  ancestor being wrapped). Box-selection routinely catches both, so structural actions normalize
+  the selection to its subtree roots first (`selectedRootIds`). `ungroupNodes` promotes a frame's
+  direct children into **its own parent** (not to the root — that would move them by the whole
+  ancestor offset); `reparentNode` moves a node OR a whole frame subtree, keeps its **root-space**
+  position fixed (`rootPosition`, not the old add-one-parent's-origin math) and refuses a cycle;
+  `addSelectionToGroup` adds a selection to an existing frame; `reorderGroupWithinParent` reorders
+  a frame among its siblings, carrying its subtree. `nodeStatesToFlow`/`groupsFirst` emit frames
+  **depth-first from the root** — a flat "groups first" sort is not enough once two groups compare
+  equal — and that persisted order is also the downgrade contract (a pre-nesting build's stable
+  sort leaves it alone, so a nested tree still hydrates parent-first and renders there).
+  **A frame that gains a child bigger than itself is re-fitted, ancestors included**
+  (`fitGroupToChildren` up the chain): a wrapper created at `(minX-28, minY-62)` relative to its
+  parent is routinely negative, and `extent:'parent'` would make React Flow clamp it into an
+  inverted range — snapping the frame hundreds of px away and dragging the whole wrapped subtree
+  with it. Visually: a dashed rounded frame in the group color with a floating label pill (color
+  dot + editable name) on the top border and ungroup/× top-right (on hover/selected). **The pill
+  is the frame's `dragHandle`** and the frame body is `pointer-events: none` — a frame is a
+  background container, not a giant drag target, so its body passes clicks to the pane and an
+  outer frame cannot swallow the clicks meant for a frame drawn inside it. The
   `NodeResizer` line is hidden (`lineStyle` transparent) so it can't draw a sharp-cornered
   box; the selection ring is a `box-shadow` instead, which follows the same `border-radius`.
 - **editor** (`EditorNode.tsx`) — Monaco code editor for a `filePath`; reads/writes via
@@ -762,6 +798,33 @@ persisted — only `unread`/`session`/`sessionId` go to localStorage under
   installer needs is why events are typed `ManagedHookEvent` (`string | {event, matcher}`): grok's
   tool matcher is a REGEX and must be `.*` — a bare `*` is invalid and silently stops tool events
   firing. Plain-string events keep their byte-identical output for every other agent.
+- **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
+  `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
+  "a session on this machine", never *which* session, so every node also gets a capability derived
+  from one restart-stable secret (`kid.mac`, domain-separated HMAC over the node id), handed to the
+  client as a 0600 file and verified three ways: `verified` / `legacy` / `forged`. `legacy` is "we
+  cannot judge this", not a failure. Two invariants come out of this series and both cost real
+  incidents to learn:
+  - **A credential never rides argv — local or SSH.** Measured 2026-08-13: `buildPtyEnv` put the hook
+    bearer in the tmux `-e` argv, which lands in a long-lived tmux client's `/proc/<pid>/cmdline`
+    at **mode 444** on a stock Linux with no `hidepid`; combined with `open-terminal --cmd` not being
+    in the confirm-gated `DESTRUCTIVE` set, that was arbitrary command execution as the victim from
+    any account on the box. A remote command line is argv on **both** ends, so the same rule binds
+    every `ssh`/`curl` we generate. Credentials travel by 0600 file or by **stdin**
+    (`curl --config -`, already house style in `usage/remote-claude-usage.ts` and
+    `codex-identity-proxy.ts`). Never add an argv fallback "for old curl" — that undoes the fix.
+  - **Both raw listeners change together** — `src/main/index.ts` and `src/server/agent-status.ts`.
+    A new field on the hook event (the `verified` flag was one) that reaches only the desktop leaves
+    the Server Edition silently without the feature; the boundary tests cannot tell you a field is
+    *missing*. `hook-verified-parity.test.ts` asserts it at source level because this repo has
+    shipped a one-shell hook-server change three times.
+
+  Enforcement is dated (`NODE_IDENTITY_STRICT_AFTER`, 2026-10-13, read through `isStrictInstant` so a
+  clock years ahead cannot enter strict mode early) with a `settings.hookIdentityStrict` escape hatch
+  in Settings → Agents. **Trust on first proof latches a node the moment it authenticates, so it
+  refuses TODAY, not on the cutoff** — which is why every token sweep must also call
+  `hookServer.forgetProvenNode`. `/hook/*` never 403s a missing token: the phone, the cross-instance
+  failover and every pre-token session legitimately have none.
 - **Fullscreen TUI (Claude)** — through the SAME `settings.json` seam the hook installer uses,
   nodeterm ensures Claude's `"tui": "fullscreen"` so a session takes the alternate screen + mouse
   and behaves natively in tmux (else a drag falls into copy-mode). Two guardrails: **write-if-absent**
@@ -907,11 +970,13 @@ persisted — only `unread`/`session`/`sessionId` go to localStorage under
   control the desktop's canvas. The shim is generated source no compiler checks:
   `canvas-control-shim.test.ts` runs it for real (/bin/sh against a real hook server, port AND
   unix-socket transports) — keep it that way.
-  **Grouping verbs** (`group` / `ungroup` / `move` / `arrange` / `align`): `group` only wraps
-  **top-level** nodes into a new frame (children already in a frame are skipped — the reply says
-  how many + points at `move`); `ungroup --group <id>` dissolves a frame (nodes kept); `move
-  --nodes <id,id> [--group <id>]` reparents nodes INTO a frame (or `top`/`none`/omit → out to top
-  level) via `reparentNode` — the ONE way to move a node between frames, which `group` won't do.
+  **Grouping verbs** (`group` / `ungroup` / `move` / `arrange` / `align`): `group` wraps **sibling**
+  objects — nodes or frames — into a new frame in their shared container (a mixed-container set, or
+  an ancestor plus its descendant, is refused with that reason); `ungroup --group <id>` dissolves a
+  frame, promoting its direct children into the frame's own parent (nodes kept); `move
+  --nodes <id,id> [--group <id>]` reparents nodes OR whole frame subtrees INTO a frame (or
+  `top`/`none`/omit → out to top level) via `reparentNode` — the ONE way to move a node between
+  frames, which `group` won't do; a cycle (a frame into itself or its own descendant) is refused.
   `arrange`/`align` now run in ONE coordinate space: all top-level, OR all children of one frame
   (`commonParentId` decides; a mixed set is refused, not silently subset-arranged — the old
   behavior). When the ids are a frame's children, the frame is shrunk to hug the tidied layout
@@ -1396,6 +1461,18 @@ again; the grace window was never the thing that was wrong.
   pan = middle-drag or trackpad two-finger (`panOnScroll`, `zoomOnScroll:false`); pinch
   zoom. Right mouse is free for the context menu.
 - **Delete** (Delete/Backspace) opens `ConfirmDialog` before removing selected nodes.
+- **Zoom chords** (`renderer/lib/zoomShortcut.ts`): **⌘/Ctrl+0 → `zoomTo100`** (actual size — what
+  the browser AND Electron's default View menu already mean by that key) and **Shift+1 → `fitAll`**
+  (the Figma/tldraw/Excalidraw "zoom to fit"). Matched on `e.code`, like the project-jump chord,
+  which excludes `Digit0` so the two can never collide. The module is a PURE decision because both
+  chords move the camera and a camera move here is not read-only — `onMove` → `markDirty` persists
+  the viewport and casts it to the team session — so it refuses while the kanban board is up and
+  while focus is in a text surface (input/textarea/contenteditable/Monaco/xterm, where Shift+1 is
+  just the `!` key), and on auto-repeat (both actions animate; a held chord would restart the tween).
+  Desktop ⌘0 does NOT arrive as a keydown: the default menu's `resetZoom` accelerator wins, so
+  `main/index.ts` intercepts it in `before-input-event` and forwards `app:zoom-actual-size`, which
+  re-asks the same refusals. Server Edition needs no intercept (no menu; Chrome/Firefox hand ⌘0 to
+  the page) and stubs the subscription.
 - **"Go to node" (`goToNode`)** — the one camera-travel path (notification click, sessions
   sidebar, ⌘K jump, presence travel, minimap double-click, double-click focus). It frames the node
   with `fitView({nodes:[{id}]})` **only when React Flow has MEASURED it**: `getFitViewNodes` filters
@@ -1608,7 +1685,11 @@ again; the grace window was never the thing that was wrong.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. Cmd+M is intercepted in `main/index.ts` `before-input-event` (else macOS minimizes)
-  and forwarded to the renderer via `app:toggle-markdown`.
+  and forwarded to the renderer via `app:toggle-markdown`; Cmd+W (`app:close-node`) and Cmd+0
+  (`app:zoom-actual-size`) are taken back from the same default menu the same way. We never call
+  `Menu.setApplicationMenu`, so Electron's DEFAULT menu is live and owns every accelerator in it —
+  a chord that collides with one never reaches the renderer at all
+  (`main/menu-accelerator-intercepts.test.ts` pins the three we steal).
 - **Theme**: macOS dark palette as CSS tokens in `styles.css` `:root` (`--accent` = systemBlue,
   label/separator opacities, SF font stack). Canvas background is black with dot grid.
 

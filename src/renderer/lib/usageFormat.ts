@@ -71,11 +71,7 @@ export function severityColor(severity: string | null, leftPercent: number): str
   }
 }
 
-/**
- * The percentage a limit renders as, honouring the used/remaining display setting. Only the
- * NUMBER flips — the bar always fills with what is left (a fuel gauge), because inverting the
- * fill per mode would also invert what the severity colours appear to mean.
- */
+/** The percentage a limit renders as, honouring the used/remaining display setting. */
 export function percentText(usedPercent: number, mode: 'used' | 'remaining'): string {
   return mode === 'used'
     ? `${Math.round(usedPercent)}% used`
@@ -85,4 +81,14 @@ export function percentText(usedPercent: number, mode: 'used' | 'remaining'): st
 /** Compact form for the pill: the bare number, no suffix (the segment label follows it). */
 export function percentNumber(usedPercent: number, mode: 'used' | 'remaining'): number {
   return Math.round(mode === 'used' ? usedPercent : 100 - usedPercent)
+}
+
+/**
+ * Bar fill, honouring the used/remaining display setting — the fill tracks the same quantity as
+ * the adjacent number, so "92% used" shows a nearly-full bar instead of a barely-visible sliver.
+ * Color is a separate call (`severityColor`/`barColor`) keyed to the true remaining percentage,
+ * never to this value, so severity red/yellow/green doesn't flip meaning with the mode.
+ */
+export function barFillPercent(usedPercent: number, mode: 'used' | 'remaining'): number {
+  return mode === 'used' ? usedPercent : 100 - usedPercent
 }

@@ -5,7 +5,14 @@ import { useSettings } from '../state/settings'
 import { useProjects } from '../state/projects'
 import { useSshConn } from '../state/sshConn'
 import { scopeFromKey, scopeUsage, usageScopeKey } from '../lib/usageScope'
-import { formatResetCountdown, formatTimeAgo, percentNumber, percentText, severityColor } from '../lib/usageFormat'
+import {
+  barFillPercent,
+  formatResetCountdown,
+  formatTimeAgo,
+  percentNumber,
+  percentText,
+  severityColor
+} from '../lib/usageFormat'
 import {
   enabledProviders,
   hasAnyUsage,
@@ -22,11 +29,14 @@ import { systemAccountDisplay } from '../state/workspace'
 const USAGE_HOVER_CLOSE_MS = 220
 
 /**
- * A single limit row in the popover: bar, "% left", reset countdown. Bars render REMAINING
- * quota (the limit carries percent USED), which is the convention this pill has always used.
+ * A single limit row in the popover: bar, "% left"/"% used", reset countdown. The bar's fill
+ * honours the display mode (`barFillPercent`) so it tracks the same quantity as the number
+ * beside it; its color stays keyed to the TRUE remaining percentage via `severityColor`, so
+ * severity red/yellow/green never flips meaning when the mode does.
  */
 function LimitRow({ limit, mode }: { limit: UsageLimit; mode: 'used' | 'remaining' }) {
   const left = 100 - limit.usedPercent
+  const fill = barFillPercent(limit.usedPercent, mode)
   return (
     <div className="usage-row">
       <div className="usage-row__title">
@@ -37,7 +47,7 @@ function LimitRow({ limit, mode }: { limit: UsageLimit; mode: 'used' | 'remainin
       <div className="usage-bar">
         <div
           className="usage-bar__fill"
-          style={{ width: `${left}%`, background: severityColor(limit.severity, left) }}
+          style={{ width: `${fill}%`, background: severityColor(limit.severity, left) }}
         />
       </div>
       <div className="usage-row__meta">
@@ -328,7 +338,7 @@ export function UsageIndicator({ overBoard = false }: { overBoard?: boolean }): 
             <span
               className="usage-pill__minibar-fill"
               style={{
-                width: `${100 - primary.usedPercent}%`,
+                width: `${barFillPercent(primary.usedPercent, percentMode)}%`,
                 background: severityColor(primary.severity, 100 - primary.usedPercent)
               }}
             />

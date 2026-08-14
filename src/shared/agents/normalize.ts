@@ -53,6 +53,14 @@ export interface NormalizedAgentEvent {
   tokens?: number
   toolUses?: number
   result?: string
+  /**
+   * The POST that produced this event presented a per-node token the running instance had minted
+   * for THIS node id. Set by the hook server, never by a normalizer.
+   *
+   * It is a LABEL, not a permission: `false` covers every client that predates the token, the
+   * phone, and the documented cross-instance failover, so no consumer may treat it as "reject".
+   */
+  verified?: boolean
   // recurring
   recurringKind?: 'loop' | 'schedule' | 'cron'
   /** The recurring job was REMOVED (e.g. CronDelete) — take the card down. */

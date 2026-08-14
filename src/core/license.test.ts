@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import crypto from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { promises as fsp } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { IPC } from '../shared/ipc'
@@ -44,9 +45,17 @@ function jsonResponse(body: unknown): { ok: boolean; status: number; json: () =>
 
 const HOUR = 60 * 60 * 1000
 
-/** Let real I/O (fs writes in save()) and microtasks settle — setTimeout stays unfaked. */
-async function flush(): Promise<void> {
-  for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 25))
+/**
+ * Await the refresh initLicense() actually started (launch + anything the 6h interval fired),
+ * via the handle license.ts parks it on. This used to be a bounded `flush()` of timed sleeps, and
+ * a loaded CI runner beat it: the assertions saw zero broadcasts, and the continuation then landed
+ * after afterEach's resetPlatformForTests() and threw with nobody awaiting. There is no timing
+ * guess left here — the refresh is awaited, so it is also guaranteed done before teardown.
+ * Resolves against the post-resetModules instance the test itself imported.
+ */
+async function refreshed(): Promise<void> {
+  const { __licenseRefreshesForTests } = await import('./license')
+  await __licenseRefreshesForTests()
 }
 
 describe('license entitlement refresh', () => {
@@ -92,7 +101,7 @@ describe('license entitlement refresh', () => {
     fetchMock.mockResolvedValue(jsonResponse({ active: true, token }))
     const { initLicense } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(sent().length).toBe(1)
@@ -108,13 +117,13 @@ describe('license entitlement refresh', () => {
     )
     const { initLicense } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     // A day passes in-session: the app must have polled again on its own —
     // launch-only refresh means the token silently expires after 7 days.
     await vi.advanceTimersByTimeAsync(24 * HOUR)
-    await flush()
+    await refreshed()
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
     const last = sent().at(-1)!
     expect(last.active).toBe(true)
@@ -126,13 +135,13 @@ describe('license entitlement refresh', () => {
     )
     const { initLicense } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     expect(sent().at(-1)!.active).toBe(true)
 
     // From now on the server says: not entitled (canceled subscription).
     fetchMock.mockResolvedValue(jsonResponse({ active: false }))
     await vi.advanceTimersByTimeAsync(24 * HOUR)
-    await flush()
+    await refreshed()
     expect(sent().at(-1)!.active).toBe(false)
   })
 
@@ -143,10 +152,33 @@ describe('license entitlement refresh', () => {
     )
     const { initLicense } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
 
     expect(sent().length).toBeGreaterThan(0)
     expect(sent().at(-1)!.active).toBe(false)
+  })
+
+  it('broadcasts even when the refresh lands long after a bounded flush would have given up', async () => {
+    // Regression for a CI flake that reddened unrelated PRs. initLicense() starts refresh()
+    // UN-AWAITED; the assertions above used to race it with ~75 ms of timed sleeps, and a loaded
+    // runner won: `sent()` was still empty (`expected 0 to be greater than 0`) and the
+    // continuation then landed after afterEach had run resetPlatformForTests(), so broadcast() →
+    // platform() threw with nobody awaiting — an unhandled rejection, which fails the whole file.
+    // Here the response deliberately lands 300 ms in, i.e. past ANY flush budget, so the ordering
+    // the flake needs is forced rather than hoped for. Passing means the assertion is awaiting the
+    // real refresh, not a timeout.
+    fetchMock.mockImplementation(
+      async () =>
+        await new Promise((r) =>
+          setTimeout(() => r(jsonResponse({ active: true, token: mint(7 * 24 * 60 * 60) })), 300)
+        )
+    )
+    const { initLicense } = await import('./license')
+    initLicense()
+    await refreshed()
+
+    expect(sent().length).toBe(1)
+    expect(sent()[0].active).toBe(true)
   })
 
   it('does not revive an expired token when the system clock is rolled back', async () => {
@@ -155,19 +187,66 @@ describe('license entitlement refresh', () => {
     )
     const { initLicense } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     expect(sent().at(-1)!.active).toBe(true)
 
     // Server unreachable from now on (offline grace path), and the token expires in-session.
     fetchMock.mockRejectedValue(new Error('offline'))
     await vi.advanceTimersByTimeAsync(7 * 24 * HOUR + 12 * HOUR)
-    await flush()
+    await refreshed()
 
     // Attacker rolls the clock back before the expiry: exp is "in the future" again,
     // but the app has already observed a later time — the token must stay dead.
     vi.setSystemTime(Date.now() - 9 * 24 * HOUR)
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.active).toBe(false)
+  })
+
+  it('a slow early write cannot walk the clock anchor backwards past a later one', async () => {
+    // Regression for the SECOND flake in this file (it made the rollback test above fail ~4 runs
+    // in 15 on a loaded box). bumpLastSeen is a read-modify-write of license.json, and the refresh
+    // runs used to be started independently, so a burst of them — which is what advancing days of
+    // fake time produces — could have an OLDER lastSeen write complete LAST and walk the anchor
+    // backwards. That is precisely what the anchor exists to prevent.
+    //
+    // Forced deterministically here: the first two writes of the periodic burst take 200 ms while
+    // every later one is immediate. Runs that overlap therefore ALWAYS finish out of order (an
+    // early, small lastSeen lands last); runs that are queued cannot overlap at all, so the delay
+    // only slows the chain down and the newest value still lands last.
+    let slowWrites = 0
+    const realWrite = fsp.writeFile.bind(fsp)
+    const writeSpy = vi
+      .spyOn(fsp, 'writeFile')
+      .mockImplementation(async (...args: Parameters<typeof fsp.writeFile>) => {
+        if (slowWrites > 0) {
+          slowWrites--
+          await new Promise((r) => setTimeout(r, 200))
+        }
+        return realWrite(...args)
+      })
+    try {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ active: true, token: mint(7 * 24 * 60 * 60) }))
+      const { initLicense } = await import('./license')
+      initLicense()
+      await refreshed()
+
+      fetchMock.mockRejectedValue(new Error('offline'))
+      slowWrites = 2 // …i.e. the first two of the burst below, nothing the launch refresh wrote
+      await vi.advanceTimersByTimeAsync(7 * 24 * HOUR + 12 * HOUR)
+      await refreshed()
+
+      // The anchor must hold the LARGEST time observed, whatever order the writes completed in.
+      const stored = JSON.parse(readFileSync(path.join(h.userData, 'license.json'), 'utf-8')) as {
+        lastSeen?: number
+      }
+      expect(stored.lastSeen).toBe(Math.floor(Date.now() / 1000))
+
+      vi.setSystemTime(Date.now() - 9 * 24 * HOUR)
+      const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
+      expect(status.active).toBe(false)
+    } finally {
+      writeSpy.mockRestore()
+    }
   })
 })
 
@@ -208,7 +287,7 @@ describe('license seats entitlement', () => {
     storeToken(mint(7 * 24 * 60 * 60, 'test-device', 5))
     const { initLicense, licensedSeats } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.active).toBe(true)
     expect(status.seats).toBe(5)
@@ -219,7 +298,7 @@ describe('license seats entitlement', () => {
     storeToken(mint(7 * 24 * 60 * 60))
     const { initLicense, licensedSeats } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.active).toBe(true)
     expect(status.seats).toBe(3) // Pro includes 3 seats; existing tokens get them with no re-mint
@@ -230,7 +309,7 @@ describe('license seats entitlement', () => {
     storeToken(mint(7 * 24 * 60 * 60, 'test-device', 2))
     const { initLicense, licensedSeats } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.seats).toBe(3) // never fewer than the 3 included with Pro
     expect(licensedSeats()).toBe(3)
@@ -240,7 +319,7 @@ describe('license seats entitlement', () => {
     storeToken(undefined)
     const { initLicense, licensedSeats } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.active).toBe(false)
     expect(status.seats).toBe(0)
@@ -251,7 +330,7 @@ describe('license seats entitlement', () => {
     storeToken(mint(-60, 'test-device', 5))
     const { initLicense, licensedSeats } = await import('./license')
     initLicense()
-    await flush()
+    await refreshed()
     const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
     expect(status.active).toBe(false)
     expect(status.seats).toBe(0)
@@ -264,7 +343,7 @@ describe('license seats entitlement', () => {
     try {
       const { initLicense } = await import('./license')
       initLicense()
-      await flush() // let the launch refresh settle so its rejection isn't left unhandled
+      await refreshed() // the launch refresh (rejecting → offline grace) is awaited, never raced
       await fake.handlers[IPC.licenseUpgrade]() // default → base Pro
       await fake.handlers[IPC.licenseUpgrade]('seats') // add-seats link
       // Each carries this device's id for the device-bound webhook binding.
@@ -284,7 +363,7 @@ describe('license seats entitlement', () => {
     try {
       const { initLicense } = await import('./license')
       initLicense()
-      await flush() // let the launch refresh settle so its rejection isn't left unhandled
+      await refreshed() // the launch refresh (rejecting → offline grace) is awaited, never raced
       await fake.handlers[IPC.licenseUpgrade]('seats')
       // 'seats' opens the dedicated seats Payment Link — NOT the base Pro link — with the deviceId.
       const opened = fake.opened[0]

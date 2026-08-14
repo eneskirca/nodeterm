@@ -59,6 +59,7 @@ import {
 } from '../terminal/terminal-config'
 import { useXtermVisualSettings } from '../terminal/useXtermVisualSettings'
 import { loseWebglContexts, registerWebglClient, type WebglClientHandle } from '../terminal/webgl-budget'
+import { quantizeCharSize } from '../terminal/char-size-quantize'
 import {
   PARK_MAX,
   armParkExpiry,
@@ -124,7 +125,9 @@ import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { isHidden } from '../lib/ui-visibility'
 import { readsClaudeTranscript } from '../lib/transcriptGates'
+import { liveProjectJumpTarget } from '../lib/projectJump'
 import { useSettings } from '../state/settings'
+import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useAgentStatus, agentStatusForApi, inferInterruptAfterSettle } from '../state/agentStatus'
 import type { AgentState } from '@shared/agents/normalize'
 import type { ClientId } from '@shared/presence'
@@ -137,14 +140,15 @@ import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { accountChipLabel, COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
-import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, reportsOwnCopy, resumeCommand, agentConfig } from '@shared/agents/config'
+import { hasHooks, canRecur, canContextLink, hasUsage, canChat, canResume, canRename, canReadTitle, createdAgentId, reportsOwnCopy, resumeCommand, agentConfig, agentLaunchProgram } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { ensureActivePermissionMode } from '../state/permissionMode'
-import { buildSshArgs, type SshConnection } from '@shared/ssh'
+import { buildSshArgs, sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import { hintLabel } from '@shared/platform-utils'
 import { ColumnPill } from '../components/kanban/ColumnPill'
 import { BoardLogPanel } from '../components/kanban/BoardLogPanel'
 import { AgentMascot } from './AgentMascot'
+import { connectHostAttachment } from '../lib/sshAttachments'
 
 /** How long a remote terminal waits for its project's ControlMaster before giving up and showing
  *  the offline overlay. Sized for the SLOW-but-fine case (a cold app load whose connect is still
@@ -152,17 +156,36 @@ import { AgentMascot } from './AgentMascot'
  *  overlay it falls back to is cheap and self-healing, so waiting longer buys nothing. */
 export const SSH_REMOTE_WAIT_MS = 20000
 
-/** The active project's live ControlMaster path, if any. Lets the caller tell "we will resolve in
- *  a microtask" from "we are about to sit in the wait below" without duplicating the lookup. */
-export function currentControlPath(): string | undefined {
-  return useSshConn.getState().getControlPath(useProjects.getState().activeProjectId)
+/**
+ * Which connection scope a remote node in the ACTIVE project runs over: the project's own id when
+ * the project IS that SSH endpoint, otherwise the project × endpoint host attachment — a remote
+ * node living in a local canvas (or in an SSH project pointed at a different host).
+ *
+ * A node only ever exists in the active project's React Flow, so the active project is its owner.
+ */
+export function sshConnectionScope(conn: SshConnection): string {
+  const { activeProjectId, getProject } = useProjects.getState()
+  return sshConnectionIdForProject(activeProjectId, conn, getProject(activeProjectId)?.ssh?.server)
+}
+
+/** The live ControlMaster path a remote node would run over, if any. Lets the caller tell "we will
+ *  resolve in a microtask" from "we are about to sit in the wait below" without duplicating the
+ *  lookup. Without a `conn` it answers for the active project's own connection. */
+export function currentControlPath(conn?: SshConnection): string | undefined {
+  return useSshConn
+    .getState()
+    .getControlPath(conn ? sshConnectionScope(conn) : useProjects.getState().activeProjectId)
 }
 
 /**
- * Resolve the `sshRemote` create option for an SSH-project terminal: the owning project's live
+ * Resolve the `sshRemote` create option for a remote terminal: its connection scope's live
  * ControlMaster `controlPath` (set by Canvas's active-project effect on connect) plus the inline
  * connection and remote cwd. The controlPath may not be ready yet on a cold app load (child
  * effects run before the parent's connect resolves), so wait for it — briefly — before spawning.
+ *
+ * The scope is the OWNING PROJECT for an SSH project's own nodes and a HOST ATTACHMENT for a node
+ * whose endpoint isn't the project's — never a bare `activeProjectId`, which for an attached node
+ * would resolve the local project's (absent, or worse: a DIFFERENT host's) master.
  *
  * Returns undefined if no master appears within the window (connection failed). The caller must
  * then spawn NOTHING — see `PtyCreateOptions.requireRemote`: a create without `sshRemote` does
@@ -182,7 +205,27 @@ export async function resolveSshRemote(
     }
   | undefined
 > {
-  const projectId = useProjects.getState().activeProjectId
+  const activeProjectId = useProjects.getState().activeProjectId
+  const projectId = sshConnectionScope(conn)
+  // A HOST ATTACHMENT dials for itself, HERE, because nothing else will. Canvas's active-project
+  // effect pre-warms the attachments it can SEE in the stored canvas, but a node created at
+  // runtime — the remote account-login retry drops one into whatever tab is active — never
+  // appears in that pass, and would otherwise wait out the window under a scope no master exists
+  // for and then sit offline forever. Idempotent and deduped, so the pre-warm and every node on
+  // the machine collapse into one connect; the wait below is what actually blocks on it.
+  if (projectId !== activeProjectId) {
+    void connectHostAttachment(
+      projectId,
+      {
+        conn,
+        hostKey: sshHostKey(conn),
+        remoteCwd: cwd,
+        ownerProjectId: activeProjectId
+      },
+      (scopeId, c, remoteCwd) => window.nodeTerminal.sshProject.connect(scopeId, c, remoteCwd),
+      (scopeId) => window.nodeTerminal.sshProject.disconnect(scopeId)
+    )
+  }
   let controlPath = useSshConn.getState().getControlPath(projectId)
   if (!controlPath) {
     controlPath = await new Promise<string | undefined>((resolve) => {
@@ -1153,18 +1196,30 @@ export function TerminalNode({
   editingTitleRef.current = editingTitle
   titleRef.current = data.title as string
   // "Move into worktree" affordance: shown only when this terminal is a child of a group that
-  // is bound to a worktree AND its current cwd differs from that worktree path (i.e. it's still
-  // running in the old folder). Reads the parent group from React Flow state (single source of
-  // truth); `parentId` is set by the group reparenting transforms.
+  // or one of its ancestor groups is bound to a worktree AND its current cwd differs from that
+  // worktree path (i.e. it's still running in the old folder). Reads the group chain from React
+  // Flow state (single source of truth); `parentId` is set by the group reparenting transforms.
   // A STALE group (its worktree directory was deleted outside the app) must NOT offer the move:
   // "move" destroys this node's tmux session — killing whatever is running in it — and respawns it
   // in the worktree path, which no longer exists. pty-manager would silently fall back to $HOME and
   // `data.cwd` would persist the dead path forever, which not even Unbind undoes. The chip already
   // says "· missing"; the ↪ must agree with it.
-  const parentWtPath = parentId
-    ? ((getNode(parentId) as CanvasNode | undefined)?.data.worktree?.path as string | undefined)
-    : undefined
-  const parentWtStale = useWorktrees((s) => (parentId ? s.staleGroupIds.includes(parentId) : false))
+  const parentWorktree = (() => {
+    const seen = new Set<string>()
+    let groupId = parentId
+    while (groupId && !seen.has(groupId)) {
+      seen.add(groupId)
+      const group = getNode(groupId) as CanvasNode | undefined
+      const path = group?.data.worktree?.path as string | undefined
+      if (path) return { groupId, path }
+      groupId = group?.parentId
+    }
+    return undefined
+  })()
+  const parentWtPath = parentWorktree?.path
+  const parentWtStale = useWorktrees((s) =>
+    parentWorktree ? s.staleGroupIds.includes(parentWorktree.groupId) : false
+  )
   // …and a session that runs on ANOTHER MACHINE must not offer it either. Worktrees are local-only
   // in v1, so ↪ would end this node's REMOTE tmux session and respawn it in a local path that does
   // not exist on the host. Both halves of "remote" are asked: the project (its terminals and its git
@@ -1208,6 +1263,9 @@ export function TerminalNode({
     !remoteSession &&
     (data.cwd as string | undefined) !== parentWtPath
   const status = useAgentStatus((s) => s.byId[id])
+  // Transient, per-launch: what this node's Codex launcher reported it actually got. Undefined for
+  // every non-codex node and for a codex node whose launcher never spoke.
+  const codexIdentity = useCodexIdentity((s) => s.byId[id])
   // --- Eco / hibernation wake (see terminal/hibernation-policy.ts) ---
   // A hibernated node's CLI was asked to `/exit` while nobody was looking; its tmux session, pane
   // and scrollback are untouched, and the conversation comes back with the provider's own
@@ -1373,7 +1431,10 @@ export function TerminalNode({
   // `respawnNonce` ourselves: a respawn before the master is back would just re-run the same
   // 20s wait and land right back here.
   const reconnectOffline = (): void => {
-    const projectId = useProjects.getState().activeProjectId
+    // The SCOPE, not the project: an attached node's master belongs to its host attachment, and
+    // retrying the local project's (nonexistent) connection would never bring this node back.
+    const conn = data.ssh as SshConnection | undefined
+    const projectId = conn ? sshConnectionScope(conn) : useProjects.getState().activeProjectId
     if (projectId) sshRetryHandler?.(projectId, [id])
   }
 
@@ -1661,14 +1722,36 @@ export function TerminalNode({
       const canvases = term.element ? Array.from(term.element.querySelectorAll('canvas')) : null
       try {
         webgl.dispose()
-      } catch {
-        // already disposed via context loss
+      } catch (err) {
+        // A second dispose after onContextLoss already ran is a silent no-op — a THROW here is
+        // never that. The addon's dispose is ALSO its put-xterm-back-on-a-DOM-renderer path (a
+        // disposable registered at activate), so a throw aborts the restore and would leave the
+        // terminal with NO renderer at all: zero canvases, zero `.xterm-rows`, a permanently
+        // black node no repaint can reach. Seen in the field as the zoom-out blackout when
+        // addon-webgl 0.19.0's dispose guard read xterm-5.6 internals (`_core._store`) on the
+        // 5.5 core and crashed on EVERY release. The renderer-less check below is the heal; the
+        // warn is its field trace.
+        console.warn('[nodeterm] webgl dispose threw mid-release', err)
       }
       webgl = null
       loseWebglContexts(canvases)
       // A dispose that died midway leaves its (now context-lost, permanently BLACK) canvas
       // attached OVER the DOM rows — sweep it before the repaint (see the safety-net note).
       verifyCleanDomState('release')
+      // The other way a dispose dies midway: canvases already gone but the DOM renderer never
+      // installed (the throw above). `verifyCleanDomState` cannot see that state — it keys on
+      // stray canvases, and here there are none — so probe for the renderer's row container
+      // directly and rebuild what the addon's aborted restore owed. Skipped while a glyph
+      // attachment owns the screen (no rows there by design, and `setRenderer` would dispose
+      // the glyph addon — see the both-renderers invariant).
+      if (!disposed && !glyphAttach && term.element && !term.element.querySelector('.xterm-rows')) {
+        if (restoreDomRenderer()) {
+          console.warn('[nodeterm] healed a renderer-less webgl release: DOM renderer restored')
+        } else {
+          escalateRespawn('webgl release left no renderer and the DOM restore failed')
+          return
+        }
+      }
       // The DOM renderer that replaced the addon starts from an EMPTY row container, and this
       // release almost always runs while the node is HIDDEN — the swap's own refresh defers
       // behind xterm's pause flag, which is exactly where it can be lost. Re-arm it explicitly.
@@ -2125,6 +2208,9 @@ export function TerminalNode({
       term.loadAddon(fit)
       term.loadAddon(searchAddon)
       term.open(container)
+      // Renderer-parity: quantize the char measurement to the device-pixel grid, so a budget
+      // grant/release swaps renderers without the text visibly reflowing (see the helper).
+      quantizeCharSize(term)
       applyFit()
       patchTerminalScale(term, getZoom)
       // OSC 52 clipboard write: route the decoded text to the local clipboard. This is the PRIMARY
@@ -2200,8 +2286,11 @@ export function TerminalNode({
     // NOT preventable by a page — hence Ctrl+Insert, which no browser reserves.
     // Shift+Enter is also intercepted here: xterm would send a plain \r (submit), so we remap it to
     // ESC+CR (`SHIFT_ENTER_SEQ`) — agent CLIs read that as "insert newline" (see terminal-config.ts).
+    // Cmd/Ctrl+1-9 (jump to the Nth project) must be swallowed before xterm turns Ctrl+2..Ctrl+8
+    // into control bytes — but ONLY when the app owns the key: desktop shell, digit addressing an
+    // open project. `liveProjectJumpTarget` is the same decision Canvas's handler makes.
     term.attachCustomKeyEventHandler((e) => {
-      const action = terminalKeyAction(e, term.hasSelection())
+      const action = terminalKeyAction(e, term.hasSelection(), liveProjectJumpTarget(e) !== null)
       if (action === 'pass') return true
       e.preventDefault()
       if (action === 'copy') window.nodeTerminal.clipboard.writeText(term.getSelection())
@@ -2254,10 +2343,11 @@ export function TerminalNode({
     // `ssh` as a LOCAL pty program. Only the latter sets shell:'ssh' + buildSshArgs.
     const sshRemoteTmux = !!data.sshRemoteTmux
     const localSsh = !!ssh && !sshRemoteTmux
-    // Owning project of an SSH-project terminal, captured at spawn time for the exit-255 drop
-    // report below (a node only exists in the active project's React Flow, so the active
-    // project is its owner — same assumption as resolveSshRemote).
-    const sshProjectId = sshRemoteTmux ? useProjects.getState().activeProjectId : null
+    // Connection SCOPE of a remote terminal, captured at spawn time for the exit-255 drop report
+    // below. Same choice `resolveSshRemote` makes: the owning project for an SSH project's own
+    // node, the host attachment for a node attached to another endpoint — so the reconnect
+    // coordinator re-establishes the master this node actually died on.
+    const sshProjectId = sshRemoteTmux && ssh ? sshConnectionScope(ssh) : null
     // Prefetch the persisted scrollback in parallel with the spawn so it's ready to replay the
     // instant the session resolves (a cold restart after a reboot recreates the tmux session
     // empty — see the `fresh` handling below). Cheap no-op ('') when there's no snapshot.
@@ -2286,7 +2376,7 @@ export function TerminalNode({
       // or an unreachable host, and a terminal that is silently blank for that long reads as
       // broken. Only when there is nothing to wait FOR is nothing printed (the common case: the
       // master is already up and this resolves in a microtask).
-      if (sshRemoteTmux && ssh && !currentControlPath()) {
+      if (sshRemoteTmux && ssh && !currentControlPath(ssh)) {
         // Drop the overlay for the duration of the attempt (this respawn IS the retry the user or
         // the coordinator asked for) so the line below is visible; it comes back if we fail.
         setCo(termKey, { offline: false })
@@ -2665,7 +2755,14 @@ export function TerminalNode({
           // relaunched empty while their transcripts sat on disk, unreachable.
           const st = useAgentStatus.getState().byId[id]
           const priorId = st?.sessionId || data.agentSessionId
-          const base = (priorId && resumeCommand(agentId, priorId)) || agentConfig(agentId)?.launchCmd
+          // Shared-identity agents resume THROUGH their launcher, so the cold-restored node
+          // re-claims its own thread instead of joining as an anonymous client. `data.ssh` is what
+          // keeps a remote node on the bare command (no launcher on the host).
+          const shared = codexSharedIdentity(data.ssh || data.sshRemoteTmux)
+          const base =
+            (priorId && resumeCommand(agentId, priorId, shared)) ||
+            (agentConfig(agentId) &&
+              agentLaunchProgram(agentId, agentConfig(agentId)!.launchCmd, shared))
           // Re-resolve the mode at relaunch: it's a property of how a session is launched, not
           // a persisted property of the node, so the current setting wins after a reboot. `base`
           // is always freshly built here — never a command string read back from node data — so
@@ -2831,6 +2928,11 @@ export function TerminalNode({
         // Same funnel, same await, same reasoning as the restart closure above: the permission
         // mode is a property of how a session is LAUNCHED, so it is re-resolved now (a wake can be
         // hours after the exit, and days after the node was created).
+        // Deliberately the BARE command, with no shared-identity launcher: this types into a pane
+        // that already exists, and a tmux session created before the launcher was installed does
+        // not carry its directory on PATH — naming it there would be `command not found` where a
+        // plain `codex resume` works. A restarted codex node therefore rejoins as a plain client
+        // until its next cold start. Fail open, same rule as everywhere else in this feature.
         const base = resumeCommand(agentId, agentSessionId)
         // Refused BEFORE anything is written. `performResumePhase` gates on this same bare command
         // and would refuse too — but the KILL_LINE below is ours, so leaving this check to it
@@ -3610,7 +3712,12 @@ export function TerminalNode({
       // Remote terminal: uploading over the ControlMaster takes seconds and pastes nothing until
       // it's done, so show an overlay while it runs — without it a drop looks like it silently did
       // nothing. (The upload + REMOTE-path resolution itself lives in the shared droppedPaths.)
-      const projectId = useProjects.getState().activeProjectId
+      // Uploads go over the master this node's PTY runs on — its scope, which for an attached
+      // node is the host attachment, not the (local) project.
+      const dropConn = data.ssh as SshConnection | undefined
+      const projectId = dropConn
+        ? sshConnectionScope(dropConn)
+        : useProjects.getState().activeProjectId
       if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
       setUploadNote({
         text: `Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`,
@@ -3944,6 +4051,18 @@ export function TerminalNode({
         {status?.session && status.session !== data.title && (
           <span className="term-node__session" title={status.session}>
             {status.session}
+          </span>
+        )}
+        {/* The fallback, made visible. A Codex node that could not get a managed shared identity
+            runs a perfectly good plain `codex` — but the user has to be able to SEE that it did,
+            without reading a log, so the chip states it and its tooltip says why. Absent (and the
+            node byte-identical to before this feature) whenever identity is shared or unknown. */}
+        {codexIdentity?.mode === 'plain' && (
+          <span
+            className="node-account-chip node-account-chip--warning"
+            title={codexFallbackText(codexIdentity.reason)}
+          >
+            plain codex
           </span>
         )}
         {accountChip && (

@@ -282,6 +282,161 @@ describe('generated plugin unix-socket transport', () => {
   })
 })
 
+// The per-node token (task A10). The plugin is the one client that is not sh: it must learn the
+// token dir from the SAME endpoint file (a new KEY=VALUE line the file's regex has to accept),
+// read `<dir>/<nodeId>`, and put the header on BOTH transports — the Bun `fetch` (TCP and unix)
+// and the node:http socketPath fallback.
+describe('generated plugin presents the per-node token', () => {
+  let tokenDir: string
+  let sockDir: string
+
+  beforeEach(() => {
+    tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-oc-tok-'))
+    sockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-oc-tsock-'))
+    fs.writeFileSync(path.join(tokenDir, 'node-1'), 'OPENCODE-NODE-TOKEN\n', { mode: 0o600 })
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+    fs.rmSync(tokenDir, { recursive: true, force: true })
+    fs.rmSync(sockDir, { recursive: true, force: true })
+  })
+
+  async function importPlugin(): Promise<Record<string, (input: unknown) => Promise<void>>> {
+    const file = path.join(tmp, `plugin-token-${Math.random().toString(36).slice(2)}.mjs`)
+    fs.writeFileSync(file, buildOpencodePlugin())
+    const mod = await import(/* @vite-ignore */ `file://${file}`)
+    return mod.NodetermStatus()
+  }
+
+  /** Fires one event over the plain TCP `fetch` path and returns the headers it sent. */
+  async function tcpHeaders(env: Record<string, string>): Promise<Record<string, string>> {
+    const calls: Array<Record<string, string>> = []
+    vi.stubGlobal('fetch', (_url: string, init: { headers: Record<string, string> }) => {
+      calls.push(init.headers)
+      return Promise.resolve(new Response())
+    })
+    vi.stubEnv('NODETERM_NODE_ID', 'node-1')
+    vi.stubEnv('NODETERM_HOOK_PORT', '43210')
+    vi.stubEnv('NODETERM_HOOK_TOKEN', 'tok')
+    vi.stubEnv('NODETERM_HOOK_ENDPOINT', '')
+    vi.stubEnv('NODETERM_HOOK_SOCK', '')
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v)
+    const hooks = await importPlugin()
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_1' } } })
+    expect(calls.length).toBe(1)
+    return calls[0]
+  }
+
+  it('sends the token on the fetch path when the file exists', async () => {
+    const headers = await tcpHeaders({ NODETERM_NODE_TOKEN_DIR: tokenDir })
+    expect(headers['x-nodeterm-node-token']).toBe('OPENCODE-NODE-TOKEN')
+  })
+
+  it('sends an EMPTY token — and still posts — when there is no token file', async () => {
+    const headers = await tcpHeaders({ NODETERM_NODE_TOKEN_DIR: path.join(tokenDir, 'nope') })
+    expect(headers['x-nodeterm-node-token']).toBe('')
+  })
+
+  it('sends an empty token when no dir is advertised at all (pre-v2 endpoint)', async () => {
+    const headers = await tcpHeaders({})
+    expect(headers['x-nodeterm-node-token']).toBe('')
+  })
+
+  it('never presents ANOTHER node\'s token file — the path is keyed by the node id', async () => {
+    const headers = await tcpHeaders({ NODETERM_NODE_TOKEN_DIR: tokenDir, NODETERM_NODE_ID: 'node-9' })
+    expect(headers['x-nodeterm-node-token']).toBe('')
+  })
+
+  it('learns the dir from the ENDPOINT FILE (the v2 line), not only the env', async () => {
+    const envFile = path.join(sockDir, 'hook-endpoint.env')
+    fs.writeFileSync(
+      envFile,
+      `NODETERM_HOOK_PORT=43210\nNODETERM_HOOK_TOKEN=filetok\nNODETERM_HOOK_VERSION=2\nNODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+    )
+    const headers = await tcpHeaders({ NODETERM_HOOK_ENDPOINT: envFile, NODETERM_HOOK_PORT: '' })
+    expect(headers['x-nodeterm-node-token']).toBe('OPENCODE-NODE-TOKEN')
+    expect(headers['x-nodeterm-hook-token']).toBe('filetok')
+  })
+
+  it('sends it on the Bun unix-fetch path too', async () => {
+    const calls: Array<{ init: Record<string, unknown> }> = []
+    vi.stubGlobal('Bun', {})
+    vi.stubGlobal('fetch', (_url: string, init: Record<string, unknown>) => {
+      calls.push({ init })
+      return Promise.resolve(new Response())
+    })
+    vi.stubEnv('NODETERM_NODE_ID', 'node-1')
+    vi.stubEnv('NODETERM_HOOK_SOCK', '/tmp/some.sock')
+    vi.stubEnv('NODETERM_HOOK_TOKEN', 'tok')
+    vi.stubEnv('NODETERM_HOOK_PORT', '')
+    vi.stubEnv('NODETERM_HOOK_ENDPOINT', '')
+    vi.stubEnv('NODETERM_NODE_TOKEN_DIR', tokenDir)
+    const hooks = await importPlugin()
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_1' } } })
+    expect(calls.length).toBe(1)
+    expect((calls[0].init.headers as Record<string, string>)['x-nodeterm-node-token']).toBe(
+      'OPENCODE-NODE-TOKEN'
+    )
+  })
+
+  it('sends it on the node:http socketPath path too (real unix server)', async () => {
+    const { createServer } = await import('node:http')
+    const sock = path.join(sockDir, 'hook.sock')
+    const received: Array<string> = []
+    const server = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        received.push(String(req.headers['x-nodeterm-node-token'] ?? ''))
+        res.end('ok')
+      })
+    })
+    await new Promise<void>((r) => server.listen(sock, r))
+    try {
+      vi.stubEnv('NODETERM_NODE_ID', 'node-1')
+      vi.stubEnv('NODETERM_HOOK_SOCK', sock)
+      vi.stubEnv('NODETERM_HOOK_TOKEN', 'socktok')
+      vi.stubEnv('NODETERM_HOOK_PORT', '')
+      vi.stubEnv('NODETERM_HOOK_ENDPOINT', '')
+      vi.stubEnv('NODETERM_NODE_TOKEN_DIR', tokenDir)
+      const hooks = await importPlugin()
+      await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_1' } } })
+      await vi.waitFor(() => expect(received.length).toBe(1))
+      expect(received[0]).toBe('OPENCODE-NODE-TOKEN')
+    } finally {
+      server.close()
+    }
+  })
+
+  it('posts over node:http with an EMPTY token when the file is missing', async () => {
+    const { createServer } = await import('node:http')
+    const sock = path.join(sockDir, 'hook-empty.sock')
+    const received: Array<string> = []
+    const server = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        received.push(String(req.headers['x-nodeterm-node-token'] ?? ''))
+        res.end('ok')
+      })
+    })
+    await new Promise<void>((r) => server.listen(sock, r))
+    try {
+      vi.stubEnv('NODETERM_NODE_ID', 'node-1')
+      vi.stubEnv('NODETERM_HOOK_SOCK', sock)
+      vi.stubEnv('NODETERM_HOOK_TOKEN', 'socktok')
+      vi.stubEnv('NODETERM_HOOK_PORT', '')
+      vi.stubEnv('NODETERM_HOOK_ENDPOINT', '')
+      vi.stubEnv('NODETERM_NODE_TOKEN_DIR', path.join(tokenDir, 'nope'))
+      const hooks = await importPlugin()
+      await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_1' } } })
+      await vi.waitFor(() => expect(received.length).toBe(1))
+      expect(received[0]).toBe('')
+    } finally {
+      server.close()
+    }
+  })
+})
+
 describe('opencodeConfigDir honors XDG_CONFIG_HOME', () => {
   it('lands the plugin under $XDG_CONFIG_HOME/opencode when the (absolute) env var is set', () => {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-xdg-'))
