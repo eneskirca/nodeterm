@@ -244,7 +244,11 @@ describe('remoteTmuxPtyArgs', () => {
       '-e', 'NODETERM_NODE_ID=nt-x'
     ])
     const cmd = args[args.length - 1]
-    expect(cmd).toContain('new-session -A -e NODETERM_HOOK_ENDPOINT=/r/ep.env -e NODETERM_NODE_ID=nt-x -s')
+    // Each token is posix-quoted: this is ONE remote shell line, and the pair values carry the raw
+    // node id (see control-master.injection.test.ts for the injection this closes).
+    expect(cmd).toContain(
+      `new-session -A '-e' 'NODETERM_HOOK_ENDPOINT=/r/ep.env' '-e' 'NODETERM_NODE_ID=nt-x' -s`
+    )
   })
   it('threads confPath to remoteTmuxCommand as a `-f` source before new-session', () => {
     const args = remoteTmuxPtyArgs(conn, '/s.sock', 'nt-x', '/srv/app', undefined, undefined, [], '/home/u/.nodeterm/tmux.conf')
@@ -294,9 +298,10 @@ describe('hook forwarding', () => {
     ])
     expect(remoteHookEnvArgs('/ep', 'n1', '1')).not.toContain('NODETERM_CANVAS_CONTROL=1')
   })
-  it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION', () => {
-    expect(remoteEndpointFileContents('/r.sock', 'tok', '1')).toBe(
-      'NODETERM_HOOK_SOCK=/r.sock\nNODETERM_HOOK_TOKEN=tok\nNODETERM_HOOK_VERSION=1\n'
+  it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION and the remote token dir', () => {
+    expect(remoteEndpointFileContents('/r.sock', 'tok', '2', '/home/u/.nodeterm/node-tokens')).toBe(
+      'NODETERM_HOOK_SOCK=/r.sock\nNODETERM_HOOK_TOKEN=tok\nNODETERM_HOOK_VERSION=2\n' +
+        'NODETERM_NODE_TOKEN_DIR=/home/u/.nodeterm/node-tokens\n'
     )
   })
 })

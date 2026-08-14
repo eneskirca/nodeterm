@@ -23,6 +23,8 @@ import { DownloadTickets } from '../core/download-tickets'
 import { registerBoardLogHandlers, type BoardLogRoute } from '../core/board-log-handlers'
 import os from 'os'
 import { hookServer } from '../core/agents/hook-server'
+import { loadOrCreateNodeAuthSecret } from '../core/agents/node-auth-secret'
+import { initNodeTokens, refreshNodeTokens } from '../core/agents/node-token-service'
 import {
   writePendingAnswerLocal,
   startPendingSweep,
@@ -223,7 +225,8 @@ export async function startServer(
   const downloadTickets = new DownloadTickets()
   const { gitService } = registerCoreHandlers(platform, {
     getSettings: () => settingsStore.get(),
-    downloadTickets
+    downloadTickets,
+    localProjectCwd: (projectId: string) => workspaceStore.localCwdForProject(projectId)
   })
   const github = registerGitHubIntegration({
     platform,
@@ -416,6 +419,23 @@ export async function startServer(
   }
   await hookServer.start()
 
+  // ---- Node identity (src/core/agents/node-auth-secret.ts) ------------------------------------
+  // First time the Server Edition arms node identity. Headless Linux has no OS keychain, so the
+  // secret is stored as raw 0600 bytes (node-auth-key.bin); the loader handles the at-rest format.
+  // FAIL OPEN and LOUD: if the secret can't be created/read, identity stays unavailable (legacy
+  // mode) and the hook server keeps serving — a throw here must never block boot or the hooks.
+  // Same escape hatch as the desktop, wired OUTSIDE the try for the same reason: it is not part of
+  // arming the secret, and a headless host in legacy mode is where it is most likely to be needed.
+  hookServer.setIdentityStrictOverride(() => settingsStore.get().hookIdentityStrict)
+  try {
+    hookServer.setNodeAuthSecret(await loadOrCreateNodeAuthSecret())
+    // Materialise a token file for every persisted node so an already-running session becomes
+    // verified at its next hook event with no restart. No-ops into legacy mode without a secret.
+    initNodeTokens({ canvases: () => workspaceStore.persistedCanvases() })
+  } catch (error) {
+    console.warn('[node-identity] no secret — hook identity unavailable, running legacy', error)
+  }
+
   // Context Link: core owns the whole feature (read handler, shim, skill, instruction blocks) and
   // writes everything under `dataDir`; what it needs from a shell is the link map. The desktop's
   // renderer pushes it from the live canvas — headless there may be no browser attached at all, so
@@ -428,7 +448,10 @@ export async function startServer(
   })
   // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
   // bridge edge reaches us as the workspace save it triggers.
-  workspaceStore.onPersist = () => void contextLink.refresh()
+  workspaceStore.onPersist = () => {
+    contextLink.refresh()
+    refreshNodeTokens()
+  }
   // Nothing has read the workspace index yet — the desktop gets its first load from the renderer,
   // and this shell may never have one. Read it once so links are live before any browser connects.
   // Read-only: boot must not sideline a conflict-marked project.json (that stays a renderer/probe
@@ -542,6 +565,10 @@ export async function startServer(
         // node env is torn down aborts the process. See SpeechService.shutdown.
         await speechService.shutdown()
         hookServer.stop()
+        // No WS teardown counterpart to the serving branch's below, and none is owed: this branch
+        // returns BEFORE `http.createServer`/`attachWsServer`, so there is no listener and no
+        // upgraded socket that could hold a close open. `startServer` has two returns and a
+        // shutdown step usually belongs in both — this one belongs in exactly one.
       }
     }
   }
@@ -556,7 +583,7 @@ export async function startServer(
   )
   // A closed browser tab is the NORMAL way to leave the Server Edition and sends no `pty:kill`,
   // so the WS close hook is what unsubscribes that client from the sessions it was watching.
-  attachWsServer(server, {
+  const wsServer = attachWsServer(server, {
     platform,
     auth,
     onClientGone: (uiId) => {
@@ -591,6 +618,11 @@ export async function startServer(
       await speechService.shutdown()
       // Close the loopback hook-server listener (it would otherwise die with the process anyway).
       hookServer.stop()
+      // Upgraded WebSockets are not ordinary HTTP connections: server.close() waits for them but
+      // does not end them. Own the WS lifecycle explicitly so a client close racing shutdown
+      // cannot hang the Server Edition (or its tests) forever.
+      for (const client of wsServer.clients) client.terminate()
+      await new Promise<void>((resolve) => wsServer.close(() => resolve()))
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()))
       })

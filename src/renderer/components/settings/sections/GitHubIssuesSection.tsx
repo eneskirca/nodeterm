@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import type {
   GitHubAuthProvider,
+  GitHubAuthStatus,
   GitHubControlView,
   ProjectKanbanGitHub
 } from '@shared/github-issues'
 import { useProjects } from '../../../state/projects'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
+import { useSettingsSearch } from '../context'
 import { FieldRow } from '../FieldRow'
 import { ConfirmDialog } from '../../ConfirmDialog'
 import { Button } from '@renderer/ui/Button'
@@ -69,24 +71,53 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
   const board = project?.kanban
   const githubConfig = board?.github
   const [view, setView] = useState<GitHubControlView | null>(null)
+  // The auth block this screen DESCRIBES — see authBlockFor: it is not always `view.auth`.
+  const [auth, setAuth] = useState<GitHubAuthStatus | null>(null)
   const [token, setToken] = useState('')
   const [repositoryDraft, setRepositoryDraft] = useState('')
   const [busy, setBusy] = useState('')
   const [notice, setNotice] = useState('')
   const [confirmation, setConfirmation] = useState<Confirmation>(null)
+  const searchQuery = useSettingsSearch()
+
+  /** `GitHubHostController.status(projectId)` MASKS the auth block for a project that is not
+   *  approved on this machine (`ghAuthenticated: false, activeProvider: null, tokenPresent: false`)
+   *  — a deliberate credential boundary, but it means "not approved yet" is indistinguishable from
+   *  "signed out". Approval comes AFTER authentication in the visible flow, so reading the masked
+   *  block put "GitHub CLI is not signed in. Run `gh auth login`" in front of every signed-in user
+   *  during setup. Ask for the project-independent block in exactly that case; when the project IS
+   *  approved the view already carries the real one, so the approved path spawns nothing extra. */
+  const authBlockFor = async (next: GitHubControlView): Promise<GitHubAuthStatus | null> => {
+    if (!next.project || next.project.approved) return next.auth
+    try {
+      return (await window.nodeTerminal.githubControl.status()).auth
+    } catch {
+      // Unknown beats a confident wrong answer: the copy falls back to its neutral branch.
+      return null
+    }
+  }
 
   const refreshStatus = async (): Promise<void> => {
     if (!projectId) return
     const next = await window.nodeTerminal.githubControl.status(projectId)
     setView(next)
+    setAuth(await authBlockFor(next))
   }
 
   useEffect(() => {
     if (!isActive || !projectId || project?.remote) return
     let live = true
-    void window.nodeTerminal.githubControl.status(projectId)
-      .then((next) => { if (live) setView(next) })
-      .catch((error) => { if (live) setNotice(messageFor(error)) })
+    void (async () => {
+      try {
+        const next = await window.nodeTerminal.githubControl.status(projectId)
+        if (!live) return
+        setView(next)
+        const block = await authBlockFor(next)
+        if (live) setAuth(block)
+      } catch (error) {
+        if (live) setNotice(messageFor(error))
+      }
+    })()
     return () => { live = false }
   }, [isActive, projectId, project?.remote])
 
@@ -154,7 +185,19 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
   const completionReady = !!githubConfig?.completionColumnId &&
     mappings.has(githubConfig.completionColumnId)
   const ready = approved && authenticated && completionReady
-  const ghSignedIn = !!view?.auth.ghAuthenticated
+
+  // What actually authenticates a request is `activeProvider` — the RESULT of the selected provider
+  // meeting the credentials that exist. `ghAuthenticated` alone lies in both directions: pinned to
+  // token-only it can be true while nothing authenticates, and pinned to gh-only a saved token is
+  // inert however present it is.
+  const activeProvider = auth?.activeProvider ?? null
+  const selectedProvider = auth?.selectedProvider ?? view?.control.authProvider ?? 'auto'
+  const ghActive = activeProvider === 'gh'
+  /** The token control is noise wherever a token cannot be what signs the user in: the CLI already
+   *  does it, or the user pinned authentication to the CLI. It moves into Advanced, never away. */
+  const tokenIsAside = !auth || ghActive || selectedProvider === 'gh'
+  // A control the user searched for must not be hidden behind a collapsed disclosure.
+  const searching = searchQuery.trim() !== ''
 
   // The personal access token control, defined once and placed either prominently (when the GitHub
   // CLI is NOT signed in — it's the only way in) or tucked inside "Advanced" (when gh already works,
@@ -319,29 +362,74 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
 
           <SearchableRow {...ROWS.authentication}>
             <div className="space-y-3">
-              {ghSignedIn ? (
-                // Happy path: the CLI already authenticates every request — no token, no dropdown.
-                // (Unless the user has explicitly pinned the provider to token-only, below.)
-                <p className="text-[13px] text-text">
-                  ✓ Signed in via GitHub CLI
-                  {view?.auth.activeProvider === 'gh' && view?.auth.login ? ` as @${view.auth.login}` : ''}.
-                  {view?.control.authProvider === 'token' ? '' : ' No token needed.'}
-                </p>
-              ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                {!auth ? (
+                  // Unknown, not signed out — the status read has not landed (or could not run).
+                  <p className="text-[13px] text-muted">
+                    GitHub authentication has not been checked yet.
+                  </p>
+                ) : ghActive ? (
+                  // Happy path: the CLI already authenticates every request — no token, no dropdown.
+                  <p className="text-[13px] text-text">
+                    ✓ Signed in via GitHub CLI{auth.login ? ` as @${auth.login}` : ''}. No token needed.
+                    {auth.tokenPresent ? ' A saved token is kept as a fallback.' : ''}
+                  </p>
+                ) : activeProvider === 'token' ? (
+                  <p className="text-[13px] text-text">
+                    ✓ Signed in with the saved personal access token{auth.login ? ` as @${auth.login}` : ''}.
+                  </p>
+                ) : selectedProvider === 'gh' ? (
+                  <p className="text-[13px] text-muted">
+                    GitHub CLI is not signed in. Run <code>gh auth login</code> in a terminal.
+                  </p>
+                ) : selectedProvider === 'token' ? (
+                  <p className="text-[13px] text-muted">
+                    No valid personal access token is saved. Paste one below.
+                  </p>
+                ) : (
+                  <p className="text-[13px] text-muted">
+                    GitHub CLI is not signed in. Run <code>gh auth login</code> in a terminal, or paste a
+                    personal access token below.
+                  </p>
+                )}
+                {/* The hint above tells the user to run a command in a terminal, so it needs a way
+                    back. The resolver's status read bypasses the credential cache, so this is
+                    accurate the moment `gh auth login` finishes. */}
+                <Button disabled={busy !== ''} onClick={() => void run(
+                  'recheck',
+                  async () => { /* the refresh inside run() is the whole action */ },
+                  'Authentication re-checked.'
+                )}>
+                  Check again
+                </Button>
+              </div>
+
+              {/* A pinned provider decides which credential is even consulted, and the dropdown that
+                  changes it now lives inside Advanced — so the pinning has to be said out loud. */}
+              {selectedProvider !== 'auto' && (
                 <p className="text-[13px] text-muted">
-                  GitHub CLI is not signed in. Run <code>gh auth login</code> in a terminal, or paste a
-                  personal access token below.
+                  {selectedProvider === 'gh'
+                    ? 'Authentication is pinned to the GitHub CLI, so a saved token is never used.'
+                    : 'Authentication is pinned to a personal access token, so the GitHub CLI is never used'}
+                  {selectedProvider === 'token' && auth?.ghAuthenticated
+                    ? ' — it is signed in, but ignored.'
+                    : selectedProvider === 'token' ? '.' : ''}
+                  {' '}Change this under Advanced.
                 </p>
               )}
 
-              {/* Token is the only way in when gh is absent, so surface it; otherwise hide it away. */}
-              {!ghSignedIn && tokenFieldRow}
+              {/* Token is a way in only where it can authenticate; otherwise it is tucked away. */}
+              {!tokenIsAside && tokenFieldRow}
 
-              <details className="github-auth-advanced">
-                <summary>{ghSignedIn ? 'Advanced — use a personal access token instead' : 'Advanced'}</summary>
-                <div className="space-y-4" style={{ marginTop: 12 }}>
+              <details className="github-auth-advanced" open={searching || undefined}>
+                <summary>
+                  {tokenIsAside
+                    ? 'Advanced — authentication provider and personal access token'
+                    : 'Advanced — authentication provider'}
+                </summary>
+                <div className="mt-3 space-y-4">
                   {providerFieldRow}
-                  {ghSignedIn && tokenFieldRow}
+                  {tokenIsAside && tokenFieldRow}
                 </div>
               </details>
             </div>

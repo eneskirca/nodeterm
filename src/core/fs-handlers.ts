@@ -1,6 +1,7 @@
 import type { CorePlatform } from './platform'
 import * as fsOps from './fs-ops'
 import { saveUpload } from './uploads'
+import { saveCanvasImage } from './canvas-images'
 import { IPC } from '../shared/ipc'
 import type { DownloadTicket } from '../shared/types'
 
@@ -22,6 +23,15 @@ export function registerFsHandlers(
      * rather than as "not offered here".
      */
     issueDownloadTicket?: (path: string) => Promise<DownloadTicket | null>
+    /**
+     * The project's LOCAL cwd, or undefined for an SSH project / relay tab / cwd-less canvas.
+     * Injected rather than taken from the caller because the renderer sends only a `projectId`:
+     * the write path is always derived here, from this shell's own workspace index, so a canvas
+     * image can never be aimed at a directory the renderer names. (Same discipline as
+     * `registerBoardLogHandlers` — see core/board-log-handlers.ts.) Absent ⇒ every project takes
+     * the durable app-local fallback, which is a coherent degrade, not a failure.
+     */
+    localProjectCwd?: (projectId: string) => string | undefined
   } = {}
 ): void {
   platform.handle(IPC.fsList, (dirPath: string) => fsOps.listDir(dirPath))
@@ -37,6 +47,18 @@ export function registerFsHandlers(
   // the managed uploads dir so the terminal has something to name. See core/uploads.ts.
   platform.handle(IPC.filesSaveUpload, (name: string, dataBase64: string) =>
     saveUpload(platform.userDataDir, name, dataBase64)
+  )
+  // A canvas image node is persisted, so its bytes go somewhere equally durable — the project's
+  // own `.nodeterm/images/` when it has one. See core/canvas-images.ts for the fallbacks.
+  platform.handle(
+    IPC.filesSaveCanvasImage,
+    (projectId: string, name: string, dataBase64: string) =>
+      saveCanvasImage({
+        projectCwd: deps.localProjectCwd?.(projectId),
+        userDataDir: platform.userDataDir,
+        name,
+        dataBase64
+      })
   )
   platform.handle(IPC.filesDownloadTicket, (p: string) =>
     deps.issueDownloadTicket ? deps.issueDownloadTicket(p) : Promise.resolve(null)

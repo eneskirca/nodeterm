@@ -67,9 +67,32 @@ export interface SessionBudgetConfig {
   batchMax: number
 }
 
+/**
+ * A positive INTEGER from the environment, or the fallback.
+ *
+ * The floor is `>= 1`, not `> 0`, and that is the whole point: `Math.floor(0.5)` is 0, and a zero
+ * here is not a smaller setting — it is the REMOVAL of a safety. `MAX_DETACHED=0.5` became a cap of
+ * zero, so every detached session counted as over-cap and a full batch died every sweep;
+ * `GRACE_HOURS=0.5` became zero grace, so a session was reapable the moment it detached.
+ *
+ * The asymmetry is what makes it dangerous rather than merely wrong: `abc`, `''` and `0` all fall
+ * back to the safe default, while `0.5` — the most PLAUSIBLE thing an operator would type, meaning
+ * "half" — silently disarmed the guard. A hand-editable value must degrade to the safe default,
+ * never to something more destructive than the default.
+ *
+ * Sub-hour grace is a legitimate wish, so it is served properly by `envHours` rather than being
+ * floored into nothing.
+ */
 function envInt(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
   const n = Number(env[key])
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback
+}
+
+/** Hours as a possibly-FRACTIONAL positive number, returned in seconds. `0.5` means 30 minutes —
+ *  the reading the operator intended — instead of `Math.floor`-ing to no grace at all. */
+function envHours(env: NodeJS.ProcessEnv, key: string, fallbackHours: number): number {
+  const n = Number(env[key])
+  return Math.round((Number.isFinite(n) && n > 0 ? n : fallbackHours) * 3600)
 }
 
 /**
@@ -85,7 +108,7 @@ export function sessionBudgetConfig(env: NodeJS.ProcessEnv, totalMb: number): Se
     disabled: env.NODETERM_SESSION_REAP_DISABLED === '1' || env.NODETERM_SESSION_REAP_DISABLED === 'true',
     minAvailableMb: envInt(env, 'NODETERM_SESSION_MIN_AVAILABLE_MB', Math.max(1024, Math.round(totalMb * 0.1))),
     maxDetached: envInt(env, 'NODETERM_SESSION_MAX_DETACHED', 48),
-    graceSec: envInt(env, 'NODETERM_SESSION_GRACE_HOURS', 6) * 3600,
+    graceSec: envHours(env, 'NODETERM_SESSION_GRACE_HOURS', 6),
     batchMax: envInt(env, 'NODETERM_SESSION_REAP_BATCH', 8)
   }
 }

@@ -1,7 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
+  canvasImageFiles,
+  canvasImageSink,
   clipboardImages,
   escapeDroppedPath,
+  localPathsForFiles,
   pasteHasText,
   pastedFiles,
   uploadNameFor
@@ -58,6 +61,68 @@ describe('pastedFiles', () => {
   it('answers empty for a text paste, which is xterm s to handle', () => {
     expect(pastedFiles(clipboard({}))).toEqual([])
     expect(pastedFiles(null)).toEqual([])
+  })
+})
+
+describe('canvasImageFiles', () => {
+  it('keeps MIME images and known image extensions only', () => {
+    const png = new File(['png'], 'shot.png', { type: 'image/png' })
+    const avif = new File(['avif'], 'photo.AVIF')
+    const text = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+    expect(canvasImageFiles([png, avif, text])).toEqual([png, avif])
+  })
+})
+
+describe('localPathsForFiles', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('routes pathless canvas bytes to the project image store, not the uploads staging area', async () => {
+    const saveUpload = vi.fn()
+    const saveCanvasImage = vi.fn().mockResolvedValue('/proj/.nodeterm/images/pasted.png')
+    // The suite runs on the node environment, which has no FileReader; only the base64 handoff
+    // matters here, so the read is the smallest stand-in that produces one.
+    vi.stubGlobal(
+      'FileReader',
+      class {
+        onload: (() => void) | null = null
+        onerror: (() => void) | null = null
+        result: string | null = null
+        readAsDataURL(): void {
+          this.result = 'data:image/png;base64,cG5n'
+          this.onload?.()
+        }
+      }
+    )
+    vi.stubGlobal('window', {
+      nodeTerminal: {
+        // A clipboard screenshot: no OS path, so the sink is the only thing that decides where it
+        // lands — and a canvas node outlives the 7-day uploads sweep.
+        getPathForFile: () => null,
+        files: { saveUpload, saveCanvasImage }
+      }
+    })
+    const file = new File(['png'], 'pasted.png', { type: 'image/png' })
+    expect(await localPathsForFiles([file], canvasImageSink('project-a'))).toEqual([
+      '/proj/.nodeterm/images/pasted.png'
+    ])
+    expect(saveCanvasImage).toHaveBeenCalledWith('project-a', 'pasted.png', expect.any(String))
+    expect(saveUpload).not.toHaveBeenCalled()
+  })
+
+  it('reuses an Electron file path without shell escaping it, and never calls the sink', async () => {
+    const saveCanvasImage = vi.fn()
+    vi.stubGlobal('window', {
+      nodeTerminal: {
+        getPathForFile: () => '/tmp/My image.png',
+        files: { saveUpload: vi.fn(), saveCanvasImage }
+      }
+    })
+    const file = new File(['png'], 'My image.png', { type: 'image/png' })
+    // A Finder drop already IS a file on this disk, so nothing is copied anywhere.
+    expect(await localPathsForFiles([file], canvasImageSink('project-a'))).toEqual([
+      '/tmp/My image.png'
+    ])
+    expect(saveCanvasImage).not.toHaveBeenCalled()
   })
 })
 

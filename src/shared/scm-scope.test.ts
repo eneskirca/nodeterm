@@ -56,6 +56,12 @@ describe('selectedScmGroupId', () => {
     expect(selectedScmGroupId([g1, select(termNode('t1', 'g1'))])).toBe('g1')
   })
 
+  it('inherits a bound Source Control scope through nested unbound groups', () => {
+    const inner = { ...groupNode('inner'), parentId: 'g1' }
+    expect(selectedScmGroupId([g1, inner, select(termNode('t1', 'inner'))])).toBe('g1')
+    expect(selectedScmGroupId([g1, select(inner)])).toBe('g1')
+  })
+
   it('returns null for a selected ungrouped node', () => {
     expect(selectedScmGroupId([g1, select(termNode('t1'))])).toBeNull()
   })

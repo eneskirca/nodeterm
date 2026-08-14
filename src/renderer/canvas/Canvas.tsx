@@ -34,6 +34,14 @@ import {
   wakeHibernatedNode
 } from '../nodes/TerminalNode'
 import { solveFitPadding } from './fit-view'
+import { MacWheelGestureRouter, trackpadRoutingEnabled } from './wheel-gesture'
+import { selectedLocalFilePaths } from './canvas-file-copy'
+import {
+  canvasImagePasteArmedAfterKey,
+  canvasImportRefusal,
+  guardedCanvasImagePlacements,
+  isCanvasImageDropTarget
+} from './canvas-image-import'
 import {
   SharedGlyphLayer,
   flushOpaqueNodeIds,
@@ -48,10 +56,14 @@ import {
   useSharedGlyphActive
 } from './SharedGlyphLayer'
 import { SshReconnector } from '../lib/sshReconnect'
+import {
+  hostAttachmentsFor,
+  connectHostAttachment,
+  type SshConnectFn
+} from '../lib/sshAttachments'
 import { terminalKey } from '../terminal/terminal-config'
 import {
   setWebglGesture,
-  setWebglZoom,
   releaseAllHiddenGrants,
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
@@ -138,6 +150,12 @@ import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
 import type { SessionNodeInput } from '../lib/sessionList'
 import { liveProjectJumpTarget, projectJumpDigit } from '../lib/projectJump'
+import {
+  liveZoomShortcutAction,
+  liveZoomShortcutContext,
+  zoomShortcutAllowed,
+  zoomShortcutChord
+} from '../lib/zoomShortcut'
 import { UsageIndicator } from '../components/UsageIndicator'
 import { SystemResourcePill } from '../components/SystemResourcePill'
 import { PresenceLayer } from '../components/PresenceLayer'
@@ -178,10 +196,19 @@ import { planHibernation, HIBERNATE_SWEEP_MS } from '../terminal/hibernation-pol
 import { buildHibernationCandidates } from '../lib/hibernationCandidates'
 import { applyLoopDismiss } from '../lib/loopCard'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
+import { isSafeQuickOpenRelPath } from '@shared/quick-open-filter'
+
+/** The real `sshProject.connect`, bound once. Passed into `connectHostAttachment` rather than
+ *  reached for inside it, so that helper stays testable without an Electron preload. */
+const sshConnect: SshConnectFn = (scopeId, conn, remoteCwd) =>
+  window.nodeTerminal.sshProject.connect(scopeId, conn, remoteCwd)
+const sshDisconnect = (scopeId: string): Promise<unknown> =>
+  window.nodeTerminal.sshProject.disconnect(scopeId)
 import { opensInEditor } from '../lib/openTarget'
 import { newEntryPath, parentDir } from '../lib/explorerCreate'
 import { useProjects } from '../state/projects'
 import { useAgentStatus } from '../state/agentStatus'
+import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
 import { SubagentNode } from '../nodes/SubagentNode'
@@ -204,6 +231,14 @@ import {
 import { normWorktreePath, type BoundGroup } from '@shared/worktree-reconcile'
 import { boundGroups, scmScopes, defaultScmScope, selectedScmGroupId } from '@shared/scm-scope'
 import { hintLabel } from '@shared/platform-utils'
+import {
+  canvasImageFiles,
+  canvasImageSink,
+  clipboardImages,
+  localPathsForFiles,
+  pasteHasText,
+  pastedFiles
+} from '../terminal/file-drop'
 import { useWorktrees } from '../state/worktrees'
 import { activeSessionApi } from '../session/session'
 import {
@@ -308,11 +343,14 @@ import {
   isVideoFile,
   duplicateNode,
   flowToNodeStates,
+  addSelectionToGroup,
   groupSelectedNodes,
   NODE_COLORS,
   nodeStatesToFlow,
+  reorderGroupWithinParent,
   reorderNodeBefore,
   reparentNode,
+  selectedRootIds,
   resolveNewNodeAccount,
   accountsForProject,
   sshAccountsHint,
@@ -672,10 +710,15 @@ export function Canvas() {
   // told here rather than being left with a note their teammates never see. Dismissible; re-armed
   // by the next refused cast (the publisher keeps retrying that node, so it syncs once trimmed).
   const [syncNote, setSyncNote] = useState<string | null>(null)
-  // Copy-to-clipboard failure (browser build only): the bridge clipboard stub dispatches
-  // `nodeterm:toast` when neither the Clipboard API nor execCommand can copy — typically a
-  // non-secure context (plain http over a LAN). It must be seen, not swallowed.
+  // A transient warning banner. Two producers, both of which must be SEEN rather than swallowed:
+  // a copy-to-clipboard failure (browser build only — the bridge clipboard stub dispatches
+  // `nodeterm:toast` when neither the Clipboard API nor execCommand can copy, typically a
+  // non-secure context over a LAN), and a Codex node reporting that it fell back to plain codex.
   const [copyError, setCopyError] = useState<string | null>(null)
+  // Cmd+V only drops an image on the canvas when the LAST pointer press was on the pane itself —
+  // otherwise a paste aimed at a panel or a dialog would spawn a node behind it. See
+  // canvas-image-import.ts for the arming rules.
+  const canvasImagePasteArmedRef = useRef(false)
   // Result of a worktree operation (merge / remove). These used to be `window.alert`s — a modal
   // that blocks the whole app to say "Merged feat into main." Shown as a strip in the existing
   // top-banner column instead; an 'info' one fades itself out, an 'error' stays until dismissed.
@@ -925,6 +968,20 @@ export function Canvas() {
     }
     window.addEventListener('nodeterm:toast', onToast)
     return () => window.removeEventListener('nodeterm:toast', onToast)
+  }, [])
+  // A Codex node's launcher reporting what it actually got. The 'plain' case is the fallback, and
+  // this is what stops it being silent: the node keeps a chip (see TerminalNode's header) and the
+  // FIRST fallback per node also raises a toast, because a chip on a node you are not looking at
+  // teaches nothing. Deliberately NOT written into the pane — text pushed into an agent's terminal
+  // is prompt injection, which this repo forbids.
+  useEffect(() => {
+    const seen = new Set<string>()
+    return window.nodeTerminal.codex.onIdentity((e) => {
+      useCodexIdentity.getState().setMode(e.nodeId, e.mode, e.reason)
+      if (e.mode !== 'plain' || seen.has(e.nodeId)) return
+      seen.add(e.nodeId)
+      setCopyError(codexFallbackText(e.reason))
+    })
   }, [])
   // Terminal node id awaiting confirmation to move into its group's worktree.
   const [moveTarget, setMoveTargetState] = useState<string | null>(null)
@@ -1672,6 +1729,29 @@ export function Canvas() {
       // Local active project: ensure all git ops run local (no stale remote from a prior SSH tab).
       void api.git.setActiveRemote(null)
     }
+    // HOST ATTACHMENTS: remote nodes on this canvas whose machine is not the project's own — every
+    // remote node when the project is LOCAL. They have no project row to be connected from, so
+    // their masters are opened here, alongside the project's, under the stable attachment scope
+    // their terminals resolve (`sshConnectionIdForProject`). This is a PRE-WARM only: a node added
+    // at runtime dials for itself from `resolveSshRemote`, and `connectHostAttachment` collapses
+    // both into one connect. Failures are silent by design — the node's own 20s wait then its
+    // offline overlay is the user-visible half, and `requireRemote` guarantees nothing starts
+    // locally.
+    // NOTE: git routing is deliberately NOT armed for an attachment. The project's own cwd is what
+    // the Source Control panel is about, and an attached node must not repoint it at another host.
+    for (const attachment of hostAttachmentsFor(project.id, project.nodes, project.ssh?.server)) {
+      void connectHostAttachment(
+        attachment.scopeId,
+        {
+          conn: attachment.conn,
+          hostKey: attachment.hostKey,
+          remoteCwd: attachment.remoteCwd,
+          ownerProjectId: project.id
+        },
+        sshConnect,
+        sshDisconnect
+      )
+    }
     loadingRef.current = true
     const flow = nodeStatesToFlow(project.nodes)
     setNodes(flow)
@@ -1714,9 +1794,6 @@ export function Canvas() {
       setViewport(project.viewport)
       setZoomPct(Math.round(project.viewport.zoom * 100))
       setGroupLabelBoost(project.viewport.zoom)
-      // A project can load already zoomed way out (saved viewport) — seed the WebGL zoom gate
-      // before the mount-time IntersectionObserver reports make every node request a context.
-      setWebglZoom(project.viewport.zoom)
       // Seed the shared glyph camera from the same viewport: `onMove` only fires once the user
       // actually pans, so without this a project that loads scrolled away would draw its grids
       // against the previous project's camera until the first gesture.
@@ -1922,7 +1999,7 @@ export function Canvas() {
       setMigrationNote(
         kind === 'exec'
           ? 'Custom shells and advanced SSH options (e.g. a ProxyCommand jump host) are no longer stored in the shared .nodeterm/project.json — a cloned repo could use them to run code. They still work here: they moved to this machine only, and your teammates no longer receive them.'
-          : 'Projects now live in a .nodeterm folder inside each project directory — commit it to share the canvas, or add it to .gitignore.'
+          : 'Projects now live in a .nodeterm folder inside each project directory. It holds the canvas only — no ids, camera or accounts from this machine — so committing it shares the canvas cleanly, or add it to .gitignore.'
       )
     })
   }, [])
@@ -2533,20 +2610,37 @@ export function Canvas() {
   // zoom to the cursor. React Flow's own zoomOnPinch / zoomActivationKeyCode are disabled so
   // this is the single source of zoom (no double-zoom on the open canvas).
   //
-  // With settings.wheelZoom on, a PLAIN wheel zooms too (mouse-first workflow; scroll-to-pan
-  // is disabled on <ReactFlow> in that mode) — except inside a `nowheel` node body (focused
-  // xterm scrollback, Monaco, markdown/chat panes), which keeps its own scrolling. The hover
-  // guard overlay is NOT nowheel, so an unfocused terminal still zooms under the cursor.
+  // With settings.wheelZoom on, a PLAIN mouse wheel zooms too (mouse-first workflow) — except
+  // inside a `nowheel` node body (focused xterm scrollback, Monaco, markdown/chat panes), which
+  // keeps its own scrolling. The hover guard overlay is NOT nowheel, so an unfocused terminal
+  // still zooms under the cursor. On macOS a two-finger TRACKPAD scroll keeps panning even with
+  // wheelZoom on: Chromium reports both devices as an unmodified pixel-wheel, so
+  // MacWheelGestureRouter tells them apart (and stays sticky for the length of one physical
+  // gesture) and hands trackpad packets back to React Flow's own panOnScroll.
   const wheelZoom = settings.wheelZoom
+  // The escape hatch, resolved ONCE: the router and React Flow's panOnScroll below must agree, or
+  // a gesture neither of them pans is a gesture that does nothing.
+  const trackpadRouting = trackpadRoutingEnabled(isMac, settings.trackpadPan)
   useEffect(() => {
     const wrap = flowWrapRef.current
     if (!wrap) return
+    const wheelRouting = new MacWheelGestureRouter()
     const onWheel = (e: WheelEvent) => {
       if (canvasLocked) return
       if (!e.ctrlKey && !e.metaKey) {
+        // The ancestor walk is the expensive part of this handler at ~120 Hz, so it is memoized
+        // per packet AND never run for a packet no guard asks about (a plain wheel with wheelZoom
+        // off, which is the default, walks nothing at all).
+        const target = e.target as HTMLElement | null
+        let scroller: boolean | undefined
+        const overNativeScrollable = (): boolean => (scroller ??= !!target?.closest('.nowheel'))
+        // A macOS trackpad's two-finger scroll pans the canvas outside native scroll surfaces;
+        // inside them (terminal, Monaco, markdown) it scrolls that surface as before.
+        if (wheelRouting.destination(e, trackpadRouting, overNativeScrollable) === 'flow-pan')
+          return
         // pinch (ctrl+wheel) / Cmd/Ctrl+scroll always zoom; plain wheel only when opted in
         if (!wheelZoom) return
-        if ((e.target as HTMLElement | null)?.closest('.nowheel')) return
+        if (overNativeScrollable()) return
       }
       e.preventDefault()
       e.stopPropagation()
@@ -2563,7 +2657,7 @@ export function Canvas() {
     }
     wrap.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => wrap.removeEventListener('wheel', onWheel, { capture: true })
-  }, [getViewport, setViewport, wheelZoom, canvasLocked])
+  }, [getViewport, setViewport, wheelZoom, trackpadRouting, canvasLocked])
 
   // Double-clicking EMPTY canvas pulls back to the overview zoom — the inverse of the node
   // double-click, which frames one node. A fixed zoom, not "the camera the last focus came from":
@@ -2671,13 +2765,39 @@ export function Canvas() {
   // since both decide by comparing against what this returns.
   const cwdForNewNodeIn = useCallback(
     (parentId: string | undefined): string | undefined => {
-      if (!parentId) return undefined
-      const parent = nodesRef.current.find((n) => n.id === parentId)
-      const stale = useWorktrees.getState().staleGroupIds.includes(parentId)
-      if (parent?.data.worktree && !stale && !isSshProject) return parent.data.worktree.path
-      return parent?.data.cwd || undefined
+      // Frames nest, so the answer is the NEAREST ancestor that states one — a node dropped in a
+      // sub-frame of a worktree frame still belongs to that worktree checkout.
+      const seen = new Set<string>()
+      let currentId = parentId
+      while (currentId && !seen.has(currentId)) {
+        seen.add(currentId)
+        const parent = nodesRef.current.find((n) => n.id === currentId)
+        if (!parent) return undefined
+        const stale = useWorktrees.getState().staleGroupIds.includes(currentId)
+        if (parent.data.worktree && !stale && !isSshProject) return parent.data.worktree.path
+        if (parent.data.cwd) return parent.data.cwd
+        currentId = parent.parentId
+      }
+      return undefined
     },
     [isSshProject]
+  )
+
+  /** The nearest ancestor frame (from `parentId` upward) that is bound to a git worktree. */
+  const worktreeForGroupChain = useCallback(
+    (parentId: string | undefined): { groupId: string; path: string } | undefined => {
+      const seen = new Set<string>()
+      let currentId = parentId
+      while (currentId && !seen.has(currentId)) {
+        seen.add(currentId)
+        const group = nodesRef.current.find((node) => node.id === currentId)
+        const path = group?.data.worktree?.path as string | undefined
+        if (path) return { groupId: currentId, path }
+        currentId = group?.parentId
+      }
+      return undefined
+    },
+    []
   )
 
   // Reparent a freshly-created node into a group (parentId + extent 'parent', position made
@@ -2685,11 +2805,17 @@ export function Canvas() {
   const parentInto = useCallback((node: CanvasNode, groupId: string): CanvasNode => {
     const group = nodesRef.current.find((n) => n.id === groupId)
     if (!group) return node
+    // The frame's own position is relative to ITS parent once frames nest, so the incoming
+    // absolute point must be converted against the frame's ROOT-space origin.
+    const groupPosition = absolutePosition(
+      group as FocusableNode,
+      nodesRef.current as FocusableNode[]
+    )
     return {
       ...node,
       parentId: groupId,
       extent: 'parent' as const,
-      position: { x: node.position.x - group.position.x, y: node.position.y - group.position.y }
+      position: { x: node.position.x - groupPosition.x, y: node.position.y - groupPosition.y }
     }
   }, [])
 
@@ -2725,9 +2851,6 @@ export function Canvas() {
   const placeSpawned = useCallback(
     (node: CanvasNode, pos: { x: number; y: number }): CanvasNode => {
       const placed = { ...node, position: pos, parentId: undefined, extent: undefined }
-      // A group frame is never nested into another (the model is one level deep — see
-      // groupSelectedNodes/ungroupNodes); it just lands where it was dropped.
-      if (placed.type === 'group') return placed
       const groupId = groupAtPoint(pos)
       return groupId ? parentInto(placed, groupId) : placed
     },
@@ -2920,33 +3043,155 @@ export function Canvas() {
     [setNodes, markDirty, viewCenter]
   )
 
-  // Load the quick-open file index when the palette opens.
+  // Reuse the same path resolver as terminal file paste/drop, then feed the existing Open-file
+  // node path. Desktop Finder drops retain their real path; clipboard/browser blobs are saved in
+  // NodeTerm's managed upload directory first. Multiple images fan out diagonally from the cursor.
+  const placeCanvasImages = useCallback(
+    async (files: File[], center: { x: number; y: number }, projectId: string) => {
+      const images = canvasImageFiles(files)
+      if (!images.length) return
+      // A relay tab writes here and reads on the peer, so the node could never render its own
+      // file — say so instead of creating it. Same fact, same source as the Cmd+C gate below.
+      const refusal = canvasImportRefusal(!!useProjects.getState().getProject(projectId)?.remote)
+      if (refusal) {
+        setCopyError(refusal)
+        return
+      }
+      const placements = await guardedCanvasImagePlacements(
+        // Into the PROJECT's own `.nodeterm/images/`, not the 7-day uploads staging area: the node
+        // that names this file is persisted in project.json, so the file has to outlive a week and
+        // travel to whoever clones the repo.
+        () => localPathsForFiles(images, canvasImageSink(projectId)),
+        projectId,
+        () => useProjects.getState().activeProjectId,
+        center
+      )
+      placements.forEach(({ filePath, center: placement }) => openFile(filePath, placement))
+      // Unsaveable files are dropped silently one layer down, and core already retried in a second
+      // directory before giving up — so a shortfall here means the image is genuinely not on disk.
+      // Saying nothing would leave the user watching for a node that is never coming. (A project
+      // switch mid-save legitimately places nothing; that is the guard's job, not a failure.)
+      const lost = images.length - placements.length
+      if (lost > 0 && useProjects.getState().activeProjectId === projectId) {
+        setCopyError(
+          `Could not save ${lost === 1 ? 'the image' : `${lost} images`} — check that this project's folder is writable.`
+        )
+      }
+    },
+    [openFile]
+  )
+
+  // Drop or paste an image onto empty canvas → an image preview node. Registered on `window`
+  // (not the wrapper) because a paste has no drop target, and gated by isCanvasImageDropTarget so
+  // panels, dialogs and node bodies keep their own drop/paste behavior.
+  useEffect(() => {
+    const wrap = flowWrapRef.current
+    if (!wrap) return
+    const editableTarget = (target: EventTarget | null): boolean => {
+      const element = target instanceof Element ? target : null
+      return !!element?.closest(
+        'input, textarea, select, button, [contenteditable], [role="dialog"], .monaco-editor, .xterm, .react-flow__node'
+      )
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      canvasImagePasteArmedRef.current = isCanvasImageDropTarget(event.target, wrap)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      canvasImagePasteArmedRef.current = canvasImagePasteArmedAfterKey(
+        canvasImagePasteArmedRef.current,
+        event
+      )
+    }
+    const onDragOver = (event: DragEvent) => {
+      if (!isCanvasImageDropTarget(event.target, wrap)) return
+      if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+    }
+    const onDrop = (event: DragEvent) => {
+      if (!isCanvasImageDropTarget(event.target, wrap)) return
+      const images = canvasImageFiles(Array.from(event.dataTransfer?.files ?? []))
+      if (!images.length) return
+      event.preventDefault()
+      event.stopPropagation()
+      const center = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const projectId = useProjects.getState().activeProjectId
+      if (projectId) void placeCanvasImages(images, center, projectId)
+    }
+    const onPaste = (event: ClipboardEvent) => {
+      if (!canvasImagePasteArmedRef.current || !hasProjects || welcomeOpen || kanbanOpen) return
+      if (document.querySelector('[role="dialog"], .usage-popover')) return
+      if (editableTarget(event.target)) return
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const center = viewCenter()
+      if (!center) return
+      const files = canvasImageFiles(pastedFiles(event.clipboardData))
+      if (files.length) {
+        event.preventDefault()
+        event.stopPropagation()
+        void placeCanvasImages(files, center, projectId)
+        return
+      }
+      // A screenshot can arrive with an empty clipboardData when Chromium filters the paste
+      // target. Ordinary text must remain untouched; only the image-only case uses async read().
+      if (pasteHasText(event.clipboardData)) return
+      void clipboardImages().then((images) => {
+        if (images.length) void placeCanvasImages(images, center, projectId)
+      })
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    window.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+      window.removeEventListener('paste', onPaste)
+    }
+  }, [hasProjects, kanbanOpen, placeCanvasImages, screenToFlowPosition, viewCenter, welcomeOpen])
+
+  // Load the quick-open file index when the palette opens. An SSH project indexes its remoteCwd
+  // over the ControlMaster (sshFs.quickOpen); the browser client's sshFs is a stub, so the catch
+  // fails open to an empty index there instead of surfacing an "unsupported" error.
   useEffect(() => {
     if (!paletteOpen) return
-    const cwd = useProjects.getState().getProject(activeProjectId ?? '')?.cwd
-    if (!cwd) {
+    const project = useProjects.getState().getProject(activeProjectId ?? '')
+    const cwd = project?.ssh?.remoteCwd ?? project?.cwd
+    if (!project || !cwd) {
       setFileIndex([])
       return
     }
     let cancelled = false
-    void window.nodeTerminal.files.quickOpen(cwd).then((files) => {
-      if (!cancelled) setFileIndex(prepareQuickOpenFiles(files))
-    })
+    const index = project.ssh
+      ? window.nodeTerminal.sshFs.quickOpen(project.id, cwd)
+      : window.nodeTerminal.files.quickOpen(cwd)
+    void index
+      .catch(() => [] as string[])
+      .then((files) => {
+        if (!cancelled) setFileIndex(prepareQuickOpenFiles(files))
+      })
     return () => {
       cancelled = true
     }
   }, [paletteOpen, activeProjectId])
 
   /** Open a quick-open file result by root-relative path: editor node for text/images,
-   *  OS default app for binaries (e.g. .dmg). */
+   *  OS default app for binaries (e.g. .dmg). On an SSH project everything opens as a canvas
+   *  node routed over `sshFs` (there is no OS to hand a remote path to). */
   const openProjectFile = useCallback(
     (relPath: string) => {
-      const cwd = useProjects.getState().getProject(activeProjectId ?? '')?.cwd
+      const project = useProjects.getState().getProject(activeProjectId ?? '')
+      const cwd = project?.ssh?.remoteCwd ?? project?.cwd
       if (!cwd) return
-      // relPath comes from the trusted local file index (always cwd-relative), so the
-      // `cwd + relPath` join needs no traversal guard in v1; a future remote/untrusted source would.
+      // An SSH project's index is remote-supplied, so guard the join against traversal.
+      if (!isSafeQuickOpenRelPath(relPath)) return
       const abs = `${cwd.replace(/\/$/, '')}/${relPath}`
-      if (opensInEditor(relPath)) openFile(abs)
+      if (project?.ssh) openFile(abs, undefined, true)
+      else if (opensInEditor(relPath)) openFile(abs)
       else window.nodeTerminal.shell.openPath(abs)
     },
     [activeProjectId, openFile]
@@ -3107,9 +3352,21 @@ export function Canvas() {
   const cloneRepo = useCallback(() => setCloneDialogOpen(true), [])
 
   const onRepoCloned = useCallback(
-    (clonedPath: string, name: string) => {
+    async (clonedPath: string, name: string) => {
       commitActiveToStore()
-      const project = useProjects.getState().addProject(name, clonedPath)
+      // A cloned repo may SHIP its canvas: `.nodeterm/project.json` is a git-shared file (the
+      // migration banner asks users to commit it). Minting a brand-new empty project for the folder
+      // ignored that canvas entirely, so a clone came up blank. Same probe→adopt path as "Open
+      // folder…" — the probe reads the canvas and mints this machine's id for it.
+      //
+      // The probe may NOT be allowed to fail the clone: `onCloned` is typed `=> void` and the
+      // dialog does not await it, so a rejected IPC would leave the freshly cloned repo with no
+      // tab at all (plus an unhandled rejection) where the old code always created one. A failed
+      // probe simply means "we learned nothing about this folder" → the virgin-folder path.
+      const probed = await api.workspace.probeFolder(clonedPath).catch(() => null)
+      const project = probed
+        ? useProjects.getState().adoptProject({ ...probed, closed: false })
+        : useProjects.getState().addProject(name, clonedPath)
       useProjects.getState().setActive(project.id)
       // The welcome screen stays up behind the clone dialog; dismiss it now that a
       // project actually exists (no-op when the dialog was opened elsewhere).
@@ -3668,6 +3925,16 @@ export function Canvas() {
     [setNodes, markDirty]
   )
 
+  // Add the current selection to an EXISTING frame (the counterpart of "Group selection", which
+  // always makes a new one). Only subtree roots move — see addSelectionToGroup.
+  const addToExistingGroup = useCallback(
+    (ids: string[], groupId: string) => {
+      setNodes((nodes) => addSelectionToGroup(nodes as CanvasNode[], ids, groupId))
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
   // Detach single nodes from their group frame (the frame and its other children stay).
   // Counterpart of drag-into-group / `ungroup` (which dissolves the whole frame).
   const removeFromGroup = useCallback(
@@ -4118,9 +4385,7 @@ export function Canvas() {
     (nodeId: string) => {
       const node = nodesRef.current.find((n) => n.id === nodeId)
       const parentId = node?.parentId
-      const wtPath = nodesRef.current.find((p) => p.id === parentId)?.data.worktree?.path as
-        | string
-        | undefined
+      const wtPath = worktreeForGroupChain(parentId)?.path
       if (!wtPath) return
       // Never open the confirm for a session that does not live on this machine (see the confirm).
       if (isSshProject || isRemoteSessionNode(node?.data)) {
@@ -4137,7 +4402,7 @@ export function Canvas() {
       }
       setMoveTarget(nodeId)
     },
-    [cwdForNewNodeIn, isSshProject]
+    [cwdForNewNodeIn, isSshProject, worktreeForGroupChain]
   )
 
   const confirmMoveIntoWorktree = useCallback(async () => {
@@ -4145,8 +4410,7 @@ export function Canvas() {
     setMoveTarget(null)
     if (!id) return
     const node = nodesRef.current.find((n) => n.id === id)
-    const parent = nodesRef.current.find((p) => p.id === node?.parentId)
-    const wtPath = parent?.data.worktree?.path as string | undefined
+    const wtPath = worktreeForGroupChain(node?.parentId)?.path
     if (!node || !wtPath || node.data.cwd === wtPath) return
     // A session that runs on another machine must never be moved into a LOCAL worktree: `destroy`
     // would end its REMOTE tmux session (running processes and all) and respawn it in a directory
@@ -4209,7 +4473,7 @@ export function Canvas() {
       )
     )
     markDirty()
-  }, [moveTarget, setNodes, markDirty, cwdForNewNodeIn, isSshProject])
+  }, [moveTarget, setNodes, markDirty, cwdForNewNodeIn, isSshProject, worktreeForGroupChain])
 
   // Bridge the move-into-worktree handler to TerminalNode (React Flow owns the instances).
   useEffect(() => {
@@ -4682,6 +4946,18 @@ export function Canvas() {
       } else if ((e.metaKey || e.ctrlKey) && e.key === '/') {
         e.preventDefault()
         setShortcutsOpen((v) => !v)
+      } else if (zoomShortcutChord(e) !== null) {
+        // ⌘/Ctrl+0 = back to 100%, Shift+1 = fit everything. `liveZoomShortcutAction` is the
+        // whole decision (see `lib/zoomShortcut.ts`), and the ⌘0 desktop route below asks the same
+        // one, so the two paths can never disagree about when the chord is allowed to move the
+        // camera. A null answer means "leave the key alone" — no `preventDefault`, which is what
+        // keeps Shift+1 typing a `!` wherever the user is actually typing.
+        const action = liveZoomShortcutAction(e)
+        if (action) {
+          e.preventDefault()
+          if (action === 'zoom-100') zoomTo100()
+          else fitAll()
+        }
       } else if (projectJumpDigit(e) !== null) {
         // Cmd/Ctrl+1-9 jumps to the Nth project — but only when the app actually owns the key
         // (desktop shell, and the digit addresses an open project). `liveProjectJumpTarget`
@@ -4693,16 +4969,67 @@ export function Canvas() {
           switchProject(targetId)
         }
       } else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'c') {
-        // Copy the current page selection (e.g. markdown view) to the clipboard.
+        // Native text selection wins (markdown, editor and terminal keep their normal copy path).
         const tag = (document.activeElement?.tagName || '').toLowerCase()
-        if (tag === 'input' || tag === 'textarea') return
+        if (
+          tag === 'input' ||
+          tag === 'textarea' ||
+          document.activeElement?.getAttribute('contenteditable') === 'true' ||
+          document.activeElement?.closest('.monaco-editor, .xterm')
+        )
+          return
         const sel = window.getSelection?.()?.toString()
-        if (sel) window.nodeTerminal.clipboard.writeText(sel)
+        if (sel) {
+          window.nodeTerminal.clipboard.writeText(sel)
+          return
+        }
+        // Nothing selected as text: copy the selected file-backed nodes as FILE REFERENCES, so
+        // Finder (or any file-aware app) pastes the actual files.
+        //
+        // Gated to where it can actually succeed, because the failure path raises a banner that
+        // stays until dismissed — and before this feature the keystroke was a silent no-op, which
+        // is what every other machine must keep getting. `writeFilesToClipboard` is darwin-gated
+        // in main and the browser bridge stub answers false, so on a non-mac renderer (desktop OR
+        // Server Edition) this branch could only ever produce that banner, wearing macOS-specific
+        // copy on a Linux box. The board is an opaque overlay over the canvas, so a copy there
+        // would act on a selection the user cannot see (the canvas-only-shortcut discipline).
+        const projects = useProjects.getState()
+        if (!isMac || isKanbanOpen(projects.activeProjectId)) return
+        const paths = selectedLocalFilePaths(nodesRef.current, {
+          projectIsRelay: !!projects.getProject(projects.activeProjectId ?? '')?.remote
+        })
+        if (!paths.length) return
+        e.preventDefault()
+        void window.nodeTerminal.clipboard
+          .writeFiles(paths)
+          .then((copied) => {
+            setCopyError(
+              copied
+                ? null
+                : 'Copy failed — only existing local files can be copied from the macOS desktop app.'
+            )
+          })
+          .catch(() => setCopyError('Copy failed — the system clipboard is unavailable.'))
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleSessionsPin, switchProject])
+  }, [toggleSessionsPin, switchProject, fitAll, zoomTo100])
+
+  // ⌘/Ctrl+0 on the DESKTOP never reaches the keydown handler above: Electron's default View menu
+  // binds the accelerator to `resetZoom`, and a menu accelerator is handled before the page sees
+  // the key. `main/index.ts` intercepts it in `before-input-event` — exactly as it already does for
+  // ⌘M (else macOS minimizes) and ⌘W — and forwards it here, so the chord zooms the CANVAS to 100%
+  // instead of resetting the WINDOW's page zoom, which is not what a canvas app's user means by
+  // "actual size". The forwarded signal carries no event, so the refusals are re-asked here from
+  // the same module rather than re-derived. Server Edition has no menu and no intercept: there the
+  // keydown branch above is the whole path (the browser's own ⌘0 means the same thing, so the two
+  // agree rather than fight, and the bridge stubs this subscription out).
+  useEffect(() => {
+    return window.nodeTerminal.onZoomActualSize(() => {
+      if (zoomShortcutAllowed(liveZoomShortcutContext())) zoomTo100()
+    })
+  }, [zoomTo100])
 
   // Apply the accent color as a CSS variable.
   useEffect(() => {
@@ -4727,22 +5054,58 @@ export function Canvas() {
     return tidySeparators([
       { type: 'label', label: ids.length > 1 ? `${ids.length} nodes` : '1 node' },
       ...((): MenuItem[] => {
-        // "Group …" only when something is actually groupable (top-level, not itself a group —
-        // groupSelectedNodes silently skips the rest, so the item would otherwise no-op);
-        // "Remove from group" only when a target is inside a group frame (the frame stays).
-        const groupable = ids.some((nid) => {
-          const n = nodesRef.current.find((nd) => nd.id === nid)
-          return !!n && !n.parentId && n.type !== 'group'
-        })
+        // "Group …" wraps objects that share ONE container — existing frames are valid members
+        // now that frames nest. A box-selection that caught a frame AND its children is
+        // normalized to its subtree roots first (selectedRootIds), so the children are not torn
+        // out of the frame being wrapped; a set spanning two containers is refused, because
+        // their positions are not comparable. "Remove from group" only when a target is inside
+        // a frame (the frame stays).
+        const selectedNodes = ids
+          .map((nid) => nodesRef.current.find((node) => node.id === nid))
+          .filter((node): node is CanvasNode => !!node)
+        const rootIds = selectedRootIds(nodesRef.current as CanvasNode[], ids)
+        const rootSet = new Set(rootIds)
+        const rootNodes = selectedNodes.filter((node) => rootSet.has(node.id))
+        const groupable =
+          rootNodes.length > 0 &&
+          (ids.length === 1 || rootNodes.length > 1) &&
+          new Set(rootNodes.map((node) => node.parentId ?? null)).size === 1
+        // Frames in the selection that this selection could actually be ADDED to (the pure
+        // transform is asked, so the item can never be a no-op).
+        const targetGroups = selectedNodes.filter(
+          (node) =>
+            node.type === 'group' &&
+            addSelectionToGroup(nodesRef.current as CanvasNode[], ids, node.id) !==
+              nodesRef.current
+        )
         const parented = ids.some(
           (nid) => !!nodesRef.current.find((nd) => nd.id === nid)?.parentId
         )
         const items: MenuItem[] = []
+        if (targetGroups.length === 1 && !isHidden('group', hidden)) {
+          const targetGroup = targetGroups[0]
+          items.push({
+            label: `Add selection to ${targetGroup.data.title || 'group'}`,
+            icon: <IconGroup />,
+            onClick: () => addToExistingGroup(ids, targetGroup.id)
+          })
+        } else if (targetGroups.length > 1 && !isHidden('group', hidden)) {
+          items.push({
+            type: 'submenu',
+            label: 'Add selection to group',
+            icon: <IconGroup />,
+            children: targetGroups.map((targetGroup) => ({
+              label: targetGroup.data.title || 'Group',
+              icon: <IconGroup />,
+              onClick: () => addToExistingGroup(ids, targetGroup.id)
+            }))
+          })
+        }
         if (groupable && !isHidden('group', hidden))
           items.push({
-            label: ids.length > 1 ? 'Group selection' : 'Group node',
+            label: rootIds.length > 1 ? 'Group selection' : 'Group node',
             icon: <IconGroup />,
-            onClick: () => groupSelection(ids)
+            onClick: () => groupSelection(rootIds)
           })
         if (parented && !isHidden('remove-from-group', hidden))
           items.push({
@@ -4884,6 +5247,7 @@ export function Canvas() {
     ])
   }, [
     groupSelection,
+    addToExistingGroup,
     removeFromGroup,
     setNodesColor,
     duplicateNodes,
@@ -4981,11 +5345,45 @@ export function Canvas() {
   )
 
   const groupItems = useCallback(
-    (groupId: string, at?: { x: number; y: number }): MenuItem[] =>
+    (groupId: string, at?: { x: number; y: number }): MenuItem[] => {
+      // Right-clicking a frame while other objects are selected is the natural way to say "put
+      // these in here" (or "wrap all of us in a new frame"). Both are offered only when the pure
+      // transform would actually do something.
+      const selectedIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id)
+      const rootIds = selectedRootIds(nodesRef.current as CanvasNode[], selectedIds)
+      const rootSet = new Set(rootIds)
+      const rootNodes = nodesRef.current.filter((node) => rootSet.has(node.id))
+      const canWrapSelection =
+        selectedIds.includes(groupId) &&
+        rootNodes.length > 1 &&
+        new Set(rootNodes.map((node) => node.parentId ?? null)).size === 1
+      const canAddSelection =
+        selectedIds.includes(groupId) &&
+        addSelectionToGroup(nodesRef.current as CanvasNode[], selectedIds, groupId) !==
+          nodesRef.current
+      const groupHidden = isHidden('group', useSettings.getState().settings.hiddenNodeMenuItems)
       // The group frame has its own colors strip; it answers to the same "Colors" toggle as the
       // node menu, so hiding it in Settings hides it everywhere a right-click can reach it.
-      tidySeparators([
+      return tidySeparators([
         { type: 'label', label: 'Group' },
+        ...(canAddSelection && !groupHidden
+          ? [
+              {
+                label: 'Add selected objects to group',
+                icon: <IconGroup />,
+                onClick: () => addToExistingGroup(selectedIds, groupId)
+              } as MenuItem
+            ]
+          : []),
+        ...(canWrapSelection && !groupHidden
+          ? [
+              {
+                label: 'Wrap selection in new group',
+                icon: <IconGroup />,
+                onClick: () => groupSelection(rootIds)
+              } as MenuItem
+            ]
+          : []),
         {
           label: 'New terminal',
           icon: <IconTerminal />,
@@ -5018,7 +5416,8 @@ export function Canvas() {
           danger: true,
           onClick: () => ungroup(groupId)
         }
-      ]),
+      ])
+    },
     [
       setNodesColor,
       ungroup,
@@ -5027,7 +5426,9 @@ export function Canvas() {
       isSshProject,
       addTerminal,
       agentCreationItems,
-      addSticky
+      addSticky,
+      addToExistingGroup,
+      groupSelection
     ]
   )
 
@@ -5307,9 +5708,6 @@ export function Canvas() {
           zoomRafRef.current = null
           setZoomPct(Math.round(viewportRef.current.zoom * 100))
           setGroupLabelBoost(viewportRef.current.zoom)
-          // Feed the WebGL budget's zoom gate (suspend GPU rendering when zoomed way out).
-          // Idempotent + hysteresis inside; per-frame call cost is a float compare.
-          setWebglZoom(viewportRef.current.zoom)
         })
       }
     },
@@ -6025,14 +6423,21 @@ export function Canvas() {
           case 'group': {
             const ids = (args.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean)
             const live = nodesRef.current as CanvasNode[]
-            const resolvable = ids.filter((gid) => live.some((nd) => nd.id === gid && !nd.parentId && nd.type !== 'group'))
+            const resolvable = ids.filter((id) => live.some((node) => node.id === id))
             if (resolvable.length === 0) {
-              reply({ ok: false, error: 'group: none of the given node ids are groupable (top-level, non-group)' })
+              reply({ ok: false, error: 'group: none of the given node ids exist' })
               return
             }
             const groupCount = live.filter((nd) => nd.type === 'group').length
             let grouped = groupSelectedNodes(live, resolvable, groupCount)
-            const groupNode = grouped[0] // groupSelectedNodes returns the new group first
+            // The new frame is no longer guaranteed to be first (it is emitted in tree order),
+            // and a refused set returns the array unchanged — find it by id instead.
+            const oldIds = new Set(live.map((node) => node.id))
+            const groupNode = grouped.find((node) => !oldIds.has(node.id) && node.type === 'group')
+            if (!groupNode) {
+              reply({ ok: false, error: 'group: nodes must be siblings in one container and may not include an ancestor with its descendant' })
+              return
+            }
             if (args.label) {
               grouped = grouped.map((nd) =>
                 nd.id === groupNode.id ? { ...nd, data: { ...nd.data, title: args.label } } : nd
@@ -6040,12 +6445,8 @@ export function Canvas() {
             }
             setNodes(grouped)
             markDirty()
-            // Nodes already inside another frame are skipped (group only wraps loose nodes) — say
-            // so, and point at `move`, so the agent isn't left wondering why a node stayed put.
             const skippedGrouped = ids.length - resolvable.length
-            const groupNote = skippedGrouped > 0
-              ? ` (${skippedGrouped} already in a frame were skipped — use \`move --group ${groupNode.id}\` for those)`
-              : ''
+            const groupNote = skippedGrouped > 0 ? ` (${skippedGrouped} unknown id(s) skipped)` : ''
             reply({
               ok: true,
               message: `grouped ${resolvable.length} node(s) into ${groupNode.id}${groupNote}`,
@@ -6068,9 +6469,10 @@ export function Canvas() {
             return
           }
           case 'move': {
-            // Reparent nodes INTO an existing frame (or out to the top level) — the one way to
-            // move a node OUT of its current frame, which `group` deliberately won't do. `reparentNode`
-            // keeps each node fixed on the canvas via absolute↔relative conversion.
+            // Reparent nodes — or whole frame subtrees — INTO an existing frame (or out to the
+            // top level): the one way to move a node OUT of its current frame, which `group`
+            // deliberately won't do. `reparentNode` keeps each node's ROOT-space position fixed
+            // and refuses a cycle (a frame into itself or its own descendant).
             const ids = (args.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean)
             const live = nodesRef.current as CanvasNode[]
             const rawTarget = (args.group ?? '').trim().toLowerCase()
@@ -6085,12 +6487,12 @@ export function Canvas() {
             for (const id of ids) {
               const before = next
               const nd = next.find((n) => n.id === id)
-              // Skip a group id, an unknown id, or a node already in the requested container.
-              if (nd && nd.type !== 'group') next = reparentNode(next, id, targetGroup)
+              // Skip an unknown id, a node already in the requested container, or a cycle.
+              if (nd) next = reparentNode(next, id, targetGroup)
               if (next !== before) moved.push(id)
             }
             if (moved.length === 0) {
-              reply({ ok: false, error: 'move: nothing moved (unknown ids, group ids, or already there)' })
+              reply({ ok: false, error: 'move: nothing moved (unknown ids, already there, or an invalid group cycle)' })
               return
             }
             // The source frame(s) the nodes LEFT, and the destination, may now be the wrong size —
@@ -6275,8 +6677,13 @@ export function Canvas() {
             let next: CanvasNode[] = [...live, ...reviewers, ...(judge ? [judge] : [])]
             next = arrangeNodes(next, panelIds, { layout: 'grid', origin: placeBelow(0) })
             const vGroupCount = next.filter((nd) => nd.type === 'group').length
+            const existingGroupIds = new Set(
+              next.filter((node) => node.type === 'group').map((node) => node.id)
+            )
             next = groupSelectedNodes(next, panelIds, vGroupCount)
-            const vGroup = next[0]
+            const vGroup = next.find(
+              (node) => node.type === 'group' && !existingGroupIds.has(node.id)
+            )!
             next = next.map((nd) =>
               nd.id === vGroup.id
                 ? { ...nd, data: { ...nd.data, title: args.label || `Verify: ${targetTitle}` } }
@@ -6355,8 +6762,13 @@ export function Canvas() {
             let next: CanvasNode[] = [...live, ...members]
             next = arrangeNodes(next, memberIds, { layout: 'grid', origin: placeBelow(0) })
             const groupCount = next.filter((nd) => nd.type === 'group').length
+            const existingGroupIds = new Set(
+              next.filter((node) => node.type === 'group').map((node) => node.id)
+            )
             next = groupSelectedNodes(next, memberIds, groupCount)
-            const teamGroup = next[0]
+            const teamGroup = next.find(
+              (node) => node.type === 'group' && !existingGroupIds.has(node.id)
+            )!
             next = next.map((nd) =>
               nd.id === teamGroup.id ? { ...nd, data: { ...nd.data, title: args.label || 'Team' } } : nd
             )
@@ -6942,6 +7354,21 @@ export function Canvas() {
     [activeProjectId, setNodes, markDirty, writeDisk]
   )
 
+  // Sibling reorder for a FRAME row in the sessions sidebar. Distinct from reorderSession:
+  // a frame carries its whole subtree, and the drop never changes its parent.
+  const reorderSidebarGroup = useCallback(
+    (projectId: string, draggedId: string, parentId: string | null, beforeId: string | null) => {
+      if (projectId === activeProjectId) {
+        setNodes((ns) => reorderGroupWithinParent(ns, draggedId, parentId, beforeId))
+        markDirty()
+      } else {
+        useProjects.getState().reorderGroup(projectId, draggedId, parentId, beforeId)
+        void writeDisk()
+      }
+    },
+    [activeProjectId, setNodes, markDirty, writeDisk]
+  )
+
   const onRowContextMenu = useCallback(
     (e: React.MouseEvent, projectId: string, id: string) => {
       e.preventDefault()
@@ -7333,7 +7760,14 @@ export function Canvas() {
   const sshReconnectorRef = useRef<SshReconnector | null>(null)
   useEffect(() => {
     const rec = new SshReconnector({
-      connect: async (projectId) => {
+      connect: async (scopeId) => {
+        // A HOST ATTACHMENT has no project row to read its endpoint from — `registerAttachment`
+        // put it on record before the first dial, precisely so a connect that never succeeded is
+        // still reachable here. Reconnect it on its own loop (its master is its own) and leave git
+        // routing alone: the owning project is local, or points somewhere else entirely.
+        const attached = useSshConn.getState().getAttachment(scopeId)
+        if (attached) return connectHostAttachment(scopeId, attached, sshConnect, sshDisconnect)
+        const projectId = scopeId
         const project = useProjects.getState().getProject(projectId)
         if (!project?.ssh) return false
         const ssh = project.ssh
@@ -7346,7 +7780,9 @@ export function Canvas() {
         useSshConn.getState().setConn(projectId, info)
         return true
       },
-      respawn: (projectId, nodeIds) => {
+      respawn: (scopeId, nodeIds) => {
+        // The nodes live on the OWNING canvas, which for an attachment is not the scope id.
+        const projectId = useSshConn.getState().ownerProjectId(scopeId)
         if (useProjects.getState().activeProjectId !== projectId) {
           // The project was switched away between the drop and the reconnect: nothing is mounted,
           // and any park is holding the DEAD pty (the node unmount-parked before the master came
@@ -7683,6 +8119,21 @@ export function Canvas() {
           .catch(() => {})
           .finally(() => void window.nodeTerminal.sshProject.disconnect(id))
         useSshConn.getState().clear(id)
+      }
+      // Host attachments this project owns: nothing else knows they exist (no project row), so
+      // deleting the canvas is the only chance to tear their masters down. Same order as above —
+      // kill the remote sessions over the live master, then drop it.
+      for (const scopeId of useSshConn.getState().attachmentScopesOf(id)) {
+        const nodeIds = project
+          ? hostAttachmentsFor(id, project.nodes, project.ssh?.server).find(
+              (a) => a.scopeId === scopeId
+            )?.nodeIds ?? []
+          : []
+        void window.nodeTerminal.sshProject
+          .killSessions(scopeId, nodeIds)
+          .catch(() => {})
+          .finally(() => void window.nodeTerminal.sshProject.disconnect(scopeId))
+        useSshConn.getState().clearAttachment(scopeId)
       }
       disposeRelayTabForProject(id)
       store.deleteProject(id)
@@ -8234,6 +8685,9 @@ export function Canvas() {
           // Figma-style default: left-drag rubber-band selects, pan is middle-drag/scroll.
           selectionOnDrag={!spacePan && settings.canvasDragMode !== 'pan'}
           selectionMode={SelectionMode.Partial}
+          // Shift joins the default Meta/Control: adding a frame to an existing selection is the
+          // gesture "Add selection to group" is reached by, and Shift+click is what users try.
+          multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
           // The lock freezes the CAMERA only (pan/zoom) — nodes stay draggable, resizable and
           // connectable: the point is "stop the map sliding under me", not "freeze my work".
           panOnDrag={
@@ -8243,7 +8697,7 @@ export function Canvas() {
                 ? [0, 1]
                 : [1]
           }
-          panOnScroll={canvasLocked ? false : !wheelZoom}
+          panOnScroll={canvasLocked ? false : trackpadRouting || !wheelZoom}
           zoomOnScroll={false}
           zoomOnPinch={false}
           // Off: a pane double-click is the overview-zoom gesture (see PANE_OVERVIEW_ZOOM) and a
@@ -8490,6 +8944,7 @@ export function Canvas() {
         onAiNameGroup={aiNameGroup}
         onMoveToGroup={moveSessionToGroup}
         onReorder={reorderSession}
+        onReorderGroup={reorderSidebarGroup}
         onRowContextMenu={onRowContextMenu}
         onProjectContextMenu={onProjectContextMenu}
         onSwitchProject={switchProject}

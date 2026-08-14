@@ -171,6 +171,29 @@ export function isPremium(): boolean {
   return verify(load().token) !== null
 }
 
+// Every refresh started so far (the launch one + whatever the 6h interval fired), chained. The
+// refresh is deliberately fire-and-forget — nothing at boot may block on the network — which has
+// two consequences this handle exists to own:
+//   1. a TEST can only observe it by racing a timed flush, and a loaded CI runner wins that race:
+//      the assertion sees zero broadcasts, and the continuation then lands after the test has torn
+//      the platform down, so platform() throws with nobody awaiting. One cause, two red symptoms.
+//      __licenseRefreshesForTests() lets the test await the real thing instead.
+//   2. a throw anywhere in the chain would be an UNHANDLED REJECTION in a process that stays up for
+//      days, so the runner below logs instead of dropping it.
+// It is a QUEUE, not merely "the latest run": see runRefresh below for why overlapping runs are
+// wrong on their own terms, and note that awaiting only the newest would still leave an older run
+// in flight — free to land after the test has torn its platform down.
+let refreshes: Promise<void> = Promise.resolve()
+
+/**
+ * TEST ONLY (house pattern: webgl-budget's `__resetWebglBudgetForTests`) — resolves once every
+ * refresh initLicense() has started so far has settled. Tests await this instead of guessing a
+ * timeout; see the note on `refreshes`.
+ */
+export function __licenseRefreshesForTests(): Promise<void> {
+  return refreshes
+}
+
 export function initLicense(onChange?: () => void): void {
   const deviceId = getDeviceId()
   const broadcast = (s: LicenseStatus) => {
@@ -271,7 +294,25 @@ export function initLicense(onChange?: () => void): void {
     }
   }
 
+  // One refresh run: still fire-and-forget for the caller, but QUEUED behind the previous run,
+  // parked on `refreshes` so tests can await it, and with its errors logged rather than left to
+  // the unhandled-rejection handler.
+  //
+  // Queued, not merely tracked: bumpLastSeen is a read-modify-write of license.json (load() then
+  // save()), so two overlapping runs can interleave and let the OLDER `lastSeen` land last —
+  // which walks the clock-rollback anchor BACKWARDS, the one thing it exists to prevent. In the
+  // real app the runs are 6h apart and never overlap (an 8s fetch abort bounds each one), so this
+  // is a resolved promise plus a microtask; the overlap is reachable only where the clock is
+  // compressed — a test advancing days of fake time — and it made the rollback test flaky.
+  const runRefresh = (): void => {
+    refreshes = refreshes
+      .then(() => bumpLastSeen().then(refresh))
+      .catch((err) =>
+        console.warn('[license] refresh failed', err instanceof Error ? err.message : String(err))
+      )
+  }
+
   // On launch + every 6h while the app stays open (see REFRESH_INTERVAL_MS).
-  void bumpLastSeen().then(refresh)
-  setInterval(() => void bumpLastSeen().then(refresh), REFRESH_INTERVAL_MS).unref()
+  runRefresh()
+  setInterval(runRefresh, REFRESH_INTERVAL_MS).unref()
 }

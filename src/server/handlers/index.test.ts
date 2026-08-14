@@ -9,6 +9,7 @@ import { IPC } from '../../shared/ipc'
 import { DEFAULT_SETTINGS, type GitStatus } from '../../shared/types'
 import { initPlatform, resetPlatformForTests } from '../../core/platform'
 import { DownloadTickets } from '../../core/download-tickets'
+import { projectImagesDir } from '../../core/canvas-images'
 
 let repo: string, platform: ServerPlatform, ui: number
 beforeEach(() => {
@@ -61,6 +62,30 @@ describe('registerCoreHandlers (git)', () => {
     // The worktree dialog derives its default path from this: an empty answer would suggest
     // `/worktrees/…` at the filesystem ROOT, which the (often root-run) server would create.
     expect(await call(IPC.appUserDataDir)).toBe(repo)
+  })
+})
+
+describe('registerCoreHandlers (canvas images)', () => {
+  it('forwards localProjectCwd, so an image lands in the project the SHELL resolved', async () => {
+    // The dep is one line per shell (src/server/index.ts and src/main/index.ts) and nothing else
+    // in the suite notices if it goes missing — every image would just quietly stop travelling
+    // with its project. This pins the server's half; the desktop's is the matching line in
+    // src/main/index.ts, which has no unit-testable seam (it is inside app.whenReady's bootstrap).
+    resetPlatformForTests()
+    const p2 = new ServerPlatform({ userDataDir: repo, appVersion: '0' })
+    initPlatform(p2)
+    registerCoreHandlers(p2, {
+      getSettings: () => DEFAULT_SETTINGS,
+      localProjectCwd: (id) => (id === 'p2' ? repo : undefined)
+    })
+    const ui2 = p2.attach({ sendText: () => {}, sendBinary: () => {} })
+    const res = await p2.dispatch(ui2, {
+      t: 'req',
+      id: 1,
+      method: IPC.filesSaveCanvasImage,
+      args: ['p2', 'shot.png', Buffer.from('png').toString('base64')]
+    })
+    expect((res as { result: string }).result).toBe(path.join(projectImagesDir(repo), 'shot.png'))
   })
 })
 

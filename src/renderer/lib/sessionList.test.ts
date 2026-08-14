@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildSessionList,
+  groupSessionCount,
+  groupSessionRows,
+  liveCollapseKeys,
+  pruneCollapsedItems,
   sessionStatusKind,
   projectIdAtIndex,
   isGroupCollapsed,
@@ -154,6 +158,7 @@ describe('buildSessionList', () => {
     expect(p1.groups).toHaveLength(1)
     expect(p1.groups[0]).toMatchObject({ id: 'g1', title: 'Frontend', color: '#abc' })
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['t1', 't2'])
+    expect(p1.groups[0].children).toEqual([])
     expect(p1.ungrouped.map((s) => s.id)).toEqual(['t3', 't4'])
   })
 
@@ -186,6 +191,108 @@ describe('buildSessionList', () => {
 
     const unfiltered = buildSessionList(projects(), null, 'p1', {}, '')
     expect(unfiltered.length).toBe(2) // both projects kept when no filter
+  })
+
+  it('builds nested canvas groups as a recursive tree and preserves ancestors when filtering', () => {
+    const proj: ProjectInput[] = [
+      {
+        id: 'p1',
+        name: 'Alpha',
+        color: '#111',
+        nodes: [
+          node('outer', { kind: 'group', title: 'Outer' }),
+          node('inner', { kind: 'group', title: 'Inner', parentId: 'outer' }),
+          node('deep', { kind: 'group', title: 'Deep', parentId: 'inner' }),
+          node('direct', { parentId: 'outer' }),
+          node('target', { title: 'Needle session', parentId: 'deep' })
+        ]
+      }
+    ]
+    const [all] = buildSessionList(
+      proj,
+      null,
+      'p1',
+      { target: { unread: false, state: 'waiting' } },
+      ''
+    )
+    const outer = all.groups[0]
+    expect(outer.children[0].children[0].id).toBe('deep')
+    expect(groupSessionRows(outer).map((row) => row.id)).toEqual(['direct', 'target'])
+    expect(groupSessionCount(outer)).toBe(2)
+    // A nested session still reaches the project header badges.
+    expect(projectSignalCounts(all)).toEqual({ attention: 1, unread: 0, working: 0 })
+
+    // Filtering keeps the ancestors of a match — otherwise the hit is unreachable in the tree.
+    const [filtered] = buildSessionList(proj, null, 'p1', {}, 'needle')
+    expect(filtered.groups[0].id).toBe('outer')
+    expect(filtered.groups[0].children[0].children[0].sessions.map((row) => row.id)).toEqual([
+      'target'
+    ])
+  })
+
+  it('promotes groups with dangling or cyclic parents to a reachable root', () => {
+    const proj: ProjectInput[] = [
+      {
+        id: 'p1',
+        name: 'Alpha',
+        color: '#111',
+        nodes: [
+          node('dangling', { kind: 'group', parentId: 'missing' }),
+          node('a', { kind: 'group', parentId: 'b' }),
+          node('b', { kind: 'group', parentId: 'a' })
+        ]
+      }
+    ]
+    const [group] = buildSessionList(proj, null, 'p1', {}, '')
+    expect(new Set(group.groups.map((bucket) => bucket.id))).toEqual(
+      new Set(['dangling', 'a', 'b'])
+    )
+  })
+})
+
+describe('sidebar disclosure keys', () => {
+  const proj: ProjectInput[] = [
+    {
+      id: 'p1',
+      name: 'Alpha',
+      color: '#111',
+      nodes: [
+        node('outer', { kind: 'group', title: 'Outer' }),
+        node('inner', { kind: 'group', title: 'Inner', parentId: 'outer' }),
+        node('t1', { parentId: 'inner' })
+      ]
+    }
+  ]
+
+  it('lists a key for the project and for every frame at any depth', () => {
+    const keys = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    expect(keys).toEqual(
+      new Set(['project:p1', 'project:p1:group:outer', 'project:p1:group:inner'])
+    )
+  })
+
+  it('drops keys whose project or frame is gone, and keeps the key being written', () => {
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const stored = {
+      'project:p1': true,
+      'project:p1:group:inner': true,
+      'project:p1:group:deleted': true,
+      'project:closed-long-ago': true
+    }
+    expect(pruneCollapsedItems(stored, live)).toEqual({
+      'project:p1': true,
+      'project:p1:group:inner': true
+    })
+    // A filtered tree does not list every frame, so the key being toggled is always kept.
+    expect(pruneCollapsedItems(stored, new Set<string>(), 'project:p1:group:deleted')).toEqual({
+      'project:p1:group:deleted': true
+    })
+  })
+
+  it('returns the same object when there is nothing to prune (no needless settings write)', () => {
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const stored = { 'project:p1': true }
+    expect(pruneCollapsedItems(stored, live)).toBe(stored)
   })
 })
 

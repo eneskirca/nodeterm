@@ -21,10 +21,14 @@ const ROWS = {
   panHover: { title: 'Pan-hover delay (ms)', keywords: ['pan', 'hover', 'delay', 'focus', 'guard'] },
   doubleClick: { title: 'Double-click to focus', keywords: ['double', 'click', 'focus'] },
   sidebarCollapse: {
-    title: 'Sidebar: focus active project',
-    keywords: ['sidebar', 'sessions', 'collapse', 'expand', 'project', 'switch']
+    title: 'Sidebar: collapse inactive by default',
+    keywords: ['sidebar', 'sessions', 'collapse', 'expand', 'project', 'switch', 'group', 'tree']
   },
   wheelZoom: { title: 'Scroll wheel zooms', keywords: ['zoom', 'wheel', 'scroll', 'mouse', 'pan'] },
+  trackpadPan: {
+    title: 'Trackpad scroll pans',
+    keywords: ['trackpad', 'pan', 'scroll', 'zoom', 'magic', 'mouse', 'two-finger', 'macos']
+  },
   dragMode: {
     title: 'Canvas left-drag',
     keywords: ['pan', 'drag', 'select', 'canvas', 'mouse', 'grab', 'figma', 'miro']
@@ -135,13 +139,13 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
       </SearchableRow>
       <SearchableRow {...ROWS.sidebarCollapse}>
         <FieldRow
-          label="Sidebar: focus active project"
-          description="Collapse inactive projects in the sessions sidebar when switching projects. Off: everything stays as you left it."
+          label="Sidebar: collapse inactive by default"
+          description="Projects without an explicit choice start collapsed when inactive. Your project and group chevron choices are remembered."
           control={
             <Switch
               checked={settings.sidebarAutoCollapse}
               onChange={(v) => update({ sidebarAutoCollapse: v })}
-              ariaLabel="Sidebar: focus active project"
+              ariaLabel="Sidebar: collapse inactive by default"
             />
           }
         />
@@ -155,6 +159,21 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               checked={settings.wheelZoom}
               onChange={(v) => update({ wheelZoom: v })}
               ariaLabel="Scroll wheel zooms"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.trackpadPan}>
+        <FieldRow
+          label="Trackpad scroll pans"
+          description={hintLabel(
+            'macOS: a two-finger trackpad scroll pans the canvas even with wheel zoom on. Turn off if a precise-pixel mouse (Magic Mouse, MX) pans when you meant to zoom.'
+          )}
+          control={
+            <Switch
+              checked={settings.trackpadPan}
+              onChange={(v) => update({ trackpadPan: v })}
+              ariaLabel="Trackpad scroll pans"
             />
           }
         />

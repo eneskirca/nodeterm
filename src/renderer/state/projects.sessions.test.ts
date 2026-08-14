@@ -108,6 +108,33 @@ describe('moveNodeToGroup', () => {
     useProjects.getState().moveNodeToGroup('p1', 'nope', 'g1')
     expect(useProjects.getState().getProject('p1')!.nodes).toBe(before)
   })
+
+    it('moves nested group subtrees and rejects a cycle', () => {
+    const outer = group('outer', 100, 80)
+    const inner = { ...group('inner', 30, 40), parentId: 'outer' }
+    const target = group('target', 500, 200)
+    useProjects.setState({
+      projects: [
+        {
+          id: 'p1',
+          name: 'P1',
+          color: '#111',
+          viewport: { x: 0, y: 0, zoom: 1 },
+          nodes: [outer, inner, target]
+        }
+      ],
+      activeProjectId: 'p1'
+    })
+    useProjects.getState().moveNodeToGroup('p1', 'inner', 'target')
+    let nodes = useProjects.getState().getProject('p1')!.nodes
+    expect(nodes.find((node) => node.id === 'inner')).toMatchObject({
+      parentId: 'target',
+      position: { x: -370, y: -80 }
+    })
+    useProjects.getState().moveNodeToGroup('p1', 'target', 'inner')
+    nodes = useProjects.getState().getProject('p1')!.nodes
+    expect(nodes.find((node) => node.id === 'target')!.parentId).toBeUndefined()
+  })
 })
 
 describe('reorderNode', () => {

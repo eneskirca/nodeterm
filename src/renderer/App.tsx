@@ -15,20 +15,17 @@ import { useSharedGlyph } from './canvas/SharedGlyphLayer'
 import { resolveTerminalRenderer } from '../shared/webgl'
 import { resolveTerminalTheme } from './terminal/themes'
 import { useAppTheme } from './state/useAppTheme'
-import { isMacPlatform } from '../shared/platform-utils'
 
 export default function App() {
-  // Apply the terminal-rendering setting to the two GPU coordinators, live. 'auto' resolves per
-  // platform (macOS → the SHARED canvas: the compositor-level black/flicker failures have only
-  // ever been observed there and are a function of many per-terminal contexts, which one
-  // canvas-wide context does not create; WebGL per terminal on a Mac is a deliberate 'on' — see
-  // `resolveTerminalRenderer` for the evidence that moved this). 'off' reclaims every context;
-  // 'shared' takes the per-terminal budget down entirely and brings up the one canvas-wide glyph
-  // context instead. `applyRendererMode` owns the ordering contract between the two (and its test).
+  // Apply the terminal-rendering setting to the two GPU coordinators, live. 'auto' is
+  // per-terminal WebGL on every platform (see `resolveTerminalRenderer` for the history of the
+  // macOS branch and the evidence that collapsed it). 'off' reclaims every context; 'shared'
+  // takes the per-terminal budget down entirely and brings up the one canvas-wide glyph context
+  // instead. `applyRendererMode` owns the ordering contract between the two (and its test).
   // Subscribed at the root so it holds whatever view is showing.
   const gpu = useSettings((s) => s.settings.terminalGpuRendering)
   useEffect(() => {
-    applyRendererMode(resolveTerminalRenderer(gpu, isMacPlatform()), {
+    applyRendererMode(resolveTerminalRenderer(gpu), {
       setWebglEnabled,
       setSharedEnabled: (on) => useSharedGlyph.getState().setEnabled(on)
     })

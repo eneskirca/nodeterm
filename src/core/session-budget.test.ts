@@ -374,3 +374,33 @@ describe('darwin default reader: no byte reading may ever reap (behavioural)', (
     expect(w.calls.filter((c) => c.args[2] === 'kill-session')).toHaveLength(0)
   })
 })
+
+describe('sessionBudgetConfig with fractional env values', () => {
+  const cfg = (env: Record<string, string>) => sessionBudgetConfig(env, 24576)
+
+  it('a fractional MAX_DETACHED falls back — it must never become a cap of ZERO', () => {
+    // Math.floor(0.5) === 0, and a cap of zero is not a smaller cap: every detached session counts
+    // as over-cap, so a full batch dies every sweep. The unsafe direction.
+    expect(cfg({ NODETERM_SESSION_MAX_DETACHED: '0.5' }).maxDetached).toBe(48)
+    expect(cfg({ NODETERM_SESSION_MAX_DETACHED: '0.9' }).maxDetached).toBe(48)
+    // A real value still works, and 1.5 still floors to 1 rather than falling back.
+    expect(cfg({ NODETERM_SESSION_MAX_DETACHED: '10' }).maxDetached).toBe(10)
+    expect(cfg({ NODETERM_SESSION_MAX_DETACHED: '1.5' }).maxDetached).toBe(1)
+  })
+
+  it('a fractional GRACE_HOURS means what it says — half an hour, not NO grace', () => {
+    // The plausible-input trap: `abc`/``/`0` all fell back safely, but `0.5` floored to zero grace,
+    // making a session reapable the moment it detached.
+    expect(cfg({ NODETERM_SESSION_GRACE_HOURS: '0.5' }).graceSec).toBe(1800)
+    expect(cfg({ NODETERM_SESSION_GRACE_HOURS: '0.25' }).graceSec).toBe(900)
+    expect(cfg({ NODETERM_SESSION_GRACE_HOURS: '2' }).graceSec).toBe(7200)
+  })
+
+  it('junk and zero still fall back to the safe defaults on every key', () => {
+    for (const v of ['abc', '', '0', '-3']) {
+      expect(cfg({ NODETERM_SESSION_GRACE_HOURS: v }).graceSec).toBe(6 * 3600)
+      expect(cfg({ NODETERM_SESSION_MAX_DETACHED: v }).maxDetached).toBe(48)
+      expect(cfg({ NODETERM_SESSION_REAP_BATCH: v }).batchMax).toBe(8)
+    }
+  })
+})

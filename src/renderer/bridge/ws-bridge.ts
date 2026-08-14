@@ -22,6 +22,9 @@ import {
   type ChatTranscriptResult,
   type ClaudeApi,
   type ClaudeCliCaps,
+  type CodexApi,
+  type CodexIdentityCaps,
+  UNKNOWN_CODEX_IDENTITY_CAPS,
   type ContextApi,
   type DownloadTicket,
   type FilesApi,
@@ -456,7 +459,13 @@ export function buildFilesApi(
     // Also real, and the direction that matters here: the browser holds the bytes, the terminal
     // runs on the server, so a pasted image only becomes nameable once the server has written it.
     saveUpload: (name, dataBase64) =>
-      client.request(IPC.filesSaveUpload, name, dataBase64) as Promise<string | null>
+      client.request(IPC.filesSaveUpload, name, dataBase64) as Promise<string | null>,
+    // Real too, and for the same reason: the browser holds the bytes and the project folder is on
+    // the server, so only the server can put a canvas image where the canvas will find it again.
+    saveCanvasImage: (projectId, name, dataBase64) =>
+      client.request(IPC.filesSaveCanvasImage, projectId, name, dataBase64) as Promise<
+        string | null
+      >
   }
 
   const context: ContextApi = {
@@ -653,6 +662,22 @@ export function buildSessionMemoryApi(client: RpcClient): Pick<NodeTerminalApi, 
  * only real member is a capability probe — the Server Edition gets the real reader from
  * `buildTranscriptApi` below instead, which the relay does not use.
  */
+/**
+ * The `codex` namespace over an RpcClient — a REAL implementation, not a stub, because the answer
+ * has to come from the machine the pty runs on. Today the Server Edition's handler deliberately
+ * answers `{ shared: false }` (see server/handlers/index.ts); wiring that side later needs nothing
+ * here. A failed request degrades to the same conservative answer: the launch path reads it.
+ */
+export function buildCodexApi(client: RpcClient): CodexApi {
+  return {
+    identityCaps: () =>
+      (client.request(IPC.codexIdentityCaps) as Promise<CodexIdentityCaps>).catch(
+        () => UNKNOWN_CODEX_IDENTITY_CAPS
+      ),
+    onIdentity: (listener) => client.subscribe(IPC.codexIdentity, listener as Listener)
+  }
+}
+
 export function buildClaudeApi(client: RpcClient, stub: ClaudeApi): ClaudeApi {
   return {
     ...stub,
@@ -813,6 +838,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildUsageApi(client),
     ...buildSessionMemoryApi(client),
     ...buildGitHubApi(client),
+    codex: buildCodexApi(client),
     // `claude` is assembled from two builders: `cliCaps` from the relay-shared one, and the
     // transcript reader from the Server-Edition-only one (which also supplies `chat`).
     ...(() => {

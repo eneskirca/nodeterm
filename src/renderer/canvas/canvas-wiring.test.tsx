@@ -78,6 +78,24 @@ describe('the session-memory panel is the one caller that fans a kill across soc
   })
 })
 
+describe('the zoom chords go through their guarded decision, on both routes', () => {
+  // `lib/zoomShortcut.ts` owns when ⌘0 / Shift+1 may move the camera (not while the kanban board
+  // covers the canvas, not while the user is typing). It is tested thoroughly on its own — what
+  // nothing else can see is Canvas calling round it. Both failures are silent: a raw
+  // `zoomShortcutChord` dispatch would fire under the board, and a bare `zoomTo100()` on the
+  // forwarded desktop route would fire mid-keystroke in a terminal.
+  it('asks the live decision on the keydown route', () => {
+    expect(CANVAS_SRC).toContain('const action = liveZoomShortcutAction(e)')
+    expect(CANVAS_SRC).toContain("if (action === 'zoom-100') zoomTo100()")
+  })
+
+  it('re-asks the refusals on the ⌘0 route forwarded from main', () => {
+    expect(CANVAS_SRC).toContain(
+      'if (zoomShortcutAllowed(liveZoomShortcutContext())) zoomTo100()'
+    )
+  })
+})
+
 describe('the end-session confirm describes both things it does', () => {
   // `closeSession` stops the tmux session AND deletes the canvas node. The wording is inherited
   // from the sessions sidebar, where deleting the node is the obvious intent — but the

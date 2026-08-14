@@ -22,17 +22,19 @@ export const WEBGL_CONTEXT_CAP_DESKTOP = 32
 export const WEBGL_BUDGET_DESKTOP = 24
 
 /**
- * Renderer budget on MAC desktop, deliberately much lower. Two field reports on macOS point at
- * the OS compositor mishandling many simultaneous WebGL canvases: whole-window flicker (the
- * reason the GPU-rendering master toggle exists), and terminals compositing BLACK after a
- * zoom-out grants a burst of contexts — with zero JS-visible errors in either case (no context
- * loss event, so nothing our repaint heals can reach: `term.refresh` re-draws, the compositor
- * still doesn't present it). Staying under the browser CAP is not enough there — the pressure
- * the macOS compositor tolerates is lower than what Chromium allows. ~10 keeps GPU rendering
- * for the terminals the user is actually looking at while staying inside what macOS
- * compositing handles reliably.
+ * Renderer budget on MAC desktop, still below the shared-desktop 24 — but no longer 10, and the
+ * history of the number is the point. 10 was calibrated against "terminals composite BLACK after
+ * a zoom-out grant burst", which was later root-caused to the addon-webgl 0.19 dispose crash
+ * (dependency skew, fixed by the 0.18.0 pin + release heal) — evidence that no longer argues
+ * for any particular ceiling. What remains genuinely macOS-specific is one UNCONFIRMED
+ * 2026-07-30 whole-window-flicker report, filed while the mac budget was 24 (and while the 0.19
+ * skew was live, so even that is confounded). 16 is the deliberate middle: enough that roaming
+ * a busy canvas rarely hits budget-contention reclaims (the visible DOM→WebGL upgrade at the
+ * pan frontier), while not re-creating the exact budget-24 configuration of the flicker report
+ * in one step. Equalizing to `WEBGL_BUDGET_DESKTOP` is the next move if a device soak at 16
+ * stays clean; if flicker returns, this constant is where the answer goes back down.
  */
-export const WEBGL_BUDGET_DESKTOP_MAC = 10
+export const WEBGL_BUDGET_DESKTOP_MAC = 16
 
 /** How a terminal actually paints: xterm's own DOM renderer, one budgeted WebGL context per
  *  terminal (the coordinator described above), or glyphgrid — ONE context for the whole canvas,
@@ -43,58 +45,37 @@ export type TerminalRenderer = 'dom' | 'webgl' | 'shared'
  * Resolve the `terminalGpuRendering` setting to the renderer the terminals should use. THE single
  * resolver: there is deliberately no second "is GPU rendering on?" boolean helper, because
  * 'shared' is a GPU mode whose PER-TERMINAL budget must be off, so a boolean answer is wrong for
- * one of its two callers no matter which way it goes. (The former `resolveGpuRendering` returned
- * `true` for every value it did not recognise on non-mac — which for 'shared' would have left the
- * budget handing out contexts to terminals that no longer paint their own pixels.)
+ * one of its two callers no matter which way it goes.
  *
- * 'auto' (the default) is per-terminal WebGL everywhere EXCEPT macOS, where it is the SHARED
- * canvas. The macOS branch has moved once, and the history is the justification:
+ * 'auto' (the default) is per-terminal WebGL on EVERY platform. The macOS branch has moved
+ * twice before, and the history is the justification for collapsing it:
  *
- *   - It used to be 'dom'. The compositor-level failures documented above (whole-window flicker;
- *     terminals compositing BLACK after a burst of context grants) have only ever been observed on
- *     macOS, they raise no JS-visible error, and no repaint we can issue heals them — so the only
- *     field-proven-clean configuration there was to not use the GPU per terminal at all. A public
- *     default must be the proven one, which made WebGL on a Mac a deliberate 'on'.
- *   - It is now 'shared'. That failure class is a function of MANY simultaneous WebGL canvases;
- *     one canvas-wide context removes the pressure by construction rather than by avoiding the
- *     GPU. Phase 2 then closed the gaps that made the shared renderer unfit to be a default —
- *     decorations (search highlights), cursor styles/wide cells/the blurred outline, blink, the
- *     rounded plate, surviving a lost context, dpr changes — and the whole device checklist plus a
- *     ≥30-minute soak with a dozen busy terminals (built-in and external display) was run by the
- *     author on 2026-08-05 with no flicker and no black-composited node. Evidence, not optimism:
- *     if a field report contradicts it, this branch goes back to 'dom' and the checklist's soak
- *     item is the reproduction.
+ *   - It was 'dom', then 'shared' (2026-08-05): per-terminal WebGL on macOS composited BLACK
+ *     after zoom-out bursts and was blamed on the OS compositor, so the default first avoided
+ *     the GPU and then avoided per-terminal contexts.
+ *   - It is now 'webgl', because that macOS evidence collapsed. The blackout was root-caused to
+ *     a dependency skew — addon-webgl 0.19's dispose crashed on the 5.5 core and aborted its own
+ *     DOM-renderer restore, on every platform (pinned + healed; see
+ *     `renderer/terminal/webgl-addon-pair.test.ts`) — and the mass swap waves that amplified it
+ *     went with the zoom gate when the context lifecycle became budget-only. What actually
+ *     guards macOS is `WEBGL_BUDGET_DESKTOP_MAC` (16), which caps compositor pressure at every
+ *     zoom. The one unconfirmed macOS report left is the 2026-07-30 whole-window flicker, whose
+ *     escape hatches survive unchanged: 'off' (no GPU) and 'shared' (one canvas-wide context)
+ *     are both explicit choices. If a field report contradicts this promotion, the macOS branch
+ *     comes back and 'shared' is where it points.
  *
- * Non-macOS is deliberately NOT promoted: the failure this answers is a macOS one, Linux and
- * Windows have been on per-terminal WebGL all along with no such reports, and there is no soak
- * evidence to move them. One platform at a time, and the platform with the evidence goes first.
- *
- * THE SERVER EDITION IS INCLUDED, and that is a decision rather than an oversight of the
- * navigator-based detection: a Mac BROWSER tab answers `isMac` too, so it moves with the desktop.
- * The soak evidence is desktop-only, so this is the one part of the promotion running ahead of its
- * measurement — taken because the downside is bounded in a way the upside is not. A browser caps
- * live WebGL contexts harder than Electron does (that cap is the whole reason the per-terminal
- * budget coordinator exists, and `WEBGL_BUDGET` is lowest there), so ONE context is the mode that
- * surface needs most; and if the shared renderer fails there, `failSharedGlyph` drops the session
- * to the DOM renderer — which is exactly where a Mac browser tab sits TODAY. The bad case returns
- * those users to their current behaviour; the good case removes their context ceiling. If that
- * proves wrong, gate this on desktop rather than reverting the desktop default with it.
- *
- * The four-way setting is unchanged, so the escape hatch survives: 'on' is still per-terminal
- * WebGL (and still uses the budget coordinator above), 'off' is still the DOM renderer, and
- * 'shared' is platform-independent because the per-terminal context pressure it replaces never
- * existed for it. Renderer-side only (platform detection is navigator-based).
+ * The four-way setting is unchanged: 'on' is per-terminal WebGL (now the same as 'auto'), 'off'
+ * is the DOM renderer, 'shared' is the canvas-wide glyph renderer on every platform.
  *
  * Legacy booleans still mean their own explicit choice ('on'/'off'); anything unrecognised
  * resolves exactly like 'auto' — the settings-store migration normalizes the file, and a value
  * that slipped past it must land on the DEFAULT.
  */
 export function resolveTerminalRenderer(
-  value: 'auto' | 'on' | 'off' | 'shared' | boolean | undefined,
-  isMac: boolean
+  value: 'auto' | 'on' | 'off' | 'shared' | boolean | undefined
 ): TerminalRenderer {
   if (value === 'shared') return 'shared'
   if (value === 'on' || value === true) return 'webgl'
   if (value === 'off' || value === false) return 'dom'
-  return isMac ? 'shared' : 'webgl'
+  return 'webgl'
 }

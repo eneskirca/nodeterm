@@ -52,7 +52,15 @@ import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-
 import { claudeConfigDirFor } from './claude-config-dir'
 import { findExecutableSync, findInPathString, resolveShellPath, shellPathNow } from './exec-path'
 import { AUTH_ENV_STRIP, accountTmuxEnvArgs, remoteAccountConfigDirAbs } from './claude-accounts-core'
+import { NODE_ID_MAX, isSafeNodeId } from './remote-safety'
 import { presenceHub } from './presence/hub'
+import {
+  codexLauncherDir,
+  forgetCodexThreadIdentitiesForNode,
+  installCodexLauncher
+} from './codex-identity-proxy'
+import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
+import { hasSharedIdentity, type AgentId } from '../shared/agents/config'
 
 // How often we snapshot a live tmux session's scrollback to disk, so a machine reboot (which
 // kills the tmux server) can still replay recent output on cold restart. A final snapshot also
@@ -1409,6 +1417,26 @@ export class PtyManager {
   private async create(clientId: ClientId, options: PtyCreateOptions): Promise<PtyCreateResult> {
     const key = options.persistKey
     if (!key) return this.spawnNew(clientId, options)
+    // SECURITY — the choke point for the node id. Every session spawn (local tmux, plain shell,
+    // SSH remote) goes through here, `pty:create` validates its payload nowhere, and node ids come
+    // from `.nodeterm/project.json` — a file that travels in a cloned/shared repo and is written on
+    // remote hosts. The id reaches a REMOTE SHELL verbatim as `NODETERM_NODE_ID=<key>`; quoting at
+    // that splice (`remoteTmuxPtyArgs`) is the primary fix and this is the second layer, so a
+    // future splice that forgets to quote is not instantly exploitable.
+    //
+    // FAILURE DIRECTION — refuse, don't sanitise. Nothing legitimate is refused: every id the app
+    // mints comes from `nextId()` (`<prefix>-<base36>-<counter>`) or `uuid()`, both inside
+    // `[A-Za-z0-9._-]`. And sanitising would be worse than a refusal here rather than merely
+    // safer-looking: `NODETERM_NODE_ID` is a CROSS-BOUNDARY CONTRACT — Canvas.tsx keys
+    // `agentStatus.byId` off the raw node id — so a silently rewritten id would report status for a
+    // node that does not exist, i.e. a terminal that looks fine and is permanently dark. A thrown
+    // error surfaces in the pane where someone can read it.
+    if (!isSafeNodeId(key))
+      throw new Error(
+        `Refusing to open this terminal: its node id is not a safe id (allowed: letters, digits, ` +
+          `dot, dash, underscore; max ${NODE_ID_MAX}). A project file with an id like this cannot be ` +
+          `trusted — it is how a shared or cloned repo would smuggle a command onto a remote host.`
+      )
     // Co-attach: a live session for this node id already exists in THIS process (another client,
     // or this client's own second view). Subscribe to it instead of spawning a second tmux client
     // — `-D` would otherwise kick the first viewer off.
@@ -1574,6 +1602,12 @@ export class PtyManager {
     // Ensure the login-shell PATH is resolved (prewarmed in init(); usually already settled)
     // so the session env below picks it up — awaiting keeps the event loop free either way.
     await resolveShellPath()
+    // Rewrite the launcher on every create: it is generated, so an app upgrade must not leave an
+    // old copy behind. Failure is not fatal — `installCodexLauncher` answers null, the caps probe
+    // says "no shared identity", and the launch line the renderer already chose is the bare CLI.
+    if (hasSharedIdentity((options.agentId ?? 'claude') as AgentId) && !options.sshRemote) {
+      installCodexLauncher()
+    }
     const sessionId = this.spawnSession(options, clientId, undefined)
     const spawned = this.sessions.get(sessionId)
     // Surface a missing-account-dir fallback so the renderer can flag the node's account chip.
@@ -1881,11 +1915,23 @@ export class PtyManager {
       this.getSettings().hookReplyApprovals && (options.agentId ?? 'claude') === 'claude'
         ? PERM_WAIT_SECS_DEFAULT
         : 0
+    // Materialise this node's token BEFORE the session exists, so the very first hook event the
+    // agent fires can already read it. Local sessions only: a remote node's token is written on the
+    // HOST (see remote-hooks), because the host is where its hook script runs.
+    if (options.persistKey && !options.sshRemote) ensureNodeToken(options.persistKey)
     const hookEnv =
       options.persistKey && !options.sshRemote
         ? hookServer.buildPtyEnv(options.persistKey, options.agentId ?? 'claude', permWaitSecs)
         : {}
     for (const [k, v] of Object.entries(hookEnv)) env[k] = v
+
+    // Shared-identity agents (SHARED_IDENTITY_CAPABLE — never `agentId === 'codex'`) reach their
+    // managed launcher by NAME, so its directory goes first on THIS session's PATH only. A plain
+    // terminal, and every other agent, sees the PATH it always saw. The launcher itself falls back
+    // to the bare CLI, so a session that gets the PATH but no identity is still a working session.
+    if (hasSharedIdentity((options.agentId ?? 'claude') as AgentId) && !options.sshRemote) {
+      env.PATH = `${codexLauncherDir()}${path.delimiter}${env.PATH ?? ''}`
+    }
 
     // Managed Claude account: the whole session runs under the account's private config
     // dir. The claude CLI then reads/writes credentials + transcripts there. Also strip
@@ -1934,6 +1980,14 @@ export class PtyManager {
     const remoteSsh = options.sshRemote && options.persistKey ? findSsh() : null
     if (options.sshRemote && options.persistKey && remoteSsh) {
       file = remoteSsh
+      // The remote twin of the local `ensureNodeToken` above: materialise THIS node's token on the
+      // host before the attach. The connect path writes one for every node the canvas had AT
+      // CONNECT; a node created afterwards would otherwise wait for the next reconnect — for a
+      // long-lived SSH project, forever — and spend that whole time on `legacy`.
+      // Fire-and-forget and fail-open by construction (see ensureRemoteNodeToken): the hook script
+      // re-reads the file at every event, so a token that lands a moment after the attach is in
+      // time for everything that matters, and one that never lands costs only the verified label.
+      ensureRemoteNodeToken(options.sshRemote.controlPath, options.persistKey)
       // Route this ssh child's agent lookups at the APP-PRIVATE ssh-agent when main is running one
       // (published via env because core cannot import main's ssh-agent.ts). Matters when the
       // ControlMaster is down: `childArgs` uses `ControlMaster=auto`, so this child authenticates
@@ -2998,6 +3052,24 @@ export class PtyManager {
     // OLD cwd's session, and the respawn is a cold start (`fresh`), so replaying it would paint the
     // pre-move terminal into the new one.
     await deleteScrollback(persistKey)
+    // Same hook, same reason as the snapshot above: this node's Codex thread records go with the
+    // session. Left behind they accumulate one file per thread forever, and the hook prelude keeps
+    // re-exporting a DELETED node's id into any tool shell that still carries that thread id.
+    //
+    // Like the snapshot, this also runs for a RECYCLE (the worktree move), where the node lives on
+    // — and that is fine rather than intended: a recycle respawns cold, so the next launch mints or
+    // re-binds a record immediately. Worth stating because the two intents share this line: only
+    // `delete` means "gone for good".
+    forgetCodexThreadIdentitiesForNode(persistKey)
+    // The node's per-node capability goes with it — but ONLY on a delete, unlike the two above.
+    // The token is derived from the NODE id, and a recycle keeps the node: the file on disk stays
+    // exactly correct across a worktree move, so sweeping it would delete a valid credential and
+    // open a window (kill → respawn → first hook event) in which the node cannot prove itself.
+    // Under the trust-on-first-proof latch that window is not merely a downgrade to `legacy` — a
+    // node that has already proven itself and then presents nothing is refused. Re-minting right
+    // after the sweep would close most of it, but it depends on respawn ordering and still leaves a
+    // gap; not sweeping leaves none, and there is nothing stale to clean up.
+    if (intent === 'delete') sweepNodeToken(persistKey)
     if (sshRemote) {
       // Remote (ssh-project) node: end the REMOTE session.
       const ssh = findSsh()

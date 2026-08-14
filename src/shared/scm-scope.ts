@@ -51,7 +51,8 @@ export function scmScopes(project: { cwd?: string; name: string }, bound: BoundG
 
 /**
  * The group the canvas selection points at, which Source Control opens on: a selected group node
- * itself, else a selected node's parent group.
+ * itself, else a selected node's parent chain. Nested unbound groups inherit the nearest bound
+ * ancestor's Source Control scope.
  *
  * A selection can span several nodes (box-select), so the pick is made explicit rather than left to
  * array order: a candidate group that is actually BOUND to a worktree wins over any other, because
@@ -60,10 +61,16 @@ export function scmScopes(project: { cwd?: string; name: string }, bound: BoundG
  */
 export function selectedScmGroupId(nodes: ScmScopeNode[]): string | null {
   const candidates: string[] = []
+  const byId = new Map(nodes.map((node) => [node.id, node]))
   for (const n of nodes) {
     if (!n.selected) continue
-    const groupId = n.type === 'group' ? n.id : n.parentId
-    if (groupId && !candidates.includes(groupId)) candidates.push(groupId)
+    const seen = new Set<string>()
+    let groupId = n.type === 'group' ? n.id : n.parentId
+    while (groupId && !seen.has(groupId)) {
+      seen.add(groupId)
+      if (!candidates.includes(groupId)) candidates.push(groupId)
+      groupId = byId.get(groupId)?.parentId
+    }
   }
   if (candidates.length === 0) return null
   const boundIds = new Set(boundGroups(nodes).map((b) => b.groupId))

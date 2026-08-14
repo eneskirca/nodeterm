@@ -9,7 +9,8 @@ import type {
   Viewport,
   Workspace
 } from '@shared/types'
-import { applyCanvasMutation, createProject } from './workspace'
+import { collisionSeed, derivedProjectId } from '@shared/project-id'
+import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 
 interface ProjectsState {
   projects: Project[]
@@ -46,8 +47,9 @@ interface ProjectsState {
    *  a fresh empty project for a folder that already has one: its first mirror write used to
    *  clobber the server's .nodeterm/project.json. Activates and returns it. */
   openSshProject(label: string, ssh: NonNullable<Project['ssh']>): Project
-  /** Registers a probed project (from a folder's .nodeterm file). If the id collides with an
-   *  existing project, derives a fresh project id (node ids untouched). Activates it. */
+  /** Registers a probed project (from a folder's .nodeterm file). The probe already minted the id
+   *  — the shared file carries none — so this only defends against a collision with an existing
+   *  project (node ids untouched). Activates it. */
   adoptProject(project: Project): Project
   /** Replaces one project's data wholesale (external file change). Keeps activeProjectId. */
   replaceProject(project: Project): void
@@ -100,6 +102,13 @@ interface ProjectsState {
   /** Reorders a node to sit immediately before another (sidebar order = array order),
    *  joining the target's container if they differ. */
   reorderNode(projectId: string, draggedId: string, beforeId: string): void
+  /** Reorders a group subtree among its siblings without changing its parent. */
+  reorderGroup(
+    projectId: string,
+    draggedId: string,
+    parentId: string | null,
+    beforeId: string | null
+  ): void
   /** Reorders a project to sit immediately before another (tab bar + sidebar order = array
    *  order), or to the end with beforeId = null. Closed projects keep their slots. */
   reorderProject(draggedId: string, beforeId: string | null): void
@@ -114,27 +123,86 @@ interface ProjectsState {
   toWorkspace(): Workspace
 }
 
+/** A persisted node's position in ROOT space: its own plus every ancestor frame's origin. */
+function rootStatePosition(
+  node: CanvasNodeState,
+  nodes: CanvasNodeState[]
+): { x: number; y: number } {
+  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]))
+  const seen = new Set<string>([node.id])
+  let x = node.position.x
+  let y = node.position.y
+  let parentId = node.parentId
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId)
+    const parent = byId.get(parentId)
+    if (!parent) break
+    x += parent.position.x
+    y += parent.position.y
+    parentId = parent.parentId
+  }
+  return { x, y }
+}
+
+function stateIsDescendant(
+  nodes: CanvasNodeState[],
+  candidateId: string,
+  ancestorId: string
+): boolean {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const seen = new Set<string>()
+  let current = byId.get(candidateId)
+  while (current?.parentId && !seen.has(current.parentId)) {
+    if (current.parentId === ancestorId) return true
+    seen.add(current.parentId)
+    current = byId.get(current.parentId)
+  }
+  return false
+}
+
 /** Returns `node` repositioned for a new parent (groupId, or null for top level), keeping its
- *  on-canvas position fixed (one-level absolute↔relative). Unchanged if the target is not a
+ *  root-space position fixed across arbitrary nesting. Unchanged if the target is not a
  *  group. `extent` is omitted — nodeStatesToFlow re-derives it from parentId on load. */
 function repositionState(
   node: CanvasNodeState,
   groupId: string | null,
   nodes: CanvasNodeState[]
 ): CanvasNodeState {
-  const oldParent = node.parentId ? nodes.find((n) => n.id === node.parentId) : undefined
-  const abs = {
-    x: node.position.x + (oldParent?.position.x ?? 0),
-    y: node.position.y + (oldParent?.position.y ?? 0)
-  }
+  const abs = rootStatePosition(node, nodes)
   if (groupId === null) return { ...node, parentId: undefined, position: abs }
   const group = nodes.find((n) => n.id === groupId)
   if (!group || group.kind !== 'group') return node
+  const groupAbs = rootStatePosition(group, nodes)
   return {
     ...node,
     parentId: group.id,
-    position: { x: abs.x - group.position.x, y: abs.y - group.position.y }
+    position: { x: abs.x - groupAbs.x, y: abs.y - groupAbs.y }
   }
+}
+
+/**
+ * Defense in depth for the ONE invariant this store cannot survive without: no two projects share
+ * an id. Every mutator here (`commitCanvas`, `deleteProject`, `closeProject`, `renameNode`, …)
+ * either maps by id — writing one canvas into BOTH projects — or filters by id, hitting both. The
+ * tab bar keys its children by id, which is how the bug announced itself: ~1500 React "two children
+ * with the same key" warnings.
+ *
+ * The store in main repairs the persisted index and re-keys the file (see
+ * `WorkspaceStore.repairDuplicateIds`); this is the renderer's own guard for anything that reaches
+ * hydrate some other way (a relay `projects.list` blob, a downgraded/older host). It uses the SAME
+ * derivation, so when both run they agree on the id rather than fighting over it.
+ */
+function withUniqueIds(projects: Project[]): Project[] {
+  const seen = new Set<string>()
+  return projects.map((p) => {
+    if (!seen.has(p.id)) {
+      seen.add(p.id)
+      return p
+    }
+    const id = derivedProjectId(p.id, collisionSeed(p), (c) => seen.has(c))
+    seen.add(id)
+    return { ...p, id }
+  })
 }
 
 /** Returns `projects` with one project's nodes transformed; other projects untouched. */
@@ -152,7 +220,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   reloadNonce: 0,
 
   hydrate(ws) {
-    set({ projects: ws.projects, activeProjectId: ws.activeProjectId })
+    set({ projects: withUniqueIds(ws.projects), activeProjectId: ws.activeProjectId })
   },
 
   requestReload() {
@@ -207,10 +275,17 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   adoptProject(project) {
     const taken = get().projects.some((p) => p.id === project.id)
-    // A copied folder carries the original's project id; derive a fresh one. Node ids are
-    // deliberately kept (they are tmux session names — see the spec's accepted limitation).
+    // `probeFolder` mints the id (the folder's project.json no longer names one), so a collision
+    // here means the id was minted against a store this renderer had not hydrated yet — derive a
+    // fresh one. Node ids are deliberately kept (they are tmux session names — see the spec's
+    // accepted limitation). Deterministic in (id, folder), not random, so this path and the
+    // store's own repair never disagree about what a tab is called.
     const adopted = taken
-      ? { ...project, id: `${project.id}-${Math.random().toString(36).slice(2, 8)}` }
+      ? {
+          ...project,
+          id: derivedProjectId(project.id, collisionSeed(project), (c) =>
+            get().projects.some((p) => p.id === c))
+        }
       : project
     set((s) => ({ projects: [...s.projects, adopted], activeProjectId: adopted.id }))
     return adopted
@@ -338,8 +413,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     set((s) => ({
       projects: mapProjectNodes(s.projects, projectId, (nodes) => {
         const node = nodes.find((n) => n.id === nodeId)
-        if (!node || node.kind === 'group') return nodes
+        if (!node) return nodes
         if ((node.parentId ?? null) === groupId) return nodes
+        // A frame may be moved into another frame, but never into itself or its own subtree.
+        if (groupId === nodeId || (groupId && stateIsDescendant(nodes, groupId, nodeId))) {
+          return nodes
+        }
         const next = repositionState(node, groupId, nodes)
         if (next === node) return nodes // target group missing / not a group
         return nodes.map((n) => (n.id === nodeId ? next : n))
@@ -362,6 +441,19 @@ export const useProjects = create<ProjectsState>((set, get) => ({
         const without = nodes.filter((n) => n.id !== draggedId)
         const idx = without.findIndex((n) => n.id === beforeId)
         return [...without.slice(0, idx), moved, ...without.slice(idx)]
+      })
+    }))
+  },
+
+  reorderGroup(projectId, draggedId, parentId, beforeId) {
+    set((s) => ({
+      projects: mapProjectNodes(s.projects, projectId, (nodes) => {
+        const dragged = nodes.find((node) => node.id === draggedId)
+        const before = beforeId ? nodes.find((node) => node.id === beforeId) : undefined
+        if (!dragged || dragged.kind !== 'group' || (beforeId && before?.kind !== 'group')) {
+          return nodes
+        }
+        return reorderGroupWithinParent(nodes, draggedId, parentId, beforeId)
       })
     }))
   },

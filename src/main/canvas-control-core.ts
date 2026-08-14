@@ -1,6 +1,7 @@
 // Pure core for agent canvas control: the verb model, request validation, and the standalone
 // CLI source. No electron imports, so this module + CONTROL_CLI_SCRIPT are unit-testable.
 // Electron/ipc/server wiring lives in canvas-control.ts + index.ts + hook-server.ts.
+import { HOOK_CURL_HEADERS_SH } from '../core/agents/hook-curl-config-sh'
 
 export type ControlVerb =
   | 'list'
@@ -151,9 +152,9 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `show-image <path>` / `show-video <path>` — open a media file as a node.',
     '- `show-web (--url U | --file P.html | --html "<...>")` — open a web viewer.',
     '- `open-browser --url U` — open a navigable browser node.',
-    '- `group --nodes <id,id> [--label L]` — wrap TOP-LEVEL nodes in a new labeled frame (nodes already',
-    '  inside another frame are skipped — use `move` for those). `ungroup --group <id>` dissolves a frame,',
-    '  freeing its nodes to the top level. `move --nodes <id,id> [--group <id>]` reparents nodes INTO an',
+    '- `group --nodes <id,id> [--label L]` — wrap sibling nodes or sibling groups in a new labeled frame.',
+    '  Every id must share one container. `ungroup --group <id>` dissolves a frame and promotes its direct',
+    '  children into the frame\'s parent. `move --nodes <id,id> [--group <id>]` reparents nodes or groups INTO an',
     '  existing frame (omit `--group`, or pass `top`/`none`, to pull them out to the top level) — this is',
     '  how you move a node from one frame to another.',
     '- `arrange --nodes <id,id> [--layout grid|row|column] [--cols N]` /',
@@ -194,8 +195,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'per stream `open-worktree --branch <slug>` then `open-agent --agent claude --group <groupId>',
     '--prompt "<concrete task>"` (each stream on its own branch, no tree conflicts). Members land',
     'in grid slots inside the frame automatically; align the frames themselves with',
-    '`arrange --nodes <groupId,…> --layout row` (pass GROUP ids — arrange/align are top-level',
-    'only) and `rename` each by subject. When a station goes idle, READ what it did through the',
+    '`arrange --nodes <groupId,…> --layout row` (pass sibling GROUP ids from one container)',
+    'and `rename` each by subject. When a station goes idle, READ what it did through the',
     'context link (the linked-context CLI — see the get-linked-context section in your global',
     'agent instructions) and reconcile the streams into ONE synthesis yourself; a station you',
     'never read is one you cannot vouch for. The user merges when a stream is done;',
@@ -228,6 +229,17 @@ fi
 if [ -n "$NODETERM_HOOK_ENDPOINT" ] && [ -r "$NODETERM_HOOK_ENDPOINT" ]; then
   . "$NODETERM_HOOK_ENDPOINT" 2>/dev/null || :
 fi
+
+# The PER-NODE capability: the endpoint file (v2) advertises the directory, the token is one file
+# in it named for THIS node id — a lookup by name, never a scan, so a session can only ever present
+# its own. Missing (pre-v2 endpoint, a node whose token was never materialised) leaves it empty,
+# which the server reads as legacy — the request still goes, exactly as before.
+nt_node_token=""
+if [ -n "$NODETERM_NODE_TOKEN_DIR" ] && [ -n "$NODETERM_NODE_ID" ]; then
+  nt_node_token=$(head -n 1 "$NODETERM_NODE_TOKEN_DIR/$NODETERM_NODE_ID" 2>/dev/null)
+fi
+
+${HOOK_CURL_HEADERS_SH}
 
 nt_verb="list"
 if [ $# -gt 0 ]; then nt_verb="$1"; shift; fi
@@ -262,16 +274,16 @@ done
 
 nt_out=$(mktemp 2>/dev/null || echo "/tmp/nodeterm-control.$$")
 if [ -n "$NODETERM_HOOK_SOCK" ]; then
-  nt_code=$(curl -sS -o "$nt_out" -w '%{http_code}' -X POST \\
+  nt_code=$(nt_hook_headers |
+    curl -sS -o "$nt_out" -w '%{http_code}' -X POST --config - \\
     --unix-socket "$NODETERM_HOOK_SOCK" "http://localhost/control/$nt_verb" \\
     -H "Accept: text/plain" \\
-    -H "X-Nodeterm-Hook-Token: \${NODETERM_HOOK_TOKEN}" \\
     --data-urlencode "nodeId=\${NODETERM_NODE_ID}" "$@" 2>/dev/null)
 elif [ -n "$NODETERM_HOOK_PORT" ]; then
-  nt_code=$(curl -sS -o "$nt_out" -w '%{http_code}' -X POST \\
+  nt_code=$(nt_hook_headers |
+    curl -sS -o "$nt_out" -w '%{http_code}' -X POST --config - \\
     "http://127.0.0.1:\${NODETERM_HOOK_PORT}/control/$nt_verb" \\
     -H "Accept: text/plain" \\
-    -H "X-Nodeterm-Hook-Token: \${NODETERM_HOOK_TOKEN}" \\
     --data-urlencode "nodeId=\${NODETERM_NODE_ID}" "$@" 2>/dev/null)
 else
   rm -f "$nt_out"
@@ -335,15 +347,14 @@ Verbs:
   render on the DESKTOP: \`show-image\` and \`show-video\` still work with a host path (the
   file is read/fetched back over the connection), but \`show-web --file/--html\` is refused —
   use \`--url\`, or copy the file to the desktop first.
-- \`group --nodes <id,id> [--label "Frontend Team"]\` — wrap TOP-LEVEL nodes in a new labeled
-  group frame. Nodes that are ALREADY inside another frame are skipped (the reply says how many) —
-  use \`move\` to pull those across, not \`group\`.
-- \`ungroup --group <id>\` — dissolve a group frame, freeing its nodes back to the top level (the
-  nodes stay put; only the frame is removed).
-- \`move --nodes <id,id> [--group <id>]\` — reparent nodes INTO an existing group frame, keeping
+- \`group --nodes <id,id> [--label "Frontend Team"]\` — wrap sibling nodes or sibling groups in a
+  new labeled frame. Every id must share one container; an ancestor cannot be grouped with its descendant.
+- \`ungroup --group <id>\` — dissolve a group frame, promoting its direct children into the frame's
+  parent (the nodes stay put; only the frame is removed).
+- \`move --nodes <id,id> [--group <id>]\` — reparent nodes or group subtrees INTO an existing group, keeping
   each where it sits on the canvas. Omit \`--group\` (or pass \`top\`/\`none\`) to pull them OUT to the
   top level. This is how you move a node from one frame to another: \`move --nodes n1,n2 --group g2\`.
-  (\`group\` only wraps loose top-level nodes; it will not steal a node out of its current frame.)
+  Invalid cycles are rejected.
 - \`arrange --nodes <id,id> [--layout grid|row|column] [--cols N]\` — tidy layout, no overlap. Works
   on top-level nodes OR on the children of ONE frame — every id must share a container (you cannot
   arrange nodes from two different frames, or mix framed + loose, in one call). When the ids are a
@@ -429,8 +440,8 @@ across Nodeterm sessions), be the orchestration chef — plan the kitchen, then 
 3. Keep the kitchen tidy: members opened with \`--group\` land in neat grid slots inside the
    frame automatically (the frame grows to fit), and successive \`open-worktree\` frames fan
    out side by side — after opening all stations, align the frames with
-   \`arrange --nodes <groupId,groupId,…> --layout row\` (arrange/align work on top-level
-   nodes, so pass the GROUP ids, not the children). \`rename\` each group by subject.
+   \`arrange --nodes <groupId,groupId,…> --layout row\` (pass sibling GROUP ids from one
+   container, not their children). \`rename\` each group by subject.
 4. Track progress (their status badges show working/waiting) and coordinate.
 5. Collect the results yourself — this is the half most orchestrators skip. Every station you
    opened is context-linked to you, so when one goes idle, read what it actually did with the

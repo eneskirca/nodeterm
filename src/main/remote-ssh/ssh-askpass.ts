@@ -40,6 +40,7 @@ import { promises as fs, rmSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { instanceSockId } from './ssh-agent'
+import { curlHeaderConfigSh } from '../../core/agents/hook-curl-config-sh'
 
 const ASKPASS_SCRIPT_NAME = 'ssh-askpass.sh'
 /** A passphrase prompt body is a few bytes; cap generously against a misbehaving caller. */
@@ -108,13 +109,45 @@ function askpassSockPath(): string {
   return path.join(os.homedir(), '.nodeterm', 'askpass', `${instanceSockId()}.sock`)
 }
 
+/**
+ * The bearer that authenticates this helper to the socket, handed to curl on STDIN as a config
+ * file rather than as an `-H` argument. Same emitter (and same stripping rule) as the hook clients
+ * — see `core/agents/hook-curl-config-sh.ts` for why a command line is not a private channel.
+ *
+ * This one is the WORST of the family to leak by duration: a passphrase prompt sits on
+ * `--max-time 300`, so an argv header here is readable in `ps` / /proc/<pid>/cmdline for up to
+ * five minutes, not the milliseconds a hook POST takes. Whoever reads it can drive this socket's
+ * /prompt endpoint themselves — i.e. make the app pop passphrase dialogs — for as long as the app
+ * runs. (The 0600 socket in its 0700 dir already keeps a co-tenant off the socket itself; this is
+ * the second factor, and a second factor everyone can read is not one.)
+ */
+const ASKPASS_CURL_HEADERS_SH = curlHeaderConfigSh(
+  'nt_askpass_headers',
+  [{ name: 'X-Nodeterm-Askpass-Token', valueRef: '$NODETERM_ASKPASS_TOKEN' }],
+  `# The bearer goes to curl on STDIN as a config file, never in argv: a command line is
+# world-readable through \`ps\` / /proc/<pid>/cmdline for the life of the process, and this curl
+# lives up to --max-time 300 waiting for a human to type a passphrase.
+#
+# Quoting: a curl config file is LINE-based, so a \`"\`, a \`\\\` or either line break in the value
+# could end the header line and start a directive of its own; all four are stripped. Belt and
+# braces — the token is a randomUUID(), i.e. hex and dashes, so none of them can ever occur, which
+# is exactly what makes STRIPPING rather than escaping safe: nothing legitimate is altered.
+#
+# An EMPTY value behaves as \`-H\` did: nothing after the colon means curl sends no header, the
+# server answers 403, and -f turns that into the non-zero exit the breadcrumb below reports.`
+)
+
 export function buildAskpassScript(): string {
   return [
     '#!/bin/sh',
+    ASKPASS_CURL_HEADERS_SH,
     // -f: an HTTP error (403 from a stale token after another instance rebound the socket) must
     // exit non-zero and hit the breadcrumb below, not read as "empty answer" and die silently.
-    'answer=$(curl -sSf --max-time 300 --unix-socket "${NODETERM_ASKPASS_SOCK}" -X POST "http://localhost/prompt" \\',
-    '  -H "X-Nodeterm-Askpass-Token: ${NODETERM_ASKPASS_TOKEN}" \\',
+    // The status of a pipeline is its LAST command's (POSIX), so `$?` below is still curl's own
+    // exit code, exactly as when curl was the only command in this substitution.
+    'answer=$(nt_askpass_headers |',
+    '  curl -sSf --max-time 300 --unix-socket "${NODETERM_ASKPASS_SOCK}" -X POST "http://localhost/prompt" \\',
+    '  --config - \\',
     '  --data-urlencode "identity=${NODETERM_ASKPASS_IDENTITY}" \\',
     '  --data-urlencode "caller=$PPID" \\',
     '  --data-urlencode "prompt=$1")',

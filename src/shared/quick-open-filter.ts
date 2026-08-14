@@ -1,8 +1,8 @@
 /**
  * Pure Quick Open (⌘K file search) listing policy — no IO, no Electron. Provides
- * a noise blocklist + rg/git arg builders + line normalization.
- * The caller (main process) owns process execution. v1 is single local root (no
- * WSL/SSH/exclude-prefix logic).
+ * a noise blocklist + rg/git arg builders + line normalization + the traversal guard.
+ * Callers own process execution: fs-ops.listQuickOpenFiles runs the listers locally,
+ * ssh-fs.sshQuickOpenArgs folds the same chain into one remote command.
  */
 
 // Tool-generated caches / VCS / editor state that are never hand-edited. Deliberately omits
@@ -23,6 +23,24 @@ export const HIDDEN_DIR_BLOCKLIST: ReadonlySet<string> = new Set([
 
 // Pruned from every traversal but not a dotdir, so tracked separately.
 const NON_DOTTED_PRUNE = 'node_modules'
+
+/** Hard cap on index size — local and SSH listers both stop here. */
+export const QUICK_OPEN_FILE_CAP = 50_000
+
+/** Every dir name pruned from traversal (find/walk fallbacks build their prune list from this). */
+export function quickOpenPruneNames(): string[] {
+  return [NON_DOTTED_PRUNE, ...HIDDEN_DIR_BLOCKLIST]
+}
+
+/**
+ * Guard for joining an index-supplied relPath onto the project root. The local index is trusted,
+ * but an SSH project's index comes from the remote host — a compromised host must not be able to
+ * point the join outside the root (`../`, absolute, drive-letter).
+ */
+export function isSafeQuickOpenRelPath(relPath: string): boolean {
+  if (!relPath || relPath.startsWith('/') || /^[A-Za-z]:/.test(relPath)) return false
+  return relPath.split(/[\\/]/).every((seg) => seg !== '' && seg !== '..')
+}
 
 /**
  * True if `relPath` (`/`-separated, root-relative) does not traverse a blocklisted segment.
@@ -55,7 +73,7 @@ function escapeGlob(segment: string): string {
  * prunes traversal of huge caches instead of merely dropping already-listed files.
  */
 export function buildHiddenDirExcludeGlobs(): string[] {
-  const names = [NON_DOTTED_PRUNE, ...HIDDEN_DIR_BLOCKLIST]
+  const names = quickOpenPruneNames()
   const out: string[] = []
   for (const name of names) out.push('--glob', `!**/${escapeGlob(name)}`)
   return out
