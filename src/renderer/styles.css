@@ -1920,19 +1920,6 @@ body,
   height: 100%;
 }
 
-/* Renderer parity, macOS: the app sets `-webkit-font-smoothing: antialiased` on :root (grayscale
-   AA — the right call for the chrome's UI font), and the DOM renderer's rows INHERIT it, while the
-   WebGL renderer never sees it: its glyphs are rasterized into a canvas atlas, which uses the
-   platform default. So the same text renders thinner/paler the moment a terminal falls back to the
-   DOM renderer, and a budget swap flashes that difference. Terminal rows opt back out to the
-   platform default so both renderers lay down comparable ink. Scoped to the rows only — the app
-   chrome keeps its grayscale AA — and inert on Linux/Windows Chromium, which ignores this property
-   (measured: DOM ink coverage unchanged there), so it is a macOS-targeted correction by
-   construction. */
-.xterm-rows {
-  -webkit-font-smoothing: auto;
-}
-
 /* Shared glyph renderer (experimental, `glyphgrid`): a glyph-attached terminal becomes a
    transparent WINDOW onto the one GPU canvas, which sits between the React Flow background and the
    nodes (z-index 0 against the renderer's 4 — it cannot simply be raised above them, or a

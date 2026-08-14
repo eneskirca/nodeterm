@@ -4,7 +4,6 @@ import { useSettings } from '../../state/settings'
 import { applyLiveOptions, xtermOptionsFromSettings } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import { activateUnicode11 } from '../../terminal/unicode-width'
-import { quantizeCharSize } from '../../terminal/char-size-quantize'
 
 /** Fixed grid — the preview is a sample, not a fitted terminal, so there is no FitAddon and no
  *  ResizeObserver to keep in sync. Wide enough for the sample lines below without wrapping. */
@@ -65,8 +64,6 @@ export function TerminalPreview(): React.JSX.Element {
     activateUnicode11(term)
     termRef.current = term
     term.open(hostRef.current!)
-    // Same cell width as the real terminals, so the preview shows the layout users get.
-    quantizeCharSize(term)
     term.write(SAMPLE)
     return () => {
       termRef.current = null
