@@ -74,6 +74,28 @@ describe('resolveAgentConfig — custom with a base harness', () => {
     expect(c.expectedProcess).toBe('claude')
     expect(c.baseAgent).toBe('claude')
   })
+  it('ignores a stale flag-prompt on a claude-base agent (claude takes a positional, not --prompt)', () => {
+    const stale: CustomAgent = {
+      id: 'custom:stale',
+      label: 'Stale',
+      launchCmd: 'claude-wopr',
+      baseAgent: 'claude',
+      promptInjectionMode: 'flag-prompt'
+    }
+    // The prompt grammar is the harness's, not the record's: claude rejects `--prompt`, so a
+    // stale flag-prompt must NOT win over the base's `argv`.
+    expect(resolveAgentConfig('custom:stale', stale).promptInjectionMode).toBe('argv')
+  })
+  it('a baseless custom agent keeps its own promptInjectionMode', () => {
+    expect(resolveAgentConfig('custom:aider', vanilla).promptInjectionMode).toBe('argv')
+    const flagPrompt: CustomAgent = {
+      id: 'custom:fp',
+      label: 'FP',
+      launchCmd: 'opencode',
+      promptInjectionMode: 'flag-prompt'
+    }
+    expect(resolveAgentConfig('custom:fp', flagPrompt).promptInjectionMode).toBe('flag-prompt')
+  })
   it('inherits color from the base when the custom record has none', () => {
     expect(resolveAgentConfig('custom:proxy', claudeProxy).color).toBe('#d97757')
   })

@@ -74,6 +74,24 @@ describe('assembleLaunchCommand — custom agents', () => {
     expect(r.command).toBe("claude-wopr '--model' 'sonnet' 'fix' --permission-mode auto --session-id s1")
     expect(r.missingEnv).toEqual([])
   })
+  it('a claude-base agent with a stale flag-prompt emits a POSITIONAL, not --prompt', () => {
+    // Regression: a custom agent with baseAgent:'claude' + a stale promptInjectionMode:'flag-prompt'
+    // must NOT emit `--prompt` (claude rejects it). The harness's argv grammar wins.
+    setCustomAgentBaseResolver((id) => (id === 'custom:stale' ? 'claude' : undefined))
+    const stale: CustomAgent = {
+      id: 'custom:stale',
+      label: 'Stale',
+      launchCmd: 'claude-wopr',
+      baseAgent: 'claude',
+      promptInjectionMode: 'flag-prompt'
+    }
+    const r = assembleLaunchCommand(
+      { agentId: 'custom:stale', customAgent: stale, initialPrompt: 'read the handoff file' },
+      ENV
+    )
+    expect(r.command).toContain("'read the handoff file'")
+    expect(r.command).not.toContain('--prompt')
+  })
   it('expands ${env:…} in args and reports missing vars', () => {
     setCustomAgentBaseResolver((id) => (id === 'custom:proxy' ? 'claude' : undefined))
     const r = assembleLaunchCommand(

@@ -42,7 +42,9 @@ export interface EffectiveAgentConfig {
  * from settings); fields inherit from `baseAgent` and the custom record overrides:
  *  - `launchCmd`: custom value, else the base harness's command (so a claude-compatible proxy with
  *    a blank command runs `claude`), else the id itself (today's fallback for vanilla customs).
- *  - `promptInjectionMode`: custom value, else the base's, else `argv`.
+ *  - `promptInjectionMode`: from the BASE harness when `baseAgent` is set (the prompt grammar is
+ *    a property of the harness — a claude wrapper takes a positional, never `--prompt`), else the
+ *    custom value, else `argv`.
  *  - `color`: custom value, else the base's, else the fallback grey.
  *  - `argvPromptSeparator` / `expectedProcess`: from the base only (a custom record does not set
  *    these — inheriting them is the whole point of declaring a base).
@@ -57,8 +59,16 @@ export function resolveAgentConfig(
   }
   const base = customAgent?.baseAgent ? AGENT_CONFIG[customAgent.baseAgent] : undefined
   const launchCmd = customAgent?.launchCmd?.trim() || base?.launchCmd || id
+  // The prompt grammar is a property of the HARNESS, not a user preference: `flag-prompt`
+  // (emitting `--prompt <p>`) is opencode-specific — claude/codex/grok take a POSITIONAL (`argv`)
+  // and gemini uses `stdin-after-start`. A custom agent wrapping claude (e.g. claude-wopr) speaks
+  // claude's positional grammar, so a stale `flag-prompt` on its record would emit `--prompt`,
+  // which claude rejects (`unknown option '--prompt'`). When a `baseAgent` is declared, the base's
+  // promptInjectionMode is AUTHORITATIVE and the custom record's value is ignored — exactly like
+  // `argvPromptSeparator`/`expectedProcess`, which also inherit from the base only. A baseless
+  // custom agent has no harness to inherit from, so its own value (default `argv`) stands.
   const promptInjectionMode: PromptInjectionMode =
-    customAgent?.promptInjectionMode ?? base?.promptInjectionMode ?? 'argv'
+    base?.promptInjectionMode ?? customAgent?.promptInjectionMode ?? 'argv'
   const color = customAgent?.color || base?.color || FALLBACK_AGENT_COLOR
   return {
     label: customAgent?.label || id,

@@ -171,10 +171,17 @@ function AgentCard({
       />
       <FieldRow
         label="Prompt injection"
-        description={base ? `Inherited from ${base.label}.` : undefined}
+        description={
+          base
+            ? `Inherited from ${base.label} — the prompt grammar is a property of the harness, not a preference (claude takes a positional, never --prompt).`
+            : 'How an initial prompt is passed to the CLI.'
+        }
         control={
           <Select
-            value={agent.promptInjectionMode ?? 'argv'}
+            // Show the RESOLVED mode: when a base harness is set, its grammar wins over any stale
+            // value on the record (claude rejects --prompt), so the dropdown reflects what actually
+            // runs rather than a greyed-out wrong value.
+            value={base ? base.promptInjectionMode : agent.promptInjectionMode ?? 'argv'}
             disabled={!!base}
             onChange={(e) =>
               onPatch(agent.id, { promptInjectionMode: e.target.value as PromptInjectionMode })
