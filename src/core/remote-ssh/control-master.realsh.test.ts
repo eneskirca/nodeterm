@@ -143,9 +143,14 @@ describe('REAL sh: the four vectors that survived the first fix', () => {
     expect(argv).toContain('/srv/app;id;#') // the cwd stayed DATA
   })
 
-  it('B: a remote $HOME that isSafeRemoteHome accepts (and should)', () => {
+  it('B: a remote $HOME carrying the ansi-c quoting vector', () => {
     const home = "/home/u$'x"
-    expect(isSafeRemoteHome(home), 'a legal path — the validator is not the defence here').toBe(true)
+    // The predicate USED to accept this — it is a legal path, and quoting at the splice was the
+    // whole defence. It refuses `$` now (the per-node identity series consolidated the two
+    // independently-written home predicates onto the stricter one), so this value can no longer
+    // reach here through `setup`. The splice is still proven inert below, on purpose: a splice that
+    // is only safe because a validator upstream happens to be strict is one refactor from an RCE.
+    expect(isSafeRemoteHome(home), 'refused at the boundary now — but not RELIED on here').toBe(false)
     const cmd = remoteTmuxPtyArgs(
       conn,
       '/s.sock',

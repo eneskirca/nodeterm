@@ -59,6 +59,7 @@ import {
   forgetCodexThreadIdentitiesForNode,
   installCodexLauncher
 } from './codex-identity-proxy'
+import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { hasSharedIdentity, type AgentId } from '../shared/agents/config'
 
 // How often we snapshot a live tmux session's scrollback to disk, so a machine reboot (which
@@ -1914,6 +1915,10 @@ export class PtyManager {
       this.getSettings().hookReplyApprovals && (options.agentId ?? 'claude') === 'claude'
         ? PERM_WAIT_SECS_DEFAULT
         : 0
+    // Materialise this node's token BEFORE the session exists, so the very first hook event the
+    // agent fires can already read it. Local sessions only: a remote node's token is written on the
+    // HOST (see remote-hooks), because the host is where its hook script runs.
+    if (options.persistKey && !options.sshRemote) ensureNodeToken(options.persistKey)
     const hookEnv =
       options.persistKey && !options.sshRemote
         ? hookServer.buildPtyEnv(options.persistKey, options.agentId ?? 'claude', permWaitSecs)
@@ -1975,6 +1980,14 @@ export class PtyManager {
     const remoteSsh = options.sshRemote && options.persistKey ? findSsh() : null
     if (options.sshRemote && options.persistKey && remoteSsh) {
       file = remoteSsh
+      // The remote twin of the local `ensureNodeToken` above: materialise THIS node's token on the
+      // host before the attach. The connect path writes one for every node the canvas had AT
+      // CONNECT; a node created afterwards would otherwise wait for the next reconnect — for a
+      // long-lived SSH project, forever — and spend that whole time on `legacy`.
+      // Fire-and-forget and fail-open by construction (see ensureRemoteNodeToken): the hook script
+      // re-reads the file at every event, so a token that lands a moment after the attach is in
+      // time for everything that matters, and one that never lands costs only the verified label.
+      ensureRemoteNodeToken(options.sshRemote.controlPath, options.persistKey)
       // Route this ssh child's agent lookups at the APP-PRIVATE ssh-agent when main is running one
       // (published via env because core cannot import main's ssh-agent.ts). Matters when the
       // ControlMaster is down: `childArgs` uses `ControlMaster=auto`, so this child authenticates
@@ -3048,6 +3061,15 @@ export class PtyManager {
     // re-binds a record immediately. Worth stating because the two intents share this line: only
     // `delete` means "gone for good".
     forgetCodexThreadIdentitiesForNode(persistKey)
+    // The node's per-node capability goes with it — but ONLY on a delete, unlike the two above.
+    // The token is derived from the NODE id, and a recycle keeps the node: the file on disk stays
+    // exactly correct across a worktree move, so sweeping it would delete a valid credential and
+    // open a window (kill → respawn → first hook event) in which the node cannot prove itself.
+    // Under the trust-on-first-proof latch that window is not merely a downgrade to `legacy` — a
+    // node that has already proven itself and then presents nothing is refused. Re-minting right
+    // after the sweep would close most of it, but it depends on respawn ordering and still leaves a
+    // gap; not sweeping leaves none, and there is nothing stale to clean up.
+    if (intent === 'delete') sweepNodeToken(persistKey)
     if (sshRemote) {
       // Remote (ssh-project) node: end the REMOTE session.
       const ssh = findSsh()

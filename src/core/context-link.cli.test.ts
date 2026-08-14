@@ -4,7 +4,7 @@
 // for the behavior it inherited, plus the remote (SSH) case the old shape could not express.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -250,5 +250,213 @@ describe('context-link CLI', () => {
     const out = await shimRun('node-Z', ['transcript', '--node', 'node-B'])
     expect(out).toContain('No linked nodes')
     expect(out).not.toContain('deploy the app')
+  })
+})
+
+// The per-node token (task A10). Same shape as every other client: read the file the endpoint
+// advertises, keyed by this node's id, present it on BOTH transports.
+//
+// curl DROPS a header whose value is empty (`-H "X: ${empty}"` sends nothing at all) — which is
+// the contract we want, since the server reads absent and empty identically as `legacy`. So
+// "empty token" below is read as `headers[...] ?? ''`.
+describe('context-link shim presents the per-node token', () => {
+  const seen: { path: string; nodeToken: string }[] = []
+  let tcp: import('node:http').Server
+  let unix: import('node:http').Server
+  let tcpPort = 0
+  let sock = ''
+  let tokenDir = ''
+
+  beforeAll(async () => {
+    const http = await import('node:http')
+    const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void => {
+      req.resume()
+      req.on('end', () => {
+        seen.push({ path: req.url ?? '', nodeToken: String(req.headers['x-nodeterm-node-token'] ?? '') })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('ok\n')
+      })
+    }
+    tcp = http.createServer(handler)
+    unix = http.createServer(handler)
+    await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', r))
+    tcpPort = (tcp.address() as { port: number }).port
+    sock = join(dir, 'ctx-token-probe.sock')
+    await new Promise<void>((r) => unix.listen(sock, r))
+    tokenDir = join(dir, 'node-tokens')
+    mkdirSync(tokenDir, { recursive: true })
+    writeFileSync(join(tokenDir, 'node-A'), 'CONTEXT-NODE-TOKEN\n', { mode: 0o600 })
+  })
+
+  afterAll(() => {
+    tcp.close()
+    unix.close()
+  })
+
+  function probe(nodeId: string, env: Record<string, string>): Promise<unknown> {
+    return run('/bin/sh', [shim, 'list'], {
+      env: { PATH: process.env.PATH ?? '', NODETERM_NODE_ID: nodeId, NODETERM_HOOK_TOKEN: 'x', ...env }
+    })
+  }
+
+  it('sends it over the TCP branch when the file exists', async () => {
+    seen.length = 0
+    await probe('node-A', { NODETERM_HOOK_PORT: String(tcpPort), NODETERM_NODE_TOKEN_DIR: tokenDir })
+    expect(seen).toEqual([{ path: '/context-link/list', nodeToken: 'CONTEXT-NODE-TOKEN' }])
+  })
+
+  it('sends it over the unix-socket branch too (the SSH path)', async () => {
+    seen.length = 0
+    await probe('node-A', { NODETERM_HOOK_SOCK: sock, NODETERM_NODE_TOKEN_DIR: tokenDir })
+    expect(seen).toEqual([{ path: '/context-link/list', nodeToken: 'CONTEXT-NODE-TOKEN' }])
+  })
+
+  it('reads the dir out of the endpoint file, not only the env', async () => {
+    seen.length = 0
+    const endpoint = join(dir, 'ctx-token-endpoint.env')
+    writeFileSync(
+      endpoint,
+      `NODETERM_HOOK_PORT=${tcpPort}\nNODETERM_HOOK_TOKEN=whatever\nNODETERM_HOOK_VERSION=2\nNODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+    )
+    await probe('node-A', { NODETERM_HOOK_ENDPOINT: endpoint })
+    expect(seen).toEqual([{ path: '/context-link/list', nodeToken: 'CONTEXT-NODE-TOKEN' }])
+  })
+
+  it('still reads, with an empty token, when no token file exists', async () => {
+    seen.length = 0
+    await probe('node-A', { NODETERM_HOOK_PORT: String(tcpPort), NODETERM_NODE_TOKEN_DIR: join(dir, 'nope') })
+    expect(seen).toEqual([{ path: '/context-link/list', nodeToken: '' }])
+  })
+
+  it('never presents ANOTHER node\'s token file — the path is keyed by $NODETERM_NODE_ID', async () => {
+    seen.length = 0
+    await probe('node-Z', { NODETERM_HOOK_PORT: String(tcpPort), NODETERM_NODE_TOKEN_DIR: tokenDir })
+    expect(seen).toEqual([{ path: '/context-link/list', nodeToken: '' }])
+  })
+})
+
+// `ps` and /proc/<pid>/cmdline are world-readable, so a credential passed as `curl -H …` is
+// published to every other account on the host for the life of that curl — and this shim is
+// installed on SSH hosts, where the other accounts are strangers. Both headers go in on stdin.
+//
+// The recording curl is a PASSTHROUGH (log argv + stdin, then run the real curl), so each case
+// proves the credential left argv AND that it still reached the server. Checking only the server's
+// headers would pass with the leak entirely intact.
+describe('context-link shim keeps credentials off curl\'s command line', () => {
+  const seen: { hookToken: string; nodeToken: string }[] = []
+  let tcp: import('node:http').Server
+  let unix: import('node:http').Server
+  let tcpPort = 0
+  let sock = ''
+  let binDir = ''
+  let tokenDir = ''
+  let argvLog = ''
+  let stdinLog = ''
+
+  beforeAll(async () => {
+    const http = await import('node:http')
+    const handler = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void => {
+      req.resume()
+      req.on('end', () => {
+        seen.push({
+          hookToken: String(req.headers['x-nodeterm-hook-token'] ?? ''),
+          nodeToken: String(req.headers['x-nodeterm-node-token'] ?? '')
+        })
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('ok\n')
+      })
+    }
+    tcp = http.createServer(handler)
+    unix = http.createServer(handler)
+    await new Promise<void>((r) => tcp.listen(0, '127.0.0.1', r))
+    tcpPort = (tcp.address() as { port: number }).port
+    sock = join(dir, 'ctx-argv-probe.sock')
+    await new Promise<void>((r) => unix.listen(sock, r))
+    tokenDir = join(dir, 'ctx-argv-tokens')
+    mkdirSync(tokenDir, { recursive: true })
+    writeFileSync(join(tokenDir, 'node-A'), 'SECRET-NODE-TOKEN\n', { mode: 0o600 })
+    binDir = join(dir, 'ctx-argv-bin')
+    mkdirSync(binDir, { recursive: true })
+    argvLog = join(binDir, 'argv.log')
+    stdinLog = join(binDir, 'stdin.log')
+    const realCurl = (await run('/bin/sh', ['-c', 'command -v curl'])).stdout.trim()
+    writeFileSync(
+      join(binDir, 'curl'),
+      [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}`,
+        // Only a curl told to read its config from stdin gets a reader. A regression that put the
+        // headers back on argv would otherwise leave `tee` waiting on a stdin nobody ever closes,
+        // and the failure would read as a timeout instead of the assertion it really is.
+        'case "$*" in',
+        `  *"--config -"*) tee -a ${JSON.stringify(stdinLog)} | ${JSON.stringify(realCurl)} "$@" ;;`,
+        `  *) ${JSON.stringify(realCurl)} "$@" </dev/null ;;`,
+        'esac',
+        ''
+      ].join('\n'),
+      { mode: 0o755 }
+    )
+  })
+
+  afterAll(() => {
+    tcp.close()
+    unix.close()
+  })
+
+  async function record(env: Record<string, string>): Promise<{ argv: string; stdin: string }> {
+    // Truncated, not deleted: a regression must fail on the assertion below, not on a missing file.
+    writeFileSync(argvLog, '')
+    writeFileSync(stdinLog, '')
+    seen.length = 0
+    await run('/bin/sh', [shim, 'list'], {
+      env: {
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        NODETERM_NODE_ID: 'node-A',
+        NODETERM_HOOK_TOKEN: 'SECRET-BEARER',
+        NODETERM_NODE_TOKEN_DIR: tokenDir,
+        ...env
+      }
+    })
+    return { argv: readFileSync(argvLog, 'utf8'), stdin: readFileSync(stdinLog, 'utf8') }
+  }
+
+  it('names no credential header in the generated source at all', () => {
+    expect(CONTEXT_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Hook-Token')
+    expect(CONTEXT_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Node-Token')
+    expect((CONTEXT_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(2)
+  })
+
+  it('over TCP: neither token is in argv, both arrive on stdin and reach the server', async () => {
+    const { argv, stdin } = await record({ NODETERM_HOOK_PORT: String(tcpPort) })
+    expect(seen).toEqual([{ hookToken: 'SECRET-BEARER', nodeToken: 'SECRET-NODE-TOKEN' }])
+    expect(argv).not.toContain('SECRET-BEARER')
+    expect(argv).not.toContain('SECRET-NODE-TOKEN')
+    expect(argv).not.toContain('X-Nodeterm-Hook-Token')
+    expect(argv).not.toContain('X-Nodeterm-Node-Token')
+    expect(stdin).toContain('header = "X-Nodeterm-Hook-Token: SECRET-BEARER"')
+    expect(stdin).toContain('header = "X-Nodeterm-Node-Token: SECRET-NODE-TOKEN"')
+  })
+
+  // The SSH transport — the one where the process table belongs to somebody else.
+  it('over the unix socket: neither token is in argv, both arrive on stdin', async () => {
+    const { argv, stdin } = await record({ NODETERM_HOOK_PORT: '', NODETERM_HOOK_SOCK: sock })
+    expect(seen).toEqual([{ hookToken: 'SECRET-BEARER', nodeToken: 'SECRET-NODE-TOKEN' }])
+    expect(argv).toContain('--unix-socket')
+    expect(argv).not.toContain('SECRET-BEARER')
+    expect(argv).not.toContain('SECRET-NODE-TOKEN')
+    expect(stdin).toContain('header = "X-Nodeterm-Hook-Token: SECRET-BEARER"')
+    expect(stdin).toContain('header = "X-Nodeterm-Node-Token: SECRET-NODE-TOKEN"')
+  })
+
+  // "No token" still means legacy: curl sends no header at all when there is nothing after the
+  // colon, exactly as the `-H` form behaved, and the server reads absent and empty alike.
+  it('still calls with no node token at all when the file is missing', async () => {
+    const { argv, stdin } = await record({
+      NODETERM_HOOK_PORT: String(tcpPort),
+      NODETERM_NODE_TOKEN_DIR: join(dir, 'ctx-argv-none')
+    })
+    expect(seen).toEqual([{ hookToken: 'SECRET-BEARER', nodeToken: '' }])
+    expect(stdin).toContain('header = "X-Nodeterm-Node-Token: "')
+    expect(argv).not.toContain('X-Nodeterm-Node-Token')
   })
 })

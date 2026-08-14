@@ -84,6 +84,18 @@ come from git-shared JSON and can end up interpolated into a shell command line.
 `/bin/sh` against a fixture tree. A composed fixture will not tell you that `echo ##MEM` prints an
 empty line because `#` starts a comment.
 
+**Credentials never ride argv — local or SSH.** Not a tmux `-e` pair, not `curl -H`, not a remote
+command string. `/proc/<pid>/cmdline` is mode 444 on a stock Linux, and a remote command line is argv
+on the host too: we shipped the hook bearer that way and any other account on the machine could read
+it and open a terminal running an arbitrary command. Pass secrets by 0600 file or by **stdin**
+(`curl --config -`), and never add an argv fallback. See `docs/node-identity.md`.
+
+**Both raw listeners change together** — `src/main/index.ts` and `src/server/agent-status.ts`. A new
+field on a hook event that reaches only the desktop leaves the Server Edition quietly without the
+feature, and the boundary tests can only tell you an import is wrong, never that a field is missing.
+The same applies to any hook-server signature change; this repo has shipped one to a single shell
+three times.
+
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains
 why in detail.

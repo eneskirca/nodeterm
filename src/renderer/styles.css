@@ -4466,6 +4466,7 @@ body,
 }
 .clone-dialog__progress {
   margin-top: 10px;
+  margin-bottom: 14px;
 }
 .clone-dialog__progress-label {
   font-size: 11px;

@@ -2019,3 +2019,94 @@ describe('lastSshErrorLine', () => {
     expect(out.length).toBeLessThanOrEqual(201)
   })
 })
+
+/**
+ * Remote nodes were permanently `legacy`: the endpoint file advertised
+ * `$HOME/.nodeterm/node-tokens` and nothing ever wrote it. The connect is where that dir gets
+ * filled, on exactly the terms the canvas-control install already uses.
+ */
+describe('SshProjectManager — per-node tokens on the host', () => {
+  /** A runner for a connect whose reverse hook tunnel VERIFIES (curl answers 204), which is what
+   *  sets `hookEndpointPath` — the gate the token write shares with the canvas-control install. */
+  function verifiedRun() {
+    return vi.fn(async (args: string[], _stdin?: string) => {
+      const j = args.join(' ')
+      if (j.includes('$HOME')) return { code: 0, stdout: '/home/u' }
+      if (j.includes('%{http_code}')) return { code: 0, stdout: '204' }
+      return { code: 0, stdout: '' }
+    })
+  }
+  /** The connect fires the write without awaiting it (best-effort setup must not delay a
+   *  terminal), so the assertions run after the microtask queue drains. */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('materialises every canvas node id on the host, tokens on STDIN', async () => {
+    const run = verifiedRun()
+    const mgr = new SshProjectManager({
+      userDataDir: '/ud',
+      spawnMaster: vi.fn(() => ({ kill: vi.fn(), on: vi.fn() })),
+      run,
+      runScp: vi.fn(async () => ({ code: 0 })),
+      getHook: () => ({ port: 1, token: 't', version: '1' }),
+      onStatus: vi.fn(),
+      nodeIdsForProject: (id) => (id === 'p1' ? ['node-1', 'node-2'] : []),
+      nodeTokenMinter: () => (nodeId) => `kid12345.mac-of-${nodeId}`
+    })
+    await mgr.connect('p1', conn)
+    await settle()
+    const cmds = run.mock.calls.map(([a]) => (a as string[]).join(' '))
+    // tmp + rename (`cat >` truncates, so writing straight at the file leaves an EMPTY token
+    // behind when the host is out of quota or disk — see RemoteHooks.writeNodeTokens).
+    expect(cmds.some((c) => c.includes("mv -f '/home/u/.nodeterm/node-tokens/.node-1.tmp' '/home/u/.nodeterm/node-tokens/node-1'"))).toBe(true)
+    expect(cmds.some((c) => c.includes("mv -f '/home/u/.nodeterm/node-tokens/.node-2.tmp' '/home/u/.nodeterm/node-tokens/node-2'"))).toBe(true)
+    // never on a command line — the host's process table is readable by its other users.
+    expect(cmds.some((c) => c.includes('mac-of-node-1'))).toBe(false)
+    const write = run.mock.calls.find(([a]) =>
+      (a as string[]).join(' ').includes("node-tokens/node-1'")
+    )
+    expect(write?.[1]).toBe('kid12345.mac-of-node-1\n')
+  })
+
+  it('writes nothing when this instance has no node-auth secret (legacy everywhere)', async () => {
+    const run = verifiedRun()
+    const mgr = new SshProjectManager({
+      userDataDir: '/ud',
+      spawnMaster: vi.fn(() => ({ kill: vi.fn(), on: vi.fn() })),
+      run,
+      runScp: vi.fn(async () => ({ code: 0 })),
+      getHook: () => ({ port: 1, token: 't', version: '1' }),
+      onStatus: vi.fn(),
+      nodeIdsForProject: () => ['node-1'],
+      nodeTokenMinter: () => null
+    })
+    await mgr.connect('p1', conn)
+    await settle()
+    expect(run.mock.calls.some(([a]) => (a as string[]).join(' ').includes('node-tokens'))).toBe(false)
+  })
+
+  it('writeNodeTokenForNode covers a node created AFTER the connect', async () => {
+    const run = verifiedRun()
+    const mgr = new SshProjectManager({
+      userDataDir: '/ud',
+      spawnMaster: vi.fn(() => ({ kill: vi.fn(), on: vi.fn() })),
+      run,
+      runScp: vi.fn(async () => ({ code: 0 })),
+      getHook: () => ({ port: 1, token: 't', version: '1' }),
+      onStatus: vi.fn(),
+      nodeIdsForProject: () => [],
+      nodeTokenMinter: () => (nodeId) => `kid12345.mac-of-${nodeId}`
+    })
+    const { controlPath } = await mgr.connect('p1', conn)
+    await settle()
+    run.mockClear()
+    await mgr.writeNodeTokenForNode(controlPath, 'node-9')
+    const cmds = run.mock.calls.map(([a]) => (a as string[]).join(' '))
+    expect(cmds.some((c) => c.includes("mv -f '/home/u/.nodeterm/node-tokens/.node-9.tmp' '/home/u/.nodeterm/node-tokens/node-9'"))).toBe(true)
+    // an unknown control path is a no-op, not a throw
+    run.mockClear()
+    await expect(mgr.writeNodeTokenForNode('/nope.sock', 'node-9')).resolves.toBeUndefined()
+    expect(run.mock.calls).toHaveLength(0)
+  })
+})

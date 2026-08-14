@@ -477,8 +477,20 @@ export function remoteHookEnvArgs(
   return env
 }
 /** Contents of the remote endpoint env file the managed hook script sources (unix-socket transport). */
-export function remoteEndpointFileContents(sock: string, token: string, version: string): string {
-  return `NODETERM_HOOK_SOCK=${sock}\nNODETERM_HOOK_TOKEN=${token}\nNODETERM_HOOK_VERSION=${version}\n`
+export function remoteEndpointFileContents(
+  sock: string,
+  token: string,
+  version: string,
+  tokenDir: string
+): string {
+  return (
+    `NODETERM_HOOK_SOCK=${sock}\n` +
+    `NODETERM_HOOK_TOKEN=${token}\n` +
+    `NODETERM_HOOK_VERSION=${version}\n` +
+    // The REMOTE token dir ($HOME/.nodeterm/node-tokens on the host), not ours. The host stores
+    // per-node tokens only; it never holds a secret and can never mint.
+    `NODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+  )
 }
 
 /**

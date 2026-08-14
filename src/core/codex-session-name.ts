@@ -19,9 +19,12 @@ import { WebSocket } from 'ws'
 // Minting a thread is a multi-step conversation with a typically COLD server, so it needs a real
 // budget — and the hook route serving it must raise its socket guard to match (handleCodexThread).
 // Shared with the launcher's client budget so the two cannot drift apart.
-import { CODEX_THREAD_START_TIMEOUT_MS } from './codex-identity-proxy'
+// `isSafeThreadId` comes from the same module, and deliberately: this file used to keep its own
+// copy of the bare charset, which accepted `.` and `..` — harmless over the RPC wire here, but the
+// ids it validates (a thread the app-server just minted, one a node persisted) are handed straight
+// to the record store, where they ARE path segments. One rule, so the two cannot drift apart.
+import { CODEX_THREAD_START_TIMEOUT_MS, isSafeThreadId } from './codex-identity-proxy'
 
-const SAFE_THREAD_ID = /^[A-Za-z0-9._-]+$/
 /**
  * `codex app-server daemon start` exiting 0 does NOT mean its control socket is accepting
  * connections yet — the daemon binds a beat later. Everything here runs immediately after that
@@ -110,7 +113,7 @@ export function readCodexSessionNameAt(
   threadId: string,
   timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<string | null> {
-  if (!SAFE_THREAD_ID.test(threadId)) return Promise.resolve(null)
+  if (!isSafeThreadId(threadId)) return Promise.resolve(null)
   return new Promise((resolve) => {
     let settled = false
     let ws: WebSocket
@@ -271,7 +274,7 @@ export async function codexThreadExistsAt(
   attempts = SOCKET_WAIT_ATTEMPTS,
   gapMs = SOCKET_WAIT_MS
 ): Promise<boolean> {
-  if (!SAFE_THREAD_ID.test(threadId)) return false
+  if (!isSafeThreadId(threadId)) return false
   for (let i = 0; i < attempts; i++) {
     const result = await probeCodexThread(socketPath, threadId, timeoutMs)
     if (result !== 'unreachable') return result === 'yes'
@@ -403,7 +406,7 @@ function startCodexThreadOnce(
         if (
           message.error ||
           typeof startedThreadId !== 'string' ||
-          !SAFE_THREAD_ID.test(startedThreadId)
+          !isSafeThreadId(startedThreadId)
         ) {
           finish(new Error('Codex app-server returned no valid thread identity'))
           return
@@ -412,7 +415,7 @@ function startCodexThreadOnce(
         ws.send(JSON.stringify({ id: 3, method: 'turn/start', params: { threadId, input: [] } }))
       } else if (message.id === 3) {
         const turnId = message.result?.turn?.id
-        if (message.error || typeof turnId !== 'string' || !SAFE_THREAD_ID.test(turnId)) {
+        if (message.error || typeof turnId !== 'string' || !isSafeThreadId(turnId)) {
           finish(new Error('Codex app-server could not materialize the new thread'))
           return
         }
@@ -451,7 +454,7 @@ function startCodexThreadOnce(
         if (
           message.error ||
           typeof readyThreadId !== 'string' ||
-          !SAFE_THREAD_ID.test(readyThreadId)
+          !isSafeThreadId(readyThreadId)
         ) {
           finish(new Error('Codex app-server could not clean up thread materialization'))
           return
@@ -484,7 +487,7 @@ export function readCodexSessionName(
   threadId: string,
   socketPath = defaultCodexAppServerSocket()
 ): Promise<string | null> {
-  if (!SAFE_THREAD_ID.test(threadId)) return Promise.resolve(null)
+  if (!isSafeThreadId(threadId)) return Promise.resolve(null)
   const key = `${socketPath}\0${threadId}`
   const cached = names.get(key)
   if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.name)

@@ -74,16 +74,15 @@ export function registerCoreHandlers(
   // The Server Edition answers "no shared identity", so every Codex node here launches the bare
   // `codex` it always did — a working node with its own app-server, just without the shared one.
   //
-  // The blocker is the secret, not the plumbing: the per-node capability that closes the identity
-  // routes' authorization hole is keychain-backed on the desktop (Electron `safeStorage`, see
-  // src/main/codex-node-auth-secret.ts) and there is no equivalent on a headless Linux host. The
-  // only way to arm this here is a secret at rest in the data dir, which is a security decision
-  // this slice is not entitled to make quietly. Wiring it up is exactly three calls at this spot —
-  // `hookServer.setCodexNodeAuthSecret(secret)`, `setCodexThreadIdentityAuthSecret(secret)`,
-  // `refreshCodexIdentityCaps()` — plus the same two `setCodexThread*Handler` registrations
-  // src/main/index.ts makes; everything they call already lives in src/core and boots from
-  // CorePlatform. Until that secret question is answered, saying "no" here is what keeps the
-  // browser's Codex nodes identical to what they are today rather than half-armed.
+  // The secret question that used to block this is ANSWERED: src/server/index.ts arms
+  // `hookServer.setNodeAuthSecret(await loadOrCreateNodeAuthSecret())` at boot, which on a headless
+  // host is raw 0600 bytes in the data dir — a decision taken explicitly, not quietly (see
+  // src/core/agents/node-auth-secret.ts). What is still missing is only the codex-specific
+  // plumbing: `setCodexThreadIdentityAuthSecret(secret)`, `refreshCodexIdentityCaps()`, and the two
+  // `setCodexThread*Handler` registrations src/main/index.ts makes. Everything they call already
+  // lives in src/core and boots from CorePlatform, so this stays a scope line, not a blocker —
+  // until it is drawn differently, saying "no" here keeps the browser's Codex nodes identical to
+  // what they are today rather than half-armed.
   registerCodexIdentityIpc(() => UNKNOWN_CODEX_IDENTITY_CAPS)
 
   // Claude subscription usage. Previously desktop-only — the browser bridge answered `null`, so

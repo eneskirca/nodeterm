@@ -298,9 +298,10 @@ describe('hook forwarding', () => {
     ])
     expect(remoteHookEnvArgs('/ep', 'n1', '1')).not.toContain('NODETERM_CANVAS_CONTROL=1')
   })
-  it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION', () => {
-    expect(remoteEndpointFileContents('/r.sock', 'tok', '1')).toBe(
-      'NODETERM_HOOK_SOCK=/r.sock\nNODETERM_HOOK_TOKEN=tok\nNODETERM_HOOK_VERSION=1\n'
+  it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION and the remote token dir', () => {
+    expect(remoteEndpointFileContents('/r.sock', 'tok', '2', '/home/u/.nodeterm/node-tokens')).toBe(
+      'NODETERM_HOOK_SOCK=/r.sock\nNODETERM_HOOK_TOKEN=tok\nNODETERM_HOOK_VERSION=2\n' +
+        'NODETERM_NODE_TOKEN_DIR=/home/u/.nodeterm/node-tokens\n'
     )
   })
 })

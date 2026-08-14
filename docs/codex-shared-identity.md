@@ -58,7 +58,9 @@ other install runs plain `codex`. §3 is what makes that a quiet degrade instead
 | `src/core/codex-session-name.ts` | The app-server protocol client: mint a thread, check one exists, read its name. |
 | `src/core/codex-identity-caps.ts` | "Can a node on this machine get a managed identity?" — the construction-time gate. |
 | `src/core/agents/hook-server.ts` | The `/codex-thread/{start,bind,fallback}` routes and the per-node capability. |
-| `src/main/codex-node-auth-secret.ts` | The keychain-backed secret both of the above are keyed on. |
+| `src/core/agents/node-auth-secret.ts` | The one restart-stable secret both of the above are keyed on (sealed via `safeStorage` on the desktop, raw 0600 bytes on the Server Edition). |
+| `src/core/agents/node-auth-token.ts` | The one derivation — `kid.mac` — and the three-way verifier every route judges a presented token with. |
+| `src/core/agents/node-token-files.ts` | How a token reaches the client: one 0600 file per node under `node-tokens/`, never the tmux argv. |
 | `src/renderer/state/codexIdentity.ts` | The renderer's gate + the transient per-node mode the UI shows. |
 
 ### The records

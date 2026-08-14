@@ -12,13 +12,24 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { buildCodexLauncherScript } from './codex-identity-proxy'
 import { hookServer } from './agents/hook-server'
+import { nodeAuthKid, nodeAuthToken } from './agents/node-auth-token'
+import {
+  nodeTokenDir,
+  resetNodeTokenFilesForTests,
+  sweepNodeTokenFile,
+  writeNodeTokenFile
+} from './agents/node-token-files'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 
 const run = promisify(execFile)
+
+/** The one secret. Every token in this file is derived from it by `nodeAuthToken` — the same
+ *  function the server verifies with, so a second derivation cannot hide here. */
+const SECRET = randomBytes(32)
 
 let dir = ''
 let launcher = ''
@@ -52,7 +63,7 @@ beforeAll(async () => {
   // `true` stands in for `codex app-server daemon start`; the "no app-server" case overrides it.
   fs.writeFileSync(launcher, buildCodexLauncherScript('true'), { mode: 0o755 })
   await hookServer.start()
-  hookServer.setCodexNodeAuthSecret(randomBytes(32))
+  hookServer.setNodeAuthSecret(SECRET)
   hookServer.setCodexThreadStartHandler(async ({ nodeId, cwd }) => {
     started.push({ nodeId, cwd })
     if (startDelayMs) await new Promise((r) => setTimeout(r, startDelayMs))
@@ -71,6 +82,8 @@ beforeAll(async () => {
 
 afterAll(() => {
   hookServer.stop()
+  hookServer.clearNodeAuthSecretForTests()
+  resetNodeTokenFilesForTests()
   resetPlatformForTests()
   fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -83,8 +96,19 @@ beforeEach(() => {
   startDelayMs = 0
   bindAnswer = () => {}
   fs.writeFileSync(argvLog, '')
+  // The capability arrives through the FILE channel now (0600 under nodeTokenDir(), advertised as
+  // NODETERM_NODE_TOKEN_DIR in the endpoint file) — never through the tmux argv. Re-materialised
+  // per test because several cases below deliberately poison or remove it.
+  fs.rmSync(nodeTokenDir(), { recursive: true, force: true })
+  writeNodeTokenFile('node-1', nodeAuthToken(SECRET, 'node-1'))
 })
 
+/**
+ * NOTE what is NOT here: `NODETERM_CODEX_NODE_TOKEN`. `buildPtyEnv` stopped emitting it (it rode
+ * the world-readable tmux `-e` argv), so the launcher's real environment has no per-node credential
+ * in it at all — it reads the token file. A test that kept injecting the var would prove the file
+ * channel works only by accident.
+ */
 function baseEnv(): Record<string, string> {
   return {
     PATH: `${binDir}:${process.env.PATH ?? ''}`,
@@ -95,8 +119,7 @@ function baseEnv(): Record<string, string> {
     // live coordinates after an app restart), but their presence is why a node whose endpoint file
     // vanished can still report that it fell back.
     NODETERM_HOOK_PORT: String(hookServer.getPort()),
-    NODETERM_HOOK_TOKEN: hookServer.getToken(),
-    NODETERM_CODEX_NODE_TOKEN: hookServer.codexNodeAuthToken('node-1')
+    NODETERM_HOOK_TOKEN: hookServer.getToken()
   }
 }
 
@@ -157,11 +180,6 @@ describe('falls back to plain codex', () => {
       'hook endpoint points at nothing (app restarted, tmux session outlived it)',
       { NODETERM_HOOK_ENDPOINT: '/nonexistent/hook-endpoint.env' },
       'hook-endpoint-unavailable'
-    ],
-    [
-      'no per-node capability token (secure storage unavailable)',
-      { NODETERM_CODEX_NODE_TOKEN: '' },
-      'node-token-unavailable'
     ]
   ]
 
@@ -254,40 +272,150 @@ describe('a start handler that takes real time', () => {
   }, 20_000)
 })
 
+// The channel and the derivation both changed under this launcher: the token is `kid.mac` (one
+// shared derivation with /hook/*) and it arrives in a 0600 FILE, not in the tmux argv. Between the
+// two changes the feature was INERT — the launcher read an env var nothing set any more, reported
+// `node-token-unavailable` and ran plain codex. These are the tests that say it is not.
+describe('the per-node capability, over the file channel', () => {
+  it('accepts the kid.mac wire shape — the dot is part of the token, not a charset violation', async () => {
+    // THE TRAP. The old gate was `*[!A-Za-z0-9_-]*`, minted from HMAC(secret, nodeId) with no
+    // separator in it. The shared derivation puts a `.` between kid and mac, so that gate rejects
+    // EVERY current token and degrades every codex node silently.
+    const token = nodeAuthToken(SECRET, 'node-1')
+    expect(token).toContain('.')
+    expect(fs.readFileSync(path.join(nodeTokenDir(), 'node-1'), 'utf8').trim()).toBe(token)
+    await callLauncher([])
+    expect(started).toEqual([{ nodeId: 'node-1', cwd: fs.realpathSync(dir) }])
+    expect(fallbacks).toEqual([])
+    expect(codexArgv()).toEqual(['--remote unix:// resume thread-abc'])
+  })
+
+  it('reads the token from the FILE with the env channel gone entirely', async () => {
+    expect(baseEnv().NODETERM_CODEX_NODE_TOKEN).toBeUndefined()
+    await callLauncher(['resume', 'thread-xyz'])
+    expect(bound).toEqual([{ nodeId: 'node-1', threadId: 'thread-xyz' }])
+    expect(fallbacks).toEqual([])
+  })
+
+  it('is unmoved by a stale env var left over from a pre-upgrade session', async () => {
+    // Charset-valid but minted for the WRONG node. If anything still read that variable, the route
+    // would 403 and this node would degrade to plain codex.
+    await callLauncher([], { NODETERM_CODEX_NODE_TOKEN: nodeAuthToken(SECRET, 'node-2') })
+    expect(started).toEqual([{ nodeId: 'node-1', cwd: fs.realpathSync(dir) }])
+    expect(fallbacks).toEqual([])
+  })
+
+  it('ignores NODETERM_CODEX_NODE_TOKEN entirely — the "one release" fallback was never real', async () => {
+    // The fallback shipped for "a session spawned by the previous build", and the test that
+    // certified it fed a NEW-format token into the OLD variable — an input the previous build never
+    // produced. What that build actually set is base64url(HMAC(secret, nodeId)) with NO dot, which
+    // the current verifier reads as a foreign kid ⇒ `legacy` ⇒ 403 on /codex-thread/{start,bind}.
+    // So the fallback bought one wasted round-trip and the same degrade. A pre-upgrade session runs
+    // plain codex until it is relaunched.
+    sweepNodeTokenFile('node-1')
+    fs.rmSync(path.join(nodeTokenDir(), 'node-1'), { force: true })
+    const oldFormat = createHmac('sha256', SECRET).update('node-1').digest('base64url')
+    expect(oldFormat).not.toContain('.') // the shape the previous build actually wrote
+    await callLauncher([], { NODETERM_CODEX_NODE_TOKEN: oldFormat })
+    expect(started).toEqual([])
+    expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'node-token-unavailable' }])
+  })
+
+  it('a missing token file and no env var → node-token-unavailable → plain codex', async () => {
+    fs.rmSync(path.join(nodeTokenDir(), 'node-1'), { force: true })
+    await callLauncher(['--ask-for-approval', 'never', 'do the thing'])
+    expect(codexArgv()).toEqual(['--ask-for-approval never do the thing'])
+    expect(started).toEqual([])
+    expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'node-token-unavailable' }])
+  })
+
+  it('a token path that cannot be read as a file → the same degrade, never a crash', async () => {
+    // A directory where the token should be: `head` fails, and the launcher must treat that the
+    // way it treats every other unavailable identity — plain codex with the arguments intact.
+    const file = path.join(nodeTokenDir(), 'node-1')
+    fs.rmSync(file, { force: true })
+    fs.mkdirSync(file)
+    try {
+      await callLauncher(['hello'])
+      expect(codexArgv()).toEqual(['hello'])
+      expect(started).toEqual([])
+      expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'node-token-unavailable' }])
+    } finally {
+      fs.rmSync(file, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('per-node capability (the authorization the shared bearer cannot give)', () => {
+  const post = (verb: string, body: string, headers: Record<string, string>) =>
+    fetch(`http://127.0.0.1:${hookServer.getPort()}/codex-thread/${verb}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-nodeterm-hook-token': hookServer.getToken(),
+        ...headers
+      },
+      body
+    })
+
+  it('binding node-1 with node-2\'s token is 403 — judged by the SHARED verifier', async () => {
+    const res = await post('bind', 'nodeId=node-1&threadId=thread-xyz', {
+      'x-nodeterm-node-token': nodeAuthToken(SECRET, 'node-2')
+    })
+    expect(res.status).toBe(403)
+    expect(bound).toEqual([])
+  })
+
+  it('our own kid with a mutated mac is 403 on start as well as bind', async () => {
+    const good = nodeAuthToken(SECRET, 'node-1')
+    const mac = good.slice(good.indexOf('.') + 1)
+    const mutated = `${nodeAuthKid(SECRET)}.${mac.slice(0, -1)}${mac.endsWith('A') ? 'B' : 'A'}`
+    expect(mutated).not.toBe(good)
+    expect((await post('bind', 'nodeId=node-1&threadId=thread-xyz', {
+      'x-nodeterm-node-token': mutated
+    })).status).toBe(403)
+    expect((await post('start', `nodeId=node-1&cwd=${encodeURIComponent(dir)}`, {
+      'x-nodeterm-node-token': mutated
+    })).status).toBe(403)
+    expect(bound).toEqual([])
+    expect(started).toEqual([])
+  })
+
+  it('start and bind stay STRICT: a tokenless caller is refused, unlike /hook/*', async () => {
+    // These routes were strict from day one and have no upgrade population to protect — a
+    // pre-#167 session has no launcher that calls them at all — so `legacy` is a 403 here.
+    expect((await post('start', `nodeId=node-1&cwd=${encodeURIComponent(dir)}`, {})).status).toBe(403)
+    expect((await post('bind', 'nodeId=node-1&threadId=thread-xyz', {})).status).toBe(403)
+    expect(started).toEqual([])
+    expect(bound).toEqual([])
+  })
+
   it('the fallback report is trusted only when it presents no token at all', async () => {
     // The one route the capability is not required on — because the commonest thing it reports is
     // that there was no capability to present. The exemption is exactly that narrow: a report that
     // DOES carry a token must carry the right one, or a session holding only the shared bearer
     // could flag a sibling node as fallen back.
-    const post = (nodeId: string, headers: Record<string, string>) =>
-      fetch(`http://127.0.0.1:${hookServer.getPort()}/codex-thread/fallback`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'x-nodeterm-hook-token': hookServer.getToken(),
-          ...headers
-        },
-        body: `nodeId=${nodeId}&reason=broker-unreachable`
-      })
-    expect((await post('node-1', {})).status).toBe(204)
+    const report = (nodeId: string, headers: Record<string, string>) =>
+      post('fallback', `nodeId=${nodeId}&reason=broker-unreachable`, headers)
+    expect((await report('node-1', {})).status).toBe(204)
     expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'broker-unreachable' }])
-    const wrong = await post('node-1', {
-      'x-nodeterm-node-token': hookServer.codexNodeAuthToken('node-2')
+    const wrong = await report('node-1', {
+      'x-nodeterm-node-token': nodeAuthToken(SECRET, 'node-2')
     })
     expect(wrong.status).toBe(403)
     expect(fallbacks).toHaveLength(1)
-    const right = await post('node-1', {
-      'x-nodeterm-node-token': hookServer.codexNodeAuthToken('node-1')
+    const right = await report('node-1', {
+      'x-nodeterm-node-token': nodeAuthToken(SECRET, 'node-1')
     })
     expect(right.status).toBe(204)
     expect(fallbacks).toHaveLength(2)
   })
 
   it("refuses a token minted for a SIBLING node, and falls back rather than binding it", async () => {
-    await callLauncher(['resume', 'thread-xyz'], {
-      NODETERM_CODEX_NODE_TOKEN: hookServer.codexNodeAuthToken('node-2')
-    })
+    // The hijack shape the file channel has to survive: node-1's own token FILE holding a token
+    // minted for node-2 (a case-folding collision on APFS, a hand-edited file).
+    writeNodeTokenFile('node-1', nodeAuthToken(SECRET, 'node-2'))
+    await callLauncher(['resume', 'thread-xyz'])
     // The route rejected it before the handler ran: no binding was recorded for node-1.
     expect(bound).toEqual([])
     expect(codexArgv()).toEqual(['resume thread-xyz'])

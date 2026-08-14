@@ -8,7 +8,9 @@
 import { childArgs, hookForwardArgs, hookForwardCancelArgs, remoteEndpointFileContents } from '../../core/remote-ssh/control-master'
 import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, GROK_HOOK_EVENTS } from '@shared/agents/hook-events'
 import { GROK_HOOK_FILE, isSafeRemoteGrokHome } from '../../core/agents/grok-paths'
-import { isSafeRemoteHome } from '../../core/remote-safety'
+import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
+import { hookServer } from '../../core/agents/hook-server'
+import { curlHeaderConfigLine } from '../../core/agents/hook-curl-config-sh'
 import { buildManagedScript } from '../../core/agents/hooks/managed-script'
 
 /**
@@ -123,7 +125,18 @@ export class RemoteHooks {
       // answer means no hooks, never a half-built remote path. (Layer two is the quoting below;
       // both are needed: the validator bounds what can arrive, the quoting bounds what it can do.)
       const home = stdout.trim()
-      if (code !== 0 || !isSafeRemoteHome(home)) return null // fail-open: nothing else would work
+      if (code !== 0 || !home) return null // fail-open: nothing else would work
+      // The host's answer is interpolated into every remote path below — all of them quoted now,
+      // but a `$HOME` that is not a plain path is still refused OUTRIGHT rather than escaped case
+      // by case. LOUD, because unlike the rest of this file's fail-open steps the user loses hooks
+      // entirely and there would otherwise be nothing anywhere saying why.
+      if (!isSafeRemoteHome(home)) {
+        console.warn(
+          '[remote-hooks] the host reported a $HOME that is not a plain path — refusing to build ' +
+            'remote commands from it; this host runs without status hooks'
+        )
+        return null
+      }
       const remoteDir = `${home}/.nodeterm`
       const sock = `${remoteDir}/hook-${projectId}.sock`
       // PER-PROJECT endpoint file. The sock is already per-project, but the endpoint file used to
@@ -166,7 +179,7 @@ export class RemoteHooks {
       // so sessions are never pointed at a socket that answers nothing.
       await this.r.run(
         childArgs(conn, controlPath, `umask 077; cat > ${posixQuote(endpoint)}`),
-        remoteEndpointFileContents(sock, hook.token, hook.version)
+        remoteEndpointFileContents(sock, hook.token, hook.version, `${remoteDir}/node-tokens`)
       )
       // 3. install the managed hook for each JSON agent (script + merged config).
       for (const t of AGENT_TARGETS) {
@@ -205,6 +218,118 @@ export class RemoteHooks {
       return { endpointPath: endpoint }
     } catch {
       return null // fail-open: agent runs without hooks
+    }
+  }
+
+  /**
+   * Materialise this instance's per-node tokens ON THE HOST — `<home>/.nodeterm/node-tokens/<id>`,
+   * 0600 in a 0700 dir, exactly the layout the endpoint file already advertises as
+   * `NODETERM_NODE_TOKEN_DIR` and the managed script already reads (`head -n 1 "$DIR/$NODE_ID"`).
+   * Nothing wrote it before this, which is why every remote node was permanently `legacy`.
+   *
+   * THE INVARIANT — a credential NEVER rides an ssh command line. The host's process table is
+   * readable by its OTHER users (`ps` shows full argv), and a remote command line is argv on both
+   * ends. So the token goes on STDIN, as the endpoint-file write above already does, and only the
+   * (non-secret) path is interpolated. Do not "simplify" this into `printf %s <token> > file`.
+   *
+   * Fail-open per node AND overall. A connect that died over an identity file would be a far worse
+   * regression than an unverified remote node: a node with no token file presents an empty header,
+   * which the server reads as `legacy` — the designed state, not an outage.
+   *
+   * `mint` returning '' is a REFUSAL (no secret, or the case-fold collision guard), and a refusal
+   * SWEEPS: an earlier connect's file for that id is precisely the token its colliding twin would
+   * read, so leaving it in place is the attack the local `node-token-service` sweeps for.
+   *
+   * Fail-open does NOT mean fail-silent: a node whose write did not land has no token to present,
+   * and the trust-on-first-proof latch lives at the DESKTOP and is keyed by node id, so leaving it
+   * armed over a token that is not there is a permanent 403 (invariant 7). Every failure path here
+   * therefore calls `hookServer.forgetProvenNode`.
+   *
+   * KNOWN LIMITATION — the dir is flat, i.e. per HOST ACCOUNT, not per nodeterm instance. Two
+   * instances driving the same host+user (two desktops sharing a deploy account, or a desktop
+   * whose SSH project points at a host that also runs a headless Server Edition under the same
+   * $HOME) mint with DIFFERENT secrets and overwrite each other's files. The loser's sessions then
+   * present a token carrying the winner's kid, which `verifyNodeToken` reads as `legacy` — never as
+   * another node, and never as `forged`. So the cost is a silent drop to the fail-open state, not a
+   * mis-verification. Scoping the dir as `node-tokens/<kid>/<id>` would close it and needs NO client
+   * change (the client uses whatever dir the endpoint file names) — it is left out here only to keep
+   * the remote layout identical to the local one; see the task A11 report.
+   */
+  async writeNodeTokens(
+    conn: SshConnection,
+    controlPath: string,
+    home: string,
+    nodeIds: readonly string[],
+    mint: (nodeId: string) => string
+  ): Promise<void> {
+    try {
+      if (!isSafeRemoteHome(home)) return
+      const dir = `${home}/.nodeterm/node-tokens`
+      // Gate BEFORE any path join: the ids come from `project.json`, which travels in shared and
+      // cloned repos, and `..` under the token dir resolves to its PARENT. De-duplicated so a
+      // canvas listing one node twice is one write, not two.
+      const ids = [...new Set(nodeIds)].filter((id) => isSafeNodeId(id))
+      // Mint FIRST, so a set with nothing to do costs no round-trip at all (and an all-unsafe
+      // list costs not one remote command).
+      const writes: { id: string; token: string }[] = []
+      const sweeps: string[] = []
+      for (const id of ids) {
+        let token = ''
+        try {
+          token = mint(id)
+        } catch {
+          token = '' // a minter that throws is a refusal, not a crashed connect
+        }
+        if (token) writes.push({ id, token })
+        else sweeps.push(id)
+      }
+      for (const id of sweeps) {
+        await this.r
+          .run(childArgs(conn, controlPath, `rm -f ${posixQuote(`${dir}/${id}`)}`))
+          .catch(() => {})
+      }
+      if (!writes.length) return
+      // `umask 077` so the dir is 0700 the moment it exists; `chmod 700` because an EXISTING dir
+      // keeps its old mode (the same belt-and-braces the local writer applies).
+      const mk = await this.r.run(
+        childArgs(conn, controlPath, `umask 077; mkdir -p ${posixQuote(dir)} && chmod 700 ${posixQuote(dir)}`)
+      )
+      if (mk.code !== 0) return // no dir ⇒ no files; the nodes stay `legacy`
+      for (const { id, token } of writes) {
+        const file = posixQuote(`${dir}/${id}`)
+        // TMP + RENAME, the same shape the local writer uses, and for a reason that is not
+        // cosmetic: `cat > <file>` TRUNCATES before the write can fail, so a host that is out of
+        // quota or disk left the node holding an EMPTY token file. An empty header reads as
+        // `legacy`, and a node still latched at the desktop then takes a hard 403 on every
+        // canvas-control call for the rest of the session. Writing beside the file and renaming
+        // means a failure costs the node nothing it already had.
+        const tmp = posixQuote(`${dir}/.${id}.tmp`)
+        let wrote = false
+        try {
+          // chmod on the TMP, so the mode is right before the name exists; `mv` within one dir is
+          // a rename, which carries the tmp's 0600 over whatever the destination's mode was.
+          const w = await this.r.run(
+            childArgs(
+              conn,
+              controlPath,
+              `umask 077; cat > ${tmp} && chmod 600 ${tmp} && mv -f ${tmp} ${file} || { rm -f ${tmp}; exit 1; }`
+            ),
+            `${token}\n` // newline-terminated: the client reads it with `head -n 1`
+          )
+          // The runner RESOLVES on a non-zero exit — a failed write is a `code`, not a throw, and
+          // reading only the throw is how this failure stayed invisible.
+          wrote = w.code === 0
+        } catch {
+          /* fail-open per node: one unwritable token must not cost the others theirs */
+        }
+        // INVARIANT 7 — a node with no token must not stay latched. Every other path that takes a
+        // token away releases the latch (`sweepToken` in node-token-service); this one silently did
+        // not, and the desktop's latch is instance-global, so a remote node whose write failed was
+        // refused permanently with advice to restart that could not help.
+        if (!wrote) hookServer.forgetProvenNode(id)
+      }
+    } catch {
+      /* fail-open: an identity file must never be able to fail a connect */
     }
   }
 
@@ -660,6 +785,22 @@ export class RemoteHooks {
    * managed hook script uses, run ON the host. `000`/curl-fail = the listener's target is dead
    * (a stale forward from a previous run). No `payload` field is sent, so the server records
    * nothing (its listener path needs one).
+   *
+   * THE BEARER GOES ON STDIN, NEVER ARGV. This used to send `-H 'x-nodeterm-hook-token: <token>'`
+   * on the curl command line — and a remote command line is argv on BOTH ends: for as long as that
+   * curl lives, every OTHER user on the host can read the app-wide hook bearer out of `ps` /
+   * `/proc/<pid>/cmdline`. It is the same leak already measured and closed on the local side (the
+   * tmux `-e` channel), just pointed at someone else's machine. `curl --config -` reads options
+   * from stdin, where `header = "..."` sets the same header with nothing to see in the process
+   * table; `codex-identity-proxy.ts` already uses this exact idiom, and the runner already writes
+   * stdin (the endpoint-file write does).
+   *
+   * There is deliberately NO argv fallback for a curl too old for `--config` (it has had it since
+   * the 1990s): a fallback that puts the token back on argv would simply undo this. The probe
+   * failing is already a designed state — an unverified tunnel means remote agents run without
+   * hooks, loudly warned — and that is strictly better than leaking the bearer.
+   *
+   * What counts as SUCCESS is unchanged: exit 0 and a body of exactly `204`.
    */
   private async verifyTunnel(
     conn: SshConnection,
@@ -670,8 +811,21 @@ export class RemoteHooks {
     try {
       const cmd =
         `curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST --unix-socket ${posixQuote(sock)} ` +
-        `-H ${posixQuote(`x-nodeterm-hook-token: ${token}`)} http://localhost/hook/verify --data nodeId=verify`
-      const r = await this.r.run(childArgs(conn, controlPath, cmd))
+        // `/verify` — the probe's OWN route, which answers 204 on the bearer alone and takes no
+        // node identity at all. It used to POST `/hook/verify`, where it 204'd only as a side
+        // effect of sending no payload; the identity label on `/hook/*` would have started judging
+        // it there. `nodeId=verify` is kept in the body only so an OLDER desktop's script and this
+        // one send the same bytes; the route reads nothing.
+        `--config - http://localhost/verify --data nodeId=verify`
+      // ONE COPY OF THE QUOTING RULE. This used to build its own `header = "…"` line, escaping `\`
+      // and `"` and ignoring the two line breaks — a second, weaker version of the rule that
+      // `hook-curl-config-sh.ts` states for the generated sh clients. `curlHeaderConfigLine` is
+      // that same rule for a config file WE write; a rule with two copies is a rule where one copy
+      // is wrong.
+      const r = await this.r.run(
+        childArgs(conn, controlPath, cmd),
+        curlHeaderConfigLine('x-nodeterm-hook-token', token)
+      )
       return r.code === 0 && r.stdout.trim() === '204'
     } catch {
       return false

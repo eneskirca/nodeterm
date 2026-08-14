@@ -31,7 +31,9 @@ export function codexThreadIdentityResolverSh(identityRoot: string): string {
 # NODETERM_* env. Recover this thread's exact node binding, or change nothing at all.
 if [ -z "\${NODETERM_NODE_ID-}" ] && [ -n "\${CODEX_THREAD_ID-}" ]; then
   case "$CODEX_THREAD_ID" in
-    ''|*[!A-Za-z0-9._-]*) ;;
+    # '.' and '..' MATCH the charset and are path segments: "$identityRoot"/.. is the record dir's
+    # PARENT. Refused by name here for the same reason isSafeThreadId refuses them in TypeScript.
+    ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
       nt_codex_map=${posixQuote(identityRoot)}/"$CODEX_THREAD_ID"
       if [ -r "$nt_codex_map" ]; then

@@ -32,6 +32,11 @@ import {
 import { claudeVersionProbeCommand, parseClaudeVersionProbe } from '../../core/remote-ssh/claude-version-probe'
 import { RemoteHooks } from './remote-hooks'
 import { hookServer } from '../../core/agents/hook-server'
+import {
+  nodeIdsForCanvas,
+  remoteNodeTokenMinter,
+  setRemoteNodeTokenWriter
+} from '../../core/agents/node-token-service'
 import { askpassServer } from './ssh-askpass'
 import { appSshAgent } from './ssh-agent'
 import { sessionName } from '../../core/tmux-naming'
@@ -106,6 +111,14 @@ interface Runners {
    *  FILE was in play, which is the signature of a credential held only in the user's own agent,
    *  and selects the hint that names the fix (see connectOnce's failure tail). */
   askpassAsked?: (masterPid?: number) => boolean
+  /** The node ids of this project's persisted canvas — the nodes whose per-node tokens have to
+   *  exist ON THE HOST for a remote session to be anything but `legacy`. Injected (rather than
+   *  read from the workspace store here) so the manager stays a pure unit under test. Absent ⇒ no
+   *  tokens are materialised, which is the pre-identity behavior. */
+  nodeIdsForProject?: (projectId: string) => string[]
+  /** Mints this instance's per-node token, or null when there is no node-auth secret at all
+   *  (legacy everywhere). Resolved per pass so one connect's tokens all come from one secret. */
+  nodeTokenMinter?: () => ((nodeId: string) => string) | null
 }
 
 /** Backoff after a FAILED remote claude probe (no markers = claude not found on that attempt).
@@ -578,6 +591,11 @@ export class SshProjectManager {
         if (remoteHome && hookEndpointPath) {
           void this.remoteHooks.installCanvasControl(conn, controlPath, remoteHome)
           void this.remoteHooks.installContextLink(conn, controlPath, remoteHome)
+          // Per-node tokens for every node of this project (the endpoint file written just above
+          // is what tells the host's hook script where to find them, which is also why this is
+          // gated on `hookEndpointPath`: a token nothing can be pointed at is a wasted round-trip).
+          // Same not-awaited best-effort terms as the two installs.
+          void this.materialiseNodeTokens(projectId, conn, controlPath, remoteHome)
         }
         // Same ownership check the failure path makes below, and for the same reason: the setup
         // above is several remote round-trips, and a disconnect + reconnect inside that window
@@ -964,6 +982,53 @@ export class SshProjectManager {
   /** The resolved remote `$HOME` for a connected project, if known. */
   remoteHomeFor(projectId: string): string | undefined {
     return this.conns.get(projectId)?.remoteHome
+  }
+
+  /**
+   * Write this project's per-node tokens onto its host (connect path). Everything about it is
+   * best-effort: no minter (no secret ⇒ legacy everywhere) or no node ids ⇒ not a single remote
+   * command, and `RemoteHooks.writeNodeTokens` never throws.
+   */
+  private async materialiseNodeTokens(
+    projectId: string,
+    conn: SshConnection,
+    controlPath: string,
+    remoteHome: string
+  ): Promise<void> {
+    try {
+      const mint = this.r.nodeTokenMinter?.()
+      if (!mint) return
+      const ids = this.r.nodeIdsForProject?.(projectId) ?? []
+      if (!ids.length) return
+      await this.remoteHooks.writeNodeTokens(conn, controlPath, remoteHome, ids, mint)
+    } catch {
+      /* fail-open: an identity file must never be able to fail a connect */
+    }
+  }
+
+  /**
+   * Materialise ONE node's token on the host that serves `controlPath` — the SPAWN path (see
+   * `ensureRemoteNodeToken`). A node created after the project connected would otherwise have no
+   * token on the host until the next reconnect, i.e. for a long-lived project, never.
+   *
+   * Keyed by control path rather than project id because that is what a pty session carries.
+   * Gated on the same two facts the connect path is: a resolved `$HOME` (every remote path must be
+   * absolute) and a verified tunnel (`hookEndpointPath` ⇒ the endpoint file that names the token
+   * dir actually exists on the host).
+   */
+  async writeNodeTokenForNode(controlPath: string, nodeId: string): Promise<void> {
+    try {
+      for (const c of this.conns.values()) {
+        if (c.controlPath !== controlPath) continue
+        if (!c.remoteHome || !c.hookEndpointPath) return
+        const mint = this.r.nodeTokenMinter?.()
+        if (!mint) return
+        await this.remoteHooks.writeNodeTokens(c.conn, c.controlPath, c.remoteHome, [nodeId], mint)
+        return
+      }
+    } catch {
+      /* fail-open: never let a token write reach a pty spawn */
+    }
   }
 
   /**
@@ -1579,6 +1644,10 @@ export function initSshProject(
         )
       }),
     getHook: () => ({ port: hookServer.getPort(), token: hookServer.getToken(), version: hookServer.getVersion() }),
+    // Per-node identity for REMOTE nodes. Both come from the same module the local materialiser
+    // uses, so one canvas cannot be judged by two different rules depending on where it runs.
+    nodeIdsForProject: (projectId) => nodeIdsForCanvas(projectId),
+    nodeTokenMinter: () => remoteNodeTokenMinter(),
     onStatus: (e) => {
       // sendToMain resolves the window AT SEND TIME (see main-window.ts): the `win` captured here
       // is destroyed and recreated by a macOS close/reopen, and sending to the stale reference is
@@ -1593,6 +1662,11 @@ export function initSshProject(
         // a UI that cannot hear us changes nothing about the connection itself
       }
     }
+  })
+  // The spawn-path leg of the remote materialiser: `pty-manager` (core) reaches the ControlMaster
+  // through this registration, because the runner that owns it lives here, in main.
+  setRemoteNodeTokenWriter((controlPath, nodeId) => {
+    void mgr.writeNodeTokenForNode(controlPath, nodeId)
   })
   // Registered after `mgr` exists so the dialog can name the server: the askpass request carries
   // the asking master's pid, and only the manager can map it back to a connection.

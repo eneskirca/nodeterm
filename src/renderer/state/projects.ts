@@ -47,8 +47,9 @@ interface ProjectsState {
    *  a fresh empty project for a folder that already has one: its first mirror write used to
    *  clobber the server's .nodeterm/project.json. Activates and returns it. */
   openSshProject(label: string, ssh: NonNullable<Project['ssh']>): Project
-  /** Registers a probed project (from a folder's .nodeterm file). If the id collides with an
-   *  existing project, derives a fresh project id (node ids untouched). Activates it. */
+  /** Registers a probed project (from a folder's .nodeterm file). The probe already minted the id
+   *  — the shared file carries none — so this only defends against a collision with an existing
+   *  project (node ids untouched). Activates it. */
   adoptProject(project: Project): Project
   /** Replaces one project's data wholesale (external file change). Keeps activeProjectId. */
   replaceProject(project: Project): void
@@ -274,10 +275,11 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   adoptProject(project) {
     const taken = get().projects.some((p) => p.id === project.id)
-    // A copied folder carries the original's project id; derive a fresh one. Node ids are
-    // deliberately kept (they are tmux session names — see the spec's accepted limitation).
-    // Deterministic in (id, folder), not random: adopting the same folder twice must land on the
-    // same id, so the store's own repair and this path never disagree about what a tab is called.
+    // `probeFolder` mints the id (the folder's project.json no longer names one), so a collision
+    // here means the id was minted against a store this renderer had not hydrated yet — derive a
+    // fresh one. Node ids are deliberately kept (they are tmux session names — see the spec's
+    // accepted limitation). Deterministic in (id, folder), not random, so this path and the
+    // store's own repair never disagree about what a tab is called.
     const adopted = taken
       ? {
           ...project,

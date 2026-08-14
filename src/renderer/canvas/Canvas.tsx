@@ -1999,7 +1999,7 @@ export function Canvas() {
       setMigrationNote(
         kind === 'exec'
           ? 'Custom shells and advanced SSH options (e.g. a ProxyCommand jump host) are no longer stored in the shared .nodeterm/project.json — a cloned repo could use them to run code. They still work here: they moved to this machine only, and your teammates no longer receive them.'
-          : 'Projects now live in a .nodeterm folder inside each project directory — commit it to share the canvas, or add it to .gitignore.'
+          : 'Projects now live in a .nodeterm folder inside each project directory. It holds the canvas only — no ids, camera or accounts from this machine — so committing it shares the canvas cleanly, or add it to .gitignore.'
       )
     })
   }, [])
@@ -3356,8 +3356,8 @@ export function Canvas() {
       commitActiveToStore()
       // A cloned repo may SHIP its canvas: `.nodeterm/project.json` is a git-shared file (the
       // migration banner asks users to commit it). Minting a brand-new empty project for the folder
-      // both ignored that canvas and pointed a fresh id at a file that already had one — the exact
-      // id/file mismatch this fix is about. Same probe→adopt path as "Open folder…".
+      // ignored that canvas entirely, so a clone came up blank. Same probe→adopt path as "Open
+      // folder…" — the probe reads the canvas and mints this machine's id for it.
       //
       // The probe may NOT be allowed to fail the clone: `onCloned` is typed `=> void` and the
       // dialog does not await it, so a rejected IPC would leave the freshly cloned repo with no

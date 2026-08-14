@@ -9,6 +9,7 @@ import {
   forgetCodexThreadIdentitiesForNode,
   codexThreadIdentityRoot,
   installCodexLauncher,
+  isSafeThreadId,
   readCodexThreadIdentity,
   resetCodexThreadIdentityAuthSecret,
   resolveCodexThreadNodeIdentity,
@@ -42,6 +43,54 @@ afterEach(() => {
   resetCodexThreadIdentityAuthSecret()
   resetPlatformForTests()
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// A thread id is a PATH SEGMENT under `codexThreadIdentityRoot()` and a field inside the record
+// signature. The charset alone never made it safe: `.` and `..` both match `[A-Za-z0-9._-]+`, and
+// `..` as a path segment resolves to the record dir's PARENT. This is the same hole `isSafeNodeId`
+// closed for node ids; these rows are the trap.
+const UNSAFE_THREAD_IDS = ['.', '..', '../x', 'a/b', '', 'x'.repeat(129)]
+
+describe('isSafeThreadId', () => {
+  it('refuses every id that could leave the record directory, be empty, or be unbounded', () => {
+    for (const id of UNSAFE_THREAD_IDS) expect(isSafeThreadId(id), JSON.stringify(id)).toBe(false)
+  })
+
+  it('accepts the ids the app-server actually mints', () => {
+    for (const id of ['thread-1', '0199b4b7-8d4e-7a4e-9a2f-3c9d0f1a2b3c', 'x'.repeat(128)]) {
+      expect(isSafeThreadId(id), id).toBe(true)
+    }
+  })
+})
+
+describe('path-unsafe thread ids never reach a path or a hash', () => {
+  it('refuses to write a record under one, and creates nothing', () => {
+    for (const id of UNSAFE_THREAD_IDS) {
+      expect(() =>
+        writeCodexThreadIdentity(id, 'node-1', '/data/e', recordsRoot)
+      ).toThrow()
+    }
+    // Not one stray file, and — the row that matters — no record dropped in the PARENT of the
+    // store by a `..` segment.
+    expect(fs.existsSync(recordsRoot)).toBe(false)
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
+  it('refuses to bind one, and creates nothing', () => {
+    for (const id of UNSAFE_THREAD_IDS) {
+      expect(() =>
+        bindCodexThreadIdentity(id, 'node-1', '/data/e', live([]), recordsRoot)
+      ).toThrow()
+    }
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
+  it('reads nothing back for one', () => {
+    for (const id of UNSAFE_THREAD_IDS) {
+      expect(readCodexThreadIdentity(id, recordsRoot), JSON.stringify(id)).toBeUndefined()
+      expect(resolveCodexThreadNodeIdentity(id, recordsRoot), JSON.stringify(id)).toBeUndefined()
+    }
+  })
 })
 
 describe('codex thread identity store', () => {

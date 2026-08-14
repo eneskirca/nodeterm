@@ -131,7 +131,8 @@ import {
   writeCodexThreadIdentity
 } from '../core/codex-identity-proxy'
 import { codexThreadExists, startCodexThread } from '../core/codex-session-name'
-import { loadOrCreateCodexNodeAuthSecret } from './codex-node-auth-secret'
+import { loadOrCreateNodeAuthSecret } from '../core/agents/node-auth-secret'
+import { initNodeTokens, refreshNodeTokens } from '../core/agents/node-token-service'
 import { claudeConfigDirFor } from '../core/claude-config-dir'
 import {
   isSafeLocalTranscriptPath,
@@ -273,7 +274,10 @@ const workspaceWatcher = new WorkspaceWatcher({
     })
   }
 })
-workspaceStore.onPersist = () => workspaceWatcher.sync()
+workspaceStore.onPersist = () => {
+  workspaceWatcher.sync()
+  refreshNodeTokens()
+}
 const gitService = new GitService()
 
 // Markers delimiting the `projects.list` relay blob. The iOS client splits on these exact
@@ -918,18 +922,28 @@ app.whenReady().then(async () => {
   // listeners (setListener/setRawListener/setControlHandler) attach later, which the server
   // tolerates — early hook POSTs are simply dropped, never mis-routed.
   await hookServer.start()
-  // ---- Codex shared identity (src/core/codex-identity-proxy.ts) -------------------------------
-  // One keychain-backed secret does two jobs: it mints the per-node capability the identity routes
-  // require (closing the "shared bearer can name any sibling node" hole) and it signs the thread →
-  // node records the hook prelude reads back. If secure storage is unavailable the whole feature
-  // stays OFF — `codexIdentityCaps()` then answers `shared: false`, every launch line stays the
-  // bare `codex`, and nothing is half-armed.
+  // ---- Node identity (src/core/agents/node-auth-secret.ts) ------------------------------------
+  // One secret does two jobs: it arms the hook server's per-node capability (closing the "shared
+  // bearer can name any sibling node" hole) and it signs the codex thread → node records the hook
+  // prelude reads back. On the desktop it is sealed via safeStorage; if secure storage is
+  // unavailable the load rejects and we FAIL OPEN — identity stays unavailable (legacy mode),
+  // `codexIdentityCaps()` answers `shared: false`, every launch line stays the bare `codex`, and
+  // nothing is half-armed. Never throws up the boot path.
+  // The escape hatch for per-route enforcement, read LIVE so flipping it in Settings takes effect
+  // on the next request. Wired OUTSIDE the try: it is not part of arming the secret, and a machine
+  // running in legacy mode is precisely one whose owner may need it.
+  hookServer.setIdentityStrictOverride(() => settingsStore.get().hookIdentityStrict)
   try {
-    const codexNodeAuthSecret = await loadOrCreateCodexNodeAuthSecret()
-    hookServer.setCodexNodeAuthSecret(codexNodeAuthSecret)
-    setCodexThreadIdentityAuthSecret(codexNodeAuthSecret)
+    const nodeAuthSecret = await loadOrCreateNodeAuthSecret()
+    hookServer.setNodeAuthSecret(nodeAuthSecret)
+    // Keep signing bound codex thread records with the same secret so they keep verifying.
+    setCodexThreadIdentityAuthSecret(nodeAuthSecret)
+    // Materialise a token file for every node in every persisted project. This is what makes the
+    // upgrade invisible: an already-running session becomes verified at its next hook event, no
+    // restart. Safe if the secret is absent — the service no-ops into legacy mode.
+    initNodeTokens({ canvases: () => workspaceStore.persistedCanvases() })
   } catch (error) {
-    console.error('[codex-identity] unavailable; Codex nodes run plain codex:', error)
+    console.warn('[node-identity] no secret — hook identity unavailable, running legacy', error)
   }
   // Probes the CLI for `--remote`, installs the launcher, and publishes the construction-time
   // answer. MUST stay after the secret above and before the window: it is what unblocks
@@ -1784,7 +1798,12 @@ app.whenReady().then(async () => {
     return isSafeRemoteTranscriptPath(abs, remoteHome) ? abs : undefined
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
-  hookServer.setRawListener((agentId, nodeId, payload) => {
+  // `meta` carries the per-node `verified` flag and is deliberately UNUSED here: A13 moved
+  // enforcement into the hook server, which refuses before a listener is ever called. This shell
+  // used to keep a `nodeVerified` map written on every event and read by nothing. The parameter
+  // stays because the flag is part of the listener contract and both shells must take it
+  // (invariant 4, pinned by hook-verified-parity.test.ts); a second copy of the answer is not.
+  hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
       // Everything the claude path does below hangs off `transcript_path`, and grok has none.
