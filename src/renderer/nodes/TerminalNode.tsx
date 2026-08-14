@@ -59,6 +59,7 @@ import {
 } from '../terminal/terminal-config'
 import { useXtermVisualSettings } from '../terminal/useXtermVisualSettings'
 import { loseWebglContexts, registerWebglClient, type WebglClientHandle } from '../terminal/webgl-budget'
+import { quantizeCharSize } from '../terminal/char-size-quantize'
 import {
   PARK_MAX,
   armParkExpiry,
@@ -2210,6 +2211,9 @@ export function TerminalNode({
       term.loadAddon(fit)
       term.loadAddon(searchAddon)
       term.open(container)
+      // Renderer-parity: quantize the char measurement to the device-pixel grid, so a budget
+      // grant/release swaps renderers without the text visibly reflowing (see the helper).
+      quantizeCharSize(term)
       applyFit()
       patchTerminalScale(term, getZoom)
       // OSC 52 clipboard write: route the decoded text to the local clipboard. This is the PRIMARY
