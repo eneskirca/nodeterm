@@ -62,6 +62,8 @@ export interface HibernationCandidate {
   offscreen: boolean
   /** Already hibernated — nothing left to reclaim. */
   hibernated: boolean
+  /** Last-known UI continuity is not evidence that the CLI is currently safe to stop. */
+  restored: boolean
   /**
    * The session runs on ANOTHER MACHINE (an SSH project's terminal, or a relay/remote-server tab).
    * Excluded in v1, the same call the offscreen dispose makes: the exit and its much later resume
@@ -110,6 +112,7 @@ export function planHibernation(
     .filter(
       (c) =>
         !c.hibernated &&
+        !c.restored &&
         !c.remote &&
         c.wired &&
         c.offscreen &&

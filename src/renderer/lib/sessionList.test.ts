@@ -321,6 +321,7 @@ describe('projectSignalCounts', () => {
       isAgent: false,
       statusKind: 'unknown' as const,
       stateLabel: 'Unknown',
+      statusRestored: false,
       unread: false,
       usesContext: false,
       ...s

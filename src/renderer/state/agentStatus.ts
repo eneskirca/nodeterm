@@ -2,13 +2,15 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { WORKING_STALE_MS } from '@shared/agents/stale'
 import type { AgentId } from '@shared/agents/config'
 import type { AgentState } from '@shared/agents/normalize'
+import type { AgentStatusSnapshot } from '@shared/agents/status-snapshot'
 import type { NodeTerminalApi } from '@shared/types'
 
 /**
  * Transient per-node status for agent (e.g. Claude Code) sessions, driven by the agent's hooks.
  * `unread`, `session`, `sessionId`, `agentId`, `loop` and `hibernated` are persisted to
- * localStorage so they survive a reload/restart; the live `state` (working/waiting/…) is not
- * (it'd be stale on relaunch), and neither are its two clocks (`stateAt`, `lastEventAt`).
+ * localStorage so they survive a reload/restart. Workflow state is not trusted from localStorage:
+ * the core may hydrate a display-only last-known value, while live hooks establish operational
+ * state for this renderer run. `stateAt` is always live-only.
  * `agentId` is durable because a PLAIN terminal's agent identity exists nowhere else: an
  * explicit agent node re-derives it from `data.agentId`, but a hand-launched `claude` in a
  * plain terminal is only known here, and its context links must keep classifying across
@@ -38,6 +40,11 @@ export interface AgentNodeStatus {
   /** Live activity; undefined = idle/unknown. */
   state?: AgentState
   /**
+   * `state` was hydrated from the core's durable last-known ledger, not observed by this renderer.
+   * Display-only: safety decisions must reject it. Cleared by the first live state transition.
+   */
+  restored?: true
+  /**
    * When the LAST hook event asserted the current state (freshness, not transition time).
    * Never rendered — drives the done-holdoff guard, the stale-working sweeper, and the
    * interrupt-inference baseline. Same-state events refresh it in place (no re-render).
@@ -55,9 +62,9 @@ export interface AgentNodeStatus {
    * When this node last CHANGED state (or was explicitly woken) — rendered as the status group's
    * relative age and also read as the idle clock by `terminal/hibernation-policy.ts`. Deliberately
    * not `stateAt`: that one is refreshed by every same-state event (freshness), while "how long in
-   * this state" means "how long since the transition". TRANSIENT — never persisted: a relaunch has
-   * seen no events yet, and a stale stamp read as "idle since before the restart" would hibernate a
-   * session the moment the app came back. Absent ⇒ unknown idle ⇒ never a hibernation candidate.
+   * this state" means "how long since the transition". Not persisted to localStorage. A core
+   * snapshot may restore it for the relative-time label, but marks the whole row `restored`; Eco
+   * and other safety decisions must reject that provenance. Absent ⇒ unknown idle.
    */
   lastEventAt?: number
   /**
@@ -150,6 +157,18 @@ export interface AgentStatusStore {
     newTurn?: boolean,
     pendingId?: string,
     verified?: boolean
+  ): void
+  /** Merge display-only restart state without notifications, unread changes, or live side effects. */
+  hydrateSnapshot(snapshot: AgentStatusSnapshot): void
+  /**
+   * Apply a process/session boundary without discarding same-conversation workflow continuity.
+   * The retained value becomes display-only (`restored`) until another live state event arrives.
+   */
+  setSessionBoundary(
+    id: string,
+    phase: 'start' | 'end',
+    agentId?: AgentId,
+    sessionId?: string
   ): void
   /** Clear `working` entries whose last event is older than `staleMs` (lost-Stop safety net). */
   sweepStaleWorking(staleMs?: number): void
@@ -341,6 +360,7 @@ export function createAgentStatusSession(
         const samePendingWhileBlocked =
           state !== 'blocked' || (pendingId ?? prev.pendingId) === prev.pendingId
         if (
+          !prev.restored &&
           prev.state === state &&
           (agentId === undefined || prev.agentId === agentId) &&
           samePendingWhileBlocked
@@ -359,7 +379,8 @@ export function createAgentStatusSession(
         // The ONE place a state transition is recorded, so it is also the one place the idle
         // clock is stamped (the same-state fast path above deliberately does not touch it —
         // see `lastEventAt`).
-        const next = { ...prev, state, stateAt: now, lastEventAt: now }
+        const next: AgentNodeStatus = { ...prev, state, stateAt: now, lastEventAt: now }
+        delete next.restored
         // Written on the same edge the state is — the evidence describes THIS transition, and an
         // absent argument is not evidence.
         next.stateVerified = verified === true
@@ -416,13 +437,61 @@ export function createAgentStatusSession(
         return { byId }
       }),
 
+    hydrateSnapshot: (snapshot) =>
+      set((s) => {
+        let changed = false
+        const byId = { ...s.byId }
+        for (const [id, remembered] of Object.entries(snapshot)) {
+          const prev = byId[id] ?? EMPTY
+          // Subscription is installed before the request. If a live event won that race (or this
+          // canvas remounted after already seeing one), an older display snapshot must not rewind it.
+          if (prev.stateAt !== undefined && !prev.restored) continue
+          byId[id] = {
+            ...prev,
+            state: remembered.state,
+            restored: true,
+            stateAt: undefined,
+            lastEventAt: remembered.changedAt,
+            stateVerified: false,
+            pendingId: undefined,
+            ...(remembered.agentId ? { agentId: remembered.agentId } : {}),
+            ...(remembered.sessionId ? { sessionId: remembered.sessionId } : {}),
+            ...(remembered.name ? { session: remembered.name } : {})
+          }
+          changed = true
+        }
+        return changed ? { byId } : s
+      }),
+
+    setSessionBoundary: (id, phase, agentId, sessionId) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        const sameSession = !prev.sessionId || !sessionId || prev.sessionId === sessionId
+        const preserve =
+          sameSession &&
+          (phase === 'start' ? prev.state !== undefined : prev.state === 'done')
+        const now = Date.now()
+        const next: AgentNodeStatus = {
+          ...prev,
+          state: preserve ? prev.state : undefined,
+          restored: true,
+          stateAt: undefined,
+          lastEventAt: preserve ? prev.lastEventAt : now,
+          stateVerified: false,
+          pendingId: undefined,
+          ...(agentId ? { agentId } : {}),
+          ...(sessionId ? { sessionId } : {})
+        }
+        return { byId: { ...s.byId, [id]: next } }
+      }),
+
     sweepStaleWorking: (staleMs = STALE_WORKING_MS) =>
       set((s) => {
         const now = Date.now()
         let changed = false
         const byId = { ...s.byId }
         for (const [id, v] of Object.entries(byId)) {
-          if (v.state === 'working' && now - (v.stateAt ?? 0) > staleMs) {
+          if (!v.restored && v.state === 'working' && now - (v.stateAt ?? 0) > staleMs) {
             // This is a real transition to Unknown, even though it did not arrive through a hook.
             // Stamp both clocks so the sidebar age and Eco idle clock begin at the transition.
             byId[id] = { ...v, state: undefined, stateAt: now, lastEventAt: now }

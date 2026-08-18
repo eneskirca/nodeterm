@@ -198,6 +198,8 @@ export interface SessionRowVM {
   stateLabel: string
   /** When the current live state began. Transient; absent when no transition has been observed. */
   statusUpdatedAt?: number
+  /** The workflow state is the core's restart-safe last-known value, not a live observation. */
+  statusRestored: boolean
   unread: boolean
   session?: string
   loop?: { kind: 'loop' | 'schedule' | 'cron'; count: number }
@@ -266,6 +268,7 @@ function toRow(
     statusKind,
     stateLabel: STATE_LABEL[statusKind],
     statusUpdatedAt: status?.lastEventAt,
+    statusRestored: !!status?.restored,
     unread: !!status?.unread,
     session: status?.session,
     // A dismissed cron/schedule entry is retained as a fact (the hibernation guard reads it) but

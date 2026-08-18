@@ -39,4 +39,11 @@ describe('buildAgentApi', () => {
     api.ackDone('nt-x')
     expect(c.requests).toEqual([{ channel: IPC.agentAckDone, arg: 'nt-x' }])
   })
+
+  it('requests the restart-safe status snapshot from the connected core', async () => {
+    const c = fakeClient()
+    const api = buildAgentApi(c as never)
+    await api.agentStatusSnapshot()
+    expect(c.requests).toEqual([{ channel: IPC.agentStatusSnapshot, arg: undefined }])
+  })
 })

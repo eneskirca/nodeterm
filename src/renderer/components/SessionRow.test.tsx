@@ -11,6 +11,7 @@ const row: SessionRowVM = {
   statusKind: 'attention',
   stateLabel: 'Waiting for your response',
   statusUpdatedAt: 1,
+  statusRestored: false,
   unread: false,
   usesContext: false,
   projectId: 'p1',
@@ -36,5 +37,24 @@ describe('SessionRow status age', () => {
 
     expect(html).toContain('5m ago')
     expect(html).toContain('Entered this state 5m ago')
+  })
+
+  it('labels a restored age as last known', () => {
+    const html = renderToStaticMarkup(
+      <SessionRow
+        row={{ ...row, statusRestored: true }}
+        stateAgeLabel="1d ago"
+        onClick={vi.fn()}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onAiName={vi.fn()}
+        onContextMenu={vi.fn()}
+        onDragStart={vi.fn()}
+        onDragEnd={vi.fn()}
+      />
+    )
+
+    expect(html).toContain('last known · 1d ago')
+    expect(html).toContain('Last known state entered 1d ago')
   })
 })
