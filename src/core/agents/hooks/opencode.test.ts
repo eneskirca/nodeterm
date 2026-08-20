@@ -10,6 +10,7 @@ import {
   pluginPath,
   removeOpencodeHooks
 } from './opencode'
+import { endpointFileContents } from '../hook-server'
 
 let tmp: string
 beforeEach(() => {
@@ -357,6 +358,22 @@ describe('generated plugin presents the per-node token', () => {
     const headers = await tcpHeaders({ NODETERM_HOOK_ENDPOINT: envFile, NODETERM_HOOK_PORT: '' })
     expect(headers['x-nodeterm-node-token']).toBe('OPENCODE-NODE-TOKEN')
     expect(headers['x-nodeterm-hook-token']).toBe('filetok')
+  })
+
+  it("reads the WRITER'S OWN format — a shell-quoted spaced token dir resolves (issue #351)", async () => {
+    // hook-server quotes values so a spaced macOS path survives POSIX sourcing; the plugin's
+    // line parser must accept that same quoted grammar, or opencode alone would regress.
+    const spacedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt oc spaced-'))
+    try {
+      fs.writeFileSync(path.join(spacedDir, 'node-1'), 'OPENCODE-NODE-TOKEN\n', { mode: 0o600 })
+      const envFile = path.join(sockDir, 'hook-endpoint.env')
+      fs.writeFileSync(envFile, endpointFileContents(43210, 'filetok', spacedDir))
+      const headers = await tcpHeaders({ NODETERM_HOOK_ENDPOINT: envFile, NODETERM_HOOK_PORT: '' })
+      expect(headers['x-nodeterm-node-token']).toBe('OPENCODE-NODE-TOKEN')
+      expect(headers['x-nodeterm-hook-token']).toBe('filetok')
+    } finally {
+      fs.rmSync(spacedDir, { recursive: true, force: true })
+    }
   })
 
   it('sends it on the Bun unix-fetch path too', async () => {

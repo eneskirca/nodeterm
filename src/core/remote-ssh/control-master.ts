@@ -13,6 +13,7 @@ import {
   type PasteDelivery
 } from '../tmux-naming'
 import { sanitizePasteText } from '../paste-injection'
+import { shellQuoteIfNeeded } from '../../shared/shell-quote'
 import { canControlCanvas } from '../../shared/agents/config'
 import { PANE_OWNER_FMT, foregroundArgvArgs } from '../agents/pane-owner'
 // Dependency-free (no node-pty): safe to import from these pure builders.
@@ -684,13 +685,15 @@ export function remoteEndpointFileContents(
   version: string,
   tokenDir: string
 ): string {
+  // Values are shell-quoted when they need it (see endpointFileContents in hook-server.ts —
+  // issue #351): this file is read by POSIX `.`, and an unquoted space kills the source.
   return (
-    `NODETERM_HOOK_SOCK=${sock}\n` +
-    `NODETERM_HOOK_TOKEN=${token}\n` +
-    `NODETERM_HOOK_VERSION=${version}\n` +
+    `NODETERM_HOOK_SOCK=${shellQuoteIfNeeded(sock)}\n` +
+    `NODETERM_HOOK_TOKEN=${shellQuoteIfNeeded(token)}\n` +
+    `NODETERM_HOOK_VERSION=${shellQuoteIfNeeded(version)}\n` +
     // The REMOTE token dir ($HOME/.nodeterm/node-tokens on the host), not ours. The host stores
     // per-node tokens only; it never holds a secret and can never mint.
-    `NODETERM_NODE_TOKEN_DIR=${tokenDir}\n`
+    `NODETERM_NODE_TOKEN_DIR=${shellQuoteIfNeeded(tokenDir)}\n`
   )
 }
 

@@ -4,6 +4,7 @@ import { writeFileSync, mkdirSync } from 'fs'
 import path from 'path'
 import { platform } from '../platform'
 import { canControlCanvas, type AgentId } from '../../shared/agents/config'
+import { shellQuoteIfNeeded } from '../../shared/shell-quote'
 import { normalizeFor, type NormalizedAgentEvent } from '../../shared/agents/normalize'
 import type { CodexIdentityEvent } from '../../shared/types'
 import type { NodeTokenVerdict } from './node-auth-token'
@@ -194,6 +195,25 @@ export const STICKY_CONTROL_REFUSAL = 'Sticky write refused.'
 /** The verified-only refusal, worded for the verb that was refused. */
 export function verifiedRefusalFor(verb: string): string {
   return verb === 'sticky' ? STICKY_CONTROL_REFUSAL : MESSAGING_CONTROL_REFUSAL
+}
+
+/** Contents of the local endpoint env file the managed hook script sources (TCP transport).
+ *  KEY=VALUE lines read by POSIX `.` (managed script, codex identity proxy, context-link) and by
+ *  the opencode plugin's line parser. Values are shell-quoted when they need it: the macOS
+ *  default token dir lives under `Application Support`, and an unquoted space made every `.` of
+ *  this file exit 127 — the var never set, Codex dropped to plain mode (issue #351). Space-free
+ *  values stay bare, so the historical format is byte-identical everywhere it worked. */
+export function endpointFileContents(port: number, token: string, tokenDir: string): string {
+  return (
+    `NODETERM_HOOK_PORT=${port}\n` +
+    `NODETERM_HOOK_TOKEN=${shellQuoteIfNeeded(token)}\n` +
+    `NODETERM_HOOK_VERSION=${NODETERM_HOOK_PROTOCOL_VERSION}\n` +
+    // Where clients read their PER-NODE capability from, keyed by $NODETERM_NODE_ID.
+    // Advertised (not compiled in) so a failover that sources ANOTHER instance's endpoint
+    // file also picks up THAT instance's token dir: it then finds a token that instance can
+    // verify, or none — never a mismatched one.
+    `NODETERM_NODE_TOKEN_DIR=${shellQuoteIfNeeded(tokenDir)}\n`
+  )
 }
 
 class HookServer {
@@ -909,20 +929,12 @@ class HookServer {
     try {
       const p = this.endpointFilePath()
       mkdirSync(path.dirname(p), { recursive: true })
-      writeFileSync(
-        p,
-        `NODETERM_HOOK_PORT=${this.port}\n` +
-          `NODETERM_HOOK_TOKEN=${this.token}\n` +
-          `NODETERM_HOOK_VERSION=${NODETERM_HOOK_PROTOCOL_VERSION}\n` +
-          // Where clients read their PER-NODE capability from, keyed by $NODETERM_NODE_ID.
-          // Advertised (not compiled in) so a failover that sources ANOTHER instance's endpoint
-          // file also picks up THAT instance's token dir: it then finds a token that instance can
-          // verify, or none — never a mismatched one.
-          `NODETERM_NODE_TOKEN_DIR=${nodeTokenDir()}\n`,
+      writeFileSync(p, endpointFileContents(this.port, this.token, nodeTokenDir()), {
         // 0o600: this file holds the bearer token — owner read/write only so another local user
         // can't read it and forge hook events.
-        { encoding: 'utf8', mode: 0o600 }
-      )
+        encoding: 'utf8',
+        mode: 0o600
+      })
     } catch (e) {
       console.warn('[agent-hooks] could not write endpoint file', e)
     }

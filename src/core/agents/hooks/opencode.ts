@@ -63,16 +63,22 @@ export const NodetermStatus = async () => {
       version: process.env.NODETERM_HOOK_VERSION,
       tokenDir: process.env.NODETERM_NODE_TOKEN_DIR
     }
+    // The writer shell-quotes values that need it (a spaced macOS token dir — issue #351);
+    // this file's canonical reader is POSIX \`.\`, so undo that one grammar here.
+    const unq = (v) =>
+      v.length >= 2 && v.startsWith("'") && v.endsWith("'")
+        ? v.slice(1, -1).replace(/'\\\\''/g, "'")
+        : v
     try {
       const file = process.env.NODETERM_HOOK_ENDPOINT
       if (file) {
         for (const line of fs.readFileSync(file, 'utf8').split('\\n')) {
           const m = line.match(/^NODETERM_HOOK_(PORT|SOCK|TOKEN|VERSION)=(.*)$/)
-          if (m) conf[m[1].toLowerCase()] = m[2]
+          if (m) conf[m[1].toLowerCase()] = unq(m[2])
           // The v2 endpoint line: where this instance keeps per-node tokens. It has its own
           // prefix, so it needs its own match rather than a widened NODETERM_HOOK_ group.
           const d = line.match(/^NODETERM_NODE_TOKEN_DIR=(.*)$/)
-          if (d) conf.tokenDir = d[1]
+          if (d) conf.tokenDir = unq(d[1])
         }
       }
     } catch {}
