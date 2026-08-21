@@ -54,7 +54,8 @@ describe('copilot capabilities', () => {
       color: '#8957e5',
       launchCmd: 'copilot',
       promptInjectionMode: 'flag-interactive',
-      expectedProcess: 'copilot'
+      expectedProcess: 'copilot',
+      vanillaEnvPattern: '^COPILOT_PROVIDER_'
     })
     expect(hasHooks('copilot')).toBe(true)
     expect(canResume('copilot')).toBe(true)

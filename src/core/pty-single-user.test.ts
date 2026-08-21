@@ -377,6 +377,175 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     }
   })
 
+  // "Restart on subscription": clearEnv spawns the session VANILLA — skip the gateway AND strip
+  // inherited provider vars (a LaunchAgent/zshrc export a GUI launch still inherits) so the agent
+  // falls back to its OWN default provider. Both moves are gated on the agent's vanillaEnvPattern
+  // (resolved through its base harness). The strip runs BEFORE custom-agent env, so a user who
+  // explicitly declares a provider var on a custom agent still wins.
+  it('clearEnv skips the gateway and strips inherited provider env for claude', async () => {
+    const inheritedBase = process.env.ANTHROPIC_BASE_URL
+    const inheritedKey = process.env.ANTHROPIC_API_KEY
+    const inheritedDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.ANTHROPIC_BASE_URL = 'https://launchagent-gateway.example.test'
+    process.env.ANTHROPIC_API_KEY = 'sk-inherited'
+    process.env.CLAUDE_CONFIG_DIR = '/home/me/.nodeterm/claude-accounts/abc'
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        modelGateway: {
+          baseUrl: 'https://bifrost.example.test',
+          apiKey: 'vk-gateway'
+        }
+      }))
+      m.registerIpc()
+
+      await create(80, 24, 'vanilla-claude', { agentId: 'claude', clearEnv: true })
+
+      const env = spawnArgs[0].env
+      // (1) the gateway is NOT injected …
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+      // … and (2) the INHERITED provider vars are stripped too, so the session does not fall back
+      // to the LaunchAgent-set base URL instead of the subscription.
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+      // CLAUDE_CONFIG_DIR is the managed-account dir, NOT a provider credential — stripping it
+      // would break account isolation, so it survives a vanilla relaunch.
+      expect(env.CLAUDE_CONFIG_DIR).toBe('/home/me/.nodeterm/claude-accounts/abc')
+    } finally {
+      for (const [k, v] of [
+        ['ANTHROPIC_BASE_URL', inheritedBase],
+        ['ANTHROPIC_API_KEY', inheritedKey],
+        ['CLAUDE_CONFIG_DIR', inheritedDir]
+      ] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  it('clearEnv is one-directional: unset, the gateway is injected as usual', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    const m = new PtyManager()
+    m.init(() => ({
+      ...DEFAULT_SETTINGS,
+      modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+    }))
+    m.registerIpc()
+
+    await create(80, 24, 'gateway-claude', { agentId: 'claude' })
+
+    expect(spawnArgs[0].env.ANTHROPIC_BASE_URL).toBe('https://bifrost.example.test/anthropic')
+    expect(spawnArgs[0].env.ANTHROPIC_AUTH_TOKEN).toBe('vk-gateway')
+  })
+
+  it('clearEnv strips COPILOT_PROVIDER_* for copilot but keeps the home dir', async () => {
+    const inheritedHome = process.env.COPILOT_HOME
+    const inheritedProviderKey = process.env.COPILOT_PROVIDER_API_KEY
+    process.env.COPILOT_HOME = '/home/me/.copilot'
+    process.env.COPILOT_PROVIDER_API_KEY = 'sk-inherited'
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }))
+      m.registerIpc()
+
+      await create(80, 24, 'vanilla-copilot', { agentId: 'copilot', clearEnv: true })
+
+      const env = spawnArgs[0].env
+      // Gateway + inherited provider vars both gone.
+      expect(env.COPILOT_PROVIDER_API_KEY).toBeUndefined()
+      expect(env.COPILOT_PROVIDER_BASE_URL).toBeUndefined()
+      // Home dir is a config dir, not a credential — survives.
+      expect(env.COPILOT_HOME).toBe('/home/me/.copilot')
+    } finally {
+      for (const [k, v] of [
+        ['COPILOT_HOME', inheritedHome],
+        ['COPILOT_PROVIDER_API_KEY', inheritedProviderKey]
+      ] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  // The global "Launch on subscription" default is the counterpart to the per-node `clearEnv`
+  // recycle: read LIVE at spawn, so a fresh launch strips the gateway + inherited provider env
+  // WITHOUT a per-node flag (and survives a reboot, since the setting is the source of truth, not
+  // a one-shot data field that is cleared after its single use).
+  it('vanillaLaunchDefault strips the gateway + inherited env on a fresh spawn (no per-node clearEnv)', async () => {
+    const inheritedBase = process.env.ANTHROPIC_BASE_URL
+    const inheritedDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.ANTHROPIC_BASE_URL = 'https://launchagent-gateway.example.test'
+    process.env.CLAUDE_CONFIG_DIR = '/home/me/.nodeterm/claude-accounts/abc'
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        vanillaLaunchDefault: true,
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }))
+      m.registerIpc()
+
+      // No `clearEnv` on the node — the SETTING is what strips. This is the new-session case the
+      // per-node action could not serve (it recycles, which needs a session with turns to resume).
+      await create(80, 24, 'vanilla-default-claude', { agentId: 'claude' })
+
+      const env = spawnArgs[0].env
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+      // Inherited provider var stripped too — no fall-back to the LaunchAgent gateway.
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+      // Account isolation survives (config dir is not a provider credential).
+      expect(env.CLAUDE_CONFIG_DIR).toBe('/home/me/.nodeterm/claude-accounts/abc')
+    } finally {
+      for (const [k, v] of [
+        ['ANTHROPIC_BASE_URL', inheritedBase],
+        ['CLAUDE_CONFIG_DIR', inheritedDir]
+      ] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  it('vanillaLaunchDefault is a no-op for an agent with no strip pattern, and off keeps the gateway', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    const m = new PtyManager()
+    m.init(() => ({
+      ...DEFAULT_SETTINGS,
+      vanillaLaunchDefault: true,
+      modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+    }))
+    m.registerIpc()
+
+    // gemini has no vanillaEnvPattern (and no gateway route at all) → the setting strips nothing
+    // and the spawn proceeds normally. A global toggle must not change an agent it does not cover:
+    // a non-provider env var (PATH) survives the strip pass untouched. (A provider var inherited
+    // from the host env is NOT stripped either — gemini has no pattern — which is the no-op.)
+    await create(80, 24, 'vanilla-default-gemini', { agentId: 'gemini' })
+    expect(typeof spawnArgs[0].env.PATH).toBe('string')
+
+    // And with the setting OFF (the default), a claude spawn keeps the gateway — the non-disruptive
+    // upgrade guarantee for existing users. (spawnArgs accumulates within a test: this is [1].)
+    const m2 = new PtyManager()
+    m2.init(() => ({
+      ...DEFAULT_SETTINGS,
+      vanillaLaunchDefault: false,
+      modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+    }))
+    m2.registerIpc()
+    await create(80, 24, 'gateway-claude-default-off', { agentId: 'claude' })
+    expect(spawnArgs[1].env.ANTHROPIC_BASE_URL).toBe('https://bifrost.example.test/anthropic')
+    expect(spawnArgs[1].env.ANTHROPIC_AUTH_TOKEN).toBe('vk-gateway')
+  })
+
   // ── `fresh` drives scrollback replay + agent resume: it must still be computed from tmux ──
   it('fresh:false on a WARM reattach (tmux session already exists) — no cold restore', async () => {
     await tmuxManager()

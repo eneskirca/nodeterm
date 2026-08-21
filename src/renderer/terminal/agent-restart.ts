@@ -94,6 +94,29 @@ export function restartSessionId(live: unknown, persisted: unknown): string | un
   return undefined
 }
 
+/**
+ * "Restart on subscription" (clear-env) has the same interruption contract as a model switch: it
+ * never writes the harness exit command into the composer — core proves the expected agent owns
+ * the foreground process group and terminates that group by PID before the pane is recycled — so a
+ * `working` or `blocked` session may be interrupted safely (unlike `restartEligibility`, which must
+ * reject those states because its `/exit` would be typed AS THE ANSWER to a permission dialog).
+ * Gateway overload — the scenario this feature exists for — shows up mid-turn: the turn is stuck or
+ * failing, and "wait for the turn to finish" is exactly what you cannot do when the gateway is down.
+ *
+ * The durable requirements are shared with restart: the harness must support resume and there must
+ * be a provider session id to carry into the replacement process. The strip set itself is checked
+ * by the caller through `vanillaEnvStripPattern` (only claude/codex/copilot builtins have one).
+ */
+export function clearEnvEligibility(
+  agentId: string | undefined,
+  sessionId: string | undefined
+): { ok: true } | { ok: false; reason: Exclude<IneligibleReason, 'working'> } {
+  if (!agentId || !canResume(agentId) || !exitSequence(agentId))
+    return { ok: false, reason: 'not-resumable' }
+  if (!sessionId) return { ok: false, reason: 'no-session' }
+  return { ok: true }
+}
+
 export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
@@ -437,7 +460,13 @@ export function guardConcurrentRestart<T extends string, Args extends unknown[]>
 export type AgentRestartFn = (
   targetAgentId?: AgentId,
   targetModel?: string,
-  restartShell?: boolean
+  restartShell?: boolean,
+  // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+  // provider env so the agent falls back to its OWN default provider. No model/agent change; the
+  // cold-restore auto-resume keeps the same conversation. Uses `clearEnvEligibility` (permits busy,
+  // since `terminateForeground` is PID-safe — no `/exit` typed into a dialog) and recycles the same
+  // way a model switch does, because tmux env changes do not retroactively change an existing shell.
+  clearEnv?: boolean
 ) => Promise<RestartOutcome>
 
 const restartFns = new Map<string, AgentRestartFn>()
