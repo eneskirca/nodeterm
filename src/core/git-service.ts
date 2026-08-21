@@ -7,7 +7,8 @@ import { IPC } from '../shared/ipc'
 import type { GitFileChange, GitResult, GitStatus } from '../shared/types'
 import { loadGitHistoryFromExecutor } from '../shared/git-history'
 import * as worktreeOps from '../shared/worktree-ops'
-import type { WorktreeListResult } from '../shared/worktree'
+import type { WorktreeListResult, SubmoduleListResult } from '../shared/worktree'
+import { branchParentConfigKey, isValidGitRef } from '../shared/worktree'
 import type { GitHistoryOptions, GitHistoryResult } from '../shared/git-history'
 import { resolveGitRemote, runRemoteGit } from './remote-ssh/remote-git'
 import { platform } from './platform'
@@ -270,6 +271,7 @@ export class GitService {
     )
     platform().handle(IPC.gitRepoRoot, (cwd: string) => this.repoRoot(cwd))
     platform().handle(IPC.gitWorktreeList, (repoPath: string) => this.worktreeList(repoPath))
+    platform().handle(IPC.gitSubmoduleList, (repoPath: string) => this.submoduleList(repoPath))
     platform().handle(IPC.gitWorktreeAdd, (repoPath: string, wtPath: string, branch: string, baseRef: string, isNew: boolean) =>
       this.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew)
     )
@@ -278,6 +280,17 @@ export class GitService {
     )
     platform().handle(IPC.gitWorktreeRemove, (repoPath: string, wtPath: string, deleteBranch: boolean, pruneOnly?: boolean) =>
       this.worktreeRemove(repoPath, wtPath, deleteBranch, pruneOnly)
+    )
+    platform().handle(IPC.gitSetBranchParent, (repoPath: string, child: string, parent: string) =>
+      this.setBranchParent(repoPath, child, parent)
+    )
+    platform().handle(IPC.gitUnsetBranchParent, (repoPath: string, child: string) =>
+      this.unsetBranchParent(repoPath, child)
+    )
+    platform().handle(IPC.gitSyncBranch, (cwd: string, child: string) => this.syncBranch(cwd, child))
+    platform().handle(IPC.gitProposeBranch, (cwd: string, child: string) => this.proposeBranch(cwd, child))
+    platform().handle(IPC.gitShipBranch, (cwd: string, child: string, parent: string) =>
+      this.shipBranch(cwd, child, parent)
     )
   }
 
@@ -298,6 +311,16 @@ export class GitService {
     // that came from a FAILED `git worktree list` is not "there are no worktrees", and the store on
     // the other side of this IPC would otherwise mark every bound group missing on one bad read.
     return worktreeOps.listWorktrees(git, repoPath, async (p) => fs.existsSync(p))
+  }
+  submoduleList(repoPath: string): Promise<SubmoduleListResult> {
+    // Same remote refusal as `worktreeList`: a repo on an SSH host cannot be stat'd from here, and the
+    // submodule paths are RELATIVE to a remote root — so a local `fs.existsSync` would answer about the
+    // wrong machine. Answer "the read failed" (`ok:false`), which is exactly what it is — NOT an empty
+    // list, which the auto-linker would read as "no submodules" and drop every link on one bad read.
+    if (isRemoteRepo(repoPath)) return Promise.resolve({ ok: false, entries: [] })
+    // `pathExists` is the `-` flag's fallback (see worktree-ops `listSubmodules`): a submodule git still
+    // records but whose directory is gone must read `prunable`. LOCAL-only (see the remote refusal above).
+    return worktreeOps.listSubmodules(git, repoPath, async (p) => fs.existsSync(p))
   }
   worktreeAdd(
     repoPath: string,
@@ -337,6 +360,139 @@ export class GitService {
     return worktreeOps.worktreeRemove(git, repoPath, wtPath, os.homedir(), deleteBranch, pruneOnly, async (p) =>
       fs.existsSync(p)
     )
+  }
+
+  // ── Branch-dependency / stacked-diff ops (ticket 03) ──────────────────────────────────────
+  //
+  // Plain git only — NO git-town binary. We adopt git-town's `git-town-branch.<child>.parent` config
+  // key as the topology convention (interoperable: a user who installs git-town gets the same lineage
+  // we declared, and a lineage they declared is readable by us). The rebase/PR/merge ops are plain
+  // `git`/`gh`. git-town remains an OPTIONAL power-user path, never a dependency.
+  //
+  // No `isRemoteRepo` refusal on these: `git config` and `git rebase` operate on refs already in the
+  // repo and route over the ControlMaster fine. The SSH gate lives at the verb/button layer (Canvas),
+  // which already refuses stacked-diff ops for SSH projects via `WORKTREE_SSH_NOTICE`. If a later
+  // audit wants the gate at the seam too, gate it here — but a pass-through that refuses is still a
+  // pass-through, not a reimplemented rebase.
+
+  /**
+   * Declare a branch's parent in the shared git config. Re-validates `child`/`parent` at the
+   * interpolation site (`branchParentConfigKey`): these values come from git-shared link JSON and
+   * land on a `git config` command line, so a smuggled flag or path char is rejected BEFORE any
+   * command is built (the standing rule — same as permission modes / `SAFE_SESSION_ID`). `repoPath`
+   * may be any worktree's cwd; the config is shared across worktrees.
+   */
+  async setBranchParent(repoPath: string, child: string, parent: string): Promise<GitResult> {
+    const key = branchParentConfigKey(child)
+    const p = parent.trim()
+    if (!key || !isValidGitRef(p)) return { ok: false, message: 'Invalid branch name.' }
+    const r = await git(repoPath, ['config', key, p])
+    return r.ok ? { ok: true, message: `Set ${child.trim()} → ${p}.` } : fail(r)
+  }
+
+  /** Drop a branch's parent config. The dependency LINK is removed separately (by the inspector). */
+  async unsetBranchParent(repoPath: string, child: string): Promise<GitResult> {
+    const key = branchParentConfigKey(child)
+    if (!key) return { ok: false, message: 'Invalid branch name.' }
+    // `--unset` exits 5 when the key is absent — that is not a failure here (the lineage is already
+    // gone, which is what the caller asked for). Treat a "key never existed" as success.
+    const r = await git(repoPath, ['config', '--unset', key])
+    if (r.ok) return { ok: true, message: `Unset parent of ${child.trim()}.` }
+    if (/exit code 5|not found/i.test(r.err)) return { ok: true, message: `Unset parent of ${child.trim()}.` }
+    return fail(r)
+  }
+
+  /**
+   * Sync one branch onto its configured parent: read the parent from config, then `git rebase
+   * <parent>` in the child's own worktree cwd (where the child is already HEAD). A clean rebase →
+   * success. A rebase that STOPS on a conflict is reported `ok:false` with a message telling the user
+   * to resolve in the terminal and `git rebase --continue` (the worktree's terminal is the natural
+   * place — it is the tmux session under the node). This is the honest behavior without git-town's
+   * conflict UI: we do not hide a conflicted state as success.
+   */
+  async syncBranch(cwd: string, child: string): Promise<GitResult> {
+    const c = child.trim()
+    if (!isValidGitRef(c)) return { ok: false, message: 'Invalid branch name.' }
+    // Read the parent from the convention config key. Missing parent → nothing to sync onto.
+    const key = branchParentConfigKey(c)
+    if (!key) return { ok: false, message: 'Invalid branch name.' }
+    const parentR = await git(cwd, ['config', '--get', key])
+    if (!parentR.ok || !parentR.out.trim()) {
+      return { ok: false, message: `No parent configured for ${c}. Declare the dependency first.` }
+    }
+    const parent = parentR.out.trim()
+    if (!isValidGitRef(parent)) return { ok: false, message: 'Invalid parent branch.' }
+    const r = await git(cwd, ['rebase', parent])
+    if (r.ok) return { ok: true, message: r.out || `Rebased ${c} onto ${parent}.` }
+    // A conflict leaves the repo mid-rebase. Surface it honestly and point at the terminal: the
+    // user resolves there and runs `git rebase --continue` (or `--abort`). We deliberately do NOT
+    // auto-abort — the user may want to keep partial resolution.
+    if (/conflict|could not apply|merge/i.test(r.err)) {
+      return {
+        ok: false,
+        message: `Rebase stopped on a conflict. Resolve it in this terminal, then run \`git rebase --continue\` (or \`git rebase --abort\` to give up). Parent: ${parent}.`
+      }
+    }
+    return fail(r)
+  }
+
+  /** Open a PR from `child` into its configured parent via `gh`. Auth reuses the publish path's
+   *  ghAuthed check; a not-logged-in gh is surfaced as needsAuth. */
+  async proposeBranch(cwd: string, child: string): Promise<GitResult> {
+    const c = child.trim()
+    if (!isValidGitRef(c)) return { ok: false, message: 'Invalid branch name.' }
+    if (!GH_PATH) return { ok: false, message: 'GitHub CLI (gh) not found.' }
+    const key = branchParentConfigKey(c)
+    if (!key) return { ok: false, message: 'Invalid branch name.' }
+    const parentR = await git(cwd, ['config', '--get', key])
+    const parent = parentR.out.trim()
+    if (!parentR.ok || !parent) {
+      return { ok: false, message: `No parent configured for ${c}. Declare the dependency first.` }
+    }
+    if (!isValidGitRef(parent)) return { ok: false, message: 'Invalid parent branch.' }
+    // gh needs auth. Reuse the existing token-from-git-credentials fallback so a user who can push
+    // can also propose without a separate `gh auth login`.
+    const env: NodeJS.ProcessEnv = { ...GIT_ENV }
+    if (!(await ghAuthed())) {
+      const token = await githubTokenFromGitCredentials(cwd)
+      if (!token) return { ok: false, message: 'Sign in to GitHub to propose.', needsAuth: true }
+      env.GH_TOKEN = token
+    }
+    try {
+      // --head names the source branch; --base the parent it stacks onto. The PR body notes the
+      // stack relationship so a reviewer sees the dependency without leaving the PR.
+      await run(
+        GH_PATH,
+        ['pr', 'create', '--base', parent, '--head', c, '--title', c, '--body', `Stacked on #${parent}.`],
+        { cwd, env, maxBuffer: 10 * 1024 * 1024 }
+      )
+      return { ok: true, message: `Opened PR ${c} → ${parent}.` }
+    } catch (e) {
+      const err = e as { stderr?: string; message?: string }
+      const msg = (err.stderr || err.message || 'gh failed').trim()
+      if (/\balready exists/i.test(msg)) return { ok: false, message: 'A PR already exists for this branch.' }
+      if (/\b(401|403)\b|unauthor|forbidden|auth|token|scope|HTTP 4/i.test(msg)) {
+        return { ok: false, message: msg, needsAuth: true }
+      }
+      return { ok: false, message: msg }
+    }
+  }
+
+  /**
+   * Ship one branch into its parent: fast-forward the parent to the child when clean (the simple
+   * v1 case). Run in the PARENT's worktree cwd (where parent is HEAD), after fetching the child ref.
+   * A non-fast-forward (the parent moved) is reported, NOT force-merged — rebase first (syncBranch),
+   * then ship. Multi-descendant restack (git-town's hardest part) is a deliberate follow-up.
+   */
+  async shipBranch(cwd: string, child: string, parent: string): Promise<GitResult> {
+    const c = child.trim()
+    const p = parent.trim()
+    if (!isValidGitRef(c) || !isValidGitRef(p)) return { ok: false, message: 'Invalid branch name.' }
+    // `cwd` is the parent's worktree (parent is HEAD). Make the child ref reachable from here, then
+    // fast-forward. `merge --ff-only` refuses when parent is not an ancestor of child — exactly the
+    // guard we want: a stale parent means rebase first, never a surprise merge commit.
+    const r = await git(cwd, ['merge', '--ff-only', c])
+    return r.ok ? { ok: true, message: r.out || `Shipped ${c} into ${p} (fast-forward).` } : fail(r)
   }
 
   async status(cwd: string): Promise<GitStatus> {

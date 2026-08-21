@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
 }))
 const readAccount = vi.fn(async () => ({ email: 'me@example.com' }))
 vi.mock('../core/codex-session-name', () => ({
-  readCodexThreadAt: vi.fn(async () => null),
+  readCodexThreadRollout: vi.fn(async () => null),
   readCodexAccountAt: (..._a: any[]) => readAccount()
 }))
 vi.mock('../core/pty-manager', () => ({ findInLoginPath: vi.fn(async () => null) }))

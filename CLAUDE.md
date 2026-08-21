@@ -774,6 +774,20 @@ else, and its context links must keep classifying across restarts).
   the shared mapping. Desktop and Server Edition use the same core handler; relay tabs deliberately
   do not apply this machine's gateway to another core. Mobile needs a settings/model-picker surface
   before it can expose the feature.
+  **Copilot max-context from discovery (2026-08):** Copilot BYOK honors
+  `COPILOT_PROVIDER_MAX_PROMPT_TOKENS` / `COPILOT_PROVIDER_MAX_OUTPUT_TOKENS`, sourced from the
+  gateway's `/v1/models` response. `parseGatewayModels` reads the limits under the common field
+  names (`context_length` / `max_context_length` / `context_window` for the prompt cap;
+  `max_output_tokens` / `max_completion_tokens` for output) onto `GatewayModel.contextWindow` /
+  `maxOutputTokens`, tolerant of strings/garbage (absent ⇒ undefined ⇒ no env var). `modelGatewayEnv`
+  resolves the chosen model by id from a discovered-models list and emits the vars **only when the
+  limit is known** — never guess (a percentage over a guessed window is the "wrong number as a fact"
+  trap). The list is threaded from discovery: `agent-env-ipc.ts` `discoverModels` takes an
+  `onDiscovered(baseUrl, models)` callback that `ptyManager.setGatewayModels` caches (keyed by
+  gateway URL), and `buildPtyEnv` passes the current gateway's cache into `modelGatewayEnv`. The
+  remote path picks the new keys up automatically (`...gatewayEnv` spread into the remote tmux `-e`).
+  The two keys are in `MODEL_GATEWAY_ENV_KEYS` (lockstep with the tmux `update-environment` conf,
+  pinned by `model-gateway.test.ts`) — a missed key never reaches a shared tmux server.
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE` and `CANVAS_CONTROL_CAPABLE`; NOT in
   `USAGE_CAPABLE` / `CONTEXT_LINK_CAPABLE` / `SUBAGENT_CAPABLE` (each blocked on a fixture that needs a
@@ -1258,6 +1272,39 @@ else, and its context links must keep classifying across restarts).
   caller's. The judge is armed on ids that exist only in that tick, which is why `armAfter` takes
   `extraLive` — without it the reviewers would look *deleted*, deletion counts as satisfied, and
   the judge would fire before a single review existed.
+  **Placement counts must account for in-flight nodes (the stacking bug, 2026-08):** a conductor
+  firing several `open-worktree` / `open-agent --group` calls in one orchestration burst does so
+  across separate IPC round-trips, and `setNodes` is async — `nodesRef.current` only updates on
+  re-render, so before React flushes, every call reads the SAME stale count. `open-worktree`'s
+  `groupFan` (top-level group count) and `addGrouped`'s `existing` (children of a frame) both
+  collapsed to one value, so 4 stations landed at the identical `(1248, 370)`. The fix is
+  `pendingPlacementRef` (`Canvas.tsx`), the placement counterpart of the `drawn` bridge
+  accumulator: every node the handler appends via `setNodes` is also `recordPending`-ed, and the
+  counters (`topLevelGroupCount`, `childCountOf`) fold pending entries in alongside
+  `nodesRef.current`. Entries are reconciled away once they appear in `nodesRef` (the loop at the
+  top of each control invocation), so it never grows unbounded and stops double-counting once React
+  catches up. **A new placement counter owes the same fold** — read `nodesRef.current` PLUS
+  `pendingPlacementRef`, never `nodesRef` alone.
+  **`--title` on `open-claude`/`open-agent` (station naming, 2026-08):** without it, a conductor
+  opening one agent per worktree gets N nodes all named "Codex"/"Claude" (`createAgentNode` defaults
+  the title to the agent label with `titleAuto: true`). `--title <T>` sets `data.title` + pins
+  `titleAuto: false` at creation (the same pattern `spawn-team`'s `r.title` uses), so each station is
+  named in one call instead of a separate `rename`. The flag is documented in BOTH agent-facing texts
+  (`buildCanvasSkillBody` + `buildCanvasControlInstructions`) and the doctrine line tells a conductor
+  to title every station — pinned by `canvas-control-core.test.ts`. (It does not depend on the
+  shim's `--flag=value` parse fix: `--title` always takes a value, so both shim loops agree.)
+  **`spawn-team` per-role harness + the "Spawn a team…" dialog (2026-08):** the `spawn-team` verb
+  already accepted a per-role `agent` (`r.agent ?? 'claude'`); the UI dialog now matches it. The
+  dialog (`SpawnTeamDialog.tsx`) submits a `SpawnTeamInput` (`renderer/lib/spawnTeamPrompt.ts`):
+  with no `roles`, it opens ONE conductor pre-prompted with `conductorPrompt(...)` (today's behavior,
+  now with a `conductorAgent` picker defaulting to `settings.defaultAgent`); with explicit `roles`
+  (`{ title?, prompt, agent }[]`, capped at `MAX_TEAM_ROLES` = 8), `spawnTeam` composes the team
+  INLINE — no conductor — using the same member-building the verb does (`createAgentNode` per role,
+  per-role `activePermissionMode`, `arrangeNodes` grid, `groupSelectedNodes` into a "Team" frame),
+  minus the source/ropes/bridges (the dialog has no conductor to fan out from). Role agents are
+  filtered to `canControlCanvas` (a teammate that can't drive the canvas is a poor default); the
+  conductor picker lists every enabled agent. The cap is shared (`MAX_TEAM_ROLES`, imported by both
+  the verb and the dialog) so the two cannot drift — CLAUDE.md rule #10.
 - **Context Link** — a node action gated by `CONTEXT_LINK_CAPABLE` (claude/codex/gemini/opencode;
   **grok**, custom agents + plain terminals excluded — grok's `updates.jsonl` parser is unbuilt): drawing an edge between two builtin-agent nodes lets each
   READ the other's context on demand (pull, not push). Architecture (2026-07, SSH-capable — see

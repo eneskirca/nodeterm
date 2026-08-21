@@ -390,6 +390,15 @@ describe('hook forwarding', () => {
     ])
     expect(remoteHookEnvArgs('/ep', 'n1', '1')).not.toContain('NODETERM_CANVAS_CONTROL=1')
   })
+  it('arms an orphaned custom agent through its persisted base snapshot', () => {
+    expect(remoteHookEnvArgs('/ep', 'n1', '1', 'custom:deleted', 'claude')).toEqual([
+      '-e', 'NODETERM_HOOK_ENDPOINT=/ep',
+      '-e', 'NODETERM_NODE_ID=n1',
+      '-e', 'NODETERM_HOOK_VERSION=1',
+      '-e', 'NODETERM_AGENT_ID=custom:deleted',
+      '-e', 'NODETERM_CANVAS_CONTROL=1'
+    ])
+  })
   it('remoteEndpointFileContents writes SOCK/TOKEN/VERSION and the remote token dir, each quoted', () => {
     expect(remoteEndpointFileContents('/r.sock', 'tok', '2', '/home/u/.nodeterm/node-tokens')).toBe(
       "NODETERM_HOOK_SOCK='/r.sock'\nNODETERM_HOOK_TOKEN='tok'\nNODETERM_HOOK_VERSION='2'\n" +

@@ -141,6 +141,27 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('close-worktree')).toBe(false)
   })
 
+  it('link-branches requires --base and --branch; sync-stack takes no required args; neither destructive', () => {
+    expect(parseControlRequest('link-branches', {})).toEqual({
+      error: 'link-branches requires --base <parent branch>'
+    })
+    expect(parseControlRequest('link-branches', { base: 'feat-a' })).toEqual({
+      error: 'link-branches requires --branch <child branch>'
+    })
+    expect(parseControlRequest('link-branches', { base: 'feat-a', branch: 'feat-b' })).toEqual({
+      verb: 'link-branches',
+      args: { base: 'feat-a', branch: 'feat-b' }
+    })
+    // sync-stack has no required args (--branch is optional).
+    expect(parseControlRequest('sync-stack', {})).toEqual({ verb: 'sync-stack', args: {} })
+    expect(parseControlRequest('sync-stack', { branch: 'feat-b' })).toEqual({
+      verb: 'sync-stack',
+      args: { branch: 'feat-b' }
+    })
+    expect(isDestructiveVerb('link-branches')).toBe(false)
+    expect(isDestructiveVerb('sync-stack')).toBe(false)
+  })
+
   it('branch requires --node, and is not destructive', () => {
     expect(parseControlRequest('branch', {})).toEqual({ error: 'branch requires --node <id>' })
     expect(parseControlRequest('branch', { node: 'n1' })).toEqual({
@@ -296,6 +317,39 @@ describe('parseControlRequest', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       expect(body).toContain('`sticky --node')
       expect(body).toContain('--create')
+    }
+  })
+
+  it('both agent-facing texts document the --title flag on open-claude/open-agent', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // A conductor opening one agent per worktree gets N nodes all named "Codex"/"Claude" without
+      // --title. The skill must tell agents to name each station at creation (pinned, titleAuto off).
+      expect(body).toMatch(/open-claude.*--title/)
+      expect(body).toMatch(/open-agent.*--title/)
+      expect(body.toLowerCase()).toContain('pinned')
+    }
+  })
+
+  it('both agent-facing texts document the --project flag on open-agent/open-claude (ticket 05)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // --project opens the session in a DIFFERENT project the caller has already opened (review
+      // #363 superseded the earlier "projection" model: a returned id cold-opens in the other
+      // project — the session starts when the user next views it — and never switches the user's
+      // view; the caller's OWN id behaves as if the flag were omitted). The skill must tell agents
+      // the node lives in the OTHER project (owns the session) and that an unknown --project is
+      // refused, not a silent local fallback — the requireRemote precedent. An orchestrating agent
+      // that reads "unknown = local" would open in the wrong repo. `--project` rides on a
+      // continuation line under the open verbs (not the verb line itself), so the assertion checks
+      // the flag + its key facts, not a same-line regex.
+      expect(body).toContain('--project')
+      expect(body).toContain('`--project <id>`')
+      expect(body).toContain('any other id is refused')
+      // The cold-open model replaced the projection model; the old word must be gone.
+      expect(body.toLowerCase()).not.toContain('projection')
+      expect(body.toLowerCase()).toContain('refused')
+      // The open verbs themselves must still be documented (the flag hangs off them).
+      expect(body).toMatch(/open-agent/)
+      expect(body).toMatch(/open-claude/)
     }
   })
 

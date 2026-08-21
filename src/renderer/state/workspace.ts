@@ -10,6 +10,7 @@ import type {
 } from '@shared/types'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId } from '@shared/agents/config'
 import { agentConfig, supportsSessionIdFlag } from '@shared/agents/config'
+import { resolveAgentBase, resolveAgentConfig } from '@shared/agents/custom-agent'
 import { assembleLaunchCommand } from '@shared/agents/launch'
 import { agentEnvSnapshot } from '../lib/agentEnv'
 import { uuid } from '@renderer/lib/uuid'
@@ -123,6 +124,8 @@ export interface NodeData {
   highScore?: number
   /** Which agent runs in this terminal node (claude/codex/gemini/custom). */
   agentId?: AgentId
+  /** Persisted builtin harness for the node's mutable current agent association. */
+  agentBaseId?: BuiltinAgentId
   /** Model selected for this node through the shared model gateway. */
   agentModel?: string
   /**
@@ -477,22 +480,6 @@ export function resolveNewNodeAgent(
   return explicit ?? projectDefaultAgent(projectId, settings) ?? launchableDefaultAgent(settings)
 }
 
-/** Fallback color for custom / unknown agents that have no config-provided color. */
-const FALLBACK_AGENT_COLOR = '#888888'
-
-/**
- * Resolves an agent's label/color/launch command. Builtins come from the static config;
- * custom agents are looked up by id in the settings store. Falls back to the id itself for
- * unknown agents so a node still spawns something sensible.
- */
-function resolveAgent(agentId: AgentId): { label: string; color: string; launchCmd: string } {
-  const builtin = agentConfig(agentId)
-  if (builtin) return { label: builtin.label, color: builtin.color, launchCmd: builtin.launchCmd }
-  const custom = useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
-  if (custom) return { label: custom.label, color: FALLBACK_AGENT_COLOR, launchCmd: custom.launchCmd }
-  return { label: agentId, color: FALLBACK_AGENT_COLOR, launchCmd: agentId }
-}
-
 /**
  * The managed accounts selectable in a given project, host-scoped. A LOCAL project shows only
  * local accounts (no `host`); an SSH project shows only accounts whose `host` matches that
@@ -558,7 +545,11 @@ export function createAgentNode(
    *  existing caller passes that ninth argument, so the model is the one that had to move. */
   model?: string
 ): CanvasNode {
-  const { label, color } = resolveAgent(agentId)
+  const customAgent = agentConfig(agentId)
+    ? undefined
+    : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+  const agentBaseId = resolveAgentBase(agentId, customAgent)
+  const { label, color } = resolveAgentConfig(agentId, customAgent, agentBaseId)
   // The launch-command override (this project's `.nodeterm/settings.json` first, then Settings →
   // Agents → Launch commands — see `agentLaunchOverride`) replaces the bare CLI in the assembled
   // command. Threaded into the shared assembler below as `launchCmdOverride` so fresh launch,
@@ -576,7 +567,10 @@ export function createAgentNode(
   // learning its id from hooks exactly as before. Inheritance-aware: a custom agent with
   // baseAgent:'claude' mints an id too (capabilityAgentId resolves it to claude).
   const cliCaps = claudeCliCapsNow()
-  const sessionIdFlagSupported = supportsSessionIdFlag(agentId, cliCaps.sessionIdFlag)
+  const sessionIdFlagSupported = supportsSessionIdFlag(
+    agentBaseId ?? agentId,
+    cliCaps.sessionIdFlag
+  )
   const mintedSessionId = sessionIdFlagSupported ? uuid() : undefined
   // Command assembly is delegated to the ONE shared builder (src/shared/agents/launch.ts), used by
   // fresh launch AND cold-restore resume, so a custom agent's baseAgent/args/expansion are applied
@@ -585,12 +579,10 @@ export function createAgentNode(
   // typed line is the previewed line. Env-var VALUES (the env map) are separate: pty-manager
   // injects them as process env main-side, never into the typed command. For a builtin with no
   // custom args this is byte-identical to the old hand-built command line.
-  const customAgent = agentConfig(agentId)
-    ? undefined
-    : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
   const { command: initialCommand, missingEnv } = assembleLaunchCommand(
     {
       agentId,
+      baseAgentId: agentBaseId,
       customAgent,
       initialPrompt,
       permissionMode,
@@ -637,6 +629,7 @@ export function createAgentNode(
       group: null,
       tags: [],
       agentId,
+      ...(agentBaseId ? { agentBaseId } : {}),
       // Managed accounts bind to the builtin Claude and Codex agents (S6) — never to another
       // builtin, and never to a custom agent even when it inherits one of those bases. A custom
       // agent inheriting claude/codex is still its own agent; account binding stays with the
@@ -1122,7 +1115,7 @@ function groupsFirst(nodes: CanvasNode[]): CanvasNode[] {
 }
 
 /** A node's position in ROOT space: its own position plus every ancestor frame's origin. */
-function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: number } {
+export function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: number } {
   const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]))
   const seen = new Set<string>([node.id])
   let x = node.position.x
@@ -1137,6 +1130,168 @@ function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: nu
     parentId = parent.parentId
   }
   return { x, y }
+}
+
+// ─── node-group ↔ canvas isomorphism (ticket 07) ──────────────────────────────
+//
+// A node-group and a canvas are two reversible views of the same node-set. Drilling into a group
+// promotes its DIRECT children to root-space (the sub-canvas's top level), reusing the existing
+// canvas-switcher. This is cheap because React Flow keys nodes by `id` and the terminal lifecycle
+// is keyed on `[respawnNonce, offscreenEpoch]` — NOT position/parentId — so repositioning a child
+// from nested-space to root-space re-runs no lifecycle effect: the xterm/PTY/renderer survive in
+// place. Only the group's SIBLINGS leave the node-set (they park via the existing primitive).
+//
+// `rootPosition` (above) is the same helper `ungroupNodes` uses to strip a node's parent offset.
+
+/** The transient, in-memory drill context. Never persisted — a drill is navigation, not a surface. */
+export type DrillContext =
+  | { kind: 'group'; groupId: string; projectId: string } // openNodeGroupAsCanvas: a group's children as the sub-canvas
+  | { kind: 'node'; nodeId: string; projectId: string } // openNodeAsCanvas (F11): a single node maximized (ticket 10)
+  | { kind: 'project-ref'; projectId: string; targetId: string } // openNodeGroupAsCanvas on a `data.projectRef` group (09): drill = switch active project to the referenced one. `projectId` is the SOURCE (meta) canvas — `exitDrill` switches back to it; `targetId` is the referenced project (so the load effect knows a target load is part of THIS drill, not a manual switch to a third project). No merge-back (commits land in the target project); no `cwdOverride` (the target loads its own full nodes).
+
+/**
+ * Build the drilled sub-canvas node-set: the group's DIRECT children promoted to ROOT space, with
+ * `parentId`/`extent` stripped (they become top-level in the sub-canvas). Nested groups stay nested
+ * — only the drilled group's direct children are promoted. The group frame itself and its siblings
+ * are absent (siblings park; the group is the thing being looked-into, not shown as a frame).
+ *
+ * Returns `{ flow, childIds }` so the caller knows exactly which node ids constitute the drilled view
+ * (used to merge edits back into the full project node array on commit — see `remergeDrilledNodes`).
+ */
+export function drillGroupChildren(
+  nodes: CanvasNode[],
+  groupId: string
+): { flow: CanvasNode[]; childIds: Set<string> } {
+  const childIds = new Set<string>()
+  const flow: CanvasNode[] = []
+  for (const node of nodes) {
+    if (node.parentId === groupId) {
+      childIds.add(node.id)
+      const root = rootPosition(node, nodes)
+      flow.push({ ...node, parentId: undefined, extent: undefined, position: root })
+    }
+  }
+  return { flow, childIds }
+}
+
+/**
+ * Commit-while-drilled: merge the EDITED drilled children back into the project's FULL node array,
+ * re-nested under the group (the inverse of `drillGroupChildren`). Drilled children were promoted to
+ * root-space for viewing; persistence stores positions NESTED (parent-relative), so the group's root
+ * origin is subtracted back. Siblings (anything not a drilled child) are kept untouched from the
+ * stored array, as is the group frame itself (it left the drilled view).
+ *
+ * `drilledStates` is `flowToNodeStates(drilledFlow)` — positions are ROOT-space (the drilled view),
+ * and `parentId` is undefined (drilling strips it). We re-nest both.
+ *
+ * This is the one place that closes the logged hazard (07): a drilled view's `nodesRef.current` is a
+ * SUBSET, but `commitCanvas` wholesale-replaces the project's nodes — so committing the subset would
+ * clobber every sibling. Merging by id against the full stored array preserves them, and re-nesting
+ * keeps the persisted positions correct regardless of when the 800ms autosave timer fires.
+ */
+export function remergeDrilledNodes(
+  fullStored: CanvasNodeState[],
+  drilledStates: CanvasNodeState[],
+  groupId: string,
+  fullNodesForRoot: CanvasNode[]
+): CanvasNodeState[] {
+  const drilledById = new Map(drilledStates.map((s) => [s.id, s]))
+  // The group's ROOT-space origin, resolved against the full node array (the group is absent from the
+  // drilled view, so it must be read from the full set — the same reason 08 reads cwd from project.nodes).
+  const group = fullNodesForRoot.find((n) => n.id === groupId)
+  const gx = group ? rootPosition(group, fullNodesForRoot).x : 0
+  const gy = group ? rootPosition(group, fullNodesForRoot).y : 0
+  // Which stored nodes were DIRECT children of the drilled group before the drill. These are the only
+  // nodes whose membership the drilled view may change: a child DELETED while drilled (present in the
+  // stored set, absent from the drilled view) must be dropped; a child NEWLY created while drilled is
+  // appended below. Siblings and the group frame are NOT direct children, so they survive untouched.
+  const wasDirectChild = new Set(
+    fullStored.filter((s) => s.parentId === groupId).map((s) => s.id)
+  )
+  // Re-nest a single drilled child: root-space position → parent-relative, parentId restored.
+  const renest = (s: CanvasNodeState): CanvasNodeState => ({
+    ...s,
+    parentId: groupId,
+    position: { x: s.position.x - gx, y: s.position.y - gy }
+  })
+  // Merge by id over the FULL stored array. A stored direct child that is GONE from the drilled view
+  // (deleted while drilled) is dropped; siblings + the group frame are untouched; remaining drilled
+  // children are re-nested.
+  const merged: CanvasNodeState[] = []
+  for (const state of fullStored) {
+    if (wasDirectChild.has(state.id) && !drilledById.has(state.id)) continue // deleted while drilled
+    const drilled = drilledById.get(state.id)
+    merged.push(drilled ? renest(drilled) : state)
+  }
+  // APPEND drilled children that are NEW (created while drilled — present in the drilled view but
+  // absent from the stored array). Without this a brand-new child would be silently dropped on commit,
+  // and for a worktree drill (08) that means its persisted cwd would never gain the `parentId = groupId`
+  // that `cwdForNewNodeIn` walks to resolve the worktree path — orphaning it from the worktree on reload.
+  const known = new Set(fullStored.map((s) => s.id))
+  for (const drilled of drilledStates) {
+    if (!known.has(drilled.id)) merged.push(renest(drilled))
+  }
+  return merged
+}
+
+/**
+ * Build the focused single-node sub-canvas (ticket 10 — F11 focus = the degenerate case of 07's
+ * isomorphism). The node is promoted to ROOT space (a nested terminal inside a group has its
+ * accumulated parent offset stripped; a top-level node is a no-op — `rootPosition` walks the
+ * ancestor chain and, finding none, returns `node.position` unchanged), with `parentId`/`extent`
+ * stripped for the focused view. Returns `{ flow, nodeId }` so the caller knows the single id.
+ *
+ * This is `drillGroupChildren` for a one-node set. The merge-back (`mergeSingleNode`) is the trivial
+ * case of `remergeDrilledNodes`: replace this one node in the full array, re-nesting its position
+ * (subtract its parent's root origin) and restoring `parentId`/`extent`.
+ */
+export function drillSingleNode(
+  nodes: CanvasNode[],
+  nodeId: string
+): { flow: CanvasNode[]; found: boolean } {
+  const node = nodes.find((n) => n.id === nodeId)
+  if (!node) return { flow: [], found: false }
+  const root = rootPosition(node, nodes)
+  return {
+    flow: [{ ...node, parentId: undefined, extent: undefined, position: root }],
+    found: true
+  }
+}
+
+/**
+ * Commit-while-focused (ticket 10): merge the EDITED single node back into the project's FULL node
+ * array, re-nested under its original parent (the inverse of `drillSingleNode`). This is the trivial
+ * case of `remergeDrilledNodes` — one node, not a group's fan-out. The node was promoted to root-space
+ * for viewing; persistence stores positions NESTED (parent-relative), so we subtract the parent's root
+ * origin back and restore `parentId`. The node's ORIGINAL `parentId`/`extent` come from `fullStored`
+ * (the stored node carries them — drilling only stripped them in the in-memory view, not on disk), so we
+ * keep the stored `parentId` rather than hard-coding a group id (a top-level focused node keeps no parent).
+ */
+export function mergeSingleNode(
+  fullStored: CanvasNodeState[],
+  focusedState: CanvasNodeState,
+  fullNodesForRoot: CanvasNode[]
+): CanvasNodeState[] {
+  const focused = fullStored.find((s) => s.id === focusedState.id)
+  if (!focused) {
+    // The focused node no longer exists in the full set (deleted while focused). Drop it entirely —
+    // a deleted node must not be resurrected by a commit. This mirrors `remergeDrilledNodes` keeping
+    // the full array as the source of truth.
+    return fullStored
+  }
+  const parentId = focused.parentId
+  let position = focusedState.position
+  if (parentId) {
+    const parent = fullNodesForRoot.find((n) => n.id === parentId)
+    const ox = parent ? rootPosition(parent, fullNodesForRoot).x : 0
+    const oy = parent ? rootPosition(parent, fullNodesForRoot).y : 0
+    position = { x: focusedState.position.x - ox, y: focusedState.position.y - oy }
+  }
+  // `extent` is not on CanvasNodeState — `nodeStatesToFlow` derives it from `parentId`
+  // (`parentId ? 'parent' : undefined`), so restoring `parentId` here restores `extent` on reflow.
+  return fullStored.map((s) =>
+    s.id === focusedState.id ? { ...focusedState, parentId, position } : s
+  )
 }
 
 function isDescendant(nodes: CanvasNode[], candidateId: string, ancestorId: string): boolean {
@@ -1599,6 +1754,14 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
     // tag. Backfill agentId so saved workspaces keep working.
     let agentId = n.agentId
     if (!agentId && Array.isArray(n.tags) && n.tags.includes('claude')) agentId = 'claude'
+    // New nodes carry their current harness directly. For pre-field nodes, snapshot it from the
+    // still-present definition once on load; if the definition is already gone, the live status
+    // reconciliation in Canvas can recover it from a verified running harness.
+    const agentBaseId =
+      n.agentBaseId ??
+      (agentId && agentConfig(agentId)
+        ? (agentId as BuiltinAgentId)
+        : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)?.baseAgent)
     return {
       id: n.id,
       // Default to 'terminal' for nodes saved before the kind field existed.
@@ -1634,6 +1797,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         commitOid: n.commitOid,
         highScore: n.highScore,
         agentId,
+        agentBaseId,
         agentModel: n.agentModel,
         accountId: n.accountId,
         agentSessionId: n.agentSessionId,
@@ -1641,7 +1805,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         ssh: n.ssh,
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
-        worktree: n.worktree
+        worktree: n.worktree,
+        projectRef: n.projectRef
       }
     }
   })
@@ -1704,6 +1869,7 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         commitOid: n.data.commitOid,
         highScore: n.data.highScore,
         agentId: n.data.agentId,
+        agentBaseId: n.data.agentBaseId,
         agentModel: n.data.agentModel,
         accountId: n.data.accountId,
         agentSessionId: n.data.agentSessionId,
@@ -1712,7 +1878,8 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         sshRemoteTmux: n.data.sshRemoteTmux,
         sshFs: n.data.sshFs,
         worktree: n.data.worktree,
-        premaxRect: n.data.premaxRect
+        premaxRect: n.data.premaxRect,
+        projectRef: n.data.projectRef as { projectId: string } | undefined
       }
     })
 }

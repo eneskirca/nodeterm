@@ -10,6 +10,7 @@ import {
   isDangerousWorktreeRemovalPath,
   decideMergeStrategy,
   isRemoteSessionNode,
+  branchParentConfigKey,
   isValidGitRef,
   resolveBaseRef,
   worktreeFromCreate,
@@ -66,6 +67,29 @@ describe('isValidGitRef', () => {
     expect(isValidGitRef('--force')).toBe(false)
     expect(isValidGitRef('a b')).toBe(false)
     expect(isValidGitRef('')).toBe(false)
+  })
+})
+
+describe('branchParentConfigKey', () => {
+  // The interpolation guard: a branch name from git-shared JSON lands on a `git config` command line,
+  // so a smuggled flag or path char must be rejected BEFORE the key is built (the standing rule —
+  // re-validate at the site, not by the type).
+  it('builds the git-town convention key for a valid branch', () => {
+    expect(branchParentConfigKey('feat-b')).toBe('git-town-branch.feat-b.parent')
+    expect(branchParentConfigKey('feature/x')).toBe('git-town-branch.feature/x.parent')
+  })
+  it('rejects a flag-like branch (no key built, no command possible)', () => {
+    expect(branchParentConfigKey('-x')).toBeNull()
+    expect(branchParentConfigKey('--force')).toBeNull()
+  })
+  it('rejects a branch with forbidden ref chars', () => {
+    expect(branchParentConfigKey('a b')).toBeNull()
+    expect(branchParentConfigKey('a..b')).toBeNull()
+    expect(branchParentConfigKey('')).toBeNull()
+    expect(branchParentConfigKey('   ')).toBeNull()
+  })
+  it('trims before validating', () => {
+    expect(branchParentConfigKey('  feat-b  ')).toBe('git-town-branch.feat-b.parent')
   })
 })
 

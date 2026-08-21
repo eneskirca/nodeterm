@@ -11,6 +11,7 @@ import {
   modelGatewayRoutes,
   parseGatewayModels,
   resolveModelGatewayApiKey,
+  type GatewayModel,
   type ModelDiscoveryResult,
   type ModelGatewaySettings
 } from '../shared/agents/model-gateway'
@@ -26,7 +27,8 @@ const DISCOVERY_TIMEOUT_MS = 10_000
 async function discoverModels(
   settings: ModelGatewaySettings,
   saved: ModelGatewaySettings | undefined,
-  storedSecret: string | null
+  storedSecret: string | null,
+  onDiscovered?: (baseUrl: string, models: GatewayModel[]) => void
 ): Promise<ModelDiscoveryResult> {
   const routes = modelGatewayRoutes(settings?.baseUrl ?? '')
   const apiKeyField = settings?.apiKey ?? ''
@@ -82,6 +84,10 @@ async function discoverModels(
       return { models: [], error: `Model discovery failed (HTTP ${response.status}).` }
     }
     const models = parseGatewayModels(await response.json())
+    // Push the discovered models into the PtyManager cache (when wired) so spawn-time env
+    // injection can read the reported context/output token limits for Copilot BYOK. Cleared on an
+    // empty result so a gateway change does not serve stale limits.
+    if (onDiscovered) onDiscovered(settings.baseUrl, models)
     return models.length
       ? { models }
       : { models: [], error: 'The gateway returned no usable models.' }
@@ -103,10 +109,14 @@ async function discoverModels(
  *  env key references for a caller-chosen URL (see the gate in `discoverModels`). */
 export function registerAgentEnvIpc(
   getSavedGateway: () => ModelGatewaySettings | undefined,
-  credentials?: ModelGatewayCredentialService
+  credentials?: ModelGatewayCredentialService,
+  /** Called with the discovered models for a gateway URL so the PtyManager can cache them for
+   *  spawn-time Copilot BYOK max-context env injection. Optional: the Server Edition / shells that
+   *  do not own a PtyManager pass none, and the limits simply are not cached there. */
+  onDiscovered?: (baseUrl: string, models: GatewayModel[]) => void
 ): void {
   platform().handle(IPC.agentDiscoverModels, (settings: ModelGatewaySettings) =>
-    discoverModels(settings, getSavedGateway(), credentials?.readForHost() ?? null)
+    discoverModels(settings, getSavedGateway(), credentials?.readForHost() ?? null, onDiscovered)
   )
   platform().handle(IPC.agentGatewayCredentialStatus, () =>
     credentials?.status() ?? { hasStoredKey: false, storage: 'unavailable' as const }

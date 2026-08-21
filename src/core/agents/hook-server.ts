@@ -1038,7 +1038,13 @@ class HookServer {
   // managed permission hook holds for that many seconds for a phone/canvas answer file before
   // falling through to Claude's interactive prompt. 0/undefined ⇒ NODETERM_PERM_WAIT_SECS absent ⇒
   // the hook's wait-branch is inert (exact legacy behavior). See docs/hook-reply-approvals.md.
-  buildPtyEnv(nodeId: string, agentId: AgentId, permWaitSecs = 0): Record<string, string> {
+  buildPtyEnv(
+    nodeId: string,
+    agentId: AgentId,
+    permWaitSecs = 0,
+    /** Node-persisted harness snapshot; authoritative if the custom definition was deleted. */
+    capabilityAgentId: AgentId = agentId
+  ): Record<string, string> {
     if (this.port <= 0 || !this.token) return {}
     return {
       // NO NODETERM_HOOK_TOKEN, NO NODETERM_HOOK_PORT — measured 2026-08-13: these ride the tmux
@@ -1062,7 +1068,7 @@ class HookServer {
       NODETERM_NODE_ID: nodeId,
       NODETERM_AGENT_ID: agentId,
       ...(permWaitSecs > 0 ? { NODETERM_PERM_WAIT_SECS: String(permWaitSecs) } : {}),
-      ...(canControlCanvas(agentId) ? { NODETERM_CANVAS_CONTROL: '1' } : {})
+      ...(canControlCanvas(capabilityAgentId) ? { NODETERM_CANVAS_CONTROL: '1' } : {})
       // NO NODETERM_CODEX_NODE_TOKEN either. The per-node capability is the same class of leak as
       // the app-wide bearer above, and a worse one to reason about: it is the credential that
       // proves WHICH node is calling, so a sibling uid reading it off /proc/<pid>/cmdline could

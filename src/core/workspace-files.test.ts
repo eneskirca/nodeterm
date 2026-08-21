@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import type { CanvasNodeState, Project, Workspace } from '../shared/types'
+import type { CanvasNodeState, Link, Project, Workspace } from '../shared/types'
 import {
   toPortableNodes, resolveNodes, projectToFile, fileToProject, framingViewport,
-  sameProjectContent, splitWorkspace, serializeProjectFile
+  sameProjectContent, splitWorkspace, serializeProjectFile, migrateLinks
 } from './workspace-files'
 import { legacyFileId } from '../shared/project-id'
 import type { ProjectFileV1 } from './workspace-files'
@@ -612,5 +612,114 @@ describe('project icon: emitted only when valid, sanitized on the hostile load p
   it('a hand-edited hostile icon shape on disk is dropped on load', () => {
     const f = { ...projectToFile(project(), 1, 'now'), icon: { type: 'lucide', name: 'not-real' } } as any
     expect(fileToProject(f, { id: 'p1' }).icon).toBeUndefined()
+  })
+})
+
+describe('migrateLinks (bridges/ropes → unified Link[])', () => {
+  it('lifts bridges to kind:"context" node↔node links, preserving ids', () => {
+    const out = migrateLinks({ bridges: [{ id: 'bridge-a-b', source: 'a', target: 'b' }] })!
+    expect(out).toEqual([
+      {
+        id: 'bridge-a-b',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'a' },
+        target: { ref: 'node', nodeId: 'b' }
+      }
+    ])
+  })
+
+  it('lifts ropes to kind:"lineage" with displayOnly meta, preserving ctrl- ids', () => {
+    const out = migrateLinks({ ropes: [{ id: 'ctrl-a-b', source: 'a', target: 'b' }] })!
+    expect(out).toEqual([
+      {
+        id: 'ctrl-a-b',
+        kind: 'lineage',
+        source: { ref: 'node', nodeId: 'a' },
+        target: { ref: 'node', nodeId: 'b' },
+        meta: { displayOnly: true }
+      }
+    ])
+  })
+
+  it('merges bridges + ropes into one array (context first, then lineage)', () => {
+    const out = migrateLinks({
+      bridges: [{ id: 'bridge-a-b', source: 'a', target: 'b' }],
+      ropes: [{ id: 'ctrl-a-c', source: 'a', target: 'c' }]
+    })!
+    expect(out.map((l) => l.kind)).toEqual(['context', 'lineage'])
+    expect(out).toHaveLength(2)
+  })
+
+  it('passes an already-migrated `links` through untouched (no double-migration)', () => {
+    const links: Link[] = [
+      {
+        id: 'x',
+        kind: 'dependency',
+        source: { ref: 'branch', repoPath: '/r', branch: 'feat' },
+        target: { ref: 'branch', repoPath: '/r', branch: 'main' }
+      }
+    ]
+    // Even if legacy bridges/ropes are ALSO present, an existing `links` wins (it was written by
+    // a newer build, so the legacy fields are stale leftovers).
+    expect(migrateLinks({ links, bridges: [{ id: 'stale', source: 'a', target: 'b' }] })).toBe(links)
+  })
+
+  it('returns undefined for a link-less canvas (omitted field = byte-identical file)', () => {
+    expect(migrateLinks({})).toBeUndefined()
+    expect(migrateLinks({ bridges: [], ropes: [] })).toBeUndefined()
+  })
+})
+
+describe('projectToFile / fileToProject link migration round-trip', () => {
+  it('writes `links` only (no bridges/ropes) and reads them back', () => {
+    const p = project({
+      links: [
+        {
+          id: 'bridge-n1-n2',
+          kind: 'context',
+          source: { ref: 'node', nodeId: 'term-abc' },
+          target: { ref: 'node', nodeId: 'other' }
+        }
+      ]
+    })
+    const f = projectToFile(p, 1, '2026-01-01')
+    expect(f.links).toBeDefined()
+    expect(f.bridges).toBeUndefined()
+    expect(f.ropes).toBeUndefined()
+    // Read back: links survive (fileToProject passes `links` through migrateLinks).
+    const back = fileToProject(f, { id: 'p1' })
+    expect(back.links).toEqual(p.links)
+  })
+
+  it('reads a legacy file carrying bridges/ropes (no links) and migrates to links', () => {
+    const f: ProjectFileV1 = {
+      version: 1,
+      rev: 1,
+      savedAt: '2026-01-01',
+      name: 'foo',
+      color: '#7aa2f7',
+      nodes: [node()],
+      bridges: [{ id: 'bridge-a-b', source: 'a', target: 'b' }],
+      ropes: [{ id: 'ctrl-a-c', source: 'a', target: 'c' }]
+    }
+    const back = fileToProject(f, { id: 'p1' })
+    expect(back.links).toEqual([
+      {
+        id: 'bridge-a-b',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'a' },
+        target: { ref: 'node', nodeId: 'b' }
+      },
+      {
+        id: 'ctrl-a-c',
+        kind: 'lineage',
+        source: { ref: 'node', nodeId: 'a' },
+        target: { ref: 'node', nodeId: 'c' },
+        meta: { displayOnly: true }
+      }
+    ])
+    // Legacy fields are NOT re-attached on read (links replaces them).
+    expect(back.bridges).toBeUndefined()
+    expect(back.ropes).toBeUndefined()
   })
 })

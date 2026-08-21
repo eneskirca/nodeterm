@@ -5,8 +5,9 @@ import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
 import { useProjectSetup } from '../state/projectSetup'
+import { isBranchDependencyLink } from '../lib/link-authoring'
 
-export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
+export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup' | 'sync'
 
 /**
  * Worktree-action handler bridge. React Flow instantiates custom nodes itself, so we can't
@@ -22,6 +23,16 @@ export function setWorktreeActionHandler(
 }
 
 /**
+ * Drill-into-group handler bridge (ticket 07 — node-group ↔ canvas isomorphism). Same indirection as
+ * `worktreeActionHandler`: Canvas registers `openNodeGroupAsCanvas` here so the group's "open as
+ * canvas" affordance can trigger the drill without prop drilling through React Flow.
+ */
+let drillHandler: ((groupId: string) => void) | null = null
+export function setDrillHandler(fn: ((groupId: string) => void) | null): void {
+  drillHandler = fn
+}
+
+/**
  * A group frame: a dashed, rounded, translucent box that contains child nodes. A floating
  * label pill (color dot + name) sits on the top border; ungroup/× appear top-right on hover.
  * Children are real React Flow nodes parented to this one, so dragging the frame moves them
@@ -34,6 +45,18 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const frameRef = useRef<HTMLDivElement | null>(null)
 
   const wt = data.worktree
+  // Cross-project reference (ticket 09): when set, this group frame REFERENCES another project's
+  // canvas. Drilling the frame (the ⤢ button below) switches the active project to the referenced
+  // one instead of promoting this group's children. Resolved here only to render a badge (the
+  // referenced project's color dot + name) and to grey the frame when the referenced project is
+  // gone/unavailable/closed — the drill handler in Canvas refuses in that case, so the visual is
+  // the honest signal. Like `wt`, a `projectRef` group may ALSO hold local children on the
+  // meta-canvas; the badge is additive, not a replacement for the group's own label.
+  const ref = data.projectRef as { projectId: string } | undefined
+  const refProject = useProjects((s) =>
+    ref ? s.projects.find((p) => p.id === ref.projectId) : undefined
+  )
+  const refUnavailable = !!ref && (!refProject || refProject.unavailable || refProject.closed)
   // The store is the ONLY caller of the worktree/status git IPC; it throttles
   // (WORKTREE_STATUS_THROTTLE_MS) and is epoch-guarded, so asking often is free.
   const status = useWorktrees((s) => (wt ? s.statusByPath[wt.path] : undefined))
@@ -52,6 +75,18 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   // mistaken for "nothing is happening".
   const setupPending = useProjectSetup((s) => (s.pendingByGroup[id] ?? 0) > 0)
   const setupBusy = setupPending || setupRun?.state === 'running'
+  // Does a `dependency` link name this group's branch as the CHILD (source)? That is the gate for
+  // the ↻ Sync button: a stack to rebase onto a parent exists only when the lineage is declared.
+  // Reads the active project's links (a dependency link is project-scoped). The branch git reports
+  // NOW wins over the persisted `wt.branch` (the user may have switched inside the worktree).
+  const branchNow = wt ? status?.branch || wt.branch : ''
+  const hasDepParent = useProjects((s) => {
+    if (!wt || !branchNow) return false
+    const proj = s.projects.find((p) => p.id === s.activeProjectId)
+    return !!(proj?.links ?? []).some(
+      (l) => isBranchDependencyLink(l) && l.source.branch === branchNow
+    )
+  })
 
   // On an SSH project the poll is OFF, not merely useless: `git status <path>` would be answered by
   // the LOCAL filesystem for a project whose checkout lives on the host (remote git routing is
@@ -139,7 +174,8 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
     'group-node',
     selected ? 'selected' : '',
     bound ? 'group-node--worktree' : '',
-    bound && stale ? 'group-node--worktree-stale' : ''
+    bound && stale ? 'group-node--worktree-stale' : '',
+    refUnavailable ? 'group-node--worktree-stale' : '' // reuse the stale/unavailable muted visual
   ]
     .filter(Boolean)
     .join(' ')
@@ -149,8 +185,9 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
       ref={frameRef}
       className={frameClass}
       style={{
-        borderColor: bound && stale ? undefined : data.color,
-        background: bound && stale ? undefined : `${data.color}${bound ? '1c' : '0f'}`,
+        borderColor: (bound && stale) || refUnavailable ? undefined : data.color,
+        background:
+          (bound && stale) || refUnavailable ? undefined : `${data.color}${bound ? '1c' : '0f'}`,
         // Rounded selection ring (box-shadow follows border-radius, unlike the resizer line).
         boxShadow: selected ? `0 0 0 1.5px ${data.color}` : undefined
       }}
@@ -274,6 +311,15 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
                 ⤴
               </button>
             )}
+            {!stale && hasDepParent && (
+              <button
+                className="group-node__wt-btn"
+                title="Sync: rebase this branch onto its dependency parent"
+                onClick={() => worktreeActionHandler?.(id, 'sync')}
+              >
+                ↻
+              </button>
+            )}
             <button
               className="group-node__wt-btn"
               title={
@@ -296,9 +342,43 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
             )}
           </div>
         )}
+        {ref && (
+          <div className="group-node__wt nodrag">
+            {refUnavailable ? (
+              <span
+                className="group-node__branch group-node__branch--stale"
+                title={
+                  !refProject
+                    ? `Referenced project is no longer available.\nReopen its folder to restore it (the same cwd-derived id).`
+                    : `Referenced project is ${refProject.unavailable ? 'unavailable' : 'closed'}.\nReopen it to drill into it.`
+                }
+              >
+                ↗ unavailable project
+              </span>
+            ) : (
+              <span
+                className="group-node__branch"
+                title={`Drill into project: ${refProject!.name}`}
+              >
+                <span
+                  className="group-node__dot"
+                  style={{ display: 'inline-block', background: refProject!.color ?? '#0a84ff' }}
+                />{' '}
+                ↗ {refProject!.name}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="group-node__actions nodrag">
+        <button
+          className="group-node__drill"
+          title="Open as canvas (drill into this group)"
+          onClick={() => drillHandler?.(id)}
+        >
+          ⤢
+        </button>
         <button className="group-node__ungroup" title="Ungroup" onClick={ungroup}>
           ungroup
         </button>

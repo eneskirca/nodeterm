@@ -1,11 +1,11 @@
 import {
   AGENT_CONFIG,
-  BUILTIN_AGENT_IDS,
   canResume,
   type AgentId,
   type BuiltinAgentId,
 } from "@shared/agents/config";
 import type { CustomAgent } from "@shared/types";
+import { resolveAgentBase } from "@shared/agents/custom-agent";
 
 /**
  * One agent a node could reopen its current session id AS, in place, by swapping the CLI that
@@ -35,13 +35,17 @@ export function reopenVariants(
   sourceAgentId: AgentId,
   customAgents: readonly CustomAgent[],
   disabledAgents: readonly AgentId[],
+  /** Node-persisted current harness; lets an orphaned custom node reopen as its builtin base. */
+  sourceBaseId?: BuiltinAgentId,
 ): ReopenVariant[] {
   // Resolve from the records passed in rather than the runtime's injected capability resolver.
   // This keeps the helper deterministic in tests and, more importantly, makes a deleted/unknown
   // custom source ineligible instead of guessing that its id is a harness.
-  const base = BUILTIN_AGENT_IDS.includes(sourceAgentId as BuiltinAgentId)
-    ? (sourceAgentId as BuiltinAgentId)
-    : customAgents.find((c) => c.id === sourceAgentId)?.baseAgent;
+  const base = resolveAgentBase(
+    sourceAgentId,
+    customAgents.find((c) => c.id === sourceAgentId),
+    sourceBaseId,
+  );
   if (!base || !canResume(base)) return [];
 
   const disabled = new Set(disabledAgents);

@@ -133,6 +133,24 @@ function isTransportUncertainty(value: unknown): boolean {
   )
 }
 
+/**
+ * Whether a `socket.write` CALLBACK error proves the frame never reached the wire. A real kernel
+ * write rejection always carries an errno `code` (EPIPE / ECONNRESET / ECONNABORTED /
+ * ERR_STREAM_DESTROYED); that is the only trustworthy signal at the write-callback site, where the
+ * alternative — `isTransportUncertainty`'s message-substring match — is far too loose (a fabricated
+ * or application error whose text merely contains "socket" would wrongly become resendable). Use
+ * `isTransportUncertainty` for connect/reconnect classification, where the wording is all you have.
+ */
+function isWriteCallbackUndelivered(value: unknown): boolean {
+  const error = asError(value) as NodeJS.ErrnoException
+  return (
+    error.code === 'ECONNRESET' ||
+    error.code === 'EPIPE' ||
+    error.code === 'ECONNABORTED' ||
+    error.code === 'ERR_STREAM_DESTROYED'
+  )
+}
+
 /** Protocol-v1 hosts stay alive for warm terminal continuity. Operations that need atomic
  * generation or replacement semantics fail closed without replacing that live host. */
 export class SessionHostProtocolCompatibilityError extends Error {
@@ -836,10 +854,38 @@ export class SessionHostClient {
             // A response may beat a late write callback. Identity-check this exact pending entry so
             // that callback can neither settle nor delete a newer request that reused surrounding state.
             if (!error || this.pending.get(id) !== pending) return
-            this.dropSocket(socket, asError(error), true)
+            const err = asError(error)
+            // A write-CALLBACK error is resendable ONLY when the kernel itself rejected the flush —
+            // an errno `code` (EPIPE / ECONNRESET / ECONNABORTED / ERR_STREAM_DESTROYED) proves the
+            // frame's bytes never reached the wire, so it is safe to replay on a fresh connection (the
+            // framing is one line per frame, so a partial flush leaves the host's LineFramer with no
+            // complete line and a resend cannot double-apply). A GENERIC error (no errno — a fabricated
+            // or application-level failure) stays a plain rejection: by then the frame was handed to
+            // socket.write and its delivery is the transport's business, so the host may have received
+            // and acted on it, and resending a non-idempotent command would double-apply it.
+            //
+            // This errno-only gate is deliberately NARROWER than `isTransportUncertainty`: that helper
+            // also matches message substrings ('socket'/…), which is correct for connect/reconnect
+            // classification (where the error's wording is all you have) but far too loose here — a
+            // fabricated test error whose message merely CONTAINS "socket" must not become resendable.
+            // The kernel always sets `code` on a real write-callback failure, so errno is the one
+            // trustworthy signal at this site.
+            if (isWriteCallbackUndelivered(err)) pending.sent = false
+            this.dropSocket(socket, err, true)
           })
         } catch (error) {
-          if (this.pending.get(id) === pending) this.dropSocket(socket, asError(error), true)
+          // A SYNCHRONOUS throw from socket.write means the call threw before any bytes were handed to
+          // the transport (EPIPE on a socket the kernel already tore down between the destroyed-recheck
+          // above and this line) — no bytes left this process, so the frame is provably undelivered.
+          // Reset `sent` before dropSocket so this entry rejects as SessionHostRequestNotDeliveredError
+          // and request() replays it on a fresh connection, instead of surfacing a plain EPIPE the host
+          // never saw. (No test exercises this path — a real socket.write rarely throws synchronously —
+          // but it is the one case where undelivered is certain, so resend is safe.)
+          const err = asError(error)
+          if (this.pending.get(id) === pending) {
+            pending.sent = false
+            this.dropSocket(socket, err, true)
+          }
         }
       })
     })

@@ -59,6 +59,16 @@ describe("reopenVariants", () => {
     );
   });
 
+  it("uses a node-persisted base after the source custom definition is deleted", () => {
+    expect(
+      reopenVariants("custom:missing" as AgentId, customs, [], "claude"),
+    ).toEqual([
+      { id: "claude", label: "Claude Code", base: "claude" },
+      { id: "custom:claude-a", label: "Claude A", base: "claude" },
+      { id: "custom:claude-b", label: "Claude B", base: "claude" },
+    ]);
+  });
+
   it("never crosses provider session-id namespaces", () => {
     expect(reopenVariants("codex", customs, []).map((v) => v.id)).toEqual([
       "custom:codex",

@@ -298,6 +298,27 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     }
   })
 
+  it('uses a persisted base snapshot for an orphaned custom agent', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    const m = new PtyManager()
+    m.init(() => ({
+      ...DEFAULT_SETTINGS,
+      customAgents: [],
+      modelGateway: { baseUrl: 'https://gateway.example.test', apiKey: 'vk-secret' }
+    }))
+    m.registerIpc()
+
+    await create(80, 24, 'orphaned-custom-node', {
+      agentId: 'custom:deleted',
+      agentBaseId: 'claude'
+    })
+
+    expect(spawnArgs[0].env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://gateway.example.test/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'vk-secret'
+    })
+  })
+
   it('maps a selected Copilot model into its BYOK environment, never a model flag', async () => {
     const { PtyManager } = await import('./pty-manager')
     const m = new PtyManager()

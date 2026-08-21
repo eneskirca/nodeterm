@@ -61,11 +61,36 @@ describe('appendProjectNode', () => {
     expect(n.sshRemoteTmux).toBeUndefined()
   })
 
-  it('carries agentId only when given', () => {
+  it('carries agentId and snapshots a builtin base only when an agent is given', () => {
     const withAgent = JSON.parse(appendProjectNode(baseFile([]), { id: 'term-c-1', agentId: 'claude' }, NOW)!)
     expect(withAgent.nodes[0].agentId).toBe('claude')
+    expect(withAgent.nodes[0].agentBaseId).toBe('claude')
     const plain = JSON.parse(appendProjectNode(baseFile([]), { id: 'term-c-2' }, NOW)!)
     expect(plain.nodes[0].agentId).toBeUndefined()
+    expect(plain.nodes[0].agentBaseId).toBeUndefined()
+  })
+
+  it('accepts a valid custom-agent base snapshot but ignores a mismatched base for a builtin', () => {
+    const custom = JSON.parse(
+      appendProjectNode(
+        baseFile([]),
+        { id: 'term-c-1', agentId: 'custom:proxy', agentBaseId: 'claude' },
+        NOW
+      )!
+    )
+    expect(custom.nodes[0]).toMatchObject({
+      agentId: 'custom:proxy',
+      agentBaseId: 'claude'
+    })
+
+    const builtin = JSON.parse(
+      appendProjectNode(
+        baseFile([]),
+        { id: 'term-c-2', agentId: 'codex', agentBaseId: 'claude' },
+        NOW
+      )!
+    )
+    expect(builtin.nodes[0].agentBaseId).toBe('codex')
   })
 
   it('an agent node adopts the agent color + label default, like createAgentNode', () => {

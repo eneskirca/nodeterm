@@ -357,3 +357,18 @@ export const IconRestoreSize = () => (
     <path d="M4 20l6-6" />
   </svg>
 )
+
+/** Maximize/focus — matches the group ⤢ "drill into" glyph (ticket 10 F11 focus). */
+export const IconFocus = () => (
+  <svg {...S}>
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+  </svg>
+)
+
+/** Chain link — the off-canvas link authoring surface (ticket 06): picker/inspector entry points. */
+export const IconLink = () => (
+  <svg {...S}>
+    <path d="M9 12a3.5 3.5 0 0 0 5 0l2.5-2.5a3.5 3.5 0 0 0-5-5L10 6" />
+    <path d="M15 12a3.5 3.5 0 0 0-5 0L7.5 14.5a3.5 3.5 0 0 0 5 5L14 18" />
+  </svg>
+)

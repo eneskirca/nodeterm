@@ -538,6 +538,41 @@ describe('group worktree serialization', () => {
   })
 })
 
+describe('group projectRef serialization (ticket 09 meta-canvas)', () => {
+  // A projectRef group is an ordinary `kind:'group'` node carrying `data.projectRef`. It must round-trip
+  // through flowToNodeStates/nodeStatesToFlow so a reloaded meta-canvas re-derives its reference frames —
+  // without this, `data.projectRef` is silently dropped on persist and every reference disappears on reload.
+  it('round-trips data.projectRef on a group node', () => {
+    const group = {
+      id: 'group_ref',
+      type: 'group',
+      position: { x: 0, y: 0 },
+      width: 520,
+      height: 360,
+      data: {
+        title: 'References Project A',
+        color: '#0a84ff',
+        group: null,
+        projectRef: { projectId: 'proj-a' }
+      }
+    } as unknown as CanvasNode
+
+    const states = flowToNodeStates([group])
+    expect(states[0].projectRef).toEqual(group.data.projectRef)
+
+    const back = nodeStatesToFlow(states)
+    expect(back[0].data.projectRef).toEqual(group.data.projectRef)
+  })
+
+  it('leaves projectRef undefined for an ordinary group', () => {
+    const group = {
+      id: 'group_3', type: 'group', position: { x: 0, y: 0 }, width: 1, height: 1,
+      data: { title: 'G', color: '#fff', group: null }
+    } as unknown as CanvasNode
+    expect(flowToNodeStates([group])[0].projectRef).toBeUndefined()
+  })
+})
+
 describe('resolveNewNodeAccount', () => {
   const accounts = [{ id: 'a1', label: 'work', createdAt: 0 }]
   it('prefers the explicit pick', () =>

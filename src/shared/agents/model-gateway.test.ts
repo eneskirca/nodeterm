@@ -57,6 +57,34 @@ describe('parseGatewayModels', () => {
     expect(parseGatewayModels({ models: [{ id: 'gpt-5' }] })).toEqual([])
     expect(parseGatewayModels(null)).toEqual([])
   })
+
+  it('reads context/output token limits under the common field names, tolerating strings and garbage', () => {
+    expect(
+      parseGatewayModels({
+        data: [
+          // OpenAI convention: context_length + max_output_tokens
+          { id: 'openai/gpt-5', context_length: 400000, max_output_tokens: 16384 },
+          // context_window alias + max_completion_tokens
+          { id: 'anthropic/claude-sonnet-4', context_window: 200000, max_completion_tokens: 8192 },
+          // max_context_length variant
+          { id: 'misc/variant', max_context_length: 128000 },
+          // string-encoded limit
+          { id: 'misc/str', context_length: '32000' },
+          // garbage / non-positive → omitted, model still listed
+          { id: 'misc/bad', context_length: 'nope', max_output_tokens: 0 },
+          // nothing reported → no limit fields
+          { id: 'misc/none' }
+        ]
+      })
+    ).toEqual([
+      { id: 'anthropic/claude-sonnet-4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 8192 },
+      { id: 'misc/bad', provider: 'misc' },
+      { id: 'misc/none', provider: 'misc' },
+      { id: 'misc/str', provider: 'misc', contextWindow: 32000 },
+      { id: 'misc/variant', provider: 'misc', contextWindow: 128000 },
+      { id: 'openai/gpt-5', provider: 'openai', contextWindow: 400000, maxOutputTokens: 16384 }
+    ])
+  })
 })
 
 describe('agent mappings', () => {
@@ -154,6 +182,49 @@ describe('agent mappings', () => {
     )
   })
 
+  it('injects Copilot max-context env vars from discovery, and omits them when limits are unknown', () => {
+    const models = parseGatewayModels({
+      data: [
+        { id: 'openai/gpt-5', context_length: 400000, max_output_tokens: 16384 },
+        { id: 'anthropic/claude-sonnet-4', context_window: 200000 },
+        { id: 'openai/gpt-5.5' }
+      ]
+    })
+    // Both limits known → both env vars emitted.
+    expect(modelGatewayEnv(gateway, 'copilot', 'openai/gpt-5', {}, null, models)).toEqual({
+      COPILOT_PROVIDER_BASE_URL: 'https://bifrost.example.test/openai/v1',
+      COPILOT_PROVIDER_TYPE: 'openai',
+      COPILOT_PROVIDER_API_KEY: 'vk-secret',
+      COPILOT_PROVIDER_MODEL_ID: 'gpt-5',
+      COPILOT_PROVIDER_WIRE_MODEL: 'openai/gpt-5',
+      COPILOT_PROVIDER_WIRE_API: 'responses',
+      COPILOT_PROVIDER_MAX_PROMPT_TOKENS: '400000',
+      COPILOT_PROVIDER_MAX_OUTPUT_TOKENS: '16384'
+    })
+    // Output limit unknown → only the prompt cap is emitted (never guessed).
+    expect(modelGatewayEnv(gateway, 'copilot', 'anthropic/claude-sonnet-4', {}, null, models)).toEqual({
+      COPILOT_PROVIDER_BASE_URL: 'https://bifrost.example.test/anthropic',
+      COPILOT_PROVIDER_TYPE: 'anthropic',
+      COPILOT_PROVIDER_API_KEY: 'vk-secret',
+      COPILOT_PROVIDER_MODEL_ID: 'claude-sonnet-4',
+      COPILOT_PROVIDER_WIRE_MODEL: 'anthropic/claude-sonnet-4',
+      COPILOT_PROVIDER_MAX_PROMPT_TOKENS: '200000'
+    })
+    // Model present in the catalogue but with NO reported limits → no max-token env vars.
+    expect(modelGatewayEnv(gateway, 'copilot', 'openai/gpt-5.5', {}, null, models)).toEqual({
+      COPILOT_PROVIDER_BASE_URL: 'https://bifrost.example.test/openai/v1',
+      COPILOT_PROVIDER_TYPE: 'openai',
+      COPILOT_PROVIDER_API_KEY: 'vk-secret',
+      COPILOT_PROVIDER_MODEL_ID: 'gpt-5.5',
+      COPILOT_PROVIDER_WIRE_MODEL: 'openai/gpt-5.5',
+      COPILOT_PROVIDER_WIRE_API: 'responses'
+    })
+    // Model not in the discovered list at all → no max-token env vars (no cache hit, no guess).
+    expect(
+      modelGatewayEnv(gateway, 'copilot', 'openai/gpt-5.5', {}, null, [])
+    ).not.toHaveProperty('COPILOT_PROVIDER_MAX_PROMPT_TOKENS')
+  })
+
   it('quotes model ids and refuses unsupported/control-bearing values', () => {
     expect(withAgentModel('codex resume abc', 'codex', "openai/o'model")).toBe(
       "codex resume abc --model 'openai/o'\\''model'"
@@ -224,21 +295,33 @@ describe('agent mappings', () => {
 describe('MODEL_GATEWAY_ENV_KEYS lockstep', () => {
   it('covers every var any capability base can emit — a missed key never reaches a shared tmux server', () => {
     const gateway = { baseUrl: 'https://gw.example.test', apiKey: 'vk-1' }
+    // Models carrying context/output limits so the Copilot max-token keys are exercised too.
+    const models = parseGatewayModels({
+      data: [
+        { id: 'openai/gpt-5.5-codex', context_length: 400000, max_output_tokens: 16384 },
+        { id: 'openai/gpt-5', context_length: 400000, max_output_tokens: 16384 },
+        { id: 'anthropic/claude-sonnet-5', context_length: 200000, max_output_tokens: 8192 }
+      ]
+    })
     const seen = new Set<string>()
     for (const id of ['claude', 'codex', 'gemini', 'grok', 'copilot'] as const) {
       for (const k of Object.keys(
-        modelGatewayEnv(gateway, id, 'openai/gpt-5.5-codex')
+        modelGatewayEnv(gateway, id, 'openai/gpt-5.5-codex', {}, null, models)
       ))
         seen.add(k)
       // The gpt-5 responses-API marker only appears for a gpt-5-family OpenAI model.
-      for (const k of Object.keys(modelGatewayEnv(gateway, id, 'openai/gpt-5')))
+      for (const k of Object.keys(modelGatewayEnv(gateway, id, 'openai/gpt-5', {}, null, models)))
         seen.add(k)
       for (const k of Object.keys(
-        modelGatewayEnv(gateway, id, 'anthropic/claude-sonnet-5')
+        modelGatewayEnv(gateway, id, 'anthropic/claude-sonnet-5', {}, null, models)
       ))
         seen.add(k)
     }
     expect(seen.size).toBeGreaterThan(0)
     for (const k of seen) expect(MODEL_GATEWAY_ENV_KEYS).toContain(k)
+    // The two new keys must be reachable when limits are discovered, else the lockstep would
+    // silently never cover them.
+    expect(seen).toContain('COPILOT_PROVIDER_MAX_PROMPT_TOKENS')
+    expect(seen).toContain('COPILOT_PROVIDER_MAX_OUTPUT_TOKENS')
   })
 })

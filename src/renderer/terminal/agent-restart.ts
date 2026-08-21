@@ -83,6 +83,26 @@ export function restartEligibility(
 }
 
 /**
+ * Model switching has a different interruption contract from an in-place restart. It never writes
+ * the harness exit command into the composer: core proves the expected agent owns the foreground
+ * process group and terminates that group by PID before the pane is recycled. A user-requested
+ * switch may therefore interrupt `working` or `blocked` safely without turning `/exit` into prompt
+ * text (the reason `restartEligibility` must reject those states).
+ *
+ * Keep the durable requirements shared with restart: the harness must support resume and there
+ * must be a provider session id to carry into the replacement process. Model capability itself is
+ * checked by the caller through the base-agent-aware `canSwitchModel` registry.
+ */
+export function modelSwitchEligibility(
+  agentId: string | undefined,
+  sessionId: string | undefined
+): { ok: true } | { ok: false; reason: Exclude<IneligibleReason, 'working'> } {
+  if (!agentId || !canResume(agentId)) return { ok: false, reason: 'not-resumable' }
+  if (!sessionId) return { ok: false, reason: 'no-session' }
+  return { ok: true }
+}
+
+/**
  * Prefer the live hook-reported id, then the caller-chosen id persisted on the node. Copilot and
  * modern Claude can start with a minted id before their first hook lands; making each menu/closure
  * rediscover this fallback separately would make one of them offer a restart that the other
@@ -117,7 +137,13 @@ export function clearEnvEligibility(
   return { ok: true }
 }
 
-export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
+export type RestartOutcome =
+  | 'restarted'
+  | 'exit-timeout'
+  | 'not-eligible'
+  | 'model-no-session'
+  | 'model-unavailable'
+  | 'model-pane-mismatch'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250

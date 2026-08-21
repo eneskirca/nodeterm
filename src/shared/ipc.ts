@@ -427,9 +427,19 @@ export const IPC = {
   gitCheckoutCommit: 'git:checkout-commit',
   gitRepoRoot: 'git:repo-root',
   gitWorktreeList: 'git:worktree-list',
+  gitSubmoduleList: 'git:submodule-list',
   gitWorktreeAdd: 'git:worktree-add',
   gitWorktreeMerge: 'git:worktree-merge',
   gitWorktreeRemove: 'git:worktree-remove',
+  // Branch-dependency / stacked-diff ops (ticket 03). Plain git — no external binary. The
+  // `set/unset-branch-parent` pair adopts git-town's `git-town-branch.<child>.parent` config key
+  // as the topology convention (interoperable with git-town for users who install it); the
+  // sync/propose/ship ops are plain `git rebase` / `gh pr create` / `git merge --ff-only`.
+  gitSetBranchParent: 'git:set-branch-parent',
+  gitUnsetBranchParent: 'git:unset-branch-parent',
+  gitSyncBranch: 'git:sync-branch',
+  gitProposeBranch: 'git:propose-branch',
+  gitShipBranch: 'git:ship-branch',
   gitSetActiveRemote: 'git:set-active-remote',
   shellOpenExternal: 'shell:open-external',
   commitGenerate: 'commit:generate',

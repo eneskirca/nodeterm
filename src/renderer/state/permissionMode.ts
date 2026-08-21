@@ -83,10 +83,12 @@ function autoSupportedFor(project: Project | undefined): boolean {
 }
 
 /**
- * The permission mode a session launched RIGHT NOW actually starts in: the active project's
- * override, else the global setting — with `auto` degraded to `manual` (no flag → bare command)
- * when the CLI that will run it is too old to know the value (Claude Code < 2.1.71, which exits 1
- * on it) or hasn't been probed yet. The other four modes are never touched by the gate.
+ * The permission mode a session launched RIGHT NOW actually starts in — resolved against an
+ * EXPLICIT project rather than the active one. The body `activePermissionMode` always had, split
+ * out so a launch into a NON-active project (canvas-control `open-agent --project <B>`, ticket 05)
+ * resolves B's override + the `auto` version gate against B — not against the canvas the user is
+ * currently looking at. B may be an SSH project, in which case `autoSupportedFor` reads B's remote
+ * probe answer (`useSshConn`), exactly as it would for an active SSH project.
  *
  * `agentId` defaults to `'claude'`, so every call site written before a second agent had a
  * permission mode keeps its exact behavior.
@@ -94,11 +96,6 @@ function autoSupportedFor(project: Project | undefined): boolean {
  * Lives in its own module rather than in workspace.ts because projects.ts imports workspace.ts
  * (createProject) — importing the projects store from workspace.ts would close that cycle.
  */
-export function activePermissionMode(agentId: AgentId = 'claude'): AgentPermissionMode {
-  const { getProject, activeProjectId } = useProjects.getState()
-  return projectPermissionMode(getProject(activeProjectId), agentId)
-}
-
 /**
  * The same resolution for an EXPLICIT project — the `--project`-targeted opens (issue #338) need
  * the TARGET project's override + gate, not the active one's: a node opened into another project
@@ -117,6 +114,20 @@ export function projectPermissionMode(
   // or absent entirely. An agent that needs its own gate adds it here, beside this one, rather than
   // inheriting claude's.
   return agentId === 'claude' ? gatePermissionMode(mode, autoSupportedFor(project)) : mode
+}
+
+/**
+ * The permission mode a session launched RIGHT NOW actually starts in: the active project's
+ * override, else the global setting — with `auto` degraded to `manual` (no flag → bare command)
+ * when the CLI that will run it is too old to know the value (Claude Code < 2.1.71, which exits 1
+ * on it) or hasn't been probed yet. The other four modes are never touched by the gate.
+ *
+ * Thin wrapper over `projectPermissionMode` that resolves the active project; the two share one
+ * body so a launch into a background project and a launch into the active one can never diverge.
+ */
+export function activePermissionMode(agentId: AgentId = 'claude'): AgentPermissionMode {
+  const { getProject, activeProjectId } = useProjects.getState()
+  return projectPermissionMode(getProject(activeProjectId), agentId)
 }
 
 /** How long a launch on an SSH project may wait for the REMOTE probe's first answer. The probe

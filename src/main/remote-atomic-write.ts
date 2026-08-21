@@ -55,7 +55,12 @@ export function remoteAtomicWrite(
   const parent = options.makeParent === false
     ? ''
     : `mkdir -p -- ${quoteRemotePath(parentPath)} && `
-  const protect = options.chmod600 ? ` && chmod 600 -- ${temporary}` : ''
+  // `chmod` on BSD (macOS) does NOT recognize `--` as an option terminator (a GNU coreutils
+  // convention) — `chmod 600 -- '<path>'` tries to stat a file literally named `--` and fails.
+  // `mv`/`rm` below keep their `--` because BOTH BSD and GNU accept it there; only `chmod` is the
+  // odd one out. The temp leaf is always `.nodeterm-<uuid>.tmp` (dot-prefixed, never option-like),
+  // so `chmod 600 <temp>` needs no terminator.
+  const protect = options.chmod600 ? ` && chmod 600 ${temporary}` : ''
   const command =
     `${prefix}${parent}{ cat > ${temporary}${protect} && mv -f -- ${temporary} ${target}; ` +
     `nt_status=$?; ` +

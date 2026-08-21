@@ -402,6 +402,39 @@ export function createdAgentId(
   return tags.includes('claude') ? 'claude' : undefined
 }
 
+/**
+ * The persisted builtin harness for a node's CURRENT agent association.
+ *
+ * New nodes store `agentBaseId` directly, so this read does not depend on the custom-agent
+ * registry. The registry remains only a migration fallback for nodes saved before the field
+ * existed. Builtins resolve to themselves, which gives legacy builtin nodes the same answer
+ * without requiring a rewrite merely to keep working.
+ */
+export function createdAgentBaseId(
+  data: { agentId?: unknown; agentBaseId?: unknown; tags?: unknown } | undefined
+): BuiltinAgentId | undefined {
+  if (!data) return undefined
+  const id = createdAgentId(data)
+  if (!id) return undefined
+  // A builtin's harness is definitionally itself. This also makes a stale/malformed persisted
+  // pair fail closed instead of letting `{ agentId: 'codex', agentBaseId: 'claude' }` light the
+  // wrong controls. The snapshot is meaningful only for a custom id.
+  if (BUILTIN_AGENT_IDS.includes(id as BuiltinAgentId)) return id as BuiltinAgentId
+  if (
+    typeof data.agentBaseId === 'string' &&
+    BUILTIN_AGENT_IDS.includes(data.agentBaseId as BuiltinAgentId)
+  )
+    return data.agentBaseId as BuiltinAgentId
+  return baseAgentOf(id)
+}
+
+/** The agent id whose protocol/capabilities this node currently uses. */
+export function createdAgentHarnessId(
+  data: { agentId?: unknown; agentBaseId?: unknown; tags?: unknown } | undefined
+): AgentId | undefined {
+  return createdAgentBaseId(data) ?? createdAgentId(data)
+}
+
 // Session ids are interpolated into a shell command line (written into the live shell on a
 // cold restart), so accept only the safe charset agents actually use (UUIDs etc.) — never a
 // flag-like or metacharacter-bearing value.

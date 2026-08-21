@@ -52,12 +52,14 @@ import {
   type CapabilityAckMap
 } from '../core/project-capability-consent'
 import type { ProjectCapability } from '../shared/project-capabilities'
+import { createdAgentHarnessId } from '../shared/agents/config'
 
 /** The little the service needs to know about a stored node. */
 export interface MessagingStoredNode {
   id: string
   title?: string
   agentId?: string
+  agentBaseId?: string
 }
 
 /**
@@ -494,7 +496,7 @@ export async function runDelivery(
   // The spawn-time default (`options.agentId ?? 'claude'`), mirrored: a plain terminal node got
   // the claude hook env at spawn, so its pane is judged against claude's binaries — and a bare
   // shell in it still refuses as `targetNotAgentPane`.
-  const targetAgentId = targetNode?.agentId ?? 'claude'
+  const targetAgentId = createdAgentHarnessId(targetNode) ?? 'claude'
 
   const delivery: DeliveryDeps = {
     paneOwner: (id) => deps.paneOwner(id),

@@ -30,7 +30,9 @@ const sessionRename = read('lib/sessionRename.ts')
 describe('session-name title gates', () => {
   it('the node-title poll is gated on the READ capability', () => {
     // The effect that adopts the agent's own session name into data.title.
-    expect(terminalNode).toContain('const canReadTitleNode = !!agentId && canReadTitle(agentId)')
+    expect(terminalNode).toContain(
+      'const canReadTitleNode = !!agentHarnessId && canReadTitle(agentHarnessId)'
+    )
     expect(terminalNode).toContain('if (!canReadTitleNode || data.titleAuto === false) return')
     // The pre-split gate must be gone from that effect — with it, a gemini node never polls.
     expect(terminalNode).not.toContain('if (!canRenameNode || data.titleAuto === false) return')
@@ -93,8 +95,8 @@ describe('session-name title gates', () => {
 })
 
 /**
- * The claude-transcript gates: `claudeTranscript` (`readsClaudeTranscript(agentId)`), NOT `showUsage`
- * (`hasUsage(agentId)`).
+ * The claude-transcript gates: `claudeTranscript` (`readsClaudeTranscript(agentHarnessId)`), NOT
+ * `showUsage` (`hasUsage(agentHarnessId)`).
  *
  * `USAGE_CAPABLE` grew to claude + codex + gemini, so `showUsage` is now true for three agents while
  * only ONE of them has a claude transcript. Both readers behind these gates resolve a session id
@@ -115,8 +117,12 @@ describe('claude-transcript gates', () => {
 
   it('is derived from the agent, not from the meter', () => {
     // The fact itself, kept separate from `showUsage` one line above it.
-    expect(terminalNode).toContain('const claudeTranscript = readsClaudeTranscript(agentId)')
-    expect(terminalNode).toContain('const showUsage = !!agentId && hasUsage(agentId)')
+    expect(terminalNode).toContain(
+      'const claudeTranscript = readsClaudeTranscript(agentHarnessId)'
+    )
+    expect(terminalNode).toContain(
+      'const showUsage = !!agentHarnessId && hasUsage(agentHarnessId)'
+    )
   })
 
   it('gates the mount-time meter rehydration (`context.ensure`)', () => {
