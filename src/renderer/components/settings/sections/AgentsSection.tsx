@@ -67,6 +67,22 @@ const ROWS = {
       'opencode'
     ]
   },
+  vanillaLaunch: {
+    title: 'Launch on subscription',
+    keywords: [
+      'subscription',
+      'vanilla',
+      'gateway',
+      'provider',
+      'default',
+      'anthropic',
+      'openai',
+      'copilot',
+      'env',
+      'credentials',
+      'clear env'
+    ]
+  },
   permissionMode: {
     title: 'Permission mode',
     keywords: [
@@ -357,6 +373,19 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
             </div>
           ))}
         </div>
+      </SearchableRow>
+      <SearchableRow {...ROWS.vanillaLaunch}>
+        <FieldRow
+          label="Launch on subscription"
+          description="Spawn every fresh agent session with gateway and inherited provider env stripped, so it runs against its OWN default provider — Claude's subscription, Copilot's GitHub routing — instead of a configured model gateway or a LaunchAgent-set override. The per-node “Restart on subscription” action does the same for one node; this is its global counterpart. The managed-account config dir is kept, so account isolation survives. Off by default — it changes which provider every agent node uses."
+          control={
+            <Switch
+              checked={settings.vanillaLaunchDefault}
+              ariaLabel="Launch on subscription by default"
+              onChange={(on) => update({ vanillaLaunchDefault: on })}
+            />
+          }
+        />
       </SearchableRow>
       <SearchableRow {...ROWS.permissionMode}>
         <FieldRow
