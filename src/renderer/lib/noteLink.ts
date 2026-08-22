@@ -2,7 +2,7 @@
 // agent nodes vs. note link between a sticky and a terminal), build the one-shot push
 // message a note link injects into an agent session, and re-export the link-map builders.
 // Kept free of React/store imports so the connection matrix is unit-testable.
-import type { BridgeLink } from '@shared/types'
+import type { Link } from '@shared/types'
 import { oneLine } from '@shared/one-line'
 
 export interface LinkEndpoint {
@@ -23,6 +23,55 @@ export function classifyLink(a: LinkEndpoint, b: LinkEndpoint): LinkKind | null 
   return other.kind === 'terminal' ? 'note' : null
 }
 
+/**
+ * Project a {@link Link} down to the `{ id, source, target }` node-id pair the renderer's edge
+ * state + the rope-cover helpers reason in. Returns `null` for a link whose endpoints are not BOTH
+ * `ref:'node'` (an `xnode` cross-project target or a `branch` dependency endpoint) — such a link
+ * has no on-canvas node pair to draw or to share a rope with. On-canvas context/lineage links are
+ * always node↔node today; the null branch is the seam tickets 03/04/05 extend through.
+ */
+export function nodeEndpoints(link: Link): { id: string; source: string; target: string } | null {
+  if (link.source.ref !== 'node' || link.target.ref !== 'node') return null
+  return { id: link.id, source: link.source.nodeId, target: link.target.nodeId }
+}
+
+/** Build a `kind:'context'` node↔node link with a stable id (the `bridge-` prefix is kept for
+ *  back-compat with any persisted id a migrated file already carries). */
+export function contextLink(source: string, target: string, note?: string): Link {
+  return {
+    id: `bridge-${source}-${target}`,
+    kind: 'context',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target },
+    ...(note != null ? { meta: { note } } : {})
+  }
+}
+
+/** Build a `kind:'lineage'` (display-only rope) node↔node link with a `ctrl-` id. */
+export function lineageLink(source: string, target: string): Link {
+  return {
+    id: `ctrl-${source}-${target}`,
+    kind: 'lineage',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target },
+    meta: { displayOnly: true }
+  }
+}
+
+/** Build a `kind:'dependency'` node↔node link with a `dep-` id. Used by the meta-canvas submodule
+ *  auto-link (ticket 09): a same-canvas `dependency` edge between two `projectRef` group frames.
+ *  Unlike the cross-project/branch dependency links (off-canvas, inspector-only), a node↔node
+ *  dependency is a real on-canvas edge — `linksToRuntime` renders it (amber, dashed) and
+ *  `runtimeToLinks` round-trips it, so it survives the load→commit cycle. */
+export function dependencyLink(source: string, target: string): Link {
+  return {
+    id: `dep-${source}-${target}`,
+    kind: 'dependency',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target }
+  }
+}
+
 /** One node the plan refused to link, with the reason to report back to the caller. */
 export interface SkippedBridge {
   id: string
@@ -30,8 +79,8 @@ export interface SkippedBridge {
 }
 
 export interface BridgePlan {
-  /** Edges to append (already deduped against `existing` AND within the batch). */
-  edges: BridgeLink[]
+  /** Links to append (already deduped against `existing` AND within the batch). */
+  edges: Link[]
   linked: string[]
   skipped: SkippedBridge[]
 }
@@ -46,6 +95,9 @@ export interface BridgePlan {
  * that links nodes it created in the SAME tick cannot resolve them off the canvas yet
  * (setNodes is async), and `existing` is passed in rather than read, so a batch also dedupes
  * against itself and not just against what is already on screen.
+ *
+ * `existing` is a node-pair projection (`{source, target}[]`) of the links already on screen,
+ * not `Link[]` — dedup is endpoint-pair based and a caller holds the projection already.
  */
 export function planBridges(
   fromId: string,
@@ -53,12 +105,12 @@ export function planBridges(
   lookup: (id: string) => LinkEndpoint | null,
   existing: readonly { source: string; target: string }[]
 ): BridgePlan {
-  const edges: BridgeLink[] = []
+  const edges: Link[] = []
   const linked: string[] = []
   const skipped: SkippedBridge[] = []
   const se = lookup(fromId)
   const linkedAlready = (a: string, b: string) =>
-    [...existing, ...edges].some(
+    [...existing, ...edges.map((e) => nodeEndpoints(e)!)].some(
       (e) => (e.source === a && e.target === b) || (e.source === b && e.target === a)
     )
   for (const tid of targetIds) {
@@ -87,7 +139,7 @@ export function planBridges(
       skipped.push({ id: tid, why: 'already linked' })
       continue
     }
-    edges.push({ id: `bridge-${source}-${target}`, source, target })
+    edges.push(contextLink(source, target))
     linked.push(tid)
   }
   return { edges, linked, skipped }
@@ -191,5 +243,6 @@ export function buildContextLinkNote(
 export {
   buildLinkMap,
   buildBackgroundLinkMaps,
+  mergeContextLinkMaps,
   type LinkNodeInfo
 } from '@shared/context-link-map'

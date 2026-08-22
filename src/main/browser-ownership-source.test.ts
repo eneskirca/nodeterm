@@ -6,8 +6,8 @@ import { projectToFile, fileToProject, serializeProjectFile } from '../core/work
 import type { Project } from '@shared/types'
 
 // Ownership of an agent-opened browser node is decided ONLY by the in-memory ledger a `verified`
-// open-browser filled THIS app run. It is NEVER read from `Project.ropes`, which is documented
-// display-only but IS persisted and git-shared — so a cloned project.json can ship the exact lineage
+// open-browser filled THIS app run. It is NEVER read from `Project.links`, whose `lineage` entries
+// are display-only but ARE persisted and git-shared — so a cloned project.json can ship the exact lineage
 // (`claude-1 -> browser-1`) an ownership check that trusted ropes would grant on.
 
 function projectWithHostileRope(): Project {
@@ -21,16 +21,22 @@ function projectWithHostileRope(): Project {
       { id: 'claude-1', kind: 'terminal', title: 'A', position: { x: 0, y: 0 }, agentId: 'claude' },
       { id: 'browser-1', kind: 'browser', title: 'B', position: { x: 0, y: 300 }, url: 'https://x.test/' }
     ] as unknown as Project['nodes'],
-    // The attack: a pre-declared rope that says claude-1 opened browser-1.
-    ropes: [{ id: 'r1', source: 'claude-1', target: 'browser-1' }]
+    // The attack: a pre-declared lineage link that says claude-1 opened browser-1.
+    links: [{
+      id: 'r1',
+      kind: 'lineage',
+      source: { ref: 'node', nodeId: 'claude-1' },
+      target: { ref: 'node', nodeId: 'browser-1' },
+      meta: { displayOnly: true }
+    }]
   } as Project
 }
 
-describe('ownership is never read out of Project.ropes — behavioural', () => {
+describe('ownership is never read out of Project.links — behavioural', () => {
   it('a pre-declared rope grants nothing on a freshly loaded project (empty ledger)', () => {
     const project = projectWithHostileRope()
     // The rope really is present — this is a genuine, persisted attack input, not a strawman.
-    expect(project.ropes).toEqual([{ id: 'r1', source: 'claude-1', target: 'browser-1' }])
+    expect(project.links).toHaveLength(1)
 
     // The ledger every run starts empty; nothing claimed browser-1 this run.
     const ledger = new BrowserControlLedger()
@@ -47,7 +53,7 @@ describe('ownership is never read out of Project.ropes — behavioural', () => {
     const reparsed = JSON.parse(serializeProjectFile(file))
     const reloaded = fileToProject(reparsed, { id: project.id, cwd: project.cwd })
 
-    expect(reloaded.ropes).toEqual([{ id: 'r1', source: 'claude-1', target: 'browser-1' }])
+    expect(reloaded.links).toEqual(project.links)
 
     const ledger = new BrowserControlLedger()
     expect(ledger.get('browser-1', 'claude-1')).toBe(null)
@@ -73,10 +79,10 @@ describe('ownership is never read out of Project.ropes — behavioural', () => {
  * "the rope already says who opened it" is a genuinely tempting one-liner. Same enforcement style
  * as hook-verified-parity.test.ts.
  */
-describe('ownership is never read out of Project.ropes — structural', () => {
+describe('ownership is never read out of Project.links — structural', () => {
   const root = path.resolve(__dirname, '..', '..')
 
-  /** Strip block + line comments only (NOT string literals — `project['ropes']` is a real read and
+  /** Strip block + line comments only (NOT string literals — `project['links']` is a real read and
    *  must still trip the check). The ledger's own doc comment explains why ropes is refused; that
    *  explanation lives in a comment and is correctly removed here. */
   function stripComments(src: string): string {
@@ -110,9 +116,9 @@ describe('ownership is never read out of Project.ropes — structural', () => {
     return out
   }
 
-  it('no ownership-surface source references the identifier `ropes`', () => {
+  it('no ownership-surface source reads a persisted `links` field', () => {
     for (const { name, code } of browserSurfaceSources()) {
-      expect(/\bropes\b/.test(stripComments(code)), `${name} must not read ropes`).toBe(false)
+      expect(/(?:\.links\b|\[['"]links['"]\])/.test(stripComments(code)), `${name} must not read links`).toBe(false)
     }
   })
 })

@@ -136,6 +136,28 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('close-worktree')).toBe(false)
   })
 
+  it('link-branches and sync-stack require their branch arguments; neither is confirm-gated here', () => {
+    expect(parseControlRequest('link-branches', {})).toEqual({
+      error: 'link-branches requires --base <parent branch>'
+    })
+    expect(parseControlRequest('link-branches', { base: 'feat-a' })).toEqual({
+      error: 'link-branches requires --branch <child branch>'
+    })
+    expect(parseControlRequest('link-branches', { base: 'feat-a', branch: 'feat-b' })).toEqual({
+      verb: 'link-branches',
+      args: { base: 'feat-a', branch: 'feat-b' }
+    })
+    expect(parseControlRequest('sync-stack', {})).toEqual({
+      error: 'sync-stack requires --branch <child branch>'
+    })
+    expect(parseControlRequest('sync-stack', { branch: 'feat-b' })).toEqual({
+      verb: 'sync-stack',
+      args: { branch: 'feat-b' }
+    })
+    expect(isDestructiveVerb('link-branches')).toBe(false)
+    expect(isDestructiveVerb('sync-stack')).toBe(false)
+  })
+
   it('branch requires --node, and is not destructive', () => {
     expect(parseControlRequest('branch', {})).toEqual({ error: 'branch requires --node <id>' })
     expect(parseControlRequest('branch', { node: 'n1' })).toEqual({
@@ -262,6 +284,29 @@ describe('parseControlRequest', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       expect(body).toContain('`sticky --node')
       expect(body).toContain('--create')
+    }
+  })
+
+  it('both agent-facing texts document the --project flag on open-agent/open-claude (ticket 05)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // --project opens the session in a DIFFERENT project the caller has already opened (review
+      // #363 superseded the earlier "projection" model: a returned id cold-opens in the other
+      // project — the session starts when the user next views it — and never switches the user's
+      // view; the caller's OWN id behaves as if the flag were omitted). The skill must tell agents
+      // the node lives in the OTHER project (owns the session) and that an unknown --project is
+      // refused, not a silent local fallback — the requireRemote precedent. An orchestrating agent
+      // that reads "unknown = local" would open in the wrong repo. `--project` rides on a
+      // continuation line under the open verbs (not the verb line itself), so the assertion checks
+      // the flag + its key facts, not a same-line regex.
+      expect(body).toContain('--project')
+      expect(body).toContain('`--project <id>`')
+      expect(body).toContain('any other id is refused')
+      // The cold-open model replaced the projection model; the old word must be gone.
+      expect(body.toLowerCase()).not.toContain('projection')
+      expect(body.toLowerCase()).toContain('refused')
+      // The open verbs themselves must still be documented (the flag hangs off them).
+      expect(body).toMatch(/open-agent/)
+      expect(body).toMatch(/open-claude/)
     }
   })
 
@@ -493,8 +538,7 @@ describe('open-project + --project docs land with the dispatch (issue #338, spec
     for (const [name, body] of bodies) {
       expect(body, name).toContain('one project per repository')
       expect(body, name).toContain('open-project --cwd <repo>')
-      // v1 has no cross-project links; the workaround is named.
-      expect(body, name).toMatch(/reader agent inside that project/)
+      expect(body, name).toMatch(/context link between sessions in different\s+projects/)
     }
   })
 })

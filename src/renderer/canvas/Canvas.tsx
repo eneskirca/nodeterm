@@ -12,6 +12,7 @@ import {
   MiniMap,
   ReactFlow,
   SelectionMode,
+  ViewportPortal,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -69,7 +70,8 @@ import {
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
 import { StickyNode } from '../nodes/StickyNode'
-import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
+import { GroupNode, setWorktreeActionHandler, setDrillHandler } from '../nodes/GroupNode'
+import { setTravelNodeHandler } from '../nodes/travel-handler'
 import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
 import { DinoNode } from '../nodes/DinoNode'
 import BrowserNode from '../nodes/BrowserNode'
@@ -110,7 +112,8 @@ import {
   IconTerminal,
   IconTrash,
   IconUngroup,
-  IconUnlock
+  IconUnlock,
+  IconLink
 } from '../components/icons'
 import type { SettingsSectionId } from '../components/settings/nav'
 import { projectSectionId } from '../components/settings/project-settings-targets'
@@ -152,6 +155,7 @@ import { viewportAtZoom1 } from '../lib/zoomReset'
 import { isSpaceRelease, spacePanKeydown } from '../lib/spacePan'
 import { UpdateCard } from '../components/UpdateCard'
 import { AnnouncementBanner } from '../components/AnnouncementBanner'
+import { DrillBreadcrumb } from '../components/DrillBreadcrumb'
 import { TmuxBanner } from '../components/TmuxBanner'
 import { PtyPressureBanner } from '../components/PtyPressureBanner'
 import { ShortcutCaptureBanner } from '../components/ShortcutCaptureBanner'
@@ -166,6 +170,9 @@ import { UpgradeDialog } from '../components/UpgradeDialog'
 import { RemotePicker } from '../components/RemotePicker'
 import { WorktreeDialog } from '../components/WorktreeDialog'
 import { SpawnTeamDialog } from '../components/SpawnTeamDialog'
+import { LinkTargetPicker } from '../components/links/LinkTargetPicker'
+import { LinkInspectorPanel } from '../components/links/LinkInspectorPanel'
+import { setLinkCommitHandler } from '../components/links/link-commit'
 import { conductorPrompt } from '../lib/spawnTeamPrompt'
 import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
@@ -275,6 +282,7 @@ import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
 import { SubagentNode } from '../nodes/SubagentNode'
 import { LoopNode } from '../nodes/LoopNode'
+import { XProjectNode } from '../nodes/XProjectNode'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
 import {
   computeWorktreePath,
@@ -342,8 +350,10 @@ import {
   reconnectRelayTab,
   type RelayTab,
 } from '../session/relay-tab'
-import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, hiddenLinkIds, linkIdsCoveredByRopes, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
+import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, contextLink, dependencyLink, hiddenLinkIds, lineageLink, linkIdsCoveredByRopes, mergeContextLinkMaps, nodeEndpoints, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
+import { offCanvasLinkColor, applyDependencyLink, newLinkId, depHostEdges, isCrossProjectDependencyLink } from '../lib/link-authoring'
 import { dependencyEdges, launchesToFire, unmetDeps, type ArmedNode } from '../lib/pendingLaunch'
+import { existingDependencyLinkKeys, planSubmoduleLinks, type SubmoduleProjectSuggestion } from '../lib/submoduleLink'
 import { freeSpot } from '../lib/placement'
 import { pushSessionRename } from '../lib/sessionRename'
 import { oneLine } from '@shared/one-line'
@@ -360,6 +370,8 @@ import type { SshServer } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
 import type {
   CanvasNodeState,
+  Endpoint,
+  Link,
   NodeKind,
   Project,
   ProjectKanban,
@@ -433,7 +445,10 @@ import {
   accountsForProject,
   sshAccountsHint,
   ungroupNodes,
-  type CanvasNode
+  type CanvasNode,
+  type DrillContext,
+  drillGroupChildren,
+  remergeDrilledNodes
 } from '../state/workspace'
 import { codexAccountSelectable, codexAccountSwitchStillEligible } from './codex-account-switch'
 import { resolveNewCodexNodeAccount, planCodexAccountSwitch } from './codex-account-ops'
@@ -613,6 +628,142 @@ const ropeEdge = (id: string, source: string, target: string, color: string): Ed
   markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }
 })
 
+/** A persisted `kind:'dependency'` node↔node link rendered as an on-canvas edge — amber, dashed,
+ *  directional (child → parent). The meta-canvas submodule auto-link (ticket 09) draws these
+ *  between two `projectRef` group frames. Mirrors `ropeEdge`'s shape (flow handles, arrowhead). */
+const DEP_EDGE_COLOR = '#f59e0b'
+const depEdge = (id: string, source: string, target: string): Edge => ({
+  id,
+  source,
+  sourceHandle: 'link-out',
+  target,
+  targetHandle: 'link-in',
+  type: 'default',
+  label: 'dep',
+  labelStyle: { fill: DEP_EDGE_COLOR, fontSize: 11, fontWeight: 600 },
+  labelBgStyle: { fill: '#1c1c1e', fillOpacity: 0.85 },
+  labelBgPadding: [6, 3] as [number, number],
+  labelBgBorderRadius: 5,
+  style: { stroke: DEP_EDGE_COLOR, strokeWidth: 1.5, strokeDasharray: '5 4' },
+  markerEnd: { type: MarkerType.ArrowClosed, color: DEP_EDGE_COLOR, width: 14, height: 14 }
+})
+
+/**
+ * Split the persisted `Link[]` into the three runtime edge arrays the canvas holds:
+ *  - `context` node↔node links → `linkEdges` (context + note links, the read-back substrate).
+ *  - `lineage` node↔node links → `controlEdges` (display-only ropes), colored by the source
+ *    agent's config color (falls back to the browser blue), exactly as the old `project.ropes`
+ *    restore did.
+ * `dependency`/`xnode`/`branch` links have no on-canvas node pair and are dropped here (they are
+ * not authored on-canvas yet — ticket 06) — the same lazy-prune the old endpoint-validity filter did.
+ */
+function linksToRuntime(
+  links: readonly Link[] | undefined,
+  agentColorOf: (agentId: string) => string,
+  nodeAgentOf: (nodeId: string) => string | undefined
+): { context: Edge[]; lineage: Edge[]; dependency: Edge[] } {
+  const context: Edge[] = []
+  const lineage: Edge[] = []
+  const dependency: Edge[] = []
+  for (const l of links ?? []) {
+    const pair = nodeEndpoints(l)
+    if (!pair) continue // xnode/branch — no on-canvas node pair
+    if (l.kind === 'context') {
+      context.push({ id: pair.id, source: pair.source, target: pair.target, type: 'default' })
+    } else if (l.kind === 'lineage') {
+      const color = agentColorOf(nodeAgentOf(pair.source) ?? '') ?? '#0a84ff'
+      lineage.push(ropeEdge(pair.id, pair.source, pair.target, color))
+    } else if (l.kind === 'dependency') {
+      // A same-project node↔node dependency (the meta-canvas submodule auto-link, 09) is a real
+      // on-canvas edge. Cross-project/branch dependency links have a non-`node` endpoint and were
+      // already skipped by `nodeEndpoints` above — they stay off-canvas (inspector/xlink), untouched.
+      dependency.push(depEdge(pair.id, pair.source, pair.target))
+    }
+  }
+  return { context, lineage, dependency }
+}
+
+/** Merge the two runtime edge arrays back into the persisted `Link[]`. Context edges become
+ *  `kind:'context'` (a sticky→terminal note link is already `context` — its text lives on the
+ *  sticky node, not the link); lineage ropes become `kind:'lineage'` with `meta.displayOnly`;
+ * dependency edges become `kind:'dependency'` (the meta-canvas auto-link, 09). */
+function runtimeToLinks(
+  context: readonly Edge[],
+  lineage: readonly Edge[],
+  dependency: readonly Edge[]
+): Link[] | undefined {
+  const out: Link[] = []
+  for (const e of context) {
+    if (e.source && e.target) out.push(contextLink(e.source, e.target))
+  }
+  for (const e of lineage) {
+    if (e.source && e.target) out.push(lineageLink(e.source, e.target))
+  }
+  for (const e of dependency) {
+    if (e.source && e.target) out.push(dependencyLink(e.source, e.target))
+  }
+  return out.length ? out : undefined
+}
+
+/**
+ * Compose the persisted `Link[]` from BOTH the on-canvas runtime edge arrays (the
+ * `runtimeToLinks` projection — all node↔node `context`/`lineage`/`dependency`) AND the off-canvas
+ * links the projection cannot represent (`xnode`/`branch` and any link with a non-node endpoint).
+ * The two sets are disjoint by construction: every on-canvas edge is a node↔node pair, every
+ * off-canvas link is not, so no dedup is needed. This is what makes the load → commit round-trip
+ * LOSSLESS for off-canvas links — `runtimeToLinks` alone rebuilds a `Link[]` from only the runtime
+ * arrays and silently drops everything in `offCanvas`.
+ */
+function mergeLinks(
+  context: readonly Edge[],
+  lineage: readonly Edge[],
+  dependency: readonly Edge[],
+  offCanvas: readonly Link[]
+): Link[] | undefined {
+  const onCanvas = runtimeToLinks(context, lineage, dependency) ?? []
+  const out = offCanvas.length ? [...onCanvas, ...offCanvas] : onCanvas
+  return out.length ? out : undefined
+}
+
+/** Stable string key for an `Endpoint` — used by `linkSig` to hash the active project's links into
+ *  a primitive so `displayEdges` re-derives `xlink-` edges only when the off-canvas set changes. */
+function epKey(ep: Endpoint): string {
+  if (ep.ref === 'node') return `n:${ep.nodeId}`
+  if (ep.ref === 'xnode') return `x:${ep.projectId}:${ep.nodeId}`
+  return `b:${ep.repoPath}:${ep.branch}`
+}
+
+/** FNV-ish string hash → int32. Used only to fold link signatures into one reactive primitive. */
+function hashStr(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return h
+}
+
+/** The on-canvas node id a derived `xlink-` edge dangles from — the `node` endpoint that resolves
+ *  to a live node on the active canvas. Returns '' if neither side is a live node (the caller's
+ *  filter already guarantees one is, but TS can't track that across `.filter`). */
+function liveNodeOf(l: Link, liveIds: Set<string>): string {
+  if (l.source.ref === 'node' && liveIds.has(l.source.nodeId)) return l.source.nodeId
+  if (l.target.ref === 'node' && liveIds.has(l.target.nodeId)) return l.target.nodeId
+  return ''
+}
+
+/** Short label for a derived `xlink-` edge — names the OFF-canvas side (the on-canvas side is the
+ *  node the edge dangles from). A branch → "repo · branch"; an xnode → "Project · node" (resolved
+ *  from the projects store by the caller is overkill for a label — the branch/tag is the signal). */
+function xlinkLabel(l: Link): string {
+  const off =
+    l.source.ref !== 'node' ? l.source : l.target.ref !== 'node' ? l.target : null
+  if (!off) return l.kind === 'dependency' ? 'depends on' : l.kind === 'lineage' ? 'spawned by' : 'linked'
+  if (off.ref === 'branch') {
+    const repo = off.repoPath.split('/').filter(Boolean).pop() ?? off.repoPath
+    return `${repo} · ${off.branch}`
+  }
+  if (off.ref === 'xnode') return `→ ${off.projectId.slice(0, 6)}`
+  return l.kind
+}
+
 
 const minimapNodeColor = (n: Node): string =>
   (n.data as { color?: string })?.color ?? '#0a84ff'
@@ -741,6 +892,25 @@ export function Canvas() {
   const [controlEdges, setControlEdges] = useState<Edge[]>([])
   const controlEdgesRef = useRef<Edge[]>([])
   controlEdgesRef.current = controlEdges
+  // Same-project `node`↔`node` `dependency` links rendered as a visible amber dashed edge (the
+  // meta-canvas submodule auto-link, ticket 09). Parallel to `linkEdges` (context) / `controlEdges`
+  // (lineage): `linksToRuntime` emits these, `runtimeToLinks` round-trips them, `mergeLinks` folds
+  // them back into `Project.links`. Named `depLinkEdges` (NOT `depEdges`/`dependencyEdges` — those
+  // are the pending-launch `--after` edges from `lib/pendingLaunch`, a different concept). Off-canvas
+  // `dependency` links (xnode/branch endpoints) have `nodeEndpoints===null` so they land in
+  // `offCanvasLinksRef` and are never drawn — this array holds only the on-canvas node↔node ones.
+  const [depLinkEdges, setDepLinkEdges] = useState<Edge[]>([])
+  const depLinkEdgesRef = useRef<Edge[]>([])
+  depLinkEdgesRef.current = depLinkEdges
+  // Off-canvas links for the active project: those whose endpoints are NOT both `ref:'node'`
+  // (xnode cross-project, branch cross-repo, and `dependency`/`lineage` over non-node pairs) —
+  // i.e. exactly the links `linksToRuntime` DROPS (nodeEndpoints returns null) and so cannot
+  // survive the load → commit round-trip on their own. `runtimeToLinks` rebuilds a `Link[]` from
+  // only the two runtime edge arrays (all node↔node), so without this ref an off-canvas link
+  // written to Project.links is destroyed on the next autosave. Populate on load (the same
+  // `linksToRuntime` call site); `mergeLinks` folds it back in at commit. These links are
+  // disjoint from the on-canvas set by construction, so no dedup is needed.
+  const offCanvasLinksRef = useRef<Link[]>([])
   const [dirty, setDirty] = useState(false)
   // Bumped only when a save finished with `dirty` still set (an edit raced it). It exists purely to
   // give the debounced-autosave effect a dependency that CHANGES in that case — `dirty` stays true
@@ -1000,6 +1170,12 @@ export function Canvas() {
   // dialog opens (a branch created in a terminal since the last store refresh should still show), so
   // it is dialog-local state rather than a store fact.
   const [worktreeBranches, setWorktreeBranches] = useState<string[]>([])
+  // Off-canvas link authoring (ticket 06): the node a LinkTargetPicker / LinkInspectorPanel is open
+  // for. `linkPickerNode` opens the picker (author any-kind link off-canvas); `linkInspectorNode`
+  // opens the inspector (list/delete). Both write through `commitLinks`. The node id alone is enough
+  // — its project is resolved from the projects store at open time.
+  const [linkPickerNode, setLinkPickerNode] = useState<string | null>(null)
+  const [linkInspectorNode, setLinkInspectorNode] = useState<string | null>(null)
   // The store is filled asynchronously by the active-project effect, so the dialog subscribes
   // (rather than reading getState() once) — the repo may resolve after it's already open.
   const worktreeRepoRoot = useWorktrees((s) => s.repoRoot)
@@ -1111,6 +1287,28 @@ export function Canvas() {
    * the initial empty `useNodesState([])` can never be committed as some project's canvas.
    */
   const nodesProjectIdRef = useRef<string | null>(null)
+  /**
+   * The transient, in-memory DRILL context (ticket 07 — node-group ↔ canvas isomorphism). When set,
+   * `nodesRef`/React Flow hold the drilled SUBSET (a group's direct children promoted to root-space),
+   * not the project's full canvas. Never persisted: a drill is navigation, not a surface. On any
+   * project switch / reload it is cleared (the load effect owns the node-set). `drillChildIdsRef`
+   * records exactly which node ids constitute the drilled view, so `commitActiveToStore` can merge
+   * their edits back into the full project node array (see remergeDrilledNodes) instead of clobbering
+   * every sibling — the logged hazard.
+   */
+  const drillRef = useRef<DrillContext | null>(null)
+  const drillChildIdsRef = useRef<Set<string>>(new Set())
+  /** The parent canvas's viewport, stashed on drill entry so `exitDrill` can restore it (07). */
+  const preDrillViewportRef = useRef<Viewport | null>(null)
+  /** Bumped to force the load effect to re-run for a drill change (it keys on activeProjectId/reloadNonce). */
+  const [drillNonce, setDrillNonce] = useState(0)
+  // Unopened submodules appear as derived ghost project tiles on a meta-canvas. They never enter
+  // React Flow's node array (and therefore can never leak into project.json). Opening one registers
+  // the folder in the background, then re-runs the auto-linker to promote the ghost to a real
+  // projectRef group at the same location.
+  const [submoduleSuggestions, setSubmoduleSuggestions] = useState<SubmoduleProjectSuggestion[]>([])
+  const submoduleSuggestionsRef = useRef<SubmoduleProjectSuggestion[]>([])
+  const [submoduleRefreshNonce, setSubmoduleRefreshNonce] = useState(0)
   // focusNodeById, for callbacks declared ABOVE its definition (openFile's dedupe focuses the
   // already-open node). Assigned right after the definition, same render-mirror idiom as nodesRef.
   const focusNodeRef = useRef<(nodeId: string) => void>(() => {})
@@ -1231,6 +1429,58 @@ export function Canvas() {
   /** The active project runs on a remote host → every worktree affordance is off (see
    *  WORKTREE_SSH_HINT). Reactive, so the menus rebuild when the user switches projects. */
   const isSshProject = !!activeSshServer
+  // Signature of the active project's off-canvas links (the ones `linksToRuntime` drops and
+  // `offCanvasLinksRef` stashes). A primitive so the `displayEdges` memo re-derives the dashed
+  // `xlink-` edges only when the set actually changes — not on every canvas edit (the full
+  // `Project.links` array is rebuilt on each debounced save). Encodes count + a hash of each
+  // link's id+kind+endpoint refs.
+  const linkSig = useProjects((s) => {
+    const links = s.projects.find((p) => p.id === s.activeProjectId)?.links
+    if (!links?.length) return 0
+    let h = links.length
+    for (const l of links) {
+      h = (h * 31 + hashStr(l.id)) | 0
+      h = (h * 31 + l.kind.charCodeAt(0)) | 0
+      h = (h * 31 + hashStr(epKey(l.source))) | 0
+      h = (h * 31 + hashStr(epKey(l.target))) | 0
+    }
+    return h
+  })
+  // Signature of the active project's cross-project LINEAGE links (kind:'lineage', target
+  // ref:'xnode') — the ones a projection node derives from (ticket 05). A primitive so the
+  // `ephemeralNodes` memo re-derives the `xproj-` nodes only when that set changes, not on every
+  // canvas edit. Encodes count + a hash of each link's id + source node + target (projectId,nodeId).
+  const lineageXnodeSig = useProjects((s) => {
+    const links = s.projects.find((p) => p.id === s.activeProjectId)?.links
+    if (!links?.length) return 0
+    let h = 0
+    for (const l of links) {
+      if (l.kind !== 'lineage' || l.target.ref !== 'xnode') continue
+      h = (h * 31 + hashStr(l.id)) | 0
+      h = (h * 31 + hashStr(epKey(l.source))) | 0
+      h = (h * 31 + hashStr(epKey(l.target))) | 0
+    }
+    return h
+  })
+  // Signature of every NON-active project's nodes — so a projection re-derives when a foreign
+  // project's node list changes (B gains/loses the node a projection points at, or B's node's
+  // title/cwd/agentId fields shift). Reads the whole store but folds to one primitive, so this
+  // never re-renders the canvas per foreign edit — only the `ephemeralNodes` memo, which already
+  // depends on `nodes`. Active project is excluded (its nodes are `nodes` already).
+  const foreignNodesSig = useProjects((s) => {
+    let h = 0
+    for (const p of s.projects) {
+      if (p.id === s.activeProjectId) continue
+      h = (h * 31 + hashStr(p.id)) | 0
+      for (const n of p.nodes) {
+        h = (h * 31 + hashStr(n.id)) | 0
+        h = (h * 31 + hashStr(n.title)) | 0
+        h = (h * 31 + hashStr(n.cwd ?? '')) | 0
+        h = (h * 31 + hashStr(n.agentId ?? '')) | 0
+      }
+    }
+    return h
+  })
   nodesRef.current = nodes
   /**
    * ONE confirm dialog at a time — mirrored into a ref so the []-dep agent-control effect sees the
@@ -1289,6 +1539,7 @@ export function Canvas() {
       diff: withNodeBoundary(LazyDiffNode),
       subagent: withNodeBoundary(SubagentNode),
       loop: withNodeBoundary(LoopNode),
+      xproject: withNodeBoundary(XProjectNode),
       dino: withNodeBoundary(DinoNode),
       video: withNodeBoundary(VideoNode),
       web: withNodeBoundary(WebNode),
@@ -1417,7 +1668,10 @@ export function Canvas() {
     const claudeById = useAgentStatus.getState().byId // re-read on loopSig change (see above)
     const hasLoops = loopSig !== ''
     const hasAgents = Object.keys(agentById).length > 0
-    if (!hasLoops && !hasAgents) return NO_EPHEMERAL
+    // A cross-project lineage link (ticket 05) also derives an ephemeral projection node, so the
+    // guard must let the memo run when one exists even with no loops/subagents.
+    const hasXproj = lineageXnodeSig !== 0
+    if (!hasLoops && !hasAgents && !hasXproj) return NO_EPHEMERAL
     // Explicit width/height for an ephemeral node (so it resizes like any other node).
     // Defaults switch with expand; a user resize override wins.
     const dims = (id: string, baseW: number, expW: number, baseH: number, expH: number) => {
@@ -1530,9 +1784,71 @@ export function Canvas() {
         })
       })
     }
+    // Cross-project PROJECTIONS (ticket 05): one ephemeral `xproject` node per lineage link whose
+    // target is an `xnode` in ANOTHER project. The projection co-attaches to B's tmux session as a
+    // canvas node (XProjectNode), greyed/dotted with a B badge. Derived from the persisted lineage
+    // link (on A's `Project.links`) + B's serialized `Project.nodes` — nothing extra is persisted
+    // on A. A deleted B node or a missing B project renders nothing here (lazy-prune); the lineage
+    // link survives in the inspector for manual cleanup, exactly like 04's `available:false`.
+    if (hasXproj) {
+      const active = useProjects.getState().activeProjectId
+      const allProjects = useProjects.getState().projects
+      const links =
+        allProjects.find((p) => p.id === active)?.links?.filter(
+          (l) => l.kind === 'lineage' && l.target.ref === 'xnode' && l.source.ref === 'node'
+        ) ?? []
+      for (const l of links) {
+        // Re-narrow inside the loop: `.filter`'s predicate does not narrow the element type, so the
+        // `xnode`/`node` field accesses need their own `ref` guards.
+        if (l.source.ref !== 'node' || l.target.ref !== 'xnode') continue
+        const srcNodeId = l.source.nodeId
+        const bProjectId = l.target.projectId
+        const bNodeId = l.target.nodeId
+        const bProject = allProjects.find((p) => p.id === bProjectId)
+        const bNode = bProject?.nodes.find((n) => n.id === bNodeId)
+        // Lazy-prune: a missing B project or a deleted B node renders no projection. The link
+        // itself is NOT dropped (it lives in the inspector) — only the derived node vanishes.
+        if (!bProject || !bNode) continue
+        const source = nodes.find((n) => n.id === srcNodeId)
+        const projId = `xproj-${bProjectId}-${bNodeId}`
+        const ph = source?.measured?.height ?? (source?.height as number) ?? 400
+        eNodes.push({
+          id: projId,
+          type: 'xproject',
+          // Inherit the source agent's group so the projection sits in the same coordinate space.
+          ...(source?.parentId ? { parentId: source.parentId } : {}),
+          position: offsetFrom(
+            source ? { position: source.position } : { position: { x: 0, y: 0 } },
+            ephemeralPos[projId],
+            { x: 320, y: ph + 60 }
+          ),
+          draggable: true,
+          selectable: false, // a rubber band must not sweep a projection into a real selection
+          selected: ephSelId === projId,
+          width: 480,
+          height: 320,
+          style: { width: 480, height: 320 },
+          data: {
+            title: bNode.title || `${bProject.name} · ${bNode.id.slice(0, 6)}`,
+            color: bProject.color,
+            group: null,
+            xprojSpawn: { bProjectId, bNodeId, bNode, bProject },
+            xprojOriginName: bProject.name
+          }
+        } as unknown as CanvasNode)
+        // Dashed rope from the source agent to its projection, in B's project color.
+        eEdges.push({
+          id: `e-${projId}`,
+          source: srcNodeId,
+          sourceHandle: 'flow-out',
+          target: projId,
+          style: { stroke: bProject.color, strokeWidth: 1.5, strokeDasharray: '6 4' }
+        })
+      }
+    }
     return { ephemeralNodes: eNodes, ephemeralEdges: eEdges }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loopSig stands in for the byId read
-  }, [agentById, loopSig, ephemeralPos, ephSizes, ephExpanded, ephSelId, nodes])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loopSig/lineageXnodeSig/foreignNodesSig stand in for their reads
+  }, [agentById, loopSig, ephemeralPos, ephSizes, ephExpanded, ephSelId, nodes, lineageXnodeSig, foreignNodesSig])
 
   // Merge the persisted nodes with the ephemeral ones once per change (not per render),
   // so React Flow's array-identity short-circuit holds while panning/zooming.
@@ -1665,11 +1981,84 @@ export function Canvas() {
     // durable relation and stays. Built above (depEdges), keyed on the dependency signature so a
     // drag frame does not rebuild it.
     const extra =
-      ephemeralEdges.length || ropes.length || depEdges.length
-        ? [...ephemeralEdges, ...ropes, ...depEdges]
+      ephemeralEdges.length || ropes.length || depEdges.length || depLinkEdges.length
+        ? [...ephemeralEdges, ...ropes, ...depEdges, ...depLinkEdges]
         : []
-    return extra.length ? [...decorated, ...extra] : decorated
-  }, [linkEdges, ephemeralEdges, controlEdges, accent, stickySig, depEdges, drivenLeaseEntries])
+    // Off-canvas links (xnode/branch/dependency) that touch THIS canvas — i.e. whose `node`
+    // endpoint resolves to a live node id here — render as derived dashed `xlink-` edges so they
+    // are visible on-canvas, distinct from hand-drawn bridges. A cross-project link to a node that
+    // is NOT on this canvas draws nothing here (it lives in the inspector only). These are
+    // render-only: no handles a connection can originate from, so `onConnect` never starts on one,
+    // and `onEdgeDoubleClick` ignores `xlink-` ids — the inspector is the delete surface. Re-keyed
+    // on `linkSig` (the active project's link-set signature) so a commit re-derives them.
+    //
+    // EXCEPT a cross-project `dependency` link (ticket 04): A and B share no git, so it owns no
+    // stack topology and no canvas edge — resolve point 3 says it is strictly off-canvas (inspector
+    // only), never a dangling `xlink`. The `liveNodeOf` filter below would otherwise pick it up
+    // (its `source` is a live `node` in A; its `target` is an `xnode` in B). A `lineage` link with
+    // an `xnode` target is ALSO excluded: ticket 05 renders it as a foreign-node PROJECTION (an
+    // ephemeral `xproject` node + a dashed rope in the `ephemeralEdges` pass), not a dangling
+    // self-loop edge, so the two must not double-draw. The exclusion is kind+ref-specific:
+    // `dependency` (any ref) and `lineage`+`xnode` are out; every other lineage/context link still
+    // gets its `xlink-` edge.
+    const liveIds = new Set(nodes.map((n) => n.id))
+    const xlinkEdges = offCanvasLinksRef.current
+      .filter(
+        (l) =>
+          !isCrossProjectDependencyLink(l) &&
+          !(l.kind === 'lineage' && l.target.ref === 'xnode') &&
+          liveNodeOf(l, liveIds) !== ''
+      )
+      .map((l) => {
+        // The on-canvas endpoint is the `node` side; the other side has no node here, so the edge
+        // dangles from the live node toward the (off-canvas) target. Source/target are both the
+        // live node id when only one side resolves (React Flow needs real node ids to draw).
+        const liveNode = liveNodeOf(l, liveIds)
+        return {
+          id: `xlink-${l.id}`,
+          source: liveNode,
+          target: liveNode,
+          sourceHandle: 'link-out',
+          targetHandle: 'link-in',
+          type: 'default',
+          label: xlinkLabel(l),
+          labelStyle: { fill: offCanvasLinkColor(l), fontSize: 11, fontWeight: 600 },
+          labelBgStyle: { fill: '#1c1c1e', fillOpacity: 0.85 },
+          labelBgPadding: [6, 3] as [number, number],
+          labelBgBorderRadius: 5,
+          style: { stroke: offCanvasLinkColor(l), strokeWidth: 1.5, strokeDasharray: '5 4' }
+        }
+      })
+    const withXlink = xlinkEdges.length ? [...extra, ...xlinkEdges] : extra
+    // Two-host dependency edges (ticket 03): a `dependency` link whose both `branch` endpoints are
+    // hosted by worktree group nodes on THIS canvas renders as a real dashed accent edge between the
+    // two group frames (child → parent), not a dangling self-loop. Disjoint from `xlinkEdges` by
+    // construction (those need a `node` endpoint; these have two `branch` endpoints). Derived, not
+    // stored — the join key is each group node's `data.worktree.branch` against the link's branches.
+    const branchToGroupNode = new Map<string, string>()
+    for (const n of nodes) {
+      if (n.type === 'group' && n.data.worktree?.branch) {
+        // First host wins: two worktrees can't share a checked-out branch, so this is unambiguous in
+        // practice, but a stale binding could momentarily double-list — keep the first to stay stable.
+        if (!branchToGroupNode.has(n.data.worktree.branch)) branchToGroupNode.set(n.data.worktree.branch, n.id)
+      }
+    }
+    const branchDepEdges = depHostEdges(offCanvasLinksRef.current, branchToGroupNode).map((d) => ({
+      id: d.id,
+      source: d.source,
+      target: d.target,
+      type: 'default',
+      label: d.label,
+      labelStyle: { fill: '#f59e0b', fontSize: 11, fontWeight: 600 },
+      labelBgStyle: { fill: '#1c1c1e', fillOpacity: 0.85 },
+      labelBgPadding: [6, 3] as [number, number],
+      labelBgBorderRadius: 5,
+      style: { stroke: '#f59e0b', strokeWidth: 1.5, strokeDasharray: '5 4' },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#f59e0b', width: 14, height: 14 }
+    }))
+    const withDep = branchDepEdges.length ? [...withXlink, ...branchDepEdges] : withXlink
+    return withDep.length ? [...decorated, ...withDep] : decorated
+  }, [linkEdges, ephemeralEdges, controlEdges, depLinkEdges, accent, stickySig, depEdges, linkSig, nodes])
 
   // Header pin button (and ⌘⇧L): toggle the persisted pin preference. Clears the transient
   // dismiss so (re)pinning shows the docked panel; unpinning collapses it to hover-peek.
@@ -1906,7 +2295,34 @@ export function Canvas() {
       )
     }
     loadingRef.current = true
-    const flow = nodeStatesToFlow(project.nodes)
+    const fullFlow = nodeStatesToFlow(project.nodes)
+    // Drill (ticket 07): if a drill context is active for THIS project, the active node-set is the
+    // group's direct children promoted to root-space, not the full canvas. The group's own terminals
+    // stay mounted (React Flow keys nodes by id; the terminal lifecycle is keyed on
+    // [respawnNonce, offscreenEpoch], not position/parentId — so repositioning re-runs no lifecycle
+    // effect). Siblings leave the node-set and park via the existing primitive on the reverse leg.
+    const drill = drillRef.current
+    let flow: CanvasNode[]
+    if (drill && drill.projectId === project.id && drill.kind === 'group') {
+      const drilled = drillGroupChildren(fullFlow, drill.groupId)
+      flow = drilled.flow
+      drillChildIdsRef.current = drilled.childIds
+    } else if (drill?.kind === 'project-ref') {
+      // A cross-project drill (09) has NO node-set transformation: the target loads its own full
+      // canvas via the normal path. Keep the drill ALIVE while the target is active (so the breadcrumb
+      // stays and exitDrill can switch back to the source meta-canvas); only null it when a THIRD
+      // project loads — i.e. a manual tab/⌘K switch away from the target. The `project.id === targetId`
+      // guard is exactly that distinction.
+      if (project.id !== drill.targetId) {
+        drillRef.current = null
+        drillChildIdsRef.current = new Set()
+      }
+      flow = fullFlow
+    } else {
+      drillRef.current = null
+      drillChildIdsRef.current = new Set()
+      flow = fullFlow
+    }
     setNodes(flow)
     // React Flow now holds THIS project's canvas: the commit guard may pair it with the active id
     // again. Both refs are assigned HERE, synchronously, because `setNodes` only lands on the next
@@ -1924,15 +2340,21 @@ export function Canvas() {
     if (project.cwd && !project.ssh) {
       void useWorktrees.getState().refresh(project.cwd, boundGroups(flow))
     }
-    setLinkEdges((project.bridges ?? []).map((b) => ({ id: b.id, source: b.source, target: b.target })))
-    // Restore control ropes with the source agent's color (falls back to the browser blue).
-    setControlEdges(
-      (project.ropes ?? []).map((r) => {
-        const srcState = project.nodes.find((n) => n.id === r.source)
-        const color = agentConfig((srcState?.agentId as AgentId) ?? '')?.color ?? '#0a84ff'
-        return ropeEdge(r.id, r.source, r.target, color)
-      })
+    // Restore edges from the unified `links` substrate: `context` → linkEdges (context + note
+    // links, the read-back substrate), `lineage` → controlEdges (display-only ropes) colored by
+    // the source agent's config color (falls back to the browser blue), as the old `ropes` restore
+    // did. `dependency`/`xnode`/`branch` links have no on-canvas node pair and are dropped here —
+    // but they are NOT lost: they are stashed in `offCanvasLinksRef` so `mergeLinks` can fold them
+    // back into the persisted `Link[]` at commit (the round-trip is lossless for off-canvas links).
+    const restored = linksToRuntime(
+      project.links,
+      (id) => agentConfig(id)?.color ?? '#0a84ff',
+      (nodeId) => project.nodes.find((n) => n.id === nodeId)?.agentId as AgentId | undefined
     )
+    setLinkEdges(restored.context)
+    setControlEdges(restored.lineage)
+    setDepLinkEdges(restored.dependency)
+    offCanvasLinksRef.current = (project.links ?? []).filter((l) => nodeEndpoints(l) === null)
     // Reset history for the newly loaded project.
     committedRef.current = flow
     pastRef.current = []
@@ -1942,6 +2364,14 @@ export function Canvas() {
       // In-place reload (external change / SSH reconcile): keep the user's current camera —
       // the file's viewport is where another machine last saved, not where this user looks.
       preserveViewportRef.current = false
+    } else if (drill && drill.projectId === project.id && drill.kind === 'group') {
+      // Drill (07): the sub-canvas gets a DERIVED viewport — frame the drilled node-set. The parent
+      // canvas's last viewport was stashed on drill entry (preDrillViewportRef) and restored on exit.
+      // A drill has no persisted viewport of its own (and shouldn't — drilling is navigation, not a
+      // saved surface; persisting one would churn project.json per drill).
+      setTimeout(() => {
+        void fitView({ nodes: flow.map((n) => ({ id: n.id })), duration: 250, padding: 0.15 })
+      }, 0)
     } else {
       viewportRef.current = project.viewport
       setViewport(project.viewport)
@@ -1990,7 +2420,7 @@ export function Canvas() {
     }, 0)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProjectId, reloadNonce, setNodes, setViewport])
+  }, [activeProjectId, reloadNonce, drillNonce, setNodes, setViewport])
 
   /**
    * Counts EDITS (not saves). `writeDisk` captures it before it builds the snapshot and clears
@@ -2067,17 +2497,339 @@ export function Canvas() {
     // The normal switch flow still commits — every caller commits BEFORE `setActive`, while the two
     // ids still agree — but an autosave timer armed under the previous project now skips instead of
     // writing its nodes under the new project's id (field bug 2026-08-10).
-    if (canCommitCanvas(nodesProjectIdRef.current, id))
+    if (canCommitCanvas(nodesProjectIdRef.current, id)) {
+      // Drill (07): while drilled, `nodesRef.current` is the SUBSET (the group's children at root-space),
+      // but `commitCanvas` wholesale-replaces the project's nodes — committing the subset would clobber
+      // every sibling. Merge the edited drilled children back into the project's FULL stored node array,
+      // re-nested under the group (positions stored parent-relative). The full array is read from the
+      // store (not nodesRef, which holds the subset); remerge needs the full CanvasNode array to resolve
+      // the group's root origin (the group is absent from the drilled view), so we re-flow the stored states.
+      const drill = drillRef.current
+      let nodesToCommit: CanvasNodeState[]
+      if (drill && drill.projectId === id && drill.kind === 'group') {
+        const stored = useProjects.getState().getProject(id)
+        const fullFlow = stored ? nodeStatesToFlow(stored.nodes) : []
+        nodesToCommit = remergeDrilledNodes(
+          stored?.nodes ?? [],
+          flowToNodeStates(nodesRef.current),
+          drill.groupId,
+          fullFlow
+        )
+      } else {
+        nodesToCommit = flowToNodeStates(nodesRef.current)
+      }
       useProjects
         .getState()
         .commitCanvas(
           id,
-          flowToNodeStates(nodesRef.current),
+          nodesToCommit,
           viewportRef.current,
-          linkEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-          controlEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target }))
+          mergeLinks(linkEdgesRef.current, controlEdgesRef.current, depLinkEdgesRef.current, offCanvasLinksRef.current)
         )
+    }
   }, [])
+
+  /**
+   * The single funnel for off-canvas link mutations (the picker's add, the inspector's delete).
+   * `Project.links` is the source of truth; the on-canvas edge arrays are its projection plus the
+   * hand-draw scratch space. For the ACTIVE project, this rebuilds `linkEdges`/`controlEdges` from
+   * the on-canvas subset of `next` and refreshes `offCanvasLinksRef` with the rest, so a same-
+   * project on-canvas link added off-canvas (rare, but the seam) draws immediately and a deleted
+   * one disappears in the same mutation. For a BACKGROUND project (inspector opened on a non-active
+   * node), it writes `Project.links` directly via `commitCanvas` against that project's stored
+   * nodes — never the active canvas's — so it doesn't clobber a project it isn't looking at.
+   */
+  const commitLinks = useCallback(
+    (projectId: string, next: Link[]) => {
+      if (projectId === activeProjectId) {
+        // Split `next` the same way the load effect does: node↔node context/lineage/dependency →
+        // on-canvas edges; everything else → off-canvas ref. Re-deriving from the authoritative set
+        // removes the drift hazard of mutating one store without the other.
+        const ctx: Edge[] = []
+        const lin: Edge[] = []
+        const dep: Edge[] = []
+        const offCanvas: Link[] = []
+        // Agent-color lookup for lineage ropes, mirroring `linksToRuntime`'s `nodeAgentOf`: read the
+        // CREATED agent harness id off the live node data (not `agentIdOf`, which is declared below
+        // this hook and would be a TDZ use). Falls back to the browser blue.
+        const nodeAgentOf = (nodeId: string): AgentId | undefined =>
+          createdAgentId(nodesRef.current.find((n) => n.id === nodeId)?.data) as AgentId | undefined
+        for (const l of next) {
+          const pair = nodeEndpoints(l)
+          if (!pair) {
+            offCanvas.push(l)
+          } else if (l.kind === 'context') {
+            ctx.push({ id: pair.id, source: pair.source, target: pair.target, type: 'default' })
+          } else if (l.kind === 'lineage') {
+            const color = agentConfig(nodeAgentOf(pair.source) ?? '')?.color ?? '#0a84ff'
+            lin.push(ropeEdge(pair.id, pair.source, pair.target, color))
+          } else if (l.kind === 'dependency') {
+            dep.push(depEdge(pair.id, pair.source, pair.target))
+          } else {
+            offCanvas.push(l)
+          }
+        }
+        setLinkEdges(ctx)
+        setControlEdges(lin)
+        setDepLinkEdges(dep)
+        offCanvasLinksRef.current = offCanvas
+      }
+      // Persist the full Link[] (on-canvas + off-canvas). For a background project, read its stored
+      // nodes so commitCanvas doesn't overwrite them with the active canvas's nodes.
+      const stored = useProjects.getState().getProject(projectId)
+      const nodesToCommit = projectId === activeProjectId
+        ? flowToNodeStates(nodesRef.current)
+        : (stored?.nodes ?? [])
+      useProjects.getState().commitCanvas(
+        projectId,
+        nodesToCommit,
+        projectId === activeProjectId ? viewportRef.current : (stored ? stored.viewport : { x: 0, y: 0, zoom: 1 }),
+        next.length ? next : undefined
+      )
+      markDirty()
+    },
+    [activeProjectId, setLinkEdges, setControlEdges, setDepLinkEdges, markDirty]
+  )
+
+  // Submodule auto-link (ticket 09): when the ACTIVE project is a meta-canvas — i.e. it holds group
+  // nodes carrying `data.projectRef` — resolve each referenced project's git submodules and, for
+  // every submodule whose folder is itself an OPEN project, ensure a projectRef group for it exists
+  // on the meta-canvas and draw a visible `dependency` edge between the two groups. The edge is a
+  // `node`↔`node` `dependency` link (both endpoints are real group nodes here), so `linksToRuntime`
+  // renders it amber and `runtimeToLinks` round-trips it — exactly the seam task #47 wired.
+  //
+  // Gated on the active project HAVING projectRef groups so an ordinary project never pays the git
+  // churn (repoRoot + submoduleList per referenced repo). Epoch-guarded: a project switch bumps the
+  // epoch and a stale in-flight read's result is dropped. Runs once on load + on a manual ⟳ follow-up
+  // (polling is a follow-up — each read is a `git` subprocess on the referenced project's machine).
+  // SSH projects are skipped: `git-service.submoduleList` refuses a remote repo (the cwd is on the
+  // host), and an SSH referenced project's submodules live there too — real support needs the
+  // ControlMaster, out of scope for v1.
+  const submoduleEpochRef = useRef(0)
+  useEffect(() => {
+    const project = useProjects.getState().getProject(activeProjectId)
+    if (!project) {
+      submoduleSuggestionsRef.current = []
+      setSubmoduleSuggestions([])
+      return
+    }
+    // Collect the projectRef groups on THIS canvas (live nodes), with their referenced project.
+    const refGroups = nodesRef.current
+      .filter((n) => n.type === 'group' && (n.data as unknown as { projectRef?: { projectId: string } }).projectRef)
+      .map((n) => {
+        const ref = (n.data as unknown as { projectRef: { projectId: string } }).projectRef
+        return { groupId: n.id, projectId: ref.projectId }
+      })
+    if (!refGroups.length) {
+      submoduleSuggestionsRef.current = []
+      setSubmoduleSuggestions([])
+      return // an ordinary canvas — no git churn
+    }
+    const epoch = ++submoduleEpochRef.current
+    let cancelled = false
+    void (async () => {
+      // Map every referenced project id → the group node id already on the canvas (for the link
+      // endpoints), and gather the referenced projects that actually have a local cwd to read.
+      const existingGroupForProject = new Map<string, string>()
+      for (const g of refGroups) existingGroupForProject.set(g.projectId, g.groupId)
+      const openProjects = useProjects
+        .getState()
+        .projects.filter((p) => p.cwd && !p.ssh)
+        .map((p) => ({ cwd: p.cwd!, projectId: p.id }))
+      const existingLinkKeys = existingDependencyLinkKeys(project.links)
+      const newLinks: Link[] = []
+      const groupsToCreate: { projectId: string; color?: string }[] = []
+      const suggestions: SubmoduleProjectSuggestion[] = []
+      for (const ref of refGroups) {
+        const refProject = useProjects.getState().getProject(ref.projectId)
+        if (!refProject?.cwd || refProject.ssh) continue
+        const root = await api.git.repoRoot(refProject.cwd).catch(() => null)
+        if (cancelled || epoch !== submoduleEpochRef.current || !root) continue
+        const subs = await api.git.submoduleList(root).catch(() => null)
+        if (cancelled || epoch !== submoduleEpochRef.current || !subs?.ok) continue
+        const plan = planSubmoduleLinks(
+          ref,
+          root,
+          subs.entries,
+          openProjects,
+          existingGroupForProject,
+          existingLinkKeys
+        )
+        newLinks.push(...plan.links)
+        for (const suggestion of plan.suggestions) {
+          if (!suggestions.some((s) => s.path === suggestion.path && s.sourceGroupId === suggestion.sourceGroupId)) {
+            suggestions.push(suggestion)
+          }
+        }
+        // A group to create may already have been requested by an earlier ref in this loop — dedupe.
+        for (const g of plan.groupsToCreate) {
+          if (!existingGroupForProject.has(g.projectId) && !groupsToCreate.some((x) => x.projectId === g.projectId)) {
+            groupsToCreate.push(g)
+          }
+        }
+      }
+      if (cancelled || epoch !== submoduleEpochRef.current) return
+      const previousSuggestions = submoduleSuggestionsRef.current
+      submoduleSuggestionsRef.current = suggestions
+      setSubmoduleSuggestions(suggestions)
+      // First mint any missing projectRef groups (so the links have endpoints), then upsert the
+      // dependency links. The groups are created on the live canvas via setNodes; the links are
+      // written through commitLinks so the on-canvas `depLinkEdges` + the persisted `Project.links`
+      // stay in sync. A created group lands its edge on the NEXT run (the plan defers a link whose
+      // target group doesn't exist yet — never a dangling edge).
+      if (groupsToCreate.length) {
+        const targetColors = new Map(
+          useProjects.getState().projects.map((p) => [p.id, p.color] as const)
+        )
+        setNodes((ns) => {
+          const fresh = [...ns]
+          for (const g of groupsToCreate) {
+            const target = useProjects.getState().getProject(g.projectId)
+            const suggestionIndex = previousSuggestions.findIndex((s) => s.path === target?.cwd)
+            const suggestion = suggestionIndex >= 0 ? previousSuggestions[suggestionIndex] : undefined
+            const source = suggestion ? fresh.find((n) => n.id === suggestion.sourceGroupId) : undefined
+            // Promote an opened ghost in place. A project that was already open has no ghost, so
+            // it falls back to the ordinary staggered meta-canvas grid.
+            const position = source
+              ? {
+                  x: source.position.x + (source.width ?? 520) + 80,
+                  y: source.position.y + suggestionIndex * 150
+                }
+              : {
+                  x: 200 + (fresh.length % 4) * 560,
+                  y: 200 + Math.floor(fresh.length / 4) * 420
+                }
+            const node = createGroupNode(position, undefined, fresh.length)
+            fresh.push({
+              ...node,
+              data: { ...node.data, projectRef: { projectId: g.projectId }, color: targetColors.get(g.projectId) ?? node.data.color }
+            })
+          }
+          return fresh
+        })
+        markDirty()
+        // The first pass creates the real endpoint; the next pass sees it and adds the dependency
+        // edge. Keeping those phases separate guarantees no persisted dangling edge.
+        setSubmoduleRefreshNonce((n) => n + 1)
+      }
+      if (newLinks.length) {
+        const currentLinks = useProjects.getState().getProject(activeProjectId)?.links ?? []
+        commitLinks(activeProjectId, [...currentLinks, ...newLinks])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeProjectId, submoduleRefreshNonce, api, setNodes, markDirty, commitLinks])
+
+  /** The project id that holds a node (node ids are globally unique across projects). Used by the
+   *  link picker/inspector entry points to resolve a background node's project. */
+  const projectOfNode = useCallback((nodeId: string): string | null => {
+    const p = useProjects.getState().projects.find((proj) => proj.nodes.some((n) => n.id === nodeId))
+    return p?.id ?? null
+  }, [])
+
+  /** The current `Project.links` for a project — the base the picker appends a new link to before
+   *  handing the full set to `commitLinks`. */
+  const linksForProject = useCallback((projectId: string): Link[] => {
+    return useProjects.getState().getProject(projectId)?.links ?? []
+  }, [])
+
+  // Every inspector surface (terminal header, card modal, Canvas portal) writes through the same
+  // live-edge + persistence funnel. React Flow creates node components itself, so this small bridge
+  // avoids copying the reconciliation logic into each surface.
+  useEffect(() => {
+    setLinkCommitHandler(commitLinks)
+    return () => setLinkCommitHandler(null)
+  }, [commitLinks])
+
+  /**
+   * Exit a group drill (07): clear the context and re-run the load effect, which rebuilds the full
+   * canvas with the group visible as a frame again. The drilled nodes, which stayed mounted, get `parentId`/`extent`
+   * restored and re-nested; siblings, which parked, remount and adopt. Commit first so edits made
+   * inside the drill land (remerged into the full array), then restore the stashed parent viewport.
+   *
+   */
+  const exitDrill = useCallback(() => {
+    if (!drillRef.current) return
+    commitActiveToStore()
+    const drill = drillRef.current
+    drillRef.current = null
+    drillChildIdsRef.current = new Set()
+    setDrillNonce((n) => n + 1)
+    // Cross-project drill (09): switch the active project back to the SOURCE meta-canvas. The load
+    // effect then re-runs for the source (its drillRef was just nulled, so it loads its full canvas)
+    // and restores the source's own persisted viewport — the meta-canvas's camera is stashed in
+    // `preDrillViewportRef` and applied below the same way group/node drills restore theirs.
+    if (drill.kind === 'project-ref') {
+      useProjects.getState().setActive(drill.projectId)
+    }
+    // Restore the parent viewport once the full canvas has loaded. The load effect runs after this
+    // render; defer past it with a microtask + a frame so setNodes has landed and setViewport sticks.
+    if (preDrillViewportRef.current && drill.kind === 'group') {
+      const vp = preDrillViewportRef.current
+      preDrillViewportRef.current = null
+      setTimeout(() => {
+        viewportRef.current = vp
+        setViewport(vp)
+        setZoomPct(Math.round(vp.zoom * 100))
+        setGroupLabelBoost(vp.zoom)
+        setSharedGlyphCamera(vp)
+      }, 0)
+    } else if (preDrillViewportRef.current && drill.kind === 'project-ref') {
+      // The meta-canvas's stashed camera — restored once the source project's nodes have loaded back.
+      const vp = preDrillViewportRef.current
+      preDrillViewportRef.current = null
+      setTimeout(() => {
+        viewportRef.current = vp
+        setViewport(vp)
+        setZoomPct(Math.round(vp.zoom * 100))
+        setGroupLabelBoost(vp.zoom)
+        setSharedGlyphCamera(vp)
+      }, 0)
+    }
+  }, [commitActiveToStore, setViewport])
+
+  /**
+   * Drill into a node-group: switch the active node-set to the group's direct children (promoted to
+   * root-space), reusing the canvas-switcher load effect (ticket 07). The group's own terminals stay
+   * mounted (RF id-keying); only siblings leave the node-set (they park). Transient/in-memory — never
+   * persisted. Commit any live edits first (the load effect re-runs and would otherwise drop them),
+   * stash the parent viewport for `exitDrill`, then arm the drill context and bump the nonce so the
+   * load effect re-runs and builds the drilled flow.
+   */
+  const openNodeGroupAsCanvas = useCallback(
+    (groupId: string) => {
+      const id = useProjects.getState().activeProjectId
+      if (!id) return
+      // The group must exist in the live canvas.
+      const node = nodesRef.current.find((n) => n.id === groupId && n.type === 'group')
+      if (!node) return
+      // Cross-project drill (ticket 09): a `data.projectRef` group REFERENCES another project. Drilling
+      // it switches the active project to the referenced one (the existing project-switch load effect
+      // swaps the canvas), rather than promoting this group's children. The group may also hold local
+      // children on the meta-canvas — those are left alone (not a sub-canvas drill). No merge-back:
+      // commits land in the target project via its own commitCanvas path, and exitDrill switches back
+      // to THIS meta-canvas. Refuse if the referenced project is gone/unavailable/closed (the GroupNode
+      // renderer already greys it; drilling into something unopenable is a no-op, never a switch).
+      const ref = (node.data as { projectRef?: { projectId: string } }).projectRef
+      if (ref) {
+        const target = useProjects.getState().getProject(ref.projectId)
+        if (!target || target.unavailable || target.closed) return
+        commitActiveToStore()
+        preDrillViewportRef.current = getViewport()
+        drillRef.current = { kind: 'project-ref', projectId: id, targetId: target.id }
+        useProjects.getState().setActive(target.id)
+        setDrillNonce((n) => n + 1)
+        return
+      }
+      commitActiveToStore()
+      preDrillViewportRef.current = getViewport()
+      drillRef.current = { kind: 'group', groupId, projectId: id }
+      setDrillNonce((n) => n + 1)
+    },
+    [commitActiveToStore, getViewport]
+  )
 
   const writeDisk = useCallback(async () => {
     // Captured BEFORE the snapshot is built (`toWorkspace()` runs synchronously on this line), so
@@ -2681,6 +3433,19 @@ export function Canvas() {
   // Double-click a context link to remove it (ephemeral subagent/loop edges are left alone).
   const onEdgeDoubleClick = useCallback(
     (_e: React.MouseEvent, edge: Edge) => {
+      // A persisted same-project `dep-` dependency edge (ticket 09: the meta-canvas submodule
+      // auto-link, held in `depLinkEdges`) IS deletable on canvas — unlike the DERIVED `dep-` edges
+      // (ticket 03's two-host branch dependency, `dep-${linkId}`) which are render-only and owned by
+      // the inspector. Distinguish by membership: a dep edge in `depLinkEdgesRef` is persisted.
+      if (depLinkEdgesRef.current.some((b) => b.id === edge.id)) {
+        setDepLinkEdges((es) => es.filter((b) => b.id !== edge.id))
+        markDirty()
+        return
+      }
+      // Derived off-canvas edges (`xlink-`, and the two-host dependency `dep-` edges from ticket 03)
+      // are render-only — no delete here; the inspector owns them. (Ephemeral subagent/loop edges
+      // likewise fall through to the no-op return below.)
+      if (edge.id.startsWith('xlink-') || edge.id.startsWith('dep-')) return
       // Control ropes are removable the same way as context links (ephemeral edges are not).
       if (controlEdgesRef.current.some((b) => b.id === edge.id)) {
         // A rope may be the only DRAWN edge for a pair that also has a context bridge (see
@@ -2698,21 +3463,30 @@ export function Canvas() {
       setLinkEdges((es) => es.filter((b) => b.id !== edge.id))
       markDirty()
     },
-    [setLinkEdges, markDirty]
+    [setLinkEdges, setDepLinkEdges, markDirty]
   )
 
   // Route edge changes (selection) to the right store: `ctrl-` ids are control ropes (local
-  // state), everything else is a context link. Ephemeral subagent/loop edges emit no changes
-  // worth applying — applyEdgeChanges on unknown ids is a no-op either way.
+  // state), `dep-` ids that live in `depLinkEdges` are the persisted node↔node dependency edges
+  // (ticket 09), everything else is a context link. Ephemeral subagent/loop edges and the derived
+  // `dep-` host edges (ticket 03) emit no changes worth applying — applyEdgeChanges on unknown ids
+  // is a no-op either way.
   const handleEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       const rope: EdgeChange[] = []
+      const dep: EdgeChange[] = []
       const link: EdgeChange[] = []
-      for (const c of changes) ('id' in c && String(c.id).startsWith('ctrl-') ? rope : link).push(c)
+      for (const c of changes) {
+        const id = 'id' in c ? String(c.id) : ''
+        if (id.startsWith('ctrl-')) rope.push(c)
+        else if (id.startsWith('dep-') && depLinkEdgesRef.current.some((b) => b.id === id)) dep.push(c)
+        else link.push(c)
+      }
       if (rope.length) setControlEdges((es) => applyEdgeChanges(rope, es))
+      if (dep.length) setDepLinkEdges((es) => applyEdgeChanges(dep, es))
       if (link.length) onLinkEdgesChange(link)
     },
-    [onLinkEdgesChange]
+    [onLinkEdgesChange, setDepLinkEdges]
   )
 
   // Prune ropes whose endpoints were deleted (mirrors the context-link pruning below).
@@ -2725,7 +3499,15 @@ export function Canvas() {
       const valid = es.filter((e) => ids.has(e.source) && ids.has(e.target))
       return valid.length === es.length ? es : valid
     })
-  }, [nodes])
+    // Same prune for persisted `dep-` dependency edges (the meta-canvas auto-link, 09): a deleted
+    // projectRef group must drop its dependency edges, or they dangle against a missing node id.
+    if (depLinkEdgesRef.current.length) {
+      setDepLinkEdges((es) => {
+        const valid = es.filter((e) => ids.has(e.source) && ids.has(e.target))
+        return valid.length === es.length ? es : valid
+      })
+    }
+  }, [nodes, setDepLinkEdges])
 
   // Rewrite link files when a linked node's session starts/changes: main resolves
   // codex/gemini transcripts by sessionId, so a session that appears after the edge was
@@ -2735,9 +3517,10 @@ export function Canvas() {
   // loopSig).
   const linkSessionSig = useAgentStatus((s) => {
     let sig = ''
-    for (const e of linkEdges) {
-      const a = s.byId[e.source]
-      const b = s.byId[e.target]
+    for (const project of useProjects.getState().projects) for (const link of project.links ?? []) {
+      if (link.kind !== 'context' || link.source.ref === 'branch' || link.target.ref === 'branch') continue
+      const a = s.byId[link.source.nodeId]
+      const b = s.byId[link.target.nodeId]
       sig += `${a?.agentId ?? ''}:${a?.sessionId ?? ''}|${b?.agentId ?? ''}:${b?.sessionId ?? ''}|`
     }
     return sig
@@ -2767,19 +3550,19 @@ export function Canvas() {
         accountId: sticky ? undefined : ((n?.data.accountId as string) || undefined)
       }
     }
-    // Merge in the link maps of every OTHER project (from their serialized nodes + bridges):
+    // Merge in the link maps of every OTHER project (from their serialized nodes + `links`):
     // main clears all link files before writing the pushed map, so pushing only the active
     // project's map would sever the links of background projects whose agents keep running.
     const { projects, activeProjectId } = useProjects.getState()
-    const map = {
-      ...buildBackgroundLinkMaps(
+    const map = mergeContextLinkMaps(
+      buildBackgroundLinkMaps(
         projects,
         activeProjectId,
         (id) => useAgentStatus.getState().byId[id]?.sessionId,
         (id) => useAgentStatus.getState().byId[id]?.agentId
       ),
-      ...buildLinkMap(valid, infoOf)
-    }
+      buildLinkMap(valid, infoOf)
+    )
     const t = setTimeout(() => void window.nodeTerminal.contextLink.setLinks(map), 150)
     return () => clearTimeout(t)
     // linkSessionSig is read only as an effect trigger — infoOf re-reads sessionIds via getState().
@@ -2997,6 +3780,28 @@ export function Canvas() {
     [isSshProject]
   )
 
+  /**
+   * While drilled into a group (ticket 07/08), a new node is created at root-space inside the drilled
+   * canvas — it has no `parentId` yet (it gains one on exit, when the reverse leg re-nests it). So
+   * `cwdForNewNodeIn` (which walks `parentId` through `nodesRef.current`) CANNOT answer for it: the
+   * drilled group frame is absent from `nodesRef.current`, and the new node has no parent to walk.
+   * This resolver reads the worktree path straight from the durable binding via the DrillContext +
+   * the FULL project nodes (where the group still lives), applying the SAME staleness/SSH gates
+   * `cwdForNewNodeIn` uses. Returns undefined when not drilled, or when the drilled group isn't a
+   * healthy non-SSH worktree — in which case the caller falls back to `project?.cwd` as usual.
+   */
+  const drillCwdOverride = useCallback((): string | undefined => {
+    const drill = drillRef.current
+    if (!drill || drill.kind !== 'group') return undefined
+    const proj = useProjects.getState().getProject(drill.projectId)
+    const group = proj?.nodes.find((n) => n.id === drill.groupId)
+    const wt = group?.worktree
+    if (!wt) return undefined
+    const stale = useWorktrees.getState().staleGroupIds.includes(drill.groupId)
+    if (stale || isSshProject) return undefined
+    return wt.path
+  }, [isSshProject])
+
   /** The nearest ancestor frame (from `parentId` upward) that is bound to a git worktree. */
   const worktreeForGroupChain = useCallback(
     (parentId: string | undefined): { groupId: string; path: string } | undefined => {
@@ -3080,7 +3885,10 @@ export function Canvas() {
       cwdOverride?: string
     ) => {
       const project = useProjects.getState().getProject(activeProjectId)
-      const cwd = cwdOverride ?? cwdForNewNodeIn(groupId) ?? project?.cwd
+      // `drillCwdOverride` wins when no explicit override is given AND we're drilled into a worktree
+      // group (ticket 08): a root-space new node has no `parentId` for `cwdForNewNodeIn` to walk, so
+      // the worktree path is read straight from the DrillContext + the durable binding.
+      const cwd = cwdOverride ?? drillCwdOverride() ?? cwdForNewNodeIn(groupId) ?? project?.cwd
       setNodes((ns) => {
         // In an SSH project the node is stamped remote (runs over the project's master); the
         // factory takes the project's ssh and roots the terminal at its remoteCwd.
@@ -3089,7 +3897,7 @@ export function Canvas() {
       })
       markDirty()
     },
-    [setNodes, markDirty, activeProjectId, emptyNodePos, cwdForNewNodeIn, parentInto]
+    [setNodes, markDirty, activeProjectId, emptyNodePos, cwdForNewNodeIn, parentInto, drillCwdOverride]
   )
 
   /** Open a new terminal that runs a command on start (e.g. gh auth login). `cwd` lets a caller
@@ -3604,6 +4412,38 @@ export function Canvas() {
     [setNodes, markDirty, emptyNodePos, parentInto]
   )
 
+  // Meta-canvas (ticket 09): a top-level canvas whose group frames each REFERENCE another project.
+  // A meta-canvas is an ordinary `Project` (no cwd — it has no single working directory), activated
+  // like any other; the user then adds project-ref groups (below) or the submodule auto-linker
+  // populates them. Drilling a project-ref group switches the active project to the referenced one.
+  const newMetaCanvas = useCallback(() => {
+    commitActiveToStore()
+    const project = useProjects.getState().addProject('Meta canvas')
+    useProjects.getState().setActive(project.id)
+    void writeDisk()
+  }, [commitActiveToStore, writeDisk])
+
+  // Add an OPEN project to the active (meta) canvas as a `kind:'group'` node carrying
+  // `data.projectRef`. Excludes the active canvas itself (a project can't reference itself) and
+  // closed projects (drilling into a closed project is a no-op — `openNodeGroupAsCanvas` refuses).
+  // The group may also hold local children on the meta-canvas; `projectRef` is additive to the
+  // group's own label. The referenced project's color rides along so the badge dot matches its tab.
+  const addProjectToCanvas = useCallback(
+    (projectId: string) => {
+      const target = useProjects.getState().getProject(projectId)
+      if (!target || target.closed) return
+      if (projectId === activeProjectId) return // never reference itself
+      setNodes((ns) => {
+        const node = createGroupNode(emptyNodePos() ?? { x: 0, y: 0 }, undefined, ns.length)
+        // Carry the referenced project's color so the badge dot + frame match its tab.
+        const data = { ...node.data, projectRef: { projectId }, color: target.color }
+        return [...ns, { ...node, data }]
+      })
+      markDirty()
+    },
+    [setNodes, markDirty, activeProjectId, emptyNodePos]
+  )
+
   const addDino = useCallback(
     (center?: { x: number; y: number }) => {
       // Seed with the project record, maxed with any live dino nodes (pre-record projects
@@ -3729,10 +4569,14 @@ export function Canvas() {
       center?: { x: number; y: number },
       groupId?: string,
       accountId?: string,
-      initialPrompt?: string
+      initialPrompt?: string,
+      /** Force the working directory (mirrors `addTerminal`'s `cwdOverride` — e.g. a Source Control
+       *  action, or the drilled-worktree-canvas path in ticket 08 where a root-space new node has no
+       *  `parentId` for `cwdForNewNodeIn` to walk). */
+      cwdOverride?: string
     ) => {
       const project = useProjects.getState().getProject(activeProjectId)
-      const cwd = cwdForNewNodeIn(groupId) ?? project?.cwd
+      const cwd = cwdOverride ?? drillCwdOverride() ?? cwdForNewNodeIn(groupId) ?? project?.cwd
       // Codex accounts (S6) resolve through their OWN fail-closed gate: an explicitly picked account
       // that is missing/hostile/unconnected is REFUSED here rather than silently downgraded to the
       // system login (Property 4). Claude keeps its project-default-aware resolver. The factory
@@ -3789,7 +4633,8 @@ export function Canvas() {
       emptyNodePos,
       cwdForNewNodeIn,
       parentInto,
-      connectedProjectIdForHost
+      connectedProjectIdForHost,
+      drillCwdOverride
     ]
   )
 
@@ -3804,8 +4649,6 @@ export function Canvas() {
       const at = spawnTeamDialog?.at
       setSpawnTeamDialog(null)
       addAgentNode(
-        // No explicit pick here — the conductor opens on whatever this project calls its default
-        // agent (`.nodeterm/settings.json` → agents.defaultAgentId), else the global one.
         resolveNewNodeAgent(
           undefined,
           useProjects.getState().activeProjectId,
@@ -4791,7 +5634,7 @@ export function Canvas() {
   // merge / remove teardown actions (Tasks 8 & 9) slot in as new cases. `unbind` forgets the
   // binding without touching disk; `merge` merges to base; `remove` opens the safety dialog.
   const onWorktreeAction = useCallback(
-    (groupId: string, action: 'merge' | 'remove' | 'unbind' | 'rerun-setup') => {
+    (groupId: string, action: 'merge' | 'remove' | 'unbind' | 'rerun-setup' | 'sync') => {
       // A binding can only predate the SSH gate (hand-edited project file, or a project that became
       // an SSH project), but it can still exist — and merge/remove would run against the LOCAL
       // filesystem for a project whose git and terminals live on the remote host. Refuse them, out
@@ -4857,6 +5700,21 @@ export function Canvas() {
           startWorktreeSetup(groupId, wt.path)
           break
         }
+        case 'sync': {
+          const wt = nodesRef.current.find((n) => n.id === groupId)?.data.worktree
+          if (!wt) return
+          const branch = useWorktrees.getState().statusByPath[wt.path]?.branch || wt.branch
+          void api.git
+            .syncBranch(wt.path, branch)
+            .then((res) => setNotice({ kind: res.ok ? 'info' : 'error', text: res.message }))
+            .catch((error: unknown) =>
+              setNotice({
+                kind: 'error',
+                text: `The sync could not be confirmed: ${error instanceof Error ? error.message : String(error)}.`
+              })
+            )
+          break
+        }
         default:
           break
       }
@@ -4875,6 +5733,13 @@ export function Canvas() {
     setWorktreeActionHandler(onWorktreeAction)
     return () => setWorktreeActionHandler(null)
   }, [onWorktreeAction])
+
+  // Bridge the drill-into-group handler to GroupNode (ticket 07): the group's ⤢ affordance triggers
+  // openNodeGroupAsCanvas without prop drilling through React Flow.
+  useEffect(() => {
+    setDrillHandler(openNodeGroupAsCanvas)
+    return () => setDrillHandler(null)
+  }, [openNodeGroupAsCanvas])
 
   // Same reason as worktreeControlRef below: the agent-control handler needs the CURRENT
   // travelToProject (defined far below, after the project actions it composes).
@@ -6036,6 +6901,30 @@ export function Canvas() {
             gatewayModels,
             relaySession: session.source === 'relay'
           }, transferConversation)
+        : []),
+      // Off-canvas link authoring (ticket 06): the only way to add a dependency / cross-project
+      // (xnode) / cross-repo (branch) link, and the off-canvas way to list a node's links. Single
+      // node only. On the active-project sidebar row this same submenu appears via onRowContextMenu.
+      ...(ids.length === 1
+        ? ([
+            {
+              type: 'submenu' as const,
+              label: 'Links',
+              icon: <IconLink />,
+              children: [
+                {
+                  label: 'Link to…',
+                  icon: <IconLink />,
+                  onClick: () => setLinkPickerNode(ids[0])
+                },
+                {
+                  label: 'Links…',
+                  icon: <IconLink />,
+                  onClick: () => setLinkInspectorNode(ids[0])
+                }
+              ]
+            }
+          ] as MenuItem[])
         : []),
       ...(isHidden('collapse', hidden)
         ? []
@@ -7612,6 +8501,10 @@ export function Canvas() {
       // each dep after already bridging them to the opener): linkEdgesRef is a render-time ref,
       // so it cannot see edges added earlier in this same tick, and without the accumulator a
       // pair reachable twice would be added twice under two different ids.
+      // `drawn` accumulates the node PAIRS bridged across the calls ONE command makes (--after
+      // bridges each new node to each dep after already bridging them to the opener), for dedup
+      // against `existing` (a pair projection, not `Link[]`). `planBridges` returns `Link[]`; we
+      // project to pairs for the accumulator and to runtime edges for `linkEdges`.
       const drawn: { source: string; target: string }[] = []
       const bridgeTo = (
         fromId: string,
@@ -7620,8 +8513,14 @@ export function Canvas() {
       ) => {
         const plan = planBridges(fromId, targetIds, lookup, [...linkEdgesRef.current, ...drawn])
         if (plan.edges.length) {
-          drawn.push(...plan.edges)
-          setLinkEdges((es) => [...es, ...plan.edges.map((e) => ({ ...e, type: 'default' }))])
+          drawn.push(...plan.edges.map((e) => nodeEndpoints(e)!))
+          setLinkEdges((es) => [
+            ...es,
+            ...plan.edges.map((e) => {
+              const p = nodeEndpoints(e)!
+              return { id: p.id, source: p.source, target: p.target, type: 'default' as const }
+            })
+          ])
           markDirty()
         }
         return plan
@@ -7835,6 +8734,65 @@ export function Canvas() {
             // open-claude is the legacy fixed-agent form; open-agent takes any builtin or custom
             // agent id — resolveAgent is the single registry/base-harness resolver for both.
             const agentId = (verb === 'open-agent' ? args.agent : 'claude') as AgentId
+            // ── Cross-project spawn (ticket 05): `--project <cwd-or-id>` ─────────────────────
+            // The agent node is created in B's project (B owns the session/tmux, runs in B's cwd,
+            // inherits B's account/permission defaults). A keeps ONLY a `lineage` link with an
+            // `xnode` target, which the ephemeral derivation renders as a dimmed, dotted projection
+            // that co-attaches to B's session as a canvas node (XProjectNode) — interactive, not a
+            // modal. The projection never spawns B's session (`requireExisting`): it joins or waits.
+            if (args.project) {
+              const val = args.project.trim()
+              const st = useProjects.getState()
+              const b =
+                st.projects.find((p) => p.id === val) ??
+                st.projects.find((p) => p.cwd === val)
+              if (!b) {
+                reply({
+                  ok: false,
+                  error: `no project found for --project ${val}; open the folder first so it is a known project`
+                })
+                return
+              }
+              // Resolve B's defaults (B's, NOT A's): account, permission mode (B-aware, so the
+              // `auto` version gate reads B's remote probe when B is an SSH project), and cwd.
+              const bSettings = useSettings.getState().settings
+              const bAccount = resolveNewNodeAccount(undefined, b, bSettings.claudeAccounts)
+              const bPerm = projectPermissionMode(b, agentId)
+              const bCwd = args.cwd || b.cwd
+              const bSsh = nodeSshFor(b.ssh, bCwd)
+              // Create the node in B's SERIALIZED store (B's canvas isn't active, so no live
+              // setNodes). B's node position is a reasonable default; B's user reflows it. The node
+              // carries B's ssh so a remote B launches on B's host when B's canvas mounts.
+              const node = createAgentNode(
+                agentId,
+                b.nodes.length,
+                bCwd,
+                { x: 1248, y: 370 },
+                args.prompt,
+                bSsh,
+                bAccount,
+                bPerm
+              )
+              const serialized = flowToNodeStates([node])[0]
+              st.addNodeToProject(b.id, serialized)
+              // B's project.json must carry the node (a cold start of B reattaches it), and A's
+              // lineage link must persist so the projection re-derives across reloads.
+              void writeDisk()
+              // Side-effect on A: the lineage link whose `xnode` target drives the projection.
+              const lineageLink: Link = {
+                id: newLinkId(),
+                kind: 'lineage',
+                source: { ref: 'node', nodeId: sourceNodeId },
+                target: { ref: 'xnode', projectId: b.id, nodeId: node.id }
+              }
+              commitLinks(st.activeProjectId ?? '', [...linksForProject(st.activeProjectId ?? ''), lineageLink])
+              reply({
+                ok: true,
+                message: `opened ${agentId} in ${b.name}: ${node.id} (an interactive projection was added to your canvas — drive it in place; open ${b.name} to own the session)`,
+                result: { id: node.id, projectId: b.id }
+              })
+              return
+            }
             const count = Math.max(1, Math.min(5, parseInt(args.count || '1', 10) || 1))
             // --group parents the new node(s) into an existing group frame; a worktree-bound
             // group also hands its worktree path down as the cwd (same inheritance as
@@ -8357,7 +9315,7 @@ export function Canvas() {
               if (id === sourceNodeId) return linkEndpointOf(id)
               const m = members.find((x) => x.id === id)
               if (!m) return null
-              const a = m.data.agentId as AgentId | undefined
+              const a = createdAgentId(m.data)
               return { kind: m.type ?? 'terminal', contextCapable: !!a && canContextLink(a) }
             }
             const bridged = bridgeTo(sourceNodeId, memberIds, memberEndpoint).linked
@@ -8485,6 +9443,90 @@ export function Canvas() {
               return
             }
             reply({ ok: false, error: `close-worktree: unknown --mode ${mode} (unbind|remove)` })
+            return
+          }
+          case 'link-branches': {
+            // Declare a stacked-diff dependency: child builds on parent. Writes the git-town lineage
+            // config (the `git-town-branch.<child>.parent` convention, plain `git config`) AND records
+            // a `dependency` link whose two `branch` endpoints render as a dashed edge between the
+            // hosting worktree group frames. Local projects only — same SSH gate as open-worktree.
+            const projStore = useProjects.getState()
+            const project = projStore.getProject(projStore.activeProjectId ?? '')
+            if (project?.ssh) {
+              reply({ ok: false, error: WORKTREE_SSH_NOTICE })
+              return
+            }
+            const parent = sanitizeWorktreeBranch(args.base ?? '')
+            const child = sanitizeWorktreeBranch(args.branch ?? '')
+            if (!parent || !child) {
+              reply({ ok: false, error: 'link-branches: invalid branch name (use --base <parent> --branch <child>)' })
+              return
+            }
+            if (parent === child) {
+              reply({ ok: false, error: 'link-branches: a branch cannot depend on itself' })
+              return
+            }
+            const { repoRoot } = useWorktrees.getState()
+            if (!repoRoot) {
+              reply({ ok: false, error: 'link-branches: this project has no git repository (repo root unknown)' })
+              return
+            }
+            // Write the config FIRST and refuse the link if it failed: a link whose git-town lineage
+            // does not match is the drift the design says to never create.
+            const cfg = await applyDependencyLink(api.git, {
+              id: newLinkId(),
+              kind: 'dependency',
+              source: { ref: 'branch', repoPath: repoRoot, branch: child },
+              target: { ref: 'branch', repoPath: repoRoot, branch: parent }
+            }).catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : String(e) }))
+            if (!cfg.ok) {
+              reply({ ok: false, error: `link-branches: ${cfg.message}` })
+              return
+            }
+            const link: Link = {
+              id: newLinkId(),
+              kind: 'dependency',
+              source: { ref: 'branch', repoPath: repoRoot, branch: child },
+              target: { ref: 'branch', repoPath: repoRoot, branch: parent }
+            }
+            commitLinks(projStore.activeProjectId ?? '', [...linksForProject(projStore.activeProjectId ?? ''), link])
+            reply({ ok: true, message: `linked ${child} → ${parent} (git-town lineage set)` })
+            return
+          }
+          case 'sync-stack': {
+            // Rebase a child branch onto its configured parent, run in the child's OWN worktree cwd
+            // (where the child is already HEAD, so git-town's checkout would be a no-op — the
+            // worktree-rebase caveat). Plain `git rebase`; a conflict stops the rebase and the reply
+            // tells the user to resolve in that terminal. Local projects only.
+            const projStore = useProjects.getState()
+            const project = projStore.getProject(projStore.activeProjectId ?? '')
+            if (project?.ssh) {
+              reply({ ok: false, error: WORKTREE_SSH_NOTICE })
+              return
+            }
+            const child = sanitizeWorktreeBranch(args.branch ?? '')
+            if (!child) {
+              reply({ ok: false, error: 'sync-stack: invalid branch name (use --branch <child>)' })
+              return
+            }
+            const { repoRoot, entries } = useWorktrees.getState()
+            if (!repoRoot) {
+              reply({ ok: false, error: 'sync-stack: this project has no git repository (repo root unknown)' })
+              return
+            }
+            // Resolve the owning worktree: the entry whose checked-out branch IS the child. Running
+            // `git rebase` anywhere else would checkout the child there (yanking whatever was HEAD) —
+            // in its own worktree the child is already HEAD, so the checkout is a no-op. Mirrors
+            // worktreeMerge's listWorktrees→find.
+            const owner = entries.find((e) => e.branch === child)
+            if (!owner) {
+              reply({ ok: false, error: `sync-stack: ${child} is not checked out in any worktree — open it as a worktree first` })
+              return
+            }
+            const res = await api.git
+              .syncBranch(owner.path, child)
+              .catch((e: unknown) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }))
+            reply(res.ok ? { ok: true, message: res.message } : { ok: false, error: res.message })
             return
           }
           case 'branch': {
@@ -9150,7 +10192,9 @@ export function Canvas() {
           : [
               // Non-active project: the shared rows read the active canvas's live nodes + per-node
               // registered closures, which don't exist here. Keep the narrow set that works for any
-              // project (Duplicate defers to the store; the rest are list-level).
+              // project (Duplicate defers to the store; the rest are list-level). "Links…" opens the
+              // off-canvas inspector for this background node (ticket 06) — it reads that project's
+              // persisted `Project.links`, so it works without the live canvas.
               {
                 label: 'Duplicate',
                 icon: <IconDuplicate />,
@@ -9158,6 +10202,11 @@ export function Canvas() {
                   useProjects.getState().duplicateNode(projectId, id)
                   void writeDisk()
                 }
+              },
+              {
+                label: 'Links…',
+                icon: <IconLink />,
+                onClick: () => setLinkInspectorNode(id)
               },
               { type: 'separator' },
               { label: 'Close', icon: <IconTrash />, danger: true, onClick: () => closeSession(projectId, id) }
@@ -9676,6 +10725,29 @@ export function Canvas() {
     return true
   }, [commitActiveToStore, writeDisk])
 
+  /** Promote a derived submodule ghost without navigating away from the meta-canvas. Unlike the
+   * human "Open folder" flow, `registerProject` is intentionally non-activating: the auto-linker
+   * needs this canvas to remain mounted so it can replace the ghost with a real projectRef group. */
+  const openSubmoduleProject = useCallback(
+    async (folder: string): Promise<void> => {
+      const metaProjectId = useProjects.getState().activeProjectId
+      if (!metaProjectId) return
+      commitActiveToStore()
+      const probed = await api.workspace.probeFolder(folder)
+      useProjects.getState().registerProject({
+        resolvedCwd: folder,
+        ...(probed ? { probed: { ...probed, closed: false } } : {})
+      })
+      await writeDisk()
+      // If the user travelled while the probe was in flight, registering is still valid but the
+      // old meta-canvas is no longer the surface to refresh. It will discover the project on return.
+      if (useProjects.getState().activeProjectId === metaProjectId) {
+        setSubmoduleRefreshNonce((n) => n + 1)
+      }
+    },
+    [api, commitActiveToStore, writeDisk]
+  )
+
   const renameProject = useCallback(
     (id: string, name: string) => {
       useProjects.getState().renameProject(id, name)
@@ -9853,6 +10925,15 @@ export function Canvas() {
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
   useEffect(() => window.nodeTerminal.onFocusNode(travelToNode), [travelToNode])
 
+  // Bridge the node-travel handler to a cross-project projection's `↗` button (ticket 05): the
+  // projection lives on A's canvas but points at B's node, so the jump must switch to B (which
+  // owns the node) and frame it there — `travelToNode` resolves the owning project from the node
+  // id and reopens a closed tab if needed. Same indirection pattern as the focus handler above.
+  useEffect(() => {
+    setTravelNodeHandler(travelToNode)
+    return () => setTravelNodeHandler(null)
+  }, [travelToNode])
+
   // Memory pressure (core/memory-pressure.ts, pushed by the shell): run the renderer's reclaim
   // levers. Both are idempotent and cost only warmth — a reclaimed hidden context re-grants on its
   // next visibility transition, a dropped park re-mounts as an ordinary warm reattach — and the
@@ -10026,6 +11107,28 @@ export function Canvas() {
         run: () => setSpawnTeamDialog({})
       },
       { id: 'new-project', label: 'New project', icon: <IconProject />, run: () => addProject() },
+      {
+        id: 'new-meta-canvas',
+        label: 'New meta-canvas',
+        hint: 'canvas of canvases projects overview',
+        icon: <IconGroup />,
+        run: newMetaCanvas
+      },
+      // "Add project to canvas" — one command per OPEN project (excluding the active canvas itself),
+      // so the user can drop a project onto the active (meta) canvas as a draggable, drillable group.
+      ...useProjects
+        .getState()
+        .projects.filter((p) => !p.closed && p.id !== activeProjectId)
+        .map(
+          (p): Command => ({
+            id: `add-project-to-canvas-${p.id}`,
+            label: `Add “${p.name}” to canvas`,
+            hint: 'meta-canvas project reference drill',
+            section: 'Canvas',
+            icon: <IconGroup />,
+            run: () => addProjectToCanvas(p.id)
+          })
+        ),
       { id: 'clone-repo', label: 'Clone repository…', icon: <IconProject />, run: () => setCloneDialogOpen(true) },
       {
         id: 'new-remote',
@@ -10047,6 +11150,23 @@ export function Canvas() {
           ]
         : []),
       { id: 'zoom-100', label: 'Zoom to 100%', icon: <IconFit />, run: zoomTo100 },
+      // "Link to…" (ticket 06): open the off-canvas link picker for the single selected node —
+      // the only palette entry for authoring a dependency / cross-project / branch link. Hidden
+      // unless exactly one node is selected (a multi-link batch has no UI yet).
+      ...(nodesRef.current.filter((n) => n.selected).length === 1
+        ? [
+            {
+              id: 'link-to',
+              label: 'Link to…',
+              hint: 'connect node cross-project branch dependency',
+              icon: <IconLink />,
+              run: () => {
+                const t = nodesRef.current.find((n) => n.selected)
+                if (t) setLinkPickerNode(t.id)
+              }
+            } as Command
+          ]
+        : []),
       { id: 'save', label: 'Save', icon: <IconSave />, run: () => void persist() },
       // Hidden when the canvas has no restartable agent node — the row would have nothing to act
       // on. `hint` is searchable, so "new model" / "update" find it too.
@@ -10351,6 +11471,14 @@ export function Canvas() {
               </div>
             )
           })()}
+        {drillRef.current && drillRef.current.kind === 'group' && (
+            <DrillBreadcrumb
+              drill={drillRef.current}
+              onExit={exitDrill}
+              onWorktreeAction={onWorktreeAction}
+              isSshProject={isSshProject}
+            />
+          )}
       </div>
       {kanbanOpen && (
         <KanbanView
@@ -10555,6 +11683,34 @@ export function Canvas() {
               mounted in the experimental 'shared' renderer mode; nothing about it exists for the
               default modes. */}
           {glyphLayerActive && <SharedGlyphLayer />}
+          {/* Unopened git submodules on a meta-canvas are derived ghost project tiles. They live in
+              the viewport so they pan/zoom with the map, but never enter `nodes` and therefore can
+              never be selected, moved, autosaved, synced, or mistaken for a real projectRef. */}
+          {submoduleSuggestions.length > 0 && (
+            <ViewportPortal>
+              {submoduleSuggestions.map((suggestion, index) => {
+                const source = nodes.find((node) => node.id === suggestion.sourceGroupId)
+                const x = (source?.position.x ?? 200) + (source?.width ?? 520) + 80
+                const y = (source?.position.y ?? 200) + index * 150
+                const name = suggestion.relativePath.split('/').filter(Boolean).pop() ?? suggestion.relativePath
+                return (
+                  <div
+                    key={`${suggestion.sourceGroupId}:${suggestion.path}`}
+                    className="submodule-ghost nodrag nopan"
+                    style={{ transform: `translate(${x}px, ${y}px)` }}
+                    title={suggestion.path}
+                  >
+                    <span className="submodule-ghost__eyebrow">Unopened submodule</span>
+                    <strong>{name}</strong>
+                    <span className="submodule-ghost__path">{suggestion.relativePath}</span>
+                    <button type="button" onClick={() => void openSubmoduleProject(suggestion.path)}>
+                      Open folder
+                    </button>
+                  </div>
+                )
+              })}
+            </ViewportPortal>
+          )}
           <Controls showInteractive={false} position="bottom-left" onFitView={fitAll}>
             <ControlButton
               className={`canvas-lock-btn${canvasLocked ? ' locked' : ''}`}
@@ -10911,6 +12067,34 @@ export function Canvas() {
           worktreeNote={isSshProject ? WORKTREE_SSH_HINT : 'not a git repository'}
           onSubmit={spawnTeam}
           onCancel={() => setSpawnTeamDialog(null)}
+        />
+      )}
+
+      {/* Off-canvas link authoring (ticket 06). The picker/inspector are opened from the node
+          context menu's Links submenu and the sidebar non-active row. Both resolve the source
+          node's project from the store (a background node's project is not the active one) and
+          write through `commitLinks`, which persists the full `Project.links` and, for the active
+          project, re-derives the on-canvas edge arrays + off-canvas ref. */}
+      {linkPickerNode &&
+        (() => {
+          const pid = projectOfNode(linkPickerNode)
+          return pid ? (
+            <LinkTargetPicker
+              sourceNodeId={linkPickerNode}
+              sourceProjectId={pid}
+              onConfirm={(link) => {
+                if (pid) commitLinks(pid, [...linksForProject(pid), link])
+                setLinkPickerNode(null)
+              }}
+              onCancel={() => setLinkPickerNode(null)}
+            />
+          ) : null
+        })()}
+      {linkInspectorNode && (
+        <LinkInspectorPanel
+          nodeId={linkInspectorNode}
+          mount="portal"
+          onClose={() => setLinkInspectorNode(null)}
         />
       )}
 

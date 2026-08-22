@@ -5,7 +5,25 @@
 // (Canvas.tsx). The Server Edition has no renderer holding a canvas — it derives the whole map
 // from persisted project files instead (src/server/context-link.ts). Same rules either way, so
 // they belong in one place rather than two that drift.
-import type { BridgeLink, CanvasNodeState, ContextLinkInfo, ContextLinkMap } from './types'
+import type { CanvasNodeState, ContextLinkInfo, ContextLinkMap, Link } from './types'
+
+/**
+ * The node↔node edge pairs a context-link map can read through. Both `node` and `xnode` endpoints
+ * name real nodes (node ids are workspace-global); `xnode` merely records that the other node lives
+ * in another project. Branch endpoints carry no transcript and are excluded.
+ * `kind:'context'` covers both agent↔agent context links and sticky→terminal note links (a note
+ * link persists as `context` with `meta.note`); `lineage` (display-only ropes) is excluded.
+ */
+export function contextNodeEdges(links: readonly Link[] | undefined): Array<{ source: string; target: string }> {
+  if (!links?.length) return []
+  const out: Array<{ source: string; target: string }> = []
+  for (const l of links) {
+    if (l.kind !== 'context') continue
+    if (l.source.ref === 'branch' || l.target.ref === 'branch') continue
+    out.push({ source: l.source.nodeId, target: l.target.nodeId })
+  }
+  return out
+}
 
 export interface LinkNodeInfo {
   id: string
@@ -52,8 +70,30 @@ export function buildLinkMap(
   return map
 }
 
+/** Merge independently-derived maps without letting a later project overwrite a node's earlier
+ * links. A node may participate in both a same-project link and one or more cross-project links;
+ * object spread/assign would silently keep only the last array. Duplicate target ids collapse
+ * because the read surface is node-oriented (two authored edges to the same node are one context). */
+export function mergeContextLinkMaps(...maps: readonly ContextLinkMap[]): ContextLinkMap {
+  const out: ContextLinkMap = {}
+  for (const map of maps) {
+    for (const [nodeId, entries] of Object.entries(map)) {
+      const target = (out[nodeId] ??= [])
+      const seen = new Set(target.map((entry) => entry.id))
+      for (const entry of entries) {
+        if (seen.has(entry.id)) continue
+        target.push(entry)
+        seen.add(entry.id)
+      }
+    }
+  }
+  return out
+}
+
 /**
- * Link maps built from serialized nodes + bridges, for every project EXCEPT `activeProjectId`.
+ * Link maps built from serialized nodes + links. Same-project links in `activeProjectId` are
+ * skipped because React Flow supplies their live edge set; cross-project links owned by the active
+ * project are still included because they are deliberately off-canvas and never enter React Flow.
  *
  * On the desktop the active project's map is built live from React Flow and this covers the rest,
  * because writeLinkFiles clears ALL link files before writing the pushed map — pushing only the
@@ -70,16 +110,22 @@ export function buildLinkMap(
  * running inside.
  */
 export function buildBackgroundLinkMaps(
-  projects: Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }>,
+  projects: Array<{ id: string; nodes: CanvasNodeState[]; links?: Link[] }>,
   activeProjectId: string | null,
   sessionIdOf: (nodeId: string) => string | undefined,
   agentIdOf?: (nodeId: string) => string | undefined
 ): ContextLinkMap {
   const map: ContextLinkMap = {}
+  const byId = new Map<string, CanvasNodeState>()
+  for (const project of projects) {
+    for (const node of project.nodes) byId.set(node.id, node)
+  }
   for (const p of projects) {
-    if (p.id === activeProjectId || !p.bridges?.length) continue
-    const byId = new Map(p.nodes.map((n) => [n.id, n]))
-    const edges = p.bridges.filter((e) => byId.has(e.source) && byId.has(e.target))
+    if (!p.links?.length) continue
+    const links = p.id === activeProjectId
+      ? p.links.filter((link) => link.source.ref === 'xnode' || link.target.ref === 'xnode')
+      : p.links
+    const edges = contextNodeEdges(links).filter((e) => byId.has(e.source) && byId.has(e.target))
     const infoOf = (id: string): LinkNodeInfo => {
       const n = byId.get(id)!
       const sticky = n.kind === 'sticky'
@@ -95,7 +141,10 @@ export function buildBackgroundLinkMaps(
         accountId: sticky ? undefined : n.accountId
       }
     }
-    Object.assign(map, buildLinkMap(edges, infoOf))
+    const next = buildLinkMap(edges, infoOf)
+    const merged = mergeContextLinkMaps(map, next)
+    for (const key of Object.keys(map)) delete map[key]
+    Object.assign(map, merged)
   }
   return map
 }

@@ -3,6 +3,7 @@ import {
   buildBackgroundLinkMaps,
   buildContextLinkNote,
   buildLinkMap,
+  mergeContextLinkMaps,
   buildNotePushMessage,
   classifyLink,
   hiddenLinkIds,
@@ -10,10 +11,18 @@ import {
   pairKey,
   planBridges
 } from './noteLink'
-import type { CanvasNodeState } from '@shared/types'
+import type { CanvasNodeState, Link } from '@shared/types'
 
 const term = (contextCapable = false) => ({ kind: 'terminal', contextCapable })
 const sticky = () => ({ kind: 'sticky', contextCapable: false })
+
+/** Build a `kind:'context'` node↔node link — the shape `buildBackgroundLinkMaps` now consumes. */
+const ctx = (id: string, source: string, target: string): Link => ({
+  id,
+  kind: 'context',
+  source: { ref: 'node', nodeId: source },
+  target: { ref: 'node', nodeId: target }
+})
 
 describe('classifyLink', () => {
   it('two context-capable terminals form a context link', () => {
@@ -49,8 +58,18 @@ describe('planBridges', () => {
     expect(plan.linked).toEqual(['n2', 'n3'])
     expect(plan.skipped).toEqual([])
     expect(plan.edges).toEqual([
-      { id: 'bridge-n1-n2', source: 'n1', target: 'n2' },
-      { id: 'bridge-n1-n3', source: 'n1', target: 'n3' }
+      {
+        id: 'bridge-n1-n2',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'n1' },
+        target: { ref: 'node', nodeId: 'n2' }
+      },
+      {
+        id: 'bridge-n1-n3',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'n1' },
+        target: { ref: 'node', nodeId: 'n3' }
+      }
     ])
   })
 
@@ -86,7 +105,14 @@ describe('planBridges', () => {
 
   it('stores a note link sticky→terminal even when asked terminal→sticky', () => {
     const plan = planBridges('n1', ['s1'], lookup, [])
-    expect(plan.edges).toEqual([{ id: 'bridge-s1-n1', source: 's1', target: 'n1' }])
+    expect(plan.edges).toEqual([
+      {
+        id: 'bridge-s1-n1',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 's1' },
+        target: { ref: 'node', nodeId: 'n1' }
+      }
+    ])
     expect(plan.linked).toEqual(['s1'])
   })
 
@@ -181,6 +207,14 @@ describe('buildLinkMap', () => {
   })
 })
 
+describe('mergeContextLinkMaps', () => {
+  it('appends links for the same node instead of overwriting them, and dedupes targets', () => {
+    const a = { id: 'a', title: 'A', cwd: '/a' }
+    const b = { id: 'b', title: 'B', cwd: '/b' }
+    expect(mergeContextLinkMaps({ n: [a] }, { n: [a, b] })).toEqual({ n: [a, b] })
+  })
+})
+
 describe('buildLinkMap agent identity', () => {
   it('carries agentId/sessionId/accountId on context entries', () => {
     const infoOf = (id: string) => ({
@@ -238,7 +272,7 @@ describe('buildBackgroundLinkMaps', () => {
     {
       id: 'p-active',
       nodes: [node({ id: 'a1', agentId: 'claude' }), node({ id: 'a2', agentId: 'codex' })],
-      bridges: [{ id: 'e0', source: 'a1', target: 'a2' }]
+      links: [ctx('e0', 'a1', 'a2')]
     },
     {
       id: 'p-bg',
@@ -247,12 +281,9 @@ describe('buildBackgroundLinkMaps', () => {
         node({ id: 'b2', title: 'Gem', cwd: '/fit', agentId: 'gemini' }),
         node({ id: 'b3', kind: 'sticky', title: 'Note', text: 'remember this' })
       ],
-      bridges: [
-        { id: 'e1', source: 'b1', target: 'b2' },
-        { id: 'e2', source: 'b3', target: 'b1' }
-      ]
+      links: [ctx('e1', 'b1', 'b2'), ctx('e2', 'b3', 'b1')]
     },
-    { id: 'p-nolinks', nodes: [node({ id: 'c1' })], bridges: [] }
+    { id: 'p-nolinks', nodes: [node({ id: 'c1' })], links: [] }
   ]
 
   it('maps every project except the active one (React Flow owns that live)', () => {
@@ -263,6 +294,45 @@ describe('buildBackgroundLinkMaps', () => {
     expect(map['b2']).toEqual([
       { id: 'b1', title: 'Fitness', cwd: '/fit', agentId: 'claude', accountId: 'acct-1' }
     ])
+  })
+  it('keeps an active project cross-project context link because React Flow never owns it', () => {
+    const crossProjects = [
+      {
+        id: 'p-active',
+        nodes: [node({ id: 'a1', title: 'Active', agentId: 'claude' })],
+        links: [{
+          id: 'cross',
+          kind: 'context' as const,
+          source: { ref: 'node' as const, nodeId: 'a1' },
+          target: { ref: 'xnode' as const, projectId: 'p-bg', nodeId: 'b1' }
+        }]
+      },
+      { id: 'p-bg', nodes: [node({ id: 'b1', title: 'Background', agentId: 'codex' })], links: [] }
+    ]
+    const map = buildBackgroundLinkMaps(crossProjects, 'p-active', () => undefined)
+    expect(map.a1).toContainEqual({ id: 'b1', title: 'Background', cwd: '', agentId: 'codex' })
+    expect(map.b1).toContainEqual({ id: 'a1', title: 'Active', cwd: '', agentId: 'claude' })
+  })
+
+  it('retains same-project and cross-project links for one background node', () => {
+    const mixedProjects = [
+      {
+        id: 'p1',
+        nodes: [node({ id: 'a' }), node({ id: 'b' })],
+        links: [
+          ctx('same', 'a', 'b'),
+          {
+            id: 'cross',
+            kind: 'context' as const,
+            source: { ref: 'node' as const, nodeId: 'a' },
+            target: { ref: 'xnode' as const, projectId: 'p2', nodeId: 'c' }
+          }
+        ]
+      },
+      { id: 'p2', nodes: [node({ id: 'c' })], links: [] }
+    ]
+    const map = buildBackgroundLinkMaps(mixedProjects, null, () => undefined)
+    expect(map.a.map((entry) => entry.id).sort()).toEqual(['b', 'c'])
   })
   it('serialized stickies map one-way with their text', () => {
     const map = buildBackgroundLinkMaps(projects, 'p-active', () => undefined)
@@ -288,7 +358,7 @@ describe('buildBackgroundLinkMaps', () => {
       {
         id: 'p-bg',
         nodes: [node({ id: 'm1', title: 'Manual', cwd: '/m' }), node({ id: 'm2', title: 'Also', cwd: '/m' })],
-        bridges: [{ id: 'e', source: 'm1', target: 'm2' }]
+        links: [ctx('e', 'm1', 'm2')]
       }
     ]
     const map = buildBackgroundLinkMaps(
@@ -309,7 +379,7 @@ describe('buildBackgroundLinkMaps', () => {
   })
   it('drops edges whose endpoints are gone from the serialized nodes', () => {
     const map = buildBackgroundLinkMaps(
-      [{ id: 'p', nodes: [node({ id: 'z1' })], bridges: [{ id: 'e', source: 'z1', target: 'gone' }] }],
+      [{ id: 'p', nodes: [node({ id: 'z1' })], links: [ctx('e', 'z1', 'gone')] }],
       null,
       () => undefined
     )

@@ -525,6 +525,8 @@ export function buildFilesApi(
     repoRoot: (cwd) => client.request(IPC.gitRepoRoot, cwd) as Promise<string | null>,
     worktreeList: (repoPath) =>
       client.request(IPC.gitWorktreeList, repoPath) as ReturnType<GitApi['worktreeList']>,
+    submoduleList: (repoPath) =>
+      client.request(IPC.gitSubmoduleList, repoPath) as ReturnType<GitApi['submoduleList']>,
     worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
       client.request(
         IPC.gitWorktreeAdd,
@@ -550,6 +552,16 @@ export function buildFilesApi(
         deleteBranch,
         pruneOnly
       ) as ReturnType<GitApi['worktreeRemove']>,
+    setBranchParent: (repoPath, child, parent) =>
+      client.request(IPC.gitSetBranchParent, repoPath, child, parent) as ReturnType<GitApi['setBranchParent']>,
+    unsetBranchParent: (repoPath, child) =>
+      client.request(IPC.gitUnsetBranchParent, repoPath, child) as ReturnType<GitApi['unsetBranchParent']>,
+    syncBranch: (cwd, child) =>
+      client.request(IPC.gitSyncBranch, cwd, child) as ReturnType<GitApi['syncBranch']>,
+    proposeBranch: (cwd, child) =>
+      client.request(IPC.gitProposeBranch, cwd, child) as ReturnType<GitApi['proposeBranch']>,
+    shipBranch: (cwd, child, parent) =>
+      client.request(IPC.gitShipBranch, cwd, child, parent) as ReturnType<GitApi['shipBranch']>,
     setActiveRemote: (projectId) =>
       client.request(IPC.gitSetActiveRemote, projectId) as Promise<void>
   }

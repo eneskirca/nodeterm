@@ -27,7 +27,7 @@ describe('hideable inventories', () => {
       'markdown-view', 'refresh-terminal'
     ])
     expect(HIDEABLE_HEADER_BUTTONS.map((r) => r.id)).toEqual([
-      'refresh', 'mic', 'ai-name', 'comments', 'hide-fanout', 'tidy-fanout'
+      'refresh', 'mic', 'ai-name', 'comments', 'links', 'hide-fanout', 'tidy-fanout'
     ])
   })
   it('gives every entry a user-facing label', () => {

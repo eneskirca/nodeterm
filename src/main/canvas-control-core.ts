@@ -109,6 +109,8 @@ export type ControlVerb =
   | 'spawn-team'
   | 'open-worktree'
   | 'close-worktree'
+  | 'link-branches'
+  | 'sync-stack'
   | 'branch'
   | 'rename'
   | 'write'
@@ -146,6 +148,8 @@ const VERBS: ControlVerb[] = [
   'spawn-team',
   'open-worktree',
   'close-worktree',
+  'link-branches',
+  'sync-stack',
   'branch',
   'rename',
   'write',
@@ -211,6 +215,9 @@ export function parseControlRequest(
   if (v === 'assign' && !args.node) return { error: 'assign requires --node <id>' }
   if (v === 'open-worktree' && !args.branch) return { error: 'open-worktree requires --branch <name>' }
   if (v === 'close-worktree' && !args.group) return { error: 'close-worktree requires --group <id>' }
+  if (v === 'link-branches' && !args.base) return { error: 'link-branches requires --base <parent branch>' }
+  if (v === 'link-branches' && !args.branch) return { error: 'link-branches requires --branch <child branch>' }
+  if (v === 'sync-stack' && !args.branch) return { error: 'sync-stack requires --branch <child branch>' }
   if (v === 'branch' && !args.node) return { error: 'branch requires --node <id>' }
   if (v === 'rename' && !args.node) return { error: 'rename requires --node <id>' }
   if (v === 'rename' && !args.title) return { error: 'rename requires --title' }
@@ -292,12 +299,18 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  start until every listed station has gone idle, and is context-linked to them so it can read',
     '  their work when it wakes — use it for "B needs what A produced" instead of polling. Only',
     `  status-reporting agent nodes (${statusAgents}, or custom agents based on them) may be waited on; a plain terminal never`,
-    '  reports finishing, so waiting on one is refused. `--project <id>` opens the node(s) in another',
-    '  project instead of yours. It accepts exactly two things — any other id is refused: your OWN',
-    '  project id, which behaves exactly as if the flag were omitted (a normal open, view switch',
-    '  included); or an id `open-project` returned to YOU in this session, which never switches the',
-    '  user\'s view. A session opened into a non-active project starts when the user next views that',
-    '  project — do not poll for it. `--group`/`--after` cannot be combined with `--project`.',
+    '  reports finishing, so waiting on one is refused.',
+    '  `--project <id>` opens the session in a DIFFERENT project you have already opened, named by',
+    '  its folder path or its project id. Passing YOUR OWN project\'s id behaves exactly as if the flag',
+    '  were omitted — the node lands on your active canvas, view switch included. Passing an id',
+    '  returned to YOU in this session, which never switches the user\'s view: the node is created',
+    '  in that other project (it owns the tmux session, runs in that project\'s cwd, inherits its',
+    '  account + permission-mode defaults), and a session opened into a non-active project',
+    '  starts when the user next views that project — do not poll for it. Resolve `<id>` to a project',
+    '  you have already opened; an unknown value is refused rather than silently opening locally, and',
+    '  any other id is refused. Prefer `--project` when the work belongs in another repo\'s canvas,',
+    '  not yours. `--group`/`--after` cannot be combined with `--project` (both name ids that live',
+    '  inside one project).',
     '- `open-project --cwd </abs/path> [--name N] [--color C]` — register (or find) the project for a',
     '  local directory; the reply carries `{ projectId, name, cwd, created }`. Idempotent: the same',
     '  cwd always returns the same project, never a duplicate. Creating/adding asks the user to',
@@ -330,6 +343,14 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  wrapped in a bound group frame (terminals inside it run in the worktree). Local projects only.',
     '- `close-worktree --group <id> [--mode unbind|remove]` — unbind keeps the directory; remove asks',
     '  the user to confirm deletion.',
+    '- `link-branches --base <parent> --branch <child>` — declare a stacked-diff dependency: the child',
+    '  branch builds on the parent. Writes the lineage to the shared git config (the git-town',
+    '  `git-town-branch.<child>.parent` convention) AND records a `dependency` link that renders as a',
+    '  dashed edge between the two worktree group frames. Local projects only. Declare it once per',
+    '  pair; the sync below uses it.',
+    '- `sync-stack --branch <child>` — rebase a child branch onto its parent (`git rebase <parent>`),',
+    '  run in the child\'s own worktree. If the rebase stops on a conflict, the reply says so and the user resolves it',
+    '  in that terminal (`git rebase --continue`). No external tool: this is plain git.',
     '- `branch --node <id>` — branch a Claude node\'s conversation (Claude nodes only).',
     '- `rename --node <id> --title "New Name"` — rename any node (terminals, groups, stickies…).',
     '- `write --node <id> --text "..."` / `close --node <id>` — type into / close a node.',
@@ -368,8 +389,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'downstream one with `--after <upstream-id>` and it starts itself when the upstream goes',
     'idle (do not poll for that yourself). Then break the task into 2-5 workstreams;',
     'per stream `open-worktree --branch <slug>` then `open-agent --agent claude --group <groupId>',
-    '--prompt "<concrete task>"` (each stream on its own branch, no tree conflicts). Members land',
-    'in grid slots inside the frame automatically; align the frames themselves with',
+    '--prompt "<concrete task>"` (each stream on its own branch, no tree conflicts).',
+    'Members land in grid slots inside the frame automatically; align the frames themselves with',
     '`arrange --nodes <groupId,…> --layout row` (pass sibling GROUP ids from one container)',
     'and `rename` each by subject. When a station goes idle, READ what it did through the',
     'context link (the linked-context CLI — see the get-linked-context section in your global',
@@ -380,8 +401,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'Multi-repo orchestration: one project per repository — `open-project --cwd <repo>` (the user',
     'confirms once), then `open-agent --agent claude --project <returned id> --prompt "…"` per repo,',
     'one repo at a time. Sessions in a non-active project start when the user views that project —',
-    'do not poll for them. v1 has no cross-project links: read a repo\'s results by opening a',
-    'reader agent inside that project and linking within it.'
+    'do not poll for them. Use the link picker to create a context link between sessions in different',
+    'projects; linked agents can then read each other through get-linked-context on demand.'
   ].join('\n')
 }
 
@@ -559,13 +580,16 @@ Verbs:
   plain terminal never reports finishing and the node would hang forever. Note the semantics:
   "idle" is the end of a station's TURN, not proof its whole job is done — right for a station
   given one self-contained prompt, wrong if you expect a long conversation first.
-  \`--project <id>\` opens the node(s) in another project instead of yours. It accepts exactly
-  two things — any other id is refused: your OWN project id, which behaves exactly as if the flag
-  were omitted (a normal open, view switch included); or an id \`open-project\` returned to YOU
-  in this session, which never switches the user's view. Defaults inside the target are the
-  TARGET project's (its cwd, its default account and permission mode). A session opened into a
-  non-active project starts when the user next views that project — do not poll for it; the reply
-  says so. \`--group\`/\`--after\` cannot be combined with \`--project\`.
+  \`--project <id>\` opens the session in a DIFFERENT project you have already opened, named by its
+  folder path or its project id. Passing YOUR OWN project's id behaves exactly as if the flag
+  were omitted — the node lands on your active canvas, view switch included. Passing an id
+  returned to YOU in this session, which never switches the user's view: the node is created
+  in that other project (it owns the tmux session, runs in that project's cwd, inherits its
+  account + permission-mode defaults), and a session opened into a non-active project starts when
+  the user next views that project — do not poll for it. Resolve \`<id>\` to a project you
+  have already opened; an unknown value is refused rather than silently opening locally, and
+  any other id is refused. Use this when the work belongs in another repo's canvas, not yours.
+  \`--group\`/\`--after\` cannot be combined with \`--project\` (both name ids that live inside one project).
 - \`open-project --cwd </abs/path> [--name N] [--color C]\` — register (or find) the project for a
   local directory; the reply carries \`{ projectId, name, cwd, created }\`. Idempotent: the same
   cwd always returns the same project, never a duplicate — and \`--name\`/\`--color\` apply only
@@ -620,6 +644,17 @@ Verbs:
   run in the worktree. Local projects only.
 - \`close-worktree --group <id> [--mode unbind|remove]\` — unbind (default) drops the binding
   and keeps the directory; remove asks the user to confirm deleting the worktree.
+- \`link-branches --base <parent> --branch <child>\` — declare a stacked-diff dependency: the
+  child branch is built on top of the parent. This writes the lineage to the shared git config
+  (the git-town \`git-town-branch.<child>.parent\` convention — readable by git-town if the user
+  has it, no binary required) AND records a \`dependency\` link that shows as a dashed edge
+  between the two worktree group frames. Local projects only. Declare it once per pair; it is
+  what \`sync-stack\` reads to know the parent.
+- \`sync-stack --branch <child>\` — rebase the child branch onto its parent (\`git rebase
+  <parent>\`), run in the child's own worktree (where the child is checked out). If the rebase
+  stops on a conflict, the reply says so and tells the user to resolve in that terminal and run
+  \`git rebase --continue\` (or \`--abort\`) — we do not hide a conflicted state as success, and
+  we do not auto-abort a partial resolution. Plain git, no external tool.
 - \`branch --node <id>\` — branch a Claude node's conversation: the node stays on the new
   branch and a new node opens resuming the original. Target must be a Claude agent node.
 - \`rename --node <id> --title "New Name"\` — rename any node (terminals, groups, stickies…).
@@ -731,8 +766,7 @@ piling every session onto your canvas: \`open-project --cwd <repo>\` (the user c
 idempotent thereafter), then \`open-agent --agent claude --project <returned id> --prompt
 "<task>"\` — one repo at a time. With a RETURNED id neither verb moves the user's view, and a
 session opened into a non-active project starts when the user next views that project — do not
-poll for it. v1 has no
-cross-project links: read a repo's results by opening a reader agent inside that project and
-linking within it.
+poll for it. Use the link picker to create a context link between sessions in different projects;
+linked agents can then read each other through get-linked-context on demand.
 `
 }

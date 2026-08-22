@@ -34,6 +34,7 @@ export const HIDEABLE_HEADER_BUTTONS: readonly HideableRow[] = [
   { id: 'mic', label: 'Dictate' },
   { id: 'ai-name', label: 'Name with AI' },
   { id: 'comments', label: 'Comments' },
+  { id: 'links', label: 'Links' },
   { id: 'hide-fanout', label: 'Hide subagent/loop cards' },
   { id: 'tidy-fanout', label: 'Tidy subagent cards' }
 ]

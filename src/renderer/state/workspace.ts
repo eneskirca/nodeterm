@@ -1117,7 +1117,7 @@ function groupsFirst(nodes: CanvasNode[]): CanvasNode[] {
 }
 
 /** A node's position in ROOT space: its own position plus every ancestor frame's origin. */
-function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: number } {
+export function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: number } {
   const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]))
   const seen = new Set<string>([node.id])
   let x = node.position.x
@@ -1132,6 +1132,107 @@ function rootPosition(node: CanvasNode, nodes: CanvasNode[]): { x: number; y: nu
     parentId = parent.parentId
   }
   return { x, y }
+}
+
+// ─── node-group ↔ canvas isomorphism (ticket 07) ──────────────────────────────
+//
+// A node-group and a canvas are two reversible views of the same node-set. Drilling into a group
+// promotes its DIRECT children to root-space (the sub-canvas's top level), reusing the existing
+// canvas-switcher. This is cheap because React Flow keys nodes by `id` and the terminal lifecycle
+// is keyed on `[respawnNonce, offscreenEpoch]` — NOT position/parentId — so repositioning a child
+// from nested-space to root-space re-runs no lifecycle effect: the xterm/PTY/renderer survive in
+// place. Only the group's SIBLINGS leave the node-set (they park via the existing primitive).
+//
+// `rootPosition` (above) is the same helper `ungroupNodes` uses to strip a node's parent offset.
+
+/** The transient, in-memory drill context. Never persisted — a drill is navigation, not a surface. */
+export type DrillContext =
+  | { kind: 'group'; groupId: string; projectId: string } // openNodeGroupAsCanvas: a group's children as the sub-canvas
+  | { kind: 'project-ref'; projectId: string; targetId: string } // openNodeGroupAsCanvas on a `data.projectRef` group (09): drill = switch active project to the referenced one. `projectId` is the SOURCE (meta) canvas — `exitDrill` switches back to it; `targetId` is the referenced project (so the load effect knows a target load is part of THIS drill, not a manual switch to a third project). No merge-back (commits land in the target project); no `cwdOverride` (the target loads its own full nodes).
+
+/**
+ * Build the drilled sub-canvas node-set: the group's DIRECT children promoted to ROOT space, with
+ * `parentId`/`extent` stripped (they become top-level in the sub-canvas). Nested groups stay nested
+ * — only the drilled group's direct children are promoted. The group frame itself and its siblings
+ * are absent (siblings park; the group is the thing being looked-into, not shown as a frame).
+ *
+ * Returns `{ flow, childIds }` so the caller knows exactly which node ids constitute the drilled view
+ * (used to merge edits back into the full project node array on commit — see `remergeDrilledNodes`).
+ */
+export function drillGroupChildren(
+  nodes: CanvasNode[],
+  groupId: string
+): { flow: CanvasNode[]; childIds: Set<string> } {
+  const childIds = new Set<string>()
+  const flow: CanvasNode[] = []
+  for (const node of nodes) {
+    if (node.parentId === groupId) {
+      childIds.add(node.id)
+      const root = rootPosition(node, nodes)
+      flow.push({ ...node, parentId: undefined, extent: undefined, position: root })
+    }
+  }
+  return { flow, childIds }
+}
+
+/**
+ * Commit-while-drilled: merge the EDITED drilled children back into the project's FULL node array,
+ * re-nested under the group (the inverse of `drillGroupChildren`). Drilled children were promoted to
+ * root-space for viewing; persistence stores positions NESTED (parent-relative), so the group's root
+ * origin is subtracted back. Siblings (anything not a drilled child) are kept untouched from the
+ * stored array, as is the group frame itself (it left the drilled view).
+ *
+ * `drilledStates` is `flowToNodeStates(drilledFlow)` — positions are ROOT-space (the drilled view),
+ * and `parentId` is undefined (drilling strips it). We re-nest both.
+ *
+ * This is the one place that closes the logged hazard (07): a drilled view's `nodesRef.current` is a
+ * SUBSET, but `commitCanvas` wholesale-replaces the project's nodes — so committing the subset would
+ * clobber every sibling. Merging by id against the full stored array preserves them, and re-nesting
+ * keeps the persisted positions correct regardless of when the 800ms autosave timer fires.
+ */
+export function remergeDrilledNodes(
+  fullStored: CanvasNodeState[],
+  drilledStates: CanvasNodeState[],
+  groupId: string,
+  fullNodesForRoot: CanvasNode[]
+): CanvasNodeState[] {
+  const drilledById = new Map(drilledStates.map((s) => [s.id, s]))
+  // The group's ROOT-space origin, resolved against the full node array (the group is absent from the
+  // drilled view, so it must be read from the full set — the same reason 08 reads cwd from project.nodes).
+  const group = fullNodesForRoot.find((n) => n.id === groupId)
+  const gx = group ? rootPosition(group, fullNodesForRoot).x : 0
+  const gy = group ? rootPosition(group, fullNodesForRoot).y : 0
+  // Which stored nodes were DIRECT children of the drilled group before the drill. These are the only
+  // nodes whose membership the drilled view may change: a child DELETED while drilled (present in the
+  // stored set, absent from the drilled view) must be dropped; a child NEWLY created while drilled is
+  // appended below. Siblings and the group frame are NOT direct children, so they survive untouched.
+  const wasDirectChild = new Set(
+    fullStored.filter((s) => s.parentId === groupId).map((s) => s.id)
+  )
+  // Re-nest a single drilled child: root-space position → parent-relative, parentId restored.
+  const renest = (s: CanvasNodeState): CanvasNodeState => ({
+    ...s,
+    parentId: groupId,
+    position: { x: s.position.x - gx, y: s.position.y - gy }
+  })
+  // Merge by id over the FULL stored array. A stored direct child that is GONE from the drilled view
+  // (deleted while drilled) is dropped; siblings + the group frame are untouched; remaining drilled
+  // children are re-nested.
+  const merged: CanvasNodeState[] = []
+  for (const state of fullStored) {
+    if (wasDirectChild.has(state.id) && !drilledById.has(state.id)) continue // deleted while drilled
+    const drilled = drilledById.get(state.id)
+    merged.push(drilled ? renest(drilled) : state)
+  }
+  // APPEND drilled children that are NEW (created while drilled — present in the drilled view but
+  // absent from the stored array). Without this a brand-new child would be silently dropped on commit,
+  // and for a worktree drill (08) that means its persisted cwd would never gain the `parentId = groupId`
+  // that `cwdForNewNodeIn` walks to resolve the worktree path — orphaning it from the worktree on reload.
+  const known = new Set(fullStored.map((s) => s.id))
+  for (const drilled of drilledStates) {
+    if (!known.has(drilled.id)) merged.push(renest(drilled))
+  }
+  return merged
 }
 
 function isDescendant(nodes: CanvasNode[], candidateId: string, ancestorId: string): boolean {
@@ -1534,7 +1635,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         ssh: n.ssh,
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
-        worktree: n.worktree
+        worktree: n.worktree,
+        projectRef: n.projectRef
       }
     }
   })
@@ -1597,6 +1699,7 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         commitOid: n.data.commitOid,
         highScore: n.data.highScore,
         agentId: n.data.agentId,
+        agentBaseId: n.data.agentBaseId,
         agentModel: n.data.agentModel,
         accountId: n.data.accountId,
         agentSessionId: n.data.agentSessionId,
@@ -1604,7 +1707,8 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         ssh: n.data.ssh,
         sshRemoteTmux: n.data.sshRemoteTmux,
         sshFs: n.data.sshFs,
-        worktree: n.data.worktree
+        worktree: n.data.worktree,
+        projectRef: n.data.projectRef as { projectId: string } | undefined
       }
     })
 }

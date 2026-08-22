@@ -338,12 +338,21 @@ const api: NodeTerminalApi = {
     checkoutCommit: (cwd, oid) => ipcRenderer.invoke(IPC.gitCheckoutCommit, cwd, oid),
     repoRoot: (cwd) => ipcRenderer.invoke(IPC.gitRepoRoot, cwd),
     worktreeList: (repoPath) => ipcRenderer.invoke(IPC.gitWorktreeList, repoPath),
+    submoduleList: (repoPath) => ipcRenderer.invoke(IPC.gitSubmoduleList, repoPath),
     worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
       ipcRenderer.invoke(IPC.gitWorktreeAdd, repoPath, wtPath, branch, baseRef, isNew),
     worktreeMerge: (repoPath, branch, baseRef, push) =>
       ipcRenderer.invoke(IPC.gitWorktreeMerge, repoPath, branch, baseRef, push),
     worktreeRemove: (repoPath, wtPath, deleteBranch, pruneOnly) =>
       ipcRenderer.invoke(IPC.gitWorktreeRemove, repoPath, wtPath, deleteBranch, pruneOnly),
+    setBranchParent: (repoPath, child, parent) =>
+      ipcRenderer.invoke(IPC.gitSetBranchParent, repoPath, child, parent),
+    unsetBranchParent: (repoPath, child) =>
+      ipcRenderer.invoke(IPC.gitUnsetBranchParent, repoPath, child),
+    syncBranch: (cwd, child) => ipcRenderer.invoke(IPC.gitSyncBranch, cwd, child),
+    proposeBranch: (cwd, child) => ipcRenderer.invoke(IPC.gitProposeBranch, cwd, child),
+    shipBranch: (cwd, child, parent) =>
+      ipcRenderer.invoke(IPC.gitShipBranch, cwd, child, parent),
     setActiveRemote: (projectId) => ipcRenderer.invoke(IPC.gitSetActiveRemote, projectId)
   },
   clipboard: {

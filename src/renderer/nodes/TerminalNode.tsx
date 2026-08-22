@@ -122,7 +122,7 @@ import {
 } from '../terminal/agent-restart'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
-import { IconSearch, IconChat, IconMic, IconReload, IconEye, IconEyeOff, IconGrid } from '../components/icons'
+import { IconSearch, IconChat, IconMic, IconReload, IconEye, IconEyeOff, IconGrid, IconLink } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
@@ -176,6 +176,7 @@ import { matchesShortcut } from '@shared/shortcut'
 import { hintLabel, isWindowsPlatform, isMacPlatform } from '@shared/platform-utils'
 import { ColumnPill } from '../components/kanban/ColumnPill'
 import { BoardLogPanel } from '../components/kanban/BoardLogPanel'
+import { LinkInspectorPanel } from '../components/links/LinkInspectorPanel'
 import { AgentMascot } from './AgentMascot'
 import { connectHostAttachment } from '../lib/sshAttachments'
 
@@ -1272,6 +1273,9 @@ export function TerminalNode({
   const claudeTranscript = readsClaudeTranscript(agentId)
   // The header 💬 now opens the board-log comments flyout (right side); ⌘M keeps the markdown/chat view.
   const [commentsOpen, setCommentsOpen] = useState(false)
+  // The header 🔗 opens the off-canvas link inspector flyout (ticket 06): list/delete a node's
+  // links + "Add link" to author a cross-project/branch/dependency link off-canvas.
+  const [linksOpen, setLinksOpen] = useState(false)
   const canRenameNode = !!agentId && canRename(agentId) // WRITE leg: push `/rename <name>` back
   // READ leg: adopt the agent's own session name into the title. A superset of canRenameNode —
   // gemini names its own sessions but has no rename command, so it polls and never pushes.
@@ -4662,6 +4666,17 @@ export function TerminalNode({
               </button>
             </Tooltip>
           )}
+        {!isHidden('links', hiddenHeaderButtons) && (
+          <Tooltip label="Links — connect to a node, foreign canvas, or branch">
+            <button
+              className="term-node__link nodrag"
+              aria-pressed={linksOpen}
+              onClick={() => setLinksOpen((v) => !v)}
+            >
+              <IconLink />
+            </button>
+          </Tooltip>
+        )}
         <button
           className="term-node__close"
           title="Close (ends the session)"
@@ -4805,6 +4820,10 @@ export function TerminalNode({
         <BoardLogPanel card={{ id }} />
       </div>
     )}
+    {/* Off-canvas link inspector flyout (ticket 06) — a sibling of the root like the comments
+        flyout, expanding to the node's right (the panel's `.term-node__links` root is
+        position:absolute relative to the node). Lists/deletes this node's links + "Add link". */}
+    {linksOpen && !collapsed && <LinkInspectorPanel nodeId={id} mount="flyout" />}
     </>
   )
 }

@@ -46,6 +46,27 @@ export interface WorktreeListResult {
   entries: WorktreeEntry[]
 }
 
+/** One git submodule, as reported by `git submodule status`. `path` is RELATIVE to the repo root. */
+export interface SubmoduleEntry {
+  /** Relative path inside the repo (e.g. `vendor/lib`). */
+  path: string
+  /** Commit the superproject records for the submodule (the SHA git checks out). Empty on parse miss. */
+  sha: string
+  /**
+   * git still LISTS a submodule whose directory was deleted behind its back (or never initialized) —
+   * `git submodule status` prefixes the line with `-` exactly when the working tree is absent. Treating
+   * such an entry as alive is what makes a dead binding look healthy, so the flag has to survive the
+   * parse AND be OR-ed with a path stat (git < 2.x edge cases), mirroring `WorktreeEntry.prunable`.
+   */
+  prunable?: boolean
+}
+
+/** `git submodule status`, plus WHETHER GIT COULD BE READ AT ALL — see `worktree-ops.listSubmodules`. */
+export interface SubmoduleListResult {
+  ok: boolean
+  entries: SubmoduleEntry[]
+}
+
 /** The node fields that can say "this session does not run on this machine". */
 interface RemoteNodeLike {
   /** SSH-PROJECT terminal (`createTerminalNode(..., project.ssh)`) — the connection it runs on. */
@@ -78,6 +99,28 @@ export function isValidGitRef(name: string): boolean {
   const n = name.trim()
   if (!n || n.startsWith('-')) return false
   return !/[\s~^:?*[\\]|\.\.|^\/|\/$|@\{/.test(n)
+}
+
+/**
+ * The shared-config key git-town uses to record a branch's parent: `git-town-branch.<child>.parent`.
+ * We ADOPT this convention (plain `git config`, no git-town binary) so a topology nodeterm declares is
+ * readable by git-town, and one declared via git-town is readable by us.
+ *
+ * Pure + exported so the interpolation guard is unit-testable: a branch name that smuggles a CLI
+ * flag (`-x`) or carries path/namespace chars git forbids is REJECTED here, before it ever reaches a
+ * `git config` command line. This is the standing rule (re-validate a hand-editable value at the
+ * interpolation site, never by its type) — branch names come from git-shared JSON and land on a git
+ * command line, exactly like permission modes / `SAFE_SESSION_ID`. Returns `null` for an invalid ref
+ * so the caller can refuse without building a command. The dot-segment check keeps a `<child>` like
+ * `..` from collapsing the config section.
+ */
+export function branchParentConfigKey(child: string): string | null {
+  const n = child.trim()
+  if (!isValidGitRef(n)) return null
+  // A refname segment must not be empty or be `..` (git refines this; the regex above already
+  // rejects the leading/trailing-slash and `..` cases `isValidGitRef` covers). Belt-and-braces: a
+  // name with a literal newline is impossible after isValidGitRef but we keep the guard local.
+  return `git-town-branch.${n}.parent`
 }
 
 /** Flatten a branch name into a filesystem-safe, flag-safe slug. */
@@ -310,6 +353,45 @@ export function parseWorktreePorcelain(out: string): WorktreeEntry[] {
     }
   }
   if (cur) flush(cur)
+  return entries
+}
+
+/**
+ * Parse `git submodule status [--recursive]` into structured entries.
+ *
+ * Each line is `<flag><sha> <path> (<description>)`:
+ *  - the leading flag char is ` ` (checked out, SHA matches), `+` (SHA differs from what the
+ *    superproject records), `-` (NOT initialized — the directory is absent), or `U` (merge conflict).
+ *  - `<sha>` is the 40-char commit (or all-zeros when uninitialized).
+ *  - `<path>` is relative to the repo root (may contain spaces; the trailing ` (<desc>)` is optional
+ *    and git omits it when there is no description — so the path is everything from after the SHA to
+ *    either ` (` or end-of-line).
+ *
+ * `-` ⇒ `prunable:true`: an uninitialized submodule has no working tree, exactly the "directory gone"
+ * case `WorktreeEntry.prunable` models. `+`/`U` are NOT prunable (the directory exists; only the SHA
+ * differs). The path stat in `listSubmodules` ORs the flag with a live `fs` check so a directory git
+ * still thinks is healthy (old git, deleted-behind-its-back) is caught too.
+ */
+export function parseSubmoduleStatus(out: string): SubmoduleEntry[] {
+  const entries: SubmoduleEntry[] = []
+  for (const raw of out.split('\n')) {
+    const line = raw.trimEnd()
+    if (!line) continue
+    // The first char is the flag; the rest begins with the 40-char SHA.
+    const flag = line[0]
+    const rest = line.slice(1)
+    // SHA is the first token after the flag (git zero-pads uninitialized submodules).
+    const shaMatch = rest.match(/^\s*([0-9a-f]{40})\s+/)
+    if (!shaMatch) continue
+    const sha = shaMatch[1]
+    const afterSha = rest.slice(shaMatch[0].length)
+    // Path runs to ` (` (the optional description) or end-of-line. A path may contain spaces but not
+    // a bare ` (` — git's own format uses ` (<desc>)` only as a trailing suffix.
+    const descIdx = afterSha.indexOf(' (')
+    const path = (descIdx >= 0 ? afterSha.slice(0, descIdx) : afterSha).trim()
+    if (!path) continue
+    entries.push({ path, sha, prunable: flag === '-' })
+  }
   return entries
 }
 

@@ -1932,6 +1932,16 @@ export class PtyManager {
     // AFTER the in-flight barrier so a create racing the owner's own respawn joins it instead.
     const tomb = this.liveTombstone(key)
     if (tomb && tomb.by !== clientId) return { sessionId: '', fresh: false, closed: { by: tomb.by } }
+    // A projection of a FOREIGN node (ticket 05's `requireExisting`) must never SPAWN its target's
+    // session — it is a viewer, not the owner, and spawning would steal pane ownership + run under
+    // the wrong project's resolved context. By this point every legitimate join path has been
+    // exhausted: `join()` missed (no live session), the in-flight spawn it might have been racing
+    // has resolved (and its `late` re-join also missed, or there was no in-flight spawn at all),
+    // and the node was not tombstoned (a `closed` refusal already won above). So there is genuinely
+    // no session to join — refuse. The owning project's next mount spawns the session and the
+    // projection retries. See `PtyCreateOptions.requireExisting` for why this lives in `create`
+    // (not `spawnNew`) — the projection has no valid spawn branch at all.
+    if (options.requireExisting) return { sessionId: '', fresh: false, unavailable: 'no-session' }
     const spawn = this.spawnNew(clientId, options)
     this.inflight.set(key, spawn)
     // Clear on settle — INCLUDING on failure, or a single failed spawn would leave a rejected
