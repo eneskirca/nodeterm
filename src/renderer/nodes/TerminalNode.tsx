@@ -3170,8 +3170,16 @@ export function TerminalNode({
           transport.recycle(id)
           // `clearEnv` rides the respawn's `transport.create` (read from data above) to strip env at
           // spawn; the cold-restore auto-resume relaunches the same agent against the default provider.
+          // The node's `agentModel` is a GATEWAY model id (the one a model switch stored, or the one a
+          // gateway node was created with): it only resolves through the gateway the strip just removed.
+          // Leaving it set would make the resume line append `--model <gateway-model>`, which the
+          // subscription CLI does not know — so the agent fails to launch against the subscription with
+          // a model name that does not exist there. Drop it: the CLI's own default model is what
+          // "subscription" means, and a later model switch (or plain Restart re-applying the gateway)
+          // sets it again.
           updateNodeData(id, (node) => ({
             clearEnv: true,
+            agentModel: undefined,
             respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
           }))
           return 'restarted'
