@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createAgentNode, flowToNodeStates, nodeStatesToFlow } from './workspace'
 import { resetClaudeCliCapsForTests } from './permissionMode'
 import { UNKNOWN_CLAUDE_CLI_CAPS } from '@shared/types'
+import { DEFAULT_SETTINGS } from '@shared/types'
+import { useSettings } from './settings'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -95,5 +97,33 @@ describe('agentSessionId survives persistence', () => {
       }
     ])
     expect(loaded.data.agentSessionId).toBeUndefined()
+  })
+})
+
+describe('agentBaseId survives custom-agent settings changes', () => {
+  afterEach(() => useSettings.setState({ settings: DEFAULT_SETTINGS }))
+
+  it('snapshots the mutable current base on creation and round-trips without the definition', () => {
+    useSettings.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        customAgents: [
+          {
+            id: 'custom:claude-proxy',
+            label: 'Claude proxy',
+            launchCmd: 'claude-proxy',
+            baseAgent: 'claude'
+          }
+        ]
+      }
+    })
+    const node = createAgentNode('custom:claude-proxy', 0)
+    expect(node.data.agentBaseId).toBe('claude')
+
+    const saved = flowToNodeStates([node])
+    expect(saved[0].agentBaseId).toBe('claude')
+
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, customAgents: [] } })
+    expect(nodeStatesToFlow(saved)[0].data.agentBaseId).toBe('claude')
   })
 })

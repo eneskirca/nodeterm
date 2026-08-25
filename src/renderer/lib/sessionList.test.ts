@@ -6,6 +6,7 @@ import {
   groupSessionRows,
   liveCollapseKeys,
   pruneCollapsedItems,
+  repoSignalCounts,
   sessionStatusKind,
   sessionStatusGroup,
   sessionStateAgeLabel,
@@ -14,10 +15,28 @@ import {
   projectHeadClickAction,
   projectSignalCounts,
   type ProjectInput,
+  type RepoGroup,
   type SessionRowVM,
   type SessionGroup
 } from './sessionList'
 import type { AgentNodeStatus } from '../state/agentStatus'
+import type { WorktreeEntry } from '@shared/worktree'
+import type { SshConnection } from '@shared/ssh'
+
+// The repo-grouping layer wraps the per-project SessionGroup[]. Most existing tests assert on the
+// per-project shape (projectId/ungrouped/groups), so `flat` unwraps a RepoGroup[] back to the flat
+// SessionGroup[] they were written against. `facts` is the empty worktree-facts input (no repo
+// roots resolved → every project lands in its own degenerate RepoGroup, order preserved).
+const facts = { repoRootByProject: {}, orphansByProject: {} }
+const flat = (repos: RepoGroup[]): SessionGroup[] => repos.flatMap((r) => r.projects)
+/** Call buildSessionList with the empty worktree facts and unwrap to the flat SessionGroup[]. */
+const buildSessionGroups = (
+  projects: ProjectInput[],
+  liveActiveNodes: Parameters<typeof buildSessionList>[1],
+  activeProjectId: string,
+  statusById: Record<string, AgentNodeStatus>,
+  filter: string
+): SessionGroup[] => flat(buildSessionList(projects, liveActiveNodes, activeProjectId, statusById, filter, facts))
 
 const node = (id: string, over: Partial<ProjectInput['nodes'][number]> = {}) => ({
   id,
@@ -136,13 +155,13 @@ describe('projectHeadClickAction', () => {
 
 describe('buildSessionList', () => {
   it('keeps store order (mirrors the tab bar) regardless of which project is active', () => {
-    const groups = buildSessionList(projects(), null, 'p2', {}, '')
+    const groups = buildSessionGroups(projects(), null, 'p2', {}, '')
     expect(groups.map((g) => g.projectId)).toEqual(['p1', 'p2'])
     expect(groups.find((g) => g.projectId === 'p2')!.isActive).toBe(true)
   })
 
   it('keeps only terminal/agent nodes and flags agents', () => {
-    const groups = buildSessionList(projects(), null, 'p1', {}, '')
+    const groups = buildSessionGroups(projects(), null, 'p1', {}, '')
     const p2 = groups.find((g) => g.projectId === 'p2')!
     expect(p2.ungrouped.map((s) => s.id)).toEqual(['t2']) // sticky + editor dropped
     const p1 = groups.find((g) => g.projectId === 'p1')!
@@ -154,7 +173,7 @@ describe('buildSessionList', () => {
     const status: Record<string, AgentNodeStatus> = {
       a1: { unread: true, state: 'working', agentId: 'claude', session: 'fix bug', sessionId: 'sess-1' }
     }
-    const groups = buildSessionList(projects(), null, 'p1', status, '')
+    const groups = buildSessionGroups(projects(), null, 'p1', status, '')
     const a1 = groups[0].ungrouped.find((s) => s.id === 'a1')!
     expect(a1.statusKind).toBe('working')
     expect(a1.unread).toBe(true)
@@ -165,7 +184,7 @@ describe('buildSessionList', () => {
 
   it('uses live nodes for the active project instead of serialized ones', () => {
     const live = [node('t1', { title: 'renamed live' })]
-    const groups = buildSessionList(projects(), live, 'p1', {}, '')
+    const groups = buildSessionGroups(projects(), live, 'p1', {}, '')
     const p1 = groups.find((g) => g.projectId === 'p1')!
     expect(p1.ungrouped.map((s) => s.title)).toEqual(['renamed live'])
   })
@@ -185,7 +204,7 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const [p1] = buildSessionList(proj, null, 'p1', {}, '')
+    const [p1] = buildSessionGroups(proj, null, 'p1', {}, '')
     expect(p1.groups).toHaveLength(1)
     expect(p1.groups[0]).toMatchObject({ id: 'g1', title: 'Frontend', color: '#abc' })
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['t1', 't2'])
@@ -206,21 +225,21 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const unfiltered = buildSessionList(proj, null, 'p1', {}, '')
+    const unfiltered = buildSessionGroups(proj, null, 'p1', {}, '')
     expect(unfiltered[0].groups.map((b) => b.id)).toEqual(['g1', 'g2']) // empty g1 kept
 
-    const filtered = buildSessionList(proj, null, 'p1', {}, 'spec')
+    const filtered = buildSessionGroups(proj, null, 'p1', {}, 'spec')
     expect(filtered[0].groups.map((b) => b.id)).toEqual(['g2']) // empty g1 dropped
     expect(filtered[0].groups[0].sessions.map((s) => s.id)).toEqual(['t1'])
   })
 
   it('filters by title and session name, hiding empty projects only when filtering', () => {
     const status: Record<string, AgentNodeStatus> = { a1: { unread: false, session: 'special' } }
-    const filtered = buildSessionList(projects(), null, 'p1', status, 'spec')
+    const filtered = buildSessionGroups(projects(), null, 'p1', status, 'spec')
     expect(filtered.map((g) => g.projectId)).toEqual(['p1'])
     expect(filtered[0].ungrouped.map((s) => s.id)).toEqual(['a1'])
 
-    const unfiltered = buildSessionList(projects(), null, 'p1', {}, '')
+    const unfiltered = buildSessionGroups(projects(), null, 'p1', {}, '')
     expect(unfiltered.length).toBe(2) // both projects kept when no filter
   })
 
@@ -239,7 +258,7 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const [all] = buildSessionList(
+    const [all] = buildSessionGroups(
       proj,
       null,
       'p1',
@@ -254,7 +273,7 @@ describe('buildSessionList', () => {
     expect(projectSignalCounts(all)).toEqual({ attention: 1, unread: 0, working: 0 })
 
     // Filtering keeps the ancestors of a match — otherwise the hit is unreachable in the tree.
-    const [filtered] = buildSessionList(proj, null, 'p1', {}, 'needle')
+    const [filtered] = buildSessionGroups(proj, null, 'p1', {}, 'needle')
     expect(filtered.groups[0].id).toBe('outer')
     expect(filtered.groups[0].children[0].children[0].sessions.map((row) => row.id)).toEqual([
       'target'
@@ -274,7 +293,7 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const [group] = buildSessionList(proj, null, 'p1', {}, '')
+    const [group] = buildSessionGroups(proj, null, 'p1', {}, '')
     expect(new Set(group.groups.map((bucket) => bucket.id))).toEqual(
       new Set(['dangling', 'a', 'b'])
     )
@@ -296,21 +315,28 @@ describe('sidebar disclosure keys', () => {
   ]
 
   it('lists a key for the project and for every frame at any depth', () => {
-    const keys = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const keys = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, '', facts))
     expect(keys).toEqual(
-      new Set(['project:p1', 'project:p1:group:outer', 'project:p1:group:inner'])
+      new Set([
+        'repo:__norepo__:p1',
+        'project:p1',
+        'project:p1:group:outer',
+        'project:p1:group:inner'
+      ])
     )
   })
 
   it('drops keys whose project or frame is gone, and keeps the key being written', () => {
-    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, '', facts))
     const stored = {
+      'repo:__norepo__:p1': true,
       'project:p1': true,
       'project:p1:group:inner': true,
       'project:p1:group:deleted': true,
       'project:closed-long-ago': true
     }
     expect(pruneCollapsedItems(stored, live)).toEqual({
+      'repo:__norepo__:p1': true,
       'project:p1': true,
       'project:p1:group:inner': true
     })
@@ -321,8 +347,8 @@ describe('sidebar disclosure keys', () => {
   })
 
   it('returns the same object when there is nothing to prune (no needless settings write)', () => {
-    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
-    const stored = { 'project:p1': true }
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, '', facts))
+    const stored = { 'repo:__norepo__:p1': true, 'project:p1': true }
     expect(pruneCollapsedItems(stored, live)).toBe(stored)
   })
 })
@@ -375,7 +401,7 @@ describe('projectSignalCounts', () => {
       d: { unread: true },
       e: { unread: true, state: 'working' }
     }
-    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    const [g] = buildSessionGroups(proj, null, 'p1', status, '')
     // `e` is the load-bearing one: it is the single working session AND carries an unread mark,
     // so it must land in `working` and NOT in `unread`. `c` (done+unread) now counts as unread,
     // not attention — the user's call: unread already signals "there's something new here".
@@ -383,7 +409,7 @@ describe('projectSignalCounts', () => {
   })
 
   it('returns zeros for a quiet project', () => {
-    const [g] = buildSessionList(
+    const [g] = buildSessionGroups(
       [{ id: 'p1', name: 'P1', color: '#123', nodes: [node('x')] }],
       null,
       'p1',
@@ -426,7 +452,7 @@ describe('projectSignalCounts', () => {
       a1: { unread: true, state: 'blocked', agentId: 'claude', session: 'blocked task', sessionId: 'sess-a1' },
       a2: { unread: true, state: 'working', agentId: 'claude', session: 'working task', sessionId: 'sess-a2' }
     }
-    const [p1] = buildSessionList(proj, null, 'p1', status, '')
+    const [p1] = buildSessionGroups(proj, null, 'p1', status, '')
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['a1', 'a2']) // sanity: sessions really live under group.groups
     expect(projectSignalCounts(p1)).toEqual({ attention: 1, unread: 0, working: 1 })
   })
@@ -582,5 +608,185 @@ describe('buildStatusList', () => {
     expect(allRows.filter((r) => r.id === 'a1')).toHaveLength(1)
     // …owned by its real project (p1), NOT mis-tagged as p2.
     expect(allRows.find((r) => r.id === 'a1')!.projectId).toBe('p1')
+  })
+})
+
+describe('repo grouping', () => {
+  // A bare project with a terminal session at a given cwd. `cwd` defaults to the repo root so a
+  // one-project repo collapses to a single header.
+  const repoProject = (
+    id: string,
+    name: string,
+    cwd: string,
+    over: Partial<ProjectInput> = {}
+  ): ProjectInput => ({
+    id,
+    name,
+    color: '#111',
+    cwd,
+    nodes: [node(`${id}-t`)],
+    ...over
+  })
+
+  const factsFor = (
+    repoRootByProject: Record<string, string | null | undefined>,
+    orphansByProject: Record<string, WorktreeEntry[]> = {}
+  ) => ({ repoRootByProject, orphansByProject })
+
+  it('collapses to one RepoGroup when a single project cwd === repoRoot', () => {
+    const projects = [repoProject('p1', 'Alpha', '/repo')]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: '/repo' }))
+    expect(repos).toHaveLength(1)
+    expect(repos[0].collapsedProject).toBe(true)
+    expect(repos[0].repoRoot).toBe('/repo')
+    expect(repos[0].repoName).toBe('repo')
+    expect(repos[0].projects).toHaveLength(1)
+    expect(repos[0].projects[0].projectId).toBe('p1')
+  })
+
+  it('groups two projects sharing one repoRoot into a single RepoGroup, split (not collapsed)', () => {
+    const projects = [
+      repoProject('p1', 'Alpha', '/repo'),
+      repoProject('p2', 'Beta', '/repo/sub')
+    ]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: '/repo', p2: '/repo' }))
+    expect(repos).toHaveLength(1)
+    expect(repos[0].collapsedProject).toBe(false) // two projects → split
+    expect(repos[0].repoRoot).toBe('/repo')
+    // store order preserved within the repo
+    expect(repos[0].projects.map((g) => g.projectId)).toEqual(['p1', 'p2'])
+  })
+
+  it('keeps a subdir-cwd project split under its repo (collapsedProject false)', () => {
+    const projects = [repoProject('p1', 'Alpha', '/repo/src')]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: '/repo' }))
+    expect(repos).toHaveLength(1)
+    expect(repos[0].repoRoot).toBe('/repo')
+    expect(repos[0].collapsedProject).toBe(false) // cwd is a subdir, not the repo root
+    expect(repos[0].repoName).toBe('repo')
+  })
+
+  it('degrades to a per-project degenerate RepoGroup when there is no repo (repoRoot null)', () => {
+    const projects = [repoProject('p1', 'Alpha', '/nope')]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: null }))
+    expect(repos).toHaveLength(1)
+    expect(repos[0].repoRoot).toBeNull()
+    expect(repos[0].collapsedProject).toBe(true) // degenerate always collapses
+    // no repo folder name → falls back to the project name
+    expect(repos[0].repoName).toBe('Alpha')
+    // the degenerate key is per-project so two cwd-less projects never share one
+    expect(repos[0].key).toBe('repo:__norepo__:p1')
+  })
+
+  it('gives two cwd-less projects SEPARATE degenerate RepoGroups (per-project key)', () => {
+    const projects = [
+      { id: 'p1', name: 'Alpha', color: '#111', nodes: [node('t1')] },
+      { id: 'p2', name: 'Beta', color: '#222', nodes: [node('t2')] }
+    ]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: null, p2: null }))
+    expect(repos).toHaveLength(2)
+    expect(repos.map((r) => r.key)).toEqual(['repo:__norepo__:p1', 'repo:__norepo__:p2'])
+  })
+
+  it('keeps a local project and an SSH project with the SAME path string in separate RepoGroups', () => {
+    // Hazard #1: identical path strings on different machines must not merge.
+    const sshServer = { host: 'server', user: 'bob', port: 22 } as unknown as SshConnection
+    const projects = [
+      repoProject('p1', 'Alpha', '/repo'),
+      {
+        ...repoProject('p2', 'Beta', '/repo'),
+        ssh: { server: sshServer, remoteCwd: '/repo' }
+      }
+    ]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: '/repo', p2: '/repo' }))
+    expect(repos).toHaveLength(2)
+    // local key has an empty machine half; the SSH key carries user@host
+    expect(repos[0].key).toBe('repo::/repo')
+    expect(repos[1].key).toBe('repo:bob@server:/repo')
+  })
+
+  it('surfaces unbound worktrees as adoptable rows only for the active project repo', () => {
+    const orphans: WorktreeEntry[] = [
+      { path: '/repo/.wt/feature', branch: 'feature', head: 'abc', isBare: false },
+      { path: '/repo/.wt/detached', branch: null, head: 'def', isBare: false }
+    ]
+    const projects = [repoProject('p1', 'Alpha', '/repo')]
+    const repos = buildSessionList(
+      projects,
+      null,
+      'p1',
+      {},
+      '',
+      factsFor({ p1: '/repo' }, { p1: orphans })
+    )
+    expect(repos).toHaveLength(1)
+    // adoptable rows are attached to the repo holding the ACTIVE project only
+    expect(repos[0].adoptable).toHaveLength(2)
+    expect(repos[0].adoptable.map((a) => a.entry.branch)).toEqual(['feature', null])
+    // non-active project (p2 in another repo) gets no adoptable rows — see the next test
+  })
+
+  it('does not surface adoptable rows for a non-active project in the same repo', () => {
+    const orphans: WorktreeEntry[] = [
+      { path: '/repo/.wt/feature', branch: 'feature', head: 'abc', isBare: false }
+    ]
+    const projects = [
+      repoProject('p1', 'Alpha', '/repo'),
+      repoProject('p2', 'Beta', '/repo/sub')
+    ]
+    // active project is p1; orphans are keyed under p2 to prove they are dropped
+    const repos = buildSessionList(
+      projects,
+      null,
+      'p1',
+      {},
+      '',
+      factsFor({ p1: '/repo', p2: '/repo' }, { p2: orphans })
+    )
+    expect(repos).toHaveLength(1)
+    expect(repos[0].adoptable).toHaveLength(0)
+  })
+
+  it('keeps a RepoGroup when any session in any of its projects matches the filter', () => {
+    const projects = [
+      repoProject('p1', 'Alpha', '/repo'),
+      { ...repoProject('p2', 'Beta', '/repo/sub'), nodes: [node('t2', { title: 'needle' })] }
+    ]
+    const repos = buildSessionList(projects, null, 'p1', {}, 'needle', factsFor({ p1: '/repo', p2: '/repo' }))
+    // p1's session 'p1-t' does not match, but p2's 'needle' session does → the shared repo survives
+    expect(repos).toHaveLength(1)
+    expect(repos[0].projects.find((g) => g.projectId === 'p2')!.ungrouped).toHaveLength(1)
+  })
+
+  it('drops a RepoGroup whose adoptable rows are the only match when filtering by branch', () => {
+    const orphans: WorktreeEntry[] = [
+      { path: '/repo/.wt/feature', branch: 'feature-x', head: 'abc', isBare: false }
+    ]
+    const projects = [repoProject('p1', 'Alpha', '/repo')]
+    const repos = buildSessionList(
+      projects,
+      null,
+      'p1',
+      {},
+      'feature-x',
+      factsFor({ p1: '/repo' }, { p1: orphans })
+    )
+    // no session matches 'feature-x', but the adoptable row's branch does → repo kept
+    expect(repos).toHaveLength(1)
+    expect(repos[0].adoptable).toHaveLength(1)
+  })
+
+  it('liveCollapseKeys includes a repo:* key plus the existing project/group keys', () => {
+    const projects = [
+      repoProject('p1', 'Alpha', '/repo'),
+      { ...repoProject('p2', 'Beta', '/repo/sub'), nodes: [node('g1', { kind: 'group', title: 'G' }), node('t2', { parentId: 'g1' })] }
+    ]
+    const repos = buildSessionList(projects, null, 'p1', {}, '', factsFor({ p1: '/repo', p2: '/repo' }))
+    const keys = liveCollapseKeys(repos)
+    // one repo key (the shared repo root), both project keys, and p2's group key
+    expect(keys.has('repo::/repo')).toBe(true)
+    expect(keys.has('project:p1')).toBe(true)
+    expect(keys.has('project:p2')).toBe(true)
+    expect(keys.has('project:p2:group:g1')).toBe(true)
   })
 })

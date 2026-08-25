@@ -1,9 +1,9 @@
 import { create } from 'zustand'
 import type { AgentPermissionMode } from '@shared/agents/config'
 import type {
-  BridgeLink,
   CanvasMutation,
   CanvasNodeState,
+  Link,
   NavStop,
   Project,
   ProjectKanban,
@@ -95,14 +95,9 @@ interface ProjectsState {
   /** Replaces the project's breadcrumb (navigation history) list wholesale — the UI computes the
    *  next list via lib/breadcrumbs and hands it over whole, same convention as setProjectKanban. */
   setProjectBreadcrumbs(id: string, breadcrumbs: NavStop[]): void
-  /** Writes the serialized canvas (nodes + viewport + bridge links + control ropes) back into a project. */
-  commitCanvas(
-    id: string,
-    nodes: CanvasNodeState[],
-    viewport: Viewport,
-    bridges?: BridgeLink[],
-    ropes?: BridgeLink[]
-  ): void
+  /** Writes the serialized canvas (nodes + viewport + the unified link substrate) back into a
+   *  project. `links` merges context + lineage edges (formerly the separate `bridges`/`ropes`). */
+  commitCanvas(id: string, nodes: CanvasNodeState[], viewport: Viewport, links?: Link[]): void
   /**
    * Applies ONE peer canvas mutation to a project's serialized nodes — the path for a project
    * that is loaded but NOT active (React Flow only holds the active project's nodes). Returns
@@ -113,6 +108,13 @@ interface ProjectsState {
    * they deleted on the very next save — the data-loss shape canvas sync exists to fix.
    */
   applyNodeMutation(projectId: string, mutation: CanvasMutation): boolean
+  /**
+   * Append a fully-formed `CanvasNodeState` to a (possibly NON-active) project's serialized nodes.
+   * The seam for canvas-control `open-agent --project <B>` (ticket 05): the node is created in
+   * project B, which is not the active canvas, so it cannot go through live `setNodes` — it lands
+   * in B's `Project.nodes` and appears when B is next loaded. Other projects are untouched.
+   */
+  addNodeToProject(projectId: string, node: CanvasNodeState): void
   /** Renames a node within a project (source of truth for inactive projects). */
   renameNode(projectId: string, nodeId: string, title: string): void
   /** Recolors a node within a project. */
@@ -436,11 +438,20 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     }))
   },
 
-  commitCanvas(id, nodes, viewport, bridges, ropes) {
+  commitCanvas(id, nodes, viewport, links) {
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === id
-          ? { ...p, nodes, viewport, ...(bridges ? { bridges } : {}), ...(ropes ? { ropes } : {}) }
+          ? // Drop legacy `bridges`/`ropes` on write: a project loaded by a pre-`Link` build may
+            // still carry them in memory, and the writer migrates either shape to `links` — so
+            // leaving them set would double-serialize. `links` is undefined ⇒ an empty canvas
+            // (no edges), matching the old omit-when-empty posture.
+            (({ bridges: _b, ropes: _r, ...rest }) => ({
+              ...rest,
+              nodes,
+              viewport,
+              ...(links ? { links } : {})
+            }))(p)
           : p
       )
     }))
@@ -454,6 +465,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       )
     }))
     return true
+  },
+
+  addNodeToProject(projectId, node) {
+    if (!get().projects.some((p) => p.id === projectId)) return
+    set((s) => ({
+      projects: mapProjectNodes(s.projects, projectId, (nodes) => [...nodes, node])
+    }))
   },
 
   renameNode(projectId, nodeId, title) {

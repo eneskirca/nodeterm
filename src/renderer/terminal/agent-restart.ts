@@ -83,6 +83,26 @@ export function restartEligibility(
 }
 
 /**
+ * Model switching has a different interruption contract from an in-place restart. It never writes
+ * the harness exit command into the composer: core proves the expected agent owns the foreground
+ * process group and terminates that group by PID before the pane is recycled. A user-requested
+ * switch may therefore interrupt `working` or `blocked` safely without turning `/exit` into prompt
+ * text (the reason `restartEligibility` must reject those states).
+ *
+ * Keep the durable requirements shared with restart: the harness must support resume and there
+ * must be a provider session id to carry into the replacement process. Model capability itself is
+ * checked by the caller through the base-agent-aware `canSwitchModel` registry.
+ */
+export function modelSwitchEligibility(
+  agentId: string | undefined,
+  sessionId: string | undefined
+): { ok: true } | { ok: false; reason: Exclude<IneligibleReason, 'working'> } {
+  if (!agentId || !canResume(agentId)) return { ok: false, reason: 'not-resumable' }
+  if (!sessionId) return { ok: false, reason: 'no-session' }
+  return { ok: true }
+}
+
+/**
  * Prefer the live hook-reported id, then the caller-chosen id persisted on the node. Copilot and
  * modern Claude can start with a minted id before their first hook lands; making each menu/closure
  * rediscover this fallback separately would make one of them offer a restart that the other
@@ -94,7 +114,36 @@ export function restartSessionId(live: unknown, persisted: unknown): string | un
   return undefined
 }
 
-export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
+/**
+ * "Restart on subscription" (clear-env) has the same interruption contract as a model switch: it
+ * never writes the harness exit command into the composer — core proves the expected agent owns
+ * the foreground process group and terminates that group by PID before the pane is recycled — so a
+ * `working` or `blocked` session may be interrupted safely (unlike `restartEligibility`, which must
+ * reject those states because its `/exit` would be typed AS THE ANSWER to a permission dialog).
+ * Gateway overload — the scenario this feature exists for — shows up mid-turn: the turn is stuck or
+ * failing, and "wait for the turn to finish" is exactly what you cannot do when the gateway is down.
+ *
+ * The durable requirements are shared with restart: the harness must support resume and there must
+ * be a provider session id to carry into the replacement process. The strip set itself is checked
+ * by the caller through `vanillaEnvStripPattern` (only claude/codex/copilot builtins have one).
+ */
+export function clearEnvEligibility(
+  agentId: string | undefined,
+  sessionId: string | undefined
+): { ok: true } | { ok: false; reason: Exclude<IneligibleReason, 'working'> } {
+  if (!agentId || !canResume(agentId) || !exitSequence(agentId))
+    return { ok: false, reason: 'not-resumable' }
+  if (!sessionId) return { ok: false, reason: 'no-session' }
+  return { ok: true }
+}
+
+export type RestartOutcome =
+  | 'restarted'
+  | 'exit-timeout'
+  | 'not-eligible'
+  | 'model-no-session'
+  | 'model-unavailable'
+  | 'model-pane-mismatch'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
@@ -437,7 +486,13 @@ export function guardConcurrentRestart<T extends string, Args extends unknown[]>
 export type AgentRestartFn = (
   targetAgentId?: AgentId,
   targetModel?: string,
-  restartShell?: boolean
+  restartShell?: boolean,
+  // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+  // provider env so the agent falls back to its OWN default provider. No model/agent change; the
+  // cold-restore auto-resume keeps the same conversation. Uses `clearEnvEligibility` (permits busy,
+  // since `terminateForeground` is PID-safe — no `/exit` typed into a dialog) and recycles the same
+  // way a model switch does, because tmux env changes do not retroactively change an existing shell.
+  clearEnv?: boolean
 ) => Promise<RestartOutcome>
 
 const restartFns = new Map<string, AgentRestartFn>()

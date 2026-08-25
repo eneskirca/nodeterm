@@ -188,6 +188,14 @@ describe('assembleResumeCommand', () => {
       ).command
     ).toBe("claude-wopr '--model' 'sonnet' --resume abc-123 --permission-mode plan")
   })
+  it('an orphaned custom node falls back to its persisted base harness', () => {
+    expect(
+      assembleResumeCommand(
+        { agentId: 'custom:deleted', baseAgentId: 'claude', sessionId: 'abc-123' },
+        ENV
+      ).command
+    ).toBe('claude --resume abc-123')
+  })
   it('a non-resumable vanilla custom agent falls back to its bare launch command', () => {
     expect(
       assembleResumeCommand({ agentId: 'custom:aider', customAgent: aider }, ENV).command

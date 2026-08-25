@@ -1164,7 +1164,13 @@ app.whenReady().then(async () => {
   sshStore.registerIpc()
   // Gateway discovery/credential IPC (peer-reachable by design; the renderer never receives a
   // stored literal key, and discovery resolves key REFERENCES only for the saved gateway URL).
-  registerAgentEnvIpc(() => settingsStore.get().modelGateway, gatewayCredentials)
+  registerAgentEnvIpc(
+    () => settingsStore.get().modelGateway,
+    gatewayCredentials,
+    // Cache discovered gateway models so spawn-time Copilot BYOK env injection can read the
+    // reported context/output token limits (COPILOT_PROVIDER_MAX_PROMPT/OUTPUT_TOKENS).
+    (baseUrl, models) => ptyManager.setGatewayModels(baseUrl, models)
+  )
   // The `${env:VAR}` snapshot for custom-agent expansion is DESKTOP-WINDOW-ONLY, so it is a raw
   // `ipcMain.handle` on purpose (see the handler-table comment in platform-electron.ts): a
   // `platform().handle` registration would answer relay peers too — a paired phone or remote tab
@@ -3308,7 +3314,13 @@ app.whenReady().then(async () => {
     // declared here too, or the wire's honest shape stops at this boundary (see RemoteNodeInput).
     registerNode: (
       projectId: string,
-      node: { id: string; title?: string; agentId?: string; accountId?: string }
+      node: {
+        id: string
+        title?: string
+        agentId?: string
+        agentBaseId?: string
+        accountId?: string
+      }
     ) => workspaceStore.appendRemoteNode(projectId, node),
     // Jail roots beyond the active canvas: the phone browses EVERY project (projects.list), so
     // its fs/git access spans every local project root — not just the tab the desktop happens

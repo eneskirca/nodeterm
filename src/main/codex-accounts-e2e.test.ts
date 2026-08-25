@@ -12,7 +12,7 @@
  *
  * WHAT THIS TEST DELIBERATELY DOES NOT DO — the legs that cannot run headless are documented as OWED
  * in docs/codex-accounts-acceptance.md rather than faked here:
- *   - the live `codex app-server` JSON-RPC (U4): `readCodexThreadAt`/`readCodexAccountAt` are the ONE
+ *   - the live `codex app-server` JSON-RPC (U4): `readCodexThreadRollout`/`readCodexAccountAt` are the ONE
  *     boundary faked (as the per-PR suites do) — they stand in for a running daemon that this CI has
  *     no standalone Codex install to start. The rollout COPY they hand off to is the real fs primitive.
  *   - the real SSH WAN transfer landing (U1, PR 6): the remote importer is a spy; the far-side
@@ -61,7 +61,7 @@ vi.mock('electron', () => ({
 const readThread = vi.fn()
 const readAccount = vi.fn(async () => ({ email: 'me@example.com' }))
 vi.mock('../core/codex-session-name', () => ({
-  readCodexThreadAt: (..._a: any[]) => readThread(),
+  readCodexThreadRollout: (..._a: any[]) => readThread(),
   readCodexAccountAt: (..._a: any[]) => readAccount()
 }))
 // No real `codex` binary is discovered, so no app-server subprocess is ever spawned in this run —

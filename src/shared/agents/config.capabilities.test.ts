@@ -13,6 +13,8 @@ import {
   canSubagent,
   canTransferFrom,
   canSwitchModel,
+  createdAgentBaseId,
+  createdAgentHarnessId,
   createdAgentId,
   hasHooks,
   hasPermissionMode,
@@ -54,7 +56,8 @@ describe('copilot capabilities', () => {
       color: '#8957e5',
       launchCmd: 'copilot',
       promptInjectionMode: 'flag-interactive',
-      expectedProcess: 'copilot'
+      expectedProcess: 'copilot',
+      vanillaEnvPattern: '^COPILOT_PROVIDER_'
     })
     expect(hasHooks('copilot')).toBe(true)
     expect(canResume('copilot')).toBe(true)
@@ -119,6 +122,29 @@ describe('createdAgentId', () => {
     // node data is deserialized JSON: nothing guarantees these types at runtime.
     expect(createdAgentId({ agentId: 42 })).toBeUndefined()
     expect(createdAgentId({ tags: 'claude' })).toBeUndefined()
+  })
+})
+
+describe('persisted node base-agent snapshots', () => {
+  it('keeps a custom node associated after its registry record is gone', () => {
+    const data = { agentId: 'custom:deleted', agentBaseId: 'claude' }
+    expect(createdAgentBaseId(data)).toBe('claude')
+    expect(createdAgentHarnessId(data)).toBe('claude')
+  })
+
+  it('treats a builtin as itself even if persisted JSON contains a stale mismatched base', () => {
+    expect(createdAgentBaseId({ agentId: 'codex', agentBaseId: 'claude' })).toBe('codex')
+  })
+
+  it('never turns a plain terminal into an agent from an orphan base field alone', () => {
+    expect(createdAgentBaseId({ agentBaseId: 'claude' })).toBeUndefined()
+    expect(createdAgentHarnessId({ agentBaseId: 'claude' })).toBeUndefined()
+  })
+
+  it('ignores malformed persisted base values', () => {
+    expect(
+      createdAgentBaseId({ agentId: 'custom:deleted', agentBaseId: 'not-a-builtin' })
+    ).toBeUndefined()
   })
 })
 

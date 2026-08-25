@@ -10,10 +10,18 @@ import {
   pairKey,
   planBridges
 } from './noteLink'
-import type { CanvasNodeState } from '@shared/types'
+import type { CanvasNodeState, Link } from '@shared/types'
 
 const term = (contextCapable = false) => ({ kind: 'terminal', contextCapable })
 const sticky = () => ({ kind: 'sticky', contextCapable: false })
+
+/** Build a `kind:'context'` node↔node link — the shape `buildBackgroundLinkMaps` now consumes. */
+const ctx = (id: string, source: string, target: string): Link => ({
+  id,
+  kind: 'context',
+  source: { ref: 'node', nodeId: source },
+  target: { ref: 'node', nodeId: target }
+})
 
 describe('classifyLink', () => {
   it('two context-capable terminals form a context link', () => {
@@ -49,8 +57,18 @@ describe('planBridges', () => {
     expect(plan.linked).toEqual(['n2', 'n3'])
     expect(plan.skipped).toEqual([])
     expect(plan.edges).toEqual([
-      { id: 'bridge-n1-n2', source: 'n1', target: 'n2' },
-      { id: 'bridge-n1-n3', source: 'n1', target: 'n3' }
+      {
+        id: 'bridge-n1-n2',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'n1' },
+        target: { ref: 'node', nodeId: 'n2' }
+      },
+      {
+        id: 'bridge-n1-n3',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 'n1' },
+        target: { ref: 'node', nodeId: 'n3' }
+      }
     ])
   })
 
@@ -86,7 +104,14 @@ describe('planBridges', () => {
 
   it('stores a note link sticky→terminal even when asked terminal→sticky', () => {
     const plan = planBridges('n1', ['s1'], lookup, [])
-    expect(plan.edges).toEqual([{ id: 'bridge-s1-n1', source: 's1', target: 'n1' }])
+    expect(plan.edges).toEqual([
+      {
+        id: 'bridge-s1-n1',
+        kind: 'context',
+        source: { ref: 'node', nodeId: 's1' },
+        target: { ref: 'node', nodeId: 'n1' }
+      }
+    ])
     expect(plan.linked).toEqual(['s1'])
   })
 
@@ -238,7 +263,7 @@ describe('buildBackgroundLinkMaps', () => {
     {
       id: 'p-active',
       nodes: [node({ id: 'a1', agentId: 'claude' }), node({ id: 'a2', agentId: 'codex' })],
-      bridges: [{ id: 'e0', source: 'a1', target: 'a2' }]
+      links: [ctx('e0', 'a1', 'a2')]
     },
     {
       id: 'p-bg',
@@ -247,12 +272,9 @@ describe('buildBackgroundLinkMaps', () => {
         node({ id: 'b2', title: 'Gem', cwd: '/fit', agentId: 'gemini' }),
         node({ id: 'b3', kind: 'sticky', title: 'Note', text: 'remember this' })
       ],
-      bridges: [
-        { id: 'e1', source: 'b1', target: 'b2' },
-        { id: 'e2', source: 'b3', target: 'b1' }
-      ]
+      links: [ctx('e1', 'b1', 'b2'), ctx('e2', 'b3', 'b1')]
     },
-    { id: 'p-nolinks', nodes: [node({ id: 'c1' })], bridges: [] }
+    { id: 'p-nolinks', nodes: [node({ id: 'c1' })], links: [] }
   ]
 
   it('maps every project except the active one (React Flow owns that live)', () => {
@@ -288,7 +310,7 @@ describe('buildBackgroundLinkMaps', () => {
       {
         id: 'p-bg',
         nodes: [node({ id: 'm1', title: 'Manual', cwd: '/m' }), node({ id: 'm2', title: 'Also', cwd: '/m' })],
-        bridges: [{ id: 'e', source: 'm1', target: 'm2' }]
+        links: [ctx('e', 'm1', 'm2')]
       }
     ]
     const map = buildBackgroundLinkMaps(
@@ -307,9 +329,37 @@ describe('buildBackgroundLinkMaps', () => {
     // m2's entry for m1 stays a bare terminal (no agentId reported for m1).
     expect(map['m2']).toContainEqual({ id: 'm1', title: 'Manual', cwd: '/m' })
   })
+  it('uses the persisted base harness for a deleted custom-agent definition', () => {
+    const map = buildBackgroundLinkMaps(
+      [
+        {
+          id: 'p-bg',
+          nodes: [
+            node({
+              id: 'proxy',
+              title: 'Proxy',
+              agentId: 'custom:deleted',
+              agentBaseId: 'claude'
+            }),
+            node({ id: 'peer', title: 'Peer', agentId: 'codex' })
+          ],
+          links: [ctx('e', 'proxy', 'peer')]
+        }
+      ],
+      null,
+      (id) => (id === 'proxy' ? 'sess-proxy' : undefined)
+    )
+    expect(map.peer).toContainEqual({
+      id: 'proxy',
+      title: 'Proxy',
+      cwd: '',
+      agentId: 'claude',
+      sessionId: 'sess-proxy'
+    })
+  })
   it('drops edges whose endpoints are gone from the serialized nodes', () => {
     const map = buildBackgroundLinkMaps(
-      [{ id: 'p', nodes: [node({ id: 'z1' })], bridges: [{ id: 'e', source: 'z1', target: 'gone' }] }],
+      [{ id: 'p', nodes: [node({ id: 'z1' })], links: [ctx('e', 'z1', 'gone')] }],
       null,
       () => undefined
     )

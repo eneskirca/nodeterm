@@ -60,6 +60,22 @@ describe('worktree ops on a LOCAL repo (no remote claims it)', () => {
   })
 })
 
+describe('submoduleList', () => {
+  it('on a LOCAL repo reaches real git (the remote guard does not swallow the local path)', async () => {
+    const listed = await svc.submoduleList(repo)
+    // A fresh empty repo has no submodules — that is `ok: true` with no entries, NOT a failed read.
+    expect(listed).toEqual({ ok: true, entries: [] })
+  })
+
+  it('on a REMOTE repo reports a FAILED READ, not an empty list', async () => {
+    claimAsRemote(repo)
+    const listed = await svc.submoduleList(repo)
+    // Same rule as worktreeList: `{ ok: false }` so a caller cannot read an empty list as "no
+    // submodules" and drop every auto-link on one bad read. The host's submodules live on the host.
+    expect(listed).toEqual({ ok: false, entries: [] })
+  })
+})
+
 describe('worktree ops on a REMOTE repo', () => {
   it('worktreeList reports a FAILED READ, not an empty list', async () => {
     claimAsRemote(repo)

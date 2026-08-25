@@ -448,6 +448,8 @@ export function createHostHandlers(
     if (title !== undefined) input.title = title
     const agentId = str(node.agentId)
     if (agentId !== undefined) input.agentId = agentId
+    const agentBaseId = str(node.agentBaseId)
+    if (agentBaseId !== undefined) input.agentBaseId = agentBaseId
     // The managed Claude account the phone launched this session under (its CLAUDE_CONFIG_DIR).
     // The direct-SSH registration path has always persisted it; this leg used to drop it on the
     // floor, so an off-LAN session under account X came back as the system account and every
@@ -868,7 +870,7 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
  *  phone node registration). One bag so the init signatures stop growing positionally. */
 export interface HostBridgeDeps {
   git?: HostGitOps
-  registerNode?: (projectId: string, node: { id: string; title?: string; agentId?: string }) => Promise<boolean>
+  registerNode?: (projectId: string, node: RemoteNodeInput) => Promise<boolean>
   /** Workspace-level jail roots (local project cwds) merged with the canvas node cwds. */
   workspaceRoots?: () => string[]
 }

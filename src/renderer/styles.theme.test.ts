@@ -102,6 +102,7 @@ describe('every CSS variable resolves', () => {
     '--term-bg', // App.tsx, from the terminal theme
     '--peer-color', // presence chips, per peer
     '--group-label-boost', // GroupNode, zoom-compensated label size
+    '--xproj-stroke', // XProjectNode, the origin project's colour on a cross-project projection
     '--mascot-w',
     '--mascot-h',
     '--cmascot-w',

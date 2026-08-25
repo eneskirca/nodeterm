@@ -661,7 +661,9 @@ export function remoteHookEnvArgs(
   endpointPath: string,
   nodeId: string,
   version: string,
-  agentId?: string
+  agentId?: string,
+  /** Node-persisted harness snapshot; authoritative if the custom definition was deleted. */
+  capabilityAgentId?: string
 ): string[] {
   const env = [
     '-e',
@@ -673,7 +675,8 @@ export function remoteHookEnvArgs(
   ]
   if (agentId) {
     env.push('-e', `NODETERM_AGENT_ID=${agentId}`)
-    if (canControlCanvas(agentId)) env.push('-e', 'NODETERM_CANVAS_CONTROL=1')
+    if (canControlCanvas(capabilityAgentId ?? agentId))
+      env.push('-e', 'NODETERM_CANVAS_CONTROL=1')
   }
   return env
 }

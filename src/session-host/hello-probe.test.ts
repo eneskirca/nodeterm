@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import net from 'net'
 import os from 'os'
 import path from 'path'
-import { randomUUID } from 'crypto'
+import { randomBytes } from 'crypto'
 import { rmSync } from 'fs'
 import { encodeFrame } from './protocol'
 import { trySessionHostHello } from './hello-probe'
@@ -13,9 +13,13 @@ afterEach(() => {
 })
 
 function testEndpoint(): string {
-  const id = randomUUID()
+  // Mirror production (paths.ts): a SHORT hex suffix, not a full UUID. AF_UNIX socket paths are
+  // capped at ~104 bytes on macOS, and `os.tmpdir()` on a deep `/var/folders/...` path plus a
+  // 36-char UUID plus the `nodeterm-hello-probe-` prefix blows past that limit — `listen` then
+  // throws EINVAL. A 16-char hex (same width as the production fingerprint) stays well under.
+  const id = randomBytes(8).toString('hex')
   if (process.platform === 'win32') return `\\\\.\\pipe\\nodeterm-hello-probe-${id}`
-  const endpoint = path.join(os.tmpdir(), `nodeterm-hello-probe-${id}.sock`)
+  const endpoint = path.join(os.tmpdir(), `nt-hello-${id}.sock`)
   cleanupPaths.push(endpoint)
   return endpoint
 }

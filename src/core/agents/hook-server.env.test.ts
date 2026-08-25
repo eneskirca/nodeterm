@@ -49,6 +49,12 @@ describe('hookServer.buildPtyEnv — canvas control gate', () => {
     expect(hookServer.buildPtyEnv('n1', 'custom:abc')).not.toHaveProperty('NODETERM_CANVAS_CONTROL')
   })
 
+  it('uses a node snapshot to arm an orphaned custom agent without rewriting its identity', () => {
+    const env = hookServer.buildPtyEnv('n1', 'custom:deleted', 0, 'claude')
+    expect(env.NODETERM_AGENT_ID).toBe('custom:deleted')
+    expect(env.NODETERM_CANVAS_CONTROL).toBe('1')
+  })
+
   it('still identifies the agent to the hook, whatever the gate says', () => {
     expect(hookServer.buildPtyEnv('n1', 'grok').NODETERM_AGENT_ID).toBe('grok')
     expect(hookServer.buildPtyEnv('n1', 'grok').NODETERM_NODE_ID).toBe('n1')

@@ -1,9 +1,11 @@
 import {
   parseWorktreePorcelain,
+  parseSubmoduleStatus,
   isDangerousWorktreeRemovalPath,
   decideMergeStrategy,
   isValidGitRef,
-  type WorktreeListResult
+  type WorktreeListResult,
+  type SubmoduleListResult
 } from './worktree'
 
 /** One git invocation's result (mirrors git-service.ts's internal `Exec`). */
@@ -103,6 +105,40 @@ export async function listWorktrees(
     parseWorktreePorcelain(r.out).map(async (e) => ({
       ...e,
       prunable: e.prunable || !(await pathExists(e.path))
+    }))
+  )
+  return { ok: true, entries }
+}
+
+/**
+ * List a repo's submodules, with `prunable` made TRUE for any entry whose directory is not on disk.
+ *
+ * Mirrors `listWorktrees` exactly. `git submodule status --recursive` emits one line per submodule:
+ * `<flag><sha> <path> (<desc>)`, where the leading flag is ` `-` for an uninitialized (absent)
+ * submodule. We OR git's `-` flag with a live path stat — git reports a submodule the superproject
+ * records even when its directory was deleted behind git's back or never checked out, and a stale
+ * registration must read as `prunable` (so the auto-linker suggests re-opening rather than linking a
+ * ghost). Unlike `listWorktrees`, the submodule `path` is RELATIVE to the repo root, so it is joined
+ * against `repoPath` before the stat — `pathExists` answers about an ABSOLUTE path.
+ *
+ * The `{ ok, entries }` shape carries the same rule: a FAILED `git submodule status` (spawn EAGAIN, a
+ * repo with a corrupt `.gitmodules`, a not-a-repo) is `{ ok: false, entries: [] }` — NEVER collapsed
+ * to "this repo has no submodules", because a caller that reads the empty list as "no submodules" would
+ * drop every auto-link on one bad read, exactly the escalation `listWorktrees`' docstring warns about.
+ * `ok:false` changes no facts.
+ */
+export async function listSubmodules(
+  git: GitExecutor,
+  repoPath: string,
+  pathExists: PathExists = alwaysExists
+): Promise<SubmoduleListResult> {
+  if (!repoPath) return { ok: false, entries: [] }
+  const r = await git(repoPath, ['submodule', 'status', '--recursive'])
+  if (!r.ok) return { ok: false, entries: [] }
+  const entries = await Promise.all(
+    parseSubmoduleStatus(r.out).map(async (e) => ({
+      ...e,
+      prunable: e.prunable || !(await pathExists(repoPath.replace(/\/+$/, '') + '/' + e.path))
     }))
   )
   return { ok: true, entries }

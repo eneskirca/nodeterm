@@ -159,6 +159,28 @@ describe('projects.registerNode', () => {
     })
   })
 
+  it('forwards a custom agent base snapshot', async () => {
+    const f = makeFakes()
+    mk(f).onRpc({
+      id: '1',
+      method: 'projects.registerNode',
+      params: {
+        projectId: 'p1',
+        node: {
+          id: 'term-abc-1',
+          agentId: 'custom:proxy',
+          agentBaseId: 'claude'
+        }
+      }
+    })
+    await flush()
+    expect(f.registerNode).toHaveBeenCalledWith('p1', {
+      id: 'term-abc-1',
+      agentId: 'custom:proxy',
+      agentBaseId: 'claude'
+    })
+  })
+
   it('drops a non-string accountId instead of passing it on', async () => {
     const f = makeFakes()
     mk(f).onRpc({

@@ -8,7 +8,7 @@ import {
   mintsSessionId,
   setCustomAgentBaseResolver
 } from './config'
-import { findCustomAgent, resolveAgentConfig } from './custom-agent'
+import { findCustomAgent, resolveAgentBase, resolveAgentConfig } from './custom-agent'
 import type { CustomAgent } from '../types'
 
 const claudeProxy: CustomAgent = {
@@ -42,6 +42,15 @@ describe('resolveAgentConfig — builtins', () => {
   })
   it('grok carries its separator', () => {
     expect(resolveAgentConfig('grok').argvPromptSeparator).toBe('--')
+  })
+})
+
+describe('resolveAgentBase', () => {
+  it('centralizes builtin, persisted, and registry precedence', () => {
+    expect(resolveAgentBase('codex', undefined, 'claude')).toBe('codex')
+    expect(resolveAgentBase('custom:proxy', claudeProxy)).toBe('claude')
+    expect(resolveAgentBase('custom:proxy', claudeProxy, 'codex')).toBe('codex')
+    expect(resolveAgentBase('custom:missing')).toBeUndefined()
   })
 })
 

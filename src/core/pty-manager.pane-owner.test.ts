@@ -329,6 +329,22 @@ describe('PtyManager.terminateForeground — identity gate', () => {
     expect(killed).toEqual([-2503294])
   })
 
+  it('verifies a base-backed custom agent after its wrapper has execed the base harness', async () => {
+    script.answer = claudeForeground
+    const mgr = await killManager({
+      customAgents: [
+        {
+          id: 'custom:muse',
+          label: 'Claude Muse',
+          launchCmd: 'claude-wopr',
+          baseAgent: 'claude'
+        }
+      ]
+    })
+    expect(await mgr.terminateForeground(NODE, 'custom:muse')).toBe(true)
+    expect(killed).toEqual([-2503294])
+  })
+
   it('with no expected id, keeps the legacy shell-only guard (kills a non-shell foreground)', async () => {
     script.answer = claudeForeground
     const mgr = await killManager()

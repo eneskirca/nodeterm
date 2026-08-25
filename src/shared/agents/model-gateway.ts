@@ -48,6 +48,14 @@ export interface GatewayModel {
   id: string
   name?: string
   provider?: string
+  /** Maximum prompt context window in tokens, when the gateway reports one. Copilot BYOK surfaces
+   *  this to the CLI as `COPILOT_PROVIDER_MAX_PROMPT_TOKENS`. Absent ⇒ the env var is omitted and
+   *  the CLI falls back to its own default — never guessed (a percentage over a guessed window is a
+   *  wrong number presented as a fact). */
+  contextWindow?: number
+  /** Maximum output/completion tokens the model may produce, when reported. Surfaced to Copilot as
+   *  `COPILOT_PROVIDER_MAX_OUTPUT_TOKENS`. Absent ⇒ omitted, never guessed. */
+  maxOutputTokens?: number
 }
 
 export interface ModelDiscoveryResult {
@@ -121,6 +129,15 @@ export function modelGatewayRoutes(baseUrl: string): ModelGatewayRoutes | null {
   }
 }
 
+/** Coerce a gateway-reported token limit to a finite positive integer, or undefined. Gateways
+ *  expose context/output caps under a variety of field names and sometimes as strings; a non-finite
+ *  or non-positive value is treated as "not reported" so no env var is emitted for it. */
+function coerceTokenLimit(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value.trim()) : typeof value === 'number' ? value : NaN
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return undefined
+  return n
+}
+
 /** Parse OpenAI-compatible model-list responses, dropping unsafe/empty/duplicate ids. */
 export function parseGatewayModels(payload: unknown): GatewayModel[] {
   if (!payload || typeof payload !== 'object') return []
@@ -129,7 +146,17 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
   const byId = new Map<string, GatewayModel>()
   for (const raw of data) {
     if (!raw || typeof raw !== 'object') continue
-    const row = raw as { id?: unknown; name?: unknown; provider?: unknown; owned_by?: unknown }
+    const row = raw as {
+      id?: unknown
+      name?: unknown
+      provider?: unknown
+      owned_by?: unknown
+      context_length?: unknown
+      max_context_length?: unknown
+      context_window?: unknown
+      max_output_tokens?: unknown
+      max_completion_tokens?: unknown
+    }
     const id = typeof row.id === 'string' ? row.id.trim() : ''
     if (!id || id.length > 500 || /[\u0000-\u001f\u007f]/.test(id)) continue
     const prefix = id.includes('/') ? id.slice(0, id.indexOf('/')) : ''
@@ -139,10 +166,22 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
         : typeof row.owned_by === 'string'
           ? row.owned_by.trim()
           : ''
+    // Context window: gateways disagree on the field name. The OpenAI convention (`context_length`)
+    // and the `context_window` alias cover the providers Copilot BYOK targets; `max_context_length`
+    // is the max variant some report. The FIRST present, finite value wins (they are synonyms), and
+    // an absent one stays undefined so the env var is omitted rather than guessed.
+    const contextWindow =
+      coerceTokenLimit(row.context_length) ??
+      coerceTokenLimit(row.max_context_length) ??
+      coerceTokenLimit(row.context_window)
+    const maxOutputTokens =
+      coerceTokenLimit(row.max_output_tokens) ?? coerceTokenLimit(row.max_completion_tokens)
     byId.set(id, {
       id,
       ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name.trim() } : {}),
-      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {})
+      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {})
     })
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
@@ -181,7 +220,9 @@ export const MODEL_GATEWAY_ENV_KEYS = [
   'COPILOT_PROVIDER_API_KEY',
   'COPILOT_PROVIDER_MODEL_ID',
   'COPILOT_PROVIDER_WIRE_MODEL',
-  'COPILOT_PROVIDER_WIRE_API'
+  'COPILOT_PROVIDER_WIRE_API',
+  'COPILOT_PROVIDER_MAX_PROMPT_TOKENS',
+  'COPILOT_PROVIDER_MAX_OUTPUT_TOKENS'
 ] as const
 
 /** tmux's own stock `update-environment` entries (tmux 3.4 defaults, measured via
@@ -212,7 +253,12 @@ export function modelGatewayEnv(
   agentId: AgentId,
   model?: string,
   processEnv: Record<string, string | undefined> = {},
-  storedSecret: string | null = null
+  storedSecret: string | null = null,
+  /** The gateway's discovered model list — the ONLY source of the context/output token limits
+   *  injected for Copilot BYOK. Absent (or a model not in it) ⇒ the max-token env vars are omitted
+   *  and the CLI uses its own defaults. The caller resolves this from a cache populated by
+   *  discovery; it is never guessed here. */
+  models: GatewayModel[] = []
 ): Record<string, string> {
   const routes = modelGatewayRoutes(settings.baseUrl)
   const resolvedKey = resolveModelGatewayApiKey(settings.apiKey, processEnv, storedSecret)
@@ -246,6 +292,13 @@ export function modelGatewayEnv(
       const provider = slash > 0 ? wireModel.slice(0, slash).toLowerCase() : ''
       const modelId = slash > 0 ? wireModel.slice(slash + 1) : wireModel
       const anthropic = provider === 'anthropic'
+      // Resolve the chosen model's reported limits from discovery (the wire id, matching the
+      // catalogue key). A model not present in the discovered list, or one the gateway did not
+      // report limits for, yields NO max-token env var — Copilot falls back to its own defaults.
+      // Shipping a guessed cap would be a wrong number presented as a fact.
+      const discovered = models.find((m) => m.id === wireModel)
+      const maxPrompt = discovered?.contextWindow
+      const maxOutput = discovered?.maxOutputTokens
       return {
         COPILOT_PROVIDER_BASE_URL: anthropic ? routes.anthropic : routes.openai,
         COPILOT_PROVIDER_TYPE: anthropic ? 'anthropic' : 'openai',
@@ -257,7 +310,9 @@ export function modelGatewayEnv(
         COPILOT_PROVIDER_WIRE_MODEL: wireModel,
         ...(!anthropic && /^gpt-5(?:[.-]|$)/i.test(modelId)
           ? { COPILOT_PROVIDER_WIRE_API: 'responses' }
-          : {})
+          : {}),
+        ...(maxPrompt ? { COPILOT_PROVIDER_MAX_PROMPT_TOKENS: String(maxPrompt) } : {}),
+        ...(maxOutput ? { COPILOT_PROVIDER_MAX_OUTPUT_TOKENS: String(maxOutput) } : {})
       }
     }
     default:

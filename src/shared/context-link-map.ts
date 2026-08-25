@@ -5,7 +5,26 @@
 // (Canvas.tsx). The Server Edition has no renderer holding a canvas — it derives the whole map
 // from persisted project files instead (src/server/context-link.ts). Same rules either way, so
 // they belong in one place rather than two that drift.
-import type { BridgeLink, CanvasNodeState, ContextLinkInfo, ContextLinkMap } from './types'
+import type { CanvasNodeState, ContextLinkInfo, ContextLinkMap, Link } from './types'
+import { createdAgentHarnessId } from './agents/config'
+
+/**
+ * The node↔node edge pairs a context-link map can read through. The route resolves node↔node
+ * transcripts only, so a `dependency` link (branch endpoint) or a cross-project `xnode` target has
+ * no node-id pair here and is excluded — correct, since those carry no transcript to read back.
+ * `kind:'context'` covers both agent↔agent context links and sticky→terminal note links (a note
+ * link persists as `context` with `meta.note`); `lineage` (display-only ropes) is excluded.
+ */
+export function contextNodeEdges(links: readonly Link[] | undefined): Array<{ source: string; target: string }> {
+  if (!links?.length) return []
+  const out: Array<{ source: string; target: string }> = []
+  for (const l of links) {
+    if (l.kind !== 'context') continue
+    if (l.source.ref !== 'node' || l.target.ref !== 'node') continue
+    out.push({ source: l.source.nodeId, target: l.target.nodeId })
+  }
+  return out
+}
 
 export interface LinkNodeInfo {
   id: string
@@ -70,20 +89,22 @@ export function buildLinkMap(
  * running inside.
  */
 export function buildBackgroundLinkMaps(
-  projects: Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }>,
+  projects: Array<{ id: string; nodes: CanvasNodeState[]; links?: Link[] }>,
   activeProjectId: string | null,
   sessionIdOf: (nodeId: string) => string | undefined,
   agentIdOf?: (nodeId: string) => string | undefined
 ): ContextLinkMap {
   const map: ContextLinkMap = {}
   for (const p of projects) {
-    if (p.id === activeProjectId || !p.bridges?.length) continue
+    if (p.id === activeProjectId || !p.links?.length) continue
     const byId = new Map(p.nodes.map((n) => [n.id, n]))
-    const edges = p.bridges.filter((e) => byId.has(e.source) && byId.has(e.target))
+    const edges = contextNodeEdges(p.links).filter(
+      (e) => byId.has(e.source) && byId.has(e.target)
+    )
     const infoOf = (id: string): LinkNodeInfo => {
       const n = byId.get(id)!
       const sticky = n.kind === 'sticky'
-      const agentId = sticky ? undefined : (n.agentId ?? agentIdOf?.(id))
+      const agentId = sticky ? undefined : (createdAgentHarnessId(n) ?? agentIdOf?.(id))
       return {
         id,
         title: n.title || id,

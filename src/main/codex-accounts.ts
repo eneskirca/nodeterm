@@ -31,7 +31,7 @@ import {
   planCodexRolloutExposure,
   type CodexRolloutExposurePlan
 } from '../core/codex-accounts-core'
-import { readCodexAccountAt, readCodexThreadAt } from '../core/codex-session-name'
+import { readCodexAccountAt, readCodexThreadRollout } from '../core/codex-session-name'
 import { ensureCodexRelayRoot } from './codex-relay-daemon'
 import { platform } from '../core/platform'
 import { findInLoginPath } from '../core/pty-manager'
@@ -327,7 +327,7 @@ export function initCodexAccounts(getSshManager?: () => SshProjectManager | unde
       try {
         await ensureCodexAccountDaemon(sourceAccountId)
         await ensureCodexAccountDaemon(targetAccountId)
-        const source = await readCodexThreadAt(localCodexSocket(sourceAccountId), threadId, 5000)
+        const source = await readCodexThreadRollout(localCodexSocket(sourceAccountId), threadId, 5000)
         if (!source?.path) throw new Error('Source Codex conversation is unavailable')
         const exposure = planCodexRolloutExposure(
           codexHomeForAccount(platform().userDataDir, sourceAccountId),
@@ -387,7 +387,7 @@ export function initCodexAccounts(getSshManager?: () => SshProjectManager | unde
       if (sourceAccountId) assertCodexAccountId(sourceAccountId)
       if (targetAccountId) assertCodexAccountId(targetAccountId)
       await ensureCodexAccountDaemon(sourceAccountId)
-      const source = await readCodexThreadAt(localCodexSocket(sourceAccountId), threadId, 5000)
+      const source = await readCodexThreadRollout(localCodexSocket(sourceAccountId), threadId, 5000)
       if (!source?.path) throw new Error('Source Codex conversation is unavailable')
       // STRICT SOURCE CONTAINMENT before any upload: reuse PR 3's `planCodexRolloutExposure`
       // (source-side half) rather than re-implementing the guards. It refuses a source that is not a

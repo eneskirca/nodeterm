@@ -23,14 +23,17 @@ import {
   resumeCommandWith,
   withSessionId,
   type AgentId,
-  type AgentPermissionMode
+  type AgentPermissionMode,
+  type BuiltinAgentId
 } from './config'
 import { withPermissionMode } from './approval-mode'
-import { resolveAgentConfig } from './custom-agent'
+import { resolveAgentBase, resolveAgentConfig } from './custom-agent'
 import { withAgentModel } from './model-gateway'
 
 export interface LaunchInputs {
   agentId: AgentId
+  /** Node-persisted current builtin harness; authoritative when a custom definition is gone. */
+  baseAgentId?: BuiltinAgentId
   /** The matching `CustomAgent` record when `agentId` is a custom id. `undefined` for builtins. */
   customAgent?: CustomAgent
   /** Per-builtin launch-command override (Settings → Agents → Launch commands). When set it
@@ -60,6 +63,8 @@ export interface LaunchInputs {
 
 export interface ResumeInputs {
   agentId: AgentId
+  /** Node-persisted current builtin harness; authoritative when a custom definition is gone. */
+  baseAgentId?: BuiltinAgentId
   customAgent?: CustomAgent
   /** Per-builtin launch-command override — same meaning as `LaunchInputs.launchCmdOverride`, so a
    *  cold-restore / restart resumes through the same wrapper the fresh launch used. */
@@ -135,8 +140,10 @@ export function assembleLaunchCommand(
   inputs: LaunchInputs,
   env: Record<string, string | undefined>
 ): AssembledCommand {
-  const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent)
-  const capId = capabilityAgentId(inputs.agentId)
+  const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent, inputs.baseAgentId)
+  const capId =
+    resolveAgentBase(inputs.agentId, inputs.customAgent, inputs.baseAgentId) ??
+    capabilityAgentId(inputs.agentId)
 
   // A per-builtin launch-command override replaces the resolved program (a wrapper the user runs
   // the CLI through). It is expanded + quoted like any launchCmd, and — like a custom agent's own
@@ -150,7 +157,7 @@ export function assembleLaunchCommand(
   // bare program name, never an ${env:…} token). Skipped when an override is set.
   const program = overrideCmd
     ? launchCmd
-    : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity)
+    : agentLaunchProgram(inputs.customAgent ? inputs.agentId : capId, launchCmd, inputs.sharedIdentity)
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 
@@ -199,8 +206,10 @@ export function assembleResumeCommand(
   inputs: ResumeInputs,
   env: Record<string, string | undefined>
 ): AssembledCommand {
-  const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent)
-  const capId = capabilityAgentId(inputs.agentId)
+  const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent, inputs.baseAgentId)
+  const capId =
+    resolveAgentBase(inputs.agentId, inputs.customAgent, inputs.baseAgentId) ??
+    capabilityAgentId(inputs.agentId)
 
   // A per-builtin launch-command override wins over the program and the launcher (same rule as the
   // fresh-launch path), so a cold-restore / restart resumes through the same wrapper.
@@ -210,7 +219,7 @@ export function assembleResumeCommand(
   // its managed launcher so the resumed session re-claims its own thread. Skipped for an override.
   const program = overrideCmd
     ? launchCmd
-    : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity)
+    : agentLaunchProgram(inputs.customAgent ? inputs.agentId : capId, launchCmd, inputs.sharedIdentity)
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 

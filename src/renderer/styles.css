@@ -1735,6 +1735,24 @@ body,
   color: var(--accent-text);
 }
 
+.term-node__maximize {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.term-node__maximize:hover {
+  background: rgba(10, 132, 255, 0.18);
+  color: var(--accent-text);
+}
+
 .term-node__mic {
   background: transparent;
   border: none;
@@ -4796,6 +4814,132 @@ body,
   transition: width 200ms ease;
 }
 
+/* ---- Spawn a team dialog (reuses the .confirm shell) ---- */
+.spawn-team {
+  width: 480px;
+}
+.spawn-team__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 12px;
+}
+.spawn-team__field-label,
+.spawn-team__roles-label {
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.55);
+}
+/* A native <select> carrying an agent icon to its left. The icon sits outside the control so the
+   option list stays a plain native dropdown (no custom menu to build for N agents). */
+.spawn-team__select-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 8px;
+  color: var(--text);
+}
+.spawn-team__select-wrap:focus-within {
+  border-color: var(--accent);
+}
+.spawn-team__select-wrap > svg {
+  flex-shrink: 0;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+.spawn-team__select {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 18px 7px 0;
+  cursor: pointer;
+}
+.spawn-team__roles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 14px;
+  max-height: 38vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.spawn-team__role {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(var(--tint-rgb), 0.03);
+}
+.spawn-team__role-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.spawn-team__role-head .spawn-team__select-wrap {
+  padding: 0 6px;
+}
+.spawn-team__role-title {
+  flex: 1;
+  min-width: 0;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.spawn-team__role-title:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.spawn-team__role-remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.6);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.spawn-team__role-remove:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text);
+}
+.spawn-team__role-prompt {
+  margin: 0;
+  min-height: 52px;
+  font-family: inherit;
+  line-height: 1.4;
+  resize: vertical;
+}
+.spawn-team__add {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: rgba(var(--tint-rgb), 0.6);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.spawn-team__add:hover {
+  border-color: rgba(var(--tint-rgb), 0.3);
+  color: var(--text);
+}
+
 /* ---- Notification consent dialog (polished, icon + title + actions) ---- */
 .consent-overlay {
   position: fixed;
@@ -5618,7 +5762,8 @@ button.group-node__setup:disabled {
 }
 
 .group-node__ungroup,
-.group-node__close {
+.group-node__close,
+.group-node__drill {
   background: var(--surface-sunken);
   border: 1px solid var(--border);
   color: var(--muted);
@@ -5634,9 +5779,39 @@ button.group-node__setup:disabled {
 }
 
 .group-node__ungroup:hover,
-.group-node__close:hover {
+.group-node__close:hover,
+.group-node__drill:hover {
   background: var(--panel-header);
   color: var(--text);
+}
+
+/* Drill breadcrumb (ticket 07): shown in the top-banners strip while a group is open as a canvas.
+   For a worktree-bound group drill (ticket 08), carries the branch chip + Merge/Unbind/Remove that
+   normally live on the GroupNode frame (which leaves the node-set when drilled). */
+.drill-breadcrumb .announce-banner__close {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+.drill-breadcrumb .announce-banner__close:hover {
+  filter: brightness(1.1);
+}
+.drill-breadcrumb__wt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.drill-breadcrumb__wt .group-node__branch {
+  font-size: 12px;
+  opacity: 0.9;
+}
+.drill-breadcrumb__wt .group-node__wt-btn {
+  font-size: 11px;
+  padding: 1px 6px;
 }
 
 /* Selected outline for ephemeral subagent/loop nodes. */
@@ -5941,6 +6116,126 @@ button.group-node__setup:disabled {
 
 .loop-node__empty {
   color: var(--muted);
+}
+
+/* ---- Cross-project projection (ephemeral, ticket 05) node ----
+ * A second live view of ANOTHER project's tmux session — a co-attach canvas viewer, not a modal.
+ * Deliberately DIMMED and DOTTED so it reads as a foreign projection (the session lives in project
+ * B; this is a viewer) rather than a native node the user owns. The dotted outline + left rail use
+ * B's project color (`--xproj-stroke`, set inline from `data.color`), so several projections point
+ * at visibly different projects at once. */
+.xproj-node {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1.5px dashed var(--xproj-stroke, var(--muted));
+  border-top-width: 3px;
+  border-radius: 10px;
+  overflow: hidden;
+  /* Dimmed: this is a view of someone else's session, not a node the user owns. */
+  opacity: 0.72;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, calc(0.35 * var(--shadow-k)));
+}
+
+.xproj-node.selected {
+  opacity: 0.92;
+  box-shadow:
+    0 0 0 1px var(--xproj-stroke, var(--muted)),
+    0 6px 20px rgba(0, 0, 0, calc(0.35 * var(--shadow-k)));
+}
+
+.xproj-node__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--xproj-stroke, var(--muted)) 14%, transparent);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+}
+
+/* The origin badge: B's project color dot + name, so the projection is never mistaken for a node
+ * the user owns on THIS canvas. */
+.xproj-node__origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+.xproj-node__dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.xproj-node__title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+/* The ↗ jump button: switch to B's project and focus the node there. */
+.xproj-node__jump {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.xproj-node__jump:hover {
+  background: color-mix(in srgb, var(--xproj-stroke, var(--muted)) 18%, transparent);
+  color: var(--text);
+}
+
+.xproj-node__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--term-bg, var(--bg));
+}
+
+/* The placeholder shown when B's session is not live / not connected / closed. Centered, muted,
+ * pointer-events none so the terminal underneath (once it attaches) stays interactive. */
+.xproj-node__plate {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  pointer-events: none;
 }
 
 /* ---- Minimap ---- */
@@ -7068,6 +7363,24 @@ button.group-node__setup:disabled {
 .ss-group.is-active .ss-group__name { color: var(--accent); }
 .ss-group__branch { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group__count { font-size: 10px; color: var(--muted); }
+
+/* Repo-level header (sits above the project header when projects share a git repo). */
+.ss-repo__head { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 2px; cursor: pointer; border-radius: 6px; }
+.ss-repo__head:hover { background: var(--panel-header); }
+.ss-repo__name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-repo__count { font-size: 9px; font-weight: 700; color: var(--muted); background: var(--panel-header); border-radius: 4px; padding: 1px 5px; }
+
+/* Adoptable-worktree row: a worktree on disk with no bound canvas group. Dashed border + branch
+   chip distinguish it from a session row; it has no status badge (no session). */
+.ss-adoptable__list { padding: 2px 6px 4px 22px; display: flex; flex-direction: column; gap: 3px; }
+.ss-adoptable { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border: 1px dashed var(--border); border-radius: 6px; }
+.ss-adoptable.is-disabled { opacity: 0.5; }
+.ss-adoptable__branch { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 600; color: var(--text); flex: 0 0 auto; }
+.ss-adoptable__branch svg { width: 11px; height: 11px; }
+.ss-adoptable__path { font-size: 9.5px; color: var(--muted); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-adoptable__bind { font-size: 10px; font-weight: 600; color: var(--accent); background: rgba(var(--tint-rgb), 0.1); border: 1px solid transparent; border-radius: 5px; padding: 2px 8px; cursor: pointer; flex: 0 0 auto; }
+.ss-adoptable__bind:hover:not(:disabled) { background: rgba(var(--tint-rgb), 0.18); }
+.ss-adoptable__bind:disabled { cursor: default; opacity: 0.5; }
 /* Signal badges on the project header: 🔔 needs-you count / ✓ unread count. Visible even
    while the group is collapsed — that's their main job. */
 .ss-group__sig { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; flex: 0 0 auto; line-height: 0; }
@@ -11304,4 +11617,329 @@ body.focus-mode .dock:hover {
   color: var(--warn);
   border: 1px solid var(--warn);
   background: transparent;
+}
+
+/* ── Off-canvas link authoring (ticket 06): LinkTargetPicker + LinkInspectorPanel ── */
+.link-picker {
+  width: 520px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.link-picker__tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.link-picker__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(var(--tint-rgb), 0.6);
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.link-picker__tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.link-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  background: rgba(var(--tint-rgb), 0.03);
+}
+.link-picker__empty {
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.45);
+  padding: 8px 4px;
+}
+.link-picker__project-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: rgba(var(--tint-rgb), 0.7);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.link-picker__chev {
+  width: 10px;
+  color: rgba(var(--tint-rgb), 0.4);
+}
+.link-picker__project-name {
+  flex: 1;
+}
+.link-picker__foreign {
+  color: rgba(var(--tint-rgb), 0.4);
+  font-weight: 400;
+}
+.link-picker__nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px 16px;
+}
+.link-picker__node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.link-picker__node:hover {
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.link-picker__node.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: var(--accent);
+}
+.link-picker__node:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.link-picker__node-kind {
+  width: 14px;
+  text-align: center;
+  color: rgba(var(--tint-rgb), 0.55);
+}
+.link-picker__node-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-picker__node-agent,
+.link-picker__node-xnode {
+  font-size: 10px;
+  color: rgba(var(--tint-rgb), 0.4);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.link-picker__node-xnode {
+  color: #a855f7;
+  border-color: rgba(168, 85, 247, 0.4);
+}
+.link-picker__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 12px;
+}
+.link-picker__field-label {
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.55);
+}
+.link-picker__select {
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+.link-picker__target {
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.7);
+  margin: 0 0 12px;
+  padding: 6px 8px;
+  background: rgba(var(--tint-rgb), 0.04);
+  border-radius: 6px;
+}
+.link-picker__target.unavailable {
+  color: rgba(var(--tint-rgb), 0.4);
+  font-style: italic;
+}
+
+/* ── LinkInspectorPanel ── */
+.link-inspector {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: 420px;
+  background: var(--bg, #1c1c1e);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.link-inspector__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.link-inspector__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.link-inspector__close {
+  background: none;
+  border: none;
+  color: rgba(var(--tint-rgb), 0.5);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.link-inspector__close:hover {
+  color: var(--text);
+}
+.link-inspector__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.link-inspector__empty {
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.45);
+  padding: 12px 8px;
+  line-height: 1.4;
+}
+.link-inspector__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.link-inspector__group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(var(--tint-rgb), 0.4);
+  padding: 2px 4px;
+}
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+}
+.link-row:hover {
+  background: rgba(var(--tint-rgb), 0.05);
+}
+.link-row__kind {
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-row__target {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+}
+.link-row__target > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-row__target .unavailable {
+  color: rgba(var(--tint-rgb), 0.4);
+  font-style: italic;
+}
+.link-row__purpose {
+  font-size: 10px;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+.link-row__delete {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: rgba(var(--tint-rgb), 0.35);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.link-row__delete:hover {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.1);
+}
+.link-inspector__add {
+  margin: 6px;
+  padding: 7px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.link-inspector__add:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+/* Flyout mount (canvas node header button) — sibling of root, expands to the node's right. */
+.term-node__links {
+  position: absolute;
+  top: 36px;
+  right: -312px;
+  z-index: 20;
+}
+/* Portal mount (card modal / sidebar). */
+.link-inspector-overlay {
+  align-items: center;
+  justify-content: center;
+}
+.link-inspector-portal {
+  position: relative;
+}
+
+/* Links header button — mirrors .term-node__chat (the comments button). */
+.term-node__link {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.term-node__link:hover {
+  color: var(--text);
+  background: rgba(var(--tint-rgb), 0.1);
+}
+.term-node__link[aria-pressed='true'] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
