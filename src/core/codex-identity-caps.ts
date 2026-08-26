@@ -37,9 +37,9 @@
  *     `--remote` dies on a clap usage error after that exec, where there is no fallback left. So
  *     it is answered here, once per app run, entirely off the launch path.
  *
- * SERVER EDITION: `src/server` deliberately registers this and answers `false` — see the comment
- * at its registration site. That is what makes "Server Edition runs plain codex" a decision rather
- * than an accident.
+ * SERVER EDITION: `src/server` registers the same async answer after arming its raw-0600 node
+ * secret. The shared identity is core-owned and local on that host; no Electron primitive is
+ * required.
  */
 import { execFile } from 'child_process'
 import { accessSync, constants } from 'fs'
