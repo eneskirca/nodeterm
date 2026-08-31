@@ -7235,11 +7235,8 @@ button.group-node__setup:disabled {
 .ss-status__icon--attention { width: auto; height: auto; border-radius: 0; color: var(--danger); display: inline-flex; }
 .ss-status__icon--attention svg { width: 11px; height: 11px; }
 .ss-status__icon--working { background: var(--accent); }
-/* Unread: the same accent-blue as the row's "new for you" check, ringed so the section header
-   reads as "these are the unlooked-at ones". */
-.ss-status__icon--unread { background: var(--accent); box-shadow: 0 0 0 2px rgba(var(--tint-rgb), 0.18); }
-/* Idle: a settled, already-seen turn — a quiet filled success dot. */
-.ss-status__icon--idle { background: var(--success); opacity: 0.7; }
+/* Done: a settled turn — unread remains a row-level glow/check, not a workflow section. */
+.ss-status__icon--done { background: var(--success); opacity: 0.7; }
 .ss-status__icon--unknown { background: rgba(var(--tint-rgb), 0.25); }
 .ss-status__rows { padding: 2px 0 2px 2px; }
 

@@ -14,10 +14,9 @@
  *  - **`liveBackgroundTask` is "a background shell was launched and no turn has started since".**
  *    A Claude `Bash` with `run_in_background` runs INSIDE the CLI process and emits nothing while
  *    it works, so `agentStatus.backgroundTaskAt` is the only evidence it exists; `/exit` kills it
- *    with no output and no error. Note the coupling this depends on: a renderer reload drops
- *    `backgroundTaskAt` AND `lastEventAt` together (both transient), which is safe only because Eco
- *    is inert without an idle clock — that coupling is now load-bearing for two features, so
- *    neither field may be persisted on its own.
+ *    with no output and no error. A renderer reload drops `backgroundTaskAt`. The core may restore
+ *    `lastEventAt` solely to render a relative age, so the adapter also forwards `restored` and the
+ *    policy rejects that display-only provenance before considering the idle clock.
  *  - **`liveSubagents` is "any card for this parent that is NOT done".** Claude launches subagents
  *    async and their completion is queued into the PARENT's transcript, which a dead parent CLI
  *    never reads. An unknown/absent state counts as LIVE — the conservative direction, and the
@@ -39,6 +38,8 @@ export interface HibernationNodeInput {
 /** One agent-status entry, narrowed to what the plan reads. */
 export interface HibernationStatusInput {
   state?: string
+  /** State restored for display after restart, not observed live in this renderer. */
+  restored?: boolean
   sessionId?: string
   hibernated?: boolean
   lastEventAt?: number
@@ -88,6 +89,7 @@ export function buildHibernationCandidates(
       wired: inputs.isWired(n.id),
       offscreen: inputs.isOffscreen(n.id),
       hibernated: !!st?.hibernated,
+      restored: !!st?.restored,
       remote: inputs.isRemote(n.id),
       recurring: !!st?.loop,
       liveSubagents: liveParents.has(n.id),

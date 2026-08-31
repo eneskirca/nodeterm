@@ -383,7 +383,7 @@ import {
   reconnectRelayTab,
   type RelayTab,
 } from '../session/relay-tab'
-import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, hiddenLinkIds, linkIdsCoveredByRopes, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
+import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, contextLink, dependencyLink, hiddenLinkIds, lineageLink, linkIdsCoveredByRopes, nodeEndpoints, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
 import { dependencyEdges, launchesToFire, unmetDeps, type ArmedNode } from '../lib/pendingLaunch'
 import { freeSpot } from '../lib/placement'
 import { pushSessionRename } from '../lib/sessionRename'
@@ -404,6 +404,7 @@ import type { SshServer } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
 import type {
   CanvasNodeState,
+  Link,
   NodeKind,
   Project,
   ProjectKanban,
@@ -680,6 +681,21 @@ const ropeEdge = (id: string, source: string, target: string, color: string): Ed
   markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 }
 })
 
+/** A persisted on-canvas `dependency` edge (the meta-canvas submodule auto-link). Amber + dashed so
+ *  it reads as a dependency relation at a glance and never collides with a lineage rope (solid,
+ *  source-colored) or the gray `--after` pending-launch edge (`⏳ waits for`). */
+const DEP_LINK_COLOR = '#f59e0b'
+const depLinkEdge = (id: string, source: string, target: string): Edge => ({
+  id,
+  source,
+  sourceHandle: 'flow-out',
+  target,
+  targetHandle: 'flow-in',
+  type: 'default',
+  style: { stroke: DEP_LINK_COLOR, strokeWidth: 1.5, strokeDasharray: '6 4' },
+  markerEnd: { type: MarkerType.ArrowClosed, color: DEP_LINK_COLOR, width: 14, height: 14 }
+})
+
 
 const minimapNodeColor = (n: Node): string =>
   (n.data as { color?: string })?.color ?? '#0a84ff'
@@ -808,6 +824,19 @@ export function Canvas() {
   const [controlEdges, setControlEdges] = useState<Edge[]>([])
   const controlEdgesRef = useRef<Edge[]>([])
   controlEdgesRef.current = controlEdges
+  // Persisted same-canvas `dependency` edges (the meta-canvas submodule auto-link, ticket 09): a
+  // `kind:'dependency'` link whose BOTH endpoints are `ref:'node'` — two `projectRef` group frames on
+  // ONE canvas. Distinct from the derived `dep-`/`xlink-` host edges (ticket 03/04, render-only) and
+  // from the `--after` pending-launch `depEdges` (a different, transient concept): these round-trip
+  // through `commitCanvas` and are deletable on the canvas.
+  const [depLinkEdges, setDepLinkEdges] = useState<Edge[]>([])
+  const depLinkEdgesRef = useRef<Edge[]>([])
+  depLinkEdgesRef.current = depLinkEdges
+  // Links whose endpoints are NOT both `ref:'node'` (an `xnode` cross-project target or a `branch`
+  // dependency endpoint — tickets 03/04/05). They have no on-canvas node pair to draw, so they are
+  // never turned into edges; they are held here ONLY to round-trip losslessly through commit→reload
+  // (a bare `nodeEndpoints(l)===null` projection would silently drop them on save).
+  const offCanvasLinksRef = useRef<Link[]>([])
   const [dirty, setDirty] = useState(false)
   // Bumped only when a save finished with `dirty` still set (an edit raced it). It exists purely to
   // give the debounced-autosave effect a dependency that CHANGES in that case — `dirty` stays true
@@ -1841,11 +1870,11 @@ export function Canvas() {
     // durable relation and stays. Built above (depEdges), keyed on the dependency signature so a
     // drag frame does not rebuild it.
     const extra =
-      ephemeralEdges.length || ropes.length || depEdges.length
-        ? [...ephemeralEdges, ...ropes, ...depEdges]
+      ephemeralEdges.length || ropes.length || depEdges.length || depLinkEdges.length
+        ? [...ephemeralEdges, ...ropes, ...depEdges, ...depLinkEdges]
         : []
     return extra.length ? [...decorated, ...extra] : decorated
-  }, [linkEdges, ephemeralEdges, controlEdges, accent, stickySig, depEdges, drivenLeaseEntries])
+  }, [linkEdges, ephemeralEdges, controlEdges, accent, stickySig, depEdges, depLinkEdges, drivenLeaseEntries])
 
   // Header pin button (and ⌘⇧L): toggle the persisted pin preference. Clears the transient
   // dismiss so (re)pinning shows the docked panel; unpinning collapses it to hover-peek.
@@ -2121,14 +2150,35 @@ export function Canvas() {
     if (project.cwd && !project.ssh) {
       void useWorktrees.getState().refresh(project.cwd, boundGroups(flow))
     }
-    setLinkEdges((project.bridges ?? []).map((b) => ({ id: b.id, source: b.source, target: b.target })))
+    // Restore the link substrate from the unified `Project.links`. A `Link` projects to an on-canvas
+    // edge ONLY when both endpoints are `ref:'node'` (nodeEndpoints≠null); the rest (xnode/branch —
+    // cross-project + branch dependency endpoints) have no node pair to draw and are held in
+    // offCanvasLinksRef purely to round-trip losslessly through commit→reload. Legacy `bridges`/`ropes`
+    // are migrated to `links` on load, so reading `links` alone covers both old and new files.
+    const links = project.links ?? []
+    const onCanvas = links.map((l) => ({ l, pair: nodeEndpoints(l) })).filter((x) => x.pair)
+    const offCanvas = links.filter((l) => !nodeEndpoints(l))
+    offCanvasLinksRef.current = offCanvas
+    setLinkEdges(
+      onCanvas
+        .filter((x) => x.l.kind === 'context')
+        .map((x) => ({ id: x.pair!.id, source: x.pair!.source, target: x.pair!.target, type: 'default' }))
+    )
     // Restore control ropes with the source agent's color (falls back to the browser blue).
     setControlEdges(
-      (project.ropes ?? []).map((r) => {
-        const srcState = project.nodes.find((n) => n.id === r.source)
-        const color = agentConfig((srcState?.agentId as AgentId) ?? '')?.color ?? '#0a84ff'
-        return ropeEdge(r.id, r.source, r.target, color)
-      })
+      onCanvas
+        .filter((x) => x.l.kind === 'lineage')
+        .map((x) => {
+          const srcState = project.nodes.find((n) => n.id === x.pair!.source)
+          const color = agentConfig((srcState?.agentId as AgentId) ?? '')?.color ?? '#0a84ff'
+          return ropeEdge(x.pair!.id, x.pair!.source, x.pair!.target, color)
+        })
+    )
+    // Persisted same-canvas dependency edges (meta-canvas submodule auto-link).
+    setDepLinkEdges(
+      onCanvas
+        .filter((x) => x.l.kind === 'dependency')
+        .map((x) => depLinkEdge(x.pair!.id, x.pair!.source, x.pair!.target))
     )
     // Reset history for the newly loaded project.
     committedRef.current = flow
@@ -2302,16 +2352,20 @@ export function Canvas() {
     // The normal switch flow still commits — every caller commits BEFORE `setActive`, while the two
     // ids still agree — but an autosave timer armed under the previous project now skips instead of
     // writing its nodes under the new project's id (field bug 2026-08-10).
-    if (canCommitCanvas(nodesProjectIdRef.current, id))
-      useProjects
-        .getState()
-        .commitCanvas(
-          id,
-          flowToNodeStates(nodesRef.current),
-          viewportRef.current,
-          linkEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-          controlEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target }))
-        )
+    if (canCommitCanvas(nodesProjectIdRef.current, id)) {
+      // Rebuild the unified `Link[]` from the on-canvas edge arrays + the off-canvas links. The edge
+      // id prefix is the kind discriminator (`bridge-` context/note, `ctrl-` lineage, `dep-`
+      // dependency) and the builders reproduce the exact persisted shape, so this round-trips with the
+      // load path. Off-canvas links (xnode/branch endpoints) are passed through untouched — they were
+      // never edges and a projection would silently drop them.
+      const links: Link[] = [
+        ...linkEdgesRef.current.map((e) => contextLink(e.source, e.target)),
+        ...controlEdgesRef.current.map((e) => lineageLink(e.source, e.target)),
+        ...depLinkEdgesRef.current.map((e) => dependencyLink(e.source, e.target)),
+        ...offCanvasLinksRef.current
+      ]
+      useProjects.getState().commitCanvas(id, flowToNodeStates(nodesRef.current), viewportRef.current, links)
+    }
   }, [])
 
   const writeDisk = useCallback(async () => {
@@ -2977,11 +3031,19 @@ export function Canvas() {
         markDirty()
         return
       }
+      // A persisted on-canvas dependency edge (meta-canvas auto-link) is deletable the same way.
+      // The `dep-` prefix is shared with the DERIVED `--after`/branch-host edges, which are
+      // render-only — membership in depLinkEdgesRef is what marks this one as persisted + removable.
+      if (depLinkEdgesRef.current.some((b) => b.id === edge.id)) {
+        setDepLinkEdges((es) => es.filter((b) => b.id !== edge.id))
+        markDirty()
+        return
+      }
       if (!linkEdgesRef.current.some((b) => b.id === edge.id)) return
       setLinkEdges((es) => es.filter((b) => b.id !== edge.id))
       markDirty()
     },
-    [setLinkEdges, markDirty]
+    [setLinkEdges, setDepLinkEdges, markDirty]
   )
 
   // Route edge changes (selection) to the right store: `ctrl-` ids are control ropes (local
@@ -2990,12 +3052,20 @@ export function Canvas() {
   const handleEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       const rope: EdgeChange[] = []
+      const depLink: EdgeChange[] = []
       const link: EdgeChange[] = []
-      for (const c of changes) ('id' in c && String(c.id).startsWith('ctrl-') ? rope : link).push(c)
+      const depLinkIds = new Set(depLinkEdgesRef.current.map((e) => e.id))
+      for (const c of changes) {
+        const id = 'id' in c ? String(c.id) : ''
+        if (id.startsWith('ctrl-')) rope.push(c)
+        else if (depLinkIds.has(id)) depLink.push(c)
+        else link.push(c)
+      }
       if (rope.length) setControlEdges((es) => applyEdgeChanges(rope, es))
+      if (depLink.length) setDepLinkEdges((es) => applyEdgeChanges(depLink, es))
       if (link.length) onLinkEdgesChange(link)
     },
-    [onLinkEdgesChange]
+    [onLinkEdgesChange, setDepLinkEdges]
   )
 
   // Prune ropes whose endpoints were deleted (mirrors the context-link pruning below).
@@ -3009,6 +3079,16 @@ export function Canvas() {
       return valid.length === es.length ? es : valid
     })
   }, [nodes])
+
+  // Prune persisted dependency edges whose endpoints were deleted (mirrors the rope prune above).
+  useEffect(() => {
+    if (!depLinkEdgesRef.current.length) return
+    const ids = new Set(nodes.map((n) => n.id))
+    setDepLinkEdges((es) => {
+      const valid = es.filter((e) => ids.has(e.source) && ids.has(e.target))
+      return valid.length === es.length ? es : valid
+    })
+  }, [nodes, setDepLinkEdges])
 
   // Rewrite link files when a linked node's session starts/changes: main resolves
   // codex/gemini transcripts by sessionId, so a session that appears after the edge was
@@ -4670,7 +4750,8 @@ export function Canvas() {
     if (!ids.length) {
       const edgeIds = linkEdgesRef.current.filter((b) => b.selected).map((b) => b.id)
       const ropeIds = controlEdgesRef.current.filter((b) => b.selected).map((b) => b.id)
-      if (!edgeIds.length && !ropeIds.length) return false
+      const depLinkIds = depLinkEdgesRef.current.filter((b) => b.selected).map((b) => b.id)
+      if (!edgeIds.length && !ropeIds.length && !depLinkIds.length) return false
       // A selected rope may be standing in for a hidden context bridge — drop both, or the
       // pair stays linked with no edge left to click (see displayEdges).
       const drop = new Set([
@@ -4681,6 +4762,10 @@ export function Canvas() {
       if (ropeIds.length) {
         const dropRopes = new Set(ropeIds)
         setControlEdges((es) => es.filter((b) => !dropRopes.has(b.id)))
+      }
+      if (depLinkIds.length) {
+        const dropDep = new Set(depLinkIds)
+        setDepLinkEdges((es) => es.filter((b) => !dropDep.has(b.id)))
       }
       markDirty()
       return true
@@ -4693,7 +4778,7 @@ export function Canvas() {
       }
     })
     return true
-  }, [deleteNodes, setLinkEdges, setControlEdges, markDirty, setConfirm])
+  }, [deleteNodes, setLinkEdges, setControlEdges, setDepLinkEdges, markDirty, setConfirm])
 
   // When an account is removed in Settings, patch the ACTIVE project's live nodes (the projects
   // store only holds the other projects' serialized copies). The account's login node is
@@ -5004,6 +5089,25 @@ export function Canvas() {
     [attachWorktree, worktreeDialog]
   )
 
+  // Bind a worktree discovered as an ADOPTABLE sidebar row (no dialog target — the row has no node
+  // yet). Unlike `bindExistingWorktree` (which binds into the open dialog's target), this one mints
+  // a fresh group at the canvas center: the sidebar's Bind button is the only entry point for an
+  // unbound worktree, so there is no pre-existing group to attach to. Detached HEAD is refused
+  // (the row is disabled, but never fail silently if reached) for the same reason as the dialog path.
+  const bindSidebarWorktree = useCallback(
+    (e: WorktreeEntry) => {
+      const { repoRoot, entries } = useWorktrees.getState()
+      if (!repoRoot) return
+      const wt = worktreeFromEntry(e, repoRoot, resolveBaseRef(entries))
+      if (!wt) {
+        setWorktreeError('That worktree has a detached HEAD. Check out a branch in it first.')
+        return
+      }
+      attachWorktree({ groupId: null, at: viewCenter() ?? { x: 0, y: 0 }, size: WORKTREE_GROUP_SIZE }, wt)
+    },
+    [attachWorktree]
+  )
+
   // Ask-first worktree removal. Gather any uncommitted-work info, then open a safety dialog
   // before doing anything destructive. GitStatus has no `files` field — the dirty count is
   // staged + unstaged changes.
@@ -5188,7 +5292,7 @@ export function Canvas() {
   // merge / remove teardown actions (Tasks 8 & 9) slot in as new cases. `unbind` forgets the
   // binding without touching disk; `merge` merges to base; `remove` opens the safety dialog.
   const onWorktreeAction = useCallback(
-    (groupId: string, action: 'merge' | 'remove' | 'unbind' | 'rerun-setup') => {
+    (groupId: string, action: 'merge' | 'remove' | 'unbind' | 'rerun-setup' | 'sync') => {
       // A binding can only predate the SSH gate (hand-edited project file, or a project that became
       // an SSH project), but it can still exist — and merge/remove would run against the LOCAL
       // filesystem for a project whose git and terminals live on the remote host. Refuse them, out
@@ -5252,6 +5356,23 @@ export function Canvas() {
           const wt = nodesRef.current.find((n) => n.id === groupId)?.data.worktree
           if (!wt) return
           startWorktreeSetup(groupId, wt.path)
+          break
+        }
+        case 'sync': {
+          // The ↻ chip on a worktree whose branch has a dependency parent (a `dependency` link whose
+          // source is this branch — git-town's stacked-diff topology, adopted as plain `git config`
+          // metadata only). Rebase this branch onto its configured parent inside the worktree's own
+          // cwd (where this branch is already HEAD). A clean rebase → success; a conflict is reported
+          // honestly and the user resolves in the terminal (`git rebase --continue`) — exactly where
+          // the worktree's own terminal is. No remote is touched: a stacked rebase never publishes.
+          const wt = nodesRef.current.find((n) => n.id === groupId)?.data.worktree
+          if (!wt) return
+          setNotice({ kind: 'info', text: `Syncing ${wt.branch} onto its parent…` })
+          void api.git.syncBranch(wt.path, wt.branch).then((res) => {
+            setNotice({ kind: res.ok ? 'info' : 'error', text: res.message })
+            // Re-sync the status the chip reads — a rebase moves the tip and the dirty count.
+            void useWorktrees.getState().refreshStatus(wt.path, groupId)
+          })
           break
         }
         default:
@@ -8407,8 +8528,15 @@ export function Canvas() {
       ) => {
         const plan = planBridges(fromId, targetIds, lookup, [...linkEdgesRef.current, ...drawn])
         if (plan.edges.length) {
-          drawn.push(...plan.edges)
-          setLinkEdges((es) => [...es, ...plan.edges.map((e) => ({ ...e, type: 'default' }))])
+          // `plan.edges` are `Link`s (Endpoint source/target); the React Flow `linkEdges` and the
+          // `drawn` de-dup accumulator carry plain string node ids, so convert through nodeEndpoints.
+          const asEdges = plan.edges.map((e) => nodeEndpoints(e)).filter(Boolean) as {
+            id: string
+            source: string
+            target: string
+          }[]
+          drawn.push(...asEdges)
+          setLinkEdges((es) => [...es, ...asEdges.map((e) => ({ ...e, type: 'default' }))])
           markDirty()
         }
         return plan
@@ -10036,9 +10164,9 @@ export function Canvas() {
       const t = (s ?? '').replace(/\s+/g, ' ').trim()
       return t.length <= max ? t : `${t.slice(0, max - 1)}…`
     }
-    return api.onAgentStatus((e: NormalizedAgentEvent) => {
+    const unsubscribe = api.onAgentStatus((e: NormalizedAgentEvent) => {
       const cs = useAgentStatus.getState()
-      if (e.sessionId) cs.setSessionId(e.nodeId, e.sessionId)
+      if (e.sessionId && e.kind !== 'session') cs.setSessionId(e.nodeId, e.sessionId)
       const agentLabel = agentConfig(e.agentId)?.label ?? 'Agent'
       // "<folder> — Claude finished" + last assistant message as the body.
       const alert = (statusText: string, fallbackBody: string, sound: 'done' | 'needsYou') => {
@@ -10151,7 +10279,7 @@ export function Canvas() {
         case 'session':
           if (e.sessionTitle) cs.setSession(e.nodeId, e.sessionTitle)
           if (e.sessionPhase === 'start') {
-            cs.setState(e.nodeId, undefined, e.agentId)
+            cs.setSessionBoundary(e.nodeId, 'start', e.agentId, e.sessionId)
             // A SessionStart is proof a CLI just LAUNCHED in that pane, so a hibernated flag on
             // this node is now false — our own `/exit` produces a SessionEnd, never a
             // SessionStart. This is the residual `setState`'s live-state self-heal cannot reach:
@@ -10163,7 +10291,7 @@ export function Canvas() {
             cs.setHibernated(e.nodeId, false)
           }
           if (e.sessionPhase === 'end') {
-            cs.setState(e.nodeId, undefined, e.agentId)
+            cs.setSessionBoundary(e.nodeId, 'end', e.agentId, e.sessionId)
             // In-session /loop dies with its session; cron (and scheduled cloud routines)
             // keep running after it — their cards stay until CronDelete / manual dismiss.
             const kind = cs.byId[e.nodeId]?.loop?.kind
@@ -10176,6 +10304,21 @@ export function Canvas() {
           break
       }
     })
+    // Subscribe FIRST so a hook that lands while the request is in flight wins. The store refuses
+    // to let the later display snapshot overwrite any state already observed live in this run.
+    let cancelled = false
+    void api
+      .agentStatusSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) useAgentStatus.getState().hydrateSnapshot(snapshot)
+      })
+      .catch(() => {
+        // Best-effort continuity: a disconnected/older core leaves today's Unknown behavior.
+      })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
   }, [])
 
   // Safety net for a lost Stop POST / crashed CLI: decay working entries that saw no hook
@@ -11808,6 +11951,7 @@ export function Canvas() {
         onProjectContextMenu={onProjectContextMenu}
         onSwitchProject={switchProject}
         onAddToProject={addToProject}
+        onBindWorktree={bindSidebarWorktree}
         onMouseEnter={openSessionsPeek}
         onMouseLeave={closeSessionsPeekSoon}
       />
@@ -11966,6 +12110,11 @@ export function Canvas() {
         <SpawnTeamDialog
           worktreesAvailable={!isSshProject && !!worktreeRepoRoot}
           worktreeNote={isSshProject ? WORKTREE_SSH_HINT : 'not a git repository'}
+          defaultAgent={resolveNewNodeAgent(
+            undefined,
+            useProjects.getState().activeProjectId,
+            useSettings.getState().settings
+          )}
           onSubmit={spawnTeam}
           onCancel={() => setSpawnTeamDialog(null)}
         />

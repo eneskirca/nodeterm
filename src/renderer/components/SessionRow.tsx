@@ -178,8 +178,15 @@ export function SessionRow({
             {row.sshHost && <span className="ss-meta__ssh">⇅ {row.sshHost}</span>}
             {row.cwd && <span className="ss-meta__cwd">{dirName(row.cwd)}</span>}
             {stateAgeLabel && (
-              <span className="ss-meta__state-age" title={`Entered this state ${stateAgeLabel}`}>
-                {stateAgeLabel}
+              <span
+                className="ss-meta__state-age"
+                title={
+                  row.statusRestored
+                    ? `Last known state entered ${stateAgeLabel}`
+                    : `Entered this state ${stateAgeLabel}`
+                }
+              >
+                {row.statusRestored ? `last known · ${stateAgeLabel}` : stateAgeLabel}
               </span>
             )}
           </div>

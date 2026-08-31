@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-08-17T14:00:00.000Z","message":{"content":[{"type":"text","text":"Run the tests and summarize."}]}}
+{"type":"assistant","timestamp":"2026-08-17T14:00:01.000Z","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"npm test"}}]}}
+{"type":"user","timestamp":"2026-08-17T14:01:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Tests passed"}]}}
+{"type":"assistant","timestamp":"2026-08-17T14:01:02.000Z","message":{"content":[{"type":"text","text":"All tests passed."}]}}

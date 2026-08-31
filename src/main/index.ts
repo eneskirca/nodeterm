@@ -72,6 +72,7 @@ import { WorkspaceStore } from '../core/workspace-store'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
 import { SettingsStore } from '../core/settings-store'
 import { registerAgentEnvIpc } from '../core/agent-env-ipc'
+import { registerAgentStatusHandlers } from '../core/agent-status-handlers'
 import { presenceHub } from '../core/presence/hub'
 import { SshStore } from './ssh-store'
 import { GitService } from '../core/git-service'
@@ -1746,6 +1747,12 @@ app.whenReady().then(async () => {
   })
   // Mirror live agent status to <userData>/agent-status.json for the external mobile host agent.
   initAgentStatusMirror()
+  registerAgentStatusHandlers(corePlatform, {
+    accountIdForNode: (nodeId) => workspaceStore.getNode(nodeId)?.accountId,
+    // Transcripts for SSH-project nodes live on their host; local locators must never inspect a
+    // same-id file under this Mac's home and mistake it for remote evidence.
+    isRemoteNode: (nodeId) => !!workspaceStore.sshProjectIdForNode(nodeId)
+  })
 
   /** The one display-title rule for everything the HOST sends out (push alerts, Live Activity
    *  updates, the notch capsule): the live session name unless the node was hand-renamed. */

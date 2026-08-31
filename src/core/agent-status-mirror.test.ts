@@ -13,6 +13,8 @@ import {
   recordRawToolEvent,
   recordContextUsage,
   clearNode,
+  agentStatusSnapshot,
+  applyRecoveredAgentStatus,
   ackDone,
   flush,
   initAgentStatusMirror,
@@ -148,6 +150,25 @@ describe('buildFile (shape + expiry)', () => {
     expect(Object.keys(doc.nodes)).toEqual(['fresh'])
   })
 
+  it('keeps display continuity outside the operational expiry window', () => {
+    const now = EXPIRE_MS + 100_000
+    const remembered = {
+      stale: { state: 'done' as const, agentId: 'claude' as const, changedAt: 1 }
+    }
+    const doc = buildFile(
+      { stale: { state: 'done', agentId: 'claude', updatedAt: 1 } },
+      now,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      remembered
+    )
+    expect(doc.nodes.stale).toBeUndefined()
+    expect(doc.lastKnown).toEqual(remembered)
+  })
+
   it('omits an undefined state (idle node keeps identity)', () => {
     const doc = buildFile({ n1: { agentId: 'claude', sessionId: 's1', updatedAt: 5 } }, 5)
     expect('state' in JSON.parse(JSON.stringify(doc)).nodes.n1).toBe(false)
@@ -187,6 +208,11 @@ describe('recordAgentEvent + atomic write', () => {
     expect(doc.nodes.n1.state).toBe('done')
     expect(doc.nodes.n1.sessionId).toBe('s1')
     expect(doc.nodes.n1.agentId).toBe('claude')
+    expect(doc.lastKnown.n1).toMatchObject({
+      state: 'done',
+      sessionId: 's1',
+      agentId: 'claude'
+    })
   })
 
   it('writes the file with 0600 permissions', async () => {
@@ -203,6 +229,70 @@ describe('recordAgentEvent + atomic write', () => {
     await flush()
     const doc = JSON.parse(fs.readFileSync(file, 'utf-8'))
     expect(Object.keys(doc.nodes)).toEqual(['b'])
+    expect(Object.keys(doc.lastKnown)).toEqual(['b'])
+  })
+
+  it('same-state events refresh live evidence without resetting time in state', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValueOnce(100).mockReturnValueOnce(200)
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+    expect(agentStatusSnapshot().n1.changedAt).toBe(100)
+    expect(_snapshot().n1.updatedAt).toBe(200)
+    now.mockRestore()
+  })
+
+  it('preserves a completed same-conversation label across a session restart', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValueOnce(100).mockReturnValueOnce(200).mockReturnValueOnce(300)
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+    recordAgentEvent(ev({ state: 'done', sessionId: 's1' }))
+    recordAgentEvent(ev({ kind: 'session', sessionPhase: 'start', sessionId: 's1' }))
+
+    expect(_snapshot().n1.state).toBeUndefined()
+    expect(agentStatusSnapshot().n1).toMatchObject({
+      state: 'done',
+      sessionId: 's1',
+      changedAt: 200
+    })
+    now.mockRestore()
+  })
+
+  it('forgets the label for a new session or one that ended before completion', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValueOnce(100).mockReturnValueOnce(200)
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+    recordAgentEvent(ev({ kind: 'session', sessionPhase: 'end', sessionId: 's1' }))
+    expect(agentStatusSnapshot().n1).toMatchObject({
+      state: undefined,
+      sessionId: 's1',
+      changedAt: 200
+    })
+
+    now.mockReturnValueOnce(300).mockReturnValueOnce(400)
+    recordAgentEvent(ev({ state: 'done', sessionId: 's1' }))
+    recordAgentEvent(ev({ kind: 'session', sessionPhase: 'start', sessionId: 's2' }))
+    expect(agentStatusSnapshot().n1).toMatchObject({
+      state: undefined,
+      sessionId: 's2',
+      changedAt: 400
+    })
+    now.mockRestore()
+  })
+
+  it('applies only newer recovered display evidence and never mutates live state', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100)
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+
+    expect(applyRecoveredAgentStatus('n1', { state: 'done', observedAt: 200 })).toBe(true)
+    expect(agentStatusSnapshot().n1).toMatchObject({ state: 'done', changedAt: 200 })
+    expect(_snapshot().n1.state).toBe('working')
+
+    now.mockReturnValue(300)
+    recordAgentEvent(ev({ state: 'working', sessionId: 's1' }))
+    expect(applyRecoveredAgentStatus('n1', { state: 'done', observedAt: 250 })).toBe(false)
+    expect(agentStatusSnapshot().n1.state).toBe('working')
+    now.mockRestore()
   })
 
   it('onMirrorFlush delivers the built doc on every flush; unsubscribe stops it', async () => {
@@ -237,6 +327,11 @@ describe('filterMirrorForNodes', () => {
         a: { state: 'working', updatedAt: 1 },
         b: { state: 'done', updatedAt: 2 },
         c: { updatedAt: 3 }
+      },
+      lastKnown: {
+        a: { state: 'working', changedAt: 1 },
+        b: { state: 'done', changedAt: 2 },
+        c: { changedAt: 3 }
       }
     }
     const out = filterMirrorForNodes(doc, new Set(['b', 'c', 'ghost']))
@@ -244,6 +339,7 @@ describe('filterMirrorForNodes', () => {
     expect(out.updatedAt).toBe(99)
     expect(Object.keys(out.nodes).sort()).toEqual(['b', 'c'])
     expect(out.nodes.b.state).toBe('done')
+    expect(Object.keys(out.lastKnown ?? {}).sort()).toEqual(['b', 'c'])
   })
 
   it('does not mutate the input doc', () => {
