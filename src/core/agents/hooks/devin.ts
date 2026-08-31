@@ -11,11 +11,15 @@ const SCRIPT_FILE_NAME = 'devin.sh'
  * `.devin/hooks.v1.json` or `.devin/config.json`, but the user config is the right place for a
  * machine-wide nodeterm integration, matching where we install Claude/Gemini/Grok hooks.
  */
-export function devinConfigPath(): string {
+export function devinConfigDir(): string {
   if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'devin', 'config.json')
+    return path.join(process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming'), 'devin')
   }
-  return path.join(homedir(), '.config', 'devin', 'config.json')
+  return path.join(homedir(), '.config', 'devin')
+}
+
+export function devinConfigPath(): string {
+  return path.join(devinConfigDir(), 'config.json')
 }
 
 export function installDevinHooks(): void {

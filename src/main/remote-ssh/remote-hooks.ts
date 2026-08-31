@@ -627,6 +627,14 @@ export class RemoteHooks {
         'manage-nodeterm-canvas',
         buildCanvasSkillBody(shim)
       )
+      // Devin uses the same skill layout as Claude: ~/.config/devin/skills/<name>/SKILL.md
+      await this.writeRemoteSkill(
+        conn,
+        controlPath,
+        `${remoteHome}/.config/devin`,
+        'manage-nodeterm-canvas',
+        buildCanvasSkillBody(shim)
+      )
       // codex / gemini / opencode have no skill system — same marker-delimited instruction block
       // the desktop merges into their global instruction files. The opencode path is expanded by
       // the REMOTE shell (it is XDG-respecting and the local value says nothing about the host).
@@ -696,6 +704,14 @@ export class RemoteHooks {
         conn,
         controlPath,
         `${remoteHome}/.claude`,
+        'get-linked-context',
+        buildContextLinkSkillBody(shim)
+      )
+      // Devin uses the same skill layout as Claude: ~/.config/devin/skills/<name>/SKILL.md
+      await this.writeRemoteSkill(
+        conn,
+        controlPath,
+        `${remoteHome}/.config/devin`,
         'get-linked-context',
         buildContextLinkSkillBody(shim)
       )

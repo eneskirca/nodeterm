@@ -94,8 +94,10 @@ export const COPILOT_HOOK_EVENTS = [
 ] as const
 
 /**
- * Devin CLI hook events (→ normalizeDevin). Devin reads `.claude/` config by default but also has
- * its own `.devin/` and `~/.config/devin/config.json` hook format. We install into the global
+ * Devin CLI hook events (→ normalizeDevin). Devin does NOT read `.claude/` config by default
+ * (measured: a `SessionStart` hook in `~/.claude/settings.json` did NOT fire while `devin` was
+ * launched with a `~/.config/devin/config.json` that had no matching hook). Its own formats are
+ * `.devin/` and `~/.config/devin/config.json` hook sections. We install into the global
  * `~/.config/devin/config.json` so nodeterm's hooks live alongside Devin's own user settings.
  *
  * Measured on devin 3000.4.25 with a real session: the payload uses snake_case `hook_event_name`,

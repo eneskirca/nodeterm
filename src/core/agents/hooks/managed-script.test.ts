@@ -141,7 +141,7 @@ describe('buildManagedScript', () => {
     // contract. The wait is therefore claude-only at BUILD time: absent from every other agent's
     // script, whatever the env says.
     it('the wait branch is ABSENT from a non-claude agent script, not merely env-inert', () => {
-      for (const agent of ['codex', 'gemini', 'grok', 'copilot', 'opencode']) {
+      for (const agent of ['codex', 'gemini', 'grok', 'copilot', 'opencode', 'devin']) {
         const script = buildManagedScript(agent)
         expect(script, `${agent} script arms the perm wait`).not.toContain('NODETERM_PERM_WAIT_SECS * 2')
         expect(script, `${agent} script polls the answer file`).not.toContain('.answer')

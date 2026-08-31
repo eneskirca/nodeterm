@@ -82,13 +82,13 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
       assembleLaunchCommand({ agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits' }, ENV).command
     ).toBe("devin --permission-mode accept-edits -- 'version'")
   })
-  it('devin adds a --model flag before the prompt separator', () => {
+  it('devin does NOT add a --model flag, because Devin has no model gateway and --model takes native slugs', () => {
     expect(
       assembleLaunchCommand(
         { agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits', model: 'claude-sonnet-4' },
         ENV
       ).command
-    ).toBe("devin --permission-mode accept-edits --model 'claude-sonnet-4' -- 'version'")
+    ).toBe("devin --permission-mode accept-edits -- 'version'")
   })
   it('grok puts the permission flag BEFORE the -- separator', () => {
     expect(

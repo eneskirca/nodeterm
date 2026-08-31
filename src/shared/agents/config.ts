@@ -289,10 +289,17 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
 export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'devin'] as const
+// Agents whose permission hook can honour a deterministic wait + decision JSON reply (issue #409).
+// This is a SUBSET of PERMISSION_MODE_CAPABLE: devin accepts --permission-mode but its hook is
+// NOT known to honour our decision output, so the env var is claude-only until that is measured.
+export const PERM_WAIT_CAPABLE = ['claude'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'devin'] as const
+// Devin is NOT here: its --model flag takes Devin-native slugs (swe-1-7, etc.) and the CLI has no
+// documented gateway base-url / api-key env. Routing a gateway model id into `devin --model` would
+// rewrite the launch line while the backend stayed on Devin's own servers.
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
@@ -390,6 +397,8 @@ export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
+/** True only for agents whose permission hook is known to honour our deterministic wait + decision. */
+export const hasPermWait = (id: AgentId): boolean => includes(PERM_WAIT_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
 

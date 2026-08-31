@@ -19,6 +19,7 @@ import {
   createdAgentId,
   hasHooks,
   hasPermissionMode,
+  hasPermWait,
   hasUsage,
   reportsOwnCopy,
   RENAME_CAPABLE,
@@ -40,11 +41,22 @@ describe('CONTEXT_LINK_CAPABLE', () => {
 
 describe('MODEL_SWITCH_CAPABLE', () => {
   it('is centralized on the base harness capability', () => {
-    for (const id of ['claude', 'codex', 'copilot', 'devin'] as const) {
+    for (const id of ['claude', 'codex', 'copilot'] as const) {
       expect(canSwitchModel(id), id).toBe(true)
     }
-    for (const id of ['gemini', 'opencode', 'grok', 'custom:plain'] as const) {
+    // Devin accepts --model but its --model takes Devin-native slugs (swe-1-7, etc.) and the CLI
+    // has no documented gateway base-url / api-key env. The model switcher is for gateway model ids.
+    for (const id of ['gemini', 'opencode', 'grok', 'devin', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
+    }
+  })
+})
+
+describe('PERM_WAIT_CAPABLE', () => {
+  it('is claude-only until another agent\'s PermissionRequest hook is shown to honour our decision JSON', () => {
+    expect(hasPermWait('claude')).toBe(true)
+    for (const id of ['devin', 'codex', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
+      expect(hasPermWait(id), id).toBe(false)
     }
   })
 })
@@ -289,7 +301,8 @@ describe('devin capabilities', () => {
   it('claims the integrations whose surface is already measured', () => {
     expect(canControlCanvas('devin')).toBe(true)
     expect(canContextLink('devin')).toBe(true)
-    expect(canSwitchModel('devin')).toBe(true)
+    // Devin --model takes native slugs and has no documented gateway base-url / api-key env.
+    expect(canSwitchModel('devin')).toBe(false)
   })
 
   it('does not claim integrations that need a per-agent leaf', () => {
