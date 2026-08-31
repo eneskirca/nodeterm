@@ -93,7 +93,7 @@ import {
 } from './codex-identity-proxy'
 import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
-import { hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
+import { hasPermissionMode, hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
 import { findCustomAgent } from '../shared/agents/custom-agent'
 import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 import {
@@ -2669,10 +2669,10 @@ export class PtyManager {
     // session's hook env is injected via the remote tmux `-e` below (from the reverse-tunnel
     // endpoint file), so leave the local hook env out entirely here.
     // Deterministic hook-reply approvals (docs/hook-reply-approvals.md): arm the permission hook's
-    // wait-branch for claude sessions when the setting is on. `permWaitSecs > 0` injects
-    // NODETERM_PERM_WAIT_SECS; off / non-claude ⇒ 0 ⇒ absent ⇒ legacy behavior.
+    // wait-branch for permission-mode-capable sessions when the setting is on. `permWaitSecs > 0`
+    // injects NODETERM_PERM_WAIT_SECS; off / non-capable ⇒ 0 ⇒ absent ⇒ legacy behavior.
     const permWaitSecs =
-      this.getSettings().hookReplyApprovals && options.agentId === 'claude'
+      this.getSettings().hookReplyApprovals && hasPermissionMode(options.agentId ?? 'claude')
         ? PERM_WAIT_SECS_DEFAULT
         : 0
     // Materialise this node's token BEFORE the session exists, so the very first hook event the

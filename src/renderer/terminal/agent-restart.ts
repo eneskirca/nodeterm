@@ -40,7 +40,8 @@ const EXIT_SEQUENCES: Record<string, string> = {
   grok: '/quit',
   gemini: '/quit',
   copilot: '/exit',
-  opencode: '/exit'
+  opencode: '/exit',
+  devin: '/exit'
 }
 
 export function exitSequence(agentId: string): string | null {
@@ -201,7 +202,7 @@ export async function performExitPhase(d: {
   // would then be reported as an exit timeout.
   //
   // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI in
-  // EXIT_SEQUENCES (claude, codex, grok, gemini) — it is in every readline/ZLE prompt, and it is
+  // EXIT_SEQUENCES (claude, codex, grok, gemini, devin) — it is in every readline/ZLE prompt, and it is
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than

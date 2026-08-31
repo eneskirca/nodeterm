@@ -153,7 +153,7 @@ describe('approvalFlags — an agent with no permission mode', () => {
 describe('UI copy derived from the mapping', () => {
   it('names every agent whose start-up mode we can set', () => {
     const label = permissionModeAgentsLabel()
-    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex']) expect(label).toContain(name)
+    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Devin']) expect(label).toContain(name)
     expect(label).not.toContain('opencode')
   })
 
@@ -162,7 +162,7 @@ describe('UI copy derived from the mapping', () => {
     // the same drift the label helper exists to prevent, one level down. The ids are exported so the
     // caller can agree with them; this pins that they describe the SAME set the label does.
     const ids = permissionModeAgentIds({ exclude: ['claude'] })
-    expect(ids).toEqual(['grok', 'gemini', 'codex'])
+    expect(ids).toEqual(['grok', 'gemini', 'codex', 'devin'])
     const label = permissionModeAgentsLabel({ exclude: ['claude'] })
     for (const id of ids) expect(label.toLowerCase()).toContain(id === 'codex' ? 'codex' : id)
     expect(label).not.toContain('Claude')

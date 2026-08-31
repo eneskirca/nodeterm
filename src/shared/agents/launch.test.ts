@@ -77,6 +77,19 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
     ).toBe('grok')
   })
 
+  it('devin puts the prompt BEHIND a -- separator and the permission flag BEFORE it', () => {
+    expect(
+      assembleLaunchCommand({ agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits' }, ENV).command
+    ).toBe("devin --permission-mode accept-edits -- 'version'")
+  })
+  it('devin adds a --model flag before the prompt separator', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits', model: 'claude-sonnet-4' },
+        ENV
+      ).command
+    ).toBe("devin --permission-mode accept-edits --model 'claude-sonnet-4' -- 'version'")
+  })
   it('grok puts the permission flag BEFORE the -- separator', () => {
     expect(
       assembleLaunchCommand({ agentId: 'grok', initialPrompt: 'version', permissionMode: 'plan' }, ENV).command
@@ -192,6 +205,11 @@ describe('assembleResumeCommand', () => {
   it('claude resumes with --resume', () => {
     expect(assembleResumeCommand({ agentId: 'claude', sessionId: 'abc-123' }, ENV).command).toBe(
       'claude --resume abc-123'
+    )
+  })
+  it('devin resumes with --resume <sid>', () => {
+    expect(assembleResumeCommand({ agentId: 'devin', sessionId: 'abc-123' }, ENV).command).toBe(
+      'devin --resume abc-123'
     )
   })
   it('codex resumes with the subcommand form', () => {

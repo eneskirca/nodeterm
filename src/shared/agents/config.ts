@@ -2,7 +2,7 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
-export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot'
+export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot' | 'devin'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -40,7 +40,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'gemini',
   'opencode',
   'grok',
-  'copilot'
+  'copilot',
+  'devin'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -96,14 +97,25 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // 1.0.80 CLI's `--interactive <prompt>` starts the ordinary TUI and submits the prompt there.
     promptInjectionMode: 'flag-interactive',
     expectedProcess: 'copilot'
+  },
+  devin: {
+    label: 'Devin',
+    color: '#3969CA',
+    launchCmd: 'devin',
+    // Measured on devin 3000.4.25: usage is `devin [OPTIONS] [-- <PROMPT>...] [COMMAND]`,
+    // so the prompt is a positional after `--`. Without the separator a prompt like `list`,
+    // `auth`, `models`, `update` or `setup` is executed as a subcommand and never reaches the model.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: '--',
+    expectedProcess: 'devin'
   }
 }
 
 // Capabilities = const builtin membership lists. A custom agent resolves through its declared
 // base harness (capabilityAgentId); one with no base automatically gets only spawn + terminal-title
 // + process status.
-export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
-export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
+export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
 //
@@ -149,7 +161,14 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+export const CONTEXT_LINK_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'devin'
+] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family
@@ -249,7 +268,7 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // RemoteHooks.installCanvasControl. Membership here is what sets NODETERM_CANVAS_CONTROL in the
 // session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
 // other than a no-op.
-export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
@@ -269,11 +288,11 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // renderer/state/permissionMode.ts. grok has accepted every mode we emit since 1.0.0, its first
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
-export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as const
+export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'devin'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'devin'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
@@ -526,6 +545,7 @@ export function resumeCommandWith(
     case 'claude':
     case 'gemini':
     case 'grok':
+    case 'devin':
       return `${launchCmd} --resume ${sid}`
     default:
       return null

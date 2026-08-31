@@ -195,7 +195,7 @@ function brandPulseMascot(src: string, size: number): HTMLElement {
 function workingMascot(agentId?: string): Element {
   if (agentId === 'claude' && CLAUDE_MASCOT.src) return quadrantMascot(CLAUDE_MASCOT, 'claude')
   if (agentId === 'codex') return codexMascot()
-  // grok, gemini, opencode and copilot breathe their own brand mark instead of walking a critter — the SAME
+  // grok, gemini, opencode, copilot and devin breathe their own brand mark instead of walking a critter — the SAME
   // decision the canvas badge makes (lib/brandPulse.ts, shared precisely so one agent is never two
   // different things on two surfaces). This renderer stays React-free, so it draws the plan itself.
   const plan = brandPulsePlan(agentId, HUD_QUADRANT_H)

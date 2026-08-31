@@ -70,6 +70,19 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // absent ON PURPOSE — see modeSupported.
 }
 
+const DEVIN_MODES: Partial<Record<AgentPermissionMode, string>> = {
+  // Devin CLI 3000.4.25 accepts `auto | accept-edits | smart | dangerous` for `--permission-mode`
+  // (`/normal`, `/accept-edits`, `/smart`, `/bypass` in-session). The default is `auto`, so `manual`
+  // intentionally emits NO flag (same as grok/claude default behaviour). `plan` is not a Devin mode,
+  // and `smart` is intentionally omitted from our vocabulary: it is a limited-rollout Devin mode and
+  // `auto` is the closest stable equivalent. `bypassPermissions` maps to `dangerous` (the `--help`
+  // value; `/bypass` and `/yolo` are in-session aliases, not CLI flag values).
+  auto: 'auto',
+  acceptEdits: 'accept-edits',
+  bypassPermissions: 'dangerous'
+  // `manual` and `plan` are absent ON PURPOSE — see modeSupported.
+}
+
 /**
  * The agents that need a translation, flag and vocabulary together.
  *
@@ -83,7 +96,8 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
  */
 const APPROVAL_DIALECTS: Partial<Record<AgentId, ApprovalDialect>> = {
   gemini: { flag: '--approval-mode', modes: GEMINI_MODES },
-  codex: { flag: '--ask-for-approval', modes: CODEX_MODES }
+  codex: { flag: '--ask-for-approval', modes: CODEX_MODES },
+  devin: { flag: '--permission-mode', modes: DEVIN_MODES }
 }
 
 const dialectFor = (agentId: AgentId): ApprovalDialect | null =>
