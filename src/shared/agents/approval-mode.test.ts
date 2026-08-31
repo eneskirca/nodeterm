@@ -116,7 +116,10 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
     )
     // That codex has an equivalent, so the derived copy must NOT claim otherwise.
     expect(modeSupported('codex', 'manual', OLD_CODEX)).toBe(true)
-    expect(unsupportedModesNote(OLD_CODEX)).not.toContain(PERMISSION_MODE_LABELS.manual)
+    // Scoped to codex's own sentence: another agent (devin) may legitimately have a Manual gap.
+    expect(unsupportedModesNote(OLD_CODEX)).not.toMatch(
+      new RegExp(`${PERMISSION_MODE_LABELS.manual}[^.]*no Codex equivalent`)
+    )
   })
 
   /**
@@ -284,7 +287,7 @@ describe('approvalFlags — an agent with no permission mode', () => {
 describe('UI copy derived from the mapping', () => {
   it('names every agent whose start-up mode we can set', () => {
     const label = permissionModeAgentsLabel()
-    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Cursor', 'Antigravity'])
+    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Cursor', 'Antigravity', 'Devin'])
       expect(label).toContain(name)
     expect(label).not.toContain('opencode')
   })
@@ -294,7 +297,7 @@ describe('UI copy derived from the mapping', () => {
     // the same drift the label helper exists to prevent, one level down. The ids are exported so the
     // caller can agree with them; this pins that they describe the SAME set the label does.
     const ids = permissionModeAgentIds({ exclude: ['claude'] })
-    expect(ids).toEqual(['grok', 'gemini', 'codex', 'cursor', 'antigravity'])
+    expect(ids).toEqual(['grok', 'gemini', 'codex', 'cursor', 'antigravity', 'devin'])
     const label = permissionModeAgentsLabel({ exclude: ['claude'] })
     for (const id of ids) expect(label.toLowerCase()).toContain(id)
     expect(label).not.toContain('Claude')
@@ -349,7 +352,8 @@ describe('UI copy derived from the mapping', () => {
     expect(note).toContain('only when the model chooses to')
     expect(note).toContain('0.149.0')
     // The same sentence must NOT appear for the CLI that can express it.
-    expect(unsupportedModesNote(OLD_CODEX)).not.toContain('Ask each time')
+    // Codex's sentence only — devin's own Manual gap is a different agent's fact.
+    expect(unsupportedModesNote(OLD_CODEX)).not.toMatch(/Ask each time[^.]*no Codex equivalent/)
     expect(unsupportedModesNote(OLD_CODEX)).not.toContain('0.149.0')
     // Gemini's gap is a different agent's fact and is unmoved by codex's vocabulary.
     for (const caps of [OLD_CODEX, NEW_CODEX])

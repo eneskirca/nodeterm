@@ -18,7 +18,12 @@ import {
   remoteEndpointFileContents,
   remoteTcpEndpointFileContents
 } from '../../core/remote-ssh/control-master'
-import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, type ManagedHookEvent } from '@shared/agents/hook-events'
+import {
+  CLAUDE_HOOK_EVENTS,
+  DEVIN_HOOK_EVENTS,
+  GEMINI_HOOK_EVENTS,
+  type ManagedHookEvent
+} from '@shared/agents/hook-events'
 import { GROK_EVENTS } from '../../core/agents/hooks/grok'
 import { GROK_HOOK_FILE, REMOTE_GROK_HOME_PROBE, resolveReportedGrokHome } from '../../core/agents/grok-paths'
 import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
@@ -145,7 +150,8 @@ export interface RemoteRunner {
 // so remote gemini nodes reported nothing at all.
 const AGENT_TARGETS: { agentId: string; config: string; events: readonly ManagedHookEvent[] }[] = [
   { agentId: 'claude', config: '.claude/settings.json', events: CLAUDE_HOOK_EVENTS },
-  { agentId: 'gemini', config: '.gemini/settings.json', events: GEMINI_HOOK_EVENTS }
+  { agentId: 'gemini', config: '.gemini/settings.json', events: GEMINI_HOOK_EVENTS },
+  { agentId: 'devin', config: '.config/devin/config.json', events: DEVIN_HOOK_EVENTS }
 ]
 
 /** Where the host's instruction files live — one marker block per feature in each. */

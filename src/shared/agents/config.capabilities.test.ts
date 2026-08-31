@@ -44,10 +44,10 @@ import {
 import { CURSOR_HOOK_EVENTS } from './hook-events'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
-  it('all three builtin agents can context-link', () => {
-    expect(canContextLink('claude')).toBe(true)
-    expect(canContextLink('codex')).toBe(true)
-    expect(canContextLink('gemini')).toBe(true)
+  it('all context-link-capable builtins can context-link', () => {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'devin'] as const) {
+      expect(canContextLink(id), id).toBe(true)
+    }
   })
   it('custom agents cannot', () => {
     expect(canContextLink('custom:abc')).toBe(false)
@@ -71,7 +71,8 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     expect(hasGatewayModels('antigravity')).toBe(false)
     for (const id of ['claude', 'codex', 'copilot'] as const)
       expect(hasGatewayModels(id), id).toBe(true)
-    for (const id of ['gemini', 'opencode', 'custom:plain'] as const) {
+    // devin: `--model` takes Devin-native slugs and the CLI has no gateway env, so it stays out.
+    for (const id of ['gemini', 'opencode', 'devin', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
       expect(hasGatewayModels(id), id).toBe(false)
     }
@@ -200,11 +201,12 @@ describe('grok capabilities', () => {
     expect(AGENT_CONFIG.grok.argvPromptSeparator).toBe('--')
   })
 
-  it('is the only agent besides cursor that asks for a separator', () => {
+  it('is the only agent besides cursor and devin that asks for a separator', () => {
     // claude takes a positional too, but has no subcommand a one-word prompt could shadow — and
     // adding `--` there would change a command line that works today. cursor needs one for the
-    // same reason as grok, but its CLI ignores `--` (see the cursor block below).
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok' && a !== 'cursor')) {
+    // same reason as grok, but its CLI ignores `--` (see the cursor block below). devin's
+    // CLI has subcommands (`list`, `auth`, `models`, ...) that collide with a positional prompt.
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok' && a !== 'cursor' && a !== 'devin')) {
       expect(AGENT_CONFIG[id].argvPromptSeparator, id).toBeUndefined()
     }
   })
@@ -424,6 +426,60 @@ describe('cursor capabilities', () => {
   })
 })
 
+/**
+ * Devin is added with a measured baseline: hooks (PreToolUse/PostToolUse/PermissionRequest/
+ * UserPromptSubmit/Stop/SessionStart/SessionEnd), resume (`--resume <sid>`), and start-up
+ * permission modes (`--permission-mode auto|accept-edits|dangerous`). Canvas control, context
+ * links and model switching are now enabled because the CLI surface is there. Higher-level
+ * leaves (subagents, title sync, chat, usage meter, shared identity) are intentionally NOT
+ * claimed because their per-agent wire is unmeasured.
+ */
+describe('devin capabilities', () => {
+  it('is a builtin with a measured launch command, prompt separator and colour', () => {
+    expect(BUILTIN_AGENT_IDS).toContain('devin')
+    expect(AGENT_CONFIG.devin).toEqual({
+      label: 'Devin',
+      color: '#3969ca',
+      launchCmd: 'devin',
+      promptInjectionMode: 'argv',
+      argvPromptSeparator: '--',
+      expectedProcess: 'devin'
+    })
+  })
+
+  it('reports status through its own hooks and can resume', () => {
+    expect(hasHooks('devin')).toBe(true)
+    expect(canResume('devin')).toBe(true)
+    expect(hasPermissionMode('devin')).toBe(true)
+  })
+
+  it('resumes with the devin CLI grammar', () => {
+    expect(resumeCommand('devin', 'almondine-loganberry')).toBe('devin --resume almondine-loganberry')
+  })
+
+  it('claims the integrations whose surface is already measured', () => {
+    expect(canControlCanvas('devin')).toBe(true)
+    expect(canContextLink('devin')).toBe(true)
+    expect(canSwitchModel('devin')).toBe(false)
+  })
+
+  it('does not claim integrations that need a per-agent leaf', () => {
+    for (const can of [
+      canSubagent,
+      canRecur,
+      canBranch,
+      hasUsage,
+      canChat,
+      canTransferFrom,
+      canRename,
+      canReadTitle,
+      hasSharedIdentity
+    ]) {
+      expect(can('devin')).toBe(false)
+    }
+  })
+})
+
 describe('copy feedback', () => {
   it('stays quiet for claude, whose CLI announces its own copies', () => {
     // Claude Code captures the mouse and prints "copied N chars to tmux buffer · paste with
@@ -434,7 +490,7 @@ describe('copy feedback', () => {
   it('speaks for every agent that says nothing itself', () => {
     // codex leaves the mouse to tmux: the drag copies via OSC 52 and the highlight vanishes on
     // release with no word from anyone. That silence is what the pill exists for.
-    for (const id of ['codex', 'gemini', 'opencode', 'grok', 'copilot'])
+    for (const id of ['codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'])
       expect(reportsOwnCopy(id)).toBe(false)
   })
 
@@ -479,7 +535,7 @@ describe('title read vs rename write', () => {
 
   it('only codex has a shared identity, and it is asked through the helper', () => {
     expect(hasSharedIdentity('codex')).toBe(true)
-    for (const id of ['claude', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
+    for (const id of ['claude', 'gemini', 'grok', 'opencode', 'copilot', 'devin', 'custom:abc'] as const) {
       expect(hasSharedIdentity(id), id).toBe(false)
     }
   })

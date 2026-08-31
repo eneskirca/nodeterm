@@ -52,6 +52,8 @@ describe('exitSequence', () => {
     expect(exitSequence('opencode')).toBe('/exit')
     // cursor: bare `/quit`, measured in its TUI (exits clean, fires sessionEnd).
     expect(exitSequence('cursor')).toBe('/quit')
+    // Devin's in-session commands: `/exit` and `/quit` both exit; we use the same primary as claude.
+    expect(exitSequence('devin')).toBe('/exit')
     expect(exitSequence('my-custom')).toBeNull()
   })
 })

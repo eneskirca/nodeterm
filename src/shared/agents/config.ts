@@ -13,6 +13,7 @@ export type BuiltinAgentId =
   | 'copilot'
   | 'antigravity'
   | 'cursor'
+  | 'devin'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -91,7 +92,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'opencode',
   'grok',
   'copilot',
-  'cursor'
+  'cursor',
+  'devin'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -203,6 +205,17 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     expectedProcess: 'cursor-agent',
     // The two env overrides `cursor-agent --help` names for auth and endpoint.
     vanillaEnvPattern: '^CURSOR_API_(KEY|ENDPOINT)$'
+  },
+  devin: {
+    label: 'Devin',
+    color: '#3969ca',
+    launchCmd: 'devin',
+    // Measured on devin 3000.4.25: usage is `devin [OPTIONS] [-- <PROMPT>...] [COMMAND]`,
+    // so the prompt is a positional after `--`. Without the separator a prompt like `list`,
+    // `auth`, `models`, `update` or `setup` is executed as a subcommand and never reaches the model.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: '--',
+    expectedProcess: 'devin'
   }
 }
 
@@ -221,7 +234,8 @@ export const AGENT_HOOK_TARGETS = [
   'grok',
   'copilot',
   'antigravity',
-  'cursor'
+  'cursor',
+  'devin'
 ] as const
 // antigravity: `agy --conversation=<id>` — the `=` spelling agy prints in its own exit hint
 // (`agy --conversation=%s`, 1.2.12 binary). The id is the hook payload's `conversationId`, recorded
@@ -243,7 +257,8 @@ export const RESUMABLE_AGENTS = [
   'grok',
   'copilot',
   'antigravity',
-  'cursor'
+  'cursor',
+  'devin'
 ] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
@@ -317,7 +332,8 @@ export const CONTEXT_LINK_CAPABLE = [
   'opencode',
   'grok',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
@@ -460,7 +476,8 @@ export const TRANSFER_SOURCE_CAPABLE = [
 //
 // cursor: `sessionEnd` fires on an orderly `/quit` (measured 2026.09.28, `reason: "completed"`), and
 // `CURSOR_HOOK_EVENTS` subscribes to it; both halves are needed, the list is inert without the event.
-export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'cursor'] as const
+// devin: `SessionEnd` is subscribed in DEVIN_HOOK_EVENTS and normalizeDevin maps it to `end`.
+export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'cursor', 'devin'] as const
 // Agents that accept a node title being PUSHED back into the session — the write leg only. The
 // write is the same literal `/rename <name>` for both, which grok also accepts as `/title`.
 // The READ leg is TITLE_READ_CAPABLE below, which is a superset: an agent can name its own session
@@ -538,7 +555,8 @@ export const CANVAS_CONTROL_CAPABLE = [
   'grok',
   'copilot',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
 // Agents whose TOOL shell on Windows is POSIX: Claude Code runs its Bash tool (and its hooks)
 // through Git Bash, so `sh "<shim>.sh"` works there exactly as on macOS/Linux. Every other agent
@@ -577,7 +595,8 @@ export const PERMISSION_MODE_CAPABLE = [
   'gemini',
   'codex',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
@@ -905,6 +924,7 @@ export function resumeCommandWith(
     case 'gemini':
     case 'grok':
     case 'cursor':
+    case 'devin':
       return `${launchCmd} --resume ${sid}`
     default:
       return null
