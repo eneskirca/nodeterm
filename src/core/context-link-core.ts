@@ -103,7 +103,7 @@ export function buildLinkedContextInstructions(shimPath: string): string {
     '# Reading linked nodeterm nodes (get-linked-context)',
     '',
     'When you run inside a nodeterm canvas session, this node may be linked to other agent',
-    'nodes (Claude, Codex or Gemini) or sticky notes by a context-link edge. You can READ a',
+    'nodes (Claude, Codex, Gemini, opencode or Devin) or sticky notes by a context-link edge. You can READ a',
     "linked node's context on demand — nothing is pushed automatically:",
     '',
     '```sh',
@@ -360,12 +360,12 @@ export function buildContextLinkSkillBody(shimPath: string, dialect: ShimDialect
   const windowsNote = windowsShimNoteLines(shimPath, dialect)
   return `---
 name: get-linked-context
-description: Read the conversation/transcript, a recent summary, or the terminal output of another agent node (Claude, Codex or Gemini) you are linked to on the nodeterm canvas. Use when you need to know what a connected node has been doing, hand off, or continue its work. Only meaningful inside a nodeterm session with a context-link edge. Also reads sticky notes linked to this node as context.
+description: Read the conversation/transcript, a recent summary, or the terminal output of another agent node (Claude, Codex, Gemini, opencode or Devin) you are linked to on the nodeterm canvas. Use when you need to know what a connected node has been doing, hand off, or continue its work. Only meaningful inside a nodeterm session with a context-link edge. Also reads sticky notes linked to this node as context.
 ---
 
 # Get linked context
 
-On the nodeterm canvas, this session may be connected to other agent nodes (Claude, Codex, Gemini, opencode or Grok) by a
+On the nodeterm canvas, this session may be connected to other agent nodes (Claude, Codex, Gemini, opencode, Grok or Devin) by a
 context-link edge. When you are linked, you can READ the other node's context on demand by
 running the local CLI shim below. Nothing is pushed to you automatically — pull what you need.
 

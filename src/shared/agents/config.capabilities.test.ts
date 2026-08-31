@@ -22,6 +22,7 @@ import {
   hasHooks,
   hasGatewayModels,
   hasPermissionMode,
+  hasPermWait,
   hasUsage,
   MODEL_SWITCH_CAPABLE,
   OWN_MODEL_CATALOGUE,
@@ -81,6 +82,15 @@ describe('MODEL_SWITCH_CAPABLE', () => {
   it('OWN_MODEL_CATALOGUE is a subset of the switch-capable list', () => {
     for (const id of OWN_MODEL_CATALOGUE)
       expect(MODEL_SWITCH_CAPABLE as readonly string[]).toContain(id)
+  })
+})
+
+describe('PERM_WAIT_CAPABLE', () => {
+  it('is claude-only until another agent\'s PermissionRequest hook is shown to honour our decision JSON', () => {
+    expect(hasPermWait('claude')).toBe(true)
+    for (const id of ['devin', 'codex', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
+      expect(hasPermWait(id), id).toBe(false)
+    }
   })
 })
 

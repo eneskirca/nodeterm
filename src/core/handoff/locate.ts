@@ -8,6 +8,18 @@ import os from 'os'
 import path from 'path'
 import { resolveTranscriptPath } from '../transcript-reader'
 
+// Devin keeps one JSON transcript per session at ~/.local/share/devin/cli/transcripts/<sessionId>.json
+// (measured on 3000.4.25: a monolithic object with `steps[]`, each step carrying `source` and `message`).
+export async function locateDevin(sessionId: string): Promise<string | undefined> {
+  const p = path.join(os.homedir(), '.local', 'share', 'devin', 'cli', 'transcripts', `${sessionId}.json`)
+  try {
+    const st = await fs.promises.stat(p)
+    return st.isFile() ? p : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // claude: ~/.claude/projects/<proj>/<sessionId>.jsonl — already implemented (searches all
 // project dirs for the exact <sessionId>.jsonl). `accountId` scopes to a managed account's
 // transcript root (default `~/.claude`).

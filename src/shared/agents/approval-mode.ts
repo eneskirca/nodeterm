@@ -23,6 +23,7 @@ import {
   ALL_PERMISSION_MODES,
   PERMISSION_MODE_CAPABLE,
   PERMISSION_MODE_LABELS,
+  capabilityAgentId,
   hasPermissionMode,
   isPermissionMode,
   permissionModeFlag,
@@ -112,7 +113,14 @@ interface ApprovalDialect {
 const GEMINI_MODES: Partial<Record<AgentPermissionMode, string>> = {
   plan: 'plan',
   acceptEdits: 'auto_edit',
-  bypassPermissions: 'yolo'
+  bypassPermissions: 'yolo',
+  manual: ''
+  // A PRESENT key with an EMPTY value is the table's way of saying "this agent supports the mode,
+  // and expresses it by emitting NO flag" — `modeSupported` reads presence (`Object.hasOwn`) while
+  // `approvalFlags` reads truthiness, so the two answers are `true` + `[]`. An ABSENT key means
+  // unsupported (`false` + `[]`, e.g. gemini's `auto`, devin's `manual`) — same emitted command,
+  // opposite promise to the user, which is why the distinction is a key and not a value.
+  //
   // `manual` → gemini's own `default`, i.e. NO flag, exactly as it is for claude.
   //
   // `auto` is ABSENT ON PURPOSE, and it is the one absence worth explaining, because `auto` is
@@ -199,11 +207,15 @@ const CURSOR_MODES: Partial<Record<AgentPermissionMode, string>> = {
 
 const DEVIN_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // Devin CLI 3000.4.25 accepts `auto | accept-edits | smart | dangerous` for `--permission-mode`
-  // (`/normal`, `/accept-edits`, `/smart`, `/bypass` in-session). The default is `auto`, so `manual`
-  // intentionally emits NO flag (same as grok/claude default behaviour). `plan` is not a Devin mode,
+  // (`/normal`, `/accept-edits`, `/smart`, `/bypass` in-session). `plan` is not a Devin mode,
   // and `smart` is intentionally omitted from our vocabulary: it is a limited-rollout Devin mode and
   // `auto` is the closest stable equivalent. `bypassPermissions` maps to `dangerous` (the `--help`
   // value; `/bypass` and `/yolo` are in-session aliases, not CLI flag values).
+  //
+  // `manual` is ABSENT on purpose: Devin's own default is `auto`, which auto-approves read-only
+  // tools and only asks for higher-permission actions. Emitting NO flag would therefore run `auto`,
+  // not "ask each time". There is no Devin mode that asks for every action, so `manual` is
+  // unsupported and `modeSupported('devin', 'manual')` is false.
   auto: 'auto',
   acceptEdits: 'accept-edits',
   bypassPermissions: 'dangerous'
@@ -284,8 +296,12 @@ function standaloneFlag(
     : undefined
 }
 
-const dialectFor = (agentId: AgentId): ApprovalDialect | null =>
-  Object.hasOwn(APPROVAL_DIALECTS, agentId) ? APPROVAL_DIALECTS[agentId] ?? null : null
+// Resolve dialect through the base harness, so a custom agent with `baseAgent:'devin'`
+// inherits devin's flag and value table instead of falling back to claude's `--permission-mode`.
+const dialectFor = (agentId: AgentId): ApprovalDialect | null => {
+  const base = capabilityAgentId(agentId)
+  return Object.hasOwn(APPROVAL_DIALECTS, base) ? APPROVAL_DIALECTS[base] ?? null : null
+}
 
 /** Can this agent actually start in this mode? `false` means the launch omits the flag and the
  *  agent uses its own default — surfaced in the UI so the user is not misled. */
