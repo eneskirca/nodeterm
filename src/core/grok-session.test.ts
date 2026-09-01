@@ -1,20 +1,8 @@
 // FIXTURE PROVENANCE — read this before trusting `__fixtures__/grok/summary.json`.
 //
-// It was NOT captured from a real grok session: there is no grok binary and no grok account on the
-// machine this task was implemented on. It is CONSTRUCTED from the field list grok's shipped 1.0.0
-// documentation gives for `summary.json` (`info`, `session_summary`, `generated_title`,
-// `created_at`, `updated_at`, `num_messages`, `num_chat_messages`, `current_model_id`,
-// `parent_session_id`, `agent_name`). The field NAMES come from that list; every VALUE is a
-// plausible placeholder, the timestamp format is a guess, and nested shapes are left empty rather
-// than invented (`info: {}`) — so only the two keys the assertions below pin (`generated_title`,
-// `current_model_id`) may be relied upon.
-//
-// UNVERIFIED, and the reason the first TITLE_KEYS entry exists: the key grok's `/rename` (alias
-// `/title`) writes a MANUAL title to is unknown. `'title'` is a first guess, placed first so a real
-// manual title wins the moment someone confirms it. Until then the read leg adopts the documented
-// `generated_title`, which is grok's own auto-name — correct, just not overridable from grok's side.
-// Replacing this fixture with a real capture (and correcting TITLE_KEYS if the key differs) is the
-// checklist item this task leaves open.
+// Captured from grok 1.0.13 on 2026-09-01. Personal paths and ids are redacted, and the two human
+// strings intentionally differ so removing `generated_title` cannot fall through to the same text
+// via `session_summary`. Every key and value type matches the captured summary.json.
 import { afterAll, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -35,17 +23,21 @@ describe('pickGrokSessionMeta', () => {
     const meta = pickGrokSessionMeta(fixture)
     // Both assertions read from the fixture — do not relax them to `expect.any(String)`: the point
     // of the fixture is that the keys are pinned.
-    expect(meta?.title).toBe('Add grok status hooks to nodeterm')
-    expect(meta?.model).toBe('grok-4')
+    expect(meta?.title).toBe('Plan the release')
+    expect(meta?.model).toBe('grok-4.6')
   })
 
-  it('prefers a manually set title over the model-generated one', () => {
-    const meta = pickGrokSessionMeta(JSON.stringify({ title: 'mine', generated_title: 'auto' }))
-    expect(meta?.title).toBe('mine')
+  it('prefers grok\'s generated title over the human session summary and an unsupported title key', () => {
+    const meta = pickGrokSessionMeta(
+      JSON.stringify({ title: 'guess', generated_title: 'auto', session_summary: 'summary' })
+    )
+    expect(meta?.title).toBe('auto')
   })
 
-  it('falls back to the generated title', () => {
-    expect(pickGrokSessionMeta(JSON.stringify({ generated_title: 'auto' }))?.title).toBe('auto')
+  it('falls back to the human session summary before grok has generated a title', () => {
+    expect(pickGrokSessionMeta(JSON.stringify({ session_summary: 'summary' }))?.title).toBe(
+      'summary'
+    )
   })
 
   it('returns a null TITLE (not a null meta) when the session has no name yet', () => {

@@ -266,27 +266,22 @@ resolve **nothing** there (`GROK_ENCODED_CWD_MAX_BYTES`); a session id must matc
 
 The session **name** (what `/resume` shows and what a node title with `titleAuto` adopts) is read by
 `core/grok-session.ts` → `pickGrokSessionMeta` over `summary.json`, in preference order
-`TITLE_KEYS = ['title', 'generated_title']`, plus `current_model_id` as the model. Reads are capped
+`TITLE_KEYS = ['generated_title', 'session_summary']`, plus `current_model_id` as the model. Reads are capped
 at 256 KB and answer `null` — never a throw — for an absent, oversized or unparseable file.
 Resolution is a **direct open** of the directory a hook told us about: `rememberGrokSessionDir` /
 `grokSessionDirFor` / `forgetGrokSession` keep a bounded (512-entry, least-recently-seen-evicted)
 `sessionId → dir` map, populated by the shells' raw listeners.
 
-**The fixture is CONSTRUCTED, not captured.** `src/core/__fixtures__/grok/summary.json` was built
-from the field list grok's shipped 1.0.0 documentation gives (`info`, `session_summary`,
-`generated_title`, `created_at`, `updated_at`, `num_messages`, `num_chat_messages`,
-`current_model_id`, `parent_session_id`, `agent_name`) — because no grok binary or account existed on
-the implementation machine. The field **names** come from that list; every **value** is a placeholder,
-the timestamp format is a guess, and nested shapes are left empty (`info: {}`) rather than invented.
-Only the two keys the assertions pin, `generated_title` and `current_model_id`, may be relied on. The
-provenance is written at the top of `grok-session.test.ts`; keep it there until the file is replaced
-by a real capture.
+**The fixture is a real capture.** `src/core/__fixtures__/grok/summary.json` was captured from grok
+1.0.13 at `$GROK_HOME/sessions/<encoded-cwd>/<session-id>/summary.json` on 2026-09-01. Personal
+paths and ids are redacted, while every key and value type is preserved. `generated_title` and
+`session_summary` deliberately use different redacted text so the fixture proves which key wins.
 
-**`TITLE_KEYS[0] = 'title'` is an unverified guess** at the key grok's `/rename` (alias `/title`)
-writes a *manual* title to. `generated_title` is the documented auto-title. `'title'` is listed
-first so a real manual title wins the moment the key is confirmed; a wrong guess degrades to the
-generated title (right name, just not overridable from grok's side) rather than to a wrong name.
-Confirming it is checklist item **14**.
+The capture has no `title` field. `generated_title` is grok's session name and wins;
+`session_summary` is the human-readable fallback before that title exists. Keeping the old guessed
+key would let a hand-edited or foreign `title` override the name grok actually generated. The
+fixture test's required mutation — removing `generated_title` from `TITLE_KEYS` — fails on the
+captured title, so the precedence is behaviorally pinned.
 
 **Not captured at all:** nothing, for the context meter. `signals.json` was the last entry here and
 it has been captured (22 sessions): it states the used count, the window total AND the percentage.
@@ -582,10 +577,10 @@ State machine edges
 Session identity + restore
 11. Does the session chip fill in? The chip has exactly ONE source: the terminal-title OSC
     (`term.onTitleChange`, path/prompt-looking titles ignored). The summary.json poll feeds the node
-    TITLE instead — that is item 14 — so a blank chip with a correct title is not a bug.
-12. `/rename Something` in grok, then check the node title adopts it — and record WHICH
-    summary.json key held it. TITLE_KEYS[0] = 'title' is a GUESS; correct it if it differs, and
-    replace __fixtures__/grok/summary.json with the real file while you are there.
+    TITLE instead — that is item 12 — so a blank chip with a correct title is not a bug.
+12. **Verified 2026-09-01:** a real grok 1.0.13 `summary.json` stores the session name in
+    `generated_title`, with `session_summary` as a separate human-readable fallback and no `title`
+    field. The redacted capture in `src/core/__fixtures__/grok/summary.json` pins that shape.
 13. Rename the NODE by hand: does grok's own title change (the `/rename` write leg)?
 14. Reboot (or `tmux kill-server`) and reopen the project: does the node cold-restore with
     `grok --resume <id>` and land in the SAME conversation, in the right cwd? Note that after

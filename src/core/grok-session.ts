@@ -45,17 +45,13 @@ export interface GrokSessionMeta {
 }
 
 /**
- * Title keys in PREFERENCE order: a manually set title wins over the model-generated one, exactly
- * as claude's `custom-title` wins over its `ai-title`.
+ * Title keys in PREFERENCE order. `generated_title` is grok's actual session name;
+ * `session_summary` is the human-readable fallback before that title is generated.
  *
- * `generated_title` is DOCUMENTED (grok 1.0.0). `'title'` is UNVERIFIED — it is a first guess at the
- * key grok's `/rename` (alias `/title`) writes a manual title to, which could not be captured
- * because no grok binary or account was available (see the provenance note atop grok-session.test.ts
- * and the fixture it describes). It is listed FIRST so a real manual title wins the moment the key is
- * confirmed; an unknown key is simply absent from the file, so a wrong guess degrades to the
- * generated title rather than to a wrong name.
+ * Do not restore the guessed `title` key: a real grok 1.0.13 summary has no such field, and
+ * accepting one lets a hand-edited or foreign value override the name grok actually generated.
  */
-const TITLE_KEYS = ['title', 'generated_title'] as const
+const TITLE_KEYS = ['generated_title', 'session_summary'] as const
 
 /** Pure: the meta from a summary.json body. null when this is not a summary object at all. */
 export function pickGrokSessionMeta(summaryJson: string): GrokSessionMeta | null {
