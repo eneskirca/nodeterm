@@ -6,6 +6,7 @@ import {
   __resetAgentRestartForTests,
   agentHibernateFns,
   agentRestartFn,
+  clearEnvEligibility,
   exitSequence,
   guardConcurrentRestart,
   isShellCommand,
@@ -90,6 +91,33 @@ describe('restartEligibility', () => {
       ok: false,
       reason: 'not-resumable'
     })
+  })
+})
+
+describe('clearEnvEligibility', () => {
+  it('permits a busy session — terminateForeground is PID-safe, and gateway overload lands mid-turn', () => {
+    // The shared `restartEligibility` refuses working/blocked because its `/exit` would answer a
+    // permission prompt. clearEnv SIGTERMs the foreground group by PID instead — no slash command is
+    // typed into the pane — so it may interrupt a stuck turn, which is exactly the scenario the
+    // feature exists for.
+    expect(clearEnvEligibility('claude', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('codex', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('copilot', 'abc')).toEqual({ ok: true })
+  })
+
+  it('still requires a resumable harness and provider session id', () => {
+    expect(clearEnvEligibility('claude', undefined)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+    expect(clearEnvEligibility('my-custom', 'abc')).toEqual({
+      ok: false,
+      reason: 'not-resumable'
+    })
+    // An agent with no vanillaEnvPattern (gemini) still passes THIS gate — resumability is a
+    // separate fact from "has a strip set." The menu row is hidden upstream on the pattern, so
+    // the gate is only ever reached for claude/codex/copilot. Tested in vanilla-env.test.ts.
+    expect(clearEnvEligibility('gemini', 'abc')).toEqual({ ok: true })
   })
 })
 

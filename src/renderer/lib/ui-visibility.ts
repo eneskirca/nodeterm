@@ -26,7 +26,8 @@ export const HIDEABLE_MENU_ITEMS: readonly HideableRow[] = [
   { id: 'snap-zone', label: 'Snap to zone' },
   { id: 'collapse', label: 'Collapse / Expand' },
   { id: 'markdown-view', label: 'Markdown view' },
-  { id: 'refresh-terminal', label: 'Refresh terminal' }
+  { id: 'refresh-terminal', label: 'Refresh terminal' },
+  { id: 'vanilla-restart', label: 'Restart on subscription' }
 ]
 
 /** Hideable terminal node header buttons, in header order. */

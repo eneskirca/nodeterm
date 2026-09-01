@@ -106,6 +106,14 @@ export interface PtyCreateOptions {
   agentId?: AgentId
   /** Per-node model override. Applied through the node's base harness on launch/cold restore. */
   agentModel?: string
+  /**
+   * One-shot: spawn (or re-spawn after a recycle) with gateway + inherited provider env stripped
+   * so the agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub
+   * routing) instead of the configured gateway/inherited override. The strip set is per-agent
+   * (`vanillaEnvStripPattern`); `CLAUDE_CONFIG_DIR` is deliberately kept (account isolation
+   * survives). Cleared after the spawn resolves so a later ordinary Restart re-applies the gateway.
+   */
+  clearEnv?: boolean
   /** Managed Claude account: inject CLAUDE_CONFIG_DIR for this account into the session env. */
   accountId?: string
   /**
@@ -336,6 +344,13 @@ export interface CanvasNodeState {
   agentId?: AgentId
   /** Model selected for this agent node through the shared model gateway. */
   agentModel?: string
+  /**
+   * One-shot "Restart on subscription" flag: when set, the next `transport.create` strips gateway +
+   * inherited provider env (per `vanillaEnvStripPattern`) so the agent resumes against its own
+   * default provider. Set by the clear-env recycle action, cleared after the spawn resolves so an
+   * ordinary Restart re-applies the gateway. See `PtyCreateOptions.clearEnv`.
+   */
+  clearEnv?: boolean
   /** Set while this node is armed but not yet launched — see PendingLaunch. */
   pendingLaunch?: PendingLaunch
   /**
@@ -1396,6 +1411,15 @@ export interface Settings {
    *  driver runs in `default`). Overridable per project via Project.defaultPermissionMode.
    *  `auto` is version-gated: CLIs below 2.1.71 reject the value, so it degrades to no flag. */
   claudePermissionMode: AgentPermissionMode
+  /**
+   *  When on, EVERY fresh agent launch spawns with gateway + inherited provider env stripped, so the
+   *  agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub routing)
+   *  instead of a configured gateway/inherited override. The per-node one-shot `data.clearEnv`
+   *  (cleared after its single recycle) is the per-node action; this is its global counterpart.
+   *  Default OFF — opt-in, because it changes which provider every agent node uses. Does NOT strip
+   *  `CLAUDE_CONFIG_DIR` (account isolation survives). See `vanillaEnvStripPattern`.
+   */
+  vanillaLaunchDefault: boolean
   /** "Eco": exit the agent CLI of a session that has been idle AND offscreen for
    *  `agentHibernationIdleMinutes`, reclaiming its RAM; the conversation is resumed automatically
    *  when the node is viewed again. Default OFF — opt-in, because it stops a real process.
@@ -1572,6 +1596,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Sessions start in auto mode out of the box. Existing users pick this up on hydrate
   // (settings hydrate merges over DEFAULT_SETTINGS) — a deliberate behavior change.
   claudePermissionMode: 'auto',
+  // Opt-in: strips the gateway/inherited provider env on every fresh launch so agents run against
+  // their own default provider. Off by default — changes which provider every agent node uses.
+  vanillaLaunchDefault: false,
   // Opt-in: hibernation exits a live CLI, so nobody gets it without asking. The 30-minute floor
   // is deliberately long — shorter windows exit sessions the user is between turns on.
   agentHibernationEnabled: false,

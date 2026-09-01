@@ -116,6 +116,7 @@ import {
   queryPaneWithin,
   registerAgentHibernate,
   registerAgentRestart,
+  clearEnvEligibility,
   restartEligibility,
   restartSessionId,
   RESTART_EXIT_TIMEOUT_MS,
@@ -2719,6 +2720,9 @@ export function TerminalNode({
           ownerProjectId: sshProjectId ?? useProjects.getState().activeProjectId,
           agentId: data.agentId,
           agentModel: data.agentModel,
+          // "Restart on subscription": ride the spawn's env-strip path. Cleared below once the
+          // spawn resolves so an ordinary Restart re-applies the gateway (one-shot).
+          clearEnv: data.clearEnv === true,
           accountId: data.accountId,
           sshRemote,
           // Belt AND braces: the guard above cannot see a `ssh` executable that has gone missing,
@@ -3051,6 +3055,11 @@ export function TerminalNode({
         if (fresh && useAgentStatus.getState().byId[id]?.hibernated) {
           useAgentStatus.getState().setHibernated(id, false)
         }
+        // The clear-env strip is one-shot: once this spawn has applied it, clear the flag so a later
+        // ordinary Restart re-applies the gateway. (The recycle action re-sets it for its own spawn.)
+        if (data.clearEnv) {
+          updateNodeData(id, { clearEnv: undefined })
+        }
         // Run a one-shot command on first open (e.g. "gh auth login" or the agent CLI), then
         // forget it.
         if (data.initialCommand) {
@@ -3171,7 +3180,7 @@ export function TerminalNode({
     }
     const unregisterRestart = registerAgentRestart(
       id,
-      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean) => {
+      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean) => {
         const st = useAgentStatus.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
@@ -3180,6 +3189,45 @@ export function TerminalNode({
         // value captured when the pane attached, or a later plain Restart would silently reopen
         // the old agent again.
         const sourceAgentId = createdAgentId(currentNode?.data)
+        // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+        // provider env so the agent falls back to its OWN default provider (Claude's subscription,
+        // Copilot's GitHub routing). No model change, no agent change: same agent, same
+        // conversation, resumed by the cold-restore path once the fresh shell is up. It recycles
+        // (not in-place `/exit`) for the same reason a model switch does — tmux env changes do not
+        // retroactively change an existing shell, so the gateway vars baked into the live session
+        // can only be dropped by respawning. Relay sessions belong to another core/settings store,
+        // so this Mac's gateway-stripped env must never be pushed into one.
+        //
+        // This branch is gated SEPARATELY from the shared `restartEligibility` below: clearEnv
+        // uses `terminateForeground` (SIGTERM the foreground group by PID — no `/exit` typed into
+        // the pane), so it is safe to interrupt a `working`/`blocked` session. Gateway overload —
+        // the scenario this exists for — shows up mid-turn, and "wait for the turn to finish" is
+        // impossible when the gateway is down. `clearEnvEligibility` permits busy for that reason;
+        // `restartEligibility` must NOT, because its `/exit` would answer a permission dialog.
+        if (clearEnv) {
+          if (session.source === 'relay') return 'not-eligible'
+          const clearGate = clearEnvEligibility(sourceAgentId, agentSessionId)
+          if (!clearGate.ok || !sourceAgentId) return 'not-eligible'
+          // Identity-gated (same as a model switch): core SIGTERMs the foreground group ONLY if
+          // this agent still owns it, so a stale menu can never kill vim or a build in this pane.
+          if (!(await api.pty.terminateForeground(id, sourceAgentId))) return 'not-eligible'
+          transport.recycle(id)
+          // `clearEnv` rides the respawn's `transport.create` (read from data above) to strip env at
+          // spawn; the cold-restore auto-resume relaunches the same agent against the default provider.
+          // The node's `agentModel` is a GATEWAY model id (the one a model switch stored, or the one a
+          // gateway node was created with): it only resolves through the gateway the strip just removed.
+          // Leaving it set would make the resume line append `--model <gateway-model>`, which the
+          // subscription CLI does not know — so the agent fails to launch against the subscription with
+          // a model name that does not exist there. Drop it: the CLI's own default model is what
+          // "subscription" means, and a later model switch (or plain Restart re-applying the gateway)
+          // sets it again.
+          updateNodeData(id, (node) => ({
+            clearEnv: true,
+            agentModel: undefined,
+            respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+          }))
+          return 'restarted'
+        }
         const gate = restartEligibility(sourceAgentId, st?.state, agentSessionId)
         if (!gate.ok || !sourceAgentId || !agentSessionId || !restartTarget())
           return 'not-eligible'
