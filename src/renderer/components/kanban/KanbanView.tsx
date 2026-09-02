@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { KanbanLabel, ProjectKanban } from '@shared/types'
+import type { BoardLogEvent, KanbanLabel, ProjectKanban } from '@shared/types'
 import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
 import { useViewMode } from '../../state/viewMode'
 import { useProjects } from '../../state/projects'
@@ -19,12 +19,13 @@ import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
 import type { ModalSpawn } from './ModalTerminal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
 import { IconAgent, IconExternal, IconNote, IconSwitch, IconTerminal, IconTrash, IconWeb } from '../icons'
-import type { GitHubIssueCardView } from '@shared/github-issues'
+import type { GitHubIssueCardView, GitHubLink } from '@shared/github-issues'
 import { useGitHubIssues } from '../../state/githubIssues'
 import { useAgentStatus } from '../../state/agentStatus'
 import { useSession } from '../../session/session'
 import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
 import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
+import { GitHubLinkPicker } from '../github/GitHubLinkPicker'
 import { ConfirmDialog } from '../ConfirmDialog'
 import {
   githubMoveConfirmation,
@@ -39,6 +40,9 @@ export interface KanbanSession {
   title: string
   color: string
   kind: 'terminal' | 'sticky' | 'browser'
+  /** The issues / pull requests explicitly attached to the node — the same array the canvas chip
+   *  reads, so the two views can never disagree about what a session is working on. */
+  github?: GitHubLink[]
   agentId?: string
   /** Sticky note body — shown in the expanded detail row. */
   text?: string
@@ -89,6 +93,14 @@ export interface KanbanViewProps {
   onModalNodeChange: (nodeId: string | null) => void
   /** Persist a browser card's navigation (url/title) from the modal webview to the node. */
   onBrowserNav: (nodeId: string, patch: { url?: string; title?: string }) => void
+  /** Replace a node's GitHub links wholesale (the metadata strip's × routes here). */
+  onChangeNodeLinks: (nodeId: string, next: GitHubLink[] | undefined, event?: BoardLogEvent) => void
+  /** Attach / detach one link through the canvas funnel, so the board-log event is emitted once. */
+  onAttachNodeLink: (nodeId: string, link: GitHubLink) => void
+  onDetachNodeLink: (nodeId: string, link: Pick<GitHubLink, 'kind' | 'number'>) => void
+  /** The project's repository, or undefined when GitHub is not configured — the board's whole
+   *  "show a GitHub surface at all?" answer. */
+  githubRepository?: string
 }
 
 type Drag =
@@ -117,8 +129,10 @@ const NO_CARDS: KanbanSession[] = []
  *  renders stop at this boundary. */
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav
+  onModalNodeChange, onBrowserNav, onChangeNodeLinks, onAttachNodeLink, onDetachNodeLink,
+  githubRepository
 }: KanbanViewProps) {
+  const [linkPicker, setLinkPicker] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const { api } = useSession()
   const dragRef = useRef<Drag>(null)
   // One card modal at a time; a deleted node closes it via the byId.has render guard.
@@ -523,6 +537,15 @@ export const KanbanView = memo(function KanbanView({
       ...(moveTargets.length
         ? ([{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets }] as MenuItem[])
         : []),
+      ...(githubRepository
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Attach GitHub issue / PR…',
+              onClick: () => setLinkPicker({ ...(cardMenu ?? { x: 200, y: 200 }), nodeId })
+            }
+          ] as MenuItem[])
+        : []),
       { type: 'separator' },
       { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(nodeId) }
     ]
@@ -663,6 +686,22 @@ export const KanbanView = memo(function KanbanView({
           onRename={(t) => onRenameNode(modalNodeId, t)}
           onEditSticky={(t) => onEditSticky(modalNodeId, t)}
           onBrowserNav={(patch) => onBrowserNav(modalNodeId, patch)}
+          githubRepository={githubRepository}
+          onChangeNodeLinks={onChangeNodeLinks}
+          onAttachLink={(anchor) => setLinkPicker({ ...anchor, nodeId: modalNodeId })}
+        />
+      )}
+      {linkPicker && githubRepository && projectId && (
+        <GitHubLinkPicker
+          projectId={projectId}
+          repository={githubRepository}
+          existing={byId.get(linkPicker.nodeId)?.github ?? []}
+          anchor={{ x: linkPicker.x, y: linkPicker.y }}
+          onPick={(link) => {
+            onAttachNodeLink(linkPicker.nodeId, link)
+            setLinkPicker(null)
+          }}
+          onClose={() => setLinkPicker(null)}
         />
       )}
       {modalIssue && (

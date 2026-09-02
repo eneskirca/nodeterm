@@ -173,6 +173,11 @@ export interface NodeData {
    * the machine-local arm store's question, never this field's. See @shared/trigger.
    */
   trigger?: import('@shared/trigger').TriggerSpec
+  /**
+   * The GitHub issues / pull requests the user explicitly attached to this node (issue #462).
+   * Persisted git-shared content; the repository is the project's, never stored per link.
+   */
+  github?: import('@shared/github-issues').GitHubLink[]
   [key: string]: unknown
 }
 
@@ -1818,7 +1823,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
         worktree: n.worktree,
-        trigger: n.trigger
+        trigger: n.trigger,
+        github: n.github
       }
     }
   })
@@ -1892,6 +1898,7 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         sshFs: n.data.sshFs,
         worktree: n.data.worktree,
         trigger: n.data.trigger,
+        github: n.data.github,
         premaxRect: n.data.premaxRect
       }
     })

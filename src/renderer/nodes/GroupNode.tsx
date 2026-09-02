@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
 import { useProjectSetup } from '../state/projectSetup'
+import { GitHubLinkChip } from '../components/github/GitHubLinkChip'
+import { useGitHubLinks, suggestionKey } from '../state/githubLinks'
+import { linkRepository, suggestionFor } from '../lib/githubLinks'
+import { attachGitHubLink, openGitHubLinkPicker } from '../canvas/githubLinkActions'
+import { SessionContext } from '../session/session'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
 
@@ -110,6 +115,7 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
               const next = entries[entries.length - 1]?.isIntersecting ?? true
               const entered = next && !onScreen
               onScreen = next
+              onScreenRef.current = next
               if (entered) poke()
             },
             { rootMargin: '200px' }
@@ -122,6 +128,39 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
       io?.disconnect()
     }
   }, [wtPath, id])
+
+  // The frame's own "PR #n open — attach?" suggestion (issue #462 phase 3b). SUGGEST, NEVER
+  // ADOPT: nothing is written until the user clicks Attach, because a branch matching a pull
+  // request is a guess, and a wrong chip costs more than a dismissed prompt.
+  //
+  // `wtPath` is already undefined on an SSH project (see above), so an SSH frame fetches nothing.
+  // There is NO timer: one read on mount-visible and one per branch change, and the host's own
+  // 5-minute TTL absorbs the rest — a canvas of frames must not become a poll of its own.
+  // Read the context rather than `useSession()`: a frame is mountable without a provider (the
+  // node tests do exactly that), and no session simply means no suggestion to fetch.
+  const api = useContext(SessionContext)?.api
+  const projectId = useProjects((s) => s.activeProjectId)
+  const githubRepository = useProjects((s) =>
+    linkRepository(s.projects.find((p) => p.id === s.activeProjectId)?.kanban))
+  const suggestions = useGitHubLinks((s) => s.pullSuggestions[`${projectId}:${id}`])
+  const dismissed = useGitHubLinks((s) => s.dismissed)
+  const branch = status?.branch || wt?.branch
+  const onScreenRef = useRef(true)
+  useEffect(() => {
+    if (!api || !wtPath || !branch || !githubRepository || !projectId) return
+    if (!onScreenRef.current || document.visibilityState === 'hidden') return
+    void useGitHubLinks.getState().fetchPullsForBranch(api.githubIssues, projectId, id, branch)
+  }, [api, projectId, id, wtPath, branch, githubRepository])
+
+  const candidates = suggestions && branch && suggestions.branch === branch
+    ? suggestionFor(
+        data.github,
+        suggestions.pulls,
+        new Set(suggestions.pulls
+          .filter((pull) => dismissed.has(suggestionKey(projectId, id, pull.number)))
+          .map((pull) => pull.number))
+      )
+    : []
 
   // Dissolving the frame destroys the worktree binding (the frame IS the binding) while the
   // worktree itself stays on disk. Route that through Canvas's `unbind` first, so the store
@@ -190,6 +229,7 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
           spellCheck={false}
           onChange={(e) => updateNodeData(id, { title: e.target.value })}
         />
+        <GitHubLinkChip nodeId={id} links={data.github ?? []} variant="group" />
         {wt && (
           <div className="group-node__wt nodrag">
             {stale ? (
@@ -297,6 +337,48 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
           </div>
         )}
       </div>
+
+      {candidates.length > 0 && (
+        <div className="group-node__pr-suggest nodrag">
+          <span title={candidates.map((pull) => `#${pull.number} ${pull.title}`).join('\n')}>
+            {candidates.length > 1
+              ? `${candidates.length} open PRs`
+              : `PR #${candidates[0].number} ${candidates[0].draft ? 'draft' : 'open'}`}
+          </span>
+          <button
+            className="group-node__wt-btn"
+            title={
+              candidates.length > 1
+                ? 'Pick which pull request to attach'
+                : `Attach #${candidates[0].number} to this frame`
+            }
+            onClick={(event) => {
+              if (candidates.length > 1) {
+                openGitHubLinkPicker(id, { x: event.clientX, y: event.clientY })
+                return
+              }
+              attachGitHubLink(id, {
+                kind: 'pull',
+                number: candidates[0].number,
+                title: candidates[0].title
+              })
+            }}
+          >
+            Attach
+          </button>
+          <button
+            className="group-node__wt-btn"
+            title="Dismiss this suggestion on this machine"
+            onClick={() => {
+              for (const pull of candidates) {
+                useGitHubLinks.getState().dismissSuggestion(projectId, id, pull.number)
+              }
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="group-node__actions nodrag">
         <button className="group-node__ungroup" title="Ungroup" onClick={ungroup}>

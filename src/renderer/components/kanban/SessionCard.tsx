@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import type { KanbanCardMeta, KanbanLabel, KanbanPriority } from '@shared/types'
 import { useAgentStatus } from '../../state/agentStatus'
 import { ContextMeter } from '../ContextMeter'
+import { GitHubLinkChip } from '../github/GitHubLinkChip'
 import { LabelChips } from './LabelChips'
 import type { KanbanSession } from './KanbanView'
 
@@ -128,9 +129,13 @@ export const SessionCard = memo(function SessionCard({
         )}
         {status?.unread && <span className="kanban-card__unread" />}
       </div>
-      {(labels.length > 0 || assignees.length > 0 || due !== undefined || priority !== undefined) && (
+      {(session.github?.length || labels.length > 0 || assignees.length > 0 ||
+        due !== undefined || priority !== undefined) && (
         <div className="kanban-card__metarow">
           {/* Labels share the priority/due/avatars row (left); the meta chips hug the right. */}
+          {!!session.github?.length && (
+            <GitHubLinkChip nodeId={session.id} links={session.github} variant="card" />
+          )}
           <LabelChips labels={labels} size="sm" className="kanban-card__metalabels" />
           <div className="kanban-card__metaright">
             {priority !== undefined && PRIO_COLOR[priority] && (

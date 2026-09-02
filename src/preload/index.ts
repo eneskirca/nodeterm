@@ -213,6 +213,9 @@ const api: NodeTerminalApi = {
       ipcRenderer.send(IPC.githubIssuesUnsubscribe, projectId)
     },
     query: (request) => ipcRenderer.invoke(IPC.githubIssuesQuery, request),
+    lookup: (request) => ipcRenderer.invoke(IPC.githubIssuesLookup, request),
+    search: (request) => ipcRenderer.invoke(IPC.githubIssuesSearch, request),
+    pullsForBranch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullsForBranch, request),
     refresh: (projectId, full) => ipcRenderer.invoke(IPC.githubIssuesRefresh, projectId, full),
     moveIssue: (request) => ipcRenderer.invoke(IPC.githubIssuesMove, request),
     createMissingLabels: (projectId) => ipcRenderer.invoke(IPC.githubIssuesCreateLabels, projectId),

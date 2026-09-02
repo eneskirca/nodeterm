@@ -393,6 +393,14 @@ export interface CanvasNodeState {
   /** group-only: when bound, the git worktree this group works in. */
   worktree?: GroupWorktree
   /**
+   * The GitHub issues / pull requests the user explicitly attached to this node (issue #462).
+   * Git-shared CONTENT — the team shares which session works on which issue — and therefore
+   * hostile input on every load path (`sanitizeNodeGitHubLinks` in @shared/github-link, applied in
+   * BOTH directions). The repository is implicit (`kanban.github.repository`), so nothing here
+   * pins a slug; a link is never inferred, only made by a click.
+   */
+  github?: import('./github-issues').GitHubLink[]
+  /**
    * trigger-only: the schedule + payload + target this node represents (issue #493). Git-shared
    * CONTENT — deliberately, the team shares the definition — which is exactly why it is treated
    * as hostile on every load path (`sanitizeNodeTriggers` in core/workspace-files) and why the
@@ -576,6 +584,12 @@ export interface BoardLogEvent {
      *  agent node so it files under that agent's card. Written BEFORE the read (fail-closed): a cookie
      *  read that happened but was not recorded is the one outcome this trace exists to prevent. */
     | 'agent-read-cookies'
+    /** A GitHub issue / pull request was explicitly attached to (or detached from) a node
+     *  (issue #462). `to` is the link's kind, `title` its `#n Title` at the time. Written at the
+     *  write site, like `card-created`: `boardLogDiff` diffs the kanban only and cannot see a
+     *  node-data change. */
+    | 'github-attached'
+    | 'github-detached'
   from?: string
   to?: string
   /** Column title for column-added/deleted; card title for card-created; outcome for agent-message. */

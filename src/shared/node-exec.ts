@@ -26,6 +26,7 @@
  * a program string carrying shell metacharacters is never handed to tmux.
  */
 
+import { sanitizeNodeGitHubLinks } from './github-link'
 import { sshExtraArgsEnableLocalExec } from './ssh'
 import type { CanvasNodeState } from './types'
 
@@ -101,7 +102,10 @@ export function stripSharedNodeExec(nodes: CanvasNodeState[]): CanvasNodeState[]
  * is merely being mirrored. So they are dropped at ingest, on every surface.
  */
 export function sanitizeInboundNode(node: CanvasNodeState): CanvasNodeState {
-  return stripNodeExec(node)
+  // `github` is shared content a peer legitimately mutates, so it is normalized rather than
+  // dropped — a wire frame is as hostile as the file, and an unbounded array would ride into our
+  // nodes and back out to disk.
+  return sanitizeNodeGitHubLinks([stripNodeExec(node)])[0]
 }
 
 /**

@@ -93,6 +93,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={onEditSticky}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -173,6 +175,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -215,6 +219,8 @@ describe('CardModal', () => {
           onRename={onRename}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -290,6 +296,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -343,6 +351,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -384,6 +394,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )
@@ -437,6 +449,8 @@ describe('CardModal', () => {
           onRename={vi.fn()}
           onEditSticky={vi.fn()}
           onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
         />
       )
     )

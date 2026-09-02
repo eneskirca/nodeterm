@@ -414,6 +414,9 @@ describe('relay host — GitHub issue RPCs are scoped to the shared project', ()
     const methods: Array<[string, unknown[]]> = [
       [IPC.githubIssuesSubscribe, [{ projectId: 'proj-2' }]],
       [IPC.githubIssuesQuery, [{ projectId: 'proj-2', columnId: null, pageSize: 50 }]],
+      [IPC.githubIssuesLookup, [{ projectId: 'proj-2', number: 7 }]],
+      [IPC.githubIssuesSearch, [{ projectId: 'proj-2', search: 'x', limit: 20 }]],
+      [IPC.githubIssuesPullsForBranch, [{ projectId: 'proj-2', branch: 'feat/x' }]],
       [IPC.githubIssuesRefresh, ['proj-2', true]],
       [IPC.githubIssuesMove, [{ projectId: 'proj-2', issueNumber: 7, toColumnId: null,
         expectedUpdatedAt: '2026-08-09T00:00:00Z' }]],

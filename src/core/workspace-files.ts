@@ -14,6 +14,7 @@ import { projectCapabilityFields, readProjectCapabilities } from '../shared/proj
 import { loadedAgentBrowserPartition } from '../shared/browser-partition'
 import { sanitizeProjectIcon, type ProjectIcon } from '../shared/project-icon'
 import { sanitizeTriggerSpec } from '../shared/trigger'
+import { sanitizeNodeGitHubLinks } from '../shared/github-link'
 
 /**
  * Drop a browser node's persisted `partition` unless it is exactly the jar THIS project (its
@@ -266,9 +267,9 @@ export function projectToFile(
   // Trigger specs are additionally normalized on the way OUT too, so a malformed spec that
   // reached the live nodes some other way (a peer mutation, a hand edit) is never written into
   // the shared file as if it were ours.
-  const nodes = sanitizeNodeTriggers(
+  const nodes = sanitizeNodeGitHubLinks(sanitizeNodeTriggers(
     stripSharedNodeExec(p.cwd ? toPortableNodes(p.nodes, p.cwd) : p.nodes)
-  )
+  ))
   const icon = sanitizeProjectIcon(p.icon)
   return {
     version: 1,
@@ -356,7 +357,7 @@ export function sanitizeLoadedClosedSessions(x: unknown): ClosedSessionEntry[] |
   if (!validClosedSessions(x)) return undefined
   const capped = x.slice(0, CLOSED_SESSIONS_CAP)
   if (!capped.length) return undefined
-  return capped.map((e) => ({ ...e, node: sanitizeNodeTriggers([e.node])[0] }))
+  return capped.map((e) => ({ ...e, node: sanitizeNodeGitHubLinks(sanitizeNodeTriggers([e.node]))[0] }))
 }
 
 /**
@@ -413,12 +414,12 @@ export function fileToProject(
     // `partition` survives only when it is exactly the one THIS project (base.id, machine-local)
     // would mint — a foreign/cloned/unsafe one drops to un-owned default session. See
     // loadedAgentBrowserPartition; without it a cloned project.json forges another project's jar.
-    nodes: sanitizeNodeTriggers(
+    nodes: sanitizeNodeGitHubLinks(sanitizeNodeTriggers(
       sanitizeBrowserPartitions(
         applyLocalNodeExec(base.cwd ? resolveNodes(f.nodes, base.cwd) : f.nodes, base.localExec),
         base.id
       )
-    ),
+    )),
     ...(f.bridges ? { bridges: f.bridges } : {}),
     ...(f.ropes ? { ropes: f.ropes } : {}),
     ...(defaultAccountId ? { defaultAccountId } : {}),

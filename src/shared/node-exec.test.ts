@@ -140,6 +140,19 @@ describe('sanitizeInboundNode / sanitizeInboundMutation (canvas-sync peers)', ()
     expect(clean.title).toBe('theirs')
   })
 
+  it('normalizes a peer node\'s github links instead of laundering them into our nodes', () => {
+    const peer = node({
+      github: [
+        { kind: 'issue', number: 12, title: 'ok' },
+        { kind: 'commit', number: 1 },
+        ...Array.from({ length: 40 }, (_, index) => ({ kind: 'pull', number: index + 100 }))
+      ] as never
+    })
+    const clean = sanitizeInboundNode(peer)
+    expect(clean.github).toHaveLength(20)
+    expect(clean.github?.[0]).toEqual({ kind: 'issue', number: 12, title: 'ok' })
+  })
+
   it('a peer cannot forge the provenance marker itself', () => {
     const peer = node({
       ssh: { host: 'h', user: 'u', extraArgs: '-o ProxyCommand=evil', execTrusted: true }

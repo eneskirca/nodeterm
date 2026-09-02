@@ -36,3 +36,21 @@ describe('toKanbanSession (sticky, markdown label)', () => {
     expect(toKanbanSession(sticky('## Plan \nbody'))?.title).toBe('Plan')
   })
 })
+
+describe('toKanbanSession (github links)', () => {
+  const node = (type: string): CanvasNode =>
+    ({
+      id: 'n1',
+      type,
+      position: { x: 0, y: 0 },
+      data: { text: 'note', github: [{ kind: 'issue', number: 12, title: 'Board' }] }
+    }) as unknown as CanvasNode
+
+  for (const type of ['terminal', 'sticky', 'browser']) {
+    it(`copies the links onto a ${type} card`, () => {
+      expect(toKanbanSession(node(type))?.github).toEqual([
+        { kind: 'issue', number: 12, title: 'Board' }
+      ])
+    })
+  }
+})

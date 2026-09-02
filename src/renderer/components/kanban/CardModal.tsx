@@ -19,10 +19,12 @@ import { useSession } from '../../session/session'
 // retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
 // imports from `components/kanban/*`, and none of those re-import CardModal.
 import { wakeHibernatedNode } from '../../nodes/TerminalNode'
-import type { ProjectKanban } from '@shared/types'
+import type { BoardLogEvent, ProjectKanban } from '@shared/types'
+import type { GitHubLink } from '@shared/github-issues'
 import type { KanbanSession } from './KanbanView'
 import { BoardLogPanel } from './BoardLogPanel'
 import { CardMetaBar } from './CardMetaBar'
+import { GitHubLinkChip } from '../github/GitHubLinkChip'
 import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
@@ -45,12 +47,18 @@ interface CardModalProps {
   onEditSticky: (text: string) => void
   /** Browser navigation write-through (only called for kind 'browser'). */
   onBrowserNav: (patch: { url?: string; title?: string }) => void
+  /** The project's repository, or undefined when GitHub is not configured. */
+  githubRepository?: string
+  /** Replace this node's GitHub links (the metadata strip's × routes here). */
+  onChangeNodeLinks: (nodeId: string, next: GitHubLink[] | undefined, event?: BoardLogEvent) => void
+  /** Ask the board to open the attach picker anchored at this point. */
+  onAttachLink: (anchor: { x: number; y: number }) => void
 }
 
 /** Trello-style card popup over the board. Scrim click / Esc close it; the board (and the
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / markdown view (the node itself is hidden under the board). */
-export function CardModal({ session, columnTitle, board, onChangeBoard, onClose, onOpenCanvas, onRename, onEditSticky, onBrowserNav }: CardModalProps) {
+export function CardModal({ session, columnTitle, board, onChangeBoard, onClose, onOpenCanvas, onRename, onEditSticky, onBrowserNav, githubRepository, onChangeNodeLinks, onAttachLink }: CardModalProps) {
   const { api } = useSession()
   const idRef = useRef<string>()
   if (!idRef.current) idRef.current = nextDialogId()
@@ -255,6 +263,9 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
             </span>
           )}
           <span className="kanban-modal__column">{columnTitle ?? 'Ungrouped'}</span>
+          {!!session.github?.length && (
+            <GitHubLinkChip nodeId={session.id} links={session.github} variant="modal" />
+          )}
           {/* The driving chip, so a user watching a browser card THROUGH the modal is not
               driving-blind. The lease is keyed by node id (not by webview object), so this shows
               when the node is being driven even though the drive lands on the CANVAS webview, not
@@ -328,7 +339,15 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
             ✕
           </button>
         </div>
-        <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
+        <CardMetaBar
+          nodeId={session.id}
+          board={board}
+          onChange={onChangeBoard}
+          links={session.github ?? []}
+          {...(githubRepository ? { githubRepository } : {})}
+          onChangeLinks={(next, event) => onChangeNodeLinks(session.id, next, event)}
+          onAttachLink={onAttachLink}
+        />
         <div className="kanban-modal__body">
           {/* Body is a flex row: the card's own pane (2/3) + the board-log panel (1/3, all kinds). */}
           <div className="kanban-modal__main">

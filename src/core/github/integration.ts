@@ -54,9 +54,12 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
     onCredentialBoundaryChange: () => {
       coordinator.cancelAll()
       resolver.invalidate()
+      // The branch-pull answers were read under the identity that just moved.
+      service?.forgetBranchPulls()
     }
   })
-  const service = new GitHubIssueService({
+  let service: GitHubIssueService | undefined
+  service = new GitHubIssueService({
     cache: new GitHubIssueCache(dependencies.userDataDir),
     coordinator,
     contextForProject: (projectId) => controller.contextForProject(projectId),
