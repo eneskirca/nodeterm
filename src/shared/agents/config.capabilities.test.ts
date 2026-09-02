@@ -105,6 +105,54 @@ describe('opencode capabilities', () => {
   })
 })
 
+describe('launch-only builtin agents', () => {
+  it('declares the measured AGY, Pi, and Goose launch grammars', () => {
+    expect(AGENT_CONFIG.agy).toMatchObject({
+      label: 'AGY',
+      launchCmd: 'agy',
+      promptInjectionMode: 'flag-interactive',
+      promptFlag: '--prompt-interactive',
+      expectedProcess: 'agy'
+    })
+    expect(AGENT_CONFIG.pi).toMatchObject({
+      label: 'Pi',
+      launchCmd: 'pi',
+      promptInjectionMode: 'argv',
+      expectedProcess: 'pi'
+    })
+    expect(AGENT_CONFIG.goose).toMatchObject({
+      label: 'Goose',
+      launchCmd: 'goose',
+      launchArgs: ['session'],
+      promptLaunchArgs: ['run', '--interactive'],
+      promptInjectionMode: 'flag-prompt',
+      promptFlag: '--text',
+      expectedProcess: 'goose'
+    })
+  })
+
+  it('does not advertise provider-specific capabilities that are not wired', () => {
+    for (const id of ['agy', 'pi', 'goose'] as const) {
+      expect(BUILTIN_AGENT_IDS).toContain(id)
+      for (const can of [
+        hasHooks,
+        canResume,
+        canContextLink,
+        canControlCanvas,
+        canSwitchModel,
+        hasUsage,
+        canChat,
+        canTransferFrom,
+        canRename,
+        canReadTitle,
+        hasPermissionMode
+      ]) {
+        expect(can(id), `${id}: ${can.name}`).toBe(false)
+      }
+    }
+  })
+})
+
 describe('createdAgentId', () => {
   it('reads data.agentId, with the legacy tags fallback', () => {
     expect(createdAgentId({ agentId: 'codex' })).toBe('codex')

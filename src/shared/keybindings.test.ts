@@ -125,6 +125,12 @@ describe('registry invariants', () => {
         darwin: [], other: [] },
       { id: 'node.newAgent.copilot', title: 'New GitHub Copilot node', group: 'Nodes',
         scope: 'canvas', darwin: [], other: [] },
+      { id: 'node.newAgent.agy', title: 'New AGY node', group: 'Nodes', scope: 'canvas',
+        darwin: [], other: [] },
+      { id: 'node.newAgent.pi', title: 'New Pi node', group: 'Nodes', scope: 'canvas',
+        darwin: [], other: [] },
+      { id: 'node.newAgent.goose', title: 'New Goose node', group: 'Nodes', scope: 'canvas',
+        darwin: [], other: [] },
       { id: 'node.newSticky', title: 'New sticky note', group: 'Nodes', scope: 'canvas',
         darwin: [], other: [] },
       { id: 'node.newBrowser', title: 'New browser node', group: 'Nodes', scope: 'canvas',
@@ -205,7 +211,7 @@ describe('registry invariants', () => {
       'node.newDino',
       'node.newFile'
     ]
-    expect(added).toHaveLength(11)
+    expect(added).toHaveLength(14)
     for (const id of added) {
       const d = COMMANDS_BY_ID.get(id as CommandId)
       expect(d, id).toBeDefined()

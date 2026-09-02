@@ -181,7 +181,11 @@ export function assembleLaunchCommand(
     ? launchCmd
     : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity)
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
-  const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
+  const harnessArgs = inputs.initialPrompt || inputs.promptFile
+    ? eff.promptLaunchArgs ?? eff.launchArgs ?? []
+    : eff.launchArgs ?? []
+  const harnessFragment = harnessArgs.map(shellQuoteIfNeeded).join(' ')
+  const baseCmd = [program, harnessFragment, argsFragment].filter(Boolean).join(' ')
 
   // The prompt becomes an ARGUMENT on a command line that is then typed into the pane
   // (`writeWhenShellReady` → `deliverCommand`, which echo-verifies the line before submitting).
@@ -204,9 +208,9 @@ export function assembleLaunchCommand(
   const sep = eff.argvPromptSeparator
   const promptFlag =
     eff.promptInjectionMode === 'flag-prompt'
-      ? '--prompt'
+      ? eff.promptFlag ?? '--prompt'
       : eff.promptInjectionMode === 'flag-interactive'
-        ? '--interactive'
+        ? eff.promptFlag ?? '--interactive'
         : null
   const isFlagPrompt = !!promptFlag
   const usesSep = !!promptArg && !!sep && !isFlagPrompt

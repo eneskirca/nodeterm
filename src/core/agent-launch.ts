@@ -93,7 +93,10 @@ interface LogicalAgentLaunch {
 interface ResolvedAgentConfig {
   id: AgentId;
   launchCmd: string;
+  launchArgs?: readonly string[];
+  promptLaunchArgs?: readonly string[];
   promptInjectionMode: PromptInjectionMode;
+  promptFlag?: string;
   argvPromptSeparator?: string;
   builtin: boolean;
 }
@@ -209,7 +212,10 @@ function isBuiltinAgentId(id: AgentId): id is BuiltinAgentId {
 
 function validPromptMode(value: unknown): value is PromptInjectionMode {
   return (
-    value === "argv" || value === "flag-prompt" || value === "stdin-after-start"
+    value === "argv" ||
+    value === "flag-prompt" ||
+    value === "flag-interactive" ||
+    value === "stdin-after-start"
   );
 }
 
@@ -222,7 +228,10 @@ function resolveTrustedAgentConfig(
     return {
       id: intent.agentId,
       launchCmd: config.launchCmd,
+      launchArgs: config.launchArgs,
+      promptLaunchArgs: config.promptLaunchArgs,
       promptInjectionMode: config.promptInjectionMode,
+      promptFlag: config.promptFlag,
       argvPromptSeparator: config.argvPromptSeparator,
       builtin: true,
     };
@@ -331,7 +340,11 @@ function logicalLaunch(
 ): LogicalAgentLaunch {
   const parsed = parseTrustedLaunchCommand(config.launchCmd);
   let executable = parsed[0];
-  const baseArgs = parsed.slice(1);
+  const harnessArgs =
+    intent.action === "start" && Object.hasOwn(intent, "prompt")
+      ? config.promptLaunchArgs ?? config.launchArgs ?? []
+      : config.launchArgs ?? [];
+  const baseArgs = [...parsed.slice(1), ...harnessArgs];
   if (config.builtin)
     executable = agentLaunchProgram(
       config.id,
@@ -379,12 +392,14 @@ function logicalLaunch(
     };
   }
 
-  if (promptInjectionMode === "flag-prompt") {
+  if (promptInjectionMode === "flag-prompt" || promptInjectionMode === "flag-interactive") {
+    const promptFlag = config.promptFlag ??
+      (promptInjectionMode === "flag-interactive" ? "--interactive" : "--prompt");
     return {
       executable,
       args: [
         ...baseArgs,
-        ...(hasPrompt ? ["--prompt", prompt as string] : []),
+        ...(hasPrompt ? [promptFlag, prompt as string] : []),
         ...modeFlags,
         ...sessionArgs,
       ],

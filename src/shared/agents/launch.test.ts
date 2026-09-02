@@ -100,6 +100,51 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
       ).command
     ).toBe("copilot --interactive 'fix it' --session-id=abc-123")
   })
+  it('uses each new builtin\'s interactive launch grammar', () => {
+    expect(assembleLaunchCommand({ agentId: 'agy' }, ENV).command).toBe('agy')
+    expect(
+      assembleLaunchCommand({ agentId: 'agy', initialPrompt: 'fix it' }, ENV).command
+    ).toBe("agy --prompt-interactive 'fix it'")
+    expect(
+      assembleLaunchCommand({ agentId: 'pi', initialPrompt: 'fix it' }, ENV).command
+    ).toBe("pi 'fix it'")
+    expect(assembleLaunchCommand({ agentId: 'goose' }, ENV).command).toBe('goose session')
+    expect(
+      assembleLaunchCommand({ agentId: 'goose', initialPrompt: 'fix it' }, ENV).command
+    ).toBe("goose run --interactive --text 'fix it'")
+  })
+  it('keeps Goose subcommands when its executable is overridden or inherited', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'goose', launchCmdOverride: 'goose-wrap', initialPrompt: 'fix it' },
+        ENV
+      ).command
+    ).toBe("goose-wrap run --interactive --text 'fix it'")
+
+    const gooseProxy: CustomAgent = {
+      id: 'custom:goose',
+      label: 'Goose proxy',
+      launchCmd: 'goose-wrap',
+      baseAgent: 'goose'
+    }
+    expect(
+      assembleLaunchCommand({ agentId: gooseProxy.id, customAgent: gooseProxy }, ENV).command
+    ).toBe('goose-wrap session')
+    expect(
+      assembleLaunchCommand(
+        { agentId: gooseProxy.id, customAgent: gooseProxy, initialPrompt: 'fix it' },
+        ENV
+      ).command
+    ).toBe("goose-wrap run --interactive --text 'fix it'")
+
+    const inheritedGoose = { ...gooseProxy, id: 'custom:goose-default', launchCmd: '' }
+    expect(
+      assembleLaunchCommand(
+        { agentId: inheritedGoose.id, customAgent: inheritedGoose, initialPrompt: 'fix it' },
+        ENV
+      ).command
+    ).toBe("goose run --interactive --text 'fix it'")
+  })
   it('adds a safely quoted model override after the ordinary Claude launch flags', () => {
     expect(
       assembleLaunchCommand(
