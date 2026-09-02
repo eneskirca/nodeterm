@@ -203,6 +203,8 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
     switch (method) {
       case IPC.githubIssuesSubscribe:
       case IPC.githubIssuesQuery:
+      case IPC.githubIssuesLookup:
+      case IPC.githubIssuesSearch:
       case IPC.githubIssuesMove:
         return {
           githubIssues: true,

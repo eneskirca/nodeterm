@@ -1,3 +1,4 @@
+import type { GitHubLink } from '@shared/github-issues'
 import type { SshConnection } from '@shared/ssh'
 import { NODE_COLORS, type CanvasNode } from '../state/workspace'
 import type { KanbanSession } from '../components/kanban/KanbanView'
@@ -13,6 +14,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
       title: (n.data.title as string) || 'Browser',
       color: (n.data.color as string) ?? NODE_COLORS[0],
       kind: 'browser',
+      github: n.data.github as GitHubLink[] | undefined,
       url: n.data.url as string | undefined,
       partition: n.data.partition as string | undefined,
       spawn: {}
@@ -30,6 +32,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
       title: text.trim().split('\n')[0].replace(/^#{1,6}\s+/, '').trim().slice(0, 80) || 'Note',
       color: (n.data.color as string) ?? NODE_COLORS[2],
       kind: 'sticky',
+      github: n.data.github as GitHubLink[] | undefined,
       text,
       textUpdatedAt: n.data.textUpdatedAt as number | undefined,
       textUpdatedBy: n.data.textUpdatedBy as string | undefined,
@@ -43,6 +46,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
     title: (n.data.title as string) ?? '',
     color: (n.data.color as string) ?? NODE_COLORS[0],
     kind: 'terminal',
+    github: n.data.github as GitHubLink[] | undefined,
     agentId: n.data.agentId as string | undefined,
     // What the card modal's co-attach terminal needs to join THIS node's session the same way the
     // canvas TerminalNode does.

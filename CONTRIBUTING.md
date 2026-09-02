@@ -112,6 +112,12 @@ lane unaffected.
   see. Keep a remote temp's own leaf bounded: extending an already-valid maximum-length target leaf
   with a UUID suffix turns an atomic write into a guaranteed `ENAMETOOLONG` failure.
 
+- **A new `githubIssues:*` channel must land in the relay-host jail switch in the same commit.**
+  `githubIssuesProject` (`src/main/remote/relay-host.ts`) is what keeps a relay guest inside the one
+  shared project; a channel it does not name is dispatched for ANY project id the guest asks about.
+  Add the case beside the others and extend the `relay-host.test.ts` cross-project suite in the same
+  change — the handler must never be reached, not merely answer nothing.
+
 - **Never write to a child's stdin without an `'error'` listener on that stream.** A pipe write's
   failure is not a throw at the call site: when the child exits before draining stdin (a CLI handed
   a flag it doesn't know, an unreachable ssh host), Node re-emits the EPIPE as an async `'error'`

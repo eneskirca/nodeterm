@@ -1,3 +1,5 @@
+import type { GitHubLink } from '@shared/github-issues'
+import { GitHubLinkChip } from '../components/github/GitHubLinkChip'
 import { useEffect, useState } from 'react'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
@@ -148,6 +150,7 @@ export function StickyNode({ id, data, selected }: NodeProps<CanvasNode>) {
             it is deliberately NOT `nodrag`, so this is the bare strip of header the note is picked
             up by. That grab area is what the permanent full-width input used to swallow. Absent
             while editing, since the input takes the `flex: 1` role itself. */}
+        <GitHubLinkChip nodeId={id} links={(data.github as GitHubLink[] | undefined) ?? []} variant="node" />
         {!editingTitle && <span className="term-node__spacer" />}
         <button
           className="term-node__close"

@@ -365,6 +365,8 @@ export const IPC = {
   githubIssuesSubscribe: 'githubIssues:subscribe',
   githubIssuesUnsubscribe: 'githubIssues:unsubscribe',
   githubIssuesQuery: 'githubIssues:query',
+  githubIssuesLookup: 'githubIssues:lookup',
+  githubIssuesSearch: 'githubIssues:search',
   githubIssuesRefresh: 'githubIssues:refresh',
   githubIssuesMove: 'githubIssues:move',
   githubIssuesCreateLabels: 'githubIssues:create-labels',

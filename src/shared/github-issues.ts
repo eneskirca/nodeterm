@@ -143,6 +143,26 @@ export interface GitHubIssueCardView extends GitHubIssue {
   avatarDataUrls?: Record<string, string>
 }
 
+/** A node's explicit link to a GitHub issue or pull request.
+ *
+ *  The relationship exists ONLY because the user made it (issue #462): nothing is inferred from
+ *  terminal output, transcripts or a branch name. Repository is implicit — the project's
+ *  `kanban.github.repository` — so a link that travels in a git-shared `.nodeterm/project.json`
+ *  resolves against THAT project's repository, never a stale slug. The github.com URL is derived
+ *  (`githubLinkUrl`), never stored. */
+export type GitHubLinkKind = 'issue' | 'pull'
+
+export interface GitHubLink {
+  kind: GitHubLinkKind
+  number: number
+  /** Display snapshot taken when the link was made. Goes stale after a rename on GitHub, so every
+   *  reader prefers the live card and falls back to this only while none is cached. */
+  title?: string
+}
+
+export const GITHUB_LINK_TITLE_MAX = 200
+export const GITHUB_LINKS_PER_NODE_MAX = 20
+
 export interface GitHubIssueQuery {
   projectId: string
   /** Which kind of item to page. Absent = `'issue'`, so a caller that predates pull requests
@@ -153,6 +173,36 @@ export interface GitHubIssueQuery {
   cursor?: string
   search?: string
   labelFilter?: string[]
+}
+
+export interface GitHubLookupRequest {
+  projectId: string
+  number: number
+}
+
+/** Why `lookup` answers with a value instead of throwing: both transports between core and the
+ *  chip flatten a typed error into a message, and the UI must render `not-approved` as a disabled
+ *  row rather than as a failure. */
+export type GitHubLookupResult =
+  | { ok: true; item: GitHubIssueCardView; source: 'cache' | 'api' }
+  | {
+      ok: false
+      reason: 'not-found' | 'not-approved' | 'not-authenticated' | 'configuration-changed' |
+        'invalid-request' | 'failed'
+      message?: string
+    }
+
+export interface GitHubSearchRequest {
+  projectId: string
+  search: string
+  /** Absent = BOTH kinds, unlike `GitHubIssueQuery.kind`. */
+  kind?: 'issue' | 'pull'
+  limit: number
+}
+
+export interface GitHubSearchResult {
+  items: GitHubIssueCardView[]
+  partial: boolean
 }
 
 export interface GitHubIssuePage {
@@ -198,6 +248,10 @@ export interface GitHubIssuesApi {
   subscribe(projectId: string): Promise<GitHubIssuePage>
   unsubscribe(projectId: string): Promise<void>
   query(request: GitHubIssueQuery): Promise<GitHubIssuePage>
+  /** Resolve one attached link by number. Never throws for a refusal — see `GitHubLookupResult`. */
+  lookup(request: GitHubLookupRequest): Promise<GitHubLookupResult>
+  /** Search the cached snapshot across every column, for the attach picker. Never hits the network. */
+  search(request: GitHubSearchRequest): Promise<GitHubSearchResult>
   refresh(projectId: string, full?: boolean): Promise<void>
   moveIssue(request: {
     projectId: string

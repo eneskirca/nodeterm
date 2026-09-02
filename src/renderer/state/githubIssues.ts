@@ -5,6 +5,7 @@ import type {
   GitHubIssuesApi,
   GitHubMutationResult
 } from '@shared/github-issues'
+import { useGitHubLinks } from './githubLinks'
 
 export interface GitHubProjectPages {
   pages: Record<string, GitHubIssuePage>
@@ -57,6 +58,14 @@ async function pageColumns(
   ] as const))
   return Object.fromEntries(pages)
 }
+/** Every card the board just paged is a card a node chip may be about to ask for one at a time. */
+function seedLinkCards(
+  projectId: string,
+  ...pages: Record<string, GitHubIssuePage>[]
+): void {
+  useGitHubLinks.getState().seedFromPages(projectId, pages.flatMap((record) => Object.values(record)))
+}
+
 let nextConnectionGeneration = 0
 
 type HostSubscription = {
@@ -133,8 +142,12 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
     }))
     let live = true
     let releaseHost: (() => void) | undefined
-    const changed = api.onChanged(projectId, () => {
-      if (live && ownsConnection()) void get().reload(api, projectId)
+    const changed = api.onChanged(projectId, (changedIssueNumbers) => {
+      if (!live || !ownsConnection()) return
+      useGitHubLinks.getState().invalidate(
+        projectId, changedIssueNumbers.length ? changedIssueNumbers : undefined
+      )
+      void get().reload(api, projectId)
     })
     const teardown = (): void => {
       if (!live) return
@@ -162,6 +175,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         pageColumns(api, projectId, [null, ...columns], labelFilter, 'issue'),
         pageColumns(api, projectId, [null, ...columns], labelFilter, 'pull')
       ])
+      seedLinkCards(projectId, columnPages, columnPullPages)
       set((state) => state.projects[projectId]?.generation === generation &&
         state.projects[projectId]?.loadGeneration === loadGeneration ? ({
         projects: {
@@ -221,6 +235,7 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         pageColumns(api, projectId, [null, ...current.columns], current.labelFilter, 'issue'),
         pageColumns(api, projectId, [null, ...current.columns], current.labelFilter, 'pull')
       ])
+      seedLinkCards(projectId, pages, pullPages)
       set((state) => {
         const existing = state.projects[projectId]
         if (existing?.generation !== generation || existing.loadGeneration !== loadGeneration) return state

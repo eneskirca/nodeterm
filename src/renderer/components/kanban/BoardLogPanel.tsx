@@ -42,6 +42,10 @@ export function eventBody(e: BoardLogEvent): string {
       return `removed the priority`
     case 'agent-message':
       return `sent a message to ${e.to ?? 'another node'} (${e.title ?? 'unknown outcome'})`
+    case 'github-attached':
+      return `attached ${e.to === 'pull' ? 'PR' : 'issue'} ${e.title ?? ''}`.trimEnd()
+    case 'github-detached':
+      return `detached ${e.to === 'pull' ? 'PR' : 'issue'} ${e.title ?? ''}`.trimEnd()
     case 'agent-read-cookies':
       // A loud, human-visible line for a cookie read (the whole point of the trace). `from` names the
       // agent, `to` the domain it read; `title` names the browser node it drove.

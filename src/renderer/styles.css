@@ -1433,6 +1433,110 @@ body,
   background: rgba(255, 159, 10, 0.16);
 }
 
+/* Explicit GitHub link chip (issue #462) — the node's own claim on an issue / PR. Same size and
+   idiom as the account chip beside it; the dot carries the item's state. */
+.github-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  max-width: 130px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+
+.term-node--collapsed .github-link-chip {
+  max-width: 64px;
+}
+
+.github-link-chip--card,
+.github-link-chip--modal {
+  margin-left: 0;
+}
+
+.github-link-chip__dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.github-link-chip__dot--open { background: var(--success); }
+.github-link-chip__dot--draft { background: var(--muted); }
+.github-link-chip__dot--merged { background: #bf5af2; }
+.github-link-chip__dot--closed { background: var(--danger, #ff453a); }
+.github-link-chip__dot--unknown { background: rgba(255, 255, 255, 0.25); }
+
+.github-link-picker {
+  width: 340px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+}
+
+.github-link-picker__filter {
+  margin: 4px;
+}
+
+.github-link-picker__list {
+  overflow-y: auto;
+}
+
+.github-link-picker__list button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.github-link-picker__num {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.github-link-picker__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.github-link-picker__badge {
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.github-link-picker__note,
+.github-link-picker__foot {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.kanban-meta__ghlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kanban-meta__ghlink a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
 /* Claude Code status: RUNNING badge while working, unread dot when finished. */
 .term-node__status {
   display: inline-flex;

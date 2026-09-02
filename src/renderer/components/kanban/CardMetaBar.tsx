@@ -1,5 +1,8 @@
 import { useMemo, useState } from 'react'
-import type { BoardLogAuthor, KanbanPriority, ProjectKanban } from '@shared/types'
+import type { BoardLogAuthor, BoardLogEvent, KanbanPriority, ProjectKanban } from '@shared/types'
+import type { GitHubLink } from '@shared/github-issues'
+import { githubLinkUrl } from '@shared/github-link'
+import { linkToBoardTitle, removeLink } from '../../lib/githubLinks'
 import { cardMeta, labelsForCard, setCardDue, setCardPriority, toggleAssignee } from '../../lib/kanban'
 import { LabelChips } from './LabelChips'
 import { LabelPicker } from './LabelPicker'
@@ -28,12 +31,20 @@ interface CardMetaBarProps {
   nodeId: string
   board: ProjectKanban
   onChange: (next: ProjectKanban) => void
+  /** This node's GitHub links, and the write-back for the × on each row. */
+  links: GitHubLink[]
+  onChangeLinks: (next: GitHubLink[] | undefined, event?: BoardLogEvent) => void
+  /** Opens the board's attach picker anchored at the button. Absent repository = no group at all. */
+  onAttachLink: (anchor: { x: number; y: number }) => void
+  githubRepository?: string
 }
 
 /** Trello-style Members / Due date strip under the modal header. The assignable pool is
  *  everyone the session can NAME: me (presence identity), live presence peers, and every
  *  author already seen in the board log — no separate membership system. */
-export function CardMetaBar({ nodeId, board, onChange }: CardMetaBarProps) {
+export function CardMetaBar({
+  nodeId, board, onChange, links, onChangeLinks, onAttachLink, githubRepository
+}: CardMetaBarProps) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [labelsOpen, setLabelsOpen] = useState(false)
   const meta = cardMeta(board, nodeId)
@@ -148,6 +159,49 @@ export function CardMetaBar({ nodeId, board, onChange }: CardMetaBarProps) {
           )}
         </div>
       </div>
+      {githubRepository && (
+        <div className="kanban-meta__group">
+          <span className="kanban-meta__label">GitHub</span>
+          <div className="kanban-meta__row">
+            {links.map((link) => (
+              <span key={`${link.kind}#${link.number}`} className="kanban-meta__ghlink">
+                <a
+                  href={githubLinkUrl(githubRepository, link)}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    window.nodeTerminal.shell.openExternal(githubLinkUrl(githubRepository, link))
+                  }}
+                >
+                  {linkToBoardTitle(link)}
+                </a>
+                <button
+                  className="kanban-meta__clear"
+                  title={`Detach #${link.number}`}
+                  onClick={() =>
+                    onChangeLinks(removeLink(links, link), {
+                      type: 'github-detached',
+                      to: link.kind,
+                      title: linkToBoardTitle(link)
+                    })
+                  }
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <button
+              className="kanban-avatar kanban-avatar--add"
+              title="Attach an issue or pull request"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect()
+                onAttachLink({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
       <div className="kanban-meta__group">
         <span className="kanban-meta__label">Priority</span>
         <div className="kanban-meta__row">

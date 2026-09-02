@@ -5,6 +5,7 @@ import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
 import { useProjectSetup } from '../state/projectSetup'
+import { GitHubLinkChip } from '../components/github/GitHubLinkChip'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
 
@@ -190,6 +191,7 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
           spellCheck={false}
           onChange={(e) => updateNodeData(id, { title: e.target.value })}
         />
+        <GitHubLinkChip nodeId={id} links={data.github ?? []} variant="group" />
         {wt && (
           <div className="group-node__wt nodrag">
             {stale ? (

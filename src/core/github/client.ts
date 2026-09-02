@@ -19,7 +19,7 @@ const MAX_ERROR_METADATA_BYTES = 4 * 1024
 export class GitHubClientError extends Error {
   constructor(
     readonly code: 'invalid-request' | 'malformed-response' | 'response-too-large' |
-      'request-failed' | 'rate-limited' | 'insufficient-permission',
+      'request-failed' | 'rate-limited' | 'insufficient-permission' | 'not-found',
     readonly status?: number,
     readonly retryAt?: number
   ) {
@@ -249,6 +249,27 @@ export class GitHubIssuesClient {
     if (!positiveInteger(issueNumber, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
     const value = await this.json(await this.request(`/repos/${repository}/issues/${issueNumber}`, { method: 'GET' }))
     if (object(value)?.pull_request !== undefined) throw new GitHubClientError('invalid-request')
+    const decoded = issueFrom(value)
+    if (!decoded) throw new GitHubClientError('malformed-response')
+    return decoded
+  }
+
+  /** The sibling of `getIssue` for a caller that WANTS either kind (a node's explicit link is to
+   *  whatever the user picked). `getIssue`'s pull-request refusal is deliberate and stays — the
+   *  write paths rely on it — so admitting one is opt-in, per call site. A number that exists in
+   *  neither space is `not-found`, which the caller renders rather than treating as a failure. */
+  async getIssueOrPull(repository: string, number: number): Promise<GitHubIssue> {
+    safeRepository(repository)
+    if (!positiveInteger(number, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    let value: unknown
+    try {
+      value = await this.json(await this.request(`/repos/${repository}/issues/${number}`, { method: 'GET' }))
+    } catch (error) {
+      if (error instanceof GitHubClientError && error.code === 'request-failed' && error.status === 404) {
+        throw new GitHubClientError('not-found', 404)
+      }
+      throw error
+    }
     const decoded = issueFrom(value)
     if (!decoded) throw new GitHubClientError('malformed-response')
     return decoded

@@ -102,6 +102,33 @@ describe('GitHubIssuesClient', () => {
       .rejects.toMatchObject({ code: 'invalid-request' })
   })
 
+  it('getIssueOrPull admits a pull request, with its pull metadata decoded', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response(issue(7, {
+        pull_request: { url: 'x', merged_at: null }, draft: true
+      }))
+    })
+    const item = await client.getIssueOrPull('nodeterm/nodeterm', 7)
+    expect(item.number).toBe(7)
+    expect(item.pull).toEqual({ draft: true, mergedAt: null })
+  })
+
+  it('getIssueOrPull reports a number that exists in neither space as not-found', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response({ message: 'Not Found' }, { status: 404 })
+    })
+    await expect(client.getIssueOrPull('nodeterm/nodeterm', 9_999))
+      .rejects.toMatchObject({ code: 'not-found', status: 404 })
+  })
+
+  it('getIssueOrPull refuses a number that cannot be one', async () => {
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => response({}) })
+    await expect(client.getIssueOrPull('nodeterm/nodeterm', 0))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
   it('distinguishes permissions from primary and secondary rate limits', async () => {
     const forbidden = new GitHubIssuesClient({
       token: 'secret', fetch: async () => response({ message: 'forbidden' }, { status: 403 })

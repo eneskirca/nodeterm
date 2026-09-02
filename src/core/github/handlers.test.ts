@@ -11,6 +11,12 @@ describe('registerGitHubIssueHandlers', () => {
       subscribe: async (...args: unknown[]) => { calls.push(['subscribe', ...args]); return page },
       unsubscribe: (...args: unknown[]) => { calls.push(['unsubscribe', ...args]) },
       query: async (...args: unknown[]) => { calls.push(['query', ...args]); return page },
+      lookup: async (...args: unknown[]) => {
+        calls.push(['lookup', ...args]); return { ok: false as const, reason: 'not-found' as const }
+      },
+      search: async (...args: unknown[]) => {
+        calls.push(['search', ...args]); return { items: [], partial: false }
+      },
       refresh: async (...args: unknown[]) => { calls.push(['refresh', ...args]) },
       moveIssue: async (...args: unknown[]) => {
         calls.push(['move', ...args]); return { status: 'configuration-changed' as const }
@@ -26,10 +32,14 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesSubscribe](7, { projectId: 'p1' })
     platform.senderListeners[IPC.githubIssuesUnsubscribe](7, 'p1')
     await platform.handlers[IPC.githubIssuesQuery]({ projectId: 'p1', columnId: null, pageSize: 50 })
+    await platform.handlers[IPC.githubIssuesLookup]({ projectId: 'p1', number: 12 })
+    await platform.handlers[IPC.githubIssuesSearch]({ projectId: 'p1', search: 'x', limit: 20 })
     expect(calls).toEqual([
       ['subscribe', 7, { projectId: 'p1' }],
       ['unsubscribe', 7, 'p1'],
-      ['query', { projectId: 'p1', columnId: null, pageSize: 50 }]
+      ['query', { projectId: 'p1', columnId: null, pageSize: 50 }],
+      ['lookup', { projectId: 'p1', number: 12 }],
+      ['search', { projectId: 'p1', search: 'x', limit: 20 }]
     ])
     expect(Object.keys(platform.handlers).some((channel) => channel.startsWith('githubControl:'))).toBe(false)
   })

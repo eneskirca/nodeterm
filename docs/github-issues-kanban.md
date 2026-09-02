@@ -44,17 +44,29 @@ Each configured column has one exact issue label. Matching is case insensitive, 
 - Closing and reopening ask for confirmation first. Both notify everyone watching the issue and neither can be undone from the board. Moves that only rewrite labels apply immediately, and a card dropped back where it already sits writes nothing.
 - A move never rewrites the GitHub close reason. Re-closing an issue that is already closed leaves a `not planned` close as it is.
 - Unrelated labels are preserved.
-- Pull requests are excluded.
+- Pull requests appear as their own read-only lane. They carry no Move control and never drag: the board writes nothing to a pull request.
 
 Every card has a Move issue selector, so movement does not depend on drag and drop. Stale writes are not repeated. nodeterm refreshes the current issue and asks for a new action.
 
 ## Source filter and paging
 
-Use All, GitHub, or Sessions in the board header to choose which card sources are visible. The selection is temporary and does not change the project configuration.
+Use All, Issues, Pull requests, or Sessions in the board header to choose which card sources are visible. The selection is temporary and does not change the project configuration.
 
 The label filter groups session labels and GitHub labels separately. GitHub selections are sent to the host with a `github:` namespace, while session selections remain local to the board.
 
 Issues are loaded in pages of up to 50 per column. Use Show more issues at the end of a column for the next page.
+
+## Linking sessions to issues and pull requests
+
+A session, note, browser node, or group frame can be attached to one or more issues or pull requests. **A link only ever exists because you made it.** Nothing is inferred from terminal output, a transcript, or a branch name.
+
+Attach from the node's right-click menu, a board card's right-click menu, or the GitHub row of the card modal's metadata strip. Type `#123`, part of a title, or a github.com link for this project's repository; a link for another repository is refused, because a link's repository is always the project's.
+
+The node then wears a `#123` chip (with `+n` when it carries several) on the canvas, on its board card, and in the card modal. Its dot shows the item's state — open, closed, draft, merged — and clicking the chip opens the details, the item on GitHub, or a detach. Attaching and detaching are recorded in the board log.
+
+Links are stored on the node in `.nodeterm/project.json`, so they travel with the repository like the rest of the canvas, and are normalized as untrusted input on every read and write. There is no reverse indicator on the GitHub card yet: an issue does not know which sessions point at it.
+
+Canvas chips hold no host subscription. A chip's state is refreshed when it is first painted and then at most every 5 minutes, plus whenever the board is opened.
 
 ## Refresh and cache
 
