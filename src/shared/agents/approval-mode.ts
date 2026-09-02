@@ -157,7 +157,8 @@ export function approvalFlags(agentId: AgentId, mode: AgentPermissionMode): stri
  *
  * WHERE the flag lands is decided one layer up, by `createAgentNode`: with no `argvPromptSeparator`
  * (claude, gemini, codex) it goes LAST, keeping those command lines byte-identical; with one
- * (grok's `--`) it must go BEFORE the separator, because `--` is end-of-options.
+ * (grok's and devin's `--`) it must go BEFORE the separator, because `--` is end-of-options — a
+ * flag placed after it is a positional, silently swallowed into the prompt or a usage error.
  *
  * **A flag the command already carries is left alone (issue #601).** `cmd` is not always ours:
  * `settings.agentLaunchCommands` lets the user replace the program part with a wrapper, and a

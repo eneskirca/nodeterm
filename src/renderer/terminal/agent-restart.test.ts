@@ -38,8 +38,13 @@ describe('exitSequence', () => {
     expect(exitSequence('gemini')).not.toContain('--delete')
     expect(exitSequence('copilot')).toBe('/exit')
     expect(exitSequence('opencode')).toBe('/exit')
-    // Devin's in-session commands: `/exit` and `/quit` both exit; we use the same primary as claude.
+    // devin's documented primary is `/exit` (`/quit` is its alias), measured in the CLI's own
+    // bundled `share/devin/docs/reference/commands.mdx:439` (3000.4.25). It takes no arguments;
+    // devin's destructive verb is the separate `/rm-session <id>`, which must never be emitted
+    // here — same class of trap as gemini's `/quit --delete`, so it gets the same pin.
     expect(exitSequence('devin')).toBe('/exit')
+    expect(exitSequence('devin')).not.toContain('rm-session')
+    expect(exitSequence('devin')).not.toContain(' ')
     expect(exitSequence('my-custom')).toBeNull()
   })
 })

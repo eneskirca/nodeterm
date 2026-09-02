@@ -292,6 +292,13 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'de
 // Agents whose permission hook can honour a deterministic wait + decision JSON reply (issue #409).
 // This is a SUBSET of PERMISSION_MODE_CAPABLE: devin accepts --permission-mode but its hook is
 // NOT known to honour our decision output, so the env var is claude-only until that is measured.
+//
+// Membership is resolved through `capabilityAgentId` like every other capability, and that is
+// DELIBERATE rather than incidental: `pty-manager` previously compared the raw id against
+// 'claude', so a custom agent declaring `baseAgent: 'claude'` — which runs claude's binary and
+// therefore claude's hook script, and can honour the decision reply — was silently denied
+// NODETERM_PERM_WAIT_SECS. A custom agent based on devin (or on nothing) still gets nothing,
+// which is the narrowing this list exists for. Pinned in config.capabilities.test.ts.
 export const PERM_WAIT_CAPABLE = ['claude'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness

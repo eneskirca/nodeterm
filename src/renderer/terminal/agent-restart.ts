@@ -30,6 +30,11 @@ import {
  *  Each value is the CLI's own DOCUMENTED PRIMARY, and is sent BARE:
  *    - grok:   `/quit` (its `/exit` is an alias).
  *    - gemini: `/quit` (alias `/exit`), measured in its bundled `docs/reference/commands.md:325`.
+ *    - devin:  `/exit` (alias `/quit`), measured in its bundled
+ *              `share/devin/docs/reference/commands.mdx:439` (CLI 3000.4.25): "Exit the
+ *              application (alias: `/quit`)" — it takes NO arguments. Devin's destructive command
+ *              is a SEPARATE verb, `/rm-session <id>` ("Irreversibly delete a session and all its
+ *              data"), which nothing here may ever emit.
  *
  *  Bare is a safety rule, not a style: gemini's `/quit` also takes a `--delete` flag that exits AND
  *  *permanently deletes* the session's history and temporary files — the very conversation the
