@@ -1126,6 +1126,15 @@ disable it with its reason (`NEW_FILE_NO_CWD_HINT`,
 nothing, and a message that names the wrong cause ("not a git repository" for a project that has no
 folder to be one) sends the user hunting a problem that does not exist.
 
+**In an agent's approval-mode table, "emits no flag" is not the same as "supported".**
+`APPROVAL_DIALECTS` (`src/shared/agents/approval-mode.ts`) treats an ABSENT mode key as
+*unsupported* (gemini's `auto`, devin's `manual` and `plan`), and the one way to claim `manual` by
+emitting nothing is the dialect's `manualIsDefault` — a fact about the CLI ("its own default already
+asks before every action"), true for gemini, false for devin (its default auto-approves read-only
+tools) and codex. Both outcomes emit the same bare command; they make opposite promises to the user,
+and the Settings copy is derived from the distinction. Never set `manualIsDefault: true` "because
+the command comes out the same" — say what the CLI's default actually does.
+
 **Agent features attach to base harness capabilities, not frontend allowlists.** A custom agent can
 inherit a builtin harness, so add the capability and its one shared leaf (`src/shared/agents`) and
 let every UI ask the helper. Repeating Claude/Codex/etc. cases in menus breaks that inheritance and

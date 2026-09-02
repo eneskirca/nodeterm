@@ -358,7 +358,7 @@ export function approvalFlags(
  *
  * WHERE the flag lands is decided one layer up, by `createAgentNode`: with no `argvPromptSeparator`
  * (claude, gemini, codex, antigravity) it goes LAST, keeping those command lines byte-identical;
- * with one (grok's `--`, cursor's `agent`) it must go BEFORE the separator: `--` is end-of-options,
+ * with one (grok's and devin's `--`, cursor's `agent`) it must go BEFORE the separator: `--` is end-of-options,
  * and cursor's flags are root options that the `agent` subcommand reads (measured, see CURSOR_MODES).
  *
  * **A flag the command already carries is left alone (issue #601).** `cmd` is not always ours:

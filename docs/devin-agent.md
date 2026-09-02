@@ -109,6 +109,27 @@ Our mapping (`DEVIN_MODES`):
 `smart` is intentionally omitted: it is a limited-rollout devin mode and `auto` is the closest
 stable equivalent.
 
+### 5.1 The in-place restart exit line
+
+`EXIT_SEQUENCES.devin = '/exit'` (`renderer/terminal/agent-restart.ts`). MEASURED in the CLI's
+own bundled docs, `share/devin/docs/reference/commands.mdx:439` (devin-cli 3000.4.25):
+
+> `/exit` — Exit the application (alias: `/quit`). You can also type `exit` or `quit` without the
+> `/` prefix.
+
+So `/exit` is devin's DOCUMENTED PRIMARY and `/quit` its alias — the opposite orientation to grok
+and gemini, whose primary is `/quit`. It takes **no arguments**, and devin's destructive verb is a
+separate command entirely: `/rm-session <session-id>` — *"Irreversibly delete a session and all its
+data"* (`commands.mdx:437`). That separation is the thing worth writing down. Gemini's `/quit`
+carries its own `--delete`, which is why rule 15 says the exit line is sent **bare**; devin has no
+such flag, but nothing may ever append one, and `agent-restart.test.ts` pins the value against both
+`rm-session` and any whitespace.
+
+This is load-bearing because `devin` is in `RESUMABLE_AGENTS` **and** in this table, which makes
+devin nodes eligible for the bulk "restart idle agents" action and for Eco hibernation — both type
+this string into a live session. `restartEligibility` still refuses a `working` or `blocked` node,
+so the line is never typed into an open permission prompt.
+
 ---
 
 ## 6. Canvas control and context-link discovery
@@ -158,6 +179,14 @@ to `TOOL_RESULT_MAX` chars. Tool calls are not exposed separately in the capture
 | Server Edition | yes | core logic is in `src/core` and `src/server/agent-status.ts`; the same normalizer is wired there. Skill install on the server host is unverified. |
 | Mobile | N/A | devin is a CLI agent; mobile companion sees status over the same `agent:status` bridge as other agents. |
 
+**Neither raw hook listener changed, and that is the answer here rather than a gap.** CLAUDE.md's
+rule 11 asks that `src/main/index.ts` and `src/server/agent-status.ts` stay in parity because a
+branch added to one shell silently leaves the other without the feature. Devin needs no branch in
+either: it has no context tail (no per-turn token usage in its transcripts, so it is out of
+`USAGE_CAPABLE`), no session-directory derivation of grok's kind (its config dir is fixed, not
+hook-reported), and no subagent correlation. Devin is therefore in parity by having nothing to add
+— "no change in both shells", not "a change in one".
+
 ---
 
 ## 9. Devin device checklist
@@ -165,7 +194,11 @@ to `TOOL_RESULT_MAX` chars. Tool calls are not exposed separately in the capture
 1. **Permission hook decision contract** — `PermissionRequest` is subscribed, but we have not
    measured whether devin waits for the hook script's stdout and treats a JSON
    `{"behavior":"allow"}` / `{"behavior":"deny"}` as the answer. Until then,
-   `NODETERM_PERM_WAIT_SECS` is **claude-only**.
+   `NODETERM_PERM_WAIT_SECS` is **claude-only** — meaning the claude harness, so a custom agent
+   declaring `baseAgent: 'claude'` inherits it (it runs claude's binary and hook script) while a
+   devin-based or baseless one does not. That base resolution is the one deliberate widening
+   relative to `main`, where `pty-manager` compared the raw agent id; pinned in
+   `config.capabilities.test.ts`.
 
 2. **Remote skill path** — we install devin skills on SSH hosts at
    `~/.config/devin/skills/<name>/SKILL.md`, matching local `devin skills paths`. This assumes

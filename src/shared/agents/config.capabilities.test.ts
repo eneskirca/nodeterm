@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { normalizeFor } from './normalize'
 import {
   AGENT_CONFIG,
@@ -40,7 +40,8 @@ import {
   LOCAL_ONLY_HOOK_AGENTS,
   reportsSessionEnd,
   resumeCommandWith,
-  submitsSeparately
+  submitsSeparately,
+  setCustomAgentBaseResolver
 } from './config'
 import { CURSOR_HOOK_EVENTS } from './hook-events'
 
@@ -86,11 +87,26 @@ describe('MODEL_SWITCH_CAPABLE', () => {
 })
 
 describe('PERM_WAIT_CAPABLE', () => {
+  afterEach(() => setCustomAgentBaseResolver(null))
+
   it('is claude-only until another agent\'s PermissionRequest hook is shown to honour our decision JSON', () => {
     expect(hasPermWait('claude')).toBe(true)
     for (const id of ['devin', 'codex', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
       expect(hasPermWait(id), id).toBe(false)
     }
+  })
+
+  // The gate resolves through the BASE harness, deliberately: a claude-based custom agent runs
+  // claude's binary and therefore claude's hook script, so it can honour the decision reply. This
+  // is the one behaviour difference from the old raw `agentId === 'claude'` compare in pty-manager
+  // — everything without a claude base still gets nothing.
+  it('is inherited by a claude-based custom agent, and by no other base', () => {
+    setCustomAgentBaseResolver((id) =>
+      id === 'custom:proxy' ? 'claude' : id === 'custom:d' ? 'devin' : undefined
+    )
+    expect(hasPermWait('custom:proxy')).toBe(true)
+    expect(hasPermWait('custom:d')).toBe(false)
+    expect(hasPermWait('custom:plain')).toBe(false)
   })
 })
 
