@@ -430,7 +430,7 @@ import {
   reconnectRelayTab,
   type RelayTab,
 } from '../session/relay-tab'
-import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, hiddenLinkIds, linkIdsCoveredByRopes, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
+import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, contextLinkShimPath, hiddenLinkIds, linkIdsCoveredByRopes, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
 import {
   launchesToFire,
   launchRetryDelay,
@@ -3259,9 +3259,14 @@ export function Canvas() {
         const note = async (selfId: string, otherId: string) => {
           if (status[selfId]?.state === 'working') return
           const { shimPath } = await window.nodeTerminal.contextLink.info()
+          const self = nodesRef.current.find((n) => n.id === selfId)
+          const endpointShim = contextLinkShimPath(
+            shimPath,
+            isSshProject || isRemoteSessionNode(self?.data)
+          )
           void api.pty.sendText(
             selfId,
-            buildContextLinkNote(agentIdOf(selfId), titleOf(otherId), shimPath)
+            buildContextLinkNote(agentIdOf(selfId), titleOf(otherId), endpointShim)
           )
         }
         void note(source, target)
@@ -3281,7 +3286,7 @@ export function Canvas() {
       )
       if (msg) void api.pty.sendText(target, msg)
     },
-    [linkEndpointOf, agentIdOf, setLinkEdges, markDirty, nodes]
+    [linkEndpointOf, agentIdOf, setLinkEdges, markDirty, nodes, isSshProject]
   )
 
   // Of these ropes, the ones that are NOT live waits. A waiting rope's removal means "stop waiting

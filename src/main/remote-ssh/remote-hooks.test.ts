@@ -625,7 +625,7 @@ describe('RemoteHooks.installCanvasControl', () => {
 describe('RemoteHooks.installContextLink', () => {
   const isWriteTo = (args: string[], p: string) => args.join(' ').includes('cat > ') && args.join(' ').includes(p)
 
-  it('writes an executable shim + the skill, and merges the instruction blocks', async () => {
+  it('writes an executable shim + every agent skill path, and merges the instruction blocks', async () => {
     const { rh, calls } = harness()
     await rh.installContextLink(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
@@ -640,6 +640,12 @@ describe('RemoteHooks.installContextLink', () => {
     const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/get-linked-context/SKILL.md'))?.stdin ?? ''
     expect(skill).toContain('name: get-linked-context')
     expect(skill).toContain('sh "/home/u/.nodeterm/context.sh"')
+    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.agents/skills/get-linked-context/SKILL.md'))).toBe(true)
+    expect(
+      calls.some((c) =>
+        isWriteTo(c.args, '/home/u/.gemini/antigravity-cli/skills/get-linked-context/SKILL.md')
+      )
+    ).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:get-linked-context:start'))).toBe(true)
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
   })

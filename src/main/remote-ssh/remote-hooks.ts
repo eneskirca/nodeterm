@@ -689,13 +689,14 @@ export class RemoteHooks {
     try {
       const shim = `${remoteHome}/.nodeterm/context.sh`
       await this.writeRemoteShim(conn, controlPath, shim, CONTEXT_SHIM_SCRIPT)
-      await this.writeRemoteSkill(
-        conn,
-        controlPath,
+      const skillBody = buildContextLinkSkillBody(shim)
+      for (const configDir of [
         `${remoteHome}/.claude`,
-        'get-linked-context',
-        buildContextLinkSkillBody(shim)
-      )
+        `${remoteHome}/.agents`,
+        `${remoteHome}/.gemini/antigravity-cli`
+      ]) {
+        await this.writeRemoteSkill(conn, controlPath, configDir, 'get-linked-context', skillBody)
+      }
       const block = buildLinkedContextInstructions(shim)
       // codex/gemini are plain quoted literals; opencode must stay shell-expandable and so
       // carries a prelude that binds the untrusted $HOME to a variable (see the helper).

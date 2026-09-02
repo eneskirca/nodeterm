@@ -28,10 +28,10 @@ import {
 } from './config'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
-  it('all three builtin agents can context-link', () => {
-    expect(canContextLink('claude')).toBe(true)
-    expect(canContextLink('codex')).toBe(true)
-    expect(canContextLink('gemini')).toBe(true)
+  it('all integrated builtin agents can context-link', () => {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok', 'agy', 'pi', 'goose'] as const) {
+      expect(canContextLink(id), id).toBe(true)
+    }
   })
   it('custom agents cannot', () => {
     expect(canContextLink('custom:abc')).toBe(false)
@@ -137,7 +137,6 @@ describe('launch-only builtin agents', () => {
       for (const can of [
         hasHooks,
         canResume,
-        canContextLink,
         canControlCanvas,
         canSwitchModel,
         hasUsage,
@@ -149,6 +148,7 @@ describe('launch-only builtin agents', () => {
       ]) {
         expect(can(id), `${id}: ${can.name}`).toBe(false)
       }
+      expect(canContextLink(id), id).toBe(true)
     }
   })
 })

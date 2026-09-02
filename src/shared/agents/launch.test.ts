@@ -255,6 +255,18 @@ describe('assembleResumeCommand', () => {
   it('falls back to the bare launch command when there is no session id', () => {
     expect(assembleResumeCommand({ agentId: 'claude' }, ENV).command).toBe('claude')
   })
+  it('keeps Goose interactive launch args on restart and wrapper inheritance', () => {
+    expect(assembleResumeCommand({ agentId: 'goose' }, ENV).command).toBe('goose session')
+    const proxy: CustomAgent = {
+      id: 'custom:goose',
+      label: 'Goose proxy',
+      launchCmd: 'goose-wrap',
+      baseAgent: 'goose'
+    }
+    expect(assembleResumeCommand({ agentId: proxy.id, customAgent: proxy }, ENV).command).toBe(
+      'goose-wrap session'
+    )
+  })
   it('a claude-base proxy resumes with its own binary + claude grammar + args', () => {
     setCustomAgentBaseResolver((id) => (id === 'custom:proxy' ? 'claude' : undefined))
     expect(

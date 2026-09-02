@@ -207,6 +207,11 @@ describe('initServerContextLink', () => {
     expect(readFileSync(join(home, '.codex', 'AGENTS.md'), 'utf8')).toContain(
       'nodeterm:get-linked-context'
     )
+    const relativePaths = [
+      ['.agents', 'skills', 'get-linked-context', 'SKILL.md'],
+      ['.gemini', 'antigravity-cli', 'skills', 'get-linked-context', 'SKILL.md']
+    ]
+    for (const parts of relativePaths) expect(existsSync(join(home, ...parts)), parts.join('/')).toBe(true)
     await link.stop()
   })
 

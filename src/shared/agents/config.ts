@@ -192,7 +192,21 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+// AGY, Pi and Goose all discover the get-linked-context skill installed by initContextLink:
+//  - AGY: ~/.gemini/antigravity-cli/skills (its documented global CLI skill directory)
+//  - Pi + Goose: ~/.agents/skills (the shared Agent Skills directory both CLIs scan)
+// The link notification also carries the exact shim command so an already-running session can use
+// a newly drawn edge without restarting to refresh skill discovery.
+export const CONTEXT_LINK_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'agy',
+  'pi',
+  'goose'
+] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family

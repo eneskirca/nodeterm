@@ -263,7 +263,12 @@ export function assembleResumeCommand(
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 
   const resumeBase = inputs.sessionId ? resumeCommandWith(baseCmd, capId, inputs.sessionId) : null
-  const base = resumeBase ?? baseCmd
+  // Non-resumable harnesses still need their ordinary interactive subcommand on restart/wake.
+  // Goose is the concrete case: its configured fresh-session contract is `goose session`, so a
+  // restored node must use the same grammar. A real resume command remains unchanged.
+  const harnessFragment = (eff.launchArgs ?? []).map(shellQuoteIfNeeded).join(' ')
+  const freshBase = [program, harnessFragment, argsFragment].filter(Boolean).join(' ')
+  const base = resumeBase ?? freshBase
   const withMode = inputs.permissionMode
     ? withPermissionMode(base, capId, inputs.permissionMode)
     : base

@@ -4,10 +4,11 @@
 // renderer pushes the current link map to main (context-link:set-links); main builds one link
 // document per node (linked nodes' titles, transcript paths learned from hooks, cwds, tmux
 // session names) and answers reads over the hook server's /context-link/ route. A POSIX-sh shim
-// (context.sh) is the client; a globally-installed Claude skill (plus instruction blocks for the
-// agents that have no skill system) tells the agent how + when to call it. The local shim is built
-// with the shared-Codex thread resolver before its node-id gate; the SSH installer keeps the
-// machine-neutral body because this machine's ownership-record path is meaningless on the host.
+// (context.sh) is the client; globally-installed agent skills (plus instruction blocks for the
+// agents that do not scan the shared skill paths) tell the agent how + when to call it. The local
+// shim is built with the shared-Codex thread resolver before its node-id gate; the SSH installer
+// keeps the machine-neutral body because this machine's ownership-record path is meaningless on
+// the host.
 //
 // The reading and parsing happen HERE, on the desktop, not in the CLI. That is what lets an SSH
 // project's remote agent use the feature at all: its transcripts live on the host, reachable over
@@ -54,8 +55,15 @@ export function contextLinkDir(): string {
 function cliShimPath(): string {
   return path.join(contextLinkDir(), 'context.sh')
 }
-function skillPath(): string {
-  return path.join(os.homedir(), '.claude', 'skills', 'get-linked-context', 'SKILL.md')
+function skillPaths(): string[] {
+  const home = os.homedir()
+  return [
+    path.join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md'),
+    // Shared Agent Skills path discovered by Pi and Goose.
+    path.join(home, '.agents', 'skills', 'get-linked-context', 'SKILL.md'),
+    // AGY CLI global skills path (distinct from Gemini CLI's ~/.gemini/skills).
+    path.join(home, '.gemini', 'antigravity-cli', 'skills', 'get-linked-context', 'SKILL.md')
+  ]
 }
 
 function writeCliFiles(): void {
@@ -77,11 +85,14 @@ function writeCliFiles(): void {
 }
 
 function installSkill(): void {
-  try {
-    fs.mkdirSync(path.dirname(skillPath()), { recursive: true })
-    fs.writeFileSync(skillPath(), buildContextLinkSkillBody(cliShimPath()), 'utf8')
-  } catch (e) {
-    console.warn('[context-link] skill install failed', e)
+  const body = buildContextLinkSkillBody(cliShimPath())
+  for (const skillPath of skillPaths()) {
+    try {
+      fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+      fs.writeFileSync(skillPath, body, 'utf8')
+    } catch (e) {
+      console.warn('[context-link] skill install failed', skillPath, e)
+    }
   }
 }
 
