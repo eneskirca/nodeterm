@@ -77,6 +77,35 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
     ).toBe('grok')
   })
 
+  it('composes session id AND model together, in one line, before the -- separator', () => {
+    // launch.ts:226 is the ONLY line where minting and the model flag meet, and until this test it
+    // was uncovered: the session-id tests pass no model, the model tests pass no session id and take
+    // the OTHER branch, copilot combines them but gets its model through env instead of a flag, and
+    // codex goes through assembleResumeCommand. Replacing `inputs.model` with `undefined` on that
+    // line left 42 tests green while the model silently vanished from the command.
+    //
+    // Asserted as ONE whole string rather than as separate position checks: those already exist and
+    // are not what was missing. What was missing is that the two flags coexist AND that the pair
+    // still lands before grok's end-of-options separator — after it, grok swallows both into the
+    // prompt and the node launches on the default model with a session id nodeterm never learns,
+    // reading "--session-id … --model …" as the first words of its instructions.
+    expect(
+      assembleLaunchCommand(
+        {
+          agentId: 'grok',
+          initialPrompt: 'do the thing',
+          sessionId: '01a06126-b981-73f1-8b68-4547e4d7da84',
+          sessionIdFlagSupported: true,
+          model: 'grok-4.5',
+          permissionMode: 'plan'
+        },
+        ENV
+      ).command
+    ).toBe(
+      "grok --permission-mode plan --session-id 01a06126-b981-73f1-8b68-4547e4d7da84 --model 'grok-4.5' -- 'do the thing'"
+    )
+  })
+
   it('grok puts the MODEL flag before the -- separator, alongside the others', () => {
     // Same failure shape as the session id: a flag after grok's `--` is not rejected, it is
     // swallowed into the PROMPT. The node would launch on the DEFAULT model while the agent read
