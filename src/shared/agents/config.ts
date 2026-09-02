@@ -273,7 +273,7 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as 
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership

@@ -77,6 +77,18 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
     ).toBe('grok')
   })
 
+  it('grok puts the MODEL flag before the -- separator, alongside the others', () => {
+    // Same failure shape as the session id: a flag after grok's `--` is not rejected, it is
+    // swallowed into the PROMPT. The node would launch on the DEFAULT model while the agent read
+    // "--model grok-4.5" as the first words of its instructions — and no exit code would say so.
+    const cmd = assembleLaunchCommand(
+      { agentId: 'grok', initialPrompt: 'do the thing', model: 'grok-4.5' },
+      ENV
+    ).command
+    expect(cmd).toBe("grok --model 'grok-4.5' -- 'do the thing'")
+    expect(cmd.indexOf('--model')).toBeLessThan(cmd.indexOf(' -- '))
+  })
+
   it('grok puts the permission flag BEFORE the -- separator', () => {
     expect(
       assembleLaunchCommand({ agentId: 'grok', initialPrompt: 'version', permissionMode: 'plan' }, ENV).command

@@ -165,7 +165,7 @@ import { planSetProjectFolder } from '../lib/setProjectFolder'
 import { observationIsRemote, type ObservationOrigin } from '../lib/accountChip'
 import { transferConversationItems } from '../lib/transferItems'
 import { reopenVariants } from '../lib/reopenVariants'
-import { modelsForAgent } from '@shared/agents/model-gateway'
+import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { useModelGateway } from '../state/modelGateway'
 import { viewportAtZoom } from '../lib/zoomReset'
 import { containerOrigin, snapPointInRootSpace } from '../lib/gridSnap'
@@ -454,7 +454,7 @@ import { oneLine } from '@shared/one-line'
 import { invalidNodeColorMessage, isNodeColor } from '@shared/node-colors'
 import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
-import { activePermissionMode, projectPermissionMode } from '../state/permissionMode'
+import { activePermissionMode, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
 import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSshServers } from '../state/sshServers'
@@ -1293,6 +1293,10 @@ export function Canvas() {
   const [mergePush, setMergePush] = useState(false)
   const settings = useSettings((s) => s.settings)
   const gatewayModels = useModelGateway((s) => s.models)
+  // The agent's OWN catalogue, for the agents whose models do not come from the gateway. Read
+  // through the same probe memo the launch path uses; `modelsForAgent` decides who gets it, so no
+  // model id and no agent id is spelled here.
+  const grokModelList = (): GatewayModel[] => grokCliCapsNow().models.map((id) => ({ id }))
   const gatewayStatus = useModelGateway((s) => s.status)
   const gatewayError = useModelGateway((s) => s.error)
   const discoverModels = useModelGateway((s) => s.discover)
@@ -7686,7 +7690,7 @@ export function Canvas() {
               : []
             const switchCapable = !!sourceAgentId && canSwitchModel(sourceAgentId)
             const compatibleModels = sourceAgentId && session.source !== 'relay'
-              ? modelsForAgent(gatewayModels, sourceAgentId)
+              ? modelsForAgent(gatewayModels, sourceAgentId, grokModelList())
               : []
             const currentModel =
               typeof n?.data.agentModel === 'string' ? n.data.agentModel : undefined
