@@ -283,11 +283,7 @@ Only the two keys the assertions pin, `generated_title` and `current_model_id`, 
 provenance is written at the top of `grok-session.test.ts`; keep it there until the file is replaced
 by a real capture.
 
-**`TITLE_KEYS[0] = 'title'` is an unverified guess** at the key grok's `/rename` (alias `/title`)
-writes a *manual* title to. `generated_title` is the documented auto-title. `'title'` is listed
-first so a real manual title wins the moment the key is confirmed; a wrong guess degrades to the
-generated title (right name, just not overridable from grok's side) rather than to a wrong name.
-Confirming it is checklist item **14**.
+~~**`TITLE_KEYS[0] = 'title'` is an unverified guess**~~ **MEASURED, and the guess was wrong in the harmless direction.** `/rename <name>` typed into a live session (1.0.13, 2026-09-02) rewrites **`generated_title`** in place — the same field the model-generated name uses — and no `title` key ever appears in `summary.json`. Grok does not separate a manual title from a generated one the way claude's `custom-title`/`ai-title` pair does. The key stays first in `TITLE_KEYS` purely as forward compatibility: a key absent from every file costs one failed lookup and can never produce a wrong name, so removing it would buy nothing and lose the day grok splits the two.
 
 **Not captured at all:** nothing, for the context meter. `signals.json` was the last entry here and
 it has been captured (22 sessions): it states the used count, the window total AND the percentage.
@@ -404,6 +400,13 @@ ai-name / comments).
    existing `idleInferred` rescue, and treats `task_complete` as informational because the spec does
    not define it as a turn end (`Stop` does). Every unknown type is a no-op; no substring widens the
    permission set.
+   **And it is no longer only the spec: three notifications were captured live on 1.0.13
+   (2026-09-01).** `idle_prompt` ("Waiting for your next prompt") and `permission_prompt` ("Tool
+   permission requested") appeared exactly as documented, and `permission_prompt` fired ONLY with a
+   real dialog on screen — never for an auto-approved call, so the orca-reported over-firing does not
+   reproduce here. `task_complete` was never emitted in any captured run: grok does not document what
+   triggers it, so no prompt was known to force it. Its row stays a no-op BECAUSE it is unmeasured,
+   which is the safe direction.
 2. **The earlier Esc gap was based on a false premise; no watchdog is needed.** Grok 1.0.13
    publishes `StopCancelled` for turns that end without `Stop` (`10-hooks.md:98,336,348,354,384`). A
    session-level `user_interrupt` now clears RUNNING as an interrupted `done`; permission rejection
@@ -415,8 +418,7 @@ ai-name / comments).
 
 **Remaining gaps — state these, do not paper over them:**
 
-1. ~~The phone's per-node "what it's doing now" activity line does not work for grok.~~ **CLOSED,
-   and the stated cause was wrong.** This said grok's file hooks "never send `PreToolUse`", so the
+1. ~~The phone's per-node "what it's doing now" activity line does not work for grok.~~ **CLOSED,   and the stated cause was wrong.** This said grok's file hooks "never send `PreToolUse`", so the
    `recordRawToolEvent` call was a no-op and was deleted. Measured on 1.0.13 (2026-09-02): grok DOES
    publish the event — it spells it **`pre_tool_use`**, its own snake_case, in both field dialects —
    and `recordRawToolEvent` gates on the exact string `PreToolUse`. The blocker was a SPELLING, not

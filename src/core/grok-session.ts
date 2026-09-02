@@ -47,15 +47,19 @@ export interface GrokSessionMeta {
 }
 
 /**
- * Title keys in PREFERENCE order: a manually set title wins over the model-generated one, exactly
- * as claude's `custom-title` wins over its `ai-title`.
+ * Title keys in PREFERENCE order.
  *
- * `generated_title` is DOCUMENTED (grok 1.0.0). `'title'` is UNVERIFIED — it is a first guess at the
- * key grok's `/rename` (alias `/title`) writes a manual title to, which could not be captured
- * because no grok binary or account was available (see the provenance note atop grok-session.test.ts
- * and the fixture it describes). It is listed FIRST so a real manual title wins the moment the key is
- * confirmed; an unknown key is simply absent from the file, so a wrong guess degrades to the
- * generated title rather than to a wrong name.
+ * MEASURED (grok 1.0.13, 2026-09-02): there is only ONE key. `/rename <name>` typed into a live
+ * session rewrites **`generated_title`** in place — the same field the model-generated name uses —
+ * and no `title` key ever appears in `summary.json`. Grok does not distinguish a manual title from a
+ * generated one the way claude's `custom-title` / `ai-title` pair does.
+ *
+ * `'title'` was here as an explicitly-marked guess at the manual key, kept first so a real manual
+ * title would win the moment someone confirmed it. Someone did, and the answer is that the key does
+ * not exist. It stays in the list ONLY as a harmless forward compatibility: if a future grok ever
+ * splits the two, a manual title would win immediately. A key that is absent from every file costs
+ * one failed lookup and can never produce a wrong name — which is why removing it would buy nothing
+ * and lose that.
  */
 const TITLE_KEYS = ['title', 'generated_title'] as const
 
