@@ -427,14 +427,28 @@ ai-name / comments).
    honest; one built on a guessed key renders wrong forever. Note grok's names collide with claude's
    by CASE alone in two places (`grep`/`Grep`, `write`/`Write`), so that switch must stay
    case-sensitive.
-2. **A remote (SSH) grok node's session name never resolves.** The shells build the session directory
-   from the **local** `grokSessionsDir()` while the payload's `cwd` came from the host. It degrades
-   safely — a wrong name is never produced, only no name — but it is a real asymmetry: claude's leg
-   right below handles remote via `setRemoteTranscriptReader`.
-3. **The `sessionId → dir` map is in-memory,** so after an app restart a grok name does not resolve
-   until that session's next hook. This is the deliberate "derive, never search" trade (claude
-   resolves immediately *because* it scans, which is the behaviour that made nodes adopt each other's
-   names); the checklist records how it feels.
+2. **A remote (SSH) grok node's session name never resolves — the SEAM now exists, the SSH wiring
+   does not.** The shells build the session directory from the **local** `grokSessionsDir()` while
+   the payload's `cwd` came from the host. `readAgentSessionName` now takes a `grokRemoteSummary`
+   reader, shaped exactly like claude's `setRemoteTranscriptReader`, and its answer is FINAL for a
+   session it owns: an unreadable host yields **no name**, never the local directory's — because
+   "could not read the host" and "there is nothing" are different facts, and answering the first
+   with the second is how a node ends up wearing another session's name. Pinned by a test.
+   **What is still owed** is the desktop's implementation of that reader: it needs the host's
+   `$GROK_HOME`, which `RemoteHooks` computes at install time (`isSafeRemoteGrokHome`) and does not
+   keep. Until it is wired, a remote grok node still degrades to no name — the same behaviour as
+   before, now with the place to fix it named.
+3. ~~The `sessionId → dir` map is in-memory.~~ **CLOSED: it is persisted** (`grok-session-dirs.json`
+   under `userDataDir`, written atomically, debounced so a hook burst is one write and never awaited
+   on the hook path). A grok node's name now resolves straight after an app restart, with no hook in
+   between.
+   **Persisting is not scanning, and the distinction is the whole point of grok's design here.** A
+   scan searches a tree for a session id — that is what claude does, and it is the behaviour that
+   made nodes adopt each other's names. What this file holds is only what a hook already TOLD us, so
+   a restart recovers facts we were given rather than guessing at facts we were not.
+   Every entry is re-validated with `isSafeGrokSessionId` on load: the file is ours but it sits in a
+   directory a user can edit, and the values become filesystem paths. A corrupt or hand-edited file
+   yields an EMPTY map, never a partial one built from whatever happened to parse.
 4. **No live session-name poll in the browser** — see §7.
 6b. **The FIRST grok node in a cwd mints without checking the disk.** The taken-id set is warmed
    per cwd on demand (`renderer/state/grokSessionIds.ts`), so the first mint in a directory
@@ -478,6 +492,22 @@ ai-name / comments).
    side shares the blind spot, not because it is solved there. Fixing it
    means probing the login shell — a change with its own failure modes, not a comment — so checklist
    **31** asks first whether anyone sets the variable at all. The trap is documented at `grokHomeDir`.
+   **LOCAL SIDE CLOSED (2026-09).** `ensureGrokHomeProbed` asks the user's LOGIN+INTERACTIVE shell
+   for `GROK_HOME` once — the same spawn `resolveShellPath` already makes for `$PATH`, for the same
+   reason — and `installManagedAgentHooks` re-writes grok's hook file if the answer moves the target.
+   Three properties, each of which a mutation is pinned against: an explicit `process.env.GROK_HOME`
+   wins and the shell is not even asked (that spawn can hang on a slow dotfile); the probe is async
+   and fail-open, so boot never waits and a hung shell means today's behaviour; and the fallback
+   RECORDS itself (`grokHomeFallbackWasSilent`), because the bug was never the wrong path — it was
+   that a wrong path produced no diagnostic anywhere.
+   Item **31**'s question, answered on this device (2026-09-02): `GROK_HOME` is unset in the
+   environment AND absent from every shell rc, so the probe finds nothing here. That is precisely why
+   it had to cost nothing when it finds nothing.
+   A better source exists for READS: `summary.json` carries `grok_home` inside it (present in 29 of
+   29 local sessions, all agreeing). It cannot bootstrap the INSTALL — reading it means already
+   knowing the sessions directory — so it is recorded for a future reader rather than used.
+   **The REMOTE side is still open (item 26):** that probe runs over a plain ssh exec channel, so a
+   host exporting `GROK_HOME` only from `.bashrc` still reports empty and silently gets `~/.grok`.
 
 **Follow-ups owed elsewhere:**
 

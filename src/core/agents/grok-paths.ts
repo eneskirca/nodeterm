@@ -21,6 +21,7 @@
 import path from 'path'
 import { homedir } from 'os'
 import { isSafeRemoteHome } from '../remote-safety'
+import { resolveShellEnvVar } from '../exec-path'
 
 export const GROK_HOOK_FILE = 'nodeterm-status.json'
 export const GROK_SUMMARY_FILE = 'summary.json'
@@ -67,13 +68,78 @@ type GrokEnv = { GROK_HOME?: string }
  *  host that exports `GROK_HOME` only from `.bashrc` reports empty and silently gets `~/.grok`. That is
  *  checklist item 26, which exists BECAUSE the remote side has the problem too.
  *
- *  Deliberately NOT fixed here: resolving it means probing the user's login shell for `GROK_HOME`
- *  (a spawn, a cache, and a fail-open policy), which is its own change with its own failure modes —
- *  not a comment. It is item 31 in docs/grok-agent.md's device checklist ("is `GROK_HOME` set in your
- *  shell?") because a device run is what tells us whether anyone actually sets it. */
+ *  FIXED for the local side since 2026-09, and the shape of the fix matters. `ensureGrokHomeProbed`
+ *  asks the user's LOGIN+INTERACTIVE shell for `GROK_HOME` once (the same spawn `resolveShellPath`
+ *  already makes for `$PATH`, for the same reason), and the answer is remembered for this process.
+ *  Three properties it was built to have:
+ *
+ *    - The probe never overrides a value we already have. `process.env.GROK_HOME` wins outright:
+ *      a shell answer is evidence about the user's shell, not about this process.
+ *    - It is asynchronous and fail-open. A hung dotfile, a non-POSIX shell, Windows — all resolve to
+ *      "not set", which is `~/.grok`, exactly today's behaviour. Nothing waits on it to launch.
+ *    - The fallback LEAVES A TRACE (`grokHomeFallbackWasSilent`). Rule 9: "could not measure" and
+ *      "there is nothing" are different facts. The bug this closes was not the wrong path — it was
+ *      that a wrong path produced no badge, no notification, no name and NO DIAGNOSTIC, forever.
+ *
+ *  MEASURED on this device (2026-09-02), which is what checklist item 31 asked for: `GROK_HOME` is
+ *  unset in the environment AND absent from every shell rc. So the probe finds nothing here — which
+ *  is exactly why it must not cost anything when it finds nothing.
+ *
+ *  A better source exists for READS once a session is known: `summary.json` carries `grok_home`
+ *  inside it (present in 29 of 29 local sessions). It cannot bootstrap the INSTALL, though — reading
+ *  it requires already knowing the sessions directory — so it is recorded here as the answer for a
+ *  future reader, not used as one.
+ *
+ *  The REMOTE side is still item 26: its probe runs over a plain ssh exec channel, so a host that
+ *  exports `GROK_HOME` only from `.bashrc` still reports empty and silently gets `~/.grok`. */
+let probedGrokHome: string | null = null
+let fallbackWasSilent = false
+
+/**
+ * Ask the login shell for `GROK_HOME`, once per process. Never rejects. Call it at boot and forget
+ * it: `grokHomeDir` picks the answer up whenever it lands, and until then answers what it always did.
+ */
+export async function ensureGrokHomeProbed(
+  ask: (name: string) => Promise<string | null> = resolveShellEnvVar
+): Promise<void> {
+  if (probedGrokHome !== null) return
+  if ((process.env as GrokEnv).GROK_HOME?.trim()) return
+  let v: string | undefined
+  try {
+    v = (await ask('GROK_HOME'))?.trim()
+  } catch {
+    // A dotfile that throws is not "the variable is unset" — it is "we could not ask". Both end at
+    // `~/.grok`, but only one of them is a measurement, so the failure is RECORDED below rather than
+    // swallowed: that flag is the entire point of this function (rule 9).
+    v = undefined
+  }
+  if (v) probedGrokHome = v
+  else fallbackWasSilent = true
+}
+
+/**
+ * True when we fell back to `~/.grok` WITHOUT any positive evidence that this is where grok looks —
+ * i.e. the state in which every grok integration silently does nothing. Exposed so a diagnostic can
+ * say so instead of leaving the user with a dead node and no explanation.
+ */
+export function grokHomeFallbackWasSilent(): boolean {
+  return fallbackWasSilent
+}
+
+/** Test seam. */
+export function _resetGrokHomeProbeForTests(): void {
+  probedGrokHome = null
+  fallbackWasSilent = false
+}
+
 export function grokHomeDir(env: GrokEnv = process.env as GrokEnv, home: string = homedir()): string {
   const fromEnv = env.GROK_HOME?.trim()
-  return fromEnv || path.join(home, '.grok')
+  if (fromEnv) return fromEnv
+  // The probe answers only for the ambient environment. An explicit `env` argument is a caller
+  // saying "resolve as THIS environment would", and silently substituting a shell answer there
+  // would make the function lie about the environment it was handed.
+  if (env === (process.env as GrokEnv) && probedGrokHome) return probedGrokHome
+  return path.join(home, '.grok')
 }
 
 export function grokSessionsDir(env: GrokEnv = process.env as GrokEnv, home: string = homedir()): string {
