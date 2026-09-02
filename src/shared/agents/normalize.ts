@@ -591,6 +591,16 @@ interface GrokPayload {
   tool_use_id?: string
   toolInput?: Record<string, unknown>
   tool_input?: Record<string, unknown>
+  /** SubagentStart/SubagentStop only. MEASURED (1.0.13, two parallel `explore` children): a
+   *  per-INSTANCE id, and the only id both events share — see `grokRawFields`. The snake spelling is
+   *  read alongside the camel one for the same reason every other field here is: grok emits both
+   *  dialects in the same payload, and the SDK path may present only one. */
+  subagentId?: string
+  subagent_id?: string
+  subagentType?: string
+  subagent_type?: string
+  /** SubagentStart only: the human task text ("Read a.txt contents"). Absent on the stop. */
+  description?: string
   lastAssistantMessage?: string
   last_assistant_message?: string
   notificationType?: string
@@ -653,6 +663,9 @@ export function grokRawFields(payload: Record<string, unknown>): {
   toolName?: string
   toolUseId?: string
   toolInput?: Record<string, unknown>
+  subagentId?: string
+  subagentType?: string
+  description?: string
 } {
   const p = payload as GrokPayload
   return {
@@ -661,7 +674,21 @@ export function grokRawFields(payload: Record<string, unknown>): {
     cwd: p.cwd,
     toolName: p.toolName ?? p.tool_name,
     toolUseId: p.toolUseId ?? p.tool_use_id,
-    toolInput: p.toolInput ?? p.tool_input
+    toolInput: p.toolInput ?? p.tool_input,
+    // MEASURED on 1.0.13 (2026-09-02) by running two `explore` subagents in parallel:
+    //
+    //  - `subagentId` is a per-INSTANCE id. The two children of the same TYPE came back with
+    //    different ids, so grok keys like codex's `agent_id` and not, as was assumed, by type
+    //    alone — nothing has to be aggregated.
+    //  - It is also the ONLY id common to both events. On `SubagentStart` the `sessionId` is the
+    //    PARENT's (the hook runs in the parent); on `SubagentStop` it is the CHILD's own, equal to
+    //    `subagentId`. Keying on `sessionId` would file the start and the stop under different
+    //    cards, and the started one would never close: a badge lit forever, with no error.
+    //  - `description` arrives ONLY on the start ("Read a.txt contents"); on the stop it is
+    //    absent, so a title resolved at close time has nothing to read.
+    subagentId: p.subagentId ?? p.subagent_id,
+    subagentType: p.subagentType ?? p.subagent_type,
+    description: p.description
   }
 }
 

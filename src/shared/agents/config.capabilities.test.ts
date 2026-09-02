@@ -258,9 +258,16 @@ describe('grok capabilities', () => {
     expect(canSwitchModel('grok')).toBe(true)
   })
 
+  it('shows one card per subagent INSTANCE, not one per type', () => {
+    // Keyed by `subagentId`, measured by running two `explore` children in parallel: same type,
+    // different ids. The premise this task started from — that grok only exposes a TYPE, so two
+    // children of one type would have to share an aggregated card — was wrong, and running the two
+    // is the only thing that could have told us.
+    expect(canSubagent('grok')).toBe(true)
+  })
+
   it('does not yet claim the capabilities whose per-agent leaf is unwritten', () => {
     expect(canBranch('grok')).toBe(false)
-    expect(canSubagent('grok')).toBe(false)
   })
 })
 
