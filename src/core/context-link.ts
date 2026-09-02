@@ -21,6 +21,7 @@ import { platform } from './platform'
 import { IPC } from '../shared/ipc'
 import type { ContextLinkMap } from '../shared/types'
 import { type PtyManager } from './pty-manager'
+import { directExecutableInvocation, findInLoginPath } from './exec-path'
 import { TMUX_SOCKET } from './tmux-naming'
 import {
   buildContextShimScript,
@@ -202,6 +203,24 @@ async function fetchTranscript(node: LinkDocEntry): Promise<string | null> {
   }
 }
 
+export async function opencodeExportAt(bin: string, sessionId: string): Promise<string | null> {
+  const invocation = directExecutableInvocation(bin, ['export', sessionId])
+  if (!invocation) return null
+  try {
+    const { execFile } = await import('node:child_process')
+    return await new Promise<string | null>((resolve) => {
+      execFile(
+        invocation.executable,
+        invocation.args,
+        { encoding: 'utf-8' },
+        (err, stdout) => resolve(err ? null : stdout)
+      )
+    })
+  } catch {
+    return null
+  }
+}
+
 async function fetchOpencodeExport(node: LinkDocEntry): Promise<string | null> {
   if (!node.sessionId) return null
   if (deps.isRemoteNode?.(node.id)) {
@@ -209,16 +228,8 @@ async function fetchOpencodeExport(node: LinkDocEntry): Promise<string | null> {
       ? await deps.runRemoteCommand(node.id, `opencode export ${shellQuote(node.sessionId)}`)
       : null
   }
-  try {
-    const { execFile } = await import('node:child_process')
-    return await new Promise<string | null>((resolve) => {
-      execFile('opencode', ['export', node.sessionId ?? ''], { encoding: 'utf-8' }, (err, stdout) =>
-        resolve(err ? null : stdout)
-      )
-    })
-  } catch {
-    return null
-  }
+  const bin = await findInLoginPath('opencode')
+  return bin ? opencodeExportAt(bin, node.sessionId) : null
 }
 
 /** Single-quote for a POSIX shell. The session id reaches a remote command line, and it is

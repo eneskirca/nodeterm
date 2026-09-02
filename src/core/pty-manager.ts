@@ -497,15 +497,8 @@ function resolveLocaleLang(): string | null {
   return /utf-?8/i.test(cur) ? null : 'en_US.UTF-8'
 }
 
-/**
- * Resolve an executable against the user's real login-shell PATH (reusing the cached probe),
- * returning its absolute path or null. GUI apps inherit only a minimal PATH, so a bare
- * `execFile('claude', …)` would fail even when the tool is installed.
- */
-export async function findInLoginPath(bin: string): Promise<string | null> {
-  const shellPath = (await resolveShellPath()) ?? process.env.PATH ?? ''
-  return findInPathString(bin, shellPath)
-}
+// Kept as a compatibility export: executable resolution now lives with the other PATH helpers.
+export { findInLoginPath } from './exec-path'
 
 /** A UI client: an Electron webContents id or a ServerPlatform uiId. */
 type ClientId = number

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { executableCandidates, findInPathString, unquotePathEntry } from './exec-path'
+import {
+  directExecutableInvocation,
+  executableCandidates,
+  findInPathString,
+  unquotePathEntry
+} from './exec-path'
 
 describe('executableCandidates', () => {
   it('leaves a bare name alone off win32 — POSIX has no PATHEXT', () => {
@@ -58,6 +63,65 @@ describe('unquotePathEntry', () => {
   it('leaves an unquoted entry and a lone quote untouched', () => {
     expect(unquotePathEntry('/usr/bin')).toBe('/usr/bin')
     expect(unquotePathEntry('"C:\\half')).toBe('"C:\\half')
+  })
+})
+
+describe('directExecutableInvocation', () => {
+  const systemRoot = 'C:\\Windows'
+  const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+
+  it('leaves native and non-Windows executables unchanged', () => {
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.exe', ['--version'], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => false
+      })
+    ).toEqual({ executable: 'C:\\Tools\\agent.exe', args: ['--version'] })
+    expect(
+      directExecutableInvocation('/usr/bin/agent.cmd', ['--version'], { platform: 'linux' })
+    ).toEqual({ executable: '/usr/bin/agent.cmd', args: ['--version'] })
+  })
+
+  it('runs a Windows npm cmd shim through its sibling PowerShell shim', () => {
+    const existing = new Set([powershell.toLowerCase(), 'c:\\tools\\agent.ps1'])
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.CMD', ['--flag', 'value & untouched'], {
+        platform: 'win32',
+        systemRoot,
+        exists: (candidate) => existing.has(candidate.toLowerCase())
+      })
+    ).toEqual({
+      executable: powershell,
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        'C:\\Tools\\agent.ps1',
+        '--flag',
+        'value & untouched'
+      ]
+    })
+  })
+
+  it('fails closed when a Windows script has no safe direct entry point', () => {
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.cmd', [], {
+        platform: 'win32',
+        systemRoot,
+        exists: (candidate) => candidate.toLowerCase() === powershell.toLowerCase()
+      })
+    ).toBeNull()
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.bat', [], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => true
+      })
+    ).toBeNull()
   })
 })
 

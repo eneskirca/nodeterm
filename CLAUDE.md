@@ -52,6 +52,16 @@ means — and what you may assume when writing a feature — is three tiers, not
   fails on any such read that does not. `*.bat`/`*.cmd`/`*.ps1` are the deliberate exception and
   keep CRLF: cmd.exe is not reliably tolerant of LF, and those are the files a Windows contributor
   runs before anything else works.
+- **PATH resolution and direct execution are separate on Windows.** `findInPathString` correctly
+  follows `PATHEXT`, which means an npm-installed CLI may resolve to `<name>.cmd`; Node's
+  `execFile`/`spawn` still cannot execute that path directly (`spawn EINVAL`). App-owned
+  subprocesses must pass their resolved executable and argv through `directExecutableInvocation`
+  (`src/core/exec-path.ts`), which maps an npm `.cmd` to its equivalent sibling `.ps1` and invokes
+  it with PowerShell `-File`. The argv remains structured all the way through — never replace this
+  with `shell:true`, because commit prompts and other user-controlled arguments would then be
+  reinterpreted as shell syntax. A `.bat` has no npm sibling contract and fails closed. This helper
+  is for subprocess calls; interactive terminal agent launches keep using `agent-launch.ts`'s
+  separately tested shell plan.
 
 ## Commands
 

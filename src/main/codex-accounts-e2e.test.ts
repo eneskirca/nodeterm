@@ -232,8 +232,8 @@ describe('S6 acceptance gate — the merged machine-scoped-Codex-account chain c
     expect(existsSync(rollout)).toBe(true)
 
     // ---- LEG E: per-account usage attribution — never mixed, never fabricated --------------------
-    // Neutralise PATH so the app-server tier's `spawn('codex')` fails fast with ENOENT instead of
-    // finding a real binary; no auth.json ⇒ the backend tier declines without a network call.
+    // Neutralise PATH so the app-server tier cannot resolve a real Codex binary;
+    // no auth.json means the backend tier declines without a network call.
     const prevPath = process.env.PATH
     process.env.PATH = ''
     try {

@@ -11,6 +11,7 @@ import type { WorktreeListResult } from '../shared/worktree'
 import type { GitHistoryOptions, GitHistoryResult } from '../shared/git-history'
 import { resolveGitRemote, runRemoteGit } from './remote-ssh/remote-git'
 import { platform } from './platform'
+import { directExecutableInvocation } from './exec-path'
 import { ghPath } from './gh-path'
 import { gitEnv } from './git-env'
 import {
@@ -29,6 +30,11 @@ const run = promisify(execFile)
 // (issue #583) — live in git-env.ts, which github/credentials.ts imports as well.
 const GIT_ENV: NodeJS.ProcessEnv = gitEnv()
 
+function ghInvocation(args: string[]): ReturnType<typeof directExecutableInvocation> {
+  const gh = ghPath()
+  return gh ? directExecutableInvocation(gh, args) : null
+}
+
 // Single-flight registry for the one clone the app runs at a time. Module-scoped so a
 // macOS window re-creation can't orphan it.
 type ActiveClone = {
@@ -45,15 +51,15 @@ let ghAuthedCache: { value: boolean; at: number } | null = null
 let ghAuthedInFlight: Promise<boolean> | null = null
 
 async function ghAuthed(): Promise<boolean> {
-  const gh = ghPath()
-  if (!gh) return false
+  const invocation = ghInvocation(['auth', 'status'])
+  if (!invocation) return false
   const now = Date.now()
   if (ghAuthedCache && now - ghAuthedCache.at < GH_AUTH_TTL_MS) return ghAuthedCache.value
   if (ghAuthedInFlight) return ghAuthedInFlight
   ghAuthedInFlight = (async () => {
     let value = false
     try {
-      await run(gh, ['auth', 'status'], { env: GIT_ENV, maxBuffer: 1024 * 1024 })
+      await run(invocation.executable, invocation.args, { env: GIT_ENV, maxBuffer: 1024 * 1024 })
       value = true
     } catch {
       value = false
@@ -73,8 +79,7 @@ async function ghAuthed(): Promise<boolean> {
  * call ever (no cache at all) reports `false` while the probe runs; that flips one refresh later.
  */
 function ghAuthedSwr(): boolean {
-  const gh = ghPath()
-  if (!gh) return false
+  if (!ghInvocation([])) return false
   const fresh = !!ghAuthedCache && Date.now() - ghAuthedCache.at < GH_AUTH_TTL_MS
   if (!fresh) void ghAuthed().catch(() => {})
   return ghAuthedCache?.value ?? false
@@ -343,7 +348,7 @@ export class GitService {
       hasRemote: false,
       hasOrigin: false,
       hasUpstream: false,
-      ghAvailable: !!ghPath(),
+      ghAvailable: !!ghInvocation([]),
       ghAuthed: false,
       staged: [],
       changes: []
@@ -444,7 +449,7 @@ export class GitService {
       hasRemote,
       hasOrigin,
       hasUpstream,
-      ghAvailable: !!ghPath(),
+      ghAvailable: !!ghInvocation([]),
       ghAuthed: gh,
       staged,
       changes
@@ -781,14 +786,21 @@ export class GitService {
   }
 
   async publish(cwd: string, name: string, isPrivate: boolean): Promise<GitResult> {
-    const gh = ghPath()
-    if (!gh) return { ok: false, message: 'GitHub CLI (gh) not found.' }
     const repo = (name || '').trim()
     // GitHub repo names (optionally `owner/repo`) are limited to these chars and
     // must not start with `-`, so gh can't read the value as an option flag.
     if (!repo || repo.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(repo)) {
       return { ok: false, message: 'Invalid repository name.' }
     }
+    const invocation = ghInvocation([
+      'repo',
+      'create',
+      repo,
+      isPrivate ? '--private' : '--public',
+      '--source=.',
+      '--push'
+    ])
+    if (!invocation) return { ok: false, message: 'GitHub CLI (gh) not found.' }
     // Prefer gh's own login; otherwise reuse the user's existing git HTTPS token
     // (the one that already lets them push) so publishing doesn't demand a separate
     // `gh auth login`. If neither is available, signal the UI to start a login.
@@ -801,11 +813,7 @@ export class GitService {
       env.GH_TOKEN = token
     }
     try {
-      await run(
-        gh,
-        ['repo', 'create', repo, isPrivate ? '--private' : '--public', '--source=.', '--push'],
-        { cwd, env, maxBuffer: 10 * 1024 * 1024 }
-      )
+      await run(invocation.executable, invocation.args, { cwd, env, maxBuffer: 10 * 1024 * 1024 })
       return { ok: true, message: 'Published to GitHub.' }
     } catch (e) {
       const err = e as { stderr?: string; message?: string }

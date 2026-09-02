@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { grokCliCapsFrom, UNKNOWN_GROK_CLI_CAPS } from './grok-cli'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { grokCliCapsFrom, probeGrokCliAt, UNKNOWN_GROK_CLI_CAPS } from './grok-cli'
 
 // Verbatim from `grok --help` on 1.0.13 (2026-09-02). The two lines matter for opposite reasons:
 // the first DEFINES the flag, the second only MENTIONS it inside another option's prose.
@@ -46,5 +49,23 @@ describe('grokCliCapsFrom', () => {
   it('accepts the `=` spelling and end-of-line', () => {
     expect(grokCliCapsFrom('--session-id=<ID>').sessionIdFlag).toBe(true)
     expect(grokCliCapsFrom('  -s, --session-id').sessionIdFlag).toBe(true)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('probeGrokCliAt — Windows npm shim', () => {
+  it('probes through the sibling PowerShell shim', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-grok-shim-'))
+    try {
+      const cmd = path.join(dir, 'grok.cmd')
+      fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
+      fs.writeFileSync(
+        path.join(dir, 'grok.ps1'),
+        "if ($args[0] -eq '--help') { Write-Output '  --session-id <uuid>'; exit 0 }\r\nexit 92\r\n"
+      )
+
+      await expect(probeGrokCliAt(cmd)).resolves.toEqual({ sessionIdFlag: true })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

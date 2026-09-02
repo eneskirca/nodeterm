@@ -46,6 +46,7 @@ import { accessSync, constants } from 'fs'
 import path from 'path'
 import { promisify } from 'util'
 import { IPC } from '../shared/ipc'
+import { directExecutableInvocation } from './exec-path'
 import { platform } from './platform'
 import { type CodexIdentityCaps } from '../shared/types'
 import { installCodexLauncher, codexThreadIdentityAvailable } from './codex-identity-proxy'
@@ -115,26 +116,39 @@ export function codexCliSupportsRemote(...helpOutputs: Array<string | null | und
   return helpOutputs.some((h) => /(^|\s)--remote(\s|=|$)/m.test(h ?? ''))
 }
 
-async function probeRemoteFlag(): Promise<boolean> {
+export async function probeCodexRemoteFlagAt(bin: string): Promise<boolean> {
   try {
-    // GUI apps don't inherit the shell PATH — resolve through the login shell like every other
-    // CLI lookup in the app (pty-manager, claude-cli, commit-message).
-    const bin = await findInLoginPath('codex')
-    if (!bin) return false
-    const help = await execFileP(bin, ['--help'], { timeout: PROBE_TIMEOUT_MS })
-      .then((r) => r.stdout)
-      .catch(() => null)
+    const helpInvocation = directExecutableInvocation(bin, ['--help'])
+    const help = helpInvocation
+      ? await execFileP(helpInvocation.executable, helpInvocation.args, {
+          timeout: PROBE_TIMEOUT_MS
+        })
+          .then((r) => r.stdout)
+          .catch(() => null)
+      : null
     if (codexCliSupportsRemote(help)) return true
     // Some CLIs list a global flag only under the subcommand that takes it. One extra spawn, paid
     // once per app run and only when the top-level help did not already answer yes.
-    const resumeHelp = await execFileP(bin, ['resume', '--help'], { timeout: PROBE_TIMEOUT_MS })
-      .then((r) => r.stdout)
-      .catch(() => null)
+    const resumeInvocation = directExecutableInvocation(bin, ['resume', '--help'])
+    const resumeHelp = resumeInvocation
+      ? await execFileP(resumeInvocation.executable, resumeInvocation.args, {
+          timeout: PROBE_TIMEOUT_MS
+        })
+          .then((r) => r.stdout)
+          .catch(() => null)
+      : null
     return codexCliSupportsRemote(resumeHelp)
   } catch {
     // Missing CLI, timeout, non-zero exit — all mean "unknown", which means "no shared identity".
     return false
   }
+}
+
+async function probeRemoteFlag(): Promise<boolean> {
+  // GUI apps don't inherit the shell PATH — resolve through the login shell like every other
+  // CLI lookup in the app (pty-manager, claude-cli, commit-message).
+  const bin = await findInLoginPath('codex')
+  return bin ? probeCodexRemoteFlagAt(bin) : false
 }
 
 let latest: CodexIdentityCaps | null = null

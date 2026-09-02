@@ -8,6 +8,7 @@ import {
   codexIdentityCaps,
   codexManagedRuntimeInstalled,
   codexManagedRuntimePath,
+  probeCodexRemoteFlagAt,
   refreshCodexIdentityCaps,
   resetCodexIdentityCapsForTests
 } from './codex-identity-caps'
@@ -164,18 +165,22 @@ describe('codexManagedRuntimeInstalled', () => {
     )
   })
 
-  it('answers yes only for an executable runtime at that path', () => {
-    // An npm install has ~/.codex (auth, config, sessions) and no `packages/` at all — which is
-    // exactly the shape measured on the machine this fix was written on.
-    expect(codexManagedRuntimeInstalled(dir)).toBe(false)
-    const runtime = codexManagedRuntimePath(dir)
-    fs.mkdirSync(path.dirname(runtime), { recursive: true })
-    fs.writeFileSync(runtime, '#!/bin/sh\nexit 0\n', { mode: 0o644 })
-    // Present but not executable is not a runtime the daemon can exec, so it is still no.
-    expect(codexManagedRuntimeInstalled(dir)).toBe(false)
-    fs.chmodSync(runtime, 0o755)
-    expect(codexManagedRuntimeInstalled(dir)).toBe(true)
-  })
+  it.skipIf(process.platform === 'win32')(
+    'answers yes only for an executable runtime at that path',
+    () => {
+      // An npm install has ~/.codex (auth, config, sessions) and no `packages/` at all — which is
+      // exactly the shape measured on the machine this fix was written on.
+      // Windows ignores the executable bit, so `X_OK` cannot distinguish the two fixture modes.
+      expect(codexManagedRuntimeInstalled(dir)).toBe(false)
+      const runtime = codexManagedRuntimePath(dir)
+      fs.mkdirSync(path.dirname(runtime), { recursive: true })
+      fs.writeFileSync(runtime, '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+      // Present but not executable is not a runtime the daemon can exec, so it is still no.
+      expect(codexManagedRuntimeInstalled(dir)).toBe(false)
+      fs.chmodSync(runtime, 0o755)
+      expect(codexManagedRuntimeInstalled(dir)).toBe(true)
+    }
+  )
 })
 
 describe('codexCliSupportsRemote', () => {
@@ -191,5 +196,22 @@ describe('codexCliSupportsRemote', () => {
   it('accepts an answer from either help page', () => {
     // Some CLIs list a global flag only under the subcommand that takes it.
     expect(codexCliSupportsRemote('no flags here', '  --remote <URL>')).toBe(true)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('probeCodexRemoteFlagAt — Windows npm shim', () => {
+  it('uses the sibling PowerShell shim for both help probes', async () => {
+    const cmd = path.join(dir, 'codex.cmd')
+    fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
+    fs.writeFileSync(
+      path.join(dir, 'codex.ps1'),
+      [
+        "if ($args.Count -eq 1 -and $args[0] -eq '--help') { Write-Output 'no flag'; exit 0 }",
+        "if ($args[0] -eq 'resume' -and $args[1] -eq '--help') { Write-Output '  --remote <URL>'; exit 0 }",
+        'exit 92'
+      ].join('\r\n')
+    )
+
+    await expect(probeCodexRemoteFlagAt(cmd)).resolves.toBe(true)
   })
 })

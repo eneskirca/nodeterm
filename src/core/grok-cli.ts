@@ -11,6 +11,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { IPC } from '../shared/ipc'
+import { directExecutableInvocation } from './exec-path'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
 import { listGrokSessionIds } from './grok-session-mint'
@@ -33,20 +34,27 @@ export function grokCliCapsFrom(helpOutput: string | null | undefined): GrokCliC
   return { sessionIdFlag: /(^|\s)--session-id(\s|=|$)/m.test(helpOutput ?? '') }
 }
 
-let cached: Promise<GrokCliCaps> | null = null
-
-async function probe(): Promise<GrokCliCaps> {
+export async function probeGrokCliAt(bin: string): Promise<GrokCliCaps> {
   try {
-    // GUI apps don't inherit the shell PATH — resolve through the login shell like every other CLI
-    // lookup in the app.
-    const bin = await findInLoginPath('grok')
-    if (!bin) return UNKNOWN_GROK_CLI_CAPS
-    const { stdout } = await execFileP(bin, ['--help'], { timeout: PROBE_TIMEOUT_MS })
+    const invocation = directExecutableInvocation(bin, ['--help'])
+    if (!invocation) return UNKNOWN_GROK_CLI_CAPS
+    const { stdout } = await execFileP(invocation.executable, invocation.args, {
+      timeout: PROBE_TIMEOUT_MS
+    })
     return grokCliCapsFrom(stdout)
   } catch {
     // Missing CLI, timeout, non-zero exit — all mean "unknown", which means "omit the flag".
     return UNKNOWN_GROK_CLI_CAPS
   }
+}
+
+let cached: Promise<GrokCliCaps> | null = null
+
+async function probe(): Promise<GrokCliCaps> {
+  // GUI apps don't inherit the shell PATH — resolve through the login shell like every other CLI
+  // lookup in the app.
+  const bin = await findInLoginPath('grok')
+  return bin ? probeGrokCliAt(bin) : UNKNOWN_GROK_CLI_CAPS
 }
 
 /** The local grok CLI's capabilities. Memoized for the process lifetime. Never rejects. */
