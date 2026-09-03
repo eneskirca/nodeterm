@@ -12884,7 +12884,7 @@ export function Canvas() {
             </div>
             {notice.action && (
               <button
-                className="announce-banner__btn"
+                className="announce-banner__action"
                 onClick={() => {
                   const run = notice.action?.run
                   setNotice(null)

@@ -85,9 +85,11 @@ export function answersOffCanvas(
   return !groupChainHasWorktree(nodes, args.group?.trim() || undefined)
 }
 
-/** The notice shown when a node was created in a project the human is not looking at. It says
- *  where the work went; travelling there stays the human's choice, which is the whole point. */
+/** The notice shown when a node was created in a project the human is not looking at. It says who
+ *  did what and where it went; travelling there stays the human's choice, which is the whole point.
+ *  Active voice and a full sentence: "A node opened by an agent in X." is a noun phrase, and the
+ *  passive repair ("was opened by") buries the actor the reader needs. */
 export function offCanvasNoticeText(projectName: string, count: number): string {
-  const what = count === 1 ? 'A node' : `${count} nodes`
-  return `${what} opened by an agent in "${projectName}". That project is not on screen.`
+  const what = count === 1 ? 'a node' : `${count} nodes`
+  return `An agent opened ${what} in "${projectName}". That project is not on screen.`
 }

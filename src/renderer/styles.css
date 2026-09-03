@@ -5221,7 +5221,11 @@ body,
   gap: 8px;
 }
 
-.confirm__btn {
+/* The app's default button. `.announce-banner__action` shares the recipe rather than restating it:
+   a banner offering an ordinary next step ("Go there") is not asking for the accent treatment
+   `.announce-banner__btn` gives an install or a reload, and two copies of a default button drift. */
+.confirm__btn,
+.announce-banner__action {
   background: var(--panel-header);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -5231,8 +5235,13 @@ body,
   cursor: pointer;
 }
 
-.confirm__btn:hover {
+.confirm__btn:hover,
+.announce-banner__action:hover {
   background: rgba(var(--tint-rgb), 0.1);
+}
+
+.announce-banner__action {
+  flex: none;
 }
 
 .confirm__btn.danger {

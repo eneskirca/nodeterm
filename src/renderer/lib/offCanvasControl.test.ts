@@ -78,10 +78,10 @@ describe('offCanvasNoticeText', () => {
     // Two sentences rather than a dash: this is UI copy, and the house rule for it is plain
     // punctuation.
     expect(offCanvasNoticeText('api', 1)).toBe(
-      'A node opened by an agent in "api". That project is not on screen.'
+      'An agent opened a node in "api". That project is not on screen.'
     )
     expect(offCanvasNoticeText('api', 3)).toBe(
-      '3 nodes opened by an agent in "api". That project is not on screen.'
+      'An agent opened 3 nodes in "api". That project is not on screen.'
     )
   })
 })
