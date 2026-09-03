@@ -10,8 +10,10 @@ export {
   needsCapabilityNotice,
   projectCapabilityGranted,
   projectCapabilityGrantedFor,
+  rearmDefaultCapabilityAcks,
   recordCapabilityAck,
   type CapabilityAckMap,
+  type CapabilityAckSourceMap,
   type CapabilityAnswer,
   type CapabilityConsentState
 } from '../shared/project-capability-consent'

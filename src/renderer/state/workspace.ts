@@ -1167,11 +1167,15 @@ export function createProject(
     color: NODE_COLORS[index % NODE_COLORS.length],
     cwd,
     ...(ssh ? { ssh } : {}),
-    // This machine's global preference is an explicit local choice, so it seeds both the
-    // git-shared switch and the machine-local consent answer. Adopted/cloned projects bypass this
-    // factory and retain the clone notice gate.
+    // This machine's global preference seeds the switch and a machine-local answer for a file
+    // created here. The provenance marker is re-armed if an external local/SSH file later replaces
+    // or contributes to that lineage; adopted/cloned projects bypass this factory entirely.
     ...(agentMessaging
-      ? { agentMessaging: true, capabilityAck: { agentMessaging: 'kept' as const } }
+      ? {
+          agentMessaging: true,
+          capabilityAck: { agentMessaging: 'kept' as const },
+          capabilityAckSource: { agentMessaging: 'local-default' as const }
+        }
       : {}),
     viewport: { x: 0, y: 0, zoom: 1 },
     nodes: []

@@ -455,6 +455,29 @@ describe('readLocalRefByPath', () => {
     expect(await store.readLocalRefByPath(path.join(projRoot, 'nope/project.json'))).toBeNull()
   })
 
+  it('re-arms a global-default answer when a checkout replaces the machine-authored file', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({
+      cwd: projRoot,
+      agentMessaging: true,
+      capabilityAck: { agentMessaging: 'kept' },
+      capabilityAckSource: { agentMessaging: 'local-default' }
+    })]))
+    const filePath = path.join(projRoot, '.nodeterm/project.json')
+    const checkedOut = JSON.parse(await fs.readFile(filePath, 'utf-8'))
+    checkedOut.name = 'from-checkout'
+    checkedOut.rev += 1
+    await fs.writeFile(filePath, JSON.stringify(checkedOut))
+
+    const changed = await store.readLocalRefByPath(filePath)
+    expect(changed?.agentMessaging).toBe(true)
+    expect(changed?.capabilityAck?.agentMessaging).toBeUndefined()
+    expect(changed?.capabilityAckSource).toBeUndefined()
+    const restarted = await new WorkspaceStore().load()
+    expect(restarted.projects[0].capabilityAck?.agentMessaging).toBeUndefined()
+    expect(restarted.projects[0].capabilityAckSource).toBeUndefined()
+  })
+
   it('leaves a git-conflict-marked file in place (mid-merge is hand-resolvable, never sidelined)', async () => {
     const store = new WorkspaceStore()
     await store.save(ws([project({ cwd: projRoot })]))
@@ -855,6 +878,25 @@ describe('ssh lineage safety', () => {
     const adopted = msg!.args[0] as Project
     await store.save(ws([{ ...adopted, name: 'renamed' }]))
     expect(JSON.parse(files['~/app'])).toMatchObject({ rev: 901, id: 'fresh1', name: 'renamed' })
+  })
+
+  it('an existing remote file re-arms consent seeded by the new-project default', async () => {
+    const { files, io } = cwdIO()
+    const remote = JSON.parse(foreignRemote(12))
+    remote.agentMessaging = true
+    files['~/app'] = JSON.stringify(remote)
+    const store = new WorkspaceStore(io)
+
+    await store.save(ws([project({
+      id: 'fresh1', ssh: sshConn, cwd: undefined, nodes: [], agentMessaging: true,
+      capabilityAck: { agentMessaging: 'kept' },
+      capabilityAckSource: { agentMessaging: 'local-default' }
+    })]))
+
+    const msg = fake.sent.find((m) => m.channel === 'workspace:external-change')
+    expect(msg?.args[0]).toMatchObject({ id: 'fresh1', agentMessaging: true })
+    expect((msg?.args[0] as Project).capabilityAck?.agentMessaging).toBeUndefined()
+    expect((msg?.args[0] as Project).capabilityAckSource).toBeUndefined()
   })
 
   it('an EMPTY foreign remote never beats a populated cache, even with a higher rev — and the push outbids it', async () => {

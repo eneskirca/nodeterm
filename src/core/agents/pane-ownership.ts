@@ -26,7 +26,9 @@
  * this installation's node-auth secret. The project file cannot forge that proof, a replacement
  * pane cannot inherit it, and a copied data file cannot verify on another installation. Missing,
  * stale or malformed proof stays UNPROVEN and fails closed. We never infer ownership from
- * project.json or from a tmux environment variable that a pane can rewrite.
+ * project.json or from a tmux environment variable that a pane can rewrite. The local caller gets
+ * the generation from a detached create-only command, then attaches its painter; a concurrent
+ * creator is treated as a warm attach and cannot mint ownership.
  *
  * ── SCOPE ───────────────────────────────────────────────────────────────────────────────────────
  * This is scoped to tmux-pane messaging ownership but is intentionally feature-neutral: S8 PR 4's

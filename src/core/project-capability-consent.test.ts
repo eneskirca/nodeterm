@@ -4,6 +4,7 @@ import {
   needsCapabilityNotice,
   projectCapabilityGranted,
   projectCapabilityGrantedFor,
+  rearmDefaultCapabilityAcks,
   recordCapabilityAck
 } from './project-capability-consent'
 import * as shared from '../shared/project-capability-consent'
@@ -114,6 +115,10 @@ describe('the acknowledgment is MACHINE-LOCAL and carries the answer', () => {
     )
     expect(Object.keys(file)).not.toContain('capabilityAck')
     expect(JSON.stringify(file)).not.toContain('capabilityAck')
+    expect(JSON.stringify(projectToFile({
+      ...baseProject,
+      capabilityAckSource: { agentMessaging: 'local-default' }
+    }, 1, 't'))).not.toContain('capabilityAckSource')
   })
 
   it('a later answer overwrites an earlier one, without mutating the input', () => {
@@ -127,6 +132,28 @@ describe('the acknowledgment is MACHINE-LOCAL and carries the answer', () => {
     expect(after).not.toBe(before)
     expect(before.capabilityAck).toEqual({ agentBrowserControl: 'declined' })
     expect(after.capabilityAck).toEqual({ agentBrowserControl: 'kept' })
+  })
+
+  it('re-arms only a global-default answer when external project content arrives', () => {
+    const seeded: IndexEntryV3 = {
+      id: 'p1', name: 'p', color: '#fff',
+      capabilityAck: { agentMessaging: 'kept', agentBrowserControl: 'kept' },
+      capabilityAckSource: { agentMessaging: 'local-default' }
+    }
+    const rearmed = rearmDefaultCapabilityAcks(seeded)
+    expect(rearmed.capabilityAck).toEqual({ agentBrowserControl: 'kept' })
+    expect(rearmed.capabilityAckSource).toBeUndefined()
+    expect(seeded.capabilityAck?.agentMessaging).toBe('kept')
+  })
+
+  it('an explicit per-project answer replaces global-default provenance', () => {
+    const answered = recordCapabilityAck({
+      id: 'p1', name: 'p', color: '#fff',
+      capabilityAck: { agentMessaging: 'kept' },
+      capabilityAckSource: { agentMessaging: 'local-default' }
+    } as IndexEntryV3, 'agentMessaging', 'kept')
+    expect(answered.capabilityAck?.agentMessaging).toBe('kept')
+    expect(answered.capabilityAckSource).toBeUndefined()
   })
 
   it('a SECOND WORKTREE of the same repo notifies again', () => {

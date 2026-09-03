@@ -38,6 +38,11 @@ export type CapabilityAnswer = 'kept' | 'declined'
  *  test with an ack-carrying project as input). */
 export type CapabilityAckMap = Partial<Record<ProjectCapability, CapabilityAnswer>>
 
+/** A machine-local answer installed by a global creation default, before any shared file was
+ *  adopted. Unlike an explicit per-project answer, this provenance is re-armed when an external
+ *  project file replaces or contributes to the machine-authored lineage. */
+export type CapabilityAckSourceMap = Partial<Record<ProjectCapability, 'local-default'>>
+
 export interface CapabilityConsentState {
   capability: ProjectCapability
   /** The strict read of the shared file's switch (`projectCapabilityFlagInFile` — literal true
@@ -110,5 +115,29 @@ export function recordCapabilityAck<E extends { capabilityAck?: CapabilityAckMap
   cap: ProjectCapability,
   answer: CapabilityAnswer
 ): E {
-  return { ...entry, capabilityAck: { ...entry.capabilityAck, [cap]: answer } }
+  const next = { ...entry, capabilityAck: { ...entry.capabilityAck, [cap]: answer } } as E & {
+    capabilityAckSource?: CapabilityAckSourceMap
+  }
+  if (!next.capabilityAckSource?.[cap]) return next
+  const capabilityAckSource = { ...next.capabilityAckSource }
+  delete capabilityAckSource[cap]
+  if (Object.keys(capabilityAckSource).length) next.capabilityAckSource = capabilityAckSource
+  else delete next.capabilityAckSource
+  return next
+}
+
+/** Remove only answers seeded by the global creation default. Explicit per-project answers stand. */
+export function rearmDefaultCapabilityAcks<
+  E extends { capabilityAck?: CapabilityAckMap; capabilityAckSource?: CapabilityAckSourceMap }
+>(entry: E): E {
+  if (!entry.capabilityAckSource) return entry
+  const capabilityAck = { ...entry.capabilityAck }
+  for (const cap of Object.keys(entry.capabilityAckSource) as ProjectCapability[]) {
+    delete capabilityAck[cap]
+  }
+  const next = { ...entry } as E
+  if (Object.keys(capabilityAck).length) next.capabilityAck = capabilityAck
+  else delete next.capabilityAck
+  delete next.capabilityAckSource
+  return next
 }

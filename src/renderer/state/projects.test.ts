@@ -17,12 +17,14 @@ describe('messaging default for new projects', () => {
     const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
     expect(p.agentMessaging).toBe(true)
     expect(p.capabilityAck?.agentMessaging).toBe('kept')
+    expect(p.capabilityAckSource?.agentMessaging).toBe('local-default')
   })
 
   it('leaves messaging absent when disabled', () => {
     const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
     expect(p.agentMessaging).toBeUndefined()
     expect(p.capabilityAck?.agentMessaging).toBeUndefined()
+    expect(p.capabilityAckSource?.agentMessaging).toBeUndefined()
   })
 
   it('does not grant messaging to an adopted project', () => {

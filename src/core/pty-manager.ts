@@ -681,6 +681,9 @@ interface Session {
   /** Generation returned by the atomic create-only local-tmux command, before this client
    *  attached. Present only for ownership-proved fresh creates. */
   createdTmuxGeneration?: string
+  /** The async absence probe lost a race to another creator, so create-only recovered by
+   *  attaching to the now-existing generation. It is warm and must never record a fresh owner. */
+  attachedAfterCreateRace?: boolean
 }
 
 /** Sinks for a detached session whose output is served somewhere other than the renderer
@@ -2190,19 +2193,34 @@ export class PtyManager {
         }
       }
     }
-    const sessionId = this.spawnSession(
+    const localTmuxMode = !options.sshRemote && tmuxBacked && options.ownerProjectId
+      ? fresh ? 'create' as const : 'attach' as const
+      : undefined
+    let sessionId = this.spawnSession(
       options,
       clientId,
       undefined,
       warmWindowsBackend,
       projectOverrides,
-      !options.sshRemote && tmuxBacked && options.ownerProjectId
-        ? fresh
-          ? 'create'
-          : 'attach'
-        : undefined
+      localTmuxMode
     )
-    const spawned = this.sessions.get(sessionId)
+    let spawned = this.sessions.get(sessionId)
+    if (spawned?.attachedAfterCreateRace) fresh = false
+    if (localTmuxMode === 'attach') {
+      // The warm session can disappear after has-session but before attach-session. Confirm after
+      // node-pty starts; if it vanished, discard that dead client and make one bounded cold-create
+      // attempt. That create has its own opposite-direction race recovery below.
+      const stillExists = await this.tmuxSessionExists(options.persistKey as string)
+      if (!stillExists || !spawned || this.sessions.get(sessionId) !== spawned) {
+        if (spawned && this.sessions.get(sessionId) === spawned)
+          this.discardFailedSpawn(sessionId, spawned)
+        sessionId = this.spawnSession(
+          options, clientId, undefined, warmWindowsBackend, projectOverrides, 'create'
+        )
+        spawned = this.sessions.get(sessionId)
+        fresh = !spawned?.attachedAfterCreateRace
+      }
+    }
     if (warmWindowsBackend === 'tmux') {
       // The first strict probe deliberately preceded profile resolution. Recheck after launching
       // attach-only: if the named session disappeared in that window, never return the transient
@@ -3140,6 +3158,7 @@ export class PtyManager {
     }
 
     let createdTmuxGeneration: string | undefined
+    let attachedAfterCreateRace = false
     if (useLocalTmux && localTmuxMode === 'create') {
       const command = args.indexOf('new-session')
       const createArgs = [
@@ -3155,7 +3174,14 @@ export class PtyManager {
         ...args.slice(command + 1)
       ]
       try {
-        const output = execFileSync(file, createArgs, { cwd, env, encoding: 'utf8' }).replace(
+        // Measured 2026-09-03 with tmux 3.6a: 20 detached /bin/sh creates, 7 ms median,
+        // 13 ms p95, 18 ms max. The timeout bounds shell/host anomalies, not ordinary latency.
+        const output = execFileSync(file, createArgs, {
+          cwd,
+          env,
+          encoding: 'utf8',
+          timeout: PROBE_TIMEOUT_MS
+        }).replace(
           /\r?\n$/,
           ''
         )
@@ -3163,11 +3189,27 @@ export class PtyManager {
           throw new Error('tmux returned no valid generation')
         createdTmuxGeneration = output
       } catch (error) {
-        throw new Error(
-          `Could not create the terminal session atomically: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        )
+        // Another window may have created this exact named session after our async absence probe.
+        // Recover only when tmux now reports a strict generation for that target; every other
+        // create error remains fatal. This sync confirmation shares the create timeout and runs
+        // only on the race/error path.
+        try {
+          const target = `=${sessionName(options.persistKey as string)}:`
+          const current = execFileSync(
+            file,
+            ['-L', TMUX_SOCKET, 'display-message', '-p', '-t', target,
+              '#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}'],
+            { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }
+          ).replace(/\r?\n$/, '')
+          if (!/^\d+\|\$\d+\|\d+\|%\d+\|\d+$/.test(current)) throw error
+          attachedAfterCreateRace = true
+        } catch {
+          throw new Error(
+            `Could not create the terminal session atomically: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        }
       }
       args = [
         '-L',
@@ -3308,7 +3350,8 @@ export class PtyManager {
       pausedBy: new Set<string>(),
       accountFallback,
       sessionHost: useSessionHost,
-      ...(createdTmuxGeneration ? { createdTmuxGeneration } : {})
+      ...(createdTmuxGeneration ? { createdTmuxGeneration } : {}),
+      ...(attachedAfterCreateRace ? { attachedAfterCreateRace: true } : {})
     }
     // Both shared timers are armed by the first session that needs them: the scrollback snapshots
     // and the idle reap are both about tmux-backed sessions and nothing else.
@@ -3493,10 +3536,16 @@ export class PtyManager {
     session.sizes.clear()
     session.shown.clear()
     session.pausedBy.clear()
-    // Do not use releasePty here: its defensive resume would issue a fresh host request from a
-    // shim whose attach just failed. SessionHostPty.destroy() is the exact detach/unsubscribe.
-    const hostPty = session.proc as unknown as SessionHostPty
-    hostPty.destroy()
+    if (session.sessionHost) {
+      // Do not use releasePty here: its defensive resume would issue a fresh host request from a
+      // shim whose attach just failed. SessionHostPty.destroy() is the exact detach/unsubscribe.
+      const hostPty = session.proc as unknown as SessionHostPty
+      hostPty.destroy()
+    } else {
+      // A local tmux attach that lost its session is also provisional. Close its client without
+      // recording released/shadow state; the bounded cold-create retry replaces it immediately.
+      releasePty(session.proc as ReleasablePty)
+    }
     this.forget(sessionId, session)
     const remaining = [...this.sessions.values()]
     if (!remaining.some((candidate) => candidate.persistKey) && this.snapshotTimer) {

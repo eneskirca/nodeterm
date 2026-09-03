@@ -739,6 +739,9 @@ export interface Project {
    * (workspace-files.test.ts / capability-notice tests pin that the file bytes are unchanged).
    */
   capabilityAck?: import('./project-capability-consent').CapabilityAckMap
+  /** MACHINE-LOCAL provenance for an acknowledgment seeded by a global new-project default.
+   *  External project-file adoption clears the seeded answer and raises the normal notice. */
+  capabilityAckSource?: import('./project-capability-consent').CapabilityAckSourceMap
   /** Best dino-game score in this project — new dino nodes seed from it, so the record survives closing the node. */
   dinoHighScore?: number
   /** Kanban task board — shared via .nodeterm/project.json like nodes. */

@@ -25,6 +25,11 @@ interface SpawnCall {
   env: Record<string, string>
 }
 const spawns = vi.hoisted(() => [] as SpawnCall[])
+const syncExecs = vi.hoisted(() => [] as Array<{
+  file: string
+  args: string[]
+  env?: Record<string, string>
+}>)
 
 // This suite mocks node-pty and asserts the plain-shell spawn path. Pin off the session-host
 // backend so a built `out/session-host/host.cjs` on disk cannot flip create() onto the host
@@ -67,10 +72,21 @@ vi.mock('child_process', () => {
   type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
   const execFile = (file: string, args: string[], a?: unknown, b?: unknown): unknown => {
     const cb = (typeof a === 'function' ? a : b) as Cb | undefined
-    cb?.(null, { stdout: '', stderr: '' })
+    if (args.includes('has-session')) cb?.(Object.assign(new Error('no session'), { code: 1 }))
+    else cb?.(null, { stdout: '', stderr: '' })
     return {}
   }
-  return { execFile, execFileSync: (): string => '' }
+  const execFileSync = (
+    file: string,
+    args: string[],
+    options?: { env?: Record<string, string> }
+  ): string => {
+    syncExecs.push({ file, args, env: options?.env ? { ...options.env } : undefined })
+    if (args.includes('-P')) return '101|$1|1700000000|%2|202\n'
+    if (args.includes('display-message')) return '101|$1|1700000000|%2|202\n'
+    return ''
+  }
+  return { execFile, execFileSync }
 })
 
 const NODE = 'node-1'
@@ -95,6 +111,7 @@ describe('project settings at the spawn — LOCAL leg', () => {
   let fake: FakePlatform
   beforeEach(() => {
     spawns.length = 0
+    syncExecs.length = 0
     staged.length = 0
     fake = fakePlatform()
     initPlatform(fake)
@@ -226,7 +243,9 @@ describe('project settings at the spawn — LOCAL leg', () => {
     await create({ persistKey: NODE, ownerProjectId: PROJECT })
     expect(seen[0]).toContain('PROJECT_TOKEN')
     // The VALUE never rides the tmux argv (that is the whole point of update-environment).
-    expect(spawns[0].args.join(' ')).not.toContain('abc')
+    const createCall = syncExecs.find((call) => call.args.includes('new-session'))
+    expect(createCall?.env?.PROJECT_TOKEN).toBe('abc')
+    expect(createCall?.args.join(' ')).not.toContain('abc')
   })
 })
 
@@ -303,6 +322,7 @@ describe('project settings at the spawn — SHELL precedence', () => {
   let fake: FakePlatform
   beforeEach(() => {
     spawns.length = 0
+    syncExecs.length = 0
     fake = fakePlatform()
     initPlatform(fake)
   })
@@ -337,10 +357,11 @@ describe('project settings at the spawn — SHELL precedence', () => {
       tmuxEnabled: true
     })
     await create({ persistKey: NODE, ownerProjectId: PROJECT })
-    expect(spawns[0].file).toBe('/usr/bin/tmux')
-    expect(spawns[0].args.at(-1)).toBe('/bin/fish')
-    expect(spawns[0].args).toContain(sessionName(NODE))
-    expect(spawns[0].args).toContain(TMUX_SOCKET)
+    const createCall = syncExecs.find((call) => call.args.includes('new-session'))
+    expect(createCall?.file).toBe('/usr/bin/tmux')
+    expect(createCall?.args.at(-1)).toBe('/bin/fish')
+    expect(createCall?.args).toContain(sessionName(NODE))
+    expect(createCall?.args).toContain(TMUX_SOCKET)
   })
 })
 
@@ -348,6 +369,7 @@ describe('project settings at the spawn — SSH leg', () => {
   let fake: FakePlatform
   beforeEach(() => {
     spawns.length = 0
+    syncExecs.length = 0
     staged.length = 0
     fake = fakePlatform()
     initPlatform(fake)

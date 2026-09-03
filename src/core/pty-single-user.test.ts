@@ -99,11 +99,13 @@ vi.mock('node-pty', () => ({
  * prove `kill` never issues `kill-session` while `destroy` does.
  */
 const execCalls: Array<{ file: string; args: string[] }> = []
-const execSyncCalls: Array<{ file: string; args: string[] }> = []
+const execSyncCalls: Array<{ file: string; args: string[]; options?: { timeout?: number } }> = []
 const liveTmuxSessions = new Set<string>()
 let paneProcessReply = ''
 let processGroupReply = ''
 let tmuxGenerationReply = TMUX_GENERATION
+let createSyncError: Error | null = null
+let dropAfterHasSession = false
 
 vi.mock('child_process', () => {
   type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
@@ -113,7 +115,10 @@ vi.mock('child_process', () => {
     const ok = (stdout: string): void => cb?.(null, { stdout, stderr: '' })
     if (args.includes('has-session')) {
       const target = args[args.indexOf('-t') + 1]
-      if (liveTmuxSessions.has(target)) ok('')
+      if (liveTmuxSessions.has(target)) {
+        ok('')
+        if (dropAfterHasSession) liveTmuxSessions.delete(target)
+      }
       // Real execFile carries tmux's exit status on err.code — 1 is what probeSaysAbsent
       // reads as genuine absence (vs a spawn failure, which has a string/no code).
       else cb?.(Object.assign(new Error('no such session'), { code: 1 }))
@@ -133,9 +138,12 @@ vi.mock('child_process', () => {
     }
     return {}
   }
-  const execFileSync = (file: string, args: string[]): string => {
-    execSyncCalls.push({ file, args })
-    if (args.includes('-P')) return `${TMUX_GENERATION}\n`
+  const execFileSync = (file: string, args: string[], options?: { timeout?: number }): string => {
+    execSyncCalls.push({ file, args, options })
+    if (args.includes('-P')) {
+      if (createSyncError) throw createSyncError
+      return `${TMUX_GENERATION}\n`
+    }
     if (args.includes('display-message')) return `${tmuxGenerationReply}\n`
     return ''
   }
@@ -192,6 +200,8 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     paneProcessReply = ''
     processGroupReply = ''
     tmuxGenerationReply = TMUX_GENERATION
+    createSyncError = null
+    dropAfterHasSession = false
     resetPaneOwnershipForTests()
     hookServer.clearNodeAuthSecretForTests()
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-solo-'))
@@ -439,6 +449,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     const createOnly = execSyncCalls.find((call) => call.args.includes('new-session'))
     expect(createOnly?.args).toContain('-P')
     expect(createOnly?.args).not.toContain('-A')
+    expect(createOnly?.options?.timeout).toBe(6_000)
     expect(spawnArgs[0].args).toContain('attach-session')
     expect(spawnArgs[0].args).not.toContain('new-session')
 
@@ -458,6 +469,30 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(createOnly?.args).toContain('-P')
     expect(createOnly?.args).not.toContain('-A')
     expect(spawnArgs[0].args).toContain('attach-session')
+  })
+
+  it('recovers when another window creates the session after the absence probe', async () => {
+    await tmuxManager()
+    createSyncError = new Error('duplicate session')
+
+    const r = await create(80, 24, 'owned-create-race', { ownerProjectId: 'project-1' })
+
+    expect(r.fresh).toBe(false)
+    expect(spawnArgs[0].args).toContain('attach-session')
+    expect(paneOwnerProject('owned-create-race')).toBeUndefined()
+  })
+
+  it('recovers when a warm session disappears before attach', async () => {
+    await tmuxManager()
+    liveTmuxSessions.add(sessionName('owned-attach-race'))
+    dropAfterHasSession = true
+
+    const r = await create(80, 24, 'owned-attach-race', { ownerProjectId: 'project-1' })
+
+    expect(r.fresh).toBe(true)
+    expect(spawnArgs).toHaveLength(2)
+    expect(spawnArgs[1].args).toContain('attach-session')
+    expect(execSyncCalls.some((call) => call.args.includes('new-session'))).toBe(true)
   })
 
   it('does not record an owner when the created tmux generation was replaced', async () => {
