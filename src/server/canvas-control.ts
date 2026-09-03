@@ -175,7 +175,14 @@ export async function initServerCanvasControl(
       deps.codexSharedIdentity ?? (() => codexIdentityCaps().then((caps) => caps.shared)),
     stateOf: nodeState,
     agentIdOf: (nodeId) => mirrorEntry(nodeId)?.agentId,
-    publishProject: (project: Project) => platform().broadcast(IPC.workspaceExternalChange, project)
+    // NOT `workspaceExternalChange`. That channel means "somebody else wrote this file" and the
+    // renderer answers it with `decideExternalChange`, which compares the whole project shell —
+    // and `ropes` is part of it, so every headless spawn (one appended `ctrl-…` rope) read as a
+    // conflict while the canvas was dirty, which it almost always is mid-burst. The bar that came
+    // up suspends autosave, so it latched on, and "Keep my version" then wrote the browser's edge
+    // state over the ropes this factory had just persisted. These writes are OURS; the renderer
+    // merges them (renderer/lib/serverChange.ts) and is never asked to choose.
+    publishProject: (project: Project) => platform().broadcast(IPC.workspaceServerChange, project)
   })
 
   const messaging: AgentMessagingDeps = {

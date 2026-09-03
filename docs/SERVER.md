@@ -550,6 +550,20 @@ persisted queued command even when a tmux backend survived. A later explicit own
 view is the only cold-spawn path. Plain terminals carry no agent identity or canvas-control grant;
 missing `agentId` never means Claude.
 
+A canvas-control write is not an outside edit. The factory mutates the project, saves it, and
+broadcasts the whole thing on **`workspace:server-change`** — a channel of its own, separate from
+the `workspace:external-change` the workspace watcher uses for a git pull or a hand edit. It shared
+that channel until it was measured: the renderer classifies an outside edit by comparing the
+project shell, `ropes` included, so the single `ctrl-…` rope every `open-agent` appends read as a
+conflict whenever the canvas was dirty — which it is right through a spawn burst, because the
+paired `canvas:mut` marks it dirty, spawns arrive inside the autosave debounce, and the conflict
+bar suspends autosave, so the first one latched the bar on and every later write re-raised it.
+"Keep my version" then serialized the browser's own edges over the file and dropped the ropes this
+factory had just persisted. On the new channel the browser three-way merges instead
+(`renderer/lib/serverChange.ts`): nodes the server opened are adopted silently, ropes and bridges
+are merged against the last-known disk copy, and unsaved local edits survive. Nothing is asked of
+the user, because both sides of this merge are the same application.
+
 Validate upgrades with a disposable `NODETERM_DATA_DIR` and port. Restarting a shared live Server
 service is an explicit operator action; it is not part of a test, repair, or boot-rescue flow.
 

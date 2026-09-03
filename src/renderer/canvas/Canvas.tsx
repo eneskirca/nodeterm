@@ -156,6 +156,7 @@ import {
   decideExternalChange,
   mergeIncomingNodes
 } from '../lib/externalChange'
+import { planServerChange } from '../lib/serverChange'
 import {
   CONTENT_ADD_ITEMS,
   contentAddItemsToMenuItems,
@@ -2648,7 +2649,27 @@ export function Canvas() {
     useProjects.getState().requestReload()
   }, [])
 
-  /** Put nodes that arrived from ANOTHER device onto the live canvas immediately.
+  /** Land incoming nodes on the live canvas, and say nothing about it. Returns whether anything
+   *  actually landed (so the caller can decide about dirty).
+   *
+   *  Split out of `adoptIncomingNodes` because the server-change path below adopts by exactly these
+   *  rules and must NOT show its notice: the node it is landing was opened by an agent in this
+   *  browser's own canvas, seconds ago, at the user's request — "registered from another device"
+   *  would be a lie. Two copies of the merge would drift apart; one merge with the sentence bolted
+   *  on top of it cannot. */
+  const adoptNodesSilently = useCallback(
+    (added: CanvasNodeState[]): boolean => {
+      if (!added.length) return false
+      const next = mergeIncomingNodes(nodesRef.current, nodeStatesToFlow(added))
+      if (next === nodesRef.current) return false
+      nodesRef.current = next
+      setNodes(next)
+      return true
+    },
+    [setNodes]
+  )
+
+  /** Put nodes that arrived from ANOTHER device onto the live canvas immediately, and say so.
    *
    *  Called for every external change while dirty — bar or no bar. An incoming node id nothing here
    *  holds cannot collide with a local edit, and unlike a git pull nobody re-emits it: the phone
@@ -2658,21 +2679,19 @@ export function Canvas() {
    *  over disk — deleted a node whose tmux session is still running, headless and unreachable. */
   const adoptIncomingNodes = useCallback(
     (added: CanvasNodeState[]) => {
-      if (!added.length) return
-      const next = mergeIncomingNodes(nodesRef.current, nodeStatesToFlow(added))
-      if (next === nodesRef.current) return
-      nodesRef.current = next
-      setNodes(next)
+      if (!adoptNodesSilently(added)) return
       // The adopted nodes only exist on disk in the version we did NOT take: count them as an edit
       // so the next save writes them back out under our canvas too.
       bumpDirty()
       setNotice({ kind: 'info', text: adoptedNodesNotice(added.length) })
     },
-    [setNodes, bumpDirty]
+    [adoptNodesSilently, bumpDirty]
   )
 
   // Outside edits to a project's .nodeterm file (git pull / sync / teammate / another machine /
-  // the phone registering a session it started).
+  // the phone registering a session it started). Writes THIS core made on an agent's behalf are
+  // not in here any more: Server Edition canvas control broadcasts them on `onServerChange`
+  // (below), because they are ours and there is nothing for the user to choose between.
   useEffect(() => {
     return api.workspace.onExternalChange((project) => {
       const { activeProjectId: current } = useProjects.getState()
@@ -2716,6 +2735,52 @@ export function Canvas() {
       // 'ignore': a self-write echo / a change we already hold. Nothing to do, and above all no bar.
     })
   }, [reloadActiveProject, adoptIncomingNodes])
+
+  // Writes this core made ITSELF: Server Edition headless canvas control (an agent ran
+  // `nodeterm open-agent`, `rename`, `close`…). Never a bar and never a reload — see
+  // lib/serverChange.ts for why the outside-edit classifier was the wrong instrument, and
+  // server/canvas-control.ts for the channel split.
+  useEffect(() => {
+    return api.workspace.onServerChange((project) => {
+      const { activeProjectId: current } = useProjects.getState()
+      if (project.id !== current) {
+        // Background project: the store copy IS that project until it is switched to, and it
+        // reloads into React Flow whole on the next switch.
+        useProjects.getState().replaceProject(project)
+        return
+      }
+      const plan = planServerChange({
+        base: useProjects.getState().getProject(project.id),
+        incoming: project,
+        liveNodeIds: nodesRef.current.map((n) => n.id),
+        liveRopes: controlEdgesRef.current.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target
+        })),
+        liveBridges: linkEdgesRef.current.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target
+        }))
+      })
+      const adopted = adoptNodesSilently(plan.added)
+      // Only when the merge actually moved something: a fresh array of identical edges re-renders
+      // every edge on the canvas (displayEdges recomputes colour and the waiting look per edge)
+      // for no change at all, and these arrive in bursts.
+      if (plan.ropesChanged)
+        setControlEdges(plan.ropes.map((r) => ropeEdge(r.id, r.source, r.target)))
+      if (plan.bridgesChanged)
+        setLinkEdges(plan.bridges.map((b) => ({ id: b.id, source: b.source, target: b.target })))
+      // The store copy is our disk baseline, and the server has already written this file — so it
+      // moves to the incoming version exactly as the 'merge' branch above does.
+      useProjects.getState().replaceProject(project)
+      // The merged canvas is not yet what is on disk (the server wrote its half, we hold the
+      // union), so it has to be saved. Both sides converge on the same state — the same "two
+      // clients saving one converged canvas is harmless" model the peer-mutation path relies on.
+      if (adopted || plan.ropesChanged || plan.bridgesChanged) bumpDirty()
+    })
+  }, [adoptNodesSilently, setControlEdges, setLinkEdges, bumpDirty])
 
   // One-shot note after an on-disk migration (dismissible, non-blocking strip). Both kinds change
   // where the user's data lives, so neither may happen silently.

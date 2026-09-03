@@ -299,10 +299,13 @@ export function buildRealApi(
     // REAL: core broadcasts IPC.workspaceCorruptRecovered from the load path (workspace-store.ts).
     onCorruptRecovered: (cb) => client.subscribe(IPC.workspaceCorruptRecovered, cb as Listener),
     // Server Edition runs the shared WorkspaceWatcher and broadcasts outside file edits here.
-    // Core-originated mutations use the same channel: remote-node adoption already did, and Server
-    // Edition canvas control uses it for persisted bridge/rope changes that are wider than the
-    // node-only canvas:mut vocabulary.
-    onExternalChange: (cb) => client.subscribe(IPC.workspaceExternalChange, cb as Listener)
+    // Remote-node adoption (the phone appending a session it started) rides it too: that IS
+    // "another device", which is what this channel means.
+    onExternalChange: (cb) => client.subscribe(IPC.workspaceExternalChange, cb as Listener),
+    // REAL: Server Edition canvas control broadcasts its own persisted bridge/rope changes here —
+    // wider than the node-only canvas:mut vocabulary, but ours, so they must not travel the
+    // outside-edit channel and end up behind the conflict bar (see server/canvas-control.ts).
+    onServerChange: (cb) => client.subscribe(IPC.workspaceServerChange, cb as Listener)
   }
 
   // REAL: WorkspaceStore (core) registers the project-settings:* channels too — same

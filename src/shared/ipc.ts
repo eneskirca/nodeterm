@@ -365,6 +365,10 @@ export const IPC = {
   /** Payload: the `workspace.json.corrupt-<ts>` filename the unreadable index was preserved as. */
   workspaceCorruptRecovered: 'workspace:corrupt-recovered',
   workspaceExternalChange: 'workspace:external-change',
+  /** Server-originated project writes (Server Edition headless canvas control: an agent opened,
+   *  renamed, moved or closed a node and this core saved the file itself). NOT an outside edit —
+   *  the renderer three-way merges it instead of raising the conflict bar. */
+  workspaceServerChange: 'workspace:server-change',
   githubIssuesSubscribe: 'githubIssues:subscribe',
   githubIssuesUnsubscribe: 'githubIssues:unsubscribe',
   githubIssuesQuery: 'githubIssues:query',
