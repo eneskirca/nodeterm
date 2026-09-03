@@ -10730,21 +10730,21 @@ export function Canvas() {
             const ids = [
               ...new Set((args.node ?? '').split(',').map((id) => id.trim()).filter(Boolean))
             ]
-            const live = nodesRef.current
+            const live = readNodes()
             const colored = ids.filter((id) => live.some((node) => node.id === id))
             if (!colored.length) {
               reply({ ok: false, error: 'color: none of the given node ids exist' })
               return
             }
             const selected = new Set(colored)
-            setNodes((nodes) =>
+            applyNodes((nodes) =>
               nodes.map((node) =>
                 selected.has(node.id)
                   ? { ...node, data: { ...node.data, color: args.color } }
                   : node
               )
             )
-            markDirty()
+            touchCanvas()
             const skipped = ids.length - colored.length
             const note = skipped ? ` (${skipped} unknown id(s) skipped)` : ''
             reply({
