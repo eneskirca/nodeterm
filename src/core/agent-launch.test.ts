@@ -249,6 +249,27 @@ describe("prepareAgentLaunch logical argv", () => {
     ).resolves.toEqual({ command: "'agent' '--prompt' ''" });
   });
 
+  it("preserves a Goose base harness through the trusted session-host path", async () => {
+    const custom = {
+      id: "custom:goose-wrap",
+      launchCmd: "goose-wrap",
+      promptInjectionMode: "argv",
+      baseAgent: "goose",
+    } as const;
+    await expect(
+      prepareAgentLaunch(start(custom.id), "posix", customContext(custom)),
+    ).resolves.toEqual({ command: "'goose-wrap' 'session'" });
+    await expect(
+      prepareAgentLaunch(
+        start(custom.id, { prompt: "fix it" }),
+        "posix",
+        customContext(custom),
+      ),
+    ).resolves.toEqual({
+      command: "'goose-wrap' 'run' '--interactive' '--text' 'fix it'",
+    });
+  });
+
   it.each(["posix", "pwsh", "windows-powershell", "cmd"] as const)(
     "rejects custom stdin-after-start under %s without a trusted child-readiness handshake",
     async (dialect) => {

@@ -55,14 +55,28 @@ export function contextLinkDir(): string {
 function cliShimPath(): string {
   return path.join(contextLinkDir(), 'context.sh')
 }
-function skillPaths(): string[] {
+function skillPaths(): Array<{ path: string; requiresParent?: string }> {
   const home = os.homedir()
   return [
-    path.join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md'),
-    // Shared Agent Skills path discovered by Pi and Goose.
-    path.join(home, '.agents', 'skills', 'get-linked-context', 'SKILL.md'),
+    { path: path.join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md') },
+    // Shared Agent Skills is intentionally visible to every tool that scans ~/.agents/skills.
+    // Do not create that third-party root: install only when a user/tool already owns it.
+    {
+      path: path.join(home, '.agents', 'skills', 'get-linked-context', 'SKILL.md'),
+      requiresParent: path.join(home, '.agents')
+    },
     // AGY CLI global skills path (distinct from Gemini CLI's ~/.gemini/skills).
-    path.join(home, '.gemini', 'antigravity-cli', 'skills', 'get-linked-context', 'SKILL.md')
+    {
+      path: path.join(
+        home,
+        '.gemini',
+        'antigravity-cli',
+        'skills',
+        'get-linked-context',
+        'SKILL.md'
+      ),
+      requiresParent: path.join(home, '.gemini', 'antigravity-cli')
+    }
   ]
 }
 
@@ -86,12 +100,13 @@ function writeCliFiles(): void {
 
 function installSkill(): void {
   const body = buildContextLinkSkillBody(cliShimPath())
-  for (const skillPath of skillPaths()) {
+  for (const target of skillPaths()) {
+    if (target.requiresParent && !fs.existsSync(target.requiresParent)) continue
     try {
-      fs.mkdirSync(path.dirname(skillPath), { recursive: true })
-      fs.writeFileSync(skillPath, body, 'utf8')
+      fs.mkdirSync(path.dirname(target.path), { recursive: true })
+      fs.writeFileSync(target.path, body, 'utf8')
     } catch (e) {
-      console.warn('[context-link] skill install failed', skillPath, e)
+      console.warn('[context-link] skill install failed', target.path, e)
     }
   }
 }

@@ -453,7 +453,12 @@ import { uuid } from '../lib/uuid'
 import { planReopen, type ReopenPlan } from '../lib/reopenPlan'
 import { oneLine } from '@shared/one-line'
 import { invalidNodeColorMessage, isNodeColor } from '@shared/node-colors'
-import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
+import {
+  parseLenses,
+  verifyAgentBlockReason,
+  verifyLensPrompt,
+  verifySynthesisPrompt
+} from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
 import { activePermissionMode, projectPermissionMode } from '../state/permissionMode'
 import { useContextWindow } from '../state/contextWindow'
@@ -3255,7 +3260,9 @@ export function Canvas() {
         (nodes.find((n) => n.id === id)?.data.title as string) || 'a linked node'
       if (kind === 'context') {
         // Discovery: tell each idle endpoint it is now linked (skip a node mid-turn so we
-        // don't interrupt it). Claude gets the skill pointer; codex/gemini get the CLI inline.
+        // don't interrupt it). Agents without hooks have no working state, so this user-triggered
+        // note may land mid-turn for them. Claude gets the skill pointer; other agents get the CLI
+        // inline.
         const note = async (selfId: string, otherId: string) => {
           if (status[selfId]?.state === 'working') return
           const { shimPath } = await window.nodeTerminal.contextLink.info()
@@ -10357,18 +10364,26 @@ export function Canvas() {
               return
             }
             const targetAgent = agentIdOf(targetId)
-            if (!targetAgent || !canContextLink(targetAgent)) {
+            const targetBlock = targetAgent ? verifyAgentBlockReason(targetAgent) : 'cannot-read'
+            if (targetBlock) {
               reply({
                 ok: false,
-                error: `verify: ${targetId} is not an agent session whose work can be read — the reviewers would have nothing to look at`
+                error:
+                  targetBlock === 'cannot-report-done'
+                    ? `verify: ${targetId} is not an agent session that reports when it is done`
+                    : `verify: ${targetId} is not an agent session whose work can be read — the reviewers would have nothing to look at`
               })
               return
             }
             const reviewAgent = ((args.agent as AgentId | undefined) || targetAgent) as AgentId
-            if (!canContextLink(reviewAgent)) {
+            const reviewerBlock = verifyAgentBlockReason(reviewAgent)
+            if (reviewerBlock) {
               reply({
                 ok: false,
-                error: `verify: --agent ${reviewAgent} cannot read linked context, so it cannot review anything`
+                error:
+                  reviewerBlock === 'cannot-report-done'
+                    ? `verify: --agent ${reviewAgent} does not report when it is done, so the panel cannot sequence its verdict`
+                    : `verify: --agent ${reviewAgent} cannot read linked context, so it cannot review anything`
               })
               return
             }

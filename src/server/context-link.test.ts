@@ -197,6 +197,8 @@ describe('initServerContextLink', () => {
   // writing into $HOME" would be indistinguishable from "we can no longer write into $HOME".
   // Safe to assert for real: `home` is a per-test scratch dir this suite points HOME at.
   it('installs the discovery surface into the agent config dirs when asked to', async () => {
+    await fsPromises.mkdir(join(home, '.agents'), { recursive: true })
+    await fsPromises.mkdir(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
     const { link, registered } = start({
       ptyManager: fakePty(),
       canvases: () => [],
@@ -212,6 +214,17 @@ describe('initServerContextLink', () => {
       ['.gemini', 'antigravity-cli', 'skills', 'get-linked-context', 'SKILL.md']
     ]
     for (const parts of relativePaths) expect(existsSync(join(home, ...parts)), parts.join('/')).toBe(true)
+    await link.stop()
+  })
+
+  it('does not create optional third-party skill roots', async () => {
+    const { link } = start({
+      ptyManager: fakePty(),
+      canvases: () => [],
+      installAgentIntegrations: true
+    })
+    expect(existsSync(join(home, '.agents'))).toBe(false)
+    expect(existsSync(join(home, '.gemini', 'antigravity-cli'))).toBe(false)
     await link.stop()
   })
 

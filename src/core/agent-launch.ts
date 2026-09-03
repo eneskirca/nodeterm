@@ -40,7 +40,7 @@ export type AgentLaunchExecutableKindResolver = (
 /** The one current custom-agent record selected from machine-local settings. */
 export type TrustedCustomAgentLaunchConfig = Pick<
   CustomAgent,
-  "id" | "launchCmd" | "promptInjectionMode"
+  "id" | "launchCmd" | "promptInjectionMode" | "baseAgent"
 >;
 
 /**
@@ -238,6 +238,8 @@ function resolveTrustedAgentConfig(
   }
 
   const custom = context.customAgent;
+  const base = custom?.baseAgent ? AGENT_CONFIG[custom.baseAgent] : undefined;
+  const promptInjectionMode = base?.promptInjectionMode ?? custom?.promptInjectionMode;
   if (
     !custom ||
     typeof custom.id !== "string" ||
@@ -245,14 +247,18 @@ function resolveTrustedAgentConfig(
     custom.id !== context.expectedAgentId ||
     !safeText(custom.launchCmd, MAX_LAUNCH_COMMAND_LENGTH) ||
     !custom.launchCmd.trim() ||
-    !validPromptMode(custom.promptInjectionMode)
+    !validPromptMode(promptInjectionMode)
   )
     fail("agent-unavailable");
 
   return {
     id: intent.agentId,
     launchCmd: custom.launchCmd,
-    promptInjectionMode: custom.promptInjectionMode,
+    launchArgs: base?.launchArgs,
+    promptLaunchArgs: base?.promptLaunchArgs,
+    promptInjectionMode,
+    promptFlag: base?.promptFlag,
+    argvPromptSeparator: base?.argvPromptSeparator,
     builtin: false,
   };
 }
