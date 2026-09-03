@@ -764,11 +764,39 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
       lastMessage
     }
   }
-  if (ev === 'subagentstart' || ev === 'subagentstop') {
+  // Subagent cards. MEASURED (1.0.13, two parallel `explore` children — the capture is
+  // evidence/grok-subagent-payloads.jsonl):
+  //   subagent_start  sessionId = the PARENT's, subagentId per INSTANCE, subagentType, description
+  //   subagent_stop   sessionId = the CHILD's own (identical to its subagentId), lastAssistantMessage
+  // Two children of the SAME type carried different `subagentId`s, which is why the card is keyed on
+  // that and not on the type — one card per instance. `toolUseId` is the field the card store keys
+  // on for every agent (claude correlates by tool_use_id, codex by agent_id); grok has no tool call
+  // behind a subagent at all, so its per-instance id goes in the same slot rather than adding a
+  // fourth spelling to `NormalizedAgentEvent`.
+  //
+  // The stop's `sessionId` being the CHILD's is the trap here: `base.sessionId` would re-point the
+  // node's session to the child, so both events are answered with the id the CARD needs and the
+  // session left alone — the parent's own Stop is what owns that.
+  if ((ev === 'subagentstart' || ev === 'subagentstop') && (p.subagentId ?? p.subagent_id)) {
+    const subagentId = p.subagentId ?? p.subagent_id
+    const subagentType = p.subagentType ?? p.subagent_type
+    if (ev === 'subagentstart') {
+      return {
+        nodeId: env.nodeId,
+        agentId: env.agentId,
+        kind: 'subagent-start',
+        toolUseId: subagentId,
+        subagentType,
+        task: p.description
+      }
+    }
     return {
-      ...base,
-      kind: ev === 'subagentstart' ? 'subagent-start' : 'subagent-end',
-      subagentType: p.subagentType ?? p.subagent_type
+      nodeId: env.nodeId,
+      agentId: env.agentId,
+      kind: 'subagent-end',
+      toolUseId: subagentId,
+      subagentType,
+      result: lastMessage
     }
   }
   if (ev === 'precompact' || ev === 'postcompact') {

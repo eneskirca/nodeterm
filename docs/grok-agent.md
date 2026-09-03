@@ -164,6 +164,13 @@ observe-only — and interrupted / refused / max-turns turns **skip `Stop` hooks
 The configuration uses Grok's canonical `SubagentStop` spelling. Grok also accepts `SubagentEnd` as
 an alias, but subscribing twice would only duplicate the same lifecycle signal.
 
+`SubagentStart` / `SubagentStop` are also the only two events in that list observed FIRING rather
+than read off the docs (capture: two parallel `explore` children, 1.0.13, 2026-09-02, in
+`tasks/grok-full-support/evidence/grok-subagent-payloads.jsonl`). Subscribing them is not
+decoration: without the pair, `normalizeGrok`'s subagent branches and both raw listeners are
+unreachable, which is how the capability first reached review claiming to work while no card could
+ever render.
+
 ---
 
 ## 3. One hook file we own, and the matcher that must be `.*`

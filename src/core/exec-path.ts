@@ -61,8 +61,6 @@ export function resolveShellPath(): Promise<string | null> {
   return shellPathPromise
 }
 
-/** The cached login-shell PATH: a string once resolved, null if the probe failed, undefined
- *  while the async probe is still in flight (callers should then fall back + re-probe later). */
 /**
  * One environment VARIABLE, as the user's login+interactive shell sees it. Same spawn shape as
  * `resolveShellPath` above and for the same reason: a GUI app launched from Finder/Dock/`.desktop`
@@ -103,6 +101,8 @@ export function _resetShellEnvVarsForTests(): void {
   cachedShellVars.clear()
 }
 
+/** The cached login-shell PATH: a string once resolved, null if the probe failed, undefined
+ *  while the async probe is still in flight (callers should then fall back + re-probe later). */
 export function shellPathNow(): string | null | undefined {
   return cachedShellPath
 }

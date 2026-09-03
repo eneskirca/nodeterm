@@ -119,8 +119,10 @@ export async function ensureGrokHomeProbed(
 
 /**
  * True when we fell back to `~/.grok` WITHOUT any positive evidence that this is where grok looks —
- * i.e. the state in which every grok integration silently does nothing. Exposed so a diagnostic can
- * say so instead of leaving the user with a dead node and no explanation.
+ * i.e. the state in which every grok integration silently does nothing. Read by
+ * `installManagedAgentHooks` (core/agents/hooks/index.ts), which warns with the consequence and the
+ * fix; a flag nobody reads would leave the user the dead node and no explanation, which is the
+ * failure this whole probe exists to close.
  */
 export function grokHomeFallbackWasSilent(): boolean {
   return fallbackWasSilent
