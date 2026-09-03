@@ -1,10 +1,15 @@
 # Devin as a nodeterm agent
 
-Devin (`devin` on PATH — measured here at **3000.4.25**) is a builtin agent id alongside
+Devin (`devin` on PATH) is a builtin agent id alongside
 claude, codex, gemini, copilot, opencode and grok: `AGENT_CONFIG.devin` in
 `src/shared/agents/config.ts` — label `Devin`, colour `#3969CA`, `launchCmd: 'devin'`,
 `promptInjectionMode: 'argv'`, `argvPromptSeparator: '--'`, `expectedProcess: 'devin'`.
 Status comes from devin's own hooks, never from parsing output.
+
+**Versions measured.** Everything below was measured on **3000.4.25** unless a section says
+otherwise; the permission-mode table and the exit line (§5, §5.1) were re-measured on **3000.6.12**,
+which is where the `--permission-mode smart` launch route works. Each claim names the version it
+rests on, because devin's own rollout gates move between them.
 
 > **Measured, not guessed.** The CLI is installed and authenticated on the machine this
 > integration was built on. The facts below come from `devin --help`, `devin skills paths`,
@@ -22,7 +27,7 @@ Capabilities are membership lists in `src/shared/agents/config.ts`, not a flag b
 |---|---|---|
 | `AGENT_HOOK_TARGETS` | **joined this branch** | A normalizer for devin's own event shape (`normalizeDevin`, `src/shared/agents/normalize.ts`), a subscription list (`DEVIN_HOOK_EVENTS`, `src/shared/agents/hook-events.ts`), and an installer writing the shared managed hook into `~/.config/devin/config.json` (`core/agents/hooks/devin.ts` → `installHooksInto`). |
 | `RESUMABLE_AGENTS` | **joined this branch** | `resumeCommand('devin', id)` → `devin --resume <id>` (`devin --help` lists `--resume <SESSION_ID>`). |
-| `PERMISSION_MODE_CAPABLE` | **joined this branch** | A per-agent translation because devin does not share claude's flag spelling: `devin --permission-mode auto\|accept-edits\|smart\|dangerous` against our `manual\|auto\|acceptEdits\|plan\|bypassPermissions`. `DEVIN_MODES` in `src/shared/agents/approval-mode.ts` maps `auto`, `acceptEdits` and `bypassPermissions`; `manual` and `plan` are unsupported because devin's default `auto` auto-approves read-only tools and there is no "ask each time" mode. |
+| `PERMISSION_MODE_CAPABLE` | **joined this branch** | A per-agent translation because devin does not share claude's flag spelling: `devin --permission-mode auto\|accept-edits\|smart\|dangerous` against our `manual\|auto\|acceptEdits\|plan\|bypassPermissions`. `DEVIN_MODES` in `src/shared/agents/approval-mode.ts` maps `auto` (→ devin's `smart`, see §5), `acceptEdits` and `bypassPermissions`; `manual` and `plan` are unsupported — devin's default already auto-approves read-only tools, and its parser rejects `plan`. |
 | `CANVAS_CONTROL_CAPABLE` | **joined this branch** | Devin has the same skill-discovery layout as Claude: `~/.config/devin/skills/<name>/SKILL.md` (measured with `devin skills paths`). `canvas-control.ts` and `RemoteHooks.installCanvasControl` now write `manage-nodeterm-canvas/SKILL.md` there, locally and on SSH hosts. |
 | `CONTEXT_LINK_CAPABLE` | **joined this branch** | A skill dir for `get-linked-context` plus a transcript locator (`locateDevin` in `core/handoff/locate.ts`) and a parser (`linesFromDevin` in `core/context-link-render.ts`). Devin stores one monolithic JSON transcript per session at `~/.local/share/devin/cli/transcripts/<sessionId>.json` (measured). |
 | `MODEL_SWITCH_CAPABLE` | **deliberately NOT joined** | Devin accepts `--model <slug>` (`devin models list` shows native slugs like `swe-1-7`), but the CLI has no documented `base-url` / `api-key` env and `modelGatewayEnv` in `src/shared/agents/model-gateway.ts` is for routing through a LiteLLM/Bifrost gateway. Passing a gateway model id to `devin --model` would rewrite the launch line while the backend stayed on Devin's own servers. |
@@ -95,24 +100,83 @@ Devin's usage is `devin [OPTIONS] [PROMPT] [COMMAND]`, with subcommands (`list`,
 
 ## 5. Permission modes
 
-`devin --permission-mode` accepts `auto`, `accept-edits`, `smart`, `dangerous` (`--help`).
+`devin --permission-mode` accepts `normal` (alias `auto`, **its default**), `accept-edits`, `smart`,
+`dangerous` (aliases `yolo`, `bypass`) and `autonomous` (requires `--sandbox`). Measured two ways on
+3000.6.12: the parser lists the set itself when handed a bad value (`devin --permission-mode bogus`),
+and the behaviour table is in the CLI's bundled `share/devin/docs/reference/permissions.mdx`.
+
+| Tool type | normal (default) | accept-edits | smart | dangerous |
+|---|---|---|---|---|
+| Read-only | Auto | Auto | Auto | Auto |
+| Shell / fetch | Prompt | Prompt | Auto when judged safe | Auto |
+| Workspace edits | Prompt | Auto | Auto | Auto |
+
 Our mapping (`DEVIN_MODES`):
 
 | nodeterm mode | devin flag | note |
 |---|---|---|
-| `auto` | `--permission-mode auto` | devin's own default is `auto` |
+| `auto` | `--permission-mode smart` | the semantic match — see below |
 | `acceptEdits` | `--permission-mode accept-edits` | |
-| `bypassPermissions` | `--permission-mode dangerous` | the `--help` spelling; `/bypass` and `/yolo` are in-session aliases, not CLI flag values |
-| `manual` | **unsupported** | devin's default already auto-approves read-only tools; there is no "ask each time" mode |
-| `plan` | **unsupported** | no devin equivalent |
+| `bypassPermissions` | `--permission-mode dangerous` | the parser's own spelling; `/bypass` and `/yolo` are in-session aliases, not flag values |
+| `manual` | **unsupported** | devin's default already auto-approves read-only tools; no devin mode asks before every action |
+| `plan` | **unsupported** | devin has an in-session `/plan`, but `--permission-mode plan` is REJECTED by the parser (measured on 3000.4.25 and 3000.6.12), and a rejected value kills the launch |
 
-`smart` is intentionally omitted: it is a limited-rollout devin mode and `auto` is the closest
-stable equivalent.
+`autonomous` is unreachable by construction: it requires `--sandbox`, a separate axis this table does
+not set.
+
+### `auto` → `smart`, and why devin's own `auto` is a false friend
+
+The first version of this table mapped `auto → auto` on the reasoning that the word matched. It
+does not: **devin's `auto` is an alias for `normal`, its default.** So the flag was emitted, the
+command line changed, and the session's behaviour could not — a user who set Auto watched every
+devin node start in the mode it would have started in anyway, which is what surfaced the bug.
+
+The two CLIs mean different things by the word:
+
+- **claude's `auto`** — *"Claude decides what is safe"* (Claude Code's own mode help, which
+  recommends it "for long unattended tasks"). A model judges each action.
+- **devin's `auto`** — `normal`: reads auto-approved, every edit and every shell command prompts.
+  Nothing is judged.
+- **devin's `smart`** — *"a fast model decides whether it is safe to run without asking"*, workspace
+  edits auto-approved, and high-risk categories (package installs, mutating `git`, `rm`, `sudo`,
+  destructive cloud CLIs, dotenv/key material) **always** prompt.
+
+`smart` is therefore the equivalent, and this is not the substituted-nearest-match trap rule 8
+warns about — it is the opposite. The trap is claiming a mode the CLI cannot express; here the CLI
+expresses it exactly, under a different name, and the *matching name* was the wrong answer.
+
+**Two gates sit behind `smart`, and both degrade visibly.** The launch-flag route shipped in devin
+**3000.5.20** ("Switch with `/smart`, `/mode smart`, Shift+Tab, or `--permission-mode smart`"), and
+smart itself is rolled out server-side per account. Measured on the older **3000.4.25**, with the
+account's rollout already ON:
+
+```
+$ devin --permission-mode smart          # startup
+Warning: Smart permission mode is not available. Falling back to normal.
+
+> /smart                                 # same session, seconds later
+✓ Switched to Smart mode                                   (smart mode on)
+```
+
+The flag was accepted, the session ran, and only the startup gate had not caught up — the in-session
+switch proves the account's rollout was on. On **3000.6.12** the flag starts the session in smart
+with no warning at all.
+
+So **no version gate is added** (rule 9), and there is nothing worth gating: an older CLI, or an
+account without the rollout, takes devin's OWN fallback — printed into the pane, exit 0, landing on
+`normal`, which is precisely where the session would have started with no flag. A visible degrade
+onto the status quo does not need a probe in front of it, and adding one would deny the flag to
+users whose CLI handles it.
+
+One artefact to know when re-measuring: `--permission-mode bogus` prints `Valid options: normal
+(auto), accept-edits, dangerous (yolo, bypass), autonomous (requires --sandbox)` on 3000.6.12 —
+`smart` is **absent from that list** because of the server-side rollout, while the parser accepts
+it. The error text is not the authority on what the flag takes.
 
 ### 5.1 The in-place restart exit line
 
 `EXIT_SEQUENCES.devin = '/exit'` (`renderer/terminal/agent-restart.ts`). MEASURED in the CLI's
-own bundled docs, `share/devin/docs/reference/commands.mdx:439` (devin-cli 3000.4.25):
+own bundled docs, `share/devin/docs/reference/commands.mdx:439` (verified on devin-cli 3000.4.25 and 3000.6.12):
 
 > `/exit` — Exit the application (alias: `/quit`). You can also type `exit` or `quit` without the
 > `/` prefix.
@@ -212,5 +276,13 @@ hook-reported), and no subagent correlation. Devin is therefore in parity by hav
 
 5. **Usage meter** — devin transcripts do not carry per-turn token usage.
 
-6. **Windows skill/instruction paths** — `devinConfigDir()` switches to `%APPDATA%\devin`, but
+6. **Smart mode's live judgement** — the `auto` → `smart` mapping is measured at the CLI boundary on
+   both sides (3000.6.12 starts in smart with no warning; 3000.4.25 takes devin's own announced
+   fallback to normal, exit 0). What is NOT measured is a session actually WORKING in smart: that
+   the fast-model judgement behaves as `reference/permissions.mdx` describes, and that the
+   never-auto-approved categories (package installs, `rm`, `sudo`, mutating `git`, dotenv and key
+   material) really do prompt. That is devin's own behaviour rather than nodeterm's, but this
+   mapping is what points users at it.
+
+7. **Windows skill/instruction paths** — `devinConfigDir()` switches to `%APPDATA%\devin`, but
    canvas-control and context-link skill writes on Windows are unverified.

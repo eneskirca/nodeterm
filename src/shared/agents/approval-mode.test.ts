@@ -140,18 +140,32 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
 
 describe('approvalFlags — devin maps the three modes the CLI accepts', () => {
   it('emits --permission-mode for the documented values', () => {
-    expect(approvalFlags('devin', 'auto')).toEqual(['--permission-mode', 'auto'])
     expect(approvalFlags('devin', 'acceptEdits')).toEqual(['--permission-mode', 'accept-edits'])
     expect(approvalFlags('devin', 'bypassPermissions')).toEqual(['--permission-mode', 'dangerous'])
   })
 
-  it('does NOT claim manual — devin\'s default auto-approves read-only tools', () => {
-    // Bare `devin` runs in `auto` mode, so `manual` would actually be `auto`. Unsupported.
+  // The regression this pins is a FALSE FRIEND, not a missing flag: devin's `auto` is an alias for
+  // `normal`, its own default, so `--permission-mode auto` emitted a flag that changed the command
+  // line and could not change the session — the setting looked broken because it selected the mode
+  // the session would have started in anyway. claude's `auto` means "Claude decides what is safe"
+  // (its own mode help), and the devin mode that means that is `smart`: a fast model judges each
+  // non-edit action, with high-risk categories always prompting.
+  it('maps auto to smart, never to devin\'s own auto (which is its default)', () => {
+    expect(approvalFlags('devin', 'auto')).toEqual(['--permission-mode', 'smart'])
+    expect(approvalFlags('devin', 'auto')).not.toContain('auto')
+    expect(approvalFlags('devin', 'auto')).not.toContain('normal')
+  })
+
+  it('does NOT claim manual — devin\'s default already auto-approves read-only tools', () => {
+    // Bare `devin` runs in `normal`, which auto-approves reads, so `manual` ("ask each time") has
+    // no devin equivalent at all. Unsupported rather than substituted.
     expect(approvalFlags('devin', 'manual')).toEqual([])
     expect(modeSupported('devin', 'manual')).toBe(false)
   })
 
-  it('emits NO flag for plan, which has no devin equivalent', () => {
+  it('emits NO flag for plan, whose value the devin parser rejects', () => {
+    // devin has an in-session `/plan`, but `--permission-mode plan` is rejected at startup
+    // ("Invalid permission mode: plan"), and a rejected value kills the launch.
     expect(approvalFlags('devin', 'plan')).toEqual([])
     expect(modeSupported('devin', 'plan')).toBe(false)
   })

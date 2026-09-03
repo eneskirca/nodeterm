@@ -79,20 +79,56 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
 }
 
 const DEVIN_MODES: Partial<Record<AgentPermissionMode, string>> = {
-  // Devin CLI 3000.4.25 accepts `auto | accept-edits | smart | dangerous` for `--permission-mode`
-  // (`/normal`, `/accept-edits`, `/smart`, `/bypass` in-session). `plan` is not a Devin mode,
-  // and `smart` is intentionally omitted from our vocabulary: it is a limited-rollout Devin mode and
-  // `auto` is the closest stable equivalent. `bypassPermissions` maps to `dangerous` (the `--help`
-  // value; `/bypass` and `/yolo` are in-session aliases, not CLI flag values).
+  // Devin CLI 3000.6.12 accepts `normal` (alias `auto`, its DEFAULT), `accept-edits`, `smart`,
+  // `dangerous` (aliases `yolo`, `bypass`) and `autonomous` (requires `--sandbox`) — measured from
+  // the parser itself (`devin --permission-mode bogus` prints the accepted set) and from the mode
+  // table in its bundled `share/devin/docs/reference/permissions.mdx`. In-session the same modes
+  // are `/normal`, `/accept-edits`, `/smart`, `/bypass`.
   //
-  // `manual` is ABSENT on purpose: Devin's own default is `auto`, which auto-approves read-only
-  // tools and only asks for higher-permission actions. Emitting NO flag would therefore run `auto`,
-  // not "ask each time". There is no Devin mode that asks for every action, so `manual` is
-  // unsupported and `modeSupported('devin', 'manual')` is false.
-  auto: 'auto',
+  // `auto` → `smart`, and NOT devin's own `auto`. This looks like the substituted-nearest-match
+  // trap and is the opposite of it, because the two CLIs mean different things by the word:
+  //
+  //   claude's `auto`  = "Claude decides what is safe" (its own mode help, recommended "for long
+  //                      unattended tasks") — a model judges each action.
+  //   devin's  `auto`  = an ALIAS for `normal`, its default: read-only auto-approved, every edit
+  //                      and every shell command prompts. No model judges anything.
+  //   devin's  `smart` = "a fast model decides whether it is safe to run without asking", with
+  //                      workspace edits auto-approved and high-risk categories (installs, `rm`,
+  //                      `sudo`, mutating git, dotenv/key material) always prompting.
+  //
+  // So `smart` is the semantic match and devin's `auto` is a false friend: spelling our `auto` as
+  // devin's `auto` emitted a flag that selected devin's DEFAULT, which is why the setting looked
+  // like it did nothing — the command line changed and the session's behaviour could not.
+  //
+  // Two gates sit behind `smart`, and BOTH degrade visibly rather than failing the launch — which
+  // is what makes this mapping safe under rule 14:
+  //
+  //   VERSION — the launch-flag route shipped in devin 3000.5.20 ("Switch with /smart, /mode smart,
+  //     Shift+Tab, or --permission-mode smart"). MEASURED on the older 3000.4.25: the flag is
+  //     accepted, then devin prints `Warning: Smart permission mode is not available. Falling back
+  //     to normal.` and continues, exit 0 — while `/smart` typed into that same session switched
+  //     fine, so the account's rollout was on and only the startup path had not caught up.
+  //   ACCOUNT — smart is rolled out server-side, so an account without it takes the same visible
+  //     fallback.
+  //
+  // MEASURED on 3000.6.12: `devin --permission-mode smart` starts in smart with no warning. So no
+  // version gate is added here (rule 9 — and there is nothing to gate: the degrade is devin's own,
+  // announced in the pane, and lands on `normal`, which is exactly where the session would have
+  // started anyway). Note the `--permission-mode bogus` error list still omits `smart` on 3000.6.12
+  // because of the server-side rollout; the parser accepts it regardless.
+  auto: 'smart',
   acceptEdits: 'accept-edits',
   bypassPermissions: 'dangerous'
-  // `manual` and `plan` are absent ON PURPOSE — see modeSupported.
+  // `manual` is ABSENT on purpose: devin's default (`normal`) already auto-approves read-only
+  // tools, so no flag — and no devin mode at all — means "ask before every action".
+  //
+  // `plan` is ABSENT because the FLAG has no such value: devin has an in-session `/plan` mode
+  // (`reference/keyboard-shortcuts.mdx:48`), but `--permission-mode plan` is rejected by the
+  // parser (measured on both 3000.4.25 and 3000.6.12: "Invalid permission mode: plan"), and a
+  // rejected value kills the launch.
+  //
+  // `autonomous` is unreachable by construction — it requires `--sandbox`, which is a separate axis
+  // this table does not set.
 }
 
 /**
