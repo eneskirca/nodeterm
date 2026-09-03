@@ -282,6 +282,14 @@ sentence for grok's own output and reasoned from it. Measured across 49 local `s
 carries a short title-shaped value, because a fixture that does not look like the real thing is a
 loaded trap for whoever reads it next.
 
+**`parent_session_id` is absent because 1.0.13 does not write it, not because the capture missed
+it.** The 1.0.0 field list named it, and it is gone from the capture — which invites the next reader
+to treat its absence as a redaction slip, or to assume it appears on non-root sessions. Neither is
+true. Measured across the same 49 local `summary.json` files: **0 carry it**, and 4 of them are
+`session_kind: 'subagent'` — sessions that HAVE a parent — and those 4 do not carry it either. So
+there is no shape of session in which we have seen it. Nothing reads it today; this note exists so
+the next person does not go looking for a field that is not there.
+
 The capture has no `title` field. `generated_title` is grok's session name and is now the ONLY title
 key: `session_summary` was dropped in favour of resolving to nothing. The reason is the rule this
 repo states for itself — an uncertain value must degrade to NOTHING, never to something else — and
