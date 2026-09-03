@@ -504,6 +504,16 @@ describe('the agent-control handler reads and writes through its own canvas shim
     expect(CANVAS_SRC).toContain('} else {\n            travelToProjectRef.current(route.projectId)')
   })
 
+  it('sends the notice to the NODE, not just to its project', () => {
+    // The notice is about one thing that appeared. Landing on the project's saved camera would
+    // leave the user hunting for it; `travelToNode` reopens a closed project first and frames the
+    // node once its canvas loads, resolving off the serialized nodes the commit just wrote.
+    expect(CANVAS_SRC).toContain(
+      "action: { label: 'Go there', run: () => travelToNodeRef.current(target) }"
+    )
+    expect(CANVAS_SRC).toContain('if (!firstAdded) firstAdded = node.id')
+  })
+
   it('leaves the off-canvas notice up until it is dismissed', () => {
     // An ordinary info strip reports something the user just did and is watching, so a few seconds
     // is enough. This one reports work that landed in ANOTHER project while they were busy

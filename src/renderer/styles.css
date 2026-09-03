@@ -3683,7 +3683,7 @@ body,
   border-left: 3px solid var(--accent);
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, calc(0.45 * var(--shadow-k)));
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text);
 }
 

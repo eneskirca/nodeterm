@@ -5810,6 +5810,9 @@ export function Canvas() {
   // Same reason as worktreeControlRef below: the agent-control handler needs the CURRENT
   // travelToProject (defined far below, after the project actions it composes).
   const travelToProjectRef = useRef<(projectId: string) => void>(() => {})
+  /** Latest `travelToNode`, for the agent-control handler: that effect mounts ONCE (empty deps),
+   *  so it cannot close over the callback. Same reason as travelToProjectRef. */
+  const travelToNodeRef = useRef<(nodeId: string) => void>(() => {})
 
   // Latest worktree callbacks for the agent-control handler. That effect mounts ONCE (empty
   // deps) and these callbacks' identities change with the active project (activeProjectId /
@@ -8916,10 +8919,14 @@ export function Canvas() {
         const store = useProjects.getState()
         const before = new Map(offCanvas.nodes.map((n) => [n.id, n]))
         let added = 0
+        let firstAdded = ''
         for (const node of stagedNodes) {
           if (before.get(node.id) === node) continue
           const fresh = !before.has(node.id)
-          if (fresh) added += 1
+          if (fresh) {
+            added += 1
+            if (!firstAdded) firstAdded = node.id
+          }
           store.applyNodeMutation(offCanvas.project.id, {
             op: 'upsert',
             node: flowToNodeStates([fresh ? armForColdOpen(node) : node])[0]
@@ -8931,12 +8938,17 @@ export function Canvas() {
         })
         void writeDisk()
         if (added > 0) {
-          const target = offCanvas.project.id
+          // To the NODE, not just to its project: the notice is about one thing that appeared, and
+          // landing on the project's saved camera would leave the user hunting for it. `travelToNode`
+          // reopens a closed project first and frames the node once its canvas has loaded (the
+          // pendingFocus path), and it resolves off the SERIALIZED nodes — which the upsert above
+          // has already written, so the node is findable even though no canvas holds it yet.
+          const target = firstAdded
           setNotice({
             kind: 'info',
             text: offCanvasNoticeText(offCanvas.project.name, added),
             sticky: true,
-            action: { label: 'Go there', run: () => travelToProjectRef.current(target) }
+            action: { label: 'Go there', run: () => travelToNodeRef.current(target) }
           })
         }
         return true
@@ -12408,6 +12420,12 @@ export function Canvas() {
     },
     [focusNodeById, reopenProject]
   )
+  // Published for the agent-control handler, which mounts ONCE and cannot close over it. Assigned
+  // BELOW the definition on purpose: an effect above it would read a const that is only
+  // initialized later in the body, which works today and breaks the day someone reorders.
+  useEffect(() => {
+    travelToNodeRef.current = travelToNode
+  })
 
   // OS-notification click → focus the originating node (see the note beside focusNodeById:
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
