@@ -26,7 +26,8 @@ import {
   hasSharedIdentity,
   agentLaunchProgram,
   resumeCommand,
-  setCustomAgentBaseResolver
+  setCustomAgentBaseResolver,
+  submitEnterDelayMs
 } from './config'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
@@ -119,6 +120,7 @@ describe('opencode capabilities', () => {
       color: '#a78bfa',
       launchCmd: 'opencode',
       promptInjectionMode: 'flag-prompt',
+      submitEnterDelayMs: 150,
       expectedProcess: 'opencode'
     })
     expect(hasHooks('opencode')).toBe(true)
@@ -300,8 +302,33 @@ describe('devin capabilities', () => {
       launchCmd: 'devin',
       promptInjectionMode: 'argv',
       argvPromptSeparator: '--',
+      submitEnterDelayMs: 150,
       expectedProcess: 'devin'
     })
+  })
+
+  // devin absorbs a CR arriving within ~50-80 ms of preceding input (measured on 3000.6.12 across
+  // bracketed paste, unframed paste and `send-keys -l` alike), so text written into its composer
+  // needs the submit as a SEPARATE, later key event. Every other agent keeps 0 = the historical
+  // single-invocation delivery, and a custom agent inherits its base harness's answer.
+  it('shares the delayed submit with opencode, and custom agents inherit it', () => {
+    // Two agents batch input this way, for their own measured reasons (devin: a CR within
+    // ~50-80 ms of preceding input; opencode: a one-burst `/exit\r` never submitting). The number
+    // lives on the agent so every write path gets it — it used to be an `=== 'opencode'` branch in
+    // agent-restart.ts, so only the restart knew.
+    expect(submitEnterDelayMs('devin')).toBe(150)
+    expect(submitEnterDelayMs('opencode')).toBe(150)
+    for (const id of ['claude', 'codex', 'gemini', 'grok', 'copilot'] as const) {
+      expect(submitEnterDelayMs(id), id).toBe(0)
+    }
+    expect(submitEnterDelayMs(undefined)).toBe(0)
+    setCustomAgentBaseResolver((id) =>
+      id === 'custom:d' ? 'devin' : id === 'custom:c' ? 'claude' : undefined
+    )
+    expect(submitEnterDelayMs('custom:d')).toBe(150)
+    expect(submitEnterDelayMs('custom:c')).toBe(0)
+    expect(submitEnterDelayMs('custom:plain')).toBe(0)
+    setCustomAgentBaseResolver(null)
   })
 
   it('reports status through its own hooks and can resume', () => {

@@ -196,6 +196,45 @@ so the line is never typed into an open permission prompt.
 
 ---
 
+### 5.2 Writing into devin's composer needs a delayed Enter
+
+Any nodeterm path that types text into a devin session — the canvas-control `write` verb, an
+agent-to-agent message envelope, a note push, the restart's `/exit` — must send the submitting
+Enter as a SEPARATE key event ~150 ms after the text. `AGENT_CONFIG.devin.submitEnterDelayMs`
+carries the number and every write path reads it.
+
+**Devin's behaviour, not ours.** Measured on 3000.6.12, idle session, every delivery tmux offers:
+
+| written by | Enter in the same burst | Enter ≥ ~80 ms later |
+|---|---|---|
+| bracketed paste (`paste-buffer -p`, our path) | stays in the composer | submitted |
+| unframed paste | stays in the composer | submitted |
+| `send-keys -l` literal | stays in the composer | submitted |
+
+The threshold sits between 50 ms and 80 ms. Framing is irrelevant — devin keys off TIMING, treating
+a CR that arrives inside an input burst as pasted content. The identical bracketed-paste delivery
+into claude submits immediately (control test), which is why this is a per-agent number rather than
+a change to the delivery.
+
+**Why it mattered more than it looks.** `sendText` returns true once tmux has delivered the bytes,
+so the canvas-control `write` verb answered **`sent`** to the ORCHESTRATING agent while the text sat
+unsubmitted — a handoff reported as started that never began. The restart's `/exit` failed more
+kindly: the poll never sees a shell and the run reports `exit-timeout`, leaving the session running.
+
+**opencode had this first.** `agent-restart.ts` carried a hardcoded `agentId === 'opencode'` branch
+with the same 150 ms, measured on 1.18.18-1.18.25 — so only the RESTART path knew, and every other
+write into an opencode composer had the bug devin has. Devin arriving with the same behaviour is
+what showed it is a property of the agent; the number now lives in `AGENT_CONFIG` and both agents
+get it on every path.
+
+**The guarantee this owes.** Text and Enter in one tmux command list is what makes "the Enter can
+never fire after a failed text send" structural (tmux abandons the rest of a failed list).
+`runDelayedEnterDelivery` (`core/tmux-naming.ts`) re-establishes it explicitly: the Enter is sent
+only when the paste answered true, and the Enter's own failure is the caller's answer. A submit
+firing into a composer that never got its text would send whatever the USER had typed there.
+
+---
+
 ## 6. Canvas control and context-link discovery
 
 Both features reach devin through skills in `~/.config/devin/skills/`:

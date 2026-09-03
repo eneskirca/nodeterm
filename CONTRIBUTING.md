@@ -336,6 +336,14 @@ bare command; they make opposite promises to the user, and the Settings copy is 
 distinction. Deleting an empty-valued key "because it does nothing" silently changes what the UI
 claims — always express the difference as a key, never as a value.
 
+**A per-agent quirk belongs on the agent, not in the call site that first hit it.** opencode's TUI
+does not submit when text and its CR arrive in one input burst, and that lived as a hardcoded
+`agentId === 'opencode'` branch in the restart path — so only the restart knew, and every other
+write into an opencode composer still had the bug. Devin turned out to behave the same way, on every
+write path, which is how the branch was found. The number now sits in `AGENT_CONFIG`
+(`submitEnterDelayMs`) and every delivery reads it. If you find yourself writing `agentId === 'x'`
+outside `src/shared/agents`, that is the signal: give the fact to the agent and let each caller ask.
+
 **Agent features attach to base harness capabilities, not frontend allowlists.** A custom agent can
 inherit a builtin harness, so add the capability and its one shared leaf (`src/shared/agents`) and
 let every UI ask the helper. Repeating Claude/Codex/etc. cases in menus breaks that inheritance and

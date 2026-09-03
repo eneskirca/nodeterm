@@ -243,7 +243,7 @@ export function buildRealApi(
     readScrollback: (persistKey) =>
       client.request(IPC.ptyReadScrollback, persistKey) as Promise<string>,
     sendText: (persistKey, text, opts) =>
-      client.request(IPC.ptySendText, persistKey, text, opts?.enter) as Promise<boolean>,
+      client.request(IPC.ptySendText, persistKey, text, opts?.enter, opts?.agentId) as Promise<boolean>,
     // Fail-open: an errored status must not raise the banner in the browser.
     tmuxStatus: () =>
       client

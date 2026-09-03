@@ -896,8 +896,19 @@ export interface PtyApi {
   readScrollback(persistKey: string): Promise<string>
   /** Send literal text into a session, by default followed by Enter (e.g. a slash command).
    *  `opts.enter: false` writes the text without submitting it (dictation's Insert). Returns
-   *  false if unavailable. */
-  sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<boolean>
+   *  false if unavailable.
+   *
+   *  `opts.agentId` says which agent CLI owns the composer being written to, and exists for ONE
+   *  reason: an agent whose input debounce swallows an immediately-following CR (devin — see
+   *  `submitEnterDelayMs`) needs its Enter sent as a separate, later key event. Core already knows
+   *  this for a session IT spawned; pass it when the target may not be mounted in this app run
+   *  (an app restart leaves the tmux session running with no live Session record to ask). Omitted
+   *  ⇒ resolved from the live session, else no delay ⇒ the historical delivery. */
+  sendText(
+    persistKey: string,
+    text: string,
+    opts?: { enter?: boolean; agentId?: string }
+  ): Promise<boolean>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>

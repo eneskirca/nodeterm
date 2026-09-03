@@ -297,6 +297,45 @@ export function localPasteDelivery(
  * takes the full `PROC_TIMEOUT_MS` to fail, twice). Its own failure is ignored — `delete-buffer`
  * against a buffer `-d` already dropped is an expected error, not a problem.
  */
+/**
+ * Deliver a plan, then send Enter as a SEPARATE key event `delayMs` later.
+ *
+ * ── WHY A COMPOSER MIGHT NEED THIS ─────────────────────────────────────────────────────────────
+ *
+ * Some agent TUIs batch their input: a CR arriving in the same burst as the text it should submit
+ * is absorbed as part of that burst, leaving the line sitting in the composer. MEASURED for two
+ * agents, which is why `submitEnterDelayMs` is a per-agent number rather than a global pause —
+ * devin 3000.6.12 swallows a CR landing within ~50-80 ms of preceding input (identically for
+ * bracketed paste, unframed paste and `send-keys -l`, so it is the timing and not the framing),
+ * and opencode 1.18.18-1.18.25 leaves a one-burst `/exit\r` in its composer until it times out.
+ * The same delivery into claude submits immediately.
+ *
+ * This is the exception the `localFramedDelivery` tombstone above does not cover: it reasons that
+ * an Enter placed after the paste-close marker is a key event "a paste-aware composer cannot
+ * re-chunk into the paste". True where the composer keys off the markers; these two key off time.
+ *
+ * ── THE GUARANTEE THIS OWES ────────────────────────────────────────────────────────────────────
+ *
+ * One tmux command list makes "the Enter can never fire after a failed text send" STRUCTURAL:
+ * tmux abandons the rest of a list when a command in it fails. Splitting the two gives that up, so
+ * it is re-established explicitly — the Enter is sent ONLY if the paste answered true. A submit
+ * that fires into a composer which never received its text would send whatever the USER had typed
+ * there, which is worse than failing to deliver.
+ *
+ * `sleep` is injected so a test can prove the ORDER (and the refusal) without waiting on a clock.
+ */
+export async function runDelayedEnterDelivery(
+  plan: PasteDelivery,
+  enterArgs: string[],
+  delayMs: number,
+  run: (args: string[], input: string) => Promise<unknown>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))
+): Promise<boolean> {
+  if (!(await runPasteDelivery(plan, run))) return false
+  await sleep(delayMs)
+  return await runPasteDelivery({ args: enterArgs, body: '', cleanup: null }, run)
+}
+
 export async function runPasteDelivery(
   plan: PasteDelivery,
   run: (args: string[], input: string) => Promise<unknown>

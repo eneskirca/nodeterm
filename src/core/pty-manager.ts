@@ -29,6 +29,7 @@ import {
   remoteTmuxPtyArgs,
   type RemoteSessionEnv,
   remotePasteDelivery,
+  remoteTmuxEnterArgs,
   remoteCapturePaneArgs,
   remotePaneCommandArgs,
   remotePaneOwnerCombinedArgs,
@@ -61,6 +62,8 @@ import {
   sessionName,
   isSessionName,
   localPasteDelivery,
+  localTmuxEnterArgs,
+  runDelayedEnterDelivery,
   runPasteDelivery
 } from './tmux-naming'
 import { encodeSendKeysHex } from './tmux-control'
@@ -93,7 +96,13 @@ import {
 } from './codex-identity-proxy'
 import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
-import { hasPermWait, hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
+import {
+  hasPermWait,
+  hasSharedIdentity,
+  setCustomAgentBaseResolver,
+  submitEnterDelayMs,
+  type AgentId
+} from '../shared/agents/config'
 import { findCustomAgent } from '../shared/agents/custom-agent'
 import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 import {
@@ -630,6 +639,10 @@ interface Session {
   persistKey?: string
   /** When set, the session runs on a remote host via ssh; kill/capture target the REMOTE tmux. */
   sshRemote?: NonNullable<PtyCreateOptions['sshRemote']>
+  /** Which agent CLI this session was spawned to run, if any — recorded so a WRITE into the
+   *  session can ask that agent's composer how it wants a submit delivered (`submitEnterDelayMs`).
+   *  Undefined for a plain terminal, and for any session this process did not spawn. */
+  agentId?: string
   /** Output arrived since the last scrollback snapshot — idle sessions skip the capture. */
   outputSinceSnapshot: boolean
   /** A tmux session (local `nt-<id>`, or the remote one an SSH project attaches to) is holding this
@@ -1724,8 +1737,14 @@ export class PtyManager {
     platform().handle(IPC.ptyReadScrollback, (persistKey: string) =>
       readScrollback(persistKey)
     )
-    platform().handle(IPC.ptySendText, (persistKey: string, text: string, enter?: boolean) =>
-      this.sendText(persistKey, text, enter === undefined ? undefined : { enter })
+    platform().handle(
+      IPC.ptySendText,
+      (persistKey: string, text: string, enter?: boolean, agentId?: string) =>
+        this.sendText(
+          persistKey,
+          text,
+          enter === undefined && agentId === undefined ? undefined : { enter, agentId }
+        )
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string) => this.paneCommand(persistKey))
@@ -3171,6 +3190,7 @@ export class PtyManager {
       flushTimer: null,
       persistKey: persisted ? options.persistKey : undefined,
       sshRemote: remote,
+      agentId: options.agentId,
       outputSinceSnapshot: true, // capture the initial screen on the first tick
       // `persisted` IS "a tmux session (local or remote) is holding this work" — the same condition
       // that gates the scrollback snapshots. Recorded under its own name because the reap decision
@@ -3960,31 +3980,72 @@ export class PtyManager {
    * composition is exported, both callers use it, and the only thing left in this method is which
    * transport runs it.
    */
-  async sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<boolean> {
+  /**
+   * How long to wait between the text and the Enter for a write into THIS node's session, in ms.
+   * 0 = the historical single-invocation delivery.
+   *
+   * The agent id comes from the session this process spawned; an explicit `agentId` from the
+   * caller wins, because a write can target a node whose session this process never spawned (an
+   * app restart leaves the tmux session running and `sendText` reaches it by NAME, with no live
+   * Session record to ask). Unknown ⇒ 0 ⇒ exactly the delivery every agent had before.
+   */
+  private enterDelayFor(persistKey: string, agentId?: string): number {
+    const known = agentId ?? this.liveSessionForPersistKey(persistKey)?.agentId
+    return submitEnterDelayMs(known as AgentId | undefined)
+  }
+
+  async sendText(
+    persistKey: string,
+    text: string,
+    opts?: { enter?: boolean; agentId?: string }
+  ): Promise<boolean> {
     const enter = opts?.enter ?? true
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
     const sshRemote = live?.sshRemote
+    // Only a write that HAS a body and IS submitting can be swallowed by a composer's paste
+    // debounce. `sendText('', { enter: true })` is already a bare Enter with no burst in front of
+    // it, and `enter: false` submits nothing — both keep the single-invocation path exactly.
+    const delay = enter && text.length > 0 ? this.enterDelayFor(persistKey, opts?.agentId) : 0
     try {
       if (sshRemote) {
         const ssh = findSsh()
         if (!ssh) return false
+        const run = (args: string[], input: string): Promise<unknown> =>
+          runWithStdin(ssh, args, input)
+        if (delay > 0) {
+          const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, text, false)
+          if (!plan) return true
+          const enterArgs = remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target)
+          return await runDelayedEnterDelivery(plan, enterArgs, delay, run)
+        }
         const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, text, enter)
         if (!plan) return true
-        return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        return await runPasteDelivery(plan, run)
       }
       // No local tmux: this machine persists sessions via the session-host backend instead (see
       // docs/windows-session-host.md). Its `sendKeys` needs no attached client, exactly like
       // tmux's own `send-keys -t <name>` — the host looks the session up by NAME.
       if (live?.sessionHost || !this.tmuxPath) {
-        return this.getSettings().tmuxEnabled && sessionHostSupported()
-          ? sessionHostSendKeys(target, text, enter)
-          : false
+        if (!(this.getSettings().tmuxEnabled && sessionHostSupported())) return false
+        if (delay === 0) return sessionHostSendKeys(target, text, enter)
+        // Same two-step, same ordering guarantee: no submit unless the text landed.
+        if (!(await sessionHostSendKeys(target, text, false))) return false
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        return await sessionHostSendKeys(target, '', true)
       }
       const tmuxPath = this.tmuxPath
+      const run = (args: string[], input: string): Promise<unknown> =>
+        runWithStdin(tmuxPath, args, input)
+      if (delay > 0) {
+        const plan = localPasteDelivery(TMUX_SOCKET, target, text, false)
+        if (!plan) return true
+        const enterArgs = localTmuxEnterArgs(TMUX_SOCKET, target)
+        return await runDelayedEnterDelivery(plan, enterArgs, delay, run)
+      }
       const plan = localPasteDelivery(TMUX_SOCKET, target, text, enter)
       if (!plan) return true
-      return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
+      return await runPasteDelivery(plan, run)
     } catch {
       // Only a builder throwing (an unsafe target) reaches here — `runPasteDelivery` answers false
       // rather than throwing, precisely so the sweep cannot be skipped by an early exit.
@@ -4221,23 +4282,41 @@ export class PtyManager {
    * accidental submit a messaging delivery must never perform — an empty envelope refuses here.
    * (`buildEnvelope` can never return '', so this is a guard against a future caller, not a path.)
    */
-  async sendEnvelope(persistKey: string, envelope: string): Promise<boolean> {
+  async sendEnvelope(persistKey: string, envelope: string, agentId?: string): Promise<boolean> {
     if (envelope.length === 0) return false
     const target = sessionName(persistKey)
     const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
+    // The agent-message envelope is the delivery this matters most for: it reports `sent` to an
+    // ORCHESTRATING agent, so a submit the target's composer swallowed would be reported as a
+    // handoff that never started. Same per-agent pause as `sendText` (see `runDelayedEnterDelivery`).
+    const delay = this.enterDelayFor(persistKey, agentId)
     try {
       if (sshRemote) {
         const ssh = findSsh()
         if (!ssh) return false
+        const run = (args: string[], input: string): Promise<unknown> => runWithStdin(ssh, args, input)
+        if (delay > 0) {
+          const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, envelope, false)
+          if (!plan) return false
+          const enterArgs = remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target)
+          return await runDelayedEnterDelivery(plan, enterArgs, delay, run)
+        }
         const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, envelope, true)
         if (!plan) return false
-        return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        return await runPasteDelivery(plan, run)
       }
       if (!this.tmuxPath) return false
       const tmuxPath = this.tmuxPath
+      const run = (args: string[], input: string): Promise<unknown> => runWithStdin(tmuxPath, args, input)
+      if (delay > 0) {
+        const plan = localPasteDelivery(TMUX_SOCKET, target, envelope, false)
+        if (!plan) return false
+        const enterArgs = localTmuxEnterArgs(TMUX_SOCKET, target)
+        return await runDelayedEnterDelivery(plan, enterArgs, delay, run)
+      }
       const plan = localPasteDelivery(TMUX_SOCKET, target, envelope, true)
       if (!plan) return false
-      return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
+      return await runPasteDelivery(plan, run)
     } catch {
       // A builder throwing (an unsafe target) lands here; `runPasteDelivery` itself answers false
       // rather than throwing, so the buffer sweep is never skipped.

@@ -31,6 +31,30 @@ export interface AgentConfig {
    * shadow one, and adding a `--` there would change a command line that works today.
    */
   argvPromptSeparator?: string
+  /**
+   * Milliseconds to wait after writing text into this CLI's composer before sending the Enter that
+   * submits it. Omitted (the default) means the historical delivery: text and Enter in ONE tmux
+   * invocation, byte-identical for every agent that does not set this.
+   *
+   * devin is the case that needs it, and it needs it because of its own INPUT DEBOUNCE, not
+   * because of how we write. MEASURED on 3000.6.12, idle session, every delivery mechanism tmux
+   * offers:
+   *
+   *   bracketed paste (`paste-buffer -p`, our path) + immediate Enter  → text sits in the composer
+   *   UNFRAMED paste                                + immediate Enter  → text sits in the composer
+   *   `send-keys -l` literal                        + immediate Enter  → text sits in the composer
+   *   any of the three, Enter >= ~80 ms later                          → SUBMITTED
+   *
+   * So devin absorbs a CR that arrives within roughly 50-80 ms of preceding input (the threshold
+   * measured between those two values) — a paste-safety heuristic, applied to the burst rather
+   * than to the paste markers. The identical delivery into claude submits immediately, which is
+   * why this is a per-agent number and not a change to the delivery itself.
+   *
+   * This is the exception the `localFramedDelivery` tombstone in core/tmux-naming.ts does not
+   * cover: it reasons that an Enter after the paste-close marker "a paste-aware composer cannot
+   * re-chunk into the paste". True for claude; devin re-chunks on TIMING, marker or no marker.
+   */
+  submitEnterDelayMs?: number
   expectedProcess: string
 }
 
@@ -73,6 +97,13 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // A bare positional is a PROJECT PATH for opencode, so the initial prompt must go
     // through --prompt (see createAgentNode's flag-prompt branch).
     promptInjectionMode: 'flag-prompt',
+    // opencode's TUI batches input the same way devin's does: measured on 1.18.18-1.18.25 (Linux,
+    // tmux, isolated socket), a one-burst `/exit\r` leaves `/exit` in the composer and times out at
+    // 6 s, while splitting the CR off by 100 ms exits in ~500 ms. This number used to live as a
+    // hardcoded `agentId === 'opencode'` branch in renderer/terminal/agent-restart.ts, which meant
+    // only the RESTART path knew about it — devin arriving with the same behaviour is what showed
+    // that it is a property of the agent, not of one call site.
+    submitEnterDelayMs: 150,
     expectedProcess: 'opencode'
   },
   grok: {
@@ -107,6 +138,9 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // `auth`, `models`, `update` or `setup` is executed as a subcommand and never reaches the model.
     promptInjectionMode: 'argv',
     argvPromptSeparator: '--',
+    // 150 ms, comfortably past the measured 50-80 ms swallow window — see `submitEnterDelayMs`.
+    // The cost is one extra tmux round trip on writes INTO a devin composer; nothing else pays it.
+    submitEnterDelayMs: 150,
     expectedProcess: 'devin'
   }
 }
@@ -417,6 +451,20 @@ export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_M
 export const hasPermWait = (id: AgentId): boolean => includes(PERM_WAIT_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
 
+/**
+ * How long to wait between writing text into this agent's composer and sending the Enter that
+ * submits it. `0` = the historical single-invocation delivery, which is what every agent but devin
+ * answers.
+ *
+ * Resolved through `capabilityAgentId` like every other per-agent fact, so a custom agent
+ * declaring `baseAgent: 'devin'` runs the devin CLI and inherits its debounce. A plain terminal
+ * (no agent id) and a baseless custom agent answer 0 — a shell has no composer to debounce.
+ */
+export function submitEnterDelayMs(id: AgentId | undefined): number {
+  if (!id) return 0
+  const cfg = (AGENT_CONFIG as Record<string, AgentConfig>)[capabilityAgentId(id)]
+  return cfg?.submitEnterDelayMs ?? 0
+}
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
 
 /**
