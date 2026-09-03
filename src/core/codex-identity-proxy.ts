@@ -533,6 +533,18 @@ export function buildCodexLauncherScript(
 # Anything missing => plain 'codex' with the same arguments. A node that cannot get a managed
 # identity must still be a working node.
 
+# Job control, from the top, for the whole script's life — not only inside nt_run_shared.
+# Without it every 'codex ... resume' this script runs (the very first launch included, not just a
+# post-reset resume) stays in THIS shell's own process group, so the pane's foreground group is the
+# supervisor, never the client. Six call sites key off the pane's foreground command
+# (agent-restart.ts's exit/resume phases, TerminalNode.tsx's hibernation wake, trigger-delivery.ts's
+# shell-owned-pane gate, remote-ssh/agent-resync-decide.ts, pane-process.ts, pty-manager.ts) and every
+# one misreads a supervised pane as shell-owned without this. 'set -m' gives the client its own
+# process group and hands it the tty's foreground group (tcsetpgrp), restoring the pre-supervisor
+# answer — and, as a side effect, keeps a tty SIGINT reaching only the client, which the existing
+# 130 case below already assumes. Supported in dash (this script's usual /bin/sh) as well as bash.
+set -m
+
 nt_reason=''
 nt_node_token=''
 nt_fail() { nt_reason=$1; return 1; }
@@ -556,11 +568,11 @@ nt_app_server_ready() (
 # or restarted. The Unix socket inode is the daemon generation we can observe without intercepting
 # the TUI's terminal streams. A failed read is UNKNOWN, not evidence of a restart; it is useful only
 # when a known pre-launch inode changes or the authoritative daemon probe fails.
-nt_app_server_generation() {
+nt_app_server_generation() (
   nt_socket="\${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"
   [ -e "$nt_socket" ] || return 1
   ls -di "$nt_socket" 2>/dev/null | awk 'NR == 1 { print $1 }'
-}
+)
 
 nt_epoch() {
   date +%s 2>/dev/null || printf '0\\n'
@@ -593,6 +605,10 @@ nt_run_shared() {
     esac
 
     nt_generation_after=$(nt_app_server_generation) || nt_generation_after=''
+    # A restarted daemon that happens to land on the same socket inode while healthy answers "no
+    # change" here, so a real reset can go undetected. That is a false NEGATIVE, and it fails safe:
+    # the loop simply returns this exit status instead of resuming, the same outcome as if the
+    # daemon genuinely had not reset. Left alone deliberately — do not "fix" this into a positive.
     nt_daemon_reset=0
     if ! nt_app_server_ready; then
       nt_daemon_reset=1
@@ -603,6 +619,9 @@ nt_run_shared() {
     [ "$nt_daemon_reset" -eq 1 ] || return "$nt_status"
 
     nt_run_ended=$(nt_epoch)
+    # Not a ceiling on resets overall — any run that lasted >= 10s clears the counter, so a daemon
+    # that flaps every 11s resumes forever. This only stops a *rapid* burst (four resets with no
+    # run reaching 10s in between).
     if [ "$nt_run_started" -gt 0 ] && [ "$nt_run_ended" -ge "$nt_run_started" ] && \
        [ $((nt_run_ended - nt_run_started)) -ge 10 ]; then
       nt_rapid_resets=0
