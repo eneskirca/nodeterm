@@ -341,6 +341,18 @@ from the target's `pendingLaunch` (`renderer/lib/edgeModel.ts`), and the context
 writes stays hidden underneath it. One `open-claude --after` used to land three edges on one node.
 `src/renderer/canvas/edge-model.source.test.ts` pins both halves.
 
+**An agent never moves the user's view.** The user works in one project at a time, and a canvas
+control call arrives from whichever project its agent runs in — usually not that one. Anything an
+agent can trigger must therefore act on the canvas it was ADDRESSED at, not on the one that happens
+to be on screen: a verb that only has to put a node somewhere writes into the owning project's
+serialized nodes (`renderer/lib/offCanvasControl.ts`) and the user gets a notice with a "Go there"
+button, rather than being teleported mid-keystroke. Inside the agent-control handler that means
+reading and writing through its shims (`readNodes` / `applyNodes` / `addRopeEdges` /
+`addBridgeEdges` / `touchCanvas`) and deriving every default from `ctlProject`, never from
+`activeProjectId` — both are pinned at source level in `canvas-wiring.test.tsx`, because a bare
+`nodesRef.current` compiles, passes every other test, and silently answers about another project.
+The same rule applies to any new surface that reacts to a background agent.
+
 ## Testing
 
 `npm test` must pass, and `npm run typecheck` is the fastest gate.

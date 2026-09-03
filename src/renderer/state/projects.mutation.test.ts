@@ -75,3 +75,48 @@ describe('applyNodeMutation', () => {
     expect(useProjects.getState().projects).toHaveLength(0)
   })
 })
+
+/** The edge half of the same problem: a control call answered for a project that is NOT on screen
+ *  (lib/offCanvasControl) draws a rope to the node it opened and a context bridge back to the
+ *  opener. `commitCanvas` replaces both arrays wholesale from the live canvas, so it cannot serve
+ *  a project React Flow does not hold. */
+describe('appendProjectEdges', () => {
+  it('appends ropes and bridges to a background project', () => {
+    const p = useProjects.getState().addProject('p')
+    useProjects.getState().appendProjectEdges(p.id, {
+      ropes: [{ id: 'ctrl-a-b', source: 'a', target: 'b' }],
+      bridges: [{ id: 'bridge-a-b', source: 'a', target: 'b' }]
+    })
+
+    expect(useProjects.getState().getProject(p.id)?.ropes).toEqual([
+      { id: 'ctrl-a-b', source: 'a', target: 'b' }
+    ])
+    expect(useProjects.getState().getProject(p.id)?.bridges).toEqual([
+      { id: 'bridge-a-b', source: 'a', target: 'b' }
+    ])
+  })
+
+  it('keeps the edges already there and skips ids it has, so a retried call is idempotent', () => {
+    const p = useProjects.getState().addProject('p')
+    useProjects.getState().appendProjectEdges(p.id, {
+      ropes: [{ id: 'ctrl-a-b', source: 'a', target: 'b' }]
+    })
+    useProjects.getState().appendProjectEdges(p.id, {
+      ropes: [
+        { id: 'ctrl-a-b', source: 'a', target: 'b' },
+        { id: 'ctrl-a-c', source: 'a', target: 'c' }
+      ]
+    })
+
+    expect(useProjects.getState().getProject(p.id)?.ropes?.map((e) => e.id)).toEqual([
+      'ctrl-a-b',
+      'ctrl-a-c'
+    ])
+  })
+
+  it('writes nothing for an empty append', () => {
+    const p = useProjects.getState().addProject('p')
+    useProjects.getState().appendProjectEdges(p.id, {})
+    expect(useProjects.getState().getProject(p.id)?.ropes).toBeUndefined()
+  })
+})

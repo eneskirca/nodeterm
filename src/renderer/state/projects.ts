@@ -116,6 +116,16 @@ interface ProjectsState {
    * they deleted on the very next save — the data-loss shape canvas sync exists to fix.
    */
   applyNodeMutation(projectId: string, mutation: CanvasMutation): boolean
+  /**
+   * Appends control ropes / context bridges to a project that is NOT active — the edge half of
+   * the off-canvas control path (lib/offCanvasControl). `commitCanvas` replaces both arrays
+   * wholesale and is driven by the live canvas, so it cannot serve a project React Flow does not
+   * hold. Ids already present are skipped, which makes a retried control call idempotent.
+   */
+  appendProjectEdges(
+    projectId: string,
+    edges: { ropes?: BridgeLink[]; bridges?: BridgeLink[] }
+  ): void
   /** Renames a node within a project (source of truth for inactive projects). */
   renameNode(projectId: string, nodeId: string, title: string): void
   /** Recolors a node within a project. */
@@ -453,6 +463,25 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       projects: s.projects.map((p) =>
         p.id === id
           ? { ...p, nodes, viewport, ...(bridges ? { bridges } : {}), ...(ropes ? { ropes } : {}) }
+          : p
+      )
+    }))
+  },
+
+  appendProjectEdges(projectId, edges) {
+    const { ropes = [], bridges = [] } = edges
+    if (ropes.length === 0 && bridges.length === 0) {
+      return
+    }
+    const merge = (existing: BridgeLink[] | undefined, added: BridgeLink[]): BridgeLink[] => {
+      const have = new Set((existing ?? []).map((e) => e.id))
+      const fresh = added.filter((e) => !have.has(e.id))
+      return fresh.length === 0 ? (existing ?? []) : [...(existing ?? []), ...fresh]
+    }
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === projectId
+          ? { ...p, ropes: merge(p.ropes, ropes), bridges: merge(p.bridges, bridges) }
           : p
       )
     }))

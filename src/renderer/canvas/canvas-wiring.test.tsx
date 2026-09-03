@@ -12,7 +12,11 @@ import path from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { chromeObstacles, FIT_VIEW_GAP } from './fit-view'
 
-const CANVAS_SRC = fs.readFileSync(path.join(__dirname, 'Canvas.tsx'), 'utf8')
+// Normalized: the assertions below slice on '\n' literals, and a Windows checkout hands this
+// file back with CRLF whatever .gitattributes says about a tree cloned earlier (issue #578).
+const CANVAS_SRC = fs
+  .readFileSync(path.join(__dirname, 'Canvas.tsx'), 'utf8')
+  .replace(/\r\n/g, '\n')
 
 /** jsdom lays nothing out, so every rect is 0×0 and `chromeObstacles`'s size filter would drop the
  *  element. Give it the measurement a real bottom-left pill cluster has. */
@@ -454,5 +458,66 @@ describe('navigating from the sidebar dismisses the start screen', () => {
     expect(indexOfPresent(body, 'setWelcomeOpen(false)')).toBeLessThan(
       indexOfPresent(body, 'requestCard(')
     )
+  })
+})
+
+/**
+ * The agent-control handler must act on the canvas it was ADDRESSED at, not on the one the human
+ * happens to be looking at. Nothing else can see this: the handler is inside a `useEffect` with no
+ * render harness, the shims are pass-throughs on the on-screen path, and a new verb reaching for
+ * `nodesRef.current` or `setNodes` compiles, passes every other test, and quietly reads or writes
+ * the wrong project. See lib/offCanvasControl.
+ */
+describe('the agent-control handler reads and writes through its own canvas shims', () => {
+  /**
+   * The VERB BODY: from where the acting project is resolved (`ctlProject`) to the effect's own
+   * `}, [])`. Everything above that line deliberately reads the LIVE canvas — the source lookup,
+   * the `--project` branch's own active/serialized choice, and the post-travel wait all mean the
+   * canvas on screen. Below it, every verb acts on the canvas it was addressed at.
+   */
+  const HANDLER = (() => {
+    const anchor = CANVAS_SRC.indexOf('return api.onAgentControl(async (')
+    const start = CANVAS_SRC.indexOf('      const ctlProject =', anchor)
+    const end = CANVAS_SRC.indexOf('\n  }, [])', start)
+    expect(anchor).toBeGreaterThan(-1)
+    expect(start).toBeGreaterThan(anchor)
+    expect(end).toBeGreaterThan(start)
+    return CANVAS_SRC.slice(start, end)
+  })()
+
+  it('never reaches for the live canvas directly', () => {
+    // `readNodes()` is the live canvas while the project is on screen and the OWNING project's
+    // staged nodes otherwise. A bare `nodesRef.current` here answers about the wrong project.
+    expect(HANDLER).not.toContain('nodesRef.current')
+  })
+
+  it('never writes the live canvas directly', () => {
+    // Same, for writes — `applyNodes` stages off canvas and commits through the projects store.
+    expect(HANDLER).not.toContain('setNodes(')
+    expect(HANDLER).not.toContain('setLinkEdges(')
+  })
+
+  it('travels only when the verb cannot be answered off canvas', () => {
+    // The regression this pins: travelling unconditionally is what let a background agent's
+    // `show-web` yank the human out of the project they were typing in.
+    expect(CANVAS_SRC).toContain('answersOffCanvas(verb, args, ownerNodes)')
+    expect(CANVAS_SRC).toContain('} else {\n            travelToProjectRef.current(route.projectId)')
+  })
+
+  it('re-arms a node it creates off canvas for a cold open', () => {
+    // `initialCommand` is never serialized, so a launch left there is silently dropped and the
+    // session never starts — the rule the `--project` cold-open branch states.
+    expect(CANVAS_SRC).toContain('armForColdOpen(node) : node')
+  })
+
+  it('derives the acting project from the SOURCE node, not from what is on screen', () => {
+    // Reading the active project here was correct only because the travel had just made the two
+    // the same project. Off canvas it is another project's ssh, browser session key, managed
+    // account and permission mode. The verbs that still travel may keep asking for the active one.
+    expect(HANDLER).toContain('const ctlProject =\n        offCanvas?.project ??')
+    // Only the off-canvas-capable opens are pinned: `verify` and `spawn-team` still travel, so
+    // there the active project IS the acting one.
+    expect(HANDLER).toContain('projectPermissionMode(ctlProject, agentId)')
+    expect(HANDLER).toContain('agentBrowserPartition(ctlProject?.id')
   })
 })

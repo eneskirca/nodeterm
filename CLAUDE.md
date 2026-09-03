@@ -1861,6 +1861,47 @@ else, and its context links must keep classifying across restarts).
   so reporting it as "the error" would be a confident wrong fact. Reading the text, and the
   *failed-to-start* watchdog (a station that never emits ANY hook event — the opposite failure,
   which hangs dependents honestly rather than firing them wrongly), stay open.
+  **Opening a node never moves the human's view (`lib/offCanvasControl`, 2026-09).** Routing is by
+  SOURCE, and React Flow holds only the ACTIVE project's nodes, so a verb declared
+  `needsLiveCanvas` used to TRAVEL to the calling agent's project before it ran — which meant a
+  background agent rendering its output as a node (`show-web` for a report, `show-image` for a
+  screenshot, `open-claude` for a fan-out) yanked the user out of the project they were typing in,
+  at a moment they did not choose. Same G5 objection `send`/`reply`/`sticky`/`open-project` are
+  already exempt for; those verbs simply never needed a canvas, while these needed a PLACE TO PUT A
+  NODE — which the owning project's SERIALIZED nodes can be, exactly as the `--project` cold-open
+  branch already writes into another project's store. `OFF_CANVAS_VERBS` (`show-image`,
+  `show-video`, `show-web`, `open-browser`, `open-terminal`, `open-claude`, `open-agent`) are now
+  answered against a staged copy of that project's nodes, committed through
+  `applyNodeMutation` + the new `appendProjectEdges` (ropes and bridges — `commitCanvas` replaces
+  both arrays wholesale from the live canvas and cannot serve a project React Flow does not hold),
+  and the human gets a NOTICE naming the project with a "Go there" button. Rules a refactor must
+  not undo:
+  - **The handler's verb body reads and writes through the shims** (`readNodes` / `applyNodes` /
+    `addRopeEdges` / `addBridgeEdges` / `readLinkEdges` / `touchCanvas`), which are pass-throughs
+    on the on-screen path. A new verb reaching for `nodesRef.current` or `setNodes` compiles,
+    passes every other test, and quietly reads or writes the WRONG project;
+    `canvas-wiring.test.tsx` pins the absence at source level because nothing else can see it.
+  - **The acting project is the SOURCE's, not the active one.** `ctlProject` used to read
+    `activeProjectId`, which was correct only because the travel had just made the two the same
+    project — off canvas it decides another project's ssh flag, browser session key, managed
+    account, permission mode and launch override. `activePermissionMode` is replaced by
+    `projectPermissionMode(ctlProject, …)` on these paths; the verbs that still travel may keep
+    asking for the active project.
+  - **A node created off canvas is re-armed with `armForColdOpen`** — `initialCommand` is never
+    serialized, so a launch left there is silently dropped and the session never starts. The reply
+    therefore also CORRECTS `queued`/`queuedIds` to the whole batch and carries `offCanvas: true`
+    beside the sentence: an orchestrator must not report a session as started because its `--after`
+    deps happened to be satisfied. A REFUSAL commits nothing.
+  - **A worktree-bound `--group` is NOT answered off canvas** and still travels. `cwdForNewNodeIn`
+    subtracts the worktree store's `staleGroupIds`, which is scoped to the ACTIVE project; off
+    canvas that subtraction cannot be made, and failing open would hand the new node a checkout
+    deleted outside the app. Everything that reads or drives something LIVE also still travels —
+    `browser` needs a mounted `<webview>` guest, `write`/`close` a running pane, `focus`/`goto` a
+    camera that by definition belongs to the active project, and the layout verbs a human watching
+    the result. A verb joining `OFF_CANVAS_VERBS` owes the staging path the state it reads.
+  Surfaces: Desktop + Server Edition identical (pure renderer + the projects store — no new IPC or
+  bridge member); mobile N/A (no canvas, and the transport protocol carries no canvas nodes).
+
   **Review panel (`verify`, 2026-07):** `verify --node <id> [--lenses …] [--focus …] [--agent …]
   [--synthesis off]` opens one reviewer per LENS, each armed behind the target (`--after`) and
   bridged to it, wrapped in a `Verify: <title>` group, plus a judge armed behind the whole panel.
