@@ -8,6 +8,16 @@ import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS } from '../shared/types'
 import { MODEL_GATEWAY_SECRET_REF } from '../shared/agents/model-gateway'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
+import { hookServer } from './agents/hook-server'
+import {
+  paneOwnerProject,
+  persistPaneOwner,
+  resetPaneOwnershipForTests,
+  restorePaneOwner
+} from './agents/pane-ownership'
+
+const NODE_AUTH_SECRET = Buffer.alloc(32, 11)
+const TMUX_GENERATION = '101|$1|1700000000|%2|202'
 
 /**
  * SINGLE-USER REGRESSION.
@@ -31,6 +41,7 @@ interface FakePty {
   killed: boolean
 }
 const spawned: FakePty[] = []
+let spawnError: Error | null = null
 const spawnArgs: Array<{
   file: string
   args: string[]
@@ -54,6 +65,7 @@ vi.mock('node-pty', () => ({
     args: string[],
     opts: { cols: number; rows: number; cwd: string; env: Record<string, string> }
   ) => {
+    if (spawnError) throw spawnError
     const p: FakePty = { resizes: [], paused: false, killed: false }
     spawned.push(p)
     spawnArgs.push({ file, args, cols: opts.cols, rows: opts.rows, cwd: opts.cwd, env: opts.env })
@@ -87,9 +99,11 @@ vi.mock('node-pty', () => ({
  * prove `kill` never issues `kill-session` while `destroy` does.
  */
 const execCalls: Array<{ file: string; args: string[] }> = []
+const execSyncCalls: Array<{ file: string; args: string[] }> = []
 const liveTmuxSessions = new Set<string>()
 let paneProcessReply = ''
 let processGroupReply = ''
+let tmuxGenerationReply = TMUX_GENERATION
 
 vi.mock('child_process', () => {
   type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
@@ -108,6 +122,8 @@ vi.mock('child_process', () => {
       ok('__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__')
     } else if (args.includes('capture-pane')) {
       ok('PANE SNAPSHOT')
+    } else if (args.includes('#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}')) {
+      ok(`${tmuxGenerationReply}\n`)
     } else if (args.includes('#{pane_pid}|#{pane_current_command}')) {
       ok(paneProcessReply)
     } else if (file === 'ps' && args.includes('tpgid=')) {
@@ -117,7 +133,13 @@ vi.mock('child_process', () => {
     }
     return {}
   }
-  return { execFile, execFileSync: (): string => '' }
+  const execFileSync = (file: string, args: string[]): string => {
+    execSyncCalls.push({ file, args })
+    if (args.includes('-P')) return `${TMUX_GENERATION}\n`
+    if (args.includes('display-message')) return `${tmuxGenerationReply}\n`
+    return ''
+  }
+  return { execFile, execFileSync }
 })
 
 const SOLO = 42
@@ -164,9 +186,14 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     spawned.length = 0
     spawnArgs.length = 0
     execCalls.length = 0
+    execSyncCalls.length = 0
     liveTmuxSessions.clear()
+    spawnError = null
     paneProcessReply = ''
     processGroupReply = ''
+    tmuxGenerationReply = TMUX_GENERATION
+    resetPaneOwnershipForTests()
+    hookServer.clearNodeAuthSecretForTests()
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-solo-'))
     fake = fakePlatform({ userDataDir })
     initPlatform(fake)
@@ -175,6 +202,8 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    resetPaneOwnershipForTests()
+    hookServer.clearNodeAuthSecretForTests()
     resetPlatformForTests()
     // BEST EFFORT, and it must stay that way. This races a write it cannot wait for: the scrollback
     // snapshot is fired and forgotten by design (`snapshotScrollback` is best-effort and nothing
@@ -399,6 +428,79 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     const r = await create(80, 24)
     expect(r.fresh).toBe(false)
     expect(tmuxCalls('has-session')).toHaveLength(1)
+  })
+
+  it('persists a fresh pane owner for restart recovery', async () => {
+    hookServer.setNodeAuthSecret(NODE_AUTH_SECRET)
+    await tmuxManager()
+    const r = await create(80, 24, 'owned-fresh', { ownerProjectId: 'project-1' })
+    expect(r.fresh).toBe(true)
+    expect(paneOwnerProject('owned-fresh')).toBe('project-1')
+    const createOnly = execSyncCalls.find((call) => call.args.includes('new-session'))
+    expect(createOnly?.args).toContain('-P')
+    expect(createOnly?.args).not.toContain('-A')
+    expect(spawnArgs[0].args).toContain('attach-session')
+    expect(spawnArgs[0].args).not.toContain('new-session')
+
+    resetPaneOwnershipForTests()
+    expect(
+      restorePaneOwner('owned-fresh', 'project-1', TMUX_GENERATION, NODE_AUTH_SECRET)
+    ).toBe(true)
+  })
+
+  it('uses create-only tmux even before the signing secret is available', async () => {
+    await tmuxManager()
+    const r = await create(80, 24, 'owned-no-secret', { ownerProjectId: 'project-1' })
+
+    expect(r.fresh).toBe(true)
+    expect(paneOwnerProject('owned-no-secret')).toBe('project-1')
+    const createOnly = execSyncCalls.find((call) => call.args.includes('new-session'))
+    expect(createOnly?.args).toContain('-P')
+    expect(createOnly?.args).not.toContain('-A')
+    expect(spawnArgs[0].args).toContain('attach-session')
+  })
+
+  it('does not record an owner when the created tmux generation was replaced', async () => {
+    hookServer.setNodeAuthSecret(NODE_AUTH_SECRET)
+    tmuxGenerationReply = '102|$2|1700000001|%3|203'
+    await tmuxManager()
+
+    await create(80, 24, 'owned-replaced', { ownerProjectId: 'project-1' })
+
+    expect(paneOwnerProject('owned-replaced')).toBeUndefined()
+    resetPaneOwnershipForTests()
+    expect(
+      restorePaneOwner('owned-replaced', 'project-1', TMUX_GENERATION, NODE_AUTH_SECRET)
+    ).toBe(false)
+  })
+
+  it('removes only its exact detached generation when painter attach fails', async () => {
+    await tmuxManager()
+    spawnError = new Error('attach failed')
+
+    await expect(
+      create(80, 24, 'owned-attach-failed', { ownerProjectId: 'project-1' })
+    ).rejects.toThrow('attach failed')
+
+    const kill = execSyncCalls.find((call) => call.args.includes('kill-session'))
+    expect(kill?.args).toContain(`=${sessionName('owned-attach-failed')}`)
+    expect(paneOwnerProject('owned-attach-failed')).toBeUndefined()
+  })
+
+  it('restores a signed pane owner through the warm-attach caller', async () => {
+    hookServer.setNodeAuthSecret(NODE_AUTH_SECRET)
+    expect(
+      persistPaneOwner('owned-warm', 'project-1', TMUX_GENERATION, NODE_AUTH_SECRET)
+    ).toBe(true)
+    resetPaneOwnershipForTests()
+    liveTmuxSessions.add(sessionName('owned-warm'))
+    await tmuxManager()
+
+    const r = await create(80, 24, 'owned-warm', { ownerProjectId: 'project-1' })
+    expect(r.fresh).toBe(false)
+    expect(paneOwnerProject('owned-warm')).toBe('project-1')
+    expect(execSyncCalls.some((call) => call.args.includes('new-session'))).toBe(false)
+    expect(spawnArgs[0].args).toContain('attach-session')
   })
 
   it('fresh:true after a reboot killed the tmux server (cold restore + agent resume)', async () => {

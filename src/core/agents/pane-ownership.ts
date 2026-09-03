@@ -19,16 +19,14 @@
  *    git-copied `id`. A cloned repo gets a fresh entry id, so it cannot inherit another copy's
  *    ownership either.
  *
- * ── COLD STATE / RESTART (stated honestly) ──────────────────────────────────────────────────────
- * This ledger is IN-MEMORY and starts empty every run. After an app restart the tmux SERVER
- * usually survives, so the renderer's re-open of a node ATTACHES (`fresh === false`) and records
- * nothing — the pane is then UNPROVEN and messaging to it is REFUSED (fail-closed) until the
- * session is truly respawned (or the machine reboots, killing the tmux server, after which the
- * next open is a real fresh spawn and records correctly). We do NOT repopulate on attach: there is
- * no cheap cross-restart signal a hostile agent could not also write (a tmux session-env var is
- * settable from any pane's shell), and guessing the owner on attach is exactly how the attacker
- * would re-acquire ownership by opening the victim's id first. Fail-closed is the safe direction
- * and is pinned by a test (`ownerOf` empty ⇒ the delivery gate refuses).
+ * ── COLD STATE / RESTART ────────────────────────────────────────────────────────────────────────
+ * The runtime map starts empty, but a genuine fresh spawn also writes a machine-local, HMAC-signed
+ * ownership record bound to the local tmux server/session/pane generation. A warm attach restores
+ * the map only when that live generation, node and project all match and the record verifies under
+ * this installation's node-auth secret. The project file cannot forge that proof, a replacement
+ * pane cannot inherit it, and a copied data file cannot verify on another installation. Missing,
+ * stale or malformed proof stays UNPROVEN and fails closed. We never infer ownership from
+ * project.json or from a tmux environment variable that a pane can rewrite.
  *
  * ── SCOPE ───────────────────────────────────────────────────────────────────────────────────────
  * This is scoped to tmux-pane messaging ownership but is intentionally feature-neutral: S8 PR 4's
@@ -38,8 +36,43 @@
  * now records and reads it through the same PtyManager and messaging service as desktop.
  */
 
-/** nodeId → owning projectId (machine-local entry id), for panes freshly spawned THIS run. */
+import { createHash, createHmac, timingSafeEqual } from 'crypto'
+import fs from 'fs'
+import path from 'path'
+import { platform } from '../platform'
+import { renameAtomicSync, tempNameFor } from '../fs-atomic'
+import { isSafeNodeId } from './node-auth-token'
+
+/** nodeId → owning projectId (machine-local entry id), proved this run or restored from proof. */
 const owners = new Map<string, string>()
+const OWNER_PROOF_PREFIX = 'nt-pane-owner-v1|'
+
+interface StoredPaneOwner {
+  version: 1
+  nodeId: string
+  projectId: string
+  generation: string
+  mac: string
+}
+
+function ownerProof(secret: Buffer, nodeId: string, projectId: string, generation: string): string {
+  return createHmac('sha256', secret)
+    .update(`${OWNER_PROOF_PREFIX}${nodeId}|${projectId}|${generation}`)
+    .digest('base64url')
+}
+
+function ownerFile(nodeId: string): string {
+  const key = createHash('sha256').update(nodeId).digest('hex')
+  return path.join(platform().userDataDir, 'pane-owners', `${key}.json`)
+}
+
+function proofMatches(secret: Buffer, stored: StoredPaneOwner): boolean {
+  const expected = Buffer.from(
+    ownerProof(secret, stored.nodeId, stored.projectId, stored.generation)
+  )
+  const actual = Buffer.from(stored.mac)
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
+}
 
 /**
  * THE FRESH-GATE, pure and pinned: may this create() record pane ownership? True ONLY for a
@@ -69,9 +102,92 @@ export function recordFreshSpawnOwner(nodeId: string, ownerProjectId: string | u
   owners.set(nodeId, ownerProjectId)
 }
 
-/** The project that provably spawned this node's pane this run, or `undefined` when unproven
- *  (never spawned here, or only ever attached — e.g. after a restart). Undefined MUST fail closed
- *  at every gate: an unprovable owner is not an absent restriction. */
+/** Persist the ownership established by a genuine fresh spawn. Best-effort: a write failure keeps
+ *  this run working and leaves the next warm attach unproven. */
+export function persistPaneOwner(
+  nodeId: string,
+  ownerProjectId: string | undefined,
+  generation: string | undefined,
+  secret: Buffer | null
+): boolean {
+  if (
+    !secret ||
+    !isSafeNodeId(nodeId) ||
+    !ownerProjectId ||
+    !isSafeNodeId(ownerProjectId) ||
+    !generation
+  )
+    return false
+  const file = ownerFile(nodeId)
+  const tmp = tempNameFor(file)
+  const body: StoredPaneOwner = {
+    version: 1,
+    nodeId,
+    projectId: ownerProjectId,
+    generation,
+    mac: ownerProof(secret, nodeId, ownerProjectId, generation)
+  }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    fs.chmodSync(path.dirname(file), 0o700)
+    try {
+      fs.writeFileSync(tmp, `${JSON.stringify(body)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx'
+      })
+      renameAtomicSync(tmp, file)
+      fs.chmodSync(file, 0o600)
+    } finally {
+      try {
+        fs.rmSync(tmp, { force: true })
+      } catch {
+        /* already renamed */
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Restore a warm pane's owner only from this installation's signed record. The current tmux
+ *  generation and renderer-supplied owner must both match; neither is enough by itself. */
+export function restorePaneOwner(
+  nodeId: string,
+  ownerProjectId: string | undefined,
+  generation: string | undefined,
+  secret: Buffer | null
+): boolean {
+  if (
+    !secret ||
+    !isSafeNodeId(nodeId) ||
+    !ownerProjectId ||
+    !isSafeNodeId(ownerProjectId) ||
+    !generation
+  )
+    return false
+  try {
+    const stored = JSON.parse(fs.readFileSync(ownerFile(nodeId), 'utf8')) as StoredPaneOwner
+    if (
+      stored?.version !== 1 ||
+      stored.nodeId !== nodeId ||
+      stored.projectId !== ownerProjectId ||
+      stored.generation !== generation ||
+      typeof stored.mac !== 'string' ||
+      !proofMatches(secret, stored)
+    )
+      return false
+    owners.set(nodeId, ownerProjectId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The project that provably spawned this node's pane, or `undefined` when unproven (never spawned
+ *  here and no valid restart proof). Undefined MUST fail closed at every gate: an unprovable owner
+ *  is not an absent restriction. */
 export function paneOwnerProject(nodeId: string): string | undefined {
   return owners.get(nodeId)
 }
@@ -80,6 +196,16 @@ export function paneOwnerProject(nodeId: string): string | undefined {
  *  re-records; until then the id is unproven again, which fails closed. */
 export function forgetPaneOwner(nodeId: string): void {
   owners.delete(nodeId)
+}
+
+/** Remove the restart proof when the pane itself is deleted or recycled. */
+export function forgetPersistedPaneOwner(nodeId: string): void {
+  if (!isSafeNodeId(nodeId)) return
+  try {
+    fs.rmSync(ownerFile(nodeId), { force: true })
+  } catch {
+    /* missing/unwritable proof already fails closed */
+  }
 }
 
 /** Test seam only: wipe the ledger between cases. Never called in production. */

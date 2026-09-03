@@ -15,9 +15,8 @@ describe('pane-ownership ledger', () => {
     expect(paneOwnerProject('n1')).toBe('proj-a')
   })
 
-  it('an unrecorded node is UNPROVEN (undefined) — the fail-closed default after a restart', () => {
-    // The whole cold-state contract: nothing recorded ⇒ the delivery gate must refuse. This is the
-    // state every node is in immediately after an app restart (re-attach records nothing).
+  it('an unrecorded node is UNPROVEN (undefined) — the fail-closed default without a proof', () => {
+    // The whole cold-state contract: no fresh-spawn fact or valid restart proof ⇒ refuse.
     expect(paneOwnerProject('never-spawned')).toBeUndefined()
   })
 

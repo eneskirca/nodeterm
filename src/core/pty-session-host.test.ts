@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IPC } from '../shared/ipc'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
+import { hookServer } from './agents/hook-server'
+import { paneOwnerProject, resetPaneOwnershipForTests } from './agents/pane-ownership'
 
 const backend = vi.hoisted(() => ({
   supported: vi.fn(() => true),
@@ -84,6 +86,8 @@ describe('PtyManager session-host contracts', () => {
   let host: FakePlatform
 
   beforeEach(() => {
+    resetPaneOwnershipForTests()
+    hookServer.clearNodeAuthSecretForTests()
     host = fakePlatform()
     initPlatform(host)
     backend.supported.mockReturnValue(true)
@@ -99,6 +103,8 @@ describe('PtyManager session-host contracts', () => {
   afterEach(async () => {
     await manager?.killAll()
     manager = undefined
+    resetPaneOwnershipForTests()
+    hookServer.clearNodeAuthSecretForTests()
     resetPlatformForTests()
     vi.restoreAllMocks()
   })
@@ -227,6 +233,22 @@ describe('PtyManager session-host contracts', () => {
       persistent: true,
       screen: 'still alive'
     })
+  })
+
+  it('does not let a warm Session Host attach claim pane ownership from placeholder freshness', async () => {
+    backend.create.mockReturnValue(fakeSessionHostPty(Promise.resolve({ fresh: false })))
+    const m = await makeManager()
+    m.registerIpc()
+
+    await expect(
+      host.handlers[IPC.ptyCreate](7, {
+        cols: 80,
+        rows: 24,
+        persistKey: 'node-warm-owner',
+        ownerProjectId: 'project-clone'
+      })
+    ).resolves.toMatchObject({ fresh: false })
+    expect(paneOwnerProject('node-warm-owner')).toBeUndefined()
   })
 
   it('keeps a deletion tombstone when its owner recovery attach fails', async () => {
