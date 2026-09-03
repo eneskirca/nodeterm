@@ -75,11 +75,13 @@ describe('groupChainHasWorktree', () => {
 
 describe('offCanvasNoticeText', () => {
   it('names the project and says it is not on screen, without travelling there', () => {
+    // Two sentences rather than a dash: this is UI copy, and the house rule for it is plain
+    // punctuation.
     expect(offCanvasNoticeText('api', 1)).toBe(
-      'A node opened by an agent in "api" — that project is not on screen.'
+      'A node opened by an agent in "api". That project is not on screen.'
     )
     expect(offCanvasNoticeText('api', 3)).toBe(
-      '3 nodes opened by an agent in "api" — that project is not on screen.'
+      '3 nodes opened by an agent in "api". That project is not on screen.'
     )
   })
 })

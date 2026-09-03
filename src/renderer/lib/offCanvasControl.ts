@@ -89,5 +89,5 @@ export function answersOffCanvas(
  *  where the work went; travelling there stays the human's choice, which is the whole point. */
 export function offCanvasNoticeText(projectName: string, count: number): string {
   const what = count === 1 ? 'A node' : `${count} nodes`
-  return `${what} opened by an agent in "${projectName}" — that project is not on screen.`
+  return `${what} opened by an agent in "${projectName}". That project is not on screen.`
 }

@@ -504,6 +504,17 @@ describe('the agent-control handler reads and writes through its own canvas shim
     expect(CANVAS_SRC).toContain('} else {\n            travelToProjectRef.current(route.projectId)')
   })
 
+  it('leaves the off-canvas notice up until it is dismissed', () => {
+    // An ordinary info strip reports something the user just did and is watching, so a few seconds
+    // is enough. This one reports work that landed in ANOTHER project while they were busy
+    // elsewhere: once it fades there is nothing left anywhere that says it happened, which is how
+    // it was missed in testing.
+    expect(CANVAS_SRC).toContain("if (notice?.kind !== 'info' || notice.sticky) return")
+    expect(CANVAS_SRC).toContain(
+      'text: offCanvasNoticeText(offCanvas.project.name, added),\n            sticky: true,'
+    )
+  })
+
   it('re-arms a node it creates off canvas for a cold open', () => {
     // `initialCommand` is never serialized, so a launch left there is silently dropped and the
     // session never starts — the rule the `--project` cold-open branch states.

@@ -344,7 +344,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  `send` to it and do not report it as started. It launches itself when its wait ends,',
     '  then reports through the ordinary status hooks — there is nothing to poll.',
     '  `queued: false` means the session is running.',
-    '  YOUR OWN project may also be off screen — the user works in one project at a time. The',
+    '  YOUR OWN project may also be off screen. The user works in one project at a time. The',
     '  node is still created, in your project, and the reply says `offCanvas: true`; it starts',
     '  when the user next views that project, exactly like a `--project` open. nodeterm does NOT',
     '  switch the user\'s view to show it, so never assume they are looking at what you opened.',
@@ -782,11 +782,11 @@ Verbs:
   ends and then reports through the ordinary status hooks, so there is nothing to poll.
   \`queued: false\` means the session is running.
   **Your own project may be off screen too.** The user works in one project at a time, and yours
-  is not necessarily the one they are looking at. The node is still created — in your project —
-  and the reply says \`offCanvas: true\`; it starts when the user next views that project, exactly
-  like a \`--project\` open. nodeterm deliberately does NOT switch their view to show it, so never
+  is not necessarily the one they are looking at. The node is still created, in your project, and
+  the reply says \`offCanvas: true\`; it starts when the user next views that project, exactly like
+  a \`--project\` open. nodeterm deliberately does NOT switch their view to show it, so never
   assume they are watching what you just opened. The same applies to \`show-web\`, \`show-image\`
-  and \`show-video\`: rendering something is an offer, not an interruption.
+  and \`show-video\`. Rendering something is an offer, not an interruption.
   \`--prompt\` arrives on ONE LINE. Every run of whitespace in it — newlines included — is
   collapsed to a single space before the session starts, because the prompt is passed as an
   argument on the agent CLI's launch command line and that line is typed into the pane. Two

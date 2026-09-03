@@ -929,13 +929,18 @@ export function Canvas() {
   // top-banner column instead; an 'info' one fades itself out, an 'error' stays until dismissed.
   // `action` is the one affordance a notice may carry: work landed somewhere the human is not
   // looking, and the honest answer is to say so and offer the trip rather than take it for them.
+  // `sticky` keeps such a notice up until it is dismissed. An 'info' strip normally reports
+  // something the user just did and is watching, so a few seconds is enough; this one reports work
+  // that landed in ANOTHER project while they were busy elsewhere, and once it fades there is
+  // nothing left anywhere that says it happened.
   const [notice, setNotice] = useState<{
     kind: 'info' | 'error'
     text: string
+    sticky?: boolean
     action?: { label: string; run: () => void }
   } | null>(null)
   useEffect(() => {
-    if (notice?.kind !== 'info') return
+    if (notice?.kind !== 'info' || notice.sticky) return
     const t = setTimeout(() => setNotice(null), noticeDwellMs(notice.text))
     return () => clearTimeout(t)
   }, [notice])
@@ -8930,6 +8935,7 @@ export function Canvas() {
           setNotice({
             kind: 'info',
             text: offCanvasNoticeText(offCanvas.project.name, added),
+            sticky: true,
             action: { label: 'Go there', run: () => travelToProjectRef.current(target) }
           })
         }
@@ -8958,7 +8964,7 @@ export function Canvas() {
           requestId,
           ...r,
           message:
-            `${r.message ?? ''}\nPlaced in "${offCanvas.project.name}", which is not on screen — it starts when that project is next viewed.`.trim(),
+            `${r.message ?? ''}\nPlaced in "${offCanvas.project.name}", which is not on screen. It starts when that project is next viewed.`.trim(),
           result: {
             ...base,
             ...('queued' in base ? { queued: ids.length > 0, queuedIds: ids } : {}),
