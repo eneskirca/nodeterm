@@ -622,9 +622,6 @@ interface GrokPayload {
    *  which carried `trigger`, kept it green. */
   source?: string
   trigger?: string
-  /** Events fired inside a subagent use its type as identity; there is no measured instance id. */
-  subagentType?: string
-  subagent_type?: string
   prompt?: string
 }
 

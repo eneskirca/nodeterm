@@ -150,25 +150,20 @@ describe('normalizeGrok — published 1.0.13 events', () => {
     expect(normalizeGrok(env({ hookEventName: 'stop_cancelled', reason: 'future_reason' }))).toBeNull()
   })
 
-  it('normalizes SubagentStart and SubagentStop without inventing an instance id', () => {
+  // REPLACED after measuring. This case used to build payloads with NO `subagentId` and assert that
+  // the result carried `sessionId` — "without inventing an instance id". Both halves are wrong
+  // against the wire: all four captured subagent payloads (1.0.13) carry `subagentId`, so the
+  // id-less shape does not occur; and passing `sessionId` through is the trap, because on the STOP
+  // that id is the CHILD's own. The measured behaviour is pinned in the `normalizeGrok — subagents`
+  // block at the end of this file. What survives here is the id-less input, which must map to
+  // NOTHING rather than to a card no store can key.
+  it('returns null for a subagent event with no instance id, rather than an unkeyable card', () => {
     expect(
       normalizeGrok(env({ hookEventName: 'subagent_start', sessionId: 's1', subagentType: 'explore' }))
-    ).toEqual({
-      nodeId: 'n1',
-      agentId: 'grok',
-      sessionId: 's1',
-      kind: 'subagent-start',
-      subagentType: 'explore'
-    })
+    ).toBeNull()
     expect(
       normalizeGrok(env({ hook_event_name: 'subagent_stop', session_id: 's1', subagent_type: 'explore' }))
-    ).toEqual({
-      nodeId: 'n1',
-      agentId: 'grok',
-      sessionId: 's1',
-      kind: 'subagent-end',
-      subagentType: 'explore'
-    })
+    ).toBeNull()
   })
 
   it('carries the closed compaction phase while leaving the current badge untouched', () => {
