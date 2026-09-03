@@ -6470,11 +6470,14 @@ export class PtyManager {
    * Is a Cursor dialog (approval, AskQuestion, plan "Ready to build?") on screen? The split's bare
    * Enter must not answer one that opened during the gap. An empty or failed capture is not
    * evidence (the `sendChatPrompt` rule): the Enter goes as before.
-   * note: Cursor detectors only; SEPARATE_SUBMIT_AGENTS is cursor alone today.
+   * Cursor detectors only, so asked only of a cursor pane: another SEPARATE_SUBMIT_AGENTS member
+   * (devin) would pay two pane captures per write for detectors that can never match its screen.
    * note: fail-open on a blind capture: failing closed would block every send whenever the pane
    * cannot be read (e.g. ssh missing).
    */
   private async cursorDialogShowing(persistKey: string): Promise<boolean> {
+    const agent = this.agentForKey(persistKey)
+    if (!agent || capabilityAgentId(agent as AgentId) !== 'cursor') return false
     const screen = await this.captureSession(persistKey).catch(() => '')
     return cursorApprovalIn(screen) || cursorQuestionIn(screen) || cursorPlanPromptIn(screen)
   }

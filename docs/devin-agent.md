@@ -1,8 +1,8 @@
 # Devin as a nodeterm agent
 
 Devin (`devin` on PATH) is a builtin agent id alongside
-claude, codex, gemini, copilot, opencode and grok: `AGENT_CONFIG.devin` in
-`src/shared/agents/config.ts` — label `Devin`, colour `#3969CA`, `launchCmd: 'devin'`,
+claude, codex, gemini, copilot, opencode, grok, cursor and antigravity: `AGENT_CONFIG.devin` in
+`src/shared/agents/config.ts` — label `Devin`, colour `#3969ca`, `launchCmd: 'devin'`,
 `promptInjectionMode: 'argv'`, `argvPromptSeparator: '--'`, `expectedProcess: 'devin'`.
 Status comes from devin's own hooks, never from parsing output.
 
@@ -25,13 +25,13 @@ Capabilities are membership lists in `src/shared/agents/config.ts`, not a flag b
 
 | List | devin | What had to be true first |
 |---|---|---|
-| `AGENT_HOOK_TARGETS` | **joined this branch** | A normalizer for devin's own event shape (`normalizeDevin`, `src/shared/agents/normalize.ts`), a subscription list (`DEVIN_HOOK_EVENTS`, `src/shared/agents/hook-events.ts`), and an installer writing the shared managed hook into `~/.config/devin/config.json` (`core/agents/hooks/devin.ts` → `installHooksInto`). |
+| `AGENT_HOOK_TARGETS` | **joined this branch** | A normalizer for devin's own event shape (`normalizeDevin`, `src/shared/agents/normalize.ts`), a subscription list (`DEVIN_HOOK_EVENTS`, `src/shared/agents/hook-events.ts`), and an installer writing the shared managed hook into `~/.config/devin/config.json` (`core/agents/hooks/devin.ts` → `installHooksInto`). Like every agent's hooks it is written only once the user enables Devin in the agent-integration consent (Settings → Agents, `core/agent-integrations.ts`), and removed if they decline. |
 | `RESUMABLE_AGENTS` | **joined this branch** | `resumeCommand('devin', id)` → `devin --resume <id>` (`devin --help` lists `--resume <SESSION_ID>`). |
 | `PERMISSION_MODE_CAPABLE` | **joined this branch** | A per-agent translation because devin does not share claude's flag spelling: `devin --permission-mode auto\|accept-edits\|smart\|dangerous` against our `manual\|auto\|acceptEdits\|plan\|bypassPermissions`. `DEVIN_MODES` in `src/shared/agents/approval-mode.ts` maps `auto` (→ devin's `smart`, see §5), `acceptEdits` and `bypassPermissions`; `manual` and `plan` are unsupported — devin's default already auto-approves read-only tools, and its parser rejects `plan`. |
-| `CANVAS_CONTROL_CAPABLE` | **joined this branch** | Devin has the same skill-discovery layout as Claude: `~/.config/devin/skills/<name>/SKILL.md` (measured with `devin skills paths`). `canvas-control.ts` and `RemoteHooks.installCanvasControl` now write `manage-nodeterm-canvas/SKILL.md` there, locally and on SSH hosts. |
+| `CANVAS_CONTROL_CAPABLE` | **joined this branch** | Devin has the same skill-discovery layout as Claude: `~/.config/devin/skills/<name>/SKILL.md` (measured with `devin skills paths`). The consent lifecycle writes `manage-nodeterm-canvas/SKILL.md` there (`skillRootsFor` in `core/agent-integrations.ts`), and `RemoteHooks` does the same on SSH hosts (`devinSkillsRoot` in `remote-hooks.ts`). |
 | `CONTEXT_LINK_CAPABLE` | **joined this branch** | A skill dir for `get-linked-context` plus a transcript locator (`locateDevin` in `core/handoff/locate.ts`) and a parser (`linesFromDevin` in `core/context-link-render.ts`). Devin stores one monolithic JSON transcript per session at `~/.local/share/devin/cli/transcripts/<sessionId>.json` (measured). |
 | `MODEL_SWITCH_CAPABLE` | **deliberately NOT joined** | Devin accepts `--model <slug>` (`devin models list` shows native slugs like `swe-1-7`), but the CLI has no documented `base-url` / `api-key` env and `modelGatewayEnv` in `src/shared/agents/model-gateway.ts` is for routing through a LiteLLM/Bifrost gateway. Passing a gateway model id to `devin --model` would rewrite the launch line while the backend stayed on Devin's own servers. |
-| `CHAT_CAPABLE` | not joined | The ⌘M `ChatPanel` renders claude's transcript `.jsonl`; devin's transcript is a different JSON object with `steps[]`. |
+| `CHAT_CAPABLE` | not joined | The ⌘M `ChatPanel` routes to a per-agent transcript reader; none is written for devin's JSON object with `steps[]` yet (the context-link parser `linesFromDevin` renders text only, not the chat view's message shape). |
 | `SUBAGENT_CAPABLE` | not joined | Subagent cards are driven by claude's `Agent`/`Task` tool correlation; devin has no mapped equivalent. |
 | `BRANCH_CAPABLE` | not joined | Branch sends claude's `/branch`; devin has no counterpart. |
 | `RECURRING_CAPABLE` | not joined | `/loop`, `/schedule`, `/cron` are detected from claude's tool names. |
@@ -196,6 +196,41 @@ so the line is never typed into an open permission prompt.
 
 ---
 
+### 5.2 Writing into devin's composer needs a delayed Enter
+
+Any nodeterm path that types text into a devin session — the canvas-control `write` verb, an
+agent-to-agent message envelope, a note push, the restart's `/exit` — must send the submitting
+Enter as a SEPARATE key event after the text. devin is in `SEPARATE_SUBMIT_AGENTS`
+(`src/shared/agents/config.ts`), the same list cursor is in, so `PtyManager.sendText`,
+`sendEnvelope` and the restart's exit phase all paste, wait `SEPARATE_SUBMIT_DELAY_MS` (150 ms), then
+send a bare Enter.
+
+**Devin's behaviour, not ours.** Measured on 3000.6.12, idle session, every delivery tmux offers:
+
+| written by | Enter in the same burst | Enter ≥ ~80 ms later |
+|---|---|---|
+| bracketed paste (`paste-buffer -p`, our path) | stays in the composer | submitted |
+| unframed paste | stays in the composer | submitted |
+| `send-keys -l` literal | stays in the composer | submitted |
+
+The threshold sits between 50 ms and 80 ms. Framing is irrelevant — devin keys off TIMING, treating
+a CR that arrives inside an input burst as pasted content. The identical bracketed-paste delivery
+into claude submits immediately (control test), which is why this is a per-agent list rather than a
+change to the delivery.
+
+**Why it mattered more than it looks.** Before the split, the canvas-control `write` verb answered
+**`sent`** to the ORCHESTRATING agent while the text sat unsubmitted — a handoff reported as started
+that never began. The restart's `/exit` failed more kindly: the poll never sees a shell and the run
+reports `exit-timeout`, leaving the session running.
+
+**The guarantee this owes.** The split gives up the one-command-list property that made "the Enter
+can never fire after a failed text send" structural, so `sendText` re-establishes it: the Enter is
+sent only when the paste answered true, and a paste that landed but whose Enter did not is reported
+as `pasted-not-submitted`. The pre-Enter dialog check that the split also runs is cursor's alone
+(`cursorDialogShowing` returns false for any other agent), so devin pays no pane capture for it.
+
+---
+
 ## 6. Canvas control and context-link discovery
 
 Both features reach devin through skills in `~/.config/devin/skills/`:
@@ -203,13 +238,13 @@ Both features reach devin through skills in `~/.config/devin/skills/`:
 - `manage-nodeterm-canvas/SKILL.md` — the canvas-control shim (`nodeterm.sh`) and verb list.
 - `get-linked-context/SKILL.md` — the context-link shim (`context.sh`) and commands.
 
-The same skills are written to remote hosts in `RemoteHooks.installCanvasControl` and
-`installContextLink` at `${remoteHome}/.config/devin/skills/...`, because devin on a remote
-host uses the same layout (assumption; see §9).
-
-For agents without a skill system, the canvas-control / get-linked-context instruction blocks
-are merged into `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` and `~/.opencode/AGENTS.md`. Devin
-is not in that set because it uses skills.
+Locally they are written by the agent-integration consent lifecycle (`core/agent-integrations.ts`:
+`skillRootsFor('devin')` → `devinConfigDir()/skills`, `%APPDATA%\devin\skills` on Windows), only
+while Devin is enabled there, and removed by exact content when it is declined. On SSH hosts
+`RemoteHooks` writes the same two skills to `${remoteHome}/.config/devin/skills/...` for a host
+whose consent includes devin, because devin on a remote host uses the same layout (assumption; see
+§9). Devin gets its own root rather than the shared `~/.agents/skills` the other non-claude agents
+use there: whether devin reads that directory has not been measured.
 
 ---
 
@@ -240,7 +275,7 @@ to `TOOL_RESULT_MAX` chars. Tool calls are not exposed separately in the capture
 | Surface | supported? | notes |
 |---|---|---|
 | Desktop | yes | hooks, permission modes, resume, canvas-control skill, context-link skill |
-| Server Edition | yes | core logic is in `src/core` and `src/server/agent-status.ts`; the same normalizer is wired there. Skill install on the server host is unverified. |
+| Server Edition | yes | core logic is in `src/core` and `src/server/agent-status.ts`; the same normalizer is wired there, and the same consent lifecycle installs its hooks and skills (unless the server runs with `installHooks: false`). Not exercised on a real server host. |
 | Mobile | N/A | devin is a CLI agent; mobile companion sees status over the same `agent:status` bridge as other agents. |
 
 **Neither raw hook listener changed, and that is the answer here rather than a gap.** CLAUDE.md's

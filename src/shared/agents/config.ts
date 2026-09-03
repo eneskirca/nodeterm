@@ -493,7 +493,14 @@ export const RENAME_CAPABLE = ['claude', 'grok', 'cursor'] as const
 // paste+Enter left `/rename x` unsubmitted; the same paste followed by a bare Enter, as a second
 // tmux invocation, renamed the chat. `submitsSeparately` is asked by `PtyManager.sendText`, the one
 // funnel every one-way write reaches.
-export const SEPARATE_SUBMIT_AGENTS = ['cursor'] as const
+//
+// devin: MEASURED on 3000.6.12, idle session. A CR arriving within roughly 50-80 ms of preceding
+// input is absorbed into that input, whether the text came as a bracketed paste, an unframed paste
+// or `send-keys -l`; the same CR >= ~80 ms later submits. It keys off TIMING, not the paste markers,
+// so the split's 150 ms gap (SEPARATE_SUBMIT_DELAY_MS) is what it needs. Without it the canvas
+// `write` verb, an agent message envelope, a note push and the restart's typed `/exit` all left
+// their text sitting unsubmitted in the composer.
+export const SEPARATE_SUBMIT_AGENTS = ['cursor', 'devin'] as const
 // Agents that load nodeterm's `get-linked-context` skill from `~/.claude/skills`, so a context link,
 // a note push or a verify brief can name the skill instead of spelling out the CLI. claude, and
 // cursor (measured: it lists that skill in its own `<agent_skills>`, docs/cursor-agent.md). grok

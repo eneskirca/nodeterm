@@ -41,7 +41,8 @@ import {
   reportsSessionEnd,
   resumeCommandWith,
   submitsSeparately,
-  setCustomAgentBaseResolver
+  setCustomAgentBaseResolver,
+  capabilityAgentId
 } from './config'
 import { CURSOR_HOOK_EVENTS } from './hook-events'
 
@@ -483,6 +484,17 @@ describe('devin capabilities', () => {
     expect(resumeCommand('devin', 'almondine-loganberry')).toBe('devin --resume almondine-loganberry')
   })
 
+  it('submits a written line with a SEPARATE, later Enter, inherited by a custom agent based on it', () => {
+    // devin absorbs a CR arriving within ~50-80 ms of preceding input (measured, 3000.6.12), so a
+    // one-shot paste+Enter sits unsubmitted. SEPARATE_SUBMIT_AGENTS' 150 ms gap clears it.
+    expect(submitsSeparately('devin')).toBe(true)
+    setCustomAgentBaseResolver((id) => (id === 'custom:d' ? 'devin' : undefined))
+    try {
+      expect(submitsSeparately(capabilityAgentId('custom:d'))).toBe(true)
+    } finally {
+      setCustomAgentBaseResolver(null)
+    }
+  })
   it('claims the integrations whose surface is already measured', () => {
     expect(canControlCanvas('devin')).toBe(true)
     expect(canContextLink('devin')).toBe(true)
