@@ -1158,7 +1158,8 @@ export function createProject(
   index: number,
   name?: string,
   cwd?: string,
-  ssh?: Project['ssh']
+  ssh?: Project['ssh'],
+  agentMessaging = useSettings.getState().settings.agentMessagingDefault
 ): Project {
   return {
     id: nextId('project'),
@@ -1166,6 +1167,12 @@ export function createProject(
     color: NODE_COLORS[index % NODE_COLORS.length],
     cwd,
     ...(ssh ? { ssh } : {}),
+    // This machine's global preference is an explicit local choice, so it seeds both the
+    // git-shared switch and the machine-local consent answer. Adopted/cloned projects bypass this
+    // factory and retain the clone notice gate.
+    ...(agentMessaging
+      ? { agentMessaging: true, capabilityAck: { agentMessaging: 'kept' as const } }
+      : {}),
     viewport: { x: 0, y: 0, zoom: 1 },
     nodes: []
   }
