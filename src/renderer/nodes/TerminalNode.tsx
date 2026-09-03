@@ -4361,16 +4361,31 @@ export function TerminalNode({
 
   // ---- hover guard: dwell before entering the terminal ----
   /**
-   * Take the keyboard: leave the guard, focus xterm, and report the node active.
+   * Take the keyboard: focus xterm, leave the guard, and report the node active.
    *
    * Split out of `onBodyEnter` so a deliberate CLICK can run it with no delay — see `onGuardUp`.
+   *
+   * `ack` (default true) says a human AIMED at this node, and two things follow from it. It marks
+   * the node's finish read, which reaches past this machine (`clearUnread` → `ackDone` → the notch
+   * capsule and the paired phone). And it drops the hover guard, which is a POINTER contract: the
+   * guard makes a quick scroll pan the canvas until the dwell has elapsed, so a restore nobody
+   * pointed at must leave it armed, or the next pointer entry silently skips its dwell and the
+   * first wheel scrolls tmux instead. Keyboard focus does not need the guard down: it is an
+   * overlay, and a programmatic `focus()` is not hit-tested.
+   *
+   * Every gesture that reaches here aims at THIS node: a dwell, a click, a sidebar or notification
+   * jump. The one caller that passes false is the window-activation restore.
    */
-  const enterNow = () => {
+  const enterNow = (opts?: { ack?: boolean }) => {
+    const aimed = opts?.ack !== false
     if (dwellRef.current) clearTimeout(dwellRef.current)
-    setArmed(false)
+    if (aimed) setArmed(false)
     termRef.current?.focus()
+    useTerminalFocus.getState().remember(id)
     useAgentStatus.getState().setActive(id, true)
-    useAgentStatus.getState().clearUnread(id)
+    if (aimed) {
+      useAgentStatus.getState().clearUnread(id)
+    }
     presence.reportFocus(id)
   }
 
@@ -4385,8 +4400,9 @@ export function TerminalNode({
   useEffect(() => {
     if (focusReq === 0 || focusReq === lastFocusReqRef.current) return
     lastFocusReqRef.current = focusReq
+    const { ack } = useTerminalFocus.getState()
     useTerminalFocus.setState({ nodeId: null })
-    enterNow()
+    enterNow({ ack })
     // enterNow closes over live refs/setters; re-running on its identity would fire spuriously.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusReq])
@@ -4401,6 +4417,7 @@ export function TerminalNode({
       }
       setArmed(false)
       termRef.current?.focus()
+      useTerminalFocus.getState().remember(id)
       useAgentStatus.getState().setActive(id, true)
       useAgentStatus.getState().clearUnread(id)
       // "I am working in this node" — the same signal the agent-status active flag uses, i.e. the
@@ -4521,6 +4538,7 @@ export function TerminalNode({
     // A paste came from THIS window, which already has it.
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     term.focus()
+    useTerminalFocus.getState().remember(id)
     term.paste(paths.join(' ') + ' ')
     useAgentStatus.getState().setActive(id, true)
     presence.reportFocus(id)
