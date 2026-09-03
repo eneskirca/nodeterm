@@ -2608,10 +2608,18 @@ export interface GrokCliCaps {
    * and `--resume` accepts a TITLE as well as an id, failing as ambiguous on duplicates.
    */
   sessionIdFlag: boolean
+  /**
+   * Model ids this CLI lists, from `grok models` — the CLI's own catalogue, so there is no allowlist
+   * to maintain and a model shipped tomorrow appears without a code change.
+   *
+   * Empty when the subcommand fails, is unparseable, or grok is not installed: the UI then offers no
+   * model switching, which is the pre-feature behaviour. Never a partial list.
+   */
+  models: string[]
 }
 
-/** Unprobed grok ⇒ omit the flag ⇒ today's command line, byte-identical. */
-export const UNKNOWN_GROK_CLI_CAPS: GrokCliCaps = { sessionIdFlag: false }
+/** Unprobed grok ⇒ omit the flag, offer no models ⇒ today's command line, byte-identical. */
+export const UNKNOWN_GROK_CLI_CAPS: GrokCliCaps = { sessionIdFlag: false, models: [] }
 
 export interface GrokApi {
   /** Capabilities of the local grok CLI (memoized in the shell; safe to call repeatedly).

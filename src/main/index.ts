@@ -187,6 +187,8 @@ import { installManagedAgentHooks } from '../core/agents/hooks'
 import { createSubagentTail } from '../core/subagent-tail'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
+import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
+import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
@@ -2764,6 +2766,45 @@ app.whenReady().then(async () => {
       if (nodeId && (plan.event === 'stop' || plan.event === 'sessionend')) {
         recordRawToolEvent(nodeId, { hook_event_name: 'Stop' })
       }
+      // 3. SUBAGENT CARDS. Keyed by `subagentId` — the per-instance id, and the ONLY id both
+      // events share. On SubagentStart `sessionId` is the PARENT's; on SubagentStop it is the
+      // CHILD's own. Keying on it would file the start and the stop under different cards, and the
+      // started one would never close: a badge lit forever, with no error to show for it.
+      //
+      // The child's transcript is DERIVED from `subagentId`, never taken from the payload's
+      // `transcriptPath`. On the start that path is the PARENT's session — following it paints the
+      // parent's conversation inside the child's card, full and plausible and somebody else's — and
+      // on the stop the directory is finally the child's but the file is still `updates.jsonl`,
+      // which parses to nothing. Both spellings of that trap are documented at `handoff/locate.ts`.
+      if (g.subagentId && g.cwd) {
+        if (g.event === 'subagentstart') {
+          const childDir = grokSessionDir({
+            sessionsDir: grokSessionsDir(),
+            cwd: g.cwd,
+            sessionId: g.subagentId
+          })
+          if (childDir) {
+            subagentTail.trackFile(
+              g.subagentId,
+              join(childDir, GROK_CHAT_HISTORY_FILE),
+              createGrokSubagentFormatter
+            )
+            if (nodeId) {
+              const set = nodeSubagents.get(nodeId) ?? new Set<string>()
+              set.add(g.subagentId)
+              nodeSubagents.set(nodeId, set)
+            }
+          }
+        } else if (g.event === 'subagentstop') {
+          subagentTail.finish(g.subagentId)
+          if (nodeId) nodeSubagents.get(nodeId)?.delete(g.subagentId)
+        }
+      }
+      // A CHILD's teardown is not this node's. `session_end` carries `subagentType` only in a
+      // subagent session (measured: 2 of the 4 captured ends had it, and those two were the
+      // children). Without this guard a subagent finishing would forget the PARENT's session
+      // directory and clear its context tail — the node would go quiet mid-turn.
+      if (g.event === 'sessionend' && g.subagentType) return
       // Forgetting the MAP entry and untracking the TAIL are two different things and neither
       // substitutes for the other: `applyGrokHookSession` did the first (and does it for PostCompact
       // too, which this call site cannot see). The tail is this shell's, so it is released here.

@@ -154,9 +154,58 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
  * provider here would hide supported modes. The capability is the only UI gate; custom agents
  * inherit it from their declared base harness.
  */
-export function modelsForAgent(models: GatewayModel[], agentId: AgentId): GatewayModel[] {
+export function modelsForAgent(
+  models: GatewayModel[],
+  agentId: AgentId,
+  grokModels: readonly GatewayModel[] = []
+): GatewayModel[] {
   if (!canSwitchModel(agentId)) return []
+  // grok is offered ITS OWN models, never the gateway's, and this is a correctness rule rather than
+  // a preference: grok cannot be routed through the gateway at all (see `modelGatewayEnv` below —
+  // its custom models live in `~/.grok/config.toml`, not in environment variables). Handing it the
+  // gateway catalogue would put ids on the menu that its CLI rejects at launch: a picker that looks
+  // like it worked and kills the node.
+  if (capabilityAgentId(agentId) === 'grok') return [...grokModels]
   return models
+}
+
+/**
+ * Parse `grok models` — the CLI's own list, so there is no allowlist to maintain and a model shipped
+ * tomorrow appears without a code change.
+ *
+ * MEASURED output (1.0.13, 2026-09-02):
+ *
+ *   You are logged in with grok.com.
+ *
+ *   Default model: grok-4.6
+ *
+ *   Available models:
+ *     * grok-4.6 (default)
+ *     - grok-4.5
+ *
+ * Only the indented bullets under "Available models:" are read. The `Default model:` line is
+ * deliberately NOT a source: it repeats an entry that the bullet list already carries, and treating
+ * a prose line as data is how a login banner or a future footer becomes a fake model id.
+ *
+ * Anything unparseable yields an EMPTY list, which the UI reads as "no model switching" — the
+ * pre-feature behaviour. Never a partial list built from whatever happened to match.
+ */
+export function grokModelsFrom(stdout: string | null | undefined): GatewayModel[] {
+  const text = stdout ?? ''
+  const start = text.indexOf('Available models:')
+  if (start < 0) return []
+  const byId = new Map<string, GatewayModel>()
+  for (const raw of text.slice(start).split('\n').slice(1)) {
+    // An unindented line ends the block: the list is indented, anything flush left is prose again.
+    if (raw.trim() && !/^\s/.test(raw)) break
+    const m = /^\s+[*-]\s+(\S+)/.exec(raw)
+    if (!m) continue
+    const id = m[1]
+    // Same charset discipline as every other id that reaches a command line.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/.test(id)) continue
+    if (!byId.has(id)) byId.set(id, { id })
+  }
+  return [...byId.values()]
 }
 
 /**
@@ -268,6 +317,18 @@ export function modelGatewayEnv(
           : {})
       }
     }
+    case 'grok':
+      // Deliberately EMPTY, and stated rather than omitted. grok's model gateway is not an
+      // environment: custom models are declared in `~/.grok/config.toml` with their own `base_url`
+      // and `api_key` (`~/.grok/docs/user-guide/11-custom-models.md`), and that file also says the
+      // environment-wide knobs it does accept CANNOT carry `model`/`base_url`/`api_key`. So there is
+      // no env for this function to emit, and emitting the OpenAI pair anyway would point grok's
+      // built-in models at a gateway they were never configured for.
+      //
+      // Writing into the user's `config.toml` to route grok through the gateway is a real feature
+      // and a separate decision — it edits a file the user owns, for a value they did not ask us to
+      // change. Not this PR.
+      return {}
     default:
       return {}
   }

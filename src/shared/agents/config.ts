@@ -136,7 +136,12 @@ export const SESSION_ID_CAPABLE = ['claude', 'copilot', 'grok'] as const
 export const UNCONDITIONAL_SESSION_ID_CAPABLE = ['copilot'] as const
 // claude: Task/Agent tool via hooks (tool_use_id-keyed). codex: spawn_agent collaboration via its
 // native SubagentStart/SubagentStop hooks (agent_id-keyed), measured on codex-cli 0.146.0.
-export const SUBAGENT_CAPABLE = ['claude', 'codex'] as const
+// grok: its own native SubagentStart/SubagentStop, keyed by `subagentId` — measured on 1.0.13 by
+// running two subagents of the SAME type in parallel, which is the only way to tell an instance
+// id from a type. It was assumed to key by `subagentType` (a type, so two children of one type
+// would collide); the payloads say otherwise, and `subagentId` is also the ONLY id the start and
+// the stop share — on the start `sessionId` is the PARENT's.
+export const SUBAGENT_CAPABLE = ['claude', 'codex', 'grok'] as const
 export const RECURRING_CAPABLE = ['claude'] as const // /loop, /schedule, /cron
 export const BRANCH_CAPABLE = ['claude'] as const
 // grok joins with NO installer of its own: it scans `~/.claude/skills` for Claude Code
@@ -273,7 +278,7 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as 
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership

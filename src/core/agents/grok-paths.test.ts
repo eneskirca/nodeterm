@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import path from 'path'
+import { homedir } from 'os'
 import {
+  _resetGrokHomeProbeForTests,
+  ensureGrokHomeProbed,
   grokEncodedCwdDirName,
   grokHomeDir,
+  grokHomeFallbackWasSilent,
   grokSessionDir,
   grokSessionsDir,
   isSafeGrokSessionId,
@@ -78,4 +83,67 @@ describe('isSafeRemoteGrokHome', () => {
 
 it('grokSessionsDir sits under the resolved home', () => {
   expect(grokSessionsDir({ GROK_HOME: '/srv/g' }, '/home/u')).toBe('/srv/g/sessions')
+})
+
+describe('grokHomeDir — the login-shell probe (§8.9)', () => {
+  // The bug this closes: a desktop app launched from Finder/Dock never sourced the user's rc, while
+  // the grok CLI — started by the shell inside a tmux pane — did. For a user whose only
+  // `export GROK_HOME=…` lives in `.zshrc`, nodeterm writes the hook under `~/.grok` and grok reads
+  // somewhere else. Nothing errors: no badge, no unread dot, no notification, no session name, ever.
+  beforeEach(() => _resetGrokHomeProbeForTests())
+  afterEach(() => _resetGrokHomeProbeForTests())
+
+  it('finds the home a shell rc exports but this process never saw', async () => {
+    await ensureGrokHomeProbed(async () => '/Volumes/work/.grok')
+    expect(grokHomeDir({} as never)).toBe(path.join(homedir(), '.grok'))
+    expect(grokHomeDir()).toBe('/Volumes/work/.grok')
+    expect(grokSessionsDir()).toBe(path.join('/Volumes/work/.grok', 'sessions'))
+  })
+
+  it('never overrides a value this process already has, and does not even ASK', async () => {
+    // Two claims, and the second is the one a mutation can break invisibly: when the process already
+    // knows, the probe must not spawn a login shell at all. That spawn costs hundreds of
+    // milliseconds and can hang on a slow dotfile, so paying it for an answer we would discard is
+    // not a harmless extra.
+    process.env.GROK_HOME = '/explicit'
+    let asked = 0
+    try {
+      await ensureGrokHomeProbed(async () => {
+        asked++
+        return '/from-the-shell'
+      })
+      expect(asked).toBe(0)
+      expect(grokHomeDir()).toBe('/explicit')
+      expect(grokHomeFallbackWasSilent()).toBe(false)
+    } finally {
+      delete process.env.GROK_HOME
+    }
+  })
+
+  it('falls back to ~/.grok and SAYS SO when the shell knows nothing', async () => {
+    // Rule 9: "could not measure" and "there is nothing" are different facts. The original bug was
+    // not the wrong path — it was that the wrong path produced no diagnostic anywhere.
+    expect(grokHomeFallbackWasSilent()).toBe(false)
+    await ensureGrokHomeProbed(async () => null)
+    expect(grokHomeDir()).toBe(path.join(homedir(), '.grok'))
+    expect(grokHomeFallbackWasSilent()).toBe(true)
+  })
+
+  it('survives a probe that throws, without taking the caller down', async () => {
+    await ensureGrokHomeProbed(async () => {
+      throw new Error('dotfile exploded')
+    }).catch(() => {
+      throw new Error('ensureGrokHomeProbed must never reject')
+    })
+    expect(grokHomeDir()).toBe(path.join(homedir(), '.grok'))
+  })
+
+  it('leaves an explicitly-passed environment alone', async () => {
+    // `grokHomeDir(env)` means "resolve as THIS environment would". Substituting a shell answer
+    // there would make it lie about the environment it was handed — and both shells call it with a
+    // real env when they build a REMOTE path, where a local shell's answer is simply wrong.
+    await ensureGrokHomeProbed(async () => '/from-the-shell')
+    expect(grokHomeDir({ GROK_HOME: '/given' } as never)).toBe('/given')
+    expect(grokHomeDir({} as never, '/home/other')).toBe(path.join('/home/other', '.grok'))
+  })
 })

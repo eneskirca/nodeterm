@@ -162,6 +162,27 @@ describe('both shells register a 4-arg raw listener', () => {
   // (b) skip the context-meter track for agent_id-tagged child events — a shell missing (a)
   // silently has no live activity, and one missing (b) re-points the parent's meter at the
   // child's rollout (SubagentStart carries the parent session_id with the CHILD's path).
+  // Same rule, grok's instance. Three things must be in BOTH shells or the feature is silently
+  // half-present: (a) the card is keyed by `subagentId` — the only id the start and the stop share,
+  // since the start's `sessionId` is the PARENT's; (b) the child's transcript is DERIVED from that
+  // id, never taken from the payload's path, which on the start belongs to the parent; and (c) a
+  // `session_end` carrying `subagentType` returns early, or a child finishing tears down the
+  // PARENT's session state and the node goes quiet mid-turn.
+  it('both raw listeners carry the grok subagent branch (subagentId + derived path + child-end guard)', () => {
+    for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
+      const src = code(rel)
+      expect(src, `${rel} misses the grok subagent trackFile branch`).toMatch(
+        /subagentTail\.trackFile\(\s*g\.subagentId/
+      )
+      expect(src, `${rel} derives the child path from the payload instead of the subagentId`).toMatch(
+        /sessionId: g\.subagentId/
+      )
+      expect(src, `${rel} misses the child session_end guard`).toMatch(
+        /g\.event === 'sessionend' && g\.subagentType/
+      )
+    }
+  })
+
   it('both raw listeners carry the codex subagent branch (trackFile + agent_id gate)', () => {
     for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
       const src = code(rel)

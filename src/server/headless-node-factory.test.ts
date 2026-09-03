@@ -155,8 +155,10 @@ describe('HeadlessNodeFactory', () => {
         fullscreenTui: false,
         sessionIdFlag: false
       }),
-      // Stated, not defaulted — the required field is what stops a probe being forgotten.
-      grokCaps: async () => ({ sessionIdFlag: false }),
+      // Stated, not defaulted — the required fields are what stop a probe being forgotten.
+      // `models: []` is grok's own "no catalogue" answer (a failed/absent `grok models`), which is
+      // the pre-feature behaviour: no model switching offered, never a partial list.
+      grokCaps: async () => ({ sessionIdFlag: false, models: [] }),
       codexSharedIdentity: async () => codexSharedIdentity,
       ownership,
       stateOf: (id) => states[id],

@@ -5,8 +5,9 @@ import { grokRawFields, normalizeClaude, normalizeGrok, type RawHookEnvelope } f
  * Grok's hook envelope is its own dialect: camelCase keys whose `hookEventName` VALUE is
  * snake_case ("pre_tool_use"), and the grok SDK path converts the top-level keys to snake_case.
  * Both spellings are therefore read, and the event name is canonicalized rather than matched
- * literally — read out of the shipped 1.0.0 docs, not inferred from claude's shape. No payload was
- * ever captured: a hook fires only inside a logged-in grok session, which was never available here.
+ * literally — read out of the shipped 1.0.0 docs, not inferred from claude's shape. Payloads WERE
+ * captured on 1.0.13 (evidence/grok-hook-payloads.jsonl and grok-subagent-payloads.jsonl); the cases
+ * below that are built from a capture say so.
  */
 function env(payload: Record<string, unknown>): RawHookEnvelope {
   return { nodeId: 'n1', agentId: 'grok', payload }
@@ -149,25 +150,20 @@ describe('normalizeGrok — published 1.0.13 events', () => {
     expect(normalizeGrok(env({ hookEventName: 'stop_cancelled', reason: 'future_reason' }))).toBeNull()
   })
 
-  it('normalizes SubagentStart and SubagentStop without inventing an instance id', () => {
+  // REPLACED after measuring. This case used to build payloads with NO `subagentId` and assert that
+  // the result carried `sessionId` — "without inventing an instance id". Both halves are wrong
+  // against the wire: all four captured subagent payloads (1.0.13) carry `subagentId`, so the
+  // id-less shape does not occur; and passing `sessionId` through is the trap, because on the STOP
+  // that id is the CHILD's own. The measured behaviour is pinned in the `normalizeGrok — subagents`
+  // block at the end of this file. What survives here is the id-less input, which must map to
+  // NOTHING rather than to a card no store can key.
+  it('returns null for a subagent event with no instance id, rather than an unkeyable card', () => {
     expect(
       normalizeGrok(env({ hookEventName: 'subagent_start', sessionId: 's1', subagentType: 'explore' }))
-    ).toEqual({
-      nodeId: 'n1',
-      agentId: 'grok',
-      sessionId: 's1',
-      kind: 'subagent-start',
-      subagentType: 'explore'
-    })
+    ).toBeNull()
     expect(
       normalizeGrok(env({ hook_event_name: 'subagent_stop', session_id: 's1', subagent_type: 'explore' }))
-    ).toEqual({
-      nodeId: 'n1',
-      agentId: 'grok',
-      sessionId: 's1',
-      kind: 'subagent-end',
-      subagentType: 'explore'
-    })
+    ).toBeNull()
   })
 
   it('carries the closed compaction phase while leaving the current badge untouched', () => {
@@ -399,5 +395,83 @@ describe('grokRawFields', () => {
       toolUseId: 't2',
       toolInput: { path: '/w2/a.ts' }
     })
+  })
+})
+
+/**
+ * Subagent cards. Every payload below is copied from the 1.0.13 capture
+ * (evidence/grok-subagent-payloads.jsonl, two parallel `explore` children), field names and all.
+ *
+ * These assert the mapped EVENT, not list membership: a test that only checks `canSubagent('grok')`
+ * passes while `normalizeGrok` returns null and no card can ever render, which is exactly how the
+ * feature reached review claiming to work.
+ */
+describe('normalizeGrok — subagents', () => {
+  const START = {
+    hookEventName: 'subagent_start',
+    sessionId: 'parent-1',
+    subagentId: 'child-a',
+    subagentType: 'explore',
+    description: 'Read a.txt contents'
+  }
+  const STOP = {
+    hookEventName: 'subagent_stop',
+    // The captured stop carries the CHILD's own id here, not the parent's.
+    sessionId: 'child-a',
+    subagentId: 'child-a',
+    subagentType: 'explore',
+    lastAssistantMessage: 'alfa'
+  }
+
+  it('maps subagent_start to a card keyed on subagentId, carrying type and task', () => {
+    expect(normalizeGrok(env(START))).toEqual({
+      nodeId: 'n1',
+      agentId: 'grok',
+      kind: 'subagent-start',
+      toolUseId: 'child-a',
+      subagentType: 'explore',
+      task: 'Read a.txt contents'
+    })
+  })
+
+  it('maps subagent_stop to the end, carrying the last assistant message as the result', () => {
+    expect(normalizeGrok(env(STOP))).toEqual({
+      nodeId: 'n1',
+      agentId: 'grok',
+      kind: 'subagent-end',
+      toolUseId: 'child-a',
+      subagentType: 'explore',
+      result: 'alfa'
+    })
+  })
+
+  it('gives two children of the SAME type different cards — one per instance, not per type', () => {
+    const a = normalizeGrok(env(START))
+    const b = normalizeGrok(env({ ...START, subagentId: 'child-b' }))
+    expect(a?.subagentType).toBe(b?.subagentType)
+    expect(a?.toolUseId).not.toBe(b?.toolUseId)
+  })
+
+  it('never re-points the node session: neither event carries a sessionId', () => {
+    // The stop's own sessionId is the CHILD's; passing it through as `sessionId` would move the
+    // node's session onto the child and take the context meter with it.
+    expect(normalizeGrok(env(START))).not.toHaveProperty('sessionId')
+    expect(normalizeGrok(env(STOP))).not.toHaveProperty('sessionId')
+  })
+
+  it('reads the snake_case dialect the SDK path presents', () => {
+    expect(
+      normalizeGrok(
+        env({
+          hook_event_name: 'subagent_start',
+          subagent_id: 'child-a',
+          subagent_type: 'explore'
+        })
+      )
+    ).toMatchObject({ kind: 'subagent-start', toolUseId: 'child-a', subagentType: 'explore' })
+  })
+
+  it('returns null for a subagent event with no id, rather than an unkeyable card', () => {
+    expect(normalizeGrok(env({ hookEventName: 'subagent_start', subagentType: 'explore' }))).toBeNull()
   })
 })

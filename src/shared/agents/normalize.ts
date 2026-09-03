@@ -591,6 +591,16 @@ interface GrokPayload {
   tool_use_id?: string
   toolInput?: Record<string, unknown>
   tool_input?: Record<string, unknown>
+  /** SubagentStart/SubagentStop only. MEASURED (1.0.13, two parallel `explore` children): a
+   *  per-INSTANCE id, and the only id both events share — see `grokRawFields`. The snake spelling is
+   *  read alongside the camel one for the same reason every other field here is: grok emits both
+   *  dialects in the same payload, and the SDK path may present only one. */
+  subagentId?: string
+  subagent_id?: string
+  subagentType?: string
+  subagent_type?: string
+  /** SubagentStart only: the human task text ("Read a.txt contents"). Absent on the stop. */
+  description?: string
   lastAssistantMessage?: string
   last_assistant_message?: string
   notificationType?: string
@@ -612,9 +622,6 @@ interface GrokPayload {
    *  which carried `trigger`, kept it green. */
   source?: string
   trigger?: string
-  /** Events fired inside a subagent use its type as identity; there is no measured instance id. */
-  subagentType?: string
-  subagent_type?: string
   prompt?: string
 }
 
@@ -653,6 +660,9 @@ export function grokRawFields(payload: Record<string, unknown>): {
   toolName?: string
   toolUseId?: string
   toolInput?: Record<string, unknown>
+  subagentId?: string
+  subagentType?: string
+  description?: string
 } {
   const p = payload as GrokPayload
   return {
@@ -661,7 +671,21 @@ export function grokRawFields(payload: Record<string, unknown>): {
     cwd: p.cwd,
     toolName: p.toolName ?? p.tool_name,
     toolUseId: p.toolUseId ?? p.tool_use_id,
-    toolInput: p.toolInput ?? p.tool_input
+    toolInput: p.toolInput ?? p.tool_input,
+    // MEASURED on 1.0.13 (2026-09-02) by running two `explore` subagents in parallel:
+    //
+    //  - `subagentId` is a per-INSTANCE id. The two children of the same TYPE came back with
+    //    different ids, so grok keys like codex's `agent_id` and not, as was assumed, by type
+    //    alone — nothing has to be aggregated.
+    //  - It is also the ONLY id common to both events. On `SubagentStart` the `sessionId` is the
+    //    PARENT's (the hook runs in the parent); on `SubagentStop` it is the CHILD's own, equal to
+    //    `subagentId`. Keying on `sessionId` would file the start and the stop under different
+    //    cards, and the started one would never close: a badge lit forever, with no error.
+    //  - `description` arrives ONLY on the start ("Read a.txt contents"); on the stop it is
+    //    absent, so a title resolved at close time has nothing to read.
+    subagentId: p.subagentId ?? p.subagent_id,
+    subagentType: p.subagentType ?? p.subagent_type,
+    description: p.description
   }
 }
 
@@ -737,11 +761,39 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
       lastMessage
     }
   }
-  if (ev === 'subagentstart' || ev === 'subagentstop') {
+  // Subagent cards. MEASURED (1.0.13, two parallel `explore` children — the capture is
+  // evidence/grok-subagent-payloads.jsonl):
+  //   subagent_start  sessionId = the PARENT's, subagentId per INSTANCE, subagentType, description
+  //   subagent_stop   sessionId = the CHILD's own (identical to its subagentId), lastAssistantMessage
+  // Two children of the SAME type carried different `subagentId`s, which is why the card is keyed on
+  // that and not on the type — one card per instance. `toolUseId` is the field the card store keys
+  // on for every agent (claude correlates by tool_use_id, codex by agent_id); grok has no tool call
+  // behind a subagent at all, so its per-instance id goes in the same slot rather than adding a
+  // fourth spelling to `NormalizedAgentEvent`.
+  //
+  // The stop's `sessionId` being the CHILD's is the trap here: `base.sessionId` would re-point the
+  // node's session to the child, so both events are answered with the id the CARD needs and the
+  // session left alone — the parent's own Stop is what owns that.
+  if ((ev === 'subagentstart' || ev === 'subagentstop') && (p.subagentId ?? p.subagent_id)) {
+    const subagentId = p.subagentId ?? p.subagent_id
+    const subagentType = p.subagentType ?? p.subagent_type
+    if (ev === 'subagentstart') {
+      return {
+        nodeId: env.nodeId,
+        agentId: env.agentId,
+        kind: 'subagent-start',
+        toolUseId: subagentId,
+        subagentType,
+        task: p.description
+      }
+    }
     return {
-      ...base,
-      kind: ev === 'subagentstart' ? 'subagent-start' : 'subagent-end',
-      subagentType: p.subagentType ?? p.subagent_type
+      nodeId: env.nodeId,
+      agentId: env.agentId,
+      kind: 'subagent-end',
+      toolUseId: subagentId,
+      subagentType,
+      result: lastMessage
     }
   }
   if (ev === 'precompact' || ev === 'postcompact') {
