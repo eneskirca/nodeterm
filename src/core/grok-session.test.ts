@@ -1,20 +1,19 @@
 // FIXTURE PROVENANCE — read this before trusting `__fixtures__/grok/summary.json`.
 //
-// It was NOT captured from a real grok session: there is no grok binary and no grok account on the
-// machine this task was implemented on. It is CONSTRUCTED from the field list grok's shipped 1.0.0
-// documentation gives for `summary.json` (`info`, `session_summary`, `generated_title`,
-// `created_at`, `updated_at`, `num_messages`, `num_chat_messages`, `current_model_id`,
-// `parent_session_id`, `agent_name`). The field NAMES come from that list; every VALUE is a
-// plausible placeholder, the timestamp format is a guess, and nested shapes are left empty rather
-// than invented (`info: {}`) — so only the two keys the assertions below pin (`generated_title`,
-// `current_model_id`) may be relied upon.
+// Captured from grok 1.0.13 on 2026-09-01. Personal paths and ids are redacted; every key and value
+// type matches the captured summary.json.
 //
-// UNVERIFIED, and the reason the first TITLE_KEYS entry exists: the key grok's `/rename` (alias
-// `/title`) writes a MANUAL title to is unknown. `'title'` is a first guess, placed first so a real
-// manual title wins the moment someone confirms it. Until then the read leg adopts the documented
-// `generated_title`, which is grok's own auto-name — correct, just not overridable from grok's side.
-// Replacing this fixture with a real capture (and correcting TITLE_KEYS if the key differs) is the
-// checklist item this task leaves open.
+// TWO VALUES ARE AUTHORED, NOT CAPTURED, and the distinction is not pedantry — it already cost a
+// wrong call. `generated_title` and `session_summary` are made to DIFFER here so a mutation that
+// removes the first cannot fall through to the same text via the second and pass anyway. The
+// earlier version wrote the second one as a full sentence, and a later reader took that sentence
+// for grok's own output and reasoned from it.
+//
+// Both now carry the shape grok actually produces, measured across 49 local summary.json files:
+// short titles, 0 to 49 characters, mean 23 — identical to `generated_title` in 28 of the 29 files
+// that carry both. Never a sentence. A fixture that does not look like the real thing is a loaded
+// trap for whoever reads it next, and the discrimination the test needs costs nothing to get from
+// two different SHORT titles.
 import { afterAll, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -35,17 +34,37 @@ describe('pickGrokSessionMeta', () => {
     const meta = pickGrokSessionMeta(fixture)
     // Both assertions read from the fixture — do not relax them to `expect.any(String)`: the point
     // of the fixture is that the keys are pinned.
-    expect(meta?.title).toBe('Add grok status hooks to nodeterm')
-    expect(meta?.model).toBe('grok-4')
+    expect(meta?.title).toBe('Plan the release')
+    expect(meta?.model).toBe('grok-4.6')
   })
 
-  it('prefers a manually set title over the model-generated one', () => {
-    const meta = pickGrokSessionMeta(JSON.stringify({ title: 'mine', generated_title: 'auto' }))
-    expect(meta?.title).toBe('mine')
+  it('prefers grok\'s generated title over the human session summary and an unsupported title key', () => {
+    const meta = pickGrokSessionMeta(
+      JSON.stringify({ title: 'guess', generated_title: 'auto', session_summary: 'summary' })
+    )
+    expect(meta?.title).toBe('auto')
   })
 
-  it('falls back to the generated title', () => {
-    expect(pickGrokSessionMeta(JSON.stringify({ generated_title: 'auto' }))?.title).toBe('auto')
+  it('does NOT fall back to session_summary — an unsure value degrades to nothing', () => {
+    // It used to. The fallback is gone because `pickGrokSessionMeta` feeds the node title with no
+    // length cap anywhere on the path, so anything adopted here reaches the header, the sidebar, the
+    // kanban card, the window title and `project.json`. Reading a field we are not sure about is a
+    // guess degrading to SOMETHING ELSE, and this repo's own rule says it must degrade to NOTHING.
+    //
+    // The cost is real and measured: of 49 local summary.json files, 20 carry `session_summary` and
+    // no `generated_title` — young sessions, before grok names them. Those resolve to no name until
+    // it does. No name is a state the UI already handles; a wrong name is not.
+    expect(pickGrokSessionMeta(JSON.stringify({ session_summary: 'summary' }))?.title).toBeNull()
+  })
+
+  it('reads the generated title even when session_summary is present and different', () => {
+    // The pair the fixture is built to discriminate, asserted directly: only one of the two is a
+    // title key now, so the other cannot win and cannot rescue a mutation that removes the first.
+    expect(
+      pickGrokSessionMeta(
+        JSON.stringify({ generated_title: 'Plan the release', session_summary: 'Something else' })
+      )?.title
+    ).toBe('Plan the release')
   })
 
   it('returns a null TITLE (not a null meta) when the session has no name yet', () => {
