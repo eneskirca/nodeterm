@@ -573,8 +573,17 @@ export const POSIX_TOOL_SHELL_ON_WINDOWS = ['claude'] as const
 // way, so membership here is only half the story — the translation lives in ./approval-mode.ts.
 //
 // Membership does NOT mean every mode applies: BOTH new vocabularies are narrower than ours — codex
-// has no plan and no edit-specific mode, and gemini has nothing meaning "approve most things but not
-// edits", i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+// has no plan and no edit-specific mode, and gemini has nothing meaning what claude's `auto` means,
+// i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+//
+// What claude's `auto` actually promises, from Claude Code's own mode help, is "Claude decides what
+// is safe" — a MODEL judging each action, recommended there "for long unattended tasks". An earlier
+// version of this comment described it as "approve most things but not edits", which is a different
+// (and narrower) claim; the gemini conclusion below is unaffected — `auto_edit` is a blanket
+// auto-approval of edits, not a judgement — but the imprecision cost real behaviour once. It is why
+// devin was first mapped `auto → auto` on a name match, selecting devin's OWN default (an alias for
+// `normal`, which judges nothing) instead of `smart`, the mode that actually delegates the decision
+// to a model. Match the SEMANTIC, never the spelling; see DEVIN_MODES in ./approval-mode.
 // `modeSupported` is what the UI asks so the user is told, instead of being shown "Plan" while
 // codex runs in on-request, or "Auto" while gemini auto-approves every edit. That last one is not
 // hypothetical: `auto` is DEFAULT_PERMISSION_MODE, so mapping it to gemini's `auto_edit` would have
