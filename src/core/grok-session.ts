@@ -45,13 +45,25 @@ export interface GrokSessionMeta {
 }
 
 /**
- * Title keys in PREFERENCE order. `generated_title` is grok's actual session name;
- * `session_summary` is the human-readable fallback before that title is generated.
+ * The ONE key a node title may come from: `generated_title`, grok's own session name. Anything else
+ * falls through to null and the node keeps the title it already has.
  *
- * Do not restore the guessed `title` key: a real grok 1.0.13 summary has no such field, and
+ * `session_summary` was here as a fallback for sessions too young to have a generated title, and it
+ * is gone on purpose. The rule it broke is the one this repo states for itself: a value we are not
+ * sure about must degrade to NOTHING, never to something else. `pickGrokSessionMeta` puts whatever
+ * it returns straight into the node title, and there is no length cap anywhere on that path — so the
+ * day grok writes an actual sentence in that field, the sentence lands in the header, the sidebar,
+ * the kanban card, the window title and `project.json`.
+ *
+ * What that costs is real and worth stating rather than discovering: measured across 49 local
+ * summary.json files (1.0.13), 20 of them carry `session_summary` and no `generated_title` — young
+ * sessions, before grok names them. Those 20 now resolve to no name at all until grok generates one.
+ * That is the intended trade: no name is a state the UI already handles, a wrong name is not.
+ *
+ * Do not restore the guessed `title` key either: a real 1.0.13 summary has no such field, and
  * accepting one lets a hand-edited or foreign value override the name grok actually generated.
  */
-const TITLE_KEYS = ['generated_title', 'session_summary'] as const
+const TITLE_KEYS = ['generated_title'] as const
 
 /** Pure: the meta from a summary.json body. null when this is not a summary object at all. */
 export function pickGrokSessionMeta(summaryJson: string): GrokSessionMeta | null {

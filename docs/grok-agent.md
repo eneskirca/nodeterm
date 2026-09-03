@@ -266,22 +266,31 @@ resolve **nothing** there (`GROK_ENCODED_CWD_MAX_BYTES`); a session id must matc
 
 The session **name** (what `/resume` shows and what a node title with `titleAuto` adopts) is read by
 `core/grok-session.ts` → `pickGrokSessionMeta` over `summary.json`, in preference order
-`TITLE_KEYS = ['generated_title', 'session_summary']`, plus `current_model_id` as the model. Reads are capped
+`TITLE_KEYS = ['generated_title']`, plus `current_model_id` as the model. Reads are capped
 at 256 KB and answer `null` — never a throw — for an absent, oversized or unparseable file.
 Resolution is a **direct open** of the directory a hook told us about: `rememberGrokSessionDir` /
 `grokSessionDirFor` / `forgetGrokSession` keep a bounded (512-entry, least-recently-seen-evicted)
 `sessionId → dir` map, populated by the shells' raw listeners.
 
-**The fixture is a real capture.** `src/core/__fixtures__/grok/summary.json` was captured from grok
-1.0.13 at `$GROK_HOME/sessions/<encoded-cwd>/<session-id>/summary.json` on 2026-09-01. Personal
-paths and ids are redacted, while every key and value type is preserved. `generated_title` and
-`session_summary` deliberately use different redacted text so the fixture proves which key wins.
+**The fixture is a real capture, with one authored value — and that value caused a wrong call.**
+`src/core/__fixtures__/grok/summary.json` was captured from grok 1.0.13 on 2026-09-01; personal
+paths and ids are redacted and every key and value type is preserved. But its `session_summary` was
+REWRITTEN as a sentence so the fixture could prove which key wins, and a reader later took that
+sentence for grok's own output and reasoned from it. Measured across 49 local `summary.json` files:
+`session_summary` is never a sentence — 0 to 49 characters, mean 23, and identical to
+`generated_title` in 28 of the 29 files that carry both. It is a title, not prose. The fixture now
+carries a short title-shaped value, because a fixture that does not look like the real thing is a
+loaded trap for whoever reads it next.
 
-The capture has no `title` field. `generated_title` is grok's session name and wins;
-`session_summary` is the human-readable fallback before that title exists. Keeping the old guessed
-key would let a hand-edited or foreign `title` override the name grok actually generated. The
-fixture test's required mutation — removing `generated_title` from `TITLE_KEYS` — fails on the
-captured title, so the precedence is behaviorally pinned.
+The capture has no `title` field. `generated_title` is grok's session name and is now the ONLY title
+key: `session_summary` was dropped in favour of resolving to nothing. The reason is the rule this
+repo states for itself — an uncertain value must degrade to NOTHING, never to something else — and
+`pickGrokSessionMeta` feeds the node title with no length cap anywhere on the path, so a sentence in
+that field would reach the header, the sidebar, the kanban card, the window title and
+`project.json`. **The cost, stated rather than discovered:** of those 49 files, 20 carry
+`session_summary` and no `generated_title` — young sessions, before grok names them. Those now
+resolve to no name until grok generates one. No name is a state the UI already handles; a wrong name
+is not.
 
 **Not captured at all:** nothing, for the context meter. `signals.json` was the last entry here and
 it has been captured (22 sessions): it states the used count, the window total AND the percentage.
@@ -578,9 +587,11 @@ Session identity + restore
 11. Does the session chip fill in? The chip has exactly ONE source: the terminal-title OSC
     (`term.onTitleChange`, path/prompt-looking titles ignored). The summary.json poll feeds the node
     TITLE instead — that is item 12 — so a blank chip with a correct title is not a bug.
-12. **Verified 2026-09-01:** a real grok 1.0.13 `summary.json` stores the session name in
-    `generated_title`, with `session_summary` as a separate human-readable fallback and no `title`
-    field. The redacted capture in `src/core/__fixtures__/grok/summary.json` pins that shape.
+12. **Verified 2026-09-01, refined 2026-09-03:** a real grok 1.0.13 `summary.json` stores the
+    session name in `generated_title` and has no `title` field. `session_summary` exists alongside it
+    but is NOT a separate kind of value: across 49 local files it is identical to `generated_title`
+    in 28 of the 29 that carry both, and never longer than 49 characters. It is not read as a title
+    any more — see §5 for why resolving to nothing beats resolving to something unverified.
 13. Rename the NODE by hand: does grok's own title change (the `/rename` write leg)?
 14. Reboot (or `tmux kill-server`) and reopen the project: does the node cold-restore with
     `grok --resume <id>` and land in the SAME conversation, in the right cwd? Note that after
