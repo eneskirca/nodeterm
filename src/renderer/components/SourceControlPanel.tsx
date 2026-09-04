@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { IconClose, IconMore, IconSparkle, IconUndo } from './icons'
 import { createPortal } from 'react-dom'
 import type { FsApi, GitFileChange, GitResult, GitStatus } from '@shared/types'
 import { gitignoreAdd } from '@shared/gitignore'
@@ -305,7 +306,7 @@ export function SourceControlPanel({
           <span className="scm-row-actions">
             {!staged && (
               <button className="scm-iconbtn" title="Discard changes" onClick={() => discard(f)}>
-                ↩
+                <IconUndo />
               </button>
             )}
             <button
@@ -419,8 +420,8 @@ export function SourceControlPanel({
       <aside className="drawer scm" onClick={(e) => e.stopPropagation()}>
         <div className="drawer__head">
           <h2>Source Control</h2>
-          <button className="drawer__close" onClick={onClose}>
-            ×
+          <button className="drawer__close" aria-label="Close" onClick={onClose}>
+            <IconClose />
           </button>
         </div>
 
@@ -480,7 +481,7 @@ export function SourceControlPanel({
                   setMoreMenu({ x: r.right - 200, y: r.bottom + 4 })
                 }}
               >
-                ⋯
+                <IconMore />
               </button>
             </div>
 
@@ -500,7 +501,7 @@ export function SourceControlPanel({
                       useScmDraft.getState().clearError(draftKey)
                     }}
                   >
-                    ×
+                    <IconClose />
                   </button>
                 </div>
               )}
@@ -537,7 +538,7 @@ export function SourceControlPanel({
                     aria-label="Generate commit message"
                     onClick={generate}
                   >
-                    ✦
+                    <IconSparkle />
                   </button>
                 </div>
                 <button

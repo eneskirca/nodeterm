@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconChevronDown, IconChevronRight, IconClose } from '../components/icons'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
@@ -88,15 +90,23 @@ export function StickyNode({ id, data, selected }: NodeProps<CanvasNode>) {
       />
 
       <div className="sticky-node__header" style={{ background: `${data.color}33` }}>
-        <button className="term-node__collapse" title={collapsed ? 'Expand' : 'Collapse'} onClick={toggleCollapse}>
-          {collapsed ? '▸' : '▾'}
-        </button>
-        <button
-          className="term-node__color"
-          style={{ background: data.color }}
-          title="Color"
-          onClick={() => setShowColors((v) => !v)}
-        />
+        <Tooltip label={collapsed ? 'Expand' : 'Collapse'}>
+          <button
+            className="term-node__collapse"
+            aria-label={collapsed ? 'Expand' : 'Collapse'}
+            onClick={toggleCollapse}
+          >
+            {collapsed ? <IconChevronRight /> : <IconChevronDown />}
+          </button>
+        </Tooltip>
+        <Tooltip label="Color">
+          <button
+            className="term-node__color"
+            style={{ background: data.color }}
+            aria-label="Color"
+            onClick={() => setShowColors((v) => !v)}
+          />
+        </Tooltip>
         {showColors && (
           <div className="color-popover">
             {NODE_COLORS.map((c) => (
@@ -149,13 +159,15 @@ export function StickyNode({ id, data, selected }: NodeProps<CanvasNode>) {
             up by. That grab area is what the permanent full-width input used to swallow. Absent
             while editing, since the input takes the `flex: 1` role itself. */}
         {!editingTitle && <span className="term-node__spacer" />}
-        <button
-          className="term-node__close"
-          title="Close"
-          onClick={() => deleteElements({ nodes: [{ id }] })}
-        >
-          ×
-        </button>
+        <Tooltip label="Close">
+          <button
+            className="term-node__close"
+            aria-label="Close"
+            onClick={() => deleteElements({ nodes: [{ id }] })}
+          >
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       {editingText ? (

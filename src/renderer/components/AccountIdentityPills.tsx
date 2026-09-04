@@ -2,6 +2,7 @@
 // node chrome, create/switch menus). Based on @Corvin's #112 (`AccountIdentityPills.tsx`).
 
 import type { AccountPresentation } from '../lib/accountPresentation'
+import { IconCheck } from './icons'
 
 /**
  * Renders a presented account as an identity pill + a Local/SSH provenance pill, with an optional
@@ -30,7 +31,7 @@ export function AccountIdentityPills({
       <span className="account-provenance-pill">{account.provenance}</span>
       {selected ? (
         <span className="account-identity-check" aria-label="Selected">
-          ✓
+          <IconCheck />
         </span>
       ) : null}
     </span>

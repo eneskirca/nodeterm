@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { IconChevronDown, IconChevronRight } from '../components/icons'
 import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
@@ -71,7 +72,7 @@ export function SubagentNode({ id, data, selected }: NodeProps<CanvasNode>) {
             toggle()
           }}
         >
-          {expanded ? '▾' : '▸'}
+          {expanded ? <IconChevronDown /> : <IconChevronRight />}
         </button>
         <span className="subagent-node__dot" />
         <span className="subagent-node__type">{(data.subagentType as string) || 'subagent'}</span>

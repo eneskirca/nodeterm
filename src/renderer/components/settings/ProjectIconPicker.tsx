@@ -259,7 +259,7 @@ export function ProjectIconPicker({
             <div className="flex flex-col gap-2">
               <button
                 type="button"
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-[color:var(--accent)] px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[color:var(--accent)] px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
                 onClick={() => void onUseGithubAvatar()}
               >
                 <Github className="size-4" />

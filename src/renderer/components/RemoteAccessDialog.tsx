@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { IconClose } from './icons'
 import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
 import { useEntitlement } from '../state/entitlement'
@@ -91,7 +92,7 @@ export function RemoteAccessDialog({ onClose }: { onClose: () => void }): React.
         <div className="remote-dialog__head">
           <h3>Remote access</h3>
           <button className="remote-dialog__x" onClick={onClose} title="Close">
-            ×
+            <IconClose />
           </button>
         </div>
         <p className="remote-dialog__desc">

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose } from '../components/icons'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { useShallow } from 'zustand/react/shallow'
@@ -112,13 +114,11 @@ export function DinoNode({ id, data, selected }: NodeProps<CanvasNode>) {
             ▷ {peer.name} is playing
           </span>
         )}
-        <button
-          className="term-node__close"
-          title="Close"
-          onClick={() => deleteElements({ nodes: [{ id }] })}
-        >
-          ×
-        </button>
+        <Tooltip label="Close">
+          <button className="term-node__close" aria-label="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       <div ref={hostRef} className="dino-node__body nodrag nowheel" tabIndex={0} />

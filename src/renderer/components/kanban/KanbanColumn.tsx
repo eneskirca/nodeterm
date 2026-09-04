@@ -1,5 +1,6 @@
 import { Fragment, memo, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { IconClose } from '../icons'
 import type { KanbanColumn as KanbanColumnT } from '@shared/types'
 import { NODE_COLORS } from '../../state/workspace'
 import type { KanbanCreateChoice, KanbanCreateOption } from './KanbanView'
@@ -167,7 +168,7 @@ export const KanbanColumn = memo(function KanbanColumn({
             title="Delete column (cards return to Ungrouped)"
             onClick={() => onDelete?.(column.id)}
           >
-            ✕
+            <IconClose />
           </button>
         )}
       </div>

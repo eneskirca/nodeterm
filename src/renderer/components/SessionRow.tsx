@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AccountChip, useAccountChip } from './AccountChip'
-import { IconBellFilled, IconCircleCheck } from './icons'
+import { IconBellFilled, IconCircleCheck, IconClose } from './icons'
 import { NodeIconView } from './NodeIcon'
 import { ProjectGlyph } from './ProjectGlyph'
 import type { SessionRowVM } from '../lib/sessionList'
@@ -180,7 +180,7 @@ export function SessionRow({
               onClose()
             }}
           >
-            ×
+            <IconClose />
           </button>
         </div>
         {(row.projectName || row.cwd || row.sshHost || stateAgeLabel) && (

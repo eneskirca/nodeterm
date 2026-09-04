@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { IconClose } from './icons'
 import type { Announcement } from '@shared/types'
 
 // Polls the remote announcements feed (via the main process) and shows the newest
@@ -71,8 +72,8 @@ export function AnnouncementBanner(): JSX.Element | null {
           Learn more
         </button>
       )}
-      <button className="announce-banner__close" title="Dismiss" onClick={dismiss}>
-        ✕
+      <button className="announce-banner__close" title="Dismiss" aria-label="Dismiss" onClick={dismiss}>
+        <IconClose />
       </button>
     </div>
   )

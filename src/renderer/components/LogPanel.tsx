@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { IconClose } from './icons'
 import { createPortal } from 'react-dom'
 import type { LogRecord } from '@shared/types'
 
@@ -127,8 +128,8 @@ export function LogPanel({ onClose }: LogPanelProps) {
           <button className="logpanel__act" title="Empty the ring" onClick={clear}>
             Clear
           </button>
-          <button className="drawer__close" onClick={onClose}>
-            ×
+          <button className="drawer__close" aria-label="Close" onClick={onClose}>
+            <IconClose />
           </button>
         </div>
         <div

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose } from '../components/icons'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { monaco } from '../editor/monaco-setup'
@@ -146,13 +148,11 @@ export function DiffNode({ id, data, selected }: NodeProps<CanvasNode>) {
         </span>
         <span className="term-node__spacer" />
         <MaximizeButton id={id} maximized={!!data.premaxRect} />
-        <button
-          className="term-node__close"
-          title="Close"
-          onClick={() => deleteElements({ nodes: [{ id }] })}
-        >
-          ×
-        </button>
+        <Tooltip label="Close">
+          <button className="term-node__close" aria-label="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       {fileMissing ? (

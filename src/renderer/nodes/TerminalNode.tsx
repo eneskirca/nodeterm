@@ -135,7 +135,7 @@ import {
 import { shouldAutoWake, shouldColdResume } from '../terminal/hibernation-policy'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
-import { IconSearch, IconChat, IconMic, IconReload, IconEye, IconEyeOff, IconGrid } from '../components/icons'
+import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
@@ -4853,15 +4853,23 @@ export function TerminalNode({
       />
 
       <div className="term-node__header">
-        <button className="term-node__collapse" title={collapsed ? 'Expand' : 'Collapse'} onClick={toggleCollapse}>
-          {collapsed ? '▸' : '▾'}
-        </button>
-        <button
-          className="term-node__color"
-          style={{ background: data.color }}
-          title="Color"
-          onClick={() => setShowColors((v) => !v)}
-        />
+        <Tooltip label={collapsed ? 'Expand' : 'Collapse'}>
+          <button
+            className="term-node__collapse"
+            aria-label={collapsed ? 'Expand' : 'Collapse'}
+            onClick={toggleCollapse}
+          >
+            {collapsed ? <IconChevronRight /> : <IconChevronDown />}
+          </button>
+        </Tooltip>
+        <Tooltip label="Color">
+          <button
+            className="term-node__color"
+            style={{ background: data.color }}
+            aria-label="Color"
+            onClick={() => setShowColors((v) => !v)}
+          />
+        </Tooltip>
         {showColors && (
           <div className="color-popover">
             {NODE_COLORS.map((c) => (
@@ -5078,7 +5086,7 @@ export function TerminalNode({
                 })
               }}
             >
-              ▶
+              <IconPlay />
             </button>
           </span>
         )}
@@ -5155,7 +5163,7 @@ export function TerminalNode({
               className="term-node__move-worktree nodrag"
               onClick={() => moveIntoWorktreeHandler?.(id)}
             >
-              ↪
+              <IconMoveTo />
             </button>
           </Tooltip>
         )}
@@ -5209,8 +5217,13 @@ export function TerminalNode({
         )}
         {!isHidden('ai-name', hiddenHeaderButtons) && (
           <Tooltip label="Name with AI (from terminal output)">
-            <button className="term-node__ai nodrag" disabled={naming} onClick={nameWithAi}>
-              {naming ? '…' : '✦'}
+            <button
+              className="term-node__ai nodrag"
+              aria-label="Name with AI"
+              disabled={naming}
+              onClick={nameWithAi}
+            >
+              {naming ? <span className="ui-spinner" /> : <IconSparkle />}
             </button>
           </Tooltip>
         )}
@@ -5229,7 +5242,7 @@ export function TerminalNode({
           <Tooltip label={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}>
             <button
               className="term-node__hide-fanout nodrag"
-              title={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}
+              aria-label={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}
               aria-pressed={hideFanout}
               onClick={(e) => {
                 e.stopPropagation()
@@ -5247,7 +5260,7 @@ export function TerminalNode({
             <Tooltip label="Tidy subagent cards into a grid">
               <button
                 className="term-node__tidy-fanout nodrag"
-                title="Tidy subagent cards into a grid"
+                aria-label="Tidy subagent cards into a grid"
                 onClick={(e) => {
                   e.stopPropagation()
                   useAgentNodes.getState().tidyFanout(id)
@@ -5260,16 +5273,18 @@ export function TerminalNode({
         {!collapsed && !isHidden('maximize', hiddenHeaderButtons) && (
           <MaximizeButton id={id} maximized={!!data.premaxRect} />
         )}
-        <button
-          className="term-node__close"
-          title="Close (ends the session)"
-          onClick={() => {
-            transport.destroy(id)
-            deleteElements({ nodes: [{ id }] })
-          }}
-        >
-          ×
-        </button>
+        <Tooltip label="Close (ends the session)">
+          <button
+            className="term-node__close"
+            aria-label="Close"
+            onClick={() => {
+              transport.destroy(id)
+              deleteElements({ nodes: [{ id }] })
+            }}
+          >
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       {searchOpen && !collapsed && (
@@ -5390,7 +5405,7 @@ export function TerminalNode({
               title="Dismiss"
               aria-label="Dismiss"
             >
-              ×
+              <IconClose />
             </button>
           </div>
         )}

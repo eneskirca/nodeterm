@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { IconArrowLeft, IconArrowRight } from '../components/icons'
 import { searchOrUrl } from './browserUrl'
 import { BrowserStartPage } from './BrowserStartPage'
 import { useBrowserHistory } from '../state/browserHistory'
@@ -270,10 +271,10 @@ export function BrowserSurface({
     <div className="browser-surface" ref={rootRef}>
       <div className="browser-node__toolbar nodrag">
         <button className="browser-node__btn" disabled={!canBack} onClick={() => ref.current?.goBack()} title="Back">
-          ◀
+          <IconArrowLeft />
         </button>
         <button className="browser-node__btn" disabled={!canFwd} onClick={() => ref.current?.goForward()} title="Forward">
-          ▶
+          <IconArrowRight />
         </button>
         <button
           className="browser-node__btn"

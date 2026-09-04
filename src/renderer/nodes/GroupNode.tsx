@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose, IconUngroup } from '../components/icons'
 import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { NODE_COLORS, ungroupNodes, type CanvasNode } from '../state/workspace'
@@ -23,7 +25,7 @@ export function setWorktreeActionHandler(
 
 /**
  * A group frame: a dashed, rounded, translucent box that contains child nodes. A floating
- * label pill (color dot + name) sits on the top border; ungroup/× appear top-right on hover.
+ * label pill (color dot + name) sits on the top border; Ungroup appears top-right on hover.
  * Children are real React Flow nodes parented to this one, so dragging the frame moves them
  * together. The frame renders behind its children (it appears first in the array).
  */
@@ -164,12 +166,14 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
       />
 
       <div className="group-node__label">
-        <button
-          className="group-node__dot nodrag"
-          style={{ background: data.color }}
-          title="Color"
-          onClick={() => setShowColors((v) => !v)}
-        />
+        <Tooltip label="Color">
+          <button
+            className="group-node__dot nodrag"
+            style={{ background: data.color }}
+            aria-label="Color"
+            onClick={() => setShowColors((v) => !v)}
+          />
+        </Tooltip>
         {showColors && (
           <div className="color-popover">
             {NODE_COLORS.map((c) => (
@@ -237,6 +241,9 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
               // PROJECT lane, so it can never re-attach a worktree group's run — clicking it would
               // leave this chip failed and its nodes armed forever. Re-running here re-attaches the
               // group's lane, and a `done` from the new run releases them.
+              // Keeps a native `title` while the frame's action buttons moved to Tooltip: the
+              // bubble is `white-space: nowrap`, so these four explanatory lines would render as
+              // one bar running off the window.
               (setupRun.kind === 'setup' && setupRun.state === 'failed' ? (
                 <button
                   className={`group-node__setup group-node__setup--${setupBusy ? 'running' : 'failed'} nodrag`}
@@ -266,49 +273,55 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
                 </span>
               ))}
             {!stale && (
-              <button
-                className="group-node__wt-btn"
-                title="Merge to main"
-                onClick={() => worktreeActionHandler?.(id, 'merge')}
-              >
-                ⤴
-              </button>
+              <Tooltip label="Merge to main">
+                <button
+                  className="group-node__wt-btn"
+                  aria-label="Merge to main"
+                  onClick={() => worktreeActionHandler?.(id, 'merge')}
+                >
+                  ⤴
+                </button>
+              </Tooltip>
             )}
-            <button
-              className="group-node__wt-btn"
-              title={
+            <Tooltip
+              label={
                 stale
                   ? 'Unbind (the directory is gone — also prunes the stale git registration)'
                   : 'Unbind worktree (keeps the worktree on disk)'
               }
-              onClick={() => worktreeActionHandler?.(id, 'unbind')}
             >
-              Unbind
-            </button>
-            {!stale && (
               <button
                 className="group-node__wt-btn"
-                title="Remove worktree"
-                onClick={() => worktreeActionHandler?.(id, 'remove')}
+                onClick={() => worktreeActionHandler?.(id, 'unbind')}
               >
-                ✕
+                Unbind
               </button>
+            </Tooltip>
+            {!stale && (
+              <Tooltip label="Remove worktree">
+                <button
+                  className="group-node__wt-btn"
+                  aria-label="Remove worktree"
+                  onClick={() => worktreeActionHandler?.(id, 'remove')}
+                >
+                  <IconClose />
+                </button>
+              </Tooltip>
             )}
           </div>
         )}
       </div>
 
       <div className="group-node__actions nodrag">
-        <button className="group-node__ungroup" title="Ungroup" onClick={ungroup}>
-          ungroup
-        </button>
-        <button
-          className="group-node__close"
-          title="Remove group (keeps nodes)"
-          onClick={ungroup}
-        >
-          ×
-        </button>
+        <Tooltip label="Ungroup (keeps nodes)">
+          <button
+            className="group-node__ungroup"
+            aria-label="Ungroup (keeps nodes)"
+            onClick={ungroup}
+          >
+            <IconUngroup />
+          </button>
+        </Tooltip>
       </div>
     </div>
   )

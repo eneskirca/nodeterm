@@ -11,7 +11,7 @@ import { ancestorDirs, createTargetDir, newEntryPath, parentDir } from '../lib/e
 import { canRevealLocally, downloadRoute, triggerBrowserDownload } from '../lib/download'
 import { explorerOverlayClickCloses } from '../lib/explorerPin'
 import { isBrowserRuntime } from '../bridge/runtime'
-import { IconPin } from './icons'
+import { IconClose, IconPin, IconReload } from './icons'
 
 export interface ExplorerPanelProps {
   onClose: () => void
@@ -473,7 +473,7 @@ export function ExplorerPanel({
           <h2>{project?.name || 'Explorer'}</h2>
           <div className="ex-head-actions">
             <button type="button" title="Refresh" aria-label="Refresh" onClick={() => setVersion((v) => v + 1)}>
-              ↻
+              <IconReload />
             </button>
             {onTogglePin && (
               <button
@@ -488,7 +488,7 @@ export function ExplorerPanel({
               </button>
             )}
             <button type="button" className="drawer__close" title="Close" aria-label="Close" onClick={onClose}>
-              ×
+              <IconClose />
             </button>
           </div>
         </div>
@@ -547,11 +547,11 @@ export function ExplorerPanel({
                   </button>
                 )}
                 <button
-                  className="ex-dls__act"
+                  className="ex-dls__act ex-dls__dismiss"
                   aria-label="Dismiss"
                   onClick={() => setDownloads((list) => list.filter((x) => x.id !== d.id))}
                 >
-                  ×
+                  <IconClose />
                 </button>
               </div>
             ))}
