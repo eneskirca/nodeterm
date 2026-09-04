@@ -10,6 +10,7 @@
 //   3. Every row is rendered. A cap would have to announce itself.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { IconPower } from './icons'
 import type { AgentState } from '@shared/agents/normalize'
 import { formatBytes } from '@shared/fsLimits'
 import { useAgentStatus } from '../state/agentStatus'
@@ -198,7 +199,11 @@ export function SessionMemoryPanel({
                       .finally(() => setPausing(null))
                   }}
                 >
-                  {pausing === v.row.nodeId ? '…' : '⏻'}
+                  {pausing === v.row.nodeId ? (
+                    <span className="ui-spinner" aria-hidden />
+                  ) : (
+                    <IconPower />
+                  )}
                 </button>
               )
             })()}

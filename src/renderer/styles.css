@@ -6946,13 +6946,15 @@ button.group-node__setup:disabled {
    VISIBLE and dimmed rather than hidden, because it carries the reason in its tooltip. */
 .sessmem-row__pause {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 20px;
   height: 20px;
   border: none;
   border-radius: 10px;
   background: transparent;
   color: rgba(var(--tint-rgb), 0.45);
-  font-size: 11px;
   line-height: 1;
   cursor: pointer;
 }
