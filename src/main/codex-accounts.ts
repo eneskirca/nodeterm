@@ -113,6 +113,7 @@ export async function ensureCodexAccountDaemon(accountId?: string): Promise<void
       const invocation = directExecutableInvocation(codex, ['app-server', 'daemon', 'start'])
       if (!invocation) throw new Error('Codex CLI has no safe Windows entry point')
       await execFileP(invocation.executable, invocation.args, {
+        ...invocation.options,
         cwd: os.homedir(),
         env: { ...process.env, ...codexSessionEnv(platform().userDataDir, accountId) },
         timeout: 15_000,
@@ -273,6 +274,7 @@ export function initCodexAccounts(getSshManager?: () => SshProjectManager | unde
           const invocation = directExecutableInvocation(codex, ['app-server', 'daemon', 'stop'])
           if (!invocation) throw new Error('Codex CLI has no safe Windows entry point')
           await execFileP(invocation.executable, invocation.args, {
+            ...invocation.options,
             cwd: os.homedir(),
             env: { ...process.env, CODEX_HOME: localCodexAccountHome(id) },
             timeout: 10_000,

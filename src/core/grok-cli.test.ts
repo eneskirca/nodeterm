@@ -53,15 +53,16 @@ describe('grokCliCapsFrom', () => {
 })
 
 describe.skipIf(process.platform !== 'win32')('probeGrokCliAt — Windows npm shim', () => {
-  it('probes through the sibling PowerShell shim', async () => {
+  it('probes through cmd.exe', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-grok-shim-'))
     try {
       const cmd = path.join(dir, 'grok.cmd')
-      fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
+      const script = path.join(dir, 'grok.js')
       fs.writeFileSync(
-        path.join(dir, 'grok.ps1'),
-        "if ($args[0] -eq '--help') { Write-Output '  --session-id <uuid>'; exit 0 }\r\nexit 92\r\n"
+        script,
+        "if (process.argv[2] === '--help') console.log('  --session-id <uuid>')\nelse process.exitCode = 92\n"
       )
+      fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
 
       await expect(probeGrokCliAt(cmd)).resolves.toEqual({ sessionIdFlag: true })
     } finally {

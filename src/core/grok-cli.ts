@@ -39,6 +39,7 @@ export async function probeGrokCliAt(bin: string): Promise<GrokCliCaps> {
     const invocation = directExecutableInvocation(bin, ['--help'])
     if (!invocation) return UNKNOWN_GROK_CLI_CAPS
     const { stdout } = await execFileP(invocation.executable, invocation.args, {
+      ...invocation.options,
       timeout: PROBE_TIMEOUT_MS
     })
     return grokCliCapsFrom(stdout)

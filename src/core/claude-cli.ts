@@ -48,6 +48,7 @@ export async function probeClaudeCliAt(bin: string): Promise<ClaudeCliCaps> {
     const versionInvocation = directExecutableInvocation(bin, ['--version'])
     if (!versionInvocation) return UNKNOWN_CLAUDE_CLI_CAPS
     const { stdout } = await execFileP(versionInvocation.executable, versionInvocation.args, {
+      ...versionInvocation.options,
       timeout: PROBE_TIMEOUT_MS
     })
     // `--help` is a second spawn, paid once per process (this whole probe is memoized). Its
@@ -56,6 +57,7 @@ export async function probeClaudeCliAt(bin: string): Promise<ClaudeCliCaps> {
     const helpInvocation = directExecutableInvocation(bin, ['--help'])
     const help = helpInvocation
       ? await execFileP(helpInvocation.executable, helpInvocation.args, {
+          ...helpInvocation.options,
           timeout: PROBE_TIMEOUT_MS
         })
           .then((r) => r.stdout)

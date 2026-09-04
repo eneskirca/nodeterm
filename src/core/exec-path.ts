@@ -152,6 +152,10 @@ export function findInPathString(bin: string, pathStr: string | null | undefined
 export interface DirectExecutableInvocation {
   executable: string
   args: string[]
+  options?: {
+    windowsHide: true
+    windowsVerbatimArguments: true
+  }
 }
 
 interface DirectExecutableInvocationOptions {
@@ -160,10 +164,28 @@ interface DirectExecutableInvocationOptions {
   exists?: (candidate: string) => boolean
 }
 
+const CMD_LINE_MAX = 8100
+const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g
+
+function escapeCmdCommand(value: string): string {
+  return value.replace(CMD_META_CHARS, '^$1')
+}
+
+// Based on cross-spawn's battle-tested cmd.exe escaping. npm shims forward `%*`, so cmd parses
+// their arguments twice and every metacharacter needs two escape passes.
+function escapeCmdArgument(value: string): string {
+  let escaped = value.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"')
+  escaped = escaped.replace(/(?=(\\+?)?)\1$/, '$1$1')
+  escaped = `"${escaped}"`.replace(CMD_META_CHARS, '^$1')
+  return escaped.replace(CMD_META_CHARS, '^$1')
+}
+
 /**
  * Builds an argv-safe invocation for a resolved executable. Node cannot execute Windows npm
- * `.cmd` shims directly, and using a shell would reinterpret user-controlled arguments. npm
- * installs an equivalent sibling `.ps1` shim, so run that through PowerShell's `-File` boundary.
+ * `.cmd` shims directly, so run them through cmd.exe with every token escaped and delayed
+ * expansion disabled. CR/LF arguments are refused because cmd treats them as command boundaries
+ * even inside quotes. stdin remains the child's inherited byte stream; PowerShell's text pipeline
+ * must not sit between a staged diff and the agent CLI.
  */
 export function directExecutableInvocation(
   executable: string,
@@ -174,35 +196,24 @@ export function directExecutableInvocation(
   if (platform !== 'win32') return { executable, args }
 
   const ext = path.win32.extname(executable).toLowerCase()
-  if (ext === '.bat') return null
-  if (ext !== '.cmd' && ext !== '.ps1') return { executable, args }
+  if (ext === '.bat' || ext === '.ps1') return null
+  if (ext !== '.cmd') return { executable, args }
+  if (/\0|\r|\n/u.test(executable) || args.some((arg) => /\0|\r|\n/u.test(arg))) return null
 
-  const script = ext === '.ps1' ? executable : `${executable.slice(0, -ext.length)}.ps1`
   const systemRoot = options.systemRoot ?? process.env.SystemRoot
   if (!systemRoot) return null
-
-  const powershell = path.win32.join(
-    systemRoot,
-    'System32',
-    'WindowsPowerShell',
-    'v1.0',
-    'powershell.exe'
-  )
+  const cmd = path.win32.join(systemRoot, 'System32', 'cmd.exe')
   const exists = options.exists ?? fs.existsSync
-  if (!exists(powershell) || !exists(script)) return null
+  if (!exists(cmd)) return null
+
+  const command = [escapeCmdCommand(executable), ...args.map(escapeCmdArgument)].join(' ')
+  const wrapped = `"${command}"`
+  if (wrapped.length > CMD_LINE_MAX) return null
 
   return {
-    executable: powershell,
-    args: [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      script,
-      ...args
-    ]
+    executable: cmd,
+    args: ['/d', '/s', '/v:off', '/c', wrapped],
+    options: { windowsHide: true, windowsVerbatimArguments: true }
   }
 }
 

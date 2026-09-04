@@ -200,17 +200,18 @@ describe('codexCliSupportsRemote', () => {
 })
 
 describe.skipIf(process.platform !== 'win32')('probeCodexRemoteFlagAt — Windows npm shim', () => {
-  it('uses the sibling PowerShell shim for both help probes', async () => {
+  it('uses cmd.exe for both help probes', async () => {
     const cmd = path.join(dir, 'codex.cmd')
-    fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
+    const script = path.join(dir, 'codex.js')
     fs.writeFileSync(
-      path.join(dir, 'codex.ps1'),
+      script,
       [
-        "if ($args.Count -eq 1 -and $args[0] -eq '--help') { Write-Output 'no flag'; exit 0 }",
-        "if ($args[0] -eq 'resume' -and $args[1] -eq '--help') { Write-Output '  --remote <URL>'; exit 0 }",
-        'exit 92'
-      ].join('\r\n')
+        "if (process.argv[2] === '--help') console.log('no flag')",
+        "else if (process.argv[2] === 'resume' && process.argv[3] === '--help') console.log('  --remote <URL>')",
+        'else process.exitCode = 92'
+      ].join('\n')
     )
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
 
     await expect(probeCodexRemoteFlagAt(cmd)).resolves.toBe(true)
   })

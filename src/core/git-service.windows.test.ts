@@ -27,18 +27,17 @@ describe.skipIf(process.platform !== 'win32')('GitService - Windows npm gh shim'
     vi.resetModules()
   })
 
-  it('publishes through the PowerShell sibling with the original Windows PATH', async () => {
+  it('publishes through the cmd shim with the original Windows PATH', async () => {
     const capture = path.join(dir, 'gh-call.json')
-    fs.writeFileSync(path.join(dir, 'gh.cmd'), '@exit /b 99\r\n')
+    const script = path.join(dir, 'gh.js')
     fs.writeFileSync(
-      path.join(dir, 'gh.ps1'),
+      script,
       [
-        "if ($args[0] -eq 'repo') {",
-        "  [IO.File]::WriteAllText($env:NT_GH_CAPTURE, (@{ args = @($args); path = $env:PATH } | ConvertTo-Json -Compress))",
-        '}',
-        'exit 0'
-      ].join('\r\n')
+        "const fs = require('fs')",
+        "fs.writeFileSync(process.env.NT_GH_CAPTURE, JSON.stringify({ args: process.argv.slice(2), path: process.env.PATH }))"
+      ].join('\n')
     )
+    fs.writeFileSync(path.join(dir, 'gh.cmd'), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
     const expectedPath = `${dir};${originalPath ?? ''}`
     process.env.PATH = expectedPath
     process.env.PATHEXT = '.EXE;.CMD'

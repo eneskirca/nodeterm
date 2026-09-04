@@ -121,6 +121,7 @@ export async function probeCodexRemoteFlagAt(bin: string): Promise<boolean> {
     const helpInvocation = directExecutableInvocation(bin, ['--help'])
     const help = helpInvocation
       ? await execFileP(helpInvocation.executable, helpInvocation.args, {
+          ...helpInvocation.options,
           timeout: PROBE_TIMEOUT_MS
         })
           .then((r) => r.stdout)
@@ -132,6 +133,7 @@ export async function probeCodexRemoteFlagAt(bin: string): Promise<boolean> {
     const resumeInvocation = directExecutableInvocation(bin, ['resume', '--help'])
     const resumeHelp = resumeInvocation
       ? await execFileP(resumeInvocation.executable, resumeInvocation.args, {
+          ...resumeInvocation.options,
           timeout: PROBE_TIMEOUT_MS
         })
           .then((r) => r.stdout)

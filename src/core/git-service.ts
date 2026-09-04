@@ -59,7 +59,11 @@ async function ghAuthed(): Promise<boolean> {
   ghAuthedInFlight = (async () => {
     let value = false
     try {
-      await run(invocation.executable, invocation.args, { env: GIT_ENV, maxBuffer: 1024 * 1024 })
+      await run(invocation.executable, invocation.args, {
+        ...invocation.options,
+        env: GIT_ENV,
+        maxBuffer: 1024 * 1024
+      })
       value = true
     } catch {
       value = false
@@ -813,7 +817,12 @@ export class GitService {
       env.GH_TOKEN = token
     }
     try {
-      await run(invocation.executable, invocation.args, { cwd, env, maxBuffer: 10 * 1024 * 1024 })
+      await run(invocation.executable, invocation.args, {
+        ...invocation.options,
+        cwd,
+        env,
+        maxBuffer: 10 * 1024 * 1024
+      })
       return { ok: true, message: 'Published to GitHub.' }
     } catch (e) {
       const err = e as { stderr?: string; message?: string }

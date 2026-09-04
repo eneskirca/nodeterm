@@ -186,6 +186,7 @@ function spawnAgent(
     }
 
     const child = spawn(invocation.executable, invocation.args, {
+      ...invocation.options,
       cwd,
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],

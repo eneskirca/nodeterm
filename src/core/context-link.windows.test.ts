@@ -15,13 +15,11 @@ describe.skipIf(process.platform !== 'win32')('opencodeExportAt - Windows npm sh
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('runs the sibling PowerShell shim without interpreting the session id', async () => {
+  it('runs the cmd shim without interpreting the session id', async () => {
     const cmd = path.join(dir, 'opencode.cmd')
-    fs.writeFileSync(cmd, '@exit /b 99\r\n')
-    fs.writeFileSync(
-      path.join(dir, 'opencode.ps1'),
-      '[Console]::Out.Write(($args | ConvertTo-Json -Compress))\n'
-    )
+    const script = path.join(dir, 'opencode.js')
+    fs.writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
 
     const sessionId = 'session & untouched'
     const output = await opencodeExportAt(cmd, sessionId)

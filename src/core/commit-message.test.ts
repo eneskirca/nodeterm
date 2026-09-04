@@ -146,17 +146,15 @@ describe.skipIf(process.platform !== 'win32')('runAgent — Windows npm shim', (
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('keeps a hostile prompt as one argument without invoking cmd.exe', async () => {
+  it('keeps a hostile prompt as one argument without interpreting it as cmd syntax', async () => {
     const cmd = path.join(dir, 'fake agent.cmd')
+    const script = path.join(dir, 'fake-agent.js')
     const touched = path.join(dir, 'should-not-exist.txt')
-    fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
     fs.writeFileSync(
-      path.join(dir, 'fake agent.ps1'),
-      [
-        '$bytes = [Text.Encoding]::UTF8.GetBytes($args[0])',
-        '[Console]::Out.Write([Convert]::ToBase64String($bytes))'
-      ].join('\r\n')
+      script,
+      "process.stdout.write(Buffer.from(process.argv[2] ?? '', 'utf8').toString('base64'))\n"
     )
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
     const prompt = `message & echo pwned > "${touched}"`
 
     vi.resetModules()
@@ -173,5 +171,34 @@ describe.skipIf(process.platform !== 'win32')('runAgent — Windows npm shim', (
       message: Buffer.from(prompt, 'utf8').toString('base64')
     })
     expect(fs.existsSync(touched)).toBe(false)
+  })
+
+  it('preserves multiline Unicode stdin as a byte stream through the cmd shim', async () => {
+    const cmd = path.join(dir, 'stdin agent.cmd')
+    const script = path.join(dir, 'stdin-agent.js')
+    fs.writeFileSync(
+      script,
+      [
+        'const chunks = []',
+        "process.stdin.on('data', (chunk) => chunks.push(chunk))",
+        "process.stdin.on('end', () => process.stdout.write(Buffer.concat(chunks).toString('base64')))"
+      ].join('\n')
+    )
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+    const prompt = 'first line\r\nsegunda linha: café 日本語\nlast line'
+
+    vi.resetModules()
+    vi.doUnmock('child_process')
+    const { runAgent } = await import('./commit-message')
+    const result = await runAgent(prompt, dir, {
+      commitAgent: 'custom',
+      commitAgentCommand: `"${cmd}"`,
+      commitExtraPrompt: ''
+    } as never)
+
+    expect(result).toEqual({
+      ok: true,
+      message: Buffer.from(prompt, 'utf8').toString('base64')
+    })
   })
 })

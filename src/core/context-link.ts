@@ -212,7 +212,7 @@ export async function opencodeExportAt(bin: string, sessionId: string): Promise<
       execFile(
         invocation.executable,
         invocation.args,
-        { encoding: 'utf-8' },
+        { ...invocation.options, encoding: 'utf-8' },
         (err, stdout) => resolve(err ? null : stdout)
       )
     })

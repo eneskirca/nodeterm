@@ -102,17 +102,18 @@ describe.skipIf(process.platform !== 'win32')('probeClaudeCliAt — Windows npm 
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('probes a .cmd CLI through its sibling .ps1 entry point', async () => {
+  it('probes a .cmd CLI through cmd.exe', async () => {
     const cmd = path.join(dir, 'claude.cmd')
-    fs.writeFileSync(cmd, '@echo off\r\nexit /b 91\r\n')
+    const script = path.join(dir, 'claude.js')
     fs.writeFileSync(
-      path.join(dir, 'claude.ps1'),
+      script,
       [
-        "if ($args[0] -eq '--version') { Write-Output '2.1.226 (Claude Code)'; exit 0 }",
-        "if ($args[0] -eq '--help') { Write-Output '  --session-id <uuid>'; exit 0 }",
-        'exit 92'
-      ].join('\r\n')
+        "if (process.argv[2] === '--version') console.log('2.1.226 (Claude Code)')",
+        "else if (process.argv[2] === '--help') console.log('  --session-id <uuid>')",
+        'else process.exitCode = 92'
+      ].join('\n')
     )
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
 
     expect(await probeClaudeCliAt(cmd)).toEqual({
       version: '2.1.226 (Claude Code)',
