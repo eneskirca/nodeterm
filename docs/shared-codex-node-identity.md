@@ -53,6 +53,39 @@ collide; a remote host has one home root, so the remote digest is over `accountI
 pre-migration long home (`<userData>/codex-accounts/<id>`) is moved to its short home at boot,
 fail-closed (no-op if absent, if the target exists, or on an invalid id).
 
+## Shared-daemon restart continuity
+
+The control socket is not one process per canvas node. Every `codex --remote unix://` TUI for an
+account scope rides one persistent app-server, so an app-server upgrade, repair, or crash severs all
+of them at once. Their tmux panes and Codex rollouts remain intact, but without a client supervisor
+each pane drops back to its shell and looks like a reset.
+
+The generated launcher therefore owns the remote client for the lifetime of the bound thread:
+
+1. It records the app-server control socket's inode before launching the TUI.
+2. A normal exit or terminal signal returns unchanged.
+3. After any other exit, it retries only when `codex app-server daemon version` does not report
+   `status: running`, or when a known pre-launch socket inode changed. A failed inode read alone is
+   unknown, not proof of a reset; an unrelated Codex failure against the same healthy generation
+   returns its original status.
+4. It starts a missing daemon through the same scrubbed environment used at preflight, then resumes
+   the exact already-bound thread. Only the first launch receives the caller's prompt/options;
+   recovery never replays them because that could submit the same user turn twice.
+5. Three rapid resets stop the loop and print the exact manual `codex resume <thread>` command.
+
+Protocol health is checked before lifecycle start. Codex's PID ownership record can become stale
+while the socket remains responsive; that bookkeeping failure must not trigger a kill of live,
+shared infrastructure. The behavior is failure-injection tested under real `/bin/sh` in
+`src/core/codex-launcher-sh.test.ts`, including a mutation guard proving that a healthy
+same-generation client error is not relaunched.
+
+Desktop and Server Edition both wire this same core spine. The headless shell arms the
+restart-stable record secret, registers thread start/bind handlers against its persisted canvas,
+refreshes the launcher capability, and broadcasts identity mode through its normal browser RPC.
+Mobile needs no separate implementation: it attaches to the Server Edition's existing tmux
+session. Managed Codex account administration remains desktop-only; that is separate from
+supervising the system account's shared app-server on the server host.
+
 ## The signing secret (both shells — Decision 1)
 
 Every ownership record is HMAC-signed by the **one** restart-stable 32-byte node-auth secret

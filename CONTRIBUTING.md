@@ -176,6 +176,14 @@ come from git-shared JSON and can end up interpolated into a shell command line.
 `/bin/sh` against a fixture tree. A composed fixture will not tell you that `echo ##MEM` prints an
 empty line because `#` starts a comment.
 
+**A shared agent daemon is live-session infrastructure.** Codex's app-server control socket is
+shared by every `--remote` TUI in an account scope, so stopping or replacing one daemon disconnects
+every attached canvas node. A managed launcher must keep the already-bound thread under a bounded
+supervisor: resume only when protocol health failed or the known socket generation changed, never
+loop an unrelated client error, and never replay the original prompt after reconnect. Probe a
+responsive daemon before invoking lifecycle repair; stale PID bookkeeping is not permission to kill
+working sessions. See `docs/shared-codex-node-identity.md`.
+
 **Credentials never ride argv — local or SSH.** Not a tmux `-e` pair, not `curl -H`, not a remote
 command string. `/proc/<pid>/cmdline` is mode 444 on a stock Linux, and a remote command line is argv
 on the host too: we shipped the hook bearer that way and any other account on the machine could read

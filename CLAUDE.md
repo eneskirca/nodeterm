@@ -588,6 +588,24 @@ Lifecycle, by intent:
   The refusal is **only** in `spawnNew` — a co-attach JOIN to a live session for that node id is
   still correct. An offline node reports itself to `SshReconnector`, so the canvas heals itself;
   `retryNow` (banner Reconnect / node Reconnect) skips the backoff and clears the refuse window.
+- **A shared Codex daemon restart is NOT a terminal-session restart.** tmux survives, and the Codex
+  rollout/thread survives, but every `codex --remote unix://` TUI attached to that account's one
+  app-server socket exits together. `buildCodexLauncherScript` therefore stays in the pane as a
+  bounded transport supervisor after binding a thread instead of `exec`ing the remote TUI. On an
+  abnormal client exit it resumes that exact thread only when `app-server daemon version` no longer
+  reports `status: running` or the known control-socket inode changed; the same healthy generation
+  returns the original status so a deterministic CLI error cannot relaunch forever. A reconnect
+  never replays the launch prompt/options (that would duplicate the user's turn), and three rapid
+  resets stop with a manual `codex resume <thread>` receipt. Preflight probes live protocol health
+  before lifecycle start: Codex's PID ownership record can go stale while the shared process remains
+  responsive, and killing that "orphan" would fan one bookkeeping failure out across every node.
+  The generated-shell tests run the replaced-socket, missing-daemon, healthy-client-error, and
+  responsive-orphan cases under real `/bin/sh`; the healthy-error case is the mutation guard.
+  **Both shells wire this spine.** Electron and Server Edition arm the same signed record secret,
+  thread start/bind handlers, capability refresh, and UI identity events; the server composition is
+  isolated in `server/codex-shared-identity.ts` and behavior-tested. The old Server Edition
+  "deliberate plain Codex" answer bypassed the launcher entirely, so a reconnect implementation in
+  the launcher could be perfectly green while every headless pane still fell back to its shell.
 - **"Restart agent (resume)"** → deliberately NOT a session lifecycle event: `terminal/
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
