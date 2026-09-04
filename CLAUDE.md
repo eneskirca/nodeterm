@@ -145,7 +145,10 @@ The codebase is split by Electron process boundary — keep code on the correct 
   channels (`registerTranscriptIpc` — the ⌘M chat view + the find-bar's transcript index; see the
   ⌘M bullet under Agent support). **Canvas control is opt-in**
   (`NODETERM_SERVER_CANVAS_CONTROL=1` / `--canvas-control`): the Server shell installs its own shim
-  and runs a serialized `HeadlessNodeFactory`; disabled remains the default. (The SDK **chat node**
+  and runs a serialized `HeadlessNodeFactory`; disabled remains the default. Its project writes
+  broadcast on `workspace:server-change`, NOT the outside-edit channel — they are this core's own
+  writes and are three-way merged by the renderer, never put behind the conflict bar (see the
+  workspace-store bullet). (The SDK **chat node**
   — once listed here as deferred — was removed entirely, 2026-07; see the chat-node note in the
   node-kinds list.)
 - **`src/preload/`** — the only bridge. `index.ts` uses `contextBridge` to expose a
@@ -229,7 +232,21 @@ Persistence has two layers:
   speak an assembled v2-shaped `Workspace`; all fan-out lives in `core/workspace-store.ts` +
   pure `core/workspace-files.ts`. v2 files migrate on first save (backup `workspace.v2.bak`,
   one-time renderer note). Outside edits (git pull/sync) are detected by
-  `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty.
+  `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty; they
+  ride `workspace:external-change`, and so do the phone's `appendRemoteNode` and the SSH
+  reconcile, which really are "another device".
+  **A write this core made ITSELF rides `workspace:server-change` instead** — today that is Server
+  Edition headless canvas control (`server/canvas-control.ts`) — and the renderer three-way merges
+  it against the store baseline (`renderer/lib/serverChange.ts`: incoming nodes adopted silently,
+  ropes/bridges merged by id with server-added installed, server-removed dropped, local unsaved
+  edits kept, dangling edges pruned), never a bar and never a reload. It used to share the
+  outside-edit channel and that was a data-loss path, not a cosmetic one: `decideExternalChange`
+  compares the project shell, `ropes` included, so the one `ctrl-…` rope an `open-agent` appends
+  read as a conflict whenever the canvas was dirty — which it is throughout a spawn burst (the
+  paired `canvas:mut` marks it, spawns land 60–140 ms apart inside the 800 ms autosave debounce,
+  and **the bar itself suspends autosave**, so once raised it stayed raised). Answering "Keep my
+  version" then wrote the browser's edge state over the file, dropping the ropes the server had
+  just persisted and resurrecting cards it had removed.
   Unreadable refs render as greyed **unavailable** tabs (never dropped); corrupt project files
   are set aside as `project.json.corrupt-<ts>`. "Open folder…" adopts an existing
   `.nodeterm/project.json` — the probe MINTS the project id (node ids — tmux names — kept), and

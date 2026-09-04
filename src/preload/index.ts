@@ -156,7 +156,12 @@ const api: NodeTerminalApi = {
       const h = (_e: unknown, p: Project) => cb(p)
       ipcRenderer.on(IPC.workspaceExternalChange, h)
       return () => ipcRenderer.removeListener(IPC.workspaceExternalChange, h)
-    }
+    },
+    // Deliberate no-op on the desktop shell: nothing here writes the project file on an agent's
+    // behalf. `HeadlessNodeFactory` is Server Edition only — the desktop's canvas-control verbs run
+    // through the renderer's own React Flow state, and its watcher path stays on onExternalChange.
+    // A real subscription would be dead wiring for a channel this main process never broadcasts.
+    onServerChange: (_cb: (project: Project) => void) => () => {}
   },
   projectSettings: {
     read: (projectId: string) => ipcRenderer.invoke(IPC.projectSettingsRead, projectId),
