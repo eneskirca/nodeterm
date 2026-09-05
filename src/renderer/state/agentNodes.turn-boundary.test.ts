@@ -23,7 +23,8 @@ const reset = (): void => {
     positions: {},
     sizes: {},
     expanded: {},
-    selectedId: null
+    selectedId: null,
+    autoHideFinished: false
   })
 }
 
@@ -142,6 +143,87 @@ describe('sweepStaleWorking — the decay a kept card owes', () => {
     const startedAt = useAgentNodes.getState().byId['tu1'].startedAt
     s.sweepStaleWorking(startedAt + WORKING_STALE_MS + 1)
     useAgentNodes.getState().clearFinishedForParent('n1')
+    expect(useAgentNodes.getState().byId['tu1']).toBeUndefined()
+  })
+})
+
+describe('autoHideFinished: dropping a card the moment its subagent finishes', () => {
+  beforeEach(reset)
+
+  it('keeps the finished card until the turn boundary while the setting is off', () => {
+    const s = useAgentNodes.getState()
+    s.start('tu1', { parentNodeId: 'n1' })
+    s.finish('tu1', { tokens: 7 })
+    expect(useAgentNodes.getState().byId['tu1']).toMatchObject({ state: 'done', tokens: 7 })
+  })
+
+  it('drops the card on finish while the setting is on', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu1', { parentNodeId: 'n1' })
+    useAgentNodes.getState().finish('tu1', { tokens: 7 })
+    expect(useAgentNodes.getState().byId['tu1']).toBeUndefined()
+  })
+
+  it('takes the dropped card’s overrides, selection and activity with it', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu1', { parentNodeId: 'n1' })
+    s.setPosition('tu1', { x: 1, y: 2 })
+    s.setSize('tu1', { width: 400, height: 300 })
+    s.toggleExpanded('tu1')
+    s.appendActivity('tu1', 'ran')
+    s.select('tu1')
+    useAgentNodes.getState().finish('tu1', {})
+    const st = useAgentNodes.getState()
+    expect(st.positions['tu1']).toBeUndefined()
+    expect(st.sizes['tu1']).toBeUndefined()
+    expect(st.expanded['tu1']).toBeUndefined()
+    expect(st.activityById['tu1']).toBeUndefined()
+    expect(st.selectedId).toBeNull()
+  })
+
+  it('leaves a sibling that is still working, so #547 is unaffected', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu-done', { parentNodeId: 'n1' })
+    s.start('tu-running', { parentNodeId: 'n1' })
+    useAgentNodes.getState().finish('tu-done', {})
+    expect(Object.keys(useAgentNodes.getState().byId)).toEqual(['tu-running'])
+  })
+
+  it('marks the stale sweep done while the setting is off', () => {
+    const s = useAgentNodes.getState()
+    s.start('tu1', { parentNodeId: 'n1' })
+    const startedAt = useAgentNodes.getState().byId['tu1'].startedAt
+    s.sweepStaleWorking(startedAt + WORKING_STALE_MS + 1)
+    expect(useAgentNodes.getState().byId['tu1'].state).toBe('done')
+  })
+
+  it('drops the stale sweep’s cards while the setting is on', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu-stale', { parentNodeId: 'n1' })
+    s.start('tu-young', { parentNodeId: 'n1' })
+    const now = Date.now()
+    useAgentNodes.setState((st) => ({
+      byId: {
+        ...st.byId,
+        'tu-stale': { ...st.byId['tu-stale'], startedAt: now - WORKING_STALE_MS - 1 }
+      }
+    }))
+    useAgentNodes.getState().sweepStaleWorking(now)
+    const { byId } = useAgentNodes.getState()
+    expect(byId['tu-stale']).toBeUndefined()
+    expect(byId['tu-young']).toBeDefined()
+  })
+
+  it('a late finish on a dropped card is a no-op', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu1', { parentNodeId: 'n1' })
+    useAgentNodes.getState().finish('tu1', {})
+    useAgentNodes.getState().finish('tu1', { tokens: 9 })
     expect(useAgentNodes.getState().byId['tu1']).toBeUndefined()
   })
 })

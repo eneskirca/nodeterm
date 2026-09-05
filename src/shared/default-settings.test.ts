@@ -25,6 +25,12 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.worktreePathTemplate).toBe(DEFAULT_WORKTREE_PATH_TEMPLATE)
   })
 
+  it('keeps finished subagent cards on the canvas by default', () => {
+    // Default OFF is the whole compatibility promise of the setting: with it off, a finished card
+    // still waits for the turn boundary, exactly as before the feature.
+    expect(DEFAULT_SETTINGS.autoHideFinishedSubagentCards).toBe(false)
+  })
+
   it('keeps common identifier and path characters inside terminal word selections', () => {
     expect(DEFAULT_SETTINGS.terminalWordSeparator).not.toMatch(/[-_/.]/)
   })

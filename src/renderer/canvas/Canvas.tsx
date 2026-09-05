@@ -7475,6 +7475,14 @@ export function Canvas() {
     document.documentElement.style.setProperty('--accent', settings.accent)
   }, [settings.accent])
 
+  // Mirror the auto-hide preference into the ephemeral-card store, which is deliberately kept
+  // free of the settings store.
+  useEffect(() => {
+    useAgentNodes
+      .getState()
+      .setAutoHideFinished(settings.autoHideFinishedSubagentCards === true)
+  }, [settings.autoHideFinishedSubagentCards])
+
 
   /** ids to act on for a node menu: the whole selection if the node is part of it, else just it. */
   const targetIds = useCallback((node: Node): string[] => {

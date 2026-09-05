@@ -58,6 +58,19 @@ interface AgentNodesState {
    * derived node. Cards select one at a time, by click, purely to show their resize frame.
    */
   selectedId: string | null
+  /**
+   * `settings.autoHideFinishedSubagentCards`, mirrored here by Canvas so the store stays free of
+   * the settings store.
+   *
+   * On, a card is DROPPED at the moment its subagent reports done (by `finish()` and by
+   * `sweepStaleWorking`'s decay alike) rather than left `done` for the next turn boundary to
+   * take. Only a finished card is ever dropped, so #547's rule (a new turn must keep the cards of
+   * subagents that are still running) and Eco's `liveSubagents` are untouched.
+   *
+   * Off is the default and reproduces the previous behavior exactly.
+   */
+  autoHideFinished: boolean
+  setAutoHideFinished(on: boolean): void
   select(id: string | null): void
   setPosition(id: string, offset: { x: number; y: number }): void
   setSize(id: string, size: { width: number; height: number }): void
@@ -197,7 +210,11 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
   byId: {},
   activityById: {},
   selectedId: null,
+  autoHideFinished: false,
   ...loadLoopOverrides(),
+
+  setAutoHideFinished: (on) =>
+    set((s) => (s.autoHideFinished === on ? s : { autoHideFinished: on })),
 
   select: (id) => set((s) => (s.selectedId === id ? s : { selectedId: id })),
 
@@ -240,6 +257,7 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     set((s) => {
       const prev = s.byId[toolUseId]
       if (!prev || prev.state === 'done') return s
+      if (s.autoHideFinished) return dropCards(s, [toolUseId])
       // Async subagents end via a <task-notification> that carries no timing stats — fall
       // back to the card's own elapsed time so the duration doesn't vanish on completion.
       const durationMs = result.durationMs ?? Date.now() - prev.startedAt
@@ -264,6 +282,7 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
         (id) => s.byId[id].state === 'working' && now - s.byId[id].startedAt > staleMs
       )
       if (!stale.length) return s
+      if (s.autoHideFinished) return dropCards(s, stale)
       const byId = { ...s.byId }
       for (const id of stale) {
         const prev = byId[id]

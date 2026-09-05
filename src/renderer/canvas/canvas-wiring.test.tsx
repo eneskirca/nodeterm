@@ -196,6 +196,18 @@ describe('breadcrumb wiring the CLAUDE.md bullet calls load-bearing', () => {
   })
 })
 
+describe('the auto-hide preference reaches the ephemeral-card store', () => {
+  // `autoHideFinishedSubagentCards` lives in settings and is acted on in `state/agentNodes.ts`,
+  // which is deliberately free of the settings store, so this effect is the ONLY thing joining
+  // them. Every test of the behaviour drives `setAutoHideFinished` directly, so deleting the
+  // effect leaves the setting inert with the whole suite and typecheck green: the toggle flips,
+  // persists, and does nothing.
+  it('mirrors the setting into setAutoHideFinished', () => {
+    expect(CANVAS_SRC).toContain('.setAutoHideFinished(settings.autoHideFinishedSubagentCards === true)')
+    expect(CANVAS_SRC).toContain('}, [settings.autoHideFinishedSubagentCards])')
+  })
+})
+
 describe('deleteNodes also records persisted closed-session history', () => {
   it('builds entries from the full pre-delete tree and the same "now" used for reopenHistory', () => {
     expect(CANVAS_SRC).toContain('const deletedAt = Date.now()')

@@ -1672,6 +1672,12 @@ else, and its context links must keep classifying across restarts).
   because three surfaces each invented their own timeout) — or a subagent whose end never arrives
   pins its card, and its parent, forever. It marks the card **done** rather than deleting it, so a
   late `finish()` is the no-op it already was and the next turn boundary takes it.
+  **A third removal path is opt-in:** `settings.autoHideFinishedSubagentCards` (default OFF, and
+  off reproduces the two paths above exactly) mirrors into the store as `autoHideFinished`, and
+  with it on a card is dropped the moment its subagent reports done, by `finish()` and by the
+  decay alike, with no turn boundary. Only a DONE card is ever dropped, so #547's rule (a new turn
+  keeps the cards of subagents still running) and Eco's `liveSubagents` are untouched. Renderer
+  only: Desktop and Server Edition identical, Mobile N/A.
   (Subagents share the parent's process — no PTY.) Each card shows
   duration/tokens/tool-uses and **expands** (click) to a **live transcript**:
   `core/subagent-tail.ts` resolves the subagent's own transcript file
