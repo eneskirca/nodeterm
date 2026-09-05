@@ -8,6 +8,11 @@ testing habits). This file is what you reach for when you need to know *why* a r
 is, or you are changing a subsystem it describes. A change that other developers must know about
 belongs in BOTH (see Conventions).
 
+**PR text (title, description, comments, review responses) follows the `pr-writing` skill**: what
+changed and why it matters, then how it was checked and what was not, then risks or follow-up when
+there are any. Structure proportional to the change. `CONTRIBUTING.md` § Pull requests is the
+human-facing half of the same rule.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is

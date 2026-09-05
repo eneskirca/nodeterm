@@ -416,6 +416,10 @@ production socket on purpose; adding a third is a review conversation, not a che
 - Explain **why**, not just what. If a decision has a trade-off, name it and say what you rejected.
 - If you measured something, put the numbers in — they save the next person the same afternoon.
 - Say what you did **not** verify. That is more useful than a confident summary.
+- **Lead with what changed and why it matters.** A reviewer who reads only your first two
+  sentences should be able to decide whether to keep reading; implementation detail comes after.
+- **Match the length to the change.** A one line fix gets a paragraph, a change that moves a
+  boundary gets as much room as it needs, and neither is improved by headings it does not need.
 
 ## Documentation
 
