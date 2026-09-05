@@ -3261,7 +3261,10 @@ export function Canvas() {
           const { shimPath } = await window.nodeTerminal.contextLink.info()
           void api.pty.sendText(
             selfId,
-            buildContextLinkNote(agentIdOf(selfId), titleOf(otherId), shimPath)
+            buildContextLinkNote(agentIdOf(selfId), titleOf(otherId), shimPath),
+            // Named so a composer that debounces its input (submitEnterDelayMs) gets its Enter as
+            // a separate key event even when core has no live session to read the agent id from.
+            { agentId: agentIdOf(selfId) }
           )
         }
         void note(source, target)
@@ -3279,7 +3282,7 @@ export function Canvas() {
         (sticky?.data.text as string) ?? '',
         agentIdOf(target)
       )
-      if (msg) void api.pty.sendText(target, msg)
+      if (msg) void api.pty.sendText(target, msg, { agentId: agentIdOf(target) })
     },
     [linkEndpointOf, agentIdOf, setLinkEdges, markDirty, nodes]
   )
@@ -7342,6 +7345,7 @@ export function Canvas() {
       'node.newAgent.opencode': () => { addAgentNode('opencode'); return true },
       'node.newAgent.grok': () => { addAgentNode('grok'); return true },
       'node.newAgent.copilot': () => { addAgentNode('copilot'); return true },
+      'node.newAgent.devin': () => { addAgentNode('devin'); return true },
       'node.newSticky': () => { addSticky(); return true },
       'node.newBrowser': () => { addBrowser(); return true },
       // Opening the URL prompt IS claiming the chord — a cancelled prompt creates nothing, but the
@@ -10997,7 +11001,11 @@ export function Canvas() {
                 let thrown: string | null = null
                 const outcome = await guardConcurrentRestart(args.node, async () => {
                   try {
-                    const ok = await api.pty.sendText(args.node, args.text ?? '')
+                    const ok = await api.pty.sendText(args.node, args.text ?? '', {
+                      // This verb answers `sent` to an ORCHESTRATING agent, so a submit the
+                      // target's composer swallowed would be reported as a handoff that started.
+                      agentId: agentIdOf(args.node)
+                    })
                     return ok ? ('sent' as const) : ('failed' as const)
                   } catch (e) {
                     thrown = String(e)

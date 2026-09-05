@@ -789,6 +789,57 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
   return null
 }
 
+// Devin CLI payload (measured devin 3000.4.25). Uses snake_case `hook_event_name` and
+// `session_id`; `prompt_id` rotates per turn. Tool events carry `tool_name`, `tool_input`,
+// `tool_use_id` and `tool_response { success, output, error }`. `Stop` only carries
+// `stop_hook_active`; `last_assistant_message` is NOT present, so `lastMessage` stays undefined.
+interface DevinPayload {
+  hook_event_name?: string
+  session_id?: string
+  prompt_id?: string
+  prompt?: string
+  tool_name?: string
+  tool_use_id?: string
+  tool_input?: Record<string, unknown>
+  tool_response?: { success?: boolean; output?: string; error?: string | null }
+  stop_hook_active?: boolean
+  last_assistant_message?: string
+  source?: string
+  reason?: string
+  nodeterm_pending_id?: string
+}
+
+export function normalizeDevin(env: RawHookEnvelope): NormalizedAgentEvent | null {
+  const p = env.payload as DevinPayload
+  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId: p.session_id }
+  const ev = p.hook_event_name
+
+  if (ev === 'SessionStart') return { ...base, kind: 'session', sessionPhase: 'start' }
+  if (ev === 'SessionEnd') return { ...base, kind: 'session', sessionPhase: 'end' }
+  if (ev === 'UserPromptSubmit') {
+    return { ...base, kind: 'state', state: 'working', task: p.prompt, newTurn: true }
+  }
+  if (ev === 'PreToolUse' || ev === 'PostToolUse') {
+    return { ...base, kind: 'state', state: 'working' }
+  }
+  if (ev === 'PermissionRequest') {
+    return {
+      ...base,
+      kind: 'state',
+      state: 'blocked',
+      lastMessage: p.tool_name,
+      ...(p.nodeterm_pending_id ? { pendingId: p.nodeterm_pending_id } : {})
+    }
+  }
+  if (ev === 'Stop') {
+    // Devin Stop is the turn-end signal. It does not carry `last_assistant_message`, and the
+    // `reason` field was not present in the captured payload, so `interrupted` is left false.
+    // If a future Devin release adds `reason`, this is the one branch to revisit.
+    return { ...base, kind: 'state', state: 'done', lastMessage: p.last_assistant_message }
+  }
+  return null
+}
+
 export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): NormalizedAgentEvent | null {
   if (agentId === 'claude') return normalizeClaude(env)
   if (agentId === 'codex') return normalizeCodex(env)
@@ -796,5 +847,6 @@ export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): Normalized
   if (agentId === 'opencode') return normalizeOpencode(env)
   if (agentId === 'grok') return normalizeGrok(env)
   if (agentId === 'copilot') return normalizeCopilot(env)
+  if (agentId === 'devin') return normalizeDevin(env)
   return null
 }

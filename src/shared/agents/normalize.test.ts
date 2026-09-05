@@ -3,6 +3,7 @@ import {
   normalizeClaude,
   normalizeCodex,
   normalizeCopilot,
+  normalizeDevin,
   normalizeFor,
   type RawHookEnvelope
 } from './normalize'
@@ -484,5 +485,63 @@ describe('normalizeCodex — subagents (spawn_agent)', () => {
       })
     )
     expect(e).toMatchObject({ kind: 'state', state: 'working' })
+  })
+})
+
+describe('normalizeDevin', () => {
+  function denv(payload: Record<string, unknown>): RawHookEnvelope {
+    return { nodeId: 'n1', agentId: 'devin', payload }
+  }
+
+  it('maps session boundaries and captures the provider session id', () => {
+    expect(
+      normalizeDevin(denv({ hook_event_name: 'SessionStart', session_id: 'almondine-loganberry', source: 'startup' }))
+    ).toEqual({
+      nodeId: 'n1',
+      agentId: 'devin',
+      sessionId: 'almondine-loganberry',
+      kind: 'session',
+      sessionPhase: 'start'
+    })
+    expect(
+      normalizeDevin(denv({ hook_event_name: 'SessionEnd', session_id: 'almondine-loganberry' }))
+    ).toMatchObject({ kind: 'session', sessionPhase: 'end' })
+  })
+
+  it('maps user prompt to working with a new turn, and tool lifecycle to working', () => {
+    expect(
+      normalizeDevin(denv({ hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt_id: 'p1', prompt: 'do it' }))
+    ).toMatchObject({ kind: 'state', state: 'working', task: 'do it', newTurn: true })
+    for (const hook_event_name of ['PreToolUse', 'PostToolUse']) {
+      expect(
+        normalizeDevin(
+          denv({ hook_event_name, session_id: 's1', prompt_id: 'p1', tool_name: 'write', tool_use_id: 't1' })
+        ),
+        hook_event_name
+      ).toMatchObject({ kind: 'state', state: 'working' })
+    }
+  })
+
+  it('maps PermissionRequest to blocked and Stop to done', () => {
+    const blocked = normalizeDevin(
+      denv({
+        hook_event_name: 'PermissionRequest',
+        session_id: 's1',
+        prompt_id: 'p1',
+        tool_name: 'write',
+        nodeterm_pending_id: 'n1-1234'
+      })
+    )
+    expect(blocked).toMatchObject({ kind: 'state', state: 'blocked', pendingId: 'n1-1234', lastMessage: 'write' })
+
+    const done = normalizeDevin(denv({ hook_event_name: 'Stop', session_id: 's1', prompt_id: 'p1' }))
+    expect(done).toMatchObject({ kind: 'state', state: 'done' })
+    expect(done?.interrupted).toBeFalsy()
+  })
+
+  it('routes through the shared dispatcher', () => {
+    expect(
+      normalizeFor('devin', denv({ hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt: 'hi' }))
+    ).toMatchObject({ agentId: 'devin', state: 'working' })
   })
 })

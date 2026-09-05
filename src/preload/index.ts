@@ -92,7 +92,7 @@ const api: NodeTerminalApi = {
     capture: (persistKey, full) => ipcRenderer.invoke(IPC.ptyCapture, persistKey, full),
     readScrollback: (persistKey) => ipcRenderer.invoke(IPC.ptyReadScrollback, persistKey),
     sendText: (persistKey, text, opts) =>
-      ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter),
+      ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter, opts?.agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
     paneCommand: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey),
     terminateForeground: (persistKey, expectedAgentId) =>

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
@@ -19,19 +19,22 @@ import {
   createdAgentId,
   hasHooks,
   hasPermissionMode,
+  hasPermWait,
   hasUsage,
   reportsOwnCopy,
   RENAME_CAPABLE,
   hasSharedIdentity,
   agentLaunchProgram,
-  resumeCommand
+  resumeCommand,
+  setCustomAgentBaseResolver,
+  submitEnterDelayMs
 } from './config'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
-  it('all three builtin agents can context-link', () => {
-    expect(canContextLink('claude')).toBe(true)
-    expect(canContextLink('codex')).toBe(true)
-    expect(canContextLink('gemini')).toBe(true)
+  it('all context-link-capable builtins can context-link', () => {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'devin'] as const) {
+      expect(canContextLink(id), id).toBe(true)
+    }
   })
   it('custom agents cannot', () => {
     expect(canContextLink('custom:abc')).toBe(false)
@@ -40,12 +43,38 @@ describe('CONTEXT_LINK_CAPABLE', () => {
 
 describe('MODEL_SWITCH_CAPABLE', () => {
   it('is centralized on the base harness capability', () => {
-    expect(canSwitchModel('claude')).toBe(true)
-    expect(canSwitchModel('codex')).toBe(true)
-    expect(canSwitchModel('copilot')).toBe(true)
-    for (const id of ['gemini', 'opencode', 'grok', 'custom:plain'] as const) {
+    for (const id of ['claude', 'codex', 'copilot'] as const) {
+      expect(canSwitchModel(id), id).toBe(true)
+    }
+    // Devin accepts --model but its --model takes Devin-native slugs (swe-1-7, etc.) and the CLI
+    // has no documented gateway base-url / api-key env. The model switcher is for gateway model ids.
+    for (const id of ['gemini', 'opencode', 'grok', 'devin', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
     }
+  })
+})
+
+describe('PERM_WAIT_CAPABLE', () => {
+  afterEach(() => setCustomAgentBaseResolver(null))
+
+  it('is claude-only until another agent\'s PermissionRequest hook is shown to honour our decision JSON', () => {
+    expect(hasPermWait('claude')).toBe(true)
+    for (const id of ['devin', 'codex', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
+      expect(hasPermWait(id), id).toBe(false)
+    }
+  })
+
+  // The gate resolves through the BASE harness, deliberately: a claude-based custom agent runs
+  // claude's binary and therefore claude's hook script, so it can honour the decision reply. This
+  // is the one behaviour difference from the old raw `agentId === 'claude'` compare in pty-manager
+  // — everything without a claude base still gets nothing.
+  it('is inherited by a claude-based custom agent, and by no other base', () => {
+    setCustomAgentBaseResolver((id) =>
+      id === 'custom:proxy' ? 'claude' : id === 'custom:d' ? 'devin' : undefined
+    )
+    expect(hasPermWait('custom:proxy')).toBe(true)
+    expect(hasPermWait('custom:d')).toBe(false)
+    expect(hasPermWait('custom:plain')).toBe(false)
   })
 })
 
@@ -91,6 +120,7 @@ describe('opencode capabilities', () => {
       color: '#a78bfa',
       launchCmd: 'opencode',
       promptInjectionMode: 'flag-prompt',
+      submitEnterDelayMs: 150,
       expectedProcess: 'opencode'
     })
     expect(hasHooks('opencode')).toBe(true)
@@ -150,10 +180,11 @@ describe('grok capabilities', () => {
     expect(AGENT_CONFIG.grok.argvPromptSeparator).toBe('--')
   })
 
-  it('is the ONLY agent that asks for a separator', () => {
+  it('is one of the agents that asks for a separator', () => {
     // claude takes a positional too, but has no subcommand a one-word prompt could shadow — and
-    // adding `--` there would change a command line that works today.
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok')) {
+    // adding `--` there would change a command line that works today. devin is the second:
+    // its CLI has subcommands (`list`, `auth`, `models`, etc.) that collide with a positional prompt.
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok' && a !== 'devin')) {
       expect(AGENT_CONFIG[id].argvPromptSeparator, id).toBeUndefined()
     }
   })
@@ -254,6 +285,86 @@ describe('grok capabilities', () => {
   })
 })
 
+/**
+ * Devin is added with a measured baseline: hooks (PreToolUse/PostToolUse/PermissionRequest/
+ * UserPromptSubmit/Stop/SessionStart/SessionEnd), resume (`--resume <sid>`), and start-up
+ * permission modes (`--permission-mode auto|accept-edits|dangerous`). Canvas control, context
+ * links and model switching are now enabled because the CLI surface is there. Higher-level
+ * leaves (subagents, title sync, chat, usage meter, shared identity) are intentionally NOT
+ * claimed because their per-agent wire is unmeasured.
+ */
+describe('devin capabilities', () => {
+  it('is a builtin with a measured launch command, prompt separator and colour', () => {
+    expect(BUILTIN_AGENT_IDS).toContain('devin')
+    expect(AGENT_CONFIG.devin).toEqual({
+      label: 'Devin',
+      color: '#3969CA',
+      launchCmd: 'devin',
+      promptInjectionMode: 'argv',
+      argvPromptSeparator: '--',
+      submitEnterDelayMs: 150,
+      expectedProcess: 'devin'
+    })
+  })
+
+  // devin absorbs a CR arriving within ~50-80 ms of preceding input (measured on 3000.6.12 across
+  // bracketed paste, unframed paste and `send-keys -l` alike), so text written into its composer
+  // needs the submit as a SEPARATE, later key event. Every other agent keeps 0 = the historical
+  // single-invocation delivery, and a custom agent inherits its base harness's answer.
+  it('shares the delayed submit with opencode, and custom agents inherit it', () => {
+    // Two agents batch input this way, for their own measured reasons (devin: a CR within
+    // ~50-80 ms of preceding input; opencode: a one-burst `/exit\r` never submitting). The number
+    // lives on the agent so every write path gets it — it used to be an `=== 'opencode'` branch in
+    // agent-restart.ts, so only the restart knew.
+    expect(submitEnterDelayMs('devin')).toBe(150)
+    expect(submitEnterDelayMs('opencode')).toBe(150)
+    for (const id of ['claude', 'codex', 'gemini', 'grok', 'copilot'] as const) {
+      expect(submitEnterDelayMs(id), id).toBe(0)
+    }
+    expect(submitEnterDelayMs(undefined)).toBe(0)
+    setCustomAgentBaseResolver((id) =>
+      id === 'custom:d' ? 'devin' : id === 'custom:c' ? 'claude' : undefined
+    )
+    expect(submitEnterDelayMs('custom:d')).toBe(150)
+    expect(submitEnterDelayMs('custom:c')).toBe(0)
+    expect(submitEnterDelayMs('custom:plain')).toBe(0)
+    setCustomAgentBaseResolver(null)
+  })
+
+  it('reports status through its own hooks and can resume', () => {
+    expect(hasHooks('devin')).toBe(true)
+    expect(canResume('devin')).toBe(true)
+    expect(hasPermissionMode('devin')).toBe(true)
+  })
+
+  it('resumes with the devin CLI grammar', () => {
+    expect(resumeCommand('devin', 'almondine-loganberry')).toBe('devin --resume almondine-loganberry')
+  })
+
+  it('claims the integrations whose surface is already measured', () => {
+    expect(canControlCanvas('devin')).toBe(true)
+    expect(canContextLink('devin')).toBe(true)
+    // Devin --model takes native slugs and has no documented gateway base-url / api-key env.
+    expect(canSwitchModel('devin')).toBe(false)
+  })
+
+  it('does not claim integrations that need a per-agent leaf', () => {
+    for (const can of [
+      canSubagent,
+      canRecur,
+      canBranch,
+      hasUsage,
+      canChat,
+      canTransferFrom,
+      canRename,
+      canReadTitle,
+      hasSharedIdentity
+    ]) {
+      expect(can('devin')).toBe(false)
+    }
+  })
+})
+
 describe('copy feedback', () => {
   it('stays quiet for claude, whose CLI announces its own copies', () => {
     // Claude Code captures the mouse and prints "copied N chars to tmux buffer · paste with
@@ -264,7 +375,7 @@ describe('copy feedback', () => {
   it('speaks for every agent that says nothing itself', () => {
     // codex leaves the mouse to tmux: the drag copies via OSC 52 and the highlight vanishes on
     // release with no word from anyone. That silence is what the pill exists for.
-    for (const id of ['codex', 'gemini', 'opencode', 'grok', 'copilot'])
+    for (const id of ['codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'])
       expect(reportsOwnCopy(id)).toBe(false)
   })
 
@@ -309,7 +420,7 @@ describe('title read vs rename write', () => {
 
   it('only codex has a shared identity, and it is asked through the helper', () => {
     expect(hasSharedIdentity('codex')).toBe(true)
-    for (const id of ['claude', 'gemini', 'grok', 'opencode', 'copilot', 'custom:abc'] as const) {
+    for (const id of ['claude', 'gemini', 'grok', 'opencode', 'copilot', 'devin', 'custom:abc'] as const) {
       expect(hasSharedIdentity(id), id).toBe(false)
     }
   })

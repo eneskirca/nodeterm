@@ -179,7 +179,7 @@ describe('sourceIsControlCapable', () => {
   })
 
   it('accepts every canvas-control-capable agent', () => {
-    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok']) {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin']) {
       expect(sourceIsControlCapable(id)).toBe(true)
     }
   })
