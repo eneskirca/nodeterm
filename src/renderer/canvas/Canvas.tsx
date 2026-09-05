@@ -70,6 +70,7 @@ import {
   type SshConnectFn
 } from '../lib/sshAttachments'
 import { terminalKey } from '../terminal/terminal-config'
+import { CanvasDeletions } from '../lib/canvasDeletions'
 import {
   setWebglGesture,
   setWebglZoom,
@@ -534,7 +535,7 @@ import {
   nodeSshFor,
   createVideoNode,
   createWebNode,
-  isVideoFile,
+  isMediaFile,
   duplicateNode,
   flowToNodeStates,
   addSelectionToGroup,
@@ -2533,13 +2534,17 @@ export function Canvas() {
   }, [])
 
   // ---- persistence helpers ----
+  const canvasDeletions = useRef(new CanvasDeletions())
   const commitActiveToStore = useCallback(() => {
     const id = useProjects.getState().activeProjectId
     // Epoch pairing: only commit while the nodes React Flow holds belong to the ACTIVE project.
     // The normal switch flow still commits — every caller commits BEFORE `setActive`, while the two
     // ids still agree — but an autosave timer armed under the previous project now skips instead of
     // writing its nodes under the new project's id (field bug 2026-08-10).
-    if (canCommitCanvas(nodesProjectIdRef.current, id))
+    if (canCommitCanvas(nodesProjectIdRef.current, id)) {
+      canvasDeletions.current.record(id,
+        useProjects.getState().getProject(id)?.nodes.map((n) => n.id) ?? [],
+        nodesRef.current.map((n) => n.id))
       useProjects
         .getState()
         .commitCanvas(
@@ -2549,6 +2554,7 @@ export function Canvas() {
           linkEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target })),
           controlEdgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target }))
         )
+    }
   }, [])
 
   const writeDisk = useCallback(async () => {
@@ -2677,6 +2683,8 @@ export function Canvas() {
   useEffect(() => {
     return api.workspace.onExternalChange((project) => {
       const { activeProjectId: current } = useProjects.getState()
+      project = canvasDeletions.current.filter(project,
+        project.id === current ? nodesRef.current.map((n) => n.id) : undefined)
       if (project.id !== current) {
         // Background project: adopt silently — it reloads into React Flow on next switch.
         useProjects.getState().replaceProject(project)
@@ -3192,6 +3200,12 @@ export function Canvas() {
       const snapped = snapSettings.snapToGrid
         ? snapResizeChanges(managed, nodesRef.current, snapSettings.gridSize || GRID)
         : managed
+      const removed = snapped.filter((c) => c.type === 'remove').map((c) => c.id)
+      if (removed.length && nodesProjectIdRef.current) {
+        const ids = new Set(removed)
+        canvasDeletions.current.record(nodesProjectIdRef.current,
+          removed, nodesRef.current.filter((n) => !ids.has(n.id)).map((n) => n.id))
+      }
       onNodesChange(snapped)
       if (snapped.some((c) => c.type !== 'select')) markDirty()
     },
@@ -3932,7 +3946,7 @@ export function Canvas() {
       setNodes((ns) => [
         ...ns.map((n) => (n.selected ? { ...n, selected: false } : n)),
         {
-          ...(isVideoFile(filePath)
+          ...(isMediaFile(filePath)
             ? createVideoNode(ns.length, filePath, center ?? viewCenter(), sshFs)
             : createEditorNode(ns.length, filePath, center ?? viewCenter(), sshFs)),
           selected: true
@@ -11891,7 +11905,8 @@ export function Canvas() {
             an.start(e.toolUseId, {
               parentNodeId: e.nodeId,
               type: e.subagentType,
-              label: e.taskLabel
+              label: e.taskLabel,
+              startedAt: e.subagentStartedAt
             })
           }
           break
@@ -11902,7 +11917,7 @@ export function Canvas() {
               tokens: e.tokens,
               toolUses: e.toolUses,
               result: e.result
-            })
+            }, e.nodeId)
           break
         case 'background-task':
           // A background shell task runs INSIDE the CLI process, so the `/exit` Eco hibernation

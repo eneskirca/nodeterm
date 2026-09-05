@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
+import { isAudioFile } from '../state/workspace'
 import { useProjects } from '../state/projects'
 
 /**
@@ -20,9 +21,12 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
   const filePath = (data.filePath as string) ?? ''
   const fileName = filePath.split('/').pop() || 'video'
   const remote = !!data.sshFs
+  const Player = isAudioFile(filePath) ? 'audio' : 'video'
 
   useEffect(() => {
     if (!filePath) return
+    setSrc('')
+    setError('')
     let alive = true
     if (remote) {
       // Remote fetch can take a while for a large file — say what the wait is.
@@ -95,9 +99,9 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
       </div>
 
       <div className="editor-node__body">
-        <div className="editor-node__image nodrag nowheel">
+        <div className="editor-node__image nodrag nowheel nopan">
           {src ? (
-            <video
+            <Player
               src={src}
               controls
               preload="metadata"

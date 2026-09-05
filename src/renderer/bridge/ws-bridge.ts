@@ -14,6 +14,8 @@ import {
   type RpcMessage
 } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
+import { subscribeWithSnapshot } from '../../shared/agents/subscribe-with-snapshot'
+import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
@@ -643,7 +645,9 @@ export function buildAgentApi(
   | 'onAgentRenameNode'
 > {
   return {
-    onAgentStatus: (listener) => client.subscribe(IPC.agentStatus, listener as Listener),
+    onAgentStatus: (listener) => subscribeWithSnapshot<NormalizedAgentEvent>(
+      (deliver) => client.subscribe(IPC.agentStatus, deliver as Listener),
+      () => client.request(IPC.agentSubagentSnapshot) as Promise<NormalizedAgentEvent[]>, listener),
     // REAL forward: the Server Edition writes its own agent-status mirror, and the phone reads it
     // over its SSH browse path — a browser canvas hibernating a node must reach that file too.
     reportHibernated: (nodeId, on) => {

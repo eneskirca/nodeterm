@@ -929,6 +929,7 @@ export class WorkspaceStore {
     for (const entry of index.entries) {
       const previous = this.index?.entries.find((candidate) => candidate.id === entry.id)
       entry.localApprovalId = previous?.localApprovalId || randomUUID()
+      if (entry.ssh && previous?.sshBaseline) entry.sshBaseline = previous.sshBaseline
     }
 
     // The settings overlay / ssh settings cache ride every index write, like `localExec` and
@@ -1255,10 +1256,11 @@ export class WorkspaceStore {
     const e = this.index?.entries.find((x) => x.id === projectId && x.ssh)
     if (!e?.ssh || !this.remoteIO) return null
     const revBefore = e.cache?.rev
+    const baselineBefore = JSON.stringify(e.sshBaseline)
     const adopted = await this.reconcileSsh(e, opts?.pushIfStanding ?? true)
     // Persist the index only when the reconcile moved something — a quiet poll must not churn
     // workspace.json every tick.
-    if (adopted || e.cache?.rev !== revBefore) {
+    if (adopted || e.cache?.rev !== revBefore || JSON.stringify(e.sshBaseline) !== baselineBefore) {
       await writeAtomic(this.indexPath, JSON.stringify(this.index))
     }
     return adopted
@@ -1695,8 +1697,9 @@ export class WorkspaceStore {
       if (parsed?.version === 1 && Array.isArray(parsed.nodes)) remote = parsed
     } catch { /* corrupt server file — our cache is the only readable copy; it is written as-is */ }
     if (!remote || remote.id !== e.cache.id) return null
+    const removed = this.observeRemoteNodes(e, remote, !this.isOwnMirrorContent(e.id, res.content))
     const rescued = this.rescuableNodes(e.id, e.cache.nodes, remote.nodes)
-    if (!rescued.length) return null
+    if (!rescued.length && !removed) return null
     // The merged set must outrank both sides, or the next reconcile could rev-decide it away.
     e.cache = {
       ...e.cache,
@@ -1722,6 +1725,26 @@ export class WorkspaceStore {
     const cleared = this.clearedNodes.get(projectId)
     const missing = nodesMissingFrom(ours, theirs)
     return cleared ? missing.filter((n) => !cleared.has(n.id)) : missing
+  }
+
+  /** A newer observed snapshot's omissions are deletions, not local additions to
+   * rescue. Failed reads/old snapshots never advance this baseline. */
+  private observeRemoteNodes(e: IndexEntryV3, remote: ProjectFileV1, applyDeletions = true): boolean {
+    if (!e.cache || remote.id !== e.cache.id) return false
+    const old = e.sshBaseline
+    const valid = old && Number.isSafeInteger(old.rev) && Array.isArray(old.ids) &&
+      old.ids.every((id) => typeof id === 'string')
+    if (valid && remote.rev < old.rev) return false
+    const ids = new Set(remote.nodes.map((n) => n.id))
+    let removed = false
+    if (applyDeletions && valid && remote.rev > old.rev) {
+      const shared = new Set(old.ids)
+      const nodes = e.cache.nodes.filter((n) => !shared.has(n.id) || ids.has(n.id))
+      removed = nodes.length !== e.cache.nodes.length
+      if (removed) e.cache = { ...e.cache, nodes }
+    }
+    e.sshBaseline = { rev: remote.rev, ids: [...ids] }
+    return removed
   }
 
   /** Record the nodes a save removed from an ssh cache (see `clearedNodes`). */
@@ -1775,9 +1798,15 @@ export class WorkspaceStore {
       // said nothing new: the cache stands, and an owed mirror still pushes below. Matching by
       // exact bytes keeps the genuine-external-edit path untouched (any other writer's file —
       // a phone append, another machine's save — hashes differently).
-      if (remote && this.isOwnMirrorContent(e.id, res.content)) remote = null
+      if (remote && this.isOwnMirrorContent(e.id, res.content)) {
+        // Record confirmed delivery, but don't apply an older own write over local edits.
+        if (!e.sshBaseline || remote.rev >= e.sshBaseline.rev)
+          e.sshBaseline = { rev: remote.rev, ids: remote.nodes.map((n) => n.id) }
+        remote = null
+      }
     }
     this.reconciled.add(e.id)
+    const removedRemote = remote ? this.observeRemoteNodes(e, remote) : false
     const cacheRev = e.cache?.rev ?? 0
     const cacheNodes = e.cache?.nodes.length ?? 0
     const sameLineage = !e.cache || !remote || remote.id === e.cache.id
@@ -1802,7 +1831,7 @@ export class WorkspaceStore {
     // `clearedNodes` holds the ids this run removed, and `rescuableNodes` never brings those back,
     // so a real clear still travels. The remote half of the guard is untouched: an empty REMOTE with
     // a higher rev is the user clearing the canvas on another machine and still wins by rev.
-    const mergeable = sameLineage && !!e.cache && !!remote && remote.nodes.length > 0
+    const mergeable = sameLineage && !!e.cache && !!remote && (remote.nodes.length > 0 || removedRemote)
     if (remote && remoteWins) {
       let adopted = remote.id === e.id ? remote : { ...remote, id: e.id }
       let owed = false
@@ -1814,6 +1843,7 @@ export class WorkspaceStore {
         }
       }
       e.cache = adopted
+      e.sshBaseline = { rev: remote.rev, ids: remote.nodes.map((n) => n.id) }
       e.name = adopted.name
       e.color = adopted.color
       this.revs.set(e.id, adopted.rev)
@@ -1834,7 +1864,7 @@ export class WorkspaceStore {
     let merged: Project | null = null
     if (mergeable && e.cache && remote) {
       const rescued = this.rescuableNodes(e.id, e.cache.nodes, remote.nodes)
-      if (rescued.length) {
+      if (rescued.length || removedRemote) {
         e.cache = { ...e.cache, nodes: [...e.cache.nodes, ...rescued], rev: Math.max(cacheRev, remote.rev) + 1 }
         this.revs.set(e.id, e.cache.rev)
         this.unmirrored.add(e.id) // the merged set must land on the server

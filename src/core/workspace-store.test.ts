@@ -809,6 +809,57 @@ describe('ssh mirror guarantee (unmirrored retry)', () => {
 // inflation (refresh seeded our counter from the remote lineage) made the empty canvas win every
 // later reconcile. These tests pin the lineage rules that prevent it.
 describe('ssh lineage safety', () => {
+  it('does not erase a local undo while reading back its own deletion write', async () => {
+    const { files, io } = cwdIO()
+    const store = new WorkspaceStore(io)
+    const a = project().nodes[0]
+    const b = { ...a, id: 'undo-node' }
+    const p = project({ id: 'ps', ssh: sshConn, nodes: [a, b] })
+    await store.save(ws([p]))
+    await store.refreshSshProject('ps')
+    await store.save(ws([{ ...p, nodes: [a] }]))
+    await store.save(ws([p])) // undo BEFORE a poll confirms the deletion write
+    expect(JSON.parse(files[sshConn.remoteCwd]).nodes.map((n: { id: string }) => n.id)).toEqual([a.id, b.id])
+  })
+  it('does not rescue a node another client deleted, including after a restart', async () => {
+    const { files, io } = cwdIO()
+    const store = new WorkspaceStore(io)
+    const a = project().nodes[0]
+    const b = { ...a, id: 'deleted-elsewhere' }
+    const p = project({ id: 'ps', ssh: sshConn, nodes: [a, b] })
+    await store.save(ws([p]))
+    await store.refreshSshProject('ps') // actually read/confirm the shared baseline
+    expect(files[sshConn.remoteCwd]).not.toContain('sshBaseline')
+    const remote = JSON.parse(files[sshConn.remoteCwd])
+    files[sshConn.remoteCwd] = JSON.stringify({ ...remote, rev: remote.rev + 1, nodes: [a] })
+    const restarted = new WorkspaceStore(io)
+    await restarted.load()
+    const adopted = await restarted.refreshSshProject('ps')
+    expect(adopted?.nodes.map((n) => n.id)).toEqual([a.id])
+    await restarted.refreshSshProject('ps')
+    expect(JSON.parse(files[sshConn.remoteCwd]).nodes.map((n: { id: string }) => n.id)).toEqual([a.id])
+  })
+  it('propagates remote deletion even when local revision is ahead, preserving a new local node', async () => {
+    const { files, io } = cwdIO()
+    const store = new WorkspaceStore(io)
+    const a = project().nodes[0]
+    const b = { ...a, id: 'deleted-elsewhere' }
+    const c = { ...a, id: 'local-new' }
+    const p = project({ id: 'ps', ssh: sshConn, nodes: [a, b] })
+    await store.save(ws([p]))
+    await store.refreshSshProject('ps')
+    const baseline = JSON.parse(files[sshConn.remoteCwd])
+    // Offline local edits advance cache without advancing the observed remote baseline.
+    io.write = async () => false
+    io.read = async () => ({ status: 'error' as never })
+    await store.save(ws([{ ...p, nodes: [a, b, c] }]))
+    await store.save(ws([{ ...p, name: 'edited', nodes: [a, b, c] }]))
+    files[sshConn.remoteCwd] = JSON.stringify({ ...baseline, rev: baseline.rev + 1, nodes: [a] })
+    io.read = async () => ({ status: 'ok', content: files[sshConn.remoteCwd] })
+    io.write = async (_id, _ssh, content) => { files[sshConn.remoteCwd] = content; return true }
+    const merged = await store.refreshSshProject('ps')
+    expect(merged?.nodes.map((n) => n.id)).toEqual([a.id, c.id])
+  })
   const sshConn = { server: { host: 'h', user: 'u' } as any, remoteCwd: '~/app' }
 
   /** A populated remote project file from ANOTHER lineage (different project id). */

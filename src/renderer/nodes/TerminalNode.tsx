@@ -62,6 +62,7 @@ import {
   CO_ATTACH_MOUSE_SEQ,
   type SessionLife
 } from '../terminal/terminal-config'
+import { installImeGuard } from '../terminal/ime-guard'
 import { useXtermVisualSettings } from '../terminal/useXtermVisualSettings'
 import { ensureProjectLaunchInfo } from '../state/projectLaunchInfo'
 import { loseWebglContexts, registerWebglClient, type WebglClientHandle } from '../terminal/webgl-budget'
@@ -1960,6 +1961,7 @@ export function TerminalNode({
     // Appearance comes from ONE place, shared with the kanban card modal's viewer of this same
     // session (`ModalTerminal`) — see `xtermOptionsFromSettings`.
     const term = parked?.term ?? new Terminal(xtermOptionsFromSettings(s))
+    installImeGuard(term)
     // Only on a FRESH instance: a parked terminal already carries the table, and the buffer it kept
     // alive was measured with it — re-registering under a live buffer buys nothing.
     if (!parked) activateUnicode11(term)

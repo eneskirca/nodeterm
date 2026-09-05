@@ -55,6 +55,15 @@ const ev = (p: Partial<CopyShortcutEvent>): CopyShortcutEvent => ({
   ...p
 })
 
+describe('IME shortcut ownership', () => {
+  it('passes composition Enter through instead of submitting a newline shortcut', () => {
+    const enter = ev({ key: 'Enter', code: 'Enter', shiftKey: true })
+    expect(terminalKeyAction({ ...enter, isComposing: true }, false, false)).toBe('pass')
+    expect(terminalKeyAction({ ...enter, keyCode: 229 }, false, false)).toBe('pass')
+    expect(terminalKeyAction(enter, false, false)).not.toBe('pass')
+  })
+})
+
 describe('terminalKey (session-scope the node-keyed renderer-global maps)', () => {
   it('same session + node → the same key (stable across a park→remount)', () => {
     expect(terminalKey('local', 'abc')).toBe(terminalKey('local', 'abc'))

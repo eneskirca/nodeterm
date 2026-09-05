@@ -18,6 +18,11 @@ describe('remoteMediaCacheName', () => {
 })
 
 describe('mediaCachePruneList', () => {
+  it('keeps an oldest active player beyond the soft cap', () => {
+    const entries = Array.from({ length: 21 }, (_, i) => ({ name: `video-${i}`, mtimeMs: i }))
+    expect(mediaCachePruneList(entries, 'video-20')).toEqual(['video-0'])
+    expect(mediaCachePruneList(entries, 'video-20', 20, new Set(['video-0']))).toEqual([])
+  })
   const entry = (name: string, mtimeMs: number) => ({ name, mtimeMs })
 
   it('keeps everything under the cap', () => {

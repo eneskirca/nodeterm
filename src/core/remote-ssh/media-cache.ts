@@ -25,11 +25,13 @@ export const MEDIA_CACHE_KEEP = 20
 export function mediaCachePruneList(
   entries: readonly { name: string; mtimeMs: number }[],
   except: string,
-  keep: number = MEDIA_CACHE_KEEP
+  keep: number = MEDIA_CACHE_KEEP,
+  protectedNames: ReadonlySet<string> = new Set()
 ): string[] {
   return entries
     .filter((e) => e.name !== except)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
     .slice(Math.max(0, keep - 1))
+    .filter((e) => !protectedNames.has(e.name))
     .map((e) => e.name)
 }

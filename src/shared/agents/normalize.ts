@@ -73,6 +73,8 @@ export interface NormalizedAgentEvent {
   // subagent
   toolUseId?: string
   subagentType?: string
+  /** Original start time when recovering an in-flight fan-out after renderer reload. */
+  subagentStartedAt?: number
   // grok StopCancelled only: normalized state-less so the mirror can make the session-aware badge
   // decision (a subagent cancellation must not end its parent session).
   cancelReason?:

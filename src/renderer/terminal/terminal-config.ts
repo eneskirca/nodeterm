@@ -708,6 +708,8 @@ export function createDataGate(write: (chunk: string) => void): DataGate {
 
 /** The subset of a KeyboardEvent the copy-shortcut decision looks at. */
 export interface CopyShortcutEvent {
+  isComposing?: boolean
+  keyCode?: number
   type: string
   key: string
   code: string
@@ -829,6 +831,7 @@ export function terminalKeyAction(
   registryOwns = false,
   isWindows: boolean = isWindowsPlatform()
 ): TerminalKeyAction {
+  if (e.isComposing || e.keyCode === 229) return 'pass'
   if (
     e.type === 'keydown' &&
     e.key === 'Enter' &&

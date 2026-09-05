@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import { IPC } from '../shared/ipc'
+import { subscribeWithSnapshot } from '../shared/agents/subscribe-with-snapshot'
 import { resolveUiScale } from '../shared/ui-scale'
 import type {
   CanvasMutation,
@@ -757,11 +758,11 @@ const api: NodeTerminalApi = {
     ipcRenderer.on(IPC.agentUnreadClear, handler)
     return () => ipcRenderer.removeListener(IPC.agentUnreadClear, handler)
   },
-  onAgentStatus: (listener) => {
-    const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)
+  onAgentStatus: (listener) => subscribeWithSnapshot((deliver) => {
+    const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => deliver(payload)
     ipcRenderer.on(IPC.agentStatus, handler)
     return () => ipcRenderer.removeListener(IPC.agentStatus, handler)
-  },
+  }, () => ipcRenderer.invoke(IPC.agentSubagentSnapshot), listener),
   reportHibernated: (nodeId, on) => ipcRenderer.send(IPC.agentHibernated, { nodeId, on }),
   onAgentWake: (listener) => {
     const handler = (_e: unknown, nodeId: string) => listener(nodeId)

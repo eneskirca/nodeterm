@@ -287,6 +287,7 @@ import {
   writeAgentHtml
 } from './media-protocol'
 import { initPlatform, platform } from '../core/platform'
+import { SubagentReplay } from '../core/subagent-replay'
 import { electronPlatform } from './platform-electron'
 import { wirePeerRegistry } from './peer-registry'
 import { WEBGL_CONTEXT_CAP_DESKTOP } from '../shared/webgl'
@@ -2160,6 +2161,8 @@ app.whenReady().then(async () => {
    * the next prompt. The result proves the ask settled; `working` is the honest next state (Claude
    * carries on with "User declined to answer questions"), and any real event corrects it anyway.
    */
+  const subagentReplay = new SubagentReplay()
+  corePlatform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
   const onToolResult = (sessionId: string): void => {
     let nodeId: string | undefined
     for (const [nid, sid] of nodeContextSession) if (sid === sessionId) nodeId = nid
@@ -2188,6 +2191,7 @@ app.whenReady().then(async () => {
       toolUseId: n.toolUseId,
       result: n.result
     } satisfies NormalizedAgentEvent
+    subagentReplay.record(taskDoneEvent)
     sendToMain(IPC.agentStatus, taskDoneEvent)
     recordAgentEvent(taskDoneEvent)
     subagentTail.finish(n.toolUseId)
@@ -2462,6 +2466,7 @@ app.whenReady().then(async () => {
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.
   const emitAgentStatus = (e: NormalizedAgentEvent): void => {
+    subagentReplay.record(e)
     // Record FIRST: recordAgentEvent computes the stash-priority classification and returns the
     // event ENRICHED for a needs-you edge (a question strips its pendingId), so the canvas keys off
     // the same single source of truth as the mirror/phone. Then broadcast the enriched event.

@@ -3,11 +3,22 @@ import {
   createVideoNode,
   createWebNode,
   isVideoFile,
+  isAudioFile,
+  isMediaFile,
   nodeStatesToFlow,
   flowToNodeStates
 } from './workspace'
 
 describe('video/web nodes', () => {
+  it('routes audio as media, with the existing round-trippable video node kind', () => {
+    for (const path of ['/tmp/test.WAV', 'sound.mp3', 'voice.m4a', 'music.flac', 'a.opus', 'C:\\music\\voice.WAV']) {
+      expect(isAudioFile(path)).toBe(true)
+      expect(isMediaFile(path)).toBe(true)
+      const n = createVideoNode(0, path, undefined, true)
+      expect(nodeStatesToFlow(flowToNodeStates([n]))[0].data).toMatchObject({ filePath: path, sshFs: true })
+    }
+    expect(isMediaFile('notes.txt')).toBe(false)
+  })
   it('isVideoFile matches common video extensions, not images', () => {
     expect(isVideoFile('/a/b/clip.mp4')).toBe(true)
     expect(isVideoFile('/a/b/CLIP.WEBM')).toBe(true)
@@ -21,6 +32,14 @@ describe('video/web nodes', () => {
     expect(n.type).toBe('video')
     expect(n.data.filePath).toBe('/clips/demo.mp4')
     expect(n.data.title).toBe('demo.mp4')
+  })
+  it('repairs audio nodes persisted as editors by older builds', () => {
+    const state = flowToNodeStates([createVideoNode(0, '/tmp/old.wav', undefined, true)])[0]
+    state.kind = 'editor'
+    const repaired = nodeStatesToFlow([state])[0]
+    expect(repaired.type).toBe('video')
+    expect(repaired.id).toBe(state.id)
+    expect(repaired.data.sshFs).toBe(true)
   })
 
   it('createWebNode carries url or filePath', () => {

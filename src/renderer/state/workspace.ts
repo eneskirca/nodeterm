@@ -931,6 +931,16 @@ export function createEditorNode(
 }
 
 const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'ogv', 'avi']
+const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'flac', 'aif', 'aiff']
+
+export function isAudioFile(path: string): boolean {
+  return AUDIO_EXTS.includes(path.split('.').pop()?.toLowerCase() ?? '')
+}
+
+/** Audio reuses the persisted video/media node kind, never the UTF-8 editor. */
+export function isMediaFile(path: string): boolean {
+  return isVideoFile(path) || isAudioFile(path)
+}
 
 /** True when a path looks like a playable video file (by extension). */
 export function isVideoFile(path: string): boolean {
@@ -1897,7 +1907,9 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
     return {
       id: n.id,
       // Default to 'terminal' for nodes saved before the kind field existed.
-      type: n.kind ?? 'terminal',
+      // Older builds opened audio as UTF-8 editors. Repair those persisted nodes
+      // on load, retaining their id/path/SSH provenance and canvas position.
+      type: n.kind === 'editor' && n.filePath && isAudioFile(n.filePath) ? 'video' : n.kind ?? 'terminal',
       ...((n.kind ?? 'terminal') === 'group' ? { dragHandle: '.group-node__label' } : {}),
       position: n.position,
       width: n.size.width,

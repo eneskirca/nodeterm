@@ -174,6 +174,10 @@ export interface ProjectFileV1 {
  * the data file into `<cwd>/.nodeterm/project.json` rather than a reshaping of the project.
  */
 export interface IndexEntryV3 {
+  /** Last actually READ SSH snapshot, machine-local. Distinguishes shared nodes
+   * deleted by another client from never-shared local additions. Not a write ack:
+   * remote writes may be optimistically acknowledged before transmission. */
+  sshBaseline?: { rev: number; ids: string[] }
   /**
    * THE project id — this machine's, and the only authority for it. It is minted here (a new
    * project, or `probeFolder`'s adoption of a folder) and never read back out of the shared

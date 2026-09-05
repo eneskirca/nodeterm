@@ -20,7 +20,7 @@ import { removeAtomic, renameAtomic } from '../../core/fs-atomic'
 import { findExecutableSync, shellPathNow } from '../../core/exec-path'
 import { isSafeRemoteHome } from '../../core/remote-safety'
 import { mediaCachePruneList, remoteMediaCacheName } from '../../core/remote-ssh/media-cache'
-import { allowMediaPath } from '../media-protocol'
+import { allowMediaPath, isMediaPathAllowed } from '../media-protocol'
 import { remoteAccountConfigDir, isSupportedClaudeVersion } from '../../core/claude-accounts-core'
 import type { PushGrant } from '../../core/push-grants'
 import { REMOTE_GRANT_SCAN_CMD, parseRemoteGrants } from '../../core/remote-push-grants'
@@ -1126,6 +1126,7 @@ export class SshProjectManager {
         if (code !== 'ENOENT') throw error
       }
       if (Number.isFinite(remoteSize) && remoteSize >= 0 && cachedSize === remoteSize) {
+        allowMediaPath(dest)
         return { ok: true, localPath: dest }
       }
       await fs.mkdir(cacheDir, { recursive: true })
@@ -1144,6 +1145,7 @@ export class SshProjectManager {
       } finally {
         await removeScpPart(partPath)
       }
+      allowMediaPath(dest)
       void this.pruneMediaCache(cacheDir, path.basename(dest))
       return { ok: true, localPath: dest }
     } catch {
@@ -1151,16 +1153,17 @@ export class SshProjectManager {
     }
   }
 
-  /** Best-effort, bounded cache: keep the newest MEDIA_CACHE_KEEP entries. An evicted entry that
-   *  is still playing in an open node stops being seekable, acceptable for a 20-deep cache of a
-   *  convenience copy; the node re-fetches on next open. */
+  /** Soft bound: session-allowlisted files stay available for seeking. Older sessions'
+   * files are eligible for eviction; opening >20 files can exceed the cap until quit. */
   private async pruneMediaCache(cacheDir: string, except: string): Promise<void> {
     try {
       const names = (await fs.readdir(cacheDir)).filter((n) => !n.endsWith('.part'))
       const entries = await Promise.all(
         names.map(async (n) => ({ name: n, mtimeMs: (await fs.stat(path.join(cacheDir, n))).mtimeMs }))
       )
-      for (const n of mediaCachePruneList(entries, except)) {
+      const pinned = new Set(names.filter((n) => isMediaPathAllowed(path.join(cacheDir, n))))
+      for (const n of mediaCachePruneList(entries, except, undefined, pinned)) {
+        if (isMediaPathAllowed(path.join(cacheDir, n))) continue
         await fs.rm(path.join(cacheDir, n), { force: true }).catch(() => {})
       }
     } catch {

@@ -363,6 +363,49 @@ yourself and apply it with `setViewport` (`renderer/lib/nodeFocus.ts`, `canvas/f
 lands now and against the canvas you meant. `fitAll` is the one deliberate exception: an explicit
 user gesture on a settled canvas.
 
+## IME composition ownership
+
+Canvas and kanban terminals both install `installImeGuard` for xterm 5.5. While composition or
+its deferred finalizer owns the textarea, the fallback `insertText` path must not emit it
+again. Do not deduplicate strings: intentional repeated input is valid. Composition key events
+also bypass Nodeterm shortcuts. This adapter uses xterm private fields and needs native IME
+verification when xterm changes. Duplicate input still occurs intermittently in local use;
+this guard is only a partial mitigation, not a complete fix.
+
+## SSH deletion reconciliation
+
+Keep `IndexEntryV3.sshBaseline` machine-local and preserve it across saves and restarts. Only
+a newer, actually read, same-lineage remote snapshot proves that a previously shared node was
+deleted. Failed reads and optimistic write acknowledgments are not evidence of deletion.
+Renderer `CanvasDeletions` retains deletion memory across optimistic commits and releases it
+on explicit local undo. Older clients can still resurrect deletions if they concurrently write
+the same remote project.
+
+## Subagent lifecycle replay
+
+Both desktop and Server Edition record accepted subagent lifecycle events in bounded,
+in-memory `SubagentReplay`. Preload and WebSocket clients subscribe before requesting the
+snapshot and drain racing live events afterward. Never include state or permission alerts in
+the snapshot. Preserve original start timestamps and completed cards on duplicate starts; an
+end can reconstruct a missing start. This cannot recover hooks never received by the host, or
+survive a host-process restart.
+
+## Audio media nodes
+
+Audio files use the existing persisted `video` node kind and native audio controls, not the
+UTF-8 editor. File-opening decisions must use `isMediaFile` wherever audio and video share
+routing. On load, legacy audio editor nodes migrate while retaining their node IDs, paths, SSH
+provenance, and placement. A recognized file extension does not guarantee that the browser
+supports its codec.
+
+## Media range and cache lifetime
+
+Single-byte-range arithmetic lives in `core/media-range.ts`; suffix ranges count backward from
+EOF, and reversed/out-of-bounds ranges return 416. Remote files allowed for the current media
+session must remain cached for subsequent seeks. The cache limit is therefore soft until the
+app exits. Playback controls must not initiate canvas panning, and a changed source clears
+stale playback/error state.
+
 ## Testing
 
 `npm test` must pass, and `npm run typecheck` is the fastest gate.

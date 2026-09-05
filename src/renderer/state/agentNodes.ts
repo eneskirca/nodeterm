@@ -64,8 +64,8 @@ interface AgentNodesState {
   toggleExpanded(id: string): void
   /** Drop a card's dragged position + resized size, returning it to its laid-out spot. */
   resetPlacement(id: string): void
-  start(toolUseId: string, viz: Omit<SubagentViz, 'state' | 'startedAt'>): void
-  finish(toolUseId: string, result: SubagentResult): void
+  start(toolUseId: string, viz: Omit<SubagentViz, 'state' | 'startedAt'> & { startedAt?: number }): void
+  finish(toolUseId: string, result: SubagentResult, parentNodeId?: string): void
   /** Append a chunk of the subagent's live transcript. */
   appendActivity(toolUseId: string, chunk: string): void
   /**
@@ -232,13 +232,15 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     }),
 
   start: (toolUseId, viz) =>
-    set((s) => ({
-      byId: { ...s.byId, [toolUseId]: { ...viz, state: 'working', startedAt: Date.now() } }
+    set((s) => s.byId[toolUseId] ? s : ({
+      byId: { ...s.byId, [toolUseId]: { ...viz, state: 'working', startedAt: viz.startedAt ?? Date.now() } }
     })),
 
-  finish: (toolUseId, result) =>
+  finish: (toolUseId, result, parentNodeId) =>
     set((s) => {
-      const prev = s.byId[toolUseId]
+      const prev = s.byId[toolUseId] ?? (parentNodeId ? {
+        parentNodeId, state: 'working' as const, startedAt: Date.now() - (result.durationMs ?? 0)
+      } : undefined)
       if (!prev || prev.state === 'done') return s
       // Async subagents end via a <task-notification> that carries no timing stats — fall
       // back to the card's own elapsed time so the duration doesn't vanish on completion.

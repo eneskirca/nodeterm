@@ -27,6 +27,7 @@ import { linkedClaudeConfigDirs } from '../core/claude-config-dir'
 import { isAsyncSubagentLaunch, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { IPC } from '../shared/ipc'
+import { SubagentReplay } from '../core/subagent-replay'
 import type { ServerPlatform } from './platform-server'
 
 /** The narrow surface of the hook server this module needs — injectable for tests. */
@@ -68,6 +69,8 @@ export function wireAgentStatus(
   opts: WireAgentStatusOptions = {}
 ): { contextTail: ContextTail; geminiContextTail: ContextTail } {
   const hooks = opts.hooks ?? hookServer
+  const subagentReplay = new SubagentReplay()
+  platform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
   // nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
   // since the grok branch below, grok's)
   const nodeContextSession = new Map<string, string>()
@@ -96,6 +99,7 @@ export function wireAgentStatus(
       toolUseId: n.toolUseId,
       result: n.result
     } satisfies NormalizedAgentEvent
+    subagentReplay.record(taskDoneEvent)
     platform.broadcast(IPC.agentStatus, taskDoneEvent)
     recordAgentEvent(taskDoneEvent)
     subagentTail.finish(n.toolUseId)
@@ -156,6 +160,7 @@ export function wireAgentStatus(
   })
 
   hooks.setListener((e) => {
+    subagentReplay.record(e)
     // Record FIRST: recordAgentEvent computes the stash-priority classification and returns the
     // event ENRICHED for a needs-you edge (a question strips its pendingId), so the browser canvas
     // keys off the same single source of truth as the mirror/phone. Then broadcast the enriched one.

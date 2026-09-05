@@ -38,6 +38,7 @@ import {
   SHIFT_ENTER_SEQ,
   CO_ATTACH_MOUSE_SEQ
 } from '../../terminal/terminal-config'
+import { installImeGuard } from '../../terminal/ime-guard'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import {
   owningProjectId,
@@ -175,6 +176,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     // view of one session, and a card that renders it in different colours reads as a different
     // terminal. (It used to hardcode its own background, which is exactly what happened.)
     const term = new Terminal(xtermOptionsFromSettings(s))
+    installImeGuard(term)
     // Without a handler xterm answers an OSC 8 click with a window.confirm — the one surface
     // where this session's links would prompt instead of opening like the canvas node's.
     term.options.linkHandler = createOsc8LinkHandler((uri) =>

@@ -2,6 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useAgentNodes } from './agentNodes'
 
 describe('loop node overrides vs per-turn fan-out', () => {
+  it('recovers an end without a start and ignores a replayed start after completion', () => {
+    const s = useAgentNodes.getState()
+    s.finish('lost-start', { result: 'done', durationMs: 500 }, 'parent')
+    expect(useAgentNodes.getState().byId['lost-start']).toMatchObject({ parentNodeId: 'parent', state: 'done', result: 'done' })
+    s.start('lost-start', { parentNodeId: 'parent' })
+    expect(useAgentNodes.getState().byId['lost-start'].state).toBe('done')
+  })
+  it('keeps the original replay timestamp and ignores repeated starts', () => {
+    const s = useAgentNodes.getState()
+    s.start('replay', { parentNodeId: 'parent', startedAt: 100 })
+    s.start('replay', { parentNodeId: 'parent' })
+    expect(useAgentNodes.getState().byId['replay'].startedAt).toBe(100)
+  })
   beforeEach(() => {
     useAgentNodes.setState({ byId: {}, activityById: {}, positions: {}, sizes: {}, expanded: {} })
   })
