@@ -181,7 +181,11 @@ export function assembleLaunchCommand(
     ? launchCmd
     : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity)
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
-  const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
+  const harnessArgs = inputs.initialPrompt || inputs.promptFile
+    ? eff.promptLaunchArgs ?? eff.launchArgs ?? []
+    : eff.launchArgs ?? []
+  const harnessFragment = harnessArgs.map(shellQuoteIfNeeded).join(' ')
+  const baseCmd = [program, harnessFragment, argsFragment].filter(Boolean).join(' ')
 
   // The prompt becomes an ARGUMENT on a command line that is then typed into the pane
   // (`writeWhenShellReady` → `deliverCommand`, which echo-verifies the line before submitting).
@@ -204,9 +208,9 @@ export function assembleLaunchCommand(
   const sep = eff.argvPromptSeparator
   const promptFlag =
     eff.promptInjectionMode === 'flag-prompt'
-      ? '--prompt'
+      ? eff.promptFlag ?? '--prompt'
       : eff.promptInjectionMode === 'flag-interactive'
-        ? '--interactive'
+        ? eff.promptFlag ?? '--interactive'
         : null
   const isFlagPrompt = !!promptFlag
   const usesSep = !!promptArg && !!sep && !isFlagPrompt
@@ -259,7 +263,12 @@ export function assembleResumeCommand(
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 
   const resumeBase = inputs.sessionId ? resumeCommandWith(baseCmd, capId, inputs.sessionId) : null
-  const base = resumeBase ?? baseCmd
+  // Non-resumable harnesses still need their ordinary interactive subcommand on restart/wake.
+  // Goose is the concrete case: its configured fresh-session contract is `goose session`, so a
+  // restored node must use the same grammar. A real resume command remains unchanged.
+  const harnessFragment = (eff.launchArgs ?? []).map(shellQuoteIfNeeded).join(' ')
+  const freshBase = [program, harnessFragment, argsFragment].filter(Boolean).join(' ')
+  const base = resumeBase ?? freshBase
   const withMode = inputs.permissionMode
     ? withPermissionMode(base, capId, inputs.permissionMode)
     : base

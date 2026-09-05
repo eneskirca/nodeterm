@@ -631,8 +631,10 @@ describe('RemoteHooks.installCanvasControl', () => {
 describe('RemoteHooks.installContextLink', () => {
   const isWriteTo = (args: string[], p: string) => args.join(' ').includes('cat > ') && args.join(' ').includes(p)
 
-  it('writes an executable shim + the skill, and merges the instruction blocks', async () => {
-    const { rh, calls } = harness()
+  it('writes an executable shim + every agent skill path, and merges the instruction blocks', async () => {
+    const { rh, calls } = harness({
+      responses: { "if [ -d '/home/u/.agents' ]": '0\n1\n' }
+    })
     await rh.installContextLink(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
     expect(joined.some((j) => j.includes("cat > '/home/u/.nodeterm/context.sh'") && j.includes('chmod 755'))).toBe(true)
@@ -646,8 +648,27 @@ describe('RemoteHooks.installContextLink', () => {
     const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/get-linked-context/SKILL.md'))?.stdin ?? ''
     expect(skill).toContain('name: get-linked-context')
     expect(skill).toContain('sh "/home/u/.nodeterm/context.sh"')
+    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.agents/skills/get-linked-context/SKILL.md'))).toBe(true)
+    expect(
+      calls.some((c) =>
+        isWriteTo(c.args, '/home/u/.gemini/antigravity-cli/skills/get-linked-context/SKILL.md')
+      )
+    ).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:get-linked-context:start'))).toBe(true)
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
+  })
+
+  it('does not create optional third-party skill roots that are absent', async () => {
+    const { rh, calls } = harness()
+    await rh.installContextLink(conn, '/s.sock', '/home/u')
+    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.claude/skills/get-linked-context/SKILL.md'))).toBe(true)
+    expect(calls.some((c) => c.args.join(' ').includes("[ -d '/home/u/.agents' ]"))).toBe(true)
+    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.agents/skills/get-linked-context/SKILL.md'))).toBe(false)
+    expect(
+      calls.some((c) =>
+        isWriteTo(c.args, '/home/u/.gemini/antigravity-cli/skills/get-linked-context/SKILL.md')
+      )
+    ).toBe(false)
   })
 
   it('leaves the canvas-control block in the same file alone', async () => {

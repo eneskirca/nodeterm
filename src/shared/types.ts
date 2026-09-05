@@ -1710,7 +1710,7 @@ export const DEFAULT_SETTINGS: Settings = {
   claudeAccounts: [],
   codexAccounts: [],
   systemAccountLabel: '',
-  // All three builtin agents (Claude/Codex/Gemini) show in the Add menus out of the box.
+  // All builtin agents show in the Add menus out of the box.
   // Existing users keep whatever they've saved (their persisted disabledAgents overrides this).
   disabledAgents: [],
   hiddenUsageProviders: [],

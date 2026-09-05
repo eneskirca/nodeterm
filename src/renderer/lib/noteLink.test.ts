@@ -5,6 +5,7 @@ import {
   buildLinkMap,
   buildNotePushMessage,
   classifyLink,
+  contextLinkShimPath,
   hiddenLinkIds,
   linkIdsCoveredByRopes,
   pairKey,
@@ -200,21 +201,31 @@ describe('buildLinkMap agent identity', () => {
 })
 
 describe('buildContextLinkNote', () => {
+  it('uses the host shim for a remote endpoint and the desktop shim locally', () => {
+    expect(contextLinkShimPath('/Applications/nodeterm/context.sh', false)).toBe(
+      '/Applications/nodeterm/context.sh'
+    )
+    expect(contextLinkShimPath('/Applications/nodeterm/context.sh', true)).toBe(
+      '$HOME/.nodeterm/context.sh'
+    )
+  })
   it('claude gets the skill wording', () => {
     const msg = buildContextLinkNote('claude', 'Builder', '/x/context.sh')
     expect(msg).toContain('[nodeterm] You are now linked to "Builder"')
     expect(msg).toContain('get-linked-context skill')
   })
-  it('codex/gemini get the inline CLI command, single line', () => {
-    const msg = buildContextLinkNote('codex', 'Builder', '/x/context.sh')
-    expect(msg).toContain('sh "/x/context.sh"')
-    expect(msg).toContain('Builder')
-    expect(msg).not.toContain('\n')
+  it('non-Claude agents get the inline CLI command, single line', () => {
+    for (const agent of ['codex', 'gemini', 'agy', 'pi', 'goose']) {
+      const msg = buildContextLinkNote(agent, 'Builder', '/x/context.sh')
+      expect(msg, agent).toContain('sh "/x/context.sh"')
+      expect(msg, agent).toContain('Builder')
+      expect(msg, agent).not.toContain('\n')
+    }
   })
   it('every variant says the note is informational — no action now', () => {
     // The message is injected + submitted as a prompt, so an agent that reads it as a task
     // launches an unsolicited investigation (observed with gemini). It must self-defuse.
-    for (const agent of [undefined, 'claude', 'codex', 'gemini']) {
+    for (const agent of [undefined, 'claude', 'codex', 'gemini', 'agy', 'pi', 'goose']) {
       const msg = buildContextLinkNote(agent, 'Builder', '/x/context.sh')
       expect(msg, `agent=${agent}`).toMatch(/[Nn]o action/)
       expect(msg, `agent=${agent}`).not.toContain('\n')

@@ -27,7 +27,10 @@ export interface EffectiveAgentConfig {
   label: string
   color: string
   launchCmd: string
+  launchArgs?: readonly string[]
+  promptLaunchArgs?: readonly string[]
   promptInjectionMode: PromptInjectionMode
+  promptFlag?: string
   argvPromptSeparator?: string
   expectedProcess?: string
   /** `true` for a custom agent (`CustomAgent`), `false` for a builtin. */
@@ -74,7 +77,10 @@ export function resolveAgentConfig(
     label: customAgent?.label || id,
     color,
     launchCmd,
+    launchArgs: base?.launchArgs,
+    promptLaunchArgs: base?.promptLaunchArgs,
     promptInjectionMode,
+    promptFlag: base?.promptFlag,
     argvPromptSeparator: base?.argvPromptSeparator,
     expectedProcess: base?.expectedProcess,
     custom: true,

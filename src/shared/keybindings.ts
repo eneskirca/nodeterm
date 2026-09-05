@@ -59,7 +59,7 @@ export type CommandId =
   | 'canvas.groupSelection'
   | 'node.newTerminal'
   | 'node.newAgent'
-  // Per-builtin-agent creates. The six ids are spelled STATICALLY (never derived from
+  // Per-builtin-agent creates. The ids are spelled STATICALLY (never derived from
   // BUILTIN_AGENT_IDS) so this union stays literal — `isCommandId`, the overrides map and the
   // handler table all depend on that.
   | 'node.newAgent.claude'
@@ -68,6 +68,9 @@ export type CommandId =
   | 'node.newAgent.opencode'
   | 'node.newAgent.grok'
   | 'node.newAgent.copilot'
+  | 'node.newAgent.agy'
+  | 'node.newAgent.pi'
+  | 'node.newAgent.goose'
   | 'node.newSticky'
   | 'node.newBrowser'
   | 'node.newWebView'
@@ -172,6 +175,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: 'node.newAgent.grok', title: `New ${AGENT_CONFIG.grok.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },
   { id: 'node.newAgent.copilot', title: `New ${AGENT_CONFIG.copilot.label} node`, group: 'Nodes',
+    scope: 'canvas', defaultBindings: both() },
+  { id: 'node.newAgent.agy', title: `New ${AGENT_CONFIG.agy.label} node`, group: 'Nodes',
+    scope: 'canvas', defaultBindings: both() },
+  { id: 'node.newAgent.pi', title: `New ${AGENT_CONFIG.pi.label} node`, group: 'Nodes',
+    scope: 'canvas', defaultBindings: both() },
+  { id: 'node.newAgent.goose', title: `New ${AGENT_CONFIG.goose.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },
   { id: 'node.newSticky', title: 'New sticky note', group: 'Nodes', scope: 'canvas',
     defaultBindings: both() },

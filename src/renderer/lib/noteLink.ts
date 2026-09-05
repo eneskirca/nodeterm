@@ -20,6 +20,11 @@ export {
   type SkippedBridge
 } from '@shared/canvas-link'
 
+/** The inline context command runs inside the endpoint node, so SSH nodes need the host path. */
+export function contextLinkShimPath(localPath: string, remote: boolean): string {
+  return remote ? '$HOME/.nodeterm/context.sh' : localPath
+}
+
 /** Order-independent key for an edge's endpoints (a↔b and b↔a are the same connection). */
 export function pairKey(a: string, b: string): string {
   return a < b ? `${a}\0${b}` : `${b}\0${a}`
@@ -88,7 +93,7 @@ export function buildNotePushMessage(title: string, text: string, agentId?: stri
 
 /**
  * The one-shot message injected into each endpoint when a context link is drawn.
- * Claude discovers the capability via its installed skill; codex/gemini get the CLI
+ * Claude discovers the capability via its installed skill; other agents get the CLI
  * inline (their global-instructions block may not be loaded mid-session). Single-line:
  * pty.sendText appends Enter.
  *

@@ -76,13 +76,13 @@ export function mergeInstructionsBlock(existing: string, block: string): string 
   return existing + sep + full + '\n'
 }
 
-/** The instructions body telling codex/gemini how to read linked-node context. */
+/** The instructions body telling agents without shared skill discovery how to read linked context. */
 export function buildLinkedContextInstructions(shimPath: string): string {
   return [
     '# Reading linked nodeterm nodes (get-linked-context)',
     '',
     'When you run inside a nodeterm canvas session, this node may be linked to other agent',
-    'nodes (Claude, Codex or Gemini) or sticky notes by a context-link edge. You can READ a',
+    'agent nodes or sticky notes by a context-link edge. You can READ a',
     "linked node's context on demand — nothing is pushed automatically:",
     '',
     '```sh',
@@ -325,13 +325,13 @@ export const CONTEXT_SHIM_SCRIPT = buildContextShimScript()
 export function buildContextLinkSkillBody(shimPath: string): string {
   return `---
 name: get-linked-context
-description: Read the conversation/transcript, a recent summary, or the terminal output of another agent node (Claude, Codex or Gemini) you are linked to on the nodeterm canvas. Use when you need to know what a connected node has been doing, hand off, or continue its work. Only meaningful inside a nodeterm session with a context-link edge. Also reads sticky notes linked to this node as context.
+description: Read the conversation transcript, a recent summary, or the terminal output of another agent node you are linked to on the nodeterm canvas. Use when you need to know what a connected node has been doing, hand off, or continue its work. Only meaningful inside a nodeterm session with a context-link edge. Also reads sticky notes linked to this node as context.
 ---
 
 # Get linked context
 
-On the nodeterm canvas, this Claude session may be connected to other agent nodes (Claude, Codex or Gemini) by a
-context-link edge. When you are linked, you can READ the other node's context on demand by
+On the nodeterm canvas, this agent session may be connected to other agent nodes by a context-link
+edge. When you are linked, you can READ the other node's context on demand by
 running the local CLI shim below. Nothing is pushed to you automatically — pull what you need.
 
 Run the shim (absolute path):
