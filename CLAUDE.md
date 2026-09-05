@@ -3225,6 +3225,43 @@ the same script hand-packs `build/icon.icns` (size-checked frames — issue #369
 zip, `--publish never`). Production release signing/notarization and the update-feed hosting are
 handled outside this repo.
 
+**Linux ships AppImage + deb + rpm**, all unsigned, all built by `release-linux` on a plain
+`ubuntu-latest` runner (`npm run dist:linux` locally). Three things about it are easy to get wrong:
+
+- **The packages are named `node-terminal`, the AppImage is named `nodeterm`.** electron-builder's
+  `linuxPackageName` is package.json's `name`, not `productName` (it only falls back to the product
+  name for an `@scope/…` name), so the artifacts are `node-terminal_<version>_amd64.deb`,
+  `node-terminal-<version>.x86_64.rpm` and `nodeterm-<version>.AppImage`, the launcher is
+  `/usr/bin/node-terminal`, and the install prefix is `/opt/nodeterm` (that one IS the productName).
+  Anything that matches on the package name (`scripts/uninstall.sh`'s `dpkg -s` / `rpm -q` probes,
+  the README's install lines) must say `node-terminal` or it silently never fires. Renaming the
+  package to match the app would strand existing `.deb` installs on a package apt no longer tracks,
+  which is why the mismatch is documented rather than fixed.
+- **The rpm target shells out to the system `rpmbuild`.** electron-builder bundles fpm, but not
+  rpmbuild, so `release-linux` installs it explicitly (`apt-get install -y rpm`); without it the
+  target dies with "Need executable 'rpmbuild' to convert dir to rpm". The default `Requires` set
+  electron-builder emits (gtk3, libnotify, nss, libXScrnSaver, `(libXtst or libXtst6)`, xdg-utils,
+  at-spi2-core, `(libuuid or libuuid1)`) resolves on Fedora 44 with nothing extra pulled in;
+  verified by installing the built rpm, which also proved rpm 6.0.2 accepts fpm's spec.
+- **Auto-update is already correct for rpm and needs no work**: `isManualUpdatePlatform`
+  (src/shared/update-platform.ts) keys off the absence of `APPIMAGE` in the environment, so a deb
+  and an rpm install both land on the manual-download card rather than downloading an AppImage
+  they cannot install.
+
+**Building on a GCC 14+ distro needs `CFLAGS=-D_GNU_SOURCE`** (Fedora, Arch, recent openSUSE; the
+CI runners are old enough not to care). smart-whisper's vendored `whisper.cpp/ggml/src/ggml.c`
+calls `CPU_ZERO`, `CPU_SET_S`, `pthread_getaffinity_np` and `getcpu` without ever defining
+`_GNU_SOURCE` (upstream ggml gets it from its CMake build, which node-gyp does not use), and GCC 14
+promoted implicit function declarations from a warning to an error, so a bare `npm install` fails
+in smart-whisper's own install script before our `postinstall` ever runs. Measured on Fedora 44 /
+GCC 16.2.1: `CFLAGS=-D_GNU_SOURCE npm install` builds both native modules clean. Two Fedora runtime
+packages are needed on top: **`libxcrypt-compat`** (fpm's bundled Ruby links `libcrypt.so.1`, which
+Fedora's glibc dropped, and without it BOTH the deb and the rpm target fail), and **`fuse-libs`**
+for anyone running the AppImage, whose default runtime is still the FUSE2 one. Switching
+`build.toolsets.appimage` to `"1.0.3"` would drop that FUSE2 requirement, but the static runtime is
+upstream-flagged beta and stops passing the `--no-sandbox` launcher argument the FUSE2 path adds,
+so it is a deliberate not-yet.
+
 **Windows ships as an UNSIGNED BETA** (extracted from external PR #276; the session-host phase
 #305 merged 2026-08-20, and the decision to release without signing is #454 — CI-green, but no
 real-device daily-use verification yet, and that is a stated risk, not an oversight). Deliberate
