@@ -144,7 +144,7 @@ jobs:
 
   # Linux build: unsigned, so it runs on a plain GitHub runner (fast + free tier), in
   # parallel with the self-hosted mac job — it must never queue behind notarization.
-  # Publishes AppImage + deb + latest-linux.yml to the SAME tag's GitHub Release; the
+  # Publishes AppImage + deb + rpm + latest-linux.yml to the SAME tag's GitHub Release; the
   # nodeterm.dev update feed serves latest-linux.yml alongside the mac files.
   release-linux:
     runs-on: ubuntu-latest
@@ -155,6 +155,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # electron-builder ships its own fpm, but the rpm target shells out to the system
+      # rpmbuild ("Need executable 'rpmbuild' to convert dir to rpm"). Installed explicitly
+      # rather than relying on whatever the runner image happens to carry.
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y rpm
 
       - name: Install dependencies
         run: npm ci
@@ -177,6 +183,7 @@ jobs:
           files: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
             dist/latest-linux.yml
 
   # Windows build: UNSIGNED BETA (#454), on a plain GitHub runner. Publishes the NSIS

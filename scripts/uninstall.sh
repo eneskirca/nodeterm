@@ -527,8 +527,16 @@ note "    On each host: tmux -L nodeterm-rmt kill-server; rm -rf ~/.nodeterm  (t
 note "    script's agent-integration steps there if you used agents on that host)."
 note "  • The tmux/agent CLIs themselves (claude, codex, …) — nodeterm never owned them."
 if [ "$OS" != "Darwin" ]; then
-  if command -v dpkg >/dev/null 2>&1 && dpkg -s nodeterm >/dev/null 2>&1; then
-    note "  • The .deb package needs root to remove: sudo apt remove nodeterm"
+  # Both packages carry package.json's `name`, not the productName the app is installed
+  # under: electron-builder's linuxPackageName is `node-terminal`, /opt/nodeterm is not.
+  if command -v dpkg >/dev/null 2>&1 && dpkg -s node-terminal >/dev/null 2>&1; then
+    note "  • The .deb package needs root to remove: sudo apt remove node-terminal"
+  elif command -v rpm >/dev/null 2>&1 && rpm -q node-terminal >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then
+      note "  • The .rpm package needs root to remove: sudo dnf remove node-terminal"
+    else
+      note "  • The .rpm package needs root to remove: sudo rpm -e node-terminal"
+    fi
   fi
   note "  • If you used the AppImage, delete the nodeterm-*.AppImage file you downloaded."
 fi
