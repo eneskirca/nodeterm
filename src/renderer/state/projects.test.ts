@@ -1,8 +1,49 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { DEFAULT_SETTINGS } from '@shared/types'
 import { useProjects } from './projects'
+import { useSettings } from './settings'
 
 beforeEach(() => {
   useProjects.getState().hydrate({ version: 2, activeProjectId: '', projects: [] })
+  useSettings.setState({ settings: DEFAULT_SETTINGS, hydrated: true })
+})
+
+describe('messaging default for new projects', () => {
+  it('seeds the project switch and local consent when enabled', () => {
+    useSettings.setState({
+      settings: { ...DEFAULT_SETTINGS, agentMessagingDefault: true },
+      hydrated: true
+    })
+    const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
+    expect(p.agentMessaging).toBe(true)
+    expect(p.capabilityAck?.agentMessaging).toBe('kept')
+    expect(p.capabilityAckSource?.agentMessaging).toBe('local-default')
+  })
+
+  it('leaves messaging absent when disabled', () => {
+    const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
+    expect(p.agentMessaging).toBeUndefined()
+    expect(p.capabilityAck?.agentMessaging).toBeUndefined()
+    expect(p.capabilityAckSource?.agentMessaging).toBeUndefined()
+  })
+
+  it('does not grant messaging to an adopted project', () => {
+    useSettings.setState({
+      settings: { ...DEFAULT_SETTINGS, agentMessagingDefault: true },
+      hydrated: true
+    })
+    const p = useProjects.getState().adoptProject({
+      id: 'project-from-file',
+      name: 'clone',
+      color: '#7aa2f7',
+      cwd: '/Users/me/dev/clone',
+      agentMessaging: true,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: []
+    })
+    expect(p.agentMessaging).toBe(true)
+    expect(p.capabilityAck?.agentMessaging).toBeUndefined()
+  })
 })
 
 describe('openFolderProject', () => {

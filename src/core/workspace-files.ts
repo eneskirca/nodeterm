@@ -200,6 +200,8 @@ export interface IndexEntryV3 {
    * entry, so a second worktree of the same repo (a second entry) notifies again, on purpose.
    */
   capabilityAck?: import('../shared/project-capability-consent').CapabilityAckMap
+  /** MACHINE-LOCAL provenance for a global-default answer. Never written to project.json. */
+  capabilityAckSource?: import('../shared/project-capability-consent').CapabilityAckSourceMap
   /** MACHINE-LOCAL camera navigation history for a ref'd project. Same rule as `viewport`: this
    *  user's "where was I" is not something a repo shares. See NavStop. */
   breadcrumbs?: NavStop[]
@@ -451,6 +453,8 @@ export function fileToProject(
     defaultAccountId?: string
     /** This machine's clone-notice acknowledgments for this entry (never from the file). */
     capabilityAck?: import('../shared/project-capability-consent').CapabilityAckMap
+    /** Machine-local provenance for a global-default answer; never accepted from the file. */
+    capabilityAckSource?: import('../shared/project-capability-consent').CapabilityAckSourceMap
     /** This machine's navigation history for this entry (never from the file). */
     breadcrumbs?: NavStop[]
     /** This machine's closed-session history for this entry (never from the file) — already
@@ -503,6 +507,7 @@ export function fileToProject(
     // Machine-local, from the index entry ONLY: a file field named `capabilityAck` is a forgery
     // attempt (the shared file cannot carry this machine's consent) and is simply never read.
     ...(base.capabilityAck ? { capabilityAck: base.capabilityAck } : {}),
+    ...(base.capabilityAckSource ? { capabilityAckSource: base.capabilityAckSource } : {}),
     // Machine-local, from the index entry ONLY: a file field named `breadcrumbs` is a forgery
     // attempt (the shared file cannot carry this machine's navigation history) and is never read.
     ...(base.breadcrumbs?.length ? { breadcrumbs: base.breadcrumbs } : {}),
@@ -614,6 +619,7 @@ export function splitWorkspace(
       // The clone-notice acknowledgment rides the machine-local entry, never the shared file
       // (projectToFile does not emit it — pinned by project-capability-consent.test.ts).
       ...(p.capabilityAck ? { capabilityAck: p.capabilityAck } : {}),
+      ...(p.capabilityAckSource ? { capabilityAckSource: p.capabilityAckSource } : {}),
       ...(p.breadcrumbs?.length ? { breadcrumbs: p.breadcrumbs } : {}),
       // Same rule: whose trash can holds what is machine-local, capped on the way OUT as well as
       // in (see CLOSED_SESSIONS_CAP) — an in-memory list inflated some other way must not be

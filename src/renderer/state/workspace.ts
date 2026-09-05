@@ -1158,7 +1158,8 @@ export function createProject(
   index: number,
   name?: string,
   cwd?: string,
-  ssh?: Project['ssh']
+  ssh?: Project['ssh'],
+  agentMessaging = useSettings.getState().settings.agentMessagingDefault
 ): Project {
   return {
     id: nextId('project'),
@@ -1166,6 +1167,16 @@ export function createProject(
     color: NODE_COLORS[index % NODE_COLORS.length],
     cwd,
     ...(ssh ? { ssh } : {}),
+    // This machine's global preference seeds the switch and a machine-local answer for a file
+    // created here. The provenance marker is re-armed if an external local/SSH file later replaces
+    // or contributes to that lineage; adopted/cloned projects bypass this factory entirely.
+    ...(agentMessaging
+      ? {
+          agentMessaging: true,
+          capabilityAck: { agentMessaging: 'kept' as const },
+          capabilityAckSource: { agentMessaging: 'local-default' as const }
+        }
+      : {}),
     viewport: { x: 0, y: 0, zoom: 1 },
     nodes: []
   }

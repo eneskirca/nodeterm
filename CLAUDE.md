@@ -417,8 +417,11 @@ project's nodes only.** The contract:
 
 ## Terminal session continuity (tmux)
 
-`src/core/pty-manager.ts` runs each terminal inside a persistent tmux session
-(`tmux new-session -A -D -s nt-<nodeId>`) on a dedicated socket (`-L node-terminal`) with
+`src/core/pty-manager.ts` runs each terminal inside a persistent tmux session on a dedicated socket
+(`-L node-terminal`). Ownership-sensitive local creates use a detached create-only command that
+returns the tmux generation, then attach a painter client; warm opens use attach-only. Each side
+recovers once if the session appears or disappears across the asynchronous probe. Other tmux paths
+still use attach-or-create where no ownership proof is minted. All paths use
 a generated config (`-f <userData>/tmux.conf`, so the user's `~/.tmux.conf` never
 interferes; status bar off, **mouse on**, 50k history, `set-clipboard on` + `terminal-features
 ",*:clipboard"`, and the copy-mode mouse bindings). Because the tmux *server* outlives the app,

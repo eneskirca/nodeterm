@@ -92,10 +92,11 @@ export interface PtyCreateOptions {
   persistKey?: string
   /**
    * The machine-local id (`IndexEntryV3.id`) of the project this node belongs to, as the renderer
-   * knows it at the create call. Recorded in the runtime pane-ownership ledger on a GENUINE FRESH
-   * spawn (`agents/pane-ownership.ts`) so agent messaging can prove which project actually spawned
-   * a pane rather than trusting the git-shared, forgeable `project.json`. Optional: absent ⇒ the
-   * pane is left unproven and messaging to it fails closed (never derived from the file id).
+   * knows it at the create call. A GENUINE FRESH spawn records it in the pane-ownership ledger and
+   * writes a signed machine-local restart proof bound to that tmux generation
+   * (`agents/pane-ownership.ts`). A warm attach may restore only the same signed owner and live
+   * generation, so agent messaging never trusts the git-shared, forgeable `project.json`.
+   * Optional: absent ⇒ the pane is left unproven and messaging to it fails closed.
    */
   ownerProjectId?: string
   /**
@@ -738,6 +739,9 @@ export interface Project {
    * (workspace-files.test.ts / capability-notice tests pin that the file bytes are unchanged).
    */
   capabilityAck?: import('./project-capability-consent').CapabilityAckMap
+  /** MACHINE-LOCAL provenance for an acknowledgment seeded by a global new-project default.
+   *  External project-file adoption clears the seeded answer and raises the normal notice. */
+  capabilityAckSource?: import('./project-capability-consent').CapabilityAckSourceMap
   /** Best dino-game score in this project — new dino nodes seed from it, so the record survives closing the node. */
   dinoHighScore?: number
   /** Kanban task board — shared via .nodeterm/project.json like nodes. */
@@ -1539,6 +1543,10 @@ export interface Settings {
    *  driver runs in `default`). Overridable per project via Project.defaultPermissionMode.
    *  `auto` is version-gated: CLIs below 2.1.71 reject the value, so it degrades to no flag. */
   claudePermissionMode: AgentPermissionMode
+  /** Turn agent messaging on when this machine creates a project. This is a machine-local
+   *  default, not a blanket grant: existing projects keep their own switch, and a project
+   *  adopted from `.nodeterm/project.json` still goes through the clone-consent gate. */
+  agentMessagingDefault: boolean
   /** "Eco": exit the agent CLI of a session that has been idle AND offscreen for
    *  `agentHibernationIdleMinutes`, reclaiming its RAM; the conversation is resumed automatically
    *  when the node is viewed again. Default OFF — opt-in, because it stops a real process.
@@ -1725,6 +1733,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Sessions start in auto mode out of the box. Existing users pick this up on hydrate
   // (settings hydrate merges over DEFAULT_SETTINGS) — a deliberate behavior change.
   claudePermissionMode: 'auto',
+  // Opt-in: new projects inherit this machine-local preference and record the user's consent.
+  // Existing and cloned projects are untouched.
+  agentMessagingDefault: false,
   // Opt-in: hibernation exits a live CLI, so nobody gets it without asking. The 30-minute floor
   // is deliberately long — shorter windows exit sessions the user is between turns on.
   agentHibernationEnabled: false,

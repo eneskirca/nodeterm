@@ -42,6 +42,9 @@ import { classifyPaneCwd } from './pane-cwd'
 import {
   recordFreshSpawnOwner,
   forgetPaneOwner,
+  forgetPersistedPaneOwner,
+  persistPaneOwner,
+  restorePaneOwner,
   shouldRecordOwnership
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
@@ -675,6 +678,12 @@ interface Session {
    * already branches on `sshRemote`.
    */
   sessionHost?: boolean
+  /** Generation returned by the atomic create-only local-tmux command, before this client
+   *  attached. Present only for ownership-proved fresh creates. */
+  createdTmuxGeneration?: string
+  /** The async absence probe lost a race to another creator, so create-only recovered by
+   *  attaching to the now-existing generation. It is warm and must never record a fresh owner. */
+  attachedAfterCreateRace?: boolean
 }
 
 /** Sinks for a detached session whose output is served somewhere other than the renderer
@@ -2184,21 +2193,34 @@ export class PtyManager {
         }
       }
     }
-    const sessionId = this.spawnSession(
+    const localTmuxMode = !options.sshRemote && tmuxBacked && options.ownerProjectId
+      ? fresh ? 'create' as const : 'attach' as const
+      : undefined
+    let sessionId = this.spawnSession(
       options,
       clientId,
       undefined,
       warmWindowsBackend,
-      projectOverrides
+      projectOverrides,
+      localTmuxMode
     )
-    const spawned = this.sessions.get(sessionId)
-    // PANE OWNERSHIP (agent messaging, PR #237 fix round 2): record the OWNING project of a pane
-    // this process just GENUINELY spawned. Gated on `fresh` — an attach/co-attach to a session
-    // someone else spawned (incl. an app-restart re-attach) leaves the pane UNPROVEN, so a second
-    // project that merely opens another's node id cannot claim it. The owner is the renderer's
-    // machine-local project id, never the git-shared file id. See `agents/pane-ownership.ts`.
-    if (shouldRecordOwnership(fresh, options.persistKey, options.ownerProjectId))
-      recordFreshSpawnOwner(options.persistKey as string, options.ownerProjectId)
+    let spawned = this.sessions.get(sessionId)
+    if (spawned?.attachedAfterCreateRace) fresh = false
+    if (localTmuxMode === 'attach') {
+      // The warm session can disappear after has-session but before attach-session. Confirm after
+      // node-pty starts; if it vanished, discard that dead client and make one bounded cold-create
+      // attempt. That create has its own opposite-direction race recovery below.
+      const stillExists = await this.tmuxSessionExists(options.persistKey as string)
+      if (!stillExists || !spawned || this.sessions.get(sessionId) !== spawned) {
+        if (spawned && this.sessions.get(sessionId) === spawned)
+          this.discardFailedSpawn(sessionId, spawned)
+        sessionId = this.spawnSession(
+          options, clientId, undefined, warmWindowsBackend, projectOverrides, 'create'
+        )
+        spawned = this.sessions.get(sessionId)
+        fresh = !spawned?.attachedAfterCreateRace
+      }
+    }
     if (warmWindowsBackend === 'tmux') {
       // The first strict probe deliberately preceded profile resolution. Recheck after launching
       // attach-only: if the named session disappeared in that window, never return the transient
@@ -2246,6 +2268,42 @@ export class PtyManager {
         throw error
       }
     }
+    // PANE OWNERSHIP (agent messaging): wait until Session Host has returned authoritative
+    // freshness before recording anything. Every genuine fresh spawn gets a process-local owner.
+    // Only local tmux can recover that owner after an app restart: its proof is bound to tmux's
+    // current server/session/pane generation, so an out-of-band replacement cannot inherit stale
+    // authorization. Remote and Session Host warm attaches stay unproven and fail closed.
+    if (shouldRecordOwnership(fresh, options.persistKey, options.ownerProjectId)) {
+      if (tmuxBacked && !options.sshRemote && !spawned?.sessionHost) {
+        const generation = await this.localTmuxGeneration(options.persistKey as string)
+        if (generation && generation === spawned?.createdTmuxGeneration) {
+          recordFreshSpawnOwner(options.persistKey as string, options.ownerProjectId)
+          persistPaneOwner(
+            options.persistKey as string,
+            options.ownerProjectId,
+            generation,
+            hookServer.nodeAuthSecretOrNull()
+          )
+        }
+      } else {
+        recordFreshSpawnOwner(options.persistKey as string, options.ownerProjectId)
+      }
+    } else if (
+      !fresh &&
+      tmuxBacked &&
+      !options.sshRemote &&
+      !spawned?.sessionHost &&
+      options.persistKey &&
+      options.ownerProjectId
+    ) {
+      const generation = await this.localTmuxGeneration(options.persistKey)
+      restorePaneOwner(
+        options.persistKey,
+        options.ownerProjectId,
+        generation,
+        hookServer.nodeAuthSecretOrNull()
+      )
+    }
     // Surface a missing-account-dir fallback so the renderer can flag the node's account chip.
     const accountFallback = spawned?.accountFallback
     // The session's `persistKey` is set iff the spawn actually landed on a tmux, local or remote
@@ -2269,6 +2327,31 @@ export class PtyManager {
       ...(accountFallback ? { accountFallback } : {}),
       ...(staleCwd ? { staleCwd: true as const } : {}),
       ...(screen ? { screen } : {})
+    }
+  }
+
+  /** Stable identity for one live local-tmux generation. Exact targeting plus strict parsing is
+   *  load-bearing: tmux may exit 0 with empty format fields when a target vanished. */
+  private async localTmuxGeneration(persistKey: string): Promise<string | undefined> {
+    if (!this.tmuxPath) return undefined
+    try {
+      const { stdout } = await runAsync(
+        this.tmuxPath,
+        [
+          '-L',
+          TMUX_SOCKET,
+          'display-message',
+          '-p',
+          '-t',
+          `=${sessionName(persistKey)}:`,
+          '#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}'
+        ],
+        { timeout: PROBE_TIMEOUT_MS }
+      )
+      const generation = stdout.replace(/\r?\n$/, '')
+      return /^\d+\|\$\d+\|\d+\|%\d+\|\d+$/.test(generation) ? generation : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -2537,7 +2620,9 @@ export class PtyManager {
     warmWindowsBackend?: 'session-host' | 'tmux',
     /** What the OWNING project contributes (see `projectSpawnOverrides`) — already resolved,
      *  because this function is synchronous. Null on every path with no proven project owner. */
-    overrides?: ProjectSpawnOverrides | null
+    overrides?: ProjectSpawnOverrides | null,
+    /** Security-sensitive local tmux path: create-only or attach-only, never `new-session -A`. */
+    localTmuxMode?: 'create' | 'attach'
   ): string {
     // PRE-FLIGHT — refuse before node-pty is touched, not after it fails.
     //
@@ -2977,7 +3062,7 @@ export class PtyManager {
       // on the client's inherited env would leak the first session's values into later ones).
       file = this.tmuxPath
       useLocalTmux = true
-      if (warmWindowsBackend === 'tmux') {
+      if (warmWindowsBackend === 'tmux' || localTmuxMode === 'attach') {
         // Attach-only is the critical distinction from `new-session -A`: if the proven warm
         // generation disappears in this window, tmux rejects instead of cold-spawning a shell
         // from options that deliberately skipped trusted profile resolution.
@@ -3028,7 +3113,7 @@ export class PtyManager {
         ...Object.keys(customEnvMerged),
         ...Object.keys(projectEnv ?? {})
       ])
-      const attachFlags = tmuxAttachFlags(!!sinks)
+      const attachFlags = localTmuxMode === 'create' ? [] : tmuxAttachFlags(!!sinks)
       args = [
         '-L',
         TMUX_SOCKET,
@@ -3070,6 +3155,72 @@ export class PtyManager {
       // explicitly instead of relying on it being empty there.
       file = localSessionShell
       args = localSessionArgs
+    }
+
+    let createdTmuxGeneration: string | undefined
+    let attachedAfterCreateRace = false
+    if (useLocalTmux && localTmuxMode === 'create') {
+      const command = args.indexOf('new-session')
+      const createArgs = [
+        ...args.slice(0, command + 1),
+        '-d',
+        '-P',
+        '-F',
+        '#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}',
+        '-x',
+        String(options.cols),
+        '-y',
+        String(options.rows),
+        ...args.slice(command + 1)
+      ]
+      try {
+        // Measured 2026-09-03 with tmux 3.6a: 20 detached /bin/sh creates, 7 ms median,
+        // 13 ms p95, 18 ms max. The timeout bounds shell/host anomalies, not ordinary latency.
+        const output = execFileSync(file, createArgs, {
+          cwd,
+          env,
+          encoding: 'utf8',
+          timeout: PROBE_TIMEOUT_MS
+        }).replace(
+          /\r?\n$/,
+          ''
+        )
+        if (!/^\d+\|\$\d+\|\d+\|%\d+\|\d+$/.test(output))
+          throw new Error('tmux returned no valid generation')
+        createdTmuxGeneration = output
+      } catch (error) {
+        // Another window may have created this exact named session after our async absence probe.
+        // Recover only when tmux now reports a strict generation for that target; every other
+        // create error remains fatal. This sync confirmation shares the create timeout and runs
+        // only on the race/error path.
+        try {
+          const target = `=${sessionName(options.persistKey as string)}:`
+          const current = execFileSync(
+            file,
+            ['-L', TMUX_SOCKET, 'display-message', '-p', '-t', target,
+              '#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}'],
+            { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS }
+          ).replace(/\r?\n$/, '')
+          if (!/^\d+\|\$\d+\|\d+\|%\d+\|\d+$/.test(current)) throw error
+          attachedAfterCreateRace = true
+        } catch {
+          throw new Error(
+            `Could not create the terminal session atomically: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        }
+      }
+      args = [
+        '-L',
+        TMUX_SOCKET,
+        '-f',
+        this.confPath,
+        'attach-session',
+        ...(sinks ? [] : ['-d']),
+        '-t',
+        sessionName(options.persistKey as string)
+      ]
     }
 
     let proc: pty.IPty
@@ -3115,6 +3266,24 @@ export class PtyManager {
           env
         })
       } catch (err) {
+        // The ownership-sensitive create path starts the pane detached, then attaches its painter.
+        // If that attach fails, remove only the exact generation we created; a same-name
+        // replacement must survive rather than being killed on a stale assumption.
+        if (createdTmuxGeneration && options.persistKey) {
+          try {
+            const target = `=${sessionName(options.persistKey)}:`
+            const format = '#{pid}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}'
+            const current = execFileSync(
+              file,
+              ['-L', TMUX_SOCKET, 'display-message', '-p', '-t', target, format],
+              { encoding: 'utf8' }
+            ).replace(/\r?\n$/, '')
+            if (current === createdTmuxGeneration)
+              execFileSync(file, localTmuxKillArgs(TMUX_SOCKET, sessionName(options.persistKey)))
+          } catch {
+            /* uncertain generation: preserve it rather than kill another process's pane */
+          }
+        }
         // node-pty surfaces the underlying failure as a bare "posix_spawnp failed." with no errno.
         // Two different field causes wear that same message, so BOTH are measured before anything is
         // said: a cross-arch `electron-builder --x64` run clobbering node-pty's spawn-helper (arm64
@@ -3180,7 +3349,9 @@ export class PtyManager {
       unwatchedSince: null,
       pausedBy: new Set<string>(),
       accountFallback,
-      sessionHost: useSessionHost
+      sessionHost: useSessionHost,
+      ...(createdTmuxGeneration ? { createdTmuxGeneration } : {}),
+      ...(attachedAfterCreateRace ? { attachedAfterCreateRace: true } : {})
     }
     // Both shared timers are armed by the first session that needs them: the scrollback snapshots
     // and the idle reap are both about tmux-backed sessions and nothing else.
@@ -3365,10 +3536,16 @@ export class PtyManager {
     session.sizes.clear()
     session.shown.clear()
     session.pausedBy.clear()
-    // Do not use releasePty here: its defensive resume would issue a fresh host request from a
-    // shim whose attach just failed. SessionHostPty.destroy() is the exact detach/unsubscribe.
-    const hostPty = session.proc as unknown as SessionHostPty
-    hostPty.destroy()
+    if (session.sessionHost) {
+      // Do not use releasePty here: its defensive resume would issue a fresh host request from a
+      // shim whose attach just failed. SessionHostPty.destroy() is the exact detach/unsubscribe.
+      const hostPty = session.proc as unknown as SessionHostPty
+      hostPty.destroy()
+    } else {
+      // A local tmux attach that lost its session is also provisional. Close its client without
+      // recording released/shadow state; the bounded cold-create retry replaces it immediately.
+      releasePty(session.proc as ReleasablePty)
+    }
     this.forget(sessionId, session)
     const remaining = [...this.sessions.values()]
     if (!remaining.some((candidate) => candidate.persistKey) && this.snapshotTimer) {
@@ -4731,6 +4908,7 @@ export class PtyManager {
     // genuine respawn re-records it; until then the id is unproven, which fails closed for
     // messaging (agents/pane-ownership.ts). Safe on either intent: recycle's respawn overwrites.
     forgetPaneOwner(persistKey)
+    forgetPersistedPaneOwner(persistKey)
     // The tmux session is about to be killed, so everything attached to it goes now: a shadow would
     // otherwise linger until tmux dropped its client, and what we remembered about the released
     // session describes a pane that is about to stop existing.
