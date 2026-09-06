@@ -4,6 +4,7 @@
 // this only has the dev/packaged split.
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { spawn } from 'child_process'
 
@@ -67,16 +68,88 @@ export function resolveSessionHostScript(opts: {
  * exactly like `pty.spawn` failures elsewhere in this codebase degrade to an error the renderer
  * can show rather than crashing the main process.
  */
-export function spawnSessionHost(scriptPath: string, userDataDir: string): void {
+/** The name the host runs under on Windows. See `hostLauncherPath`. */
+export const WINDOWS_HOST_EXE = 'nodeterm-session-host.exe'
+
+/** The filesystem surface `hostLauncherPath` needs, injected so its fallbacks are testable without
+ *  a 224 MB Electron binary and a writable install directory. */
+export interface HostLinkFs {
+  statSync(p: string, opts: { bigint: true }): { ino: bigint; dev: bigint }
+  unlinkSync(p: string): void
+  linkSync(existing: string, link: string): void
+}
+
+/**
+ * The binary to spawn the host with — `execPath` everywhere, except on Windows, where it is a hard
+ * link beside it named `nodeterm-session-host.exe`.
+ *
+ * The host is deliberately detached and outlives the app, and it is the Electron binary, so it runs
+ * as `nodeterm.exe`. The one-click NSIS installer identifies the running app by image name plus
+ * install directory and waits on it — so a host left running after a quit IS the app as far as the
+ * installer can tell, and the install stalls until that process is killed by hand. Reported the
+ * first time anyone installed a build carrying this feature.
+ *
+ * A hard link takes the host out of that match structurally rather than by exception: same file, no
+ * second copy of a 224 MB binary, no admin, and Windows reports the process under the LINK's name
+ * (measured). It must sit in the install directory — Electron needs its sibling DLLs, `locales/`
+ * and `resources/`, and a link elsewhere exits immediately (0x80000003, measured).
+ *
+ * Identity is compared with BIGINT stats. An NTFS file id is 64-bit and routinely exceeds
+ * `Number.MAX_SAFE_INTEGER`, so the default numeric `ino` can report two different files as the
+ * same one — which here would mean happily launching a stale or unrelated binary. A zero id is
+ * treated as "cannot prove identity" and re-links rather than trusting it.
+ *
+ * Every failure — a read-only install dir, a filesystem without hard links, a directory squatting
+ * the name, a link that cannot be removed — returns `execPath`, which is exactly today's behaviour.
+ * The worst case is the installer annoyance this fixes, never a host that cannot start.
+ */
+export function hostLauncherPath(
+  execPath: string,
+  platform: NodeJS.Platform | string,
+  fsLike: HostLinkFs = fs as unknown as HostLinkFs
+): string {
+  if (platform !== 'win32') return execPath
+  const link = path.join(path.dirname(execPath), WINDOWS_HOST_EXE)
   try {
-    const child = spawn(process.execPath, [scriptPath, userDataDir], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
-    })
-    child.unref()
+    const target = fsLike.statSync(execPath, { bigint: true })
+    try {
+      const existing = fsLike.statSync(link, { bigint: true })
+      const known = target.ino !== 0n && existing.ino !== 0n
+      if (known && existing.ino === target.ino && existing.dev === target.dev) return link
+      fsLike.unlinkSync(link)
+    } catch {
+      // absent, unreadable, or not removable — fall through and let linkSync decide
+    }
+    fsLike.linkSync(execPath, link)
+    return link
   } catch {
-    /* the caller's subsequent connect attempt will fail and surface the real error */
+    return execPath
   }
+}
+
+export function spawnSessionHost(scriptPath: string, userDataDir: string): void {
+  const launch = (bin: string, onError?: () => void): void => {
+    try {
+      const child = spawn(bin, [scriptPath, userDataDir], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+      })
+      // A spawn failure arrives ASYNCHRONOUSLY on 'error', which the try/catch cannot see — and an
+      // unhandled 'error' on a ChildProcess takes the main process with it. That is reachable here:
+      // two app processes can race on the alias, and the loser can unlink the link between the
+      // winner creating it and spawning through it (ENOENT). The listener is what makes the
+      // fallback below real rather than theoretical.
+      child.on('error', () => onError?.())
+      child.unref()
+    } catch {
+      onError?.()
+    }
+  }
+  const bin = hostLauncherPath(process.execPath, os.platform())
+  // One retry, and only when the alias was actually used: `execPath` is the path that has always
+  // worked, so the retry can have no listener of its own beyond swallowing.
+  if (bin === process.execPath) launch(bin)
+  else launch(bin, () => launch(process.execPath))
 }
