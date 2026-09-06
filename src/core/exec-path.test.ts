@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { executableCandidates, findInPathString, unquotePathEntry } from './exec-path'
+import { execFileSync } from 'child_process'
+import {
+  directExecutableInvocation,
+  executableCandidates,
+  findInPathString,
+  unquotePathEntry
+} from './exec-path'
 
 describe('executableCandidates', () => {
   it('leaves a bare name alone off win32 — POSIX has no PATHEXT', () => {
@@ -58,6 +64,112 @@ describe('unquotePathEntry', () => {
   it('leaves an unquoted entry and a lone quote untouched', () => {
     expect(unquotePathEntry('/usr/bin')).toBe('/usr/bin')
     expect(unquotePathEntry('"C:\\half')).toBe('"C:\\half')
+  })
+})
+
+describe('directExecutableInvocation', () => {
+  const systemRoot = 'C:\\Windows'
+  const cmd = `${systemRoot}\\System32\\cmd.exe`
+
+  it('leaves native and non-Windows executables unchanged', () => {
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.exe', ['--version'], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => false
+      })
+    ).toEqual({ executable: 'C:\\Tools\\agent.exe', args: ['--version'] })
+    expect(
+      directExecutableInvocation('/usr/bin/agent.cmd', ['--version'], { platform: 'linux' })
+    ).toEqual({ executable: '/usr/bin/agent.cmd', args: ['--version'] })
+  })
+
+  it('runs a Windows cmd shim through hidden cmd.exe with escaped verbatim arguments', () => {
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.CMD', ['--flag', 'value & untouched'], {
+        platform: 'win32',
+        systemRoot,
+        exists: (candidate) => candidate.toLowerCase() === cmd.toLowerCase()
+      })
+    ).toEqual({
+      executable: cmd,
+      args: [
+        '/d',
+        '/s',
+        '/v:off',
+        '/c',
+        '"C:\\Tools\\agent.CMD ^^^"--flag^^^" ^^^"value^^^ ^^^&^^^ untouched^^^""'
+      ],
+      options: { windowsHide: true, windowsVerbatimArguments: true }
+    })
+  })
+
+  it('fails closed without cmd.exe and for unsupported Windows script kinds', () => {
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.cmd', [], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => false
+      })
+    ).toBeNull()
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.bat', [], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => true
+      })
+    ).toBeNull()
+    expect(
+      directExecutableInvocation('C:\\Tools\\agent.ps1', [], {
+        platform: 'win32',
+        systemRoot,
+        exists: () => true
+      })
+    ).toBeNull()
+  })
+
+  it('fails closed when cmd.exe cannot preserve argv or the command exceeds its limit', () => {
+    const options = { platform: 'win32' as const, systemRoot, exists: () => true }
+    expect(directExecutableInvocation('C:\\Tools\\agent.cmd', ['line 1\nline 2'], options)).toBeNull()
+    expect(directExecutableInvocation('C:\\Tools\\agent.cmd', ['line 1\rline 2'], options)).toBeNull()
+    expect(directExecutableInvocation('C:\\Tools\\agent.cmd', ['nul\0byte'], options)).toBeNull()
+    expect(directExecutableInvocation('C:\\Tools\\agent.cmd', ['x'.repeat(8100)], options)).toBeNull()
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('directExecutableInvocation - real cmd shim', () => {
+  it('preserves npm-shim argv boundaries and cmd metacharacters', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-exec-shim-'))
+    try {
+      const shimDir = path.join(dir, 'shims & !tools!')
+      fs.mkdirSync(shimDir)
+      const script = path.join(shimDir, 'capture.js')
+      const cmd = path.join(shimDir, 'capture args.cmd')
+      fs.writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+      fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+      const args = [
+        '',
+        'plain',
+        'space value',
+        'embedded "quote"',
+        'trailing\\',
+        'before\\"after',
+        '&|<>()@^',
+        '%PATH%',
+        '!delayed!',
+        'café 日本語'
+      ]
+      const invocation = directExecutableInvocation(cmd, args)
+      expect(invocation).not.toBeNull()
+
+      const output = execFileSync(invocation!.executable, invocation!.args, {
+        ...invocation!.options,
+        encoding: 'utf8'
+      })
+      expect(JSON.parse(output)).toEqual(args)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

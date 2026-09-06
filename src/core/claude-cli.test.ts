@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest'
-import { claudeCliCapsFrom, UNKNOWN_CLAUDE_CLI_CAPS } from './claude-cli'
+import { afterEach, beforeEach, describe, it, expect } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { claudeCliCapsFrom, probeClaudeCliAt, UNKNOWN_CLAUDE_CLI_CAPS } from './claude-cli'
 
 describe('claudeCliCapsFrom', () => {
   it('reads a real `claude --version` line', () => {
@@ -86,5 +89,37 @@ Options:
     const c = claudeCliCapsFrom('2.1.50 (Claude Code)', HELP)
     expect(c.sessionIdFlag).toBe(true)
     expect(c.autoPermissionMode).toBe(false)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('probeClaudeCliAt — Windows npm shim', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-claude-shim-'))
+  })
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('probes a .cmd CLI through cmd.exe', async () => {
+    const cmd = path.join(dir, 'claude.cmd')
+    const script = path.join(dir, 'claude.js')
+    fs.writeFileSync(
+      script,
+      [
+        "if (process.argv[2] === '--version') console.log('2.1.226 (Claude Code)')",
+        "else if (process.argv[2] === '--help') console.log('  --session-id <uuid>')",
+        'else process.exitCode = 92'
+      ].join('\n')
+    )
+    fs.writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+
+    expect(await probeClaudeCliAt(cmd)).toEqual({
+      version: '2.1.226 (Claude Code)',
+      autoPermissionMode: true,
+      fullscreenTui: true,
+      sessionIdFlag: true
+    })
   })
 })

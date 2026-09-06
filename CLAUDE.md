@@ -52,6 +52,17 @@ means — and what you may assume when writing a feature — is three tiers, not
   fails on any such read that does not. `*.bat`/`*.cmd`/`*.ps1` are the deliberate exception and
   keep CRLF: cmd.exe is not reliably tolerant of LF, and those are the files a Windows contributor
   runs before anything else works.
+- **PATH resolution and direct execution are separate on Windows.** `findInPathString` correctly
+  follows `PATHEXT`, which means an npm-installed CLI may resolve to `<name>.cmd`; Node's
+  `execFile`/`spawn` still cannot execute that path directly (`spawn EINVAL`). App-owned
+  subprocesses must pass their resolved executable and argv through `directExecutableInvocation`
+  (`src/core/exec-path.ts`), which invokes `.cmd` through a hidden `cmd.exe` with explicit escaping,
+  verbatim arguments and delayed expansion off. Never replace this with `shell:true`: commit prompts
+  and other user-controlled arguments would then be reinterpreted as shell syntax. The helper fails
+  closed for `.bat`/`.ps1`, CR/LF/NUL inside argv, and command lines above cmd's real 8,191-character
+  ceiling. stdin stays a byte stream directly into the shim; routing it through an npm `.ps1` shim's
+  `$input | & node` text pipeline corrupts Unicode and line endings under Windows PowerShell 5.1.
+  Interactive terminal agent launches keep using `agent-launch.ts`'s separately tested shell plan.
 
 ## Commands
 
