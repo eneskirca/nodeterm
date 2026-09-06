@@ -363,6 +363,15 @@ yourself and apply it with `setViewport` (`renderer/lib/nodeFocus.ts`, `canvas/f
 lands now and against the canvas you meant. `fitAll` is the one deliberate exception: an explicit
 user gesture on a settled canvas.
 
+**A setting read at mount reads the DEFAULT, not the user's.** `useSettings` starts on
+`DEFAULT_SETTINGS` and hydrates from disk asynchronously, while `<Canvas />` is mounted before that
+lands. A `useState(() => settings.foo ? ...)` initializer therefore reads the shipped default and
+never looks again, so an opt-in feature ships inert with a green suite and no error anywhere. Gate
+on `hydrated` (the first-launch consent dialog and `settings.rememberCanvasLock` are the worked
+examples). If the same effect also WRITES, latch its first run: otherwise switching the setting on
+mid-session applies stored state to whatever the user is doing right then, which is a different
+feature from the one they asked for.
+
 ## Testing
 
 `npm test` must pass, and `npm run typecheck` is the fastest gate.

@@ -40,6 +40,10 @@ const ROWS = {
     title: 'Zoom when going to a node',
     keywords: ['zoom', 'focus', 'go to', 'node', 'jump', 'camera', 'session', 'sidebar']
   },
+  rememberLock: {
+    title: 'Remember the canvas lock',
+    keywords: ['lock', 'canvas', 'view', 'pan', 'zoom', 'freeze', 'remember', 'restart', 'persist']
+  },
   mdPreview: {
     title: 'Open Markdown in preview',
     keywords: ['markdown', 'md', 'preview', 'render', 'editor', 'docs', 'readme', 'file']
@@ -229,6 +233,19 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               checked={settings.focusZoomToNode}
               onChange={(v) => update({ focusZoomToNode: v })}
               ariaLabel="Zoom when going to a node"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.rememberLock}>
+        <FieldRow
+          label="Remember the canvas lock"
+          description="The bottom-left lock stays on across restarts until you turn it off. Off: every launch starts unlocked."
+          control={
+            <Switch
+              checked={settings.rememberCanvasLock}
+              onChange={(v) => update({ rememberCanvasLock: v })}
+              ariaLabel="Remember the canvas lock"
             />
           }
         />

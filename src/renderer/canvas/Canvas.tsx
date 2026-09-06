@@ -172,6 +172,7 @@ import { containerOrigin, snapPointInRootSpace } from '../lib/gridSnap'
 import { zoomFromPct } from '../lib/zoomPresets'
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM } from './zoom-limits'
 import { isSpaceRelease, spacePanKeydown } from '../lib/spacePan'
+import { readCanvasLocked, writeCanvasLocked } from '../lib/canvasLock'
 import {
   FLOW_NODE_CLASS,
   isFocusTarget,
@@ -946,11 +947,16 @@ export function Canvas() {
     return () => clearTimeout(t)
   }, [notice])
   const [zoomPct, setZoomPct] = useState(100)
-  // Canvas lock (bottom-left Controls): freezes the viewport against GESTURES — pan (drag +
-  // scroll), zoom (pinch / Cmd+wheel / double-click), node dragging and edge connecting.
+  // Canvas lock (bottom-left Controls): freezes the CAMERA against gestures, namely pan (drag +
+  // scroll) and zoom (pinch / Cmd+wheel / double-click). Nodes stay draggable and connectable:
+  // the point is "stop the map sliding", not "freeze the work". One camera move still gets
+  // through, because `autoPanOnNodeDrag` / `autoPanOnConnect` are never passed and so keep React
+  // Flow's `true` default: dragging a node or a connection to the viewport edge scrolls the
+  // canvas after it.
   // Deliberate button clicks (Controls +/−/fit, dock zoom, ⌘K fit) still work, matching React
-  // Flow's own lock convention. Transient by design: a lock that survives restart reads as
-  // "the app is frozen" to whoever opens it next.
+  // Flow's own lock convention. Transient unless `settings.rememberCanvasLock` says otherwise: a
+  // lock that survives restart reads as "the app is frozen" to whoever opens it next, so it stays
+  // opt-in, and an untouched install opens unlocked exactly as it always has.
   const [canvasLocked, setCanvasLocked] = useState(false)
   /** SPACE is held: a left-drag pans instead of box-selecting, Figma-style (issue #86). */
   const [spacePan, setSpacePan] = useState(false)
@@ -12114,6 +12120,29 @@ export function Canvas() {
     useSettings.getState().update({ notifyConsentAsked: true, notifyOnClaudeDone: false })
     setConsentOpen(true)
   }, [settingsHydrated, seenOnboarding])
+
+  // The canvas lock, when the user has asked us to remember it (`rememberCanvasLock`, default
+  // off). Gated on hydration for the same reason as the consent dialog above: the store starts on
+  // DEFAULT_SETTINGS and <Canvas /> mounts before settings load, so a `useState` initializer would
+  // read the default (off) and never look again.
+  //
+  // One effect, two jobs, and the order is what makes it safe. The FIRST run after hydration
+  // restores, and latches, so a lock only ever comes back at launch: flipping the setting on
+  // mid-session must not reach into storage and lock a canvas the user is working on. Every run
+  // after that persists, which covers both the button and the setting being switched on later
+  // (from where the canvas is now). While the setting is off nothing is written, so a user who
+  // never opts in leaves no trace of a lock to be restored the day they do.
+  const rememberCanvasLock = useSettings((s) => s.settings.rememberCanvasLock)
+  const canvasLockRestored = useRef(false)
+  useEffect(() => {
+    if (!settingsHydrated) return
+    if (!canvasLockRestored.current) {
+      canvasLockRestored.current = true
+      if (rememberCanvasLock) setCanvasLocked(readCanvasLocked())
+      return
+    }
+    if (rememberCanvasLock) writeCanvasLocked(canvasLocked)
+  }, [settingsHydrated, rememberCanvasLock, canvasLocked])
 
   // Load saved SSH servers once so the RemotePicker / palette have them available.
   useEffect(() => {
