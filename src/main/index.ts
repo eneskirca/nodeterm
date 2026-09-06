@@ -7,7 +7,7 @@ import { readFile, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWrit
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, safeStorage, shell, systemPreferences, webContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, safeStorage, screen, shell, systemPreferences, webContents } from 'electron'
 import { IPC } from '../shared/ipc'
 
 // Debug log ring (issue #78): capture the process console from the first line — a packaged app
@@ -227,6 +227,12 @@ import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control
 import { initTranscriptIndex, searchTranscripts } from '../core/transcript-index'
 import { initTelemetry } from './telemetry'
 import { initClaudeUsage } from './claude-usage'
+import {
+  readWindowState,
+  resolveWindowBounds,
+  trackWindowState,
+  writeWindowState
+} from './window-state'
 import { remoteUsageTargets } from '../core/usage/remote-claude-usage'
 import { initLicense, isPremium, getStoredEntitlement } from '../core/license'
 import { WhisperModelStore } from '../core/speech/whisper-models'
@@ -930,9 +936,19 @@ function createWindow(): BrowserWindow {
         ? join(process.resourcesPath, 'icon.png')
         : join(__dirname, '../../build/icon.png')
       : undefined
+  // Reopen where the user left off (issue: the window forgot its size/position every launch).
+  // A throwaway NT_MULTI sandbox is deliberately excluded: it may share the real app's userData,
+  // and a dev instance must not move the window of the app being developed.
+  const windowStateDir = NT_MULTI ? null : app.getPath('userData')
+  const restored = resolveWindowBounds(
+    windowStateDir ? readWindowState(windowStateDir) : null,
+    // Work areas, not full display bounds: a saved position is checked against the space a window
+    // can actually occupy, which excludes the macOS menu bar, a GNOME top bar and any dock.
+    screen.getAllDisplays().map((d) => d.workArea),
+    { width: 1400, height: 900 }
+  )
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    ...restored.bounds,
     show: false,
     backgroundColor: '#1e1e1e',
     // NT_MULTI instances are throwaway dev sandboxes: label the window so a second instance is
@@ -959,6 +975,21 @@ function createWindow(): BrowserWindow {
       plugins: true
     }
   })
+
+  // Maximize BEFORE the first paint. The window is `show: false` until `ready-to-show`, so doing it
+  // here means it is simply born maximized — maximizing after `show()` is a visible jump from the
+  // restored size to full screen on every single launch.
+  if (restored.maximize) win.maximize()
+  // Track from here on. The saves are debounced through ordinary resizing and flushed on `close`,
+  // so an ordinary quit always records the final state and a crash costs at most one gesture.
+  if (windowStateDir) {
+    const stopTrackingWindowState = trackWindowState(win, (state) =>
+      // Best-effort by contract: a window geometry that failed to save is not worth a dialog, and
+      // the previous record stands.
+      void writeWindowState(windowStateDir, state)
+    )
+    win.on('closed', stopTrackingWindowState)
+  }
 
   // Register as the live main window (send-time resolution via getMainWindow/sendToMain).
   setMainWindow(win)
