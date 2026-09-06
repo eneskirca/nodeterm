@@ -141,6 +141,24 @@ function removeManagedFromDefinitions(defs: HookDefinition[]): HookDefinition[] 
 }
 
 /**
+ * `%SystemRoot%\System32\cmd.exe`, or bare `cmd` when that cannot be spelled unquoted.
+ *
+ * Unquoted is the whole constraint: quoting the program name is exactly what breaks under
+ * PowerShell (a quoted leading token is a string literal, which is #685), so a resolved path
+ * carrying a space or a shell metacharacter is unusable and the PATH lookup is the lesser evil.
+ * `windir` is the fallback name for the same value on older installs.
+ */
+export function defaultWindowsCmdExe(): string {
+  const root = process.env.SystemRoot || process.env.windir || ''
+  if (!root) return 'cmd'
+  const abs = `${root}\\System32\\cmd.exe`
+  // Deliberately a strict allow-list, not a metacharacter deny-list: anything outside a plain
+  // drive-letter path is not worth guessing at. The fallback then attempts a PATH lookup, which is
+  // what this function exists to avoid — but an unusable absolute path would run nothing at all.
+  return /^[A-Za-z]:\\[A-Za-z0-9\\._-]*$/.test(abs) ? abs : 'cmd'
+}
+
+/**
  * The hook command, formed the SAME way for hooks.json AND the trust entry — the trust hash is
  * computed over this exact byte string, so any divergence makes Codex reject the hook. The POSIX
  * form's `[ -x ... ]` guard makes a missing/non-executable script a silent no-op, so a broken
@@ -150,18 +168,70 @@ function removeManagedFromDefinitions(defs: HookDefinition[]): HookDefinition[] 
  * and it is a parameter for exactly that reason: `RemoteHooks.installCodexRemote` writes this into
  * an SSH host's `~/.codex/hooks.json`, and that host is POSIX whatever the desktop is. A default of
  * `process.platform` would make a Windows desktop install a `.cmd` command on a Linux server.
+ *
+ * `cmdExe` is likewise a parameter so the BODY stays a pure function of its arguments — it feeds the
+ * trust hash, and a builder that reached for the environment mid-computation would be harder to
+ * pin down. The environment is read only to compute the default, once, at the call. The install
+ * path takes that default; tests pass their own.
  */
 export function buildManagedCommand(
   script: string,
-  platform: NodeJS.Platform | string = process.platform
+  platform: NodeJS.Platform | string = process.platform,
+  cmdExe: string = defaultWindowsCmdExe()
 ): string {
   if (platform === 'win32') {
-    // Codex hands this to `cmd.exe /C`, which cannot parse an `sh` one-liner (issue #567). Point it
-    // at the batch wrapper written beside the script; the wrapper finds a POSIX shell and runs the
-    // very same `codex.sh`. Quoted as one token: cmd strips a single surrounding pair, and the path
-    // routinely contains spaces (`C:\Users\First Last\...`).
+    // Point codex at the batch wrapper written beside the script; the wrapper finds a POSIX shell
+    // and runs the very same `codex.sh` (issue #567).
+    //
+    // NAMING THE INTERPRETER is the fix for #685. #567 emitted the bare quoted wrapper path, which
+    // is what `command_runner.rs`'s COMSPEC/`cmd.exe /C` shape needs. But that is codex's FALLBACK:
+    // the hook runs in the session's shell, and `shell_detect.rs::default_user_shell_from_path`
+    // prefers PowerShell on Windows (`if cfg!(windows) { get_shell(ShellType::PowerShell) ... }`) —
+    // true at the rust-v0.153.4 tag, and measured on the shipped codex-cli 0.153.4 with a stock
+    // config and COMSPEC=cmd.exe. To PowerShell a lone quoted path is a string LITERAL: it echoes
+    // the path, exits 0 and runs nothing, so codex reports the hook `Completed` while no hook ever
+    // fired. A silent no-op is worse than the exit-1 noise #567 removed, because nothing in the UI
+    // says the badge went dark.
+    //
+    // Both interpreters are reachable, so the command must not assume either. Every piece below was
+    // measured, through the shipped codex AND from a cmd.exe parent, with the real wrapper and a
+    // stdin-consuming codex.sh:
+    //
+    //   `<abs cmd.exe>`  not bare `cmd`. PowerShell resolves a bare name against PATH, and a
+    //                    `cmd.*` planted in a shared directory earlier on PATH wins — a directory
+    //                    another principal may be able to write without any access to this user's
+    //                    profile, so this is NOT the same attacker as one who could edit the
+    //                    wrapper. Falls back to bare `cmd` only if the resolved path is not safe to
+    //                    write unquoted (see defaultWindowsCmdExe).
+    //   `/d`             skips the HKCU/HKLM Command Processor AutoRun entries. Not a security
+    //                    boundary — HKCU AutoRun and the wrapper are writable by the same user —
+    //                    but an AutoRun script's stdout would otherwise prefix every hook's output,
+    //                    and its cwd/env changes would leak into the hook.
+    //   `call`           needed under a cmd parent: it stops cmd's /C rule stripping the quote pair
+    //                    around a path holding `&`, `(` or `)`, which would otherwise be re-parsed
+    //                    as metacharacters.
+    //   trailing space   INSIDE the quotes, load-bearing, not a typo. It is what makes PowerShell
+    //                    keep the quoting when it builds cmd's native argument line — without it,
+    //                    `cmd /d /c call "<path with & or (>"` was measured Failed through the
+    //                    shipped codex and Completed from a cmd parent; with it, both run. (Direct
+    //                    check: `powershell -Command 'cmd /d /c echo "paren(x)"'` prints an
+    //                    unquoted `paren(x)`, while `"paren(x) "` keeps its quotes.)
+    //                    `cmd /s /c ""..."" `, the documented workaround, is NOT usable — PowerShell
+    //                    collapses the doubled quotes before cmd sees them (Failed).
+    //
+    // KNOWN LIMITS, all measured, none fixed here, and none of them regressions — the #567 form did
+    // not run at all under PowerShell, for any path:
+    //   - `^` in the path fails under both parents.
+    //   - `$` and a backtick fail under PowerShell (it interpolates / escapes) and work under cmd.
+    //   - `%NAME%` is expanded by both parents when that variable exists.
+    // Each needs the character in the user's own profile name, which Windows permits.
+    //
+    // ALSO MEASURED, and the reason nothing here depends on an exit code: under PowerShell codex
+    // sees the hook's exit status collapsed to 0/1 (a direct cmd parent preserves 0/1/2/37), so the
+    // exit-2 "block the prompt" convention does not survive this path. The managed script exits 0
+    // on every branch, including its bails, so no behaviour in this repo relies on the distinction.
     const dir = script.slice(0, Math.max(script.lastIndexOf('\\'), script.lastIndexOf('/')) + 1)
-    return `"${dir}${CODEX_WINDOWS_WRAPPER_FILE}"`
+    return `${cmdExe} /d /c call "${dir}${CODEX_WINDOWS_WRAPPER_FILE} "`
   }
   // POSIX single-quote escape so $, `, ", \ in the path are taken literally.
   const quoted = `'${script.replaceAll("'", "'\\''")}'`
