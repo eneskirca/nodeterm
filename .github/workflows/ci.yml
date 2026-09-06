@@ -51,6 +51,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Verify Visual Studio C++ toolchain
+        shell: cmd
+        run: call "%GITHUB_WORKSPACE%\bootstrap-windows.bat" --check-vs-build-tools
+
       - name: Install dependencies
         run: npm ci
 

@@ -4,8 +4,9 @@ rem ============================================================================
 rem bootstrap-windows.bat — take a fresh Windows checkout to an installed, buildable nodeterm.
 rem
 rem What it does: verifies the toolchain a native-module Electron build needs (Node >= 20, npm,
-rem Visual Studio Build Tools with the C++ workload, Python 3 — node-pty and smart-whisper are
-rem compiled against Electron's ABI by the npm `postinstall` hook), then runs `npm ci`.
+rem Visual Studio Build Tools with the C++ workload + x64 Spectre libraries, Python 3 — node-pty
+rem and smart-whisper are compiled against Electron's ABI by the npm `postinstall` hook), then
+rem runs `npm ci`.
 rem
 rem What it does NOT do: install anything machine-wide. Each missing tool is reported with the
 rem exact winget command to run — installs that touch Program Files are a decision for the
@@ -77,6 +78,11 @@ rem --- Install dependencies (postinstall patches node-pty + rebuilds native mod
 echo.
 echo Running npm ci ...
 pushd "%REPO%"
+rem Official Node 26 Windows builds carry clang/lld ThinLTO settings in process.config. node-gyp
+rem 12 copies them into MSVC addon projects, where link.exe rejects /opt:lldltojobs (LNK1117).
+rem npm forwards these overrides to node-gyp with higher precedence than process.config.
+set "npm_config_enable_thin_lto=false"
+set "npm_config_enable_lto=false"
 call npm ci
 set "NPM_EXIT=%ERRORLEVEL%"
 popd
@@ -132,5 +138,17 @@ if not exist "%VS_INSTALLATION%\." (
     exit /b 1
 )
 
+rem node-pty builds with /Qspectre and requires the matching x64 Spectre runtime libraries.
+rem Checking only the compiler workload reports a healthy toolchain that fails later with MSB8040.
+set "SPECTRE_RUNTIME="
+for /d %%D in ("%VS_INSTALLATION%\VC\Tools\MSVC\*") do if exist "%%~fD\lib\spectre\x64\vcruntime.lib" if not defined SPECTRE_RUNTIME set "SPECTRE_RUNTIME=%%~fD\lib\spectre\x64\vcruntime.lib"
+if not defined SPECTRE_RUNTIME (
+    echo [MISSING] Visual Studio C++ Spectre-mitigated libraries were not found.
+    echo   Open Visual Studio Installer, modify Build Tools, then under Individual components install:
+    echo   MSVC v143 - VS 2022 C++ x64/x86 Spectre-mitigated libs ^(Latest^)
+    exit /b 1
+)
+
 echo [OK] Visual Studio C++ build tools: "%VS_INSTALLATION%"
+echo [OK] Visual Studio C++ Spectre-mitigated libraries
 exit /b 0
