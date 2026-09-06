@@ -25,6 +25,7 @@ interface ProbeResult {
 
 interface ProbeOptions {
   createVswhere?: boolean
+  createSpectreRuntime?: boolean
   testingSentinel?: string | null
   inheritInternalOverride?: boolean
 }
@@ -43,6 +44,20 @@ function runVisualStudioProbe(vswhereBody: string, options: ProbeOptions = {}): 
   scratchDirectories.push(scratch)
   const installation = path.join(scratch, 'VS Build Tools')
   mkdirSync(installation)
+  if (options.createSpectreRuntime !== false) {
+    const spectreRuntime = path.join(
+      installation,
+      'VC',
+      'Tools',
+      'MSVC',
+      '14.44.0',
+      'lib',
+      'spectre',
+      'x64'
+    )
+    mkdirSync(spectreRuntime, { recursive: true })
+    writeFileSync(path.join(spectreRuntime, 'vcruntime.lib'), '')
+  }
 
   const checkout = path.join(scratch, 'checkout with spaces')
   mkdirSync(checkout)
@@ -225,6 +240,22 @@ describeWindows('bootstrap-windows Visual Studio probe', () => {
     expectVswhereInvocations(result, 1)
   })
 
+  it('rejects a C++ toolchain without the Spectre-mitigated runtime', () => {
+    const result = runVisualStudioProbe('echo %NODETERM_TEST_VS_INSTALLATION%', {
+      createSpectreRuntime: false
+    })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout, result.stderr).toContain(
+      '[MISSING] Visual Studio C++ Spectre-mitigated libraries were not found.'
+    )
+    expect(result.stdout).toContain(
+      'MSVC v143 - VS 2022 C++ x64/x86 Spectre-mitigated libs (Latest)'
+    )
+    expect(result.stdout).not.toContain('[OK] Visual Studio C++ build tools')
+    expectVswhereInvocations(result, 1)
+  })
+
   it('accepts a reported C++ toolchain path, including spaces', () => {
     const result = runVisualStudioProbe('echo %NODETERM_TEST_VS_INSTALLATION%')
 
@@ -233,5 +264,16 @@ describeWindows('bootstrap-windows Visual Studio probe', () => {
       `[OK] Visual Studio C++ build tools: "${result.installation}"`
     )
     expectVswhereInvocations(result, 1)
+  })
+
+  it('disables inherited Node 26 LTO settings before npm ci', () => {
+    const source = readFileSync(sourceBootstrap, 'utf8')
+    const thinLtoOverride = source.indexOf('set "npm_config_enable_thin_lto=false"')
+    const ltoOverride = source.indexOf('set "npm_config_enable_lto=false"')
+    const npmCi = source.indexOf('call npm ci')
+
+    expect(thinLtoOverride).toBeGreaterThan(-1)
+    expect(ltoOverride).toBeGreaterThan(thinLtoOverride)
+    expect(npmCi).toBeGreaterThan(ltoOverride)
   })
 })

@@ -3247,7 +3247,14 @@ winget hints (it never installs machine-wide tools itself, and the full bootstra
 elevated) and runs `npm ci`. Its `--check-vs-build-tools` mode is the narrow exception used by
 `quality-windows`: it branches before the elevation refusal, runs only the VS C++ probe, and exits
 before the Node / Python / `npm ci` steps. Fixture injection additionally requires the explicit
-`NODETERM_BOOTSTRAP_TESTING=1` sentinel. `.github/workflows/win-package-smoke.yml` is a
+`NODETERM_BOOTSTRAP_TESTING=1` sentinel. The C++ probe also verifies the x64 Spectre runtime that
+`node-pty`'s `/Qspectre` build requires; the workload alone can be present while that optional
+component is absent, which otherwise fails only after the full install with `MSB8040`. Before
+`npm ci`, the bootstrap sets `npm_config_enable_thin_lto=false` and
+`npm_config_enable_lto=false`: official Node 26 Windows builds carry clang/lld ThinLTO settings in
+`process.config`, and node-gyp 12 copies them into an MSVC addon project where `link.exe` rejects
+`/opt:lldltojobs` with `LNK1117`. These are gyp overrides, not a reason to reject a Node version
+allowed by `package.json`. `.github/workflows/win-package-smoke.yml` is a
 **workflow_dispatch-only** packaging smoke on windows-latest — build only, never publishes.
 **Follow-ups, in order:** code signing, then Windows auto-update wiring (electron-updater NSIS leg
 + `latest.yml` on the nodeterm.dev feed — blocked on signing: an unsigned auto-update is a

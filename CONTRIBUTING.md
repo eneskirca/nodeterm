@@ -17,6 +17,11 @@ npm run typecheck  # tsc for both the node and web projects — the fastest corr
 npm test           # vitest, unit + integration
 ```
 
+On Windows, run `bootstrap-windows.bat` instead of `npm install`. It verifies the Visual Studio
+C++ workload and its separately installed Spectre-mitigated libraries before compiling `node-pty`.
+It also shields MSVC addon builds from the clang/lld ThinLTO settings inherited from Node 26; a
+plain `npm install` under a stock Node 26 with node-gyp 12 otherwise fails with `LNK1117`.
+
 `npm run server:dev` boots the Server Edition (browser UI) if you are working on that surface.
 
 **If `src/main/node-pty-patch.test.ts` is red, your `node_modules` is unpatched — not your code.**
