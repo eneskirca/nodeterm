@@ -3,7 +3,7 @@ import type { ProjectKanban } from '@shared/types'
 /** Where a board card can come from. Sources are a membership list plus one concrete leaf each
  *  (the card component and the list path that feeds it) — the same discipline `AGENT_CONFIG`
  *  uses for agents, so no consumer spells a source id to decide how a card behaves. */
-export type KanbanSourceId = 'github' | 'sessions'
+export type KanbanSourceId = 'github' | 'pulls' | 'sessions'
 
 /** The board's source filter: everything, or exactly one source. */
 export type KanbanSourceFilter = 'all' | KanbanSourceId
@@ -20,20 +20,32 @@ export interface KanbanSourceDef {
   placement: 'assignment' | 'provider'
   /** In-column stacking order, low first. */
   lane: number
+  /** The board never writes this source: its cards do not drag and carry no move control.
+   *  Distinct from `placement: 'provider'`, which only says who OWNS the column — a provider
+   *  source can still be writable (an issue drag closes it on GitHub). */
+  readOnly?: boolean
   /** Whether this source can contribute cards to a given board at all. */
   configured: (board: ProjectKanban) => boolean
 }
 
 /** Declaration order IS the source filter's button order; `lane` is the in-column stacking
  *  order. The two genuinely differ on the board today (the filter reads All · GitHub · Sessions
- *  while a column stacks its sessions above its issues), and pinning both here is what keeps
- *  either of them from being re-spelled at a call site. */
+ *  while a column stacks its sessions above its issues and its issues above its pull requests),
+ *  and pinning both here is what keeps either of them from being re-spelled at a call site. */
 export const KANBAN_SOURCES: readonly KanbanSourceDef[] = [
   {
     id: 'github',
-    label: 'GitHub',
+    label: 'Issues',
     placement: 'provider',
     lane: 1,
+    configured: (board) => !!board.github
+  },
+  {
+    id: 'pulls',
+    label: 'Pull requests',
+    placement: 'provider',
+    lane: 2,
+    readOnly: true,
     configured: (board) => !!board.github
   },
   {

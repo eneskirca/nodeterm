@@ -56,9 +56,11 @@ export const SessionCard = memo(function SessionCard({
       ? 'running'
       : session.kind !== 'sticky' && (status?.state === 'waiting' || status?.state === 'blocked')
         ? 'needs'
-        : session.kind !== 'sticky' && status?.hibernated
-          ? 'sleeping'
-          : null
+        : session.kind !== 'sticky' && status?.paused
+          ? 'paused'
+          : session.kind !== 'sticky' && status?.hibernated
+            ? 'sleeping'
+            : null
   const stickyPreview = session.kind === 'sticky' ? (session.text ?? '').trim() : ''
   const assignees = meta?.assignees ?? []
   const due = meta?.dueAt
@@ -108,6 +110,14 @@ export const SessionCard = memo(function SessionCard({
         {session.kind === 'browser' && <span className="kanban-card__kind">web</span>}
         {badge === 'running' && <span className="kanban-badge kanban-badge--running">RUNNING</span>}
         {badge === 'needs' && <span className="kanban-badge kanban-badge--needs">NEEDS YOU</span>}
+        {badge === 'paused' && (
+          <span
+            className="kanban-badge kanban-badge--sleeping"
+            title="Session paused — use Resume session from the node menu to bring it back"
+          >
+            PAUSED
+          </span>
+        )}
         {badge === 'sleeping' && (
           <span
             className="kanban-badge kanban-badge--sleeping"

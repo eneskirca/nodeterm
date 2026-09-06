@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { ZONES, ZONE_GUTTER_PX, zoneTargetRect } from './nodeZones'
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from './nodeMaximize'
+import type { ScreenInsets } from './pinnedInsets'
 
 // Zone snapping (issue #394 v1): the viewport→flow subdivision the keyboard chords and the
 // "Snap to zone" menu both use. All screen-px assertions run at zoom 1 / camera origin so flow
@@ -83,5 +84,31 @@ describe('zoneTargetRect', () => {
       expect(rect!.width).toBeGreaterThan(0)
       expect(rect!.height).toBeGreaterThan(0)
     }
+  })
+
+  it('subdivides the area left over by pinned side panels, not the whole wrapper', () => {
+    // A pinned sessions sidebar on the left (314px) and a pinned explorer drawer on the right
+    // (374px): zones must tile what remains, or left-half lands under the sidebar (the bug).
+    const insets: ScreenInsets = { left: 314, right: 374 }
+    const left = zoneTargetRect(VP, W, H, 'left-half', M, G, insets)!
+    const right = zoneTargetRect(VP, W, H, 'right-half', M, G, insets)!
+    expect(left.x).toBe(M + insets.left)
+    expect(right.x + right.width).toBeCloseTo(W - M - insets.right)
+    // Still one gutter between them, and still equal halves — of the smaller area.
+    expect(right.x - (left.x + left.width)).toBeCloseTo(G)
+    expect(left.width).toBeCloseTo(right.width)
+    expect(left.width).toBeCloseTo((W - 2 * M - insets.left - insets.right - G) / 2)
+    // Vertical geometry is untouched: both panels are side cards.
+    expect(left.y).toBe(M)
+    expect(left.height).toBe(H - 2 * M)
+  })
+
+  it('still agrees with maximize once panels are pinned', () => {
+    const insets: ScreenInsets = { left: 314, right: 0 }
+    const max = maximizeTargetRect(VP, W, H, M, insets)!
+    const left = zoneTargetRect(VP, W, H, 'left-half', M, G, insets)!
+    const right = zoneTargetRect(VP, W, H, 'right-half', M, G, insets)!
+    expect(left.x).toBe(max.x)
+    expect(right.x + right.width).toBeCloseTo(max.x + max.width)
   })
 })

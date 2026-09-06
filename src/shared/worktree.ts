@@ -80,6 +80,89 @@ export function isValidGitRef(name: string): boolean {
   return !/[\s~^:?*[\\]|\.\.|^\/|\/$|@\{/.test(n)
 }
 
+/** The node shape `resolveWorktreeBase` walks — id, containment, and (for groups) the binding. */
+export interface WorktreeBaseNode {
+  id: string
+  parentId?: string
+  /** The group's binding, when this node is a worktree-bound group frame. */
+  worktree?: Pick<GroupWorktree, 'branch'>
+}
+
+export type WorktreeBaseResolution =
+  /** No `--base` given — the caller falls back to its default base. */
+  | { kind: 'default' }
+  /** A plain git ref, validated by `isValidGitRef`. */
+  | { kind: 'ref'; ref: string }
+  /** A STATION: the id named a node/group on the canvas, and the base is the branch of the
+   *  worktree-bound group that contains it (or is it). */
+  | { kind: 'station'; ref: string; stationId: string; groupId: string }
+  | { kind: 'error'; error: string }
+
+/**
+ * Resolve `open-worktree --base <value>` (issue #530): the value may be a git ref, OR the id of a
+ * station — a node or group frame inside a worktree-bound group — in which case the base is that
+ * station's branch, resolved through the binding. This lets an orchestrator say "branch off what
+ * that station is working on" by IDENTITY, instead of restating the branch name (and getting it
+ * wrong) in every downstream call.
+ *
+ * Precedence: an id that names an EXISTING node is always read as a station — a node that is not
+ * inside a worktree frame is an explicit refusal, never silently reinterpreted as a git ref (an
+ * id that matched a node was clearly meant as one; falling through would base the worktree on a
+ * ref that happens to parse). A value naming no node must be a valid git ref. Refusals are
+ * explicit for: a station with no binding, a base that resolves to the branch being created
+ * (a worktree cannot be based on itself), and a value that is neither a node nor a valid ref.
+ *
+ * Note the timing this deliberately does NOT change: the base is captured when the worktree is
+ * CREATED, exactly like a plain ref — deferred (create-at-fire) worktrees are a separate design
+ * (the rest of issue #530). The docs tell the orchestrator to create a downstream worktree after
+ * the upstream station has committed.
+ */
+export function resolveWorktreeBase(
+  baseArg: string | undefined,
+  newBranch: string,
+  nodes: WorktreeBaseNode[]
+): WorktreeBaseResolution {
+  const raw = (baseArg ?? '').trim()
+  if (!raw) return { kind: 'default' }
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const station = byId.get(raw)
+  if (station) {
+    // Climb from the station to the nearest worktree-bound group (the station may BE the group).
+    // Visited-set guarded: parentId chains come from a hand-editable, git-shared project.json,
+    // and a forged cycle must not hang the verb.
+    const seen = new Set<string>()
+    let cur: WorktreeBaseNode | undefined = station
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      const branch = cur.worktree?.branch
+      if (branch) {
+        if (branch === newBranch) {
+          return {
+            kind: 'error',
+            error: `--base ${raw} resolves to branch "${branch}", which is the branch being created — a worktree cannot be based on itself`
+          }
+        }
+        return { kind: 'station', ref: branch, stationId: raw, groupId: cur.id }
+      }
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined
+    }
+    return {
+      kind: 'error',
+      error: `--base ${raw} names a node that is not inside a worktree-bound frame — pass a git ref, or a station (node or group id) inside a worktree frame`
+    }
+  }
+  if (!isValidGitRef(raw)) {
+    return {
+      kind: 'error',
+      error: `--base "${raw}" is neither an existing node/group id nor a valid git ref`
+    }
+  }
+  if (raw === newBranch) {
+    return { kind: 'error', error: `--base "${raw}" is the branch being created — a worktree cannot be based on itself` }
+  }
+  return { kind: 'ref', ref: raw }
+}
+
 /** Flatten a branch name into a filesystem-safe, flag-safe slug. */
 export function sanitizeWorktreeBranch(input: string): string {
   return input

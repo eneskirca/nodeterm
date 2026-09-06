@@ -1066,6 +1066,106 @@ describe('ssh lineage safety', () => {
   })
 })
 
+// Field bug (enes, 2026-09-01): on an SSH project with heavy canvas-control churn (rev 19468 on the
+// live file), the "Reload from disk / Keep mine" conflict bar kept appearing with nobody else
+// editing. The reconciler recognized its own mirror writes only by REV — it had no analogue of the
+// local watcher's `isSelfWrite` byte comparison — and `refreshSshProject` (the 15 s poll + the
+// connect-time refresh) ran OFF the save chain, so a poll holding a pre-save entry snapshot could
+// read the server file AFTER the save's mirror write landed: remote.rev > (stale) cacheRev, the
+// store's own bytes were "adopted" and broadcast as an external change, and a dirty canvas raised
+// the conflict bar over a file nobody else touched.
+describe('ssh reconcile self-write recognition (the spurious conflict bar)', () => {
+  const sshConn = { server: { host: 'h', user: 'u' } as any, remoteCwd: '~/app' }
+  const node = (id: string, title: string) => ({
+    id, kind: 'terminal' as const, position: { x: 0, y: 0 }, size: { width: 1, height: 1 },
+    title, color: '#fff', group: null
+  })
+
+  it('a poll interleaved with a save never adopts that save\'s own mirror write', async () => {
+    const remote: Record<string, string> = {}
+    const gate: { open: (() => void) | null } = { open: null }
+    let holdNextRead = false
+    const io = {
+      read: async (_id: string, ssh: any) => {
+        if (holdNextRead) {
+          // The poll's ssh `cat` in flight on a slow WAN link.
+          holdNextRead = false
+          await new Promise<void>((resolve) => { gate.open = resolve })
+        }
+        return remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const }
+      },
+      write: async (_id: string, ssh: any, c: string) => ((remote[ssh.remoteCwd] = c), true)
+    }
+    const store = new WorkspaceStore(io)
+    const p1 = project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })
+    await store.save(ws([p1])) // seed: cache rev 1, mirrored
+
+    // The 15 s poll fires; its read hangs mid-flight…
+    holdNextRead = true
+    const poll = store.refreshSshProject('ps', { pushIfStanding: false })
+    await vi.waitFor(() => { if (!gate.open && holdNextRead) throw new Error('poll read not reached') })
+    // …while an ordinary autosave (canvas-control created a node) lands and mirrors rev 2.
+    const p2 = { ...p1, nodes: [...p1.nodes, node('term-2', 'spawned')] }
+    const save2 = store.save(ws([p2]))
+    // Give an un-serialized save time to run to completion (under the fix it queues instead).
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    gate.open?.()
+    await save2
+    // The poll saw either the pre-save file (rev 1 == its snapshot) or the save's own write —
+    // neither is an external change, so nothing may be adopted / broadcast toward the conflict bar.
+    await expect(poll).resolves.toBeNull()
+    expect(JSON.parse(remote['~/app']).rev).toBe(2) // the save's mirror still landed
+  })
+
+  it('an older own mirror write read back inside the throttle window does not resurrect a deleted node', async () => {
+    // Simulates the real remote IO's 5 s trailing throttle: the write is acked optimistically
+    // while the server still holds the PREVIOUS bytes.
+    const remote: Record<string, string> = {}
+    let throttleHold = false
+    const io = {
+      read: async (_id: string, ssh: any) =>
+        remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const },
+      write: async (_id: string, ssh: any, c: string) => {
+        if (!throttleHold) remote[ssh.remoteCwd] = c
+        return true // optimistic ack either way — the trailing write "will" land
+      }
+    }
+    const store = new WorkspaceStore(io)
+    const both = [node('term-1', 't'), node('term-x', 'closed later')]
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: both })])) // rev 1 on the server
+    throttleHold = true // next mirror write is acked but not yet on the wire
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })])) // user closed term-x
+    // The poll reads the server before the trailing write fires: it sees OUR OWN rev-1 bytes,
+    // which still contain term-x. That is a self-write echo, not a foreign append — rescuing
+    // term-x here would resurrect the node the user just deliberately closed.
+    await expect(store.refreshSshProject('ps', { pushIfStanding: false })).resolves.toBeNull()
+  })
+
+  it('a genuinely external edit is still adopted — self-write recognition matches exact bytes only', async () => {
+    const remote: Record<string, string> = {}
+    const io = {
+      read: async (_id: string, ssh: any) =>
+        remote[ssh.remoteCwd] != null
+          ? { status: 'ok' as const, content: remote[ssh.remoteCwd] }
+          : { status: 'absent' as const },
+      write: async (_id: string, ssh: any, c: string) => ((remote[ssh.remoteCwd] = c), true)
+    }
+    const store = new WorkspaceStore(io)
+    await store.save(ws([project({ id: 'ps', ssh: sshConn, cwd: undefined, nodes: [node('term-1', 't')] })]))
+    // Another machine edits the file we last mirrored: content derived from ours, but not ours.
+    const f = JSON.parse(remote['~/app'])
+    f.rev = 5
+    f.name = 'renamed-elsewhere'
+    remote['~/app'] = JSON.stringify(f)
+    const adopted = await store.refreshSshProject('ps', { pushIfStanding: false })
+    expect(adopted).toMatchObject({ id: 'ps', name: 'renamed-elsewhere' })
+  })
+})
+
 // Field bug (2026-08-10): two projects + rapid tab switching → both canvases wiped. Every switch
 // fires an un-awaited full save; save() was unserialized and writeAtomic used one fixed tmp path,
 // so overlapping saves spliced each other's tmp bytes (corrupt JSON published by rename) and a slow

@@ -19,12 +19,15 @@ import {
 } from '../lib/sessionList'
 import { SessionRow } from './SessionRow'
 import { ProjectGlyph } from './ProjectGlyph'
+import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconPin } from './icons'
 import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSession } from '../session/session'
+
+const HISTORY_COLLAPSE_KEY = 'history'
 
 export interface SessionsSidebarProps {
   open: boolean
@@ -63,6 +66,12 @@ export interface SessionsSidebarProps {
   /** Reorder a project to sit before another (null = to the end). Shared order with the
    *  tab bar: both render the projects array, so one drag updates both surfaces. */
   onReorderProject(draggedId: string, beforeId: string | null): void
+  /** Reopen a closed project (Welcome screen's existing action, now also reachable here). */
+  onReopenProject(id: string): void
+  /** Permanently delete a closed project (Welcome screen's existing action). */
+  onDeleteProject(id: string): void
+  onReopenClosedSession(projectId: string, entryId: string): void
+  onDiscardClosedSession(projectId: string, entryId: string): void
   onMouseEnter?(): void
   onMouseLeave?(): void
 }
@@ -167,11 +176,16 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // forever, and a canvas churns through group ids.
   const toggleCollapse = (key: string, currentlyCollapsed: boolean): void => {
     const current = useSettings.getState().settings.sidebarCollapsedItems
-    const pruned = pruneCollapsedItems(current, liveCollapseKeys(groups), key)
+    const pruned = pruneCollapsedItems(
+      current,
+      new Set([...liveCollapseKeys(groups), HISTORY_COLLAPSE_KEY]),
+      key
+    )
     useSettings.getState().update({
       sidebarCollapsedItems: { ...pruned, [key]: !currentlyCollapsed }
     })
   }
+  const historyCollapsed = collapsedItems[HISTORY_COLLAPSE_KEY] ?? false
 
   // Drop-target wiring shared by the project header (ungroup) and group sub-headers (add).
   // Only reacts while dragging a session that belongs to the same project.
@@ -454,7 +468,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
 
   return (
     <aside
-      className="sessions-sidebar"
+      className={props.pinned ? 'sessions-sidebar sessions-sidebar--pinned' : 'sessions-sidebar'}
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
     >
@@ -693,6 +707,17 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
         })
         )}
       </div>
+
+      <ClosedHistorySection
+        projects={allProjects}
+        nowMs={statusNow}
+        collapsed={historyCollapsed}
+        onToggleCollapse={() => toggleCollapse(HISTORY_COLLAPSE_KEY, historyCollapsed)}
+        onReopenProject={props.onReopenProject}
+        onDeleteProject={props.onDeleteProject}
+        onReopenSession={props.onReopenClosedSession}
+        onDiscardSession={props.onDiscardClosedSession}
+      />
     </aside>
   )
 }

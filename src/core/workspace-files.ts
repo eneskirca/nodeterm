@@ -1,4 +1,5 @@
 import path from 'path'
+import { healPathAsName } from '../shared/project-name'
 import type { AgentPermissionMode } from '../shared/agents/config'
 import { collisionSeed, derivedProjectId, legacyFileId } from '../shared/project-id'
 import {
@@ -7,7 +8,8 @@ import {
   stripSharedNodeExec,
   type LocalNodeExecMap
 } from '../shared/node-exec'
-import type { BridgeLink, CanvasNodeState, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
+import { CLOSED_SESSIONS_CAP } from '../shared/types'
+import type { BridgeLink, CanvasNodeState, ClosedSessionEntry, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
 import { projectCapabilityFields, readProjectCapabilities } from '../shared/project-capabilities'
 import { loadedAgentBrowserPartition } from '../shared/browser-partition'
 import { sanitizeProjectIcon, type ProjectIcon } from '../shared/project-icon'
@@ -123,6 +125,8 @@ export interface ProjectFileV1 {
   agentMessaging?: boolean
   dinoHighScore?: number
   kanban?: ProjectKanban
+  // NOTE: closedSessions is deliberately NOT here — see `Project.closedSessions` /
+  // `IndexEntryV3.closedSessions`. It is machine-local, like `viewport`/`breadcrumbs`.
 }
 
 /** One workspace.json v3 entry. Exactly one of: `cwd` (local ref), `ssh` (remote ref),
@@ -141,6 +145,8 @@ export interface IndexEntryV3 {
   name: string
   color: string
   closed?: boolean
+  /** Set alongside `closed: true` — see `Project.closedAt`. */
+  closedAt?: number
   /** MACHINE-LOCAL camera for a ref'd project (local folder or ssh). Where this user is looking is
    *  not something a repo shares — the file's copy churned the git diff on every pan. */
   viewport?: Viewport
@@ -157,6 +163,15 @@ export interface IndexEntryV3 {
   /** MACHINE-LOCAL camera navigation history for a ref'd project. Same rule as `viewport`: this
    *  user's "where was I" is not something a repo shares. See NavStop. */
   breadcrumbs?: NavStop[]
+  /**
+   * MACHINE-LOCAL closed-session history for a ref'd project (folder or ssh) — see
+   * `Project.closedSessions`. Whose trash can holds what deleted nodes is a per-machine fact, not
+   * shared content: a delete's full node-state blob would otherwise churn a committed,
+   * teammate-visible `.nodeterm/project.json` on every one. Validated/capped/trigger-sanitized on
+   * every load (`sanitizeLoadedClosedSessions`) exactly like an inline project's embedded
+   * `closedSessions` — this file is hand-editable input too.
+   */
+  closedSessions?: ClosedSessionEntry[]
   cwd?: string
   ssh?: Project['ssh']
   cache?: ProjectFileV1
@@ -289,6 +304,61 @@ export function validKanban(k: unknown): k is ProjectKanban {
   )
 }
 
+/** A `{x, y}` point, checked at the boundary because the file is hostile input. */
+function validPoint(p: unknown): p is { x: number; y: number } {
+  return (
+    !!p &&
+    typeof p === 'object' &&
+    typeof (p as { x: unknown }).x === 'number' &&
+    typeof (p as { y: unknown }).y === 'number'
+  )
+}
+
+/**
+ * Tolerant-reader guard for `closedSessions`, same "drop it rather than trust it" rule as
+ * `validKanban`: a legacy/hand-edited/hostile file degrades to no history instead of crashing.
+ *
+ * The POSITION fields are not optional politeness — they are the crash. `recreateNodeFromSnapshot`
+ * assigns `node.position = reattach ? snapshot.position : snapshot.absolutePosition` UNGUARDED, so
+ * an entry missing either one hands React Flow a node with `position: undefined`, and
+ * `adoptUserNodes` dereferences `position.x` — a white-screen renderer crash from a file anyone can
+ * commit. `kind` is checked for the sibling failure: a garbage kind reaches `buildBase`'s switch,
+ * returns null, and the row silently consumes itself and vanishes (`buildBase` already `return
+ * null`s for anything unknown, so a non-empty string is enough here — no NodeKind enum copy).
+ */
+export function validClosedSessions(x: unknown): x is ClosedSessionEntry[] {
+  return (
+    Array.isArray(x) &&
+    x.every((e) => {
+      if (!e || typeof e !== 'object') return false
+      const entry = e as ClosedSessionEntry
+      if (typeof entry.id !== 'string' || typeof entry.closedAt !== 'number') return false
+      if (!validPoint(entry.absolutePosition)) return false
+      const node = entry.node as CanvasNodeState | undefined
+      if (!node || typeof node !== 'object') return false
+      return typeof node.kind === 'string' && node.kind.length > 0 && validPoint(node.position)
+    })
+  )
+}
+
+/**
+ * The tolerant reader for closed-session history wherever it is admitted from disk: an
+ * `IndexEntryV3.closedSessions` (ref'd project) or an inline `IndexEntryV3.project.closedSessions`
+ * — both live in workspace.json, which is hand-editable input exactly like a git-shared
+ * `.nodeterm/project.json`. Validates shape (`validClosedSessions`), caps at `CLOSED_SESSIONS_CAP`
+ * (newest-first — the cap drops the tail), and re-normalizes each snapshot's trigger spec, same as
+ * a live node. No exec-strip / browser-partition treatment here: unlike the shared project file,
+ * this data never leaves this machine, so a node's own `shell`/`ssh.extraArgs` survive a reopen
+ * intact — there is nothing to re-attach from a separate machine-local map. Returns `undefined`
+ * for anything that fails the shape guard or has nothing to admit, never `[]`.
+ */
+export function sanitizeLoadedClosedSessions(x: unknown): ClosedSessionEntry[] | undefined {
+  if (!validClosedSessions(x)) return undefined
+  const capped = x.slice(0, CLOSED_SESSIONS_CAP)
+  if (!capped.length) return undefined
+  return capped.map((e) => ({ ...e, node: sanitizeNodeTriggers([e.node])[0] }))
+}
+
 /**
  * The shared file plus this machine's own half of the project.
  *
@@ -305,6 +375,7 @@ export function fileToProject(
     cwd?: string
     ssh?: Project['ssh']
     closed?: boolean
+    closedAt?: number
     /** This machine's camera. Falls back to the file's legacy one (a pre-change file, or a
      *  teammate's) and then to a frame that puts the canvas on screen. */
     viewport?: Viewport
@@ -314,6 +385,9 @@ export function fileToProject(
     capabilityAck?: import('../shared/project-capability-consent').CapabilityAckMap
     /** This machine's navigation history for this entry (never from the file). */
     breadcrumbs?: NavStop[]
+    /** This machine's closed-session history for this entry (never from the file) — already
+     *  validated/capped/trigger-sanitized by the caller (`sanitizeLoadedClosedSessions`). */
+    closedSessions?: ClosedSessionEntry[]
     /** This machine's own exec values for these nodes (from the local index entry). A file read
      *  WITHOUT them — an adopted/cloned folder, a probe — gets the safe defaults, never the file's
      *  own `shell`/`ssh.extraArgs`. */
@@ -324,7 +398,12 @@ export function fileToProject(
   const icon = sanitizeProjectIcon(f.icon)
   return {
     id: base.id,
-    name: f.name,
+    // A project whose stored name IS its own path is one this machine (or a teammate's) created
+    // before the basename fix, when a Windows cwd yielded the whole path instead of the folder.
+    // Heal it on read: a name equal to the cwd carries no information the cwd does not already
+    // carry, so re-deriving it cannot lose a name the user chose. Anything else is left ALONE —
+    // a deliberate rename that happens to look path-ish stays exactly as typed.
+    name: healPathAsName(f.name, base.cwd),
     color: f.color,
     ...(icon ? { icon } : {}),
     viewport: base.viewport ?? f.viewport ?? framingViewport(f.nodes),
@@ -352,12 +431,16 @@ export function fileToProject(
     ...(base.cwd ? { cwd: base.cwd } : {}),
     ...(base.ssh ? { ssh: base.ssh } : {}),
     ...(base.closed ? { closed: true } : {}),
+    ...(base.closedAt ? { closedAt: base.closedAt } : {}),
     // Machine-local, from the index entry ONLY: a file field named `capabilityAck` is a forgery
     // attempt (the shared file cannot carry this machine's consent) and is simply never read.
     ...(base.capabilityAck ? { capabilityAck: base.capabilityAck } : {}),
     // Machine-local, from the index entry ONLY: a file field named `breadcrumbs` is a forgery
     // attempt (the shared file cannot carry this machine's navigation history) and is never read.
-    ...(base.breadcrumbs?.length ? { breadcrumbs: base.breadcrumbs } : {})
+    ...(base.breadcrumbs?.length ? { breadcrumbs: base.breadcrumbs } : {}),
+    // Machine-local, from the index entry ONLY, same rule as `breadcrumbs`: a file field named
+    // `closedSessions` is never read here — the shared file cannot carry this machine's trash can.
+    ...(base.closedSessions?.length ? { closedSessions: base.closedSessions } : {})
   }
 }
 
@@ -434,7 +517,11 @@ export function splitWorkspace(
       : incoming.id
     seenIds.add(id)
     const p = id === incoming.id ? incoming : { ...incoming, id }
-    const header = { id: p.id, name: p.name, color: p.color, ...(p.closed ? { closed: true } : {}) }
+    const header = {
+      id: p.id, name: p.name, color: p.color,
+      ...(p.closed ? { closed: true } : {}),
+      ...(p.closedAt ? { closedAt: p.closedAt } : {})
+    }
     // The machine-local half of a REF'd project (a folder or an ssh endpoint), which used to ride
     // the shared file: this user's camera and this machine's default managed account. Deliberately
     // NOT added to the `unavailable` branch below — a placeholder's viewport is the {0,0,1} of an
@@ -447,7 +534,13 @@ export function splitWorkspace(
       // The clone-notice acknowledgment rides the machine-local entry, never the shared file
       // (projectToFile does not emit it — pinned by project-capability-consent.test.ts).
       ...(p.capabilityAck ? { capabilityAck: p.capabilityAck } : {}),
-      ...(p.breadcrumbs?.length ? { breadcrumbs: p.breadcrumbs } : {})
+      ...(p.breadcrumbs?.length ? { breadcrumbs: p.breadcrumbs } : {}),
+      // Same rule: whose trash can holds what is machine-local, capped on the way OUT as well as
+      // in (see CLOSED_SESSIONS_CAP) — an in-memory list inflated some other way must not be
+      // written back uncapped.
+      ...(p.closedSessions?.length
+        ? { closedSessions: p.closedSessions.slice(0, CLOSED_SESSIONS_CAP) }
+        : {})
     }
     if (p.unavailable) {
       // Placeholder (folder missing / server unreachable at load): its nodes:[] is not real

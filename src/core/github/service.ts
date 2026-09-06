@@ -131,6 +131,33 @@ function mapping(issue: GitHubIssue, config: NormalisedProjectKanbanGitHub): {
   return { columnId: matches[0]?.columnId ?? null, conflict: null }
 }
 
+/** Trims a harvest to a bound by dropping PULL REQUESTS first, oldest-updated first.
+ *  Issues are never dropped to make room for a pull request: the issue lane shipped first and
+ *  a repository big enough to overflow must degrade in the new half, not turn the board it
+ *  already had read only. Returns null when the issues ALONE still miss the bound — that is the
+ *  caller's existing incomplete path, unchanged. `fits` is a predicate so the same order serves
+ *  the item count and the byte ceiling. */
+export function evictPullsToFit(
+  items: GitHubIssue[],
+  fits: (candidate: GitHubIssue[]) => boolean
+): { items: GitHubIssue[]; pullsTruncated: boolean } | null {
+  if (fits(items)) return { items, pullsTruncated: false }
+  const issues = items.filter((item) => !item.pull)
+  if (!fits(issues)) return null
+  const pulls = items.filter((item) => item.pull)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number)
+  // Binary search the largest surviving prefix: `fits` may stringify the whole harvest, so
+  // dropping one at a time would be O(n²) on a repository near the ceiling.
+  let low = 0
+  let high = pulls.length - 1
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (fits([...issues, ...pulls.slice(0, middle)])) low = middle
+    else high = middle - 1
+  }
+  return { items: [...issues, ...pulls.slice(0, low)], pullsTruncated: true }
+}
+
 function mutationChain<T>(
   chains: Map<string, Promise<void>>,
   key: string,
@@ -275,7 +302,12 @@ export class GitHubIssueService {
     }
     const context = await this.cacheContext(request.projectId)
     const { state } = await this.cachedState(context)
-    const source = state.snapshot?.issues ?? state.partialIssues ?? []
+    // One snapshot holds both kinds (they arrive on the same endpoint), so the kind filter is
+    // what keeps the issue lane's items and counts exactly what they were before pull requests
+    // were harvested. An absent kind means issues.
+    const wantPull = request.kind === 'pull'
+    const source = (state.snapshot?.issues ?? state.partialIssues ?? [])
+      .filter((item) => !!item.pull === wantPull)
     const mapped = source.map((issue): GitHubIssueCardView => ({ ...issue, ...mapping(issue, context.config) }))
     const search = request.search?.trim().toLocaleLowerCase('en-US') ?? ''
     const filters = new Set((request.labelFilter ?? []).map((item) =>
@@ -307,8 +339,12 @@ export class GitHubIssueService {
       items: page,
       counts,
       ...(offset + page.length < visible.length ? { nextCursor: String(offset + page.length) } : {}),
-      partial: !state.snapshot && !!state.partialIssues,
-      readOnly: state.incomplete || !state.snapshot || !context.config.completionColumnId,
+      partial: (!state.snapshot && !!state.partialIssues) ||
+        (wantPull && !!state.snapshot?.pullsTruncated),
+      // The board never writes a pull request, so its page says so on the wire rather than
+      // relying on every consumer to remember.
+      readOnly: wantPull ||
+        state.incomplete || !state.snapshot || !context.config.completionColumnId,
       ...(state.snapshot ? {
         lastSuccessfulRefreshAt: state.snapshot.lastSuccessfulRefreshAt,
         lastFullReconciliationAt: state.snapshot.lastFullReconciliationAt
@@ -338,9 +374,10 @@ export class GitHubIssueService {
       if (state.incomplete || !state.snapshot || !captured.config.completionColumnId) {
         return { status: 'read-only' }
       }
-      if (!state.snapshot.issues.some((item) => item.number === request.issueNumber)) {
-        return { status: 'invalid-target' }
-      }
+      const target = state.snapshot.issues.find((item) => item.number === request.issueNumber)
+      // A pull request shares the issue number space and now lives in the same snapshot, so the
+      // membership check alone would let one through to a write path that cannot serve it.
+      if (!target || target.pull) return { status: 'invalid-target' }
       if (capturedEpoch !== epoch(await this.options.contextForProject(request.projectId))) {
         return { status: 'configuration-changed' }
       }
@@ -704,6 +741,10 @@ export class GitHubIssueService {
       this.now() - state.snapshot.lastFullReconciliationAt >= FULL_REFRESH_AGE
     const previous = state.snapshot
     const byNumber = new Map((full ? [] : previous?.issues ?? []).map((issue) => [issue.number, issue]))
+    // An incremental pass starts from a set a previous eviction may already have thinned, and it
+    // never re-fetches what was dropped — so the claim survives until a full reconciliation
+    // re-reads the repository and can honestly clear it.
+    let pullsTruncated = !full && !!previous?.pullsTruncated
     let page = 1
     const etags: Record<string, string> = {}
     while (true) {
@@ -726,22 +767,37 @@ export class GitHubIssueService {
         }
       }
       if (byNumber.size > MAX_ISSUES) {
-        await this.incomplete(
-          captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES),
-          cacheGeneration, operationId, repositoryGeneration
+        const trimmed = evictPullsToFit(
+          [...byNumber.values()], (candidate) => candidate.length <= MAX_ISSUES
         )
-        return
+        if (!trimmed) {
+          await this.incomplete(
+            captured, state, 'issue-limit', [...byNumber.values()].slice(0, MAX_ISSUES),
+            cacheGeneration, operationId, repositoryGeneration
+          )
+          return
+        }
+        // Paging continues on the trimmed set: each firing drops at least one item, so the scan
+        // stays bounded, and a later page's issue still displaces a pull request rather than the
+        // scan giving up.
+        byNumber.clear()
+        for (const item of trimmed.items) byNumber.set(item.number, item)
+        pullsTruncated = pullsTruncated || trimmed.pullsTruncated
       }
       if (!result.nextPage) break
       page = result.nextPage
     }
-    const issues = [...byNumber.values()]
-    if (Buffer.byteLength(JSON.stringify(issues), 'utf-8') > MAX_CACHE_BYTES) {
+    const harvest = [...byNumber.values()]
+    const withinBytes = evictPullsToFit(harvest, (candidate) =>
+      Buffer.byteLength(JSON.stringify(candidate), 'utf-8') <= MAX_CACHE_BYTES)
+    if (!withinBytes) {
       await this.incomplete(
-        captured, state, 'byte-limit', issues, cacheGeneration, operationId, repositoryGeneration
+        captured, state, 'byte-limit', harvest, cacheGeneration, operationId, repositoryGeneration
       )
       return
     }
+    const issues = withinBytes.items
+    pullsTruncated = pullsTruncated || withinBytes.pullsTruncated
     if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration) ||
         cacheGeneration !== state.cacheGeneration ||
         epoch(captured) !== epoch(await this.options.contextForProject(captured.projectId))) return
@@ -751,7 +807,8 @@ export class GitHubIssueService {
       lastSuccessfulRefreshAt: refreshStartedAt,
       lastFullReconciliationAt: full
         ? refreshStartedAt
-        : previous?.lastFullReconciliationAt ?? refreshStartedAt
+        : previous?.lastFullReconciliationAt ?? refreshStartedAt,
+      ...(pullsTruncated ? { pullsTruncated: true } : {})
     }
     if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration)) return
     await this.options.cache.saveComplete(captured.userId, captured.repository, snapshot)

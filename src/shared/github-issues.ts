@@ -70,6 +70,19 @@ export interface GitHubIssueUser {
   avatarUrl: string
 }
 
+/** The PR-only facts the issues endpoint carries for a pull request item, normalised. Its
+ *  presence on a `GitHubIssue` is the discriminator: GitHub returns pull requests from
+ *  `/repos/{repo}/issues`, and only those items have a `pull_request` object (an issue item
+ *  carries no `draft` key at all). */
+export interface GitHubPullMeta {
+  draft: boolean
+  /** ISO stamp when the PR merged, else null — the only thing separating merged from
+   *  closed-unmerged, both of which report `state: 'closed'`. */
+  mergedAt: string | null
+  /** Head branch. NOT in the issues list payload; filled by a targeted per-branch read. */
+  head?: string
+}
+
 export interface GitHubIssue {
   id: number
   number: number
@@ -84,6 +97,8 @@ export interface GitHubIssue {
   createdAt: string
   updatedAt: string
   locked: boolean
+  /** Present iff this item is a pull request. */
+  pull?: GitHubPullMeta
 }
 
 export interface ListIssueOptions {
@@ -130,6 +145,9 @@ export interface GitHubIssueCardView extends GitHubIssue {
 
 export interface GitHubIssueQuery {
   projectId: string
+  /** Which kind of item to page. Absent = `'issue'`, so a caller that predates pull requests
+   *  gets exactly the page it always got. */
+  kind?: 'issue' | 'pull'
   columnId: string | null
   pageSize: number
   cursor?: string

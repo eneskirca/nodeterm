@@ -144,6 +144,22 @@ export const IPC = {
    *  renderer clears unread WITHOUT re-acking (external clear — see agentStatus.clearUnread's
    *  `external` opt). See core/ack-sweep.ts. */
   agentUnreadClear: 'agent:unread-clear',
+  /** Renderer → main/server: a node's Eco hibernation flag changed (the renderer owns the flag —
+   *  `agentStatus.setHibernated` — and main only mirrors it, like `terminalFocused`). Arg:
+   *  `{ nodeId: string, on: boolean }`. Fire-and-forget cast; feeds the agent-status mirror so the
+   *  phone can render SLEEPING, and gives main the `isHibernated` signal the delivery queue's
+   *  hibernated leg was recorded as missing (agent-messaging.ts). */
+  agentHibernated: 'agent:hibernated',
+  /** main → renderer: ask the renderer to wake a hibernated node NOW (a phone viewer attached to
+   *  its session over the relay). A nudge, never an assertion: the renderer re-reads the flag and
+   *  no-ops for a non-hibernated or unmounted node — same contract as `wakeHibernatedNode`. Arg:
+   *  `nodeId: string`. */
+  agentWake: 'agent:wake',
+  /** main → renderer: the CURRENT set of node ids with a live relay viewer attached (a phone
+   *  watching the session). Arg: `string[]` — the full set each change, so a dropped event cannot
+   *  strand a stale entry. Feeds `isNodeWatched`: a session someone is watching from a phone must
+   *  not be hibernated out from under them. */
+  agentRemoteViewers: 'agent:remote-viewers',
   agentSubagentActivity: 'agent:subagent-activity',
   /** macOS Notch HUD (docs/notch-hud.md). main → hud: push the current row array. */
   hudRows: 'hud:rows',
@@ -229,6 +245,11 @@ export const IPC = {
   /** The scoped machine's RAM (available/total) — the cheap read behind the system-resource
    *  pill. Safe to poll locally; NOT polled for an SSH scope. */
   sessionMemoryHost: 'session-memory:host',
+  // Trigger nodes (issue #493): machine-local arm/disarm + the card's status/run-now.
+  triggersArm: 'triggers:arm',
+  triggersDisarm: 'triggers:disarm',
+  triggersStatus: 'triggers:status',
+  triggersRunNow: 'triggers:run-now',
   contextUpdate: 'context:update',
   contextEnsure: 'context:ensure',
   // Team presence (docs/team-presence.md). `presence:hello` is a REQUEST: its response tells the

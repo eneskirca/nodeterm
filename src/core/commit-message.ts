@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'
+import path from 'path'
 import { promisify } from 'util'
 import type { GitResult, Settings } from '../shared/types'
 import { findInPathString, shellPathNow } from './exec-path'
@@ -14,16 +15,37 @@ const TIMEOUT_MS = 120_000
 
 const bytes = (s: string) => Buffer.byteLength(s, 'utf-8')
 
-/** Resolve a CLI binary to an absolute path (GUI apps don't inherit the shell PATH). */
-function resolveBinary(name: string): string | null {
-  if (name.startsWith('/')) return fs.existsSync(name) ? name : null
-  const candidates = [
-    `${os.homedir()}/.local/bin/${name}`,
-    `${os.homedir()}/.claude/local/${name}`,
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    `/usr/bin/${name}`
-  ]
+/** Resolve a CLI binary to an absolute path (GUI apps don't inherit the shell PATH).
+ *  Exported for tests only — every caller is in this module. */
+export function resolveBinary(name: string): string | null {
+  // `path.isAbsolute`, not `startsWith('/')`. A Windows absolute path (`C:\Tools\agent.exe`, or a
+  // UNC `\\server\share\agent.exe`) does not start with `/`, so it missed this branch, fell
+  // through to the bare-name path below, and was then rejected by that branch's charset gate for
+  // containing `:` and `\`. The effect was that a custom commit agent could not be given as a full
+  // path on Windows at all.
+  if (path.isAbsolute(name)) return fs.existsSync(name) ? name : null
+  // `name` comes from a user setting (the custom commit agent), so anything that is not a bare
+  // binary name is refused here — BEFORE it is interpolated into the paths below. It used to be
+  // checked only after that loop, which let a name like `../../evil` normalize out of the
+  // directories the loop is meant to confine it to (`~/.local/bin/../../evil` is `~/evil`). Same
+  // rule as before, applied where it actually confines.
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return null
+  // GUI apps inherit a minimal PATH, so these user-install locations are checked BEFORE the PATH
+  // walk — deliberately, and left in that order here. They are POSIX paths without a file
+  // extension, which on Windows can only ever match an extensionless file: never the real
+  // `<name>.exe`/`<name>.cmd`, and possibly something `spawn()` cannot execute at all (a shell
+  // script, say). Skipped there rather than left to misfire; the PATH walk below is the one that
+  // can actually answer on Windows.
+  const candidates =
+    os.platform() === 'win32'
+      ? []
+      : [
+          `${os.homedir()}/.local/bin/${name}`,
+          `${os.homedir()}/.claude/local/${name}`,
+          `/opt/homebrew/bin/${name}`,
+          `/usr/local/bin/${name}`,
+          `/usr/bin/${name}`
+        ]
   for (const c of candidates) {
     try {
       if (fs.existsSync(c)) return c
@@ -32,10 +54,7 @@ function resolveBinary(name: string): string | null {
     }
   }
   // Resolve via PATH without a shell OR a subprocess: walk the cached login-shell PATH from
-  // exec-path.ts (the inherited GUI PATH misses user-installed bins). `name` comes from a user
-  // setting (custom commit agent) — reject anything that isn't a bare binary name to keep it
-  // well out of injection territory.
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) return null
+  // exec-path.ts (the inherited GUI PATH misses user-installed bins).
   return findInPathString(name, shellPathNow() ?? process.env.PATH)
 }
 

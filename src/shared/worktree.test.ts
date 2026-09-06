@@ -12,6 +12,8 @@ import {
   isRemoteSessionNode,
   isValidGitRef,
   resolveBaseRef,
+  resolveWorktreeBase,
+  type WorktreeBaseNode,
   worktreeFromCreate,
   worktreeFromEntry,
   worktreeRemoveMessage,
@@ -510,5 +512,88 @@ describe('effectiveWorktreeTemplate', () => {
     const template = effectiveWorktreeTemplate({ basePath: '/' }, undefined)
     expect(template).toBe('/${branch}')
     expect(computeWorktreePath('/src/repo', 'topic/a', template)).toBe('')
+  })
+})
+
+describe('resolveWorktreeBase (issue #530 — --base <ref|stationId>)', () => {
+  // A wave-one worktree frame (g1, branch wave1) holding an agent node (a1), a nested inner
+  // frame (g1a) holding a2; a loose node (n0); an unbound frame (g2) with a member (b1).
+  const NODES: WorktreeBaseNode[] = [
+    { id: 'g1', worktree: { branch: 'wave1' } },
+    { id: 'a1', parentId: 'g1' },
+    { id: 'g1a', parentId: 'g1' },
+    { id: 'a2', parentId: 'g1a' },
+    { id: 'n0' },
+    { id: 'g2' },
+    { id: 'b1', parentId: 'g2' }
+  ]
+
+  it('no --base means the default', () => {
+    expect(resolveWorktreeBase(undefined, 'wave2', NODES)).toEqual({ kind: 'default' })
+    expect(resolveWorktreeBase('  ', 'wave2', NODES)).toEqual({ kind: 'default' })
+  })
+  it('a member node resolves through its bound group to the branch', () => {
+    expect(resolveWorktreeBase('a1', 'wave2', NODES)).toEqual({
+      kind: 'station',
+      ref: 'wave1',
+      stationId: 'a1',
+      groupId: 'g1'
+    })
+  })
+  it('a node in a NESTED frame climbs to the nearest bound ancestor', () => {
+    expect(resolveWorktreeBase('a2', 'wave2', NODES)).toEqual({
+      kind: 'station',
+      ref: 'wave1',
+      stationId: 'a2',
+      groupId: 'g1'
+    })
+  })
+  it('the bound group id itself is a station', () => {
+    expect(resolveWorktreeBase('g1', 'wave2', NODES)).toEqual({
+      kind: 'station',
+      ref: 'wave1',
+      stationId: 'g1',
+      groupId: 'g1'
+    })
+  })
+  it('a node outside any worktree frame is an explicit refusal — never reinterpreted as a ref', () => {
+    for (const id of ['n0', 'b1', 'g2']) {
+      const r = resolveWorktreeBase(id, 'wave2', NODES)
+      expect(r.kind).toBe('error')
+      if (r.kind === 'error') expect(r.error).toContain('not inside a worktree-bound frame')
+    }
+  })
+  it('a station whose branch IS the new branch is refused (self-base)', () => {
+    const r = resolveWorktreeBase('a1', 'wave1', NODES)
+    expect(r.kind).toBe('error')
+    if (r.kind === 'error') expect(r.error).toContain('based on itself')
+  })
+  it('a plain ref self-base is refused too', () => {
+    const r = resolveWorktreeBase('wave2', 'wave2', NODES)
+    expect(r.kind).toBe('error')
+    if (r.kind === 'error') expect(r.error).toContain('based on itself')
+  })
+  it('a value naming no node passes through as a validated git ref', () => {
+    expect(resolveWorktreeBase('main', 'wave2', NODES)).toEqual({ kind: 'ref', ref: 'main' })
+    expect(resolveWorktreeBase('origin/main', 'wave2', NODES)).toEqual({
+      kind: 'ref',
+      ref: 'origin/main'
+    })
+  })
+  it('a value that is neither a node nor a valid ref is refused', () => {
+    for (const bad of ['-rf', 'a..b', 'has space']) {
+      const r = resolveWorktreeBase(bad, 'wave2', NODES)
+      expect(r.kind).toBe('error')
+      if (r.kind === 'error') expect(r.error).toContain('neither')
+    }
+  })
+  it('a forged parentId cycle terminates as a refusal instead of hanging', () => {
+    // project.json is hand-editable and git-shared; the walk is visited-set guarded.
+    const cyc: WorktreeBaseNode[] = [
+      { id: 'x', parentId: 'y' },
+      { id: 'y', parentId: 'x' }
+    ]
+    const r = resolveWorktreeBase('x', 'wave2', cyc)
+    expect(r.kind).toBe('error')
   })
 })

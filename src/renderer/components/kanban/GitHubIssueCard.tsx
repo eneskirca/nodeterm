@@ -1,17 +1,7 @@
 import { memo, useState } from 'react'
 import type { GitHubIssueCardView } from '@shared/github-issues'
 import type { KanbanColumn } from '@shared/types'
-
-function relativeTime(value: string): string {
-  const milliseconds = Date.now() - Date.parse(value)
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'updated recently'
-  const minutes = Math.floor(milliseconds / 60_000)
-  if (minutes < 1) return 'updated now'
-  if (minutes < 60) return `updated ${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `updated ${hours}h ago`
-  return `updated ${Math.floor(hours / 24)}d ago`
-}
+import { updatedRelative } from '../../lib/relativeTime'
 
 export const GitHubIssueCard = memo(function GitHubIssueCard({
   issue,
@@ -80,7 +70,7 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
         </div>
       )}
       <div className="github-issue-card__footer">
-        <span>{moving ? 'Syncing…' : relativeTime(issue.updatedAt)}</span>
+        <span>{moving ? 'Syncing…' : updatedRelative(issue.updatedAt)}</span>
         {issue.conflict && <span className="github-issue-conflict">Needs a column</span>}
         {issue.assignees.length > 0 && (
           <span className="kanban-card__avatars">

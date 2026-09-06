@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { GitHubIssueCache } from './cache'
 import {
+  evictPullsToFit,
   FULL_REFRESH_MIN_INTERVAL_MS,
   GitHubIssueService,
   REFRESH_MIN_INTERVAL_MS,
@@ -115,6 +116,28 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await fs.rm(userDataDir, { recursive: true, force: true })
+})
+
+describe('evictPullsToFit', () => {
+  const pull = (number: number): GitHubIssue =>
+    issue(number, { pull: { draft: false, mergedAt: null } })
+
+  it('leaves a harvest that already fits untouched', () => {
+    const items = [issue(1), pull(2)]
+    expect(evictPullsToFit(items, () => true)).toEqual({ items, pullsTruncated: false })
+  })
+
+  it('drops the oldest pull requests and keeps every issue', () => {
+    const items = [issue(1), issue(2), pull(3), pull(4), pull(5)]
+    const trimmed = evictPullsToFit(items, (candidate) => candidate.length <= 3)
+    expect(trimmed?.pullsTruncated).toBe(true)
+    expect(trimmed?.items.map((item) => item.number).sort()).toEqual([1, 2, 5])
+  })
+
+  it('refuses when the issues alone miss the bound, leaving the incomplete path to answer', () => {
+    expect(evictPullsToFit([issue(1), issue(2), pull(3)], (candidate) => candidate.length <= 1))
+      .toBeNull()
+  })
 })
 
 describe('GitHubIssueService', () => {
@@ -840,5 +863,76 @@ describe('GitHubIssueService', () => {
     clock += FULL_REFRESH_MIN_INTERVAL_MS
     await service.refresh({ projectId: 'project-1', full: true })
     expect(fullPages).toHaveLength(2)
+  })
+
+  it('pages issues and pull requests as separate kinds, counting each on its own', async () => {
+    const pull = issue(7, {
+      pull: { draft: true, mergedAt: null },
+      labels: [{ id: 1, name: 'status:doing', color: 'ffd60a' }]
+    })
+    const client = new FixtureClient([issue(1), pull])
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    await service.subscribe(1, { projectId: 'project-1' })
+
+    // No kind means issues: the page a caller that predates pull requests still asks for.
+    const issues = await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })
+    expect(issues.items.map((item) => item.number)).toEqual([1])
+    expect(issues.counts).toEqual({ ungrouped: 1 })
+
+    const pulls = await service.query({
+      projectId: 'project-1', columnId: 'doing', pageSize: 50, kind: 'pull'
+    })
+    expect(pulls.items.map((item) => item.number)).toEqual([7])
+    expect(pulls.items[0].pull).toEqual({ draft: true, mergedAt: null })
+    expect(pulls.counts).toEqual({ doing: 1 })
+    // The board never writes a pull request, and the page says so rather than trusting callers.
+    expect(pulls.readOnly).toBe(true)
+  })
+
+  it('reports the pull lane as partial when pull requests were evicted to fit', async () => {
+    const client = new FixtureClient([])
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.bind('local-1', 'project-1', 'o/r', 'user-1')
+    await cache.saveComplete('user-1', 'o/r', {
+      issues: [issue(1), issue(2, { pull: { draft: false, mergedAt: null } })],
+      etags: {},
+      lastSuccessfulRefreshAt: 1,
+      lastFullReconciliationAt: 1,
+      pullsTruncated: true
+    })
+    const service = new GitHubIssueService({
+      cache,
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+
+    const pulls = await service.query({
+      projectId: 'project-1', columnId: null, pageSize: 50, kind: 'pull'
+    })
+    const issues = await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })
+    expect(pulls.partial).toBe(true)
+    expect(issues.partial).toBe(false)
+  })
+
+  it('refuses to move a pull request, which shares the issue number space', async () => {
+    const client = new FixtureClient([issue(5, { pull: { draft: false, mergedAt: null } })])
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client)
+    })
+    await service.subscribe(1, { projectId: 'project-1' })
+
+    expect(await service.moveIssue({
+      projectId: 'project-1',
+      issueNumber: 5,
+      toColumnId: 'done',
+      expectedUpdatedAt: '2026-08-09T10:05Z'
+    })).toEqual({ status: 'invalid-target' })
+    expect(client.updates).toEqual([])
   })
 })

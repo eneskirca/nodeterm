@@ -23,6 +23,7 @@ import {
   ungroupNodes
 } from './workspace'
 import type { CanvasNode } from './workspace'
+import type { Project } from '@shared/types'
 
 const term = (id: string, pos: { x: number; y: number }, parentId?: string): CanvasNode =>
   ({
@@ -739,6 +740,33 @@ describe('createAccountLoginNode', () => {
     expect(node.data.accountId).toBe('acct-1')
     expect(node.data.initialCommand).toBe('claude /login')
   })
+
+  // Issue #553: a login node with no cwd starts in $HOME, and Claude Code's trust check is keyed
+  // on the cwd — so the user was asked to trust their entire home directory before an OAuth round
+  // trip that touches no files.
+  it('roots the login shell in the cwd it is given', () => {
+    expect(createAccountLoginNode('acct-1', 0, undefined, undefined, '/work/repo').data.cwd).toBe(
+      '/work/repo'
+    )
+  })
+
+  it('roots a REMOTE login at the host cwd, never at a local path', () => {
+    // The local cwd belongs to whichever project was active when Settings fired the event; the
+    // session runs on the host, where that path names nothing (or, worse, something else).
+    const ssh = {
+      server: { host: 'h', user: 'u' },
+      remoteCwd: '/srv/app'
+    } as unknown as NonNullable<Project['ssh']>
+    const node = createAccountLoginNode('acct-1', 0, undefined, ssh, '/local/repo')
+    expect(node.data.cwd).toBe('/srv/app')
+    expect(node.data.sshRemoteTmux).toBe(true)
+  })
+
+  it('still opens with no cwd when the caller has none to offer', () => {
+    // An SSH project has no local `cwd`, so a LOCAL account added from one falls back to $HOME —
+    // unchanged behavior, and the honest answer: that project owns no local directory.
+    expect(createAccountLoginNode('acct-1', 0).data.cwd).toBeUndefined()
+  })
 })
 
 describe('createCodexAccountLoginNode', () => {
@@ -754,6 +782,13 @@ describe('createCodexAccountLoginNode', () => {
     // With an agentId of 'codex' this would be an agent node and take the agent paths; the login
     // terminal is scoped purely because its account id is a managed CODEX one (see #345/#346).
     expect(createCodexAccountLoginNode('acct-2', 0).data.agentId).toBeUndefined()
+  })
+
+  it('roots the login shell in the cwd it is given (issue #553)', () => {
+    expect(createCodexAccountLoginNode('acct-2', 0, undefined, '/work/repo').data.cwd).toBe(
+      '/work/repo'
+    )
+    expect(createCodexAccountLoginNode('acct-2', 0).data.cwd).toBeUndefined()
   })
 })
 
@@ -784,6 +819,13 @@ describe('createSystemLoginNode (issue #420)', () => {
     expect((persisted as { initialCommand?: string }).initialCommand).toBeUndefined()
     const back = nodeStatesToFlow([persisted])[0]
     expect(isAccountLoginNode(back.data)).toBe(false)
+  })
+
+  it('roots the login shell in the cwd it is given (issue #553)', () => {
+    // The reported case: the popover's Switch account button opened in $HOME, so Claude Code's
+    // trust prompt stood between the click and the OAuth flow.
+    expect(createSystemLoginNode(0, undefined, '/work/repo').data.cwd).toBe('/work/repo')
+    expect(createSystemLoginNode(0).data.cwd).toBeUndefined()
   })
 })
 

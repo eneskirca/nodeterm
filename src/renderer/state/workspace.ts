@@ -11,6 +11,7 @@ import type {
 import type { AgentId, AgentPermissionMode, BuiltinAgentId } from '@shared/agents/config'
 import { agentConfig, supportsSessionIdFlag } from '@shared/agents/config'
 import { assembleLaunchCommand } from '@shared/agents/launch'
+import { agentAccountColor } from '@shared/agents/account-color'
 import { agentEnvSnapshot } from '../lib/agentEnv'
 import { uuid } from '@renderer/lib/uuid'
 import { claudeCliCapsNow } from './permissionMode'
@@ -24,6 +25,7 @@ import { useSettings } from './settings'
 // single implementation lives in src/shared and is shared with the relay host + the canvas-sync
 // reflector.
 export { applyCanvasMutation } from '@shared/canvas-mutations'
+export { accountNodeColor, agentAccountColor } from '@shared/agents/account-color'
 import { sanitizeInboundNode } from '@shared/node-exec'
 
 /** Preset color palette — macOS system colors (dark mode). */
@@ -588,9 +590,36 @@ export function createAgentNode(
    *  agent, so passing a model for one is harmless — it's simply not appended). Persisted as
    *  `data.agentModel` so cold-restore and later restarts keep the model. Trails `projectId`: every
    *  existing caller passes that ninth argument, so the model is the one that had to move. */
-  model?: string
+  model?: string,
+  /** Absolute path to a file holding the first prompt (canvas-control `--prompt-file`). Wins over
+   *  `initialPrompt`; composed by the assembler as a `"$(cat …)"` substitution so a multi-line
+   *  brief survives the single-line typed delivery. Validated by the caller
+   *  (`promptFilePathError` + an existence check) — the factory trusts it. Trailing/optional so
+   *  every existing caller is unchanged. */
+  promptFile?: string
 ): CanvasNode {
-  const { label, color } = resolveAgent(agentId)
+  const { label, color: agentColor } = resolveAgent(agentId)
+  // Managed accounts bind to the builtin Claude and Codex agents (S6) — never to another builtin,
+  // and never to a custom agent even when it inherits one of those bases. A custom agent inheriting
+  // claude/codex is still its own agent; account binding stays with the builtin the account picker
+  // offered it for. The Codex spawn side honours `data.accountId` (resolveCodexSessionScope), the
+  // same field Claude uses. Extracted to one local so the stamped binding below and the account
+  // color resolved from it cannot drift apart.
+  const boundAccountId =
+    accountId && (agentId === 'claude' || agentId === 'codex') ? accountId : undefined
+  // A managed account's default node color (Settings → Accounts) replaces the agent's brand color,
+  // so a second login of either builtin is recognizable on the canvas at a glance. `agentAccountColor`
+  // asks the list that OWNS this agent's accounts — the two are keyed independently, so a Claude
+  // account must never color a Codex node that happens to share its id.
+  // `?? []` on both lists, matching the phone path in `src/main`: `mergeSettings` merges without
+  // checking, so a hand-edited `"claudeAccounts": null` survives load and would throw on `.find`
+  // one level ABOVE the `typeof color` guard — i.e. the very failure that guard exists to prevent.
+  const settings = useSettings.getState().settings
+  const color =
+    agentAccountColor(agentId, boundAccountId, {
+      claude: settings.claudeAccounts ?? [],
+      codex: settings.codexAccounts ?? []
+    }) ?? agentColor
   // The launch-command override (this project's `.nodeterm/settings.json` first, then Settings →
   // Agents → Launch commands — see `agentLaunchOverride`) replaces the bare CLI in the assembled
   // command. Threaded into the shared assembler below as `launchCmdOverride` so fresh launch,
@@ -625,6 +654,7 @@ export function createAgentNode(
       agentId,
       customAgent,
       initialPrompt,
+      promptFile,
       permissionMode,
       sessionId: mintedSessionId,
       sessionIdFlagSupported,
@@ -669,12 +699,8 @@ export function createAgentNode(
       group: null,
       tags: [],
       agentId,
-      // Managed accounts bind to the builtin Claude and Codex agents (S6) — never to another
-      // builtin, and never to a custom agent even when it inherits one of those bases. A custom
-      // agent inheriting claude/codex is still its own agent; account binding stays with the
-      // builtin the account picker offered it for. The Codex spawn side honours `data.accountId`
-      // (resolveCodexSessionScope), the same field Claude uses.
-      ...(accountId && (agentId === 'claude' || agentId === 'codex') ? { accountId } : {}),
+      // See `boundAccountId` above for why this is claude/codex-only.
+      ...(boundAccountId ? { accountId: boundAccountId } : {}),
       // Persisted alongside the node (unlike initialCommand, which is consumed on first open), so
       // a cold restore months later still knows which conversation this node owns.
       ...(mintedSessionId ? { agentSessionId: mintedSessionId } : {}),
@@ -727,14 +753,24 @@ export function systemAccountDisplay(label: string | undefined, email?: string |
  * In an SSH project, pass the project's `ssh` binding: the node then runs in REMOTE tmux (Task 12),
  * so `CLAUDE_CONFIG_DIR` resolves to the account dir ON THE HOST and `claude /login` writes the
  * remote `.claude.json` (the main process polls it over ssh). For a local account, omit `ssh`.
+ *
+ * `cwd` is the directory the login shell starts in, and it is not cosmetic: Claude Code's trust
+ * check is keyed on the cwd, so a login node with none lands in `$HOME` and asks the user to trust
+ * their entire home directory — SSH keys and cloud credentials included — before an OAuth round
+ * trip that touches no files at all (issue #553). Callers pass the active project's directory:
+ * a workspace the user is already in is the one they are most likely to have trusted. The trailing
+ * position keeps every existing call byte-identical. On an SSH project `createTerminalNode` prefers
+ * `ssh.remoteCwd`, so a REMOTE login roots itself on the host and a local path can never override
+ * it — which is the only resolution that means anything for a session running over there.
  */
 export function createAccountLoginNode(
   accountId: string,
   index: number,
   center?: { x: number; y: number },
-  ssh?: Project['ssh']
+  ssh?: Project['ssh'],
+  cwd?: string
 ): CanvasNode {
-  const node = createTerminalNode(index, undefined, center, undefined, ssh)
+  const node = createTerminalNode(index, cwd, center, undefined, ssh)
   node.data = {
     ...node.data,
     title: 'Claude login',
@@ -755,13 +791,18 @@ export function createAccountLoginNode(
  * A plain terminal (not an agent node), like the Claude one: no session-name tracking, and the
  * agent-less shape is what keeps the node out of the Codex AGENT paths while still being scoped.
  * Local only — `codexAccounts.add()` mints on THIS machine, so there is no ssh binding to pass.
+ * `cwd` carries the same weight as it does on the Claude sibling above (issue #553): a login node
+ * with none starts in `$HOME`, and a CLI whose trust check is keyed on the cwd then asks about the
+ * whole home directory. Being local-only, the caller must pass a LOCAL directory — the active
+ * project's cwd, which an SSH project does not have.
  */
 export function createCodexAccountLoginNode(
   accountId: string,
   index: number,
-  center?: { x: number; y: number }
+  center?: { x: number; y: number },
+  cwd?: string
 ): CanvasNode {
-  const node = createTerminalNode(index, undefined, center)
+  const node = createTerminalNode(index, cwd, center)
   node.data = {
     ...node.data,
     title: 'Codex login',
@@ -789,10 +830,23 @@ export function createCodexAccountLoginNode(
  * this node is an inert plain terminal, not a login prompt nobody requested.
  *
  * Local only, on purpose: on an SSH project a system login would rewrite THAT host's ~/.claude,
- * so the popover does not offer the action there (see UsageIndicator).
+ * so the popover does not offer the action there (see UsageIndicator). `cwd` must therefore be a
+ * LOCAL directory — the active project's, which an SSH project does not have (its terminals are
+ * rooted at `ssh.remoteCwd`, a path that means nothing on this machine).
+ *
+ * Issue #553: this node is where the missing cwd was first noticed. `claude /login` is an OAuth
+ * round trip that touches no files, but Claude Code's trust check is keyed on the cwd, so starting
+ * in `$HOME` made the button cost a "do you trust /Users/<me>?" answer whose persisted `yes` grants
+ * a trusted workspace over everything the user owns. A project directory is not a guaranteed
+ * escape (an untrusted project still prompts) — it makes the prompt the exception rather than the
+ * rule, without nodeterm writing another tool's trust config on the user's behalf.
  */
-export function createSystemLoginNode(index: number, center?: { x: number; y: number }): CanvasNode {
-  const node = createTerminalNode(index, undefined, center)
+export function createSystemLoginNode(
+  index: number,
+  center?: { x: number; y: number },
+  cwd?: string
+): CanvasNode {
+  const node = createTerminalNode(index, cwd, center)
   node.data = {
     ...node.data,
     title: 'Switch Claude account',
@@ -979,6 +1033,27 @@ export function createStickyNode(index: number, center?: { x: number; y: number 
       color: '#ffd60a',
       group: null,
       text: ''
+    }
+  }
+}
+
+/**
+ * Creates a new trigger node (issue #493). Born with NO spec — `data.trigger` stays undefined
+ * until the card's editor saves a valid one, so a fresh trigger is inert by construction (an
+ * invalid/absent spec schedules nothing and cannot be armed).
+ */
+export function createTriggerNode(index: number, center?: { x: number; y: number }): CanvasNode {
+  return {
+    id: nextId('trigger'),
+    type: 'trigger',
+    position: placeAt(center, index, TRIGGER_SIZE.width, TRIGGER_SIZE.height),
+    width: TRIGGER_SIZE.width,
+    height: TRIGGER_SIZE.height,
+    style: { width: TRIGGER_SIZE.width, height: TRIGGER_SIZE.height },
+    data: {
+      title: 'Trigger',
+      color: '#e6a23c',
+      group: null
     }
   }
 }
@@ -1339,6 +1414,45 @@ function withNodeRect(
       : n
   )
   return fitAncestorChain(next, node.parentId)
+}
+
+/** Sub-pixel tolerance for "the node is already there". Exact equality is not available: a grouped
+ *  node's rect round-trips through `rootPosition` in floats, and `nodeW` prefers React Flow's
+ *  `measured` width, which it repopulates from the DOM device-pixel-snapped — at fractional zoom
+ *  that never equals `innerW / zoom` exactly. Without the tolerance every re-measure would rewrite
+ *  the node and bump the workspace rev, which on a shared SSH/git project is a commit per toggle. */
+const SAME_PX = 0.5
+const samePx = (a: number, b: number): boolean => Math.abs(a - b) <= SAME_PX
+
+/**
+ * Re-fit an ALREADY maximized node to a new frame, keeping its restore rect.
+ *
+ * Maximize is a MODE, not a one-shot placement: while it is on, the node claims the whole usable
+ * canvas. Pinning or unpinning a side panel changes what "whole" means, so the node follows.
+ * A node that is not maximized is left alone — that one was put where it is by hand or by a zone
+ * verb, and those are placements the user owns.
+ */
+export function refitMaximizedNode(
+  nodes: CanvasNode[],
+  nodeId: string,
+  rect: { x: number; y: number; width: number; height: number }
+): CanvasNode[] {
+  const node = nodes.find((n) => n.id === nodeId)
+  const premaxRect = node?.data.premaxRect
+  if (!node || !premaxRect) return nodes
+  // Idempotent: the caller re-measures on every panel change, and most of those land on the rect
+  // the node already has. Returning the same array keeps the workspace out of the dirty/save path
+  // and lets the caller decide by identity whether anything actually moved.
+  const root = rootPosition(node, nodes)
+  if (
+    samePx(root.x, rect.x) &&
+    samePx(root.y, rect.y) &&
+    samePx(nodeW(node) || (node.style?.width as number) || 0, rect.width) &&
+    samePx(nodeH(node) || (node.style?.height as number) || 0, rect.height)
+  ) {
+    return nodes
+  }
+  return withNodeRect(nodes, node, rect, { premaxRect })
 }
 
 /**

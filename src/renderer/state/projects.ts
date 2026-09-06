@@ -4,18 +4,21 @@ import type {
   BridgeLink,
   CanvasMutation,
   CanvasNodeState,
+  ClosedSessionEntry,
   NavStop,
   Project,
   ProjectKanban,
   Viewport,
   Workspace
 } from '@shared/types'
+import { CLOSED_SESSIONS_CAP } from '@shared/types'
 import { collisionSeed, derivedProjectId } from '@shared/project-id'
 import type { ProjectCapability } from '@shared/project-capabilities'
 import type { ProjectIcon } from '@shared/project-icon'
 import { recordCapabilityAck, type CapabilityAnswer } from '@shared/project-capability-consent'
 import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 import { markWorkspaceDirty } from './workspaceDirty'
+import { folderName } from '../lib/projectOpen'
 
 interface ProjectsState {
   projects: Project[]
@@ -144,6 +147,15 @@ interface ProjectsState {
   closeProject(id: string): string
   /** Restores a closed project and makes it active. No-op if the id is unknown. */
   reopenProject(id: string): void
+
+  /** Records freshly deleted sessions into the project's history (newest-first, capped at
+   *  `CLOSED_SESSIONS_CAP`). No-op if `entries` is empty or the project no longer exists. */
+  recordClosedSessions(projectId: string, entries: ClosedSessionEntry[]): void
+  /** Removes and returns the matching closed-session entry, or `undefined` if it's already gone
+   *  (e.g. discarded from another surface first). */
+  consumeClosedSession(projectId: string, entryId: string): ClosedSessionEntry | undefined
+  /** Removes a closed-session entry without reopening it. */
+  discardClosedSession(projectId: string, entryId: string): void
 
   /**
    * Registers (or finds) the project for a local directory WITHOUT activating it — the store half
@@ -298,7 +310,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       get().reopenProject(existing.id)
       return existing
     }
-    const name = folder.split('/').filter(Boolean).pop() || 'Project'
+    const name = folderName(folder) || 'Project'
     const project = get().addProject(name, folder)
     set({ activeProjectId: project.id })
     return project
@@ -575,7 +587,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   closeProject(id) {
     const { projects, activeProjectId } = get()
     const index = projects.findIndex((p) => p.id === id)
-    const next = projects.map((p) => (p.id === id ? { ...p, closed: true } : p))
+    const next = projects.map((p) => (p.id === id ? { ...p, closed: true, closedAt: Date.now() } : p))
     let nextActive = activeProjectId
     if (activeProjectId === id) {
       // Move focus to the nearest still-open project (search outward), or the welcome screen.
@@ -587,6 +599,47 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     }
     set({ projects: next, activeProjectId: nextActive })
     return nextActive
+  },
+
+  recordClosedSessions(projectId, entries) {
+    if (!entries.length) return
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id !== projectId
+          ? p
+          : {
+              ...p,
+              closedSessions: [...entries, ...(p.closedSessions ?? [])].slice(
+                0,
+                CLOSED_SESSIONS_CAP
+              )
+            }
+      )
+    }))
+  },
+
+  consumeClosedSession(projectId, entryId) {
+    let found: ClosedSessionEntry | undefined
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== projectId || !p.closedSessions) return p
+        const idx = p.closedSessions.findIndex((e) => e.id === entryId)
+        if (idx === -1) return p
+        found = p.closedSessions[idx]
+        return { ...p, closedSessions: p.closedSessions.filter((e) => e.id !== entryId) }
+      })
+    }))
+    return found
+  },
+
+  discardClosedSession(projectId, entryId) {
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id !== projectId || !p.closedSessions
+          ? p
+          : { ...p, closedSessions: p.closedSessions.filter((e) => e.id !== entryId) }
+      )
+    }))
   },
 
   reopenProject(id) {
@@ -633,7 +686,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       set((s) => ({ projects: [...s.projects, adopted] }))
       return { project: adopted, created: false, adopted: true }
     }
-    const fallbackName = cwd.split('/').filter(Boolean).pop() || 'Project'
+    const fallbackName = folderName(cwd) || 'Project'
     const project = {
       ...createProject(get().projects.length, name ?? fallbackName, cwd),
       ...(color ? { color } : {})

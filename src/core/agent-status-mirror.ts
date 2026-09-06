@@ -112,6 +112,19 @@ export interface MirrorEntry {
    * describe a state it did not arrive with.
    */
   idleInferred?: true
+  /**
+   * Eco hibernation: this node's CLI was `/exit`ed while nobody was looking; its tmux session and
+   * pane live on and the conversation comes back with the provider's `--resume`. The RENDERER owns
+   * the flag (`agentStatus.setHibernated`, persisted in its localStorage) and reports every change
+   * over `agent:hibernated` — the mirror only carries it, so an external reader (the phone) can
+   * render SLEEPING instead of an unexplained idle shell (`setNodeHibernated`). Present = true,
+   * absent = not hibernated — like `restored`/`idleInferred`, so old files keep their shape.
+   *
+   * A hibernated entry is EXEMPT from the expiry sweep: hibernation is precisely "idle for hours",
+   * so the 6 h staleness rule would erase the one durable fact this field exists to carry. The
+   * renderer re-reports its persisted set at boot, and a wake (or `clearNode`) drops the flag.
+   */
+  hibernated?: true
 }
 
 /** This host's Server-Edition install metadata (spec: server-update). Written by the installer
@@ -155,6 +168,8 @@ export interface MirrorFile {
       sessionId?: string
       /** The agent's own session name (see MirrorEntry.name). Absent until resolved. */
       name?: string
+      /** Eco hibernation (see MirrorEntry.hibernated). Present = true; absent on old files. */
+      hibernated?: true
       updatedAt: number
     }
   >
@@ -495,7 +510,9 @@ export function buildFile(
 ): MirrorFile {
   const out: MirrorFile = { v: 1, updatedAt: now, nodes: {} }
   for (const [id, e] of Object.entries(nodes)) {
-    if (now - e.updatedAt > expireMs) continue
+    // A hibernated entry never expires: hibernation IS long idleness, so the staleness rule would
+    // erase exactly the durable fact the flag carries (see MirrorEntry.hibernated).
+    if (now - e.updatedAt > expireMs && !e.hibernated) continue
     // Undefined fields drop out of JSON.stringify — an idle node keeps agentId/sessionId
     // without a `state` key.
     out.nodes[id] = {
@@ -503,6 +520,7 @@ export function buildFile(
       agentId: e.agentId,
       sessionId: e.sessionId,
       ...(e.name ? { name: e.name } : {}),
+      ...(e.hibernated ? { hibernated: true as const } : {}),
       updatedAt: e.updatedAt
     }
   }
@@ -1115,12 +1133,16 @@ function loadPersisted(file: string): void {
       for (const [id, e] of Object.entries(doc.nodes)) {
         if (!e || typeof e !== 'object') continue
         const updatedAt = typeof e.updatedAt === 'number' ? e.updatedAt : 0
-        if (now - updatedAt > EXPIRE_MS) continue
+        // Hibernated entries survive the expiry, as in buildFile: hours of idleness is what the
+        // flag MEANS. (The renderer also re-reports its persisted set at boot — this restore just
+        // keeps the file honest in the window before that report lands.)
+        if (now - updatedAt > EXPIRE_MS && e.hibernated !== true) continue
         state.set(id, {
           state: e.state,
           agentId: e.agentId,
           sessionId: e.sessionId,
           ...(e.name ? { name: e.name } : {}),
+          ...(e.hibernated === true ? { hibernated: true as const } : {}),
           updatedAt,
           // Marked, and FORCED unverified whatever the file said. `buildFile` writes neither field
           // — it is an allowlist, which is what keeps `stateVerified` off disk — but a file this
@@ -1601,6 +1623,29 @@ export function setNodeSessionName(nodeId: string, name: string): boolean {
   state.set(nodeId, { ...e, name })
   scheduleWrite()
   return true
+}
+
+/**
+ * Record (or clear) a node's Eco hibernation flag — the `agent:hibernated` cast's only writer.
+ * The renderer owns the flag; this is a mirror of it, like `terminalFocused` in main (see
+ * MirrorEntry.hibernated). Unlike `setNodeSessionName`, an UNKNOWN node id creates a minimal
+ * entry: a hibernated session is typically one the mirror has expired (hibernation is hours of
+ * idleness) or one reported at boot before any hook event of this run — exactly when the flag
+ * matters most. Clearing an unknown id stays a no-op.
+ */
+export function setNodeHibernated(nodeId: string, on: boolean): void {
+  if (typeof nodeId !== 'string' || !nodeId || nodeId.length > 128) return
+  const e = state.get(nodeId)
+  if (on) {
+    if (e?.hibernated) return
+    state.set(nodeId, e ? { ...e, hibernated: true } : { updatedAt: Date.now(), hibernated: true })
+  } else {
+    if (!e?.hibernated) return
+    const next = { ...e }
+    delete next.hibernated
+    state.set(nodeId, next)
+  }
+  scheduleWrite()
 }
 
 /** A node's published session name (see MirrorEntry.name), or undefined. */

@@ -95,7 +95,8 @@
         }
       ],
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "nodeterm uses the microphone so you can dictate into your terminals."
+        "NSMicrophoneUsageDescription": "nodeterm uses the microphone so you can dictate into your terminals.",
+        "NSLocalNetworkUsageDescription": "Terminals and agents you run may connect to devices and servers on your local network."
       },
       "target": [
         {
@@ -154,7 +155,7 @@
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.0.0",
     "qrcode": "^1.5.4",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "smart-whisper": "^0.8.1",
     "tweetnacl": "^1.0.3",
     "ws": "^8.21.3",
@@ -163,7 +164,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^26.3.0",
+    "@types/node": "^26.4.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
@@ -173,8 +174,8 @@
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "@xyflow/react": "^12.11.3",
-    "electron": "^42.10.0",
+    "@xyflow/react": "^12.11.5",
+    "electron": "^42.10.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.28.2",

@@ -9,6 +9,7 @@ import { useSettings } from '../state/settings'
 import { useProjects } from '../state/projects'
 import { accountsForProject, sshAccountsHint } from '../state/workspace'
 import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
+import { ZOOM_PRESETS, activeZoomPreset } from '../lib/zoomPresets'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
 
@@ -24,6 +25,7 @@ interface DockProps {
   /** Opens the Spawn-a-team dialog (issue #78) — the conductor lands at the Dock's default spot. */
   onSpawnTeam: () => void
   onAddDino: () => void
+  onAddTrigger: () => void
   onAddAgent: (agentId: AgentId, accountId?: string) => void
   onOpenFile: () => void
   onAddRemote: () => void
@@ -42,6 +44,8 @@ interface DockProps {
   onFitView: () => void
   onZoomIn: () => void
   onZoomOut: () => void
+  /** Jump to an exact zoom (a preset percentage), holding the screen centre still. */
+  onZoomTo: (pct: number) => void
   onDictate: () => void
   dictateActive: boolean
 }
@@ -61,6 +65,7 @@ export function Dock({
   onAddSticky,
   onSpawnTeam,
   onAddDino,
+  onAddTrigger,
   onAddAgent,
   onOpenFile,
   onAddRemote,
@@ -77,10 +82,12 @@ export function Dock({
   onFitView,
   onZoomIn,
   onZoomOut,
+  onZoomTo,
   onDictate,
   dictateActive
 }: DockProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false)
   // Which builtin's flyout submenu is open (at most one). A builtin earns a flyout only when it has
   // ≥1 inheriting custom agent (one with a `baseAgent` matching it); otherwise it stays a flat
   // button, byte-identical to before this nesting existed.
@@ -128,6 +135,14 @@ export function Dock({
     setMenuOpen(false)
   }
 
+  const pickZoom = (fn: () => void) => () => {
+    fn()
+    setZoomMenuOpen(false)
+  }
+
+  // The preset the readout currently sits on, or null between two — the menu's tick.
+  const activePreset = activeZoomPreset(zoomPct)
+
   // Derive the content rows from the shared add-menu spec (the same list the pane right-click and
   // the sidebar "+" use), so the Dock can no longer lag the canvas menu on which kinds are addable.
   // Terminal + agents + "New Remote Connection" stay Dock-local (agents have bespoke flyouts;
@@ -142,6 +157,7 @@ export function Dock({
     sticky: onAddSticky,
     spawnTeam: onSpawnTeam,
     dino: onAddDino,
+    trigger: onAddTrigger,
     openFile: onOpenFile,
     newFile: onNewFile,
     worktree: onAddWorktree
@@ -153,7 +169,15 @@ export function Dock({
 
   return (
     <>
-      {menuOpen && <div className="dock-backdrop" onClick={() => setMenuOpen(false)} />}
+      {(menuOpen || zoomMenuOpen) && (
+        <div
+          className="dock-backdrop"
+          onClick={() => {
+            setMenuOpen(false)
+            setZoomMenuOpen(false)
+          }}
+        />
+      )}
 
       <div className="dock">
         {menuOpen && (
@@ -285,7 +309,10 @@ export function Dock({
         <button
           className={`dock-btn dock-add${menuOpen ? ' active' : ''}`}
           title="Add node"
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={() => {
+            setZoomMenuOpen(false)
+            setMenuOpen((v) => !v)
+          }}
         >
           <PlusIcon />
         </button>
@@ -347,7 +374,41 @@ export function Dock({
         <button className="dock-btn dock-zoom-btn" title="Zoom out" onClick={onZoomOut}>
           <MinusIcon />
         </button>
-        <span className="dock-zoom">{zoomPct}%</span>
+        <div className="dock-zoom-wrap">
+          {zoomMenuOpen && (
+            <div className="dock-menu dock-zoom-menu">
+              {ZOOM_PRESETS.map((pct) => (
+                <button
+                  key={pct}
+                  className={pct === activePreset ? 'is-current' : undefined}
+                  onClick={pickZoom(() => onZoomTo(pct))}
+                >
+                  <span className="dock-menu__check">{pct === activePreset ? <CheckIcon /> : null}</span>
+                  <span>{pct}%</span>
+                  {pct === 100 && <span className="dock-menu__chord">{isMac ? '⌘0' : 'Ctrl+0'}</span>}
+                </button>
+              ))}
+              <span className="dock-menu__rule" />
+              <button onClick={pickZoom(onFitView)}>
+                <span className="dock-menu__check" />
+                <span>Zoom to fit</span>
+                <span className="dock-menu__chord">⇧1</span>
+              </button>
+            </div>
+          )}
+          <button
+            className={`dock-zoom${zoomMenuOpen ? ' active' : ''}`}
+            title="Zoom presets"
+            aria-haspopup="menu"
+            aria-expanded={zoomMenuOpen}
+            onClick={() => {
+              setMenuOpen(false)
+              setZoomMenuOpen((v) => !v)
+            }}
+          >
+            {zoomPct}%
+          </button>
+        </div>
         <button className="dock-btn dock-zoom-btn" title="Zoom in" onClick={onZoomIn}>
           <PlusSmallIcon />
         </button>
@@ -398,6 +459,13 @@ function PlusSmallIcon() {
   return (
     <svg {...S} width={15} height={15}>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+function CheckIcon() {
+  return (
+    <svg {...S} width={13} height={13} strokeWidth={2.4}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
     </svg>
   )
 }

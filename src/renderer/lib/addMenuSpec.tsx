@@ -28,7 +28,8 @@ import {
   IconNote,
   IconRemote,
   IconTerminal,
-  IconWeb
+  IconWeb,
+  IconBellFilled
 } from '../components/icons'
 
 /** A flow-space position; `undefined` means "wherever the surface's default is". */
@@ -46,6 +47,7 @@ export type AddItem =
   | { kind: 'web' }
   | { kind: 'sticky' }
   | { kind: 'dino' }
+  | { kind: 'trigger' }
   | { kind: 'open-file' }
   | { kind: 'new-file' } // requiresCwd
   | { kind: 'spawn-team' }
@@ -65,6 +67,7 @@ export const CONTENT_ADD_ITEMS: readonly AddItem[] = [
   { kind: 'web' },
   { kind: 'sticky' },
   { kind: 'dino' },
+  { kind: 'trigger' },
   { kind: 'open-file' },
   { kind: 'new-file' },
   { kind: 'spawn-team' },
@@ -94,6 +97,8 @@ export interface AddHandlers {
   web: (at?: AddPos) => void
   sticky: (at?: AddPos) => void
   dino: (at?: AddPos) => void
+  /** Adds a trigger node (issue #493) — a canvas-owned schedule that fires into another node. */
+  trigger: (at?: AddPos) => void
   openFile: (at?: AddPos) => void
   newFile: (at?: AddPos) => void
   /** Opens the Spawn-a-team dialog (issue #78); `at` is where the conductor node will land. */
@@ -143,6 +148,9 @@ export function contentAddItemsToMenuItems(
         break
       case 'dino':
         out.push({ label: 'New dino game', icon: <IconDino />, onClick: () => handlers.dino(at) })
+        break
+      case 'trigger':
+        out.push({ label: 'New trigger…', icon: <IconBellFilled />, onClick: () => handlers.trigger(at) })
         break
       case 'open-file':
         out.push({ label: 'Open file…', icon: <IconEditor />, onClick: () => void handlers.openFile(at) })
@@ -218,6 +226,9 @@ export function contentAddItemsToDockRows(
         break
       case 'dino':
         out.push({ kind: 'dino', label: 'Dino Game', icon: <IconDino />, onClick: () => handlers.dino() })
+        break
+      case 'trigger':
+        out.push({ kind: 'trigger', label: 'Trigger', icon: <IconBellFilled />, onClick: () => handlers.trigger() })
         break
       case 'open-file':
         out.push({ kind: 'open-file', label: 'Open file…', icon: <IconEditor />, onClick: () => void handlers.openFile() })

@@ -22,12 +22,39 @@ export function popEntry(stack: ReopenEntry[]): { entry: ReopenEntry | undefined
   return { entry: stack[stack.length - 1], rest: stack.slice(0, -1) }
 }
 
+/**
+ * Drops every snapshot tagged with `entryId` (`ReopenNodeSnapshot.closedSessionId`) out of
+ * `projectId`'s `kind: 'nodes'` entries, then drops any entry left with no nodes at all — an
+ * empty batch would restore nothing if popped, so it must not linger as a dead stack slot.
+ * `kind: 'project'` entries carry no snapshots and pass through untouched.
+ *
+ * This is the ⇧⌘T-stack twin of `useProjects.discardClosedSession`: the sidebar's persisted
+ * "Recently closed" list and this in-memory stack both get a row for the SAME delete, and
+ * reopening one must consume the other's matching entry too — otherwise a single delete can be
+ * reopened twice, minting two duplicate nodes from one closed session.
+ */
+export function dropClosedSessionRef(
+  stack: ReopenEntry[],
+  projectId: string,
+  entryId: string
+): ReopenEntry[] {
+  return stack
+    .map((e) =>
+      e.kind === 'nodes' && e.projectId === projectId
+        ? { ...e, nodes: e.nodes.filter((n) => n.closedSessionId !== entryId) }
+        : e
+    )
+    .filter((e) => e.kind !== 'nodes' || e.nodes.length > 0)
+}
+
 interface ReopenHistoryState {
   stack: ReopenEntry[]
   push: (entry: ReopenEntry) => void
   /** Pops and returns the most recent entry. Callers that find it stale (project already
    *  reopened another way, or permanently deleted) call this again to keep walking back. */
   popNext: () => ReopenEntry | undefined
+  /** See `dropClosedSessionRef`. */
+  dropByClosedSessionId: (projectId: string, entryId: string) => void
 }
 
 export const useReopenHistory = create<ReopenHistoryState>((set, get) => ({
@@ -37,5 +64,7 @@ export const useReopenHistory = create<ReopenHistoryState>((set, get) => ({
     const { entry, rest } = popEntry(get().stack)
     if (entry) set({ stack: rest })
     return entry
-  }
+  },
+  dropByClosedSessionId: (projectId, entryId) =>
+    set((s) => ({ stack: dropClosedSessionRef(s.stack, projectId, entryId) }))
 }))

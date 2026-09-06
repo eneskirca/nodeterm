@@ -679,6 +679,14 @@ describe('parseControlBody', () => {
   it('degrades to an empty command on garbage rather than throwing', () => {
     expect(parseControlBody('not json', 'application/json')).toEqual({ nodeId: '', args: {} })
   })
+
+  it("reads the shim's valueless --dry-run as an empty-string arg (issue #532)", () => {
+    // The sh loop translates a valueless `--dry-run` to `arg.dry-run=`; the server must land it
+    // as `args['dry-run'] === ''`, which `dryRunRequested` reads as ON.
+    expect(
+      parseControlBody('nodeId=n1&arg.dry-run=&arg.team=%5B%5D', 'application/x-www-form-urlencoded')
+    ).toEqual({ nodeId: 'n1', args: { 'dry-run': '', team: '[]' } })
+  })
 })
 
 describe('sticky through the shim (verified-only verb)', () => {

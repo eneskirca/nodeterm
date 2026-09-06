@@ -22,6 +22,12 @@ rem ============================================================================
 
 set "REPO=%~dp0"
 if "%REPO:~-1%"=="\" set "REPO=%REPO:~0,-1%"
+set "_NODETERM_VSWHERE_OVERRIDE="
+
+rem Keep the Visual Studio probe independently runnable for diagnostics and CI regression tests.
+rem GitHub-hosted Windows runners are elevated, while the full bootstrap intentionally refuses
+rem elevation before npm lifecycle scripts; this mode runs only the toolchain probe and never npm.
+if /i "%~1"=="--check-vs-build-tools" goto :check_vs_build_tools_only
 
 rem --- Refuse elevation: npm lifecycle scripts must never run as Administrator. ----------------
 "%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 86}else{exit 0}" >nul 2>nul
@@ -51,20 +57,8 @@ if %NODE_MAJOR% LSS 20 (
 echo [OK] Node.js major %NODE_MAJOR%
 
 rem --- Visual Studio Build Tools with the C++ workload (node-gyp / electron-rebuild) ------------
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if not exist "%VSWHERE%" (
-    echo [MISSING] Visual Studio Build Tools were not found ^(vswhere.exe absent^).
-    echo   Install:  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-    echo   ^(elevated; then open a NEW prompt and rerun this script^)
-    exit /b 1
-)
-"%VSWHERE%" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath >nul 2>nul
-if errorlevel 1 (
-    echo [MISSING] A Visual Studio install exists but lacks the C++ build tools component.
-    echo   Install:  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-    exit /b 1
-)
-echo [OK] Visual Studio C++ build tools
+call :check_vs_build_tools
+if errorlevel 1 exit /b 1
 
 rem --- Python 3 (node-gyp) -----------------------------------------------------------------------
 py -3 --version >nul 2>nul
@@ -95,4 +89,48 @@ echo.
 echo [DONE] Dependencies installed and native modules rebuilt against Electron's ABI.
 echo   npm run dev        - development mode with HMR
 echo   npm run dist:win   - unsigned NSIS installer + zip into dist\
+exit /b 0
+
+:check_vs_build_tools_only
+if "%NODETERM_BOOTSTRAP_TESTING%"=="1" set "_NODETERM_VSWHERE_OVERRIDE=%NODETERM_TEST_VSWHERE%"
+call :check_vs_build_tools
+exit /b %ERRORLEVEL%
+
+:check_vs_build_tools
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+rem The check-only mode may inject a fixture; the full bootstrap always uses vswhere's canonical
+rem installer location so an inherited environment variable cannot redirect the production probe.
+if defined _NODETERM_VSWHERE_OVERRIDE set "VSWHERE=%_NODETERM_VSWHERE_OVERRIDE%"
+if not exist "%VSWHERE%" (
+    echo [MISSING] Visual Studio Build Tools were not found ^(vswhere.exe absent^).
+    echo   Install:  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    echo   ^(elevated; then open a NEW prompt and rerun this script^)
+    exit /b 1
+)
+
+set "VSWHERE_ARGS=-products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -latest -property installationPath"
+rem vswhere returns exit code 0 even when the query matches nothing. Capture the first path and
+rem test the value itself; checking only ERRORLEVEL silently accepts a machine without C++ tools.
+set "VS_INSTALLATION="
+rem CALL is intentional: production uses vswhere.exe, but the cmd.exe tests inject a .cmd fixture
+rem that must return control to this script.
+for /f "usebackq delims=" %%I in (`call "%VSWHERE%" %VSWHERE_ARGS% 2^>nul`) do if not defined VS_INSTALLATION set "VS_INSTALLATION=%%I"
+if not defined VS_INSTALLATION (
+    rem FOR /F does not preserve the nested command's exit status. Query again only after an empty
+    rem capture so the retry status classifies query failure versus no matching installation.
+    call "%VSWHERE%" %VSWHERE_ARGS% >nul 2>nul
+    if errorlevel 1 (
+        echo [FAILED] vswhere could not query Visual Studio installations.
+        exit /b 1
+    )
+    echo [MISSING] No Visual Studio installation with the C++ build tools component was found.
+    echo   Install:  winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    exit /b 1
+)
+if not exist "%VS_INSTALLATION%\." (
+    echo [FAILED] vswhere reported a Visual Studio path that does not exist: "%VS_INSTALLATION%"
+    exit /b 1
+)
+
+echo [OK] Visual Studio C++ build tools: "%VS_INSTALLATION%"
 exit /b 0

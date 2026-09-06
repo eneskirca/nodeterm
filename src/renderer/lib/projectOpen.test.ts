@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
+  folderName,
+  normalizeProjectCwd,
   planOpenProject,
   recordAttachConsent,
   attachConsentRecorded,
@@ -282,5 +284,62 @@ describe('dialog copy flattens hostile names to one line (review M-2)', () => {
     expect(plan.kind).toBe('confirm')
     if (plan.kind !== 'confirm') return
     expect(plan.message.split('\n').length).toBe(3)
+  })
+})
+
+
+/**
+ * The basename behind every project name. It used to be an inline `split('/')` at five sites, which
+ * on Windows returns the WHOLE path as one segment — so a project was named
+ * `C:\Users\me\code\my-app` in the sidebar and the tab bar, and, because `name` is git-shared
+ * through `project.json`, for every teammate who pulled that file as well.
+ */
+describe('folderName', () => {
+  it('takes the last segment of a POSIX path', () => {
+    expect(folderName('/Users/me/code/my-app')).toBe('my-app')
+    expect(folderName('/Users/me/code/my-app/')).toBe('my-app')
+    expect(folderName('/Users/me/code//my-app//')).toBe('my-app')
+  })
+
+  it('takes the last segment of a Windows path — the regression', () => {
+    expect(folderName('C:\\Users\\me\\code\\my-app')).toBe('my-app')
+    expect(folderName('C:\\Users\\me\\code\\my-app\\')).toBe('my-app')
+    // A UNC share, and a mixed-separator path (Node hands back both shapes).
+    expect(folderName('\\\\server\\share\\my-app')).toBe('my-app')
+    expect(folderName('C:\\Users\\me/code\\my-app')).toBe('my-app')
+  })
+
+  it('answers empty for a path with no folder in it, so callers own their fallback', () => {
+    // 'Project' is right for a project name and wrong for a notification label, so the fallback
+    // stays at each call site rather than being baked in here.
+    expect(folderName('')).toBe('')
+    expect(folderName('/')).toBe('')
+    expect(folderName('\\\\')).toBe('')
+  })
+
+  it('leaves a drive root as the drive, without inventing a name', () => {
+    expect(folderName('C:\\')).toBe('C:')
+  })
+})
+
+describe('normalizeProjectCwd', () => {
+  it('strips a trailing separator of either kind', () => {
+    expect(normalizeProjectCwd('/Users/me/code/')).toBe('/Users/me/code')
+    // The Windows half: stripping only `/` left the backslash in place, which then read as an
+    // empty final segment for anything that split the path afterwards.
+    expect(normalizeProjectCwd('C:\\Users\\me\\code\\')).toBe('C:\\Users\\me\\code')
+    expect(normalizeProjectCwd('C:\\Users\\me\\code\\\\')).toBe('C:\\Users\\me\\code')
+  })
+
+  it('keeps a drive root, which is not the same place as the drive', () => {
+    // `C:\\` is the root of drive C; `C:` is the CURRENT directory on drive C. Stripping the
+    // separator here would dedupe an opened drive root against the wrong project.
+    expect(normalizeProjectCwd('C:\\')).toBe('C:\\')
+    expect(normalizeProjectCwd('//')).toBe('//')
+  })
+
+  it('leaves a one-character path alone, root included', () => {
+    expect(normalizeProjectCwd('/')).toBe('/')
+    expect(normalizeProjectCwd('\\')).toBe('\\')
   })
 })

@@ -21,8 +21,10 @@ npm test           # vitest, unit + integration
 
 **If `src/main/node-pty-patch.test.ts` is red, your `node_modules` is unpatched — not your code.**
 Run `npm run rebuild`. node-pty 1.1.0 leaks a pty device per spawn on macOS
-([node-pty#950](https://github.com/microsoft/node-pty/issues/950)); we patch its source before
-`electron-rebuild` compiles it, and that test guards the patch surviving upgrades.
+([node-pty#950](https://github.com/microsoft/node-pty/issues/950)) and, on Windows, leaves a
+conhost alive per killed session (its exit thread deletes the ConPTY baton without closing the
+HPCON); we patch both sources before `electron-rebuild` compiles them, and that test guards the
+patches surviving upgrades.
 
 ## Where code goes
 
@@ -67,10 +69,18 @@ need it too, and wire it in the same change.
 A board card's **source** is a registry entry, not a branch you add at a call site
 (`renderer/lib/kanbanSources.ts`). Declare the source once — filter label, `placement`
 (`assignment` = the board's own persisted assignments, `provider` = the provider owns the column),
-in-column `lane` order, whether it is `configured` for a board — and give it its one leaf (a card
-component and the list path feeding it). Columns take lanes and name no source; the drag path
-branches on `placement`. If you find yourself writing `=== 'github'` outside the registry, the
-registry is missing a field.
+in-column `lane` order, whether it is `configured` for a board, whether it is `readOnly` (the
+board never writes it: no drag, no move control) — and give it its one leaf (a card component and
+the list path feeding it). Columns take lanes and name no source; the drag path branches on
+`placement`. If you find yourself writing `=== 'github'` outside the registry, the registry is
+missing a field.
+
+Before adding a GitHub read, check what the existing poll already fetches. Pull request cards
+needed no new request at all: `/repos/{repo}/issues` returns pull requests, and the client used to
+discard them. `/repos/{repo}/pulls` looks like the obvious endpoint and is the expensive one — it
+**ignores `since`**, so it can reuse none of the incremental machinery, and its items are ~3.5× the
+bytes. CLAUDE.md's kanban section has the measurements and the eviction rule that keeps the issue
+lane unaffected.
 
 ## House rules
 
@@ -83,6 +93,14 @@ registry is missing a field.
   core that owns the files, and keep an unobserved host unknown rather than guessing. Conversely,
   on POSIX a backslash is legal filename text — do not treat both separators as interchangeable
   unless the owning filesystem is known to be Windows.
+
+- **Normalize BOTH sides of a path comparison, through one function.** A marker normalized where
+  it is built and matched raw where it is used is a no-op on the machine you wrote it on and a
+  silent defect on Windows. That is issue #558: the managed-hook marker was folded to `/` while
+  the stored command still carried `\`, so nodeterm stopped recognizing its own hook entries and
+  appended a fresh copy of all nine on every launch — nine hook processes per event, nine
+  concurrent 45 s permission waits racing one prompt. Write the normalizer once, use it on both
+  sides, and pin it with a `C:\`-shaped test.
 
 - **Never publish a file with a bare `fs.rename`.** Use `renameAtomic` or `writeFileAtomic` from
   `src/core/fs-atomic.ts`. On Windows a rename fails with `EPERM` whenever anything has the

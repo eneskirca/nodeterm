@@ -125,6 +125,54 @@ export function sanitizeTriggerSpec(value: unknown): TriggerSpec | undefined {
  * must only ever be fed a spec that went through `sanitizeTriggerSpec` — enforce that at the
  * call site rather than re-validating here.
  */
+/**
+ * `fired`/`missed`/`failed` come straight back from a fire attempt; `queued` means the target was
+ * busy and the payload waits in the deliver-on-idle queue, whose late outcomes are
+ * `delivered-late` / `expired` (plus a `missed` for a target that went away, or a trigger
+ * disarmed/edited while queued). Shared because the card renders the history the core records.
+ */
+export type TriggerRunOutcome =
+  | 'fired'
+  | 'failed'
+  | 'missed'
+  | 'queued'
+  | 'delivered-late'
+  | 'expired'
+
+export interface TriggerRun {
+  at: number
+  outcome: TriggerRunOutcome
+  detail?: string
+}
+
+/** What `triggers:status` answers — everything the card needs in one read. */
+export interface TriggerNodeStatus {
+  /** Armed on THIS machine for the node's CURRENT content. */
+  armed: boolean
+  /** An arm record exists but for DIFFERENT content — "changed since armed", not "never armed". */
+  armedForOtherContent: boolean
+  /** Next due time (epoch ms), or null (disarmed schedules still compute; invalid/spent = null). */
+  nextFireAt: number | null
+  runs: TriggerRun[]
+}
+
+/** Human-readable schedule line for the card ("every 30 min", "once at …", the cron expr). */
+export function describeTriggerSchedule(schedule: TriggerSchedule): string {
+  if (schedule.kind === 'interval') {
+    const m = schedule.everyMinutes
+    if (m % 60 === 0) {
+      const h = m / 60
+      return h === 1 ? 'every hour' : `every ${h} hours`
+    }
+    return m === 1 ? 'every minute' : `every ${m} minutes`
+  }
+  if (schedule.kind === 'once') {
+    const at = Date.parse(schedule.at)
+    return Number.isFinite(at) ? `once at ${new Date(at).toLocaleString()}` : 'once (invalid time)'
+  }
+  return `cron ${schedule.expr}`
+}
+
 export function canonicalTriggerSpec(spec: TriggerSpec): string {
   const s = spec.schedule
   const schedule =

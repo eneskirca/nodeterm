@@ -43,8 +43,8 @@ describe('snapshotNode', () => {
     })
   })
 
-  it('returns null for group/subagent/loop nodes', () => {
-    for (const type of ['group', 'subagent', 'loop'] as const) {
+  it('returns null for group/subagent/loop/trigger nodes', () => {
+    for (const type of ['group', 'subagent', 'loop', 'trigger'] as const) {
       const node = { type, position: { x: 0, y: 0 }, data: { title: 'x', color: '#fff', group: null } }
       expect(snapshotNode(node, [])).toBeNull()
     }

@@ -82,6 +82,23 @@ describe('the control shim translates flags', () => {
     expect(run(['rename', '--node', 'n1', '--title='])).toEqual(['arg.node=n1', 'arg.title='])
   })
 
+  // `--dry-run` is valueless and usually mid-line (issue #532): the peek must leave the next
+  // `--flag` alone and translate it to an explicit empty `arg.dry-run=`.
+  it('--dry-run rides as a valueless flag anywhere on the line', () => {
+    expect(run(['spawn-team', '--dry-run', '--team', '[]'])).toEqual([
+      'arg.dry-run=',
+      'arg.team=[]'
+    ])
+  })
+
+  // Hyphenated flag names ride through as-is — the loop strips only the leading `--`, so
+  // `--prompt-file` lands as `arg.prompt-file` and the server reads args['prompt-file'].
+  it('a hyphenated flag name (--prompt-file) keeps its hyphen in the arg key', () => {
+    expect(run(['open-claude', '--prompt-file', '/tmp/brief.md'])).toEqual([
+      'arg.prompt-file=/tmp/brief.md'
+    ])
+  })
+
   // The peek tests for `--`, not for `-`: a single-dash token is a VALUE. `--scroll -600` must
   // keep working, or the fix trades one silent misparse for another.
   it('a negative number is still consumed as a value', () => {

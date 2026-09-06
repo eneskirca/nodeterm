@@ -82,6 +82,26 @@ describe('appendProjectNode', () => {
     expect(titled.nodes[0].color).toBe('#d97757')
   })
 
+  it('an account-bound node takes the account color the host resolved, over the agent color', () => {
+    const out = JSON.parse(
+      appendProjectNode(
+        baseFile([]),
+        { id: 'term-c-1', agentId: 'claude', accountId: 'acct1' },
+        NOW,
+        '#0a84ff'
+      )!
+    )
+    expect(out.nodes[0].color).toBe('#0a84ff')
+    expect(out.nodes[0].accountId).toBe('acct1')
+  })
+
+  it('keeps the agent color when the host resolved no account color', () => {
+    const out = JSON.parse(
+      appendProjectNode(baseFile([]), { id: 'term-c-1', agentId: 'claude', accountId: 'acct1' }, NOW)!
+    )
+    expect(out.nodes[0].color).toBe('#d97757')
+  })
+
   it('a custom/unknown agent and a plain terminal keep the mobile defaults', () => {
     const custom = JSON.parse(appendProjectNode(baseFile([]), { id: 'term-c-1', agentId: 'aider' }, NOW)!)
     expect(custom.nodes[0].color).toBe('#7aa2f7')

@@ -4,6 +4,7 @@ import {
   maximizeNodeToRect,
   nodeStatesToFlow,
   placeNodeInRect,
+  refitMaximizedNode,
   restoreMaximizedNode
 } from './workspace'
 import type { CanvasNode } from './workspace'
@@ -161,6 +162,74 @@ describe('maximizeTargetRect', () => {
     expect(maximizeTargetRect({ x: 0, y: 0, zoom: 1 }, 0, 0, 24)).toBeNull()
     expect(maximizeTargetRect({ x: 0, y: 0, zoom: 1 }, 160, 800, 24)).toBeNull()
     expect(maximizeTargetRect({ x: 0, y: 0, zoom: 0 }, 1200, 800, 24)).toBeNull()
+  })
+
+  it('keeps clear of pinned side panels', () => {
+    // A pinned sessions sidebar (clear to x=314) and a pinned explorer drawer (374 on the right):
+    // the node starts beside the sidebar instead of underneath it.
+    expect(
+      maximizeTargetRect({ x: 0, y: 0, zoom: 1 }, 1200, 800, 24, { left: 314, right: 374 })
+    ).toEqual({
+      x: 24 + 314,
+      y: 24,
+      width: 1200 - 48 - 314 - 374,
+      height: 752
+    })
+  })
+
+  it('counts panel insets toward the refusal floor', () => {
+    // 600px wide with 470px of pinned panels leaves 82px — narrower than a node header.
+    expect(
+      maximizeTargetRect({ x: 0, y: 0, zoom: 1 }, 600, 800, 24, { left: 300, right: 170 })
+    ).toBeNull()
+  })
+})
+
+describe('refitMaximizedNode', () => {
+  const MAXED = { x: 24, y: 24, width: 1152, height: 752 }
+  const NARROWER = { x: 338, y: 24, width: 838, height: 752 }
+
+  it('moves an already maximized node and keeps its restore rect', () => {
+    const maxed = maximizeNodeToRect([term('a', { x: 40, y: 60 })], 'a', MAXED)
+    const refit = refitMaximizedNode(maxed, 'a', NARROWER)
+    const a = refit.find((n) => n.id === 'a')!
+    expect(a.position).toEqual({ x: NARROWER.x, y: NARROWER.y })
+    expect(a.width).toBe(NARROWER.width)
+    // The restore target still points at where the node was BEFORE it was maximized.
+    expect(a.data.premaxRect).toMatchObject({ x: 40, y: 60 })
+    const restored = restoreMaximizedNode(refit, 'a')
+    expect(restored.find((n) => n.id === 'a')!.position).toEqual({ x: 40, y: 60 })
+  })
+
+  it('is idempotent — refitting to the rect it already has returns the same array', () => {
+    const maxed = maximizeNodeToRect([term('a', { x: 40, y: 60 })], 'a', MAXED)
+    // The caller re-measures on every panel change; most land where the node already is, and
+    // those must not mark the workspace dirty.
+    expect(refitMaximizedNode(maxed, 'a', MAXED)).toBe(maxed)
+    expect(refitMaximizedNode(maxed, 'a', NARROWER)).not.toBe(maxed)
+  })
+
+  it('treats a sub-pixel difference as already fitted', () => {
+    // React Flow repopulates `measured` from the DOM (device-pixel-snapped), and a grouped node's
+    // rect round-trips through rootPosition in floats — at fractional zoom neither lands exactly
+    // on the computed rect. Without the tolerance every panel toggle would rewrite the node.
+    const maxed = maximizeNodeToRect([term('a', { x: 40, y: 60 })], 'a', MAXED)
+    const drift = {
+      x: MAXED.x + 0.2,
+      y: MAXED.y - 0.3,
+      width: MAXED.width + 0.4,
+      height: MAXED.height - 0.1
+    }
+    expect(refitMaximizedNode(maxed, 'a', drift)).toBe(maxed)
+    // A real move still lands.
+    expect(refitMaximizedNode(maxed, 'a', { ...MAXED, x: MAXED.x + 8 })).not.toBe(maxed)
+  })
+
+  it('leaves a node that is not maximized alone', () => {
+    // A hand-placed or zone-snapped node is a placement the user owns.
+    const plain = [term('a', { x: 40, y: 60 })]
+    expect(refitMaximizedNode(plain, 'a', NARROWER)).toBe(plain)
+    expect(refitMaximizedNode(plain, 'nope', NARROWER)).toBe(plain)
   })
 })
 

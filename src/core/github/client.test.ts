@@ -51,13 +51,46 @@ describe('GitHubIssuesClient', () => {
     expect(new Headers(calls[0].init.headers).get('authorization')).toBe('Bearer secret')
   })
 
-  it('filters pull requests before returning validated issues', async () => {
+  it('harvests pull requests alongside issues, marking only the pull requests', async () => {
     const client = new GitHubIssuesClient({
       token: 'secret',
-      fetch: async () => response([issue(1, { pull_request: { url: 'x' } }), issue(2)])
+      fetch: async () => response([
+        issue(1, {
+          draft: true,
+          pull_request: { url: 'https://api.github.com/repos/nodeterm/nodeterm/pulls/1', merged_at: null }
+        }),
+        issue(2)
+      ])
     })
     const page = await client.listIssues('nodeterm/nodeterm', { state: 'all', page: 1, perPage: 50 })
-    expect(page.items.map((item) => item.number)).toEqual([2])
+    expect(page.items.map((item) => item.number)).toEqual([1, 2])
+    expect(page.items[0].pull).toEqual({ draft: true, mergedAt: null })
+    expect(page.items[1].pull).toBeUndefined()
+  })
+
+  it('reads a merged pull request from merged_at, which is what separates it from closed', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response([
+        issue(3, {
+          state: 'closed',
+          pull_request: { url: 'x', merged_at: '2026-08-30T20:35:03Z' }
+        }),
+        issue(4, { state: 'closed', pull_request: { url: 'x', merged_at: null } })
+      ])
+    })
+    const page = await client.listIssues('nodeterm/nodeterm', { state: 'all', page: 1, perPage: 50 })
+    expect(page.items[0].pull).toEqual({ draft: false, mergedAt: '2026-08-30T20:35:03Z' })
+    expect(page.items[1].pull).toEqual({ draft: false, mergedAt: null })
+  })
+
+  it('rejects a malformed pull request payload instead of downgrading it to an issue', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response([issue(5, { pull_request: { url: 'x', merged_at: 'not-a-date' } })])
+    })
+    await expect(client.listIssues('nodeterm/nodeterm', { state: 'all', page: 1, perPage: 50 }))
+      .rejects.toMatchObject({ code: 'malformed-response' })
   })
 
   it('rejects a pull request returned by the single issue endpoint', async () => {

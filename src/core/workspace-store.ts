@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'path'
 import { renameAtomic, writeFileAtomic } from './fs-atomic'
 import { IPC } from '../shared/ipc'
@@ -10,7 +10,8 @@ import {
 } from '../shared/types'
 import {
   PROJECT_DIR, PROJECT_FILE, fileToProject, projectToFile, resolveNodes, sameProjectContent,
-  sanitizeNodeTriggers, serializeProjectFile, splitWorkspace, validKanban,
+  sanitizeLoadedClosedSessions, sanitizeNodeTriggers, serializeProjectFile, splitWorkspace,
+  validKanban,
   type IndexEntryV3, type ProjectFileV1, type WorkspaceIndexV3
 } from './workspace-files'
 import { readProjectSettingsFile, writeProjectSettingsFile } from './project-settings-files'
@@ -42,6 +43,13 @@ export interface RemoteWorkspaceIO {
 }
 
 const projectFilePath = (cwd: string): string => path.join(cwd, PROJECT_DIR, PROJECT_FILE)
+
+/** How many recent mirror payloads a project remembers for self-write recognition (see
+ *  `recentMirrorHashes`). Big enough to cover a burst of throttled writes inside one poll window;
+ *  small enough that a server-side revert to genuinely old content still reads as external. */
+const RECENT_MIRROR_CAP = 8
+
+const contentHash = (content: string): string => createHash('sha256').update(content).digest('hex')
 
 /** Alias of the shared `ProjectSettingsSnapshot` (moved to `shared/project-settings.ts` so the
  *  renderer's `ProjectSettingsApi` can name the shape without importing core) — the store's
@@ -137,6 +145,18 @@ export class WorkspaceStore {
    *  node we never had, and the tie is broken toward rescuing (a resurrected node is visible and
    *  deletable again; a deleted session node is gone with no trace of where it went). */
   private clearedNodes = new Map<string, Set<string>>()
+  /** ssh project id -> sha256 of the last few project.json payloads THIS store handed to
+   *  `remoteIO.write`. The SSH twin of `lastWritten`'s watcher self-write suppression: the 15 s
+   *  poll and the connect-time refresh read the very file the mirror writes, so a reconcile can
+   *  read the store's OWN bytes back — either a write that just landed, or (because the real IO's
+   *  5 s throttle acks a trailing write optimistically) an OLDER own write the trailing one has
+   *  not yet replaced. Recognized by exact bytes, they are never an external change: without this
+   *  a rev-only decision "adopted" our own mirror and broadcast it, raising the Reload/Keep-mine
+   *  conflict bar over a file nobody else touched — and the older-write echo could rescue back a
+   *  node the user had just deleted. Several hashes (RECENT_MIRROR_CAP), not one, precisely for
+   *  that throttle window. Runtime-only: after a restart the rev comparison is the arbiter, as
+   *  before. */
+  private recentMirrorHashes = new Map<string, string[]>()
   /** project id -> this machine's settings overlay, already sanitized. The map — not the index
    *  entry — is the live copy: `splitWorkspace` rebuilds entries from the renderer's Workspace,
    *  which has never carried machine-local state, so every save would otherwise drop the overlay
@@ -256,7 +276,14 @@ export class WorkspaceStore {
   }
 
   private async loadV3(index: WorkspaceIndexV3, sideline: boolean): Promise<Workspace> {
-    for (const entry of index.entries) entry.localApprovalId ||= randomUUID()
+    for (const entry of index.entries) {
+      entry.localApprovalId ||= randomUUID()
+      // Same "workspace.json is hand-editable input too" treatment as the inline-project branch
+      // below, for a REF'd project's own closed-session history: validate shape, cap, and
+      // re-normalize each snapshot's trigger spec. Sanitized ONCE here so every downstream reader
+      // of `e.closedSessions` (fileToProject, readLocalRef, the ssh reconcile paths) can trust it.
+      entry.closedSessions = sanitizeLoadedClosedSessions(entry.closedSessions)
+    }
     this.index = index
     const built: LoadedEntry[] = []
     for (const e of index.entries) {
@@ -264,9 +291,22 @@ export class WorkspaceStore {
         // Inline projects are stored verbatim in the index (no fileToProject pass), so apply the
         // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
         // and the same trigger shape rule (workspace.json is hand-editable input too).
-        const { kanban, ...rest } = e.project
-        const base = validKanban(kanban) ? e.project : rest
-        built.push({ entry: e, project: { ...base, nodes: sanitizeNodeTriggers(base.nodes) } })
+        // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
+        const { kanban, closedSessions, ...rest } = e.project
+        const base = validKanban(kanban) ? { ...rest, kanban } : rest
+        // Same treatment for `closedSessions` as the ref'd-project entries above, and for the
+        // same reason: a malformed value here reaches `mergeClosedHistory`, which iterates it (a
+        // non-array throws and takes the whole sidebar render down) and hands each entry's node
+        // to React Flow.
+        const history = sanitizeLoadedClosedSessions(closedSessions)
+        built.push({
+          entry: e,
+          project: {
+            ...base,
+            nodes: sanitizeNodeTriggers(base.nodes),
+            ...(history ? { closedSessions: history } : {})
+          }
+        })
       } else if (e.cwd) {
         if (sideline) await sweepStaleTmp(projectFilePath(e.cwd))
         const read = await this.readProjectFile(e.cwd, sideline)
@@ -284,9 +324,11 @@ export class WorkspaceStore {
               id: e.id,
               cwd: e.cwd,
               closed: e.closed,
+              closedAt: e.closedAt,
               viewport: e.viewport,
               defaultAccountId: e.defaultAccountId,
               breadcrumbs: e.breadcrumbs,
+              closedSessions: e.closedSessions,
               capabilityAck: e.capabilityAck,
               localExec: this.execOverlay(e, p)
             })
@@ -304,9 +346,11 @@ export class WorkspaceStore {
               id: e.id,
               ssh: e.ssh,
               closed: e.closed,
+              closedAt: e.closedAt,
               viewport: e.viewport,
               defaultAccountId: e.defaultAccountId,
               breadcrumbs: e.breadcrumbs,
+              closedSessions: e.closedSessions,
               capabilityAck: e.capabilityAck,
               localExec: this.execOverlay(e, e.cache)
             })
@@ -836,6 +880,10 @@ export class WorkspaceStore {
         if (old?.viewport) e.viewport = old.viewport
         if (old?.defaultAccountId) e.defaultAccountId = old.defaultAccountId
         if (old?.breadcrumbs) e.breadcrumbs = old.breadcrumbs
+        // Same rule: a placeholder's project carries no closedSessions (it has no nodes to have
+        // deleted), so without this an unavailable window would silently forget the user's trash
+        // can the moment splitWorkspace rebuilds the index.
+        if (old?.closedSessions) e.closedSessions = old.closedSessions
         // The clone-notice acknowledgment must also survive an unavailable window: forgetting it
         // would re-raise a notice the user already answered the moment the folder remounts.
         if (old?.capabilityAck) e.capabilityAck = old.capabilityAck
@@ -989,9 +1037,11 @@ export class WorkspaceStore {
       id: e.id,
       cwd: e.cwd,
       closed: e.closed,
+      closedAt: e.closedAt,
       viewport: e.viewport,
       defaultAccountId: e.defaultAccountId,
       breadcrumbs: e.breadcrumbs,
+      closedSessions: e.closedSessions,
       capabilityAck: e.capabilityAck,
       localExec: e.localExec
     })
@@ -1010,8 +1060,21 @@ export class WorkspaceStore {
    * companion appended to the server file reaches the live canvas). The poll passes
    * `pushIfStanding: false`: when our cache simply stands, a poll must be read-only — only an
    * OWED mirror (a previously dropped write) may still push.
+   *
+   * Runs ON `saveChain`, like every other read-modify-write of the same state: off the chain a
+   * poll could snapshot the pre-save index entry, then complete its slow ssh read AFTER the save's
+   * mirror write landed — remote.rev > (stale) cacheRev, and the store "adopted" and broadcast its
+   * OWN write as an external change (the spurious Reload/Keep-mine conflict bar). Queued, a
+   * reconcile always compares the server file against the same generation of cache/rev state, and
+   * its index write cannot interleave with a save's either.
    */
-  async refreshSshProject(projectId: string, opts?: { pushIfStanding?: boolean }): Promise<Project | null> {
+  refreshSshProject(projectId: string, opts?: { pushIfStanding?: boolean }): Promise<Project | null> {
+    const run = this.saveChain.then(() => this.refreshSshProjectNow(projectId, opts))
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
+  private async refreshSshProjectNow(projectId: string, opts?: { pushIfStanding?: boolean }): Promise<Project | null> {
     const e = this.index?.entries.find((x) => x.id === projectId && x.ssh)
     if (!e?.ssh || !this.remoteIO) return null
     const revBefore = e.cache?.rev
@@ -1255,6 +1318,24 @@ export class WorkspaceStore {
     this.unmirrored.add(projectId)
   }
 
+  /** Remembers a project.json payload handed to `remoteIO.write` (see `recentMirrorHashes`).
+   *  Called only on an acked write: an ack may be optimistic (the throttle's trailing write), but
+   *  a read can only ever return these bytes if they actually landed — so a dropped trailing
+   *  write leaves a harmless unused hash, never a false echo. */
+  private recordMirrored(projectId: string, content: string): void {
+    const hashes = this.recentMirrorHashes.get(projectId) ?? []
+    hashes.push(contentHash(content))
+    while (hashes.length > RECENT_MIRROR_CAP) hashes.shift()
+    this.recentMirrorHashes.set(projectId, hashes)
+  }
+
+  /** True when `content` is byte-identical to a payload this store recently mirrored — a
+   *  self-write echo, never an external change. Exact bytes only: any other writer's edit
+   *  (a phone append, another machine's save with its own savedAt) hashes differently. */
+  private isOwnMirrorContent(projectId: string, content: string): boolean {
+    return this.recentMirrorHashes.get(projectId)?.includes(contentHash(content)) ?? false
+  }
+
   /**
    * Registers a PHONE-STARTED session as a node in a LOCAL ref project's file — the host side of
    * the relay `projects.registerNode` verb. v1 scope: local-cwd projects only (an ssh ref's file
@@ -1272,13 +1353,25 @@ export class WorkspaceStore {
    * that read the file first lands last, and the node the phone was told about ("true", card shown)
    * never existed. Queued, the append reads what the save just wrote and the save cannot un-write it.
    */
-  appendRemoteNode(projectId: string, input: RemoteNodeInput, now = new Date()): Promise<boolean> {
-    const run = this.saveChain.then(() => this.appendRemoteNodeNow(projectId, input, now))
+  appendRemoteNode(
+    projectId: string,
+    input: RemoteNodeInput,
+    now = new Date(),
+    accountColor?: string
+  ): Promise<boolean> {
+    const run = this.saveChain.then(() =>
+      this.appendRemoteNodeNow(projectId, input, now, accountColor)
+    )
     this.saveChain = run.catch(() => {})
     return run
   }
 
-  private async appendRemoteNodeNow(projectId: string, input: RemoteNodeInput, now: Date): Promise<boolean> {
+  private async appendRemoteNodeNow(
+    projectId: string,
+    input: RemoteNodeInput,
+    now: Date,
+    accountColor?: string
+  ): Promise<boolean> {
     const e = this.index?.entries.find((x) => x.id === projectId && x.cwd)
     if (!e?.cwd) return false
     const file = projectFilePath(e.cwd)
@@ -1288,7 +1381,7 @@ export class WorkspaceStore {
     } catch {
       return false
     }
-    const updated = appendProjectNode(raw, input, now)
+    const updated = appendProjectNode(raw, input, now, accountColor)
     if (updated === null) return false
     try {
       await writeAtomic(file, updated)
@@ -1307,9 +1400,11 @@ export class WorkspaceStore {
           id: e.id,
           cwd: e.cwd,
           closed: e.closed,
+          closedAt: e.closedAt,
           viewport: e.viewport,
           defaultAccountId: e.defaultAccountId,
           breadcrumbs: e.breadcrumbs,
+          closedSessions: e.closedSessions,
           capabilityAck: e.capabilityAck,
           localExec: e.localExec
         })
@@ -1363,9 +1458,11 @@ export class WorkspaceStore {
             id: e.id,
             cwd: e.cwd,
             closed: e.closed,
+            closedAt: e.closedAt,
             viewport: e.viewport,
             defaultAccountId: e.defaultAccountId,
             breadcrumbs: e.breadcrumbs,
+            closedSessions: e.closedSessions,
             capabilityAck: e.capabilityAck,
             localExec: e.localExec
           })
@@ -1388,8 +1485,10 @@ export class WorkspaceStore {
     if (!e.ssh || !e.cache || !this.remoteIO) return
     const rescued = await this.rescueRemoteNodes(e)
     // AFTER the rescue: it replaces e.cache with the merged copy, which is what must land.
-    const ok = await this.remoteIO.write(e.id, e.ssh, serializeProjectFile(e.cache))
+    const content = serializeProjectFile(e.cache)
+    const ok = await this.remoteIO.write(e.id, e.ssh, content)
     if (ok) {
+      this.recordMirrored(e.id, content)
       this.unmirrored.delete(e.id)
       // The server now holds exactly our cache, deletions included — nothing left to remember.
       this.clearedNodes.delete(e.id)
@@ -1429,8 +1528,9 @@ export class WorkspaceStore {
     }
     this.revs.set(e.id, e.cache.rev)
     return fileToProject(e.cache, {
-      id: e.id, ssh: e.ssh, closed: e.closed,
+      id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
       viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
+      closedSessions: e.closedSessions,
       capabilityAck: e.capabilityAck, localExec: e.localExec
     })
   }
@@ -1467,6 +1567,9 @@ export class WorkspaceStore {
    * .nodeterm/project.json. Rules, in order:
    * - read ERROR → decide nothing (a failed read is never evidence of absence): stay
    *   un-reconciled, mirror stays owed, no write.
+   * - the server holds bytes THIS store recently mirrored (`recentMirrorHashes`) → a self-write
+   *   echo, not an external change: the cache stands, nothing is adopted or merged, nothing is
+   *   broadcast (no conflict bar); an owed mirror still pushes.
    * - absent/corrupt remote → push our cache up.
    * - same lineage (ids match): higher remote rev wins (rev is this file's save counter) —
    *   including an emptier remote (the user really cleared their canvas elsewhere).
@@ -1489,6 +1592,13 @@ export class WorkspaceStore {
         const parsed = JSON.parse(res.content) as ProjectFileV1
         if (parsed?.version === 1 && Array.isArray(parsed.nodes)) remote = parsed
       } catch { /* corrupt remote file → treat as absent, our cache pushes up */ }
+      // Self-write echo: the server holds bytes this store itself mirrored (a poll reading right
+      // behind a save's write, or an OLDER own write the 5 s throttle has not yet replaced).
+      // Nothing foreign is there to adopt, merge or announce — decide exactly as if the remote
+      // said nothing new: the cache stands, and an owed mirror still pushes below. Matching by
+      // exact bytes keeps the genuine-external-edit path untouched (any other writer's file —
+      // a phone append, another machine's save — hashes differently).
+      if (remote && this.isOwnMirrorContent(e.id, res.content)) remote = null
     }
     this.reconciled.add(e.id)
     const cacheRev = e.cache?.rev ?? 0
@@ -1536,8 +1646,9 @@ export class WorkspaceStore {
       if (owed) this.unmirrored.add(e.id)
       else this.unmirrored.delete(e.id) // pure adopt: the server copy IS the truth now — nothing owed
       return fileToProject(adopted, {
-        id: e.id, ssh: e.ssh, closed: e.closed,
+        id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
         viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
+        closedSessions: e.closedSessions,
         capabilityAck: e.capabilityAck, localExec: e.localExec
       })
     }
@@ -1551,8 +1662,9 @@ export class WorkspaceStore {
         this.revs.set(e.id, e.cache.rev)
         this.unmirrored.add(e.id) // the merged set must land on the server
         merged = fileToProject(e.cache, {
-          id: e.id, ssh: e.ssh, closed: e.closed,
+          id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
           viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
+          closedSessions: e.closedSessions,
           capabilityAck: e.capabilityAck, localExec: e.localExec
         })
       }
@@ -1566,8 +1678,10 @@ export class WorkspaceStore {
       }
       // Push-up runs with the master just up, but record the outcome anyway: a failed write
       // (connection flapped) stays owed so the next save retries it.
-      const ok = await this.remoteIO.write(e.id, e.ssh, serializeProjectFile(e.cache))
+      const content = serializeProjectFile(e.cache)
+      const ok = await this.remoteIO.write(e.id, e.ssh, content)
       if (ok) {
+        this.recordMirrored(e.id, content)
         this.unmirrored.delete(e.id)
         this.clearedNodes.delete(e.id) // the server holds our deletions now
       } else this.unmirrored.add(e.id)
@@ -1587,12 +1701,13 @@ function nodesMissingFrom(base: CanvasNodeState[], from: CanvasNodeState[]): Can
 }
 
 /** A labeled grey placeholder for a ref whose file can't be read right now. */
-function unavailableProject(e: { id: string; name: string; color: string; closed?: boolean; cwd?: string; ssh?: Project['ssh'] }): Project {
+function unavailableProject(e: { id: string; name: string; color: string; closed?: boolean; closedAt?: number; cwd?: string; ssh?: Project['ssh'] }): Project {
   return {
     id: e.id, name: e.name, color: e.color,
     viewport: { x: 0, y: 0, zoom: 1 }, nodes: [],
     ...(e.cwd ? { cwd: e.cwd } : {}), ...(e.ssh ? { ssh: e.ssh } : {}),
     ...(e.closed ? { closed: true } : {}),
+    ...(e.closedAt ? { closedAt: e.closedAt } : {}),
     unavailable: true
   }
 }
@@ -1604,7 +1719,17 @@ function migrateLegacy(parsed: unknown): Workspace {
     const active = ws.projects.some((p) => p.id === ws.activeProjectId)
       ? (ws.activeProjectId as string)
       : (ws.projects[0]?.id ?? '')
-    return { version: 2, activeProjectId: active, projects: ws.projects }
+    // A pre-v3 workspace.json is hand-editable input too, same as an inline v3 entry — and this
+    // path skips loadV3 entirely (the first save() is what actually migrates it), so without this
+    // a malformed `closedSessions` reaches `mergeClosedHistory`'s `for...of` before that save ever
+    // runs and takes the sidebar render down on the very first load.
+    const projects = ws.projects.map((p) => {
+      const history = sanitizeLoadedClosedSessions(p.closedSessions)
+      if (history === p.closedSessions) return p
+      const { closedSessions: _dropped, ...rest } = p
+      return history ? { ...rest, closedSessions: history } : rest
+    })
+    return { version: 2, activeProjectId: active, projects }
   }
   if (ws?.version === 1 && Array.isArray(ws.nodes)) {
     return {

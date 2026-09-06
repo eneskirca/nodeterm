@@ -173,6 +173,127 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
     expect(useAgentStatus.getState().byId['n4']?.hibernated).toBe(true)
   })
 
+  it('persists `paused` and drops the key on resume', async () => {
+    const store = memStorage()
+    vi.stubGlobal('localStorage', store)
+    const { useAgentStatus } = await import('./agentStatus')
+    useAgentStatus.getState().setPaused('n20', true)
+    expect(JSON.parse(store.getItem('nodeterm.agentStatus')!).n20.paused).toBe(true)
+    useAgentStatus.getState().setPaused('n20', false)
+    expect(JSON.parse(store.getItem('nodeterm.agentStatus') ?? '{}').n20?.paused).toBeUndefined()
+  })
+
+  it('`paused` persists INDEPENDENTLY of `hibernated` — the deep pause recycles tmux, so a paused node can carry no hibernated flag at all', async () => {
+    const store = memStorage()
+    vi.stubGlobal('localStorage', store)
+    const { useAgentStatus } = await import('./agentStatus')
+    useAgentStatus.getState().setPaused('n21', true)
+    const saved = JSON.parse(store.getItem('nodeterm.agentStatus')!).n21
+    expect(saved.paused).toBe(true)
+    expect(saved.hibernated).toBeUndefined()
+  })
+
+  it('persists `hibernatedPane` for a PAUSED node even with `hibernated` unset — the deep pause records what its recycled pane settled to, and needs the record to survive a restart just as `paused` does', async () => {
+    const store = memStorage()
+    vi.stubGlobal('localStorage', store)
+    const { useAgentStatus } = await import('./agentStatus')
+    useAgentStatus.getState().setPaused('n26', true)
+    useAgentStatus.getState().setHibernatedPane('n26', 'nu')
+    const saved = JSON.parse(store.getItem('nodeterm.agentStatus')!).n26
+    expect(saved).toMatchObject({ paused: true, hibernatedPane: 'nu' })
+    expect(saved.hibernated).toBeUndefined()
+  })
+
+  it('restores `hibernatedPane` on load for a paused (not hibernated) node', async () => {
+    vi.stubGlobal(
+      'localStorage',
+      memStorage({
+        'nodeterm.agentStatus': JSON.stringify({
+          n27: { unread: false, sessionId: 's', paused: true, hibernatedPane: 'nu' }
+        })
+      })
+    )
+    const { useAgentStatus } = await import('./agentStatus')
+    expect(useAgentStatus.getState().byId['n27']).toMatchObject({ paused: true, hibernatedPane: 'nu' })
+  })
+
+  it('setPaused(false) drops `hibernatedPane` when it was the only owner, but leaves it standing for `hibernated`', async () => {
+    const store = memStorage()
+    vi.stubGlobal('localStorage', store)
+    const { useAgentStatus } = await import('./agentStatus')
+    // paused-only: resuming drops the pane record too.
+    useAgentStatus.getState().setPaused('n28', true)
+    useAgentStatus.getState().setHibernatedPane('n28', 'nu')
+    useAgentStatus.getState().setPaused('n28', false)
+    expect(useAgentStatus.getState().byId['n28'].hibernatedPane).toBeUndefined()
+    // hibernated AND paused together: resuming `paused` alone leaves `hibernated`'s copy intact.
+    useAgentStatus.getState().setHibernated('n29', true)
+    useAgentStatus.getState().setHibernatedPane('n29', 'nu')
+    useAgentStatus.getState().setPaused('n29', true)
+    useAgentStatus.getState().setPaused('n29', false)
+    expect(useAgentStatus.getState().byId['n29'].hibernatedPane).toBe('nu')
+  })
+
+  it('clears `paused` on a LIVE state — same self-heal as `hibernated`', async () => {
+    const store = memStorage()
+    vi.stubGlobal('localStorage', store)
+    const { useAgentStatus } = await import('./agentStatus')
+    for (const state of ['working', 'blocked', 'waiting'] as const) {
+      useAgentStatus.getState().setPaused('n22', true)
+      useAgentStatus.getState().setState('n22', state, 'claude')
+      expect(useAgentStatus.getState().byId['n22'].paused, state).toBeUndefined()
+      expect(JSON.parse(store.getItem('nodeterm.agentStatus')!).n22?.paused, state).toBeUndefined()
+      useAgentStatus.getState().setState('n22', undefined)
+    }
+  })
+
+  it('the LIVE-state self-heal drops `hibernatedPane` alongside a paused-only flag (deep pause), but NOT when `hibernated` still owns it', async () => {
+    const { useAgentStatus } = await import('./agentStatus')
+    // paused-only (the deep "pause & end session" shape): the pane record goes with it.
+    useAgentStatus.getState().setPaused('n30', true)
+    useAgentStatus.getState().setHibernatedPane('n30', 'nu')
+    useAgentStatus.getState().setState('n30', 'working', 'claude')
+    expect(useAgentStatus.getState().byId['n30'].hibernatedPane).toBeUndefined()
+    // hibernated AND paused together (shallow pause): the shared `hibernated` clear already drops
+    // it — this is not a NEW case, just confirming the paused-only branch doesn't double-clear.
+    useAgentStatus.getState().setHibernated('n31', true)
+    useAgentStatus.getState().setPaused('n31', true)
+    useAgentStatus.getState().setHibernatedPane('n31', 'nu')
+    useAgentStatus.getState().setState('n31', 'working', 'claude')
+    expect(useAgentStatus.getState().byId['n31'].hibernatedPane).toBeUndefined()
+  })
+
+  it('keeps `paused` through a `done` event — same as `hibernated`, and through a cold restart (this store never clears it on its own)', async () => {
+    vi.stubGlobal('localStorage', memStorage())
+    const { useAgentStatus } = await import('./agentStatus')
+    useAgentStatus.getState().setPaused('n23', true)
+    useAgentStatus.getState().setState('n23', 'done', 'claude')
+    expect(useAgentStatus.getState().byId['n23'].paused).toBe(true)
+  })
+
+  it('resuming restarts the idle clock, so a long-paused session is not immediately re-eligible for Eco', async () => {
+    vi.stubGlobal('localStorage', memStorage())
+    const { useAgentStatus } = await import('./agentStatus')
+    useAgentStatus.setState({
+      byId: { n24: { unread: false, state: 'done', lastEventAt: Date.now() - 6 * 3600_000, paused: true } }
+    })
+    useAgentStatus.getState().setPaused('n24', false)
+    const st = useAgentStatus.getState().byId['n24']
+    expect(st.paused).toBeUndefined()
+    expect(Date.now() - st.lastEventAt!).toBeLessThan(5000)
+  })
+
+  it('restores `paused` on load', async () => {
+    vi.stubGlobal(
+      'localStorage',
+      memStorage({
+        'nodeterm.agentStatus': JSON.stringify({ n25: { unread: false, sessionId: 's', paused: true } })
+      })
+    )
+    const { useAgentStatus } = await import('./agentStatus')
+    expect(useAgentStatus.getState().byId['n25']?.paused).toBe(true)
+  })
+
   it('never persists `lastEventAt` — a stale idle clock would hibernate on relaunch', async () => {
     const store = memStorage()
     vi.stubGlobal('localStorage', store)

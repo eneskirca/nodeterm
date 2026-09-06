@@ -17,6 +17,7 @@ import {
   flush,
   initAgentStatusMirror,
   setMirrorSettingsProvider,
+  setNodeHibernated,
   setMirrorServerProvider,
   setMirrorUsageProvider,
   buildMirrorUsage,
@@ -2201,5 +2202,67 @@ describe('inbox event age prune (flush)', () => {
 
     expect(_inboxSnapshot().events).toHaveLength(1)
     expect(_inboxSnapshot().events[0].resolved).toBeUndefined()
+  })
+})
+
+describe('hibernated flag (Eco × phone — SLEEPING on external readers)', () => {
+  let dir: string
+  let file: string
+
+  beforeEach(() => {
+    _resetForTest()
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-status-hib-'))
+    file = path.join(dir, 'agent-status.json')
+    initAgentStatusMirror(file)
+  })
+  afterEach(() => {
+    _resetForTest()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('buildFile carries hibernated and EXEMPTS a hibernated entry from expiry', () => {
+    const now = EXPIRE_MS + 100_000
+    const doc = buildFile(
+      {
+        // Hibernation IS hours of idleness — the staleness rule must not erase the flag.
+        sleeping: { agentId: 'claude', hibernated: true, updatedAt: now - EXPIRE_MS - 1 },
+        stale: { state: 'working', updatedAt: now - EXPIRE_MS - 1 }
+      },
+      now
+    )
+    expect(Object.keys(doc.nodes)).toEqual(['sleeping'])
+    expect(doc.nodes.sleeping.hibernated).toBe(true)
+  })
+
+  it('setNodeHibernated sets on an EXISTING entry, creates a minimal one for an unknown id, and clears', async () => {
+    recordAgentEvent(ev({ nodeId: 'known', state: 'done' }))
+    setNodeHibernated('known', true)
+    // Unknown id: a hibernated session is typically one the mirror expired (or one reported at
+    // boot before any hook event of this run) — exactly when the flag matters most.
+    setNodeHibernated('fresh-boot', true)
+    expect(_snapshot().known.hibernated).toBe(true)
+    expect(_snapshot()['fresh-boot'].hibernated).toBe(true)
+    await flush()
+    const doc = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    expect(doc.nodes.known.hibernated).toBe(true)
+    expect(doc.nodes['fresh-boot'].hibernated).toBe(true)
+
+    setNodeHibernated('known', false)
+    expect(_snapshot().known.hibernated).toBeUndefined()
+    await flush()
+    const woken = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    expect('hibernated' in woken.nodes.known).toBe(false)
+    // Clearing an unknown id stays a no-op (no phantom entry minted).
+    setNodeHibernated('never-seen', false)
+    expect(_snapshot()['never-seen']).toBeUndefined()
+  })
+
+  it('the flag survives the SessionEnd reset the /exit itself fires', () => {
+    recordAgentEvent(ev({ nodeId: 'n1', state: 'done', sessionId: 's1' }))
+    setNodeHibernated('n1', true)
+    // Eco types /exit → the CLI's SessionEnd hook resets the node to idle — the flag must ride.
+    recordAgentEvent(ev({ nodeId: 'n1', kind: 'session' }))
+    expect(_snapshot().n1.state).toBeUndefined()
+    expect(_snapshot().n1.hibernated).toBe(true)
   })
 })

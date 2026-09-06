@@ -2,6 +2,7 @@ import type {
   GitHubIssue,
   GitHubIssueLabel,
   GitHubIssueUser,
+  GitHubPullMeta,
   GitHubRepositoryLabel,
   IssuePageResult,
   LabelPageResult,
@@ -75,6 +76,19 @@ function issueUser(value: unknown): GitHubIssueUser | null {
   return { id: Number(item.id), login: item.login, avatarUrl: avatar.toString() }
 }
 
+/** Decodes the pull-request half of an issues-endpoint item. Returns `undefined` for an issue
+ *  (no `pull_request` object) and `null` for a malformed one, which the caller must reject —
+ *  the two answers are different facts. */
+function pullFrom(item: Record<string, unknown>): GitHubPullMeta | null | undefined {
+  const pull = object(item.pull_request)
+  if (item.pull_request === undefined) return undefined
+  if (!pull) return null
+  const mergedAt = pull.merged_at
+  if (!(mergedAt === null || mergedAt === undefined || isoDate(mergedAt))) return null
+  if (!(item.draft === undefined || typeof item.draft === 'boolean')) return null
+  return { draft: item.draft === true, mergedAt: (mergedAt ?? null) as string | null }
+}
+
 function issueFrom(value: unknown): GitHubIssue | null {
   const item = object(value)
   if (!item || !positiveInteger(Number(item.id), Number.MAX_SAFE_INTEGER) ||
@@ -89,6 +103,8 @@ function issueFrom(value: unknown): GitHubIssue | null {
       !Array.isArray(item.assignees) || item.assignees.length > 100 ||
       !isoDate(item.created_at) || !isoDate(item.updated_at) ||
       typeof item.locked !== 'boolean') return null
+  const pull = pullFrom(item)
+  if (pull === null) return null
   const labels = item.labels.map(issueLabel)
   const assignees = item.assignees.map(issueUser)
   if (labels.some((entry) => !entry) || assignees.some((entry) => !entry)) return null
@@ -115,7 +131,8 @@ function issueFrom(value: unknown): GitHubIssue | null {
     assignees: assignees as GitHubIssueUser[],
     createdAt: item.created_at,
     updatedAt: item.updated_at,
-    locked: item.locked
+    locked: item.locked,
+    ...(pull ? { pull } : {})
   }
 }
 
@@ -211,8 +228,11 @@ export class GitHubIssuesClient {
     const value = await this.json(response)
     if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
     const items: GitHubIssue[] = []
+    // Pull requests arrive on this endpoint too, and they are kept: their bytes are already
+    // fetched, and harvesting them here is what gives the board's pull lane the incremental
+    // `since` watermark, ETags and cache the issue lane has. `/repos/{repo}/pulls` ignores
+    // `since` entirely, so a separate scan could not reuse any of it.
     for (const candidate of value) {
-      if (object(candidate)?.pull_request !== undefined) continue
       const decoded = issueFrom(candidate)
       if (!decoded) throw new GitHubClientError('malformed-response')
       items.push(decoded)

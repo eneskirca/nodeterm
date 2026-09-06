@@ -134,7 +134,11 @@ const ROWS = {
       'resume',
       'offscreen',
       'minutes',
-      'sleep'
+      'sleep',
+      'pause',
+      'paused',
+      'restart',
+      'reopen'
     ]
   }
 }
@@ -511,6 +515,18 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               />
               <span className="text-[13px] text-muted">min</span>
             </div>
+          }
+        />
+        <FieldRow
+          label="Keep paused after closing"
+          description="When Eco hibernates a session, also keep it paused across a project/app reopen instead of auto-resuming — only an explicit Resume brings it back. Manual “Pause session” always persists this way, whatever this is set to."
+          control={
+            <Switch
+              checked={settings.agentHibernationPersistAcrossRestart}
+              ariaLabel="Keep paused after closing"
+              disabled={!settings.agentHibernationEnabled}
+              onChange={(on) => update({ agentHibernationPersistAcrossRestart: on })}
+            />
           }
         />
       </SearchableRow>

@@ -585,12 +585,78 @@ body,
   height: 30px;
 }
 
+.dock-zoom-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .dock-zoom {
-  min-width: 46px;
+  min-width: 52px;
+  padding: 5px 6px;
   text-align: center;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
   user-select: none;
+  cursor: pointer;
+}
+
+.dock-zoom:hover {
+  background: var(--panel-header);
+  color: var(--text);
+}
+
+.dock-zoom.active {
+  background: var(--panel-header);
+  color: var(--text);
+}
+
+/* Zoom presets, anchored to the readout instead of the dock's left edge like the add-menu. */
+.dock-zoom-menu {
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 168px;
+}
+
+.dock-zoom-menu button {
+  gap: 8px;
+  padding: 7px 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The generic `.dock-menu svg` rule paints every menu glyph muted; the tick is a state marker,
+   not a leading icon, so it keeps the accent that says "this is where you are". */
+.dock-zoom-menu .dock-menu__check svg {
+  color: inherit;
+}
+
+.dock-zoom-menu button.is-current {
+  color: var(--accent);
+}
+
+.dock-menu__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.dock-menu__chord {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dock-menu__rule {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .dock-dirty {
@@ -1558,6 +1624,24 @@ body,
 }
 
 .term-node__status--sleeping:hover {
+  color: var(--text);
+}
+
+/* PAUSED: same quiet treatment as SLEEPING (a click resumes) — distinct label because a paused
+   node will NOT auto-resume when reopened, which SLEEPING does. */
+.term-node__status--paused {
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.term-node__status--paused:hover {
   color: var(--text);
 }
 
@@ -7109,6 +7193,79 @@ button.group-node__setup:disabled {
 .sessions-sidebar__body { overflow-y: auto; padding: 4px 6px 8px; }
 .sessions-sidebar__empty { padding: 18px 12px; text-align: center; font-size: 12px; color: var(--muted); }
 
+/* "Recently closed" — merged closed-projects/closed-sessions history at the bottom of the
+   sidebar. Same head layout as .sessions-sidebar__head, just smaller/muted (it is a secondary
+   section, not the panel's own header). */
+.sessions-sidebar__history { border-top: 1px solid var(--border); flex: 0 0 auto; }
+.sessions-sidebar__history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.sessions-sidebar__history-head:hover { background: var(--panel-header); }
+.sessions-sidebar__history-title { font-size: 11px; font-weight: 600; color: var(--muted); }
+/* Same 18px muted box as the project/group disclosure toggle (.ss-group__chev) — the section head
+   sits beside an 11px muted title, and an unstyled glyph inherits body size and --text, reading
+   louder than the label it belongs to. */
+.sessions-sidebar__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: -3px -2px -3px -3px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+}
+/* This section is a sibling of .sessions-sidebar__body inside a max-height flex column, so it must
+   scroll on its OWN — .sessions-sidebar__body earns an automatic min-size of 0 from its
+   `overflow-y: auto` and therefore shrinks, while a list with visible overflow would keep its full
+   content height and squeeze the session list toward zero. The cap is 20 entries PER PROJECT, so
+   the row count is unbounded across projects. */
+.sessions-sidebar__history-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 6px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.sessions-sidebar__history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+.sessions-sidebar__history-item:hover { background: var(--panel-header); }
+.sessions-sidebar__history-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sessions-sidebar__history-age { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
+.sessions-sidebar__history-del {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.sessions-sidebar__history-item:hover .sessions-sidebar__history-del { opacity: 1; }
+.sessions-sidebar__history-del:hover { background: rgba(255, 69, 58, 0.15); color: var(--danger); }
+
 .ss-group__head { display: flex; align-items: center; gap: 6px; padding: 6px 6px; cursor: pointer; border-radius: 6px; border: 1px solid transparent; }
 .ss-group__head:hover { background: var(--panel-header); }
 /* Project sections read as bands: monogram + heavier head + breathing room between projects. */
@@ -8551,6 +8708,51 @@ button.group-node__setup:disabled {
 }
 .github-issue-state--closed {
   color: #a371f7;
+}
+.kanban-card--pull {
+  /* Read-only: no drag affordance, so no grab cursor either. */
+  border-left-color: rgba(163, 113, 247, 0.7);
+  cursor: pointer;
+}
+.github-pull-state {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.github-pull-state--open {
+  color: #3fb950;
+}
+.github-pull-state--draft {
+  color: rgba(var(--tint-rgb), 0.45);
+}
+.github-pull-state--merged {
+  color: #a371f7;
+}
+.github-pull-state--closed {
+  color: #f85149;
+}
+.github-pull-badge {
+  margin-left: 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 9px;
+  font-weight: 600;
+}
+.github-pull-badge--open {
+  color: #3fb950;
+}
+.github-pull-badge--draft {
+  color: rgba(var(--tint-rgb), 0.5);
+}
+.github-pull-badge--merged {
+  color: #a371f7;
+}
+.github-pull-badge--closed {
+  color: #f85149;
 }
 .github-issue-source {
   flex: 0 0 auto;
@@ -11391,3 +11593,109 @@ body.focus-mode .dock:hover {
   border: 1px solid var(--warn);
   background: transparent;
 }
+
+/* ── Trigger node (issue #493) ──────────────────────────────────────────────────────────────── */
+.trigger-node {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-black);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.trigger-node.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.trigger-node__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  flex: 0 0 auto;
+}
+.trigger-node__chip {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.trigger-node__chip--armed { color: #30d158; border-color: rgba(48, 209, 88, 0.5); }
+.trigger-node__chip--disarmed { color: #8e8e93; border-color: rgba(142, 142, 147, 0.5); }
+.trigger-node__chip--changed { color: #ff9f0a; border-color: rgba(255, 159, 10, 0.5); }
+.trigger-node__chip--invalid { color: #ff9f0a; border-color: rgba(255, 159, 10, 0.5); }
+.trigger-node__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: default;
+}
+.trigger-node__schedule { font-weight: 600; }
+.trigger-node__countdown { color: var(--accent); font-weight: 500; }
+.trigger-node__target { color: rgba(255, 255, 255, 0.65); }
+.trigger-node__payload {
+  margin: 0;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 72px;
+  overflow-y: auto;
+}
+.trigger-node__state-line,
+.trigger-node__note { color: rgba(255, 255, 255, 0.55); font-size: 11px; }
+.trigger-node__error { color: #ff9f0a; font-size: 11px; }
+.trigger-node__row { display: flex; gap: 6px; }
+.trigger-node__row button {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.trigger-node__row button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.trigger-node__row button:disabled { opacity: 0.45; cursor: default; }
+.trigger-node__form { display: flex; flex-direction: column; gap: 6px; }
+.trigger-node__form label { display: flex; flex-direction: column; gap: 3px; color: rgba(255, 255, 255, 0.65); }
+.trigger-node__form input,
+.trigger-node__form select,
+.trigger-node__form textarea {
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+.trigger-node__form textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+.trigger-node__runs { display: flex; flex-direction: column; gap: 3px; }
+.trigger-node__run { display: flex; align-items: center; gap: 6px; }
+.trigger-node__run-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+}
+.trigger-node__run-chip--ok { color: #30d158; border-color: rgba(48, 209, 88, 0.5); }
+.trigger-node__run-chip--warn { color: #ff9f0a; border-color: rgba(255, 159, 10, 0.5); }
+.trigger-node__run-chip--muted { color: #8e8e93; border-color: rgba(142, 142, 147, 0.5); }
+.trigger-node__run-time { color: rgba(255, 255, 255, 0.45); font-size: 10px; }
+.trigger-node__confirm { display: flex; flex-direction: column; gap: 6px; text-align: left; font-size: 12px; }
+.trigger-node__confirm .trigger-node__payload { max-height: 140px; }

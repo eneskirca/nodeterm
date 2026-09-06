@@ -85,11 +85,57 @@ export interface HibernationCandidate {
   liveBackgroundTask: boolean
   /** When this node's last hook event landed. Absent = never seen ⇒ never eligible. */
   lastEventAt?: number
+  /**
+   * Already `paused` (agentStatus.paused). Excluded for the same reason `hibernated` is: nothing
+   * left to reclaim — but ALSO because a deep "pause & end session" node has `hibernated` UNSET
+   * (its tmux session was recycled, not merely exited), so `!c.hibernated` alone would still admit
+   * it. Without this field, an offscreen deep-paused node whose SessionEnd hook POST was dropped
+   * (a server hiccup, a downed tunnel) could sit at `state: 'done'` with a stale `lastEventAt`,
+   * pass every other filter, and have Eco's sweep KILL_LINE + `/exit` typed into its already-bare
+   * shell — the exact class of mistake `alreadyExited` (the manual pause closure's own skip) exists
+   * to prevent, reachable here through the automatic sweep instead.
+   */
+  paused: boolean
 }
 
 export interface HibernationConfig {
   enabled: boolean
   idleMinutes: number
+}
+
+/**
+ * "Pause session" (see agentStatus.paused) is a persisted flag with exactly one job: stop a node
+ * from coming back on its own. These two pure predicates are the whole of that job — extracted so
+ * the promise stays pinned by a unit test instead of only by reading the inline condition at each
+ * of the several call sites that must honor it (a cold restart, a mount-time reveal, a visibility
+ * edge, and a kanban card modal open all ask one of these two questions before acting).
+ */
+
+/**
+ * Should a `fresh` cold restore (reboot, first open, a reaped server — see TerminalNode's cold-
+ * restore comment) auto-relaunch the agent CLI? The one thing `paused` exists to prevent is
+ * exactly this: an ordinary cold restore always resumes, and `paused` is the deliberate exception
+ * that survives it. Every OTHER fact that gates the relaunch (is this `fresh`, is there an agent,
+ * can it be resumed) is unrelated to pausing and stays inline at the call site.
+ */
+export function shouldColdResume(paused: boolean | undefined): boolean {
+  return !paused
+}
+
+/**
+ * Should an AUTOMATIC wake trigger fire — the mount-time reveal, the offscreen→visible
+ * IntersectionObserver edge, or opening a kanban card modal? Only for a node that is ordinarily
+ * hibernated (Eco) and NOT paused: a paused node (whichever depth paused it — a warm hibernated
+ * pane, or a freshly recycled shell after "pause & end session") must wait for an EXPLICIT Resume
+ * on every reveal, not just the first one, or "only Resume brings it back" would be false the
+ * moment the user looks at the node. The explicit paths (the SLEEPING/PAUSED chip's own click, the
+ * node-menu Resume action) are NOT gated on this — they call the wake trigger directly.
+ */
+export function shouldAutoWake(
+  hibernated: boolean | undefined,
+  paused: boolean | undefined
+): boolean {
+  return !!hibernated && !paused
 }
 
 /** The node ids to hibernate now: oldest-idle first, at most `HIBERNATE_BATCH_MAX`. */
@@ -110,6 +156,7 @@ export function planHibernation(
     .filter(
       (c) =>
         !c.hibernated &&
+        !c.paused &&
         !c.remote &&
         c.wired &&
         c.offscreen &&

@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'fs'
 import os from 'os'
-import { localAgentCwd } from './commit-message'
+import path from 'path'
+import { localAgentCwd, resolveBinary } from './commit-message'
 
 /**
  * The 2026-08-05 report: "AI commit message" failed on every SSH project with
@@ -94,5 +96,42 @@ describe('runAgent — where the agent is actually spawned', () => {
   it('does NOT spawn in an SSH project’s remote path — that is the ENOENT', async () => {
     // `/root/nodeterm` exists on the server and nowhere on the machine doing the spawning.
     expect(await spawnCwdFor('/root/nodeterm', true)).toBe(os.homedir())
+  })
+})
+
+/**
+ * `resolveBinary` decides which CLI "AI commit message" and "Name with AI" spawn. It was POSIX-only
+ * in two ways at once on Windows: `startsWith('/')` never recognised an absolute path there, and the
+ * hardcoded fallbacks are extensionless POSIX paths that no Windows install can match.
+ */
+describe('resolveBinary', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-resolve-bin-'))
+  })
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('accepts an absolute path that exists, and rejects one that does not', () => {
+    // The regression: on Windows this argument is `C:\…`, which `startsWith('/')` never matched, so
+    // an absolute custom command fell through to the bare-name branch and was rejected there for
+    // containing `:` and `\`.
+    const bin = path.join(dir, 'agent.exe')
+    fs.writeFileSync(bin, '', { mode: 0o755 })
+    expect(resolveBinary(bin)).toBe(bin)
+    expect(resolveBinary(path.join(dir, 'absent.exe'))).toBeNull()
+  })
+
+  it('refuses a relative path — only a bare name or an absolute path may be spawned', () => {
+    // Anything that is not a bare binary name stays well out of injection territory.
+    expect(resolveBinary('../../evil')).toBeNull()
+    expect(resolveBinary('sub/dir/agent')).toBeNull()
+    expect(resolveBinary('agent; rm -rf /')).toBeNull()
+  })
+
+  it('answers null for a bare name that is nowhere', () => {
+    expect(resolveBinary('nt-definitely-not-installed')).toBeNull()
   })
 })

@@ -5,6 +5,9 @@ name: Security
 #   - Dependency review: blocks a PR that adds a vulnerable or disallowed-license dep.
 # Both are free on public repos and add no secrets to the PR runner.
 on:
+  # Merge-queue runs: required checks must also report on the queue's synthetic
+  # merge commits, or every queued PR times out waiting for them.
+  merge_group:
   pull_request:
     branches: [main]
   push:

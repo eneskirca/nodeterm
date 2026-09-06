@@ -18,8 +18,22 @@ export interface ProjectForOpen {
  * defense, never a second resolution.
  */
 export function normalizeProjectCwd(resolvedCwd: string): string {
-  return resolvedCwd.length > 1 ? resolvedCwd.replace(/\/+$/, '') : resolvedCwd
+  // Both separators: a Windows cwd arrives with backslashes, and stripping only `/` left a
+  // trailing `\` in place — which then became an empty final segment for anything splitting the
+  // path afterwards.
+  if (resolvedCwd.length <= 1) return resolvedCwd
+  const stripped = resolvedCwd.replace(/[\\/]+$/, '')
+  // …but a separator is not always cosmetic. `C:\` is the drive ROOT; `C:` is the current
+  // directory ON drive C — a different place, and one that would dedupe against the wrong
+  // project. Likewise a path that is nothing but separators. Keep the original wherever
+  // removing the separator would change what the path MEANS.
+  return stripped === '' || /^[A-Za-z]:$/.test(stripped) ? resolvedCwd : stripped
 }
+
+// `folderName` lives in shared/ so the core-side project loader can use the same rule; it stays
+// exported from here too, because that is where every renderer caller already imports it from.
+import { folderName } from '@shared/project-name'
+export { folderName }
 
 export function findProjectByCwd<T extends { cwd?: string }>(
   projects: readonly T[],
@@ -135,7 +149,7 @@ export function planOpenProject(input: {
   }
   const name = oneLine(
     (requestedName ?? '').trim() ||
-      (normalizeProjectCwd(resolvedCwd).split('/').filter(Boolean).pop() || 'Project')
+      (folderName(normalizeProjectCwd(resolvedCwd)) || 'Project')
   )
   return {
     kind: 'confirm',

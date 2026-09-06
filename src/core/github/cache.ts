@@ -14,6 +14,10 @@ export interface GitHubCompleteSnapshot {
   etags: Record<string, string>
   lastSuccessfulRefreshAt: number
   lastFullReconciliationAt: number
+  /** Pull requests were dropped to stay inside the issue/byte bounds, so the pull lane is a
+   *  subset. Issues are never dropped for a pull request — see the eviction order in
+   *  `service.refreshRepository`. */
+  pullsTruncated?: boolean
 }
 
 export interface GitHubIncompleteAttempt {
@@ -38,10 +42,19 @@ function safeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
+function validPull(value: unknown): boolean {
+  if (value === undefined) return true
+  if (!value || typeof value !== 'object') return false
+  const pull = value as NonNullable<GitHubIssue['pull']>
+  return typeof pull.draft === 'boolean' &&
+    (pull.mergedAt === null || typeof pull.mergedAt === 'string') &&
+    (pull.head === undefined || typeof pull.head === 'string')
+}
+
 function validIssue(value: unknown): value is GitHubIssue {
   if (!value || typeof value !== 'object') return false
   const issue = value as GitHubIssue
-  return safeInteger(issue.id) && issue.id > 0 && safeInteger(issue.number) && issue.number > 0 &&
+  return validPull(issue.pull) && safeInteger(issue.id) && issue.id > 0 && safeInteger(issue.number) && issue.number > 0 &&
     typeof issue.title === 'string' && typeof issue.body === 'string' &&
     (issue.state === 'open' || issue.state === 'closed') &&
     typeof issue.htmlUrl === 'string' && typeof issue.apiUrl === 'string' &&
@@ -57,7 +70,8 @@ function validComplete(value: unknown): value is GitHubCompleteSnapshot {
     snapshot.issues.every(validIssue) &&
     snapshot.etags !== null && typeof snapshot.etags === 'object' && !Array.isArray(snapshot.etags) &&
     Object.entries(snapshot.etags).every(([key, etag]) => key.length <= 2_048 && typeof etag === 'string' && etag.length <= 512) &&
-    safeInteger(snapshot.lastSuccessfulRefreshAt) && safeInteger(snapshot.lastFullReconciliationAt)
+    safeInteger(snapshot.lastSuccessfulRefreshAt) && safeInteger(snapshot.lastFullReconciliationAt) &&
+    (snapshot.pullsTruncated === undefined || typeof snapshot.pullsTruncated === 'boolean')
 }
 
 function validAttempt(value: unknown): value is GitHubIncompleteAttempt {

@@ -190,6 +190,29 @@ describe('GitHubIssueCache atomic write', () => {
     expect(await tmpsLeft()).toEqual([])
   })
 
+  it('round-trips a pull request harvest and its truncation flag', async () => {
+    const cache = new GitHubIssueCache(userDataDir)
+    const pull: GitHubIssue = { ...issue(9), pull: { draft: true, mergedAt: null } }
+    await cache.saveComplete('user-1', 'o/r', { ...complete([issue(1), pull]), pullsTruncated: true })
+
+    const document = await cache.load('user-1', 'o/r')
+    expect(document.lastComplete?.pullsTruncated).toBe(true)
+    expect(document.lastComplete?.issues[1].pull).toEqual({ draft: true, mergedAt: null })
+  })
+
+  it('drops a cached document whose pull metadata is malformed', async () => {
+    const cache = new GitHubIssueCache(userDataDir)
+    await cache.saveComplete('user-1', 'o/r', complete([issue(1)]))
+    const file = (await fs.readdir(path.join(userDataDir, 'github-issues-cache')))[0]
+    const target = path.join(userDataDir, 'github-issues-cache', file)
+    const document = JSON.parse(await fs.readFile(target, 'utf-8')) as GitHubCacheDocument
+    // Cache content is hostile input: a hand-edited `pull` must not reach the board as a card.
+    ;(document.lastComplete!.issues[0] as GitHubIssue).pull = { draft: 'yes' } as never
+    await fs.writeFile(target, JSON.stringify(document))
+
+    expect(await cache.load('user-1', 'o/r')).toEqual({ version: 1 })
+  })
+
   it('a failed rename removes its own temp, rejects, and leaves the previous snapshot', async () => {
     const cache = new GitHubIssueCache(userDataDir)
     await cache.saveComplete('user-1', 'o/r', complete([issue(1)]))

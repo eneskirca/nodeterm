@@ -39,7 +39,8 @@ const EXIT_SEQUENCES: Record<string, string> = {
   codex: '/quit',
   grok: '/quit',
   gemini: '/quit',
-  copilot: '/exit'
+  copilot: '/exit',
+  opencode: '/exit'
 }
 
 export function exitSequence(agentId: string): string | null {
@@ -206,7 +207,20 @@ export async function performExitPhase(d: {
   // something else this becomes one stray keystroke before the exit command — no worse than
   // today's blind write. Belongs in the manual test matrix.
   d.io.write(KILL_LINE)
-  d.io.write(exit + '\r')
+  // opencode's TUI does not submit when text and CR arrive in the same input burst
+  // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
+  // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
+  // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
+  // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
+  // the minimal split so the other agents' blind-write contract stays unchanged.
+  if (d.agentId === 'opencode') {
+    d.io.write(exit)
+    await new Promise((r) => setTimeout(r, 150))
+    if (gone()) return 'not-eligible'
+    d.io.write('\r')
+  } else {
+    d.io.write(exit + '\r')
+  }
   const deadline = Date.now() + timeoutMs
   let last: string | null = null
   for (;;) {
@@ -485,6 +499,36 @@ export function agentHibernateFns(nodeId: string): AgentHibernateFns | undefined
   return hibernateFns.get(nodeId)
 }
 
+/** The exit half's outcome, plus `'paused'` for a manual pause that actually took. Registered
+ *  separately from `hibernateFns.exit`: Eco's exit refuses a node the user is currently watching
+ *  (`isNodeWatched`) — the whole point of the sweep — but a MANUAL pause is the user acting on the
+ *  node they are looking at right now, so it must not carry that refusal. The resume half is
+ *  intentionally NOT duplicated here: `agentHibernateFns(id).resume()` already works for a paused
+ *  node whichever depth paused it (a warm hibernated pane, or a freshly recycled shell after the
+ *  deeper "pause & end session") — it only asks whether the pane is a shell right now, not why. */
+export type PauseOutcome = ExitPhaseOutcome | 'paused'
+
+export interface AgentPauseFns {
+  /** Ask the CLI to quit and mark the node PAUSED (see `agentStatus.paused`) so it does not
+   *  auto-resume on the next reveal or cold restart. `deep` additionally recycles the tmux session
+   *  for a fuller memory reclaim — the caller decides per node, at pause time. */
+  pause: (deep: boolean) => Promise<PauseOutcome>
+}
+
+const pauseFns = new Map<string, AgentPauseFns>()
+
+/** Register a node's pause closure; returns an unregister that is inert if superseded. */
+export function registerAgentPause(nodeId: string, fns: AgentPauseFns): () => void {
+  pauseFns.set(nodeId, fns)
+  return () => {
+    if (pauseFns.get(nodeId) === fns) pauseFns.delete(nodeId)
+  }
+}
+
+export function agentPauseFns(nodeId: string): AgentPauseFns | undefined {
+  return pauseFns.get(nodeId)
+}
+
 /** TEST ONLY (house pattern: webgl-budget's `__resetWebglBudgetForTests`): the maps above are
  *  module-global, so a test that leaves a restart in flight would otherwise refuse the next
  *  test's restart of the same node id. */
@@ -492,6 +536,7 @@ export function __resetAgentRestartForTests(): void {
   inFlight.clear()
   restartFns.clear()
   hibernateFns.clear()
+  pauseFns.clear()
 }
 
 // ── Bulk run: who gets restarted, and how the run is summed up ──────────────────────────

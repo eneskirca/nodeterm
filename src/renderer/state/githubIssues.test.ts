@@ -16,11 +16,18 @@ const page = (number: number, columnId: string | null, nextCursor?: string) => (
   ...(nextCursor ? { nextCursor } : {})
 })
 
+const pullPage = (number: number, columnId: string | null, nextCursor?: string) => {
+  const base = page(number, columnId, nextCursor)
+  return { ...base, items: [{ ...base.items[0], pull: { draft: false, mergedAt: null } }] }
+}
+
 function api(): GitHubIssuesApi {
   return {
     subscribe: vi.fn(async () => page(1, null)),
     unsubscribe: vi.fn(async () => {}),
-    query: vi.fn(async (request) => page(request.columnId === 'todo' ? 2 : 3, request.columnId)),
+    query: vi.fn(async (request) => request.kind === 'pull'
+      ? pullPage(request.columnId === 'todo' ? 200 : 300, request.columnId)
+      : page(request.columnId === 'todo' ? 2 : 3, request.columnId)),
     refresh: vi.fn(async () => {}),
     moveIssue: vi.fn(async () => ({ status: 'configuration-changed' as const })),
     createMissingLabels: vi.fn(async () => ({ status: 'confirmed' as const, created: [], remaining: [] })),
@@ -116,17 +123,35 @@ describe('GitHub issue renderer state', () => {
     disconnect()
   })
 
-  it('subscribes once and loads every visible column', async () => {
+  it('subscribes once and loads every visible column, in both kinds', async () => {
     const client = api()
     const disconnect = await useGitHubIssues.getState().connect(
       client, 'p1', ['todo', 'done'], ['github:bug']
     )
     expect(client.subscribe).toHaveBeenCalledWith('p1')
-    expect(client.query).toHaveBeenCalledTimes(3)
+    // Three columns × two kinds. Both are served from the one cached snapshot in core, so the
+    // pull pass is a read of data the refresh already fetched.
+    expect(client.query).toHaveBeenCalledTimes(6)
     expect(client.query).toHaveBeenCalledWith(expect.objectContaining({ labelFilter: ['github:bug'] }))
     expect(useGitHubIssues.getState().projects.p1.pages.todo.items[0].number).toBe(2)
+    expect(useGitHubIssues.getState().projects.p1.pullPages.todo.items[0].number).toBe(200)
     disconnect()
     expect(client.unsubscribe).toHaveBeenCalledWith('p1')
+  })
+
+  it('pages more of the kind it was asked for, leaving the other lane alone', async () => {
+    const client = api()
+    vi.mocked(client.query).mockImplementation(async (request) => request.kind === 'pull'
+      ? pullPage(request.cursor ? 201 : 200, request.columnId, request.cursor ? undefined : '1')
+      : page(2, request.columnId))
+    const disconnect = await useGitHubIssues.getState().connect(client, 'p1', ['todo'])
+
+    await useGitHubIssues.getState().loadMore(client, 'p1', 'todo', 'pull')
+    expect(useGitHubIssues.getState().projects.p1.pullPages.todo.items.map((item) => item.number))
+      .toEqual([200, 201])
+    expect(useGitHubIssues.getState().projects.p1.pages.todo.items.map((item) => item.number))
+      .toEqual([2])
+    disconnect()
   })
 
   it('marks only the issue being moved and exposes an actionable non-confirmed status', async () => {

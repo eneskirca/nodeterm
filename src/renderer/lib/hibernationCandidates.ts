@@ -41,6 +41,10 @@ export interface HibernationStatusInput {
   state?: string
   sessionId?: string
   hibernated?: boolean
+  /** See `HibernationCandidate.paused` — a deep "pause & end session" node has `hibernated` unset
+   *  (its tmux was recycled, not exited), so this is the ONLY thing that excludes it from a sweep
+   *  whose SessionEnd hook POST for the manual exit was dropped. */
+  paused?: boolean
   lastEventAt?: number
   /** Present = this node has a `/loop`, `/schedule` or `/cron` on it. Its `dismissed` flag is
    *  deliberately NOT consulted — see the header. */
@@ -88,6 +92,7 @@ export function buildHibernationCandidates(
       wired: inputs.isWired(n.id),
       offscreen: inputs.isOffscreen(n.id),
       hibernated: !!st?.hibernated,
+      paused: !!st?.paused,
       remote: inputs.isRemote(n.id),
       recurring: !!st?.loop,
       liveSubagents: liveParents.has(n.id),

@@ -10,6 +10,7 @@
 
 import type { Viewport } from '@xyflow/system'
 import { NODE_MAXIMIZE_MARGIN_PX, type FlowRect } from './nodeMaximize'
+import { NO_INSETS, type ScreenInsets } from './pinnedInsets'
 
 /** Screen-pixel gap between two adjacent zones, so side-by-side nodes don't touch. */
 export const ZONE_GUTTER_PX = 12
@@ -63,15 +64,19 @@ export function zoneTargetRect(
   containerHeight: number,
   zone: ZoneId,
   marginPx: number = NODE_MAXIMIZE_MARGIN_PX,
-  gutterPx: number = ZONE_GUTTER_PX
+  gutterPx: number = ZONE_GUTTER_PX,
+  insets: ScreenInsets = NO_INSETS
 ): FlowRect | null {
   const frac = ZONES_BY_ID.get(zone)
   if (!frac || !(viewport.zoom > 0)) return null
-  const innerW = containerWidth - marginPx * 2
+  // Same usable area as maximize: the margin on every edge, plus whatever pinned side panels
+  // cover. Zones subdivide THAT, so left-half lands beside a pinned sidebar instead of under it.
+  const originX = marginPx + insets.left
+  const innerW = containerWidth - marginPx * 2 - insets.left - insets.right
   const innerH = containerHeight - marginPx * 2
-  // Screen-px edges inside the margin-inset area, with internal edges pulled in by gutter/2.
-  const left = marginPx + frac.x0 * innerW + (frac.x0 > 0 ? gutterPx / 2 : 0)
-  const right = marginPx + frac.x1 * innerW - (frac.x1 < 1 ? gutterPx / 2 : 0)
+  // Screen-px edges inside the usable area, with internal edges pulled in by gutter/2.
+  const left = originX + frac.x0 * innerW + (frac.x0 > 0 ? gutterPx / 2 : 0)
+  const right = originX + frac.x1 * innerW - (frac.x1 < 1 ? gutterPx / 2 : 0)
   const top = marginPx + frac.y0 * innerH + (frac.y0 > 0 ? gutterPx / 2 : 0)
   const bottom = marginPx + frac.y1 * innerH - (frac.y1 < 1 ? gutterPx / 2 : 0)
   // Same refusal floor as maximize: below this the "zone" is smaller than a node header, and a

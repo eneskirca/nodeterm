@@ -28,6 +28,7 @@ describe('buildHibernationCandidates', () => {
         wired: true,
         offscreen: true,
         hibernated: false,
+        paused: false,
         remote: false,
         recurring: false,
         liveSubagents: false,
@@ -155,6 +156,16 @@ describe('buildHibernationCandidates', () => {
       inputs({ statusById: { a: { state: 'done', sessionId: 'sid-a', lastEventAt: IDLE, hibernated: true } } })
     )
     expect(rows[0].hibernated).toBe(true)
+    expect(planHibernation(rows, NOW, { enabled: true, idleMinutes: 30 })).toEqual([])
+  })
+
+  it('marks a PAUSED node (hibernated unset — the deep pause case) so the sweep never types /exit into its already-bare shell', () => {
+    const rows = buildHibernationCandidates(
+      inputs({
+        statusById: { a: { state: 'done', sessionId: 'sid-a', lastEventAt: IDLE, paused: true } }
+      })
+    )
+    expect(rows[0]).toMatchObject({ hibernated: false, paused: true })
     expect(planHibernation(rows, NOW, { enabled: true, idleMinutes: 30 })).toEqual([])
   })
 

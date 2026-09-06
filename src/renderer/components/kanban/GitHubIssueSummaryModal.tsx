@@ -11,6 +11,7 @@ export function GitHubIssueSummaryModal({
   moving,
   readOnly,
   status,
+  kind = 'issue',
   onMove,
   onClose
 }: {
@@ -19,9 +20,13 @@ export function GitHubIssueSummaryModal({
   moving: boolean
   readOnly: boolean
   status?: string
+  /** A pull request is read-only on the board, so its variant drops the Move control and the
+   *  conflict hint — both name a write only an issue has. */
+  kind?: 'issue' | 'pull'
   onMove: (columnId: string | null) => void
   onClose: () => void
 }): React.JSX.Element {
+  const isPull = kind === 'pull'
   const { api } = useSession()
   const close = useRef<HTMLButtonElement>(null)
   const dialog = useRef<HTMLElement>(null)
@@ -64,27 +69,31 @@ export function GitHubIssueSummaryModal({
       >
         <header className="github-issue-modal__header">
           <div>
-            <div className="github-issue-modal__eyebrow">GitHub issue #{issue.number}</div>
+            <div className="github-issue-modal__eyebrow">
+              GitHub {isPull ? 'pull request' : 'issue'} #{issue.number}
+            </div>
             <h2 id="github-issue-modal-title">{issue.title}</h2>
           </div>
           <button ref={close} className="github-issue-modal__close" onClick={onClose} aria-label="Close">×</button>
         </header>
         <div className="github-issue-modal__actions">
-          <label>
-            <span>Move to</span>
-            <Select
-              aria-label={`Move issue #${issue.number}`}
-              value={issue.columnId ?? ''}
-              disabled={moving || readOnly}
-              onChange={(event) => onMove(event.target.value || null)}
-            >
-              <option value="">Ungrouped</option>
-              {columns.map((column) => <option key={column.id} value={column.id}>{column.title}</option>)}
-            </Select>
-          </label>
+          {!isPull && (
+            <label>
+              <span>Move to</span>
+              <Select
+                aria-label={`Move issue #${issue.number}`}
+                value={issue.columnId ?? ''}
+                disabled={moving || readOnly}
+                onChange={(event) => onMove(event.target.value || null)}
+              >
+                <option value="">Ungrouped</option>
+                {columns.map((column) => <option key={column.id} value={column.id}>{column.title}</option>)}
+              </Select>
+            </label>
+          )}
           <Button onClick={() => void api.shell.openExternal(issue.htmlUrl)}>Open on GitHub</Button>
         </div>
-        {issue.conflict && (
+        {!isPull && issue.conflict && (
           <p className="github-issue-modal__warning">
             This issue has conflicting mapped labels. Choose a column to replace them with one exact label.
           </p>

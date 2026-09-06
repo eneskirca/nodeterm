@@ -50,7 +50,12 @@ function isSshSpec(value: unknown): boolean {
   return typeof c.host === 'string' && c.host !== '' && typeof c.user === 'string' && c.user !== ''
 }
 
-export function appendProjectNode(raw: string, input: RemoteNodeInput, now: Date): string | null {
+export function appendProjectNode(
+  raw: string,
+  input: RemoteNodeInput,
+  now: Date,
+  accountColor?: string
+): string | null {
   if (!SAFE_NODE_ID.test(input.id)) return null
   // Refused, not silently dropped: an account id becomes a config-DIR path segment
   // (`claude-accounts/<id>`, `~/.nodeterm/claude-accounts/<id>` on a host), so a bad one must never
@@ -97,8 +102,12 @@ export function appendProjectNode(raw: string, input: RemoteNodeInput, now: Date
   }
 
   // An agent node looks exactly like one minted by the canvas (createAgentNode): the agent's
-  // label as the starting title and the agent's color — titleAuto then lets the agent's own
-  // session name take over, same as desktop. A plain terminal keeps the mobile defaults.
+  // label as the starting title, and the bound account's default color where the host resolved
+  // one, else the agent's — titleAuto then lets the agent's own session name take over, same as
+  // desktop. `accountColor` is host-derived (the phone cannot choose it) and already resolved
+  // through the shared `accountNodeColor`, so a phone-started session under a colored account
+  // lands on the canvas in that color instead of the agent's. A plain terminal keeps the mobile
+  // defaults.
   const agent = typeof input.agentId === 'string' ? agentConfig(input.agentId) : undefined
   const node: Record<string, unknown> = {
     id: input.id,
@@ -110,7 +119,7 @@ export function appendProjectNode(raw: string, input: RemoteNodeInput, now: Date
         ? input.title.slice(0, TITLE_MAX)
         : (agent?.label ?? 'Mobile session'),
     titleAuto: true,
-    color: agent?.color ?? '#7aa2f7',
+    color: accountColor ?? agent?.color ?? '#7aa2f7',
     group: null,
     tags: [],
     collapsed: false,

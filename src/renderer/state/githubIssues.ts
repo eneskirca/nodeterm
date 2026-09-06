@@ -1,12 +1,16 @@
 import { create } from 'zustand'
 import type {
   GitHubIssuePage,
+  GitHubIssueQuery,
   GitHubIssuesApi,
   GitHubMutationResult
 } from '@shared/github-issues'
 
 export interface GitHubProjectPages {
   pages: Record<string, GitHubIssuePage>
+  /** The same columns paged for the other kind. Pull requests ride the issue snapshot, so this
+   *  costs no extra network refresh — one query per column against what is already cached. */
+  pullPages: Record<string, GitHubIssuePage>
   columns: string[]
   moving: Record<number, true>
   loading: boolean
@@ -21,7 +25,12 @@ interface GitHubIssuesState {
   projects: Record<string, GitHubProjectPages>
   connect(api: GitHubIssuesApi, projectId: string, columns: string[], labelFilter?: string[]): Promise<() => void>
   reload(api: GitHubIssuesApi, projectId: string): Promise<void>
-  loadMore(api: GitHubIssuesApi, projectId: string, columnId: string | null): Promise<void>
+  loadMore(
+    api: GitHubIssuesApi,
+    projectId: string,
+    columnId: string | null,
+    kind?: GitHubIssueQuery['kind']
+  ): Promise<void>
   move(
     api: GitHubIssuesApi,
     projectId: string,
@@ -32,6 +41,22 @@ interface GitHubIssuesState {
 }
 
 const keyFor = (columnId: string | null): string => columnId ?? 'ungrouped'
+
+/** Pages every column for one kind. Both kinds are served from the one cached snapshot in core,
+ *  so the second pass is a read of data already fetched, not a second refresh. */
+async function pageColumns(
+  api: GitHubIssuesApi,
+  projectId: string,
+  columns: (string | null)[],
+  labelFilter: string[],
+  kind: GitHubIssueQuery['kind']
+): Promise<Record<string, GitHubIssuePage>> {
+  const pages = await Promise.all(columns.map(async (columnId) => [
+    keyFor(columnId),
+    await api.query({ projectId, columnId, pageSize: 50, labelFilter, ...(kind ? { kind } : {}) })
+  ] as const))
+  return Object.fromEntries(pages)
+}
 let nextConnectionGeneration = 0
 
 type HostSubscription = {
@@ -101,8 +126,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       projects: {
         ...state.projects,
         [projectId]: {
-          pages: {}, columns, moving: {}, loading: true, labelFilter, issueStatus: {},
-          generation, loadGeneration: 0
+          pages: {}, pullPages: {}, columns, moving: {}, loading: true, labelFilter,
+          issueStatus: {}, generation, loadGeneration: 0
         }
       }
     }))
@@ -133,16 +158,17 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         return () => undefined
       }
       const loadGeneration = get().projects[projectId]?.loadGeneration ?? 0
-      const columnPages = await Promise.all([null, ...columns].map(async (columnId) => [
-        keyFor(columnId),
-        await api.query({ projectId, columnId, pageSize: 50, labelFilter })
-      ] as const))
+      const [columnPages, columnPullPages] = await Promise.all([
+        pageColumns(api, projectId, [null, ...columns], labelFilter, 'issue'),
+        pageColumns(api, projectId, [null, ...columns], labelFilter, 'pull')
+      ])
       set((state) => state.projects[projectId]?.generation === generation &&
         state.projects[projectId]?.loadGeneration === loadGeneration ? ({
         projects: {
           ...state.projects,
           [projectId]: {
-            pages: Object.fromEntries(columnPages),
+            pages: columnPages,
+            pullPages: columnPullPages,
             columns,
             moving: state.projects[projectId]?.moving ?? {},
             issueStatus: state.projects[projectId]?.issueStatus ?? {},
@@ -158,7 +184,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
         projects: {
           ...state.projects,
           [projectId]: {
-            pages: {}, columns, moving: {}, loading: false, labelFilter, issueStatus: {},
+            pages: {}, pullPages: {}, columns, moving: {}, loading: false, labelFilter,
+            issueStatus: {},
             error: error instanceof Error ? error.message : 'GitHub issues are unavailable',
             generation,
             loadGeneration: state.projects[projectId]?.loadGeneration ?? 0
@@ -190,17 +217,17 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       } : state
     })
     try {
-      const pages = await Promise.all([null, ...current.columns].map(async (columnId) => [
-        keyFor(columnId),
-        await api.query({ projectId, columnId, pageSize: 50, labelFilter: current.labelFilter })
-      ] as const))
+      const [pages, pullPages] = await Promise.all([
+        pageColumns(api, projectId, [null, ...current.columns], current.labelFilter, 'issue'),
+        pageColumns(api, projectId, [null, ...current.columns], current.labelFilter, 'pull')
+      ])
       set((state) => {
         const existing = state.projects[projectId]
         if (existing?.generation !== generation || existing.loadGeneration !== loadGeneration) return state
         return existing ? {
           projects: {
             ...state.projects,
-            [projectId]: { ...existing, pages: Object.fromEntries(pages), loading: false, error: undefined }
+            [projectId]: { ...existing, pages, pullPages, loading: false, error: undefined }
           }
         } : state
       })
@@ -222,9 +249,10 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
     }
   },
 
-  async loadMore(api, projectId, columnId) {
+  async loadMore(api, projectId, columnId, kind = 'issue') {
     const project = get().projects[projectId]
-    const current = project?.pages[keyFor(columnId)]
+    const field = kind === 'pull' ? 'pullPages' : 'pages'
+    const current = project?.[field][keyFor(columnId)]
     if (!project || !current?.nextCursor) return
     const generation = project.generation
     const loadGeneration = project.loadGeneration
@@ -233,7 +261,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
       columnId,
       pageSize: 50,
       cursor: current.nextCursor,
-      labelFilter: project.labelFilter
+      labelFilter: project.labelFilter,
+      kind
     })
     set((state) => {
       const existing = state.projects[projectId]
@@ -244,8 +273,8 @@ export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
           ...state.projects,
           [projectId]: {
             ...existing,
-            pages: {
-              ...existing.pages,
+            [field]: {
+              ...existing[field],
               [keyFor(columnId)]: { ...next, items: [...current.items, ...next.items] }
             }
           }

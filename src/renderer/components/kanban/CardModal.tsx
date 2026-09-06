@@ -14,6 +14,11 @@ import {
   CARD_MODAL_MIN_H
 } from '../../state/cardModalSize'
 import { useSession } from '../../session/session'
+// The same wake trigger the canvas node's SLEEPING/PAUSED chip and mount/visibility auto-wakes
+// use — NOT a bespoke resume path, so a click here gets the same WakeInputBuffer protection and
+// retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
+// imports from `components/kanban/*`, and none of those re-import CardModal.
+import { wakeHibernatedNode } from '../../nodes/TerminalNode'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
 import { BoardLogPanel } from './BoardLogPanel'
@@ -57,6 +62,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
   // StickyNode's toggle, so the canvas and the card can't disagree about how a note reads).
   const [editingNote, setEditingNote] = useState(false)
   const agentSessionId = useAgentStatus((st) => st.byId[session.id]?.sessionId)
+  const paused = useAgentStatus((st) => !!st.byId[session.id]?.paused)
   const [naming, setNaming] = useState(false)
   // Comments & activity panel: OPEN by default in the modal; the header 💬 collapses it. The
   // choice is remembered (localStorage) — once collapsed, later cards open collapsed too.
@@ -254,6 +260,20 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
               when the node is being driven even though the drive lands on the CANVAS webview, not
               this modal's — which is what the user needs to know (Task 6.3). */}
           {isBrowser && <BrowserDrivingIndicator nodeId={session.id} />}
+          {isTerminal && paused && (
+            // Opening the card is one of the modal-open wake triggers `TerminalNode` publishes
+            // (see `setKanbanModalNode`), and it deliberately skips a PAUSED node — so the modal
+            // must say why the session is a bare shell instead of showing nothing. Clickable via
+            // the same wake trigger the canvas chip uses.
+            <button
+              className="kanban-badge kanban-badge--sleeping"
+              style={{ cursor: 'pointer', border: 'none' }}
+              title="Session paused — click to resume"
+              onClick={() => wakeHibernatedNode(session.id)}
+            >
+              PAUSED
+            </button>
+          )}
           {isTerminal && (
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}

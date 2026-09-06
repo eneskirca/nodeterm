@@ -39,8 +39,17 @@ export interface LaunchInputs {
    *  Trusted verbatim, exactly like a custom agent's `launchCmd`: it is the local user's own
    *  settings and is typed into their own pane. */
   launchCmdOverride?: string
-  /** First-launch prompt. Empty/undefined = start the agent with no prompt. */
+  /** First-launch prompt. Empty/undefined = start the agent with no prompt. Collapsed to ONE
+   *  line (every whitespace run → a single space): the prompt rides argv on a command line typed
+   *  into the pane, and a newline would submit the half-typed line. Multi-line briefs go through
+   *  `promptFile` instead. */
   initialPrompt?: string
+  /** Absolute path to a file holding the first-launch prompt (canvas-control `--prompt-file`).
+   *  Wins over `initialPrompt`. Composed as `"$(cat '<path>')"` so the TYPED line stays one line
+   *  while the pane's shell expands the file — newlines and all — into a single argv element at
+   *  execution. Requires a POSIX-style shell in the new node; validate with
+   *  `promptFilePathError` before passing. */
+  promptFile?: string
   /** Permission mode to start in. `undefined` = no flag (the agent's own default). */
   permissionMode?: AgentPermissionMode
   /** Per-node model override, applied through the effective base harness. */
@@ -126,6 +135,26 @@ function expandedProgram(
 }
 
 /**
+ * Validate a `--prompt-file` path BEFORE it is composed into the launch line. Returns a short
+ * error fragment, or null when the path is usable. The rules exist because the path is
+ * interpolated into a command that is typed into the pane as ONE line: a newline in the path
+ * would break the single-line delivery the whole mechanism exists to preserve, and a relative
+ * path is ambiguous between the calling agent's cwd and the new node's cwd — requiring an
+ * absolute path removes the guess. (Quoting itself is `shellSingleQuote`'s job — a space or a
+ * quote in the path is fine.)
+ */
+export function promptFilePathError(p: string): string | null {
+  const t = p.trim()
+  if (!t) return 'needs a path'
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\x00]/.test(t)) return 'must not contain newlines or control characters'
+  if (!(t.startsWith('/') || /^[A-Za-z]:[\\/]/.test(t))) {
+    return `must be an absolute path (got "${t}")`
+  }
+  return null
+}
+
+/**
  * Assemble the FIRST-LAUNCH command: `<launchCmd> <args> [sep] [prompt] [permission flag]
  * [session-id flag]`. The prompt and flags land per the resolved prompt convention (separator
  * agents put flags before `--`; positional agents put them last), exactly as the historical
@@ -154,17 +183,24 @@ export function assembleLaunchCommand(
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 
-  // The prompt becomes a POSITIONAL ARGUMENT on a command line that is then typed into the pane
-  // (`writeWhenShellReady` -> `deliverCommand`, which echo-verifies the line before submitting it).
-  // A newline inside it would submit the half-typed line and fail that verification, so every run
-  // of whitespace is collapsed to a single space. Load-bearing for this delivery path, not tidying:
-  // preserving structure means delivering the prompt as a MESSAGE after launch (sendText, which
-  // frames multi-line text through tmux `paste-buffer -p`) rather than as argv. Callers that let a
-  // user or an agent supply the prompt must say the text arrives on one line -- see
-  // `buildCanvasSkillBody` / `buildCanvasControlInstructions`.
-  const promptArg = inputs.initialPrompt
-    ? shellSingleQuote(inputs.initialPrompt.replace(/\s+/g, ' ').trim())
-    : null
+  // The prompt becomes an ARGUMENT on a command line that is then typed into the pane
+  // (`writeWhenShellReady` → `deliverCommand`, which echo-verifies the line before submitting).
+  // A raw newline inside it would submit the half-typed line and fail that verification, so:
+  // - `initialPrompt` (a literal) has every whitespace run collapsed to a single space —
+  //   load-bearing for the delivery path, not tidying (PR #516's finding). Callers that let a
+  //   user or an agent supply the prompt must say the text arrives on one line — see
+  //   `buildCanvasSkillBody` / `buildCanvasControlInstructions`.
+  // - `promptFile` (issue #520) keeps structure WITHOUT putting it on the typed line: the
+  //   argument is a `"$(cat '<path>')"` command substitution, so the pane's shell reads the file
+  //   at execution and hands the CLI its exact contents as ONE argv element. The double quotes
+  //   make the substitution a single word and keep its RESULT data — file content is never
+  //   re-parsed as shell syntax. On an SSH project the path (and the `cat`) are on the host,
+  //   which is exactly where the node runs. Only the PATH is interpolated, single-quoted.
+  const promptArg = inputs.promptFile
+    ? `"$(cat ${shellSingleQuote(inputs.promptFile.trim())})"`
+    : inputs.initialPrompt
+      ? shellSingleQuote(inputs.initialPrompt.replace(/\s+/g, ' ').trim())
+      : null
   const sep = eff.argvPromptSeparator
   const promptFlag =
     eff.promptInjectionMode === 'flag-prompt'

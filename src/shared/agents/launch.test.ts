@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { assembleLaunchCommand, assembleResumeCommand } from './launch'
+import { assembleLaunchCommand, assembleResumeCommand, promptFilePathError } from './launch'
 import { setCustomAgentBaseResolver } from './config'
 import type { CustomAgent } from '../types'
 
@@ -282,5 +282,77 @@ describe('quoting by construction — env values can never become shell syntax o
     )
     expect(command).toBe("claude-wopr '--model' '--verbose'")
     expect(missingEnv).toEqual(['GONE'])
+  })
+})
+
+describe('assembleLaunchCommand — promptFile (issue #520)', () => {
+  // The whole point: the TYPED line stays single-line while the pane's shell expands the file at
+  // execution, so a multi-line brief reaches the CLI with its structure intact.
+  it('claude composes the prompt as a "$(cat …)" substitution with the PATH single-quoted', () => {
+    expect(
+      assembleLaunchCommand({ agentId: 'claude', promptFile: '/tmp/brief.md' }, ENV).command
+    ).toBe('claude "$(cat \'/tmp/brief.md\')"')
+  })
+  it('flags still land after the prompt for claude', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', promptFile: '/tmp/brief.md', permissionMode: 'auto' },
+        ENV
+      ).command
+    ).toBe('claude "$(cat \'/tmp/brief.md\')" --permission-mode auto')
+  })
+  it('grok keeps its flags BEFORE the -- separator, substitution after it', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'grok', promptFile: '/tmp/brief.md', permissionMode: 'plan' },
+        ENV
+      ).command
+    ).toBe('grok --permission-mode plan -- "$(cat \'/tmp/brief.md\')"')
+  })
+  it('a flag-prompt agent passes the substitution through its prompt flag', () => {
+    expect(assembleLaunchCommand({ agentId: 'opencode', promptFile: '/tmp/b.md' }, ENV).command).toBe(
+      'opencode --prompt "$(cat \'/tmp/b.md\')"'
+    )
+  })
+  it('promptFile wins over initialPrompt', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', initialPrompt: 'ignored', promptFile: '/tmp/brief.md' },
+        ENV
+      ).command
+    ).toBe('claude "$(cat \'/tmp/brief.md\')"')
+  })
+  it('a path with a quote in it cannot break out of the quoting', () => {
+    // shellSingleQuote's '\'' dance — the path stays ONE argument to cat and nothing in it
+    // reaches the shell as syntax.
+    const cmd = assembleLaunchCommand(
+      { agentId: 'claude', promptFile: "/tmp/my brief's.md" },
+      ENV
+    ).command
+    expect(cmd.startsWith('claude "$(cat ')).toBe(true)
+    expect(cmd).toContain("'/tmp/my brief'\\''s.md'")
+  })
+  it('the --prompt literal is still collapsed to one line (unchanged behavior)', () => {
+    expect(
+      assembleLaunchCommand({ agentId: 'claude', initialPrompt: 'a\nb\n\n  c' }, ENV).command
+    ).toBe("claude 'a b c'")
+  })
+})
+
+describe('promptFilePathError', () => {
+  it('accepts an absolute POSIX path', () => {
+    expect(promptFilePathError('/tmp/brief.md')).toBeNull()
+  })
+  it('accepts a Windows drive path', () => {
+    expect(promptFilePathError('C:\\briefs\\x.md')).toBeNull()
+  })
+  it('refuses a relative path', () => {
+    expect(promptFilePathError('brief.md')).toMatch(/absolute/)
+  })
+  it('refuses an empty path', () => {
+    expect(promptFilePathError('  ')).toMatch(/needs a path/)
+  })
+  it('refuses a newline in the path — it would break the single-line typed delivery', () => {
+    expect(promptFilePathError('/tmp/a\nb')).toMatch(/newlines/)
   })
 })

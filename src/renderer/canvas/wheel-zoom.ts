@@ -19,16 +19,14 @@
  * second, far beyond any physical pinch.
  */
 
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM } from './zoom-limits'
+
 /** One burst's total influence on zoom, in deltaY pixels — the historical per-event cap. */
 export const WHEEL_ZOOM_MAX_STEP = 50
 
 /** Packets closer together than this share one budget; must stay well under ~125 ms so
  *  deliberate successive clicks are never merged. */
 const BURST_WINDOW_MS = 40
-
-/** Mirrors the <ReactFlow minZoom/maxZoom> props in Canvas.tsx — keep in sync. */
-const MIN_ZOOM = 0.01
-const MAX_ZOOM = 2
 
 const ZOOM_STEP_RATE = 0.01
 
@@ -53,7 +51,10 @@ export class WheelZoomBurstLimiter {
 
 /** The zoom the canvas moves to for an (already limited) wheel step at a given speed. */
 export const nextWheelZoom = (zoom: number, deltaY: number, speed: number): number =>
-  Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * Math.exp(-deltaY * ZOOM_STEP_RATE * speed)))
+  Math.min(
+    CANVAS_MAX_ZOOM,
+    Math.max(CANVAS_MIN_ZOOM, zoom * Math.exp(-deltaY * ZOOM_STEP_RATE * speed))
+  )
 
 /** settings.json is hand-editable, so the multiplier is validated at point of use (same
  *  convention as tmux scrollback): non-numbers fall back to 1, numbers clamp to the slider's

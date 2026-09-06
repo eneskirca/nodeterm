@@ -67,17 +67,77 @@ export function shellPathNow(): string | null | undefined {
   return cachedShellPath
 }
 
-/** Walk a PATH string for an executable — sync but SUBPROCESS-FREE (one accessSync per entry),
+/** What Windows itself falls back to when PATHEXT is unset or empty. */
+const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
+
+/**
+ * The names a bare `bin` can have ON DISK, in the order Windows itself tries them.
+ *
+ * Windows resolves a bare command against PATHEXT — `gh` on disk is `gh.exe`, `claude` is
+ * `claude.exe`, an npm shim is `<name>.cmd`. Without this a PATH walk finds nothing at all there:
+ * `path.join(dir, 'gh')` names a file that does not exist, and every caller then falls through to
+ * its POSIX fallback list (`/usr/bin/...`), which does not exist either. The result was a silent
+ * `null` for every lookup on Windows — and, downstream, no `gh`, no `ssh`, and a claude
+ * capability probe that never ran.
+ *
+ * PATHEXT entries come FIRST and the bare name LAST, which is the order Windows itself resolves in
+ * — and the order matters more than it looks. npm installs a global CLI as BOTH `<name>` (a POSIX
+ * shell shim, for Git Bash) and `<name>.cmd` (for cmd) in the same directory. Trying the bare name
+ * first hands back the shim, which `CreateProcess` cannot run: the spawn fails with a file that
+ * plainly exists. The bare name is kept as a last resort because an extensionless PE is executable,
+ * just not the thing to prefer. A `bin` that already carries a PATHEXT suffix is returned untouched
+ * rather than growing a second one (`gh.exe.EXE`).
+ *
+ * The extension is appended with PATHEXT's OWN casing, which is conventionally upper case — so a
+ * hit on `gh.exe` comes back as `...\gh.EXE`. That is the same file (Windows paths are
+ * case-insensitive) and every consumer here spawns it rather than comparing it, so the alternative
+ * — a readdir per directory to recover the on-disk spelling — buys nothing and would put I/O on a
+ * function whose whole point is to stay cheap on the main thread.
+ *
+ * `platform` and `pathext` are parameters, not reads of the ambient process, so the mapping is
+ * unit-testable from any OS — the same shape as `tmuxInstall(platform, hasCommand)` next door.
+ */
+export function executableCandidates(
+  bin: string,
+  platform: NodeJS.Platform | string,
+  pathext: string | undefined
+): string[] {
+  if (platform !== 'win32') return [bin]
+  const exts = (pathext || DEFAULT_PATHEXT)
+    .split(';')
+    .map((e) => e.trim())
+    .filter(Boolean)
+  const lower = bin.toLowerCase()
+  if (exts.some((e) => lower.endsWith(e.toLowerCase()))) return [bin]
+  return [...exts.map((e) => bin + e), bin]
+}
+
+/** Strip the quotes Windows tolerates around a PATH entry ("C:\Program Files\..."). `where.exe`
+ *  strips them before resolving; a quote left in place turns a real directory into a miss. */
+export function unquotePathEntry(entry: string): string {
+  return entry.replace(/^"(.*)"$/, '$1')
+}
+
+/** `X_OK` is meaningless on Windows — Node documents it as degrading to `F_OK` — so the extension
+ *  list above, not the executable bit, is what makes a hit real there. Asking for X_OK anyway is
+ *  harmless but says something untrue about the check; F_OK says what we actually test. */
+const ACCESS_MODE = os.platform() === 'win32' ? fs.constants.F_OK : fs.constants.X_OK
+
+/** Walk a PATH string for an executable — sync but SUBPROCESS-FREE (one accessSync per candidate),
  *  so it is safe on the main thread. Returns the first accessible match, or null. */
 export function findInPathString(bin: string, pathStr: string | null | undefined): string | null {
-  for (const dir of (pathStr ?? '').split(path.delimiter)) {
+  const names = executableCandidates(bin, os.platform(), process.env.PATHEXT)
+  for (const raw of (pathStr ?? '').split(path.delimiter)) {
+    const dir = unquotePathEntry(raw)
     if (!dir) continue
-    const candidate = path.join(dir, bin)
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK)
-      return candidate
-    } catch {
-      // not here — keep looking
+    for (const name of names) {
+      const candidate = path.join(dir, name)
+      try {
+        fs.accessSync(candidate, ACCESS_MODE)
+        return candidate
+      } catch {
+        // not here — keep looking
+      }
     }
   }
   return null
@@ -92,7 +152,7 @@ export function findExecutableSync(bin: string, fallbacks: string[] = []): strin
   if (hit) return hit
   for (const c of fallbacks) {
     try {
-      fs.accessSync(c, fs.constants.X_OK)
+      fs.accessSync(c, ACCESS_MODE)
       return c
     } catch {
       // keep trying

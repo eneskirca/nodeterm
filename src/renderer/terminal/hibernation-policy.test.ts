@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { planHibernation, HIBERNATE_BATCH_MAX } from './hibernation-policy'
+import {
+  planHibernation,
+  shouldAutoWake,
+  shouldColdResume,
+  HIBERNATE_BATCH_MAX
+} from './hibernation-policy'
 
 const base = (id: string, over: object = {}) => ({
   id,
@@ -9,6 +14,7 @@ const base = (id: string, over: object = {}) => ({
   wired: true,
   offscreen: true,
   hibernated: false,
+  paused: false,
   remote: false,
   recurring: false,
   liveSubagents: false,
@@ -95,7 +101,7 @@ describe('planHibernation', () => {
 
   it('refuses a node the restart gate itself refuses (no session id / not resumable)', () => {
     expect(planHibernation([base('a', { sessionId: undefined })], NOW, cfg)).toEqual([])
-    expect(planHibernation([base('a', { agentId: 'opencode' })], NOW, cfg)).toEqual([])
+    expect(planHibernation([base('a', { agentId: 'custom:unknown' })], NOW, cfg)).toEqual([])
     expect(planHibernation([base('a', { agentId: undefined })], NOW, cfg)).toEqual([])
   })
 
@@ -103,6 +109,14 @@ describe('planHibernation', () => {
     expect(planHibernation([base('a', { wired: false })], NOW, cfg)).toEqual([])
     expect(planHibernation([base('a', { offscreen: false })], NOW, cfg)).toEqual([])
     expect(planHibernation([base('a', { hibernated: true })], NOW, cfg)).toEqual([])
+  })
+
+  it('excludes an already-PAUSED node even with `hibernated` unset — the deep "pause & end session" case, whose tmux was recycled rather than merely exited', () => {
+    // `hibernated: false` here on purpose: this is exactly the shape a deep-paused node has, and
+    // `!c.hibernated` alone would still admit it — `paused` is the only field that catches it.
+    expect(
+      planHibernation([base('a', { hibernated: false, paused: true })], NOW, cfg)
+    ).toEqual([])
   })
 
   it('excludes REMOTE sessions here, not only at the exit — the batch is a slice', () => {
@@ -125,5 +139,33 @@ describe('planHibernation', () => {
 
   it('empty candidate list → empty', () => {
     expect(planHibernation([], NOW, cfg)).toEqual([])
+  })
+})
+
+describe('shouldColdResume — a fresh cold restart must not relaunch a PAUSED node', () => {
+  it('refuses when paused', () => {
+    expect(shouldColdResume(true)).toBe(false)
+  })
+  it('allows the ordinary cold-restore auto-resume when not paused', () => {
+    expect(shouldColdResume(false)).toBe(true)
+    expect(shouldColdResume(undefined)).toBe(true)
+  })
+})
+
+describe('shouldAutoWake — the mount timer / visibility edge / kanban modal-open auto-triggers', () => {
+  it('fires for an ordinary hibernated (Eco) node, unaffected by this feature', () => {
+    expect(shouldAutoWake(true, false)).toBe(true)
+    expect(shouldAutoWake(true, undefined)).toBe(true)
+  })
+  it('never fires for a PAUSED node, hibernated or not — only an explicit Resume may', () => {
+    // shallow pause: hibernated AND paused
+    expect(shouldAutoWake(true, true)).toBe(false)
+    // deep "pause & end session": tmux recycled, hibernated never set, only paused
+    expect(shouldAutoWake(false, true)).toBe(false)
+    expect(shouldAutoWake(undefined, true)).toBe(false)
+  })
+  it('does not fire for a node that is neither hibernated nor paused (nothing to wake)', () => {
+    expect(shouldAutoWake(false, false)).toBe(false)
+    expect(shouldAutoWake(undefined, undefined)).toBe(false)
   })
 })

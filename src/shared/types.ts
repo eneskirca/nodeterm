@@ -411,6 +411,32 @@ export interface CanvasNodeState {
 }
 
 /**
+ * One entry in `Project.closedSessions` — everything needed to recreate a fresh node in the same
+ * spot a deleted one used to occupy. `node` is the exact shape a live node is already persisted
+ * as (`CanvasNodeState`); `absolutePosition` is captured at delete time because `node.position`
+ * is relative-to-parent when `node.parentId` is set, and that parent group may not exist by the
+ * time this entry is reopened.
+ */
+export interface ClosedSessionEntry {
+  id: string
+  closedAt: number
+  node: CanvasNodeState
+  absolutePosition: { x: number; y: number }
+}
+
+/**
+ * How many closed-session entries one project keeps (newest-first; the rest are dropped).
+ *
+ * ONE definition, because the cap must hold at every point an entry list is produced OR admitted:
+ * the store mutator that records a delete (`recordClosedSessions`), and every load path that
+ * admits `IndexEntryV3.closedSessions` (a ref'd project's machine-local history) or an inline
+ * project's embedded one. Enforcing it only where WE append is not enforcement at all —
+ * workspace.json is hand-editable input too, so an inflated list can arrive from outside (a
+ * pre-cap build's file, a hand edit) and would render unbounded rows and be written back in full.
+ */
+export const CLOSED_SESSIONS_CAP = 20
+
+/**
  * A snapshot of one canvas's nodes in the form sent over the remote mirror wire.
  * Reuses the persisted node shape (`CanvasNodeState`) so host and client agree on layout.
  */
@@ -695,6 +721,21 @@ export interface Project {
    * list. Absent/false = an open tab. A closed project never becomes `activeProjectId`.
    */
   closed?: boolean
+  /** Set alongside `closed: true` — when this project was closed, for sorting "recently closed"
+   *  history newest-first. Machine-local (see `IndexEntryV3.closedAt`) — never written into the
+   *  shared project file, same rule as `closed` itself. Absent on a project closed before this
+   *  field existed; such entries sort last. */
+  closedAt?: number
+  /**
+   * Sessions (terminal/agent/sticky/…) deleted from this project, most-recent-first, capped at
+   * 20. MACHINE-LOCAL, same rule as `closedAt`/`breadcrumbs` — see `IndexEntryV3.closedSessions`,
+   * never written into the shared project file (a delete's full node-state blob — title, cwd,
+   * position — would otherwise churn a committed, teammate-visible document on every one). Whose
+   * trash can holds what is a per-machine fact, not shared content. A fresh id per entry;
+   * recreating a node from one always mints a new node id/session, never reuses the original
+   * (see `recreateNodeFromSnapshot`).
+   */
+  closedSessions?: ClosedSessionEntry[]
   /**
    * Set at load time when the project's .nodeterm/project.json could not be read
    * (folder missing, server unreachable, corrupt file). Runtime-only — never persisted.
@@ -1108,6 +1149,10 @@ export interface ClaudeAccount {
   host?: string
   /** True until `claude /login` completes in the account dir and the email is captured. */
   pending?: boolean
+  /** Optional default node color for nodes opened under this account (Settings → Accounts);
+   *  unset = the agent's own brand color. Read through `accountNodeColor`, which re-validates it
+   *  as a string — this file is hand-editable and nothing checks it field-by-field on load. */
+  color?: string
   createdAt: number
 }
 
@@ -1404,6 +1449,13 @@ export interface Settings {
   agentHibernationEnabled: boolean
   /** How long a session must be idle + offscreen before "Eco" hibernates it (minutes). */
   agentHibernationIdleMinutes: number
+  /** When Eco hibernates a session, also mark it PAUSED (see `AgentNodeStatus.paused`) so it does
+   *  NOT auto-resume the next time the project or app reopens — only an explicit Resume brings it
+   *  back. Off by default: ordinary Eco already resumes automatically on the next reveal, and this
+   *  opts a hibernated session OUT of that for good, trading convenience for a colder, smaller
+   *  footprint across restarts. Independent of manual "Pause session", which always persists this
+   *  way regardless of this setting. */
+  agentHibernationPersistAcrossRestart: boolean
   /** Send anonymous usage data (version/OS) to the telemetry backend. Opt-OUT (default on):
    *  version/OS only, nothing personal, client IP never stored. Turn it off in Settings → Privacy
    *  (or hard-disable with DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED). Note: a lighter anonymous
@@ -1576,6 +1628,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // is deliberately long — shorter windows exit sessions the user is between turns on.
   agentHibernationEnabled: false,
   agentHibernationIdleMinutes: 30,
+  agentHibernationPersistAcrossRestart: false,
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
   // no telemetryEnabled key yet; anyone who already saved settings keeps their stored value.
   telemetryEnabled: true,
@@ -2847,6 +2900,23 @@ export interface ShortcutsApi {
   setTerminalFocused(focused: boolean): void
 }
 
+/**
+ * Trigger nodes (issue #493): the card's IPC surface. `arm` binds this machine's consent to the
+ * exact spec the user was shown (content-bound — see @shared/trigger); `runNow` chooses only WHEN,
+ * never WHAT (the payload is resolved core-side from the node's persisted content). Real on
+ * desktop and the Server Edition; the relay stub refuses (another machine's arm store is not ours
+ * to write).
+ */
+export interface TriggersApi {
+  arm(projectId: string, nodeId: string, spec: import('./trigger').TriggerSpec): Promise<boolean>
+  disarm(projectId: string, nodeId: string): Promise<void>
+  status(projectId: string, nodeId: string): Promise<import('./trigger').TriggerNodeStatus>
+  runNow(
+    projectId: string,
+    nodeId: string
+  ): Promise<{ outcome: 'fired' | 'missed' | 'failed' | 'queued'; detail?: string }>
+}
+
 export interface NodeTerminalApi {
   pty: PtyApi
   workspace: WorkspaceApi
@@ -2876,6 +2946,7 @@ export interface NodeTerminalApi {
   githubControl: import('./github-issues').GitHubControlApi
   usage: UsageApi
   sessionMemory: SessionMemoryApi
+  triggers: TriggersApi
   context: ContextApi
   canvas: CanvasApi
   codex: CodexApi
@@ -2980,6 +3051,20 @@ export interface NodeTerminalApi {
   onUnreadClear(listener: (nodeId: string) => void): () => void
   /** Fires on each normalized agent hook event (working/done/waiting/subagent/…). Returns unsubscribe. */
   onAgentStatus(listener: (e: NormalizedAgentEvent) => void): () => void
+  /** Report a node's Eco hibernation flag to the core (the renderer owns the flag; the core only
+   *  mirrors it into the agent-status file so the phone can render SLEEPING). Fire-and-forget;
+   *  called on every `setHibernated` change and replayed for the persisted set at boot. */
+  reportHibernated(nodeId: string, on: boolean): void
+  /** Fires when the core asks this renderer to WAKE a hibernated node NOW (a phone viewer just
+   *  attached to its session over the relay). A nudge with `wakeHibernatedNode`'s exact contract:
+   *  re-read the flag, no-op when not hibernated or not mounted. Returns unsubscribe.
+   *  Desktop-only signal (the relay host lives in the desktop main process); the ws-bridge
+   *  subscribes to nothing and returns a no-op unsubscribe. */
+  onAgentWake(listener: (nodeId: string) => void): () => void
+  /** Fires with the CURRENT set of node ids that have a live relay (phone) viewer attached — the
+   *  full set each change, never a delta. Feeds `isNodeWatched` so Eco cannot hibernate a session
+   *  someone is watching from a phone. Desktop-only signal, like `onAgentWake`. */
+  onRemoteViewers(listener: (nodeIds: string[]) => void): () => void
   /** Fires with live subagent transcript chunks while a subagent runs. Returns unsubscribe. */
   onSubagentActivity(listener: (e: SubagentActivity) => void): () => void
   /** Fires when an agent's `nodeterm` CLI requests a canvas action. Returns unsubscribe. */

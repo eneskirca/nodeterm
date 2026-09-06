@@ -27,6 +27,7 @@ import {
 import { randomUUID } from 'crypto'
 import { renameAtomicSync } from '../../fs-atomic'
 import { buildManagedScript } from './managed-script'
+import { normalizeHookCommand } from './install-helper'
 import {
   computeTrustedHash,
   getCodexCanonicalTrustPath,
@@ -101,7 +102,10 @@ function scriptPath(): string {
 // keys off the path segment, not the exact command string.
 function isManagedCommand(command: string | undefined): boolean {
   if (!command) return false
-  return command.replaceAll('\\', '/').includes(`agent-hooks/${SCRIPT_FILE_NAME}`)
+  // Separator folding comes from install-helper so the two installers can never disagree about
+  // what makes an entry ours — the drift that made the JSON-settings agents duplicate on Windows
+  // (#558). Only the normalizer is shared; codex's merge stays its own (the trust hash).
+  return normalizeHookCommand(command).includes(`agent-hooks/${SCRIPT_FILE_NAME}`)
 }
 
 function definitionHasManagedCommand(def: HookDefinition): boolean {

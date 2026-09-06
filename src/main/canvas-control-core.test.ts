@@ -14,6 +14,7 @@ import {
 } from '../core/agents/hook-sandbox-hint-sh'
 import { RETRYABLE } from '../core/agents/agent-message-decide'
 import { PROJECT_TARGETABLE_VERBS } from './project-grants'
+import { DRY_RUN_VERBS } from '../shared/control-verbs'
 import { STRICT_CONTROL_VERBS } from '../core/agents/node-identity-policy'
 import { BROWSER_ACTION_KEYS } from '../core/browser-verb'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from '../core/browser-outcomes'
@@ -325,6 +326,46 @@ describe('parseControlRequest', () => {
       expect(body.toLowerCase()).toContain('ignore')
       // Per-role model is what lets ONE spawn-team call mix tiers; the JSON example must show it.
       expect(body).toContain('"model"')
+    }
+  })
+
+  it('both agent-facing texts document --base accepting a station id (issue #530)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The flag surface must show the widened grammar…
+      expect(body).toContain('--base <ref|stationId>')
+      // …and both hard truths beside it: what a station id resolves to, and that the base is
+      // captured at CREATION (the deferred-resolution half of #530 is not built — an agent that
+      // reads this text and assumes lazy capture bases a wave on an empty branch).
+      expect(body.toLowerCase()).toContain('station')
+      expect(body).toMatch(/captured when the worktree is CREATED/i)
+    }
+  })
+
+  it('both agent-facing texts document --dry-run, derived from DRY_RUN_VERBS (issue #532)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      expect(body).toContain('--dry-run')
+      // The verb list is RENDERED from the set (dryRunDocLines) — walk the real set so a verb
+      // added to the gate lands in the text the day it is added, and a removed one reds here.
+      for (const v of DRY_RUN_VERBS) expect(body).toContain(v)
+      // Both hard edges must be stated, or an agent discovers them by losing a call to each:
+      // unsupported verbs refuse, and --project cannot be combined.
+      expect(body.toLowerCase()).toContain('refuses `--dry-run`')
+      expect(body).toContain('cannot be combined with `--project`')
+    }
+  })
+
+  it('both agent-facing texts document --prompt-file and the one-line --prompt fact (issue #520)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // `assembleLaunchCommand` collapses every whitespace run in a --prompt literal (it rides
+      // argv on a line typed into the pane). An agent that does not know this writes a numbered
+      // brief and gets one paragraph — and the fix, --prompt-file, is useless undocumented.
+      expect(body.toUpperCase()).toContain('ONE LINE')
+      expect(body).toContain('--prompt-file')
+      // The per-role escape on spawn-team must be named too, or teams stay prose-only.
+      expect(body).toContain('promptFile')
+      // The failure that costs a whole station: flattened, a leading slash command swallows the
+      // task as its argument, and the node then reads as idle to `--after`.
+      expect(body.toLowerCase()).toMatch(/begin a prompt with `\/`|start a prompt with `\/`/)
     }
   })
 

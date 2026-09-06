@@ -21,6 +21,10 @@ export interface CodexAccount {
   pending?: boolean
   /** Set only for remote (SSH) accounts: the ssh host this account's home lives on. */
   host?: string
+  /** Optional default node color for nodes opened under this account (Settings → Accounts);
+   *  unset = the agent's own brand color. Read through `accountNodeColor`, which re-validates it
+   *  as a string — settings.json is hand-editable and nothing checks it field-by-field on load. */
+  color?: string
 }
 
 /**

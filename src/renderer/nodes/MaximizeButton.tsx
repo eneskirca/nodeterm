@@ -11,7 +11,8 @@ import { IconMaximize, IconRestoreSize } from '../components/icons'
 import { commandTooltip } from '../lib/keybindingOverrides'
 import { markWorkspaceDirty } from '../state/workspaceDirty'
 import { maximizeNodeToRect, restoreMaximizedNode, type CanvasNode } from '../state/workspace'
-import { maximizeTargetRect } from '../lib/nodeMaximize'
+import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from '../lib/nodeMaximize'
+import { measurePinnedInsets } from '../lib/pinnedInsets'
 
 export function MaximizeButton({ id, maximized }: { id: string; maximized: boolean }) {
   const { setNodes, getViewport } = useReactFlow()
@@ -21,8 +22,17 @@ export function MaximizeButton({ id, maximized }: { id: string; maximized: boole
     setNodes((ns) => {
       const flow = ns as CanvasNode[]
       if (maximized) return restoreMaximizedNode(flow, id)
-      const { width, height } = store.getState()
-      const rect = maximizeTargetRect(getViewport(), width, height)
+      const { width, height, domNode } = store.getState()
+      // Same usable area the canvas commands compute: a node maximized from its header must clear
+      // the pinned side panels too — this button is the primary maximize path.
+      const wrap = domNode?.getBoundingClientRect()
+      const rect = maximizeTargetRect(
+        getViewport(),
+        width,
+        height,
+        NODE_MAXIMIZE_MARGIN_PX,
+        wrap ? measurePinnedInsets(wrap) : undefined
+      )
       return rect ? maximizeNodeToRect(flow, id, rect) : ns
     })
     // Direct setNodes bypasses handleNodesChange, so the project must be marked dirty

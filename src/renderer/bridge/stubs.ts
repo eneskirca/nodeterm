@@ -122,6 +122,9 @@ export function buildStubApi(): Omit<
   | 'onUnreadClear'
   | 'answerPermission'
   | 'ackDone'
+  | 'reportHibernated'
+  | 'onAgentWake'
+  | 'onRemoteViewers'
   // Real over the bridge (IPC.appUserDataDir): the worktree dialog's default path is derived from
   // it, and a '' stub would propose `/worktrees/…` at the filesystem root.
   | 'userDataDir'
@@ -272,6 +275,17 @@ export function buildStubApi(): Omit<
       // measure" — the one honest answer, and never mistakable for "nothing is using memory".
       read: () => Promise.resolve({ ok: false, rows: [], mem: null }),
       host: () => Promise.resolve(null)
+    },
+    triggers: {
+      // Superseded by the real WS-backed namespace in ws-bridge (startTriggerService registers the
+      // handlers in the server shell). On the RELAY tab this stub stays in force and REFUSES: the
+      // arm store, the scheduler and the sessions all live on the host — arming from the guest
+      // would write another machine's execution consent. The card catches the rejection and says
+      // triggers are managed on the host machine.
+      arm: U('triggers.arm'),
+      disarm: U('triggers.disarm'),
+      status: U('triggers.status'),
+      runNow: U('triggers.runNow')
     },
     codex: {
       // Overridden by the real WS-backed namespace in ws-bridge. The stub's answer is the same
@@ -510,6 +524,9 @@ export function buildStubApi(): Omit<
     | 'onUnreadClear'
     | 'answerPermission'
   | 'ackDone'
+  | 'reportHibernated'
+  | 'onAgentWake'
+  | 'onRemoteViewers'
     | 'userDataDir'
     | 'presence'
     | 'speech'

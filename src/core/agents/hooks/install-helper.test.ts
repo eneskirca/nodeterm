@@ -1,5 +1,6 @@
+import path from 'path'
 import { describe, expect, it } from 'vitest'
-import { buildManagedHookCommand, mergeManagedHook } from './install-helper'
+import { buildManagedHookCommand, mergeManagedHook, type HookSettings } from './install-helper'
 import { CLAUDE_HOOK_EVENTS } from '@shared/agents/hook-events'
 
 const cmd = buildManagedHookCommand('/remote/.nodeterm/agent-hooks/claude.sh')
@@ -109,5 +110,87 @@ describe('mergeManagedHook — matcher support is opt-in per event', () => {
     const out = mergeManagedHook({}, 'CMD', ['Stop', { event: 'PreToolUse', matcher: '.*' }])
     expect(out.hooks!.Stop[0]).toEqual({ hooks: [{ type: 'command', command: 'CMD' }] })
     expect(out.hooks!.PreToolUse[0]).toEqual({ matcher: '.*', hooks: [{ type: 'command', command: 'CMD' }] })
+  })
+})
+
+/**
+ * Issue #558 — the marker was normalized to `/` while the stored command was matched raw, so on
+ * Windows we never recognized our OWN entry: the filter kept it and every launch appended a fresh
+ * set. A user reported nine identical definitions on each of the nine claude events (23,916-byte
+ * settings.json) — nine `claude.sh` processes and nine POSTs per Stop, and nine concurrent 45 s
+ * `PermissionRequest` waits all entitled to answer the same prompt.
+ *
+ * These run on any OS: the win32-ness that matters is the SEPARATOR inside the stored command,
+ * which `path.win32` gives us without a Windows runner.
+ */
+describe('mergeManagedHook — Windows path separators (issue #558)', () => {
+  const winScript = path.win32.join('C:\\Users\\u', '.nodeterm', 'agent-hooks', 'claude.sh')
+  const winCmd = buildManagedHookCommand(winScript)
+
+  it('the command really does carry backslashes (guards the fixture itself)', () => {
+    expect(winScript).toBe('C:\\Users\\u\\.nodeterm\\agent-hooks\\claude.sh')
+    expect(winCmd).toContain('agent-hooks\\claude.sh')
+  })
+
+  it('recognizes its own entry — five installs leave ONE, not five', () => {
+    let cfg: HookSettings = {}
+    for (let i = 0; i < 5; i++) cfg = mergeManagedHook(cfg, winCmd, ['Stop'])
+    expect(cfg.hooks!.Stop).toEqual([{ hooks: [{ type: 'command', command: winCmd }] }])
+  })
+
+  it('repairs the file a broken build already wrote: 9 duplicates per event collapse to 1', () => {
+    // The reported state, rebuilt: nine byte-identical definitions on every managed event.
+    const dup = { hooks: [{ type: 'command', command: winCmd }] }
+    const hooks: Record<string, typeof dup[]> = {}
+    for (const ev of CLAUDE_HOOK_EVENTS) hooks[ev as string] = Array.from({ length: 9 }, () => ({ ...dup }))
+    const out = mergeManagedHook({ hooks }, winCmd, CLAUDE_HOOK_EVENTS)
+    for (const ev of CLAUDE_HOOK_EVENTS) {
+      expect(out.hooks![ev as string], ev as string).toEqual([{ hooks: [{ type: 'command', command: winCmd }] }])
+    }
+  })
+
+  it('collapses duplicates written with the OTHER separator too', () => {
+    // Same machine, different builds/instances: only the separator spelling differs, and both
+    // sides of the comparison are normalized now, so either spelling is recognized as ours.
+    const posix = buildManagedHookCommand('/home/u/.nodeterm/agent-hooks/claude.sh')
+    const before = {
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: winCmd }] }, { hooks: [{ type: 'command', command: posix }] }] }
+    }
+    expect(mergeManagedHook(before, winCmd, ['Stop']).hooks!.Stop).toEqual([
+      { hooks: [{ type: 'command', command: winCmd }] }
+    ])
+  })
+
+  it("still leaves a foreign tool's windows-path hook alone", () => {
+    const foreign = { hooks: [{ type: 'command', command: 'sh "C:\\Users\\u\\.someapp\\agent-hooks\\other.sh"' }] }
+    const out = mergeManagedHook({ hooks: { Stop: [foreign, { hooks: [{ type: 'command', command: winCmd }] }] } }, winCmd, ['Stop'])
+    expect(out.hooks!.Stop).toEqual([foreign, { hooks: [{ type: 'command', command: winCmd }] }])
+  })
+})
+
+describe('mergeManagedHook — only OUR handler is removed from a shared definition', () => {
+  it("keeps a user's handler that sits beside ours in one definition", () => {
+    const mixed = {
+      matcher: '.*',
+      hooks: [
+        { type: 'command', command: 'my-own-hook.sh' },
+        { type: 'command', command: cmd }
+      ]
+    }
+    const out = mergeManagedHook({ hooks: { Stop: [mixed] } }, cmd, ['Stop'])
+    expect(out.hooks!.Stop).toEqual([
+      { matcher: '.*', hooks: [{ type: 'command', command: 'my-own-hook.sh' }] },
+      { hooks: [{ type: 'command', command: cmd }] }
+    ])
+  })
+
+  it('survives a hand-edited definition whose handler has no command at all', () => {
+    const junk = { hooks: [{ type: 'command' } as unknown as { type: string; command: string }] }
+    expect(() => mergeManagedHook({ hooks: { Stop: [junk] } }, cmd, ['Stop'])).not.toThrow()
+  })
+
+  it('leaves a non-array event value we cannot interpret exactly as found', () => {
+    const before = { hooks: { SubagentStop: 'nonsense' as unknown as [] } }
+    expect(mergeManagedHook(before, cmd, ['Stop']).hooks!.SubagentStop).toBe('nonsense')
   })
 })
