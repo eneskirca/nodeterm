@@ -3112,6 +3112,44 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
 - **Shortcuts** (`ShortcutsPanel.tsx`, ? / ⌘/): shown once on first launch (`seenShortcuts`).
   **Derived from the registry, never hand-listed** — see the Keybindings invariant below.
 - **Welcome** (`WelcomeScreen.tsx`): shown when no projects exist.
+- **Window geometry is REMEMBERED** (`main/window-state.ts`, `<userData>/window-state.json`) — size,
+  position and maximized state, restored at the next launch. Before this the window opened at a
+  hard-coded 1400x900 every time, on every platform, so a user who works maximized re-maximized it
+  on every launch; Electron persists nothing on its own and no platform does it for us. The module
+  is Electron-free in the `keydown-intercept.ts` shape (pure decisions over plain rectangles,
+  structural window interfaces), so the refusals below can be pressed by a test instead of only by
+  someone with two monitors — `screen.getAllDisplays()` is called at the seam in `index.ts` and its
+  **work areas** (not full display bounds) are passed in. The refusals ARE the feature, because each
+  is a way the naive version is worse than the fixed size it replaces:
+  - **`getNormalBounds()`, never `getBounds()`.** While maximized the latter returns the MAXIMIZED
+    rectangle, so saving it makes the next un-maximize hand back a screen-sized window — state that
+    looks right and behaves wrong, and only for the users who maximize.
+  - **A position that is no longer reachable is DROPPED, not clamped.** A laptop undocked from the
+    monitor its window was on would otherwise reopen the app off-screen: running, focusable from the
+    dock, visible nowhere, with no gesture that rescues it. Reachable means a real overlap with some
+    work area (`MIN_VISIBLE_WIDTH`/`HEIGHT`), judged against the CLAMPED size — a few pixels on
+    screen is not a title bar anyone can grab. Dropping keeps the user's size and lets the platform
+    place a window it knows how to place; inventing a corner for it is the guess.
+  - **No capture while minimized or fullscreen.** `isMaximized()` is FALSE while a macOS window is
+    fullscreen, so capturing there records `maximized: false` and erases exactly the preference this
+    exists to remember. The last non-fullscreen state stands, which also means the app never reopens
+    INTO fullscreen — deliberate: a fullscreen window is usually a temporary mode and is much harder
+    to escape on first launch than a maximized one.
+  - **Maximize before the first paint**, while the window is still `show: false`; maximizing after
+    `show()` is a visible jump from the restored size on every launch.
+  - Every field is **re-validated as a number on read** — the file is hand-editable and its values
+    reach the `BrowserWindow` constructor before there is a window in which to report a failure.
+  - Saves are debounced (`resize`/`move` fire continuously through a drag) and flushed
+    **synchronously** on `close`: that is the only moment guaranteed to see the final state, and an
+    awaited write there races the process exit. Published through `renameAtomicSync` with a
+    per-call unique temp, like every other store.
+  - **NT_MULTI is excluded**: a throwaway dev sandbox may share the real app's userData, and it must
+    not move the window of the app being developed.
+  - Desktop only, and genuinely so — a browser tab's geometry is the browser's, and the mobile
+    companion has no window. Nothing here belongs in `src/core`. **Wayland caveat**: a native-Wayland
+    client cannot set its own position (the compositor owns placement), so x/y is honoured under
+    XWayland and quietly ignored otherwise. Size and maximized restore either way, which is what the
+    drop-don't-clamp rule already degrades to.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. The New-project `+` is a **sibling** of `.tabbar__tabs`, not its last child — inside
