@@ -2373,11 +2373,35 @@ export class PtyManager {
    * Same fail-safe direction as everywhere else here: an unprobeable tmux answers "exists", so
    * the caller treats it as a warm join and types nothing into it.
    */
+  /**
+   * Would this machine ever SELECT the session-host backend? The same predicate the spawn path uses
+   * (win32, or no local tmux, with the setting on and the bundle present), lifted out so the
+   * read-only queries can ask it too.
+   *
+   * They have to: `hasSession` / `listSessions` go through `request()`, and `request()` is what
+   * establishes the connection on a cold client — so an existence probe SPAWNS a host. Before
+   * #579 that was invisible, because no packaged build had a bundle to spawn. Once it ships, an
+   * unguarded probe would start a session-host process on a tmux-backed Mac that can never choose
+   * it.
+   */
+  private hostBackendEligible(): boolean {
+    return (
+      (this.runtimePlatform === 'win32' || !this.tmuxPath) &&
+      this.getSettings().tmuxEnabled &&
+      sessionHostSupported()
+    )
+  }
+
   async sessionExists(persistKey: string): Promise<boolean> {
     if (this.liveSessionForPersistKey(persistKey)) return true
     const probes: Promise<boolean>[] = []
     if (this.tmuxPath) probes.push(this.tmuxSessionExists(persistKey))
-    if (this.getSettings().tmuxEnabled && sessionHostSupported()) {
+    // Same "would this machine ever choose the host backend" predicate the spawn path uses, and it
+    // has to be here rather than only there: `hasSession` goes through `request()`, which
+    // ESTABLISHES the connection on a cold client — so an existence probe SPAWNS a host. Without
+    // the guard, a tmux-backed Mac would start a session-host process it can never select, purely
+    // by being asked whether a session exists.
+    if (this.hostBackendEligible()) {
       // A failed host read is not evidence of absence. This mirrors tmuxSessionExists' fail-safe
       // direction and prevents a reconnect blip from being mistaken for a cold generation.
       probes.push(sessionHostHasSession(sessionName(persistKey)).catch(() => true))
@@ -4281,10 +4305,11 @@ export class PtyManager {
           )
           .catch(() => [] as string[])
       : Promise.resolve([] as string[])
-    const hostSessions =
-      this.getSettings().tmuxEnabled && sessionHostSupported()
-        ? sessionHostListSessions().catch(() => [] as string[])
-        : Promise.resolve([] as string[])
+    // Guarded for the same reason as `sessionExists`: listing is a request, and a request on a cold
+    // client spawns the host.
+    const hostSessions = this.hostBackendEligible()
+      ? sessionHostListSessions().catch(() => [] as string[])
+      : Promise.resolve([] as string[])
     const [tmux, host] = await Promise.all([tmuxSessions, hostSessions])
     return [...new Set([...tmux, ...host])]
   }

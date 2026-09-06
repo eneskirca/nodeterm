@@ -14,7 +14,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build && npm run build:codex-relay",
+    "build": "electron-vite build && npm run host:build && npm run build:codex-relay",
     "build:codex-relay": "node scripts/build-codex-relay.mjs",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
@@ -28,10 +28,10 @@
     "server:dev": "npm run build && npm run server:build && node out/server/main.cjs",
     "make-icon": "node scripts/make-icon.mjs",
     "make-social": "node scripts/make-social.mjs",
-    "dist": "npm run make-icon && electron-vite build && electron-builder --mac --arm64 --publish never -c.mac.identity=null -c.mac.notarize=false -c.extraMetadata.nodeTermUpdates=disabled",
-    "dist:linux": "npm run make-icon && electron-vite build && electron-builder --linux --publish never -c.extraMetadata.nodeTermUpdates=disabled",
-    "dist:win": "npm run make-icon && electron-vite build && electron-builder --win --x64 --publish never -c.extraMetadata.nodeTermUpdates=disabled",
-    "release": "npm run make-icon && electron-vite build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
+    "dist": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --mac --arm64 --publish never -c.mac.identity=null -c.mac.notarize=false -c.extraMetadata.nodeTermUpdates=disabled",
+    "dist:linux": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --linux --publish never -c.extraMetadata.nodeTermUpdates=disabled",
+    "dist:win": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --win --x64 --publish never -c.extraMetadata.nodeTermUpdates=disabled",
+    "release": "npm run make-icon && electron-vite build && npm run host:build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
     "postinstall": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper"
   },
   "build": {
