@@ -35,6 +35,10 @@ function ghInvocation(args: string[]): ReturnType<typeof directExecutableInvocat
   return gh ? directExecutableInvocation(gh, args) : null
 }
 
+function ghRunnable(): boolean {
+  return ghInvocation([]) !== null
+}
+
 // Single-flight registry for the one clone the app runs at a time. Module-scoped so a
 // macOS window re-creation can't orphan it.
 type ActiveClone = {
@@ -83,7 +87,7 @@ async function ghAuthed(): Promise<boolean> {
  * call ever (no cache at all) reports `false` while the probe runs; that flips one refresh later.
  */
 function ghAuthedSwr(): boolean {
-  if (!ghInvocation([])) return false
+  if (!ghRunnable()) return false
   const fresh = !!ghAuthedCache && Date.now() - ghAuthedCache.at < GH_AUTH_TTL_MS
   if (!fresh) void ghAuthed().catch(() => {})
   return ghAuthedCache?.value ?? false
@@ -352,7 +356,7 @@ export class GitService {
       hasRemote: false,
       hasOrigin: false,
       hasUpstream: false,
-      ghAvailable: !!ghInvocation([]),
+      ghAvailable: ghRunnable(),
       ghAuthed: false,
       staged: [],
       changes: []
@@ -453,7 +457,7 @@ export class GitService {
       hasRemote,
       hasOrigin,
       hasUpstream,
-      ghAvailable: !!ghInvocation([]),
+      ghAvailable: ghRunnable(),
       ghAuthed: gh,
       staged,
       changes
