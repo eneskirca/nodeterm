@@ -2,20 +2,31 @@
 //
 // WHY THIS EXISTS. Every managed hook command in this repo is a POSIX `sh` one-liner, and for
 // claude that is fine on Windows because Claude Code runs its hooks through Git Bash. Codex does
-// not: `codex-rs/hooks/src/engine/command_runner.rs` (rust-v0.151.0) builds the hook command as
+// not. The hook runs in the SESSION'S shell, and `codex-rs/shell-command/src/shell_detect.rs`
+// (rust-v0.153.4) prefers PowerShell on Windows:
+//
+//     if cfg!(windows) { get_shell(ShellType::PowerShell).unwrap_or_else(ultimate_fallback_shell) }
+//
+// with `codex-rs/hooks/src/engine/command_runner.rs`'s
 //
 //     #[cfg(windows)]  ("COMSPEC", "cmd.exe", "/C")
 //
-// and only substitutes a different shell when the session has one configured — which a default
-// Windows install does not. So the string we write is handed to `cmd.exe /C`, which cannot parse
-// `if [ -x '...' ]; then ...; fi`:
+// as the fallback. Both are reachable — PowerShell was what the shipped codex-cli 0.153.4 used on a
+// stock Windows 11 install here. NEITHER can parse `if [ -x '...' ]; then ...; fi`:
 //
-//     -x was unexpected at this time.       exit=1
+//     cmd.exe     -x was unexpected at this time.           exit=1
+//     PowerShell  Missing '(' after 'if' in if statement.   exit=1
 //
 // That is exit 1 on EVERY event, for the whole life of a codex node: no status badge, no
 // PermissionRequest forwarding, no Stop to clear RUNNING, and a visible "hook exited with code 1"
-// line each time (issue #567). `/bin/sh` would not have rescued a cmd-parsable variant either —
-// Git Bash's shell is at `C:\Program Files\Git\bin\sh.exe` and is not on PATH.
+// line each time (issues #567, #685). `/bin/sh` would not have rescued a parsable variant either:
+// on the machine this was measured on, Git Bash's shell sits at `C:\Program Files\Git\bin\sh.exe`
+// and is not on PATH — hook commands of `& sh '<script>'` and `& sh.exe '<script>'` both came back
+// Failed. Hence the search below is by absolute path, with PATH only as its last resort.
+//
+// WHICH INTERPRETER RUNS THE COMMAND is therefore not something this file may assume. It is pinned
+// in the command itself — `buildManagedCommand` emits `<abs cmd.exe> /d /c call "<this wrapper> "`,
+// measured to run this file under both — so everything below can rely on being run by cmd.exe.
 //
 // WHAT THIS IS NOT. It is deliberately **not** a second implementation of the hook protocol. The
 // managed script (`managed-script.ts`) stays the one POSIX source of truth for POSTing the payload,
