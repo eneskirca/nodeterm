@@ -129,9 +129,10 @@ export function isKanbanOpen(projectId: string): boolean {
  * Gated by the feature flag `omniKanbanEnabled` — when the feature is off, the view flag is
  * ignored and per-project tabs remain. `globalKanban` itself is persisted in localStorage
  * (`nodeterm.globalKanban`) so an explicit "open overview" survives a restart; this is
- * intentional (like `viewByProject`), not transient — a lock that survives restart would read
- * as "frozen", but a board that survives restart reads as "you left it open". If that proves
- * surprising, make this transient; the call site is this one helper.
+ * intentional (like `viewByProject`), not transient: a canvas lock that survives restart would
+ * read as "frozen" (which is why `lib/canvasLock.ts` keeps it opt-in and default off), but a
+ * board that survives restart reads as "you left it open". If that proves surprising, make this
+ * transient; the call site is this one helper.
  */
 export function isGlobalKanbanOpen(): boolean {
   try {

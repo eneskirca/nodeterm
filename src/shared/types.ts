@@ -1365,6 +1365,15 @@ export interface Settings {
    *  costs them the sense of where they were. Either way the node is centred and kept clear of the
    *  floating chrome (renderer/lib/nodeFocus). */
   focusZoomToNode: boolean
+  /** Whether the bottom-left canvas lock survives a restart. OFF by default, and deliberately so:
+   *  the lock was transient by design, because a canvas that will not pan on the next launch reads
+   *  as "the app is frozen" to whoever opens it, and the lit button is a small thing to spot. Users
+   *  who lock on purpose and want it to stay locked opt in here; everyone else opens unlocked
+   *  exactly as before. The lock itself is persisted in localStorage (renderer/lib/canvasLock),
+   *  never in settings.json or the git-shared project.json: this flag says whether to remember,
+   *  the lock is one person's view state. Machine-local on Desktop; in the Server Edition this
+   *  setting is the server's while the lock is per browser profile. */
+  rememberCanvasLock: boolean
   /** Open Markdown files (.md, .markdown, …) in rendered preview instead of the code editor.
    *  Only picks the view an editor node OPENS in — the node's Preview/Edit toggle (and the
    *  markdown-toggle chord) still switches either way. Default ON since the release after
@@ -1676,6 +1685,7 @@ export const DEFAULT_SETTINGS: Settings = {
   panHoverDelay: 600,
   doubleClickFocus: true,
   focusZoomToNode: true,
+  rememberCanvasLock: false,
   openMarkdownPreview: true,
   openMarkdownPreviewMigrated: true,
   terminalMiddleClickPaste: false,

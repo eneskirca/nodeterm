@@ -484,3 +484,46 @@ describe('navigating from the sidebar dismisses the start screen', () => {
     )
   })
 })
+
+describe('the canvas lock is remembered only when the user opted in', () => {
+  // The whole feature is three lines inside a 13k-line file, and every one of them can be deleted
+  // without reddening a test: the helper's own suite passes whether or not Canvas ever calls it.
+  // Same reasoning as the frameNode pin above.
+  const effect = CANVAS_SRC.slice(
+    CANVAS_SRC.indexOf('const rememberCanvasLock = useSettings('),
+    CANVAS_SRC.indexOf('// Load saved SSH servers once')
+  )
+
+  it('starts unlocked, so an install that never opts in is unchanged', () => {
+    expect(CANVAS_SRC).toContain('const [canvasLocked, setCanvasLocked] = useState(false)')
+  })
+
+  it('restores and persists behind settings.rememberCanvasLock', () => {
+    expect(effect).toContain('useSettings((s) => s.settings.rememberCanvasLock)')
+    expect(effect).toContain('if (rememberCanvasLock) setCanvasLocked(readCanvasLocked())')
+    expect(effect).toContain('if (rememberCanvasLock) writeCanvasLocked(canvasLocked)')
+    // The deps are the one line here that a deletion leaves green: without `canvasLocked` the
+    // effect stops re-running on a toggle, so only a settings flip would ever write and a lock
+    // engaged with the BUTTON would never survive a restart. There is no ESLint in this repo, so
+    // exhaustive-deps cannot catch it either.
+    expect(effect).toContain('}, [settingsHydrated, rememberCanvasLock, canvasLocked])')
+  })
+
+  it('waits for settings to hydrate before deciding either way', () => {
+    // Canvas mounts before settings load, so an ungated read sees DEFAULT_SETTINGS (off) and the
+    // opt-in silently never takes effect.
+    expect(effect).toContain('if (!settingsHydrated) return')
+    expect(indexOfPresent(effect, 'if (!settingsHydrated) return')).toBeLessThan(
+      indexOfPresent(effect, 'canvasLockRestored.current = true')
+    )
+  })
+
+  it('restores only on the first run after hydration, never on a later opt-in', () => {
+    // Flipping the setting on mid-session must not reach into storage and lock a canvas somebody
+    // is working on: the latch is what keeps a restore a launch-time event.
+    expect(indexOfPresent(effect, 'canvasLockRestored.current = true')).toBeLessThan(
+      indexOfPresent(effect, 'if (rememberCanvasLock) setCanvasLocked(readCanvasLocked())')
+    )
+    expect(effect).toContain('if (!canvasLockRestored.current) {')
+  })
+})

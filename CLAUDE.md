@@ -359,7 +359,22 @@ project's nodes only.** The contract:
   `liveCollapseKeys`), because settings.json is forever and a canvas churns through group ids.
 - The bottom-left **canvas lock** freezes the CAMERA only (pan/zoom): nodes stay draggable,
   resizable and connectable while locked — the point is "stop the map sliding", not "freeze
-  the work".
+  the work". It is **transient by default and opt-in to remember**: a lock that survives a
+  restart reads as "the app is frozen" to whoever opens the app next, and the lit button is a
+  small thing to spot, so `settings.rememberCanvasLock` (Behavior, default OFF) is what turns it
+  into a preference. The bit itself lives in localStorage (`nodeterm.canvasLocked`,
+  `renderer/lib/canvasLock.ts`) beside the view mode and the explorer pin, never in settings.json
+  and never in the git-shared `project.json`: the SETTING says whether to remember, the lock is
+  one person's view state. Note the two tiers differ per surface: on Desktop both are
+  machine-local, but in the **Server Edition** the setting rides that server's settings.json
+  (shared by every browser hitting it) while the bit is per browser PROFILE, so two profiles can
+  legitimately disagree about the lock. Desktop + Server Edition; **Mobile: N/A** (no canvas).
+  It is one GLOBAL bit rather than per-project
+  because `<Canvas />` is mounted once and is not keyed by project, so the lock always carried
+  across project switches within a session. Restore is gated on settings HYDRATION (Canvas mounts
+  first, so a `useState` initializer would read the default and the opt-in would silently never
+  work) and latched to the first run, so switching the setting on mid-session never reaches into
+  storage and locks a canvas somebody is working on.
 - Before any project switch / add / delete, `commitActiveToStore()` serializes the live
   React Flow nodes back into the store, so nothing is lost. Then disk is written.
 - Switching away unmounts the old project's `TerminalNode`s → their tmux clients detach but
