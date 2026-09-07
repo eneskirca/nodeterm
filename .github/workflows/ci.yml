@@ -24,8 +24,19 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # electron-rebuild (via postinstall) targets Electron's ABI, so vitest cannot load the
+      # binding it produces — the *.realtty / *.realtmux suites self-skip, and the Windows
+      # session-host tests only `import type`. Skip the compile; keep the two install effects
+      # that are actually load-bearing: patch-node-pty.mjs writes the markers
+      # src/main/node-pty-patch.test.ts asserts, and esbuild needs its platform binary linked.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Patch node-pty sources
+        run: node scripts/patch-node-pty.mjs
+
+      - name: Link esbuild platform binary
+        run: npm rebuild esbuild
 
       - name: Type check
         run: npm run typecheck
@@ -51,8 +62,19 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # electron-rebuild (via postinstall) targets Electron's ABI, so vitest cannot load the
+      # binding it produces — the *.realtty / *.realtmux suites self-skip, and the Windows
+      # session-host tests only `import type`. Skip the compile; keep the two install effects
+      # that are actually load-bearing: patch-node-pty.mjs writes the markers
+      # src/main/node-pty-patch.test.ts asserts, and esbuild needs its platform binary linked.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Patch node-pty sources
+        run: node scripts/patch-node-pty.mjs
+
+      - name: Link esbuild platform binary
+        run: npm rebuild esbuild
 
       - name: Type check
         run: npm run typecheck
