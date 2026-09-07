@@ -150,7 +150,7 @@
     "dompurify": "^3.4.14",
     "electron-updater": "^6.8.9",
     "emoji-picker-react": "^4.19.1",
-    "lucide-react": "^0.545.0",
+    "lucide-react": "^1.40.0",
     "marked": "^12.0.2",
     "monaco-editor": "^0.56.0",
     "node-pty": "^1.0.0",
