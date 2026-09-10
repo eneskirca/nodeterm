@@ -182,6 +182,43 @@ describe('SettingsStore nested-default merge', () => {
     })
   })
 
+  describe('agent launch mode migration', () => {
+    const loadWith = (saved: Record<string, unknown>): Settings => {
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')
+      const store = new SettingsStore()
+      store.init()
+      return store.get()
+    }
+
+    it('migrates the legacy vanilla boolean and keeps its downgrade mirror synchronized', () => {
+      expect(loadWith({ vanillaLaunchDefault: true })).toMatchObject({
+        agentLaunchMode: 'subscription',
+        vanillaLaunchDefault: true
+      })
+      expect(loadWith({ vanillaLaunchDefault: false })).toMatchObject({
+        agentLaunchMode: 'gateway',
+        vanillaLaunchDefault: false
+      })
+      expect(loadWith({})).toMatchObject({
+        agentLaunchMode: 'gateway',
+        vanillaLaunchDefault: false
+      })
+    })
+
+    it('keeps each valid mode authoritative and normalizes invalid values to the default', () => {
+      expect(
+        loadWith({ agentLaunchMode: 'gateway-model', vanillaLaunchDefault: true })
+      ).toMatchObject({ agentLaunchMode: 'gateway-model', vanillaLaunchDefault: false })
+      expect(
+        loadWith({ agentLaunchMode: 'subscription', vanillaLaunchDefault: false })
+      ).toMatchObject({ agentLaunchMode: 'subscription', vanillaLaunchDefault: true })
+      expect(loadWith({ agentLaunchMode: 'unknown', vanillaLaunchDefault: false })).toMatchObject({
+        agentLaunchMode: 'gateway',
+        vanillaLaunchDefault: false
+      })
+    })
+  })
+
   describe('dictation chord seed (one-shot migration)', () => {
     // Same disk fixture as the sibling describes: write a settings.json, load it through the real
     // store, read the merged result back.

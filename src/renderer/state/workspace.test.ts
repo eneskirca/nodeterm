@@ -23,7 +23,9 @@ import {
   ungroupNodes
 } from './workspace'
 import type { CanvasNode } from './workspace'
-import type { Project } from '@shared/types'
+import { DEFAULT_SETTINGS, type Project } from '@shared/types'
+import { useModelGateway } from './modelGateway'
+import { useSettings } from './settings'
 
 const term = (id: string, pos: { x: number; y: number }, parentId?: string): CanvasNode =>
   ({
@@ -771,6 +773,44 @@ describe('model on agent node factory', () => {
     const node = createAgentNode('gemini', 0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'gemini-2.5')
     expect(node.data.agentModel).toBe('gemini-2.5')
     expect(node.data.initialCommand).not.toContain('--model')
+  })
+
+  it('does not assemble a new launch from a catalogue invalidated by a settings change', () => {
+    const previousSettings = useSettings.getState()
+    const previousGateway = useModelGateway.getState()
+    try {
+      useSettings.setState({
+        settings: {
+          ...DEFAULT_SETTINGS,
+          modelGateway: { baseUrl: 'https://gateway.test', apiKey: 'old' }
+        },
+        hydrated: true
+      })
+      useModelGateway.setState({
+        models: [{ id: 'claude-large', contextWindow: 400_000 }],
+        status: 'ready',
+        error: ''
+      })
+      expect(
+        createAgentNode('claude', 0, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, 'claude-large').data.initialCommand
+      ).toContain('claude-large[1m]')
+
+      useSettings.getState().update({
+        modelGateway: {
+          baseUrl: 'https://gateway.test',
+          apiKey: 'old',
+          discoveryPath: '/openai/v1/models'
+        }
+      })
+      expect(
+        createAgentNode('claude', 0, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, 'claude-large').data.initialCommand
+      ).toContain("'claude-large'")
+    } finally {
+      useSettings.setState(previousSettings)
+      useModelGateway.setState(previousGateway)
+    }
   })
 })
 

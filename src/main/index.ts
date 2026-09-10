@@ -1191,7 +1191,16 @@ app.whenReady().then(async () => {
         // healed-swap strands, [glyphgrid] attach/geometry warnings) are exactly what this panel
         // is for, and they triage by tag. Untagged lines fall back to 'renderer'.
         const { tag, rest } = splitTag(String(event.message ?? ''))
-        logBuffer.push({ level, tag: tag || 'renderer', msg: rest })
+        if (tag === 'model-respawn' && contents.getType() !== 'webview') {
+          // This trace is explicitly field-diagnostic and users commonly start dev with
+          // `... | tee nodeterm.log`. Sending it through main's wrapped console lands it in BOTH
+          // stdout/the tee and the same debug ring, once. Never promote a guest page's console by
+          // tag: an untrusted webview must not be able to forge or flood the app's lifecycle log.
+          // Other renderer chatter remains ring-only.
+          console[level](`[model-respawn] ${rest}`)
+        } else {
+          logBuffer.push({ level, tag: tag || 'renderer', msg: rest })
+        }
       } catch {
         /* logging must never break a page */
       }
@@ -1283,7 +1292,11 @@ app.whenReady().then(async () => {
   sshStore.registerIpc()
   // Gateway discovery/credential IPC (peer-reachable by design; the renderer never receives a
   // stored literal key, and discovery resolves key REFERENCES only for the saved gateway URL).
-  registerAgentEnvIpc(() => settingsStore.get().modelGateway, gatewayCredentials)
+  registerAgentEnvIpc(
+    () => settingsStore.get().modelGateway,
+    gatewayCredentials,
+    (scope, models) => ptyManager.setGatewayModels(scope, models)
+  )
   // The `${env:VAR}` snapshot for custom-agent expansion is DESKTOP-WINDOW-ONLY, so it is a raw
   // `ipcMain.handle` on purpose (see the handler-table comment in platform-electron.ts): a
   // `platform().handle` registration would answer relay peers too — a paired phone or remote tab

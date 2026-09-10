@@ -3,6 +3,7 @@ import { WORKING_STALE_MS } from '@shared/agents/stale'
 import type { AgentId } from '@shared/agents/config'
 import type { AgentState } from '@shared/agents/normalize'
 import type { NodeTerminalApi, ObservedClaudeAccount } from '@shared/types'
+import type { RestartRefusalReason } from '@renderer/terminal/agent-restart'
 
 /**
  * Transient per-node status for agent (e.g. Claude Code) sessions, driven by the agent's hooks.
@@ -63,9 +64,9 @@ export interface AgentNodeStatus {
   lastEventAt?: number
   /**
    * When this node last launched a BACKGROUND shell task (Claude's `Bash` with
-   * `run_in_background: true`). Such a task lives inside the CLI process, so `/exit` — Eco
-   * hibernation and the bulk in-place restart both type it — kills it silently, with no output and
-   * no error. The stamp is what those two exclude on.
+   * `run_in_background: true`). Such a task lives inside the CLI process, so terminating that
+   * exact process group for Eco or bulk restart kills it silently, with no output and no error.
+   * The stamp is what those two exclude on.
    *
    * TRANSIENT — never persisted, same rationale as `lastEventAt`: after a relaunch Eco is inert
    * until a turn happens anyway, and any turn's `working` would have cleared this. A stale stamp
@@ -118,6 +119,11 @@ export interface AgentNodeStatus {
    * it can still see.
    */
   dropped?: boolean
+  /**
+   * The LAST refusal reason this node's restart/exit reported (see the store method of the same
+   * idea). TRANSIENT — never persisted; absent = no refusal since the last success.
+   */
+  lastRestartRefusal?: { reason: RestartRefusalReason; detail?: string; at: number }
   /** Which agent this node is running (claude/codex/gemini/…), when known. */
   agentId?: AgentId
   /**
@@ -181,7 +187,7 @@ export interface AgentNodeStatus {
      * with its session anyway.
      *
      * It matters beyond the card: `loop` is the ONLY record that this node has a wakeup pending,
-     * and it is what stops Eco mode from hibernating it (`/exit` kills the CLI process, and the
+     * and it is what stops Eco mode from hibernating it (terminating the CLI process also kills the
      * scheduled wakeup dies with it — a silently cancelled job). Clearing the entry on dismiss
      * dropped that guard while the job lived on, so the fact is now retained and only the RENDER
      * filters on it. A real end (CronDelete) still clears the entry.
@@ -265,6 +271,19 @@ export interface AgentStatusStore {
   /** Record a /loop iteration (count++ and append its summary). No-op if not looping. */
   bumpLoop(id: string, message?: string): void
   remove(id: string): void
+  /**
+   * WHY this node's last restart, model switch or hibernation exit refused — ONE refusal, ONE — ONE refusal, ONE
+   * reason. Written by every refusal site in the restart closure (TerminalNode) and the
+   * restart/hibernate phases (agent-restart.ts) immediately before their early return, and read
+   * by the Canvas notice and the grouped-restart strip so an unexplained ✗ row or the old
+   * five-conditions-behind-one-string notice dies. TRANSIENT — never persisted: a stale refusal
+   * from before an app reload would explain a restart that never happened. Cleared on a
+   * successful restart of the node.
+   */
+  setLastRestartRefusal(
+    id: string,
+    refusal: { reason: RestartRefusalReason; detail?: string } | null
+  ): void
 }
 
 const EMPTY: AgentNodeStatus = { unread: false }
@@ -799,6 +818,17 @@ export function createAgentStatusSession(
         delete byId[id]
         save(byId)
         return { byId }
+      }),
+    setLastRestartRefusal: (id, refusal) =>
+      set((s) => {
+        const prev = s.byId[id]
+        if (!prev && !refusal) return s
+        const next: AgentNodeStatus = {
+          ...prev ?? EMPTY,
+          lastRestartRefusal: refusal ? { ...refusal, at: Date.now() } : undefined
+        }
+        // No persistence — see the field's JSDoc.
+        return { byId: { ...s.byId, [id]: next } }
       })
   }))
 

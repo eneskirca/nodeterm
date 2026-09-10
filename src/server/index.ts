@@ -232,7 +232,11 @@ export async function startServer(
   // exactly the secret store that must never cross that boundary. Browser clients hardcode an
   // empty snapshot and `${env:VAR}` expansion degrades to the missing-env refusal; discovery
   // resolves key REFERENCES only for the saved gateway URL (the exfil-oracle gate in core).
-  registerAgentEnvIpc(() => settingsStore.get().modelGateway, gatewayCredentials)
+  registerAgentEnvIpc(
+    () => settingsStore.get().modelGateway,
+    gatewayCredentials,
+    (scope, models) => ptyManager.setGatewayModels(scope, models)
+  )
   ptyManager.init(
     () => settingsStore.get(),
     () => gatewayCredentials.readForHost()

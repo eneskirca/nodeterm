@@ -8,6 +8,28 @@ export interface ModelGatewaySettings {
   baseUrl: string
   /** Literal legacy key, `${env:VAR}` reference, or `MODEL_GATEWAY_SECRET_REF`. */
   apiKey: string
+  /** Path the discovery (Models API) request is sent to, appended to `baseUrl` — e.g.
+   *  `/openai/v1/models` for a gateway that serves its model catalogue under a protocol prefix.
+   *  Deliberately a PATH SUFFIX and never a full URL: discovery sends the resolved API key to the
+   *  target, and a caller-chosen host would turn the pre-save/relay flow into a credential-exfil-
+   *  tration oracle (the same reason `${env:VAR}` references resolve only for the saved baseUrl).
+   *  Empty/absent = the conventional derived `/v1/models` (see `modelGatewayRoutes`). */
+  discoveryPath?: string
+}
+
+/** Characters a discovery path may contain, minus URL structure that could change WHERE the
+ *  request goes: no query (`?`), fragment (`#`), dot-dot traversal, or second scheme. The value is
+ *  hand-editable settings.json AND caller-supplied over IPC, so it is re-validated at the point it
+ *  is appended to the root (the same rule as permission modes / model ids on a command line) — an
+ *  unrecognized value yields the derived default path, never a guessed one. */
+const GATEWAY_DISCOVERY_PATH = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@/]*$/
+
+/** A validated discovery path, or null when absent/unsafe (null ⇒ use the derived default). */
+export function sanitizedGatewayDiscoveryPath(path: string | undefined): string | null {
+  const value = path?.trim() ?? ''
+  if (!value) return null
+  if (value.length > 500 || value.includes('..') || !GATEWAY_DISCOVERY_PATH.test(value)) return null
+  return value.replace(/\/+$/, '') || null
 }
 
 /** Stored in settings.json when the literal credential lives in the shell's secret store. */
@@ -48,6 +70,14 @@ export interface GatewayModel {
   id: string
   name?: string
   provider?: string
+  /** Maximum prompt context window in tokens, when the gateway reports one. The autocompact helper sizes
+   *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` off it for a claude-base agent. Absent ⇒ the env var is
+   *  omitted and the CLI falls back to its own default — never guessed (a percentage over a guessed
+   *  window is a wrong number presented as a fact). */
+  contextWindow?: number
+  /** Maximum output/completion tokens the model may produce, when reported. Retained as catalogue
+   *  metadata for consumers; absent stays absent, never guessed. */
+  maxOutputTokens?: number
 }
 
 export interface ModelDiscoveryResult {
@@ -100,8 +130,18 @@ export function resolveModelGatewayApiKey(
  * the provider-specific paths are the Bifrost layout requested by the launch mapping. Only http(s)
  * URLs are accepted: this value is later handed to `fetch` and agent CLIs, and settings.json is
  * hand-editable. Invalid input degrades to null, never to a guessed endpoint.
+ *
+ * `discoveryPath` (optional, from the same `ModelGatewaySettings`) replaces the conventional
+ * `/v1/models` suffix when it is present and passes `sanitizedGatewayDiscoveryPath`. It changes
+ * only WHICH path on the saved root the catalogue is read from — never the host — so the
+ * credential trust gate upstream (references resolve only for the saved baseUrl) is unaffected.
+ * An unsafe value falls back to the derived default rather than sending a fetch somewhere the
+ * user did not vet.
  */
-export function modelGatewayRoutes(baseUrl: string): ModelGatewayRoutes | null {
+export function modelGatewayRoutes(
+  baseUrl: string,
+  discoveryPath?: string
+): ModelGatewayRoutes | null {
   const raw = baseUrl.trim().replace(/\/+$/, '')
   if (!raw) return null
   try {
@@ -111,14 +151,22 @@ export function modelGatewayRoutes(baseUrl: string): ModelGatewayRoutes | null {
     // The separate API-key field exists precisely so a secret never has to live there.
     if (parsed.username || parsed.password || parsed.search || parsed.hash) return null
     const root = parsed.toString().replace(/\/+$/, '')
+    const discoverySuffix = sanitizedGatewayDiscoveryPath(discoveryPath) ?? '/v1/models'
     return {
-      discovery: `${root}/v1/models`,
+      discovery: `${root}${discoverySuffix}`,
       openai: `${root}/openai/v1`,
       anthropic: `${root}/anthropic`
     }
   } catch {
     return null
   }
+}
+
+/** Accept only positive integer token limits; invalid or absent metadata stays unknown. */
+function coerceTokenLimit(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value.trim()) : typeof value === 'number' ? value : NaN
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return undefined
+  return n
 }
 
 /** Parse OpenAI-compatible model-list responses, dropping unsafe/empty/duplicate ids. */
@@ -129,7 +177,17 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
   const byId = new Map<string, GatewayModel>()
   for (const raw of data) {
     if (!raw || typeof raw !== 'object') continue
-    const row = raw as { id?: unknown; name?: unknown; provider?: unknown; owned_by?: unknown }
+    const row = raw as {
+      id?: unknown
+      name?: unknown
+      provider?: unknown
+      owned_by?: unknown
+      context_length?: unknown
+      max_context_length?: unknown
+      context_window?: unknown
+      max_output_tokens?: unknown
+      max_completion_tokens?: unknown
+    }
     const id = typeof row.id === 'string' ? row.id.trim() : ''
     if (!id || id.length > 500 || /[\u0000-\u001f\u007f]/.test(id)) continue
     const prefix = id.includes('/') ? id.slice(0, id.indexOf('/')) : ''
@@ -139,10 +197,22 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
         : typeof row.owned_by === 'string'
           ? row.owned_by.trim()
           : ''
+    // Context window: gateways disagree on the field name. The OpenAI convention (`context_length`)
+    // and the `context_window` alias cover the providers Copilot BYOK targets; `max_context_length`
+    // is the max variant some report. The FIRST present, finite value wins (they are synonyms), and
+    // an absent one stays undefined so the env var is omitted rather than guessed.
+    const contextWindow =
+      coerceTokenLimit(row.context_length) ??
+      coerceTokenLimit(row.max_context_length) ??
+      coerceTokenLimit(row.context_window)
+    const maxOutputTokens =
+      coerceTokenLimit(row.max_output_tokens) ?? coerceTokenLimit(row.max_completion_tokens)
     byId.set(id, {
       id,
       ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name.trim() } : {}),
-      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {})
+      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {})
     })
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
@@ -154,9 +224,9 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
  * provider here would hide supported modes. The capability is the only UI gate; custom agents
  * inherit it from their declared base harness.
  */
-export function modelsForAgent(models: GatewayModel[], agentId: AgentId): GatewayModel[] {
+export function modelsForAgent(models: readonly GatewayModel[], agentId: AgentId): GatewayModel[] {
   if (!canSwitchModel(agentId)) return []
-  return models
+  return [...models]
 }
 
 /**
@@ -182,6 +252,20 @@ export const MODEL_GATEWAY_ENV_KEYS = [
   'COPILOT_PROVIDER_MODEL_ID',
   'COPILOT_PROVIDER_WIRE_MODEL',
   'COPILOT_PROVIDER_WIRE_API'
+] as const
+
+/** Claude Code autocompact env vars, injected for a claude-base agent whose resolved gateway model
+ *  reports a context window above `AUTOCOMPACT_THRESHOLD`. These are Claude Code's OWN conventions:
+ *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` sizes the compaction window, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+ *  sets the % threshold at which it fires. Listed alongside `MODEL_GATEWAY_ENV_KEYS` in the tmux
+ *  `update-environment` conf so a re-attached client inherits them (unset on a non-claude session ⇒
+ *  no effect, so including them in the shared conf is harmless). Sourced ONLY from discovery — never
+ *  guessed — by `claudeAutocompactFor` below. */
+export const AUTOCOMPACT_THRESHOLD = 200_000
+export const AUTOCOMPACT_PCT_OVERRIDE = '80'
+export const AUTOCOMPACT_ENV_KEYS = [
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+  'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
 ] as const
 
 /** tmux's own stock `update-environment` entries (tmux 3.4 defaults, measured via
@@ -211,7 +295,14 @@ const TMUX_STOCK_UPDATE_ENV = [
  *  Deduped so an overlap (e.g. ANTHROPIC_AUTH_TOKEN, in both the gateway list and the claude
  *  auth strip) cannot double an entry. */
 export function tmuxUpdateEnvironmentLine(extraNames: readonly string[] = []): string {
-  const names = [...new Set([...TMUX_STOCK_UPDATE_ENV, ...MODEL_GATEWAY_ENV_KEYS, ...extraNames])]
+  const names = [
+    ...new Set([
+      ...TMUX_STOCK_UPDATE_ENV,
+      ...MODEL_GATEWAY_ENV_KEYS,
+      ...AUTOCOMPACT_ENV_KEYS,
+      ...extraNames
+    ])
+  ]
   return `set -g update-environment "${names.join(' ')}"`
 }
 
@@ -295,4 +386,85 @@ export function withAgentModel(cmd: string, agentId: AgentId, model: string | un
   // provider-prefixed Bifrost id through Copilot's internal catalogue.
   if (capabilityAgentId(agentId) === 'copilot') return cmd
   return `${cmd} --model ${shellSingleQuote(value)}`
+}
+
+/**
+ * For a claude-base agent and its resolved model, return the `[1m]`-suffixed model id and the
+ * Claude Code autocompact env, sourced ONLY from the gateway's discovered model list.
+ *
+ * Claude Code sizes its autocompact window off the model id and fires compaction at a default %
+ * of that window. A gateway model whose real context window is large (e.g. a 1M model surfaced
+ * through a proxy as `vllm/GLM-5.2-NVFP4-MTP[1m]`) would otherwise still use the 200k default and
+ * compact a long session early. Two levers fix it, both Claude-Code-specific:
+ *
+ *  1. A `[1m]` suffix on the model id marks a LARGE window. Appended when the discovered window
+ *     is above `AUTOCOMPACT_THRESHOLD` (see the comment at the suffix below for what each lever
+ *     actually moves — the env var sizes compaction, the suffix is what the CLI's own meter
+ *     honors).
+ *  2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (the window size) and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+ *     (the % threshold) env vars, set to the discovered window and `AUTOCOMPACT_PCT_OVERRIDE`.
+ *
+ * Everything is sourced from discovery — never guessed. An unknown model, or one the gateway did
+ * not report a `contextWindow` for, yields NO env and NO suffix (fail open to the CLI's own
+ * behavior). A percentage over a guessed window is a wrong number presented as a fact, the same
+ * rule used throughout gateway model metadata. Non-claude agents get neither: the env
+ * var names and the `[1m]` convention are Claude Code's own and mean nothing to codex/copilot.
+ *
+ * `modelId` is the (possibly suffixed) id a caller should pass to `withAgentModel`; `env` is the
+ * map a spawn site merges into the session environment. The two come from ONE call so the suffix
+ * and the env can never disagree about whether this is a large-context session.
+ */
+export function claudeAutocompactFor(
+  agentId: AgentId,
+  model: string | undefined,
+  models: readonly GatewayModel[]
+): { modelId: string | undefined; env: Record<string, string> } {
+  // Only a claude-base harness. The env var names are Claude Code's; a codex/copilot node would
+  // silently ignore them, and appending [1m] to its --model would send an unknown id to that CLI.
+  if (capabilityAgentId(agentId) !== 'claude') return { modelId: model, env: {} }
+  const id = normalizedAgentModel(agentId, model)
+  if (!id) return { modelId: model, env: {} }
+  // The discovered model is the ONLY source of the window. A model not in the catalogue tells us
+  // nothing — ship no env and no suffix rather than a guess. Exact ids first; then the
+  // `[1m]`-stripped pair, because the SAME model is listed plain and suffixed depending on who
+  // stored it (`modelAvailability` already treats either spelling as available — judging the
+  // window exact-only here would let a suffixed catalogue spelling silently skip both the env
+  // and the shape-mismatch ask for a session launched plain).
+  const discovered = models.find((m) => m.id === id) ??
+    models.find((m) => m.id.replace(/\[1m\]$/, '') === id.replace(/\[1m\]$/, ''))
+  const window = discovered?.contextWindow
+  if (!window) return { modelId: id, env: {} }
+  if (window <= AUTOCOMPACT_THRESHOLD) {
+    return { modelId: id.replace(/\[1m\]$/, ''), env: {} }
+  }
+  // Append the [1m] marker for EVERY above-threshold window — restored 2026-08-31 after the
+  // mid-band "env only" rule measured as a regression: Misc Bugs (5.3 plain, env 400000) still
+  // metered 200k in its status line, so `CLAUDE_CODE_AUTO_COMPACT_WINDOW` does NOT drive the
+  // CLI's own meter, and the suffix is the only lever that resizes it. The env rides alongside
+  // to size the compaction point; the suffix carries the window to the meter. (A suffixed 5.2 in
+  // the field metered ~400k, so the suffix claims the window per model — it is not a fixed 1M
+  // escalation — which also means a mid-band identifier is safe to suffix.)
+  // Symmetric strip: a record whose window dropped below the threshold must NOT keep an old
+  // suffix — re-launching it would re-claim the large window.
+  //
+  // PAIRING INVARIANT (belt-and-suspenders, pinned by model-gateway.test.ts): every branch that
+  // emits a suffixed modelId MUST also emit the autocompact env, and the env is emitted ONLY on
+  // a suffixed branch. The two halves of the mechanism are one mechanism: the `[1m]` suffix lifts
+  // Claude Code's OWN window ceiling (it is what the CLI's status meter honors) and
+  // `CLAUDE_CODE_AUTO_COMPACT_WINDOW` pulls the compaction point back DOWN to the discovered
+  // size. A suffix without the env lets the context grow toward the ceiling with no autocompact
+  // headroom — past what the gateway can serve; an env without the suffix meters 200k while
+  // compaction reads the larger window — two windows disagreeing in one session. `pty-manager`
+  // asserts the invariant at the composed-env site (refuses the spawn loud) so a future caller
+  // that half-applies the pair is caught the day it ships.
+  const modelId = window > AUTOCOMPACT_THRESHOLD
+    ? (id.endsWith('[1m]') ? id : `${id}[1m]`)
+    : id.replace(/\[1m\]$/, '')
+  return {
+    modelId,
+    env: {
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window),
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    }
+  }
 }
