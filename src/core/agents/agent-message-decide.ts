@@ -39,9 +39,9 @@ export type NotPermittedReason =
    *  the per-project grant cannot be attributed (PR #237 review I-1); its own word because the
    *  human's fix is de-duplicating ids, not moving nodes. See `agent-message-scope.ts`. */
   | 'ambiguous-target-node-id'
-  /** No RUNTIME proof of which project spawned the target pane: the ledger has no entry (never
-   *  spawned this run, or only re-attached after a restart), or its owner disagrees with the sole
-   *  store claimant (a project.json listing a pane it did not spawn). The store's node-set is
+  /** No proof of which project spawned the target pane: the ledger has neither a fresh-spawn fact
+   *  nor a valid generation-bound restart proof, or its owner disagrees with the sole store
+   *  claimant (a project.json listing a pane it did not spawn). The store's node-set is
    *  attacker-writable, so ownership is proven at spawn, not read from the file (PR #237 fix
    *  round 2 — the confused deputy driven end-to-end); unprovable ⇒ refuse. Not retryable: the
    *  pane must be freshly (re)spawned by its real owner before it can be messaged. */

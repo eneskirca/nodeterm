@@ -91,6 +91,10 @@ const ROWS = {
     title: 'One-click approvals',
     keywords: ['approve', 'deny', 'approval', 'permission', 'hook', 'phone', 'canvas', 'one click', 'claude']
   },
+  messagingDefault: {
+    title: 'Messaging in new projects',
+    keywords: ['agent', 'message', 'messaging', 'default', 'project', 'communication']
+  },
   nodeIdentity: {
     title: 'Verified node identity',
     keywords: [
@@ -396,6 +400,19 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               checked={settings.hookReplyApprovals}
               ariaLabel="One-click hook-reply approvals"
               onChange={(on) => update({ hookReplyApprovals: on })}
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.messagingDefault}>
+        <FieldRow
+          label="Messaging in new projects"
+          description="Turn agent messaging on when this machine creates a project. Existing projects keep their current setting, and cloned project files still require confirmation."
+          control={
+            <Switch
+              checked={settings.agentMessagingDefault}
+              ariaLabel="Messaging in new projects"
+              onChange={(on) => update({ agentMessagingDefault: on })}
             />
           }
         />

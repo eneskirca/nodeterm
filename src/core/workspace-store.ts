@@ -23,7 +23,7 @@ import {
   type ProjectSettingsSnapshot
 } from '../shared/project-settings'
 import { readProjectCapabilities, type ProjectCapability } from '../shared/project-capabilities'
-import type { CapabilityAckMap } from './project-capability-consent'
+import { rearmDefaultCapabilityAcks, type CapabilityAckMap } from './project-capability-consent'
 import { hoistLegacyNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
 import { collisionSeed, derivedProjectId, freshProjectId } from '../shared/project-id'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
@@ -346,6 +346,7 @@ export class WorkspaceStore {
               breadcrumbs: e.breadcrumbs,
               closedSessions: e.closedSessions,
               capabilityAck: e.capabilityAck,
+              capabilityAckSource: e.capabilityAckSource,
               localExec: this.execOverlay(e, p)
             })
           })
@@ -368,6 +369,7 @@ export class WorkspaceStore {
               breadcrumbs: e.breadcrumbs,
               closedSessions: e.closedSessions,
               capabilityAck: e.capabilityAck,
+              capabilityAckSource: e.capabilityAckSource,
               localExec: this.execOverlay(e, e.cache)
             })
           })
@@ -853,6 +855,7 @@ export class WorkspaceStore {
       breadcrumbs: e.breadcrumbs,
       closedSessions: e.closedSessions,
       capabilityAck: e.capabilityAck,
+      capabilityAckSource: e.capabilityAckSource,
       localExec: this.execOverlay(e, read.file)
     })
     e.project = project
@@ -975,6 +978,7 @@ export class WorkspaceStore {
         // The clone-notice acknowledgment must also survive an unavailable window: forgetting it
         // would re-raise a notice the user already answered the moment the folder remounts.
         if (old?.capabilityAck) e.capabilityAck = old.capabilityAck
+        if (old?.capabilityAckSource) e.capabilityAckSource = old.capabilityAckSource
         // A data-ref placeholder (its file was unreadable at load) must stay a data-ref. Without
         // this the entry comes back as a PRE-FILE inline entry holding the placeholder's
         // `nodes: []` — the empty canvas becomes the stored truth and the file it named is
@@ -1208,7 +1212,13 @@ export class WorkspaceStore {
     return this.lastWritten.get(filePath) === content
   }
 
-  async readLocalRef(projectId: string): Promise<Project | null> {
+  readLocalRef(projectId: string): Promise<Project | null> {
+    const run = this.saveChain.then(() => this.readLocalRefNow(projectId))
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
+  private async readLocalRefNow(projectId: string): Promise<Project | null> {
     const e = this.index?.entries.find((x) => x.id === projectId && x.cwd)
     if (!e?.cwd) return null
     const read = await this.readProjectFile(e.cwd, false)
@@ -1218,6 +1228,15 @@ export class WorkspaceStore {
     // drops it. Same for the camera: a teammate's committed viewport must not yank this user's.
     this.revs.set(e.id, read.file.rev)
     this.lastWritten.set(projectFilePath(e.cwd), read.raw)
+    // This method is reached only for a watcher-confirmed external write. A global default was
+    // consent for the file this machine created, not for a checkout/pull that replaces it.
+    if (this.rearmSeededCapabilityAcks(e) && this.index) {
+      // Consent state must survive an immediate quit; leaving it only in the renderer would let
+      // the same external file regain the old seeded answer on restart. This read runs on
+      // saveChain, so the index write cannot race an ordinary workspace save.
+      this.applySettingsToIndex(this.index)
+      await writeAtomic(this.indexPath, JSON.stringify(this.index))
+    }
     return fileToProject(read.file, {
       id: e.id,
       cwd: e.cwd,
@@ -1228,6 +1247,7 @@ export class WorkspaceStore {
       breadcrumbs: e.breadcrumbs,
       closedSessions: e.closedSessions,
       capabilityAck: e.capabilityAck,
+      capabilityAckSource: e.capabilityAckSource,
       localExec: e.localExec
     })
   }
@@ -1447,25 +1467,32 @@ export class WorkspaceStore {
    */
   capabilityProjectFor(
     projectId: string
-  ): (Partial<Record<ProjectCapability, true>> & { capabilityAck?: CapabilityAckMap }) | undefined {
+  ): (Partial<Record<ProjectCapability, true>> & {
+    capabilityAck?: CapabilityAckMap
+    capabilityAckSource?: import('./project-capability-consent').CapabilityAckSourceMap
+  }) | undefined {
     for (const e of this.index?.entries ?? []) {
       if (e.project) {
         if (e.project.id !== projectId) continue
         return {
           ...readProjectCapabilities(e.project),
-          ...(e.project.capabilityAck ? { capabilityAck: e.project.capabilityAck } : {})
+          ...(e.project.capabilityAck ? { capabilityAck: e.project.capabilityAck } : {}),
+          ...(e.project.capabilityAckSource
+            ? { capabilityAckSource: e.project.capabilityAckSource }
+            : {})
         }
       }
       if (e.id !== projectId) continue
       const ack = e.capabilityAck ? { capabilityAck: e.capabilityAck } : {}
-      if (e.cache) return { ...readProjectCapabilities(e.cache), ...ack }
+      const source = e.capabilityAckSource ? { capabilityAckSource: e.capabilityAckSource } : {}
+      if (e.cache) return { ...readProjectCapabilities(e.cache), ...ack, ...source }
       if (e.cwd) {
         const raw = this.lastWritten.get(projectFilePath(e.cwd))
-        if (!raw) return { ...ack } // file never read this run: no flag known, so nothing grants
+        if (!raw) return { ...ack, ...source } // file never read this run: no flag known, so nothing grants
         try {
-          return { ...readProjectCapabilities(JSON.parse(raw)), ...ack }
+          return { ...readProjectCapabilities(JSON.parse(raw)), ...ack, ...source }
         } catch {
-          return { ...ack } // corrupt file: fail closed, like every other reader of this cache
+          return { ...ack, ...source } // corrupt file: fail closed, like every other reader of this cache
         }
       }
       return undefined
@@ -1519,6 +1546,16 @@ export class WorkspaceStore {
    *  (a phone append, another machine's save with its own savedAt) hashes differently. */
   private isOwnMirrorContent(projectId: string, content: string): boolean {
     return this.recentMirrorHashes.get(projectId)?.includes(contentHash(content)) ?? false
+  }
+
+  /** Re-arm only global-default answers when an external project document enters this lineage. */
+  private rearmSeededCapabilityAcks(e: IndexEntryV3): boolean {
+    const next = rearmDefaultCapabilityAcks(e)
+    if (next === e) return false
+    if (next.capabilityAck) e.capabilityAck = next.capabilityAck
+    else delete e.capabilityAck
+    delete e.capabilityAckSource
+    return true
   }
 
   /**
@@ -1591,6 +1628,7 @@ export class WorkspaceStore {
           breadcrumbs: e.breadcrumbs,
           closedSessions: e.closedSessions,
           capabilityAck: e.capabilityAck,
+          capabilityAckSource: e.capabilityAckSource,
           localExec: e.localExec
         })
       )
@@ -1649,6 +1687,7 @@ export class WorkspaceStore {
             breadcrumbs: e.breadcrumbs,
             closedSessions: e.closedSessions,
             capabilityAck: e.capabilityAck,
+            capabilityAckSource: e.capabilityAckSource,
             localExec: e.localExec
           })
         )
@@ -1717,7 +1756,8 @@ export class WorkspaceStore {
       id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
       viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
       closedSessions: e.closedSessions,
-      capabilityAck: e.capabilityAck, localExec: e.localExec
+      capabilityAck: e.capabilityAck, capabilityAckSource: e.capabilityAckSource,
+      localExec: e.localExec
     })
   }
 
@@ -1800,6 +1840,7 @@ export class WorkspaceStore {
       return null
     }
     let remote: ProjectFileV1 | null = null
+    let rearmedDefault = false
     if (res.status === 'ok') {
       try {
         const parsed = JSON.parse(res.content) as ProjectFileV1
@@ -1815,6 +1856,7 @@ export class WorkspaceStore {
       // exact bytes keeps the genuine-external-edit path untouched (any other writer's file —
       // a phone append, another machine's save — hashes differently).
       if (remote && this.isOwnMirrorContent(e.id, res.content)) remote = null
+      else if (remote) rearmedDefault = this.rearmSeededCapabilityAcks(e)
     }
     this.reconciled.add(e.id)
     const cacheRev = e.cache?.rev ?? 0
@@ -1865,7 +1907,8 @@ export class WorkspaceStore {
         id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
         viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
         closedSessions: e.closedSessions,
-        capabilityAck: e.capabilityAck, localExec: e.localExec
+        capabilityAck: e.capabilityAck, capabilityAckSource: e.capabilityAckSource,
+        localExec: e.localExec
       })
     }
     // Our cache stood. Before it clobbers the server, merge in any remote-only session nodes (the
@@ -1881,7 +1924,8 @@ export class WorkspaceStore {
           id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
           viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
           closedSessions: e.closedSessions,
-          capabilityAck: e.capabilityAck, localExec: e.localExec
+          capabilityAck: e.capabilityAck, capabilityAckSource: e.capabilityAckSource,
+          localExec: e.localExec
         })
       }
     }
@@ -1905,7 +1949,15 @@ export class WorkspaceStore {
     }
     // Surface a rescued merge to the renderer even on a read-only poll (pushIfStanding:false) — the
     // whole point is the phone's session reaching the live desktop canvas without a reconnect.
-    return merged
+    if (merged || !rearmedDefault || !e.cache) return merged
+    // Even when our cache wins on content, the remote file was not one this machine authored.
+    // Return the same canvas with its seeded answer removed so the renderer raises the notice.
+    return fileToProject(e.cache, {
+      id: e.id, ssh: e.ssh, closed: e.closed, closedAt: e.closedAt,
+      viewport: e.viewport, defaultAccountId: e.defaultAccountId, breadcrumbs: e.breadcrumbs,
+      closedSessions: e.closedSessions, capabilityAck: e.capabilityAck,
+      capabilityAckSource: e.capabilityAckSource, localExec: e.localExec
+    })
   }
 }
 

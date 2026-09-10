@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { Project } from '@shared/types'
+import { DEFAULT_SETTINGS } from '@shared/types'
 import {
   PROJECT_CAPABILITIES,
   PROJECT_CAPABILITY_COPY,
@@ -15,6 +16,7 @@ import {
 } from '@shared/project-capabilities'
 import { projectCapabilityGrantedFor } from '@shared/project-capability-consent'
 import { useProjects } from '../../state/projects'
+import { useSettings } from '../../state/settings'
 import { AgentsSection } from './sections/AgentsSection'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -50,6 +52,7 @@ beforeEach(() => {
     claude: { cliCaps: vi.fn(async () => null) }
   }
   useProjects.setState({ projects: [project()], activeProjectId: 'p1', reloadNonce: 0 })
+  useSettings.setState({ settings: DEFAULT_SETTINGS, hydrated: true })
 })
 
 afterEach(() => {
@@ -59,6 +62,17 @@ afterEach(() => {
 })
 
 describe('per-project capability rows, generated from PROJECT_CAPABILITIES', () => {
+  it('offers a machine-local messaging default for projects created later', () => {
+    mount()
+    const toggle = host.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Messaging in new projects"]'
+    )
+    expect(toggle).toBeTruthy()
+    expect(useSettings.getState().settings.agentMessagingDefault).toBe(false)
+    act(() => toggle!.click())
+    expect(useSettings.getState().settings.agentMessagingDefault).toBe(true)
+  })
+
   it('renders one row per capability, naming the active project, the grant and what travels', () => {
     mount()
     const text = host.textContent ?? ''

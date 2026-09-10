@@ -80,8 +80,9 @@ export interface AgentMessagingDeps {
    */
   messagingEnabled(projectId: string): boolean
   /**
-   * The project that PROVABLY spawned the target node's pane this run, or `undefined` when
-   * unproven (runtime ledger, `core/agents/pane-ownership.ts`). The delivery gate trusts THIS,
+   * The project that PROVABLY spawned the target node's pane, either this run or through a signed
+   * machine-local restart proof; `undefined` when unproven (`core/agents/pane-ownership.ts`). The
+   * delivery gate trusts THIS,
    * not the persisted store's node-set, to decide whose grant applies — the store is
    * attacker-writable (`project.json` lists any node id) and cannot tell a real owner from a
    * project that merely listed a live pane it never spawned (PR #237 fix round 2). Undefined ⇒
@@ -307,9 +308,10 @@ const NOT_PERMITTED_TEXT: Record<NotPermittedReason, string> = {
     'single project\'s messaging grant. De-duplicate the id (re-add the cloned folder to mint ' +
     'fresh ids) before messaging it.',
   'unproven-target-owner':
-    'the target pane\'s owning project cannot be proven at runtime (it was not freshly spawned in ' +
-    'this session, or its ownership is disputed), so a per-project messaging grant cannot be ' +
-    'applied to it. Re-open the target node so its owner is recorded, then try again.'
+    'the target pane\'s owning project cannot be proven (it may predate restart-safe ownership ' +
+    'proofs, use an unsupported persistence backend, or have disputed ownership), so a ' +
+    'per-project messaging grant cannot be applied to it. Restart the target terminal session ' +
+    'once — closing and reopening the card is not enough — then try again.'
 }
 
 /**
@@ -486,9 +488,9 @@ export async function runDelivery(
     // above resolved `projectId` from the persisted node-set, which is attacker-writable — a
     // hostile `project.json` can LIST a live pane's node id it never spawned, and when the real
     // owner is absent from the store that hostile project is the sole claimant. The ledger records
-    // who actually SPAWNED the pane this run; the grant is evaluated against THAT owner, and the
-    // store's `projectId` is only a cross-check. Unprovable — no ledger entry (restart / never
-    // spawned here), or the ledger owner disagrees with the sole store claimant — fails closed.
+    // who actually SPAWNED the pane or restores that fact from a signed machine-local proof; the
+    // grant is evaluated against THAT owner, and the store's `projectId` is only a cross-check.
+    // Missing proof, or disagreement with the sole store claimant, fails closed.
     const owner = projectId ? deps.paneOwnerProject(req.targetNodeId) : undefined
     if (!projectId || !owner || owner !== projectId) notPermitted = 'unproven-target-owner'
     else if (!deps.messagingEnabled(owner)) notPermitted = 'switch-off'

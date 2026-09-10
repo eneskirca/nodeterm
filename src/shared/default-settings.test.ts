@@ -21,6 +21,10 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.claudePermissionMode).toBe('auto')
   })
 
+  it('keeps messaging in new projects opt-in', () => {
+    expect(DEFAULT_SETTINGS.agentMessagingDefault).toBe(false)
+  })
+
   it('uses the shared worktree path template default', () => {
     expect(DEFAULT_SETTINGS.worktreePathTemplate).toBe(DEFAULT_WORKTREE_PATH_TEMPLATE)
   })
