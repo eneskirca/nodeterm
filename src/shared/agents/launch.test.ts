@@ -77,6 +77,14 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
     ).toBe('grok')
   })
 
+  it('grok puts --model BEFORE the -- separator', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'grok', initialPrompt: 'version', model: 'grok-4.6' },
+        ENV
+      ).command
+    ).toBe("grok --model 'grok-4.6' -- 'version'")
+  })
   it('grok puts the permission flag BEFORE the -- separator', () => {
     expect(
       assembleLaunchCommand({ agentId: 'grok', initialPrompt: 'version', permissionMode: 'plan' }, ENV).command

@@ -410,9 +410,9 @@ own `×` use.
   flag. See `docs/SERVER.md`.
 - **Relay tabs** — the ws-bridge stub answers `ok:false`; the panel says session memory is not
   available on a relay tab rather than reporting a failure.
-- **Kanban board** — Canvas passes `overBoard={kanbanOpen}`, which raises the pill to z 26 over the
-  board's opaque 25 (the same prop `UsageIndicator` takes beside it); an open panel rises to 60, over
-  the board and the banners but below ConfirmDialog / the palette.
+- **Kanban board** — Canvas passes `overBoard={kanbanBoardOpen}` (kanban only; Mesa hides the cluster),
+  which raises the pill to z 26 over the board's opaque 25 (the same prop `UsageIndicator` takes beside
+  it); an open panel rises to 60, over the board and the banners but below ConfirmDialog / the palette.
 - **Sessions sidebar** — an open panel also has to clear the sidebar (z 12) when the board is
   *closed*, which is a separate rule: `.sysres-indicator:has(.sessmem-panel) { z-index: 13 }`,
   mirroring `.usage-indicator:has(.usage-popover)`. Both `:has()` rules only work because the pill

@@ -1,0 +1,1287 @@
+/* Mesa — table layout of live terminals. Overlay sits on the canvas the same way the
+   kanban board does (canvas stays mounted so PTYs are not SIGWINCH'd to 0×0). */
+
+.mesa-overlay {
+  position: fixed;
+  top: 44px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(10, 132, 255, 0.08), transparent 55%),
+    radial-gradient(900px 500px at 110% 10%, rgba(191, 90, 242, 0.07), transparent 50%),
+    var(--canvas-bg);
+  color: rgba(var(--tint-rgb), 0.92);
+  overflow: hidden;
+}
+/* View cycle (mesa → canvas → kanban → Omni) must not remount ModalTerminals. visibility
+   keeps the tmux client at the same size — display:none / 0×0 would SIGWINCH. */
+.mesa-overlay.is-parked {
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.mesa-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 16px;
+  padding: 12px 20px 10px;
+  /* Same reserve as .kanban-header: the floating controls cluster (⌘K, explorer, settings)
+     sits at z-index 26 over this overlay. Without it, "Nuevo terminal" lands under those icons. */
+  padding-right: 320px;
+  min-height: 52px;
+}
+
+.mesa-bar__brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mesa-bar__kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+
+.mesa-bar__hint {
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mesa-bar__actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  align-items: center;
+}
+
+.mesa-composer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mesa-composer__sel {
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  max-width: 180px;
+}
+
+.mesa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  background: rgba(var(--tint-rgb), 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mesa-btn:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+}
+
+.mesa-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mesa-btn--primary {
+  background: #0a84ff;
+  border-color: transparent;
+  color: #fff;
+}
+
+.mesa-btn--primary:hover {
+  filter: brightness(1.08);
+}
+
+.mesa-btn--lg {
+  height: 40px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
+.mesa-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px;
+}
+
+.mesa-empty__title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.mesa-empty__sub {
+  margin: 0 0 12px;
+  max-width: 420px;
+  color: rgba(var(--tint-rgb), 0.55);
+  line-height: 1.45;
+}
+
+.mesa-empty .mesa-composer {
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.mesa-board {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  padding: 0 16px 16px;
+  overflow: auto;
+}
+
+.mesa-board--grid {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-auto-rows: minmax(240px, 1fr);
+}
+
+.mesa-board--cols {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(320px, 1fr);
+  grid-template-columns: unset;
+  grid-auto-rows: unset;
+}
+
+.mesa-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--mesa-col, #0a84ff) 35%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--mesa-col, #0a84ff) 7%, rgba(0, 0, 0, 0.18));
+  overflow: hidden;
+}
+
+.mesa-col__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+
+.mesa-col__title,
+.mesa-col__rename {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: text;
+}
+
+.mesa-col__rename {
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.3);
+}
+
+.mesa-col__count {
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.4);
+}
+
+.mesa-col__add {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 0;
+  background: rgba(var(--tint-rgb), 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.mesa-col__cells {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow: auto;
+}
+
+.mesa-board--grid .mesa-col,
+.mesa-board--grid .mesa-col__cells {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.mesa-drop {
+  flex: 1;
+  min-height: 120px;
+  border: 1px dashed rgba(var(--tint-rgb), 0.2);
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.4);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mesa-cell {
+  flex: 1;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(var(--tint-rgb), 0.1);
+  box-shadow: inset 3px 0 0 var(--mesa-cell, #0a84ff);
+  cursor: grab;
+}
+
+.mesa-cell.is-focus {
+  flex: 1.6;
+  border-color: color-mix(in srgb, var(--mesa-cell) 70%, white);
+}
+
+.mesa-cell.is-pick {
+  outline: 2px dashed rgba(10, 132, 255, 0.7);
+  outline-offset: -2px;
+  cursor: pointer;
+}
+
+.mesa-cell.is-from {
+  outline: 2px solid #0a84ff;
+  outline-offset: -2px;
+}
+
+.mesa-cell.is-to {
+  outline: 2px solid #32d74b;
+  outline-offset: -2px;
+}
+
+.mesa-cell__chrome {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.mesa-cell__letter {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--mesa-cell, #0a84ff);
+  color: #0b0b0d;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.mesa-cell__name,
+.mesa-cell__rename {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesa-cell__agent,
+.mesa-cell__state {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(var(--tint-rgb), 0.5);
+}
+
+.mesa-cell__state.is-working {
+  color: #ffd60a;
+}
+
+.mesa-cell__state.is-waiting,
+.mesa-cell__state.is-blocked {
+  color: #ff9f0a;
+}
+
+.mesa-cell__talk,
+.mesa-cell__kill {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(var(--tint-rgb), 0.55);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.mesa-cell__talk:hover,
+.mesa-cell__kill:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: inherit;
+}
+
+.mesa-cell__term {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--term-bg, #0d0d10);
+}
+
+.mesa-cell__term .kanban-modal__termwrap {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+
+.mesa-cell__term .kanban-modal__term {
+  height: 100%;
+}
+
+.mesa-cell__log {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 4px 10px 6px;
+  list-style: none;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.5);
+  max-height: 52px;
+  overflow: auto;
+}
+
+.mesa-talk {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.1);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.mesa-talk__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.mesa-talk__who b {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: #0a84ff;
+  color: #0b0b0d;
+}
+
+.mesa-talk__input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--tint-rgb), 0.14);
+  background: rgba(var(--tint-rgb), 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+
+.mesa-talk__hint {
+  font-size: 13px;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+
+/* Grok Bot layout: roster | chat | the Bot’s computer. */
+
+.mesa-grok {
+  background: #070708;
+}
+
+.mesa-grok__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.mesa-roster {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  background: #0b0b0d;
+}
+
+.mesa-roster__search {
+  margin: 10px 12px 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.mesa-roster__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
+}
+
+.mesa-roster__sec {
+  margin-bottom: 8px;
+}
+
+.mesa-roster .mesa-col__head {
+  padding: 8px 6px 4px;
+  border: 0;
+}
+
+.mesa-drop--roster {
+  min-height: 44px;
+  margin: 4px 6px;
+}
+
+.mesa-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mesa-row:hover,
+.mesa-row.is-selected {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mesa-row.is-pick {
+  outline: 1px dashed #0a84ff;
+}
+
+.mesa-row.is-from {
+  background: rgba(10, 132, 255, 0.12);
+}
+
+.mesa-row__copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mesa-row__name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesa-row__snip {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.42);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesa-row__unread {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #0a84ff;
+  flex: 0 0 auto;
+}
+
+.mesa-row__talk {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mesa-row__talk:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+.mesa-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mesa-stage__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mesa-stage__name,
+.mesa-stage__rename {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 650;
+  padding: 0;
+  cursor: text;
+}
+
+.mesa-stage__job {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: capitalize;
+}
+
+.mesa-stage__model {
+  max-width: 140px;
+}
+
+.mesa-stage__kill {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.mesa-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mesa-chip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.mesa-chip.is-live .mesa-chip__dot {
+  background: #bf5af2;
+  box-shadow: 0 0 8px #bf5af2;
+}
+
+.mesa-chip.is-on {
+  background: rgba(191, 90, 242, 0.12);
+  border-color: rgba(191, 90, 242, 0.4);
+}
+
+.mesa-btn--quiet {
+  height: 26px;
+  font-size: 12px;
+}
+
+.mesa-stage__terms {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.mesa-stage__term {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.mesa-stage__term.is-parked {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.mesa-stage__term .kanban-modal__termwrap,
+.mesa-stage__term .kanban-modal__term {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.mesa-stage__tools {
+  flex: 0 0 auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mesa-routine {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mesa-routine em {
+  font-style: normal;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.mesa-swarm {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mesa-swarm__input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.mesa-routines__hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.mesa-stage__empty {
+  margin: auto;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Presence avatars — motion carries state, no extra chrome. */
+
+.bot-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  --bot: #bf5af2;
+}
+
+.bot-avatar__face {
+  width: 100%;
+  height: 100%;
+  background: var(--bot);
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.bot-avatar.is-circle .bot-avatar__face {
+  border-radius: 50%;
+}
+
+.bot-avatar.is-squircle .bot-avatar__face {
+  border-radius: 32%;
+}
+
+.bot-avatar.is-hex .bot-avatar__face {
+  clip-path: polygon(50% 4%, 96% 27%, 96% 73%, 50% 96%, 4% 73%, 4% 27%);
+}
+
+.bot-avatar.is-diamond .bot-avatar__face {
+  clip-path: polygon(50% 6%, 94% 50%, 50% 94%, 6% 50%);
+}
+
+.bot-avatar__eyes {
+  display: flex;
+  gap: 18%;
+  align-items: center;
+  height: 28%;
+}
+
+.bot-avatar__eyes i {
+  display: block;
+  width: 18%;
+  height: 100%;
+  min-width: 4px;
+  border-radius: 999px;
+  background: #121214;
+  animation: bot-blink 5s ease-in-out infinite;
+}
+
+.bot-avatar__acc {
+  position: absolute;
+  pointer-events: none;
+}
+
+.bot-avatar__acc--hat {
+  top: -12%;
+  width: 62%;
+  height: 22%;
+  background: #121214;
+  border-radius: 4px 4px 0 0;
+}
+
+.bot-avatar__acc--antenna {
+  top: -18%;
+  width: 8%;
+  height: 22%;
+  background: #121214;
+  border-radius: 4px;
+}
+
+.bot-avatar__acc--bow {
+  top: -8%;
+  width: 28%;
+  height: 18%;
+  background: #ff453a;
+  border-radius: 50%;
+}
+
+.bot-avatar__acc--glasses {
+  width: 72%;
+  height: 28%;
+  border: 2px solid #121214;
+  border-radius: 6px;
+  top: 32%;
+}
+
+.bot-avatar.is-idle .bot-avatar__face {
+  animation: bot-idle 4s ease-in-out infinite;
+}
+
+.bot-avatar.is-working .bot-avatar__face {
+  animation: bot-work 0.7s ease-in-out infinite;
+}
+
+.bot-avatar.is-waiting .bot-avatar__face {
+  animation: bot-wait 1.6s ease-in-out infinite;
+}
+
+.bot-avatar.is-blocked .bot-avatar__face {
+  filter: saturate(1.2);
+  animation: bot-block 1.1s ease-in-out infinite;
+}
+
+.bot-avatar.is-done .bot-avatar__face {
+  animation: bot-done 1.2s ease-out 1;
+}
+
+@keyframes bot-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.12); }
+}
+
+@keyframes bot-idle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4%); }
+}
+
+@keyframes bot-work {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  40% { transform: translateY(-10%) rotate(-6deg); }
+  70% { transform: translateY(2%) rotate(4deg); }
+}
+
+@keyframes bot-wait {
+  0%, 100% { transform: rotate(-8deg); }
+  50% { transform: rotate(8deg); }
+}
+
+@keyframes bot-block {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6%); }
+  75% { transform: translateX(6%); }
+}
+
+@keyframes bot-done {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+/* Mesa Swarm — capa visual inicial. */
+.mesa-overlay.mesa-grok {
+  --mesa-bg: #09090b;
+  --mesa-panel: #101013;
+  --mesa-raised: #17171c;
+  --mesa-border: rgb(255 255 255 / 8%);
+  --mesa-text: #f4f4f5;
+  --mesa-muted: #a1a1aa;
+  --mesa-warn: #d4a017;
+  color: var(--mesa-text);
+  background: var(--mesa-bg);
+  color-scheme: dark;
+}
+
+.mesa-grok .mesa-bar {
+  min-height: 56px;
+  padding: 10px 18px;
+  padding-right: 320px;
+  border-bottom: 1px solid var(--mesa-border);
+}
+
+.mesa-grok .mesa-bar__kicker {
+  color: var(--mesa-text);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+.mesa-grok .mesa-bar__hint,
+.mesa-grok .mesa-row__snip,
+.mesa-grok .mesa-stage__job {
+  color: var(--mesa-muted);
+}
+
+.mesa-grok__body {
+  grid-template-columns: 272px minmax(0, 1fr);
+}
+
+.mesa-grok__body.has-inspector {
+  grid-template-columns: 272px minmax(0, 1fr) 320px;
+}
+
+.mesa-grok .mesa-roster {
+  background: var(--mesa-panel);
+  border-color: var(--mesa-border);
+}
+
+.mesa-grok .mesa-row {
+  min-height: 52px;
+  border-radius: 9px;
+}
+
+.mesa-grok .mesa-row.is-selected {
+  background: var(--mesa-raised);
+  box-shadow: inset 2px 0 0 var(--mesa-text);
+}
+
+.mesa-grok .mesa-row.is-asleep {
+  opacity: 0.55;
+  min-height: 36px;
+  padding-left: 28px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+.mesa-grok .mesa-row.is-asleep.is-activatable {
+  cursor: pointer;
+}
+
+.mesa-grok .mesa-row.is-asleep:disabled {
+  pointer-events: none;
+}
+
+.mesa-grok .mesa-btn--primary {
+  background: #f4f4f5;
+  color: #09090b;
+  border-color: transparent;
+}
+
+.mesa-grok .mesa-stage__bar {
+  min-height: 56px;
+  border-color: var(--mesa-border);
+}
+
+.mesa-grok .mesa-stage__term {
+  background: var(--mesa-bg);
+}
+
+.mesa-grok .mesa-stage__policy {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--mesa-muted);
+  white-space: nowrap;
+}
+
+.mesa-grok .mesa-stage__more {
+  position: relative;
+  margin-left: auto;
+}
+
+.mesa-grok .mesa-stage__menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid var(--mesa-border);
+  border-radius: 10px;
+  background: var(--mesa-raised);
+}
+
+.mesa-grok .mesa-stage__menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mesa-grok .mesa-stage__menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mesa-inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--mesa-panel);
+  border-left: 1px solid var(--mesa-border);
+}
+
+.mesa-console-down {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--mesa-raised);
+  border-bottom: 1px solid var(--mesa-border);
+  color: var(--mesa-text);
+  font-size: 13px;
+}
+
+.mesa-inspector__bar,
+.mesa-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-color: var(--mesa-border);
+}
+
+.mesa-inspector__bar {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--mesa-border);
+}
+
+.mesa-inspector__block {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--mesa-border);
+}
+
+.mesa-inspector__kicker {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--mesa-muted);
+  margin-bottom: 8px;
+}
+
+.mesa-inspector__meta,
+.mesa-inspector__empty {
+  color: var(--mesa-muted);
+  font-size: 13px;
+}
+
+.mesa-inspector__roles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mesa-inspector__role {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mesa-inspector__role em {
+  margin-left: auto;
+  color: var(--mesa-muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.mesa-status {
+  flex: 0 0 auto;
+  justify-content: space-between;
+  border-top: 1px solid var(--mesa-border);
+  background: var(--mesa-panel);
+  font-size: 13px;
+  color: var(--mesa-muted);
+}
+
+.mesa-status__budget {
+  margin-left: auto;
+}
+
+.mesa-status__hint {
+  max-width: 28rem;
+  color: var(--mesa-warn, #d4a017);
+  font-size: 12px;
+}
+
+.mesa-roster__obj {
+  margin: 0 10px 8px;
+  font-size: 13px;
+  color: var(--mesa-muted);
+}
+
+.mesa-roster__coord-head {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.mesa-roster__coord-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mesa-roster__coord-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px 0 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mesa-roster__coord-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.mesa-roster__coord-btn em {
+  margin-left: auto;
+  color: var(--mesa-muted);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.mesa-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 46%);
+}
+
+.mesa-dialog__card {
+  width: min(440px, calc(100% - 32px));
+  padding: 18px;
+  border: 1px solid var(--mesa-border);
+  border-radius: 14px;
+  background: var(--mesa-raised);
+}
+
+.mesa-dialog__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.mesa-dialog__hint {
+  margin: 0 0 12px;
+  color: var(--mesa-muted);
+  font-size: 13px;
+}
+
+.mesa-dialog__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mesa-composer--dialog {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.mesa-composer__obj,
+.mesa-composer--dialog .mesa-composer__sel,
+.mesa-dialog .mesa-swarm__input {
+  width: 100%;
+  max-width: none;
+}
+
+.mesa-composer__obj {
+  resize: vertical;
+  min-height: 72px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--mesa-border);
+  background: var(--mesa-bg);
+  color: inherit;
+  font: inherit;
+}
+
+.mesa-composer__budget {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mesa-composer__hard {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mesa-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bot-avatar.is-compact .bot-avatar__face {
+  animation-duration: 8s;
+}
+
+.mesa-grok :is(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid #a1a1aa;
+  outline-offset: 3px;
+}
+
+@media (max-width: 960px) {
+  .mesa-grok__body,
+  .mesa-grok__body.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mesa-grok .mesa-roster,
+  .mesa-inspector {
+    position: absolute;
+    top: 56px;
+    bottom: 44px;
+    z-index: 6;
+    width: min(320px, 88vw);
+  }
+
+  .mesa-grok .mesa-roster {
+    left: 0;
+  }
+
+  .mesa-inspector {
+    right: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mesa-grok .bot-avatar__face,
+  .mesa-grok .bot-avatar__eyes i {
+    animation: none;
+  }
+}

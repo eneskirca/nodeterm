@@ -482,6 +482,31 @@ const api: NodeTerminalApi = {
     status: (projectId, nodeId) => ipcRenderer.invoke(IPC.triggersStatus, { projectId, nodeId }),
     runNow: (projectId, nodeId) => ipcRenderer.invoke(IPC.triggersRunNow, { projectId, nodeId })
   },
+  swarm: {
+    create: (input) => ipcRenderer.invoke(IPC.swarmCreate, input),
+    get: (missionId) => ipcRenderer.invoke(IPC.swarmGet, { missionId }),
+    list: (projectId) => ipcRenderer.invoke(IPC.swarmList, { projectId }),
+    setGoal: (missionId, objective, criteria) =>
+      ipcRenderer.invoke(IPC.swarmSetGoal, { missionId, objective, criteria }),
+    setWorkspaceRoot: (missionId, workspaceRoot) =>
+      ipcRenderer.invoke(IPC.swarmSetWorkspace, { missionId, workspaceRoot }),
+    activate: (missionId, roleId) => ipcRenderer.invoke(IPC.swarmActivate, { missionId, roleId }),
+    bind: (missionId, roleId, nodeId, launch) =>
+      ipcRenderer.invoke(IPC.swarmBind, { missionId, roleId, nodeId, ...launch }),
+    tick: (missionId) => ipcRenderer.invoke(IPC.swarmTick, { missionId }),
+    approve: (missionId, approvalId) => ipcRenderer.invoke(IPC.swarmApprove, { missionId, approvalId }),
+    pause: (missionId) => ipcRenderer.invoke(IPC.swarmPause, { missionId }),
+    resume: (missionId) => ipcRenderer.invoke(IPC.swarmResume, { missionId }),
+    cancel: (missionId) => ipcRenderer.invoke(IPC.swarmCancel, { missionId }),
+    ensureTui: (missionId, nodeId) => ipcRenderer.invoke(IPC.swarmEnsureTui, { missionId, nodeId }),
+    caps: () => ipcRenderer.invoke(IPC.swarmCaps),
+    noteIdle: (input) => ipcRenderer.invoke(IPC.swarmNoteIdle, input),
+    onChanged: (listener) => {
+      const handler = (_e: unknown, mission: Parameters<typeof listener>[0]) => listener(mission)
+      ipcRenderer.on(IPC.swarmChanged, handler)
+      return () => ipcRenderer.removeListener(IPC.swarmChanged, handler)
+    }
+  },
   context: {
     onUpdate: (listener) => {
       const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)

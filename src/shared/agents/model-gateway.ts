@@ -1,4 +1,4 @@
-import { canSwitchModel, capabilityAgentId, type AgentId } from './config'
+import { canSwitchModel, canUseModelFlag, capabilityAgentId, type AgentId } from './config'
 import { shellSingleQuote } from '../shell-quote'
 import { expandEnvVars } from './expansion'
 
@@ -280,7 +280,7 @@ export function normalizedAgentModel(agentId: AgentId, model: string | undefined
     !value ||
     value.length > 500 ||
     /[\u0000-\u001f\u007f]/.test(value) ||
-    !canSwitchModel(agentId)
+    !(canSwitchModel(agentId) || canUseModelFlag(agentId))
   )
     return null
   return value

@@ -14,7 +14,7 @@ import { DEFAULT_WORKTREE_PATH_TEMPLATE } from '@shared/worktree'
 const ROWS = {
   defaultView: {
     title: 'Default view',
-    keywords: ['default', 'view', 'kanban', 'board', 'canvas', 'project']
+    keywords: ['default', 'view', 'kanban', 'board', 'canvas', 'project', 'mesa', 'table']
   },
   omniKanban: {
     title: 'Omni Kanban (global swimlanes)',
@@ -96,9 +96,18 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           control={
             <Select
               aria-label="Default view"
-              value={settings.defaultProjectView === 'kanban' ? 'kanban' : 'canvas'}
-              onChange={(e) => update({ defaultProjectView: e.target.value as 'canvas' | 'kanban' })}
+              value={
+                settings.defaultProjectView === 'kanban'
+                  ? 'kanban'
+                  : settings.defaultProjectView === 'table'
+                    ? 'table'
+                    : 'canvas'
+              }
+              onChange={(e) =>
+                update({ defaultProjectView: e.target.value as 'canvas' | 'kanban' | 'table' })
+              }
             >
+              <option value="table">Mesa (table of terminals)</option>
               <option value="canvas">Canvas</option>
               <option value="kanban">Kanban board</option>
             </Select>

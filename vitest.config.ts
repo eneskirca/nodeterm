@@ -6,6 +6,7 @@ export default defineConfig({
     include: [
       'src/core/**/*.test.ts',
       'src/shared/**/*.test.ts',
+      'src/tui/**/*.test.ts',
       'src/main/**/*.test.ts',
       'src/preload/**/*.test.ts',
       // .tsx too: component tests (jsdom via a per-file pragma; everything else stays node).

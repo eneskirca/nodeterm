@@ -2565,6 +2565,9 @@ body,
   background: var(--bg, var(--bg));
   z-index: 5;
 }
+.term-chat--bare {
+  background: transparent;
+}
 .term-chat__bar {
   display: flex;
   justify-content: space-between;
@@ -6416,6 +6419,12 @@ button.group-node__setup:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* Mesa's talk/compose owns this corner. `--board` raises the pills to z 26 for kanban; on Mesa
+   that paints them through the composer. Hide the cluster rather than leaving it clickable under
+   an opaque overlay — a hover-expanded RAM pill still receives events at the overlay's edge. */
+.canvas-pills--mesa {
+  display: none;
 }
 
 /* ---- Resume-where-you-left-off card (breadcrumb trail, once per project activation) ---- */

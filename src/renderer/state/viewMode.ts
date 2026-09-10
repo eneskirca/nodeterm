@@ -12,15 +12,17 @@ import { useSettings } from './settings'
 export const PROJECT_VIEW_KEY = 'nodeterm.projectView'
 export const GLOBAL_KANBAN_KEY = 'nodeterm.globalKanban'
 
-export type ProjectView = 'canvas' | 'kanban'
+export type ProjectView = 'canvas' | 'kanban' | 'table'
 
-/** Parses the persisted map, keeping only valid canvas/kanban entries. Exported for tests. */
+/** Parses the persisted map, keeping only valid canvas/kanban/table entries. Exported for tests. */
 export function parseViewMap(raw: string | null): Record<string, ProjectView> {
   try {
     const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     const out: Record<string, ProjectView> = {}
-    for (const [id, v] of Object.entries(parsed)) if (v === 'kanban' || v === 'canvas') out[id] = v
+    for (const [id, v] of Object.entries(parsed)) {
+      if (v === 'kanban' || v === 'canvas' || v === 'table') out[id] = v
+    }
     return out
   } catch {
     return {}
@@ -41,6 +43,9 @@ interface ViewModeState {
   defaultView: ProjectView
   setDefaultView(v: ProjectView): void
   toggle(projectId: string): void
+  /** Cycle mesa → canvas → kanban → mesa. */
+  cycle(projectId: string): void
+  setView(projectId: string, view: ProjectView): void
   /** Global swimlane overview — when true, kanban shows all projects as swimlanes instead of per-project tabs. */
   globalKanban: boolean
   toggleGlobalKanban(): void
@@ -89,7 +94,7 @@ function saveGlobalKanban(v: boolean): void {
 
 export const useViewMode = create<ViewModeState>((set) => ({
   viewByProject: parseViewMap(readLocal(PROJECT_VIEW_KEY)),
-  defaultView: 'canvas',
+  defaultView: 'table',
   globalKanban: readGlobalKanban(),
   highlightedSwimlaneId: null,
   setHighlightedSwimlaneId: (id) => set({ highlightedSwimlaneId: id }),
@@ -110,6 +115,21 @@ export const useViewMode = create<ViewModeState>((set) => ({
       // the user just left, and firing it later would pop a card out of nowhere.
       return { viewByProject: next, requestedCardNodeId: null }
     }),
+  cycle: (projectId) =>
+    set((s) => {
+      const cur = s.viewByProject[projectId] ?? s.defaultView
+      const flipped: ProjectView = cur === 'table' ? 'canvas' : cur === 'canvas' ? 'kanban' : 'table'
+      const next: Record<string, ProjectView> = { ...s.viewByProject, [projectId]: flipped }
+      save(next)
+      return { viewByProject: next, requestedCardNodeId: null }
+    }),
+  setView: (projectId, view) =>
+    set((s) => {
+      if ((s.viewByProject[projectId] ?? s.defaultView) === view) return s
+      const next: Record<string, ProjectView> = { ...s.viewByProject, [projectId]: view }
+      save(next)
+      return { viewByProject: next, requestedCardNodeId: null }
+    }),
   toggleGlobalKanban: () =>
     set((s) => {
       const next = !s.globalKanban
@@ -122,6 +142,18 @@ export const useViewMode = create<ViewModeState>((set) => ({
  *  keydown handlers use this so they need no store subscription/deps). */
 export function isKanbanOpen(projectId: string): boolean {
   return !!projectId && viewFor(useViewMode.getState(), projectId) === 'kanban'
+}
+
+export function isTableOpen(projectId: string): boolean {
+  return !!projectId && viewFor(useViewMode.getState(), projectId) === 'table'
+}
+
+/** True when an opaque overlay (mesa, kanban, or omni board) is covering the canvas. */
+export function isCanvasCovered(projectId: string): boolean {
+  if (isGlobalKanbanOpen()) return true
+  if (!projectId) return false
+  const v = viewFor(useViewMode.getState(), projectId)
+  return v === 'kanban' || v === 'table'
 }
 
 /**

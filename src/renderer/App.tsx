@@ -67,7 +67,9 @@ export default function App() {
   // hasn't explicitly toggled follow it (and flip live when the setting changes).
   const defaultView = useSettings((s) => s.settings.defaultProjectView)
   useEffect(() => {
-    useViewMode.getState().setDefaultView(defaultView === 'kanban' ? 'kanban' : 'canvas')
+    useViewMode.getState().setDefaultView(
+      defaultView === 'kanban' ? 'kanban' : defaultView === 'table' ? 'table' : 'canvas'
+    )
   }, [defaultView])
 
   return (

@@ -149,6 +149,9 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
     // `...local` (a v1 degrade: they read/write on this machine, not the host). boardLog is now
     // bridged to the host (see above) — it no longer rides `...local`.
     chat: stub.chat,
+    // Swarm missions are host-owned on THIS machine's core. A relay tab must not drive or
+    // subscribe to the viewer's Mesa runtime — refuse like chat/transcripts.
+    swarm: stub.swarm,
     // Agent canvas-control (`agent:control`) is not wired over the relay (matches the Server
     // Edition); inert no-ops rather than a local subscription that never carries the host's events.
     onAgentControl: stub.onAgentControl,

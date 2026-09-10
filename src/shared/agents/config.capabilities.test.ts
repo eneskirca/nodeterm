@@ -16,6 +16,7 @@ import {
   canSubagent,
   canTransferFrom,
   canSwitchModel,
+  canUseModelFlag,
   createdAgentId,
   hasHooks,
   hasPermissionMode,
@@ -46,6 +47,15 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     for (const id of ['gemini', 'opencode', 'grok', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
     }
+  })
+})
+
+describe('MODEL_FLAG_CAPABLE', () => {
+  it('grok takes --model natively without joining the gateway list', () => {
+    expect(canUseModelFlag('grok')).toBe(true)
+    expect(canSwitchModel('grok')).toBe(false)
+    expect(canUseModelFlag('claude')).toBe(false)
+    expect(canUseModelFlag('gemini')).toBe(false)
   })
 })
 

@@ -290,6 +290,24 @@ export function buildStubApi(): Omit<
       status: U('triggers.status'),
       runNow: U('triggers.runNow')
     },
+    swarm: {
+      create: U('swarm.create'),
+      get: U('swarm.get'),
+      list: U('swarm.list'),
+      setGoal: U('swarm.setGoal'),
+      setWorkspaceRoot: U('swarm.setWorkspaceRoot'),
+      activate: U('swarm.activate'),
+      bind: U('swarm.bind'),
+      tick: U('swarm.tick'),
+      approve: U('swarm.approve'),
+      pause: U('swarm.pause'),
+      resume: U('swarm.resume'),
+      cancel: U('swarm.cancel'),
+      ensureTui: U('swarm.ensureTui'),
+      caps: U('swarm.caps'),
+      noteIdle: U('swarm.noteIdle'),
+      onChanged: noopUnsub
+    },
     codex: {
       // Overridden by the real WS-backed namespace in ws-bridge. The stub's answer is the same
       // one the Server Edition gives on purpose (see server/handlers/index.ts): no shared

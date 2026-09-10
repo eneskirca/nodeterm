@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { parseViewMap, useViewMode, isKanbanOpen, viewFor } from './viewMode'
+import { parseViewMap, useViewMode, isCanvasCovered, isKanbanOpen, isTableOpen, viewFor } from './viewMode'
 
 describe('parseViewMap', () => {
-  it('keeps canvas/kanban entries, tolerates garbage', () => {
+  it('keeps canvas/kanban/table entries, tolerates garbage', () => {
     expect(parseViewMap(null)).toEqual({})
     expect(parseViewMap('not json')).toEqual({})
     expect(parseViewMap('[1,2]')).toEqual({})
-    expect(parseViewMap(JSON.stringify({ p1: 'kanban', p2: 'canvas', p3: 42 }))).toEqual({ p1: 'kanban', p2: 'canvas' })
+    expect(parseViewMap(JSON.stringify({ p1: 'kanban', p2: 'canvas', p3: 42, p4: 'table' }))).toEqual({
+      p1: 'kanban',
+      p2: 'canvas',
+      p4: 'table'
+    })
   })
 })
 
@@ -28,6 +32,34 @@ describe('toggle + default', () => {
     useViewMode.getState().toggle('x')
     expect(useViewMode.getState().viewByProject.x).toBe('canvas')
     expect(isKanbanOpen('x')).toBe(false) // explicit choice beats the kanban default
+  })
+  it('cycle walks mesa → canvas → kanban → mesa', () => {
+    useViewMode.setState({ viewByProject: {}, defaultView: 'table' })
+    useViewMode.getState().cycle('p1')
+    expect(useViewMode.getState().viewByProject.p1).toBe('canvas')
+    useViewMode.getState().cycle('p1')
+    expect(useViewMode.getState().viewByProject.p1).toBe('kanban')
+    useViewMode.getState().cycle('p1')
+    expect(useViewMode.getState().viewByProject.p1).toBe('table')
+  })
+
+  it('toggle from Mesa is not the leave-for-canvas path (that is setView)', () => {
+    useViewMode.setState({ viewByProject: { p1: 'table' }, defaultView: 'table' })
+    useViewMode.getState().toggle('p1')
+    expect(useViewMode.getState().viewByProject.p1).toBe('kanban')
+    useViewMode.setState({ viewByProject: { p1: 'table' }, defaultView: 'table' })
+    useViewMode.getState().setView('p1', 'canvas')
+    expect(useViewMode.getState().viewByProject.p1).toBe('canvas')
+  })
+
+  it('treats Mesa as a covered canvas, not as the kanban board', () => {
+    useViewMode.setState({ viewByProject: { p1: 'table' }, defaultView: 'table', globalKanban: false })
+    expect(isTableOpen('p1')).toBe(true)
+    expect(isKanbanOpen('p1')).toBe(false)
+    expect(isCanvasCovered('p1')).toBe(true)
+    useViewMode.getState().setView('p1', 'canvas')
+    expect(isTableOpen('p1')).toBe(false)
+    expect(isCanvasCovered('p1')).toBe(false)
   })
 })
 

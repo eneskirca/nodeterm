@@ -35,6 +35,7 @@ export { applyCanvasMutation } from '@shared/canvas-mutations'
 export { accountNodeColor, agentAccountColor } from '@shared/agents/account-color'
 import { sanitizeInboundNode } from '@shared/node-exec'
 import { NODE_COLORS } from '@shared/node-colors'
+import { callsignAt } from '../lib/callsign'
 
 // Preserve the renderer's long-standing import surface; validation and the palette now live in
 // shared so Server Edition and canvas-control accept exactly what these pickers display.
@@ -71,6 +72,11 @@ export interface NodeData {
    */
   titleAuto?: boolean
   color: string
+  /**
+   * Human letter on the Mesa view (A, B, C…). Distinct from the tmux persist key. Assigned
+   * once, never reused while the node lives, so "talk to B" cannot land on the wrong session.
+   */
+  callsign?: string
   group: string | null
   tags?: string[]
   collapsed?: boolean
@@ -140,6 +146,8 @@ export interface NodeData {
   agentId?: AgentId
   /** Model selected for this node through the shared model gateway. */
   agentModel?: string
+  swarm?: import('@shared/swarm/types').SwarmNodeMeta
+  launchMode?: import('@shared/swarm/types').SwarmLaunchMode
   /**
    * Claude nodes only: the managed Claude account (config-dir isolated) this node runs under.
    * Persisted so cold-restore resume reads the transcript from the right account dir.
@@ -311,6 +319,7 @@ export function createTerminalNode(
     data: {
       title: `Terminal ${index + 1}`,
       color: NODE_COLORS[index % NODE_COLORS.length],
+      callsign: callsignAt(index),
       group: null,
       tags: [],
       cwd: ssh ? ssh.remoteCwd : cwd,
@@ -337,6 +346,7 @@ export function createSshTerminalNode(
     data: {
       title: server.label,
       color: NODE_COLORS[index % NODE_COLORS.length],
+      callsign: callsignAt(index),
       group: null,
       tags: [],
       ssh: {
@@ -613,11 +623,12 @@ export function createAgentNode(
   accountId?: string,
   permissionMode?: AgentPermissionMode,
   projectId?: string,
-  /** Per-node model override for a MODEL_SWITCH_CAPABLE agent (claude/codex/copilot, base-resolved).
-   *  Applied through the effective base harness via `withAgentModel` (a no-op for a non-capable
-   *  agent, so passing a model for one is harmless — it's simply not appended). Persisted as
-   *  `data.agentModel` so cold-restore and later restarts keep the model. Trails `projectId`: every
-   *  existing caller passes that ninth argument, so the model is the one that had to move. */
+  /** Per-node model override. Applied through `withAgentModel` for agents in
+   *  MODEL_SWITCH_CAPABLE (claude/codex/copilot, gateway) or MODEL_FLAG_CAPABLE (grok, native
+   *  `--model`). A no-op for everyone else, so passing a model for one is harmless — it's
+   *  simply not appended. Persisted as `data.agentModel` so cold-restore and later restarts
+   *  keep the model. Trails `projectId`: every existing caller passes that ninth argument,
+   *  so the model is the one that had to move. */
   model?: string,
   /** Absolute path to a file holding the first prompt (canvas-control `--prompt-file`). Wins over
    *  `initialPrompt`; composed by the assembler as a `"$(cat …)"` substitution so a multi-line
@@ -732,6 +743,7 @@ export function createAgentNode(
       // Adopt the agent's own session name into the title until the user renames it by hand.
       titleAuto: true,
       color,
+      callsign: callsignAt(index),
       group: null,
       tags: [],
       agentId,
@@ -747,6 +759,18 @@ export function createAgentNode(
       initialCommand,
       ...(ssh ? { ssh: ssh.server, sshRemoteTmux: true } : {})
     }
+  }
+}
+
+/**
+ * Mesa worker identity without a canvas-typed CLI. `createAgentNode` always assembles
+ * `initialCommand`; if that node mounts before `launchMode: 'runtime'` is stamped, TerminalNode
+ * types grok/claude and the host `startTask` types it again. Same setNodes as creation.
+ */
+export function hostOwnSwarmAgent(node: CanvasNode): CanvasNode {
+  return {
+    ...node,
+    data: { ...node.data, initialCommand: undefined, launchMode: 'runtime' }
   }
 }
 
@@ -1910,6 +1934,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         // tracking the session name; non-agent nodes ignore it.
         titleAuto: n.titleAuto ?? true,
         color: n.color,
+        callsign: n.callsign,
         group: n.group,
         tags: n.tags,
         collapsed,
@@ -1934,6 +1959,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         highScore: n.highScore,
         agentId,
         agentModel: n.agentModel,
+        swarm: n.swarm,
+        launchMode: n.launchMode,
         accountId: n.accountId,
         agentSessionId: n.agentSessionId,
         pendingLaunch: n.pendingLaunch,
@@ -1990,6 +2017,7 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         title: n.data.title,
         titleAuto: n.data.titleAuto,
         color: n.data.color,
+        callsign: n.data.callsign,
         group: n.data.group,
         tags: n.data.tags,
         collapsed: n.data.collapsed,
@@ -2014,6 +2042,8 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         highScore: n.data.highScore,
         agentId: n.data.agentId,
         agentModel: n.data.agentModel,
+        swarm: n.data.swarm,
+        launchMode: n.data.launchMode,
         accountId: n.data.accountId,
         agentSessionId: n.data.agentSessionId,
         pendingLaunch: n.data.pendingLaunch,

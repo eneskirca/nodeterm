@@ -160,3 +160,14 @@ export function findExecutableSync(bin: string, fallbacks: string[] = []): strin
   }
   return null
 }
+
+/** Where `curl https://opencode.ai/install` puts the native CLI. Not bun. */
+export function opencodeInstallerBinDir(home: string): string {
+  return path.join(home, '.opencode', 'bin')
+}
+
+/** Put `dir` first on PATH so it wins over a later stub of the same name. */
+export function preferDirOnPath(pathStr: string, dir: string, delimiter = path.delimiter): string {
+  if (!dir) return pathStr
+  return pathStr ? `${dir}${delimiter}${pathStr}` : dir
+}

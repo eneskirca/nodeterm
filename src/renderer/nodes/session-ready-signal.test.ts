@@ -48,9 +48,11 @@ describe('where readiness is published (source pins)', () => {
     // The park branch returns before this line; a parked tmux session is still addressable by
     // `sendText`, so clearing there would strand a launch that could have been delivered.
     expect(src).toMatch(/life\.dead = true[\s\S]{0,1800}?setSessionReady\(id, false\)/)
-    // Exactly three publish sites: mount (adopt-or-not), settle, teardown. A fourth means
-    // somebody has taught another path to claim readiness it cannot vouch for.
-    expect(src.match(/setSessionReady\(/g)?.length).toBe(4) // 3 call sites + the definition
+    // Publish sites: mount (adopt-or-not), settle, teardown, plus markViewerSessionReady
+    // (Mesa ModalTerminal — first client, never clears). A fifth call site besides those
+    // means somebody has taught another path to claim readiness it cannot vouch for.
+    expect(src.match(/setSessionReady\(/g)?.length).toBe(5) // 4 call sites + the definition
+    expect(src).toContain('export function markViewerSessionReady')
   })
 })
 
@@ -84,6 +86,15 @@ describe('an ARMED node does not cold-start its agent under the hold (source pin
     // `paused` gate (shouldColdResume), and the two guards are independent refusals that must
     // both survive a reformat.
     expect(src).toMatch(/fresh &&\s*\n?\s*agentId &&\s*\n?\s*canResume\(agentId\) &&\s*\n?\s*!data\.pendingLaunch/)
+    expect(src).toContain("data.launchMode !== 'runtime'")
+  })
+})
+
+describe('Mesa focus is a watched session (source pins)', () => {
+  it('isNodeWatched asks the Mesa slot, not only the canvas observer and kanban modal', () => {
+    expect(src).toContain('mesaWatchedNodeId === nodeId')
+    expect(src).toContain('export function setMesaWatchedNode')
+    expect(src).not.toContain('setWatchedNode(focusId)')
   })
 })
 

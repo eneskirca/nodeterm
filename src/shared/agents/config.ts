@@ -289,6 +289,12 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as 
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
 export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
+// Agents whose CLI accepts `--model` natively, WITHOUT going through the model gateway.
+// grok is the case: `grok --help` documents `-m, --model <MODEL>`, measured 2026-09-09, and
+// `grok models` lists the account default. It must NOT join MODEL_SWITCH_CAPABLE — that list
+// also lights the gateway discovery submenu, which would tell a grok user to "configure a
+// URL and API key in Settings → Model gateway" for a CLI that talks to xAI directly.
+export const MODEL_FLAG_CAPABLE = ['grok'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
@@ -390,6 +396,9 @@ export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABL
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
+/** Native `--model` on the typed launch line, without the gateway protocol.
+ *  grok is the member; claude/codex already join via `canSwitchModel`. */
+export const canUseModelFlag = (id: AgentId): boolean => includes(MODEL_FLAG_CAPABLE, id)
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
 
 /**

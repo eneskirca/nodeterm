@@ -37,6 +37,10 @@ interface ChatPanelProps {
   title?: string
   /** Rendered at the right of the bar in place of the ⌘M exit hint. */
   hint?: string
+  /** Hide the ⌘M chrome — Mesa / Grok Bot already names the bot in the stage header. */
+  bare?: boolean
+  /** Who this chat is with. Composer becomes "Message {name}". */
+  peerName?: string
 }
 
 /**
@@ -82,7 +86,9 @@ export function ChatPanel({
   agentId,
   readOnly,
   title,
-  hint
+  hint,
+  bare,
+  peerName
 }: ChatPanelProps) {
   // This node's core api (stable for the session — the chat transcript and the tmux session
   // both live on the core this panel's project belongs to).
@@ -153,11 +159,13 @@ export function ChatPanel({
   const mdChip = chipFor('node.toggleMarkdown')
 
   return (
-    <div className="term-chat nodrag nowheel">
+    <div className={`term-chat nodrag nowheel${bare ? ' term-chat--bare' : ''}`}>
+      {!bare && (
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__hint">{hint ?? (mdChip ? `${mdChip} to exit` : 'Exit')}</span>
       </div>
+      )}
       <div className="term-chat__msgs" ref={msgsRef}>
         {messages.length === 0 && loadState !== 'loading' && (
           <div className="term-chat__empty">
@@ -201,8 +209,12 @@ export function ChatPanel({
             readonly
               ? "Can't write to this session"
               : working
-                ? 'Claude is working…'
-                : 'Message Claude…  (Enter to send)'
+                ? peerName
+                  ? `${peerName} is working…`
+                  : 'Working…'
+                : peerName
+                  ? `Message ${peerName}`
+                  : 'Message Claude…  (Enter to send)'
           }
           disabled={readonly || working}
           rows={2}

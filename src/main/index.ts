@@ -2,6 +2,8 @@ import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/gro
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startSwarmService } from '../core/swarm/swarm-service'
+import { adoptOrAddWorktree } from '../core/swarm/workspaces'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
@@ -290,6 +292,14 @@ import { initPlatform, platform } from '../core/platform'
 import { electronPlatform } from './platform-electron'
 import { wirePeerRegistry } from './peer-registry'
 import { WEBGL_CONTEXT_CAP_DESKTOP } from '../shared/webgl'
+
+// This repo is the nodeterm-mod fork. Electron's single-instance lock (and the default
+// userData folder) are keyed by the app name. Leaving it as "node-terminal" makes
+// `npm run dev` focus the *installed* nodeterm instead of opening this clone.
+app.setName('nodeterm-mod')
+if (!process.env.NT_USER_DATA) {
+  app.setPath('userData', join(app.getPath('appData'), 'nodeterm-mod'))
+}
 
 // Dev-only: NT_MULTI lets a SECOND instance run (host + client testing on one machine) with an
 // isolated userData via NT_USER_DATA — its own device-id/session/license/workspace. Never active
@@ -937,7 +947,7 @@ function createWindow(): BrowserWindow {
     backgroundColor: '#1e1e1e',
     // NT_MULTI instances are throwaway dev sandboxes: label the window so a second instance is
     // never mistaken for the real one (the dock already shows the Electron icon in dev).
-    title: NT_MULTI ? 'node-terminal (test instance)' : 'node-terminal',
+    title: NT_MULTI ? 'nodeterm-mod (test instance)' : 'nodeterm-mod',
     icon: linuxIcon,
     // Integrate the macOS traffic lights into our top bar (modern Mac app look). Both options are
     // macOS-only in Electron, and the renderer's tab bar reserves its 86px of left padding for
@@ -1880,6 +1890,25 @@ app.whenReady().then(async () => {
     paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
     handle: (channel, handler) => platform().handle(channel, handler)
   })
+  const swarmService = startSwarmService({
+    userDataDir: app.getPath('userData'),
+    handle: (channel, handler) => platform().handle(channel, handler),
+    sendText: (nodeId, text, opts) => ptyManager.sendText(nodeId, text, opts),
+    paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
+    getNode: (nodeId) => {
+      const n = workspaceStore.getNode(nodeId)
+      return n ? { agentId: n.agentId, agentModel: n.agentModel, agentSessionId: n.agentSessionId } : undefined
+    },
+    getSettings: () => settingsStore.get(),
+    broadcast: (channel, ...args) => corePlatform.broadcast(channel, ...args),
+    ensureWorktree: async ({ repoRoot, path, branch, baseRef }) =>
+      adoptOrAddWorktree(
+        (root, wt, br, base, isNew) => gitService.worktreeAdd(root, wt, br, base, isNew),
+        { repoRoot, path, branch, baseRef },
+        (p) => existsSync(p),
+        { git: (cwd, args) => gitService.runGit(cwd, args), homeDir: app.getPath('home') }
+      )
+  })
   // macOS Notch HUD (docs/notch-hud.md): walking agent mascots by the notch. darwin + setting only;
   // reads the same agent-status seams the mirror does. Live-toggled via settings below.
   //
@@ -2472,6 +2501,7 @@ app.whenReady().then(async () => {
     // Agent messaging taps the SAME stream: the sender's newTurn resets its fan-out budget, and
     // an open delivery receipt watch is satisfied by the target's verified advance.
     onMessagingAgentEvent(enriched)
+    swarmService.onAgentEvent(enriched)
   }
   hookServer.setListener(emitAgentStatus)
   // Deterministic hook-reply approvals (docs/hook-reply-approvals.md): the canvas Approve/Deny

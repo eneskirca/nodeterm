@@ -107,6 +107,7 @@ import {
   type Vec2
 } from '../lib/glyphGridNode'
 import { deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import { claimNodeLaunch } from '../lib/claimNodeLaunch'
 import {
   agentHibernateFns,
   exitSequence,
@@ -157,7 +158,7 @@ import { PresenceChips } from '../components/PresenceChips'
 import { useAgentNodes } from '../state/agentNodes'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useProjects } from '../state/projects'
-import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, useViewMode, viewFor } from '../state/viewMode'
+import { isCanvasCovered, isOmniKanbanEnabled, useViewMode, viewFor } from '../state/viewMode'
 import { useSshConn } from '../state/sshConn'
 import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
@@ -896,6 +897,11 @@ function setSessionReady(nodeId: string, ready: boolean): void {
   for (const cb of sessionReadySubs) cb(nodeId)
 }
 
+/** Mesa ModalTerminal is often the first client. It may publish ready; it never clears. */
+export function markViewerSessionReady(nodeId: string): void {
+  setSessionReady(nodeId, true)
+}
+
 /**
  * Which mounted terminals are currently OUT of the viewport, published by the one visibility
  * observer each node already runs (Phase 2's) — never a second observer, and never a second
@@ -943,6 +949,18 @@ export function setWatchedNode(nodeId: string | null): void {
   watchedNodeId = nodeId
 }
 
+/**
+ * The Mesa-focused bot — a FOURTH way to be watched. Mesa's ModalTerminal co-attaches the
+ * session while the canvas node sits under the overlay (often off-camera). Without this eye,
+ * Eco's sweep asked only the canvas observer and `/exit`ed a CLI the user was reading.
+ * Own slot so it cannot clobber the kanban modal's `watchedNodeId`.
+ */
+let mesaWatchedNodeId: string | null = null
+
+export function setMesaWatchedNode(nodeId: string | null): void {
+  mesaWatchedNodeId = nodeId
+}
+
 /** How long a freshly mounted node waits before asking to be woken: the spawn its resume line is
  *  written into is still in flight at mount (no session id, no pane). */
 const WAKE_MOUNT_DELAY_MS = 2000
@@ -977,15 +995,18 @@ export function setRemotelyViewedNodes(nodeIds: readonly string[]): void {
  * three times, and the fire-time copy was missing the modal clause — so a card modal opened
  * mid-batch could still have `/exit` typed into it.
  *
- * Three ways to be watched, and only the first is visible to any observer: the node is on screen,
- * its kanban card modal is open (see `watchedNodeId`), or a phone viewer is attached to its
- * session over the relay (`remotelyViewedNodes`). Unknown answers WATCHED — a node whose observer
- * has not delivered yet must never be read as "nobody is looking", which is the direction that
- * quits a session out from under someone.
+ * Four ways to be watched, and only the first is visible to any observer: the node is on screen,
+ * its kanban card modal is open (see `watchedNodeId`), Mesa is focused on it (`mesaWatchedNodeId`),
+ * or a phone viewer is attached to its session over the relay (`remotelyViewedNodes`). Unknown
+ * answers WATCHED — a node whose observer has not delivered yet must never be read as "nobody is
+ * looking", which is the direction that quits a session out from under someone.
  */
 export function isNodeWatched(nodeId: string): boolean {
   return (
-    !offscreenNodes.has(nodeId) || watchedNodeId === nodeId || remotelyViewedNodes.has(nodeId)
+    !offscreenNodes.has(nodeId) ||
+    watchedNodeId === nodeId ||
+    mesaWatchedNodeId === nodeId ||
+    remotelyViewedNodes.has(nodeId)
   )
 }
 
@@ -1212,11 +1233,11 @@ export function TerminalNode({
   // exactly like a park, and the visible modal drives the shared grid. A node only ever lives in the
   // ACTIVE project's React Flow, so the active project's view is the one that matters.
   const omniKanbanEnabled = useSettings((s) => isOmniKanbanEnabled(s.settings))
-  const boardOpen = useViewMode(
-    (s) =>
-      (omniKanbanEnabled && s.globalKanban) ||
-      viewFor(s, useProjects.getState().activeProjectId ?? '') === 'kanban'
-  )
+  const boardOpen = useViewMode((s) => {
+    if (omniKanbanEnabled && s.globalKanban) return true
+    const v = viewFor(s, useProjects.getState().activeProjectId ?? '')
+    return v === 'kanban' || v === 'table'
+  })
   const boardOpenRef = useRef(boardOpen)
   const dwellRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [showColors, setShowColors] = useState(false)
@@ -2816,7 +2837,7 @@ export function TerminalNode({
         terminalShortcutPolicy() !== 'terminal-first' && liveProjectJumpTarget(e) !== null
       const registryOwns = terminalChordBubbles(
         e,
-        isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId ?? '')
+        isCanvasCovered(useProjects.getState().activeProjectId ?? '')
       )
       const action = terminalKeyAction(e, term.hasSelection(), ownsProjectJump, registryOwns)
       if (action === 'pass') return true
@@ -3309,15 +3330,22 @@ export function TerminalNode({
         // same command-building path through the registered hibernate/wake pair) may relaunch it.
         const pausedNow = !!useAgentStatus.getState().byId[id]?.paused
         // Run a one-shot command on first open (e.g. "gh auth login" or the agent CLI), then
-        // forget it.
-        if (data.initialCommand) {
-          writeWhenShellReady(data.initialCommand)
-          updateNodeData(id, { initialCommand: undefined })
+        // forget it. Mesa's ModalTerminal is attach-only (`mayLaunch={false}`); this painter is
+        // the remaining client that may type. A failed claim must NOT fall through to cold-resume
+        // (that would launch a second CLI into the pane the other viewer is already filling).
+        // Host-owned swarm panes (`launchMode: 'runtime'`) never take this path — ensureTui /
+        // the adapter own the line.
+        if (data.initialCommand && data.launchMode !== 'runtime') {
+          if (claimNodeLaunch(id)) {
+            writeWhenShellReady(data.initialCommand)
+            updateNodeData(id, { initialCommand: undefined })
+          }
         } else if (
           fresh &&
           agentId &&
           canResume(agentId) &&
           !data.pendingLaunch &&
+          data.launchMode !== 'runtime' &&
           shouldColdResume(pausedNow)
         ) {
           // Cold restart of an agent node: the live agent is gone, so re-launch it. Resume the

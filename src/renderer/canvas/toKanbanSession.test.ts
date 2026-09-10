@@ -36,3 +36,25 @@ describe('toKanbanSession (sticky, markdown label)', () => {
     expect(toKanbanSession(sticky('## Plan \nbody'))?.title).toBe('Plan')
   })
 })
+
+describe('toKanbanSession (terminal spawn)', () => {
+  it('carries the live initialCommand so Mesa can type the agent CLI', () => {
+    const n = {
+      id: 'term-1',
+      type: 'terminal',
+      position: { x: 0, y: 0 },
+      data: { title: 'Grok', agentId: 'grok', initialCommand: "grok --model 'grok-4.6'" }
+    } as unknown as CanvasNode
+    expect(toKanbanSession(n)?.spawn.initialCommand).toBe("grok --model 'grok-4.6'")
+  })
+
+  it('propagates managed swarm launchMode so a viewer cannot start the CLI', () => {
+    const n = {
+      id: 'term-2',
+      type: 'terminal',
+      position: { x: 0, y: 0 },
+      data: { title: 'O', launchMode: 'runtime', initialCommand: 'mesa-orchestrator' }
+    } as unknown as CanvasNode
+    expect(toKanbanSession(n)?.spawn.launchMode).toBe('runtime')
+  })
+})

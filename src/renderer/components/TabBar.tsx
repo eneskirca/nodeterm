@@ -12,7 +12,7 @@ import { sessionCount, sessionForProject, useProjectSession } from '../session/s
 import { tabClickAction } from '../session/relay-tab'
 import { useMenuFlip } from '../ui/useMenuFlip'
 import { commandTooltip } from '../lib/keybindingOverrides'
-import { IconCanvasView, IconKanban } from './icons'
+import { IconCanvasView, IconGrid, IconKanban } from './icons'
 import { ProjectGlyph } from './ProjectGlyph'
 import {
   ALL_PERMISSION_MODES,
@@ -90,8 +90,7 @@ export function TabBar({
   const omniEnabled = useSettings((s) => isOmniKanbanEnabled(s.settings))
   const globalKanban = useViewMode((s) => s.globalKanban)
   const isGlobal = omniEnabled && globalKanban
-  const perProjectKanban = useViewMode((s) => !!activeId && viewFor(s, activeId) === 'kanban')
-  const kanbanActive = isGlobal || perProjectKanban
+  const currentView = useViewMode((s) => (activeId ? viewFor(s, activeId) : s.defaultView))
   const highlightedId = useViewMode((s) => s.highlightedSwimlaneId)
   // Unread dots need only the unread id set — subscribing to the whole status map re-rendered
   // the TabBar on every working/waiting flip of any agent. Primitive signature → rare updates.
@@ -376,7 +375,13 @@ export function TabBar({
                   <button
                     className="tab__board-toggle"
                     title={commandTooltip(
-                      kanbanActive ? 'Canvas view' : 'Kanban view',
+                      isGlobal
+                        ? 'Canvas view'
+                        : currentView === 'table'
+                          ? 'Mesa · click for canvas'
+                          : currentView === 'canvas'
+                            ? 'Canvas · click for board'
+                            : 'Board · click for mesa',
                       'view.kanbanToggle'
                     )}
                     onClick={(e) => {
@@ -393,11 +398,17 @@ export function TabBar({
                       if (omni && asDefault) {
                         vm.toggleGlobalKanban()
                       } else {
-                        vm.toggle(p.id)
+                        vm.cycle(p.id)
                       }
                     }}
                   >
-                    {kanbanActive ? <IconCanvasView /> : <IconKanban />}
+                    {isGlobal || currentView === 'kanban' ? (
+                      <IconKanban />
+                    ) : currentView === 'canvas' ? (
+                      <IconCanvasView />
+                    ) : (
+                      <IconGrid />
+                    )}
                   </button>
                 )}
                 {active && editingId !== p.id && (

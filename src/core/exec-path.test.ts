@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { executableCandidates, findInPathString, unquotePathEntry } from './exec-path'
+import { executableCandidates, findInPathString, opencodeInstallerBinDir, preferDirOnPath, unquotePathEntry } from './exec-path'
 
 describe('executableCandidates', () => {
   it('leaves a bare name alone off win32 — POSIX has no PATHEXT', () => {
@@ -142,5 +142,17 @@ describe('findInPathString (real filesystem)', () => {
       writeBin('nt-full.exe')
       expectPath(findInPathString('nt-full.exe', dir), path.join(dir, 'nt-full.exe'))
     })
+  })
+})
+
+describe('opencode installer PATH', () => {
+  it('names ~/.opencode/bin — the official native install, not bun', () => {
+    expect(opencodeInstallerBinDir('/Users/me')).toBe(path.join('/Users/me', '.opencode', 'bin'))
+  })
+
+  it('prefers that dir over a later bun/npm stub on PATH', () => {
+    expect(preferDirOnPath('/usr/bin:/bin', '/Users/me/.opencode/bin', ':')).toBe(
+      '/Users/me/.opencode/bin:/usr/bin:/bin'
+    )
   })
 })

@@ -1,5 +1,5 @@
 import { useProjects } from '../state/projects'
-import { isKanbanOpen } from '../state/viewMode'
+import { isCanvasCovered } from '../state/viewMode'
 
 /**
  * The two canvas ZOOM chords as ONE pure decision:
@@ -107,7 +107,7 @@ export function hasTextFocus(active: Element | null): boolean {
 /** The live shell state the refusals are decided against. */
 export function liveZoomShortcutContext(): ZoomShortcutContext {
   return {
-    boardOpen: isKanbanOpen(useProjects.getState().activeProjectId),
+    boardOpen: isCanvasCovered(useProjects.getState().activeProjectId ?? ''),
     textFocus: hasTextFocus(typeof document === 'undefined' ? null : document.activeElement)
   }
 }

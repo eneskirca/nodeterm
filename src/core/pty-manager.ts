@@ -70,7 +70,7 @@ import { effectiveSize, type PtySize } from './pty-size'
 import { machOArch, archMismatch } from './macho-arch'
 import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-store'
 import { claudeConfigDirFor } from './claude-config-dir'
-import { findExecutableSync, findInPathString, resolveShellPath, shellPathNow } from './exec-path'
+import { findExecutableSync, findInPathString, opencodeInstallerBinDir, preferDirOnPath, resolveShellPath, shellPathNow } from './exec-path'
 import {
   AUTH_ENV_STRIP,
   accountTmuxEnvArgs,
@@ -93,7 +93,7 @@ import {
 } from './codex-identity-proxy'
 import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
-import { hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
+import { capabilityAgentId, hasSharedIdentity, setCustomAgentBaseResolver, type AgentId } from '../shared/agents/config'
 import { findCustomAgent } from '../shared/agents/custom-agent'
 import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 import {
@@ -2654,6 +2654,18 @@ export class PtyManager {
     // paths spawn late enough that the init()-time prewarm has long since settled.
     const shellPath = shellPathNow() ?? null
     if (shellPath) env.PATH = shellPath
+    // Official opencode installer lands a native binary at ~/.opencode/bin (no bun). A GUI/tmux
+    // PATH that misses that dir falls through to an npm/bunx stub that prints "install bun".
+    // Prepend the installer dir when it exists so `opencode` is that binary, not the stub.
+    if (options.agentId && capabilityAgentId(options.agentId as AgentId) === 'opencode') {
+      const dir = opencodeInstallerBinDir(os.homedir())
+      try {
+        fs.accessSync(dir, fs.constants.X_OK)
+        env.PATH = preferDirOnPath(env.PATH ?? '', dir)
+      } catch {
+        // brew / PATH-only install — leave the login-shell PATH alone
+      }
+    }
 
     // Same GUI-launch gap for the locale: with no LANG/LC_* the shell's `locale` is "C" (non-UTF-8),
     // so Claude Code and other TUIs fall back to ASCII box-drawing (rounded borders render as `_`/`|`).

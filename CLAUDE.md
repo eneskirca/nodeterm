@@ -2506,7 +2506,8 @@ about which machine they describe. Reading + parsing is `core/session-memory.ts`
   rather than trusting the renderer's flag — see docs/SERVER.md, including the silent dependency on
   the boot-time `workspaceStore.load()`. **Relay tabs**: the stub answers `ok:false` and the panel
   says session memory is not available there, which is a different story from a failure. **Kanban**:
-  Canvas passes `overBoard={kanbanOpen}` (the same prop `UsageIndicator` takes), raising the pill to
+  Canvas passes `overBoard={kanbanBoardOpen}` (kanban only — Mesa hides `.canvas-pills` instead, because
+  its talk bar owns that corner), raising the pill to
   z 26 over the board's opaque 25, and an open panel to 60; with the board CLOSED the open panel
   still has to clear the sessions sidebar (z 12), which is the separate
   `.sysres-indicator:has(.sessmem-panel) { z-index: 13 }` — both `:has()` rules work only because

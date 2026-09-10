@@ -161,6 +161,7 @@ describe('agent mappings', () => {
     expect(withAgentModel('gemini --resume abc', 'gemini', 'gemini/pro')).toBe(
       'gemini --resume abc'
     )
+    expect(withAgentModel('grok', 'grok', 'grok-4.6')).toBe("grok --model 'grok-4.6'")
     expect(withAgentModel('claude', 'claude', 'bad\nmodel')).toBe('claude')
   })
 
@@ -181,6 +182,7 @@ describe('agent mappings', () => {
     expect(modelsForAgent(models, 'codex').map((m) => m.id)).toEqual(all)
     expect(modelsForAgent(models, 'copilot').map((m) => m.id)).toEqual(all)
     expect(modelsForAgent(models, 'gemini')).toEqual([])
+    expect(modelsForAgent(models, 'grok')).toEqual([])
   })
 
   it('inherits mappings and filtering through a custom base agent', () => {

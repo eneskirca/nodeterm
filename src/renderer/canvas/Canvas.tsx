@@ -140,6 +140,7 @@ import {
   KanbanView
 } from '../components/lazyPanels'
 import { WelcomeScreen } from '../components/WelcomeScreen'
+import { TableView } from '../components/table/TableView'
 import { CloneRepoDialog } from '../components/CloneRepoDialog'
 import { markMobileLaunchSeen, shouldShowMobileLaunch } from '../lib/mobileLaunch'
 import type { DictationTarget } from '../components/DictationOverlay'
@@ -198,6 +199,8 @@ import { RemotePicker } from '../components/RemotePicker'
 import { WorktreeDialog } from '../components/WorktreeDialog'
 import { SpawnTeamDialog } from '../components/SpawnTeamDialog'
 import { conductorPrompt } from '../lib/spawnTeamPrompt'
+import { planSwarm } from '../lib/swarmRules'
+import { callsignOf, nextCallsign, parseCallsign } from '../lib/callsign'
 import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
 import type { SessionNodeInput } from '../lib/sessionList'
@@ -407,6 +410,7 @@ import {
   type AgentId,
   type AgentPermissionMode
 } from '@shared/agents/config'
+import { DEFAULT_GROK_MODEL } from '@shared/agents/grok-models'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
 import { parseTeamSpec } from '../lib/teamSpec'
@@ -485,7 +489,7 @@ import { canClearDirty, canCommitCanvas, canCreateOnCanvas } from '../state/pers
 import { isHidden } from '../lib/ui-visibility'
 import { boardLogEvents } from '../lib/boardLogDiff'
 import { useBoardLog } from '../state/boardLog'
-import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, useViewMode, viewFor } from '../state/viewMode'
+import { isCanvasCovered, isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, isTableOpen, useViewMode, viewFor } from '../state/viewMode'
 import { GlobalKanbanView } from '../components/kanban/GlobalKanbanView'
 import { useFocusNode, FOCUS_SURFACE_ID } from '../state/focusNode'
 import { focusTargetId } from '../lib/focusTarget'
@@ -520,6 +524,7 @@ import {
   isAccountLoginNode,
   systemAccountDisplay,
   createAgentNode,
+  hostOwnSwarmAgent,
   createBrowserNode,
   createDinoNode,
   createTriggerNode,
@@ -2415,7 +2420,7 @@ export function Canvas() {
         resumeCardEnabled &&
         !resumeCardShown.has(project.id) &&
         hasLiveStop &&
-        !isKanbanOpen(project.id)
+        !isCanvasCovered(project.id)
       ) {
         resumeCardShown.add(project.id)
         setResumeProject(project)
@@ -2433,6 +2438,11 @@ export function Canvas() {
           if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) {
             useViewMode.getState().requestCard(pending)
           } else {
+            const landId = useProjects.getState().activeProjectId
+            // Mesa is the other full-page overlay. toggle() from table jumps to kanban, so
+            // "go to node" would land on the board. Park Mesa (setView canvas) — TableView stays
+            // mounted via mesaHeldFor, so the TUI / worker CLIs do not restart.
+            if (landId && isTableOpen(landId)) useViewMode.getState().setView(landId, 'canvas')
             setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === pending })))
             goToNode(node)
             // Same as focusNodeById: after the cross-project switch lands, hand the keyboard to the
@@ -2481,10 +2491,21 @@ export function Canvas() {
   useEffect(() => registerWorkspaceDirty(markDirty), [markDirty])
 
   const perProjectKanbanOpen = useViewMode((s) => !!activeProjectId && viewFor(s, activeProjectId) === 'kanban')
+  const perProjectTableOpen = useViewMode((s) => !!activeProjectId && viewFor(s, activeProjectId) === 'table')
+  const [mesaHeldFor, setMesaHeldFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (perProjectTableOpen && activeProjectId) setMesaHeldFor(activeProjectId)
+  }, [perProjectTableOpen, activeProjectId])
   const rawGlobalKanban = useViewMode((s) => s.globalKanban)
   const omniEnabled = useSettings((s) => isOmniKanbanEnabled(s.settings))
   const globalKanbanOpen = rawGlobalKanban && omniEnabled
-  const kanbanOpen = globalKanbanOpen || perProjectKanbanOpen
+  const mesaMounted =
+    !!activeProjectId && (perProjectTableOpen || mesaHeldFor === activeProjectId)
+  const kanbanBoardOpen = globalKanbanOpen || perProjectKanbanOpen
+  // Shortcuts / paste / zoom treat Mesa as a covered canvas, same as the board. The usage + RAM
+  // pills must NOT: kanban lifts them to z 26 over empty board chrome, and Mesa's talk bar lives
+  // in that same bottom-left corner — raising them paints the quota strip through "Enviar".
+  const kanbanOpen = kanbanBoardOpen || perProjectTableOpen
   const projectKanban = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.kanban)
   // Fresh default per project — ids must not be shared across projects; NOT persisted
   // until the first edit writes it (spec lazy-default rule).
@@ -2613,7 +2634,7 @@ export function Canvas() {
     }
     const id = useProjects.getState().activeProjectId
     if (!id) return false
-    useViewMode.getState().toggle(id)
+    useViewMode.getState().cycle(id)
     return true
   }, [commitActiveToStore])
 
@@ -3739,7 +3760,9 @@ export function Canvas() {
       initialCommand?: string,
       groupId?: string,
       /** Force the working directory (e.g. a Source Control action running in a worktree scope). */
-      cwdOverride?: string
+      cwdOverride?: string,
+      /** Mesa orchestrator: host types the TUI; do not deliver initialCommand. */
+      hostOwned?: boolean
     ) => {
       // Live read + epoch guard: same rule as addAgentNode (issue #443) — a menu closure built
       // under the previous project must not root a terminal in that project's folder.
@@ -3770,7 +3793,8 @@ export function Canvas() {
       // passing `project?.ssh` straight through.
       const ssh = nodeSshFor(project?.ssh, cwdOverride)
       setNodes((ns) => {
-        const node = createTerminalNode(ns.length, cwd, center ?? emptyNodePos(), initialCommand, ssh)
+        const created = createTerminalNode(ns.length, cwd, center ?? emptyNodePos(), initialCommand, ssh)
+        const node = hostOwned ? hostOwnSwarmAgent(created) : created
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
       markDirty()
@@ -4490,6 +4514,7 @@ export function Canvas() {
       if (pid) {
         if (isGlobalKanbanOpen()) useViewMode.getState().toggleGlobalKanban()
         else if (isKanbanOpen(pid)) useViewMode.getState().toggle(pid)
+        else if (isTableOpen(pid)) useViewMode.getState().setView(pid, 'canvas')
       }
     }
     window.addEventListener('nodeterm:switch-system-account', onSwitchSystemAccount)
@@ -4520,7 +4545,10 @@ export function Canvas() {
       // `null` = the user EXPLICITLY picked the System account row: resolveNewNodeAccount then
       // skips the project default instead of treating the pick as "no pick" (#419).
       accountId?: string | null,
-      initialPrompt?: string
+      initialPrompt?: string,
+      model?: string,
+      hostOwned?: boolean,
+      permissionMode?: import('@shared/agents/config').AgentPermissionMode
     ) => {
       // Resolve the target project LIVE, at click time — never from this callback's render
       // closure. Menu onClick closures outlive the render that built them (`setMenu` freezes
@@ -4578,7 +4606,7 @@ export function Canvas() {
         `[nodeterm] node-create agent=${agentId} project=${targetProjectId} group=${groupId ?? '-'} cwd=${cwd ?? '-'}`
       )
       setNodes((ns) => {
-        const node = createAgentNode(
+        const created = createAgentNode(
           agentId,
           ns.length,
           cwd,
@@ -4586,11 +4614,15 @@ export function Canvas() {
           initialPrompt,
           project?.ssh,
           account,
-          activePermissionMode(agentId),
+          permissionMode ?? activePermissionMode(agentId),
           // Same funnel as the account above: the active project owns the node, so its own
           // `.nodeterm/settings.json` launch command layers over the global one.
-          targetProjectId
+          targetProjectId,
+          model
         )
+        // Mesa workers: host startTask types the CLI. A later stamp is too late — this node
+        // mounts in the same commit and TerminalNode would deliver initialCommand first.
+        const node = hostOwned ? hostOwnSwarmAgent(created) : created
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
       markDirty()
@@ -4698,7 +4730,7 @@ export function Canvas() {
     }
 
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+      if (isCanvasCovered(useProjects.getState().activeProjectId ?? '')) return
       const combo = dictationBinding()
       if (combo === '' || !isHoldChord(combo)) return
 
@@ -6607,7 +6639,7 @@ export function Canvas() {
     return nodesRef.current.filter((n) => !n.parentId).length >= 2
   }, [])
   const arrangeAllNodes = useCallback(() => {
-    if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+    if (isCanvasCovered(useProjects.getState().activeProjectId ?? '')) return
     const targets = nodesRef.current
       .filter((n) => !n.parentId)
       .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
@@ -6741,7 +6773,7 @@ export function Canvas() {
   const stepAndFrame = useCallback(
     (direction: 'back' | 'forward') => {
       const activeId = useProjects.getState().activeProjectId
-      if (!activeId || isGlobalKanbanOpen() || isKanbanOpen(activeId)) return
+      if (!activeId || isCanvasCovered(activeId)) return
       const next = stepBreadcrumb(navRef.current, direction, (nodeId) =>
         nodesRef.current.some((n) => n.id === nodeId)
       )
@@ -6809,7 +6841,7 @@ export function Canvas() {
     }
     // The kanban board is an opaque overlay and its card modal already IS a focused view of a
     // session — engaging under it would just hide the canvas twice.
-    if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+    if (isCanvasCovered(useProjects.getState().activeProjectId ?? '')) return
     const target = focusTargetId(nodesRef.current)
     if (!target) {
       setNotice({ kind: 'error', text: FOCUS_NO_TARGET_NOTICE })
@@ -7076,7 +7108,7 @@ export function Canvas() {
     // copy on a Linux box. The board is an opaque overlay over the canvas, so a copy there
     // would act on a selection the user cannot see (the canvas-only-shortcut discipline).
     const projects = useProjects.getState()
-    if (!isMac || isGlobalKanbanOpen() || isKanbanOpen(projects.activeProjectId)) return false
+    if (!isMac || isCanvasCovered(projects.activeProjectId ?? '')) return false
     const paths = selectedLocalFilePaths(nodesRef.current, {
       projectIsRelay: !!projects.getProject(projects.activeProjectId ?? '')?.remote
     })
@@ -7291,7 +7323,7 @@ export function Canvas() {
   const globalKeyDeps = useRef<GlobalKeydownDeps | null>(null)
   globalKeyDeps.current = {
     activeElement: () => document.activeElement as unknown as ContextElement | null,
-    kanbanOpen: () => isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId),
+    kanbanOpen: () => isCanvasCovered(useProjects.getState().activeProjectId ?? ''),
     overrides: activeKeybindingOverrides,
     isMac,
     // Read per keystroke (the deps object is rebuilt each render anyway, but the thunk is what
@@ -8505,6 +8537,9 @@ export function Canvas() {
           useAgentStatus.getState().clearUnread(nodeId)
           return
         }
+        // Mesa is the other overlay. Do not toggle() — table→kanban. Park Mesa; viewers stay mounted.
+        const mesaId = useProjects.getState().activeProjectId
+        if (mesaId && isTableOpen(mesaId)) useViewMode.getState().setView(mesaId, 'canvas')
         setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })))
         goToNode(node)
         // Hand the keyboard to the node's terminal so the user can type immediately — the zoom
@@ -11359,6 +11394,221 @@ export function Canvas() {
     [renameSession, activeProjectId]
   )
 
+  const stampCallsignsFromTable = useCallback(
+    (next: CanvasNode[]) => {
+      setNodes(next)
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const stampSwarmFromTable = useCallback(
+    (nodeId: string, swarm: { missionId: string; roleId: import('@shared/swarm/types').SwarmRoleId }) => {
+      setNodes((ns) =>
+        ns.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, swarm, launchMode: 'runtime' } } : n
+        )
+      )
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const stampCwdFromTable = useCallback(
+    (nodeId: string, cwd: string) => {
+      setNodes((ns) =>
+        ns.map((n) => (n.id === nodeId && n.data.cwd !== cwd ? { ...n, data: { ...n.data, cwd } } : n))
+      )
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const stampModelFromTable = useCallback(
+    (nodeId: string, model: string) => {
+      setNodes((ns) =>
+        ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, agentModel: model } } : n))
+      )
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const addGroupFromTable = useCallback(() => {
+    setNodes((ns) => {
+      const groupCount = ns.filter((n) => n.type === 'group').length
+      const group = createGroupNode(
+        { x: 80 + groupCount * 48, y: 80 },
+        undefined,
+        groupCount
+      )
+      return [group, ...(ns as CanvasNode[])]
+    })
+    markDirty()
+  }, [setNodes, markDirty])
+
+  const moveNodeFromTable = useCallback(
+    (nodeId: string, groupId: string | null) => {
+      setNodes((ns) => reparentNode(ns as CanvasNode[], nodeId, groupId))
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const renameGroupFromTable = useCallback(
+    (groupId: string, title: string) => {
+      setNodes((ns) =>
+        ns.map((n) => (n.id === groupId ? { ...n, data: { ...n.data, title } } : n))
+      )
+      markDirty()
+    },
+    [setNodes, markDirty]
+  )
+
+  const addTerminalFromTable = useCallback(
+    (
+      groupId?: string,
+      launch?: {
+        agentId?: AgentId
+        model?: string
+        orchestrator?: boolean
+        runtime?: boolean
+        permissionMode?: import('@shared/agents/config').AgentPermissionMode
+      }
+    ) => {
+      if (launch?.orchestrator) {
+        // Plain terminal (no agent CLI). launchMode runtime so canvas TerminalNode
+        // never types into the pane — ensureTui owns the TUI line.
+        addTerminal(undefined, undefined, groupId, undefined, true)
+        return
+      }
+      const settings = useSettings.getState().settings
+      const projectId = useProjects.getState().activeProjectId
+      const agentId = resolveNewNodeAgent(launch?.agentId, projectId, settings)
+      const model =
+        launch?.model ?? (agentId === 'grok' ? DEFAULT_GROK_MODEL : undefined)
+      addAgentNode(
+        agentId,
+        undefined,
+        groupId,
+        undefined,
+        undefined,
+        model,
+        launch?.runtime === true,
+        launch?.runtime === true ? (launch.permissionMode ?? 'bypassPermissions') : undefined
+      )
+    },
+    [addAgentNode, addTerminal]
+  )
+
+  const spawnSwarmFromTable = useCallback(
+    (leadId: string, task: string) => {
+      const targetProjectId = useProjects.getState().activeProjectId
+      if (!canCreateOnCanvas(nodesProjectIdRef.current, targetProjectId)) {
+        setNotice({
+          kind: 'error',
+          text: 'Could not create the swarm: the canvas on screen is not the active project’s. Switch tabs once and try again.'
+        })
+        return
+      }
+      const live = nodesRef.current as CanvasNode[]
+      const lead = live.find((n) => n.id === leadId)
+      if (!lead) return
+      const project = useProjects.getState().getProject(targetProjectId)
+      const intoGroup = lead.parentId
+      const cwd = cwdForNewNodeIn(intoGroup) ?? project?.cwd
+      const settings = useSettings.getState().settings
+      const account = resolveNewNodeAccount(
+        undefined,
+        project,
+        settings.claudeAccounts
+      )
+      const leadAgent = resolveNewNodeAgent(
+        typeof lead.data.agentId === 'string' ? (lead.data.agentId as AgentId) : undefined,
+        targetProjectId,
+        settings
+      )
+      const leadModel =
+        typeof lead.data.agentModel === 'string' && lead.data.agentModel
+          ? lead.data.agentModel
+          : leadAgent === 'grok'
+            ? DEFAULT_GROK_MODEL
+            : undefined
+      const plan = planSwarm({
+        task,
+        leadName: String(lead.data.title ?? ''),
+        leadCallsign: callsignOf(lead)
+      })
+      setNodes((ns) => {
+        const used = ns
+          .filter((n) => n.type === 'terminal')
+          .map((n) => parseCallsign(n.data.callsign))
+          .filter((s): s is string => !!s)
+        const stamp = (
+          title: string,
+          prompt: string,
+          index: number,
+          after?: string[]
+        ): CanvasNode => {
+          let node = createAgentNode(
+            leadAgent,
+            ns.length + index,
+            cwd,
+            emptyNodePos(),
+            prompt,
+            project?.ssh,
+            account,
+            activePermissionMode(leadAgent),
+            targetProjectId,
+            leadModel
+          )
+          const callsign = nextCallsign(used)
+          used.push(callsign)
+          const command = node.data.initialCommand as string | undefined
+          node = {
+            ...node,
+            data: {
+              ...node.data,
+              title,
+              titleAuto: false,
+              callsign,
+              ...(after?.length && command
+                ? { initialCommand: undefined, pendingLaunch: { after, command } }
+                : {})
+            }
+          }
+          return node
+        }
+        const workers = plan.workers.map((w, i) => stamp(w.title, w.prompt, i))
+        const synth = stamp(
+          plan.synthesizer.title,
+          plan.synthesizer.prompt,
+          workers.length,
+          workers.map((w) => w.id)
+        )
+        let next: CanvasNode[] = [...ns, ...workers, synth]
+        if (intoGroup) {
+          for (const id of [...workers, synth].map((n) => n.id)) {
+            next = reparentNode(next, id, intoGroup)
+          }
+        } else {
+          const ids = [leadId, ...workers.map((w) => w.id), synth.id]
+          const groupCount = next.filter((n) => n.type === 'group').length
+          const existing = new Set(next.filter((n) => n.type === 'group').map((n) => n.id))
+          next = groupSelectedNodes(next, ids, groupCount, snapGridNow())
+          next = next.map((n) =>
+            n.type === 'group' && !existing.has(n.id)
+              ? { ...n, data: { ...n.data, title: plan.groupTitle } }
+              : n
+          )
+        }
+        return next
+      })
+      markDirty()
+    },
+    [cwdForNewNodeIn, emptyNodePos, markDirty, setNodes]
+  )
+
   // Phone-originated node actions over the relay (the iOS session-list long-press menu). Both are
   // nudges in the `agent:wake` shape — main already validated/sanitized the payload, and this side
   // still re-resolves everything and no-ops for a node it cannot find. `refresh` bumps
@@ -12910,14 +13160,22 @@ export function Canvas() {
       })
     const kanbanId = useProjects.getState().activeProjectId
     if (kanbanId) {
-      const kb = isKanbanOpen(kanbanId)
+      const current = viewFor(useViewMode.getState(), kanbanId)
       cmds.push({
         id: 'toggle-kanban',
-        label: kb ? 'Canvas view' : 'Kanban view',
+        label:
+          current === 'table' ? 'Canvas view' : current === 'canvas' ? 'Kanban view' : 'Mesa view',
         hint: chipFor('view.kanbanToggle') || undefined,
         section: 'View',
-        icon: kb ? <IconCanvasView /> : <IconKanban />,
-        run: () => useViewMode.getState().toggle(kanbanId)
+        icon:
+          current === 'kanban' ? (
+            <IconKanban />
+          ) : current === 'canvas' ? (
+            <IconCanvasView />
+          ) : (
+            <IconGrid />
+          ),
+        run: () => useViewMode.getState().cycle(kanbanId)
       })
     }
     cmds.push({
@@ -13161,22 +13419,49 @@ export function Canvas() {
             )
           })()}
       </div>
+      {mesaMounted && (
+        <TableView
+          nodes={nodes as CanvasNode[]}
+          parked={!perProjectTableOpen || globalKanbanOpen}
+          onStampCallsigns={stampCallsignsFromTable}
+          onStampSwarm={stampSwarmFromTable}
+          onStampCwd={stampCwdFromTable}
+          onAddTerminal={addTerminalFromTable}
+          onAddGroup={addGroupFromTable}
+          onRename={renameNodeFromKanban}
+          onRenameGroup={renameGroupFromTable}
+          onMove={moveNodeFromTable}
+          onDelete={deleteNodeFromKanban}
+          onSpawnSwarm={spawnSwarmFromTable}
+          onSetModel={(nodeId, model) => {
+            const n = (nodesRef.current as CanvasNode[]).find((x) => x.id === nodeId)
+            // Host-owned Mesa panes: a restart fights ensureTui / startTask and drops scrollback.
+            if (n?.data.launchMode === 'runtime' || n?.data.swarm) {
+              stampModelFromTable(nodeId, model)
+              return
+            }
+            void restartAgentNode(nodeId, undefined, model)
+          }}
+        />
+      )}
       {globalKanbanOpen ? (
         <GlobalKanbanView />
-      ) : perProjectKanbanOpen && (
-        <KanbanView
-          board={projectKanban ?? seedBoard}
-          sessions={kanbanSessions}
-          onChange={onKanbanChange}
-          onOpenNode={openNodeFromKanban}
-          onCreateNode={createNodeInColumn}
-          onRenameNode={renameNodeFromKanban}
-          onEditSticky={editStickyText}
-          onDeleteNode={deleteNodeFromKanban}
-          onModalNodeChange={setKanbanModalNode}
-          onBrowserNav={browserNavFromKanban}
-          onSetIcon={setNodeIcon}
-        />
+      ) : (
+        perProjectKanbanOpen && (
+          <KanbanView
+            board={projectKanban ?? seedBoard}
+            sessions={kanbanSessions}
+            onChange={onKanbanChange}
+            onOpenNode={openNodeFromKanban}
+            onCreateNode={createNodeInColumn}
+            onRenameNode={renameNodeFromKanban}
+            onEditSticky={editStickyText}
+            onDeleteNode={deleteNodeFromKanban}
+            onModalNodeChange={setKanbanModalNode}
+            onBrowserNav={browserNavFromKanban}
+            onSetIcon={setNodeIcon}
+          />
+        )
       )}
       <UpdateCard />
 
@@ -13395,12 +13680,15 @@ export function Canvas() {
             `data-canvas-chrome` is fit-view's own documented opt-in: it makes the whole cluster ONE
             obstacle rect (instead of one per pill, overlapping after inflation), so fitView never
             parks a node underneath either pill. */}
-        <div className="canvas-pills" data-canvas-chrome>
+        <div
+          className={`canvas-pills${perProjectTableOpen ? ' canvas-pills--mesa' : ''}`}
+          data-canvas-chrome
+        >
           {/* `travelToNode`, not `focusNodeById`: the panel resolves sessions in CLOSED projects
               too (their tmux sessions keep running), and reaching one means reopening its tab
               first — the same path a notification click and a peer jump take. */}
           <SystemResourcePill
-            overBoard={kanbanOpen}
+            overBoard={kanbanBoardOpen}
             onGoToNode={travelToNode}
             onKillSession={killSessionById}
             pauseOfferFor={sessionPauseOfferFor}
@@ -13409,8 +13697,8 @@ export function Canvas() {
         
           {/* Same write path as the TabBar caret menu (project.defaultAccountId + persist) — the
               popover row is a second, better-placed entrance to the same action (issue #142). */}
-          <UsageIndicator overBoard={kanbanOpen} onSetDefaultAccount={setProjectDefaultAccount} />
-</div>
+          <UsageIndicator overBoard={kanbanBoardOpen} onSetDefaultAccount={setProjectDefaultAccount} />
+        </div>
 
         {/* Canvas-mounted, deliberately NOT in the .top-banners column: this is about THIS canvas,
             not an app-wide message. Opening a row records a new breadcrumb through goToNode — which
@@ -13459,7 +13747,7 @@ export function Canvas() {
             onReopen={reopenProject}
             onDeleteClosed={requestDeleteClosed}
             onClose={hasProjects ? () => setWelcomeOpen(false) : undefined}
-            overBoard={kanbanOpen}
+            overBoard={kanbanBoardOpen}
           />
         )}
 

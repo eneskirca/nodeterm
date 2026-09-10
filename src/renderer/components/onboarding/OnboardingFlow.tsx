@@ -377,7 +377,13 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
                   <span className="onb-defaultview__label">Open new projects as</span>
                   <div className="onb-seg" role="group" aria-label="Default view">
                     <button
-                      className={`onb-seg__btn${settings.defaultProjectView !== 'kanban' ? ' is-on' : ''}`}
+                      className={`onb-seg__btn${settings.defaultProjectView === 'table' ? ' is-on' : ''}`}
+                      onClick={() => update({ defaultProjectView: 'table' })}
+                    >
+                      Mesa
+                    </button>
+                    <button
+                      className={`onb-seg__btn${settings.defaultProjectView === 'canvas' ? ' is-on' : ''}`}
                       onClick={() => update({ defaultProjectView: 'canvas' })}
                     >
                       Canvas

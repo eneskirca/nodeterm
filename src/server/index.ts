@@ -2,6 +2,8 @@ import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startSwarmService } from '../core/swarm/swarm-service'
+import { adoptOrAddWorktree } from '../core/swarm/workspaces'
 import path from 'path'
 import http from 'http'
 
@@ -417,6 +419,25 @@ export async function startServer(
     // The shell's own CorePlatform instance (`platform` is this file's ServerPlatform local).
     handle: (channel, handler) => platform.handle(channel, handler)
   })
+  const swarmService = startSwarmService({
+    userDataDir: config.dataDir,
+    handle: (channel, handler) => platform.handle(channel, handler),
+    sendText: (nodeId, text, opts) => ptyManager.sendText(nodeId, text, opts),
+    paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
+    getNode: (nodeId) => {
+      const n = workspaceStore.getNode(nodeId)
+      return n ? { agentId: n.agentId, agentModel: n.agentModel, agentSessionId: n.agentSessionId } : undefined
+    },
+    getSettings: () => settingsStore.get(),
+    broadcast: (channel, ...args) => platform.broadcast(channel, ...args),
+    ensureWorktree: async ({ repoRoot, path: wtPath, branch, baseRef }) =>
+      adoptOrAddWorktree(
+        (root, wt, br, base, isNew) => gitService.worktreeAdd(root, wt, br, base, isNew),
+        { repoRoot, path: wtPath, branch, baseRef },
+        (p) => fs.existsSync(p),
+        { git: (cwd, args) => gitService.runGit(cwd, args), homeDir: os.homedir() }
+      )
+  })
   // Advertise launch settings to the mobile companion through the mirror (same provider the
   // desktop wires in src/main/index.ts). No SSH push exists server-side, so only the local
   // provider applies. The provider is consulted at every flush (heartbeat ≤60s), so a settings
@@ -450,7 +471,10 @@ export async function startServer(
   // now so the runtime, once present, consumes the exact same normalized stream as the UI/mirror.
   let canvasControl: ServerCanvasControl | null = null
   const { contextTail, geminiContextTail } = wireAgentStatus(platform, {
-    onEvent: (event) => canvasControl?.onAgentEvent(event)
+    onEvent: (event) => {
+      canvasControl?.onAgentEvent(event)
+      swarmService.onAgentEvent(event)
+    }
   })
   // The ⌘M chat view + the find-bar's transcript index. Registered HERE rather than with the rest
   // of the handlers because the hook-fed path authority is the tail created just above. No remote

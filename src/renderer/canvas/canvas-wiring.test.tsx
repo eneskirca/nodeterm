@@ -55,7 +55,8 @@ describe('the canvas pill cluster is fit-view chrome', () => {
   })
 
   it('is what Canvas actually renders', () => {
-    expect(CANVAS_SRC).toContain('<div className="canvas-pills" data-canvas-chrome>')
+    expect(CANVAS_SRC).toContain('data-canvas-chrome')
+    expect(CANVAS_SRC).toContain('canvas-pills')
   })
 })
 
@@ -188,7 +189,7 @@ describe('breadcrumb wiring the CLAUDE.md bullet calls load-bearing', () => {
     // one-shot slot — then once per app run, only with a live stop, and never under the opaque
     // kanban overlay.
     expect(CANVAS_SRC).toContain(
-      'resumeCardEnabled &&\n        !resumeCardShown.has(project.id) &&\n        hasLiveStop &&\n        !isKanbanOpen(project.id)'
+      'resumeCardEnabled &&\n        !resumeCardShown.has(project.id) &&\n        hasLiveStop &&\n        !isCanvasCovered(project.id)'
     )
     expect(CANVAS_SRC).toContain(
       'const resumeCardEnabled = useSettings.getState().settings.showResumeCard'
@@ -386,14 +387,14 @@ describe('node creation resolves its project LIVE and only onto a matching canva
   it('reads the active project from the store at call time in every creation funnel', () => {
     const liveReads =
       CANVAS_SRC.match(/const targetProjectId = useProjects\.getState\(\)\.activeProjectId/g) ?? []
-    // addAgentNode, addTerminal, createNodeInColumn, explainCommit.
-    expect(liveReads.length).toBe(4)
+    // addAgentNode, addTerminal, createNodeInColumn, explainCommit, spawnSwarmFromTable.
+    expect(liveReads.length).toBe(5)
   })
 
   it('guards every creation funnel with canCreateOnCanvas against the canvas epoch tag', () => {
     const guards =
       CANVAS_SRC.match(/canCreateOnCanvas\(nodesProjectIdRef\.current, targetProjectId\)/g) ?? []
-    expect(guards.length).toBe(4)
+    expect(guards.length).toBe(5)
   })
 
   it('refuses a mismatch loudly — a dead click with no message is how #443 stayed undiagnosable', () => {
@@ -416,7 +417,7 @@ describe('node creation resolves its project LIVE and only onto a matching canva
     // with the whole suite green.
     const liveRecordReads =
       CANVAS_SRC.match(/const project = useProjects\.getState\(\)\.getProject\(targetProjectId\)/g) ?? []
-    expect(liveRecordReads.length).toBe(4)
+    expect(liveRecordReads.length).toBe(5)
   })
 })
 
@@ -482,5 +483,75 @@ describe('navigating from the sidebar dismisses the start screen', () => {
     expect(indexOfPresent(body, 'setWelcomeOpen(false)')).toBeLessThan(
       indexOfPresent(body, 'requestCard(')
     )
+  })
+
+  it('focusNodeById parks Mesa instead of framing under it or toggling into kanban', () => {
+    const body = callbackBody('focusNodeById')
+    expect(body).toContain('isTableOpen(mesaId)')
+    expect(body).toContain("setView(mesaId, 'canvas')")
+    expect(body).not.toContain('toggle(mesaId)')
+  })
+})
+
+describe('Mesa Nuevo bot launches the chosen CLI, not a grok-only default', () => {
+  it('resolves the agent through resolveNewNodeAgent so the project default wins', () => {
+    const body = callbackBody('addTerminalFromTable')
+    expect(body).toContain('resolveNewNodeAgent(launch?.agentId, projectId, settings)')
+    expect(body).toContain('addAgentNode(')
+    expect(body).toContain('launch?.runtime === true')
+    expect(body).toContain('bypassPermissions')
+  })
+
+  it('only stamps DEFAULT_GROK_MODEL when that resolved CLI is grok', () => {
+    const body = callbackBody('addTerminalFromTable')
+    expect(body).toContain("agentId === 'grok' ? DEFAULT_GROK_MODEL")
+    expect(body).not.toContain("launch?.agentId ?? 'grok'")
+  })
+
+  it('Nueva misión opens a host-owned plain terminal — the host types the TUI, not an agent CLI', () => {
+    const body = callbackBody('addTerminalFromTable')
+    expect(body).toContain('if (launch?.orchestrator)')
+    expect(body).toContain('addTerminal(undefined, undefined, groupId, undefined, true)')
+    expect(callbackBody('addTerminal')).toContain('hostOwnSwarmAgent')
+  })
+
+  it('Mesa workers are host-owned at create — no typed initialCommand race', () => {
+    const add = callbackBody('addTerminalFromTable')
+    expect(add).toContain('launch?.runtime === true')
+    expect(callbackBody('addAgentNode')).toContain('hostOwnSwarmAgent')
+    expect(callbackBody('addAgentNode')).toContain('hostOwned')
+  })
+})
+
+describe('Mesa overlay leaves the canvas mounted', () => {
+  it('renders TableView as a sibling overlay and keeps ReactFlow in the tree', () => {
+    expect(CANVAS_SRC).toContain('mesaMounted && (')
+    expect(CANVAS_SRC).toContain('parked={!perProjectTableOpen || globalKanbanOpen}')
+    expect(CANVAS_SRC).toContain('mesaHeldFor')
+    expect(CANVAS_SRC).not.toContain('!globalKanbanOpen && !!activeProjectId')
+    expect(CANVAS_SRC).toMatch(/<ReactFlow[\s\n]/)
+    expect(callbackBody('stampSwarmFromTable')).toContain("launchMode: 'runtime'")
+    expect(callbackBody('stampCwdFromTable')).toContain('cwd')
+    expect(CANVAS_SRC).toContain('onStampCwd={stampCwdFromTable}')
+    expect(callbackBody('stampModelFromTable')).toContain('agentModel: model')
+    expect(CANVAS_SRC).toContain("n?.data.launchMode === 'runtime' || n?.data.swarm")
+    expect(CANVAS_SRC).toContain('stampModelFromTable(nodeId, model)')
+    expect(CANVAS_SRC).toContain("run: () => useViewMode.getState().cycle(kanbanId)")
+    expect(CANVAS_SRC).toContain("current === 'table' ? 'Canvas view'")
+    expect(CANVAS_SRC).toContain("setView(mesaId, 'canvas')")
+    expect(CANVAS_SRC).toContain("setView(landId, 'canvas')")
+  })
+})
+
+describe('Mesa does not lift the canvas usage cluster over its talk bar', () => {
+  // kanbanOpen includes the table view (shortcuts must treat Mesa as a covered canvas). overBoard
+  // must not: that class is z 26 over the overlay's bottom-left, which on Mesa is the composer.
+  it('raises the pills only over the kanban board', () => {
+    expect(CANVAS_SRC).toContain('overBoard={kanbanBoardOpen}')
+    expect(CANVAS_SRC).not.toContain('overBoard={kanbanOpen}')
+  })
+
+  it('hides the pill cluster while Mesa is open', () => {
+    expect(CANVAS_SRC).toContain("perProjectTableOpen ? ' canvas-pills--mesa' : ''")
   })
 })

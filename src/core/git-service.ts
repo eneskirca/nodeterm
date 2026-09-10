@@ -277,6 +277,10 @@ export class GitService {
   repoRoot(cwd: string) {
     return worktreeOps.repoRoot(git, cwd)
   }
+  /** Same git subprocess as worktreeAdd. Mesa seeds a repo when the attached folder has none. */
+  runGit(cwd: string, args: string[]): Promise<Exec> {
+    return git(cwd, args)
+  }
   worktreeList(repoPath: string): Promise<WorktreeListResult> {
     // A repo on an SSH host cannot be stat'd from here (see `isRemoteRepo`): answer "the read
     // failed", which is exactly what it is — NOT an empty list, which every caller would read as

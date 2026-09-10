@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useReactFlow } from '@xyflow/react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -40,12 +41,16 @@ import {
 } from '../../terminal/terminal-config'
 import { useXtermVisualSettings } from '../../terminal/useXtermVisualSettings'
 import {
+  markViewerSessionReady,
   owningProjectId,
   resolveSshRemote,
   reportSshDrop,
   sshConnectionScope
 } from '../../nodes/TerminalNode'
 import { buildSshArgs, type SshConnection } from '@shared/ssh'
+import { deliverCommand } from '../../terminal/command-delivery'
+import { claimNodeLaunch, releaseNodeLaunch } from '../../lib/claimNodeLaunch'
+import type { ITheme } from '@xterm/xterm'
 
 /** The subset of a node's `data` a SECOND client needs to attach to its session the same way the
  *  canvas TerminalNode does. Canvas fills it from the node's data; sticky/chat cards pass `{}`. */
@@ -60,6 +65,8 @@ export interface ModalSpawn {
   sshRemoteTmux?: boolean
   /** One-shot launch command for a fresh session (agent CLIs). */
   initialCommand?: string
+  /** Host-owned swarm sessions attach only; viewers never type the CLI. */
+  launchMode?: 'viewer' | 'runtime'
 }
 
 /**
@@ -78,10 +85,25 @@ interface ModalTerminalProps {
   /** The modal header's 🔍 toggle — the FindBar renders inside this pane. */
   searchOpen: boolean
   onCloseSearch: () => void
+  /** When false, joining the session does not steal keyboard focus (Mesa grid). Default true. */
+  autoFocus?: boolean
+  /** When false, this viewer never types `initialCommand` (Mesa's off-screen park). Default true. */
+  mayLaunch?: boolean
+  /** Mesa chrome background. CSS cannot recolor xterm's canvas glyphs. */
+  themePatch?: Partial<ITheme>
 }
 
-export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: ModalTerminalProps) {
+export function ModalTerminal({
+  nodeId,
+  spawn,
+  searchOpen,
+  onCloseSearch,
+  autoFocus = true,
+  mayLaunch = true,
+  themePatch
+}: ModalTerminalProps) {
   const { api } = useSession()
+  const { updateNodeData } = useReactFlow()
   const hostRef = useRef<HTMLDivElement>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
@@ -175,6 +197,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     // view of one session, and a card that renders it in different colours reads as a different
     // terminal. (It used to hardcode its own background, which is exactly what happened.)
     const term = new Terminal(xtermOptionsFromSettings(s))
+    if (themePatch) term.options.theme = { ...term.options.theme, ...themePatch }
     // Without a handler xterm answers an OSC 8 click with a window.confirm — the one surface
     // where this session's links would prompt instead of opening like the canvas node's.
     term.options.linkHandler = createOsc8LinkHandler((uri) =>
@@ -350,17 +373,23 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
       // modal is a transient, always-on-top second view and never drives the shared session's flow.
 
       // A fresh (cold-restart / first-open) session's tmux pane is gone, so replay the persisted
-      // scrollback. A warm join is painted from the server-captured screen inside create(). Agent
-      // auto-resume is deliberately canvas-only — the modal never re-launches a CLI. Both the
-      // snapshot and `res.screen` come from `capture-pane -p` (LF-separated, no CR bytes) and this
-      // xterm runs with convertEol:false, so they MUST go through toXtermText or they staircase.
+      // scrollback. A warm join is painted from the server-captured screen inside create().
+      // Mesa can be the FIRST spawner (canvas covered): when the node still carries
+      // `initialCommand`, this viewer types the agent CLI — canvas-only auto-resume stays
+      // canvas-only (no `--resume` from the modal). Both the snapshot and `res.screen` come
+      // from `capture-pane -p` (LF-separated, no CR bytes) and this xterm runs with
+      // convertEol:false, so they MUST go through toXtermText or they staircase.
       const snapshot = res.fresh ? await api.pty.readScrollback(nodeId) : null
       // The read above is a suspension point: bail if the modal closed while it was in flight, so we
       // never write into a disposed xterm or observe a null host ref (mirrors TerminalNode's
       // post-await onDisposed check).
       if (dead) return
       const paint = seedPaint({
-        replay: attachReplay({ parked: false, fresh: res.fresh, hasInitialCommand: false }),
+        replay: attachReplay({
+          parked: false,
+          fresh: res.fresh,
+          hasInitialCommand: !!spawn.initialCommand
+        }),
         superseded: false,
         snapshot,
         screen: res.screen
@@ -389,7 +418,57 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
       ro.observe(hostRef.current!)
       cleanups.push(() => ro.disconnect())
       transport.resize(res.sessionId, term.cols, term.rows)
-      term.focus()
+      if (autoFocus) term.focus()
+
+      // Mesa-as-primary: this viewer is often the first/only client that can type. Claim the
+      // one-shot launch so we don't race the canvas TerminalNode (which still mounts under the
+      // overlay). Kanban card modals hit the same path — if the canvas node already claimed,
+      // this is a no-op. Host-owned Mesa panes (`mayLaunch={false}`) still publish ready so
+      // ensureTui waits for the same settle the CLI writer uses.
+      const sid = res.sessionId
+      const whenShellSettled = (run: () => void): void => {
+        let done = false
+        let timer: ReturnType<typeof setTimeout>
+        const fire = (): void => {
+          if (done) return
+          done = true
+          unsub()
+          run()
+        }
+        const unsub = transport.onData(sid, () => {
+          if (done) return
+          clearTimeout(timer)
+          timer = setTimeout(fire, 200)
+        })
+        timer = setTimeout(fire, 1500)
+        cleanups.push(() => {
+          done = true
+          clearTimeout(timer)
+          unsub()
+        })
+      }
+      whenShellSettled(() => markViewerSessionReady(nodeId))
+      const launchCmd =
+        mayLaunch && spawn.launchMode !== 'runtime' ? spawn.initialCommand : undefined
+      if (launchCmd && claimNodeLaunch(nodeId)) {
+        let started = false
+        whenShellSettled(() => {
+          started = true
+          cleanups.push(
+            deliverCommand(
+              {
+                write: (d) => transport.write(sid, d),
+                onData: (cb) => transport.onData(sid, cb)
+              },
+              launchCmd
+            )
+          )
+          updateNodeData(nodeId, { initialCommand: undefined })
+        })
+        cleanups.push(() => {
+          if (!started) releaseNodeLaunch(nodeId)
+        })
+      }
     })()
 
     return () => {
@@ -418,12 +497,15 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    const { metricsChanged } = applyLiveOptions(term, visual)
+    const { metricsChanged, themeChanged } = applyLiveOptions(term, visual)
+    if (themePatch && (themeChanged || term.options.theme?.background !== themePatch.background)) {
+      term.options.theme = { ...term.options.theme, ...themePatch }
+    }
     if (!metricsChanged) return
     fitRef.current?.fit()
     const sid = sessionIdRef.current
     if (sid) transportRef.current?.resize(sid, term.cols, term.rows)
-  }, [visual])
+  }, [visual, themePatch])
 
   // File drop → paste the path(s) into the co-attached session, just like the canvas node.
   const onDragOver = (e: React.DragEvent) => {

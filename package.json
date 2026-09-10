@@ -20,6 +20,11 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "dev:mesa:mock": "NODETERM_SWARM_ADAPTER=mock electron-vite dev",
+    "dev:mesa:swarm": "NODETERM_SWARM_ADAPTER=live electron-vite dev",
+    "test:swarm": "vitest run src/core/swarm src/shared/swarm src/tui",
+    "test:mesa": "vitest run src/renderer/components/table src/renderer/lib/mesaFocus.test.ts src/renderer/lib/mesaModels.test.ts src/renderer/lib/mesaTheme.test.ts src/renderer/lib/talkMessage.test.ts src/renderer/components/kanban/ModalTerminal.launch.test.ts",
+    "eval:router": "vitest run src/core/swarm/router.ts",
     "test:unit": "vitest run test/remote",
     "rebuild": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper",
     "server:build": "esbuild src/server/main.ts --bundle --platform=node --format=cjs --outfile=out/server/main.cjs --external:node-pty --external:ws --external:smart-whisper --tsconfig=tsconfig.node.json",
@@ -35,8 +40,8 @@
     "postinstall": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper"
   },
   "build": {
-    "appId": "com.nodeterm.app",
-    "productName": "nodeterm",
+    "appId": "com.nodeterm.mod",
+    "productName": "nodeterm-mod",
     "directories": {
       "output": "dist",
       "buildResources": "build"

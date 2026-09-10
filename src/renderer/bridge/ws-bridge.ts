@@ -792,6 +792,46 @@ function buildUsageApi(client: RpcClient): Pick<NodeTerminalApi, 'usage'> {
  * the machine that will fire it. The relay deliberately keeps the refusing stub (stubs.ts):
  * another machine's arm store is not the guest's to write.
  */
+export function buildSwarmApi(client: RpcClient): Pick<NodeTerminalApi, 'swarm'> {
+  return {
+    swarm: {
+      create: (input) => client.request(IPC.swarmCreate, input) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      get: (missionId) => client.request(IPC.swarmGet, { missionId }) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      list: (projectId) => client.request(IPC.swarmList, { projectId }) as Promise<import('@shared/swarm/types').SwarmMission[]>,
+      setGoal: (missionId, objective, criteria) =>
+        client.request(IPC.swarmSetGoal, { missionId, objective, criteria }) as Promise<
+          import('@shared/swarm/types').SwarmMission | null
+        >,
+      setWorkspaceRoot: (missionId, workspaceRoot) =>
+        client.request(IPC.swarmSetWorkspace, { missionId, workspaceRoot }) as Promise<
+          import('@shared/swarm/types').SwarmMission | null
+        >,
+      activate: (missionId, roleId) =>
+        client.request(IPC.swarmActivate, { missionId, roleId }) as Promise<
+          import('@shared/swarm/types').SwarmMission | null
+        >,
+      bind: (missionId, roleId, nodeId, launch) =>
+        client.request(IPC.swarmBind, { missionId, roleId, nodeId, ...launch }) as Promise<
+          import('@shared/swarm/types').SwarmMission | null
+        >,
+      tick: (missionId) => client.request(IPC.swarmTick, { missionId }) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      approve: (missionId, approvalId) =>
+        client.request(IPC.swarmApprove, { missionId, approvalId }) as Promise<
+          import('@shared/swarm/types').SwarmMission | null
+        >,
+      pause: (missionId) => client.request(IPC.swarmPause, { missionId }) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      resume: (missionId) => client.request(IPC.swarmResume, { missionId }) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      cancel: (missionId) => client.request(IPC.swarmCancel, { missionId }) as Promise<import('@shared/swarm/types').SwarmMission | null>,
+      ensureTui: (missionId, nodeId) =>
+        client.request(IPC.swarmEnsureTui, { missionId, nodeId }) as Promise<{ ok: boolean; running: boolean }>,
+      caps: () =>
+        client.request(IPC.swarmCaps) as Promise<{ mode: 'mock' | 'live'; adapterId: string }>,
+      noteIdle: (input) => client.request(IPC.swarmNoteIdle, input) as Promise<{ ok: boolean }>,
+      onChanged: (listener) => client.subscribe(IPC.swarmChanged, listener as Listener)
+    }
+  }
+}
+
 export function buildTriggersApi(client: RpcClient): Pick<NodeTerminalApi, 'triggers'> {
   return {
     triggers: {
@@ -1064,6 +1104,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildUsageApi(client),
     ...buildSessionMemoryApi(client),
     ...buildTriggersApi(client),
+    ...buildSwarmApi(client),
     ...buildGitHubApi(client),
     ...buildClaudeAccountsApi(client),
     codex: buildCodexApi(client),

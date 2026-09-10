@@ -7,6 +7,7 @@ import { initAgentResolver } from './state/agent-resolver'
 import { refreshAgentEnv } from './lib/agentEnv'
 import { applyWindowChrome } from './lib/windowChrome'
 import './styles.css'
+import './components/table/table.css'
 import './tailwind.css'
 
 // Does this window draw the macOS traffic lights inside our own tab bar? Stamped on <html> before

@@ -334,6 +334,8 @@ export interface CanvasNodeState {
    */
   titleAuto?: boolean
   color: string
+  /** Mesa letter (A, B, C…). Human identity, persisted so it survives a restart. */
+  callsign?: string
   group: string | null
   /** Labels for organizing/filtering terminals. */
   tags?: string[]
@@ -357,6 +359,8 @@ export interface CanvasNodeState {
   agentId?: AgentId
   /** Model selected for this agent node through the shared model gateway. */
   agentModel?: string
+  swarm?: import('./swarm/types').SwarmNodeMeta
+  launchMode?: import('./swarm/types').SwarmLaunchMode
   /** Set while this node is armed but not yet launched — see PendingLaunch. */
   pendingLaunch?: PendingLaunch
   /**
@@ -1340,9 +1344,9 @@ export interface Settings {
    *  status so sessions needing attention float to the top. Remote/relay sessions have no live
    *  status in the sidebar and show as idle in either mode. */
   sidebarGrouping: 'project' | 'status'
-  /** Fallback view for projects the user hasn't explicitly toggled (canvas or the kanban board).
+  /** Fallback view for projects the user hasn't explicitly toggled (mesa table, canvas, or kanban).
    *  Personal machine-local preference; per-project explicit choices override it. */
-  defaultProjectView: 'canvas' | 'kanban'
+  defaultProjectView: 'canvas' | 'kanban' | 'table'
   /** Global swimlane kanban overview (Omni-Kanban): when enabled, the kanban board shows all
    *  open projects as stacked swimlanes instead of per-project tabs. Toggle in Settings →
    *  Behavior. Default OFF — no silent behavior change for existing users; `globalKanban`
@@ -1669,7 +1673,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarAutoCollapse: true,
   sidebarCollapsedItems: {},
   sidebarGrouping: 'project',
-  defaultProjectView: 'canvas',
+  defaultProjectView: 'table',
   omniKanbanEnabled: false,
   omniKanbanAsDefault: false,
   worktreePathTemplate: DEFAULT_WORKTREE_PATH_TEMPLATE,
@@ -3068,6 +3072,34 @@ export interface TriggersApi {
   ): Promise<{ outcome: 'fired' | 'missed' | 'failed' | 'queued'; detail?: string }>
 }
 
+export interface SwarmApi {
+  create(input: import('./swarm/types').CreateMissionInput): Promise<import('./swarm/types').SwarmMission | null>
+  get(missionId: string): Promise<import('./swarm/types').SwarmMission | null>
+  list(projectId?: string): Promise<import('./swarm/types').SwarmMission[]>
+  setGoal(missionId: string, objective: string, criteria?: string[]): Promise<import('./swarm/types').SwarmMission | null>
+  setWorkspaceRoot(missionId: string, workspaceRoot: string): Promise<import('./swarm/types').SwarmMission | null>
+  activate(missionId: string, roleId: import('./swarm/types').SwarmRoleId): Promise<import('./swarm/types').SwarmMission | null>
+  bind(
+    missionId: string,
+    roleId: import('./swarm/types').SwarmRoleId,
+    nodeId: string,
+    launch?: { agentId?: string; agentModel?: string; agentSessionId?: string }
+  ): Promise<import('./swarm/types').SwarmMission | null>
+  tick(missionId: string): Promise<import('./swarm/types').SwarmMission | null>
+  approve(missionId: string, approvalId: string): Promise<import('./swarm/types').SwarmMission | null>
+  pause(missionId: string): Promise<import('./swarm/types').SwarmMission | null>
+  resume(missionId: string): Promise<import('./swarm/types').SwarmMission | null>
+  cancel(missionId: string): Promise<import('./swarm/types').SwarmMission | null>
+  ensureTui(missionId: string, nodeId: string): Promise<{ ok: boolean; running: boolean }>
+  caps(): Promise<{ mode: 'mock' | 'live'; adapterId: string }>
+  noteIdle(input: {
+    nodeId: string
+    executionId: string
+    launchGeneration?: number
+  }): Promise<{ ok: boolean }>
+  onChanged(listener: (mission: import('./swarm/types').SwarmMission) => void): () => void
+}
+
 export interface NodeTerminalApi {
   pty: PtyApi
   workspace: WorkspaceApi
@@ -3098,6 +3130,7 @@ export interface NodeTerminalApi {
   usage: UsageApi
   sessionMemory: SessionMemoryApi
   triggers: TriggersApi
+  swarm: SwarmApi
   context: ContextApi
   canvas: CanvasApi
   codex: CodexApi
