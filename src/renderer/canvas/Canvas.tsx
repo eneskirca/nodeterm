@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
 import { fanoutStillWorking } from '@renderer/lib/completionAlert'
@@ -172,7 +172,28 @@ import { planSetProjectFolder } from '../lib/setProjectFolder'
 import { observationIsRemote, type ObservationOrigin } from '../lib/accountChip'
 import { transferConversationItems } from '../lib/transferItems'
 import { reopenVariants } from '../lib/reopenVariants'
-import { modelsForAgent } from '@shared/agents/model-gateway'
+import { claudeAutocompactFor, modelContextWindow, modelsForAgent } from '@shared/agents/model-gateway'
+import {
+  modelAvailability,
+  modelLaunchShapeMismatch,
+  modelRecoveryCure,
+  modelRecoverySessionKey,
+  modelRecoveryTrigger,
+  modelWindowChange,
+  modelWindowSessionKey,
+  type ModelRecoveryReason
+} from '@shared/agents/model-availability'
+import { modelRespawnErrorKind, modelRespawnTrace } from '@shared/model-respawn-trace'
+import {
+  modelSwitchProgressCanAutoDismiss,
+  modelSwitchRepairVerdict,
+  modelSwitchShouldAutoForceRetry
+} from '../lib/modelSwitchProgress'
+import {
+  catalogueForModelRecovery,
+  refreshModelRecoveryCatalogue
+} from '../lib/modelRecovery'
+import { Select } from '../ui/Select'
 import { useModelGateway } from '../state/modelGateway'
 import { viewportAtZoom } from '../lib/zoomReset'
 import { containerOrigin, snapPointInRootSpace } from '../lib/gridSnap'
@@ -318,12 +339,16 @@ import {
   agentRestartFn,
   guardConcurrentRestart,
   planBulkRestart,
+  clearEnvEligibility,
+  RESTART_REFUSAL_COPY,
   restartEligibility,
   restartSessionId,
   settleRestart,
   summarizeBulkRestart,
+  type AgentRestartFn,
   type BulkRestartPlan,
-  type RestartOutcome
+  type RestartOutcome,
+  type RestartRefusalReason
 } from '../terminal/agent-restart'
 import {
   planHibernation,
@@ -412,8 +437,10 @@ import {
   canRename,
   canContextLink,
   canSwitchModel,
+  capabilityAgentId,
   createdAgentId,
   resumeCommand,
+  vanillaEnvStripPattern,
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   type AgentId,
@@ -621,6 +648,13 @@ function noticeDwellMs(text: string): number {
  *  `confirmFlags`): ONE confirm at a time, decided at call time rather than at the next render. */
 interface ConfirmState {
   message: string
+  /** Optional content ABOVE the message by default (a grouped picker, a scope summary): rendered
+   *  verbatim inside the dialog box, exactly like ConfirmDialog's `body` prop. `bodyPosition`
+   *  moves it below the message when the message refers to the content ("the sessions below"). */
+  body?: ReactNode
+  /** 'below' renders `body` AFTER the message — the reading order the grouped model ask wants
+   *  (reason first, then the rows it refers to). Consent-style bodies stay above. */
+  bodyPosition?: 'above' | 'below'
   onConfirm: () => void
   /** Optional: runs when the user cancels/escapes (e.g. to reply 'denied' to an agent). */
   onCancel?: () => void
@@ -629,6 +663,11 @@ interface ConfirmState {
   danger?: boolean
   /** Report-only (an error, a "not ready yet"): one dismiss button, no destructive default. */
   alert?: boolean
+  /** When false, neither button takes autoFocus — for a dialog the APP raised without the user
+   *  asking (the grouped model ask surfaces on a discovery refresh): a focused button would let
+   *  the next Enter/Space natively activate one they never saw. Undefined keeps autofocus, the
+   *  historical behavior. */
+  autoFocusButtons?: boolean
   /** Set when an AGENT asked for this dialog: it is answered by an explicit click, never by an
    *  Enter the user aimed at their terminal (see components/confirm-key). */
   requestedBy?: string
@@ -770,6 +809,43 @@ const ZOOM_STEP_DURATION_MS = 150
  */
 const resumeCardShown = new Set<string>()
 
+/** Model-change prompts already raised, per node+model+trigger-version. The map is the tombstone:
+ *  it is written when a dialog is ANSWERED (so the grouped ask carries only the pairs the user has
+ *  not yet answered), kept on cancel (a "Keep it" answer is durable for this catalogue) and kept
+ *  after a successful restart, so the same catalogue state does not re-raise every effect run.
+ *  Window and launch-shape triggers include the newly discovered value in the key: answering one
+ *  change must not permanently silence a later, different provider change for the same model. */
+const modelGoneAsked = new Map<string, boolean>()
+
+/** Per-session first observation for nodes created before launch windows were persisted. */
+const modelWindowSeen = new Map<string, number>()
+
+/**
+ * Whether a grouped model-restart batch has UNRESOLVED rows — pending spinner, in-flight, or a
+ * failure the user has not yet clicked away. While truthy, the detection passes
+ * (`considerModelAvailability` via the discovery-refresh effect and the window-focus listener)
+ * hold off re-firing the dialog: a batch whose rows are mid-restart, or whose failures are
+ * being worked, must not be contradicted or nagspammed by a second ask for the same nodes.
+ * Written by the batch (set/cleared in `runRestart`) and read via the focus effect's ref (the
+ * effect's deps do not include the strip). A module-level mirror of the state the strip's
+ * render owns — the strip is the single owner of this latch.
+ */
+type ModelSwitchRepair = {
+  retry: (id: string) => void
+  retryAll: () => void
+  /** Spend ONE failed row's ask (its per-row ✕): the tombstone "Keep it"/Dismiss writes. */
+  spend?: (id: string) => void
+  clear: () => void
+}
+
+/**
+ * The live pick of the grouped "model is gone" dialog, threaded from its <select>'s onChange to
+ * the confirm handler — the same click-time read the model <select> in the node menus uses, with
+ * no React state in between (a useState here would mean an extra whole-canvas render per open of
+ * a dialog the confirm closure can read directly). Null whenever no such dialog is open.
+ */
+let modelGonePick: { pickedId?: string } | null = null
+
 const CONTROL_TRAVEL_TIMEOUT_MS = 8000
 const CONTROL_TRAVEL_POLL_MS = 60
 async function waitForCanvasNode(
@@ -784,6 +860,29 @@ async function waitForCanvasNode(
   }
 }
 
+/** After activating a node's owning project, how long to wait for ITS mount to register the
+ *  restart closure. The project load effect hydrates React Flow within a tick, then the
+ *  TerminalNode mount spawns/adopts the PTY and registers — the same window the canvas-control
+ *  machinery `waitForCanvasNode`s over, plus a little for the mount itself. The registration
+ *  (not the mount) is the gate: a stale closure resolvable earlier is fine, one later is what
+ *  fails the batch item, not the batch. */
+const RESTART_REGISTER_TIMEOUT_MS = CONTROL_TRAVEL_TIMEOUT_MS
+const RESTART_REGISTER_POLL_MS = 120
+function waitRestartRegistered(nodeId: string): Promise<AgentRestartFn | undefined> {
+  return new Promise((resolve) => {
+    let elapsed = 0
+    const tick = (): void => {
+      const fn = agentRestartFn(nodeId)
+      if (fn || elapsed >= RESTART_REGISTER_TIMEOUT_MS) {
+        resolve(fn)
+        return
+      }
+      elapsed += RESTART_REGISTER_POLL_MS
+      setTimeout(tick, RESTART_REGISTER_POLL_MS)
+    }
+    tick()
+  })
+}
 // A "spawned by" / "sequenced after" rope: control-capable agent → node it opened, browser popup →
 // opener, or `--after` dependency → the armed node. Display-only (never a context link) but
 // persisted per project as `ropes`, so the lineage survives restarts. Selectable; removed with ⌫ /
@@ -1206,6 +1305,41 @@ export function Canvas() {
   // The closed-session entry whose transcript is on screen (issue #531), or null. A SNAPSHOT of
   // the ledger row, not a reference into the store: reading it needs only the pointer it carries.
   const [closedTranscript, setClosedTranscript] = useState<ClosedSessionEntry | null>(null)
+  // Per-session LIVE progress for the grouped model restart (the row spinners the user asked
+  // for). Set when the batch begins; each row advances as its own restart resolves — spinner
+  // while in flight, ✓/✗ when done — and the whole strip clears only when EVERY row reached a
+  // terminal outcome (a completed-selectable state the user explicitly required: never dismiss
+  // over a session whose CLI is still cycling). Null = nothing running.
+  const [modelSwitchProgress, setModelSwitchProgress] = useState<{
+    target: string
+    rows: {
+      id: string
+      label: string
+      projectName: string
+      state: 'pending' | 'running' | 'ok' | 'failed'
+      /** Set on failure: WHY the row failed, verbatim (fail loud — never swallowed). */
+      detail?: string
+      /** Mismatch this row was flagged for — shown as current → desired in the dialog AND on
+       *  a failed row, so the user can see what was being fixed when it failed. */
+      from?: string
+      reason?: 'gone' | 'win' | 'shape'
+    }[]
+  } | null>(null)
+  // The live rows, ref-held: `runRestart`'s repair handlers (per-row Retry buttons) read the
+  // CURRENT failed set at click time — a closure taken in the batch would go stale the moment
+  // a retry flipped a row to `running`.
+  const modelSwitchProgressStateRef = useRef(modelSwitchProgress)
+  modelSwitchProgressStateRef.current = modelSwitchProgress
+  // Every batch gets a generation. A success timer from batch N must never clear batch N+1 if a
+  // fresh detection starts during the 1.8s success dwell — especially when N+1 contains failures.
+  const modelSwitchProgressRunRef = useRef(0)
+  // The popup and its imperative repair closure must share the Canvas instance. These used to be
+  // module globals; React Fast Refresh preserved the failed popup state while re-evaluating the
+  // module and resetting its controller to null, leaving the always-visible "Retry failed" button
+  // wired to a silent optional-chain no-op. Refs survive ordinary renders/Fast Refresh together
+  // with the popup and are discarded together when this Canvas genuinely unmounts.
+  const modelSwitchRepairRef = useRef<ModelSwitchRepair | null>(null)
+  const modelSwitchLatchRef = useRef(modelSwitchProgress !== null)
   // Node to center once its project finishes loading (cross-project notification click).
   const pendingFocusRef = useRef<string | null>(null)
   // One-shot: the next active-project load keeps the CURRENT camera instead of applying the
@@ -1328,6 +1462,7 @@ export function Canvas() {
   const gatewayModels = useModelGateway((s) => s.models)
   const gatewayStatus = useModelGateway((s) => s.status)
   const gatewayError = useModelGateway((s) => s.error)
+  const gatewayDiscoveryAt = useModelGateway((s) => s.discoveryAt)
   const discoverModels = useModelGateway((s) => s.discover)
   const clearModels = useModelGateway((s) => s.clear)
 
@@ -1346,6 +1481,7 @@ export function Canvas() {
   }, [
     settings.modelGateway.baseUrl,
     settings.modelGateway.apiKey,
+    settings.modelGateway.discoveryPath,
     discoverModels,
     clearModels
   ])
@@ -2214,6 +2350,7 @@ export function Canvas() {
               title: n.data.title ?? n.id,
               color: n.data.color ?? '#888',
               agentId: n.data.agentId,
+              agentLaunchContextWindow: n.data.agentLaunchContextWindow,
               // The node's creation-time account, for the sidebar row's account chip (the
               // serialized nodes of inactive projects carry it already).
               accountId: n.data.accountId,
@@ -2512,6 +2649,756 @@ export function Canvas() {
   // ride the same debounced whole-file save.
   useEffect(() => registerWorkspaceDirty(markDirty), [markDirty])
 
+  // A model the catalogue no longer lists (gateway dropped/renamed it; discovery refreshed) leaves
+  // every node pinned to it launching an id the provider will refuse — and a model the gateway
+  // NOW SERVES with a different context window leaves every large-context session compacting
+  // against a dead autocompact window. ONE grouped dialog asks about every affected session at
+  // once, with a single model pick they all restart onto — per-node asks would both stack and
+  // nag. The restart itself is the EXISTING single-node in-place path (`agentRestartFn` +
+  // `guardConcurrentRestart` inside each node's own closure), run sequentially here — no new
+  // restart machinery: in particular it refuses a busy/blocked session per restartEligibility,
+  // never types an exit command into a permission dialog.
+  //
+  // Detection evaluates only a catalogue that has already landed. Settings changes and boot use
+  // the debounced prime effect above; focus starts one fresh request, whose `discoveryAt` update
+  // invokes this evaluator. Empty/error/loading snapshots cannot judge and never recurse.
+  const considerModelAvailability = useCallback((): void => {
+    // An unresolved batch owns the conversation (rows pending/running, or failures the user is
+    // resolving): no second ask while the strip is live. The focus listener ALSO checks this,
+    // so a focus that lands mid-batch is held off as well. Written by `runRestart`.
+    if (modelSwitchLatchRef.current) {
+      modelRespawnTrace('detection.skipped', { reason: 'progress-latched' })
+      return
+    }
+    const st = useModelGateway.getState()
+    const gatewayModels = catalogueForModelRecovery(st)
+    modelRespawnTrace('detection.begin', {
+      gatewayStatus: st.status,
+      cachedModelCount: st.models.length,
+      activeNodeCount: nodesRef.current.length
+    })
+    if (!gatewayModels) {
+      modelRespawnTrace('detection.aborted', {
+        reason: 'catalogue-unavailable',
+        gatewayStatus: st.status,
+        modelCount: st.models.length
+      })
+      return
+    }
+    const gatewayStatus = st.status
+
+    /** ONE dialog for the WHOLE pass, not one per node: `setConfirm` REPLACES an open dialog
+     *  (`confirmFlags` exists exactly for that), so per-node asks would orphan each other.
+     *  Affected sessions are collected first, then presented together with a single model pick
+     *  that all of them restart onto. */
+    const affected: {
+      id: string
+      model: string
+      label: string
+      ownerProjectId: string
+      projectName: string
+      live: boolean
+      agentId: AgentId
+      reason: ModelRecoveryReason
+      /** Versioned tombstone: later changes on the same session/model ask independently. */
+      askKey: string
+    }[] = []
+    const observeLegacyWindow = (id: string, model: string): boolean => {
+      const key = modelWindowSessionKey(id, model)
+      const change = modelWindowChange(model, gatewayModels, modelWindowSeen.get(key))
+      if (change.fresh && change.contextWindow !== '') {
+        modelWindowSeen.set(key, change.contextWindow)
+      }
+      return change.changed
+    }
+    const askKeyFor = (
+      id: string,
+      model: string,
+      agentId: AgentId,
+      reason: ModelRecoveryReason
+    ): string => {
+      const version =
+        reason === 'shape'
+          ? claudeAutocompactFor(agentId, model, gatewayModels).modelId ?? model
+          : reason === 'win'
+            ? modelContextWindow(model, gatewayModels) ?? 'unknown'
+            : 'absent'
+      return modelRecoverySessionKey(id, model, reason, version)
+    }
+    /** Shared candidate gates for live and serialized project nodes. Legacy nodes may use their
+     *  requested model plus a per-session window ledger for detection; cure still requires the
+     *  actual record written by the accepted relaunch. */
+    const consider = (
+      id: string,
+      agentId: AgentId | undefined,
+      currentModel: unknown,
+      currentLaunchModel: unknown,
+      currentLaunchContextWindow: unknown,
+      persistedSessionId: unknown,
+      ownerProjectId: string,
+      label: string,
+      projectName: string,
+      source: 'active-project' | 'other-project'
+    ): void => {
+      if (!agentId || !canSwitchModel(agentId)) return
+      const status = useAgentStatus.getState().byId[id]
+      const gate = restartEligibility(
+        agentId,
+        status?.state,
+        restartSessionId(status?.sessionId, persistedSessionId)
+      )
+      if (!gate.ok) return
+
+      const launchModel =
+        typeof currentLaunchModel === 'string' ? currentLaunchModel : undefined
+      const launchContextWindow =
+        typeof currentLaunchContextWindow === 'number'
+          ? currentLaunchContextWindow
+          : undefined
+      const requestedModel = typeof currentModel === 'string' ? currentModel : undefined
+      const observedModel = launchModel ?? requestedModel
+      if (!observedModel) return
+      const hasPersistedWindow =
+        typeof launchContextWindow === 'number' &&
+        Number.isFinite(launchContextWindow) &&
+        launchContextWindow > 0
+      let reason: ModelRecoveryReason | null
+      if (hasPersistedWindow) {
+        reason = modelRecoveryTrigger(agentId, observedModel, launchContextWindow, gatewayModels)
+      } else {
+        const availability = modelAvailability(observedModel, gatewayModels)
+        if (availability.unavailable) reason = 'gone'
+        else if (observeLegacyWindow(id, observedModel)) reason = 'win'
+        else if (modelLaunchShapeMismatch(agentId, observedModel, gatewayModels)) reason = 'shape'
+        else reason = null
+      }
+      if (!reason || !modelsForAgent(gatewayModels, agentId).length) return
+
+      modelRespawnTrace('detection.candidate', {
+        nodeId: id,
+        agentId,
+        source,
+        trigger: reason === 'win' ? 'window' : reason,
+        currentModel: observedModel,
+        projectId: ownerProjectId
+      })
+      affected.push({
+        id,
+        model: observedModel,
+        label,
+        ownerProjectId,
+        projectName,
+        live: nodesProjectIdRef.current === ownerProjectId,
+        agentId,
+        reason,
+        askKey: askKeyFor(id, observedModel, agentId, reason)
+      })
+    }
+
+    // The active canvas first, then every other readable local/SSH project. Relay sessions run on
+    // another core and must never receive this machine's gateway selection.
+    const seen = new Set<string>()
+    for (const n of nodesRef.current) {
+      seen.add(n.id)
+      consider(
+        n.id,
+        restartAgentIdOf(n),
+        n.data.agentModel,
+        n.data.agentLaunchModel,
+        n.data.agentLaunchContextWindow,
+        n.data.agentSessionId,
+        nodesProjectIdRef.current ?? '',
+        (typeof n.data.title === 'string' && n.data.title) || n.id,
+        '',
+        'active-project'
+      )
+    }
+    const { projects } = useProjects.getState()
+    for (const project of projects) {
+      if (!project.id || project.id === nodesProjectIdRef.current) continue
+      if (project.remote || project.unavailable) continue
+      if (sessionForProject(project.id).source !== 'local') continue
+      for (const node of project.nodes) {
+        if (seen.has(node.id) || (node.kind ?? 'terminal') !== 'terminal') continue
+        consider(
+          node.id,
+          createdAgentId(node),
+          node.agentModel,
+          node.agentLaunchModel,
+          node.agentLaunchContextWindow,
+          node.agentSessionId,
+          project.id,
+          node.title || node.id,
+          project.name,
+          'other-project'
+        )
+      }
+    }
+    // Per-pair tombstones: a pair already ASKED (kept on cancel, so "Keep it" is durable for this
+    // catalogue) is left out of the group, and if nothing new remains there is no dialog at all.
+    // GONE, WINDOW-CHANGE and SHAPE asks are tombstoned separately — a "keep it" answered for one
+    // reason must not silence the other; a session whose model both left the catalogue AND
+    // changed size could otherwise be asked once and then never again for either.
+    const unasked = affected.filter(({ askKey }) => !modelGoneAsked.has(askKey))
+    modelRespawnTrace('detection.complete', {
+      gatewayStatus,
+      modelCount: gatewayModels.length,
+      affectedCount: affected.length,
+      unaskedCount: unasked.length
+    })
+    if (!unasked.length) return
+    // The union of models every restartable agent base can switch to. One list, because the same
+    // gateway serves them all; a per-capable-base filter would need a second select.
+    const choices = [...new Set(gatewayModels.map((m) => m.id))]
+    // The user's configured default gateway model is the recommendation — sessions restart onto
+    // what new sessions would launch on, not whatever discovery happened to list first. Falls
+    // back to the first entry when the default is unset or left the catalogue itself.
+    const defaultModel = useSettings.getState().settings.modelGatewayDefaultModel
+    const initialPick = defaultModel && choices.includes(defaultModel) ? defaultModel : choices[0]
+    modelGonePick = { pickedId: initialPick }
+    /** Serialized restart, one node at a time, with PER-ROW live progress: each row shows its
+     *  own spinner while its CLI cycles and holds its ✓/✗ only when that row is done. The user
+     *  explicitly required "all complete before dismissing", so the strip (which survives the
+     *  dialog closing) clears only when every row reached a terminal outcome. */
+    const runRestart = async (target: string): Promise<void> => {
+      const progressRun = ++modelSwitchProgressRunRef.current
+      let resolvedDismissScheduled = false
+      let ok = 0
+      let kept = 0
+      let failed = 0
+      // Blocks Retry/Retry failed while the original serialized pass (or another retry sweep) is
+      // still moving between projects. A second sweep would race active-project travel and can
+      // invoke a node's closure in the wrong canvas.
+      let repairSweepRunning = true
+      // Latch the detection off for the whole batch: a pass whose rows are pending/running (or
+      // left failed for the user to resolve) must not be contradicted by a second ask.
+      modelSwitchLatchRef.current = true
+      modelRespawnTrace('batch.begin', {
+        run: progressRun,
+        targetModel: target,
+        rowCount: unasked.length
+      })
+      const initialProgress: NonNullable<typeof modelSwitchProgress> = {
+        target,
+        rows: unasked.map((item) => ({
+          id: item.id,
+          label: item.label,
+          projectName: item.projectName,
+          state: 'pending' as const,
+          from: item.model,
+          reason: item.reason
+        }))
+      }
+      // Publish the ref synchronously as well as React state: the first `repairOne` starts in this
+      // same async turn, before a render is guaranteed, and its running state must not target the
+      // previous batch/null. Every writer below follows this rule so completion checks are live.
+      modelSwitchProgressStateRef.current = initialProgress
+      setModelSwitchProgress(initialProgress)
+      // The view follows each owner's activation below; when the batch needed any travel, hand
+      // the canvas back to where the user was. Safe AFTER the loop: every restart has resolved,
+      // and switching away just parks the (tmux-backed) terminal — its respawn finishes
+      // underneath, or re-adopts on return.
+      const homeProjectId = useProjects.getState().activeProjectId
+      let traveled = false
+      const setRowState = (
+        id: string,
+        state: 'running' | 'ok' | 'failed',
+        detail?: string
+      ): void => {
+        modelRespawnTrace('progress.row', {
+          run: progressRun,
+          nodeId: id,
+          state,
+          hasDetail: detail !== undefined
+        })
+        const cur = modelSwitchProgressStateRef.current
+        if (!cur) return
+        const next = {
+          ...cur,
+          rows: cur.rows.map((r) =>
+            r.id === id ? { ...r, state, detail: detail ?? r.detail } : r
+          )
+        }
+        modelSwitchProgressStateRef.current = next
+        setModelSwitchProgress(next)
+      }
+      /** One row's repair (retry after a failure, or the first attempt — the batch loop below
+       *  DELEGATES to this so a retry and an original run share one code path; two copies of a
+       *  restart choreography are exactly the drift this file's invariants warn about). The
+       *  same travel + registered-closure path, for that one node, onto the SAME target model;
+       *  the shared counters (`ok/kept/failed`) inflate as rows resolve. */
+      /** Called after ANY row resolution (first pass or retry): when NO row is failed any
+       *  more, the strip's job is done — dwell a beat so the last ✓ is readable, then clear
+       *  it and release the detection latch + repair handlers. Idempotent (a second call
+       *  with failures still present does nothing). */
+      const finishIfResolved = (): void => {
+        const rows = modelSwitchProgressStateRef.current?.rows
+        if (!modelSwitchProgressCanAutoDismiss(rows) || resolvedDismissScheduled) {
+          modelRespawnTrace('progress.retain', {
+            run: progressRun,
+            rowCount: rows?.length ?? 0,
+            failedCount: rows?.filter((row) => row.state === 'failed').length ?? 0,
+            alreadyScheduled: resolvedDismissScheduled
+          })
+          return
+        }
+        resolvedDismissScheduled = true
+        modelSwitchLatchRef.current = false
+        modelSwitchRepairRef.current = null
+        modelRespawnTrace('progress.dismiss-scheduled', { run: progressRun, delayMs: 1800 })
+        setTimeout(() => {
+          if (modelSwitchProgressRunRef.current !== progressRun) {
+            modelRespawnTrace('progress.dismiss-cancelled', {
+              run: progressRun,
+              currentRun: modelSwitchProgressRunRef.current
+            })
+            return
+          }
+          // Re-check the LIVE rows. This protects against any repair/state transition that lands
+          // after the timer was armed and makes the timer incapable of hiding unresolved work.
+          setModelSwitchProgress((cur) => {
+            const next = modelSwitchProgressCanAutoDismiss(cur?.rows) ? null : cur
+            modelRespawnTrace(next ? 'progress.dismiss-blocked' : 'progress.dismissed', {
+              run: progressRun,
+              rowCount: cur?.rows.length ?? 0
+            })
+            modelSwitchProgressStateRef.current = next
+            return next
+          })
+        }, 1800)
+      }
+      const actualLaunchRecord = (
+        item: typeof unasked[number]
+      ): { model?: string; contextWindow?: number } => {
+        // TerminalNode owns these fields. Read its live React Flow node when its project is still
+        // mounted; if ownership changed while the restart awaited, read the project's serialized
+        // record. Never replace either with a catalogue-derived expectation.
+        if (nodesProjectIdRef.current === item.ownerProjectId) {
+          const live = getNodes().find((node) => node.id === item.id) as CanvasNode | undefined
+          if (live) {
+            return {
+              model: live.data.agentLaunchModel as string | undefined,
+              contextWindow: live.data.agentLaunchContextWindow as number | undefined
+            }
+          }
+          return {}
+        }
+        const saved = useProjects
+          .getState()
+          .projects.find((project) => project.id === item.ownerProjectId)
+          ?.nodes.find((node) => node.id === item.id)
+        return {
+          model: saved?.agentLaunchModel,
+          contextWindow: saved?.agentLaunchContextWindow
+        }
+      }
+      const repairOne = async (
+        item: typeof unasked[number],
+        autoForceRetry = false
+      ): Promise<void> => {
+        modelRespawnTrace('repair.begin', {
+          run: progressRun,
+          nodeId: item.id,
+          agentId: item.agentId,
+          targetModel: target,
+          live: item.live,
+          projectId: item.ownerProjectId
+        })
+        try {
+          setRowState(item.id, 'running')
+          let fn = agentRestartFn(item.id)
+          // Re-evaluate ownership NOW. A failed-row click can move the user between projects before
+          // Retry/Retry failed, so the batch's original `item.live` snapshot is stale by design.
+          if (
+            !fn &&
+            item.ownerProjectId &&
+            nodesProjectIdRef.current !== item.ownerProjectId
+          ) {
+            traveled = true
+            modelRespawnTrace('repair.travel', {
+              run: progressRun,
+              nodeId: item.id,
+              projectId: item.ownerProjectId
+            })
+            travelToProjectRef.current(item.ownerProjectId)
+            fn = await waitRestartRegistered(item.id)
+            modelRespawnTrace('repair.registration-wait-complete', {
+              run: progressRun,
+              nodeId: item.id,
+              registered: !!fn
+            })
+          }
+          if (!fn) {
+            failed++
+            modelRespawnTrace('repair.failed', {
+              run: progressRun,
+              nodeId: item.id,
+              reason: 'restart-not-registered'
+            })
+            setRowState(item.id, 'failed', 'no restart closure registered — the session’s node never mounted')
+            return
+          }
+          modelRespawnTrace('repair.invoke', { run: progressRun, nodeId: item.id })
+          // `lastRestartRefusal` is a transient outcome side channel, not durable node state.
+          // Clear the prior attempt before invoking this one: otherwise a plain timeout after an
+          // earlier agent-not-running failure can inherit that stale reason and incorrectly earn
+          // the bounded automatic force retry (or show the previous detail on this row).
+          useAgentStatus.getState().setLastRestartRefusal(item.id, null)
+          let o = await fn(undefined, target)
+          let refusal = useAgentStatus.getState().byId[item.id]?.lastRestartRefusal
+          modelRespawnTrace('repair.outcome', {
+            run: progressRun,
+            nodeId: item.id,
+            outcome: o,
+            refusalReason: refusal?.reason,
+            attempt: 1
+          })
+          if (modelSwitchShouldAutoForceRetry(autoForceRetry, o, refusal?.reason)) {
+            // The first replacement shell lived but its separately tracked agent child exited.
+            // Re-run the SAME registered node closure once — a bounded automatic form of the
+            // Retry button the user observed curing transient startup races.
+            let retryFn = agentRestartFn(item.id)
+            if (!retryFn) retryFn = await waitRestartRegistered(item.id)
+            modelRespawnTrace('repair.auto-force-retry', {
+              run: progressRun,
+              nodeId: item.id,
+              registered: !!retryFn
+            })
+            if (retryFn) {
+              useAgentStatus.getState().setLastRestartRefusal(item.id, null)
+              o = await retryFn(undefined, target)
+              refusal = useAgentStatus.getState().byId[item.id]?.lastRestartRefusal
+              modelRespawnTrace('repair.outcome', {
+                run: progressRun,
+                nodeId: item.id,
+                outcome: o,
+                refusalReason: refusal?.reason,
+                attempt: 2
+              })
+            }
+          }
+          if (o === 'restarted') {
+            const record = actualLaunchRecord(item)
+            const currentCatalogue = catalogueForModelRecovery(useModelGateway.getState()) ?? []
+            const cure = modelRecoveryCure(
+              item.reason,
+              item.agentId,
+              record.model,
+              record.contextWindow,
+              currentCatalogue
+            )
+            const verdict = modelSwitchRepairVerdict(o, cure.cured)
+            modelRespawnTrace(cure.cured ? 'repair.cure-verified' : 'repair.cure-not-verified', {
+              run: progressRun,
+              nodeId: item.id,
+              trigger: item.reason === 'win' ? 'window' : item.reason,
+              appliedModel: record.model
+            })
+            if (verdict.state === 'ok') {
+              ok++
+              setRowState(item.id, 'ok')
+              if (verdict.spendAsk) modelGoneAsked.set(item.askKey, true)
+            } else {
+              failed++
+              setRowState(item.id, 'failed', cure.detail ?? 'the restart did not update its launch record')
+            }
+          } else if (o === 'exit-timeout') {
+            failed++
+            // A 'threw' refusal (settleRestart / the phases) put the verbatim exception on the
+            // side channel — render THAT, not the generic timeout wording.
+            setRowState(
+              item.id,
+              'failed',
+              refusal?.detail
+                ? refusal.detail
+                : 'the CLI did not exit in time — its pane may hold a stuck process or an unanswered prompt'
+            )
+          } else {
+            kept++
+            // ONE refusal, ONE reason: the closure wrote `lastRestartRefusal` before its early
+            // return; the row shows the reason's own sentence — plus the site's own detail
+            // (the pane content, the missing var names), not a five-way "or".
+            if (refusal) {
+              setRowState(
+                item.id,
+                'failed',
+                refusal.detail
+                  ? `${RESTART_REFUSAL_COPY[refusal.reason]} (${refusal.detail})`
+                  : RESTART_REFUSAL_COPY[refusal.reason]
+              )
+            } else {
+              // No side-channel entry at all: the closure ran before that writer existed.
+              // Say so — the old bare fallback read as "nothing happened".
+              setRowState(item.id, 'failed', 'refused with no recorded reason — restart again to capture it')
+            }
+          }
+        } catch (err) {
+          failed++
+          modelRespawnTrace('repair.threw', {
+            run: progressRun,
+            nodeId: item.id,
+            errorKind: modelRespawnErrorKind(err)
+          })
+          const text = err instanceof Error ? err.message : String(err)
+          setRowState(item.id, 'failed', text)
+        } finally {
+          // Includes registration/travel failures and the no-closure early return above. A row
+          // must never bypass completion bookkeeping and strand the sweep latch forever.
+          finishIfResolved()
+        }
+      }
+      // The repair handlers the strip's buttons call: retry re-runs ONLY failed rows (per-row
+      // or all), serially, reusing repairOne so a retry lands the SAME closure, writes the SAME
+      // counters and arms the SAME tombstone. Clear spends the failed rows' asks (the same
+      // tombstone the "Keep it" path writes — a user who chooses dismiss has answered the ask).
+      const failedRowIds = (): string[] =>
+        modelSwitchProgressStateRef.current?.rows.filter((r) => r.state === 'failed').map((r) => r.id) ?? []
+      // Spend ONE row's ask (its per-row ✕): the same tombstone "Keep it"/Dismiss writes — the
+      // user has answered this node's ask individually. The strip then clears if nothing failed
+      // remains.
+      const spendRow = (id: string): void => {
+        if (repairSweepRunning) {
+          modelRespawnTrace('progress.row-dismiss-blocked', { run: progressRun, nodeId: id })
+          return
+        }
+        modelRespawnTrace('progress.row-dismissed', { run: progressRun, nodeId: id })
+        const item = unasked.find((x) => x.id === id)
+        if (item) {
+          modelGoneAsked.set(item.askKey, true)
+        }
+        const cur = modelSwitchProgressStateRef.current
+        const next = cur ? { ...cur, rows: cur.rows.filter((r) => r.id !== id) } : cur
+        modelSwitchProgressStateRef.current = next
+        setModelSwitchProgress(next)
+        // A spend that empties the strip (or resolves it) releases the latch with it.
+        const rows = modelSwitchProgressStateRef.current?.rows
+        if (!rows?.some((r) => r.state === 'failed' || r.state === 'pending' || r.state === 'running')) {
+          modelSwitchLatchRef.current = false
+          modelSwitchRepairRef.current = null
+          modelSwitchProgressStateRef.current = null
+          setModelSwitchProgress(null)
+        }
+      }
+      modelSwitchRepairRef.current = {
+        retry: (id: string): void => {
+          const item = unasked.find((x) => x.id === id)
+          const retryable = !repairSweepRunning && !!item && failedRowIds().includes(id)
+          modelRespawnTrace('retry.one', {
+            run: progressRun,
+            nodeId: id,
+            retryable,
+            sweepRunning: repairSweepRunning
+          })
+          if (item && retryable) {
+            repairSweepRunning = true
+            void repairOne(item).finally(() => {
+              repairSweepRunning = false
+              modelRespawnTrace('retry.one-complete', { run: progressRun, nodeId: id })
+            })
+          }
+        },
+        retryAll: (): void => {
+          const retryable = unasked.filter((x) => failedRowIds().includes(x.id))
+          modelRespawnTrace('retry.all', {
+            run: progressRun,
+            rowCount: retryable.length,
+            sweepRunning: repairSweepRunning
+          })
+          if (repairSweepRunning || !retryable.length) return
+          repairSweepRunning = true
+          void (async () => {
+            try {
+              for (const item of retryable) await repairOne(item)
+            } finally {
+              repairSweepRunning = false
+              modelRespawnTrace('retry.all-complete', {
+                run: progressRun,
+                rowCount: retryable.length
+              })
+            }
+          })()
+        },
+        spend: spendRow,
+        clear: (): void => {
+          if (repairSweepRunning) {
+            modelRespawnTrace('progress.dismiss-all-blocked', { run: progressRun })
+            return
+          }
+          modelRespawnTrace('progress.dismiss-all', { run: progressRun })
+          for (const item of unasked) modelGoneAsked.set(item.askKey, true)
+          modelSwitchLatchRef.current = false
+          modelSwitchRepairRef.current = null
+          modelSwitchProgressStateRef.current = null
+          setModelSwitchProgress(null)
+        }
+      }
+      try {
+        for (const item of unasked) {
+          await repairOne(item, true)
+        }
+      } finally {
+        // `repairOne` catches expected restart/travel failures, but this outer release is the
+        // last-resort invariant: no unexpected exception may make every Retry button inert.
+        repairSweepRunning = false
+      }
+      modelGonePick = null
+      if (traveled && homeProjectId && useProjects.getState().activeProjectId !== homeProjectId) {
+        modelRespawnTrace('batch.return-home', { run: progressRun, projectId: homeProjectId })
+        travelToProjectRef.current(homeProjectId)
+      }
+      // Clear the strip ONLY when every live row is `ok`: a refusal is also rendered as a failed
+      // row but increments `kept`, not the `failed` counter — the old `if (!failed)` therefore
+      // auto-dismissed precisely the actionable refusals this strip exists to retain. A failed row stays on screen (with its error
+      // detail and its Retry button) until the user resolves or clicks it away — and while any
+      // failed row sits here, the detection holds off entirely (`modelSwitchLatch`), so focus
+      // does not re-fire the ask the user is already mid-resolving. Successes dwell 1.8s and
+      // clear; failures pin the whole strip. An all-✓ batch releases both with the strip.
+      finishIfResolved()
+      modelRespawnTrace('batch.complete', {
+        run: progressRun,
+        restartedCount: ok,
+        refusedCount: kept,
+        failedCount: failed,
+        retained: !!modelSwitchProgressStateRef.current?.rows.some((row) => row.state === 'failed')
+      })
+      if (ok > 0) {
+        setNotice({
+          kind: 'info',
+          text: `Switched ${ok} session${ok === 1 ? '' : 's'} to ${target}` +
+            (kept ? `, ${kept} refused (busy or not resumable)` : '') +
+            (failed ? `, ${failed} failed` : '') +
+            '.'
+        })
+      } else if (kept > 0 || failed > 0) {
+        setNotice({
+          kind: 'error',
+          text: `No session was verified on ${target}` +
+            (kept ? ` — ${kept} ${kept === 1 ? 'was' : 'were'} refused (busy or not resumable)` : '') +
+            (failed ? `, ${failed} failed` : '') +
+            '.'
+        })
+      }
+    }
+    // Which REASON dominates the ask decides the copy: a catalogue drop, a window delta and a
+    // launch-shape delta read very differently, and a mixed batch is rare enough to spell them.
+    const goneItems = unasked.filter((item) => item.reason === 'gone')
+    const windowItems = unasked.filter((item) => item.reason === 'win')
+    const shapeItems = unasked.filter((item) => item.reason === 'shape')
+    const reasonCount = [goneItems, windowItems, shapeItems].filter((items) => items.length).length
+    const message = reasonCount > 1
+      ? 'Gateway model availability or context settings changed for these sessions. ' +
+        'Pick a model and restart them; each conversation is resumed, nothing is deleted.'
+      : windowItems.length
+        ? `${[...new Set(windowItems.map((x) => x.model))].join(', ')} now reports a different context window than when ` +
+          'these sessions launched — their autocompact window is the old size until they restart. ' +
+          'Pick a model and restart them; each conversation is resumed, nothing is deleted.'
+        : shapeItems.length
+          ? 'These sessions were launched with different context settings than the gateway now reports. ' +
+            'Pick a model and restart them; each conversation is resumed, nothing is deleted.'
+          : `${[...new Set(goneItems.map((x) => x.model))].join(', ')} is no longer listed by the gateway. ` +
+            'Pick a replacement model and restart the sessions below; each conversation is resumed, nothing is deleted.'
+    setConfirm({
+      danger: false,
+      // The app raised this without the user asking (a discovery refresh or a window focus):
+      // neither button takes focus, so their next Enter/Space cannot natively activate one they
+      // never saw. Escape still cancels.
+      autoFocusButtons: false,
+      message,
+      confirmLabel: `Restart ${unasked.length} session${unasked.length === 1 ? '' : 's'}`,
+      cancelLabel: 'Keep it',
+      // The reason leads and the rows follow — the message says "the sessions below", so the
+      // list must actually sit below it (the default 'above' is the ConsentNotice's order).
+      bodyPosition: 'below',
+      body: (
+        <div className="confirm__model-list">
+          <ul className="confirm__model-rows">
+            {unasked.map((item) => (
+              <li key={item.id}>
+                <span className="confirm__model-label">
+                  {item.label}
+                  {item.projectName ? ` — ${item.projectName}` : ''}
+                </span>
+                {item.reason === 'win' && <span className="confirm__model-reason">window changed</span>}
+                {item.reason === 'shape' && (
+                  <span className="confirm__model-reason">launch context settings changed</span>
+                )}
+                <code className="confirm__model-id">{item.model}</code>
+              </li>
+            ))}
+          </ul>
+          <label className="confirm__model-pick">
+            Restart them on:
+            <Select
+              defaultValue={initialPick}
+              className="confirm__model-select"
+              onChange={(e) => {
+                if (modelGonePick) modelGonePick.pickedId = e.target.value
+              }}
+            >
+              {choices.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </Select>
+          </label>
+        </div>
+      ),
+      onConfirm: () => {
+        const target = modelGonePick?.pickedId ?? initialPick
+        modelRespawnTrace('dialog.confirmed', { targetModel: target, rowCount: unasked.length })
+        modelGonePick = null
+        // Dismiss the dialog IMMEDIATELY — the restart is a long serialized batch (each node
+        // quits + recycles + resumes), and leaving this one up while it ran kept a modal over
+        // the canvas for its whole duration. Outcomes land in the notice.
+        setConfirm(null)
+        // Tombstones move into runRestart's per-item outcome handling below: a timed-out or
+        // refused exit must re-raise on the next trigger instead of having spent its ask.
+        void runRestart(target)
+      },
+      onCancel: () => {
+        modelRespawnTrace('dialog.cancelled', { rowCount: unasked.length })
+        modelGonePick = null
+        // "Keep it" IS an answer — so it still spends every ask (an unanswered dialog would
+        // re-nag on each focus/refresh). The restart path below, by contrast, tombstones per
+        // OUTCOME: a failed or timed-out restart leaves the ask open to re-raise.
+        for (const item of unasked) modelGoneAsked.set(item.askKey, true)
+        setNotice({
+          kind: 'info',
+          text: `Kept the session${unasked.length === 1 ? '' : 's'} on its current model. ` +
+            'Use “Switch model” on any node to change it.'
+        })
+      }
+    })
+    modelRespawnTrace('dialog.opened', {
+      rowCount: unasked.length,
+      choiceCount: choices.length,
+      initialModel: initialPick
+    })
+  }, [getNodes, setConfirm])
+  const considerRef = useRef(considerModelAvailability)
+  considerRef.current = considerModelAvailability
+  useEffect(() => {
+    const onFocus = (): void => {
+      if (confirmFlags.current.confirm) return
+      // An unresolved batch owns the conversation: rows are mid-restart or sitting failed for
+      // the user to resolve — detection must not re-fire and contradict them.
+      if (modelSwitchLatchRef.current) return
+      void refreshModelRecoveryCatalogue(
+        () => useSettings.getState().settings.modelGateway,
+        (gateway) => useModelGateway.getState().discover(gateway)
+      )
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+  // Evaluate once when the current request lands. Ready-empty and error results stop here; they
+  // never initiate another request.
+  useEffect(() => {
+    if (confirmFlags.current.confirm) return
+    if (modelSwitchLatchRef.current) return
+    considerRef.current()
+  }, [gatewayDiscoveryAt])
   const perProjectKanbanOpen = useViewMode((s) => !!activeProjectId && viewFor(s, activeProjectId) === 'kanban')
   const rawGlobalKanban = useViewMode((s) => s.globalKanban)
   const omniEnabled = useSettings((s) => isOmniKanbanEnabled(s.settings))
@@ -4674,6 +5561,17 @@ export function Canvas() {
         `[nodeterm] node-create agent=${agentId} project=${targetProjectId} group=${groupId ?? '-'} cwd=${cwd ?? '-'}`
       )
       setNodes((ns) => {
+        // The default gateway model applies ONLY when the launch mode asks for it
+        // (`agentLaunchMode === 'gateway-model'`). 'gateway' launches with the CLI's own default
+        // model, and 'subscription' strips the gateway entirely so its model is moot. Gated on
+        // `canSwitchModel` (base-resolved) so a non-capable agent is left model-less.
+        const settings = useSettings.getState().settings
+        const model =
+          settings.agentLaunchMode === 'gateway-model' &&
+          settings.modelGatewayDefaultModel &&
+          canSwitchModel(agentId)
+            ? settings.modelGatewayDefaultModel
+            : undefined
         const node = createAgentNode(
           agentId,
           ns.length,
@@ -4685,7 +5583,8 @@ export function Canvas() {
           activePermissionMode(agentId),
           // Same funnel as the account above: the active project owns the node, so its own
           // `.nodeterm/settings.json` launch command layers over the global one.
-          targetProjectId
+          targetProjectId,
+          model
         )
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
@@ -6108,20 +7007,23 @@ export function Canvas() {
     nodeId: string,
     targetAgentId?: AgentId,
     targetModel?: string,
-    restartShell?: boolean
+    restartShell?: boolean,
+    clearEnv?: boolean
   ) => {
     const fn = agentRestartFn(nodeId)
     if (!fn) return // node unmounted between opening the menu and clicking
-    const action = restartShell
-      ? 'Restart'
-      : targetModel
-        ? 'Model switch'
-        : targetAgentId
-          ? 'Reopen'
-          : 'Restart'
+    const action = clearEnv
+      ? 'Restart on subscription'
+      : restartShell
+        ? 'Restart'
+        : targetModel
+          ? 'Model switch'
+          : targetAgentId
+            ? 'Reopen'
+            : 'Restart'
     let outcome: RestartOutcome
     try {
-      outcome = await fn(targetAgentId, targetModel, restartShell)
+      outcome = await fn(targetAgentId, targetModel, restartShell, clearEnv)
     } catch {
       // The transport under the restart threw (a relay socket still CONNECTING rejects the very
       // first write). Unhandled, this rejection made the action a silent no-op — the user clicked
@@ -6165,11 +7067,13 @@ export function Canvas() {
       outcome === 'restarted'
         ? {
             kind: 'info',
-            text: targetModel
-              ? `Switched to ${targetModel} — conversation resumed.`
-              : targetLabel
-                ? `Session reopened as ${targetLabel} — conversation resumed.`
-                : 'Agent restarted — conversation resumed.'
+            text: clearEnv
+              ? 'Restarted on subscription — conversation resumed.'
+              : targetModel
+                ? `Switched to ${targetModel} — conversation resumed.`
+                : targetLabel
+                  ? `Session reopened as ${targetLabel} — conversation resumed.`
+                  : 'Agent restarted — conversation resumed.'
           }
         : outcome === 'exit-timeout'
           ? {
@@ -7903,6 +8807,44 @@ export function Canvas() {
                     : 'Quits the CLI, respawns a fresh shell (picks up env/profile changes), then resumes.'),
                 onClick: () => void restartAgentNode(ids[0], undefined, undefined, true)
               },
+              // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+              // provider env so the agent falls back to its OWN default provider (Claude's
+              // subscription, Copilot's GitHub routing). No model/agent change; the cold-restore
+              // auto-resume keeps the same conversation. Shown only for an agent with a strip set
+              // (claude/codex/copilot builtins). Gated on `clearEnvEligibility`, NOT the shared `why`:
+              // clearEnv uses `terminateForeground` (SIGTERM by PID, no `/exit` into a dialog), so it
+              // is safe to interrupt a `working`/`blocked` session — which is its primary scenario
+              // (gateway overload shows up mid-turn, and "wait for the turn" is impossible when the
+              // gateway is down). Refused over relay for the same reason "Restart agent and shell" is
+              // — the stripped env belongs to this machine's settings store, not the host's core.
+              // Hideable (unlike the recovery restart rows above), because it is a convenience, not a
+              // recovery lever.
+              ...(vanillaEnvStripPattern(sourceAgentId ?? ('claude' as AgentId)) &&
+              !isHidden('vanilla-restart', hidden)
+                ? [
+                    {
+                      label:
+                        capabilityAgentId(sourceAgentId ?? ('claude' as AgentId)) === 'copilot'
+                          ? 'Restart on Copilot defaults'
+                          : 'Restart on subscription',
+                      icon: <IconPower />,
+                      disabled:
+                        !clearEnvEligibility(sourceAgentId, sessionId).ok ||
+                        session.source === 'relay' ||
+                        !agentRestartFn(ids[0]),
+                      hint:
+                        !clearEnvEligibility(sourceAgentId, sessionId).ok
+                          ? 'Nothing to resume yet — this session has not reported an id.'
+                          : session.source === 'relay'
+                            ? 'Restart the shell on the machine hosting this relay session.'
+                            : !agentRestartFn(ids[0])
+                              ? 'This terminal is not attached right now.'
+                              : 'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
+                      onClick: () =>
+                        void restartAgentNode(ids[0], undefined, undefined, undefined, true)
+                    }
+                  ]
+                : []),
               ...(variants.length
                 ? ([
                     {
@@ -14029,10 +14971,18 @@ export function Canvas() {
       {confirm && (
         <ConfirmDialog
           message={confirm.message}
+          body={confirm.body}
+          bodyPosition={confirm.bodyPosition}
           confirmLabel={confirm.confirmLabel}
           cancelLabel={confirm.cancelLabel}
           danger={confirm.danger}
           alert={confirm.alert}
+          // A dialog the app raised without the user asking (an agent verb, or the grouped model
+          // ask surfacing on a discovery refresh) must not steal focus: autoFocus makes the next
+          // Enter/Space NATIVELY activate a button the user never saw — a path confirm-key cannot
+          // preventDefault. App-raised and agent-raised dialogs keep focus off the buttons; a
+          // dialog the user opened themselves (a worktree remove, a delete) keeps the focus.
+          autoFocusButtons={confirm.autoFocusButtons}
           // The user did not open this one — an agent did. It appeared under their hands, so it is
           // answered by a click, never by a keystroke aimed somewhere else (components/confirm-key).
           enterConfirms={!confirm.requestedBy}
@@ -14042,6 +14992,191 @@ export function Canvas() {
             setConfirm(null)
           }}
         />
+      )}
+
+      {/* Live per-session progress for the grouped model restart — the strip SURVIVES the dialog
+          (the dialog dismisses on confirm, and the batch then runs to completion in the same
+          callback), one spinner per in-flight session, ✗/✓ per finished one. The user's explicit
+          requirement: every row completes before the strip goes away. The dialog is replaced by
+          the strip, not covered by it. */}
+      {modelSwitchProgress && (
+        <div className="model-switch-progress" role="status" aria-live="polite">
+          <div className="model-switch-progress__title">
+            Switching {modelSwitchProgress.rows.length} session{modelSwitchProgress.rows.length === 1 ? '' : 's'} to{' '}
+            <code>{modelSwitchProgress.target}</code>…
+          </div>
+          <ul className="model-switch-progress__rows">
+            {modelSwitchProgress.rows.map((row) => (
+              <li
+                key={row.id}
+                className={`model-switch-progress__row model-switch-progress__row--${row.state}`}
+              >
+                <span className="model-switch-progress__marker" aria-hidden>
+                  {row.state === 'running' && <span className="ui-spinner" />}
+                  {row.state === 'ok' && '✓'}
+                  {row.state === 'failed' && '✕'}
+                  {row.state === 'pending' && '·'}
+                </span>
+                {/* A failed row is one the user asked to SEE (the grouped ask's contract): its
+                    whole session+reason body is one travel button — another project first, then
+                    camera-centre. A tiny label-only target was easy to miss, especially beside
+                    Retry. Non-failed rows stay plain text: they are not work items. */}
+                {row.state === 'failed' ? (
+                  <button
+                    type="button"
+                    className="model-switch-progress__session"
+                    title="Go to this session on the canvas"
+                    onClick={() => {
+                      modelRespawnTrace('progress.row-opened', {
+                        run: modelSwitchProgressRunRef.current,
+                        nodeId: row.id
+                      })
+                      travelToNode(row.id)
+                    }}
+                  >
+                    <span className="model-switch-progress__label">
+                      {row.label}
+                      {row.projectName ? ` — ${row.projectName}` : ''}
+                    </span>
+                    {row.detail && (
+                      <span className="model-switch-progress__detail">
+                        {row.from
+                          ? `moving ${row.from} → ${modelSwitchProgress.target}: ${row.detail}`
+                          : row.detail}
+                      </span>
+                    )}
+                  </button>
+                ) : (
+                  <span className="model-switch-progress__label">
+                    {row.label}
+                    {row.projectName ? ` — ${row.projectName}` : ''}
+                  </span>
+                )}
+                <code className="model-switch-progress__model">
+                  {row.state === 'ok' ? modelSwitchProgress.target : ''}
+                </code>
+                {row.state === 'failed' && (
+                  <span className="model-switch-progress__row-actions">
+                    <button
+                      type="button"
+                      className="model-switch-progress__retry"
+                      disabled={modelSwitchProgress.rows.some(
+                        (candidate) => candidate.state === 'pending' || candidate.state === 'running'
+                      )}
+                      onClick={() => {
+                        const repair = modelSwitchRepairRef.current
+                        modelRespawnTrace('retry.one-clicked', {
+                          run: modelSwitchProgressRunRef.current,
+                          nodeId: row.id,
+                          controllerAvailable: !!repair
+                        })
+                        if (repair) repair.retry(row.id)
+                        else {
+                          modelSwitchLatchRef.current = false
+                          modelSwitchProgressStateRef.current = null
+                          setModelSwitchProgress(null)
+                          setNotice({
+                            kind: 'error',
+                            text: 'The restart controls were refreshed. The unresolved restart prompt will reopen so you can retry.'
+                          })
+                          setTimeout(() => considerRef.current(), 0)
+                        }
+                      }}
+                    >
+                      Retry
+                    </button>
+                    <button
+                      type="button"
+                      className="model-switch-progress__retry model-switch-progress__spend"
+                      title="Keep this session on its current model (spend this ask)"
+                      disabled={modelSwitchProgress.rows.some(
+                        (candidate) => candidate.state === 'pending' || candidate.state === 'running'
+                      )}
+                      onClick={() => {
+                        const repair = modelSwitchRepairRef.current
+                        modelRespawnTrace('progress.row-dismiss-clicked', {
+                          run: modelSwitchProgressRunRef.current,
+                          nodeId: row.id,
+                          controllerAvailable: !!repair
+                        })
+                        if (repair?.spend) repair.spend(row.id)
+                        else {
+                          modelSwitchLatchRef.current = false
+                          modelSwitchProgressStateRef.current = null
+                          setModelSwitchProgress(null)
+                          setNotice({
+                            kind: 'error',
+                            text: 'The restart controls were refreshed. The unresolved restart prompt will reopen.'
+                          })
+                          setTimeout(() => considerRef.current(), 0)
+                        }
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {modelSwitchProgress.rows.some((r) => r.state === 'failed') && (
+            <div className="model-switch-progress__actions">
+              <button
+                type="button"
+                className="model-switch-progress__btn"
+                disabled={modelSwitchProgress.rows.some(
+                  (candidate) => candidate.state === 'pending' || candidate.state === 'running'
+                )}
+                onClick={() => {
+                  const repair = modelSwitchRepairRef.current
+                  modelRespawnTrace('retry.all-clicked', {
+                    run: modelSwitchProgressRunRef.current,
+                    controllerAvailable: !!repair,
+                    failedCount: modelSwitchProgress.rows.filter((row) => row.state === 'failed').length
+                  })
+                  if (repair) repair.retryAll()
+                  else {
+                    // A stale popup can survive a dev Fast Refresh from the old module-global
+                    // controller. Never silently no-op: discard only the orphaned UI (no asks are
+                    // spent), release detection, and immediately rebuild a live prompt/controller.
+                    modelSwitchLatchRef.current = false
+                    modelSwitchProgressStateRef.current = null
+                    setModelSwitchProgress(null)
+                    setNotice({
+                      kind: 'error',
+                      text: 'The restart controls were refreshed. The unresolved restart prompt will reopen so you can retry.'
+                    })
+                    setTimeout(() => considerRef.current(), 0)
+                  }
+                }}
+              >
+                Retry failed
+              </button>
+              <button
+                type="button"
+                className="model-switch-progress__btn model-switch-progress__btn--clear"
+                disabled={modelSwitchProgress.rows.some(
+                  (candidate) => candidate.state === 'pending' || candidate.state === 'running'
+                )}
+                onClick={() => {
+                  const repair = modelSwitchRepairRef.current
+                  modelRespawnTrace('progress.dismiss-all-clicked', {
+                    run: modelSwitchProgressRunRef.current,
+                    controllerAvailable: !!repair
+                  })
+                  if (repair) repair.clear()
+                  else {
+                    modelSwitchLatchRef.current = false
+                    modelSwitchProgressStateRef.current = null
+                    setModelSwitchProgress(null)
+                  }
+                }}
+              >
+                Dismiss list
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {pendingPeer && (

@@ -5201,6 +5201,251 @@ body,
   padding: 8px 10px;
 }
 
+/* Grouped "model is gone / window changed" ask, rendered BELOW the reason message. The session
+   list is its own scroll region: ConfirmDialog's flex column only makes `.confirm__msg` scroll,
+   and a long list here would otherwise push the model picker and the action buttons past the
+   bottom of the box. */
+.confirm__model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 16px;
+  min-height: 0;
+  /* Below the `.confirm` max-height budget, so the message + buttons always stay visible
+     beside it — the list compresses instead of growing the box. */
+  max-height: 40vh;
+}
+
+.confirm__model-rows {
+  margin: 0;
+  padding-left: 18px;
+  overflow-y: auto;
+  min-height: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.confirm__model-rows li + li {
+  margin-top: 4px;
+}
+
+.confirm__model-rows code {
+  color: rgba(var(--tint-rgb), 0.65);
+  font-size: 11.5px;
+}
+
+.confirm__model-label {
+  margin-right: 6px;
+}
+
+.confirm__model-id {
+  color: rgba(var(--tint-rgb), 0.65);
+  font-size: 11.5px;
+}
+
+.confirm__model-reason {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  background: rgba(255, 159, 10, 0.18);
+  color: #ffb340;
+  vertical-align: 1px;
+}
+
+.confirm__model-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: rgba(var(--tint-rgb), 0.55);
+  flex-shrink: 0;
+}
+
+.confirm__model-select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Live per-session progress for the grouped model restart — the strip survives the closing
+   dialog; it never hides a still-running row (the dismiss condition IS row completion). */
+.model-switch-progress {
+  position: fixed;
+  bottom: 52px;
+  right: 20px;
+  z-index: 70;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 300px;
+  max-width: 400px;
+  max-height: 45vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+
+.model-switch-progress__title {
+  font-size: 12.5px;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.model-switch-progress__title code {
+  color: rgba(var(--tint-rgb), 0.7);
+  font-size: 11px;
+}
+
+.model-switch-progress__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-switch-progress__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Fixed marker box so pending/running/success/fail all occupy the same width — the rows do not
+   reflow as a row transitions. */
+.model-switch-progress__marker {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.model-switch-progress__row--ok .model-switch-progress__marker {
+  color: #30d158;
+}
+
+.model-switch-progress__row--failed .model-switch-progress__marker {
+  color: #ff453a;
+}
+
+.model-switch-progress__row--running .ui-spinner {
+  /* The shared .ui-spinner is 14px, sized for a 16px-ish label — matches here. */
+  color: #d97757;
+}
+
+.model-switch-progress__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.model-switch-progress__row--failed .model-switch-progress__label {
+  color: rgba(var(--tint-rgb), 0.6);
+}
+
+/* A FAILED row's session+reason body is one generous travel target: another project first, then
+   camera-centre. Retry/dismiss stay separate sibling buttons. */
+.model-switch-progress__session {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-switch-progress__session:hover .model-switch-progress__label,
+.model-switch-progress__session:focus-visible .model-switch-progress__label {
+  text-decoration: underline;
+}
+
+/* Failure detail + per-row actionable controls: the detail wraps under the label (max two
+   lines); the Retry affordance is an inline button on the row itself. */
+.model-switch-progress__detail {
+  display: block;
+  width: 100%;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-switch-progress__retry {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.model-switch-progress__retry:hover {
+  background: rgba(var(--tint-rgb), 0.12);
+}
+
+.model-switch-progress__row-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.model-switch-progress__spend {
+  opacity: 0.55;
+}
+
+.model-switch-progress__model {
+  flex-shrink: 0;
+  color: rgba(var(--tint-rgb), 0.65);
+  font-size: 11px;
+}
+
+/* Footer actions on strip with failures: repair-what-you-can, or spend the asks and dismiss. */
+.model-switch-progress__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.model-switch-progress__btn {
+  background: var(--panel-header);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.model-switch-progress__btn:hover {
+  background: rgba(var(--tint-rgb), 0.12);
+}
+
+.model-switch-progress__btn--clear {
+  opacity: 0.8;
+}
+
 .confirm__textarea {
   /* Task prose, not a one-liner: fixed comfortable height, user-growable. `font-family` because
      a bare textarea falls back to the UA monospace default, unlike input. */

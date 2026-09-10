@@ -6,8 +6,12 @@ import { isTopDialog, nextDialogId, popDialog, pushDialog } from './dialog-stack
 interface ConfirmDialogProps {
   message: string
   /** Optional content rendered ABOVE the message (e.g. the remote-access ConsentNotice), so the
-   *  human reads what they are granting before the SAS body + buttons. */
+   *  human reads what they are granting before the SAS body + buttons. `bodyPosition` moves it. */
   body?: ReactNode
+  /** Where `body` sits relative to `message`. 'above' (default) suits a consent notice the
+   *  reader must see BEFORE the ask; 'below' suits a list the message refers to ("the sessions
+   *  below") — the reason must lead and the rows follow it. */
+  bodyPosition?: 'above' | 'below'
   confirmLabel?: string
   cancelLabel?: string
   danger?: boolean
@@ -55,6 +59,7 @@ interface ConfirmDialogProps {
 export function ConfirmDialog({
   message,
   body,
+  bodyPosition = 'above',
   confirmLabel,
   cancelLabel = 'Cancel',
   danger: dangerProp,
@@ -112,8 +117,9 @@ export function ConfirmDialog({
   return createPortal(
     <div className="confirm-overlay" onClick={dismiss}>
       <div className="confirm" ref={boxRef} onClick={(e) => e.stopPropagation()}>
-        {body}
+        {body && bodyPosition === 'above' && body}
         <p className="confirm__msg">{message}</p>
+        {body && bodyPosition === 'below' && body}
         {option && (
           <label className="confirm__option">
             <input

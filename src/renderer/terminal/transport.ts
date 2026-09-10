@@ -39,7 +39,7 @@ export interface TerminalTransport {
    * the node is not going anywhere. Co-viewers therefore get `onRecycled` (restart, re-attach to
    * the replacement session), never the permanent, un-respawnable closed state.
    */
-  recycle(persistKey: string): void
+  recycle(persistKey: string): Promise<void>
 
   /** Listens for output; returns an unsubscribe function. */
   onData(sessionId: string, listener: (data: string) => void): () => void

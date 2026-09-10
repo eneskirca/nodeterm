@@ -1,3 +1,4 @@
+import type { DeliveryOutcome } from './command-delivery'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DELIVERY_ATTEMPTS,
@@ -226,11 +227,32 @@ describe('deliverCommand', () => {
 
   it('does not let a throwing Enter escape into the echo listener', () => {
     const f = throwingIo((d) => d === '\r')
-    let ends = 0
-    deliverCommand(f.io, CMD, () => (ends += 1))
+    const verdicts: DeliveryOutcome[] = []
+    deliverCommand(f.io, CMD, (outcome) => verdicts.push(outcome))
     expect(() => f.emit(CMD)).not.toThrow() // the throw would surface inside the PTY data callback
-    expect(ends).toBe(1) // the line was written and verified; only Enter was lost
+    expect(verdicts).toEqual(['cancelled']) // verified text is not a submission when Enter was lost
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('reports submitted only after the final Enter write succeeds', () => {
+    const f = fakeIo()
+    const verdicts: DeliveryOutcome[] = []
+    deliverCommand(f.io, CMD, (outcome) => verdicts.push(outcome))
+    expect(verdicts).toEqual([])
+    f.emit(CMD)
+    expect(verdicts).toEqual(['submitted'])
+    expect(f.writes.at(-1)).toBe('\r')
+  })
+
+  it('invokes a throwing settlement callback exactly once', () => {
+    const f = fakeIo()
+    const settled = vi.fn(() => {
+      throw new Error('consumer failed')
+    })
+    deliverCommand(f.io, CMD, settled)
+    expect(() => f.emit(CMD)).toThrow('consumer failed')
+    expect(settled).toHaveBeenCalledOnce()
+    expect(settled).toHaveBeenCalledWith('submitted')
   })
 
   it('ignores echo arriving after submit (no double Enter)', () => {

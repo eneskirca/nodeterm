@@ -46,6 +46,10 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
     kind: 'terminal',
     agentId: n.data.agentId as string | undefined,
     icon: n.data.icon as NodeIcon | undefined,
+    // The launch record, so both kanban ContextMeter surfaces show the model and denominator the
+    // session was launched with (the transcript trails a switch — see lib/contextMeterModel.ts).
+    agentModel: n.data.agentLaunchModel as string | undefined,
+    agentLaunchContextWindow: n.data.agentLaunchContextWindow as number | undefined,
     // What the card modal's co-attach terminal needs to join THIS node's session the same way the
     // canvas TerminalNode does.
     spawn: {

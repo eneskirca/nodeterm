@@ -70,6 +70,27 @@ function mergeSettings(saved: Partial<Settings> | null | undefined): Settings {
   if (gpu === false) merged.terminalGpuRendering = "off";
   else if (gpu !== "on" && gpu !== "off" && gpu !== "auto" && gpu !== "shared")
     merged.terminalGpuRendering = "auto";
+  // `agentLaunchMode` is the three-way successor to the `vanillaLaunchDefault` boolean. A saved
+  // file from before this field existed carries only the boolean: `true` was an explicit opt into
+  // subscription/vanilla, so it migrates to `'subscription'`; `false` (or absent) is the default
+  // and maps to `'gateway'`. Once `agentLaunchMode` is present it is the truth and the boolean is
+  // only a downgrade mirror (the renderer write path keeps it in sync for an older build).
+  // Validate to the default for an unrecognized value — settings.json is hand-editable.
+  const savedLaunchMode = (saved as { agentLaunchMode?: unknown } | null | undefined)
+    ?.agentLaunchMode;
+  if (
+    savedLaunchMode === "gateway" ||
+    savedLaunchMode === "gateway-model" ||
+    savedLaunchMode === "subscription"
+  ) {
+    merged.agentLaunchMode = savedLaunchMode;
+  } else if (merged.vanillaLaunchDefault === true) {
+    merged.agentLaunchMode = "subscription";
+  } else {
+    merged.agentLaunchMode = DEFAULT_SETTINGS.agentLaunchMode;
+  }
+  // Keep the mirror in lockstep with the resolved mode so an older build still honors the choice.
+  merged.vanillaLaunchDefault = merged.agentLaunchMode === "subscription";
   return merged;
 }
 
