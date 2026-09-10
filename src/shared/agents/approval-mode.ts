@@ -16,6 +16,7 @@ import {
   ALL_PERMISSION_MODES,
   PERMISSION_MODE_CAPABLE,
   PERMISSION_MODE_LABELS,
+  capabilityAgentId,
   hasPermissionMode,
   isPermissionMode,
   permissionModeFlag,
@@ -36,7 +37,14 @@ interface ApprovalDialect {
 const GEMINI_MODES: Partial<Record<AgentPermissionMode, string>> = {
   plan: 'plan',
   acceptEdits: 'auto_edit',
-  bypassPermissions: 'yolo'
+  bypassPermissions: 'yolo',
+  manual: ''
+  // A PRESENT key with an EMPTY value is the table's way of saying "this agent supports the mode,
+  // and expresses it by emitting NO flag" — `modeSupported` reads presence (`Object.hasOwn`) while
+  // `approvalFlags` reads truthiness, so the two answers are `true` + `[]`. An ABSENT key means
+  // unsupported (`false` + `[]`, e.g. gemini's `auto`, devin's `manual`) — same emitted command,
+  // opposite promise to the user, which is why the distinction is a key and not a value.
+  //
   // `manual` → gemini's own `default`, i.e. NO flag, exactly as it is for claude.
   //
   // `auto` is ABSENT ON PURPOSE, and it is the one absence worth explaining, because `auto` is
@@ -70,6 +78,59 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // absent ON PURPOSE — see modeSupported.
 }
 
+const DEVIN_MODES: Partial<Record<AgentPermissionMode, string>> = {
+  // Devin CLI 3000.6.12 accepts `normal` (alias `auto`, its DEFAULT), `accept-edits`, `smart`,
+  // `dangerous` (aliases `yolo`, `bypass`) and `autonomous` (requires `--sandbox`) — measured from
+  // the parser itself (`devin --permission-mode bogus` prints the accepted set) and from the mode
+  // table in its bundled `share/devin/docs/reference/permissions.mdx`. In-session the same modes
+  // are `/normal`, `/accept-edits`, `/smart`, `/bypass`.
+  //
+  // `auto` → `smart`, and NOT devin's own `auto`. This looks like the substituted-nearest-match
+  // trap and is the opposite of it, because the two CLIs mean different things by the word:
+  //
+  //   claude's `auto`  = "Claude decides what is safe" (its own mode help, recommended "for long
+  //                      unattended tasks") — a model judges each action.
+  //   devin's  `auto`  = an ALIAS for `normal`, its default: read-only auto-approved, every edit
+  //                      and every shell command prompts. No model judges anything.
+  //   devin's  `smart` = "a fast model decides whether it is safe to run without asking", with
+  //                      workspace edits auto-approved and high-risk categories (installs, `rm`,
+  //                      `sudo`, mutating git, dotenv/key material) always prompting.
+  //
+  // So `smart` is the semantic match and devin's `auto` is a false friend: spelling our `auto` as
+  // devin's `auto` emitted a flag that selected devin's DEFAULT, which is why the setting looked
+  // like it did nothing — the command line changed and the session's behaviour could not.
+  //
+  // Two gates sit behind `smart`, and BOTH degrade visibly rather than failing the launch — which
+  // is what makes this mapping safe under rule 14:
+  //
+  //   VERSION — the launch-flag route shipped in devin 3000.5.20 ("Switch with /smart, /mode smart,
+  //     Shift+Tab, or --permission-mode smart"). MEASURED on the older 3000.4.25: the flag is
+  //     accepted, then devin prints `Warning: Smart permission mode is not available. Falling back
+  //     to normal.` and continues, exit 0 — while `/smart` typed into that same session switched
+  //     fine, so the account's rollout was on and only the startup path had not caught up.
+  //   ACCOUNT — smart is rolled out server-side, so an account without it takes the same visible
+  //     fallback.
+  //
+  // MEASURED on 3000.6.12: `devin --permission-mode smart` starts in smart with no warning. So no
+  // version gate is added here (rule 9 — and there is nothing to gate: the degrade is devin's own,
+  // announced in the pane, and lands on `normal`, which is exactly where the session would have
+  // started anyway). Note the `--permission-mode bogus` error list still omits `smart` on 3000.6.12
+  // because of the server-side rollout; the parser accepts it regardless.
+  auto: 'smart',
+  acceptEdits: 'accept-edits',
+  bypassPermissions: 'dangerous'
+  // `manual` is ABSENT on purpose: devin's default (`normal`) already auto-approves read-only
+  // tools, so no flag — and no devin mode at all — means "ask before every action".
+  //
+  // `plan` is ABSENT because the FLAG has no such value: devin has an in-session `/plan` mode
+  // (`reference/keyboard-shortcuts.mdx:48`), but `--permission-mode plan` is rejected by the
+  // parser (measured on both 3000.4.25 and 3000.6.12: "Invalid permission mode: plan"), and a
+  // rejected value kills the launch.
+  //
+  // `autonomous` is unreachable by construction — it requires `--sandbox`, which is a separate axis
+  // this table does not set.
+}
+
 /**
  * The agents that need a translation, flag and vocabulary together.
  *
@@ -83,24 +144,26 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
  */
 const APPROVAL_DIALECTS: Partial<Record<AgentId, ApprovalDialect>> = {
   gemini: { flag: '--approval-mode', modes: GEMINI_MODES },
-  codex: { flag: '--ask-for-approval', modes: CODEX_MODES }
+  codex: { flag: '--ask-for-approval', modes: CODEX_MODES },
+  devin: { flag: '--permission-mode', modes: DEVIN_MODES }
 }
 
-const dialectFor = (agentId: AgentId): ApprovalDialect | null =>
-  Object.hasOwn(APPROVAL_DIALECTS, agentId) ? APPROVAL_DIALECTS[agentId] ?? null : null
+// Resolve dialect through the base harness, so a custom agent with `baseAgent:'devin'`
+// inherits devin's flag and value table instead of falling back to claude's `--permission-mode`.
+const dialectFor = (agentId: AgentId): ApprovalDialect | null => {
+  const base = capabilityAgentId(agentId)
+  return Object.hasOwn(APPROVAL_DIALECTS, base) ? APPROVAL_DIALECTS[base] ?? null : null
+}
 
 /** Can this agent actually start in this mode? `false` means the launch omits the flag and the
  *  agent uses its own default — surfaced in the UI so the user is not misled. */
 export function modeSupported(agentId: AgentId, mode: AgentPermissionMode): boolean {
   if (!isPermissionMode(mode)) return false
-  // `manual` — "ask each time" — is reachable on every capable agent, but for two different reasons,
-  // which is why the table is not its authority: claude/grok/gemini get there by emitting NO flag
-  // (their own default already prompts), and codex gets there through `untrusted`, because its
-  // default does not. Either way the promise holds; an agent whose CLI could offer neither would
-  // need this early return revisited.
-  if (mode === 'manual') return hasPermissionMode(agentId)
   const dialect = dialectFor(agentId)
   if (dialect) return Object.hasOwn(dialect.modes, mode)
+  // No dialect = claude and grok: every mode they support is spelled identically, and `manual`
+  // means "no flag" because their own default already prompts per action. An agent that HAS a
+  // dialect answered above — there `manual` is supported only when the table maps it explicitly.
   return hasPermissionMode(agentId)
 }
 
@@ -130,7 +193,8 @@ export function approvalFlags(agentId: AgentId, mode: AgentPermissionMode): stri
  *
  * WHERE the flag lands is decided one layer up, by `createAgentNode`: with no `argvPromptSeparator`
  * (claude, gemini, codex) it goes LAST, keeping those command lines byte-identical; with one
- * (grok's `--`) it must go BEFORE the separator, because `--` is end-of-options.
+ * (grok's and devin's `--`) it must go BEFORE the separator, because `--` is end-of-options — a
+ * flag placed after it is a positional, silently swallowed into the prompt or a usage error.
  *
  * **A flag the command already carries is left alone (issue #601).** `cmd` is not always ours:
  * `settings.agentLaunchCommands` lets the user replace the program part with a wrapper, and a

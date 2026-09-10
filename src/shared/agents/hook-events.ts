@@ -92,3 +92,27 @@ export const COPILOT_HOOK_EVENTS = [
   'Notification',
   'SessionEnd'
 ] as const
+
+/**
+ * Devin CLI hook events (→ normalizeDevin). Devin does NOT read `.claude/` config by default
+ * (measured: a `SessionStart` hook in `~/.claude/settings.json` did NOT fire while `devin` was
+ * launched with a `~/.config/devin/config.json` that had no matching hook). Its own formats are
+ * `.devin/` and `~/.config/devin/config.json` hook sections. We install into the global
+ * `~/.config/devin/config.json` so nodeterm's hooks live alongside Devin's own user settings.
+ *
+ * Measured on devin 3000.4.25 with a real session: the payload uses snake_case `hook_event_name`,
+ * carries `session_id` and per-turn `prompt_id`, and sends `PreToolUse`/`PostToolUse` with
+ * `tool_name`, `tool_input`, `tool_use_id` and `tool_response { success, output, error }`.
+ * `Stop` has only `stop_hook_active`; it does NOT carry `last_assistant_message`, so we cannot
+ * populate the node's last-message from the Stop hook. `SessionEnd` was not observed in the
+ * single-turn capture but is documented and subscribed defensively.
+ */
+export const DEVIN_HOOK_EVENTS: readonly ManagedHookEvent[] = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'Stop',
+  'PermissionRequest',
+  'SessionEnd',
+  { event: 'PreToolUse', matcher: '.*' },
+  { event: 'PostToolUse', matcher: '.*' }
+]

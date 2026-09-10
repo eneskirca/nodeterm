@@ -41,8 +41,9 @@ import {
   type ContextLinkVerb
 } from './context-link-render'
 import { hookServer } from './agents/hook-server'
-import { locateClaude, locateCodex, locateGemini, locateGrok } from './handoff/locate'
+import { locateClaude, locateCodex, locateGemini, locateGrok, locateDevin } from './handoff/locate'
 import { opencodeConfigDir } from './agents/hooks/opencode'
+import { devinConfigDir } from './agents/hooks/devin'
 
 export { setNodeTranscript } from './context-link-core'
 
@@ -56,6 +57,9 @@ function cliShimPath(): string {
 }
 function skillPath(): string {
   return path.join(os.homedir(), '.claude', 'skills', 'get-linked-context', 'SKILL.md')
+}
+function devinSkillPath(): string {
+  return path.join(devinConfigDir(), 'skills', 'get-linked-context', 'SKILL.md')
 }
 
 function writeCliFiles(): void {
@@ -77,11 +81,14 @@ function writeCliFiles(): void {
 }
 
 function installSkill(): void {
-  try {
-    fs.mkdirSync(path.dirname(skillPath()), { recursive: true })
-    fs.writeFileSync(skillPath(), buildContextLinkSkillBody(cliShimPath()), 'utf8')
-  } catch (e) {
-    console.warn('[context-link] skill install failed', e)
+  const body = buildContextLinkSkillBody(cliShimPath())
+  for (const p of [skillPath(), devinSkillPath()]) {
+    try {
+      fs.mkdirSync(path.dirname(p), { recursive: true })
+      fs.writeFileSync(p, body, 'utf8')
+    } catch (e) {
+      console.warn('[context-link] skill install failed', p, e)
+    }
   }
 }
 
@@ -133,7 +140,13 @@ export interface ContextLinkDeps {
 // start mid-line, which only costs that one line (it fails to parse and is dropped).
 const REMOTE_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024
 
-const LINK_LOCATORS = { claude: locateClaude, codex: locateCodex, gemini: locateGemini, grok: locateGrok }
+const LINK_LOCATORS = {
+  claude: locateClaude,
+  codex: locateCodex,
+  gemini: locateGemini,
+  grok: locateGrok,
+  devin: locateDevin
+}
 
 // The link documents, by node id — the same objects written to disk, kept in memory because they
 // are what authorizes a read (a node may only ever name a link inside ITS OWN document).

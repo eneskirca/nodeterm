@@ -2,7 +2,7 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
-export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot'
+export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot' | 'devin'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -31,6 +31,30 @@ export interface AgentConfig {
    * shadow one, and adding a `--` there would change a command line that works today.
    */
   argvPromptSeparator?: string
+  /**
+   * Milliseconds to wait after writing text into this CLI's composer before sending the Enter that
+   * submits it. Omitted (the default) means the historical delivery: text and Enter in ONE tmux
+   * invocation, byte-identical for every agent that does not set this.
+   *
+   * devin is the case that needs it, and it needs it because of its own INPUT DEBOUNCE, not
+   * because of how we write. MEASURED on 3000.6.12, idle session, every delivery mechanism tmux
+   * offers:
+   *
+   *   bracketed paste (`paste-buffer -p`, our path) + immediate Enter  → text sits in the composer
+   *   UNFRAMED paste                                + immediate Enter  → text sits in the composer
+   *   `send-keys -l` literal                        + immediate Enter  → text sits in the composer
+   *   any of the three, Enter >= ~80 ms later                          → SUBMITTED
+   *
+   * So devin absorbs a CR that arrives within roughly 50-80 ms of preceding input (the threshold
+   * measured between those two values) — a paste-safety heuristic, applied to the burst rather
+   * than to the paste markers. The identical delivery into claude submits immediately, which is
+   * why this is a per-agent number and not a change to the delivery itself.
+   *
+   * This is the exception the `localFramedDelivery` tombstone in core/tmux-naming.ts does not
+   * cover: it reasons that an Enter after the paste-close marker "a paste-aware composer cannot
+   * re-chunk into the paste". True for claude; devin re-chunks on TIMING, marker or no marker.
+   */
+  submitEnterDelayMs?: number
   expectedProcess: string
 }
 
@@ -40,7 +64,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'gemini',
   'opencode',
   'grok',
-  'copilot'
+  'copilot',
+  'devin'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -72,6 +97,13 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // A bare positional is a PROJECT PATH for opencode, so the initial prompt must go
     // through --prompt (see createAgentNode's flag-prompt branch).
     promptInjectionMode: 'flag-prompt',
+    // opencode's TUI batches input the same way devin's does: measured on 1.18.18-1.18.25 (Linux,
+    // tmux, isolated socket), a one-burst `/exit\r` leaves `/exit` in the composer and times out at
+    // 6 s, while splitting the CR off by 100 ms exits in ~500 ms. This number used to live as a
+    // hardcoded `agentId === 'opencode'` branch in renderer/terminal/agent-restart.ts, which meant
+    // only the RESTART path knew about it — devin arriving with the same behaviour is what showed
+    // that it is a property of the agent, not of one call site.
+    submitEnterDelayMs: 150,
     expectedProcess: 'opencode'
   },
   grok: {
@@ -96,14 +128,28 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // 1.0.80 CLI's `--interactive <prompt>` starts the ordinary TUI and submits the prompt there.
     promptInjectionMode: 'flag-interactive',
     expectedProcess: 'copilot'
+  },
+  devin: {
+    label: 'Devin',
+    color: '#3969CA',
+    launchCmd: 'devin',
+    // Measured on devin 3000.4.25: usage is `devin [OPTIONS] [-- <PROMPT>...] [COMMAND]`,
+    // so the prompt is a positional after `--`. Without the separator a prompt like `list`,
+    // `auth`, `models`, `update` or `setup` is executed as a subcommand and never reaches the model.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: '--',
+    // 150 ms, comfortably past the measured 50-80 ms swallow window — see `submitEnterDelayMs`.
+    // The cost is one extra tmux round trip on writes INTO a devin composer; nothing else pays it.
+    submitEnterDelayMs: 150,
+    expectedProcess: 'devin'
   }
 }
 
 // Capabilities = const builtin membership lists. A custom agent resolves through its declared
 // base harness (capabilityAgentId); one with no base automatically gets only spawn + terminal-title
 // + process status.
-export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
-export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
+export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
 //
@@ -149,7 +195,14 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+export const CONTEXT_LINK_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'devin'
+] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family
@@ -264,7 +317,7 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // RemoteHooks.installCanvasControl. Membership here is what sets NODETERM_CANVAS_CONTROL in the
 // session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
 // other than a no-op.
-export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot', 'devin'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
@@ -273,8 +326,17 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // is only half the story — the translation lives in ./approval-mode.ts.
 //
 // Membership does NOT mean every mode applies: BOTH new vocabularies are narrower than ours — codex
-// has no plan and no edit-specific mode, and gemini has nothing meaning "approve most things but not
-// edits", i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+// has no plan and no edit-specific mode, and gemini has nothing meaning what claude's `auto` means,
+// i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+//
+// What claude's `auto` actually promises, from Claude Code's own mode help, is "Claude decides what
+// is safe" — a MODEL judging each action, recommended there "for long unattended tasks". An earlier
+// version of this comment described it as "approve most things but not edits", which is a different
+// (and narrower) claim; the gemini conclusion below is unaffected — `auto_edit` is a blanket
+// auto-approval of edits, not a judgement — but the imprecision cost real behaviour once. It is why
+// devin was first mapped `auto → auto` on a name match, selecting devin's OWN default (an alias for
+// `normal`, which judges nothing) instead of `smart`, the mode that actually delegates the decision
+// to a model. Match the SEMANTIC, never the spelling; see DEVIN_MODES in ./approval-mode.
 // `modeSupported` is what the UI asks so the user is told, instead of being shown "Plan" while
 // codex runs in on-request, or "Auto" while gemini auto-approves every edit. That last one is not
 // hypothetical: `auto` is DEFAULT_PERMISSION_MODE, so mapping it to gemini's `auto_edit` would have
@@ -284,10 +346,24 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 // renderer/state/permissionMode.ts. grok has accepted every mode we emit since 1.0.0, its first
 // release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
 // a gate fed by a `claude --version` probe.
-export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as const
+export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'devin'] as const
+// Agents whose permission hook can honour a deterministic wait + decision JSON reply (issue #409).
+// This is a SUBSET of PERMISSION_MODE_CAPABLE: devin accepts --permission-mode but its hook is
+// NOT known to honour our decision output, so the env var is claude-only until that is measured.
+//
+// Membership is resolved through `capabilityAgentId` like every other capability, and that is
+// DELIBERATE rather than incidental: `pty-manager` previously compared the raw id against
+// 'claude', so a custom agent declaring `baseAgent: 'claude'` — which runs claude's binary and
+// therefore claude's hook script, and can honour the decision reply — was silently denied
+// NODETERM_PERM_WAIT_SECS. A custom agent based on devin (or on nothing) still gets nothing,
+// which is the narrowing this list exists for. Pinned in config.capabilities.test.ts.
+export const PERM_WAIT_CAPABLE = ['claude'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
+// Devin is NOT here: its --model flag takes Devin-native slugs (swe-1-7, etc.) and the CLI has no
+// documented gateway base-url / api-key env. Routing a gateway model id into `devin --model` would
+// rewrite the launch line while the backend stayed on Devin's own servers.
 export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
@@ -389,7 +465,24 @@ export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
+/** True only for agents whose permission hook is known to honour our deterministic wait + decision. */
+export const hasPermWait = (id: AgentId): boolean => includes(PERM_WAIT_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
+
+/**
+ * How long to wait between writing text into this agent's composer and sending the Enter that
+ * submits it. `0` = the historical single-invocation delivery, which is what every agent but devin
+ * answers.
+ *
+ * Resolved through `capabilityAgentId` like every other per-agent fact, so a custom agent
+ * declaring `baseAgent: 'devin'` runs the devin CLI and inherits its debounce. A plain terminal
+ * (no agent id) and a baseless custom agent answer 0 — a shell has no composer to debounce.
+ */
+export function submitEnterDelayMs(id: AgentId | undefined): number {
+  if (!id) return 0
+  const cfg = (AGENT_CONFIG as Record<string, AgentConfig>)[capabilityAgentId(id)]
+  return cfg?.submitEnterDelayMs ?? 0
+}
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)
 
 /**
@@ -544,6 +637,7 @@ export function resumeCommandWith(
     case 'claude':
     case 'gemini':
     case 'grok':
+    case 'devin':
       return `${launchCmd} --resume ${sid}`
     default:
       return null

@@ -305,6 +305,24 @@ export function linesFromGrok(buf: string): string[] {
   return res
 }
 
+/** Devin transcript: a monolithic JSON object with `steps[]`. Each step carries `source`
+ *  ('system' | 'user' | 'agent') and `message` (string). Tool calls are not exposed separately,
+ *  so we render the user/agent conversation as one line per step. */
+export function linesFromDevin(buf: string): string[] {
+  const o = parseJson(buf) as { steps?: { source?: unknown; message?: unknown }[] } | undefined
+  if (!o || !Array.isArray(o.steps)) return []
+  const res: string[] = []
+  for (const step of o.steps) {
+    if (!step || typeof step.message !== 'string' || !step.message) continue
+    const source = typeof step.source === 'string' ? step.source : ''
+    if (source === 'system') continue
+    const role = source === 'user' ? 'user' : 'assistant'
+    const text = step.message.replace(/\s+/g, ' ').trim().slice(0, TOOL_RESULT_MAX)
+    if (text) res.push(`${role}: ${text}`)
+  }
+  return res
+}
+
 /** How many lines of this buffer could not be parsed. Skipped, but never in silence. */
 linesFromGrok.skipped = (buf: string): number => grokParse(buf).skipped
 
@@ -312,6 +330,7 @@ linesFromGrok.skipped = (buf: string): number => grokParse(buf).skipped
 export function renderTranscriptLines(agent: string | undefined, buf: string): string[] {
   if (agent === 'gemini') return linesFromGemini(buf)
   if (agent === 'grok') return linesFromGrok(buf)
+  if (agent === 'devin') return linesFromDevin(buf)
   const parse = agent === 'codex' ? linesFromCodex : linesFromClaude
   const lines: string[] = []
   for (const raw of buf.split('\n')) {

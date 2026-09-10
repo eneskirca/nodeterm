@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   localTmuxEnterArgs,
   localTmuxPasteArgs,
+  runDelayedEnterDelivery,
   pasteBufferName,
   sessionName,
   isSessionName,
@@ -91,3 +92,65 @@ describe('localTmuxPasteArgs', () => {
 // the messaging envelope now rides `localPasteDelivery` (enter=true) like every other write —
 // tmux ≥ 3.7 passes paste-buffer content through vis(3), so a payload-carried frame cannot
 // arrive as escapes. See the tombstone in tmux-naming.ts.
+
+describe('runDelayedEnterDelivery', () => {
+  const plan = { args: ['paste', 'args'], body: 'hello', cleanup: ['delete-buffer'] }
+
+  it('sends the text, waits, then sends Enter as its own invocation', async () => {
+    const calls: string[][] = []
+    const slept: number[] = []
+    const ok = await runDelayedEnterDelivery(
+      plan,
+      ['enter', 'args'],
+      150,
+      async (args) => {
+        calls.push(args)
+      },
+      async (ms) => {
+        // The wait must happen BETWEEN the two writes, which is the whole point: an Enter inside
+        // the text's input burst is what devin and opencode absorb instead of submitting.
+        slept.push(ms)
+        expect(calls).toEqual([['paste', 'args']])
+      }
+    )
+    expect(ok).toBe(true)
+    expect(calls).toEqual([['paste', 'args'], ['enter', 'args']])
+    expect(slept).toEqual([150])
+  })
+
+  // The ordering guarantee a single tmux command list gave for free: tmux abandons the rest of a
+  // list when one of its commands fails, so the Enter could never fire after a failed text send.
+  // Split across two invocations that has to be enforced here, or a submit would fire into a
+  // composer holding whatever the USER had typed — worse than not delivering at all.
+  it('never sends Enter when the text failed to land, and sweeps the buffer', async () => {
+    const calls: string[][] = []
+    const ok = await runDelayedEnterDelivery(
+      plan,
+      ['enter', 'args'],
+      150,
+      async (args) => {
+        calls.push(args)
+        if (args[0] === 'paste') throw new Error('cant find pane')
+      },
+      async () => {
+        throw new Error('must not wait: there is nothing to submit')
+      }
+    )
+    expect(ok).toBe(false)
+    expect(calls).not.toContainEqual(['enter', 'args'])
+    expect(calls).toContainEqual(['delete-buffer'])
+  })
+
+  it('reports false when the Enter itself fails, rather than a delivery it cannot stand behind', async () => {
+    const ok = await runDelayedEnterDelivery(
+      plan,
+      ['enter', 'args'],
+      1,
+      async (args) => {
+        if (args[0] === 'enter') throw new Error('session died between the two writes')
+      },
+      async () => {}
+    )
+    expect(ok).toBe(false)
+  })
+})

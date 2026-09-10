@@ -19,6 +19,7 @@ import {
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
 import { opencodeConfigDir } from '../core/agents/hooks/opencode'
 import { copilotHomeDir } from '../core/agents/hooks/copilot'
+import { devinConfigDir } from '../core/agents/hooks/devin'
 
 function dir(): string {
   return path.join(app.getPath('userData'), 'canvas-control')
@@ -99,6 +100,7 @@ export function initCanvasControl(): void {
   try {
     writeCliFiles()
     installCanvasSkillInto(path.join(os.homedir(), '.claude'))
+    installCanvasSkillInto(devinConfigDir())
     installAgentInstructions()
   } catch (e) {
     console.error('[canvas-control] setup failed', e)

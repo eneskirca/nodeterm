@@ -9,6 +9,7 @@ import {
   canResumeWith,
   capabilityAgentId,
   resumeCommand,
+  submitEnterDelayMs,
   type AgentId
 } from '../../shared/agents/config'
 import { isShellCommand } from '@shared/agents/pane'
@@ -30,6 +31,11 @@ import {
  *  Each value is the CLI's own DOCUMENTED PRIMARY, and is sent BARE:
  *    - grok:   `/quit` (its `/exit` is an alias).
  *    - gemini: `/quit` (alias `/exit`), measured in its bundled `docs/reference/commands.md:325`.
+ *    - devin:  `/exit` (alias `/quit`), measured in its bundled
+ *              `share/devin/docs/reference/commands.mdx:439` (CLI 3000.4.25): "Exit the
+ *              application (alias: `/quit`)" — it takes NO arguments. Devin's destructive command
+ *              is a SEPARATE verb, `/rm-session <id>` ("Irreversibly delete a session and all its
+ *              data"), which nothing here may ever emit.
  *
  *  Bare is a safety rule, not a style: gemini's `/quit` also takes a `--delete` flag that exits AND
  *  *permanently deletes* the session's history and temporary files — the very conversation the
@@ -40,7 +46,8 @@ const EXIT_SEQUENCES: Record<string, string> = {
   grok: '/quit',
   gemini: '/quit',
   copilot: '/exit',
-  opencode: '/exit'
+  opencode: '/exit',
+  devin: '/exit'
 }
 
 export function exitSequence(agentId: string): string | null {
@@ -201,21 +208,26 @@ export async function performExitPhase(d: {
   // would then be reported as an exit timeout.
   //
   // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI in
-  // EXIT_SEQUENCES (claude, codex, grok, gemini) — it is in every readline/ZLE prompt, and it is
+  // EXIT_SEQUENCES (claude, codex, grok, gemini, devin) — it is in every readline/ZLE prompt, and it is
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than
   // today's blind write. Belongs in the manual test matrix.
   d.io.write(KILL_LINE)
-  // opencode's TUI does not submit when text and CR arrive in the same input burst
-  // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
-  // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
-  // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
-  // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
-  // the minimal split so the other agents' blind-write contract stays unchanged.
-  if (d.agentId === 'opencode') {
+  // Some TUIs do not submit when text and CR arrive in the SAME input burst, and answer for how
+  // long to wait through `submitEnterDelayMs` (shared/agents/config.ts, where each agent's
+  // measurement lives): opencode 1.18.18-1.18.25 leaves a one-burst `/exit\r` in its composer and
+  // times out at 6 s, and devin 3000.6.12 absorbs any CR landing within ~50-80 ms of preceding
+  // input. Every other agent answers 0 and keeps the one-write blind delivery byte-for-byte.
+  //
+  // This was an `agentId === 'opencode'` branch here until devin turned up with the same
+  // behaviour — the exact call-site fork the capability rules warn about, which is why the number
+  // now lives with the agent instead of with this one caller. The resume half already handles the
+  // shape its own way (echo-verified delivery, command-delivery.ts).
+  const submitDelay = submitEnterDelayMs(d.agentId)
+  if (submitDelay > 0) {
     d.io.write(exit)
-    await new Promise((r) => setTimeout(r, 150))
+    await new Promise((r) => setTimeout(r, submitDelay))
     if (gone()) return 'not-eligible'
     d.io.write('\r')
   } else {
