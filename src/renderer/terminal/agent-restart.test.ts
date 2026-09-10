@@ -6,11 +6,12 @@ import {
   __resetAgentRestartForTests,
   agentHibernateFns,
   agentRestartFn,
+  clearEnvEligibility,
   exitSequence,
   guardConcurrentRestart,
   isShellCommand,
-  performExitPhase,
-  performRestartResume,
+  performExitPhase as performExitPhaseCore,
+  performRestartResume as performRestartResumeCore,
   performResumePhase,
   planBulkRestart,
   registerAgentHibernate,
@@ -88,6 +89,60 @@ describe('restartEligibility', () => {
   })
 })
 
+describe('clearEnvEligibility', () => {
+  it('permits a busy session — terminateForeground is PID-safe, and gateway overload lands mid-turn', () => {
+    // The shared `restartEligibility` refuses working/blocked because its `/exit` would answer a
+    // permission prompt. clearEnv SIGTERMs the foreground group by PID instead — no slash command is
+    // typed into the pane — so it may interrupt a stuck turn, which is exactly the scenario the
+    // feature exists for.
+    expect(clearEnvEligibility('claude', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('codex', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('copilot', 'abc')).toEqual({ ok: true })
+  })
+
+  it('still requires a resumable harness and provider session id', () => {
+    expect(clearEnvEligibility('claude', undefined)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+    expect(clearEnvEligibility('my-custom', 'abc')).toEqual({
+      ok: false,
+      reason: 'not-resumable'
+    })
+    // An agent with no vanillaEnvPattern (gemini) still passes THIS gate — resumability is a
+    // separate fact from "has a strip set." The menu row is hidden upstream on the pattern, so
+    // the gate is only ever reached for claude/codex/copilot. Tested in vanilla-env.test.ts.
+    expect(clearEnvEligibility('gemini', 'abc')).toEqual({ ok: true })
+  })
+})
+
+describe('clearEnvEligibility', () => {
+  it('permits a busy session — terminateForeground is PID-safe, and gateway overload lands mid-turn', () => {
+    // The shared `restartEligibility` refuses working/blocked because its `/exit` would answer a
+    // permission prompt. clearEnv SIGTERMs the foreground group by PID instead — no slash command is
+    // typed into the pane — so it may interrupt a stuck turn, which is exactly the scenario the
+    // feature exists for.
+    expect(clearEnvEligibility('claude', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('codex', 'abc')).toEqual({ ok: true })
+    expect(clearEnvEligibility('copilot', 'abc')).toEqual({ ok: true })
+  })
+
+  it('still requires a resumable harness and provider session id', () => {
+    expect(clearEnvEligibility('claude', undefined)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+    expect(clearEnvEligibility('my-custom', 'abc')).toEqual({
+      ok: false,
+      reason: 'not-resumable'
+    })
+    // An agent with no vanillaEnvPattern (gemini) still passes THIS gate — resumability is a
+    // separate fact from "has a strip set." The menu row is hidden upstream on the pattern, so
+    // the gate is only ever reached for claude/codex/copilot. Tested in vanilla-env.test.ts.
+    expect(clearEnvEligibility('gemini', 'abc')).toEqual({ ok: true })
+  })
+})
+
 function fakeIo() {
   const written: string[] = []
   let cb: ((chunk: string) => void) | null = null
@@ -127,11 +182,55 @@ function silentIo() {
   }
 }
 
+// Most choreography tests care about polling/delivery, not core process discovery. Production is
+// required by type to supply the identity-gated terminator; default it to a successful fake here,
+// while the dedicated stop tests below override it to exercise ownership loss/refusal.
+type ExitArgs = Parameters<typeof performExitPhaseCore>[0]
+function performExitPhase(
+  d: Omit<ExitArgs, 'terminateForeground'> & {
+    terminateForeground?: ExitArgs['terminateForeground']
+  }
+) {
+  return performExitPhaseCore({
+    ...d,
+    terminateForeground: d.terminateForeground ?? (async () => 'terminated' as const)
+  })
+}
+
+type RestartArgs = Parameters<typeof performRestartResumeCore>[0]
+function performRestartResume(
+  d: Omit<RestartArgs, 'terminateForeground'> & {
+    terminateForeground?: RestartArgs['terminateForeground']
+  }
+) {
+  return performRestartResumeCore({
+    ...d,
+    terminateForeground: d.terminateForeground ?? (async () => 'terminated' as const)
+  })
+}
+
 describe('performRestartResume', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('sends exit, waits for the shell, then delivers the resume command', async () => {
+  it('hands an already-idle login shell to the fresh-shell recovery callback', async () => {
+    const { written, io } = fakeIo()
+    const onAlreadyExited = vi.fn(async () => 'restarted' as const)
+    await expect(
+      performRestartResume({
+        agentId: 'claude',
+        sessionId: 'sid-1',
+        io,
+        paneCommand: async () => 'zsh',
+        terminateForeground: async () => 'already-exited',
+        onAlreadyExited
+      })
+    ).resolves.toBe('restarted')
+    expect(onAlreadyExited).toHaveBeenCalledOnce()
+    expect(written).toEqual([])
+  })
+
+  it('terminates the verified process, waits for the shell, then delivers the resume command', async () => {
     const { written, io } = fakeIo()
     let pane = 'claude'
     const p = performRestartResume({
@@ -146,8 +245,8 @@ describe('performRestartResume', () => {
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
-    expect(written.slice(0, 2)).toEqual(['\x15', '/exit\r'])
     expect(written.join('')).toContain('claude --resume sid-1')
+    expect(written.join('')).not.toContain('/exit')
   })
 
   it('gives up without delivering when the pane never returns to a shell', async () => {
@@ -165,15 +264,15 @@ describe('performRestartResume', () => {
     expect(written.join('')).not.toContain('--resume')
   })
 
-  it('gives up when the pane query wedges after the exit was sent', async () => {
+  it('gives up when the pane query wedges after the process was terminated', async () => {
     const { written, io } = fakeIo()
     let first = true
     const p = performRestartResume({
       agentId: 'claude',
       sessionId: 'sid-1',
       io,
-      // The pre-flight answers, so the exit IS written; then the tmux server wedges and no poll
-      // ever settles. The deadline, not the query, has to end the restart.
+      // The pre-flight answers, so termination runs; then the tmux server wedges and no poll ever
+      // settles. The deadline, not the query, has to end the restart.
       paneCommand: () => {
         if (!first) return new Promise<string | null>(() => {})
         first = false
@@ -219,7 +318,7 @@ describe('performRestartResume', () => {
     expect(written).toEqual([])
   })
 
-  it('clears the pending input line before asking the CLI to quit', async () => {
+  it('never writes a stop sequence into the pane before resuming', async () => {
     const { written, io } = fakeIo()
     let pane = 'claude'
     const p = performRestartResume({
@@ -234,9 +333,9 @@ describe('performRestartResume', () => {
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
-    // Half-typed user text in the prompt would otherwise be SUBMITTED as `…the/exit`.
-    expect(written[0]).toBe('\x15')
-    expect(written[1]).toBe('/exit\r')
+    // The exact process is stopped out-of-band; the first pane write belongs to the resume.
+    expect(written[0]).toBe('claude --resume sid-1')
+    expect(written.join('')).not.toContain('/exit')
   })
 
   it('takes a pane command that CHANGED away from the CLI as proof it quit', async () => {
@@ -352,7 +451,7 @@ describe('performRestartResume', () => {
     expect(typeof cancel).toBe('function') // handed out as the delivery STARTS, not when it ends
     const delivered = written.length
     cancel?.()
-    expect(await p).toBe('restarted') // cancelling settles the delivery, and with it the restart
+    await expect(p).rejects.toThrow('resume delivery did not submit')
     await vi.advanceTimersByTimeAsync(30_000)
     // No rewrite retries, no fail-open submit: nothing more reaches the torn-down transport.
     expect(written.length).toBe(delivered)
@@ -464,7 +563,7 @@ describe('performExitPhase', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('quits the CLI and reports exited once the pane reports a shell — writing nothing after', async () => {
+  it('terminates out-of-band and reports exited once the pane reports a shell', async () => {
     const { written, io } = fakeIo()
     let pane = 'claude'
     const p = performExitPhase({
@@ -479,9 +578,22 @@ describe('performExitPhase', () => {
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('exited')
-    // The exit phase's ENTIRE output: clear the line, then the CLI's own exit command. The resume
-    // line belongs to the other phase, so nothing here may reach the pane after `/exit`.
-    expect(written).toEqual(['\x15', '/exit\r'])
+    // Process termination is out-of-band. This phase never types into the pane.
+    expect(written).toEqual([])
+  })
+
+  it('reports an agent that already returned to the original login shell separately', async () => {
+    const { written, io } = fakeIo()
+    await expect(
+      performExitPhase({
+        agentId: 'claude',
+        sessionId: 'sid-1',
+        io,
+        paneCommand: async () => 'zsh',
+        terminateForeground: async () => 'already-exited'
+      })
+    ).resolves.toBe('already-exited')
+    expect(written).toEqual([])
   })
 
   it('writes NOTHING and refuses when the pre-flight probe answers null', async () => {
@@ -512,7 +624,24 @@ describe('performExitPhase', () => {
     })
     await vi.advanceTimersByTimeAsync(2000)
     expect(await p).toBe('exit-timeout')
-    expect(written).toEqual(['\x15', '/exit\r']) // never force-killed, never resumed
+    expect(written).toEqual([]) // terminated out-of-band, never resumed
+  })
+
+  it('refuses when the exact expected agent PID is no longer foreground', async () => {
+    const { written, io } = fakeIo()
+    const onRefusal = vi.fn()
+    expect(
+      await performExitPhase({
+        agentId: 'claude',
+        sessionId: 'sid-1',
+        io,
+        paneCommand: async () => 'zsh',
+        terminateForeground: async () => 'refused',
+        onRefusal
+      })
+    ).toBe('not-eligible')
+    expect(written).toEqual([])
+    expect(onRefusal).toHaveBeenCalledWith('lost-foreground')
   })
 
   it('refuses a session we could never resume into — the exit alone would lose it', async () => {
@@ -591,69 +720,25 @@ describe('performExitPhase', () => {
     expect(await p).toBe('not-eligible') // not a timeout: there is no pane left to time out in
   })
 
-  it('splits opencode exit into text then CR (batched-input guard), leaving others one-burst', async () => {
-    // opencode's TUI swallows a one-burst `/exit\r` (measured 1.18.18-1.18.25, Linux, tmux, isolated
-    // socket: `/exit` left in composer with popup armed, exit-timeout at 6s; split CR by 100ms exits
-    // in ~500ms, shipped with 150ms). This pins the split so a refactor cannot silently re-batch it.
-    for (const agentId of ['opencode'] as const) {
-      const { written, io } = fakeIo()
-      let pane = 'opencode'
-      const p = performExitPhase({
-        agentId,
-        sessionId: 'sid-1',
-        io,
-        paneCommand: async () => pane,
-        timeoutMs: 6000,
-        pollMs: 100
-      })
-      // Pre-flight resolves; KILL_LINE + exit text are written, CR not yet.
-      await vi.advanceTimersByTimeAsync(0)
-      expect(written).toEqual(['\x15', '/exit'])
-      await vi.advanceTimersByTimeAsync(150)
-      expect(written).toEqual(['\x15', '/exit', '\r'])
-      pane = 'zsh'
-      await vi.advanceTimersByTimeAsync(5000)
-      expect(await p).toBe('exited')
-    }
-    // Every other agent keeps the historical one-burst path byte-identical.
-    for (const agentId of ['claude', 'codex', 'grok', 'gemini', 'copilot'] as const) {
-      const { written, io } = fakeIo()
-      let pane: string = agentId
-      const p = performExitPhase({
-        agentId,
-        sessionId: 'sid-1',
-        io,
-        paneCommand: async () => pane,
-        timeoutMs: 6000,
-        pollMs: 100
-      })
-      await vi.advanceTimersByTimeAsync(0)
-      const exit = agentId === 'claude' || agentId === 'copilot' ? '/exit' : '/quit'
-      expect(written).toEqual(['\x15', `${exit}\r`])
-      pane = 'zsh'
-      await vi.advanceTimersByTimeAsync(5000)
-      expect(await p).toBe('exited')
-    }
-  })
-
-  it('abandons the split CR when the pane dies mid-delay', async () => {
+  it('terminates opencode out-of-band without typing its split exit sequence', async () => {
     const { written, io } = fakeIo()
-    let live = true
+    let pane = 'opencode'
+    const terminateForeground = vi.fn(async () => 'terminated' as const)
     const p = performExitPhase({
       agentId: 'opencode',
       sessionId: 'sid-1',
       io,
-      paneCommand: async () => 'opencode',
+      paneCommand: async () => pane,
+      terminateForeground,
       timeoutMs: 6000,
-      pollMs: 100,
-      isLive: () => live
+      pollMs: 100
     })
     await vi.advanceTimersByTimeAsync(0)
-    expect(written).toEqual(['\x15', '/exit'])
-    live = false
-    await vi.advanceTimersByTimeAsync(200)
-    expect(await p).toBe('not-eligible')
-    expect(written).toEqual(['\x15', '/exit']) // CR never sent into a dead pane
+    expect(terminateForeground).toHaveBeenCalledOnce()
+    expect(written).toEqual([])
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('exited')
   })
 })
 
@@ -667,7 +752,7 @@ describe('performResumePhase', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('resumed')
     expect(written.join('')).toContain('claude --resume sid-1')
-    expect(written.join('')).not.toContain('/exit') // the exit belongs to the other phase
+    expect(written.join('')).not.toContain('/exit') // process stop is out-of-band
   })
 
   it("prefers the caller's command (permission mode) over the bare one", async () => {
@@ -711,7 +796,7 @@ describe('performResumePhase', () => {
     expect(typeof cancel).toBe('function')
     const delivered = written.length
     cancel?.()
-    expect(await p).toBe('resumed')
+    await expect(p).rejects.toThrow('resume delivery did not submit')
     await vi.advanceTimersByTimeAsync(30_000)
     expect(written.length).toBe(delivered) // no retries into a torn-down transport
   })
@@ -766,7 +851,7 @@ describe('performRestartResume — grok', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it("quits with grok's own exit line and resumes by session id", async () => {
+  it('terminates grok out-of-band and resumes by session id', async () => {
     const { written, io } = fakeIo()
     let pane = 'grok'
     const p = performRestartResume({
@@ -781,9 +866,8 @@ describe('performRestartResume — grok', () => {
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
-    // `/quit`, not claude's `/exit` — the table is per CLI.
-    expect(written.slice(0, 2)).toEqual(['\x15', '/quit\r'])
     expect(written.join('')).toContain('grok --resume abc-1')
+    expect(written.join('')).not.toContain('/quit')
   })
 
   it("delivers the caller's permission-mode resume line, composed as TerminalNode composes it", async () => {
@@ -842,7 +926,7 @@ describe('performRestartResume — gemini', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('quits with /quit and resumes by session id', async () => {
+  it('terminates gemini out-of-band and resumes by session id', async () => {
     const { written, io } = fakeIo()
     let pane = 'gemini'
     const p = performRestartResume({
@@ -857,10 +941,8 @@ describe('performRestartResume — gemini', () => {
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
-    // `/quit` (alias `/exit`) measured in gemini's bundled docs/reference/commands.md:325.
-    // `\x15` is the kill-line that clears any half-typed prompt first.
-    expect(written.slice(0, 2)).toEqual(['\x15', '/quit\r'])
     expect(written.join('')).toContain('gemini --resume abc-1')
+    expect(written.join('')).not.toContain('/quit')
   })
 
   it('never types the history-destroying --delete flag', async () => {
@@ -926,34 +1008,42 @@ describe('performRestartResume — the delivery await is bounded', () => {
     vi.resetModules()
   })
 
-  it('stops waiting on a delivery that never announces it settled', async () => {
+  it('cancels and rejects a delivery that never announces it settled', async () => {
     // A transport whose write() throws used to kill deliverCommand's retry callback before it
     // could submit — `onSettled` then never fired, this await never settled, the node stayed
     // locked out by guardConcurrentRestart for the app's life and the bulk loop hung with no
     // summary. The transport is fixed in command-delivery.ts; this is the belt to that braces —
     // NOTHING may wait forever, whatever the delivery does.
+    let cancelled = 0
     vi.doMock('./command-delivery', () => ({
       VERIFY_TIMEOUT_MS: 2000,
       DELIVERY_ATTEMPTS: 3,
       KILL_LINE: '\x15',
-      deliverCommand: () => () => {} // started, never settles
+      deliverCommand: () => () => {
+        cancelled += 1
+      } // started, never settles
     }))
     const mod = await import('./agent-restart')
-    let outcome: string | undefined
+    let outcome = 'pending'
     void mod
       .performRestartResume({
         agentId: 'claude',
         sessionId: 'sid-1',
         io: { write: () => {}, onData: () => () => {} },
         paneCommand: async () => 'zsh',
+        terminateForeground: async () => 'terminated',
         timeoutMs: 1000,
         pollMs: 100
       })
-      .then((o) => (outcome = o))
+      .then(
+        () => (outcome = 'resolved'),
+        () => (outcome = 'rejected')
+      )
     await vi.advanceTimersByTimeAsync(200)
-    expect(outcome).toBeUndefined() // still holding the node, as designed
+    expect(outcome).toBe('pending') // still holding the node, as designed
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(outcome).toBe('restarted')
+    expect(outcome).toBe('rejected')
+    expect(cancelled).toBe(1)
   })
 })
 
@@ -983,11 +1073,11 @@ describe('guardConcurrentRestart', () => {
     await vi.advanceTimersByTimeAsync(150)
     // The resume line is in the pane but NOT submitted (no echo to verify it).
     expect(written.join('')).toContain('claude --resume sid-1')
-    // A second menu/bulk click landing in that window would splice `/exit` into the pending line
-    // and submit `claude --resume sid-1/exit`.
+    // A second menu/bulk click landing in that window could terminate the new process or splice a
+    // second resume line into the pending one.
     expect(await run()).toBe('not-eligible')
     expect(await probe()).toBe('not-eligible')
-    expect(written.filter((w) => w === '/exit\r')).toHaveLength(1)
+    expect(written.filter((w) => w === '/exit\r')).toHaveLength(0)
     await vi.advanceTimersByTimeAsync(10_000) // the fail-open submit ends the delivery
     expect(await first).toBe('restarted')
     expect(await probe()).toBe('restarted') // pane free again

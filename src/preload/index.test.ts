@@ -39,6 +39,8 @@ describe('preload sshProject passphrase wiring', () => {
   it('routes foreground process termination through request IPC', async () => {
     await api.pty.terminateForeground('node-1', 'claude')
     expect(h.invoke).toHaveBeenCalledWith(IPC.ptyTerminateForeground, 'node-1', 'claude')
+    await api.pty.agentProcess('node-1', 'claude')
+    expect(h.invoke).toHaveBeenCalledWith(IPC.ptyAgentProcess, 'node-1', 'claude')
   })
 
   it('exposes GitHub issue data and host-control namespaces on their exact channels', async () => {

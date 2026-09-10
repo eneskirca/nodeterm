@@ -432,3 +432,102 @@ describe('promptFilePathError', () => {
     expect(promptFilePathError('/tmp/a\nb')).toMatch(/newlines/)
   })
 })
+
+describe('autocompact [1m] model-id suffix — applied at assembly from discovery', () => {
+  // A claude-base model whose discovered context window is above the threshold gets a `[1m]`
+  // suffix on its --model id; non-claude agents and below-threshold models do not. The env half
+  // is injected spawn-side (pty-manager); this covers the id half that reaches the typed command.
+  const largeModels = [
+    { id: 'anthropic/claude-opus-5', contextWindow: 1_000_000 },
+    { id: 'anthropic/claude-sonnet-5', contextWindow: 200_000 }
+  ]
+
+  it('appends [1m] to a large-context claude model on a fresh launch', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', model: 'anthropic/claude-opus-5', models: largeModels },
+        ENV
+      ).command
+    ).toBe("claude --model 'anthropic/claude-opus-5[1m]'")
+  })
+
+  it('appends [1m] on a cold-restore resume too (same id as launch)', () => {
+    expect(
+      assembleResumeCommand(
+        { agentId: 'claude', sessionId: 'abc-123', model: 'anthropic/claude-opus-5', models: largeModels },
+        ENV
+      ).command
+    ).toBe("claude --resume abc-123 --model 'anthropic/claude-opus-5[1m]'")
+  })
+
+  it('does NOT append [1m] for a model at the threshold (200k is not above it)', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', model: 'anthropic/claude-sonnet-5', models: largeModels },
+        ENV
+      ).command
+    ).toBe("claude --model 'anthropic/claude-sonnet-5'")
+  })
+
+  it('does NOT append [1m] for a non-claude agent, even with a large-context model', () => {
+    // codex does not take a --model suffix convention; its model stays the discovered id.
+    expect(
+      assembleResumeCommand(
+        { agentId: 'codex', sessionId: 't-1', model: 'openai/gpt-5.5-codex', models: largeModels },
+        ENV
+      ).command
+    ).toBe("codex resume t-1 --model 'openai/gpt-5.5-codex'")
+  })
+
+  it('leaves an already-suffixed id alone (no double [1m])', () => {
+    const withSuffix = [{ id: 'vllm/GLM-5.2-NVFP4-MTP[1m]', contextWindow: 1_000_000 }]
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', model: 'vllm/GLM-5.2-NVFP4-MTP[1m]', models: withSuffix },
+        ENV
+      ).command
+    ).toBe("claude --model 'vllm/GLM-5.2-NVFP4-MTP[1m]'")
+  })
+
+  it('fails open with no discovery list — the id is used unchanged', () => {
+    expect(
+      assembleLaunchCommand({ agentId: 'claude', model: 'anthropic/claude-opus-5' }, ENV).command
+    ).toBe("claude --model 'anthropic/claude-opus-5'")
+  })
+})
+
+describe('cold-restore resume vs fresh re-claim — the hook-confirmed discriminator', () => {
+  // A node MINTS a session id at creation and launches claude with `--session-id <minted>`. If the
+  // user switches model/subscription (or restarts) BEFORE any turn, no transcript was written, so
+  // `claude --resume <minted>` errors. The fix lives in TerminalNode's cold-restore gate: resume
+  // ONLY off a hook-confirmed id (`st.sessionId`); when only the minted id is known, re-launch
+  // FRESH with `--session-id <minted>` (re-claiming the same id) instead of `--resume`. These two
+  // assertions pin the assembler outputs the component chooses between — the contract the gate
+  // depends on — so a refactor that collapses them is caught.
+  it('a hook-confirmed id resumes: assembleResumeCommand emits --resume', () => {
+    expect(
+      assembleResumeCommand(
+        { agentId: 'claude', sessionId: 'abc-123', models: [] },
+        ENV
+      ).command
+    ).toBe('claude --resume abc-123')
+  })
+
+  it('a minted-only id re-claims: assembleLaunchCommand emits --session-id, NOT --resume', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', sessionId: 'abc-123', sessionIdFlagSupported: true, models: [] },
+        ENV
+      ).command
+    ).toBe('claude --session-id abc-123')
+  })
+
+  it('a minted-only id on an older CLI (no --session-id flag) launches bare — claude mints its own', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'claude', sessionId: 'abc-123', sessionIdFlagSupported: false, models: [] },
+        ENV
+      ).command
+    ).toBe('claude')
+  })
+})
