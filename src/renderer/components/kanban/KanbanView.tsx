@@ -41,6 +41,13 @@ export interface KanbanSession {
   color: string
   kind: 'terminal' | 'sticky' | 'browser'
   agentId?: string
+  /** Terminal-only: the node's launch record, so its ContextMeter shows the
+   *  model the session was launched with (the transcript label trails a switch —
+   *  lib/contextMeterModel.ts). */
+  agentModel?: string
+  /** Terminal-only: the context window baked into that launch. It outranks the transcript's
+   *  stale pre-switch denominator until the agent emits a new usage row. */
+  agentLaunchContextWindow?: number
   /** Sticky note body — shown in the expanded detail row. */
   text?: string
   /** Sticky-only: last canvas-control `sticky` write (cleared on hand edits) — the modal's stamp. */

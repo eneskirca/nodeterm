@@ -10,7 +10,12 @@ import type {
 } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId } from '@shared/agents/config'
-import { agentConfig, capabilityAgentId, supportsSessionIdFlag } from '@shared/agents/config'
+import {
+  agentConfig,
+  capabilityAgentId,
+  canSwitchModel,
+  supportsSessionIdFlag
+} from '@shared/agents/config'
 import { assembleLaunchCommand } from '@shared/agents/launch'
 import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
@@ -27,6 +32,8 @@ import { folderTitle } from '../lib/explorerCreate'
 import { sshHostKey } from '@shared/ssh'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { useSettings } from './settings'
+import { useModelGateway } from './modelGateway'
+import { claudeAutocompactFor, modelContextWindow } from '@shared/agents/model-gateway'
 
 // Re-exported so Canvas (and anything else in the renderer) keeps importing it from here, while the
 // single implementation lives in src/shared and is shared with the relay host + the canvas-sync
@@ -97,6 +104,8 @@ export interface NodeData {
    * deliberately absent from flowToNodeStates, like initialCommand/expandedHeight.
    */
   respawnNonce?: number
+  /** Generation of a provider-change recycle awaiting acknowledgement from the next lifecycle. */
+  agentRespawnGeneration?: number
   shell?: string
   cwd?: string
   text?: string
@@ -140,6 +149,10 @@ export interface NodeData {
   agentId?: AgentId
   /** Model selected for this node through the shared model gateway. */
   agentModel?: string
+  /** Exact model id emitted by the launch assembler; may include an internal `[1m]` marker. */
+  agentLaunchModel?: string
+  /** Context window baked into this session's launch environment, when discovery knew it. */
+  agentLaunchContextWindow?: number
   /**
    * Claude nodes only: the managed Claude account (config-dir isolated) this node runs under.
    * Persisted so cold-restore resume reads the transcript from the right account dir.
@@ -688,6 +701,7 @@ export function createAgentNode(
   const customAgent = agentConfig(agentId)
     ? undefined
     : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+  const gatewayModels = useModelGateway.getState().models
   const { command: initialCommand, missingEnv } = assembleLaunchCommand(
     {
       agentId,
@@ -709,12 +723,20 @@ export function createAgentNode(
       // A model picked at creation (e.g. Transfer-to-agent-with-model). `withAgentModel` appends
       // `--model <value>` for a switch-capable agent and no-ops otherwise, so the line stays
       // byte-identical when no model is chosen.
-      model
+      model,
+      models: gatewayModels
     },
     // The boot-time snapshot of the desktop env (empty on browser/relay by design, where the
     // missing-env warning below is the honest outcome — the same markers the preview shows).
     agentEnvSnapshot()
   )
+  const launchedModel =
+    model && canSwitchModel(agentId)
+      ? claudeAutocompactFor(agentId, model, gatewayModels).modelId
+      : undefined
+  const launchedContextWindow = launchedModel
+    ? modelContextWindow(launchedModel, gatewayModels)
+    : undefined
   if (missingEnv.length) {
     // A missing var in the typed command (launchCmd/args) would launch with a blank — surface it,
     // matching the preview. Env-var VALUES (the env map) are merged main-side and warned there.
@@ -743,6 +765,8 @@ export function createAgentNode(
       // A model chosen at creation (Transfer-to-agent-with-model). Persisted so cold-restore and
       // later restarts keep it; `withAgentModel` re-applies it on relaunch. Only stamped when set.
       ...(model ? { agentModel: model } : {}),
+      ...(launchedModel ? { agentLaunchModel: launchedModel } : {}),
+      ...(launchedContextWindow ? { agentLaunchContextWindow: launchedContextWindow } : {}),
       cwd: ssh ? ssh.remoteCwd : cwd,
       initialCommand,
       ...(ssh ? { ssh: ssh.server, sshRemoteTmux: true } : {})
@@ -1934,6 +1958,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         highScore: n.highScore,
         agentId,
         agentModel: n.agentModel,
+        agentLaunchModel: n.agentLaunchModel,
+        agentLaunchContextWindow: n.agentLaunchContextWindow,
         accountId: n.accountId,
         agentSessionId: n.agentSessionId,
         pendingLaunch: n.pendingLaunch,
@@ -2014,6 +2040,8 @@ export function flowToNodeStates(nodes: CanvasNode[]): CanvasNodeState[] {
         highScore: n.data.highScore,
         agentId: n.data.agentId,
         agentModel: n.data.agentModel,
+        agentLaunchModel: n.data.agentLaunchModel,
+        agentLaunchContextWindow: n.data.agentLaunchContextWindow,
         accountId: n.data.accountId,
         agentSessionId: n.data.agentSessionId,
         pendingLaunch: n.data.pendingLaunch,

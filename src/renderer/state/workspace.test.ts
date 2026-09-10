@@ -23,7 +23,9 @@ import {
   ungroupNodes
 } from './workspace'
 import type { CanvasNode } from './workspace'
-import type { Project } from '@shared/types'
+import { DEFAULT_SETTINGS, type Project } from '@shared/types'
+import { useModelGateway } from './modelGateway'
+import { useSettings } from './settings'
 
 const term = (id: string, pos: { x: number; y: number }, parentId?: string): CanvasNode =>
   ({
@@ -760,6 +762,29 @@ describe('model on agent node factory', () => {
     expect(node.data.initialCommand).toContain('--model')
     expect(node.data.initialCommand).toContain('claude-sonnet-5')
   })
+  it('stores the catalogue selection separately from the exact launch model and window', () => {
+    useModelGateway.setState({
+      models: [{ id: 'claude-sonnet-5', contextWindow: 400_000 }],
+      status: 'ready'
+    })
+    const node = createAgentNode(
+      'claude',
+      0,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'claude-sonnet-5'
+    )
+    expect(node.data.agentModel).toBe('claude-sonnet-5')
+    expect(node.data.agentLaunchModel).toBe('claude-sonnet-5[1m]')
+    expect(node.data.agentLaunchContextWindow).toBe(400_000)
+    expect(node.data.initialCommand).toContain('claude-sonnet-5[1m]')
+    useModelGateway.setState({ models: [], status: 'idle' })
+  })
   it('omits agentModel and the --model flag when no model is given', () => {
     const node = createAgentNode('claude', 0)
     expect(node.data.agentModel).toBeUndefined()
@@ -771,6 +796,44 @@ describe('model on agent node factory', () => {
     const node = createAgentNode('gemini', 0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'gemini-2.5')
     expect(node.data.agentModel).toBe('gemini-2.5')
     expect(node.data.initialCommand).not.toContain('--model')
+  })
+
+  it('does not assemble a new launch from a catalogue invalidated by a settings change', () => {
+    const previousSettings = useSettings.getState()
+    const previousGateway = useModelGateway.getState()
+    try {
+      useSettings.setState({
+        settings: {
+          ...DEFAULT_SETTINGS,
+          modelGateway: { baseUrl: 'https://gateway.test', apiKey: 'old' }
+        },
+        hydrated: true
+      })
+      useModelGateway.setState({
+        models: [{ id: 'claude-large', contextWindow: 400_000 }],
+        status: 'ready',
+        error: ''
+      })
+      expect(
+        createAgentNode('claude', 0, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, 'claude-large').data.initialCommand
+      ).toContain('claude-large[1m]')
+
+      useSettings.getState().update({
+        modelGateway: {
+          baseUrl: 'https://gateway.test',
+          apiKey: 'old',
+          discoveryPath: '/openai/v1/models'
+        }
+      })
+      expect(
+        createAgentNode('claude', 0, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, 'claude-large').data.initialCommand
+      ).toContain("'claude-large'")
+    } finally {
+      useSettings.setState(previousSettings)
+      useModelGateway.setState(previousGateway)
+    }
   })
 })
 
@@ -788,15 +851,21 @@ describe('accountId serialization', () => {
         group: null,
         agentId: 'claude',
         agentModel: 'openai/gpt-5',
+        agentLaunchModel: 'openai/gpt-5[1m]',
+        agentLaunchContextWindow: 500_000,
         accountId: 'a1'
       }
     } as unknown as CanvasNode
     const states = flowToNodeStates([node])
     expect(states[0].accountId).toBe('a1')
     expect(states[0].agentModel).toBe('openai/gpt-5')
+    expect(states[0].agentLaunchModel).toBe('openai/gpt-5[1m]')
+    expect(states[0].agentLaunchContextWindow).toBe(500_000)
     const back = nodeStatesToFlow(states)
     expect(back[0].data.accountId).toBe('a1')
     expect(back[0].data.agentModel).toBe('openai/gpt-5')
+    expect(back[0].data.agentLaunchModel).toBe('openai/gpt-5[1m]')
+    expect(back[0].data.agentLaunchContextWindow).toBe(500_000)
   })
   it('leaves accountId undefined when unset', () => {
     const node = {

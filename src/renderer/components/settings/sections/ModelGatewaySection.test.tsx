@@ -22,7 +22,7 @@ describe('ModelGatewaySection credential modes', () => {
     ;(window as unknown as { nodeTerminal: any }).nodeTerminal = {
       settings: { save: vi.fn() },
       agent: {
-        discoverModels: vi.fn(),
+        discoverModels: vi.fn(async () => ({ models: [] })),
         gatewayCredentialStatus: vi.fn(async () => ({
           hasStoredKey: false,
           storage: 'encrypted' as const
@@ -77,6 +77,28 @@ describe('ModelGatewaySection credential modes', () => {
     expect(useSettings.getState().settings.modelGateway.apiKey).toBe('${env:GATEWAY_KEY}')
   })
 
+  it('persists the selected discovery path and previews its resolved endpoint', async () => {
+    await mount()
+    expect(host.textContent).toContain(
+      'Discovery: https://gateway.example.test/v1/models'
+    )
+
+    const openAiPath = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
+      (input) => input.parentElement?.textContent?.includes('/openai/v1/models')
+    )!
+    await act(async () => {
+      openAiPath.click()
+    })
+
+    expect(useSettings.getState().settings.modelGateway.discoveryPath).toBe(
+      '/openai/v1/models'
+    )
+    expect(openAiPath.checked).toBe(true)
+    expect(host.textContent).toContain(
+      'Discovery: https://gateway.example.test/openai/v1/models'
+    )
+  })
+
   it('keeps a literal key write-only and stores only the secret sentinel in settings', async () => {
     await mount()
     const source = host.querySelector<HTMLSelectElement>('#model-gateway-credential-source')!
@@ -110,5 +132,45 @@ describe('ModelGatewaySection credential modes', () => {
     )
     expect(input.value).toBe('')
     expect(host.textContent).not.toContain('literal-secret')
+  })
+
+  it('invalidates a stored-key catalogue before discovering with its replacement', async () => {
+    useSettings.setState({
+      settings: {
+        ...useSettings.getState().settings,
+        modelGateway: {
+          ...useSettings.getState().settings.modelGateway,
+          apiKey: MODEL_GATEWAY_SECRET_REF
+        }
+      }
+    })
+    ;(window as unknown as { nodeTerminal: any }).nodeTerminal.agent.gatewayCredentialStatus =
+      vi.fn(async () => ({ hasStoredKey: true, storage: 'encrypted' as const }))
+    useModelGateway.setState({
+      models: [{ id: 'old/model' }],
+      status: 'ready',
+      error: ''
+    })
+    await mount()
+
+    const input = host.querySelector<HTMLInputElement>('#model-gateway-key')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        'replacement-secret'
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const save = [...host.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Save key'
+    )!
+    await act(async () => {
+      save.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useModelGateway.getState().models).toEqual([])
+    expect(window.nodeTerminal.agent.discoverModels).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: MODEL_GATEWAY_SECRET_REF })
+    )
   })
 })

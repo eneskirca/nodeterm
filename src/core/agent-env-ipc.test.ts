@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IPC } from '../shared/ipc'
 import {
+  type GatewayModel,
   MODEL_GATEWAY_SECRET_REF,
   type ModelGatewaySettings
 } from '../shared/agents/model-gateway'
 import { registerAgentEnvIpc } from './agent-env-ipc'
 import { ModelGatewayCredentialService } from './model-gateway-credentials'
+import type { ModelGatewayDiscoveryScope } from './model-gateway-scope'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 import { initPlatform, resetPlatformForTests } from './platform'
 
@@ -16,6 +18,11 @@ describe('model gateway discovery API-key expansion', () => {
   let credentials: ModelGatewayCredentialService
   let storedKey: string | null
   let savedGateway: ModelGatewaySettings | undefined
+  let onDiscovered: ReturnType<
+    typeof vi.fn<
+      (scope: ModelGatewayDiscoveryScope, models: GatewayModel[]) => void
+    >
+  >
 
   beforeEach(async () => {
     inheritedKey = process.env.NODETERM_TEST_GATEWAY_KEY
@@ -41,7 +48,10 @@ describe('model gateway discovery API-key expansion', () => {
     })
     await credentials.init()
     savedGateway = undefined
-    registerAgentEnvIpc(() => savedGateway, credentials)
+    onDiscovered = vi.fn<
+      (scope: ModelGatewayDiscoveryScope, models: GatewayModel[]) => void
+    >()
+    registerAgentEnvIpc(() => savedGateway, credentials, onDiscovered)
   })
 
   afterEach(() => {
@@ -192,5 +202,90 @@ describe('model gateway discovery API-key expansion', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer vk-typed-into-the-form' })
       })
     )
+    expect(onDiscovered).not.toHaveBeenCalled()
+  })
+
+  it('publishes a successful catalogue only for the still-current saved configuration', async () => {
+    savedGateway = { baseUrl: 'https://gateway.example.test', apiKey: 'key' }
+
+    await fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    expect(onDiscovered).toHaveBeenCalledTimes(1)
+    expect(onDiscovered.mock.calls[0][1]).toEqual([
+      { id: 'openai/gpt-5.5', provider: 'openai' }
+    ])
+  })
+
+  it('drops a response when the effective discovery path changes while it is in flight', async () => {
+    let resolve!: (response: Response) => void
+    fetchMock.mockReturnValue(new Promise((done) => { resolve = done }))
+    savedGateway = { baseUrl: 'https://gateway.example.test', apiKey: 'key' }
+    const pending = fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    savedGateway = { ...savedGateway, discoveryPath: '/openai/v1/models' }
+    resolve(new Response(JSON.stringify({ data: [{ id: 'old' }] }), { status: 200 }))
+    await pending
+
+    expect(onDiscovered).not.toHaveBeenCalled()
+  })
+
+  it('drops a response when an environment credential rotates while it is in flight', async () => {
+    let resolve!: (response: Response) => void
+    fetchMock.mockReturnValue(new Promise((done) => { resolve = done }))
+    process.env.NODETERM_TEST_GATEWAY_KEY = 'old'
+    savedGateway = {
+      baseUrl: 'https://gateway.example.test',
+      apiKey: '${env:NODETERM_TEST_GATEWAY_KEY}'
+    }
+    const pending = fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    process.env.NODETERM_TEST_GATEWAY_KEY = 'new'
+    resolve(new Response(JSON.stringify({ data: [{ id: 'old' }] }), { status: 200 }))
+    await pending
+
+    expect(onDiscovered).not.toHaveBeenCalled()
+  })
+
+  it('drops a response when the stored credential rotates behind the sentinel', async () => {
+    await fake.handlers[IPC.agentGatewayCredentialSave]('old')
+    let resolve!: (response: Response) => void
+    fetchMock.mockReturnValue(new Promise((done) => { resolve = done }))
+    savedGateway = {
+      baseUrl: 'https://gateway.example.test',
+      apiKey: MODEL_GATEWAY_SECRET_REF
+    }
+    const pending = fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    await fake.handlers[IPC.agentGatewayCredentialSave]('new')
+    resolve(new Response(JSON.stringify({ data: [{ id: 'old' }] }), { status: 200 }))
+    await pending
+
+    expect(onDiscovered).not.toHaveBeenCalled()
+  })
+
+  it('lets only the newest same-scope request publish when responses arrive out of order', async () => {
+    const resolves: Array<(response: Response) => void> = []
+    fetchMock.mockImplementation(() => new Promise<Response>((done) => resolves.push(done)))
+    savedGateway = { baseUrl: 'https://gateway.example.test', apiKey: 'key' }
+    const older = fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+    const newer = fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    resolves[1](new Response(JSON.stringify({ data: [{ id: 'new' }] }), { status: 200 }))
+    await newer
+    resolves[0](new Response(JSON.stringify({ data: [{ id: 'old' }] }), { status: 200 }))
+    await older
+
+    expect(onDiscovered).toHaveBeenCalledTimes(1)
+    expect(onDiscovered.mock.calls[0][1]).toEqual([{ id: 'new' }])
+  })
+
+  it('publishes an empty successful catalogue to clear the matching snapshot', async () => {
+    savedGateway = { baseUrl: 'https://gateway.example.test', apiKey: 'key' }
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }))
+
+    await fake.handlers[IPC.agentDiscoverModels]({ ...savedGateway })
+
+    expect(onDiscovered).toHaveBeenCalledTimes(1)
+    expect(onDiscovered.mock.calls[0][1]).toEqual([])
   })
 })

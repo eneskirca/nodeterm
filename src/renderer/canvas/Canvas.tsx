@@ -318,6 +318,7 @@ import {
   agentRestartFn,
   guardConcurrentRestart,
   planBulkRestart,
+  clearEnvEligibility,
   restartEligibility,
   restartSessionId,
   settleRestart,
@@ -412,8 +413,10 @@ import {
   canRename,
   canContextLink,
   canSwitchModel,
+  capabilityAgentId,
   createdAgentId,
   resumeCommand,
+  vanillaEnvStripPattern,
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   type AgentId,
@@ -1346,6 +1349,7 @@ export function Canvas() {
   }, [
     settings.modelGateway.baseUrl,
     settings.modelGateway.apiKey,
+    settings.modelGateway.discoveryPath,
     discoverModels,
     clearModels
   ])
@@ -2214,6 +2218,7 @@ export function Canvas() {
               title: n.data.title ?? n.id,
               color: n.data.color ?? '#888',
               agentId: n.data.agentId,
+              agentLaunchContextWindow: n.data.agentLaunchContextWindow,
               // The node's creation-time account, for the sidebar row's account chip (the
               // serialized nodes of inactive projects carry it already).
               accountId: n.data.accountId,
@@ -4674,6 +4679,17 @@ export function Canvas() {
         `[nodeterm] node-create agent=${agentId} project=${targetProjectId} group=${groupId ?? '-'} cwd=${cwd ?? '-'}`
       )
       setNodes((ns) => {
+        // The default gateway model applies ONLY when the launch mode asks for it
+        // (`agentLaunchMode === 'gateway-model'`). 'gateway' launches with the CLI's own default
+        // model, and 'subscription' strips the gateway entirely so its model is moot. Gated on
+        // `canSwitchModel` (base-resolved) so a non-capable agent is left model-less.
+        const settings = useSettings.getState().settings
+        const model =
+          settings.agentLaunchMode === 'gateway-model' &&
+          settings.modelGatewayDefaultModel &&
+          canSwitchModel(agentId)
+            ? settings.modelGatewayDefaultModel
+            : undefined
         const node = createAgentNode(
           agentId,
           ns.length,
@@ -4685,7 +4701,8 @@ export function Canvas() {
           activePermissionMode(agentId),
           // Same funnel as the account above: the active project owns the node, so its own
           // `.nodeterm/settings.json` launch command layers over the global one.
-          targetProjectId
+          targetProjectId,
+          model
         )
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
@@ -6108,20 +6125,23 @@ export function Canvas() {
     nodeId: string,
     targetAgentId?: AgentId,
     targetModel?: string,
-    restartShell?: boolean
+    restartShell?: boolean,
+    clearEnv?: boolean
   ) => {
     const fn = agentRestartFn(nodeId)
     if (!fn) return // node unmounted between opening the menu and clicking
-    const action = restartShell
-      ? 'Restart'
-      : targetModel
-        ? 'Model switch'
-        : targetAgentId
-          ? 'Reopen'
-          : 'Restart'
+    const action = clearEnv
+      ? 'Restart on subscription'
+      : restartShell
+        ? 'Restart'
+        : targetModel
+          ? 'Model switch'
+          : targetAgentId
+            ? 'Reopen'
+            : 'Restart'
     let outcome: RestartOutcome
     try {
-      outcome = await fn(targetAgentId, targetModel, restartShell)
+      outcome = await fn(targetAgentId, targetModel, restartShell, clearEnv)
     } catch {
       // The transport under the restart threw (a relay socket still CONNECTING rejects the very
       // first write). Unhandled, this rejection made the action a silent no-op — the user clicked
@@ -6165,11 +6185,13 @@ export function Canvas() {
       outcome === 'restarted'
         ? {
             kind: 'info',
-            text: targetModel
-              ? `Switched to ${targetModel} — conversation resumed.`
-              : targetLabel
-                ? `Session reopened as ${targetLabel} — conversation resumed.`
-                : 'Agent restarted — conversation resumed.'
+            text: clearEnv
+              ? 'Restarted on subscription — conversation resumed.'
+              : targetModel
+                ? `Switched to ${targetModel} — conversation resumed.`
+                : targetLabel
+                  ? `Session reopened as ${targetLabel} — conversation resumed.`
+                  : 'Agent restarted — conversation resumed.'
           }
         : outcome === 'exit-timeout'
           ? {
@@ -7903,6 +7925,44 @@ export function Canvas() {
                     : 'Quits the CLI, respawns a fresh shell (picks up env/profile changes), then resumes.'),
                 onClick: () => void restartAgentNode(ids[0], undefined, undefined, true)
               },
+              // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+              // provider env so the agent falls back to its OWN default provider (Claude's
+              // subscription, Copilot's GitHub routing). No model/agent change; the cold-restore
+              // auto-resume keeps the same conversation. Shown only for an agent with a strip set
+              // (claude/codex/copilot builtins). Gated on `clearEnvEligibility`, NOT the shared `why`:
+              // clearEnv uses `terminateForeground` (SIGTERM by PID, no `/exit` into a dialog), so it
+              // is safe to interrupt a `working`/`blocked` session — which is its primary scenario
+              // (gateway overload shows up mid-turn, and "wait for the turn" is impossible when the
+              // gateway is down). Refused over relay for the same reason "Restart agent and shell" is
+              // — the stripped env belongs to this machine's settings store, not the host's core.
+              // Hideable (unlike the recovery restart rows above), because it is a convenience, not a
+              // recovery lever.
+              ...(vanillaEnvStripPattern(sourceAgentId ?? ('claude' as AgentId)) &&
+              !isHidden('vanilla-restart', hidden)
+                ? [
+                    {
+                      label:
+                        capabilityAgentId(sourceAgentId ?? ('claude' as AgentId)) === 'copilot'
+                          ? 'Restart on Copilot defaults'
+                          : 'Restart on subscription',
+                      icon: <IconPower />,
+                      disabled:
+                        !clearEnvEligibility(sourceAgentId, sessionId).ok ||
+                        session.source === 'relay' ||
+                        !agentRestartFn(ids[0]),
+                      hint:
+                        !clearEnvEligibility(sourceAgentId, sessionId).ok
+                          ? 'Nothing to resume yet — this session has not reported an id.'
+                          : session.source === 'relay'
+                            ? 'Restart the shell on the machine hosting this relay session.'
+                            : !agentRestartFn(ids[0])
+                              ? 'This terminal is not attached right now.'
+                              : 'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
+                      onClick: () =>
+                        void restartAgentNode(ids[0], undefined, undefined, undefined, true)
+                    }
+                  ]
+                : []),
               ...(variants.length
                 ? ([
                     {

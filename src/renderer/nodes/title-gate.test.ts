@@ -173,7 +173,8 @@ describe('claude-transcript gates', () => {
     // narrowing THAT to claude would take codex's and gemini's meters away.
     const found = sites('<ContextMeter')
     expect(found.length).toBe(1)
-    const [lineNo, text] = found[0]
-    expect(text, `${lineNo}: ${text.trim()}`).toContain('showUsage &&')
+    const [lineNo] = found[0]
+    const guard = lines.slice(Math.max(0, lineNo - 3), lineNo).join('\n')
+    expect(guard, `${lineNo}: ContextMeter guard`).toMatch(/\{showUsage &&\s*(?:\(\s*)?<ContextMeter\b/)
   })
 })

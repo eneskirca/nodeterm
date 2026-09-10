@@ -18,6 +18,26 @@ import type {
   ModelGatewayCredentialStatus,
   ModelGatewaySettings
 } from './agents/model-gateway'
+import type { AgentPaneVerdict } from './agents/pane-owner-predicate'
+
+/**
+ * The default provider behavior for a FRESH agent spawn — the three-way successor to the old
+ * `vanillaLaunchDefault` boolean. Read by `pty-manager`'s spawn-site strip gate and by the
+ * renderer's new-node creation (`addAgentNode`):
+ *  - `'gateway'`        — inject the model gateway env; the agent uses the CLI's OWN default model
+ *                         (no `--model`). Today's behavior for a gateway node with no per-node model.
+ *  - `'gateway-model'`  — inject the gateway env AND launch with the configured default gateway
+ *                         model (`settings.modelGatewayDefaultModel`), so a new canvas session
+ *                         opens on a chosen model without a per-node "Switch model" click.
+ *  - `'subscription'`   — strip the gateway + inherited provider env so the agent runs against its
+ *                         OWN default provider (Claude's subscription, Copilot's GitHub routing).
+ *                         The former `vanillaLaunchDefault: true`. Wins even when a default model is
+ *                         set (vanilla = no gateway at all, so the gateway model is moot).
+ *
+ * `vanillaLaunchDefault` is kept for one release as a migration MIRROR (an older build still honors
+ * the choice); `agentLaunchMode === 'subscription'` ⇒ `vanillaLaunchDefault = true`, else `false`.
+ */
+export type AgentLaunchMode = 'gateway' | 'gateway-model' | 'subscription'
 
 /** Profile-switch replacement intent. The trusted core validates and re-resolves it before teardown. */
 export interface PtyRecycleTarget {
@@ -106,6 +126,14 @@ export interface PtyCreateOptions {
   agentId?: AgentId
   /** Per-node model override. Applied through the node's base harness on launch/cold restore. */
   agentModel?: string
+  /**
+   * One-shot: spawn (or re-spawn after a recycle) with gateway + inherited provider env stripped
+   * so the agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub
+   * routing) instead of the configured gateway/inherited override. The strip set is per-agent
+   * (`vanillaEnvStripPattern`); `CLAUDE_CONFIG_DIR` is deliberately kept (account isolation
+   * survives). Cleared after the spawn resolves so a later ordinary Restart re-applies the gateway.
+   */
+  clearEnv?: boolean
   /** Managed Claude account: inject CLAUDE_CONFIG_DIR for this account into the session env. */
   accountId?: string
   /**
@@ -357,6 +385,17 @@ export interface CanvasNodeState {
   agentId?: AgentId
   /** Model selected for this agent node through the shared model gateway. */
   agentModel?: string
+  /** Exact model id emitted by the launch assembler; may include an internal `[1m]` marker. */
+  agentLaunchModel?: string
+  /** Context window baked into this session's launch environment, when discovery knew it. */
+  agentLaunchContextWindow?: number
+  /**
+   * One-shot "Restart on subscription" flag: when set, the next `transport.create` strips gateway +
+   * inherited provider env (per `vanillaEnvStripPattern`) so the agent resumes against its own
+   * default provider. Set by the clear-env recycle action, cleared after the spawn resolves so an
+   * ordinary Restart re-applies the gateway. See `PtyCreateOptions.clearEnv`.
+   */
+  clearEnv?: boolean
   /** Set while this node is armed but not yet launched — see PendingLaunch. */
   pendingLaunch?: PendingLaunch
   /**
@@ -852,6 +891,17 @@ export type PtyLimitFixResult =
    *  renderer: nothing failed, so neither may raise an error toast. */
   | { ok: false; error: string; canceled?: boolean; busy?: boolean }
 
+/** Result of the exact-PID foreground stop used by agent restarts. */
+export type TerminateForegroundOutcome = 'terminated' | 'already-exited' | 'refused'
+
+/** A fresh kernel-backed process identity sample for a node's expected agent. */
+export interface AgentProcessProof {
+  verdict: AgentPaneVerdict
+  /** The tmux pane's root/login-shell PID, distinct from the agent process. */
+  shellPid?: number
+  agentPid?: number
+}
+
 export interface PtyApi {
   /** Starts a new PTY session; returns its sessionId and whether the session was freshly
    *  created (cold start) vs reattached to a still-running tmux session (warm). */
@@ -885,7 +935,7 @@ export interface PtyApi {
   /** Ends a node's persistent session so the SAME node id respawns in a new cwd ("move into
    *  worktree"). Same tmux kill as `destroy`, opposite intent: the node stays on the canvas, so
    *  co-viewers get `onRecycled` (restart + re-attach), never the permanent closed state. */
-  recycle(persistKey: string): void
+  recycle(persistKey: string): Promise<void>
   /** Suggest a terminal title from its recent output via the configured AI agent. */
   generateName(persistKey: string, cwd: string): Promise<GitResult>
   /** Suggest a group title from its member terminals' recent output via the configured AI agent. */
@@ -905,11 +955,13 @@ export interface PtyApi {
    *  node persistKey. null when it is unknown — no session, no tmux, or the query failed — which
    *  callers must read as "not observed", never as evidence of a particular command. */
   paneCommand(persistKey: string): Promise<string | null>
-  /** Terminate the foreground process group in a node's pane. Returns false when the pane/process
-   *  cannot be safely identified; it never kills the pane's login shell. When `expectedAgentId` is
-   *  given, the kill happens only if that harness actually owns the foreground group (argv-verified)
-   *  — so a stale menu can never SIGTERM vim or a build the user started in the pane. */
-  terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean>
+  /** Terminate the exact argv-verified agent process group without killing the pane shell. */
+  terminateForeground(
+    persistKey: string,
+    expectedAgentId?: string
+  ): Promise<TerminateForegroundOutcome>
+  /** Read-only proof that the expected agent owns the foreground process group. */
+  agentProcess(persistKey: string, expectedAgentId: string): Promise<AgentProcessProof>
   /** The agent session's display name (`/rename` name, else auto name) read from the agent's own
    *  session store, resolved strictly by sessionId; null if unknown. Keeps a node title in sync with
    *  the `/resume` name (e.g. after resume) without cross-contaminating same-folder sessions.
@@ -1509,6 +1561,10 @@ export interface Settings {
   customAgents: CustomAgent[]
   /** One gateway root + non-secret credential reference used by model-switch-capable harnesses. */
   modelGateway: ModelGatewaySettings
+  /** The default gateway model id (from discovery) applied to a fresh canvas agent spawn when
+   *  `agentLaunchMode === 'gateway-model'`. A separate field from `modelGateway` (it is NOT a
+   *  credential). Absent/empty = no default ⇒ `'gateway-model'` behaves like `'gateway'`. */
+  modelGatewayDefaultModel?: string
   /** Per-builtin-agent launch command overrides (Settings → Agents → Launch commands). The value
    *  replaces the bare CLI name everywhere a launch line is built — new sessions, cold-restore
    *  relaunches and in-place restarts, with the usual flags (`--resume`, `--permission-mode`, the
@@ -1552,6 +1608,18 @@ export interface Settings {
    *  driver runs in `default`). Overridable per project via Project.defaultPermissionMode.
    *  `auto` is version-gated: CLIs below 2.1.71 reject the value, so it degrades to no flag. */
   claudePermissionMode: AgentPermissionMode
+  /**
+   *  When on, EVERY fresh agent launch spawns with gateway + inherited provider env stripped, so the
+   *  agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub routing)
+   *  instead of a configured gateway/inherited override. The per-node one-shot `data.clearEnv`
+   *  (cleared after its single recycle) is the per-node action; this is its global counterpart.
+   *  Default OFF — opt-in, because it changes which provider every agent node uses. Does NOT strip
+   *  `CLAUDE_CONFIG_DIR` (account isolation survives). See `vanillaEnvStripPattern`.
+   */
+  vanillaLaunchDefault: boolean
+  /** The default provider behavior for a fresh agent spawn (the three-way successor to
+   *  `vanillaLaunchDefault`). See `AgentLaunchMode`. Default `'gateway'` = today's behavior. */
+  agentLaunchMode: AgentLaunchMode
   /** "Eco": exit the agent CLI of a session that has been idle AND offscreen for
    *  `agentHibernationIdleMinutes`, reclaiming its RAM; the conversation is resumed automatically
    *  when the node is viewed again. Default OFF — opt-in, because it stops a real process.
@@ -1719,6 +1787,9 @@ export const DEFAULT_SETTINGS: Settings = {
   soundVolume: 0.5,
   customAgents: [],
   modelGateway: { baseUrl: '', apiKey: '' },
+  // No default gateway model until the user picks one in Settings → Model gateway. Absent ⇒
+  // `'gateway-model'` behaves like `'gateway'` (no --model on a fresh spawn).
+  modelGatewayDefaultModel: undefined,
   agentLaunchCommands: {},
   claudeAccounts: [],
   codexAccounts: [],
@@ -1738,6 +1809,12 @@ export const DEFAULT_SETTINGS: Settings = {
   // Sessions start in auto mode out of the box. Existing users pick this up on hydrate
   // (settings hydrate merges over DEFAULT_SETTINGS) — a deliberate behavior change.
   claudePermissionMode: 'auto',
+  // Opt-in: strips the gateway/inherited provider env on every fresh launch so agents run against
+  // their own default provider. Off by default — changes which provider every agent node uses.
+  vanillaLaunchDefault: false,
+  // The three-way successor to the boolean above. `'gateway'` = inject gateway env, CLI default
+  // model (today's behavior). `vanillaLaunchDefault` is now its migration mirror.
+  agentLaunchMode: 'gateway',
   // Opt-in: hibernation exits a live CLI, so nobody gets it without asking. The 30-minute floor
   // is deliberately long — shorter windows exit sessions the user is between turns on.
   agentHibernationEnabled: false,

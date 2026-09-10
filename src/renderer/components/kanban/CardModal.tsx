@@ -326,7 +326,11 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           {isTerminal && (
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}
-              <ContextMeter sessionId={agentSessionId ?? null} />
+              <ContextMeter
+                sessionId={agentSessionId ?? null}
+                nodeModel={session.agentModel}
+                nodeContextWindow={session.agentLaunchContextWindow}
+              />
               <button
                 className="kanban-modal__action"
                 title="Search this terminal"

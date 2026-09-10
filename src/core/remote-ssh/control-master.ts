@@ -506,24 +506,38 @@ export function remotePaneProcessArgs(
 }
 
 /**
- * SIGTERM the remote pane's foreground process group, after core has already confirmed tmux is
- * reporting an agent rather than a shell. The shell re-reads tpgid here to close the process-race
- * window and refuses its own group (`panePid`) before invoking kill.
+ * SIGTERM the remote pane's foreground process group, after core has identified the exact expected
+ * agent PID from full argv. The remote shell re-reads both the pane's tpgid and that exact PID's
+ * tpgid in one command, requires them to match, and refuses the pane shell's own group before kill.
  */
 export function remoteTerminateForegroundArgs(
   conn: SshConnection,
   controlPath: string,
-  panePid: number
+  panePid: number,
+  expectedAgentPid?: number
 ): string[] {
   if (!Number.isSafeInteger(panePid) || panePid <= 0) {
     throw new Error('invalid-pane-pid')
   }
+  if (
+    expectedAgentPid !== undefined &&
+    (!Number.isSafeInteger(expectedAgentPid) || expectedAgentPid <= 0)
+  ) {
+    throw new Error('invalid-agent-pid')
+  }
+  const expectedAgentCheck = expectedAgentPid
+    ? `agent_tpgid=$(ps -o tpgid= -p ${expectedAgentPid} | tr -d '[:space:]') && ` +
+      `case "$agent_tpgid" in ''|*[!0-9]*) exit 1;; esac && ` +
+      `[ "$agent_tpgid" = "$tpgid" ] && `
+    : ''
   return childArgs(
     conn,
     controlPath,
     `tpgid=$(ps -o tpgid= -p ${panePid} | tr -d '[:space:]') && ` +
       `case "$tpgid" in ''|*[!0-9]*) exit 1;; esac && ` +
-      `[ "$tpgid" -gt 0 ] && [ "$tpgid" -ne ${panePid} ] && kill -TERM -- "-$tpgid"`
+      `[ "$tpgid" -gt 0 ] && [ "$tpgid" -ne ${panePid} ] && ` +
+      expectedAgentCheck +
+      `kill -TERM -- "-$tpgid"`
   )
 }
 /**
