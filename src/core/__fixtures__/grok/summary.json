@@ -1,12 +1,23 @@
 {
-  "info": {},
-  "session_summary": "Wired grok's status hooks into nodeterm and checked the badge on the canvas.",
-  "generated_title": "Add grok status hooks to nodeterm",
-  "created_at": "2026-08-09T09:14:02.481Z",
-  "updated_at": "2026-08-09T09:41:37.902Z",
-  "num_messages": 12,
-  "num_chat_messages": 8,
-  "current_model_id": "grok-4",
-  "parent_session_id": null,
-  "agent_name": "grok"
+  "info": {
+    "id": "0198f123-4567-7abc-8def-0123456789ab",
+    "cwd": "/home/user/project"
+  },
+  "session_summary": "Release checklist review",
+  "created_at": "2026-08-31T16:35:07.755061Z",
+  "updated_at": "2026-09-01T08:33:55.301476Z",
+  "num_messages": 1763,
+  "num_chat_messages": 625,
+  "current_model_id": "grok-4.6",
+  "next_trace_turn": 23,
+  "chat_format_version": 1,
+  "request_id": "123e4567-e89b-42d3-a456-426614174000",
+  "grok_home": "/home/user/.grok",
+  "last_active_at": "2026-09-01T08:33:42.045064Z",
+  "generated_title": "Plan the release",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh",
+  "last_turn_summary": "Prepared the implementation plan",
+  "last_turn_summary_prompt_id": "123e4567-e89b-42d3-a456-426614174001"
 }
