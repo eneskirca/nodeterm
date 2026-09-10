@@ -690,13 +690,24 @@ export class RemoteHooks {
     try {
       const shim = `${remoteHome}/.nodeterm/context.sh`
       await this.writeRemoteShim(conn, controlPath, shim, CONTEXT_SHIM_SCRIPT)
-      await this.writeRemoteSkill(
+      const skillBody = buildContextLinkSkillBody(shim)
+      const optionalConfigDirs = [
+        // Shared Agent Skills is visible to every tool that scans ~/.agents/skills. Use it when
+        // the user or a tool already created the root, but do not claim that namespace ourselves.
+        `${remoteHome}/.agents`,
+        `${remoteHome}/.gemini/antigravity-cli`
+      ]
+      const presentConfigDirs = await this.existingRemoteDirectories(
         conn,
         controlPath,
-        `${remoteHome}/.claude`,
-        'get-linked-context',
-        buildContextLinkSkillBody(shim)
+        optionalConfigDirs
       )
+      for (const configDir of [
+        `${remoteHome}/.claude`,
+        ...optionalConfigDirs.filter((dir) => presentConfigDirs.has(dir))
+      ]) {
+        await this.writeRemoteSkill(conn, controlPath, configDir, 'get-linked-context', skillBody)
+      }
       const block = buildLinkedContextInstructions(shim)
       // codex/gemini are plain quoted literals; opencode must stay shell-expandable and so
       // carries a prelude that binds the untrusted $HOME to a variable (see the helper).
@@ -760,6 +771,36 @@ export class RemoteHooks {
       childArgs(conn, controlPath, `mkdir -p ${posixQuote(dirnameOf(skill))} && cat > ${posixQuote(skill)}`),
       body
     )
+  }
+
+  /** Probe optional third-party config roots in one SSH round trip. A failed or malformed probe
+   *  returns none, so context-link setup keeps its own shim/Claude skill and creates no foreign
+   *  namespace by guess. */
+  private async existingRemoteDirectories(
+    conn: SshConnection,
+    controlPath: string,
+    directories: readonly string[]
+  ): Promise<Set<string>> {
+    if (!directories.length) return new Set()
+    try {
+      const command = directories
+        .map(
+          (directory, index) =>
+            `if [ -d ${posixQuote(directory)} ]; then printf '%s\\n' ${index}; fi`
+        )
+        .join('; ')
+      const { code, stdout } = await this.r.run(childArgs(conn, controlPath, command))
+      if (code !== 0) return new Set()
+      const indexes = new Set(
+        stdout
+          .split(/\r?\n/)
+          .filter((value) => /^\d+$/.test(value))
+          .map(Number)
+      )
+      return new Set(directories.filter((_, index) => indexes.has(index)))
+    } catch {
+      return new Set()
+    }
   }
 
   /** Read-merge-write one marker-delimited instructions block at a remote path EXPRESSION

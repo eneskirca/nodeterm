@@ -177,6 +177,23 @@ describe("prepareAgentLaunch logical argv", () => {
     });
   });
 
+  it("builds AGY, Pi, and Goose interactive launches", async () => {
+    await expect(
+      prepareAgentLaunch(start("agy", { prompt: "fix it" }), "posix", builtinContext("agy")),
+    ).resolves.toEqual({ command: "'agy' '--prompt-interactive' 'fix it'" });
+    await expect(
+      prepareAgentLaunch(start("pi", { prompt: "fix it" }), "posix", builtinContext("pi")),
+    ).resolves.toEqual({ command: "'pi' 'fix it'" });
+    await expect(
+      prepareAgentLaunch(start("goose"), "posix", builtinContext("goose")),
+    ).resolves.toEqual({ command: "'goose' 'session'" });
+    await expect(
+      prepareAgentLaunch(start("goose", { prompt: "fix it" }), "posix", builtinContext("goose")),
+    ).resolves.toEqual({
+      command: "'goose' 'run' '--interactive' '--text' 'fix it'",
+    });
+  });
+
   it("builds every builtin resume grammar and derives shared identity from trusted context", async () => {
     await expect(
       prepareAgentLaunch(
@@ -230,6 +247,27 @@ describe("prepareAgentLaunch logical argv", () => {
         customContext(flag),
       ),
     ).resolves.toEqual({ command: "'agent' '--prompt' ''" });
+  });
+
+  it("preserves a Goose base harness through the trusted session-host path", async () => {
+    const custom = {
+      id: "custom:goose-wrap",
+      launchCmd: "goose-wrap",
+      promptInjectionMode: "argv",
+      baseAgent: "goose",
+    } as const;
+    await expect(
+      prepareAgentLaunch(start(custom.id), "posix", customContext(custom)),
+    ).resolves.toEqual({ command: "'goose-wrap' 'session'" });
+    await expect(
+      prepareAgentLaunch(
+        start(custom.id, { prompt: "fix it" }),
+        "posix",
+        customContext(custom),
+      ),
+    ).resolves.toEqual({
+      command: "'goose-wrap' 'run' '--interactive' '--text' 'fix it'",
+    });
   });
 
   it.each(["posix", "pwsh", "windows-powershell", "cmd"] as const)(

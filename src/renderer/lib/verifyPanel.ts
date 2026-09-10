@@ -5,6 +5,17 @@
 //
 // Kept free of React/store imports so the lens table and the prompt wording are unit-testable.
 
+import { canContextLink, hasHooks, type AgentId } from '@shared/agents/config'
+
+/** Why an agent cannot participate in an automatically sequenced verification panel. */
+export function verifyAgentBlockReason(
+  agentId: AgentId
+): 'cannot-read' | 'cannot-report-done' | null {
+  if (!canContextLink(agentId)) return 'cannot-read'
+  if (!hasHooks(agentId)) return 'cannot-report-done'
+  return null
+}
+
 /** Lens id → what that reviewer is told to hunt for. */
 const LENS_BRIEFS: Record<string, string> = {
   correctness:

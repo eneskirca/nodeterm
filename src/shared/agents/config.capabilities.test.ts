@@ -28,10 +28,10 @@ import {
 } from './config'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
-  it('all three builtin agents can context-link', () => {
-    expect(canContextLink('claude')).toBe(true)
-    expect(canContextLink('codex')).toBe(true)
-    expect(canContextLink('gemini')).toBe(true)
+  it('all integrated builtin agents can context-link', () => {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok', 'agy', 'pi', 'goose'] as const) {
+      expect(canContextLink(id), id).toBe(true)
+    }
   })
   it('custom agents cannot', () => {
     expect(canContextLink('custom:abc')).toBe(false)
@@ -101,6 +101,54 @@ describe('opencode capabilities', () => {
   it('stays out of the claude-only capability lists', () => {
     for (const can of [canSubagent, canRecur, canBranch, hasUsage, canChat, canTransferFrom, canRename, canReadTitle, hasPermissionMode]) {
       expect(can('opencode')).toBe(false)
+    }
+  })
+})
+
+describe('launch-only builtin agents', () => {
+  it('declares the measured AGY, Pi, and Goose launch grammars', () => {
+    expect(AGENT_CONFIG.agy).toMatchObject({
+      label: 'AGY',
+      launchCmd: 'agy',
+      promptInjectionMode: 'flag-interactive',
+      promptFlag: '--prompt-interactive',
+      expectedProcess: 'agy'
+    })
+    expect(AGENT_CONFIG.pi).toMatchObject({
+      label: 'Pi',
+      launchCmd: 'pi',
+      promptInjectionMode: 'argv',
+      expectedProcess: 'pi'
+    })
+    expect(AGENT_CONFIG.goose).toMatchObject({
+      label: 'Goose',
+      launchCmd: 'goose',
+      launchArgs: ['session'],
+      promptLaunchArgs: ['run', '--interactive'],
+      promptInjectionMode: 'flag-prompt',
+      promptFlag: '--text',
+      expectedProcess: 'goose'
+    })
+  })
+
+  it('does not advertise provider-specific capabilities that are not wired', () => {
+    for (const id of ['agy', 'pi', 'goose'] as const) {
+      expect(BUILTIN_AGENT_IDS).toContain(id)
+      for (const can of [
+        hasHooks,
+        canResume,
+        canControlCanvas,
+        canSwitchModel,
+        hasUsage,
+        canChat,
+        canTransferFrom,
+        canRename,
+        canReadTitle,
+        hasPermissionMode
+      ]) {
+        expect(can(id), `${id}: ${can.name}`).toBe(false)
+      }
+      expect(canContextLink(id), id).toBe(true)
     }
   })
 })

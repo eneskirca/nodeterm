@@ -3,9 +3,20 @@ import {
   DEFAULT_LENSES,
   MAX_LENSES,
   parseLenses,
+  verifyAgentBlockReason,
   verifyLensPrompt,
   verifySynthesisPrompt
 } from './verifyPanel'
+
+describe('verifyAgentBlockReason', () => {
+  it('requires both readable context and completion hooks', () => {
+    expect(verifyAgentBlockReason('claude')).toBeNull()
+    expect(verifyAgentBlockReason('agy')).toBe('cannot-report-done')
+    expect(verifyAgentBlockReason('pi')).toBe('cannot-report-done')
+    expect(verifyAgentBlockReason('goose')).toBe('cannot-report-done')
+    expect(verifyAgentBlockReason('custom:unknown')).toBe('cannot-read')
+  })
+})
 
 describe('parseLenses', () => {
   it('falls back to the default panel when nothing is given', () => {

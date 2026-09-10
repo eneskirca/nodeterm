@@ -123,7 +123,7 @@ then **Send** (nothing auto-submits). Your voice never leaves the machine.
 ### Node kinds
 
 🖥 **Terminal** (xterm + tmux, AI naming) · 🤖 **Agent** (Claude Code / Codex / Gemini /
-GitHub Copilot / opencode / Grok / custom) · 📝 **Sticky note** (link to an agent as context) · 🗂 **Group**
+GitHub Copilot / opencode / Grok / AGY / Pi / Goose / custom) · 📝 **Sticky note** (link to an agent as context) · 🗂 **Group**
 (bind to a **git worktree** for agent-per-branch) · ✏️ **Editor** (Monaco, ⌘S) ·
 🔀 **Diff** · 🌐 **Web / Video**
 

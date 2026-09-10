@@ -1078,4 +1078,14 @@ describe('createAgentNode prompt injection', () => {
     expect(createAgentNode('codex', 0, undefined, undefined, 'do X').data.initialCommand).toBe("codex 'do X'")
     expect(createAgentNode('gemini', 0, undefined, undefined, 'do X').data.initialCommand).toBe("gemini 'do X'")
   })
+  it('launches AGY, Pi, and Goose with their interactive prompt forms', () => {
+    expect(createAgentNode('agy', 0, undefined, undefined, 'do X').data.initialCommand).toBe(
+      "agy --prompt-interactive 'do X'"
+    )
+    expect(createAgentNode('pi', 0, undefined, undefined, 'do X').data.initialCommand).toBe("pi 'do X'")
+    expect(createAgentNode('goose', 0).data.initialCommand).toBe('goose session')
+    expect(createAgentNode('goose', 0, undefined, undefined, 'do X').data.initialCommand).toBe(
+      "goose run --interactive --text 'do X'"
+    )
+  })
 })

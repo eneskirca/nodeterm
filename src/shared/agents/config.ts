@@ -2,7 +2,16 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
-export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot'
+export type BuiltinAgentId =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'opencode'
+  | 'grok'
+  | 'copilot'
+  | 'agy'
+  | 'pi'
+  | 'goose'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -16,7 +25,13 @@ export interface AgentConfig {
   label: string // menu + node title, e.g. 'Claude Code'
   color: string // node color
   launchCmd: string // base launch command
+  /** Arguments required for an interactive launch with no initial prompt. */
+  launchArgs?: readonly string[]
+  /** Arguments used instead of launchArgs when an initial prompt is present. */
+  promptLaunchArgs?: readonly string[]
   promptInjectionMode: PromptInjectionMode
+  /** Override the flag implied by flag-prompt / flag-interactive. */
+  promptFlag?: string
   /**
    * Put this between the command and an `argv` prompt — in practice `'--'`, and only for a CLI
    * whose grammar has BOTH a positional prompt and subcommands.
@@ -40,7 +55,10 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'gemini',
   'opencode',
   'grok',
-  'copilot'
+  'copilot',
+  'agy',
+  'pi',
+  'goose'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -96,6 +114,31 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // 1.0.80 CLI's `--interactive <prompt>` starts the ordinary TUI and submits the prompt there.
     promptInjectionMode: 'flag-interactive',
     expectedProcess: 'copilot'
+  },
+  agy: {
+    label: 'AGY',
+    color: '#4285f4',
+    launchCmd: 'agy',
+    promptInjectionMode: 'flag-interactive',
+    promptFlag: '--prompt-interactive',
+    expectedProcess: 'agy'
+  },
+  pi: {
+    label: 'Pi',
+    color: '#f59e0b',
+    launchCmd: 'pi',
+    promptInjectionMode: 'argv',
+    expectedProcess: 'pi'
+  },
+  goose: {
+    label: 'Goose',
+    color: '#f1be49',
+    launchCmd: 'goose',
+    launchArgs: ['session'],
+    promptLaunchArgs: ['run', '--interactive'],
+    promptInjectionMode: 'flag-prompt',
+    promptFlag: '--text',
+    expectedProcess: 'goose'
   }
 }
 
@@ -149,7 +192,21 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+// AGY, Pi and Goose all discover the get-linked-context skill installed by initContextLink:
+//  - AGY: ~/.gemini/antigravity-cli/skills (its documented global CLI skill directory)
+//  - Pi + Goose: ~/.agents/skills (the shared Agent Skills directory both CLIs scan)
+// The link notification also carries the exact shim command so an already-running session can use
+// a newly drawn edge without restarting to refresh skill discovery.
+export const CONTEXT_LINK_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'agy',
+  'pi',
+  'goose'
+] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family

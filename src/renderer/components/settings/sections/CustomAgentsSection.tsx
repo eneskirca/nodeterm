@@ -122,7 +122,7 @@ function AgentCard({
         label="Base harness"
         description={
           base
-            ? `Inherits ${base.label}'s hooks, resume, permission modes, and canvas control.`
+            ? `Inherits ${base.label}'s launch conventions and supported integrations.`
             : 'Optional: inherit a built-in harness’s integrations. Blank = a standalone CLI.'
         }
         control={
