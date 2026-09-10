@@ -16,6 +16,7 @@ import path from 'path'
 import { spawn } from 'child_process'
 import type { ProviderUsage, UsageLimit } from '../../shared/types'
 import { parseResetTimestamp } from './claude-usage-map'
+import { directExecutableInvocation, findInLoginPath } from '../exec-path'
 
 const BACKEND_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const FETCH_TIMEOUT_MS = 8000
@@ -150,11 +151,23 @@ async function fetchViaBackend(home: string): Promise<ProviderUsage | null> {
  * when the backend tier declined. Sandboxed read-only/untrusted — this must never be a way for
  * a quota refresh to touch the user's files.
  */
-async function fetchViaAppServer(home: string): Promise<ProviderUsage | null> {
+export async function fetchCodexUsageViaAppServerAt(
+  bin: string,
+  home: string
+): Promise<ProviderUsage | null> {
+  const invocation = directExecutableInvocation(bin, [
+    '-s',
+    'read-only',
+    '-a',
+    'untrusted',
+    'app-server'
+  ])
+  if (!invocation) return null
   return new Promise<ProviderUsage | null>((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn('codex', ['-s', 'read-only', '-a', 'untrusted', 'app-server'], {
+      child = spawn(invocation.executable, invocation.args, {
+        ...invocation.options,
         env: { ...process.env, CODEX_HOME: home },
         stdio: ['pipe', 'pipe', 'ignore']
       })
@@ -223,6 +236,11 @@ async function fetchViaAppServer(home: string): Promise<ProviderUsage | null> {
       }) + '\n'
     )
   })
+}
+
+async function fetchViaAppServer(home: string): Promise<ProviderUsage | null> {
+  const bin = await findInLoginPath('codex')
+  return bin ? fetchCodexUsageViaAppServerAt(bin, home) : null
 }
 
 /**

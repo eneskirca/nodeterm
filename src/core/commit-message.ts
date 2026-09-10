@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import type { GitResult, Settings } from '../shared/types'
-import { findInPathString, shellPathNow } from './exec-path'
+import { directExecutableInvocation, findInPathString, shellPathNow } from './exec-path'
 import { resolveGitRemote, runRemoteGit } from './remote-ssh/remote-git'
 
 const run = promisify(execFile)
@@ -179,7 +179,14 @@ function spawnAgent(
   stdin: string | null
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, {
+    const invocation = directExecutableInvocation(bin, args)
+    if (!invocation) {
+      resolve({ code: 1, stdout: '', stderr: `Cannot safely execute Windows script: ${bin}` })
+      return
+    }
+
+    const child = spawn(invocation.executable, invocation.args, {
+      ...invocation.options,
       cwd,
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],

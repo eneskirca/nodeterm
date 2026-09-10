@@ -10,6 +10,7 @@ import { promisify } from 'util'
 import { supportsAutoPermissionMode, supportsFullscreenTui } from '../shared/agents/config'
 import { IPC } from '../shared/ipc'
 import { UNKNOWN_CLAUDE_CLI_CAPS, type ClaudeCliCaps } from '../shared/types'
+import { directExecutableInvocation } from './exec-path'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
 
@@ -42,26 +43,41 @@ export function claudeCliCapsFrom(
   }
 }
 
-let cached: Promise<ClaudeCliCaps> | null = null
-
-async function probe(): Promise<ClaudeCliCaps> {
+export async function probeClaudeCliAt(bin: string): Promise<ClaudeCliCaps> {
   try {
-    // GUI apps don't inherit the shell PATH — resolve through the login shell like every other
-    // CLI lookup in the app (pty-manager, commit-message).
-    const bin = await findInLoginPath('claude')
-    if (!bin) return UNKNOWN_CLAUDE_CLI_CAPS
-    const { stdout } = await execFileP(bin, ['--version'], { timeout: PROBE_TIMEOUT_MS })
+    const versionInvocation = directExecutableInvocation(bin, ['--version'])
+    if (!versionInvocation) return UNKNOWN_CLAUDE_CLI_CAPS
+    const { stdout } = await execFileP(versionInvocation.executable, versionInvocation.args, {
+      ...versionInvocation.options,
+      timeout: PROBE_TIMEOUT_MS
+    })
     // `--help` is a second spawn, paid once per process (this whole probe is memoized). Its
     // failure must not cost us the version answer, so it degrades on its own: no help text just
     // means no minted session ids.
-    const help = await execFileP(bin, ['--help'], { timeout: PROBE_TIMEOUT_MS })
-      .then((r) => r.stdout)
-      .catch(() => null)
+    const helpInvocation = directExecutableInvocation(bin, ['--help'])
+    const help = helpInvocation
+      ? await execFileP(helpInvocation.executable, helpInvocation.args, {
+          ...helpInvocation.options,
+          timeout: PROBE_TIMEOUT_MS
+        })
+          .then((r) => r.stdout)
+          .catch(() => null)
+      : null
     return claudeCliCapsFrom(stdout, help)
   } catch {
     // Missing CLI, timeout, non-zero exit — all mean "unknown", which means "omit the flag".
     return UNKNOWN_CLAUDE_CLI_CAPS
   }
+}
+
+let cached: Promise<ClaudeCliCaps> | null = null
+
+async function probe(): Promise<ClaudeCliCaps> {
+  // GUI apps don't inherit the shell PATH — resolve through the login shell like every other
+  // CLI lookup in the app (pty-manager, commit-message).
+  const bin = await findInLoginPath('claude')
+  if (!bin) return UNKNOWN_CLAUDE_CLI_CAPS
+  return probeClaudeCliAt(bin)
 }
 
 /**

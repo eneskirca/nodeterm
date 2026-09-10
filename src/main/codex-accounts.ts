@@ -32,6 +32,7 @@ import {
   type CodexRolloutExposurePlan
 } from '../core/codex-accounts-core'
 import { readCodexAccountAt, readCodexThreadAt } from '../core/codex-session-name'
+import { directExecutableInvocation } from '../core/exec-path'
 import { ensureCodexRelayRoot } from './codex-relay-daemon'
 import { platform } from '../core/platform'
 import { findInLoginPath } from '../core/pty-manager'
@@ -109,7 +110,10 @@ export async function ensureCodexAccountDaemon(accountId?: string): Promise<void
     async () => {
       const codex = await findInLoginPath('codex')
       if (!codex) throw new Error('Codex CLI unavailable')
-      await execFileP(codex, ['app-server', 'daemon', 'start'], {
+      const invocation = directExecutableInvocation(codex, ['app-server', 'daemon', 'start'])
+      if (!invocation) throw new Error('Codex CLI has no safe Windows entry point')
+      await execFileP(invocation.executable, invocation.args, {
+        ...invocation.options,
         cwd: os.homedir(),
         env: { ...process.env, ...codexSessionEnv(platform().userDataDir, accountId) },
         timeout: 15_000,
@@ -267,7 +271,10 @@ export function initCodexAccounts(getSshManager?: () => SshProjectManager | unde
       try {
         const codex = await findInLoginPath('codex')
         if (codex) {
-          await execFileP(codex, ['app-server', 'daemon', 'stop'], {
+          const invocation = directExecutableInvocation(codex, ['app-server', 'daemon', 'stop'])
+          if (!invocation) throw new Error('Codex CLI has no safe Windows entry point')
+          await execFileP(invocation.executable, invocation.args, {
+            ...invocation.options,
             cwd: os.homedir(),
             env: { ...process.env, CODEX_HOME: localCodexAccountHome(id) },
             timeout: 10_000,

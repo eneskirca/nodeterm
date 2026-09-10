@@ -13,7 +13,8 @@ import path from 'path'
 
 // The app-server tier spawns the real `codex` binary; force it to decline instantly so the
 // identity-stamping tests below are hermetic (they exercise the backend + unavailable paths only).
-vi.mock('child_process', () => ({
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
   spawn: () => {
     throw new Error('app-server disabled in test')
   }

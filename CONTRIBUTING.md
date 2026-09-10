@@ -107,6 +107,15 @@ lane unaffected.
   on POSIX a backslash is legal filename text — do not treat both separators as interchangeable
   unless the owning filesystem is known to be Windows.
 
+- **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
+  correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
+  shim directly. For short-lived app-owned subprocesses, pass the resolved path and argv through
+  `directExecutableInvocation` (`src/core/exec-path.ts`): it uses hidden `cmd.exe` with explicit
+  escaping, verbatim arguments and delayed expansion off. Do not fix this with `shell: true`;
+  prompts and other user-controlled arguments would become shell syntax. `.bat`/`.ps1`, CR/LF/NUL
+  arguments and lines above cmd's limit fail explicitly. Keep stdin direct: PowerShell's text
+  pipeline changes Unicode and line endings under Windows PowerShell 5.1.
+
 - **Normalize BOTH sides of a path comparison, through one function.** A marker normalized where
   it is built and matched raw where it is used is a no-op on the machine you wrote it on and a
   silent defect on Windows. That is issue #558: the managed-hook marker was folded to `/` while
