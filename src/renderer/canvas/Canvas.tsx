@@ -7751,7 +7751,6 @@ export function Canvas() {
       .setAutoHideFinished(settings.autoHideFinishedSubagentCards === true)
   }, [settings.autoHideFinishedSubagentCards])
 
-
   /** ids to act on for a node menu: the whole selection if the node is part of it, else just it. */
   const targetIds = useCallback((node: Node): string[] => {
     const selected = nodesRef.current.filter((n) => n.selected).map((n) => n.id)

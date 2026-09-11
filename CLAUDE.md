@@ -1846,10 +1846,15 @@ else, and its context links must keep classifying across restarts).
   late `finish()` is the no-op it already was and the next turn boundary takes it.
   **A third removal path is opt-in:** `settings.autoHideFinishedSubagentCards` (default OFF, and
   off reproduces the two paths above exactly) mirrors into the store as `autoHideFinished`, and
-  with it on a card is dropped the moment its subagent reports done, by `finish()` and by the
-  decay alike, with no turn boundary. Only a DONE card is ever dropped, so #547's rule (a new turn
-  keeps the cards of subagents still running) and Eco's `liveSubagents` are untouched. Renderer
-  only: Desktop and Server Edition identical, Mobile N/A.
+  with it on a card is dropped the moment its subagent REPORTS done, with no turn boundary. Only a
+  DONE card is ever dropped, so #547's rule (a new turn keeps the cards of subagents still running)
+  and Eco's `liveSubagents` are untouched. **The decay is deliberately NOT one of the paths it
+  gates**: `sweepStaleWorking` fires precisely because the end never ARRIVED, which is the opposite
+  of what the setting promises, and it is the one case where a visible card carries the most
+  information — drop it and a fan-out whose subagents died silently leaves nothing on the canvas
+  saying one was ever launched. It costs Eco nothing either way, since an absent card and a `done`
+  card are the same answer to `liveSubagents`. Renderer only: Desktop and Server Edition identical,
+  Mobile N/A.
   (Subagents share the parent's process — no PTY.) Each card shows
   duration/tokens/tool-uses and **expands** (click) to a **live transcript**:
   `core/subagent-tail.ts` resolves the subagent's own transcript file

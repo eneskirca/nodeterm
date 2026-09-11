@@ -200,7 +200,11 @@ describe('autoHideFinished: dropping a card the moment its subagent finishes', (
     expect(useAgentNodes.getState().byId['tu1'].state).toBe('done')
   })
 
-  it('drops the stale sweep’s cards while the setting is on', () => {
+  it('does NOT drop the stale sweep’s cards, even while the setting is on', () => {
+    // The sweep fires because the end never ARRIVED, which is the opposite of what this setting
+    // promises. It is also the case where a visible card carries the most information: drop it and
+    // a fan-out whose subagents died silently leaves nothing behind saying one was ever launched.
+    // So the decay keeps marking `done` and the turn boundary takes the card, as it always did.
     const s = useAgentNodes.getState()
     s.setAutoHideFinished(true)
     s.start('tu-stale', { parentNodeId: 'n1' })
@@ -214,8 +218,18 @@ describe('autoHideFinished: dropping a card the moment its subagent finishes', (
     }))
     useAgentNodes.getState().sweepStaleWorking(now)
     const { byId } = useAgentNodes.getState()
-    expect(byId['tu-stale']).toBeUndefined()
-    expect(byId['tu-young']).toBeDefined()
+    expect(byId['tu-stale'].state).toBe('done')
+    expect(byId['tu-young'].state).toBe('working')
+  })
+
+  it('and the turn boundary then takes that decayed card, as it does with the setting off', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('tu-stale', { parentNodeId: 'n1' })
+    const startedAt = useAgentNodes.getState().byId['tu-stale'].startedAt
+    useAgentNodes.getState().sweepStaleWorking(startedAt + WORKING_STALE_MS + 1)
+    useAgentNodes.getState().clearFinishedForParent('n1')
+    expect(useAgentNodes.getState().byId['tu-stale']).toBeUndefined()
   })
 
   it('a late finish on a dropped card is a no-op', () => {

@@ -62,10 +62,18 @@ interface AgentNodesState {
    * `settings.autoHideFinishedSubagentCards`, mirrored here by Canvas so the store stays free of
    * the settings store.
    *
-   * On, a card is DROPPED at the moment its subagent reports done (by `finish()` and by
-   * `sweepStaleWorking`'s decay alike) rather than left `done` for the next turn boundary to
-   * take. Only a finished card is ever dropped, so #547's rule (a new turn must keep the cards of
-   * subagents that are still running) and Eco's `liveSubagents` are untouched.
+   * On, a card is DROPPED at the moment its subagent REPORTS done — `finish()`, and only
+   * `finish()` — rather than left `done` for the next turn boundary to take. Only a finished card
+   * is ever dropped, so #547's rule (a new turn must keep the cards of subagents that are still
+   * running) and Eco's `liveSubagents` are untouched.
+   *
+   * **`sweepStaleWorking`'s decay is deliberately NOT gated on this.** That sweep fires precisely
+   * because the end never ARRIVED (crashed CLI, killed pane, slept machine), which is the opposite
+   * of the setting's promise, and it is the one case where a visible card carries the most
+   * information: drop it and a fan-out whose subagents died silently leaves nothing on the canvas
+   * that says a subagent was ever launched. The decay keeps marking `done` and the turn boundary
+   * takes the card, exactly as it did before this setting existed. It costs Eco nothing — an
+   * absent card and a `done` card are the same answer to `liveSubagents`.
    *
    * Off is the default and reproduces the previous behavior exactly.
    */
@@ -282,7 +290,6 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
         (id) => s.byId[id].state === 'working' && now - s.byId[id].startedAt > staleMs
       )
       if (!stale.length) return s
-      if (s.autoHideFinished) return dropCards(s, stale)
       const byId = { ...s.byId }
       for (const id of stale) {
         const prev = byId[id]
