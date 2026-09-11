@@ -173,6 +173,8 @@ export interface WindowStateSource {
   isMaximized(): boolean
   /** The RESTORED bounds — see the note in `captureWindowState`. */
   getNormalBounds(): Rect
+  /** The CURRENT bounds. Read only while un-maximized — see the note in `captureWindowState`. */
+  getBounds(): Rect
 }
 
 /**
@@ -192,21 +194,28 @@ export interface WindowStateSource {
  * In both cases the previously saved record stands, which is the honest outcome: "we could not
  * observe a new preference", never "the preference is gone".
  *
- * The bounds come from `getNormalBounds()`, never `getBounds()`. While maximized the latter returns
- * the MAXIMIZED rectangle, so saving it would make the next un-maximize restore to a window the
+ * While MAXIMIZED the bounds come from `getNormalBounds()`, never `getBounds()`: the latter returns
+ * the maximized rectangle, so saving it would make the next un-maximize restore to a window the
  * size of the screen — the state would look right and behave wrong, and only for the users who
  * maximize.
+ *
+ * While un-maximized it is `getBounds()`, and the two are the same rectangle wherever both work.
+ * The split exists for Linux, where Electron documents `getNormalBounds()` as supported only on
+ * some desktop environments; `getBounds()` has no such caveat, so the common case stops depending
+ * on the window manager. The maximized case still does, and cannot be helped from here — but it
+ * also matters less, because that record restores by re-maximizing rather than by its size.
  */
 export function captureWindowState(win: WindowStateSource): WindowState | null {
   if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return null
-  const b = win.getNormalBounds()
+  const maximized = win.isMaximized()
+  const b = maximized ? win.getNormalBounds() : win.getBounds()
   if (!Number.isFinite(b.width) || !Number.isFinite(b.height) || b.width <= 0 || b.height <= 0) {
     return null
   }
   const state: WindowState = {
     width: Math.round(b.width),
     height: Math.round(b.height),
-    maximized: win.isMaximized()
+    maximized
   }
   if (Number.isFinite(b.x) && Number.isFinite(b.y)) {
     state.x = Math.round(b.x)

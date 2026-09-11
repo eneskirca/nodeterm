@@ -28,13 +28,24 @@ const ONE_SCREEN: Rect[] = [{ x: 0, y: 27, width: 1920, height: 1053 }]
 const TWO_SCREENS: Rect[] = [...ONE_SCREEN, { x: -2560, y: 0, width: 2560, height: 1440 }]
 const DEFAULTS = { width: 1400, height: 900 }
 
-function source(over: Partial<{ destroyed: boolean; minimized: boolean; fullScreen: boolean; maximized: boolean; bounds: Rect }> = {}) {
+function source(
+  over: Partial<{
+    destroyed: boolean
+    minimized: boolean
+    fullScreen: boolean
+    maximized: boolean
+    bounds: Rect
+    currentBounds: Rect
+  }> = {}
+) {
+  const normal = over.bounds ?? { x: 100, y: 200, width: 1000, height: 700 }
   return {
     isDestroyed: () => over.destroyed ?? false,
     isMinimized: () => over.minimized ?? false,
     isFullScreen: () => over.fullScreen ?? false,
     isMaximized: () => over.maximized ?? false,
-    getNormalBounds: () => over.bounds ?? { x: 100, y: 200, width: 1000, height: 700 }
+    getNormalBounds: () => normal,
+    getBounds: () => over.currentBounds ?? normal
   }
 }
 
@@ -222,6 +233,24 @@ describe('captureWindowState', () => {
       width: 1000,
       height: 700,
       maximized: true
+    })
+  })
+
+  it('reads getBounds while un-maximized, so Linux WMs without getNormalBounds still save', () => {
+    // Electron documents getNormalBounds() as supported only on some Linux desktop environments.
+    // The un-maximized case is the common one and must not depend on the window manager; the two
+    // calls return the same rectangle wherever both work, so nothing changes elsewhere.
+    const win = source({
+      maximized: false,
+      bounds: { x: 0, y: 0, width: 1, height: 1 },
+      currentBounds: { x: 300, y: 120, width: 1280, height: 800 }
+    })
+    expect(captureWindowState(win)).toEqual({
+      x: 300,
+      y: 120,
+      width: 1280,
+      height: 800,
+      maximized: false
     })
   })
 

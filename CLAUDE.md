@@ -3590,9 +3590,14 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   someone with two monitors — `screen.getAllDisplays()` is called at the seam in `index.ts` and its
   **work areas** (not full display bounds) are passed in. The refusals ARE the feature, because each
   is a way the naive version is worse than the fixed size it replaces:
-  - **`getNormalBounds()`, never `getBounds()`.** While maximized the latter returns the MAXIMIZED
-    rectangle, so saving it makes the next un-maximize hand back a screen-sized window — state that
-    looks right and behaves wrong, and only for the users who maximize.
+  - **While MAXIMIZED the size comes from `getNormalBounds()`, never `getBounds()`.** The latter
+    returns the MAXIMIZED rectangle, so saving it makes the next un-maximize hand back a
+    screen-sized window — state that looks right and behaves wrong, and only for the users who
+    maximize. **Un-maximized it is `getBounds()`**, which is the same rectangle wherever both work:
+    Electron documents `getNormalBounds()` as supported only on some Linux desktop environments, and
+    the common case must not depend on the window manager. The maximized case still does and cannot
+    be helped from here, but it matters less, because that record restores by re-maximizing rather
+    than by its size.
   - **A position that is no longer reachable is DROPPED, not clamped.** A laptop undocked from the
     monitor its window was on would otherwise reopen the app off-screen: running, focusable from the
     dock, visible nowhere, with no gesture that rescues it. Reachable means a real overlap with some
