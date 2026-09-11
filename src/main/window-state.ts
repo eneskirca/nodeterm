@@ -53,6 +53,20 @@ export const MIN_HEIGHT = 360
 export const MIN_VISIBLE_WIDTH = 120
 export const MIN_VISIBLE_HEIGHT = 80
 
+/**
+ * How far ABOVE a work area's top edge the window's own top edge may sit and still count as
+ * reachable. The overlap test on its own is symmetric, so it passes a window whose BOTTOM edge
+ * dips into the work area while the title bar sits hundreds of px higher, off-screen: unplug an
+ * external monitor mounted above the laptop and a record of `y: -500, height: 700` keeps 173px of
+ * overlap against a screen starting at `y: 27`, which is enough for the height floor and not
+ * enough to grab. Under `titleBarStyle: 'hiddenInset'` the title bar IS the drag region, so there
+ * is nothing else to take hold of.
+ *
+ * The slack exists because window managers report decorations inconsistently and a few pixels of
+ * overhang is ordinary; it is far smaller than a title bar, which is the thing being protected.
+ */
+export const TOP_OVERHANG_SLACK = 24
+
 /** The debounce on save. `resize`/`move` fire continuously through a drag. */
 export const SAVE_DEBOUNCE_MS = 400
 
@@ -91,11 +105,16 @@ export function parseWindowState(raw: string): WindowState | null {
   return state
 }
 
-/** Visible overlap between a window rect and one display's work area. */
+/**
+ * Visible overlap between a window rect and one display's work area, plus the one thing overlap
+ * alone cannot say: that the overlapping part includes the window's TOP. See `TOP_OVERHANG_SLACK`.
+ */
 function reachableOn(r: Rect, area: Rect): boolean {
   const w = Math.min(r.x + r.width, area.x + area.width) - Math.max(r.x, area.x)
   const h = Math.min(r.y + r.height, area.y + area.height) - Math.max(r.y, area.y)
-  return w >= MIN_VISIBLE_WIDTH && h >= MIN_VISIBLE_HEIGHT
+  return (
+    w >= MIN_VISIBLE_WIDTH && h >= MIN_VISIBLE_HEIGHT && r.y >= area.y - TOP_OVERHANG_SLACK
+  )
 }
 
 function clamp(v: number, lo: number, hi: number): number {

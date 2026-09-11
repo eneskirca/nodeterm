@@ -3597,8 +3597,15 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     monitor its window was on would otherwise reopen the app off-screen: running, focusable from the
     dock, visible nowhere, with no gesture that rescues it. Reachable means a real overlap with some
     work area (`MIN_VISIBLE_WIDTH`/`HEIGHT`), judged against the CLAMPED size — a few pixels on
-    screen is not a title bar anyone can grab. Dropping keeps the user's size and lets the platform
-    place a window it knows how to place; inventing a corner for it is the guess.
+    screen is not a title bar anyone can grab. **Overlap alone is not enough, because it is
+    symmetric**: a monitor mounted ABOVE the laptop and then unplugged leaves a record whose BOTTOM
+    edge clips the laptop's work area by enough to clear the height floor while the title bar sits
+    hundreds of px above the screen — and under `titleBarStyle: 'hiddenInset'` the title bar is the
+    whole drag region. So the window's TOP edge must also land on that work area, within
+    `TOP_OVERHANG_SLACK` (24px, because window managers report decorations inconsistently and a few
+    pixels of overhang must not cost the user their position every launch). The rule is per-display,
+    like the overlap it joins. Dropping keeps the user's size and lets the platform place a window it
+    knows how to place; inventing a corner for it is the guess.
   - **No capture while minimized or fullscreen.** `isMaximized()` is FALSE while a macOS window is
     fullscreen, so capturing there records `maximized: false` and erases exactly the preference this
     exists to remember. The last non-fullscreen state stands, which also means the app never reopens

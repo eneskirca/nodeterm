@@ -135,6 +135,36 @@ describe('resolveWindowBounds', () => {
     })
   })
 
+  it('drops a position whose overlap is its BOTTOM edge, leaving the title bar above the screen', () => {
+    // An external monitor mounted ABOVE the laptop, then unplugged. The bottom 173px of the window
+    // still overlaps the laptop's work area, which clears the height floor — but the title bar sits
+    // 527px above the top of the screen, and under `titleBarStyle: 'hiddenInset'` the title bar is
+    // the only drag region there is. Symmetric overlap cannot see this; the top-edge rule can.
+    const saved: WindowState = { x: 200, y: -500, width: 1000, height: 700, maximized: false }
+    expect(resolveWindowBounds(saved, ONE_SCREEN, DEFAULTS).bounds).toEqual({
+      width: 1000,
+      height: 700
+    })
+  })
+
+  it('keeps a position overhanging the top by a few pixels — that is decoration, not a lost window', () => {
+    // Window managers report decorations inconsistently, so a small overhang is ordinary and must
+    // not cost the user their position on every launch. TOP_OVERHANG_SLACK is far smaller than a
+    // title bar, which is the thing the rule above protects.
+    const saved: WindowState = { x: 200, y: 27 - 10, width: 1000, height: 700, maximized: false }
+    expect(resolveWindowBounds(saved, ONE_SCREEN, DEFAULTS).bounds).toMatchObject({ x: 200, y: 17 })
+  })
+
+  it('judges the top edge against the display the window is ON, not the primary one', () => {
+    // The second screen's work area starts at y: 0, so a window at y: 0 is reachable there even
+    // though it is above the laptop's y: 27. The rule is per-display, like the overlap it joins.
+    const saved: WindowState = { x: -2000, y: 0, width: 1000, height: 700, maximized: false }
+    expect(resolveWindowBounds(saved, TWO_SCREENS, DEFAULTS).bounds).toMatchObject({
+      x: -2000,
+      y: 0
+    })
+  })
+
   it('never clamps a dropped position into a corner — the platform places it instead', () => {
     const saved: WindowState = { x: 99999, y: 99999, width: 1000, height: 700, maximized: false }
     const { bounds } = resolveWindowBounds(saved, ONE_SCREEN, DEFAULTS)
