@@ -191,7 +191,7 @@ export const SessionCard = memo(function SessionCard({
             <span className="kanban-card__stickytext">{stickyPreview}</span>
           ) : (
             <>
-              <ContextMeter sessionId={status?.sessionId ?? null} />
+              <ContextMeter sessionId={status?.sessionId ?? null} nodeId={session.id} />
               <AccountChip chip={accountChip} />
               {status?.session && (
                 <span className="kanban-card__session" title={status.session}>

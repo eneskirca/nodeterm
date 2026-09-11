@@ -853,6 +853,20 @@ export type PtyLimitFixResult =
    *  renderer: nothing failed, so neither may raise an error toast. */
   | { ok: false; error: string; canceled?: boolean; busy?: boolean }
 
+/** A session environment entry after core has irreversibly masked credential-shaped values. */
+export interface PtyEnvVar {
+  key: string
+  value: string
+  secret?: boolean
+  /** False means tmux records this variable as removed from the session environment. */
+  set?: boolean
+}
+
+export interface PtyEnvInfo {
+  source: 'spawn' | 'tmux' | 'unavailable'
+  vars: PtyEnvVar[]
+}
+
 export interface PtyApi {
   /** Starts a new PTY session; returns its sessionId and whether the session was freshly
    *  created (cold start) vs reattached to a still-running tmux session (warm). */
@@ -906,6 +920,8 @@ export interface PtyApi {
    *  node persistKey. null when it is unknown — no session, no tmux, or the query failed — which
    *  callers must read as "not observed", never as evidence of a particular command. */
   paneCommand(persistKey: string): Promise<string | null>
+  /** Read this session's environment with secrets masked in core. */
+  envInfo(persistKey: string): Promise<PtyEnvInfo>
   /** Terminate the foreground process group in a node's pane. Returns false when the pane/process
    *  cannot be safely identified; it never kills the pane's login shell. When `expectedAgentId` is
    *  given, the kill happens only if that harness actually owns the foreground group (argv-verified)

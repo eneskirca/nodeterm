@@ -42,6 +42,7 @@ import {
   type PresenceApi,
   type PtyApi,
   type PtyCreateOptions,
+  type PtyEnvInfo,
   type SettingsApi,
   type ClaudeUsage,
   type ProviderUsage,
@@ -255,6 +256,10 @@ export function buildRealApi(
     // shell yet" and gives up on its own deadline.
     paneCommand: (persistKey) =>
       client.request(IPC.ptyPaneCommand, persistKey).catch(() => null) as Promise<string | null>,
+    envInfo: (persistKey) =>
+      client
+        .request(IPC.ptyEnvInfo, persistKey)
+        .catch(() => ({ source: 'unavailable', vars: [] }) as PtyEnvInfo) as Promise<PtyEnvInfo>,
     terminateForeground: (persistKey, expectedAgentId) =>
       client.request(IPC.ptyTerminateForeground, persistKey, expectedAgentId).catch(() => false) as Promise<boolean>,
     // No server handler — the session-name poll degrades to no adopted name. A PRE-EXISTING gap,

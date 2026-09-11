@@ -1337,6 +1337,14 @@ else, and its context links must keep classifying across restarts).
   the shared mapping. Desktop and Server Edition use the same core handler; relay tabs deliberately
   do not apply this machine's gateway to another core. Mobile needs a settings/model-picker surface
   before it can expose the feature.
+  **Spawn-environment visibility:** `pty.envInfo(persistKey)` (`pty:env-info`) supplies the context
+  meter on canvas nodes, kanban cards and card modals with the environment for that session. A
+  current local spawn returns the masked core capture (`source: 'spawn'`); an older local or SSH
+  session falls back to its tmux session environment (`source: 'tmux'`); a missing session or failed
+  read returns the explicit `unavailable` state. Credential-shaped names and values are irreversibly
+  masked in `core/pty-env-info.ts` before crossing IPC. The fallback parses `show-environment -s`
+  without evaluating its shell output, including multiline values and tmux's `unset NAME;` form
+  (the plain output spells the same removed-variable fact as `-NAME`).
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE`, `CANVAS_CONTROL_CAPABLE`,
   `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE`,

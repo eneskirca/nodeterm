@@ -505,6 +505,20 @@ export function remotePaneProcessArgs(
   )
 }
 
+/** Read shell-formatted session environment from remote tmux for `PtyManager.envInfo`.
+ * tmux emits `NAME="..."; export NAME;` for set vars and `unset NAME;` for removed vars. */
+export function remoteShowEnvironmentArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string
+): string[] {
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} show-environment -s -t ${sessionId}`)
+  )
+}
+
 /**
  * SIGTERM the remote pane's foreground process group, after core has already confirmed tmux is
  * reporting an agent rather than a shell. The shell re-reads tpgid here to close the process-race

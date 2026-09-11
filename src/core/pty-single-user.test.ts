@@ -6,6 +6,7 @@ import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS } from '../shared/types'
+import type { PtyEnvInfo } from '../shared/types'
 import { MODEL_GATEWAY_SECRET_REF } from '../shared/agents/model-gateway'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
 
@@ -90,6 +91,7 @@ const execCalls: Array<{ file: string; args: string[] }> = []
 const liveTmuxSessions = new Set<string>()
 let paneProcessReply = ''
 let processGroupReply = ''
+let tmuxEnvironmentReply = ''
 
 vi.mock('child_process', () => {
   type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
@@ -108,6 +110,8 @@ vi.mock('child_process', () => {
       ok('__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__')
     } else if (args.includes('capture-pane')) {
       ok('PANE SNAPSHOT')
+    } else if (args.includes('show-environment')) {
+      ok(tmuxEnvironmentReply)
     } else if (args.includes('#{pane_pid}|#{pane_current_command}')) {
       ok(paneProcessReply)
     } else if (file === 'ps' && args.includes('tpgid=')) {
@@ -167,6 +171,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     liveTmuxSessions.clear()
     paneProcessReply = ''
     processGroupReply = ''
+    tmuxEnvironmentReply = ''
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-solo-'))
     fake = fakePlatform({ userDataDir })
     initPlatform(fake)
@@ -405,6 +410,56 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     await tmuxManager()
     const r = await create(80, 24) // no live tmux session → cold start
     expect(r.fresh).toBe(true)
+  })
+
+  it('publishes the original spawn environment across a same-generation co-attach', async () => {
+    const inherited = process.env.ENV_CAPTURE_TEST
+    try {
+      process.env.ENV_CAPTURE_TEST = 'original'
+      await tmuxManager()
+      await create(80, 24)
+      process.env.ENV_CAPTURE_TEST = 'changed-after-spawn'
+      await create(90, 30)
+
+      const info = (await fake.handlers[IPC.ptyEnvInfo]('solo-1')) as PtyEnvInfo
+      expect(info).toMatchObject({ source: 'spawn' })
+      expect(info.vars).toContainEqual({ key: 'ENV_CAPTURE_TEST', value: 'original' })
+    } finally {
+      if (inherited === undefined) delete process.env.ENV_CAPTURE_TEST
+      else process.env.ENV_CAPTURE_TEST = inherited
+    }
+  })
+
+  it('uses tmux environment for a warm attach instead of publishing the new client env', async () => {
+    const inherited = process.env.ENV_CAPTURE_TEST
+    try {
+      process.env.ENV_CAPTURE_TEST = 'new-client-value'
+      await tmuxManager()
+      liveTmuxSessions.add(sessionName('solo-1'))
+      tmuxEnvironmentReply = 'ENV_CAPTURE_TEST="old-session-value"; export ENV_CAPTURE_TEST;\n'
+      await expect(create(80, 24)).resolves.toMatchObject({ fresh: false })
+
+      const info = await fake.handlers[IPC.ptyEnvInfo]('solo-1')
+      expect(info).toEqual({
+        source: 'tmux',
+        vars: [{ key: 'ENV_CAPTURE_TEST', value: 'old-session-value' }]
+      })
+      expect(tmuxCalls('show-environment')[0]?.args).toContain('-s')
+    } finally {
+      if (inherited === undefined) delete process.env.ENV_CAPTURE_TEST
+      else process.env.ENV_CAPTURE_TEST = inherited
+    }
+  })
+
+  it('does not probe local tmux when no live Session identifies the backend', async () => {
+    await tmuxManager()
+    tmuxEnvironmentReply = 'WRONG_SESSION="visible"; export WRONG_SESSION;\n'
+
+    await expect(fake.handlers[IPC.ptyEnvInfo]('unknown-node')).resolves.toEqual({
+      source: 'unavailable',
+      vars: []
+    })
+    expect(tmuxCalls('show-environment')).toHaveLength(0)
   })
 
   // ── Output: one subscriber, one coalesced message, never a broadcast ──────────────────────

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IPC } from '../shared/ipc'
+import type { PtyEnvInfo } from '../shared/types'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 
@@ -219,6 +220,10 @@ describe('PtyManager session-host contracts', () => {
     await vi.waitFor(() => expect(backend.create).toHaveBeenCalledTimes(1))
     await Promise.resolve()
     expect(settled).toBe(false)
+    await expect(host.handlers[IPC.ptyEnvInfo]('node-pending')).resolves.toEqual({
+      source: 'unavailable',
+      vars: []
+    })
 
     resolveReady({ fresh: false, screen: 'still alive' })
     await expect(resultPromise).resolves.toMatchObject({
@@ -227,6 +232,30 @@ describe('PtyManager session-host contracts', () => {
       persistent: true,
       screen: 'still alive'
     })
+    await expect(host.handlers[IPC.ptyEnvInfo]('node-pending')).resolves.toEqual({
+      source: 'unavailable',
+      vars: []
+    })
+  })
+
+  it('publishes a session-host environment only after ready proves a fresh generation', async () => {
+    const inherited = process.env.ENV_CAPTURE_TEST
+    try {
+      process.env.ENV_CAPTURE_TEST = 'fresh-host-value'
+      const m = await makeManager()
+      m.registerIpc()
+      const create = host.handlers[IPC.ptyCreate]
+
+      await expect(
+        create(7, { cols: 80, rows: 24, persistKey: 'node-fresh-host' })
+      ).resolves.toMatchObject({ fresh: true })
+      const info = (await host.handlers[IPC.ptyEnvInfo]('node-fresh-host')) as PtyEnvInfo
+      expect(info).toMatchObject({ source: 'spawn' })
+      expect(info.vars).toContainEqual({ key: 'ENV_CAPTURE_TEST', value: 'fresh-host-value' })
+    } finally {
+      if (inherited === undefined) delete process.env.ENV_CAPTURE_TEST
+      else process.env.ENV_CAPTURE_TEST = inherited
+    }
   })
 
   it('keeps a deletion tombstone when its owner recovery attach fails', async () => {

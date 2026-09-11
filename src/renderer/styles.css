@@ -7164,6 +7164,45 @@ button.group-node__setup:disabled {
 .ctx-bar__fill { height: 100%; border-radius: 4px; }
 .ctx-popover__meta { margin-top: 8px; font-size: 12px; }
 .ctx-popover__sub { margin-top: 4px; font-size: 11px; color: rgba(var(--tint-rgb), 0.5); }
+.ctx-env { margin-top: 10px; }
+.ctx-env__title { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+.ctx-env__sub { font-size: 10px; color: rgba(var(--tint-rgb), 0.5); margin-bottom: 6px; }
+.ctx-env__empty { font-size: 11px; color: rgba(var(--tint-rgb), 0.5); line-height: 1.4; }
+.ctx-env__vars {
+  max-height: 170px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+.ctx-env__var {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.06);
+  font-size: 10.5px;
+  min-width: 0;
+}
+.ctx-env__key {
+  flex: 0 0 45%;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(var(--tint-rgb), 0.75);
+  font-size: inherit;
+}
+.ctx-env__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: inherit;
+}
+.ctx-env__var--secret .ctx-env__value {
+  border-bottom: 1px dashed rgba(var(--tint-rgb), 0.35);
+}
 .usage-account__email { font-size: 13px; }
 
 .seg-pill {
