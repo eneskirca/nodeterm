@@ -16,11 +16,11 @@ hidden tabs.
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/eneskirca/nodeterm?style=flat)](https://github.com/eneskirca/nodeterm/stargazers)
 [![Latest release](https://img.shields.io/github/v/release/eneskirca/nodeterm?include_prereleases&sort=semver)](https://github.com/eneskirca/nodeterm/releases)
-<!-- Installer downloads: .dmg + .AppImage + .deb + Setup .exe across every release, hand-written on purpose.
+<!-- Installer downloads: .dmg + .AppImage + .deb + .rpm + Setup .exe across every release, hand-written on purpose.
      shields' github/downloads/…/total reads ~12× higher because electron-updater's own traffic
      (latest-*.yml polls, mac .zip deltas, blockmaps) is counted as downloads there. Recount with:
      gh api --paginate repos/eneskirca/nodeterm/releases --jq \
-       '[.[].assets[] | select(.name|test("\\.(dmg|AppImage|deb|exe)$")) | .download_count] | add' -->
+       '[.[].assets[] | select(.name|test("\\.(dmg|AppImage|deb|rpm|exe)$")) | .download_count] | add' -->
 [![Downloads](https://img.shields.io/badge/downloads-1.2k-brightgreen)](https://github.com/eneskirca/nodeterm/releases)
 
 <a href="https://trendshift.io/repositories/103825?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-103825" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/103825" alt="eneskirca%2Fnodeterm | Trendshift" width="250" height="55"/></a>
@@ -208,8 +208,12 @@ detects your platform. Everything is also listed at
   `homebrew/cask` and reports the cask as not found; without the trust grant, Homebrew ≥6
   fails rather than prompting. The cask tracks each promoted release, and the app updates
   itself (electron-updater), so `brew upgrade` is rarely needed for it.
-- **Linux (x64)** — self-updating **AppImage**, or a `.deb` for Debian/Ubuntu
-  (`sudo apt install ./nodeterm-*.deb`; updates are manual for `.deb`).
+- **Linux (x64)** — self-updating **AppImage**, a `.deb` for Debian/Ubuntu
+  (`sudo apt install ./node-terminal_*.deb`), or an `.rpm` for Fedora/RHEL
+  (`sudo dnf install ./node-terminal-*.rpm`). Updates are manual for both packages: the app
+  tells you when a new version is out and links the download. The AppImage needs FUSE 2,
+  which Fedora does not install by default: `sudo dnf install fuse-libs` if it exits with
+  a `libfuse.so.2` error.
 - **Windows (x64) — beta** — `nodeterm-Setup-<version>.exe` (per-user installer) or a
   portable `-win.zip`. Early support, so know what you are getting: the installer is
   **unsigned** (SmartScreen will ask — *More info → Run anyway*), **updates are manual**
@@ -245,6 +249,18 @@ release job does this automatically), or just install tmux yourself. On **Window
 C++ build tools and Python 3 (needed to compile node-pty) and points you at the exact
 `winget` commands for anything missing, then runs `npm ci`.
 
+On **Fedora** (and any distro shipping GCC 14 or newer), export `CFLAGS=-D_GNU_SOURCE` for the
+install: smart-whisper's bundled whisper.cpp uses GNU-only CPU-affinity calls without asking for
+them, and GCC 14 turned that from a warning into an error, so a plain `npm install` fails while
+building it. Packaging additionally wants `rpm-build` (for the `.rpm` target) and
+`libxcrypt-compat` (electron-builder's bundled `fpm` runs a Ruby that still links
+`libcrypt.so.1`, without which both `.deb` and `.rpm` fail):
+
+```bash
+sudo dnf install -y rpm-build libxcrypt-compat
+CFLAGS=-D_GNU_SOURCE npm install
+```
+
 ```bash
 npm install        # deps + rebuilds node-pty against Electron's ABI (postinstall)
 npm run dev        # dev mode with renderer HMR
@@ -253,7 +269,7 @@ npm start          # preview the production build
 npm run typecheck  # fastest correctness gate
 npm test           # vitest unit + integration suite
 npm run dist       # local UNSIGNED .dmg into dist/ (smoke test)
-npm run dist:linux # AppImage + .deb into dist/ (on a Linux host)
+npm run dist:linux # AppImage + .deb + .rpm into dist/ (on a Linux host; .rpm needs rpmbuild)
 npm run dist:win   # unsigned NSIS installer + zip into dist/ (on a Windows host)
 npm run server:dev # build + run the browser Server Edition (needs Node 22 + tmux)
 ```
