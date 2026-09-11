@@ -3247,6 +3247,13 @@ handled outside this repo.
   (src/shared/update-platform.ts) keys off the absence of `APPIMAGE` in the environment, so a deb
   and an rpm install both land on the manual-download card rather than downloading an AppImage
   they cannot install.
+- **The ORDER of `build.linux.target` is load-bearing: AppImage stays FIRST.** electron-builder
+  writes the update feed from the first target it can publish, so the entry at the head of that
+  array is what `latest-linux.yml` points at — and the AppImage is the only Linux artifact
+  electron-updater can actually install in place. `deb` has sat behind it for a long time without
+  disturbing the feed, and `rpm` is appended behind both for the same reason. package.json is JSON
+  and cannot carry the comment, so it is written here: **do not alphabetize or otherwise re-sort
+  that array.**
 
 **Building on a GCC 14+ distro needs `CFLAGS=-D_GNU_SOURCE`** (Fedora, Arch, recent openSUSE; the
 CI runners are old enough not to care). smart-whisper's vendored `whisper.cpp/ggml/src/ggml.c`
