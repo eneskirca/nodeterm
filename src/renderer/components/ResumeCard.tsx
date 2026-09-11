@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { IconClose } from './icons'
 import type { NavStop, Project } from '@shared/types'
 import { relativeTime } from '../lib/relativeTime'
 
@@ -62,7 +63,7 @@ export function ResumeCard({ project, nodes, onOpen }: ResumeCardProps): JSX.Ele
           aria-label="Dismiss"
           onClick={() => setDismissed(true)}
         >
-          ✕
+          <IconClose />
         </button>
       </div>
       <div className="resume-card__rows">

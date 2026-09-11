@@ -5,6 +5,7 @@ import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
 import type { NormalizedAgentEvent } from './agents/normalize'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
+import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
 import type { BrowserLeasePush } from './browser-indicator'
 import type { GroupWorktree } from './worktree'
@@ -964,6 +965,9 @@ export interface WorkspaceApi {
   onCorruptRecovered(cb: (backupFile: string) => void): () => void
   /** Fired when a project file changed on disk outside the app (git pull, sync, teammate). */
   onExternalChange(cb: (project: Project) => void): () => void
+  /** Fired when THIS core wrote the project itself (Server Edition headless canvas control: an agent
+   *  opened, renamed, moved, closed…). Not an outside edit — the renderer merges it, never asks. */
+  onServerChange(cb: (project: Project) => void): () => void
 }
 
 export interface ProjectSettingsApi {
@@ -1201,6 +1205,16 @@ export interface ClaudeAccount {
    * (settings.json), so it is re-validated at every point of use (absolute, normalized).
    */
   configDir?: string
+  /**
+   * Share the machine's system skills (`~/.claude/skills`) with this account (issue #643).
+   * OFF/absent = the isolation Claude Code's own `join(CLAUDE_CONFIG_DIR, 'skills')` gives, which
+   * is the default and often the point. ON = each system skill is LINKED into the account's own
+   * `skills/` individually — the account's directory stays real, nodeterm's own skills keep their
+   * names, and turning it off removes only the links (`core/claude-skill-share.ts`).
+   * Reconciled at launch and whenever the switch is flipped; LOCAL accounts only — a remote (SSH)
+   * account's skills live on its host and are out of scope for v1.
+   */
+  shareSystemSkills?: boolean
   createdAt: number
 }
 
@@ -1640,6 +1654,15 @@ export interface Settings {
    *  strands a live session gets their canvas back without downgrading the app. Neither value ever
    *  admits a forged token. */
   hookIdentityStrict?: boolean
+  /** Machine-local waivers for the canvas-control destructive confirm dialog
+   *  (@shared/control-confirm). Absent — and absent from DEFAULT_SETTINGS — means "always ask",
+   *  which is the pre-feature behavior bit for bit.
+   *
+   *  MACHINE-LOCAL BY CONSTRUCTION, and the reason is the trap this closed: a permission mode
+   *  rides `.nodeterm/project.json` and is git-shared, so anything keyed on the mode alone could
+   *  be turned off for a user by a repository they cloned. A waiver is a statement about this
+   *  machine's trust in its own agents, so it lives here and NEVER in a project file. */
+  controlConfirmWaivers?: ControlConfirmWaivers
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -2468,6 +2491,18 @@ export interface ChatTranscriptResult {
   found: boolean
 }
 
+/**
+ * Three answers to "is there a transcript for this session id?", because two are not enough.
+ *
+ * `absent` is a POSITIVE finding — we read the place it would be and it is not there. `unknown`
+ * is "we could not look": an unreadable root, a downed ControlMaster, a surface with no reader,
+ * an id we would not put on a command line anyway. The only consumer that acts on a negative is
+ * cold restore (it launches the agent bare instead of resuming a dead id), and for it the two
+ * must never collapse: dropping a resume on `unknown` would throw away a live conversation
+ * because an ssh call blipped.
+ */
+export type TranscriptPresence = 'present' | 'absent' | 'unknown'
+
 export interface ChatApi {
   /**
    * Reads an agent session transcript as structured chat messages.
@@ -2487,6 +2522,23 @@ export interface ChatApi {
     nodeId?: string,
     agentId?: string
   ): Promise<ChatTranscriptResult>
+
+  /**
+   * Is the transcript this session id names still on disk?
+   *
+   * Resolved STRICTLY by `sessionId` — no cwd fallback, which would answer `present` from another
+   * session's newest file. `nodeId` lets an SSH-project node be asked on its HOST. Never rejects:
+   * anything it cannot judge is `unknown`.
+   *
+   * Claude-shaped transcripts only (`readsClaudeTranscript` is the caller-side gate) — every other
+   * agent's id misses this resolver by construction, and reporting that as `absent` would drop a
+   * perfectly good resume.
+   */
+  transcriptExists(
+    sessionId: string,
+    accountId?: string,
+    nodeId?: string
+  ): Promise<TranscriptPresence>
 }
 
 /** Optional SSH context for account ops. When `projectId` names a connected SSH project, the
@@ -2513,6 +2565,31 @@ export interface ClaudeAccountsApi {
    * in yet), and installs the managed status hook into it. Local only — no SSH ctx.
    */
   link(configDir: string): Promise<{ id: string; configDir: string; email: string | null }>
+  /**
+   * Turn `~/.claude/skills` sharing on or off for one LOCAL account (issue #643) and reconcile the
+   * filesystem now. Idempotent in both directions; the renderer owns the settings flag and calls
+   * this for the effect. Never throws — the result reports what happened, including `refused`
+   * (the account's `skills/` resolves to the system one) and `failed` (an EPERM, a vanished skill).
+   */
+  setSkillSharing(id: string, enabled: boolean): Promise<ClaudeSkillShareResult>
+}
+
+/** What one `setSkillSharing` / launch reconcile did. Counts, never an exception. */
+export interface ClaudeSkillShareResult {
+  linked: number
+  unlinked: number
+  /** Links of ours present after the call — what the Settings row reports. */
+  shared: number
+  /** System skills not shared because the account has its own entry by that name. */
+  occupied: number
+  failed: number
+  /**
+   * Why nothing was done. `same-directory`: the account's `skills/` resolves to the system one
+   * (a hand-made whole-directory link, or a linked account pointed at `~/.claude`) — linking into
+   * it would plant links in the user's own folder and let the off-switch delete them from there.
+   * `remote-account`: an SSH account, whose skills live on its host (out of scope for v1).
+   */
+  refused?: 'same-directory' | 'remote-account'
 }
 
 /**
@@ -2614,10 +2691,18 @@ export interface GrokCliCaps {
    * and `--resume` accepts a TITLE as well as an id, failing as ambiguous on duplicates.
    */
   sessionIdFlag: boolean
+  /**
+   * Model ids this CLI lists, from `grok models` — the CLI's own catalogue, so there is no allowlist
+   * to maintain and a model shipped tomorrow appears without a code change.
+   *
+   * Empty when the subcommand fails, is unparseable, or grok is not installed: the UI then offers no
+   * model switching, which is the pre-feature behaviour. Never a partial list.
+   */
+  models: string[]
 }
 
-/** Unprobed grok ⇒ omit the flag ⇒ today's command line, byte-identical. */
-export const UNKNOWN_GROK_CLI_CAPS: GrokCliCaps = { sessionIdFlag: false }
+/** Unprobed grok ⇒ omit the flag, offer no models ⇒ today's command line, byte-identical. */
+export const UNKNOWN_GROK_CLI_CAPS: GrokCliCaps = { sessionIdFlag: false, models: [] }
 
 export interface GrokApi {
   /** Capabilities of the local grok CLI (memoized in the shell; safe to call repeatedly).

@@ -17,12 +17,15 @@
 // needs no live session. It is idempotent — a session already ended by `destroy` (the mounted case)
 // is a best-effort miss on the host — so no case analysis is needed at the call site.
 
-// KNOWN GAP, recorded in docs/session-memory.md's "Known gaps": the SESSIONS SIDEBAR still calls
-// `closeSession` with no remote leg, so ending an unmounted SSH node's session there leaves the
-// host's `nt-<id>` running after a confirm that said otherwise — the two surfaces now disagree
-// about the same session. Its correct fix is owner-routed per row (the row's OWNER project's
-// master, not the active project's, which is only sound here because the panel shows one machine
-// at a time); reuse this file rather than adding a third kill path.
+// That gap is CLOSED, and not here: `PtyManager.runEndSession` no longer decides remoteness from
+// the live `Session` alone. A resolver wired from the persisted index (`setRemoteNodeOwner` →
+// `workspaceStore.sshProjectIdForNode` + that project's ControlMaster — see core/remote-end.ts)
+// answers for a node with no live client at all, so every `transport.destroy` — the sessions
+// sidebar's `closeSession`, the node `×`, Delete, a delete after an app restart — now reaches the
+// host by itself, and a kill it could not deliver is written down rather than swallowed.
+//
+// This file therefore stays for what it always was: the panel's ORPHAN rows, which carry no node
+// id any project claims, so no resolver can find an owner for them. Do not add a third kill path.
 
 import type { Project } from '@shared/types'
 

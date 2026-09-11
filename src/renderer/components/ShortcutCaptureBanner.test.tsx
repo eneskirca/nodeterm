@@ -68,6 +68,9 @@ const body = (): string | undefined =>
   host.querySelector<HTMLElement>('.announce-banner__body')?.textContent ?? undefined
 const btn = (label: string): HTMLButtonElement =>
   [...host.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement
+/** The dismiss button carries an icon, not a label, so it is addressed by its title. */
+const btnByTitle = (title: string): HTMLButtonElement =>
+  host.querySelector(`button[title="${title}"]`) as HTMLButtonElement
 const click = (el: HTMLElement): void => {
   act(() => el.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 }
@@ -153,10 +156,10 @@ describe('ShortcutCaptureBanner', () => {
     expect(banner()).toBeNull()
   })
 
-  it('the ✕ dismisses without opening Settings', () => {
+  it('the dismiss button dismisses without opening Settings', () => {
     render()
     capture('app.commandPalette')
-    click(btn('✕'))
+    click(btnByTitle('Dismiss'))
     expect(banner()).toBeNull()
     expect(onOpenShortcuts).not.toHaveBeenCalled()
   })

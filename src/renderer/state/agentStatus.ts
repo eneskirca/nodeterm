@@ -220,7 +220,10 @@ export interface AgentStatusStore {
   /** Clear `working` entries whose last event is older than `staleMs` (lost-Stop safety net). */
   sweepStaleWorking(staleMs?: number): void
   setSession(id: string, session: string): void
-  setSessionId(id: string, sessionId: string): void
+  /** Record — or, with `undefined`, FORGET — this node's agent session id. Forgetting is what a
+   *  cold-restore resume does when the CLI reports the conversation does not exist (issue #707):
+   *  keeping a proven-dead id would make the next cold restore replay the same failed `--resume`. */
+  setSessionId(id: string, sessionId: string | undefined): void
   /** Record the Claude account a hook event says this node is running under. Persisted; see
    *  `account`. Idempotent — a re-assert of the same account writes nothing. */
   setAccount(id: string, account: ObservedClaudeAccount): void

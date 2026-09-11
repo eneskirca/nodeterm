@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { toDataURL } from 'qrcode'
+import { DEFAULT_PAIR_QR_FORM, encodePairQr, type PairQrForm } from '@shared/pair-qr'
 
 export type PairingPhase = 'idle' | 'waiting' | 'paired' | 'timeout'
 
@@ -16,6 +17,10 @@ const SSH_RECHECK_MS = 2000
 export function usePhonePairing(onPaired?: () => void): {
   phase: PairingPhase
   qr: string
+  /** Which envelope the QR on screen encodes. Switching it re-renders the SAME live token —
+   *  it never restarts pairing (eneskirca/nodeterm#745). */
+  qrForm: PairQrForm
+  setQrForm: (form: PairQrForm) => void
   sshOpen: boolean
   sshHealed: boolean
   /** On phase 'paired': whether the pairing came with a relay leg ('off' = toggle disabled,
@@ -33,6 +38,10 @@ export function usePhonePairing(onPaired?: () => void): {
 } {
   const [phase, setPhase] = useState<PairingPhase>('idle')
   const [qr, setQr] = useState('')
+  // The built payload JSON, kept so the QR can be re-encoded in the other envelope without
+  // minting a new token — the listener on the other end is keyed to THIS one.
+  const [payload, setPayload] = useState('')
+  const [qrForm, setQrForm] = useState<PairQrForm>(DEFAULT_PAIR_QR_FORM)
   const [sshOpen, setSshOpen] = useState(true)
   // Went from unreachable → reachable while the warning was showing: show a green confirmation
   // instead of silently dropping the warning (the user just flipped a toggle; acknowledge it).
@@ -74,10 +83,11 @@ export function usePhonePairing(onPaired?: () => void): {
     setError('')
     setBusy(true)
     try {
-      const { payload, sshOpen: open, relayPlan: plan } = await window.nodeTerminal.pairing.start()
+      const { payload: built, sshOpen: open, relayPlan: plan } = await window.nodeTerminal.pairing.start()
       setRelayPlan(plan ?? null)
-      const dataUrl = await toDataURL(payload, { margin: 1, width: 240 })
-      setQr(dataUrl)
+      // The image itself is rendered by the effect below, which also handles a later switch
+      // between the JSON and URL envelopes.
+      setPayload(built)
       setSshOpen(open)
       setSshHealed(false)
       setRelayResult(null)
@@ -90,12 +100,35 @@ export function usePhonePairing(onPaired?: () => void): {
     }
   }
 
+  // Render the QR for whatever payload + envelope is current. Re-runs when the user switches
+  // envelope, which is deliberately NOT a restart: same token, same listener, different
+  // encoding of the same bytes.
+  useEffect(() => {
+    if (!payload) {
+      setQr('')
+      return
+    }
+    let cancelled = false
+    void toDataURL(encodePairQr(payload, qrForm), { margin: 1, width: 240 })
+      .then((dataUrl) => {
+        if (!cancelled) setQr(dataUrl)
+      })
+      .catch(() => {
+        // Keep whatever image is already up; the pairing listener is unaffected by a render
+        // failure, and a blank QR with no explanation is the failure mode #745 was about.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [payload, qrForm])
+
   const stop = (): void => {
     if (runningRef.current) {
       runningRef.current = false
       void window.nodeTerminal.pairing.stop()
     }
     setPhase('idle')
+    setPayload('')
     setQr('')
   }
 
@@ -106,6 +139,7 @@ export function usePhonePairing(onPaired?: () => void): {
   useEffect(() => {
     return window.nodeTerminal.pairing.onDone((result) => {
       runningRef.current = false
+      setPayload('')
       setQr('')
       setPhase(result.ok ? 'paired' : 'timeout')
       setRelayResult(result.ok ? (result.relay ?? null) : null)
@@ -123,5 +157,19 @@ export function usePhonePairing(onPaired?: () => void): {
     }
   }, [])
 
-  return { phase, qr, sshOpen, sshHealed, relayResult, relayPlan, error, busy, start, stop, reset: () => setPhase('idle') }
+  return {
+    phase,
+    qr,
+    qrForm,
+    setQrForm,
+    sshOpen,
+    sshHealed,
+    relayResult,
+    relayPlan,
+    error,
+    busy,
+    start,
+    stop,
+    reset: () => setPhase('idle')
+  }
 }

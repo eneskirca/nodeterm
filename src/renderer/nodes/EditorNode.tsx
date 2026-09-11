@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose } from '../components/icons'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { monaco } from '../editor/monaco-setup'
@@ -281,31 +283,32 @@ export function EditorNode({ id, data, selected }: NodeProps<CanvasNode>) {
           imageDims && <span className="editor-node__dims">{imageDims}</span>
         ) : isPdf ? null : (
           <>
-            <button
-              className="editor-node__toggle"
-              title={commandTooltip('Toggle markdown preview', 'node.toggleMarkdown')}
-              onClick={togglePreview}
-            >
-              {preview ? 'Edit' : 'Preview'}
-            </button>
-            <button
-              className="editor-node__save"
-              disabled={!dirty}
-              title={hintLabel('Save (⌘S)')}
-              onClick={save}
-            >
-              Save
-            </button>
+            <Tooltip label={commandTooltip('Toggle markdown preview', 'node.toggleMarkdown')}>
+              <button
+                className="editor-node__toggle"
+                aria-label="Toggle markdown preview"
+                onClick={togglePreview}
+              >
+                {preview ? 'Edit' : 'Preview'}
+              </button>
+            </Tooltip>
+            <Tooltip label={hintLabel('Save (⌘S)')}>
+              <button className="editor-node__save" disabled={!dirty} onClick={save}>
+                Save
+              </button>
+            </Tooltip>
           </>
         )}
         <MaximizeButton id={id} maximized={!!data.premaxRect} />
-        <button
-          className="term-node__close"
-          title="Close"
-          onClick={() => deleteElements({ nodes: [{ id }] })}
-        >
-          ×
-        </button>
+        <Tooltip label="Close">
+          <button
+            className="term-node__close"
+            aria-label="Close"
+            onClick={() => deleteElements({ nodes: [{ id }] })}
+          >
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="editor-node__body">

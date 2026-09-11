@@ -5,7 +5,7 @@ export function isCanvasImageDropTarget(target: EventTarget | null, wrap: Elemen
     element &&
     wrap.contains(element) &&
     element.closest('.react-flow__pane') &&
-    !element.closest('.react-flow__node, .react-flow__controls, .react-flow__minimap')
+    !element.closest('.react-flow__node, .react-flow__minimap')
   )
 }
 

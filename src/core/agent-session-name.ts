@@ -17,7 +17,7 @@
 // Anything else has no readable session name; the claude reader answers null for it, which is what
 // every pre-grok caller already got.
 import { readSessionName, readSmallTail, TITLE_TAIL_BYTES } from './transcript-reader'
-import { readGrokSessionName } from './grok-session'
+import { readGrokSessionName, type GrokRemoteSummaryReader } from './grok-session'
 import { pickGeminiTitle } from './gemini-session'
 import { readCodexSessionName } from './codex-session-name'
 
@@ -29,6 +29,16 @@ import { readCodexSessionName } from './codex-session-name'
  * here as a function rather than as a core singleton.
  */
 export interface AgentSessionNameDeps {
+  /**
+   * Reads a REMOTE grok session's `summary.json` on its host — the grok analogue of claude's
+   * `setRemoteTranscriptReader`, and the fix for §8.4: without it the shells derive the session
+   * directory from the LOCAL sessions root while the payload's `cwd` came from the host, i.e. a path
+   * on the wrong machine.
+   *
+   * Its answer is FINAL for a session it owns: `{ text: '' }` means "remote, unreadable" and yields
+   * no name, never a local lookup. Only `null` — "not a remote session" — routes to the local map.
+   */
+  grokRemoteSummary?: GrokRemoteSummaryReader
   /**
    * sessionId → that gemini session's transcript path, i.e. `geminiContextTail.pathFor`. Fed only
    * by hook POSTs, so `undefined` for a session no hook has been seen for — and for a REMOTE (SSH)
@@ -71,7 +81,7 @@ export function readAgentSessionName(
   deps?: AgentSessionNameDeps
 ): Promise<string | null> {
   if (!sessionId) return Promise.resolve(null)
-  if (agentId === 'grok') return readGrokSessionName(sessionId)
+  if (agentId === 'grok') return readGrokSessionName(sessionId, deps?.grokRemoteSummary)
   if (agentId === 'gemini') return readGeminiSessionName(sessionId, deps?.geminiPathFor)
   // Never falls through to claude's reader: that one SCANS ~/.claude/projects on a cache miss, so
   // an unrouted codex node would pay that scan once a minute for a guaranteed null.

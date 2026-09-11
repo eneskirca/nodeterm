@@ -100,5 +100,9 @@ describe('Server Edition external workspace watcher', () => {
     expect(incoming.nodes.map((candidate) => candidate.id)).toEqual([source.id, kept.id])
     expect(incoming.bridges).toEqual([{ id: 'bridge-kept', source: source.id, target: kept.id }])
     expect(incoming.ropes).toEqual([{ id: 'rope-kept', source: source.id, target: kept.id }])
+    // This one IS an outside edit — a hand edit or a git pull — so it belongs on the channel the
+    // renderer answers with the conflict bar, and must never be swapped onto the server-write
+    // channel a later refactor might mistake it for (that one merges silently, no question asked).
+    expect(fake.sent.filter((entry) => entry.channel === IPC.workspaceServerChange)).toEqual([])
   })
 })

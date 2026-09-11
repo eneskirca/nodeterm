@@ -23,10 +23,12 @@ import {
   type LogRecord,
   type BoardLogReadResult,
   type ChatTranscriptResult,
+  type TranscriptPresence,
   type ClaudeApi,
   type ClaudeCliCaps,
   type GrokApi,
   type GrokCliCaps,
+  type ClaudeSkillShareResult,
   type CodexApi,
   type CodexIdentityCaps,
   UNKNOWN_CODEX_IDENTITY_CAPS,
@@ -299,10 +301,13 @@ export function buildRealApi(
     // REAL: core broadcasts IPC.workspaceCorruptRecovered from the load path (workspace-store.ts).
     onCorruptRecovered: (cb) => client.subscribe(IPC.workspaceCorruptRecovered, cb as Listener),
     // Server Edition runs the shared WorkspaceWatcher and broadcasts outside file edits here.
-    // Core-originated mutations use the same channel: remote-node adoption already did, and Server
-    // Edition canvas control uses it for persisted bridge/rope changes that are wider than the
-    // node-only canvas:mut vocabulary.
-    onExternalChange: (cb) => client.subscribe(IPC.workspaceExternalChange, cb as Listener)
+    // Remote-node adoption (the phone appending a session it started) rides it too: that IS
+    // "another device", which is what this channel means.
+    onExternalChange: (cb) => client.subscribe(IPC.workspaceExternalChange, cb as Listener),
+    // REAL: Server Edition canvas control broadcasts its own persisted bridge/rope changes here —
+    // wider than the node-only canvas:mut vocabulary, but ours, so they must not travel the
+    // outside-edit channel and end up behind the conflict bar (see server/canvas-control.ts).
+    onServerChange: (cb) => client.subscribe(IPC.workspaceServerChange, cb as Listener)
   }
 
   // REAL: WorkspaceStore (core) registers the project-settings:* channels too — same
@@ -896,7 +901,20 @@ export function buildTranscriptApi(
           accountId,
           nodeId,
           agentId
-        ) as Promise<ChatTranscriptResult>
+        ) as Promise<ChatTranscriptResult>,
+      // A REAL implementation, not a stub: the server runs on the machine holding these
+      // transcripts, so its answer is as good as the desktop's local leg. A failed request
+      // degrades to `unknown` (never `absent`) — cold restore acts on a negative, so the wrong
+      // degrade would drop a live conversation's `--resume` because a socket blipped.
+      transcriptExists: (sessionId, accountId, nodeId) =>
+        (
+          client.request(
+            IPC.transcriptExists,
+            sessionId,
+            accountId,
+            nodeId
+          ) as Promise<TranscriptPresence>
+        ).catch(() => 'unknown' as const)
     },
     claudeReadTranscript: (sessionId, cwd, accountId, nodeId) =>
       client.request(
@@ -943,7 +961,15 @@ export function buildClaudeAccountsApi(client: RpcClient): Pick<NodeTerminalApi,
           id: string
           configDir: string
           email: string | null
-        }>
+        }>,
+      // Real, not a stub: the whole implementation is core, so the machine the browser is served
+      // FROM is exactly the machine whose `~/.claude/skills` the option shares (issue #643).
+      setSkillSharing: (id, enabled) =>
+        client.request(
+          IPC.claudeAccountsSetSkillSharing,
+          id,
+          enabled
+        ) as Promise<ClaudeSkillShareResult>
     }
   }
 }

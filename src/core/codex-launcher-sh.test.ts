@@ -43,11 +43,11 @@ let startAnswer: (() => string) | null = null
 let startDelayMs = 0
 let bindAnswer: (() => void) | null = null
 
-/** A stand-in for the real `codex`, which records how it was invoked and exits 0. */
-function writeFakeCodex(): void {
+/** A stand-in for the real `codex`, which records how it was invoked before the injected body. */
+function writeFakeCodex(body = 'exit 0'): void {
   fs.writeFileSync(
     path.join(binDir, 'codex'),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\n${body}\n`,
     { mode: 0o755 }
   )
 }
@@ -61,8 +61,9 @@ beforeAll(async () => {
   resetPlatformForTests()
   initPlatform(fakePlatform({ userDataDir: dir }))
   launcher = path.join(dir, 'nodeterm-codex')
-  // `true` stands in for `codex app-server daemon start`; the "no app-server" case overrides it.
-  fs.writeFileSync(launcher, buildCodexLauncherScript('true'), { mode: 0o755 })
+  // `true` stands in for `codex app-server daemon start`; `false` makes preflight exercise that
+  // start rather than calling the fake client as a health probe. Health-specific cases override it.
+  fs.writeFileSync(launcher, buildCodexLauncherScript('true', 'false'), { mode: 0o755 })
   await hookServer.start()
   hookServer.setNodeAuthSecret(SECRET)
   hookServer.setCodexThreadStartHandler(async ({ nodeId, cwd, accountId, agent }) => {
@@ -206,7 +207,9 @@ describe('generated Codex launcher', () => {
       { mode: 0o755 }
     )
     const script2 = path.join(dir, 'nodeterm-codex-envdump')
-    fs.writeFileSync(script2, buildCodexLauncherScript(JSON.stringify(dumpScript)), { mode: 0o755 })
+    fs.writeFileSync(script2, buildCodexLauncherScript(JSON.stringify(dumpScript), 'false'), {
+      mode: 0o755
+    })
 
     await callLauncher([], { NODETERM_CODEX_ACCOUNT_ID: 'acct-A' }, script2)
 
@@ -228,7 +231,9 @@ describe('generated Codex launcher', () => {
     const dumpScript = path.join(dir, 'dump-daemon-env-endpointfail.sh')
     fs.writeFileSync(dumpScript, `#!/bin/sh\n: > ${JSON.stringify(envDump)}\n`, { mode: 0o755 })
     const script2 = path.join(dir, 'nodeterm-codex-endpointfail')
-    fs.writeFileSync(script2, buildCodexLauncherScript(JSON.stringify(dumpScript)), { mode: 0o755 })
+    fs.writeFileSync(script2, buildCodexLauncherScript(JSON.stringify(dumpScript), 'false'), {
+      mode: 0o755
+    })
 
     await callLauncher(['do', 'work'], { NODETERM_HOOK_ENDPOINT: '/nonexistent/hook-endpoint.env' }, script2)
 
@@ -250,6 +255,120 @@ describe('generated Codex launcher', () => {
     expect(bound).toEqual([{ nodeId: 'node-1', threadId: 'thread-xyz' }])
     expect(started).toEqual([])
     expect(codexArgv()).toEqual(['--remote unix:// resume thread-xyz'])
+  })
+
+  // A daemon update/restart closes every attached `--remote` TUI at once. The launcher used to
+  // `exec` the client, so the surviving tmux pane fell back to a shell even though the rollout was
+  // intact. Run the generated shell for real and replace the socket inode while the first fake
+  // client fails: the same thread must come back automatically, and the one-shot prompt MUST NOT be
+  // replayed (that would duplicate the user's turn after a transport-only failure).
+  it('resumes the same thread after the shared daemon socket is replaced, without replaying args', async () => {
+    const codexHome = path.join(dir, 'daemon-replaced-home')
+    const socketDir = path.join(codexHome, 'app-server-control')
+    const socket = path.join(socketDir, 'app-server-control.sock')
+    const failedOnce = path.join(dir, 'daemon-replaced-once')
+    fs.mkdirSync(socketDir, { recursive: true })
+    fs.writeFileSync(socket, 'generation-one')
+    fs.rmSync(failedOnce, { force: true })
+    writeFakeCodex(
+      `case "$*" in\n` +
+        `  --remote*)\n` +
+        `    if [ ! -e ${JSON.stringify(failedOnce)} ]; then\n` +
+        `      : > ${JSON.stringify(failedOnce)}\n` +
+        // Rename a second inode over the marker; unlink+create may immediately reuse one inode.
+        `      printf next > ${JSON.stringify(`${socket}.next`)}\n` +
+        `      mv ${JSON.stringify(`${socket}.next`)} ${JSON.stringify(socket)}\n` +
+        `      exit 1\n` +
+        `    fi\n` +
+        `    ;;\n` +
+        `esac\n` +
+        `exit 0`
+    )
+    const recovering = path.join(dir, 'nodeterm-codex-replaced-daemon')
+    fs.writeFileSync(recovering, buildCodexLauncherScript('true', 'true'), { mode: 0o755 })
+
+    const result = await callLauncher(
+      ['--ask-for-approval', 'never', 'fix the bug'],
+      { CODEX_HOME: codexHome },
+      recovering
+    )
+
+    expect(codexArgv()).toEqual([
+      '--remote unix:// resume thread-abc --ask-for-approval never fix the bug',
+      '--remote unix:// resume thread-abc'
+    ])
+    expect(started).toEqual([{ nodeId: 'node-1', cwd: fs.realpathSync(dir) }])
+    expect(result.stderr).toContain('shared Codex connection reset; restoring this session')
+  })
+
+  // Mutation guard for the generation/health condition above: an unrelated Codex client failure
+  // against the SAME healthy daemon returns to the shell once. Removing that condition makes this
+  // test log four launches (and turns every deterministic CLI error into a restart loop).
+  it('does not relaunch an unrelated client failure against the same healthy daemon', async () => {
+    const codexHome = path.join(dir, 'daemon-healthy-home')
+    const socketDir = path.join(codexHome, 'app-server-control')
+    fs.mkdirSync(socketDir, { recursive: true })
+    fs.writeFileSync(path.join(socketDir, 'app-server-control.sock'), 'same-generation')
+    writeFakeCodex('case "$*" in --remote*) exit 7 ;; esac\nexit 0')
+    const guarded = path.join(dir, 'nodeterm-codex-healthy-daemon')
+    fs.writeFileSync(guarded, buildCodexLauncherScript('true', 'true'), { mode: 0o755 })
+
+    await expect(callLauncher([], { CODEX_HOME: codexHome }, guarded)).rejects.toMatchObject({
+      code: 7
+    })
+    expect(codexArgv()).toEqual(['--remote unix:// resume thread-abc'])
+  })
+
+  it('starts a missing daemon and then resumes the same thread', async () => {
+    const codexHome = path.join(dir, 'daemon-missing-home')
+    const socketDir = path.join(codexHome, 'app-server-control')
+    const socket = path.join(socketDir, 'app-server-control.sock')
+    const failedOnce = path.join(dir, 'daemon-missing-once')
+    const starts = path.join(dir, 'daemon-starts.log')
+    fs.mkdirSync(socketDir, { recursive: true })
+    fs.rmSync(socket, { force: true })
+    fs.rmSync(failedOnce, { force: true })
+    fs.writeFileSync(starts, '')
+    writeFakeCodex(
+      `case "$*" in\n` +
+        `  --remote*)\n` +
+        `    if [ ! -e ${JSON.stringify(failedOnce)} ]; then\n` +
+        `      : > ${JSON.stringify(failedOnce)}\n` +
+        `      rm -f ${JSON.stringify(socket)}\n` +
+        `      exit 1\n` +
+        `    fi\n` +
+        `    ;;\n` +
+        `esac\n` +
+        `exit 0`
+    )
+    const startCommand =
+      `printf 'start\\n' >> ${JSON.stringify(starts)}; ` +
+      `mkdir -p ${JSON.stringify(socketDir)}; : > ${JSON.stringify(socket)}`
+    const probeCommand = `[ -e ${JSON.stringify(socket)} ]`
+    const recovering = path.join(dir, 'nodeterm-codex-missing-daemon')
+    fs.writeFileSync(recovering, buildCodexLauncherScript(startCommand, probeCommand), {
+      mode: 0o755
+    })
+
+    await callLauncher(['resume', 'thread-xyz'], { CODEX_HOME: codexHome }, recovering)
+
+    expect(codexArgv()).toEqual([
+      '--remote unix:// resume thread-xyz',
+      '--remote unix:// resume thread-xyz'
+    ])
+    // Once during preflight, once after the fake transport failure removed the socket.
+    expect(fs.readFileSync(starts, 'utf8').trim().split('\n')).toEqual(['start', 'start'])
+  })
+
+  it('uses a responsive orphaned daemon without invoking its refusing lifecycle start', async () => {
+    const running = path.join(dir, 'nodeterm-codex-running-orphan')
+    fs.writeFileSync(running, buildCodexLauncherScript('false', 'true'), { mode: 0o755 })
+
+    await callLauncher([], {}, running)
+
+    expect(codexArgv()).toEqual(['--remote unix:// resume thread-abc'])
+    expect(started).toEqual([{ nodeId: 'node-1', cwd: fs.realpathSync(dir) }])
+    expect(fallbacks).toEqual([])
   })
 
   // S6: the account scope travels in the POST body, never on argv (Constraint 6), so the record is
@@ -337,7 +456,7 @@ describe('falls back to plain codex', () => {
     fs.writeFileSync(path.join(runtime, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     try {
       const noServer = path.join(dir, 'nodeterm-codex-no-server')
-      fs.writeFileSync(noServer, buildCodexLauncherScript('false'), { mode: 0o755 })
+      fs.writeFileSync(noServer, buildCodexLauncherScript('false', 'false'), { mode: 0o755 })
       await callLauncher(['hello'], {}, noServer)
       expect(codexArgv()).toEqual(['hello'])
       expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'app-server-unavailable' }])
@@ -352,7 +471,7 @@ describe('falls back to plain codex', () => {
     // The caps probe normally keeps this case away from the launcher entirely — but the pane
     // resolves CODEX_HOME from its OWN environment (§8.5) and an install can be removed after boot.
     const noServer = path.join(dir, 'nodeterm-codex-no-standalone')
-    fs.writeFileSync(noServer, buildCodexLauncherScript('false'), { mode: 0o755 })
+    fs.writeFileSync(noServer, buildCodexLauncherScript('false', 'false'), { mode: 0o755 })
     await callLauncher(['hello'], {}, noServer)
     expect(codexArgv()).toEqual(['hello'])
     expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'codex-standalone-missing' }])
@@ -364,7 +483,7 @@ describe('falls back to plain codex', () => {
     fs.mkdirSync(runtime, { recursive: true })
     fs.writeFileSync(path.join(runtime, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     const noServer = path.join(dir, 'nodeterm-codex-relocated')
-    fs.writeFileSync(noServer, buildCodexLauncherScript('false'), { mode: 0o755 })
+    fs.writeFileSync(noServer, buildCodexLauncherScript('false', 'false'), { mode: 0o755 })
     await callLauncher(['hello'], { CODEX_HOME: home }, noServer)
     expect(fallbacks).toEqual([{ nodeId: 'node-1', reason: 'app-server-unavailable' }])
   })

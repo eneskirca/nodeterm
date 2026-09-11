@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { IconReload } from './icons'
 import type { ClaudeUsage, ProviderUsage, RemoteAccountUsage, UsageLimit } from '@shared/types'
 import { AGENT_CONFIG } from '@shared/agents/config'
 import { useSettings } from '../state/settings'
@@ -611,7 +612,7 @@ export function UsageIndicator({
         disabled={refreshing}
         title="Refresh usage"
       >
-        ⟳
+        <IconReload />
       </button>
     </div>
   )

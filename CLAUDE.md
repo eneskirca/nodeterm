@@ -8,6 +8,11 @@ testing habits). This file is what you reach for when you need to know *why* a r
 is, or you are changing a subsystem it describes. A change that other developers must know about
 belongs in BOTH (see Conventions).
 
+**PR text (title, description, comments, review responses) follows the `pr-writing` skill**: what
+changed and why it matters, then how it was checked and what was not, then risks or follow-up when
+there are any. Structure proportional to the change. `CONTRIBUTING.md` § Pull requests is the
+human-facing half of the same rule.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
@@ -145,7 +150,10 @@ The codebase is split by Electron process boundary — keep code on the correct 
   channels (`registerTranscriptIpc` — the ⌘M chat view + the find-bar's transcript index; see the
   ⌘M bullet under Agent support). **Canvas control is opt-in**
   (`NODETERM_SERVER_CANVAS_CONTROL=1` / `--canvas-control`): the Server shell installs its own shim
-  and runs a serialized `HeadlessNodeFactory`; disabled remains the default. (The SDK **chat node**
+  and runs a serialized `HeadlessNodeFactory`; disabled remains the default. Its project writes
+  broadcast on `workspace:server-change`, NOT the outside-edit channel — they are this core's own
+  writes and are three-way merged by the renderer, never put behind the conflict bar (see the
+  workspace-store bullet). (The SDK **chat node**
   — once listed here as deferred — was removed entirely, 2026-07; see the chat-node note in the
   node-kinds list.)
 - **`src/preload/`** — the only bridge. `index.ts` uses `contextBridge` to expose a
@@ -229,7 +237,21 @@ Persistence has two layers:
   speak an assembled v2-shaped `Workspace`; all fan-out lives in `core/workspace-store.ts` +
   pure `core/workspace-files.ts`. v2 files migrate on first save (backup `workspace.v2.bak`,
   one-time renderer note). Outside edits (git pull/sync) are detected by
-  `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty.
+  `core/workspace-watcher.ts` → silent reload, or a Reload/Keep-mine conflict bar when dirty; they
+  ride `workspace:external-change`, and so do the phone's `appendRemoteNode` and the SSH
+  reconcile, which really are "another device".
+  **A write this core made ITSELF rides `workspace:server-change` instead** — today that is Server
+  Edition headless canvas control (`server/canvas-control.ts`) — and the renderer three-way merges
+  it against the store baseline (`renderer/lib/serverChange.ts`: incoming nodes adopted silently,
+  ropes/bridges merged by id with server-added installed, server-removed dropped, local unsaved
+  edits kept, dangling edges pruned), never a bar and never a reload. It used to share the
+  outside-edit channel and that was a data-loss path, not a cosmetic one: `decideExternalChange`
+  compares the project shell, `ropes` included, so the one `ctrl-…` rope an `open-agent` appends
+  read as a conflict whenever the canvas was dirty — which it is throughout a spawn burst (the
+  paired `canvas:mut` marks it, spawns land 60–140 ms apart inside the 800 ms autosave debounce,
+  and **the bar itself suspends autosave**, so once raised it stayed raised). Answering "Keep my
+  version" then wrote the browser's edge state over the file, dropping the ropes the server had
+  just persisted and resurrecting cards it had removed.
   Unreadable refs render as greyed **unavailable** tabs (never dropped); corrupt project files
   are set aside as `project.json.corrupt-<ts>`. "Open folder…" adopts an existing
   `.nodeterm/project.json` — the probe MINTS the project id (node ids — tmux names — kept), and
@@ -322,6 +344,30 @@ Persistence has two layers:
   `refreshSshProject` runs ON `saveChain`: off the chain a poll snapshotting the pre-save entry
   could complete its slow ssh read after the save's mirror landed and "adopt" the store's own
   write on rev alone.
+  **A write ACK is not evidence about the server's CONTENT — only a read is** (2026-09-06 field
+  report: 16 terminals deleted on an SSH project came straight back, announced as sessions
+  registered from a phone the reporter does not own). `clearedNodes` is the tombstone set that
+  tells the mirror's re-read "we deleted this, do not rescue it back", and it used to be dropped
+  the moment `remoteIO.write` returned true. That ack is **optimistic for the 5 s throttle's
+  trailing write** (`makeRemoteWorkspaceIO` returns true and schedules the run) — so when the
+  connection died inside the window, `markUnmirrored` re-owed the mirror (`unmirrored.add`) while
+  the tombstones were already gone, and the retry's re-read found every just-deleted node still on
+  the server with nothing left to filter with: `rescueRemoteNodes` merged all 16 back into the
+  cache, bumped the rev and broadcast them as an external change. The asymmetry was in one place —
+  `unmirrored` was restored, `clearedNodes` was not. A tombstone is now retired ONLY by
+  `confirmClearedDeletions`: a read that no longer lists the id (taken from reads the store already
+  makes — the mirror's own re-read and `reconcileSsh` — so it costs no round-trip), or an adopt,
+  which overrules our deletions outright. **Both** read sites must call it; wiring one leaves the
+  other's tombstones alive for the whole run. The cost is that GC lags a landed write by one read,
+  which only prolongs the suppression of a rescue we do not want; the benefit is that the rule no
+  longer depends on a dropped write being REPORTED. Symmetrically restoring the set inside
+  `markUnmirrored` was the smaller diff and was rejected: it needs the same shadow state anyway,
+  and it only closes the one failure path that happens to report back. The set is runtime-only,
+  bounded by the ids deleted this run, and pruned for projects that leave the index.
+  **Neither surface may name a device for an adopted node** (`adoptedClause`,
+  `renderer/lib/externalChange.ts`): nothing at that layer knows the source — a stale own mirror
+  and a phone append are indistinguishable there — so the copy names the project FILE and offers
+  the possibilities without asserting one.
 - **Live terminal sessions** (tmux): terminals continue where they left off across node
   remounts *and* full app restarts, including running processes. See below.
 
@@ -574,6 +620,37 @@ Lifecycle, by intent:
 - **User clicks ×** → `destroy(persistKey)` runs `tmux kill-session`, permanently ending it. For a
   REMOTE node it kills the remote session **and then the local one of the same name** — normally a
   no-op, but it reaps the orphan the pre-`requireRemote` local fallback below could leave behind.
+  **Whether a node IS remote is answered WITHOUT a live session** (`core/remote-end.ts`,
+  `planRemoteEnd`). `runEndSession` used to read it off the dying `Session` alone
+  (`dying?.sshRemote`), and its comment claimed "both callers run while the session is still live"
+  — which is false for the case that matters: a delete arrives precisely when there may be nothing
+  attached (an app restart, the offscreen release, the 5-min park expiry, a project that is not
+  even open). `dying` was then `undefined`, remoteness read as "local", the remote branch was
+  skipped **in silence**, and the one kill that went out went to the LOCAL socket, where a
+  `requireRemote` node has nothing at all. Everything else about the teardown ran, so the node left
+  the canvas looking deleted while its `nt-<id>` kept running on the host — a leak with no surface
+  anywhere. The durable answer is the machine-local index: the shell wires
+  `PtyManager.setRemoteNodeOwner` to `workspaceStore.sshProjectIdForNode` + that project's
+  ControlMaster (`refForProject`). A LIVE `sshRemote` still wins when there is one — it is the exact
+  master the session was spawned over, and a node created seconds ago may not be in the index cache
+  yet — so the two sources are complementary, not redundant. The Server Edition wires no resolver
+  (it has no SSH-project manager) and its deletes stay on the local path unchanged.
+  **And the kill is CHECKED.** The old `catch {}` read "remote session may not exist / master down;
+  ignore", which are not the same fact: tmux's own exit 1 ("can't find session", `probeSaysAbsent`)
+  is an ANSWER, while ssh's 255 / a 127 / a spawn error is a NON-answer with the session still
+  running. A non-answer — and a node whose project has no master at all — is **recorded**
+  (`core/pending-remote-kills.ts`, atomic JSON under userData, keyed by `user@host` because several
+  projects share one host's tmux server) and settled the next time that host connects
+  (`SshProjectManager.settleOwedKills`, hung on the shared connect attempt so the REUSE branch pays
+  too; an entry is dropped only on tmux exit 0 or 1). The delete itself is **never refused** over an
+  unreachable host: the node is going, and a refusal strands it on the canvas with the same session
+  still running plus a dialog — the user answers that by deleting it again. That trade is only
+  defensible BECAUSE the debt is durable; drop the store and refusing becomes the honest option.
+  **Only a `delete` may owe a debt.** A `recycle` keeps the node (worktree move, model switch,
+  "pause & end session"), so a kill deferred to a later reconnect would land on the session that
+  node has since RESPAWNED under the same name — ending live work hours after the action that
+  queued it, with nothing on screen connecting the two. A recycle still ATTEMPTS the remote kill;
+  it just records nothing when it cannot land, exactly as before.
 - **A remote node is NEVER spawned locally** (`PtyCreateOptions.requireRemote`). `sshRemote` says
   "here is the master to run over"; `requireRemote` says "and if there isn't one, spawn NOTHING".
   Without it, a create with no `sshRemote` falls through to core's local tmux/plain-shell branches
@@ -588,6 +665,24 @@ Lifecycle, by intent:
   The refusal is **only** in `spawnNew` — a co-attach JOIN to a live session for that node id is
   still correct. An offline node reports itself to `SshReconnector`, so the canvas heals itself;
   `retryNow` (banner Reconnect / node Reconnect) skips the backoff and clears the refuse window.
+- **A shared Codex daemon restart is NOT a terminal-session restart.** tmux survives, and the Codex
+  rollout/thread survives, but every `codex --remote unix://` TUI attached to that account's one
+  app-server socket exits together. `buildCodexLauncherScript` therefore stays in the pane as a
+  bounded transport supervisor after binding a thread instead of `exec`ing the remote TUI. On an
+  abnormal client exit it resumes that exact thread only when `app-server daemon version` no longer
+  reports `status: running` or the known control-socket inode changed; the same healthy generation
+  returns the original status so a deterministic CLI error cannot relaunch forever. A reconnect
+  never replays the launch prompt/options (that would duplicate the user's turn), and three rapid
+  resets stop with a manual `codex resume <thread>` receipt. Preflight probes live protocol health
+  before lifecycle start: Codex's PID ownership record can go stale while the shared process remains
+  responsive, and killing that "orphan" would fan one bookkeeping failure out across every node.
+  The generated-shell tests run the replaced-socket, missing-daemon, healthy-client-error, and
+  responsive-orphan cases under real `/bin/sh`; the healthy-error case is the mutation guard.
+  **Both shells wire this spine.** Electron and Server Edition arm the same signed record secret,
+  thread start/bind handlers, capability refresh, and UI identity events; the server composition is
+  isolated in `server/codex-shared-identity.ts` and behavior-tested. The old Server Edition
+  "deliberate plain Codex" answer bypassed the launcher entirely, so a reconnect implementation in
+  the launcher could be perfectly green while every headless pane still fell back to its shell.
 - **"Restart agent (resume)"** → deliberately NOT a session lifecycle event: `terminal/
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
@@ -691,6 +786,50 @@ session (you can't keep a live OS process across a reboot):
   flag — and instead records the pane its fresh shell settled on (`agentStatus.hibernatedPane`),
   so a later explicit Resume can recognize it even for a default shell outside the wake's
   `isShellCommand` allowlist.
+  **A persisted session id is not evidence the conversation still exists**, and a dead one is not a
+  no-op: `claude --resume <dead id>` prints *"No conversation found with session ID: <uuid>"* and
+  EXITS, leaving the pane at a bare shell under a node still wearing its agent badge. Measured
+  2026-09-09 on the reporting host (`nodeterm-rmt`, 108 live sessions): **20** panes sat in exactly
+  that state, and not one of those 20 ids had a `<id>.jsonl` anywhere under the system
+  `~/.claude/projects` or the managed account root. Claude's own 30-day cleanup, a `/clear`, a
+  removed account and an id minted for a session that never ran all produce it. So the cold-restore
+  branch now asks `chat.transcriptExists` first (`transcript:exists`, served by
+  `registerTranscriptIpc` in BOTH shells) and, on a POSITIVE `absent`, launches the agent **bare**
+  and raises a slim `CoState.lostSession` banner on the node — "The previous conversation could not
+  be found — this agent started fresh." — instead of opening a blank session in silence. Three
+  rules make that safe:
+  - **The answer is a TRI-state** (`TranscriptPresence`: `present | absent | unknown`) and only
+    `absent` drops the id. The two errors are wildly asymmetric — wrongly resuming a dead id costs
+    one line and a bare shell (today's bug), wrongly dropping a LIVE id strands work the user
+    believes is continuing — so an unreadable root, a `readdir` that threw, a downed ControlMaster,
+    a relay tab, a rejected call and an id we would not put on a command line are ALL `unknown` =
+    resume exactly as before. `transcriptPresence` (`core/transcript-reader.ts`) is
+    `resolveTranscriptPath` plus that one distinction, not a second way of finding a transcript,
+    and a root that does not exist at all still answers `unknown` on purpose: cold restore runs at
+    boot, where a not-yet-mounted `$HOME` is indistinguishable from an empty one.
+  - **The remote leg's `unknown` is TERMINAL, never a fallthrough.** A remote session's transcript
+    is on the host, so searching this machine for it would find nothing and report `absent` about
+    the wrong computer. `remoteTranscriptPresence` (`src/main`) exists beside
+    `remoteTranscriptRefFor` rather than reusing it because that function collapses "not remote" /
+    "no home" / "ssh failed" / "the host looked and there is nothing" into one `undefined` — fine
+    for a reader that falls back, fatal for a caller that acts on absence.
+    `locateRemoteTranscriptCommand` was already built for this distinction (it exits 0 on a clean
+    miss, "so no transcript is an ANSWER, not a failed ssh"), and that is the property this reads;
+    it is deliberately more permissive than the local leg (it searches the account root AND the
+    system root), which errs toward `present` = keep the resume.
+  - **Claude only**, gated by `readsClaudeTranscript` — a codex/gemini/grok id misses this
+    resolver by construction every time, so probing one would answer `absent` for a healthy
+    session and drop its resume. Those agents keep the pre-existing behaviour until the probe
+    learns their layouts (`handoff/locate.ts` has the per-agent locators; that is the seam).
+  Decision logic is the pure `terminal/cold-resume-session.ts`. **Adding a `CoState` field owes the
+  hand-written equality list in `setCo`** — a patch touching only an uncompared field is SWALLOWED
+  and its banner silently never renders (it happened once to `spawnError`);
+  `nodes/cold-resume-wiring.test.ts` now asserts every field of the interface appears there.
+  Surfaces: Desktop full; Server Edition full (the handler is core, the ws-bridge leg is real, and
+  that shell runs on the host whose transcripts it reads, so it needs no remote leg); relay tabs
+  answer `unknown` and resume as before. **Not yet on the kanban CARD MODAL** — `ModalTerminal`
+  reads no `CoState`, so a user who only ever opens the session from the board does not see the
+  notice; the honest fix is a shared node-notice surface rather than a second copy of the banner.
 
 ### We have our own VT emulator — check it before asking tmux
 
@@ -1200,9 +1339,12 @@ else, and its context links must keep classifying across restarts).
   before it can expose the feature.
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE`, `CANVAS_CONTROL_CAPABLE`,
-  `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE` and
-  `SESSION_ID_CAPABLE`; NOT in `SUBAGENT_CAPABLE` — subagent cards still need the `spawn_subagent`
-  PreToolUse/PostToolUse payload, which nobody has captured. The other four came off the blocked list
+  `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE`,
+  `SESSION_ID_CAPABLE` and `SUBAGENT_CAPABLE`. Subagent cards come from grok's native
+  `SubagentStart`/`SubagentStop` hooks, keyed by `subagentId` — measured on 1.0.13 by launching two
+  `explore` children in parallel (same type, different ids; the start's `sessionId` is the PARENT's,
+  the stop's is the CHILD's own and equals `subagentId`, so that is the only id both events share).
+  The spawn tool call is not the card key. The other four came off the blocked list
   in 2026-09, once a machine with a logged-in grok session produced real fixtures: context links and
   the ⌘M panel read `chat_history.jsonl` (NOT `updates.jsonl` — see below), and the meter reads
   `signals.json`. Its hook config is a **directory** (`$GROK_HOME/hooks/*.json`, all merged), so nodeterm
@@ -1383,8 +1525,9 @@ else, and its context links must keep classifying across restarts).
   never judged. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
   bare shell because a cold-restore `--resume` had answered *"No conversation found with session
   ID"* — the persisted `sessionId` outlived its transcript. The chip surfaces those too, but the
-  Resume it offers replays the same dead id; making cold restore fall back to a bare launch when the
-  transcript is gone is a separate, unbuilt fix.
+  Resume it offers still replays that dead id — but cold restore no longer creates the state: it
+  probes `transcript:exists` first and launches bare on a positive `absent`, saying so on the node
+  (see **Cold restore** above). Re-measured on the same host 2026-09-09: **20** of 108.
 - **Hook server (loopback HTTP)** — `src/core/agents/hook-server.ts` is a main-process
   loopback HTTP server (per-session bearer token, fail-open) that the installed hook scripts
   POST to; it replaced the old `fs.watch` signal-log mechanism. `buildPtyEnv` injects the
@@ -1441,6 +1584,30 @@ else, and its context links must keep classifying across restarts).
   remote installers at once; a second repair mechanism would be exactly the duplicated rule this
   file warns about. It strips only OUR handler out of a definition, so a hook a user hand-merged
   beside ours survives.
+- **A reused ControlMaster is not evidence of a live hook tunnel** (issue #735 — remote sessions
+  stuck on **Unknown**, no completion notifications, no unread dots). `connect()`'s reuse branch
+  returned the cached `hookEndpointPath` whenever `ssh -O check` answered, on the written-down
+  assumption that *"a master that answered `-O check` never lost its tunnel"*. That is false, and
+  the mechanism is **our own self-heal**: `childArgs` uses `ControlMaster=auto` + `ControlPersist`
+  precisely so a dead master is rebuilt by the next child command (a status poll, a mirror push, a
+  remote git call) on the same ControlPath. The rebuilt master answers `-O check` — and carries no
+  `-R`, because `RemoteHooks.setup()` is the only caller of `hookForwardArgs` and it runs only on
+  the branch where a master has just come up. The 45 s watchdog then parks on the reuse branch
+  forever. Nothing reports it: the project says `connected`, terminals work, the mirror pushes, and
+  only the hook POSTs die — into a socket file that still EXISTS with nobody listening.
+  **MEASURED on the host that prompted the fix**: 10 per-project hook sockets on disk, exactly ONE
+  with a listener (`ss -lxp`); the dead project's socket answered `curl` exit 7 while that same
+  project's status mirror was being written the same second; **107 of 128** live `nodeterm-rmt`
+  tmux sessions were pinned to that dead endpoint. Sessions are pinned for life
+  (`new-session -A -e …` — tmux ignores `-e` on an existing session), so every one of them stayed
+  dark until the app restarted. The reuse branch now probes the tunnel (`RemoteHooks.tunnelAlive`,
+  one `curl` over the already-multiplexed master) and re-runs the idempotent `setup()` when it does
+  not answer, firing `onTunnelVerified` so the working agents resync. **The retry is backed off**
+  (`tunnel-repair.ts`, pure + tested): the FIRST failure repairs immediately — that is the common
+  case — while a host that can never forward (`AllowStreamLocalForwarding no`, no `curl`, a `$HOME`
+  the validator refuses) settles at one attempt per 15 minutes instead of rewriting every agent's
+  hook config every 45 s. A missing spec answers "not alive" rather than "unknown": nothing of ours
+  is bound, which is a tunnel that cannot deliver.
 - **Per-node hook identity** (`src/core/agents/node-auth-*.ts`, `node-token-*.ts`,
   `node-identity-policy.ts` — full write-up in **`docs/node-identity.md`**) — the shared bearer proves
   "a session on this machine", never *which* session, so every node also gets a capability derived
@@ -1487,13 +1654,18 @@ else, and its context links must keep classifying across restarts).
     builder), because the failure is silent and one-sided: a remote shim carrying the prelude keeps
     working, and the only symptom is this machine's userData layout sitting in a file on someone
     else's server. **The prelude is shared; the RECORD it reads is desktop-only.** Those writers are
-    the two hook-server handlers `src/main/index.ts` registers, and
-    `src/server/handlers/index.ts` deliberately registers neither — so on the Server Edition the
-    file is byte-identical, the signing secret is armed, and the resolver still finds nothing and
-    takes its fallback. Coherent rather than missing: that shell answers `shared: false`
-    (`UNKNOWN_CODEX_IDENTITY_CAPS`), so its Codex nodes run their own app-server and no tool shell
-    needs recovering. It turns into a real gap only when that edition grows the shared app-server,
-    and the fix is the two registrations.
+    the two hook-server handlers `src/main/index.ts` registers — and, since the daemon-reset work,
+    the ones `wireServerCodexSharedIdentity` (`src/server/codex-shared-identity.ts`) registers at
+    Server Edition boot as well. That shell used to answer a flat `shared: false`
+    (`UNKNOWN_CODEX_IDENTITY_CAPS`) as a DELIBERATE degrade: its Codex nodes ran their own
+    app-server, so no tool shell needed recovering. It no longer does. The Server Edition has the
+    same local app-server, the same signed node tokens and the same persistent canvas store, so it
+    wires the shared-thread spine **after** those secrets exist and its panes get the same
+    supervisor. The registration is deliberately late for that reason, and `registerCodexIdentityIpc()`
+    now answers from the live resolver instead of a constant — an early browser caller waits for the
+    refresh rather than being pinned to a false "plain Codex" answer for the whole app run. What
+    remains desktop-only is the record's REMOTE leg (SSH shims carry no record root or prelude, the
+    paragraph above).
   - **That prelude EXPORTS WHAT THE RECORD SAYS — it never decides.** `NODETERM_AGENT_ID` and
     `NODETERM_CANVAS_CONTROL` were once constants there (`codex`, granted); both are
     `buildPtyEnv`'s answers about the PANE, which labels a node with its OWN agent id
@@ -1706,6 +1878,21 @@ else, and its context links must keep classifying across restarts).
   `last_assistant_message` as the card's result. Remote (SSH) codex nodes get cards but no live
   activity yet (the child rollout is on the host; claude's `remote-subagent-tail` has no codex
   counterpart — follow-up).
+  **Grok** (2026-09) joined via its own native `SubagentStart`/`SubagentStop`, measured on
+  grok 1.0.13 by launching two `explore` children in parallel. Keyed by `subagentId` occupying
+  the same `toolUseId` slot the store already uses (claude correlates by `tool_use_id`,
+  codex by `agent_id`; grok has no tool call behind a subagent). Facts a refactor must not
+  lose: **(1)** the start's `sessionId` is the PARENT's and the stop's is the CHILD's own
+  (equal to `subagentId`) — keying on it files start and stop under different cards and the
+  started one never closes. **(2)** the child's transcript is DERIVED from `subagentId` as
+  `chat_history.jsonl` (`core/grok-subagent-format.ts`); the start's `transcriptPath` is the
+  PARENT's, and even the stop names `updates.jsonl`, which parses to nothing. **(3)** a
+  `session_end` bearing `subagentType` returns early in both raw listeners — without that a
+  child finishing tears down the PARENT's session state. **(4)** `description` arrives only
+  on the start. The four captured payloads live in
+  `src/shared/agents/__fixtures__/grok/hook-payloads.json`, pinned by
+  `normalize.grok.capture.test.ts`. Remote (SSH) grok nodes get cards from the hook but no
+  live tail yet (the child dir is on the host; same gap as codex).
 - **/loop, /schedule & /cron node** (agents in `RECURRING_CAPABLE`) — detected from the **tools**
   the agent invokes (robust; users often phrase it in natural language so the prompt rarely starts
   with the slash): `PreToolUse` for `Skill` (skill ∈ loop/schedule/cron), `CronCreate` (→ cron,
@@ -1789,7 +1976,7 @@ else, and its context links must keep classifying across restarts).
   originally did with the answer was TRAVEL there (`travelToProjectRef`), and that was a screen
   hijack: the user looks at project B, an agent in project A runs `open-claude`, the tab switches
   and A's saved viewport is applied, so the camera appears to jump and zoom on a background agent's
-  say-so. Two membership lists now decide, and their difference is the whole design:
+  say-so. THREE membership lists now decide, and their differences are the whole design:
   - `STORE_ANSWERED_VERBS` (`needsLiveCanvas` false) = **no canvas is needed at either end** —
     `list` reads names, `send`/`reply` deliver into a tmux PANE, `sticky` rewrites a note,
     `open-project` acts on the projects store.
@@ -1800,16 +1987,128 @@ else, and its context links must keep classifying across restarts).
     node is upserted through `applyNodeMutation`, edges go through `appendCanvasLinks` (the edge
     counterpart, so the opener's rope and the fan-in bridge are not lost), `writeDisk` persists, and
     the reply is the ONE shared `coldOpenMessage` sentence with `queued: true`.
+  - `OFF_CANVAS_VERBS` (`answersOffCanvas` — `show-image`/`show-video`/`show-web`/`open-browser`)
+    = **a canvas is needed, the serialized one will do, and there is nothing to defer.** The node
+    these make has no session behind it: a page, a video, an image, a browser node is inert
+    wherever it sits, so writing it into the owning project's serialized nodes IS the whole effect
+    and it is complete when `writeDisk` returns. That is why it is a third set and not four more
+    entries in the second one — a cold open reports `queued: true`, and a caller told its
+    screenshot is queued waits for something that already happened. It gets
+    `offCanvasReplyClause` and `offCanvas: true` instead. **This was the half the cold-open fix
+    left open, and it is the half an agent meets most often**: a skill that renders its report as
+    HTML reaches for `show-web` every time it finishes, and every one of those calls used to yank
+    the user out of the project they were typing in. The verb bodies are untouched; three things
+    they read from the canvas are staged — the colour index (`nodeCount`), the placement source
+    (the stored node, hydrated through `nodeStatesToFlow` so its shape cannot drift from a live
+    one's) and the append, where `applyNodeMutation` + `appendCanvasLinks` + `writeDisk` replace
+    `setNodes` + `connect` + `markDirty`. The opener's edge is a **rope** and only a rope: a
+    display node has nothing to read, so a bridge there would grant a context link the live path
+    never draws. **`ctlProject` resolves from the SOURCE's project**, not the active one — off
+    canvas it decides the ssh flag, the browser session key and the media allowlist route; on
+    every other path the travel has already made the two the same project. None of the four takes
+    `--group`, which is why this set owes no worktree question; a verb joining it that does would,
+    because `cwdForNewNodeIn` subtracts `staleGroupIds`, which is epoch-scoped to the ACTIVE
+    project.
   Everything else keeps travelling **on purpose**: `write`/`close`/`group`/`move`/`arrange`/
-  `align`/`verify`/`spawn-team`/`open-worktree`/`open-browser`/`show-*` read live canvas state the
-  serialized copy does not carry (measured node sizes, worktree staleness, the React Flow edge
-  arrays). Route `active` is byte-identical to before. Route **`reopen` (a CLOSED project) cold-writes
+  `align`/`verify`/`spawn-team`/`open-worktree` read live canvas state the serialized copy does not
+  carry (measured node sizes, worktree staleness, the React Flow edge arrays). **`browser` is the
+  pair worth stating beside `open-browser`**: it NAVIGATES a mounted `<webview>` guest, which
+  exists only while its project is on screen, so it travels; `open-browser` merely places the node
+  and its guest is created when that project is next shown, exactly as a cold-opened terminal's PTY
+  is. Route `active` is byte-identical to before.
+  **The human is told, once, in the other voice.** The reply goes to the agent; without a strip the
+  person sees nothing at all, and the whole point of not travelling is that the choice to go and
+  look stays theirs — a choice they can only make if they are told there is something to look at.
+  `offCanvasNoticeText` names the project and the button is `travelToNode` (which reopens a closed
+  project first and resolves off the SERIALIZED nodes the write has already made). It is **sticky**:
+  every other info strip reports something the user just did and is watching, this one reports work
+  that landed while they were busy elsewhere, and once it fades nothing anywhere says it happened. Route **`reopen` (a CLOSED project) cold-writes
   too and does NOT reopen the tab** — closing is the user's explicit "park this, keep it running", so
   restoring the tab *and* activating it is the loudest form of the hijack; the reply names the closure
   so a caller does not report a session as started. On the cold path `--group`/`--after` ARE resolved
   (unlike with `--project`, where the ids would live in another project) against the serialized
   nodes, defaults come from the OWNING project (`projectPermissionMode(owner, …)`, its account,
   its `ssh`), and `--after`'s dep ropes are left to `missingDepRopes` at that project's next load.
+  **The destructive confirm, and who may waive it** (`@shared/control-confirm`, 2026-09). The
+  dialog `write` / `close` / `open-project` raise is the ONLY place a human stands between a
+  canvas-control agent and the workspace — per-node identity is not enforced until
+  `NODE_IDENTITY_STRICT_AFTER`, so a `legacy` caller still reaches the dispatch — and it used to
+  ask EVERY time with no way to say "yes, all of them". Closing 14 finished stations was 14
+  dialogs, and the 15th request was refused with `a confirmation is already pending`. Three things
+  changed, and the last one was the actual bug:
+  - **`close --node a,b,c` is ONE dialog** (`lib/closeTargets.ts`, pure). The grammar is not new —
+    the Server Edition's headless `close` has read a comma list since it shipped, including its
+    "validate the whole list before killing anything" rule; the DESKTOP dispatch read the flag as
+    one id, so a comma list called `deleteNodes(['a,b,c'])` (a no-op) and answered `closed a,b,c`.
+    A destructive verb reporting success for work it did not do is worse than either doing or
+    refusing it. The single-id form is bit-identical, **deliberately including its lack of an
+    existence check**; the bulk form refuses the WHOLE list on an unknown id and names it, because
+    with 14 ids the user cannot audit the list themselves. Capped at `CLOSE_BULK_MAX` (50) and the
+    dialog spells out at most 12 names then counts the rest — a name the user cannot see is not
+    consent.
+  - **"Don't ask again" is bounded by the app's lifetime, and the permanent version is not
+    reachable from the dialog.** The checkbox grants a waiver in the transient
+    `state/controlConfirm.ts` (memory only — not `settings.json`, not `localStorage`), per VERB, so
+    quitting restores the gate; the PERMANENT waiver exists only in Settings → Agents, where the
+    option says "permanently". A dialog that appeared under the user's hands must not be able to
+    switch a destructive gate off forever on one stray click, and a waiver granted by a CANCEL must
+    not exist at all (the grant hangs off `onConfirm`, pinned by `control-destructive.test.ts`).
+    Waiving is not silence: every waived application raises the info strip through `waivedNotice`,
+    which names the waiver that let it through and points at Settings.
+  - **`bypassPermissions` needs TWO locks, and this is the trap to understand before touching it.**
+    The permission mode is persisted to `.nodeterm/project.json`, which is **git-shared** — so
+    keying the waiver on the mode alone would let a repository the user CLONED silently disable
+    their destructive-action gate. It therefore requires a machine-local opt-in
+    (`controlConfirmWaivers.bypassMode`, default off) **and** a mode that came from the user's own
+    GLOBAL setting: `resolvePermissionModeWithSource` answers `project | global | default`, and
+    only `global` can waive. `default` is its own answer rather than folded into `global` because
+    nobody chose it, and reading an unset setting as a deliberate choice is reading consent into
+    silence. The claude version gate is deliberately NOT applied here (it exists to degrade `auto`
+    for an old CLI; a security decision must not hang on a `claude --version` probe).
+  - **`open-project` can never be waived**, by table (`CONFIRM_WAIVABLE_VERBS`) rather than by a
+    line somebody forgot at one of three call sites. It widens the app's blast radius (a new
+    directory registered as a project, plus a grant the caller feeds to `--project`) instead of
+    acting inside it, and it cannot produce the dialog storm the waiver exists to end —
+    `recordAttachConsent` already dedupes it per (caller, project).
+  **An agent-requested dialog knows its own request's lifetime** (`ConfirmState.expiresAt` /
+  `onExpire`, `CONTROL_REQUEST_TIMEOUT_MS` now shared with main). Main abandons a control request
+  after 120 s and tells the renderer NOTHING, so the dialog stayed on screen asking about work
+  nobody was waiting for — and, worse, kept `confirmBusy()` true, which refused every later
+  `write`/`close` with `a confirmation is already pending — try again` for the rest of the app run.
+  **That is the "the same dialog keeps coming back" report**, and it is a single-canvas loop: the
+  reply says retryable, the agent retries, every retry is refused by the orphan, and the moment the
+  user finally answers it a queued retry raises a fresh dialog for the same node. The deadline is
+  measured from the RENDERER's receipt, so it always fires a hair AFTER main gave up, never before
+  (the other direction would abandon a dialog whose answer main would still accept); it replies
+  `expired` rather than `denied by user` (nobody denied anything, and a reply main has already
+  timed out is simply dropped); and the notice is a fading info strip, because raising an alert
+  would keep `confirmBusy()` true — i.e. reproduce the bug with better wording.
+  **`close-worktree --mode remove`'s dialog expires too** (2026-09-11), through the SAME
+  `renderer/lib/useExpiringDialog.ts` the confirm uses — the rule was extracted rather than copied,
+  because a second effect beside the first is how one gains a fix the other silently lacks. Three
+  differences to keep in mind, all deliberate: it carries **no `onExpire`** (the verb replies
+  "removal confirmation shown to the user — they decide" the instant the dialog opens, so nobody is
+  waiting on an answer and an `onExpire` would be a reply to a call that finished minutes ago); its
+  clear must also release **`removePendingRef`**, the guard covering the async `git.status` gap
+  before `removeTarget` exists, which `confirmBusy()` reads directly — dropping the state while
+  leaving that ref latched closes the dialog and keeps refusing every later destructive verb, i.e.
+  the bug minus the only thing on screen that explained it; and the deadline is set **only when
+  `requestedBy` is present**, because a removal the USER opened from the group menu must never
+  vanish under them. It reuses `confirmExpiresAt` rather than inventing a second timeout: the fact
+  is the same class ("an agent asked and the human is not at the machine"), and this is the most
+  dangerous dialog to leave lying around — the one carrying a pre-ticked delete-from-disk choice on
+  a worktree the human never asked about.
+  **MEASURED, and the answer is no: two canvases cannot raise two dialogs for one request.** The
+  suspicion was worth checking because the same project can be open on a desktop and in a Server
+  Edition browser at once. Desktop main forwards each request to `getMainWindow()` — one
+  BrowserWindow, so at most one dialog exists per request; the Server Edition raises none at all
+  (its control is HEADLESS — `HeadlessNodeFactory.close` is gated by verified identity plus
+  process-local creator ownership, and the browser bridge's `onAgentControl` is `noopUnsub`); and
+  the shim's endpoint failover cannot duplicate a request either, because the control POST carries
+  **no `--max-time`**, so a POST waiting on a human eventually gets an HTTP answer and
+  `nt_reached()` is true — failover fires only on a dead transport (`000`/empty). If a future change
+  gives that curl a timeout, this paragraph stops being true: a confirm-gated verb would then fail
+  over mid-wait and a second instance WOULD open a second dialog for the same logical request.
   **Grouping verbs** (`group` / `ungroup` / `move` / `arrange` / `align`): `group` wraps **sibling**
   objects — nodes or frames — into a new frame in their shared container (a mixed-container set, or
   an ancestor plus its descendant, is refused with that reason); `ungroup --group <id>` dissolves a
@@ -2120,6 +2419,64 @@ else, and its context links must keep classifying across restarts).
     both shells call — the desktop passing the canvas skill as its `extra`. A second copy is the
     drift this file warns about elsewhere: the Server Edition shipped without the per-account leg
     entirely, so a managed account there reported no agent status at all.
+  - **Shared system skills (`shareSystemSkills`, issue #643, OFF by default)** — Claude Code resolves
+    user skills as `join(CLAUDE_CONFIG_DIR ?? ~/.claude, 'skills')` (MEASURED, 2.1.266), so an
+    account dir **replaces** `~/.claude/skills` rather than adding to it and a fresh managed account
+    shows only the skills nodeterm installed (that was #438). The isolation is correct and often the
+    point; this per-account switch (Settings → Accounts) is the way back in.
+    **Each system skill is linked INDIVIDUALLY** (`<accountDir>/skills/<name>` →
+    `~/.claude/skills/<name>`), never the whole `skills` directory, and that choice is what makes
+    everything else safe: `installCanvasSkillInto` writes *into* `<configDir>/skills/`, so a
+    directory-level link would put nodeterm's canvas skill in the user's SYSTEM skills folder, and
+    "turn it off" would have to restore a directory it had first moved aside. Per-skill links keep
+    the account's `skills/` a real directory and make the off-switch a link removal.
+    MEASURED with strace: Claude Code opens a symlinked entry inside `skills/` as a directory and
+    reads its `SKILL.md` exactly like a real sibling — per-skill links are equivalent to the
+    whole-directory link for discovery, not a compromise.
+    - **Ownership is name-anchored**: an entry is ours iff it is a symlink whose target normalizes
+      to exactly `join(systemSkillsDir, <that entry's own name>)`. What ON creates is precisely what
+      OFF removes; a real directory is never ours, whatever its name — so "never delete through the
+      link" is a property of the plan (`core/claude-skill-share-core.ts`, pure + mutation-tested),
+      not a promise about the applier. Removal is `unlink` then `rmdir` (a Windows junction refuses
+      `unlink`); both fail on a real non-empty directory, which is the second line of defence.
+    - **`NODETERM_OWNED_SKILLS` (`manage-nodeterm-canvas`, `get-linked-context`) is never linked and
+      never pruned.** Their presence in an account dir is decided by nodeterm's own installers; if
+      sharing linked them, the off-switch would delete a skill the canvas-control installer had put
+      there and the two owners would fight over the name at every launch.
+    - **The realpath refusal is load-bearing.** The issue's manual workaround
+      (`mv skills skills.bak && ln -s ~/.claude/skills skills`) makes the account's `skills/`
+      RESOLVE to the system one; linking into it would plant links in the user's own folder and let
+      the off-switch delete them from there. The planner compares REAL paths and refuses
+      (`same-directory`), which also covers a linked account whose `configDir` was hand-edited to
+      `~/.claude`.
+    - **Windows uses a directory JUNCTION** (`fs.symlink(target, path, 'junction')`), not the `'dir'`
+      symlink `worktree-shared-paths.ts` must use: a junction needs neither Developer Mode nor
+      elevation, and every target here is an absolute directory — the two conditions it has. On
+      POSIX Node ignores the type. So the feature is available on every desktop platform rather than
+      gated off one.
+    - **The launch sweep re-links but NEVER removes** (`installHooksIntoLocalAccounts`). ON has real
+      work at boot (a skill added to `~/.claude/skills` since the last run; a stale link to prune);
+      OFF is a removal, and ownership here is inferred from a link's SHAPE, which cannot tell our
+      link from an identical hand-made one — and a LINKED account's dir is the user's own
+      `~/.claude-2`, where exactly that is a normal thing to find. Removal therefore happens only
+      through `claude-accounts:set-skill-sharing`, where the intent is explicit. The cost: a
+      settings.json hand-edited to `false` while the app was closed keeps its links until the switch
+      is flipped.
+    - **The switch flips the filesystem FIRST and persists the flag only if that returned** — the
+      flag is what the sweep replays, so a stored `true` whose links were never made would make the
+      switch lie until the next boot. A refusal stores nothing.
+    - **The copy says the edits flow both ways**, because a link is not a copy: editing a shared
+      skill from inside the account edits the machine's own file. A user who reads "share" as "copy"
+      finds that out by losing work. Result sentences are the pure `renderer/lib/skillSharing.ts`.
+    - **Surfaces.** Desktop: full. **Server Edition: full** — the whole implementation is core, so
+      the ws-bridge leg is a real passthrough and the machine the browser is served from is exactly
+      the machine whose `~/.claude/skills` is shared (the canvas skill is not installed there, but
+      its name stays reserved: a reserved name that is never created is inert). **SSH accounts:
+      explicitly out of scope for v1** — their config dir is on the host, so the option would have to
+      link that host's skills over the ControlMaster, with its own generated-shell proof obligation.
+      The switch is DISABLED with that reason (never hidden), and core refuses (`remote-account`) as
+      the backstop for a hand-edited settings.json. **Mobile: N/A** — the phone never mints an
+      account and carries no skills concept.
   - **Account-aware readers** — transcript resolution is scoped per account (`transcriptRootFor`
     picks the account dir's `projects/`, composite cache key includes `accountId`); the same
     threading runs through the session-name poll, restart handoff, and `ChatPanel` (the ⌘M
@@ -2530,6 +2887,58 @@ disappearing" rather than as an occasional cull. The `vm_stat` reader is what ma
 again; the grace window was never the thing that was wrong.
 
 
+## Node colors (one palette, two sections)
+
+`src/shared/node-colors.ts` is the palette AND the control boundary — the picker's list and the
+allowlist `color --color C` validates against are the same array, deliberately, so the two can
+never disagree about what a legal colour is.
+
+It has two sections. The seven macOS **system** colours are the list it always was. The **agent**
+section is the brand colour of every builtin in `AGENT_CONFIG` plus `FALLBACK_AGENT_COLOR`, and it
+exists because those colours were *already on the canvas*: `createAgentNode` paints a new node from
+`AGENT_CONFIG` (the phone's `appendProjectNode` does the same), so a Claude node is born `#d97757`
+— which the picker could not offer back once the user changed it, and which
+`nodeterm color --color '#d97757'` refused with `node-color-invalid`, the app rejecting its own
+colour. MEASURED against the live hook server before the change; both faces are one gap.
+
+- **The agent section is DERIVED from `AGENT_CONFIG`, never re-typed.** Adding a builtin agent
+  extends the palette by construction. `node-colors.test.ts` pins it three ways — every builtin's
+  colour is in `NODE_COLORS`, every agent swatch's label is that agent's label, and `node-colors.ts`
+  contains no agent hex as a literal on a non-comment line. A second copy of a colour table is the
+  drift this file warns about everywhere else, and it has already happened once (see mobile below).
+- **`SYSTEM_NODE_COLORS` is the subset for surfaces where the value is drawn as TEXT or as an
+  opaque fill** — the app accent (`--accent` sits under hardcoded `#fff`), a project colour (the
+  active tab's label is `color: p.color`) and a kanban column colour (`ColumnPill` draws the title
+  in the raw hex at 10 px). It is also the **auto-assign rotation** for new frames, spawned teams
+  and fresh columns: rotating a frame onto Claude's orange says "this frame is Claude's" and means
+  nothing of the kind. The reason those surfaces differ is a measurement, not taste — on the dark
+  theme white on gemini `#4285f4` is ~3.6:1 and on grok `#64748b` ~4.0:1, both under the 4.5:1 floor
+  for the 10.5 px badge, and grok grey as tab text is ~2.6:1. Everywhere the colour is a dot, a
+  border or a 6–20 % wash (node headers, sticky, files, group frames, the account default colour)
+  offers the FULL palette.
+- **`resolveNodeColor` runs BEFORE the allowlist, and only its output is ever persisted.** It takes
+  a palette name (`blue`, `teal`, `claude`, `github copilot`) or the hex in any case, and yields a
+  canonical value or `undefined`. Names are accepted because the refusal they earned was measured
+  and expensive: seven opaque hexes taught nobody which one was teal, so a caller's next guess was
+  another name and another refusal. The boundary is unchanged by this — a name can only ever
+  resolve to a value the allowlist already held, and a name is never stored. The refusal now prints
+  `name #hex` per swatch (`nodeColorChoices`), and the agent-facing skill text is generated from the
+  same function per the canvas-control sync rule.
+  `open-project --color` takes the same treatment against the **system** resolver; it used to reach
+  `registerProject` with no validation at all.
+- **One component draws every picker** (`components/NodeColorSwatches.tsx`), because the palette now
+  has structure — headings and per-swatch names — and six copies of `NODE_COLORS.map(...)` are six
+  places to forget the heading. `NodeColorSwatches.guard.test.ts` fails on a `.color-popover` this
+  component does not own and on any renderer file that maps the palette into its own swatch row.
+  The name is the feature: an agent brand colour is unidentifiable as a bare circle.
+- **Mobile keeps its OWN list and is not updated here.** *nodeterm mobile* (`nodeterm-ios`,
+  separate private repo) hand-copies the agent colours in `NewSession.swift`, stamped
+  *"last verified 2026-07-17"*, to colour a session it creates; it has no node-colour picker at all,
+  so the palette change reaches it as nothing to do. That mirror is the concrete precedent for why
+  the desktop half is derived rather than typed — and it means a future brand-colour change owes an
+  iOS follow-up (@eneskirca), not a desktop one.
+
+
 ## Node icons (emoji or picture)
 
 A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}` or
@@ -2811,6 +3220,23 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   losing the centre. The free-rect solve (`solveFitFrame` / `solveFitPadding`) stays where it earns
   its keep: `fitAll`, which fits EVERY node and would otherwise tuck them under the dock.
   Unknowable size or no pane ⇒ the camera **stands still**.
+  **ONE exception, and it is not a walk-back of that rule (issue #743): a MAXIMIZED node**
+  (`isMaximized` — `data.premaxRect`, the flag `maximizeNodeToRect` writes and
+  `restoreMaximizedNode` clears) is framed against the same rectangle `maximizeTargetRect` placed
+  it in, by passing `measurePinnedInsets(box)` to `viewportForRect`. The trade-off above rests on
+  ONE number — how much of the node ends up behind the panel — and for a maximized node that
+  number is set by the PANEL rather than the node, **by construction**: maximize sized it to be
+  *exactly* the free area, so centring it in the wider pane buries half the inset less the margin.
+  Measured by the reporter on a signed v0.3.5 build with the sidebar pinned: an ordinary node lost
+  33px, the maximized one 137px, and the camera drifted by `322 / 2 = 161` px on every "go to
+  another node and back". Because the node is that rectangle minus two margins, centring it in the
+  free area reproduces maximize's own origin (`marginPx + insets.left`) exactly — which is what
+  makes this a fix rather than a second opinion about placement. It applies to BOTH zoom branches
+  (the rectangle question is the same one; splitting it would be two rectangles again, which is
+  the bug), and with no pinned panel `insets` is zero and the whole thing is a mathematical no-op.
+  A pane narrower than the panels over it falls back to the whole pane rather than solving against
+  a negative width. `measurePinnedInsets` reads the DOM, so it is asked only for a node that can
+  use the answer.
   `settings.focusZoomToNode` (Behavior, default ON) is the escape hatch for the rescale: off, the
   camera keeps the zoom `getZoom()` reports and only pans, and that zoom is passed through
   **unclamped** — it is one the canvas is already displaying, and re-clamping it to the framing
@@ -3108,7 +3534,26 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   half-pill itself: (`components/kanban/ColumnPill.tsx`, `columnForNode` in lib/kanban; rendered
   as a SIBLING of the node root — the roots are overflow:hidden — hidden for Ungrouped/dangling,
   click opens the board). Server Edition works as-is (pure renderer + workspace.save). Scope: no
-  agent-driven card movement yet, no board undo, mobile N/A.
+  agent-driven card movement yet, no board undo.
+  **Mobile (nodeterm-ios) reaches the board through two relay verbs**, both landing in
+  `WorkspaceStore.ensureRemoteBoard` / `setRemoteCardColumn` (host-service `handleKanban`; wired in
+  `main/index.ts`'s `hostBridge.kanban`; pure transforms in `core/project-kanban-write.ts`):
+  `projects.ensureBoard` seeds the default columns on a project that has none, `projects.setCardColumn`
+  moves one card. Three things make them necessary rather than convenient. (1) The desktop board is a
+  LAZY default — `kanban` is not written until the user's first board edit — so most project files
+  carry NO board and the phone, which knows a project only by its file, could not offer one
+  (measured: 1 of 13 project files on the author's machine had a `kanban` block). The default columns
+  therefore live in `@shared/kanban-default-board`, read by `defaultKanban()` AND by the core seeder,
+  and copied verbatim (under a pinning test on both sides) by iOS `KanbanDefaults`. (2) An SSH
+  project's file is on a THIRD machine the phone has no credentials for; the verb writes the entry's
+  `cache` and lets the ordinary mirror push it, which is exactly what a desktop card drag does — so
+  it needs nothing new from `reconcileSsh` (that decides by `rev` and unions only `nodes`). Its cache
+  change IS persisted to workspace.json, because for an ssh entry the cache is the local record. (3)
+  The phone's older direct-SSH write inlines the whole project.json into one argv string and so dies
+  at Linux's `MAX_ARG_STRLEN` — this repo's own `.nodeterm/project.json` measured 114,695 bytes,
+  ~15 KB under the 128 KB ceiling. **Both verbs announce their write on `workspaceExternalChange`
+  and that is not optional**: the renderer holds its own board and the next whole-workspace save
+  serializes THAT, so a change the renderer never heard about is one the next autosave reverts.
 - **Omni Kanban (global swimlanes)** (`components/kanban/GlobalKanbanView.tsx`; one swimlane per open project; `state/viewMode.ts` `globalKanban` (localStorage `nodeterm.globalKanban`, machine-local, like `viewByProject`) + `settings.omniKanbanEnabled` (feature gate, default OFF, `settings.json`) / `omniKanbanAsDefault` (when true, `view.kanbanToggle` — Cmd+Shift+B — opens Omni; otherwise per-project; `view.globalKanbanToggle` registry command — unbound, remappable — always opens Omni when enabled); `TabBar` and the menu IPC `onToggleKanban` share one `performKanbanToggle` decision, and `isGlobalKanbanOpen()` is the single gate (fail-closed, static import of `useSettings` — the earlier `require` failed open in the packaged renderer). The active project's lane is derived from serialized `p.nodes` via `toKanbanSessionState` — the persisted-state counterpart to `toKanbanSession` — and is committed (`commitActiveToStore`) before the overlay mounts so live React Flow edits are not stale; `pendingLaunch` never becomes `initialCommand` in the modal (the DAG launch must fire only when dependencies report done, and the canvas `TerminalNode` already delivers `initialCommand` via `writeWhenShellReady` after the `nodeterm:create-node` project switch). Active-project edits (rename / sticky / browser nav) route through Canvas live nodes (`setNodes` + `markDirty`), non-active through the store + `writeDisk`; delete uses `ConfirmDialog` (not `confirm`) and SSH-aware teardown (`transport.destroy` locally vs `sshProject.killSessions` with `everySocket` for a remote owner, plus `agentStatus` / `agentNodes` / `webviewKeepAlive` cleanup). The top bar's project pills and Cmd/Ctrl+1..9 (`nodeterm:swimlane-jump`) jump to the lane; header hint shows the correct mod (`Cmd` on Mac, `Ctrl` elsewhere). Server Edition works as-is, Mobile N/A.
 - **Settings** (`SettingsPage.tsx`, ⚙ / ⌘,): font/cursor (live to xterm + Monaco), default
   shell, grid + snap, **default node size** (`defaultNodeWidth`/`defaultNodeHeight` — new
@@ -3118,6 +3563,30 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
 - **Shortcuts** (`ShortcutsPanel.tsx`, ? / ⌘/): shown once on first launch (`seenShortcuts`).
   **Derived from the registry, never hand-listed** — see the Keybindings invariant below.
 - **Welcome** (`WelcomeScreen.tsx`): shown when no projects exist.
+- **Nothing raises the window without a user action** (issue #737, the THIRD in this family —
+  #665 and #702 were canvas-control moving the user's VIEW; this one is the OS window activating
+  over another app). The cause was `win.on('ready-to-show', () => win.show())`: `ready-to-show`
+  fires on the first paint of EVERY main-frame navigation, not once per window (MEASURED on
+  Electron 42.9.1 — a `webContents.reload()` on a VISIBLE window emits it again with `isVisible()`
+  already true), and the crash auto-reload (`render-process-gone` → `webContents.reload()`) is an
+  unattended navigation. So a backgrounded renderer being killed — macOS jetsam on a machine
+  running several agent CLIs at 335 MB–1.2 GB each — silently raised nodeterm over whatever the
+  user had ⌘Tabbed to. It is `win.once` now. **The gate must be FIRST PAINT, not `isVisible()`**:
+  after macOS hide-on-close the window is hidden but alive, and an `isVisible()` gate would `show()`
+  it on a background reload — the same bug inverted.
+  The permitted raises are all a CLICK, and they are enumerated with their triggering action in
+  **`src/main/window-raise.guard.test.ts`**, an allowlist-with-reasons in the shape of
+  `fs-atomic.guard.test.ts`: a notification tap (the one exception the rule names), a Notch HUD
+  row, a Dock activate, a second launch, and a file dropped onto a terminal. Nothing an AGENT can
+  do reaches any of them — canvas control, trigger nodes, hook POSTs, relay/pairing/push and
+  browser-drive contain no show/focus/dialog call, and agent confirms are in-renderer
+  `ConfirmDialog`s, never native. The drop IPC's `app.focus({steal:true})` is the only
+  renderer-reachable cross-app activation and now carries the same sender guard its two neighbours
+  (`uiShortcutRecording`, `uiTerminalFocus`) already had — a `<webview>` guest is a webContents in
+  this process. **KNOWN GAP, listed in the guard rather than fixed**: `standing-host.ts`'s
+  `dialog.showErrorBox` for a locked keyring is app-modal, unparented, and raised from the relay
+  RECONNECT TIMER; the honest fix routes it to a non-modal in-app surface and owes a macOS check
+  that a sheet on a background window does not activate.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. The New-project `+` is a **sibling** of `.tabbar__tabs`, not its last child — inside

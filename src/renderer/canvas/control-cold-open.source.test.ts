@@ -18,13 +18,15 @@ import { readFileSync } from 'node:fs'
  */
 const src = readFileSync(new URL('./Canvas.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
-/** The cold-open block: from its `if (canColdOpen(verb))` guard to the travel call it stands in
- *  front of. */
+/** The cold-open block: from its `if (canColdOpen(verb))` guard to the off-canvas guard that
+ *  follows it. Bounded by that guard rather than by the travel call further down, so the pins
+ *  below judge THIS block and never inherit a passing verdict from the one after it — the two are
+ *  separate branches with separate contracts (`control-off-canvas.source.test.ts`). */
 function coldOpenBody(): string {
   const start = src.indexOf('if (canColdOpen(verb)) {')
   expect(start, 'the cold-open guard').toBeGreaterThan(-1)
-  const end = src.indexOf('travelToProjectRef.current(route.projectId)', start)
-  expect(end, 'the travel call after the block').toBeGreaterThan(start)
+  const end = src.indexOf('if (answersOffCanvas(verb)) {', start)
+  expect(end, 'the off-canvas guard after the block').toBeGreaterThan(start)
   return src.slice(start, end)
 }
 

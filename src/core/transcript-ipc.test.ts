@@ -172,3 +172,103 @@ describe('registerTranscriptIpc — the chat channel is routed by AGENT', () => 
     expect(res.messages.length).toBe(1)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// `transcript:exists` — the tri-state cold restore acts on.
+//
+// The whole point of the third state is that `absent` is a POSITIVE finding and `unknown` is
+// "we could not look". Cold restore drops a `--resume <id>` on `absent` only, so every test here
+// is really asking: can anything that is merely uninformed reach that branch?
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+describe('registerTranscriptIpc — transcript presence', () => {
+  const exists = (
+    sid: string | undefined = SID,
+    accountId?: string,
+    nodeId?: string
+  ): Promise<string> => f.handlers[IPC.transcriptExists](sid, accountId, nodeId) as Promise<string>
+
+  it('finds a transcript that is there', async () => {
+    writeTranscript(lines(userLine('merhaba')))
+    registerTranscriptIpc()
+    expect(await exists()).toBe('present')
+  })
+
+  it('reports `absent` for an id whose transcript is gone, with the root readable', async () => {
+    // The measured field case: the session id outlived its `.jsonl`. Another session's file sits
+    // in the same project dir, which is what makes the root readable AND proves the answer is
+    // about this id rather than about the directory being empty.
+    writeTranscript(lines(userLine('someone else')), '11111111-2222-3333-4444-555555555555.jsonl')
+    registerTranscriptIpc()
+    expect(await exists()).toBe('absent')
+  })
+
+  it('never answers from the cwd — a sibling transcript is not this session', async () => {
+    // `resolveTranscript`'s cwd fallback returns the NEWEST transcript in the project dir. If this
+    // channel used it, every dead id in a busy directory would read as `present` and the whole fix
+    // would silently do nothing. The file below is exactly what that fallback would return.
+    writeTranscript(lines(userLine('newest')), '99999999-2222-3333-4444-555555555555.jsonl')
+    registerTranscriptIpc()
+    expect(await exists()).toBe('absent')
+  })
+
+  it('says `unknown` when the transcript root cannot be read at all', async () => {
+    // No `~/.claude/projects`. A home that is not mounted yet looks exactly like this, and cold
+    // restore runs at boot — so the miss is not evidence.
+    registerTranscriptIpc()
+    expect(await exists()).toBe('unknown')
+  })
+
+  it('says `unknown` for a malformed id rather than claiming it is gone', async () => {
+    writeTranscript(lines(userLine('merhaba')))
+    registerTranscriptIpc()
+    expect(await exists('../../etc/passwd')).toBe('unknown')
+    expect(await exists('')).toBe('unknown')
+  })
+
+  it('scopes to the account — a system transcript is not the managed account road', async () => {
+    writeTranscript(lines(userLine('system session')))
+    registerTranscriptIpc()
+    expect(await exists(SID, 'acct-1')).toBe('unknown') // that account has no root yet
+  })
+
+  it('verifies the hook-fed path instead of trusting it', async () => {
+    // `pathFor` is authoritative while it is live, but a transcript can be deleted under it. A
+    // dead hint must fall through to the scan, not answer `present`.
+    registerTranscriptIpc({ pathFor: () => path.join(home, 'gone', SID + '.jsonl') })
+    expect(await exists()).toBe('unknown') // no root either, so we could not look
+    const p = writeTranscript(lines(userLine('merhaba')))
+    expect(p).toContain(SID)
+    expect(await exists()).toBe('present') // the scan finds the real one
+  })
+
+  describe('the remote leg', () => {
+    it('takes the host answer', async () => {
+      registerTranscriptIpc({ remoteExists: async () => 'absent' })
+      // A LOCAL transcript with this id exists; the node is remote, so it is irrelevant.
+      writeTranscript(lines(userLine('a local file with the same id')))
+      expect(await exists(SID, undefined, 'node-1')).toBe('absent')
+    })
+
+    it('does NOT fall through to the local disk when the host could not answer', async () => {
+      // The rule this exists for: a remote session's transcript lives on the host. Searching THIS
+      // machine for it would find nothing and report `absent` about the wrong computer, and cold
+      // restore would then drop a live remote conversation because an ssh call blipped.
+      writeTranscript(lines(userLine('unrelated')), '11111111-2222-3333-4444-555555555555.jsonl')
+      registerTranscriptIpc({ remoteExists: async () => 'unknown' })
+      expect(await exists(SID, undefined, 'node-1')).toBe('unknown')
+    })
+
+    it('takes the local path when the session is not remote at all (null)', async () => {
+      writeTranscript(lines(userLine('merhaba')))
+      registerTranscriptIpc({ remoteExists: async () => null })
+      expect(await exists()).toBe('present')
+    })
+
+    it('is skipped entirely when no remote leg is injected (Server Edition)', async () => {
+      // That shell runs ON the host whose transcripts these are, so local IS the complete answer.
+      writeTranscript(lines(userLine('merhaba')))
+      registerTranscriptIpc()
+      expect(await exists(SID, undefined, 'node-1')).toBe('present')
+    })
+  })
+})

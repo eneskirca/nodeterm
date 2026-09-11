@@ -25,6 +25,7 @@ import {
   claudeConfigDirFor,
   linkedClaudeConfigDirFor
 } from './claude-config-dir'
+import { applySkillShare, EMPTY_SKILL_SHARE } from './claude-skill-share'
 import { installClaudeHooksInto, ensureClaudeFullscreenTuiInto } from './agents/hooks/claude'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
@@ -251,6 +252,27 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     void ensureClaudeFullscreenTuiInto(configDir)
     return { id: randomUUID(), configDir, email }
   })
+
+  /**
+   * Turn `~/.claude/skills` sharing on/off for one LOCAL account and reconcile now (issue #643).
+   * The renderer owns the settings flag; this is only the effect.
+   *
+   * **Local accounts only, by construction.** A REMOTE account's config dir lives on its host, so
+   * this would have to link that host's `~/.claude/skills` over the ControlMaster — a generated
+   * shell with its own "never delete through the link" proof obligation, and a separate change.
+   * Rather than silently reconciling the wrong machine's filesystem, an account with a `host`
+   * REFUSES here (the Settings switch is disabled with the reason, so this is the backstop for a
+   * hand-edited settings.json, not the message anyone normally sees).
+   */
+  platform().handle(IPC.claudeAccountsSetSkillSharing, async (id: string, enabled: boolean) => {
+    const remoteAccount = claudeAccountsSnapshot().some((a) => a.id === id && a.host)
+    if (remoteAccount) return { ...EMPTY_SKILL_SHARE, refused: 'remote-account' as const }
+    // `claudeConfigDirFor` validates the id alphabet AND resolves a LINKED account to the user's
+    // own dir — which is the right target: a linked account is an identity like any other, and its
+    // `skills/` is subject to the same isolation. The plan's realpath refusal is what keeps a
+    // hand-edited `configDir` of `~/.claude` from turning this into a self-link.
+    return applySkillShare(claudeConfigDirFor(id), enabled)
+  })
 }
 
 /**
@@ -267,7 +289,7 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
  * this, or the resolver would hand back a managed dir that does not exist for those rows.
  */
 export function installHooksIntoLocalAccounts(
-  accounts: readonly { id: string; host?: string }[],
+  accounts: readonly { id: string; host?: string; shareSystemSkills?: boolean }[],
   extra?: (configDir: string) => void
 ): void {
   for (const acct of accounts) {
@@ -276,6 +298,19 @@ export function installHooksIntoLocalAccounts(
       const configDir = claudeConfigDirFor(acct.id)
       installClaudeHooksInto(configDir)
       extra?.(configDir)
+      // Shared-skills reconcile (issue #643) — the ON direction ONLY, and that asymmetry is the
+      // safety property. ON has real work to do at every boot: a skill the user added to
+      // `~/.claude/skills` since the last run needs a new link, and one they deleted leaves a
+      // broken entry Claude Code would still try to read. OFF is a REMOVAL, and a launch sweep is
+      // the wrong place to perform one: ownership here is inferred from a link's shape (a link at
+      // `<name>` pointing at `<system>/<name>`), which cannot tell OUR link from an identical one
+      // the user made by hand — and a LINKED account's dir is the user's own `~/.claude-2`, where
+      // exactly that hand-made link is a normal thing to find. So the off-switch removes links
+      // only where intent is explicit (`claude-accounts:set-skill-sharing`). The cost is that a
+      // settings.json edited to `false` while the app was closed leaves its links until the switch
+      // is flipped — links, not data, and visible in the account's own folder.
+      // AFTER `extra`, so the canvas skill's own directory exists before anything looks at it.
+      if (acct.shareSystemSkills) void applySkillShare(configDir, true)
       // Off the critical path: it awaits the memoized CLI probe, then writes fail-open. (The
       // system ~/.claude is handled by installManagedAgentHooks, which covers both shells.)
       void ensureClaudeFullscreenTuiInto(configDir)

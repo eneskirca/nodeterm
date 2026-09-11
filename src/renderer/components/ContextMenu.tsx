@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { NODE_COLORS } from '../state/workspace'
+import { NodeColorSwatches } from './NodeColorSwatches'
 import { useMenuFlip } from '../ui/useMenuFlip'
 
 export type MenuItem =
@@ -78,18 +78,14 @@ export function ContextMenu({ x, y, items, onClose, zIndex, scroll }: ContextMen
           if (item.type === 'label') return <div key={i} className="ctx-label">{item.label}</div>
           if (item.type === 'colors') {
             return (
-              <div key={i} className="ctx-colors">
-                {NODE_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    style={{ background: c }}
-                    onClick={() => {
-                      item.onPick(c)
-                      onClose()
-                    }}
-                  />
-                ))}
-              </div>
+              <NodeColorSwatches
+                key={i}
+                className="ctx-colors"
+                onPick={(c) => {
+                  item.onPick(c)
+                  onClose()
+                }}
+              />
             )
           }
           if (item.type === 'submenu') {

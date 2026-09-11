@@ -6,8 +6,8 @@ import { gateProjectTarget, GRANT_CAP } from '../core/project-grants'
 import { planBridges, type LinkEndpoint } from '../shared/canvas-link'
 import {
   invalidNodeColorMessage,
-  isNodeColor,
-  NODE_COLORS,
+  resolveNodeColor,
+  SYSTEM_NODE_COLORS,
   type NodeColor
 } from '../shared/node-colors'
 import { applyStickyWrite, parseStickyArgs, resolveStickyRef } from '../shared/sticky-write'
@@ -395,7 +395,7 @@ function groupPersistedNodes(
       height: maxY - minY + GROUP_PAD * 2 + GROUP_HEADER
     },
     title: label || `Group ${groupIndex + 1}`,
-    color: color ?? NODE_COLORS[groupIndex % NODE_COLORS.length],
+    color: color ?? SYSTEM_NODE_COLORS[groupIndex % SYSTEM_NODE_COLORS.length],
     group: null,
     ...(parentId ? { parentId } : {})
   }
@@ -922,8 +922,10 @@ export class HeadlessNodeFactory {
       if (flagError) return { ok: false, error: `group: ${flagError}` }
       let color: NodeColor | undefined
       if (args.color !== undefined) {
-        if (!isNodeColor(args.color)) return { ok: false, error: invalidNodeColorMessage() }
-        color = args.color
+        // Names and mixed-case hex resolve to the one canonical palette value; anything else is
+        // the same refusal as before. Only the resolved value is persisted.
+        color = resolveNodeColor(args.color)
+        if (color === undefined) return { ok: false, error: invalidNodeColorMessage() }
       }
       const workspace = await this.deps.workspaceStore.load({ sideline: false })
       const source = sourceProject(workspace, sourceNodeId)
@@ -1012,7 +1014,8 @@ export class HeadlessNodeFactory {
     return this.runExclusive(async () => {
       const flagError = unsupportedFlags(args, new Set(['node', 'color']))
       if (flagError) return { ok: false, error: `color: ${flagError}` }
-      if (!isNodeColor(args.color)) return { ok: false, error: invalidNodeColorMessage() }
+      const color = resolveNodeColor(args.color)
+      if (color === undefined) return { ok: false, error: invalidNodeColorMessage() }
 
       const workspace = await this.deps.workspaceStore.load({ sideline: false })
       const source = sourceProject(workspace, sourceNodeId)
@@ -1027,7 +1030,7 @@ export class HeadlessNodeFactory {
       const changed = ids
         .map((id) => source.project.nodes.find((node) => node.id === id))
         .filter((node): node is CanvasNodeState => !!node)
-        .map((node) => ({ ...node, color: args.color }))
+        .map((node) => ({ ...node, color }))
       if (!changed.length) {
         return { ok: false, error: 'color: none of the given node ids exist in the caller project' }
       }
@@ -1039,8 +1042,8 @@ export class HeadlessNodeFactory {
       const note = skipped ? ` (${skipped} unknown id(s) skipped)` : ''
       return {
         ok: true,
-        message: `colored ${changed.length} node(s) ${args.color}${note}`,
-        result: { colored: changed.map((node) => node.id), skipped, color: args.color }
+        message: `colored ${changed.length} node(s) ${color}${note}`,
+        result: { colored: changed.map((node) => node.id), skipped, color }
       }
     })
   }
@@ -1122,7 +1125,7 @@ export class HeadlessNodeFactory {
       for (let i = 0; i < count; i++) {
         let command = args.cmd
         let title = `Terminal ${startIndex + i + 1}`
-        let color: string = NODE_COLORS[(startIndex + i) % NODE_COLORS.length]
+        let color: string = SYSTEM_NODE_COLORS[(startIndex + i) % SYSTEM_NODE_COLORS.length]
         let mintedSessionId: string | undefined
         let permissionMode
         if (verb === 'open-agent') {

@@ -1,5 +1,5 @@
 import type { CanvasNodeState } from '@shared/types'
-import { NODE_COLORS } from '../state/workspace'
+import { SYSTEM_NODE_COLORS } from '../state/workspace'
 import type { KanbanSession } from '../components/kanban/KanbanView'
 import type { ModalSpawn } from '../components/kanban/ModalTerminal'
 
@@ -20,7 +20,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
     return {
       id: n.id,
       title: n.title || 'Browser',
-      color: n.color ?? NODE_COLORS[0],
+      color: n.color ?? SYSTEM_NODE_COLORS[0],
       kind: 'browser',
       url: n.url,
       partition: n.partition,
@@ -32,7 +32,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
     return {
       id: n.id,
       title: stickyTitle(txt),
-      color: n.color ?? NODE_COLORS[2],
+      color: n.color ?? SYSTEM_NODE_COLORS[2],
       kind: 'sticky',
       text: txt,
       textUpdatedAt: n.textUpdatedAt,
@@ -57,7 +57,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
   return {
     id: n.id,
     title: n.title ?? '',
-    color: n.color ?? NODE_COLORS[0],
+    color: n.color ?? SYSTEM_NODE_COLORS[0],
     kind: 'terminal',
     agentId: n.agentId,
     spawn

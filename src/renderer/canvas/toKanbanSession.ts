@@ -1,6 +1,6 @@
 import type { SshConnection } from '@shared/ssh'
 import type { NodeIcon } from '@shared/node-icon'
-import { NODE_COLORS, type CanvasNode } from '../state/workspace'
+import { SYSTEM_NODE_COLORS, type CanvasNode } from '../state/workspace'
 import type { KanbanSession } from '../components/kanban/KanbanView'
 
 /** One canvas node as a board card, or null when this kind is not a card at all (a group frame, an
@@ -12,7 +12,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
     return {
       id: n.id,
       title: (n.data.title as string) || 'Browser',
-      color: (n.data.color as string) ?? NODE_COLORS[0],
+      color: (n.data.color as string) ?? SYSTEM_NODE_COLORS[0],
       kind: 'browser',
       url: n.data.url as string | undefined,
       partition: n.data.partition as string | undefined,
@@ -29,7 +29,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
       // A note has no title of its own — its trimmed first line is the card label. Bodies are
       // markdown, so a leading heading marker is presentation, not part of the label.
       title: text.trim().split('\n')[0].replace(/^#{1,6}\s+/, '').trim().slice(0, 80) || 'Note',
-      color: (n.data.color as string) ?? NODE_COLORS[2],
+      color: (n.data.color as string) ?? SYSTEM_NODE_COLORS[2],
       kind: 'sticky',
       text,
       textUpdatedAt: n.data.textUpdatedAt as number | undefined,
@@ -42,7 +42,7 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
   return {
     id: n.id,
     title: (n.data.title as string) ?? '',
-    color: (n.data.color as string) ?? NODE_COLORS[0],
+    color: (n.data.color as string) ?? SYSTEM_NODE_COLORS[0],
     kind: 'terminal',
     agentId: n.data.agentId as string | undefined,
     icon: n.data.icon as NodeIcon | undefined,

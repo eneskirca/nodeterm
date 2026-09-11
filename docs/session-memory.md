@@ -434,20 +434,17 @@ own `×` use.
 - Switching between two SSH projects with the **same `user@host`** (the scope key carries no port)
   leaves the previous rows on screen until the re-sweep, because `enterScope` only clears when the
   scope *string* changes.
-- **FOLLOW-UP OWED — the sessions sidebar still has the bug this feature fixed in the panel, and the
-  two surfaces now disagree about the same session.** `SessionsSidebar.tsx`'s close button calls
-  `closeSession(projectId, id)` (via `Canvas.tsx`'s `onCloseSession`) with **no remote leg**: for an
-  SSH project's node that is not mounted, `transport.destroy` has no live client carrying
-  `sshRemote`, so it touches only the local socket while the host's `nt-<id>` keeps running — after
-  a confirm that says it stopped. The session-memory panel routes the identical case through
-  `planSessionKill` → `sshProject.killSessions`, so ending a session from the panel works and
-  ending the same session from the sidebar does not.
-  Deliberately out of scope here: the sidebar's rows span arbitrary projects on arbitrary hosts, so
-  its correct fix is **owner-routed per row** (the owner project's own master, not the active
-  project's — the panel's rule is only sound because the panel shows one machine at a time), which
-  is a different rule on a surface this change does not own. Whoever takes it should reuse
-  `planSessionKill`'s shape rather than inventing a third kill path, and should widen its
-  `remoteProjectId` leg from "the active project" to "the row's owner" as the same change.
+- **CLOSED (was: the sessions sidebar has the bug this feature fixed in the panel).** The fix did
+  not land on the sidebar; it landed a layer down, where every surface benefits at once.
+  `PtyManager.runEndSession` used to read remoteness off the live `Session` object alone
+  (`dying?.sshRemote`), so a delete with no mounted client — the sidebar's cross-project close, the
+  node `×` after an app restart or an offscreen release, Delete on a parked node — skipped the
+  remote branch silently and sent its one kill to the LOCAL socket, where a `requireRemote` node has
+  nothing. A resolver wired from the persisted index (`setRemoteNodeOwner` →
+  `workspaceStore.sshProjectIdForNode` plus that project's ControlMaster, see `core/remote-end.ts`)
+  now answers without a live client, and an undelivered kill is recorded
+  (`core/pending-remote-kills.ts`) and settled on that host's next connect instead of being
+  swallowed. `planSessionKill` stays for the panel's ORPHAN rows, which no project claims.
 
 ## 10. Device checklist
 

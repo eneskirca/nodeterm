@@ -6,6 +6,7 @@ import type {
   ProjectKanbanGitHub
 } from '@shared/github-issues'
 import { useProjects } from '../../../state/projects'
+import { markWorkspaceDirty } from '../../../state/workspaceDirty'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { useSettingsSearch } from '../context'
@@ -42,6 +43,7 @@ const ROWS = {
 const ENTRIES = Object.values(ROWS)
 
 type Confirmation = 'labels' | 'cache' | 'revoke' | null
+type NoticeRow = 'repository' | 'authentication' | 'data'
 
 function defaultGitHub(columns: Array<{ id: string; title: string }>): ProjectKanbanGitHub {
   return {
@@ -61,6 +63,11 @@ function messageFor(error: unknown): string {
   if (code.includes('invalid-token')) return 'GitHub could not validate that token.'
   if (code.includes('not-authenticated')) return 'Sign in with GitHub CLI or save a valid token first.'
   if (code.includes('not-approved')) return 'Approve this repository on this machine first.'
+  // The settings edit is saved on a debounce, so a click within that window reaches a host that
+  // has not seen it yet. Name the wait rather than the generic failure.
+  if (code.includes('invalid-configuration') || code.includes('repository-not-found')) {
+    return 'These settings have not finished saving. Try again in a moment.'
+  }
   return 'The GitHub action could not be completed. Please try again.'
 }
 
@@ -77,6 +84,9 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
   const [repositoryDraft, setRepositoryDraft] = useState('')
   const [busy, setBusy] = useState('')
   const [notice, setNotice] = useState('')
+  // Which row the current notice belongs to. A result rendered away from the control that produced
+  // it reads as no result at all — an Approve failure shown three rows down looks like a dead button.
+  const [noticeRow, setNoticeRow] = useState<NoticeRow>('data')
   const [confirmation, setConfirmation] = useState<Confirmation>(null)
   const searchQuery = useSettingsSearch()
 
@@ -125,18 +135,30 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
     setRepositoryDraft(githubConfig?.repository ?? '')
   }, [projectId, githubConfig?.repository])
 
+  /** The host reads this project from DISK (`workspaceStore.githubProject`), so an edit that stays
+   *  in the renderer store is invisible to approve/refresh — `resolveProject` sees no `github`
+   *  block and throws `invalid-configuration`. `markWorkspaceDirty` is the seam every other
+   *  `setProjectKanban` caller pairs with (Canvas, GlobalKanbanView, NodeLabels): it rides Canvas's
+   *  debounced save, so the write keeps the canvas commit and the external-change conflict gate. */
   const updateConfig = (next: ProjectKanbanGitHub | undefined): void => {
     if (!board || !projectId) return
     const updated = { ...board }
     if (next) updated.github = next
     else delete updated.github
     setProjectKanban(projectId, updated)
+    markWorkspaceDirty()
     setNotice('')
   }
 
-  const run = async (name: string, action: () => Promise<void>, success: string): Promise<void> => {
+  const run = async (
+    name: string,
+    action: () => Promise<void>,
+    success: string,
+    row: NoticeRow = 'data'
+  ): Promise<void> => {
     setBusy(name)
     setNotice('')
+    setNoticeRow(row)
     try {
       await action()
       await refreshStatus()
@@ -226,7 +248,7 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
             onClick={() => void run('token', async () => {
               await window.nodeTerminal.githubControl.saveToken(token)
               setToken('')
-            }, 'Token saved securely.')}
+            }, 'Token saved securely.', 'authentication')}
           >
             Save token
           </Button>
@@ -236,7 +258,7 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
               onClick={() => void run('clear-token', async () => {
                 await window.nodeTerminal.githubControl.clearToken()
                 setToken('')
-              }, 'Saved token cleared.')}
+              }, 'Saved token cleared.', 'authentication')}
             >
               Clear
             </Button>
@@ -261,7 +283,7 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
               provider: event.target.value as GitHubAuthProvider,
               expectedRevision: current.control.revision
             })
-          }, 'Authentication preference updated.')}
+          }, 'Authentication preference updated.', 'authentication')}
         >
           <option value="auto">Auto</option>
           <option value="gh">GitHub CLI only</option>
@@ -351,12 +373,14 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                         repository,
                         expectedRevision: status.control.revision
                       })
-                    }, 'Repository approved on this machine.')}
+                    }, 'Repository approved on this machine.', 'repository')}
                   >
                     Approve this machine
                   </Button>
                 )}
               </div>
+              {notice && noticeRow === 'repository' &&
+                <p role="status" className="text-[13px] text-muted">{notice}</p>}
             </div>
           </SearchableRow>
 
@@ -398,7 +422,8 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                 <Button disabled={busy !== ''} onClick={() => void run(
                   'recheck',
                   async () => { /* the refresh inside run() is the whole action */ },
-                  'Authentication re-checked.'
+                  'Authentication re-checked.',
+                  'authentication'
                 )}>
                   Check again
                 </Button>
@@ -432,6 +457,9 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                   {tokenIsAside && tokenFieldRow}
                 </div>
               </details>
+
+              {notice && noticeRow === 'authentication' &&
+                <p role="status" className="text-[13px] text-muted">{notice}</p>}
             </div>
           </SearchableRow>
 
@@ -520,7 +548,8 @@ export function GitHubIssuesSection({ isActive }: { isActive: boolean }): React.
                   Choose a mapped completion column before GitHub issue changes are enabled.
                 </p>
               )}
-              {notice && <p role="status" className="text-[13px] text-muted">{notice}</p>}
+              {notice && noticeRow === 'data' &&
+                <p role="status" className="text-[13px] text-muted">{notice}</p>}
             </div>
           </SearchableRow>
         </>

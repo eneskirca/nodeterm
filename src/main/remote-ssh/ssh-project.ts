@@ -19,6 +19,7 @@ import { candidateName, safeDownloadBasename } from '../../core/download-name'
 import { removeAtomic, renameAtomic } from '../../core/fs-atomic'
 import { findExecutableSync, shellPathNow } from '../../core/exec-path'
 import { isSafeRemoteHome } from '../../core/remote-safety'
+import { drainPendingRemoteKills } from '../../core/pending-remote-kills'
 import { mediaCachePruneList, remoteMediaCacheName } from '../../core/remote-ssh/media-cache'
 import { allowMediaPath } from '../media-protocol'
 import { remoteAccountConfigDir, isSupportedClaudeVersion } from '../../core/claude-accounts-core'
@@ -41,6 +42,12 @@ import {
 } from '../../core/remote-ssh/control-master'
 import { claudeVersionProbeCommand, parseClaudeVersionProbe } from '../../core/remote-ssh/claude-version-probe'
 import { RemoteHooks } from './remote-hooks'
+import {
+  recordTunnelRepair,
+  shouldAttemptTunnelRepair,
+  type TunnelRepairState
+} from './tunnel-repair'
+
 import { hookServer } from '../../core/agents/hook-server'
 import {
   nodeIdsForCanvas,
@@ -121,10 +128,13 @@ interface Runners {
   /** The last SSH connection just went away through a user-facing disconnect. Production schedules
    *  the app-private agent's shutdown, which is what "forget the key" actually means. */
   onIdle?: () => void
-  /** A project's reverse hook tunnel was just VERIFIED on a freshly established master. Production
-   *  resyncs that project's working agents: hook events lost while the tunnel was down are gone for
-   *  good, so a node can be stranded at `working` until the 20-minute stale sweep. Deliberately not
-   *  called on the reuse branch — a master that answered `-O check` never lost its tunnel. The
+  /** A project's reverse hook tunnel was just VERIFIED — on a freshly established master, or by the
+   *  reuse branch's repair. Production resyncs that project's working agents: hook events lost while
+   *  the tunnel was down are gone for good, so a node can be stranded at `working` until the
+   *  20-minute stale sweep. This used to say it was "deliberately not called on the reuse branch —
+   *  a master that answered `-O check` never lost its tunnel", which was FALSE and was issue #735:
+   *  `ControlMaster=auto` means a dead master is rebuilt by the next child command, and the rebuilt
+   *  one carries no `-R`. It answers `-O check` all the same. The
    *  `conn` rides along because the resync builds its own remote commands (the host's tmux session
    *  list, a pane probe) and the alternative — looking the connection back up by control path —
    *  would add a public accessor for a fact this call site already holds. */
@@ -428,6 +438,64 @@ export class SshProjectManager {
    * respawned, 'reconnecting' status so the renderer flow engages). Interval is unref'd so it
    * never holds the process open; an empty conns map makes a tick a no-op.
    */
+  /** Consecutive failed tunnel repairs per project, so a host that can never forward is not
+   *  re-installed on every watchdog tick. See `tunnel-repair.ts` for why the first one is free. */
+  private tunnelRepair = new Map<string, TunnelRepairState>()
+
+  /**
+   * Re-verify a REUSED master's reverse hook tunnel, and rebuild it if it stopped answering
+   * (issue #735 — remote sessions stuck on "Unknown", no notifications, no unread dots).
+   *
+   * `-O check` answering is not evidence the tunnel is alive, and the reason is our own self-heal:
+   * `childArgs` uses `ControlMaster=auto` + `ControlPersist` on purpose, so when a master dies the
+   * next child command (a status poll, a mirror push, a remote git call) rebuilds a background
+   * master on the same ControlPath. That rebuilt master answers `-O check` — and carries no `-R`,
+   * because `setup()` is the only caller of `hookForwardArgs` and it runs only on the branch where
+   * a master has just come up. The watchdog then lands on the reuse branch forever.
+   *
+   * Nothing reports this. The project says `connected`, terminals work, the mirror pushes; only
+   * the hook POSTs die, into a socket file that still exists with nobody listening. MEASURED on
+   * the host that prompted the fix: 107 of 128 live remote tmux sessions pinned to an endpoint
+   * whose socket answered `curl` exit 7, while that project's status mirror was being written the
+   * same second.
+   *
+   * Best-effort throughout, exactly like the establish path: a failed probe or a failed rebuild
+   * leaves the connection alone and the project keeps working without hooks. It must never cost
+   * the user a connection that is already up.
+   */
+  private async repairHookTunnelIfDead(projectId: string, existing: Conn): Promise<void> {
+    try {
+      const hook = this.r.getHook()
+      // No hook server yet ⇒ nothing to point at, and `setup()` would refuse anyway.
+      if (!hook?.port || !hook.token) return
+      if (await this.remoteHooks.tunnelAlive(projectId, existing.conn, existing.controlPath, hook.token)) {
+        this.tunnelRepair.delete(projectId)
+        return
+      }
+      const now = Date.now()
+      if (!shouldAttemptTunnelRepair(this.tunnelRepair.get(projectId), now)) return
+      const res = await this.remoteHooks.setup(projectId, existing.conn, existing.controlPath, hook)
+      this.tunnelRepair.set(projectId, recordTunnelRepair(this.tunnelRepair.get(projectId), !!res, now))
+      if (!res) return
+      // Ownership re-check: `setup()` is several round-trips, and a disconnect + reconnect inside
+      // that window means this entry is no longer the live one — the same rule the establish path
+      // applies before rebuilding a master. Writing the endpoint onto a superseded entry would
+      // point sessions at a socket belonging to a connection nobody holds.
+      if (this.conns.get(projectId) !== existing) return
+      existing.hookEndpointPath = res.endpointPath
+      // Same contract as the establish path: hook events lost while the tunnel was down are gone
+      // for good, so the working agents need a resync. Fire-and-forget behind a catch — a repair
+      // job must never surface to the user as a dead SSH project.
+      try {
+        this.r.onTunnelVerified?.(projectId, existing.controlPath, existing.conn)
+      } catch {
+        // undecided changes nothing: the stale sweep remains the backstop
+      }
+    } catch {
+      // fail-open: the reuse returns whatever it already had, exactly as before this repair existed
+    }
+  }
+
   startWatchdog(intervalMs = MASTER_WATCHDOG_MS): void {
     if (this.watchdog) return
     this.watchdog = setInterval(() => {
@@ -493,8 +561,37 @@ export class SshProjectManager {
     const attempt = this.connectOnce(projectId, conn, remoteCwd, ticket).finally(() => {
       if (this.inFlight.get(projectId)?.attempt === attempt) this.inFlight.delete(projectId)
     })
+    // This host is reachable again, so this is the moment to pay off any remote `kill-session` a
+    // node delete could not deliver while it was down (see core/pending-remote-kills.ts). Hung on
+    // the shared attempt rather than inside `connectOnce`, so the REUSE branch — which returns
+    // long before the `connected` event — settles its debts too.
+    //
+    // Fire-and-forget, same contract as the tunnel resync below it: several remote round trips of
+    // pure cleanup must never delay, or fail, a connect that has already succeeded.
+    void attempt.then(
+      () => this.settleOwedKills(projectId),
+      () => {}
+    )
     this.inFlight.set(projectId, { conn, attempt, ticket })
     return attempt
+  }
+
+  /**
+   * Deliver the remote kills this machine still owes the host behind `projectId`.
+   *
+   * Keyed by HOST, not by project: several projects share one host's `$HOME` and one tmux server,
+   * so whichever of them reconnects first can settle every session owed there. An entry is dropped
+   * only on tmux's own answer — exit 0 (killed) or exit 1 ("can't find session" / "no server
+   * running", i.e. already gone). Anything else is a failed READ, never evidence of absence, and
+   * the debt stays for the next connect.
+   */
+  private async settleOwedKills(projectId: string): Promise<void> {
+    const c = this.conns.get(projectId)
+    if (!c) return
+    await drainPendingRemoteKills(sshHostKey(c.conn), async (session) => {
+      const { code } = await this.r.run(remoteTmuxKillArgs(c.conn, c.controlPath, session))
+      return code === 0 || code === 1
+    })
   }
 
   private async connectOnce(
@@ -547,6 +644,8 @@ export class SshProjectManager {
         // Keep the remote git cwd current even on an idempotent reuse (the folder may have changed).
         // Guard against a later connect without remoteCwd clearing a known cwd.
         existing.remoteCwd = remoteCwd ?? existing.remoteCwd
+        // ...and CHECK THE TUNNEL, because `-O check` says nothing about it (issue #735).
+        await this.repairHookTunnelIfDead(projectId, existing)
         return {
           controlPath: existing.controlPath,
           hookEndpointPath: existing.hookEndpointPath,

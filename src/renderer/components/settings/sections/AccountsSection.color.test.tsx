@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { AGENT_CONFIG } from '@shared/agents/config'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react'
 import { AccountsSection } from './AccountsSection'
@@ -67,9 +68,22 @@ describe('AccountsSection — default node color', () => {
   it('stores the picked color on the account', () => {
     const { host, root } = renderSection([account])
     act(() => {
-      swatch(host, 'work', 'Node color #0a84ff').click()
+      swatch(host, 'work', 'Node color Blue').click()
     })
     expect(colorOf('a1')).toBe('#0a84ff')
+    root.unmount()
+  })
+
+  it('offers the agent brand colors under their own heading', () => {
+    // The account picker is a NODE color picker, so it carries the whole palette — a second
+    // Claude login painted Claude's own clay is the case this feature exists for.
+    const { host, root } = renderSection([account])
+    act(() => {
+      swatch(host, 'work', `Node color ${AGENT_CONFIG.claude.label}`).click()
+    })
+    expect(colorOf('a1')).toBe(AGENT_CONFIG.claude.color)
+    const group = host.querySelector('[aria-label="Default node color for work"]')
+    expect(group?.textContent).toContain('Agents')
     root.unmount()
   })
 
@@ -84,8 +98,8 @@ describe('AccountsSection — default node color', () => {
 
   it('marks the picked swatch as selected', () => {
     const { host, root } = renderSection([{ ...account, color: '#0a84ff' }])
-    expect(swatch(host, 'work', 'Node color #0a84ff').getAttribute('aria-pressed')).toBe('true')
-    expect(swatch(host, 'work', 'Node color #32d74b').getAttribute('aria-pressed')).toBe('false')
+    expect(swatch(host, 'work', 'Node color Blue').getAttribute('aria-pressed')).toBe('true')
+    expect(swatch(host, 'work', 'Node color Green').getAttribute('aria-pressed')).toBe('false')
     expect(swatch(host, 'work', 'Default').getAttribute('aria-pressed')).toBe('false')
     root.unmount()
   })
@@ -100,7 +114,7 @@ describe('AccountsSection — default node color', () => {
     const other: ClaudeAccount = { id: 'a2', label: 'personal', createdAt: 0, color: '#ff453a' }
     const { host, root } = renderSection([account, other])
     act(() => {
-      swatch(host, 'work', 'Node color #0a84ff').click()
+      swatch(host, 'work', 'Node color Blue').click()
     })
     expect(colorOf('a1')).toBe('#0a84ff')
     expect(colorOf('a2')).toBe('#ff453a')
@@ -113,7 +127,7 @@ describe('AccountsSection — default node color', () => {
   it('stores the picked color on a Codex account', () => {
     const { host, root } = renderSection([], [{ id: 'c1', label: 'codex work' }])
     act(() => {
-      swatch(host, 'codex work', 'Node color #32d74b').click()
+      swatch(host, 'codex work', 'Node color Green').click()
     })
     expect(codexColorOf('c1')).toBe('#32d74b')
     root.unmount()
@@ -133,7 +147,7 @@ describe('AccountsSection — default node color', () => {
   it('colors a Codex account without touching a Claude account of the same id', () => {
     const { host, root } = renderSection([{ ...account, id: 'x1' }], [{ id: 'x1', label: 'codex' }])
     act(() => {
-      swatch(host, 'codex', 'Node color #32d74b').click()
+      swatch(host, 'codex', 'Node color Green').click()
     })
     expect(codexColorOf('x1')).toBe('#32d74b')
     expect(colorOf('x1')).toBeUndefined()

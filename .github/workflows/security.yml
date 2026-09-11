@@ -16,6 +16,12 @@ on:
     # Weekly re-scan so a newly-disclosed CVE in an unchanged dependency still surfaces.
     - cron: '17 4 * * 1'
 
+# Only PR runs may be cancelled: a cancelled merge_group run strands every PR queued
+# behind it, and a cancelled push-to-main run loses that commit's CodeQL baseline.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Least privilege: only CodeQL needs security-events:write to upload results.
 permissions:
   contents: read

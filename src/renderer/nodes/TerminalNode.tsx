@@ -106,7 +106,13 @@ import {
   validCellSize,
   type Vec2
 } from '../lib/glyphGridNode'
-import { deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import { cleanEcho, deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import {
+  RESUME_MISS_WINDOW_MS,
+  detectsResumeMiss,
+  resumeSessionMissing
+} from '../terminal/resume-fallback'
+import { MAX_LAUNCH_LINE_BYTES, lineBytes } from '@shared/canonical-line'
 import {
   agentHibernateFns,
   exitSequence,
@@ -126,6 +132,8 @@ import {
   type PauseOutcome,
   type ResumePhaseOutcome
 } from '../terminal/agent-restart'
+import { coldResumeDecision, shouldProbeTranscript } from '../terminal/cold-resume-session'
+import type { TranscriptPresence } from '@shared/types'
 import {
   looksDropped,
   looksDroppedCandidate,
@@ -135,7 +143,7 @@ import {
 import { shouldAutoWake, shouldColdResume } from '../terminal/hibernation-policy'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
-import { IconSearch, IconChat, IconMic, IconReload, IconEye, IconEyeOff, IconGrid } from '../components/icons'
+import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
@@ -163,7 +171,8 @@ import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { isBrowserRuntime } from '../bridge/runtime'
-import { agentLaunchOverride, COLLAPSED_HEIGHT, NODE_COLORS, type CanvasNode } from '../state/workspace'
+import { agentLaunchOverride, COLLAPSED_HEIGHT, type CanvasNode } from '../state/workspace'
+import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { AccountChip, useAccountChip } from '../components/AccountChip'
 import { effectiveAccountId } from '../lib/accountChip'
 import {
@@ -820,6 +829,27 @@ interface CoState {
    * respawn clears it.
    */
   staleCwd: boolean
+  /**
+   * This node COLD-STARTED and the conversation its persisted session id names is gone, so the
+   * agent was launched bare instead of resuming a dead id (see `cold-resume-session.ts`).
+   *
+   * A slim banner rather than an overlay, for the same reason `staleCwd` is one: the terminal
+   * underneath is alive and working — the agent started, it simply started fresh. Nothing to
+   * retry, so the only control is a dismiss. Announced at all because the alternative is what
+   * this fixes from the other side: a fresh conversation opened in silence, under a node whose
+   * title, badge and history all still describe the old one.
+   */
+  lostSession: boolean
+  /**
+   * A one-shot launch command was REFUSED at delivery because it is longer than a canonical-mode
+   * tty line (`deliverCommand`'s `line-too-long`, issue #706). Holds the command's byte length,
+   * for the banner; `null` = nothing refused.
+   *
+   * NOT an overlay like `spawnError`: the terminal is alive and the user can run the command
+   * themselves — covering it would take away the only surface that can still be used. Same slim
+   * top banner as `staleCwd`, and for the same reason.
+   */
+  launchTooLongBytes: number | null
 }
 const NO_CO: CoState = {
   letterbox: false,
@@ -827,7 +857,9 @@ const NO_CO: CoState = {
   ended: false,
   offline: false,
   spawnError: null,
-  staleCwd: false
+  staleCwd: false,
+  lostSession: false,
+  launchTooLongBytes: null
 }
 const coStates = new Map<string, CoState>()
 const coSubs = new Map<string, (s: CoState) => void>()
@@ -1035,7 +1067,9 @@ function setCo(key: string, patch: Partial<CoState>): void {
     next.ended === prev.ended &&
     next.offline === prev.offline &&
     next.spawnError === prev.spawnError &&
-    next.staleCwd === prev.staleCwd
+    next.staleCwd === prev.staleCwd &&
+    next.lostSession === prev.lostSession &&
+    next.launchTooLongBytes === prev.launchTooLongBytes
   )
     return
   coStates.set(key, next)
@@ -1859,6 +1893,8 @@ export function TerminalNode({
     }))
   }
   const dismissStaleCwd = (): void => setCo(termKey, { staleCwd: false })
+  const dismissLostSession = (): void => setCo(termKey, { lostSession: false })
+  const dismissLaunchTooLong = (): void => setCo(termKey, { launchTooLongBytes: null })
 
   // "Not connected" (CoState.offline): the host was unreachable, so this node has no session
   // anywhere. Ask the coordinator to re-establish the project's master NOW — it flushes the
@@ -3022,6 +3058,10 @@ export function TerminalNode({
         // Truthful on EVERY result, not only when set: a clean respawn ("Restart in folder", or
         // any refresh that landed on a healthy session) must take the banner down with it.
         setCo(termKey, { staleCwd: !!staleCwd })
+        // Same rule for the lost-conversation notice, and it is cleared HERE (before the
+        // cold-restore branch below can raise it) so a respawn that resumes cleanly — or any
+        // warm reattach, which never reaches that branch at all — takes the old banner down.
+        setCo(termKey, { lostSession: false })
         // Catch up a size change that landed while the spawn was in flight (applyFit skips the
         // IPC until sessionId is set, and the observer won't re-fire without another change).
         applyFit()
@@ -3277,7 +3317,15 @@ export function TerminalNode({
                   write: (d) => transport.write(sid, d),
                   onData: (cb) => transport.onData(sid, cb)
                 },
-                cmd
+                cmd,
+                (outcome) => {
+                  // The one outcome the caller must act on: the line was longer than the pane's
+                  // tty could take, so nothing was submitted (#706). Say so — a refusal that is
+                  // only visible as an idle pane is the failure this replaces.
+                  if (outcome === 'line-too-long') {
+                    setCo(termKey, { launchTooLongBytes: lineBytes(cmd) })
+                  }
+                }
               )
             )
           })
@@ -3343,6 +3391,26 @@ export function TerminalNode({
           // relaunched empty while their transcripts sat on disk, unreachable.
           const st = useAgentStatus.getState().byId[id]
           const priorId = st?.sessionId || data.agentSessionId
+          // …and is that conversation still THERE? A persisted id outlives its transcript
+          // (claude's 30-day cleanup, a `/clear`, a removed account, an id minted for a session
+          // that never ran), and `claude --resume <dead id>` prints "No conversation found with
+          // session ID" and exits — leaving the pane at a bare shell with an agent badge over it.
+          // Measured on one host: 20 of 108 live sessions sat in exactly that state.
+          //
+          // Only a POSITIVE `absent` drops the id (see `coldResumeDecision` for why the two errors
+          // are not symmetric). `data.accountId` is the right scope and `accountForReads` is not:
+          // the question is whether the command we are about to type will find the conversation,
+          // and that command runs under the config dir `data.accountId` names.
+          const presence = shouldProbeTranscript(priorId, agentId)
+            ? await api.chat
+                .transcriptExists(priorId!, data.accountId, id)
+                .catch((): TranscriptPresence => 'unknown')
+            : ('unknown' as TranscriptPresence)
+          const resume = coldResumeDecision(priorId, presence)
+          // Say so rather than starting a fresh conversation in silence. `life.dead` first, like
+          // the spawn-rejection handler below: a node unmounted mid-probe must not publish into a
+          // key the next mount reads.
+          if (resume.lostSession && !life.dead) setCo(termKey, { lostSession: true })
           // Re-resolve the mode at relaunch: it's a property of how a session is launched, not
           // a persisted property of the node, so the current setting wins after a reboot. Awaited
           // (not the sync `activePermissionMode`) because this fires on mount: right after a machine
@@ -3372,7 +3440,7 @@ export function TerminalNode({
             {
               agentId,
               customAgent,
-              sessionId: priorId || undefined,
+              sessionId: resume.sessionId,
               permissionMode: mode,
               model: data.agentModel,
               sharedIdentity: shared,
@@ -3387,7 +3455,82 @@ export function TerminalNode({
             // the exact line it launched with. Empty on browser/relay by design.
             agentEnvSnapshot()
           )
+          /**
+           * Watch the pane for the CLI's own "that conversation does not exist" line and, if it
+           * comes, launch the agent FRESH in the same pane.
+           *
+           * Everything it does is a refusal until proven otherwise:
+           *  - it only reads output for `RESUME_MISS_WINDOW_MS`, because the CLI answers at once;
+           *  - it matches the message against THIS id, not a bare substring;
+           *  - it re-reads the pane and requires a SHELL to own it before writing, the same gate
+           *    the hibernation wake uses — the CLI exits after printing, so anything else in that
+           *    pane is something we must not type into;
+           *  - it fires at most once, and the fallback command carries NO session id, so it can
+           *    never arm a second watcher.
+           * The dead id is forgotten on both sides afterwards (the live one from hooks and the
+           * minted one on the node), so the next cold restore does not replay it.
+           */
+          const watchResumeMiss = (deadId: string): void => {
+            let fired = false
+            let seen = ''
+            // `unsub` is assigned on the line after the timer is armed, and `stop` is pushed to
+            // `cleanups` where an unmount can call it at any moment — a `const` read before its
+            // assignment would throw out of a teardown path. Optional call, idempotent.
+            let unsub: (() => void) | undefined
+            const stop = (): void => {
+              clearTimeout(timer)
+              unsub?.()
+              unsub = undefined
+            }
+            const timer = setTimeout(() => stop(), RESUME_MISS_WINDOW_MS)
+            unsub = transport.onData(sid, (chunk) => {
+              if (fired) return
+              // Escape sequences and line breaks removed: the CLI colours its own output and tmux
+              // re-wraps it at the pane width, so a raw match would miss a line that straddles a
+              // column boundary. Bounded, so a chatty pane cannot grow this without limit.
+              seen = (seen + cleanEcho(chunk)).slice(-4096)
+              if (!resumeSessionMissing(agentId, deadId, seen)) return
+              fired = true
+              stop()
+              void (async () => {
+                const pane = await queryPaneWithin(
+                  () => api.pty.paneCommand(id),
+                  RESTART_EXIT_TIMEOUT_MS
+                )
+                // `null` is "we could not see the pane", never "nothing is running in it" — the
+                // same contract every other reader of this query keeps.
+                if (!isShellCommand(pane)) return
+                const { command: fresh } = assembleResumeCommand(
+                  {
+                    agentId,
+                    customAgent,
+                    sessionId: undefined,
+                    permissionMode: mode,
+                    model: data.agentModel,
+                    sharedIdentity: shared,
+                    launchCmdOverride: agentLaunchOverride(agentId, ownerProjectId)
+                  },
+                  agentEnvSnapshot()
+                )
+                if (!fresh) return
+                useAgentStatus.getState().setSessionId(id, undefined)
+                if (data.agentSessionId) updateNodeData(id, { agentSessionId: undefined })
+                writeWhenShellReady(fresh)
+              })()
+            })
+            cleanups.push(stop)
+          }
           if (cmd) writeWhenShellReady(cmd) // same shell-startup race as initialCommand
+          // A resume can name a conversation that does not exist — the minted id whose launch
+          // never ran (an armed `--after` node, a truncated launch line), or a hook-fed id whose
+          // transcript is gone. The CLI then prints one line, exits, and the node keeps its agent
+          // badge over a pane sitting at a bare shell (issue #707). Watch for the CLI's own
+          // refusal, naming THIS id, and start the agent fresh instead. Armed only when we
+          // actually asked to resume something and only for an agent whose message we measured;
+          // everything else is byte-identical to before. See terminal/resume-fallback.ts.
+          if (cmd && priorId && detectsResumeMiss(agentId)) {
+            watchResumeMiss(priorId)
+          }
         } else if (fresh && pausedNow) {
           // The auto-resume above was skipped (that's the feature), but this mount's PANE is
           // brand new either way — tmux respawned it, whether from the deep "pause & end session"
@@ -4450,16 +4593,31 @@ export function TerminalNode({
 
   // ---- hover guard: dwell before entering the terminal ----
   /**
-   * Take the keyboard: leave the guard, focus xterm, and report the node active.
+   * Take the keyboard: focus xterm, leave the guard, and report the node active.
    *
    * Split out of `onBodyEnter` so a deliberate CLICK can run it with no delay — see `onGuardUp`.
+   *
+   * `ack` (default true) says a human AIMED at this node, and two things follow from it. It marks
+   * the node's finish read, which reaches past this machine (`clearUnread` → `ackDone` → the notch
+   * capsule and the paired phone). And it drops the hover guard, which is a POINTER contract: the
+   * guard makes a quick scroll pan the canvas until the dwell has elapsed, so a restore nobody
+   * pointed at must leave it armed, or the next pointer entry silently skips its dwell and the
+   * first wheel scrolls tmux instead. Keyboard focus does not need the guard down: it is an
+   * overlay, and a programmatic `focus()` is not hit-tested.
+   *
+   * Every gesture that reaches here aims at THIS node: a dwell, a click, a sidebar or notification
+   * jump. The one caller that passes false is the window-activation restore.
    */
-  const enterNow = () => {
+  const enterNow = (opts?: { ack?: boolean }) => {
+    const aimed = opts?.ack !== false
     if (dwellRef.current) clearTimeout(dwellRef.current)
-    setArmed(false)
+    if (aimed) setArmed(false)
     termRef.current?.focus()
+    useTerminalFocus.getState().remember(id)
     useAgentStatus.getState().setActive(id, true)
-    useAgentStatus.getState().clearUnread(id)
+    if (aimed) {
+      useAgentStatus.getState().clearUnread(id)
+    }
     presence.reportFocus(id)
   }
 
@@ -4474,8 +4632,9 @@ export function TerminalNode({
   useEffect(() => {
     if (focusReq === 0 || focusReq === lastFocusReqRef.current) return
     lastFocusReqRef.current = focusReq
+    const { ack } = useTerminalFocus.getState()
     useTerminalFocus.setState({ nodeId: null })
-    enterNow()
+    enterNow({ ack })
     // enterNow closes over live refs/setters; re-running on its identity would fire spuriously.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusReq])
@@ -4490,6 +4649,7 @@ export function TerminalNode({
       }
       setArmed(false)
       termRef.current?.focus()
+      useTerminalFocus.getState().remember(id)
       useAgentStatus.getState().setActive(id, true)
       useAgentStatus.getState().clearUnread(id)
       // "I am working in this node" — the same signal the agent-status active flag uses, i.e. the
@@ -4610,6 +4770,7 @@ export function TerminalNode({
     // A paste came from THIS window, which already has it.
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     term.focus()
+    useTerminalFocus.getState().remember(id)
     term.paste(paths.join(' ') + ' ')
     useAgentStatus.getState().setActive(id, true)
     presence.reportFocus(id)
@@ -4853,28 +5014,32 @@ export function TerminalNode({
       />
 
       <div className="term-node__header">
-        <button className="term-node__collapse" title={collapsed ? 'Expand' : 'Collapse'} onClick={toggleCollapse}>
-          {collapsed ? '▸' : '▾'}
-        </button>
-        <button
-          className="term-node__color"
-          style={{ background: data.color }}
-          title="Color"
-          onClick={() => setShowColors((v) => !v)}
-        />
+        <Tooltip label={collapsed ? 'Expand' : 'Collapse'}>
+          <button
+            className="term-node__collapse"
+            aria-label={collapsed ? 'Expand' : 'Collapse'}
+            onClick={toggleCollapse}
+          >
+            {collapsed ? <IconChevronRight /> : <IconChevronDown />}
+          </button>
+        </Tooltip>
+        <Tooltip label="Color">
+          <button
+            className="term-node__color"
+            style={{ background: data.color }}
+            aria-label="Color"
+            onClick={() => setShowColors((v) => !v)}
+          />
+        </Tooltip>
         {showColors && (
-          <div className="color-popover">
-            {NODE_COLORS.map((c) => (
-              <button
-                key={c}
-                style={{ background: c }}
-                onClick={() => {
-                  updateNodeData(id, { color: c })
-                  setShowColors(false)
-                }}
-              />
-            ))}
-          </div>
+          <NodeColorSwatches
+            className="color-popover"
+            selected={data.color as string | undefined}
+            onPick={(c) => {
+              updateNodeData(id, { color: c })
+              setShowColors(false)
+            }}
+          />
         )}
         {data.icon ? (
           <button
@@ -5078,7 +5243,7 @@ export function TerminalNode({
                 })
               }}
             >
-              ▶
+              <IconPlay />
             </button>
           </span>
         )}
@@ -5155,7 +5320,7 @@ export function TerminalNode({
               className="term-node__move-worktree nodrag"
               onClick={() => moveIntoWorktreeHandler?.(id)}
             >
-              ↪
+              <IconMoveTo />
             </button>
           </Tooltip>
         )}
@@ -5209,8 +5374,13 @@ export function TerminalNode({
         )}
         {!isHidden('ai-name', hiddenHeaderButtons) && (
           <Tooltip label="Name with AI (from terminal output)">
-            <button className="term-node__ai nodrag" disabled={naming} onClick={nameWithAi}>
-              {naming ? '…' : '✦'}
+            <button
+              className="term-node__ai nodrag"
+              aria-label="Name with AI"
+              disabled={naming}
+              onClick={nameWithAi}
+            >
+              {naming ? <span className="ui-spinner" /> : <IconSparkle />}
             </button>
           </Tooltip>
         )}
@@ -5229,7 +5399,7 @@ export function TerminalNode({
           <Tooltip label={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}>
             <button
               className="term-node__hide-fanout nodrag"
-              title={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}
+              aria-label={hideFanout ? 'Show cards & connections' : 'Hide cards & connections'}
               aria-pressed={hideFanout}
               onClick={(e) => {
                 e.stopPropagation()
@@ -5247,7 +5417,7 @@ export function TerminalNode({
             <Tooltip label="Tidy subagent cards into a grid">
               <button
                 className="term-node__tidy-fanout nodrag"
-                title="Tidy subagent cards into a grid"
+                aria-label="Tidy subagent cards into a grid"
                 onClick={(e) => {
                   e.stopPropagation()
                   useAgentNodes.getState().tidyFanout(id)
@@ -5260,16 +5430,18 @@ export function TerminalNode({
         {!collapsed && !isHidden('maximize', hiddenHeaderButtons) && (
           <MaximizeButton id={id} maximized={!!data.premaxRect} />
         )}
-        <button
-          className="term-node__close"
-          title="Close (ends the session)"
-          onClick={() => {
-            transport.destroy(id)
-            deleteElements({ nodes: [{ id }] })
-          }}
-        >
-          ×
-        </button>
+        <Tooltip label="Close (ends the session)">
+          <button
+            className="term-node__close"
+            aria-label="Close"
+            onClick={() => {
+              transport.destroy(id)
+              deleteElements({ nodes: [{ id }] })
+            }}
+          >
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       {searchOpen && !collapsed && (
@@ -5390,10 +5562,58 @@ export function TerminalNode({
               title="Dismiss"
               aria-label="Dismiss"
             >
+              <IconClose />
+            </button>
+          </div>
+        )}
+        {/* Launch line refused (#706): same slim TOP banner as staleCwd, for the same reason —
+            the terminal is alive and the command can still be run by hand, so nothing is
+            covered. It reports what was measured and names the flag that avoids it; it does not
+            offer a retry, because retyping the identical line would be truncated identically. */}
+        {!co.closed && !co.ended && !co.spawnError && !co.offline && co.launchTooLongBytes !== null && !offscreenDown && (
+          <div className="term-node__stalecwd nodrag">
+            <span className="term-node__stalecwd-text">
+              This session&apos;s launch command ({co.launchTooLongBytes} bytes) is longer than a
+              terminal line can carry ({MAX_LAUNCH_LINE_BYTES}), so it was not run. Shorten the
+              prompt, or pass it with --prompt-file.
+            </span>
+            <button
+              className="term-node__stalecwd-dismiss"
+              onClick={dismissLaunchTooLong}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
               ×
             </button>
           </div>
         )}
+        {/* Lost conversation: the cold restore could not find the transcript its persisted session
+            id names, so the agent was launched BARE. Same slim top banner as staleCwd above, and
+            for the same reason — the terminal underneath is alive; only its history is missing.
+            Yields to staleCwd (a dead working directory is the bigger problem, and two stacked
+            banners would cover the screen). No action button: there is nothing to retry, the
+            conversation is gone. */}
+        {!co.closed &&
+          !co.ended &&
+          !co.spawnError &&
+          !co.offline &&
+          !co.staleCwd &&
+          co.lostSession &&
+          !offscreenDown && (
+            <div className="term-node__stalecwd nodrag">
+              <span className="term-node__stalecwd-text">
+                The previous conversation could not be found — this agent started fresh.
+              </span>
+              <button
+                className="term-node__stalecwd-dismiss"
+                onClick={dismissLostSession}
+                title="Dismiss"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
         {armed && !mdMode && (
           <div
             className="term-hover-guard"

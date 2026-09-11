@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isDestructiveVerb, DESTRUCTIVE_VERBS } from '@shared/control-verbs'
+import { isWaivableVerb } from '@shared/control-confirm'
 
 /**
  * A STRUCTURAL test on purpose.
@@ -72,6 +73,63 @@ describe('the confirm-gated set and the dispatch that reads it stay in agreement
       expect(body).toContain("'denied by user'")
     })
   }
+
+  /**
+   * The WAIVER gate (@shared/control-confirm) is the second thing every gated case must read, and
+   * a case that forgot it would keep asking forever — annoying but safe — while a case that read
+   * the wrong thing (or hard-coded a skip) would be a destructive verb with no human gate and no
+   * failing test. So it is pinned in both directions, exactly like the set above.
+   */
+  for (const verb of ['write', 'close'] as const) {
+    it(`${verb} reaches its confirm through the shared waiver decision`, () => {
+      expect(isWaivableVerb(verb)).toBe(true)
+      const body = dispatchBody(verb)
+      // The DECISION comes from the shared, tested table — never an inline condition here.
+      expect(body).toMatch(/controlConfirmDecision\(verb\)/)
+      // A skip must announce itself. `waivedNotice` is what puts the action on screen when the
+      // dialog is gone; without it a waiver makes destructive work silent.
+      expect(body).toContain('waivedNotice(')
+      // And the dialog it raises must offer the app-run waiver, gated on the same table.
+      expect(body).toContain('waiveVerb: isWaivableVerb(verb) ? verb : undefined')
+      // The request deadline, so an abandoned dialog cannot hold `confirmBusy` for the app run.
+      expect(body).toContain('expiresAt: confirmExpiresAt(')
+      expect(body).toContain('onExpire:')
+    })
+  }
+
+  it('open-project raises the SAME dialog but can never be waived', () => {
+    // It is outside CONFIRM_WAIVABLE_VERBS on purpose (it registers a new directory and records a
+    // grant), and it is already deduped per (caller, project), so it cannot produce the dialog
+    // storm the waiver exists to end. Both halves are asserted: no waiver, but still a deadline.
+    expect(isWaivableVerb('open-project')).toBe(false)
+    const body = dispatchBody('open-project')
+    // The FIELD, not the word: the block carries a comment explaining why it has no waiver, and
+    // that comment is the thing a future reader needs most.
+    expect(body).not.toMatch(/waiveVerb:/)
+    expect(body).not.toContain('controlConfirmDecision(')
+    expect(body).toContain('expiresAt: confirmExpiresAt(')
+  })
+
+  it('no case hard-codes a skip of its confirm', () => {
+    // The only admissible way past one of these dialogs is `controlConfirmDecision`. A literal
+    // shortcut (an env check, a `true`, a settings flag read inline) would be a silent loosening.
+    for (const verb of ['write', 'close', 'open-project'] as const) {
+      const body = dispatchBody(verb)
+      expect(body).not.toMatch(/skipConfirm|dontAskAgain|SKIP_CONFIRM/)
+    }
+  })
+
+  it('a DENIAL never grants a waiver', () => {
+    // The checkbox is ticked before the user has decided, so the grant must hang off the confirm
+    // button and nothing else. Cancelling a dialog with "Don't ask again" ticked has to leave the
+    // gate exactly where it was — the opposite would turn a refusal into a permanent yes.
+    const site = src.slice(src.indexOf('{confirm && ('), src.indexOf('{pendingPeer && ('))
+    expect(site).toContain('waiveForSession(confirm.waiveVerb)')
+    expect(site.slice(site.indexOf('onCancel={'))).not.toContain('waiveForSession')
+    // Only ever the app-run waiver from a dialog: the permanent one is a Settings write, and
+    // `controlConfirmWaivers` must not be reachable from here.
+    expect(site).not.toContain('controlConfirmWaivers')
+  })
 
   it('no other case reads isDestructiveVerb', () => {
     // Every `isDestructiveVerb(verb)` in the dispatch must sit in a case the set actually holds.
