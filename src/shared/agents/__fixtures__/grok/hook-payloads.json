@@ -1,5 +1,5 @@
 {
-  "_provenance": "captured live from grok 1.0.13 (5e9a58528b76) on 2026-09-01, real logged-in account; paths, session ids and tool-call ids redacted, KEYS AND SHAPES UNCHANGED",
+  "_provenance": "captured live from grok 1.0.13 (5e9a58528b76) on 2026-09-01, real logged-in account; SubagentStart/SubagentStop added from a second capture on 2026-09-02 (two parallel explore children of the same type); paths, session ids and tool-call ids redacted, KEYS AND SHAPES UNCHANGED",
   "events": [
     {
       "hookEventName": "session_start",
@@ -285,6 +285,76 @@
       "session_id": "00000000-0000-4000-8000-000000000001",
       "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000001/updates.jsonl",
       "permission_mode": "default"
+    },
+    {
+      "hookEventName": "subagent_start",
+      "sessionId": "00000000-0000-4000-8000-000000000010",
+      "cwd": "/work/project",
+      "workspaceRoot": "/work/project",
+      "timestamp": "2026-09-02T12:23:11.567102+00:00",
+      "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000010/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "subagentId": "00000000-0000-4000-8000-000000000012",
+      "subagentType": "explore",
+      "description": "Read b.txt contents",
+      "hook_event_name": "subagent_start",
+      "session_id": "00000000-0000-4000-8000-000000000010",
+      "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000010/updates.jsonl",
+      "permission_mode": "bypassPermissions"
+    },
+    {
+      "hookEventName": "subagent_start",
+      "sessionId": "00000000-0000-4000-8000-000000000010",
+      "cwd": "/work/project",
+      "workspaceRoot": "/work/project",
+      "timestamp": "2026-09-02T12:23:11.589454+00:00",
+      "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000010/updates.jsonl",
+      "permissionMode": "bypassPermissions",
+      "subagentId": "00000000-0000-4000-8000-000000000011",
+      "subagentType": "explore",
+      "description": "Read a.txt contents",
+      "hook_event_name": "subagent_start",
+      "session_id": "00000000-0000-4000-8000-000000000010",
+      "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000010/updates.jsonl",
+      "permission_mode": "bypassPermissions"
+    },
+    {
+      "hookEventName": "subagent_stop",
+      "sessionId": "00000000-0000-4000-8000-000000000011",
+      "cwd": "/work/project",
+      "workspaceRoot": "/work/project",
+      "timestamp": "2026-09-02T12:23:15.445215+00:00",
+      "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000011/updates.jsonl",
+      "promptId": "00000000-0000-4000-8000-000000000021",
+      "permissionMode": "bypassPermissions",
+      "phase": "gate",
+      "subagentId": "00000000-0000-4000-8000-000000000011",
+      "subagentType": "explore",
+      "stopHookActive": false,
+      "lastAssistantMessage": "alfa",
+      "hook_event_name": "subagent_stop",
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000011/updates.jsonl",
+      "permission_mode": "bypassPermissions"
+    },
+    {
+      "hookEventName": "subagent_stop",
+      "sessionId": "00000000-0000-4000-8000-000000000012",
+      "cwd": "/work/project",
+      "workspaceRoot": "/work/project",
+      "timestamp": "2026-09-02T12:23:16.099471+00:00",
+      "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000012/updates.jsonl",
+      "promptId": "00000000-0000-4000-8000-000000000022",
+      "permissionMode": "bypassPermissions",
+      "phase": "gate",
+      "subagentId": "00000000-0000-4000-8000-000000000012",
+      "subagentType": "explore",
+      "stopHookActive": false,
+      "lastAssistantMessage": "beta",
+      "hook_event_name": "subagent_stop",
+      "session_id": "00000000-0000-4000-8000-000000000012",
+      "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/00000000-0000-4000-8000-000000000012/updates.jsonl",
+      "permission_mode": "bypassPermissions"
     }
   ]
 }

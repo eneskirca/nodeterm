@@ -355,14 +355,20 @@ export function buildStubApi(): Omit<
       materializeShared: () => Promise.resolve([])
     },
     chat: {
-      readTranscript: U('chat.readTranscript')
+      readTranscript: U('chat.readTranscript'),
+      // Resolves rather than rejects, like the two `cliCaps` above and for the same reason: cold
+      // restore awaits this on the boot path, and its whole contract is that anything it cannot
+      // judge is `unknown` ⇒ resume exactly as before. A rejection here would be a second way of
+      // saying the same thing that every caller would have to remember to catch.
+      transcriptExists: () => Promise.resolve('unknown' as const)
     },
     claudeAccounts: {
       add: U('claudeAccounts.add'),
       waitLogin: U('claudeAccounts.waitLogin'),
       cancelWaitLogin: U('claudeAccounts.cancelWaitLogin'),
       remove: U('claudeAccounts.remove'),
-      link: U('claudeAccounts.link')
+      link: U('claudeAccounts.link'),
+      setSkillSharing: U('claudeAccounts.setSkillSharing')
     },
     codexAccounts: {
       add: U('codexAccounts.add'),

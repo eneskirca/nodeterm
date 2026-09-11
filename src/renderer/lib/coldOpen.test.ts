@@ -8,6 +8,8 @@ import {
   coldResolveGroup,
   groupSizeFor,
   groupSlot,
+  offCanvasNoticeText,
+  offCanvasReplyClause,
   storedAgentIdOf,
   type ColdNode
 } from './coldOpen'
@@ -216,5 +218,44 @@ describe('coldOpenMessage — ONE sentence for both cold-open sites', () => {
     const closed = coldOpenMessage(1, 'terminal', 'Docs', ['t1'], { closed: true })
     expect(closed.startsWith(open)).toBe(true)
     expect(closed).toContain('that project is closed')
+  })
+})
+
+describe('offCanvasReplyClause — the display verbs\' half of the same event', () => {
+  it('is a CLAUSE, so the verb keeps saying what it made', () => {
+    // Appended to `showing web nt-3f2a`, not instead of it: only the WHERE is new, which is what
+    // lets the four case bodies stay ignorant of routing.
+    expect(offCanvasReplyClause('api')).toBe(
+      ' — placed in "api"; that project is not on screen'
+    )
+  })
+
+  it('adds — and only adds — a clause when the project is CLOSED', () => {
+    const open = offCanvasReplyClause('api')
+    const closed = offCanvasReplyClause('api', { closed: true })
+    expect(closed.startsWith(open)).toBe(true)
+    expect(closed).toContain('reopen it from the welcome screen')
+  })
+
+  it('never claims the node is queued — it is complete when written', () => {
+    // The distinction this builder exists for. A cold-opened SESSION has not started; a page, a
+    // video or an image has. Telling a caller its screenshot is "queued" invites it to wait for
+    // something that already happened.
+    expect(offCanvasReplyClause('api')).not.toContain('queued')
+    expect(offCanvasReplyClause('api')).not.toContain('starts when')
+  })
+})
+
+describe('offCanvasNoticeText — the HUMAN half', () => {
+  it('is an active-voice sentence naming the actor and the project', () => {
+    expect(offCanvasNoticeText('api', 1)).toBe(
+      'An agent opened a node in "api". That project is not on screen.'
+    )
+  })
+
+  it('counts, rather than saying "a node" for five', () => {
+    expect(offCanvasNoticeText('api', 3)).toBe(
+      'An agent opened 3 nodes in "api". That project is not on screen.'
+    )
   })
 })

@@ -7,6 +7,14 @@
 // kills the pending line (Ctrl-U) and rewrites; the LAST attempt submits unverified —
 // fail-open, a terminal whose echo we can't recognize must never block the launch (that
 // worst case is exactly the pre-fix behavior).
+//
+// The ONE exception to failing open is a line the tty could not physically have taken: a
+// canonical-mode buffer silently drops everything past its cap (1024 bytes on macOS), so an
+// over-cap command is truncated mid-quote and Enter would strand the shell at `quote>` with the
+// agent never launched (#706). That case is refused, not submitted — see `DeliveryOutcome` and
+// @shared/canonical-line.
+
+import { fitsLaunchLine } from '@shared/canonical-line'
 
 export const VERIFY_TIMEOUT_MS = 2000
 export const DELIVERY_ATTEMPTS = 3
@@ -54,6 +62,22 @@ export function echoedIntact(cleanedSoFar: string, cmd: string): boolean {
   )
 }
 
+/**
+ * How a delivery ended, for the callers that must tell the difference.
+ *
+ *  - `submitted` — Enter was written. Either the echo verified, or the last attempt failed OPEN
+ *    (the historical behaviour: a terminal whose echo we cannot recognise must never block a
+ *    launch). Every pre-existing caller treated a settle as exactly this.
+ *  - `line-too-long` — the echo never verified AND the command is longer than a canonical-mode
+ *    tty can carry (`MAX_LAUNCH_LINE_BYTES`), so the pane is holding a KNOWN-truncated line.
+ *    Enter is NOT written; the pending line is killed instead. This is the one case where
+ *    failing open is not a fail-open at all: submitting a line whose closing quote the kernel
+ *    dropped strands the shell at `quote>` and the agent never starts (#706). A refusal the
+ *    caller can show beats a pane that merely looks idle.
+ *  - `cancelled` — the caller tore the delivery down (node unmount), or the transport threw.
+ */
+export type DeliveryOutcome = 'submitted' | 'line-too-long' | 'cancelled'
+
 export interface DeliveryIo {
   write(data: string): void
   /** Subscribe to session output; returns unsubscribe. */
@@ -65,20 +89,25 @@ export interface DeliveryIo {
  *  (verified or fail-open) or cancelled — for callers that must know when the LINE has left the
  *  pane, not merely when it was started: the retries run for up to
  *  DELIVERY_ATTEMPTS × VERIFY_TIMEOUT_MS, and anything typed into the pane during that window
- *  lands inside the un-submitted line. */
-export function deliverCommand(io: DeliveryIo, cmd: string, onSettled?: () => void): () => void {
+ *  lands inside the un-submitted line. The outcome argument is optional to read: every caller
+ *  that only needs "the line has left the pane" keeps working unchanged. */
+export function deliverCommand(
+  io: DeliveryIo,
+  cmd: string,
+  onSettled?: (outcome: DeliveryOutcome) => void
+): () => void {
   let done = false
   let attempt = 0
   let echoed = ''
   let timer: ReturnType<typeof setTimeout> | undefined
   let unsub: (() => void) | undefined
 
-  const finish = (): void => {
+  const finish = (outcome: DeliveryOutcome = 'cancelled'): void => {
     if (done) return // a cancel after the submit must not re-announce the delivery
     done = true
     if (timer) clearTimeout(timer)
     unsub?.()
-    onSettled?.()
+    onSettled?.(outcome)
   }
   /**
    * Every write goes through here. `io.write` is unguarded all the way down to the relay client's
@@ -109,7 +138,7 @@ export function deliverCommand(io: DeliveryIo, cmd: string, onSettled?: () => vo
   // in-place restart choreography feeds one) would otherwise re-enter the listener below while
   // the tail still matches, and submit forever.
   const submit = (): void => {
-    finish()
+    finish('submitted')
     write('\r')
   }
   const tryOnce = (): void => {
@@ -121,6 +150,16 @@ export function deliverCommand(io: DeliveryIo, cmd: string, onSettled?: () => vo
     timer = setTimeout(() => {
       if (done) return
       if (attempt >= DELIVERY_ATTEMPTS) {
+        // Fail-open — UNLESS the tty provably could not have taken the line. An unverified echo
+        // is usually our own blindness (an exotic prompt, a redraw we cannot parse) and submitting
+        // is then the right bet. An over-cap line is different in kind: the kernel discarded its
+        // tail while the pane was in canonical mode, so Enter would submit a command we KNOW is
+        // cut in half. Kill the pending line and report instead. See @shared/canonical-line.
+        if (!fitsLaunchLine(cmd)) {
+          write(KILL_LINE)
+          finish('line-too-long')
+          return
+        }
         submit() // fail-open: unverified submit beats a never-launched agent
         return
       }

@@ -63,7 +63,21 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
   // The shared pairing machine (also behind the top-right quick-pair popover); a completed
   // pairing refreshes the device list below — and drops the last revoke note, which names a device
   // by name and would otherwise outlive the very phone it warns about being re-paired.
-  const { phase, qr, sshOpen, sshHealed, relayResult, relayPlan, error, busy, start, stop, reset } = usePhonePairing(
+  const {
+    phase,
+    qr,
+    qrForm,
+    setQrForm,
+    sshOpen,
+    sshHealed,
+    relayResult,
+    relayPlan,
+    error,
+    busy,
+    start,
+    stop,
+    reset
+  } = usePhonePairing(
     () => {
       setRevokeNote(null)
       void refreshDevices()
@@ -232,6 +246,30 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
                     className="rounded-lg bg-white p-2"
                   />
                   <p className="text-sm text-muted">Waiting for your phone… (10 min)</p>
+                  {/* eneskirca/nodeterm#745: the default QR encodes the payload as raw JSON,
+                      which the iPhone's Camera app can only show as text — there is nothing in
+                      it to open. This switches the SAME live token to the app's URL scheme so
+                      Camera can hand it to nodeterm. Opt-in, because a phone on an app version
+                      without URL support reads only the JSON form. */}
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      className="text-xs text-muted underline"
+                      onClick={() => setQrForm(qrForm === 'url' ? 'json' : 'url')}
+                    >
+                      {qrForm === 'url'
+                        ? 'Show the in-app code instead'
+                        : 'Scan with the iPhone Camera app instead'}
+                    </button>
+                    {qrForm === 'url' ? (
+                      <p className="text-xs text-muted">
+                        Point the iPhone&apos;s own Camera at this and tap the nodeterm banner.
+                        Needs a recent version of the iOS app — if your phone doesn&apos;t
+                        recognise it, switch back and scan from inside nodeterm. Same code
+                        either way; switching doesn&apos;t restart pairing.
+                      </p>
+                    ) : null}
+                  </div>
                   {relayPlan === 'dev' ? (
                     <p className="text-sm" style={{ color: '#ff9f0a' }}>
                       Dev build: the relay is off regardless of the toggle, so this code pairs

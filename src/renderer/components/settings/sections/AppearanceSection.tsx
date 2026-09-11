@@ -1,5 +1,5 @@
 import { useSettings } from '../../../state/settings'
-import { NODE_COLORS } from '../../../state/workspace'
+import { SYSTEM_NODE_COLOR_SWATCHES } from '@shared/node-colors'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
@@ -190,11 +190,16 @@ export function AppearanceSection({ isActive }: { isActive: boolean }): React.JS
         <div className="flex items-center justify-between gap-4 py-2.5">
           <span className="text-[13px] text-text">Accent</span>
           <div className="flex flex-wrap gap-2">
-            {NODE_COLORS.map((c) => (
+            {/* The SYSTEM subset only, never the whole palette: `--accent` is painted as an
+                opaque background under hardcoded #fff (.dock-add, the dictation button, the
+                badge), where white on gemini blue is ~3.6:1 and on grok grey ~4.0:1 - under the
+                4.5:1 floor for the 10.5px badge. See isSystemNodeColor. */}
+            {SYSTEM_NODE_COLOR_SWATCHES.map(({ value: c, label }) => (
               <button
                 key={c}
                 type="button"
-                aria-label={`Accent ${c}`}
+                aria-label={`Accent ${label}`}
+                title={label}
                 onClick={() => update({ accent: c })}
                 style={{ background: c }}
                 className={cn(

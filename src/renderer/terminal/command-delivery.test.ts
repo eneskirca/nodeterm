@@ -7,6 +7,7 @@ import {
   deliverCommand,
   echoedIntact
 } from './command-delivery'
+import { MAX_LAUNCH_LINE_BYTES } from '@shared/canonical-line'
 
 const CMD = `claude --settings x 'implement the rerank feature for search results' --permission-mode auto`
 
@@ -238,5 +239,53 @@ describe('deliverCommand', () => {
     f.emit(CMD)
     f.emit(CMD)
     expect(f.writes).toEqual([CMD, '\r'])
+  })
+})
+
+describe('a launch line longer than the tty can carry (issue #706)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  /** Over MAX_LAUNCH_LINE_BYTES, the length `verify`'s default lenses actually reach: measured
+   *  1045 bytes for `security` against a 1024-byte macOS MAX_CANON, with no `--focus` at all. */
+  const LONG = `claude '${'x'.repeat(1000)}' --permission-mode auto`
+
+  /** A pane in canonical mode echoes what the kernel accepted and silently discards the rest, so
+   *  the head matches and the tail never does — exactly what `echoedIntact` is built to catch. */
+  const truncatedEcho = (cmd: string): string => cmd.slice(0, MAX_LAUNCH_LINE_BYTES)
+
+  it('is never SUBMITTED unverified — no Enter, and the half-line is cleared', () => {
+    const f = fakeIo()
+    let outcome: string | undefined
+    deliverCommand(f.io, LONG, (o) => (outcome = o))
+    for (let i = 0; i < DELIVERY_ATTEMPTS; i++) {
+      f.emit(truncatedEcho(LONG))
+      vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
+    }
+    expect(outcome).toBe('line-too-long')
+    expect(f.writes).not.toContain('\r')
+    expect(f.writes[f.writes.length - 1]).toBe(KILL_LINE)
+  })
+
+  it('still fails OPEN for a line that FITS but whose echo we could not recognise', () => {
+    // The historical contract, and why the refusal is narrowed to over-cap lines: an unverified
+    // echo is usually our own blindness, and blocking every launch on it is worse than the bug.
+    const f = fakeIo()
+    let outcome: string | undefined
+    deliverCommand(f.io, CMD, (o) => (outcome = o))
+    for (let i = 0; i < DELIVERY_ATTEMPTS; i++) vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
+    expect(outcome).toBe('submitted')
+    expect(f.writes).toContain('\r')
+  })
+
+  it('submits an over-cap line the pane DID echo whole — a raw-mode tty has no such limit', () => {
+    // The cap applies only while the tty is canonical; once the shell's line editor is up the
+    // same line arrives intact, and a verified echo is proof of exactly that.
+    const f = fakeIo()
+    let outcome: string | undefined
+    deliverCommand(f.io, LONG, (o) => (outcome = o))
+    f.emit(LONG)
+    expect(outcome).toBe('submitted')
+    expect(f.writes).toContain('\r')
   })
 })

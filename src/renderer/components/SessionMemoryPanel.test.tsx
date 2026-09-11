@@ -410,6 +410,34 @@ describe('SessionMemoryPanel', () => {
       expect(pauseOf(0)!.title).toBe('Open this session on its canvas')
     })
 
+    it('draws the shared power icon, and the shared spinner while the pause is in flight', async () => {
+      // The panel's pause is the SAME action as the node menu's "Pause session", which draws
+      // `IconPower` — one action seen in two places must not speak in two voices.
+      let settle = (): void => {}
+      onPauseSession.mockImplementation(
+        () =>
+          new Promise<void>((res) => {
+            settle = () => res()
+          })
+      )
+      pauseOffer = () => ({ show: true, disabled: false, hint: 'Pause session' })
+      mount()
+      const btn = pauseOf(0)!
+      expect(btn.querySelector('svg')).not.toBeNull()
+      expect(btn.querySelector('.ui-spinner')).toBeNull()
+
+      act(() => btn.click())
+      expect(btn.querySelector('.ui-spinner')).not.toBeNull()
+      expect(btn.querySelector('svg')).toBeNull()
+
+      // Settle inside `act` so the icon is back before the test ends — a promise still pending at
+      // teardown resolves into an unmounted tree.
+      await act(async () => {
+        settle()
+      })
+      expect(pauseOf(0)!.querySelector('svg')).not.toBeNull()
+    })
+
     it('asks per row, so one row may offer a pause while another does not', () => {
       pauseOffer = (id) =>
         id === ROWS[0].nodeId

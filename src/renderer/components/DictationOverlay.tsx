@@ -13,6 +13,7 @@
 //
 // No target selected at press time never records at all — see the warning-pill render branch.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { IconClose } from './icons'
 import { createPortal } from 'react-dom'
 import { equalizerBars } from '../lib/dictation-equalizer'
 import { PcmCapture } from '../lib/pcm-capture'
@@ -284,8 +285,8 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
           See nodeterm Pro
         </button>
       )}
-      <button type="button" className="dictation__close" title="Dismiss" onClick={handleClose}>
-        ×
+      <button type="button" className="dictation__close" title="Dismiss" aria-label="Dismiss" onClick={handleClose}>
+        <IconClose />
       </button>
     </div>
   )
@@ -298,8 +299,8 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
             ? 'Dictation is off — choose a Whisper model in Settings → Speech.'
             : 'Select a terminal node first.'}
         </span>
-        <button type="button" className="dictation__close" title="Dismiss" onClick={handleClose}>
-          ×
+        <button type="button" className="dictation__close" title="Dismiss" aria-label="Dismiss" onClick={handleClose}>
+          <IconClose />
         </button>
       </div>,
       document.body

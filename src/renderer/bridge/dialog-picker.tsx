@@ -17,6 +17,7 @@
 // here, so `..`, absolute and empty names are refused exactly as they are in the Explorer.
 
 import { useCallback, useEffect, useState } from 'react'
+import { IconArrowUp } from '../components/icons'
 import { createRoot, type Root } from 'react-dom/client'
 import type { DirEntry } from '../../shared/types'
 import { newEntryPath } from '../lib/explorerCreate'
@@ -214,7 +215,7 @@ function DirectoryPicker({
             disabled={parent === null}
             title="Up one level"
           >
-            ↑
+            <IconArrowUp />
           </button>
           <span className="dir-picker__path" title={dir}>
             {dir}

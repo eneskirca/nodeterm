@@ -11,7 +11,7 @@ import { RETRYABLE } from './agents/agent-message-decide'
 import { FANOUT_PER_TURN, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
 import { BROWSER_KEYS, BROWSER_TIMEOUT_DEFAULT_MS, BROWSER_TIMEOUT_MAX_MS } from './browser-verb'
-import { NODE_COLORS } from '@shared/node-colors'
+import { nodeColorChoices } from '@shared/node-colors'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
 
 /**
@@ -358,7 +358,10 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  path>` instead: write the brief to a file, pass the absolute path, and the session starts',
     '  with the file\'s exact contents — newlines, numbered lists and headings preserved. The file',
     '  is read when the session LAUNCHES (later than the call for an `--after`-armed node), so',
-    '  leave it in place until the station has started. Never begin a prompt with `/`: once',
+    '  leave it in place until the station has started. A long `--prompt` is SAFE on a local',
+    '  project (nodeterm spills it to a file itself), but on an SSH project pass `--prompt-file`:',
+    '  a terminal line caps at 1024 bytes on macOS, and a launch line that cannot be delivered is',
+    '  refused with a message on the node rather than half-run. Never begin a prompt with `/`: once',
     '  flattened, the agent reads the whole prompt as arguments to that slash command, your task',
     '  is never seen, and the node then sits idle looking healthy. To pick a model use `--model`,',
     '  not a leading `/model`.',
@@ -379,6 +382,11 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `show-image <path>` / `show-video <path>` — open a media file as a node.',
     '- `show-web (--url U | --file P.html | --html "<...>")` — open a web viewer.',
     '- `open-browser --url U` — open a navigable browser node.',
+    '  These four NEVER switch the user\'s view either. If your project is not on screen the node is',
+    '  saved into it and waits there — the reply says which project, and adds `offCanvas: true`.',
+    '  Nothing is queued: unlike a session, a page or an image is finished the moment it is placed,',
+    '  so there is nothing to wait for and nothing to poll. Say where it went rather than assuming',
+    '  the user saw it.',
     '- `group --nodes <id,id> [--label L] [--color C]` — wrap sibling nodes or sibling groups in a new labeled frame.',
     '  Every id must share one container. `ungroup --group <id>` dissolves a frame and promotes its direct',
     '  children into the frame\'s parent. `move --nodes <id,id> [--group <id>]` reparents nodes or groups INTO an',
@@ -416,10 +424,16 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `rename --node <id> --title "New Name"` — rename any node (terminals, groups, stickies…).',
     '  Renaming to the title the node ALREADY has is a no-op: nothing is typed into its agent',
     '  session, and the reply says `already named`. Re-assert your own name as often as you like.',
-    `- \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is one of: ${NODE_COLORS.join(', ')}.`,
-    '- `write --node <id> --text "..."` / `close --node <id>` — type into / close a node.',
+    `- \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is a palette NAME`,
+    `  or its hex: ${nodeColorChoices()}. The agent names paint a node its CLI's own brand color.`,
+    '- `write --node <id> --text "..."` / `close --node <id,id>` — type into / close nodes.',
+    '  `close` takes a COMMA LIST and asks about the whole list in ONE dialog, so close a finished',
+    '  wave in a single call rather than one call per node. Every id must exist on the canvas: an',
+    '  unknown one refuses the whole request and closes nothing.',
     '  Desktop asks the user to confirm both. `denied by user` is FINAL; `no answer within 120s`',
-    '  means nobody reached the dialog and is worth one retry when the user is back. Server Edition',
+    '  means nobody reached the dialog and is worth one retry when the user is back. The user may',
+    '  have turned the dialog off for a verb, in which case it simply applies — you cannot tell,',
+    '  and nothing changes about how you call it. Server Edition',
     '  is narrower: close requires a node this caller opened during the current server run, and all',
     '  node-mutating verbs accept only current-run creations. Every other target receives a named',
     '  ownership refusal before any partial mutation.',
@@ -798,6 +812,13 @@ Verbs:
   collapsed to a single space before the session starts, because the prompt is passed as an
   argument on the agent CLI's launch command line and that line is typed into the pane. Two
   consequences worth planning around:
+  - **A very long \`--prompt\` is safe on a local project and risky on an SSH one.** The launch
+    line is typed into the pane and a terminal line has a hard limit (1024 bytes on macOS), past
+    which the tail is silently discarded. On a local project nodeterm writes an over-long prompt
+    to a file for you and the session starts with the same flattened text; on an SSH project it
+    cannot (the file would land on the wrong machine), so pass a long brief with
+    \`--prompt-file\` there. A launch line that cannot be delivered is refused with a message on
+    the node, never half-run.
   - **A structured brief goes through \`--prompt-file <abs path>\`.** Write the brief (numbered
     acceptance criteria, file lists, guard clauses — anything multi-line) to a file, pass the
     absolute path, and the session starts with the file's exact contents: the launch line stays
@@ -834,6 +855,12 @@ Verbs:
 - \`show-video <path>\` — open a video file as a player node.
 - \`show-web (--url U | --file P.html | --html "<...>")\` — open a web viewer (live URL or local HTML you wrote).
 - \`open-browser --url U\` — open a navigable browser (back/forward/address bar) at a URL.
+  **These four never switch the user's view either.** If the project you are running in is not the
+  one on screen, the node is saved into it and waits there; the reply names the project and carries
+  \`offCanvas: true\`, and if that project is **closed** it says so — the tab is not reopened for
+  you. Nothing here is ever \`queued\`: unlike a session, a page, a video or an image is finished
+  the moment it is placed, so there is nothing to wait for and nothing to poll. What this costs you
+  is the assumption that the user saw it — tell them where it went.
   In an SSH project, nodes you open run on the HOST (same machine as you). The media viewers
   render on the DESKTOP: \`show-image\` and \`show-video\` still work with a host path (the
   file is read/fetched back over the connection), but \`show-web --file/--html\` is refused —
@@ -898,9 +925,17 @@ Verbs:
 - \`rename --node <id> --title "New Name"\` — rename any node (terminals, groups, stickies…).
   Renaming to the title the node ALREADY has is a no-op: nothing is typed into its agent
   session, and the reply says \`already named\`. Re-assert your own name as often as you like.
-- \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is one of: ${NODE_COLORS.join(', ')}.
+- \`color --node <id,id> --color C\` — recolor nodes, frames, or stickies. C is a palette NAME or
+  its hex (either is accepted, and the hex is case-insensitive): ${nodeColorChoices()}.
+  The agent names are that CLI's own brand color — \`--color claude\` paints a node the color a
+  Claude node is born with. \`group\` takes the same \`--color\`.
 - \`write --node <id> --text "..."\` — type text into a terminal node. (Asks the user to confirm.)
-- \`close --node <id>\` — close a node. Desktop asks the user to confirm. Server Edition closes
+- \`close --node <id,id>\` — close one node or several. \`--node\` takes a COMMA LIST, and the whole
+  list is confirmed in ONE dialog — so when a wave of stations is finished, close them in a single
+  call instead of one call per node (which asked the user once per node, and refused every call
+  after the first while a dialog was still open). Every id must exist on the canvas: an unknown one
+  refuses the whole request and closes NOTHING, naming the ids it could not find. Desktop asks the
+  user to confirm. Server Edition closes
   only nodes this caller opened during the current server run, without a dialog. Its other
   node-mutating verbs (link/group/rename/color/sticky update) likewise accept only current-run
   creations, and refuse the whole request before any partial mutation.
@@ -948,7 +983,12 @@ ${browserGuidanceLines().join('\n')}
 Notes:
 - Desktop \`write\` and \`close\` require the user to approve a confirmation dialog. A
   \`denied by user\` reply is FINAL; \`no answer within 120s\` is worth one retry when the user
-  is back. Server Edition uses the process-local ownership rule for \`close\` instead.
+  is back — the dialog dismisses itself at that point, so the retry is not blocked by it. The user
+  can also turn a verb's dialog off (for the session or permanently), and then the verb just
+  applies: you are never told which of the two happened, and you must not change how you call it —
+  in particular, never re-send a \`denied by user\` request hoping the dialog is off now.
+  \`a confirmation is already pending\` means a dialog for an EARLIER request is open: wait for
+  the user, do not spin. Server Edition uses the process-local ownership rule for \`close\` instead.
 - \`board\` and \`assign\` act on the CURRENTLY OPEN project's board — the same one you see when you
   toggle the kanban view. They need no confirmation.
 - If the CLI says canvas control is unavailable, you are not in a controllable nodeterm session — do not retry.
@@ -969,7 +1009,7 @@ Typical requests this skill covers:
 - "Move this node into that group" → \`move --nodes <id> --group <targetGroupId>\` (not \`group\`, which only
   wraps loose nodes). "Break up this group" → \`ungroup --group <id>\`.
 - "Rename this node/group" → \`rename\`.
-- "Color these nodes/groups by subject" → \`color --node <id,id> --color <palette value>\`.
+- "Color these nodes/groups by subject" → \`color --node <id,id> --color <name or hex>\` (e.g. \`--color teal\`).
 
 ## Nodeterm orchestration ("Build with Nodeterm orchestration")
 

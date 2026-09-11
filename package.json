@@ -1,6 +1,6 @@
 {
   "name": "node-terminal",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },

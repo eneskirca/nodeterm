@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import { buildCodexHooksAndTrust, buildManagedCommand, CODEX_EVENTS } from './codex'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  buildCodexHooksAndTrust,
+  buildManagedCommand,
+  CODEX_EVENTS,
+  defaultWindowsCmdExe
+} from './codex'
 import { computeTrustedHash } from './codex-trust'
 import { buildCodexWindowsWrapper, WINDOWS_SH_CANDIDATES } from './codex-windows-wrapper'
 
@@ -18,22 +23,74 @@ describe('buildManagedCommand', () => {
     expect(buildManagedCommand('/a/b/codex.sh', 'darwin')).toContain('else cat >/dev/null 2>&1')
   })
 
-  // Issue #567: codex runs a hook command through `cmd.exe /C` on Windows
-  // (codex-rs/hooks/src/engine/command_runner.rs, rust-v0.151.0), which answers
-  // "-x was unexpected at this time." and exit 1 to an `sh` one-liner — on EVERY event, for the
-  // life of the node.
-  it('win32: points cmd.exe at the batch wrapper beside the script, not at an sh one-liner', () => {
-    expect(buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32')).toBe(
-      '"C:\\Users\\u\\.nodeterm\\agent-hooks\\codex-hook.cmd"'
-    )
-    expect(buildManagedCommand('C:\\a\\codex.sh', 'win32')).not.toContain('[ -x')
-    expect(buildManagedCommand('C:\\a\\codex.sh', 'win32')).not.toContain('/bin/sh')
+  // These assert what the builder CONSTRUCTS. They cannot show that the string executes — that took
+  // running codex on Windows against a throwaway CODEX_HOME, and those results live in the PR for
+  // #685. What a unit test can do is pin the spelling those measurements validated, so a later edit
+  // cannot quietly walk away from it. `cmdExe` is passed explicitly throughout: the default reads
+  // the environment, and these assertions must not depend on the host running them.
+  const CMD = 'C:\\WINDOWS\\System32\\cmd.exe'
+
+  // Issues #567 / #685. The hook runs in the session's shell, and shell_detect.rs prefers PowerShell
+  // on Windows (rust-v0.153.4); command_runner.rs's COMSPEC/`cmd.exe /C` is the fallback. An `sh`
+  // one-liner is a parse error to both — "-x was unexpected at this time." / "Missing '(' after
+  // 'if' in if statement." — exit 1 on EVERY event, for the life of the node.
+  it('win32: constructs a command pointing at the batch wrapper, not an sh one-liner', () => {
+    expect(
+      buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32', CMD)
+    ).toBe(`${CMD} /d /c call "C:\\Users\\u\\.nodeterm\\agent-hooks\\codex-hook.cmd "`)
+    expect(buildManagedCommand('C:\\a\\codex.sh', 'win32', CMD)).not.toContain('[ -x')
+    expect(buildManagedCommand('C:\\a\\codex.sh', 'win32', CMD)).not.toContain('/bin/sh')
   })
 
-  it('win32: the path stays one quoted token — a user profile routinely has a space in it', () => {
-    expect(buildManagedCommand('C:\\Users\\First Last\\agent-hooks\\codex.sh', 'win32')).toBe(
-      '"C:\\Users\\First Last\\agent-hooks\\codex-hook.cmd"'
-    )
+  // The regression #685 reports. A BARE quoted path — what #567 emitted — is a valid PowerShell
+  // expression: a string literal. PowerShell echoes it, exits 0 and runs nothing, so codex reports
+  // the hook `Completed` while no hook ever fired (measured). A silently dark badge is strictly
+  // worse than the exit-1 noise #567 set out to remove, so the command must never START with a
+  // quote — that is the whole defect, in one assertion.
+  it('win32: constructs a command that names an interpreter, never a bare quoted path', () => {
+    const command = buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32', CMD)
+    expect(command.startsWith('"')).toBe(false)
+    expect(command.startsWith(`${CMD} /d /c call "`)).toBe(true)
+  })
+
+  // Two separate pieces, both load-bearing, both easy to mistake for noise:
+  //   `call`         stops cmd's /C rule stripping the quote pair around a path holding `&`, `(`
+  //                  or `)`, which cmd would then re-parse as metacharacters.
+  //   trailing space makes PowerShell keep that quoting when it builds cmd's native argument line.
+  // Measured through the shipped codex: with both, profile paths containing `&` and `(` run; with
+  // `call` alone they Fail. A tidy-up that "removes the stray space" would silently reintroduce the
+  // breakage, hence this test.
+  it('win32: keeps the call + trailing-space quoting that survives & and ( in a profile path', () => {
+    const command = buildManagedCommand('C:\\Users\\A&B (x)\\agent-hooks\\codex.sh', 'win32', CMD)
+    expect(command).toBe(`${CMD} /d /c call "C:\\Users\\A&B (x)\\agent-hooks\\codex-hook.cmd "`)
+    expect(command.endsWith(' "')).toBe(true)
+  })
+
+  it('win32: constructs one quoted token — a user profile routinely has a space in it', () => {
+    // The documented `cmd /s /c ""..."" ` doubling was measured Failed — PowerShell collapses the
+    // doubled quotes before cmd sees them — so the quoting stays a single surrounding pair.
+    const command = buildManagedCommand('C:\\Users\\First Last\\agent-hooks\\codex.sh', 'win32', CMD)
+    expect(command).toBe(`${CMD} /d /c call "C:\\Users\\First Last\\agent-hooks\\codex-hook.cmd "`)
+    expect(command).not.toContain('""')
+  })
+
+  // The program name must be usable UNQUOTED, because a quoted leading token is the #685 bug
+  // itself. Anything that could not be written bare falls back to the PATH lookup.
+  it('win32: falls back to bare cmd when the resolved interpreter path needs quoting', () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows With Space')
+    vi.stubEnv('windir', '')
+    expect(defaultWindowsCmdExe()).toBe('cmd')
+
+    vi.stubEnv('SystemRoot', 'C:\\WINDOWS')
+    expect(defaultWindowsCmdExe()).toBe('C:\\WINDOWS\\System32\\cmd.exe')
+
+    // Neither variable set — the POSIX case, since this function is exported and callable there.
+    vi.stubEnv('SystemRoot', '')
+    expect(defaultWindowsCmdExe()).toBe('cmd')
+    vi.unstubAllEnvs()
+
+    expect(buildManagedCommand('C:\\a\\codex.sh', 'win32', 'cmd').startsWith('cmd /d /c call "'))
+      .toBe(true)
   })
 
   // The platform is the machine that will RUN codex. RemoteHooks writes this into an SSH host's
@@ -196,6 +253,31 @@ describe('buildCodexHooksAndTrust', () => {
           type: 'command' as const,
           command:
             "if [ -x 'C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh' ]; then /bin/sh 'C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh'; fi"
+        }
+      ]
+    }
+    const command = buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32')
+    const built = buildCodexHooksAndTrust(
+      { hooks: { Stop: [stale], SessionStart: [stale] } },
+      command,
+      'C:\\Users\\u\\.codex\\hooks.json'
+    )!
+    for (const ev of ['Stop', 'SessionStart']) {
+      expect(built.config.hooks![ev]).toEqual([{ hooks: [{ type: 'command', command }] }])
+    }
+  })
+
+  // Issue #685 repair. A Windows machine on which a #567 build installed successfully carries the
+  // BARE quoted wrapper path — the entry PowerShell reads as a string literal and never runs. It
+  // has to be REPLACED, not appended beside: were the matcher to miss it, the dead entry would
+  // survive every launch while still being reported `Completed`. The matcher keys off the
+  // `agent-hooks/codex-hook.cmd` tail, which both spellings carry, so the strip catches it.
+  it('replaces the pre-#685 bare-quoted wrapper entry with the cmd /c one', () => {
+    const stale = {
+      hooks: [
+        {
+          type: 'command' as const,
+          command: '"C:\\Users\\u\\.nodeterm\\agent-hooks\\codex-hook.cmd"'
         }
       ]
     }

@@ -136,7 +136,12 @@ export const SESSION_ID_CAPABLE = ['claude', 'copilot', 'grok'] as const
 export const UNCONDITIONAL_SESSION_ID_CAPABLE = ['copilot'] as const
 // claude: Task/Agent tool via hooks (tool_use_id-keyed). codex: spawn_agent collaboration via its
 // native SubagentStart/SubagentStop hooks (agent_id-keyed), measured on codex-cli 0.146.0.
-export const SUBAGENT_CAPABLE = ['claude', 'codex'] as const
+// grok: its own native SubagentStart/SubagentStop, keyed by `subagentId` — measured on 1.0.13 by
+// running two subagents of the SAME type in parallel, which is the only way to tell an instance
+// id from a type. It was assumed to key by `subagentType` (a type, so two children of one type
+// would collide); the payloads say otherwise, and `subagentId` is also the ONLY id the start and
+// the stop share — on the start `sessionId` is the PARENT's.
+export const SUBAGENT_CAPABLE = ['claude', 'codex', 'grok'] as const
 export const RECURRING_CAPABLE = ['claude'] as const // /loop, /schedule, /cron
 export const BRANCH_CAPABLE = ['claude'] as const
 // grok joins with NO installer of its own: it scans `~/.claude/skills` for Claude Code
@@ -288,7 +293,7 @@ export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as 
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot'] as const
+export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok'] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
@@ -695,7 +700,32 @@ export function resolvePermissionMode(
   project: { defaultPermissionMode?: AgentPermissionMode } | undefined,
   settings: { claudePermissionMode: AgentPermissionMode }
 ): AgentPermissionMode {
-  if (isPermissionMode(project?.defaultPermissionMode)) return project.defaultPermissionMode
-  if (isPermissionMode(settings.claudePermissionMode)) return settings.claudePermissionMode
-  return DEFAULT_PERMISSION_MODE
+  return resolvePermissionModeWithSource(project, settings).mode
+}
+
+/**
+ * The same resolution, plus WHO chose the mode — and that second half is a security fact, not a
+ * nicety.
+ *
+ * `project.defaultPermissionMode` is persisted to `.nodeterm/project.json`, which is git-shared:
+ * a `bypassPermissions` override travels to everyone who clones the repo. So anything that
+ * LOOSENS a gate on the strength of the mode (today: the canvas-control confirm waiver,
+ * `decideControlConfirm` in @shared/control-confirm) must be able to tell "the user set this
+ * globally on this machine" from "this arrived in somebody's repo". `'default'` is its own answer
+ * rather than being folded into `'global'`: nobody has chosen anything, and a caller that treats
+ * an unset setting as a deliberate global choice is reading consent into silence.
+ *
+ * `resolvePermissionMode` delegates here so the two can never disagree about which half wins.
+ */
+export function resolvePermissionModeWithSource(
+  project: { defaultPermissionMode?: AgentPermissionMode } | undefined,
+  settings: { claudePermissionMode: AgentPermissionMode }
+): { mode: AgentPermissionMode; source: 'project' | 'global' | 'default' } {
+  if (isPermissionMode(project?.defaultPermissionMode)) {
+    return { mode: project.defaultPermissionMode, source: 'project' }
+  }
+  if (isPermissionMode(settings.claudePermissionMode)) {
+    return { mode: settings.claudePermissionMode, source: 'global' }
+  }
+  return { mode: DEFAULT_PERMISSION_MODE, source: 'default' }
 }

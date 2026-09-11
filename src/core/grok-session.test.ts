@@ -15,18 +15,22 @@
 // `generated_title`, which is grok's own auto-name — correct, just not overridable from grok's side.
 // Replacing this fixture with a real capture (and correcting TITLE_KEYS if the key differs) is the
 // checklist item this task leaves open.
-import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import os, { tmpdir } from 'os'
 import path from 'path'
 import {
+  _resetGrokSessionDirsForTests,
   forgetGrokSession,
   grokSessionDirFor,
+  persistGrokSessionDirs,
   pickGrokSessionMeta,
   readGrokSessionMeta,
   readGrokSessionName,
   rememberGrokSessionDir
 } from './grok-session'
+import { fakePlatform } from './platform-fake'
+import { initPlatform, resetPlatformForTests } from './platform'
 
 const fixture = readFileSync(path.join(__dirname, '__fixtures__/grok/summary.json'), 'utf8')
 
@@ -141,5 +145,93 @@ describe('readGrokSessionName', () => {
     // The whole point of the association: with no hook-fed directory there is nothing to open, and
     // scanning grok's sessions tree would be how one node adopts another's name.
     expect(await readGrokSessionName('unknown-session')).toBeNull()
+  })
+})
+
+describe('the sessionId → dir map survives a process restart', () => {
+  // §8.5 was: the map is in-memory, so after an app restart a grok node's name does not resolve
+  // until that session fires another hook. Correct but silently unhelpful — an idle session shows a
+  // blank name forever. Persisting recovers what a hook already TOLD us; it is not a scan, which is
+  // the thing grok deliberately does not do (a scan is how nodes adopted each other's names).
+  const SID = '01a06126-b981-73f1-8b68-4547e4d7da84'
+  let dataDir: string
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-map-'))
+    initPlatform(fakePlatform({ userDataDir: dataDir }))
+    _resetGrokSessionDirsForTests()
+  })
+  afterEach(() => {
+    _resetGrokSessionDirsForTests()
+    resetPlatformForTests()
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  it('resolves after a restart, with no hook in between', async () => {
+    rememberGrokSessionDir(SID, '/some/where/sessions/enc/' + SID)
+    await persistGrokSessionDirs()
+    _resetGrokSessionDirsForTests() // the restart: memory gone, disk kept
+    expect(grokSessionDirFor(SID)).toBe('/some/where/sessions/enc/' + SID)
+  })
+
+  it('persists BY ITSELF after a remember, with nobody calling the writer', async () => {
+    // The mutation this exists for: deleting the debounced write. Every other test here calls
+    // `persistGrokSessionDirs()` explicitly, so they would all stay green while production never
+    // wrote a byte — the map would look persistent in the suite and be in-memory in the app.
+    rememberGrokSessionDir(SID, '/auto/' + SID)
+    const file = path.join(dataDir, 'grok-session-dirs.json')
+    const deadline = Date.now() + 4000
+    while (!fs.existsSync(file) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect(fs.existsSync(file)).toBe(true)
+    _resetGrokSessionDirsForTests()
+    expect(grokSessionDirFor(SID)).toBe('/auto/' + SID)
+  }, 8000)
+
+  it('knows nothing when nothing was persisted — the pre-persistence answer', async () => {
+    _resetGrokSessionDirsForTests()
+    expect(grokSessionDirFor(SID)).toBeUndefined()
+  })
+
+  it('forgetting survives the restart too', async () => {
+    rememberGrokSessionDir(SID, '/d/' + SID)
+    await persistGrokSessionDirs()
+    forgetGrokSession(SID)
+    await persistGrokSessionDirs()
+    _resetGrokSessionDirsForTests()
+    expect(grokSessionDirFor(SID)).toBeUndefined()
+  })
+
+  it('rejects an id that is not a safe session id, even from our own file', async () => {
+    // The file lives in a directory the user can edit and its values become filesystem paths. A
+    // hand-edited or corrupt entry must not become a path we open.
+    fs.writeFileSync(
+      path.join(dataDir, 'grok-session-dirs.json'),
+      JSON.stringify({ '../../etc': '/etc', 'not a uuid': '/tmp/x', [SID]: '/good/' + SID })
+    )
+    _resetGrokSessionDirsForTests()
+    expect(grokSessionDirFor('../../etc')).toBeUndefined()
+    expect(grokSessionDirFor('not a uuid')).toBeUndefined()
+    expect(grokSessionDirFor(SID)).toBe('/good/' + SID)
+  })
+
+  it('yields an EMPTY map for a corrupt file, never a partial one', async () => {
+    fs.writeFileSync(path.join(dataDir, 'grok-session-dirs.json'), '{"a": "b", TRUNCATED')
+    _resetGrokSessionDirsForTests()
+    expect(grokSessionDirFor(SID)).toBeUndefined()
+    // …and the next remember still works: a bad file is not a permanent poison.
+    rememberGrokSessionDir(SID, '/after/' + SID)
+    expect(grokSessionDirFor(SID)).toBe('/after/' + SID)
+  })
+
+  it('a live hook wins over the persisted entry', async () => {
+    fs.writeFileSync(
+      path.join(dataDir, 'grok-session-dirs.json'),
+      JSON.stringify({ [SID]: '/stale/' + SID })
+    )
+    _resetGrokSessionDirsForTests()
+    rememberGrokSessionDir(SID, '/fresh/' + SID)
+    expect(grokSessionDirFor(SID)).toBe('/fresh/' + SID)
   })
 })

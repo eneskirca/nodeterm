@@ -3,11 +3,13 @@ import { getViewportForBounds } from '@xyflow/system'
 import {
   FIT_NODE_OPTIONS,
   absolutePosition,
+  isMaximized,
   isMeasured,
   nodeFitRect,
   viewportForRect
 } from './nodeFocus'
 import type { FocusableNode } from './nodeFocus'
+import { NODE_MAXIMIZE_MARGIN_PX } from './nodeMaximize'
 
 const term = (over: Partial<FocusableNode> = {}): FocusableNode => ({
   id: 'n1',
@@ -190,5 +192,82 @@ describe('isMeasured', () => {
     expect(isMeasured({ measured: { width: 600 } })).toBe(false)
     expect(isMeasured({ measured: { width: 0, height: 0 } })).toBe(false)
     expect(isMeasured(undefined)).toBe(false)
+  })
+})
+
+describe('viewportForRect — the maximized exception (issue #743)', () => {
+  /**
+   * The reporter's controlled measurement, reproduced as arithmetic. macOS, signed v0.3.5,
+   * `focusZoomToNode` OFF (so the zoom is held and cannot confound it), sessions sidebar pinned,
+   * one node, maximized. Only the CAMERA moved across "go to another node and back": the node's
+   * position, size and the zoom were byte-identical before and after.
+   */
+  const PANE_W = 1710
+  const ZOOM = 0.7345
+  const INSETS = { left: 322, right: 0 }
+  const rect = { x: -68.9, y: 0, width: 1824, height: 1261 }
+  /** Where the node's left edge lands on screen for a given viewport. */
+  const leftEdge = (vp: { x: number }) => vp.x + rect.x * ZOOM
+
+  it('reproduces the reported drift when the framing ignores the pinned inset', () => {
+    // 1824 × 0.7345 = 1339.8 rendered px; (1710 - 1339.8) / 2 = 185.1 — centred in the WHOLE pane,
+    // exactly as measured. Maximize had put it at 346.0, so the camera moved 160.9 px, which is
+    // 322 / 2: half the left inset, what centring a free-area-wide object in the full pane gives.
+    const vp = viewportForRect(rect, PANE_W, 900, ZOOM)!
+    expect(leftEdge(vp)).toBeCloseTo(185.1, 0)
+    expect(leftEdge(viewportForRect(rect, PANE_W, 900, ZOOM, INSETS)!) - leftEdge(vp)).toBeCloseTo(
+      160.9,
+      0
+    )
+  })
+
+  it('frames a maximized node exactly where maximizeTargetRect placed it', () => {
+    // maximize's own origin is `marginPx + insets.left` = 24 + 322 = 346. The node is the free
+    // area minus two margins, so centring it in the free area reproduces that origin — which is
+    // the property that makes this a fix rather than a different opinion about where to put it.
+    const vp = viewportForRect(rect, PANE_W, 900, ZOOM, INSETS)!
+    expect(leftEdge(vp)).toBeCloseTo(NODE_MAXIMIZE_MARGIN_PX + INSETS.left, 0)
+    // 136.9 px of the node sat behind the sidebar before; none does now.
+    expect(leftEdge(vp)).toBeGreaterThanOrEqual(INSETS.left)
+  })
+
+  it('is a mathematical no-op when no panel is pinned', () => {
+    const bare = viewportForRect(rect, PANE_W, 900, ZOOM)!
+    const zero = viewportForRect(rect, PANE_W, 900, ZOOM, { left: 0, right: 0 })!
+    expect(zero).toEqual(bare)
+    expect(viewportForRect(rect, PANE_W, 900, undefined, { left: 0, right: 0 })).toEqual(
+      viewportForRect(rect, PANE_W, 900)
+    )
+  })
+
+  it('insets the zoom-to-fit path too, without changing the unpinned answer', () => {
+    // `focusZoomToNode` ON rescales as well. The rectangle question is the same one, so the
+    // maximized node is fitted INSIDE the free area rather than the pane — its whole width is
+    // clear of the panel, where centring in the pane left part of it underneath.
+    const fitted = viewportForRect(rect, PANE_W, 900, undefined, INSETS)!
+    expect(fitted.x + rect.x * fitted.zoom).toBeGreaterThanOrEqual(INSETS.left)
+    expect(fitted.x + (rect.x + rect.width) * fitted.zoom).toBeLessThanOrEqual(PANE_W)
+  })
+
+  it('falls back to the whole pane when the panels are wider than it', () => {
+    // Not a rectangle anything can be centred in — solving against a negative width would put the
+    // camera somewhere arbitrary. Standing on the old answer is the honest degrade.
+    const narrow = viewportForRect(rect, 300, 900, ZOOM, { left: 322, right: 0 })!
+    expect(narrow).toEqual(viewportForRect(rect, 300, 900, ZOOM))
+  })
+
+  it('refuses a container it cannot size, insets or not', () => {
+    expect(viewportForRect(rect, 0, 0, ZOOM, INSETS)).toBeNull()
+    expect(viewportForRect(rect, PANE_W, 900, 0, INSETS)).toBeNull()
+  })
+})
+
+describe('isMaximized', () => {
+  it('keys on premaxRect — the flag maximize itself writes and restore clears', () => {
+    expect(isMaximized({ data: { premaxRect: { x: 0, y: 0, width: 10, height: 10 } } })).toBe(true)
+    expect(isMaximized({ data: {} })).toBe(false)
+    expect(isMaximized({})).toBe(false)
+    expect(isMaximized(null)).toBe(false)
+    expect(isMaximized(undefined)).toBe(false)
   })
 })

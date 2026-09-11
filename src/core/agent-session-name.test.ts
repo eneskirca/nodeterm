@@ -22,6 +22,50 @@ describe('readAgentSessionName', () => {
     forgetGrokSession('gs1')
   })
 
+  it('reads a REMOTE grok session on its host, not on this machine', async () => {
+    // §8.4: for an SSH node the shells derive the session directory from the LOCAL sessions root
+    // while the payload's `cwd` came from the host — a path on the wrong machine. The remote reader
+    // answers first, and its answer is final.
+    const dir = path.join(root, 'gs-remote')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ generated_title: 'LOCAL NAME' }))
+    rememberGrokSessionDir('gs-remote', dir)
+    const remote = async () => ({
+      text: JSON.stringify({ generated_title: 'name from the host' })
+    })
+    expect(await readAgentSessionName('gs-remote', undefined, 'grok', { grokRemoteSummary: remote }))
+      .toBe('name from the host')
+    forgetGrokSession('gs-remote')
+  })
+
+  it('a remote session that cannot be read yields NO name, never the local one', async () => {
+    // The mutation this exists for. "Could not read the host" and "there is nothing" are different
+    // facts; answering a question about the host with a fact about this machine is how a node ends
+    // up wearing another session's name. An empty body is still an answer from the remote reader.
+    const dir = path.join(root, 'gs-remote-2')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ generated_title: 'LOCAL NAME' }))
+    rememberGrokSessionDir('gs-remote-2', dir)
+    const unreadable = async () => ({ text: '' })
+    expect(
+      await readAgentSessionName('gs-remote-2', undefined, 'grok', { grokRemoteSummary: unreadable })
+    ).toBeNull()
+    forgetGrokSession('gs-remote-2')
+  })
+
+  it('a reader that does not own the session falls through to the local map', async () => {
+    // `null` means "not a remote session" — the only answer that routes locally.
+    const dir = path.join(root, 'gs-local')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ generated_title: 'local one' }))
+    rememberGrokSessionDir('gs-local', dir)
+    const notMine = async () => null
+    expect(
+      await readAgentSessionName('gs-local', undefined, 'grok', { grokRemoteSummary: notMine })
+    ).toBe('local one')
+    forgetGrokSession('gs-local')
+  })
+
   it('sends everything else to the claude transcript reader', async () => {
     // No transcript exists for this id under any root, so the honest answer is null — the assertion
     // that matters is that it did NOT come back with the grok session's name below.

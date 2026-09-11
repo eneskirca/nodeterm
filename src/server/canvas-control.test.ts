@@ -19,21 +19,24 @@ import {
   recordFreshSpawnOwner,
   resetPaneOwnershipForTests
 } from '../core/agents/pane-ownership'
-import { fakePlatform } from '../core/platform-fake'
+import { fakePlatform, type FakePlatform } from '../core/platform-fake'
 import { initPlatform, resetPlatformForTests } from '../core/platform'
 import type { PtyManager } from '../core/pty-manager'
 import type { WorkspaceStore } from '../core/workspace-store'
-import { DEFAULT_SETTINGS, type Settings, type Workspace } from '../shared/types'
+import { IPC } from '../shared/ipc'
+import { DEFAULT_SETTINGS, type Project, type Settings, type Workspace } from '../shared/types'
 import { initServerCanvasControl, type ServerCanvasControl } from './canvas-control'
 
 describe('initServerCanvasControl', () => {
   let dataDir = ''
   let runtime: ServerCanvasControl | null = null
+  let fake: FakePlatform
 
   beforeEach(() => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodeterm-server-control-'))
     resetPlatformForTests()
-    initPlatform(fakePlatform({ userDataDir: dataDir }))
+    fake = fakePlatform({ userDataDir: dataDir })
+    initPlatform(fake)
     resetPaneOwnershipForTests()
     resetMessageFlow()
     resetAgentMessageTraceForTests()
@@ -292,5 +295,77 @@ describe('initServerCanvasControl', () => {
     expect(writes[0]).toMatchObject({ enter: false })
     expect(writes[1]).toEqual({ text: '', enter: true })
     expect(legacySendEnvelope).not.toHaveBeenCalled()
+  })
+
+  it('publishes its own writes on server-change, never on the outside-edit channel', async () => {
+    // The defect this pins: `open-agent` appends a `ctrl-…` rope to `project.ropes`, and while
+    // that rode `workspace:external-change` the renderer ran it through `decideExternalChange`,
+    // which reads a changed `ropes` array as a CONFLICT whenever the canvas is dirty. The bar it
+    // raised suspends autosave, so a burst of spawns latched it on, and "Keep my version" then
+    // wrote the browser's edges over the ropes this factory had just persisted.
+    const workspace: Workspace = {
+      version: 2,
+      activeProjectId: 'p1',
+      projects: [
+        {
+          id: 'p1',
+          name: 'Project',
+          color: '#0a84ff',
+          viewport: { x: 0, y: 0, zoom: 1 },
+          nodes: [
+            {
+              id: 'source',
+              kind: 'terminal',
+              position: { x: 0, y: 0 },
+              size: { width: 640, height: 440 },
+              title: 'Source',
+              color: '#d97757',
+              group: null,
+              agentId: 'claude'
+            }
+          ]
+        }
+      ]
+    }
+    const store = {
+      load: vi.fn(async () => workspace),
+      save: vi.fn(async () => undefined),
+      persistedCanvases: () => [{ id: 'p1', nodes: workspace.projects[0].nodes }],
+      capabilityProjectFor: () => ({ agentMessaging: false, capabilityAck: {} })
+    } as unknown as WorkspaceStore
+    const pty = {
+      createHeadless: vi.fn(async () => ({ sessionId: 'unused', fresh: true })),
+      sendText: vi.fn(async () => true),
+      destroySession: vi.fn(async () => undefined),
+      paneOwner: vi.fn(async () => null),
+      sendEnvelope: vi.fn(async () => true),
+      hasLiveSession: () => true
+    } as unknown as PtyManager
+
+    runtime = await initServerCanvasControl({
+      workspaceStore: store,
+      ptyManager: pty,
+      settings: () => ({ ...DEFAULT_SETTINGS }),
+      boardLog: { append: async () => false },
+      installAgentIntegrations: false
+    })
+    fake.sent.length = 0
+
+    const opened = await runtime.handler({
+      verb: 'open-agent',
+      nodeId: 'source',
+      args: { agent: 'claude', prompt: 'spawn me' },
+      verified: true
+    })
+    expect(opened).toMatchObject({ ok: true })
+    const openedId = (opened.result as { id: string }).id
+
+    const server = fake.sent.filter((e) => e.channel === IPC.workspaceServerChange)
+    expect(server.length).toBeGreaterThan(0)
+    const published = server.at(-1)!.args[0] as Project
+    expect(published.id).toBe('p1')
+    expect(published.nodes.map((n) => n.id)).toContain(openedId)
+    // The one that must NOT happen: nothing this factory writes is an "another device" edit.
+    expect(fake.sent.filter((e) => e.channel === IPC.workspaceExternalChange)).toEqual([])
   })
 })

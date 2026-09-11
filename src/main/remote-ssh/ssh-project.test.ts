@@ -1345,14 +1345,16 @@ describe('SshProjectManager', () => {
      *  connect() takes the ordinary fresh-master path — a genuine establish. */
     function makeVerifiedMgr(
       onTunnelVerified: (projectId: string, controlPath: string, conn: SshConnection) => void,
-      httpCode = '204'
+      /** A THUNK is what lets a test kill the tunnel between two connects — see the repair tests. */
+      httpCode: string | (() => string) = '204'
     ) {
       vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined as never)
       vi.spyOn(fs, 'stat').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
       const run = vi.fn(async (args: string[]) => {
         const j = args.join(' ')
         if (j.includes('$HOME')) return { code: 0, stdout: '/home/u' }
-        if (j.includes('%{http_code}')) return { code: 0, stdout: httpCode }
+        if (j.includes('%{http_code}'))
+          return { code: 0, stdout: typeof httpCode === 'function' ? httpCode() : httpCode }
         return { code: 0, stdout: '' }
       })
       return new SshProjectManager({
@@ -1390,12 +1392,73 @@ describe('SshProjectManager', () => {
       expect(homeAtHookTime).toBe('/home/u')
     })
 
-    it('does NOT fire on the reuse branch — a live master never lost its tunnel', async () => {
+    it('does NOT fire on the reuse branch while the tunnel still ANSWERS', async () => {
+      // A healthy reuse must stay exactly as cheap and as quiet as it was: one `-O check`, one
+      // tunnel probe, no re-install and no resync.
       const onTunnelVerified = vi.fn()
       const mgr = makeVerifiedMgr(onTunnelVerified)
       await mgr.connect('p1', conn, '/remote/cwd')
       onTunnelVerified.mockClear()
-      await mgr.connect('p1', conn, '/remote/cwd') // `-O check` answers → early return
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(onTunnelVerified).not.toHaveBeenCalled()
+    })
+
+    it('REPAIRS a reused master whose tunnel stopped answering, and resyncs (issue #735)', async () => {
+      // The pin this replaces asserted "a live master never lost its tunnel", which is false and was
+      // the bug: `ControlMaster=auto` + `ControlPersist` mean the next child command rebuilds a dead
+      // master on the same ControlPath, and the rebuilt one carries no `-R`. It answers `-O check`
+      // all the same, so the watchdog parked on this branch forever while every remote hook POST
+      // vanished into a socket file with no listener — nodes stuck on "Unknown", no notifications.
+      //
+      // `deadProbes` models the real sequence exactly: the establish is clean, then the tunnel dies
+      // under a master that still answers `-O check`, the liveness probe finds it, and the rebuild
+      // binds a fresh `-R` which DOES verify. Arming it after the establish matters — the establish
+      // verifies too, and a queue primed up front would be eaten by that instead.
+      const onTunnelVerified = vi.fn()
+      let deadProbes = 0
+      const mgr = makeVerifiedMgr(onTunnelVerified, () => (deadProbes-- > 0 ? '000' : '204'))
+      await mgr.connect('p1', conn, '/remote/cwd')
+      onTunnelVerified.mockClear()
+      deadProbes = 1
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(onTunnelVerified).toHaveBeenCalledWith('p1', controlPathFor('p1'), conn)
+    })
+
+    it('rebinds the forward on repair — the endpoint is re-advertised, not merely re-probed', async () => {
+      // The whole failure is a master with no `-R`, so a repair that did not call `-O forward`
+      // would leave every hook POST dying exactly as before while reporting success.
+      let deadProbes = 0
+      const mgr = makeVerifiedMgr(vi.fn(), () => (deadProbes-- > 0 ? '000' : '204'))
+      await mgr.connect('p1', conn, '/remote/cwd')
+      deadProbes = 1
+      const forwards = () =>
+        (mgr as unknown as { r: { run: ReturnType<typeof vi.fn> } }).r.run.mock.calls.filter(
+          (c: unknown[]) => (c[0] as string[]).includes('forward')
+        ).length
+      const afterEstablish = forwards()
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(forwards()).toBeGreaterThan(afterEstablish)
+    })
+
+    it('backs off a host that can never forward instead of re-installing every tick', async () => {
+      // `setup()` rewrites the managed hook into every agent's config on the host, and the watchdog
+      // reuses every 45 s. On a host where the tunnel can never bind (sshd
+      // `AllowStreamLocalForwarding no`, no curl) an unthrottled repair would rewrite those files
+      // forever. The FIRST failure still repairs immediately — that is the case this exists for.
+      const onTunnelVerified = vi.fn()
+      const mgr = makeVerifiedMgr(onTunnelVerified, () => '000')
+      const forwards = () =>
+        (mgr as unknown as { r: { run: ReturnType<typeof vi.fn> } }).r.run.mock.calls.filter(
+          (c: unknown[]) => (c[0] as string[]).includes('forward')
+        ).length
+      await mgr.connect('p1', conn, '/remote/cwd')
+      const afterEstablish = forwards()
+      await mgr.connect('p1', conn, '/remote/cwd') // failure #1 → repair attempted
+      const afterFirstRepair = forwards()
+      expect(afterFirstRepair).toBeGreaterThan(afterEstablish)
+      await mgr.connect('p1', conn, '/remote/cwd') // inside the backoff window → no second rebuild
+      await mgr.connect('p1', conn, '/remote/cwd')
+      expect(forwards()).toBe(afterFirstRepair)
       expect(onTunnelVerified).not.toHaveBeenCalled()
     })
 

@@ -1,4 +1,6 @@
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose } from '../components/icons'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
 import { BrowserSurface } from './BrowserSurface'
@@ -49,9 +51,11 @@ export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode
             drives a lease, in every case today). */}
         <BrowserDrivingIndicator nodeId={id} />
         <span className="term-node__spacer" />
-        <button className="term-node__close" title="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>
-          ×
-        </button>
+        <Tooltip label="Close">
+          <button className="term-node__close" aria-label="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>
+            <IconClose />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="editor-node__body">

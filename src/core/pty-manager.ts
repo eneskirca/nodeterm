@@ -36,6 +36,12 @@ import {
   remoteTerminateForegroundArgs,
   remotePaneCursorArgs
 } from './remote-ssh/control-master'
+import {
+  planRemoteEnd,
+  type RemoteEndPlan,
+  type RemoteNodeOwnerResolver
+} from './remote-end'
+import { recordPendingRemoteKill, type PendingRemoteKill } from './pending-remote-kills'
 import { probeAgentSockToPin } from './remote-ssh/agent-probe'
 import { parsePaneCursor } from './pane-cursor'
 import { classifyPaneCwd } from './pane-cwd'
@@ -912,6 +918,8 @@ export class PtyManager {
    * exactly as it did before it existed.
    */
   private readProjectSpawnOverrides: ProjectSpawnOverridesReader | null = null
+  /** "Which SSH host owns this node?", from the persisted index — see `setRemoteNodeOwner`. */
+  private remoteNodeOwner: RemoteNodeOwnerResolver | null = null
   /** ONE shared snapshot interval for all persisted sessions — a per-session interval spawned
    *  one tmux/ssh capture subprocess per session per tick, forever, even for idle terminals. */
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
@@ -1495,6 +1503,19 @@ export class PtyManager {
    */
   setProjectSpawnOverrides(read: ProjectSpawnOverridesReader | null): void {
     this.readProjectSpawnOverrides = read
+  }
+
+  /**
+   * Wire "which host owns this node?", answered from PERSISTED project data rather than from a
+   * live session — see `remote-end.ts` for the leak this closes.
+   *
+   * A separate setter for the same reason as the one above: the resolver needs the workspace store
+   * AND the SSH-project manager, and neither shell has both by the time `init` runs. Wiring none
+   * (the Server Edition, which has no SSH-project manager) leaves every delete on the local path it
+   * already took.
+   */
+  setRemoteNodeOwner(resolve: RemoteNodeOwnerResolver | null): void {
+    this.remoteNodeOwner = resolve
   }
 
   /**
@@ -4671,6 +4692,67 @@ export class PtyManager {
     return promise
   }
 
+  /**
+   * Deliver the remote half of an end — or write down that we could not.
+   *
+   * The `catch {}` this replaces read "remote session may not exist / master down; ignore", and
+   * those two are not the same fact at all. "May not exist" is an ANSWER: tmux says `can't find
+   * session` and exits 1, which is what `probeSaysAbsent` is anchored to and what the local kill
+   * loop has always treated as the ordinary case. "Master down" is a NON-answer — ssh's own 255,
+   * a 127 for a tmux that is not on the remote PATH, a spawn error with no code at all — and the
+   * session is still running on the host. Ignoring both is how ~150 `nt-` sessions accumulate on a
+   * machine whose owner deleted them.
+   *
+   * A non-answer is therefore RECORDED, and paid off the next time that host is reachable
+   * (`drainPendingRemoteKills`, run from the SSH project's connect). The delete itself is never
+   * refused over it: the node is going, and a refusal would strand it on the canvas with the same
+   * session still running plus a dialog. That choice is only defensible BECAUSE the debt is
+   * durable — drop the store and the honest thing to do becomes refusing.
+   *
+   * **Only a DELETE may owe a debt.** A `recycle` keeps the node (worktree move, model switch,
+   * "pause & end session"), so a kill deferred to some later reconnect would land on the session
+   * the node has since RESPAWNED under the same name — it would end live work, hours after the
+   * action that queued it, with nothing on screen connecting the two. A recycle whose remote kill
+   * could not be delivered therefore does exactly what it did before: nothing. Only `delete` makes
+   * "kill this name whenever you next can" an unconditionally correct instruction.
+   */
+  private async endRemoteSession(
+    persistKey: string,
+    intent: EndIntent,
+    plan: Extract<RemoteEndPlan, { kind: 'deliver' | 'defer' }>
+  ): Promise<void> {
+    const session = sessionName(persistKey)
+    const owe = (reason: PendingRemoteKill['reason']): Promise<void> =>
+      intent === 'delete'
+        ? recordPendingRemoteKill({
+            hostKey: plan.hostKey,
+            session,
+            reason,
+            projectId: plan.projectId
+          })
+        : Promise.resolve()
+    if (plan.kind === 'defer') {
+      await owe(plan.reason)
+      return
+    }
+    try {
+      await this.confirmedProcessRun(
+        plan.ssh,
+        remoteTmuxKillArgs(plan.conn, plan.controlPath, session)
+      )
+    } catch (error) {
+      // tmux's own "can't find session" (exit 1) settles it — there is nothing left to kill, and
+      // that is the expected answer for a host that rebooted since the session was last seen.
+      if (probeSaysAbsent(error)) return
+      await owe('delivery-failed')
+      console.warn(
+        `[pty] remote kill for ${session} on ${plan.hostKey} was not delivered` +
+          (intent === 'delete' ? '; owed until that host reconnects' : ''),
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+  }
+
   private async runEndSession(
     clientId: ClientId | null,
     persistKey: string,
@@ -4681,9 +4763,16 @@ export class PtyManager {
     /** Trusted replacement identity; present only after confirmed profile preflight. */
     replacementTarget?: PtyRecycleTarget
   ): Promise<void> {
-    // Both callers run while the session is still live, so its sshRemote is known. Capture it
-    // synchronously before any await. The index is the co-attach one (UI sessions); the scan is
-    // the fallback for a session that is live but not indexed.
+    // The index is the co-attach one (UI sessions); the scan is the fallback for a session that is
+    // live but not indexed. Both are captured synchronously, before any await.
+    //
+    // What this used to say — "both callers run while the session is still live, so its sshRemote
+    // is known" — was simply not true, and believing it leaked remote sessions. A delete arrives
+    // precisely when there may be NO live session: after an app restart, after the offscreen
+    // release disposed the client, after the park timer ran out, or for a node whose project is not
+    // open at all. `dying` was then undefined, `sshRemote` with it, and the remote branch below was
+    // skipped in silence while the one kill that did go out went to the LOCAL socket — nothing at
+    // all for a `requireRemote` node. See `planRemoteEnd`.
     const indexedId = this.byPersistKey.get(persistKey)
     const indexed = indexedId ? this.sessions.get(indexedId) : undefined
     const fallback = indexed ?? this.sessionByPersistKey(persistKey)
@@ -4693,7 +4782,16 @@ export class PtyManager {
         ? [...this.sessions.entries()].find(([, candidate]) => candidate === fallback)?.[0]
         : undefined)
     const dying = fallback
-    const sshRemote = dying?.sshRemote
+    // Resolved here, synchronously, for the same reason the live handle always was: a
+    // connect/disconnect landing mid-teardown must not change the branch that already committed to
+    // it. The resolver is the FALLBACK — a live `sshRemote` is the exact handle this session was
+    // spawned over and still wins — and it is what makes a delete with no live client reach the
+    // host at all.
+    const remoteEnd = planRemoteEnd({
+      live: dying?.sshRemote,
+      owner: this.remoteNodeOwner?.(persistKey) ?? null,
+      ssh: findSsh()
+    })
     // SessionHostClient has a real request/response acknowledgement. Await it BEFORE any local
     // deletion claim: on transport failure the node, tombstone, subscribers and transcript tails
     // remain available, because the host outcome is unknown and the user must be able to retry.
@@ -4823,16 +4921,13 @@ export class PtyManager {
     // too, and there are two of them to keep in step.
     if (intent === 'delete') clearNodeAgentStatus(persistKey)
     if (!backendAlreadyEnded) {
-      if (sshRemote) {
+      if (remoteEnd.kind !== 'none') {
         // Remote (ssh-project) node: end the REMOTE session.
-        const ssh = findSsh()
-        if (ssh) {
-          try {
-            await runAsync(ssh, remoteTmuxKillArgs(sshRemote.conn, sshRemote.controlPath, sessionName(persistKey)))
-          } catch {
-            // remote session may not exist / master down; ignore
-          }
-        }
+        //
+        // Routed through `confirmedProcessRun` — which IS `runAsync` in production, so the command
+        // and its bounds are unchanged — because this is confirmed teardown now rather than a
+        // best-effort side call, and because a kill nothing can observe is a kill nothing can test.
+        await this.endRemoteSession(persistKey, intent, remoteEnd)
         // ...and then fall through to the LOCAL kill below rather than returning. A remote node
         // normally has no local session — but it may have one from before `requireRemote`, when a
         // create issued with the master down spawned a local shell under this exact name. That

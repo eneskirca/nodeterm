@@ -14,7 +14,7 @@ import { useSettings } from '../../../state/settings'
 import { useSystemAccount } from '../../../state/systemAccount'
 import { markWorkspaceDirty } from '../../../state/workspaceDirty'
 import {
-  NODE_COLORS,
+  SYSTEM_NODE_COLORS,
   accountsForProject,
   sshAccountsHint,
   systemAccountDisplay
@@ -268,7 +268,7 @@ function EditableProjectSection({
             name={project.name}
             icon={project.icon}
             color={project.color}
-            colors={NODE_COLORS}
+            colors={SYSTEM_NODE_COLORS}
             dark={appTheme === 'dark'}
             // Only the section the user is actually viewing probes the (uncached, live) GitHub
             // avatar. During a settings SEARCH many sections are VISIBLE-but-not-active — gating
