@@ -30,6 +30,21 @@ const ROWS = {
     title: 'Available models',
     description: 'Refresh the model catalogue used by agent-node context menus.',
     keywords: ['discover', 'refresh', 'switch model', 'catalogue']
+  },
+  defaultModel: {
+    title: 'Default model',
+    description:
+      'A model new canvas agent sessions launch on when the Agents “Launch mode” is set to “Gateway (default model)”.',
+    keywords: [
+      'default',
+      'model',
+      'launch',
+      'gateway model',
+      'new session',
+      'claude',
+      'codex',
+      'copilot'
+    ]
   }
 }
 const ENTRIES = Object.values(ROWS)
@@ -48,6 +63,7 @@ function credentialMessage(error: unknown): string {
 
 export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const gateway = useSettings((s) => s.settings.modelGateway)
+  const defaultModel = useSettings((s) => s.settings.modelGatewayDefaultModel)
   const update = useSettings((s) => s.update)
   const models = useModelGateway((s) => s.models)
   const status = useModelGateway((s) => s.status)
@@ -327,6 +343,34 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
             ))}
           </div>
         ) : null}
+      </SearchableRow>
+
+      <SearchableRow {...ROWS.defaultModel}>
+        <FieldRow
+          label="Default model"
+          description="New canvas agent sessions launch on this model when Settings → Agents → Launch mode is “Gateway (default model)”. Picked from the discovered catalogue — discover models first."
+          control={
+            <Select
+              aria-label="Default gateway model"
+              value={defaultModel ?? ''}
+              disabled={!models.length}
+              onChange={(e) => {
+                const id = e.target.value
+                // An empty value is the one spelling of "no default" (absent), matching how the
+                // launch-commands fields above treat a cleared input. A non-empty id is stored
+                // verbatim — it is the discovered catalogue id, not a credential.
+                update({ modelGatewayDefaultModel: id || undefined })
+              }}
+            >
+              <option value="">(none — CLI default model)</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.id}
+                </option>
+              ))}
+            </Select>
+          }
+        />
       </SearchableRow>
     </SettingsSection>
   )

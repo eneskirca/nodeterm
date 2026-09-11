@@ -40,7 +40,9 @@ describe('where readiness is published (source pins)', () => {
     // tty flush comes out mangled, which is exactly what `whenShellSettled` exists to avoid — so
     // the armed launch must not be released on a bare create-resolve.
     expect(src).toContain('whenShellSettled(() => setSessionReady(id, true))')
-    expect(src).toContain('const writeWhenShellReady = (cmd: string): void => {')
+    expect(src).toContain(
+      'const writeWhenShellReady = (cmd: string, onSettled?: (outcome: DeliveryOutcome) => void): void => {'
+    )
     expect(src).toMatch(/whenShellSettled\(\(\) => \{[\s\S]{0,400}?deliverCommand\(/)
   })
 

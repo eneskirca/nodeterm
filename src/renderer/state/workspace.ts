@@ -102,6 +102,8 @@ export interface NodeData {
    * deliberately absent from flowToNodeStates, like initialCommand/expandedHeight.
    */
   respawnNonce?: number
+  /** Generation of a provider-change recycle awaiting acknowledgement from the next lifecycle. */
+  agentRespawnGeneration?: number
   shell?: string
   cwd?: string
   text?: string

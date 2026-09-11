@@ -35,7 +35,7 @@ import {
 import { fileLinkDialect } from '../terminal/file-link-dialect'
 import { hostPlatformFor } from '../terminal/host-platform'
 import { sshFs } from '../terminal/ssh-fs'
-import type { FsApi, PendingLaunch } from '@shared/types'
+import type { FsApi, PendingLaunch, TerminateForegroundOutcome } from '@shared/types'
 import {
   attachReplay,
   closedByLabel,
@@ -106,7 +106,7 @@ import {
   validCellSize,
   type Vec2
 } from '../lib/glyphGridNode'
-import { cleanEcho, deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import { cleanEcho, deliverCommand, KILL_LINE, type DeliveryIo, type DeliveryOutcome } from '../terminal/command-delivery'
 import {
   RESUME_MISS_WINDOW_MS,
   detectsResumeMiss,
@@ -125,12 +125,14 @@ import {
   registerAgentHibernate,
   registerAgentPause,
   registerAgentRestart,
+  clearEnvEligibility,
   restartEligibility,
   restartSessionId,
   RESTART_EXIT_TIMEOUT_MS,
   type ExitPhaseOutcome,
   type PauseOutcome,
-  type ResumePhaseOutcome
+  type ResumePhaseOutcome,
+  type RestartRefusalReason
 } from '../terminal/agent-restart'
 import { coldResumeDecision, shouldProbeTranscript } from '../terminal/cold-resume-session'
 import type { TranscriptPresence } from '@shared/types'
@@ -141,6 +143,17 @@ import {
   LIVENESS_QUERY_MS
 } from '../terminal/agent-liveness'
 import { shouldAutoWake, shouldColdResume } from '../terminal/hibernation-policy'
+import {
+  AGENT_NOT_RUNNING_AFTER_RESPAWN,
+  agentRespawnPending,
+  beginAgentRespawn,
+  reportAgentRespawn,
+  type AgentRespawnAck
+} from '../terminal/agent-respawn-ack'
+import {
+  agentProcessProofWithin,
+  waitForAgentRespawnProcess
+} from '../terminal/agent-respawn-process'
 import { WakeInputBuffer } from '../terminal/wake-input-buffer'
 import { FindBar } from '../components/FindBar'
 import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
@@ -169,6 +182,7 @@ import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, useViewMode, vie
 import { useSshConn } from '../state/sshConn'
 import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
+import { modelRespawnErrorKind, modelRespawnTrace } from '@shared/model-respawn-trace'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { isBrowserRuntime } from '../bridge/runtime'
 import { agentLaunchOverride, COLLAPSED_HEIGHT, type CanvasNode } from '../state/workspace'
@@ -189,13 +203,18 @@ import {
   reportsOwnCopy,
   agentConfig,
   capabilityAgentId,
+  supportsSessionIdFlag,
   type AgentId
 } from '@shared/agents/config'
 import { withPermissionMode } from '@shared/agents/approval-mode'
-import { assembleResumeCommand } from '@shared/agents/launch'
+import { assembleLaunchCommand, assembleResumeCommand } from '@shared/agents/launch'
 import { agentEnvSnapshot } from '@renderer/lib/agentEnv'
 import { normalizedAgentModel } from '@shared/agents/model-gateway'
-import { ensureActivePermissionMode } from '../state/permissionMode'
+import {
+  ensureActivePermissionMode,
+  claudeCliCapsNow,
+  grokCliCapsNow
+} from '../state/permissionMode'
 import { buildSshArgs, sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import {
   chipFor,
@@ -1007,7 +1026,7 @@ export function setRemotelyViewedNodes(nodeIds: readonly string[]): void {
  * decision that turns on attention: the sweep's plan, the exit closure's fire-time re-ask, and the
  * post-mark nudge. It has to be ONE function: the first version of this feature asked the question
  * three times, and the fire-time copy was missing the modal clause — so a card modal opened
- * mid-batch could still have `/exit` typed into it.
+ * mid-batch could still have its live agent terminated out from under the user.
  *
  * Three ways to be watched, and only the first is visible to any observer: the node is on screen,
  * its kanban card modal is open (see `watchedNodeId`), or a phone viewer is attached to its
@@ -1585,8 +1604,8 @@ export function TerminalNode({
   // every non-codex node and for a codex node whose launcher never spoke.
   const codexIdentity = useCodexIdentity((s) => s.byId[id])
   // --- Eco / hibernation wake (see terminal/hibernation-policy.ts) ---
-  // A hibernated node's CLI was asked to `/exit` while nobody was looking; its tmux session, pane
-  // and scrollback are untouched, and the conversation comes back with the provider's own
+  // A hibernated node's exact agent process group was identity-verified and SIGTERM'd while nobody
+  // was looking; its tmux session, pane and scrollback are untouched, and the conversation returns with
   // `--resume`. THREE things ask for that here, all through one function:
   //   1. the visibility observer, on the offscreen→visible edge (the everyday path);
   //   2. mount-while-already-visible — a node the canvas opens ON SCREEN never transitions, so
@@ -1887,10 +1906,20 @@ export function TerminalNode({
   // work, which is exactly why nothing here runs on its own.
   const restartInFolder = (): void => {
     setCo(termKey, { staleCwd: false })
-    transport.recycle(id)
-    updateNodeData(id, (n) => ({
-      respawnNonce: ((n.data.respawnNonce as number | undefined) ?? 0) + 1
-    }))
+    void transport.recycle(id).then(
+      () => {
+        updateNodeData(id, (n) => ({
+          respawnNonce: ((n.data.respawnNonce as number | undefined) ?? 0) + 1
+        }))
+      },
+      (error: unknown) => {
+        console.error('[terminal] restart-in-folder recycle failed', error)
+        setCo(termKey, {
+          staleCwd: true,
+          spawnError: 'The terminal could not be restarted. Try again.'
+        })
+      }
+    )
   }
   const dismissStaleCwd = (): void => setCo(termKey, { staleCwd: false })
   const dismissLostSession = (): void => setCo(termKey, { lostSession: false })
@@ -1981,6 +2010,13 @@ export function TerminalNode({
     // xterm + session are built. `myNonce` vs the render-updated ref tells the cleanup below
     // whether it runs for a respawn (worktree move — must NOT park) or a plain unmount.
     const myNonce = data.respawnNonce
+    const respawnGeneration = data.agentRespawnGeneration
+    const reportThisRespawn = (result: AgentRespawnAck): boolean => {
+      if (typeof respawnGeneration !== 'number') return false
+      const accepted = reportAgentRespawn(id, respawnGeneration, result)
+      if (accepted) updateNodeData(id, { agentRespawnGeneration: undefined })
+      return accepted
+    }
     const parked = parkedTerminals.get(termKey)
     if (parked) {
       parkedTerminals.delete(termKey)
@@ -2979,6 +3015,14 @@ export function TerminalNode({
       setCo(termKey, { offline: false })
       sentCols = term.cols
       sentRows = term.rows
+      modelRespawnTrace('spawn.create-requested', {
+        nodeId: id,
+        agentId: data.agentId,
+        model: data.agentModel,
+        clearEnv: data.clearEnv === true,
+        remote: sshRemoteTmux,
+        respawnNonce: typeof data.respawnNonce === 'number' ? data.respawnNonce : 0
+      })
       transport
         .create({
           cols: term.cols,
@@ -2995,6 +3039,9 @@ export function TerminalNode({
           ownerProjectId: sshProjectId ?? useProjects.getState().activeProjectId,
           agentId: data.agentId,
           agentModel: data.agentModel,
+          // "Restart on subscription": ride the spawn's env-strip path. Cleared below once the
+          // spawn resolves so an ordinary Restart re-applies the gateway (one-shot).
+          clearEnv: data.clearEnv === true,
           accountId: data.accountId,
           sshRemote,
           // Belt AND braces: the guard above cannot see a `ssh` executable that has gone missing,
@@ -3014,10 +3061,23 @@ export function TerminalNode({
           persistent,
           unavailable
         }) => {
+        modelRespawnTrace('spawn.create-resolved', {
+          nodeId: id,
+          agentId: data.agentId,
+          fresh,
+          persistent: persistent ?? true,
+          unavailable: !!unavailable,
+          closed: !!closed,
+          clearEnv: data.clearEnv === true
+        })
         // REFUSED: `requireRemote` and core could not spawn remotely (the master died inside our
         // round-trip, or `ssh` is missing). Nothing was spawned — land in the same offline state
         // the near-side guard above produces, retry included.
         if (unavailable) {
+          reportThisRespawn({
+            ok: false,
+            detail: 'the replacement terminal could not connect to its host'
+          })
           setCo(termKey, { offline: true })
           if (!disposed)
             term.write('\r\n\x1b[90m[not connected — nothing was started locally]\x1b[0m\r\n')
@@ -3029,6 +3089,10 @@ export function TerminalNode({
         // was spawned — land in the same "closed by <name>" state a subscribed co-viewer gets.
         // BEFORE `onDisposed()`: there is no session here, so there is nothing to kill or unwire.
         if (closed) {
+          reportThisRespawn({
+            ok: false,
+            detail: 'the replacement terminal was closed before it could start'
+          })
           setCo(termKey, { closed })
           if (!disposed) term.write('\r\n\x1b[90m[session closed by another user]\x1b[0m\r\n')
           return
@@ -3042,6 +3106,10 @@ export function TerminalNode({
         const onDisposed = (): boolean => {
           const action = disposalAction({ disposed, handedOff: handedOff?.life })
           if (action !== 'teardown') return false
+          reportThisRespawn({
+            ok: false,
+            detail: 'the replacement terminal was torn down before it became ready'
+          })
           offData?.()
           killSession(sid)
           return true
@@ -3309,10 +3377,14 @@ export function TerminalNode({
             unsub()
           })
         }
-        const writeWhenShellReady = (cmd: string): void => {
+        const writeWhenShellReady = (cmd: string, onSettled?: (outcome: DeliveryOutcome) => void): void => {
+          if (life.dead) {
+            onSettled?.('cancelled')
+            return
+          }
           whenShellSettled(() => {
-            cleanups.push(
-              deliverCommand(
+            try {
+              const cancelDelivery = deliverCommand(
                 {
                   write: (d) => transport.write(sid, d),
                   onData: (cb) => transport.onData(sid, cb)
@@ -3322,12 +3394,24 @@ export function TerminalNode({
                   // The one outcome the caller must act on: the line was longer than the pane's
                   // tty could take, so nothing was submitted (#706). Say so — a refusal that is
                   // only visible as an idle pane is the failure this replaces.
-                  if (outcome === 'line-too-long') {
+                  if (outcome === 'line-too-long' && !life.dead) {
                     setCo(termKey, { launchTooLongBytes: lineBytes(cmd) })
                   }
+                  onSettled?.(life.dead ? 'cancelled' : outcome)
                 }
               )
-            )
+              cleanups.push(cancelDelivery)
+            } catch (error) {
+              modelRespawnTrace('cold-resume.delivery-threw', {
+                nodeId: id,
+                agentId,
+                errorKind: modelRespawnErrorKind(error)
+              })
+              reportThisRespawn({
+                ok: false,
+                detail: 'the replacement terminal rejected the resume command'
+              })
+            }
           })
         }
         // Tell the canvas this node can be typed into — the gate its armed-launch loop waits on.
@@ -3349,6 +3433,7 @@ export function TerminalNode({
         //    design. Nothing auto-resumes here — the branch below is `fresh`-only — and the wake
         //    path owns the relaunch. That is the whole feature.
         if (fresh && useAgentStatus.getState().byId[id]?.hibernated) {
+          modelRespawnTrace('spawn.clear-stale-hibernation', { nodeId: id })
           useAgentStatus.getState().setHibernated(id, false)
         }
         // Paused (see agentStatus.paused) is the ONE exception to the "fresh always resumes" rule
@@ -3356,10 +3441,22 @@ export function TerminalNode({
         // the auto-resume branch below must be skipped — only an explicit Resume (which reuses the
         // same command-building path through the registered hibernate/wake pair) may relaunch it.
         const pausedNow = !!useAgentStatus.getState().byId[id]?.paused
+        // The clear-env strip is one-shot: once this spawn has applied it, clear the flag so a later
+        // ordinary Restart re-applies the gateway. (The recycle action re-sets it for its own spawn.)
+        if (data.clearEnv) {
+          modelRespawnTrace('spawn.clear-env-consumed', { nodeId: id })
+          updateNodeData(id, { clearEnv: undefined })
+        }
         // Run a one-shot command on first open (e.g. "gh auth login" or the agent CLI), then
         // forget it.
         if (data.initialCommand) {
           writeWhenShellReady(data.initialCommand)
+          if (agentRespawnPending(id, respawnGeneration)) {
+            reportThisRespawn({
+              ok: false,
+              detail: 'the replacement terminal had a conflicting one-shot command'
+            })
+          }
           updateNodeData(id, { initialCommand: undefined })
         } else if (
           fresh &&
@@ -3368,6 +3465,11 @@ export function TerminalNode({
           !data.pendingLaunch &&
           shouldColdResume(pausedNow)
         ) {
+          modelRespawnTrace('cold-resume.begin', {
+            nodeId: id,
+            agentId,
+            model: data.agentModel
+          })
           // Cold restart of an agent node: the live agent is gone, so re-launch it. Resume the
           // prior conversation by its session id when we have one; otherwise start the agent
           // fresh. Plain terminals get nothing here — just the restored shell.
@@ -3455,6 +3557,66 @@ export function TerminalNode({
             // the exact line it launched with. Empty on browser/relay by design.
             agentEnvSnapshot()
           )
+          let launchAttempt = 0
+          const launchAndVerify = (command: string): void => {
+            const attempt = ++launchAttempt
+            writeWhenShellReady(command, (outcome) => {
+              if (attempt !== launchAttempt) return
+              if (outcome !== 'submitted') {
+                reportThisRespawn({
+                  ok: false,
+                  detail: outcome === 'line-too-long'
+                    ? 'the replacement launch command exceeded the terminal line limit'
+                    : 'the replacement terminal did not submit the agent launch command'
+                })
+                return
+              }
+              if (!agentRespawnPending(id, respawnGeneration)) return
+              modelRespawnTrace('cold-resume.agent-proof-begin', {
+                nodeId: id,
+                agentId,
+                generation: respawnGeneration
+              })
+              void waitForAgentRespawnProcess(() => api.pty.agentProcess(id, agentId), {
+                active: () =>
+                  !life.dead && attempt === launchAttempt && agentRespawnPending(id, respawnGeneration),
+                onAttempt: (probeAttempt, proof, stableForMs) => {
+                  modelRespawnTrace('cold-resume.agent-proof-attempt', {
+                    nodeId: id,
+                    agentId,
+                    generation: respawnGeneration,
+                    attempt: probeAttempt,
+                    verdict: proof.verdict,
+                    shellPid: proof.shellPid,
+                    agentPid: proof.agentPid,
+                    stableForMs
+                  })
+                }
+              }).then((proof) => {
+                if (life.dead || attempt !== launchAttempt || !agentRespawnPending(id, respawnGeneration)) return
+                modelRespawnTrace('cold-resume.agent-proof-complete', {
+                  nodeId: id,
+                  agentId,
+                  generation: respawnGeneration,
+                  running: proof.running,
+                  attempts: proof.attempts,
+                  lastVerdict: proof.lastVerdict,
+                  shellPid: proof.shellPid,
+                  agentPid: proof.agentPid,
+                  reason: proof.reason
+                })
+                reportThisRespawn(
+                  proof.running
+                    ? { ok: true }
+                    : {
+                        ok: false,
+                        reason: 'agent-not-running',
+                        detail: AGENT_NOT_RUNNING_AFTER_RESPAWN
+                      }
+                )
+              })
+            })
+          }
           /**
            * Watch the pane for the CLI's own "that conversation does not exist" line and, if it
            * comes, launch the agent FRESH in the same pane.
@@ -3471,6 +3633,7 @@ export function TerminalNode({
            * minted one on the node), so the next cold restore does not replay it.
            */
           const watchResumeMiss = (deadId: string): void => {
+            if (life.dead) return
             let fired = false
             let seen = ''
             // `unsub` is assigned on the line after the timer is armed, and `stop` is pushed to
@@ -3484,13 +3647,14 @@ export function TerminalNode({
             }
             const timer = setTimeout(() => stop(), RESUME_MISS_WINDOW_MS)
             unsub = transport.onData(sid, (chunk) => {
-              if (fired) return
+              if (fired || life.dead) return
               // Escape sequences and line breaks removed: the CLI colours its own output and tmux
               // re-wraps it at the pane width, so a raw match would miss a line that straddles a
               // column boundary. Bounded, so a chatty pane cannot grow this without limit.
               seen = (seen + cleanEcho(chunk)).slice(-4096)
               if (!resumeSessionMissing(agentId, deadId, seen)) return
               fired = true
+              launchAttempt += 1
               stop()
               void (async () => {
                 const pane = await queryPaneWithin(
@@ -3499,7 +3663,11 @@ export function TerminalNode({
                 )
                 // `null` is "we could not see the pane", never "nothing is running in it" — the
                 // same contract every other reader of this query keeps.
-                if (!isShellCommand(pane)) return
+                if (life.dead) return
+                if (!isShellCommand(pane)) {
+                  reportThisRespawn({ ok: false, detail: 'the missing-session fallback could not verify a shell' })
+                  return
+                }
                 const { command: fresh } = assembleResumeCommand(
                   {
                     agentId,
@@ -3512,15 +3680,21 @@ export function TerminalNode({
                   },
                   agentEnvSnapshot()
                 )
-                if (!fresh) return
-                useAgentStatus.getState().setSessionId(id, undefined)
-                if (data.agentSessionId) updateNodeData(id, { agentSessionId: undefined })
-                writeWhenShellReady(fresh)
+                if (!fresh) {
+                  reportThisRespawn({ ok: false, detail: 'the missing-session fallback could not build a launch command' })
+                  return
+                }
+                if (useAgentStatus.getState().byId[id]?.sessionId === deadId) {
+                  useAgentStatus.getState().setSessionId(id, undefined)
+                }
+                if (getNode(id)?.data.agentSessionId === deadId) {
+                  updateNodeData(id, { agentSessionId: undefined })
+                }
+                launchAndVerify(fresh)
               })()
             })
             cleanups.push(stop)
           }
-          if (cmd) writeWhenShellReady(cmd) // same shell-startup race as initialCommand
           // A resume can name a conversation that does not exist — the minted id whose launch
           // never ran (an armed `--after` node, a truncated launch line), or a hook-fed id whose
           // transcript is gone. The CLI then prints one line, exits, and the node keeps its agent
@@ -3528,8 +3702,16 @@ export function TerminalNode({
           // refusal, naming THIS id, and start the agent fresh instead. Armed only when we
           // actually asked to resume something and only for an agent whose message we measured;
           // everything else is byte-identical to before. See terminal/resume-fallback.ts.
-          if (cmd && priorId && detectsResumeMiss(agentId)) {
-            watchResumeMiss(priorId)
+          if (cmd && resume.sessionId && detectsResumeMiss(agentId)) {
+            watchResumeMiss(resume.sessionId)
+          }
+          if (cmd) {
+            launchAndVerify(cmd)
+          } else {
+            reportThisRespawn({
+              ok: false,
+              detail: 'the replacement terminal could not assemble an agent launch command'
+            })
           }
         } else if (fresh && pausedNow) {
           // The auto-resume above was skipped (that's the feature), but this mount's PANE is
@@ -3544,9 +3726,26 @@ export function TerminalNode({
           // longer exists.
           const settled = await queryPaneWithin(() => api.pty.paneCommand(id), RESTART_EXIT_TIMEOUT_MS)
           useAgentStatus.getState().setHibernatedPane(id, settled)
+        } else if (agentRespawnPending(id, respawnGeneration)) {
+          reportThisRespawn({
+            ok: false,
+            detail: fresh
+              ? 'the replacement terminal could not resume this agent'
+              : 'the old terminal session was reattached instead of being replaced'
+          })
         }
       })
       .catch((err: unknown) => {
+        modelRespawnTrace('spawn.create-threw', {
+          nodeId: id,
+          agentId: data.agentId,
+          errorKind: modelRespawnErrorKind(err),
+          dead: life.dead
+        })
+        reportThisRespawn({
+          ok: false,
+          detail: 'the replacement terminal failed to start'
+        })
         // THE missing handler, and the answer to "some terminals are black" (2026-08-06).
         //
         // A rejected create means core started NOTHING: no session to tear down, no data gate to
@@ -3591,15 +3790,39 @@ export function TerminalNode({
     // Is there still a pane to restart in? A spawn in flight has no session yet; a real teardown
     // flips `life.dead`; and a session another client DESTROYED (or one recycled with no
     // replacement) is gone while this component happily stays mounted showing the overlay — the
-    // same states the park branch in the cleanup below refuses to park. Writing `/exit` into any of
-    // them reaches nothing and would be reported as a 6-second "failed (exit timeout)".
+    // same states the park branch in the cleanup below refuses to park. Trying to terminate any of
+    // them reaches nothing and would otherwise be reported as a 6-second exit timeout.
     const restartTarget = (): boolean => {
       const coNow = getCo(termKey)
       return !!sessionId && !life.dead && !coNow.closed && !coNow.ended
     }
     const unregisterRestart = registerAgentRestart(
       id,
-      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean) => {
+      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean) => {
+        modelRespawnTrace('node-restart.begin', {
+          nodeId: id,
+          requestedAgentId: targetAgentId,
+          targetModel,
+          restartShell: !!restartShell,
+          clearEnv: !!clearEnv,
+          transportSource: session.source
+        })
+        // Refusal is one-attempt evidence. A timeout path does not manufacture a sharper reason,
+        // so retaining an older attempt here would make every caller attribute the new outcome to
+        // stale state (including the grouped pass's bounded agent-not-running retry decision).
+        useAgentStatus.getState().setLastRestartRefusal(id, null)
+        // One refusal, one reason: every early return below writes the side channel
+        // (`agentStatus.lastRestartRefusal`) through this reporter before returning
+        // `'not-eligible'` — the Canvas notice and the grouped-restart strip render the REASON,
+        // not the old five-conditions-behind-one-string line. A success clears the channel.
+        const refuse = (reason: RestartRefusalReason, detail?: string): void => {
+          modelRespawnTrace('node-restart.refused', {
+            nodeId: id,
+            reason,
+            hasDetail: detail !== undefined
+          })
+          useAgentStatus.getState().setLastRestartRefusal(id, { reason, detail })
+        }
         const st = useAgentStatus.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
@@ -3608,9 +3831,156 @@ export function TerminalNode({
         // value captured when the pane attached, or a later plain Restart would silently reopen
         // the old agent again.
         const sourceAgentId = createdAgentId(currentNode?.data)
-        const gate = restartEligibility(sourceAgentId, st?.state, agentSessionId)
-        if (!gate.ok || !sourceAgentId || !agentSessionId || !restartTarget())
+        // ONE stop mechanism for every restart flavor below. Core proves this exact SOURCE
+        // harness PID is still live in the foreground group, SIGTERMs that group, and this shared
+        // phase waits until the pane is a shell before any recycle/resume follows. The target may
+        // be a same-base variant, but it is not running yet — identity must always name `source`.
+        const terminateSourceForeground = (): Promise<TerminateForegroundOutcome> =>
+          sourceAgentId
+            ? api.pty.terminateForeground(id, sourceAgentId)
+            : Promise.resolve('refused')
+        const stoppedAtShell = (
+          outcome: ExitPhaseOutcome
+        ): outcome is 'exited' | 'already-exited' =>
+          outcome === 'exited' || outcome === 'already-exited'
+        const stopForegroundFor = (resumableAgentId: AgentId): Promise<ExitPhaseOutcome> => {
+          if (!agentSessionId) {
+            refuse('no-session')
+            return Promise.resolve('not-eligible')
+          }
+          modelRespawnTrace('node-restart.stop-requested', {
+            nodeId: id,
+            sourceAgentId,
+            resumableAgentId,
+            hasSessionId: true
+          })
+          return performExitPhase({
+            agentId: resumableAgentId,
+            sessionId: agentSessionId,
+            io: restartIo,
+            paneCommand: () => api.pty.paneCommand(id),
+            terminateForeground: terminateSourceForeground,
+            isLive: restartTarget,
+            onRefusal: refuse
+          })
+        }
+        /** Recycle acknowledgement is only teardown. The next TerminalNode lifecycle must also
+         * confirm that it created a fresh PTY and started the cold-resume delivery before this
+         * restart can report success to the grouped progress strip. */
+        const recycleAndAwaitRespawn = async (
+          branch: 'clear-env' | 'model-switch' | 'restart-shell' | 'agent-already-exited',
+          applyRespawnData: (generation: number) => void
+        ): Promise<'restarted' | 'exit-timeout'> => {
+          modelRespawnTrace('node-restart.recycle', { nodeId: id, reason: branch })
+          try {
+            await transport.recycle(id)
+          } catch (error) {
+            modelRespawnTrace('node-restart.recycle-threw', {
+              nodeId: id,
+              reason: branch,
+              errorKind: modelRespawnErrorKind(error)
+            })
+            throw error
+          }
+          modelRespawnTrace('node-restart.recycle-confirmed', { nodeId: id, reason: branch })
+          // Start the replacement deadline only after teardown acknowledged. A slow backend kill
+          // is a recycle failure/latency problem, not evidence that the new PTY missed its own
+          // create+resume deadline — and this component does not bump the nonce until below.
+          const ticket = beginAgentRespawn(id)
+          applyRespawnData(ticket.generation)
+          const ack = await ticket.promise
+          if (!ack.ok) {
+            refuse(ack.reason === 'agent-not-running' ? 'agent-not-running' : 'threw', ack.detail)
+            modelRespawnTrace('node-restart.respawn-failed', {
+              nodeId: id,
+              reason: branch
+            })
+            return 'exit-timeout'
+          }
+          useAgentStatus.getState().setLastRestartRefusal(id, null)
+          modelRespawnTrace('node-restart.complete', {
+            nodeId: id,
+            outcome: 'restarted',
+            branch
+          })
+          return 'restarted'
+        }
+        // "Restart on subscription": recycle the session VANILLA — strip the gateway + inherited
+        // provider env so the agent falls back to its OWN default provider (Claude's subscription,
+        // Copilot's GitHub routing). No model change, no agent change: same agent, same
+        // conversation, resumed by the cold-restore path once the fresh shell is up. It recycles
+        // (not in-place resume) for the same reason a model switch does — tmux env changes do not
+        // retroactively change an existing shell, so the gateway vars baked into the live session
+        // can only be dropped by respawning. Relay sessions belong to another core/settings store,
+        // so this Mac's gateway-stripped env must never be pushed into one.
+        //
+        // This branch is gated SEPARATELY from the shared `restartEligibility` below: clearEnv is
+        // the explicit force-recovery action, so it may interrupt a `working`/`blocked` session.
+        // Every restart now uses the same identity-gated PID terminator; plain restart still keeps
+        // the conservative "do not interrupt active work" policy. Gateway overload —
+        // the scenario this exists for — shows up mid-turn, and "wait for the turn to finish" is
+        // impossible when the gateway is down. `clearEnvEligibility` permits busy for that reason.
+        if (clearEnv) {
+          modelRespawnTrace('node-restart.branch', { nodeId: id, branch: 'clear-env' })
+          if (session.source === 'relay') {
+            refuse('relay')
+            return 'not-eligible'
+          }
+          const clearGate = clearEnvEligibility(sourceAgentId, agentSessionId)
+          if (!clearGate.ok || !sourceAgentId) {
+            refuse(clearGate.ok ? 'agent-diverged' : clearGate.reason)
+            return 'not-eligible'
+          }
+          const exited = await stopForegroundFor(sourceAgentId)
+          modelRespawnTrace('node-restart.stop-complete', { nodeId: id, outcome: exited })
+          if (!stoppedAtShell(exited)) return exited
+          // `clearEnv` rides the respawn's `transport.create` (read from data above) to strip env at
+          // spawn; the cold-restore auto-resume relaunches the same agent against the default provider.
+          // The node's `agentModel` is a GATEWAY model id (the one a model switch stored, or the one a
+          // gateway node was created with): it only resolves through the gateway the strip just removed.
+          // Leaving it set would make the resume line append `--model <gateway-model>`, which the
+          // subscription CLI does not know — so the agent fails to launch against the subscription with
+          // a model name that does not exist there. Drop it: the CLI's own default model is what
+          // "subscription" means, and a later model switch (or plain Restart re-applying the gateway)
+          // sets it again.
+          return recycleAndAwaitRespawn('clear-env', (generation) => {
+            updateNodeData(id, (node) => ({
+              clearEnv: true,
+              agentModel: undefined,
+              agentRespawnGeneration: generation,
+              respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+            }))
+          })
+        }
+        let gate = restartEligibility(sourceAgentId, st?.state, agentSessionId)
+        if (
+          !gate.ok &&
+          gate.reason === 'working' &&
+          (targetModel || restartShell) &&
+          session.source !== 'relay' &&
+          sourceAgentId &&
+          agentSessionId &&
+          restartTarget()
+        ) {
+          const proof = await agentProcessProofWithin(
+            () => api.pty.agentProcess(id, sourceAgentId)
+          )
+          const forceRespawn = proof.verdict === 'not-agent'
+          modelRespawnTrace('node-restart.stale-status-proof', {
+            nodeId: id,
+            sourceAgentId,
+            statusState: st?.state,
+            verdict: proof.verdict,
+            shellPid: proof.shellPid,
+            agentPid: proof.agentPid,
+            forceRespawn
+          })
+          if (forceRespawn) gate = { ok: true }
+        }
+        if (!gate.ok || !sourceAgentId || !agentSessionId || !restartTarget()) {
+          refuse(gate.ok ? 'gone' : gate.reason)
           return 'not-eligible'
+        }
         const target = targetAgentId ?? sourceAgentId
         const settings = useSettings.getState().settings
         const builtinTarget = agentConfig(target)
@@ -3622,8 +3992,10 @@ export function TerminalNode({
         if (
           (!builtinTarget && !customTarget) ||
           capabilityAgentId(target) !== capabilityAgentId(sourceAgentId)
-        )
+        ) {
+          refuse('agent-diverged')
           return 'not-eligible'
+        }
         const selectedModel = targetModel
           ? normalizedAgentModel(target, targetModel)
           : normalizedAgentModel(
@@ -3637,17 +4009,29 @@ export function TerminalNode({
         // replacement shell the current gateway env. Relay sessions belong to another
         // core/settings store, so a local gateway must never be pushed into one.
         if (targetModel) {
-          if (!selectedModel || session.source === 'relay') return 'not-eligible'
-          // Identity-gated: core SIGTERMs the foreground group ONLY if `target`'s harness still
-          // owns it, so a stale model-switch menu can never kill vim or a build in this pane.
-          if (!(await api.pty.terminateForeground(id, target))) return 'not-eligible'
-          transport.recycle(id)
-          updateNodeData(id, (node) => ({
-            agentId: target,
-            agentModel: selectedModel,
-            respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
-          }))
-          return 'restarted'
+          modelRespawnTrace('node-restart.branch', {
+            nodeId: id,
+            branch: 'model-switch',
+            sourceAgentId,
+            targetAgentId: target,
+            targetModel,
+            selectedModel
+          })
+          if (!selectedModel || session.source === 'relay') {
+            refuse(session.source === 'relay' ? 'relay' : 'no-model')
+            return 'not-eligible'
+          }
+          const exited = await stopForegroundFor(target)
+          modelRespawnTrace('node-restart.stop-complete', { nodeId: id, outcome: exited })
+          if (!stoppedAtShell(exited)) return exited
+          return recycleAndAwaitRespawn('model-switch', (generation) => {
+            updateNodeData(id, (node) => ({
+              agentId: target,
+              agentModel: selectedModel,
+              agentRespawnGeneration: generation,
+              respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+            }))
+          })
         }
         // "Restart agent and shell": same quit + recycle as a model switch, but the agent and model
         // are UNCHANGED — the point is a FRESH shell that re-sources the user's profile/env (a
@@ -3657,21 +4041,21 @@ export function TerminalNode({
         // Relay sessions are excluded for the same reason a model switch is: their shell env belongs
         // to another core/settings store, and recycling here would respawn against this Mac's env.
         if (restartShell) {
-          if (session.source === 'relay') return 'not-eligible'
-          const exited = await performExitPhase({
-            agentId: target,
-            sessionId: agentSessionId,
-            io: restartIo,
-            paneCommand: () => api.pty.paneCommand(id),
-            isLive: restartTarget
+          modelRespawnTrace('node-restart.branch', { nodeId: id, branch: 'restart-shell' })
+          if (session.source === 'relay') {
+            refuse('relay')
+            return 'not-eligible'
+          }
+          const exited = await stopForegroundFor(target)
+          modelRespawnTrace('node-restart.stop-complete', { nodeId: id, outcome: exited })
+          if (!stoppedAtShell(exited)) return exited
+          return recycleAndAwaitRespawn('restart-shell', (generation) => {
+            updateNodeData(id, (node) => ({
+              agentId: target,
+              agentRespawnGeneration: generation,
+              respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+            }))
           })
-          if (exited !== 'exited') return exited
-          transport.recycle(id)
-          updateNodeData(id, (node) => ({
-            agentId: target,
-            respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
-          }))
-          return 'restarted'
         }
         // Built HERE, not inside the choreography: the shared assembly builder is the single funnel
         // for every CLI launch path (shared/agents/launch.ts) and the mode is a renderer-side, async
@@ -3692,24 +4076,48 @@ export function TerminalNode({
         // first thing a user does after a boot, and a cold snapshot would silently relaunch through
         // the bare CLI. Bounded and never-rejecting (see `warmOwningProjectId`).
         const ownerProjectId = await warmOwningProjectId()
-        const { command, missingEnv } = assembleResumeCommand(
-          {
-            agentId: target,
-            customAgent: customTarget,
-            sessionId: agentSessionId,
-            permissionMode: await ensureActivePermissionMode(target),
-            model: selectedModel ?? undefined,
-            // The launch-command override rides the restart too (the global layer is undefined for
-            // a custom target, which already owns its launchCmd) — it is a property of how the
-            // agent launches, so the owning project's own value applies here as well.
-            launchCmdOverride: agentLaunchOverride(target, ownerProjectId)
-          },
-          launchEnv
+        const hookConfirmed = !!st?.sessionId
+        const sessionIdFlagSupported = supportsSessionIdFlag(
+          target,
+          claudeCliCapsNow().sessionIdFlag,
+          grokCliCapsNow().sessionIdFlag
         )
+        const { command, missingEnv } = hookConfirmed
+          ? assembleResumeCommand(
+              {
+                agentId: target,
+                customAgent: customTarget,
+                sessionId: agentSessionId,
+                permissionMode: await ensureActivePermissionMode(target),
+                model: selectedModel ?? undefined,
+                launchCmdOverride: agentLaunchOverride(target, ownerProjectId)
+              },
+              launchEnv
+            )
+          : assembleLaunchCommand(
+              {
+                agentId: target,
+                customAgent: customTarget,
+                permissionMode: await ensureActivePermissionMode(target),
+                sessionId: sessionIdFlagSupported ? agentSessionId : undefined,
+                sessionIdFlagSupported,
+                model: selectedModel ?? undefined,
+                launchCmdOverride: agentLaunchOverride(target, ownerProjectId)
+              },
+              launchEnv
+            )
         // Never type a knowingly mangled launch line (for example `--token ''`) into the pane.
         // Settings already surfaces these missing names in its preview; a stale menu after an env
         // change degrades to the ordinary not-eligible notice and leaves the shell untouched.
-        if (missingEnv.length) return 'not-eligible'
+        if (missingEnv.length) {
+          modelRespawnTrace('node-restart.command-refused', {
+            nodeId: id,
+            reason: 'missing-env',
+            missingEnvCount: missingEnv.length
+          })
+          refuse('missing-env', missingEnv.join(', '))
+          return 'not-eligible'
+        }
         return performRestartResume({
           // Source and target were proven to share one capability base above, so this resolves to
           // the same exit + resume grammar while the explicit command selects the target binary.
@@ -3722,9 +4130,32 @@ export function TerminalNode({
           // Session-scoped (`api`, not the global preload), like readScrollback above: a relay
           // tab's pane lives on the host, and only its own api can see it.
           paneCommand: () => api.pty.paneCommand(id),
+          terminateForeground: terminateSourceForeground,
+          // If the agent is not running, force the stronger recovery path: recycle the whole local
+          // session without PID-targeting its current owner as the agent, then let cold restore resume
+          // the same conversation in a fresh shell. Relay shells live on another core, so they
+          // omit this callback and use the in-place fallback instead.
+          onAlreadyExited:
+            session.source === 'relay'
+              ? undefined
+              : () => {
+                  modelRespawnTrace('node-restart.force-respawn', {
+                    nodeId: id,
+                    sourceAgentId,
+                    targetAgentId: target
+                  })
+                  return recycleAndAwaitRespawn('agent-already-exited', (generation) => {
+                    updateNodeData(id, (node) => ({
+                      agentId: target,
+                      agentRespawnGeneration: generation,
+                      respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+                    }))
+                  })
+                },
           // Re-asked on every poll: a session that dies under the restart reports honestly instead
           // of counting a phantom, and stops polling a pane that no longer exists.
           isLive: restartTarget,
+          onRefusal: refuse,
           // The delivery has its own (echo-verify) lifetime, so hand it to the session: a real
           // teardown runs `cleanups`, and a session that died while we waited for the shell cancels
           // it outright rather than parking a timer on a corpse.
@@ -3745,20 +4176,31 @@ export function TerminalNode({
     // (parked → remounted) terminal never reaches the spawn continuation.
     const unregisterHibernate = registerAgentHibernate(id, {
       exit: guardConcurrentRestart(id, async (): Promise<ExitPhaseOutcome> => {
+        // The exit half's refusals also report ONE reason (Eco's own sweep surfaces them via its
+        // skip counts; a manual wake failure reads them).
+        const refuse = (reason: RestartRefusalReason, detail?: string): void => {
+          useAgentStatus.getState().setLastRestartRefusal(id, { reason, detail })
+        }
         // "Is the user looking at this session STILL?" — re-asked at FIRE time, never trusted from
         // the plan, the same discipline as `mayDisposeOffscreen`. A sweep can spend ~12 s working
         // through its batch, and the node whose turn comes last may be one the user panned back to
-        // (or opened as a card modal) and is now typing in: KILL_LINE + `/exit` would land in a
-        // pane they are watching, taking their half-written prompt with it. Worse, the visible
+        // (or opened as a card modal) and is now typing in: terminating the agent would discard
+        // the turn or half-written prompt they are watching. Worse, the visible
         // EDGE has already passed by then, so no wake trigger is left and the node would sit
         // SLEEPING on screen until clicked. Deliberately the SAME `isNodeWatched` the plan and the
         // nudge ask — a second copy of this question is how the modal clause went missing once.
-        if (isNodeWatched(id)) return 'not-eligible'
+        if (isNodeWatched(id)) {
+          refuse('busy')
+          return 'not-eligible'
+        }
         // SSH / relay sessions are excluded in v1, exactly as the offscreen dispose excludes them
         // (offscreen-policy.ts): the exit and its much later resume would race the ControlMaster /
         // relay lifecycle, and a wake that cannot reach the host leaves a dead conversation behind.
         // Read at CALL time — a local project can BECOME an SSH project long after this mount.
-        if (offscreenRemoteRef.current) return 'not-eligible'
+        if (offscreenRemoteRef.current) {
+          refuse('relay')
+          return 'not-eligible'
+        }
         const st = useAgentStatus.getState().byId[id]
         // Already paused (shallow OR deep — deep has `hibernated` unset, so this is the only
         // thing that catches it): the plan already excludes this via `HibernationCandidate.paused`,
@@ -3768,15 +4210,19 @@ export function TerminalNode({
         if (st?.paused) return 'not-eligible'
         const agentSessionId = st?.sessionId
         // Re-asked here, not trusted from the plan: a node that started working between the sweep's
-        // decision and its turn must keep its turn (BUSY_STATES — an exit line typed into a
-        // permission prompt ANSWERS it).
+        // decision and its turn must keep its turn (BUSY_STATES — Eco mode must never interrupt
+        // live work or a permission decision merely because it became offscreen).
         const gate = restartEligibility(agentId, st?.state, agentSessionId)
-        if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
+        if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) {
+          refuse(gate.ok ? 'gone' : gate.reason)
+          return 'not-eligible'
+        }
         const outcome = await performExitPhase({
           agentId,
           sessionId: agentSessionId,
           io: restartIo,
           paneCommand: () => api.pty.paneCommand(id),
+          terminateForeground: () => api.pty.terminateForeground(id, agentId),
           isLive: restartTarget
         })
         if (outcome === 'exited') {
@@ -3797,9 +4243,15 @@ export function TerminalNode({
         return outcome
       }),
       resume: guardConcurrentRestart(id, async (): Promise<ResumePhaseOutcome> => {
+        const refuse = (reason: RestartRefusalReason, detail?: string): void => {
+          useAgentStatus.getState().setLastRestartRefusal(id, { reason, detail })
+        }
         const st = useAgentStatus.getState().byId[id]
         const agentSessionId = st?.sessionId
-        if (!agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
+        if (!agentId || !agentSessionId || !restartTarget()) {
+          refuse('gone')
+          return 'not-eligible'
+        }
         // Command FIRST, pane check LAST. Both of these awaits can take a moment (the claude
         // version probe behind `ensureActivePermissionMode` most of all), and whatever is asked
         // first is stale by the time the delivery runs — so the fact that must be freshest is the
@@ -3839,7 +4291,10 @@ export function TerminalNode({
         // and would refuse too — but the KILL_LINE below is ours, so leaving this check to it
         // meant an unusable session id erased the pane's line (three times, once per wake trigger)
         // and then declined to resume.
-        if (!command) return 'not-eligible'
+        if (!command) {
+          refuse('no-session')
+          return 'not-eligible'
+        }
         // THE load-bearing gate of the wake half. Hours can pass between the exit and this
         // resume, and the pane is a REPL the user can type into: by now it may belong to vim, to
         // `top`, or to a claude the user launched by hand — and a launch line typed into a live
@@ -3852,7 +4307,12 @@ export function TerminalNode({
         // allowlist-free signal — from being hibernated and never woken.
         const pane = await queryPaneWithin(() => api.pty.paneCommand(id), RESTART_EXIT_TIMEOUT_MS)
         const settled = useAgentStatus.getState().byId[id]?.hibernatedPane
-        if (!isShellCommand(pane) && !(pane !== null && pane === settled)) return 'not-eligible'
+        if (!isShellCommand(pane) && !(pane !== null && pane === settled)) {
+          // The pane's actual foreground command IS the log: `vim` reads differently from a
+          // claude the user launched by hand.
+          refuse('pane-not-shell', typeof pane === 'string' ? pane : 'unreadable pane')
+          return 'not-eligible'
+        }
         // Clear the line before the launch line goes in. The shell above is the one WE exited to,
         // hours ago — nothing stops a passer-by (or a stray paste, or the user's own aborted
         // command) from having left a half-typed line at its prompt, and `deliverCommand`'s first
@@ -3906,6 +4366,7 @@ export function TerminalNode({
               sessionId: agentSessionId,
               io: restartIo,
               paneCommand: () => api.pty.paneCommand(id),
+              terminateForeground: () => api.pty.terminateForeground(id, agentId),
               isLive: restartTarget
             })
         if (outcome !== 'exited') return outcome

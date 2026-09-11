@@ -687,20 +687,29 @@ Lifecycle, by intent:
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
   shows up in a CLI's model list on a fresh launch, and doing that by hand means closing and
-  re-resuming every agent node on the canvas. Choreography: write the CLI's own exit line (`/exit`
-  for claude, `/quit` for codex — that table is also the gate, an agent not in it can never be
-  restarted in place), poll `pty:pane-command` (`#{pane_current_command}`, local tmux socket or the
-  project's SSH ControlMaster; any failure reads as "not a shell yet") every `RESTART_POLL_MS`
-  (250 ms) until a SHELL owns the pane, then echo-deliver `resumeCommand(...)` — the same
-  `claude --resume` / `codex resume` the cold restore uses. **Nothing is ever killed**: if the CLI
-  has not quit within `RESTART_EXIT_TIMEOUT_MS` (6 s) the run reports `exit-timeout` and leaves the
-  session running. A `working` **or `blocked`** session is refused — `/exit` typed into a
-  permission prompt would ANSWER it, not quit — and a node is held one-restart-at-a-time until the
-  resume line has actually LEFT the pane (an un-submitted line is where a second `/exit` would be
-  spliced in). The bulk action runs the same per-node closure sequentially over every idle agent
+  re-resuming every agent node on the canvas. Choreography: preflight `pty:pane-command`, then call
+  the ONE core stop mechanism, `pty.terminateForeground(nodeId, sourceAgentId)`: `paneOwner` proves
+  the expected harness from full argv, `agentPidIn` retains the exact PID that verdict rested on,
+  and the local/SSH kill leg re-proves that PID is still live in the foreground group immediately
+  before SIGTERM. **Nothing is typed into the pane.** The two PIDs are distinct facts: `PaneOwner.panePid` is the
+  long-lived login shell tmux spawned, while `agentPidIn(PaneOwner)` is the current harness PID;
+  the latter is re-read at the action boundary rather than persisted, because an exited process's
+  PID can be reused. If a successful kernel probe finds the expected agent absent, core returns
+  `already-exited`: local restart force-recycles the whole session without misidentifying its
+  current foreground owner as the agent, then cold restore resumes the conversation. An unreadable/unknown probe still
+  refuses (`lost-foreground`). Poll every `RESTART_POLL_MS` (250 ms) until a shell owns the
+  pane, then echo-deliver `resumeCommand(...)` — the same `claude --resume` / `codex resume` cold
+  restore uses. If the group does not release within `RESTART_EXIT_TIMEOUT_MS` (6 s), report
+  `exit-timeout` and do not resume. A `working` **or `blocked`** session is still refused by policy:
+  ordinary restart must not discard active work or a pending decision merely because the PID stop
+  is safe. The node is held one-restart-at-a-time until the resume line has actually LEFT the pane,
+  so a second restart cannot terminate the replacement or splice another launch line into it. The
+  bulk action runs the same per-node closure sequentially over every idle agent
   node in canvas order and reports one summary line. `performRestartResume` is now a COMPOSITION of
   `performExitPhase` + `performResumePhase` (2026-08-12, behavior-pinned split) — hibernation
-  drives the halves separately; each half refuses independently.
+  drives the halves separately; each half refuses independently. As of 2026-09-01 every production
+  caller, including Eco, supplies that same identity-gated terminator; `performExitPhase` has no
+  in-band exit-write path.
 - **Agent hibernation ("Eco", 2026-08-12, OPT-IN default off)** → `settings.agentHibernationEnabled`
   (+ `agentHibernationIdleMinutes`, default 30; Settings → Agents): a 60 s renderer sweep
   (`Canvas`) exits the CLI of up to **2** agent nodes per pass that are hook-idle in state `done`,
@@ -713,7 +722,7 @@ Lifecycle, by intent:
   share ONE `guardConcurrentRestart` set. Load-bearing rules a refactor must not undo:
   (1) **recurring fact is durable** — both loop-card dismiss surfaces route through
   `lib/loopCard.ts`, which HIDES a cron/schedule card but retains `agentStatus.loop`
-  (`dismissed: true`); clearing it would let Eco `/exit` a CLI whose cron wakeup lives in that
+  (`dismissed: true`); clearing it would let Eco terminate a CLI whose cron wakeup lives in that
   process. (2) **Fire-time re-asks**: still-offscreen, remote, eligibility — a plan-time verdict
   is stale by seconds. (3) `hibernated` **self-heals** on live hook states + SessionStart (never
   on `done` — a late Stop POST must not undo a just-performed hibernate); cold restore (`fresh`)
@@ -1330,10 +1339,12 @@ else, and its context links must keep classifying across restarts).
   capability (`MODEL_SWITCH_CAPABLE = claude/codex/copilot`) resolved through `capabilityAgentId`, so a
   custom agent with a supported `baseAgent` inherits it automatically — the settings UI and canvas
   menu carry no agent allowlist. A model switch SIGTERMs the pane's foreground non-shell process
-  group (never types `/exit`) and RECYCLES the tmux session before cold-resume: an existing shell may
+  group (never types `/exit`) and RECYCLES the tmux session before cold-resume. If the expected
+  agent is no longer in a successfully read foreground group, skip signalling and force this same
+  recycle path; unknown owner probes still refuse. An existing shell may
   predate the gateway setting, and tmux env changes do not retroactively change that shell's
   environment. Recreating it guarantees the current URL/key applies without typing a secret into
-  the pane. Ordinary Restart stays in-place. Custom-agent env is still merged last and may override
+  the pane. Ordinary Restart uses the same exact-PID stop but stays in-place. Custom-agent env is still merged last and may override
   the shared mapping. Desktop and Server Edition use the same core handler; relay tabs deliberately
   do not apply this machine's gateway to another core. Mobile needs a settings/model-picker surface
   before it can expose the feature.
@@ -1403,9 +1414,9 @@ else, and its context links must keep classifying across restarts).
     the read and write legs split. Its read path is the transcript the context tail already tracks
     (injected as `AgentSessionNameDeps.geminiPathFor`, held in a `let` in `src/main/index.ts` to avoid a
     TDZ throw that would kill a node's whole poll chain).
-  - **In-place restart** works for gemini: `EXIT_SEQUENCES.gemini = '/quit'` — and it must stay **bare**,
-    because `/quit --delete` exits *and permanently deletes* the session history, i.e. exactly what the
-    restart exists to resume (pinned by its own test).
+  - **In-place restart** works for gemini: `EXIT_SEQUENCES.gemini = '/quit'` remains the reviewed
+    support-table entry, but production restart never types it (or the history-destroying
+    `/quit --delete`); the shared exact-PID terminator stops Gemini out-of-band before resume.
   Full picture, measurements, gaps and a device checklist: **`docs/gemini-agent.md`**.
 - **Permission mode** (agents in `PERMISSION_MODE_CAPABLE` — claude, grok, **gemini**, **codex**) —
   the mode a session **starts** in (`claude --permission-mode <mode>`; Shift+Tab still cycles it at
@@ -2665,11 +2676,15 @@ principle. Per-agent write-ups: `docs/grok-agent.md`, `docs/gemini-agent.md`.
     returns `null` (the node keeps its own name); an unknown notification type is a no-op; a failed
     probe means the bare command, never a blocked launch. Say in the code which facts are *composed*
     rather than captured (gemini's resumed-transcript shape is) and what the wrong-guess cost is.
-15. **Kill the "in place" actions carefully.** An exit sequence must be the CLI's documented primary
-    and **bare**: gemini's `/quit` also takes `--delete`, which exits *and permanently deletes the
-    session history* — the very conversation the restart exists to resume. It has its own test.
-    Refuse the restart while the node is `working` **or** `blocked`: an exit line typed into a
-    permission prompt **answers** it.
+15. **Kill the "in place" actions carefully.** Never type a CLI exit sequence into a pane: a stale
+    node may now be a raw shell/editor, and Gemini's `/quit --delete` permanently deletes the very
+    history a restart exists to resume. Route every restart/Eco stop through
+    `performExitPhase` → identity-gated `terminateForeground`; re-prove the exact argv-verified PID
+    is live in the foreground group at the kill boundary. Track the pane login-shell PID separately
+    from the dynamically discovered agent PID. A successful probe with no expected agent takes the
+    force-respawn path without PID-targeting the replacement owner; an unknown probe refuses. Still
+    refuse ordinary restart while the
+    node is `working` or `blocked` — safe signalling is not permission to discard active work.
 16. **Write the device checklist for what you could not run.** Every unverified claim becomes a
     numbered item; group the ones that fall out of a single capture run. `docs/grok-agent.md` §9 and
     `docs/gemini-agent.md` §9 are the format.

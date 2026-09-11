@@ -48,6 +48,13 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   update(patch) {
     const next = { ...get().settings, ...patch }
+    // `vanillaLaunchDefault` is the one-release downgrade mirror for `agentLaunchMode`: an older
+    // build reads the boolean, so when the user picks a mode here the mirror must follow. (The
+    // read path in core settings-store keeps them in lockstep on load; this keeps them in lockstep
+    // on write.) `'subscription'` ⇒ true (strip env), anything else ⇒ false.
+    if ('agentLaunchMode' in patch) {
+      next.vanillaLaunchDefault = patch.agentLaunchMode === 'subscription'
+    }
     set({ settings: next })
     scheduleSave(next)
   }

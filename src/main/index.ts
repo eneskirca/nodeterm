@@ -1194,7 +1194,16 @@ app.whenReady().then(async () => {
         // healed-swap strands, [glyphgrid] attach/geometry warnings) are exactly what this panel
         // is for, and they triage by tag. Untagged lines fall back to 'renderer'.
         const { tag, rest } = splitTag(String(event.message ?? ''))
-        logBuffer.push({ level, tag: tag || 'renderer', msg: rest })
+        if (tag === 'model-respawn' && contents.getType() !== 'webview') {
+          // This trace is explicitly field-diagnostic and users commonly start dev with
+          // `... | tee nodeterm.log`. Sending it through main's wrapped console lands it in BOTH
+          // stdout/the tee and the same debug ring, once. Never promote a guest page's console by
+          // tag: an untrusted webview must not be able to forge or flood the app's lifecycle log.
+          // Other renderer chatter remains ring-only.
+          console[level](`[model-respawn] ${rest}`)
+        } else {
+          logBuffer.push({ level, tag: tag || 'renderer', msg: rest })
+        }
       } catch {
         /* logging must never break a page */
       }

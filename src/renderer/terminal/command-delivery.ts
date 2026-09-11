@@ -85,9 +85,10 @@ export interface DeliveryIo {
 }
 
 /** Deliver `cmd` + Enter, echo-verified with bounded retries. Returns a cancel function
- *  (call on node teardown). `onSettled` fires exactly once when the delivery is over — submitted
- *  (verified or fail-open) or cancelled — for callers that must know when the LINE has left the
- *  pane, not merely when it was started: the retries run for up to
+ *  (call on node teardown). `onSettled` fires exactly once when the delivery is over and reports
+ *  whether the final Enter write succeeded, the line was too long, or delivery was cancelled.
+ *  Callers can use this to know when the LINE has left the pane, not merely when it was started:
+ *  the retries run for up to
  *  DELIVERY_ATTEMPTS × VERIFY_TIMEOUT_MS, and anything typed into the pane during that window
  *  lands inside the un-submitted line. The outcome argument is optional to read: every caller
  *  that only needs "the line has left the pane" keeps working unchanged. */
@@ -134,12 +135,25 @@ export function deliverCommand(
       return false
     }
   }
-  // Close the delivery BEFORE writing Enter: an io whose write echoes back synchronously (the
-  // in-place restart choreography feeds one) would otherwise re-enter the listener below while
-  // the tail still matches, and submit forever.
+  // Mark closed BEFORE writing Enter: an io whose write echoes back synchronously (the in-place
+  // restart choreography feeds one) would otherwise re-enter the listener below while the tail
+  // still matches, and submit forever. Announce success only AFTER that final write returns: the
+  // old ordering let a rejected Enter auto-dismiss a restart as successful.
   const submit = (): void => {
-    finish('submitted')
-    write('\r')
+    if (done) return
+    done = true
+    if (timer) clearTimeout(timer)
+    unsub?.()
+    let outcome: DeliveryOutcome = 'cancelled'
+    try {
+      io.write('\r')
+      outcome = 'submitted'
+    } catch {
+      // The transport rejected Enter. Report the failed submission below.
+    }
+    // Deliberately outside the transport try/catch: a caller callback that throws must still be
+    // invoked exactly once, and its own exception keeps propagating to that caller.
+    onSettled?.(outcome)
   }
   const tryOnce = (): void => {
     if (done) return
@@ -178,5 +192,5 @@ export function deliverCommand(
     }
   })
   tryOnce()
-  return finish
+  return () => finish()
 }
