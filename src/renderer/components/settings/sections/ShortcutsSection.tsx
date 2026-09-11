@@ -34,6 +34,7 @@
  * `speech.dictation` into the legacy `settings.speech.shortcut` field for one release).
  */
 import { useMemo, useState } from 'react'
+import { IconClose } from '../../icons'
 import {
   bindingIdentity,
   COMMANDS_BY_ID,
@@ -321,7 +322,7 @@ function Chips({
               onClick={() => onRemove(i)}
               className="cursor-pointer border-0 bg-transparent px-0.5 text-[12px] leading-none text-muted opacity-0 group-hover/row:opacity-60 hover:!opacity-100 focus-visible:opacity-100"
             >
-              ×
+              <IconClose />
             </button>
           ) : null}
         </span>

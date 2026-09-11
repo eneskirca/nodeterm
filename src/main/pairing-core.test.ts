@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { encodePairQr, PAIR_URL_PREFIX } from '@shared/pair-qr'
 import {
   buildPairingPayload,
   deviceCommentFor,
@@ -368,5 +369,36 @@ describe('pickLanIPv4', () => {
         en0: [{ address: '169.254.1.1', family: 'IPv4', internal: false }]
       })
     ).toBe(null)
+  })
+})
+
+// The QR ENVELOPE (src/shared/pair-qr.ts) composed with the real payload builder. The encoder's
+// own edge cases are covered there; this pins the one thing only this project can check — that
+// what the builder emits survives the URL wrapping byte-for-byte (eneskirca/nodeterm#745).
+describe('encodePairQr over a built payload', () => {
+  const payload = buildPairingPayload({
+    host: '192.168.1.5',
+    port: 22,
+    user: 'enes',
+    token: 'tok',
+    pairPort: 5,
+    name: 'Mac',
+    hostKey: 'AAAAhostpub',
+    relay: {
+      hostId: 'abcABC012_-def012ghij',
+      hostPublicKeyB64: 'AAAAhostpub',
+      relayEndpoint: 'wss://relay.nodeterm.dev'
+    }
+  })
+
+  it('leaves the payload untouched in the default (json) form', () => {
+    expect(encodePairQr(payload)).toBe(payload)
+  })
+
+  it('round-trips the built payload through the url form', () => {
+    const url = encodePairQr(payload, 'url')
+    expect(url.startsWith(PAIR_URL_PREFIX)).toBe(true)
+    const code = url.slice(PAIR_URL_PREFIX.length)
+    expect(Buffer.from(code, 'base64url').toString('utf-8')).toBe(payload)
   })
 })

@@ -44,6 +44,7 @@ import { isMacPlatform, keyLabel } from '@shared/platform-utils'
 import { isBrowserRuntime } from '../bridge/runtime'
 import { effectiveBindings } from '../lib/keybindingOverrides'
 import { useSettings } from '../state/settings'
+import { IconClose } from './icons'
 
 export interface ShortcutsPanelProps {
   onClose: () => void
@@ -221,8 +222,8 @@ export function ShortcutsPanel({ onClose, onCustomize }: ShortcutsPanelProps) {
       <div className="shortcuts" onClick={(e) => e.stopPropagation()}>
         <div className="shortcuts__head">
           <h2>Keyboard shortcuts</h2>
-          <button className="drawer__close" onClick={onClose}>
-            ×
+          <button className="drawer__close" aria-label="Close" onClick={onClose}>
+            <IconClose />
           </button>
         </div>
         <div className="shortcuts__body">

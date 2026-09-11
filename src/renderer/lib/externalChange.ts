@@ -103,6 +103,27 @@ export function mergeIncomingNodes<T extends { id: string }>(current: T[], incom
   return fresh.length ? [...current, ...fresh] : current
 }
 
+/**
+ * The one clause both surfaces use to describe adopted sessions, so they cannot drift.
+ *
+ * It deliberately does NOT say "from another device (your phone, or another machine)". Nothing that
+ * reaches this point knows the source: the adopting side is a diff against the project file, and
+ * that file can hold a session this canvas never had for reasons that have no device behind them —
+ * an SSH mirror write that was acked and then dropped, a git pull, a stale server copy. The 2026-09-06
+ * field report was exactly that: 16 terminals deleted on a slow SSH link came straight back claiming
+ * a phone had registered them, and the user owns no phone. A wrong attribution is worse than none —
+ * it sends the reader looking for a device instead of at the file — so this names the FILE, which is
+ * the only thing actually observed, and offers the possibilities without asserting one.
+ */
+function adoptedClause(addedCount: number): string {
+  const s = addedCount === 1 ? '' : 's'
+  const verb = addedCount === 1 ? 'was' : 'were'
+  return (
+    `${addedCount} session${s} in the project file ${verb} not on this canvas and ${verb} added ` +
+    `(from another device, or from an older copy of the file).`
+  )
+}
+
 /** The conflict strip's sentence. Derived from what actually arrived so the bar cannot claim
  *  something vague while a real session sits on the canvas behind it. */
 export function conflictBarMessage(addedCount: number): string {
@@ -114,11 +135,8 @@ export function conflictBarMessage(addedCount: number): string {
   const paused = ' Your canvas is not being saved until you choose.'
   if (addedCount <= 0)
     return 'Project file changed on disk (git pull or another machine).' + paused
-  const s = addedCount === 1 ? '' : 's'
-  const verb = addedCount === 1 ? 'was' : 'were'
   return (
-    `${addedCount} new session${s} registered from another device (your phone, or another machine) ` +
-    `${verb} added to this canvas. Other parts of the project file also changed on disk — ` +
+    `${adoptedClause(addedCount)} Other parts of the project file also changed on disk — ` +
     `choose which version of those to keep.` +
     paused
   )
@@ -126,7 +144,5 @@ export function conflictBarMessage(addedCount: number): string {
 
 /** The one-off note shown when an incoming session was adopted with no bar at all. */
 export function adoptedNodesNotice(addedCount: number): string {
-  const s = addedCount === 1 ? '' : 's'
-  const verb = addedCount === 1 ? 'was' : 'were'
-  return `${addedCount} new session${s} registered from another device (your phone, or another machine) ${verb} added to this canvas.`
+  return adoptedClause(addedCount)
 }

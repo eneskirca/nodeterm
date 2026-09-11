@@ -10,6 +10,12 @@ on:
   push:
     branches: [main]
 
+# Only PR runs may be cancelled: a cancelled merge_group run strands every PR queued
+# behind it, and a cancelled push-to-main run loses that commit's CI signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

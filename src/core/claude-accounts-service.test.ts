@@ -38,6 +38,19 @@ vi.mock('./agents/hooks/claude', () => ({
   }
 }))
 
+// Same reason as the hook writers above, with one addition: the real applier resolves the SYSTEM
+// skills dir from `os.homedir()`, so an unmocked sweep in this suite would read the developer's own
+// `~/.claude/skills`. Its behaviour is covered against a real filesystem in
+// `claude-skill-share.test.ts`; here we only assert the WIRING (issue #643).
+const shared: { dir: string; enabled: boolean }[] = []
+vi.mock('./claude-skill-share', () => ({
+  EMPTY_SKILL_SHARE: { linked: 0, unlinked: 0, shared: 0, occupied: 0, failed: 0 },
+  applySkillShare: async (dir: string, enabled: boolean) => {
+    shared.push({ dir, enabled })
+    return { linked: enabled ? 2 : 0, unlinked: 0, shared: enabled ? 2 : 0, occupied: 0, failed: 0 }
+  }
+}))
+
 let fake: FakePlatform
 let userDataDir: string
 
@@ -47,6 +60,7 @@ const call = (channel: string, ...args: unknown[]): Promise<any> =>
 beforeEach(() => {
   installed.length = 0
   tui.length = 0
+  shared.length = 0
   userDataDir = mkdtempSync(path.join(os.tmpdir(), 'nt-accounts-'))
   fake = fakePlatform({ userDataDir })
   initPlatform(fake)
@@ -57,8 +71,8 @@ afterEach(() => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
-describe('registerClaudeAccountsIpc — the five channels', () => {
-  it('registers exactly the five claude-accounts channels', () => {
+describe('registerClaudeAccountsIpc — the six channels', () => {
+  it('registers exactly the six claude-accounts channels', () => {
     registerClaudeAccountsIpc()
     expect(Object.keys(fake.handlers).sort()).toEqual(
       [
@@ -66,6 +80,7 @@ describe('registerClaudeAccountsIpc — the five channels', () => {
         IPC.claudeAccountsCancelWait,
         IPC.claudeAccountsLink,
         IPC.claudeAccountsRemove,
+        IPC.claudeAccountsSetSkillSharing,
         IPC.claudeAccountsWaitLogin
       ].sort()
     )
@@ -185,6 +200,47 @@ describe('installHooksIntoLocalAccounts', () => {
     )
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+
+  // Issue #643. The launch sweep re-links (a skill added to ~/.claude/skills since the last run)
+  // and NEVER removes: ownership is inferred from a link's shape, so an OFF pass here could delete
+  // an identical link the user made by hand in their own linked-account dir. Removal happens only
+  // where the user asked for it, in `setSkillSharing`.
+  it('re-links shared skills for local accounts that opted in, and touches no other account', () => {
+    installHooksIntoLocalAccounts([
+      { id: 'aaa', shareSystemSkills: true },
+      { id: 'bbb', host: 'user@example', shareSystemSkills: true },
+      { id: 'ccc' },
+      { id: 'ddd', shareSystemSkills: false }
+    ])
+    expect(shared).toEqual([{ dir: accountConfigDir(userDataDir, 'aaa'), enabled: true }])
+  })
+})
+
+describe('claudeAccounts.setSkillSharing', () => {
+  it('reconciles the account dir and reports what happened', async () => {
+    registerClaudeAccountsIpc()
+    const res = await call(IPC.claudeAccountsSetSkillSharing, 'aaa', true)
+    expect(shared).toEqual([{ dir: accountConfigDir(userDataDir, 'aaa'), enabled: true }])
+    expect(res).toMatchObject({ linked: 2, shared: 2 })
+  })
+
+  // A remote account's config dir is on its HOST; reconciling the local one would link this
+  // machine's skills into a directory the session never reads. v1 refuses instead of guessing.
+  it('refuses a remote (SSH) account and touches no filesystem', async () => {
+    registerClaudeAccountsSource(() => [
+      { id: 'aaa', label: 'r', host: 'user@example', createdAt: 0 } as ClaudeAccount
+    ])
+    registerClaudeAccountsIpc()
+    const res = await call(IPC.claudeAccountsSetSkillSharing, 'aaa', true)
+    expect(res.refused).toBe('remote-account')
+    expect(shared).toEqual([])
+  })
+
+  it('refuses an id that could traverse out of the accounts root', async () => {
+    registerClaudeAccountsIpc()
+    await expect(call(IPC.claudeAccountsSetSkillSharing, '../evil', true)).rejects.toThrow()
+    expect(shared).toEqual([])
   })
 })
 

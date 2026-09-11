@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Tooltip } from '../components/Tooltip'
+import { IconClose, IconOpenExternal } from '../components/icons'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
@@ -191,24 +193,28 @@ export default function WebNode({ id, data, selected }: NodeProps<CanvasNode>) {
           </button>
         )}
         {url && (
+          <Tooltip label="Open in browser">
+            <button
+              className="term-node__external"
+              aria-label="Open in browser"
+              onClick={() => {
+                const safe = httpUrl(url)
+                if (safe) window.nodeTerminal.shell.openExternal(safe)
+              }}
+            >
+              <IconOpenExternal />
+            </button>
+          </Tooltip>
+        )}
+        <Tooltip label="Close">
           <button
             className="term-node__close"
-            title="Open in browser"
-            onClick={() => {
-              const safe = httpUrl(url)
-              if (safe) window.nodeTerminal.shell.openExternal(safe)
-            }}
+            aria-label="Close"
+            onClick={() => deleteElements({ nodes: [{ id }] })}
           >
-            ↗
+            <IconClose />
           </button>
-        )}
-        <button
-          className="term-node__close"
-          title="Close"
-          onClick={() => deleteElements({ nodes: [{ id }] })}
-        >
-          ×
-        </button>
+        </Tooltip>
       </div>
 
       <div className="editor-node__body">

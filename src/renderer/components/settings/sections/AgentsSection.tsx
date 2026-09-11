@@ -33,6 +33,11 @@ import {
 import { AgentIcon } from '../../../lib/agentIcons'
 import { chipFor } from '../../../lib/keybindingOverrides'
 import { NODE_IDENTITY_STRICT_DATE } from '@shared/node-identity'
+import {
+  CONFIRM_WAIVABLE_VERBS,
+  sanitizeControlConfirmWaivers
+} from '@shared/control-confirm'
+import { useControlConfirm } from '../../../state/controlConfirm'
 import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
@@ -90,6 +95,25 @@ const ROWS = {
   hookReplyApprovals: {
     title: 'One-click approvals',
     keywords: ['approve', 'deny', 'approval', 'permission', 'hook', 'phone', 'canvas', 'one click', 'claude']
+  },
+  controlConfirm: {
+    title: 'Destructive canvas-control confirmations',
+    keywords: [
+      'confirm',
+      'confirmation',
+      'dialog',
+      'ask',
+      "don't ask again",
+      'dont ask again',
+      'waive',
+      'write',
+      'close',
+      'destructive',
+      'canvas control',
+      'bypass',
+      'permission mode',
+      'security'
+    ]
   },
   nodeIdentity: {
     title: 'Verified node identity',
@@ -182,6 +206,38 @@ function permissionModeDescription(): string {
     .join(' ')
 }
 
+/**
+ * The waivable destructive verbs, in the order they are shown, with a sentence each.
+ *
+ * The LIST comes from the shared table (`CONFIRM_WAIVABLE_VERBS`) rather than being typed here, so
+ * a verb that becomes waivable cannot be waivable-in-code and invisible-in-Settings — a loosening
+ * the user cannot see or revoke is exactly what this section exists to prevent. An unknown verb
+ * falls back to its own name, which is honest and ugly rather than absent.
+ */
+const CONTROL_CONFIRM_VERB_COPY: Record<string, { label: string; description: string }> = {
+  write: {
+    label: 'Ask before an agent types into a node',
+    description:
+      'The `write` verb sends text straight into another session\u2019s terminal. Waiving the dialog lets any canvas-control agent do that without asking.'
+  },
+  close: {
+    label: 'Ask before an agent closes nodes',
+    description:
+      'The `close` verb deletes nodes and ends their terminal sessions. Waiving the dialog lets any canvas-control agent do that without asking.'
+  }
+}
+
+const CONTROL_CONFIRM_CHOICES = ['ask', 'never'] as const
+type ControlConfirmChoice = (typeof CONTROL_CONFIRM_CHOICES)[number]
+
+const CONTROL_CONFIRM_LABELS: Record<ControlConfirmChoice, string> = {
+  ask: 'Always ask',
+  // Says "permanently" in the option itself: the only other way to waive one of these is the
+  // dialog's own checkbox, which is bounded by the app's lifetime, and the difference between the
+  // two is the entire safety story.
+  never: 'Never ask (permanently, this computer)'
+}
+
 // The agents claude's version gate does NOT apply to — every other capable agent. Module level: the
 // capable list cannot change while the app runs.
 const otherModeAgents = permissionModeAgentIds({ exclude: ['claude'] })
@@ -220,6 +276,28 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
   // off-toggle re-renders immediately — and consumers read the switch per call from the store,
   // never from a snapshot taken when a lease started (agents-capabilities.test.tsx "takes effect
   // LIVE"; browser PR 4 / messaging PR 6 rely on that shape).
+  // Destructive canvas-control confirmations (@shared/control-confirm). Read through the SANITIZER,
+  // never raw: `settings.json` is hand-editable and a bogus entry there must degrade to "ask", so
+  // the section shows what the GATES will actually honour rather than what the file happens to say.
+  const waivers = sanitizeControlConfirmWaivers(settings.controlConfirmWaivers)
+  const waivableVerbs = [...CONFIRM_WAIVABLE_VERBS]
+  // Subscribed, not getState(): granting or revoking an app-run waiver must repaint this row.
+  const sessionWaivedVerbs = useControlConfirm((s) => s.sessionWaived)
+  /** Persist a PERMANENT waiver. Writes the sanitized shape back, so a hand-edited file is
+   *  normalized by the first UI touch instead of silently surviving beside it. */
+  const setAlwaysWaived = (verb: string, on: boolean): void => {
+    const next = on
+      ? [...new Set([...(waivers.always ?? []), verb])]
+      : (waivers.always ?? []).filter((v) => v !== verb)
+    update({
+      controlConfirmWaivers: sanitizeControlConfirmWaivers({ ...waivers, always: next })
+    })
+  }
+  const setBypassWaived = (on: boolean): void => {
+    update({
+      controlConfirmWaivers: sanitizeControlConfirmWaivers({ ...waivers, bypassMode: on })
+    })
+  }
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const activeProject = useProjects((s) => s.projects.find((p) => p.id === activeProjectId))
   const setProjectCapability = useProjects((s) => s.setProjectCapability)
@@ -399,6 +477,65 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
             />
           }
         />
+      </SearchableRow>
+      <SearchableRow {...ROWS.controlConfirm}>
+        <div className="space-y-4">
+          {waivableVerbs.map((v) => {
+            const copy =
+              CONTROL_CONFIRM_VERB_COPY[v] ??
+              ({ label: `Ask before an agent runs \`${v}\``, description: '' } as const)
+            const sessionWaived = sessionWaivedVerbs.includes(v)
+            const always = (waivers.always ?? []).includes(v)
+            return (
+              <FieldRow
+                key={v}
+                label={copy.label}
+                description={copy.description}
+                // A live app-run waiver is a STATE, not help text — the warning accent is right,
+                // and it must name how to end it, because the dialog that granted it is gone.
+                note={
+                  sessionWaived && !always
+                    ? 'Waived until nodeterm quits (you ticked "Don\u2019t ask again"). Revoke restores the dialog now.'
+                    : undefined
+                }
+                control={
+                  <div className="flex items-center gap-2">
+                    {sessionWaived && !always ? (
+                      <Button
+                        variant="default"
+                        onClick={() => useControlConfirm.getState().revokeForSession(v)}
+                      >
+                        Revoke
+                      </Button>
+                    ) : null}
+                    <Select
+                      aria-label={copy.label}
+                      value={always ? 'never' : 'ask'}
+                      onChange={(e) => setAlwaysWaived(v, e.target.value === 'never')}
+                    >
+                      {CONTROL_CONFIRM_CHOICES.map((c) => (
+                        <option key={c} value={c}>
+                          {CONTROL_CONFIRM_LABELS[c]}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                }
+              />
+            )
+          })}
+          <FieldRow
+            label="Also skip them while your permission mode is Bypass"
+            description="When YOUR global permission mode (above) is Bypass permissions, treat that as covering these dialogs too. A project that overrides the mode never counts \u2014 an override is saved in .nodeterm/project.json and travels to everyone who clones the repo, so a repository you cloned must not be able to switch your confirmations off."
+            control={
+              <Switch
+                checked={waivers.bypassMode === true}
+                ariaLabel="Skip destructive canvas-control confirmations in Bypass permissions mode"
+                onChange={setBypassWaived}
+              />
+            }
+          />
+        </div>
       </SearchableRow>
       <SearchableRow {...ROWS.nodeIdentity}>
         <FieldRow

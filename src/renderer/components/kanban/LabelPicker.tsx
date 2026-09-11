@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { IconClose, IconMore } from '../icons'
 import type { KanbanLabelColor, ProjectKanban } from '@shared/types'
 import {
   autoLabelColor,
@@ -111,7 +112,7 @@ export function LabelPicker({
             <span key={l.id} className="kanban-label-chip" style={{ background: s.bg, color: s.fg }}>
               {l.name || 'Label'}
               <button className="kanban-label-chip__x" title="Remove" onClick={() => toggle(l.id)}>
-                ×
+                <IconClose />
               </button>
             </span>
           )
@@ -147,7 +148,7 @@ export function LabelPicker({
                 title="Edit label"
                 onClick={() => setEditing(l.id)}
               >
-                ⋯
+                <IconMore />
               </button>
             </div>
           )

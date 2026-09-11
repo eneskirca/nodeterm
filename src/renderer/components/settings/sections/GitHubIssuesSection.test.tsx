@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitHubAuthStatus, GitHubControlView } from '@shared/github-issues'
 import { useProjects } from '../../../state/projects'
+import { registerWorkspaceDirty } from '../../../state/workspaceDirty'
 import { SettingsSearchContext } from '../context'
 import { GitHubIssuesSection } from './GitHubIssuesSection'
 
@@ -44,6 +45,8 @@ describe('GitHubIssuesSection', () => {
   let host: HTMLElement
   let saveToken: ReturnType<typeof vi.fn>
   let status: ReturnType<typeof vi.fn>
+  let dirty: ReturnType<typeof vi.fn<() => void>>
+  let unregisterDirty: () => void
 
   const mount = async (query = ''): Promise<void> => {
     root = createRoot(host)
@@ -68,6 +71,8 @@ describe('GitHubIssuesSection', () => {
   beforeEach(async () => {
     host = document.createElement('div')
     document.body.appendChild(host)
+    dirty = vi.fn<() => void>()
+    unregisterDirty = registerWorkspaceDirty(dirty)
     saveToken = vi.fn(async () => viewWith({}))
     ;(window as unknown as { nodeTerminal: any }).nodeTerminal = {
       githubControl: {
@@ -109,6 +114,7 @@ describe('GitHubIssuesSection', () => {
   afterEach(() => {
     act(() => root.unmount())
     host.remove()
+    unregisterDirty()
   })
 
   it('clears the write-only token field after Save and never renders the stored token', async () => {
@@ -137,6 +143,46 @@ describe('GitHubIssuesSection', () => {
     expect(useProjects.getState().getProject('p1')?.kanban?.github?.columnMappings)
       .toContainEqual({ columnId: 'todo', label: 'workflow:ready' })
   })
+
+
+  // A board edit made here reaches `.nodeterm/project.json` only through the debounced save Canvas
+  // owns: the host reads the project from DISK (`workspaceStore.githubProject`), so an unsaved
+  // config makes `resolveProject` throw `invalid-configuration` and Approve fail.
+  it('persists a label edit through the workspace-dirty seam', async () => {
+    await mount()
+    const input = host.querySelector<HTMLInputElement>('#github-label-todo')!
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input, 'workflow:ready')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(dirty).toHaveBeenCalled()
+  })
+
+  it('persists enabling and disabling GitHub issues', async () => {
+    await mount()
+    const toggle = host.querySelector<HTMLElement>('[aria-label="Include GitHub issues"]')!
+    await act(async () => { toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(useProjects.getState().getProject('p1')?.kanban?.github).toBeUndefined()
+    expect(dirty).toHaveBeenCalled()
+  })
+
+
+
+  it('reports an Approve failure beside the Approve button, not three rows below it', async () => {
+    ;(window as unknown as { nodeTerminal: any }).nodeTerminal.githubControl.approve =
+      vi.fn(async () => { throw Object.assign(new Error('invalid-configuration'), { code: 'invalid-configuration' }) })
+    await mount()
+    const approve = [...host.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Approve this machine')!
+    await act(async () => { approve.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    const message = [...host.querySelectorAll('[role="status"]')]
+      .find((element) => element.textContent?.includes('have not finished saving'))!
+    expect(message).toBeDefined()
+    // Same container as the button: the user sees the answer where they clicked.
+    expect(message.closest('div')?.parentElement?.contains(approve)).toBe(true)
+  })
+
 
   it('moves the single token control into Advanced when the GitHub CLI signs the user in', async () => {
     stub(viewWith({ activeProvider: 'gh', ghAuthenticated: true, tokenPresent: false }, true))

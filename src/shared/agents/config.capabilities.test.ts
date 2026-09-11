@@ -43,7 +43,10 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     expect(canSwitchModel('claude')).toBe(true)
     expect(canSwitchModel('codex')).toBe(true)
     expect(canSwitchModel('copilot')).toBe(true)
-    for (const id of ['gemini', 'opencode', 'grok', 'custom:plain'] as const) {
+    // grok joined once its leaf existed: `-m/--model` in the launch grammar plus `grok models` for
+    // discovery. It is NOT in this list as an example of a non-capable agent any more.
+    expect(canSwitchModel('grok')).toBe(true)
+    for (const id of ['gemini', 'opencode', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
     }
   })
@@ -248,9 +251,23 @@ describe('grok capabilities', () => {
     expect(supportsSessionIdFlag('claude', false, true)).toBe(false)
   })
 
+  it('picks a model through the base-harness mapping, from grok\'s own catalogue', () => {
+    // The whole capability is the leaf: membership plus `grok models` for discovery and `--model`
+    // in the launch grammar. No frontend spells a grok model id, and none spells `grok` here either
+    // — `modelsForAgent` decides who is offered which catalogue.
+    expect(canSwitchModel('grok')).toBe(true)
+  })
+
+  it('shows one card per subagent INSTANCE, not one per type', () => {
+    // Keyed by `subagentId`, measured by running two `explore` children in parallel: same type,
+    // different ids. The premise this task started from — that grok only exposes a TYPE, so two
+    // children of one type would have to share an aggregated card — was wrong, and running the two
+    // is the only thing that could have told us.
+    expect(canSubagent('grok')).toBe(true)
+  })
+
   it('does not yet claim the capabilities whose per-agent leaf is unwritten', () => {
     expect(canBranch('grok')).toBe(false)
-    expect(canSubagent('grok')).toBe(false)
   })
 })
 

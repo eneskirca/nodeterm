@@ -245,6 +245,37 @@ export async function resolveTranscriptPath(
   return undefined
 }
 
+/**
+ * Does a transcript for this session id exist under the account's root — `present`, `absent`, or
+ * `unknown` because we could not look?
+ *
+ * `resolveTranscriptPath` above answers `undefined` for BOTH "there is no such transcript" and
+ * "the root could not be read", which is fine for every reader (they all fall back to a cwd scan
+ * or return nothing) and fatal for the one caller that acts on absence: cold restore drops a dead
+ * `--resume <id>` on `absent`, and a `$HOME` that is momentarily unreadable must never be allowed
+ * to look like a deleted conversation. So this is the resolver plus exactly one more question —
+ * NOT a second way of finding a transcript.
+ *
+ * Deliberately sessionId-ONLY: there is no cwd fallback here. `resolveTranscript`'s fallback
+ * answers with the newest transcript in a project directory, which is a different session's file
+ * and would report `present` for an id that is genuinely gone.
+ */
+export async function transcriptPresence(
+  sessionId: string,
+  accountId?: string
+): Promise<'present' | 'absent' | 'unknown'> {
+  if (!SESSION_ID_RE.test(sessionId)) return 'unknown'
+  if (await resolveTranscriptPath(sessionId, accountId)) return 'present'
+  // The miss is only meaningful if the root was readable. Probed with `readdir`, the same call
+  // the scan above makes — an `access` can succeed on a directory a `readdir` is refused.
+  try {
+    await fs.promises.readdir(transcriptRoot(accountId))
+  } catch {
+    return 'unknown'
+  }
+  return 'absent'
+}
+
 // Read only the last `cap` bytes of a file as UTF-8 (whole file if smaller). Drops the partial
 // leading line on a capped read. Cheaper than readCappedTail for tiny scans (session title).
 //

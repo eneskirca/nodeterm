@@ -110,6 +110,26 @@ export class RemoteHooks {
 
   constructor(private r: RemoteRunner) {}
 
+  /**
+   * Is THIS project's reverse hook tunnel still answering? (issue #735)
+   *
+   * The connect() reuse branch used to assume a master that answered `-O check` still carried its
+   * `-R` forward. It does not, and the mechanism is our own self-heal: `childArgs` uses
+   * `ControlMaster=auto` + `ControlPersist` precisely so that when a master dies the next child
+   * command rebuilds one on the same ControlPath. That rebuilt master answers `-O check` — but
+   * nothing ever handed it `ssh -O forward -R`, because `setup()` is the only caller of
+   * `hookForwardArgs` and it runs only on the "master just came up" branch.
+   *
+   * A missing spec answers FALSE: it means nothing of ours is bound for this project in this app
+   * run, which is a tunnel that cannot deliver, not an unknown. The caller repairs by re-running
+   * `setup()`, which is idempotent and re-verifies end-to-end.
+   */
+  async tunnelAlive(projectId: string, conn: SshConnection, controlPath: string, token: string): Promise<boolean> {
+    const spec = this.specs.get(projectId)
+    if (!spec || !token) return false
+    return this.verifyTunnel(conn, controlPath, spec.sock, token)
+  }
+
   async setup(
     projectId: string,
     conn: SshConnection,

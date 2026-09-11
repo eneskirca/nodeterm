@@ -10,7 +10,12 @@ import type {
 } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId } from '@shared/agents/config'
-import { agentConfig, capabilityAgentId, supportsSessionIdFlag } from '@shared/agents/config'
+import {
+  agentConfig,
+  capabilityAgentId,
+  FALLBACK_AGENT_COLOR,
+  supportsSessionIdFlag
+} from '@shared/agents/config'
 import { assembleLaunchCommand } from '@shared/agents/launch'
 import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
@@ -34,11 +39,11 @@ import { useSettings } from './settings'
 export { applyCanvasMutation } from '@shared/canvas-mutations'
 export { accountNodeColor, agentAccountColor } from '@shared/agents/account-color'
 import { sanitizeInboundNode } from '@shared/node-exec'
-import { NODE_COLORS } from '@shared/node-colors'
+import { SYSTEM_NODE_COLORS } from '@shared/node-colors'
 
 // Preserve the renderer's long-standing import surface; validation and the palette now live in
 // shared so Server Edition and canvas-control accept exactly what these pickers display.
-export { NODE_COLORS } from '@shared/node-colors'
+export { NODE_COLORS, SYSTEM_NODE_COLORS } from '@shared/node-colors'
 
 const TERMINAL_SIZE = { width: 640, height: 440 }
 const STICKY_SIZE = { width: 240, height: 200 }
@@ -310,7 +315,7 @@ export function createTerminalNode(
     ...placeNode('terminal', center, index, size.width, size.height),
     data: {
       title: `Terminal ${index + 1}`,
-      color: NODE_COLORS[index % NODE_COLORS.length],
+      color: SYSTEM_NODE_COLORS[index % SYSTEM_NODE_COLORS.length],
       group: null,
       tags: [],
       cwd: ssh ? ssh.remoteCwd : cwd,
@@ -336,7 +341,7 @@ export function createSshTerminalNode(
     ...placeNode('terminal', center, index, size.width, size.height),
     data: {
       title: server.label,
-      color: NODE_COLORS[index % NODE_COLORS.length],
+      color: SYSTEM_NODE_COLORS[index % SYSTEM_NODE_COLORS.length],
       group: null,
       tags: [],
       ssh: {
@@ -521,9 +526,6 @@ export function resolveNewNodeAgent(
 ): AgentId {
   return explicit ?? projectDefaultAgent(projectId, settings) ?? launchableDefaultAgent(settings)
 }
-
-/** Fallback color for custom / unknown agents that have no config-provided color. */
-const FALLBACK_AGENT_COLOR = '#888888'
 
 /**
  * Resolves an agent's label/color/launch command. Builtins come from the static config;
@@ -1147,7 +1149,7 @@ export function createGroupNode(
     style: { width: size.width, height: size.height },
     data: {
       title: `Group ${index + 1}`,
-      color: NODE_COLORS[index % NODE_COLORS.length],
+      color: SYSTEM_NODE_COLORS[index % SYSTEM_NODE_COLORS.length],
       group: null
     }
   }
@@ -1163,7 +1165,7 @@ export function createProject(
   return {
     id: nextId('project'),
     name: name ?? `Project ${index + 1}`,
-    color: NODE_COLORS[index % NODE_COLORS.length],
+    color: SYSTEM_NODE_COLORS[index % SYSTEM_NODE_COLORS.length],
     cwd,
     ...(ssh ? { ssh } : {}),
     viewport: { x: 0, y: 0, zoom: 1 },

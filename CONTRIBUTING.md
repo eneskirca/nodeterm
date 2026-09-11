@@ -97,6 +97,48 @@ lane unaffected.
   PR; copy that really is macOS-specific (the ptmx-limit banner, the notch step) is exempt by name
   with its reason. Comments are not scanned.
 
+- **The node colour palette is ONE list, and it is also the control boundary.**
+  `src/shared/node-colors.ts` is what every picker draws and what `nodeterm color --color C`
+  validates against — so a colour the UI offers and a colour the CLI accepts cannot drift apart.
+  Its agent section is DERIVED from `AGENT_CONFIG`, never re-typed: add a builtin agent and the
+  palette grows by itself. If you are adding a surface that lets someone choose a node colour,
+  render `<NodeColorSwatches>` rather than mapping the array yourself (a guard test fails on a
+  hand-rolled swatch row) — and if the value will be drawn as TEXT or as an opaque fill under
+  white, take `SYSTEM_NODE_COLOR_SWATCHES` instead, with the contrast reason in a comment. Deep
+  version, including the measured numbers: CLAUDE.md § Node colors.
+
+- **Every loosening of a security gate must be a SETTING the user can see and revoke.** A "don't
+  ask again" that lives only in a dialog is a permission granted once and never findable again. The
+  canvas-control destructive confirm is the pattern to copy (`@shared/control-confirm`): the dialog
+  can grant only an APP-RUN waiver (in-memory — not `settings.json`, not `localStorage`, so
+  quitting restores the gate), the permanent one exists only in Settings where the option says
+  "permanently", a CANCEL never grants anything, and a waived action still announces itself on
+  screen. Which gates may be waived at all is a TABLE, not an `if` at each call site — so "this one
+  can never be waived" is a tested fact rather than a line somebody forgot to write.
+
+- **A permission mode (or anything else) that rides `project.json` is GIT-SHARED — never key a
+  local gate on it alone.** `project.defaultPermissionMode` travels to everyone who clones the
+  repo, so binding a confirmation-skip to "the mode is bypassPermissions" would let a cloned
+  repository silently switch off a user's destructive-action gate. The rule that came out of it:
+  ask `resolvePermissionModeWithSource` WHO chose the value (`project` / `global` / `default`) and
+  act only on the user's own machine-local choice — and keep `default` distinct from `global`,
+  because reading an unset setting as a deliberate choice is reading consent into silence. Anything
+  machine-local goes in `settings.json`; nothing that grants a capability goes in `project.json`.
+
+- **A dialog raised on someone else's behalf must know that request's lifetime.** Main abandons a
+  canvas-control request after 120 s and tells the renderer nothing, so an unanswered dialog sat
+  there forever AND held the one-confirm-at-a-time guard, which refused every later destructive
+  verb with "a confirmation is already pending" for the rest of the app run — the agent, told the
+  refusal was retryable, retried into it in a loop. If you raise a dialog for a bounded request,
+  give it the deadline (`ConfirmState.expiresAt`), import the bound rather than re-typing it, have
+  it expire slightly AFTER the requester gives up, and answer with "expired" — never "denied by
+  user", which claims a decision the human never made. Reach for the existing
+  `useExpiringDialog` hook rather than a second effect: the worktree-removal dialog needed the
+  identical rule a day later, and two copies is how one of them quietly misses the next fix. Give
+  the deadline only to a dialog an AGENT raised — one the user opened themselves must never vanish
+  under them — and remember that clearing a dialog is not always just nulling its state (that one
+  also has to release the ref its own busy-guard reads).
+
 - **Anything path-shaped: Windows is a delivery target.** Most of this was written on
   macOS/Linux, so the recurring defect is code that is genuinely correct on POSIX —
   `split('/')`, `startsWith('/')` as an is-absolute test, a bare `fs.rename`. Use
@@ -125,6 +167,18 @@ lane unaffected.
   see. Keep a remote temp's own leaf bounded: extending an already-valid maximum-length target leaf
   with a UUID suffix turns an atomic write into a guaranteed `ENAMETOOLONG` failure.
 
+- **A write ack is a claim about a WRITE, never about what the remote now holds.** Do not retire
+  state that records "the server still needs to be told X" just because the write returned true.
+  The SSH mirror's writer acks the 5 s throttle's trailing write **optimistically** — it returns
+  true and schedules the run — so a connection that dies inside that window leaves an ack behind
+  with nothing on the wire. Deleting the deletion tombstones on that ack is how 16 terminals
+  deleted on a slow link came back, announced as sessions from a phone the reporter does not own
+  (`clearedNodes` / `confirmClearedDeletions`, `src/core/workspace-store.ts`). Retire such state on
+  a READ that shows the remote no longer has it — which is the same rule this codebase already
+  applies in the other direction, "a failed read is never evidence of absence". And when you cannot
+  observe where incoming data came from, **do not name a source in the UI copy**: a wrong
+  attribution sends the reader hunting for a device instead of at the file.
+
 - **Never write to a child's stdin without an `'error'` listener on that stream.** A pipe write's
   failure is not a throw at the call site: when the child exits before draining stdin (a CLI handed
   a flag it doesn't know, an unreachable ssh host), Node re-emits the EPIPE as an async `'error'`
@@ -150,11 +204,32 @@ bug.
 
 **A failed read is never evidence of absence.** "Could not measure" and "there is nothing" are
 different facts and must stay distinguishable at every layer. Collapsing them is how a panel ends up
-reporting "no sessions" on a host running thirty.
+reporting "no sessions" on a host running thirty. When something ACTS on the negative, give it three
+answers rather than two — `present | absent | unknown` (`TranscriptPresence` is the shape) — and let
+only the positive finding trigger the action. Ask which of the two mistakes is recoverable: cold
+restore wrongly resuming a dead session id costs an error line, while wrongly dropping a live one
+opens a blank conversation over work the user believed was continuing.
 
 **Degrade to nothing, never to something wrong.** A probe that fails means the bare, safe command —
 never a substituted nearest match. A hand-editable value that is unrecognised must yield the safe
 default, never something more destructive than the default.
+
+**A node's OWNERSHIP is persisted state, never a live object.** "Is this node remote / whose host is
+it on?" must be answerable with nothing attached, because the questions that ask it — a delete, a
+kill, a cleanup — arrive precisely when nothing is: after an app restart, after the offscreen
+release, after the park timer, for a project that is not open. `PtyManager.runEndSession` read it
+off the dying in-memory `Session` instead, so an SSH node deleted with no live client had its remote
+`kill-session` skipped **in silence** and its one kill sent to the LOCAL tmux socket, where a
+`requireRemote` node has nothing; the node left the canvas looking deleted and its `nt-<id>` kept
+running on the host. Ask the machine-local index (`workspaceStore.sshProjectIdForNode`), and treat a
+live handle as the *complement* of that answer, not its source.
+
+**A side effect you could not deliver is not a side effect you performed.** The `ok:false` rule is
+not only for reads. `catch {}` around a remote kill folded "tmux says there is no such session" (an
+ANSWER) into "the ControlMaster is down" (a NON-answer, session still running). Classify the failure
+— and when the work genuinely cannot be done now, either refuse the action with a reason or write
+the debt down and settle it later (`core/pending-remote-kills.ts`). Silently dropping it is the one
+option that is never available.
 
 **A Server Edition agent owns only nodes it freshly opened in this server run.** The
 creator ledger is process-local and must never be rebuilt from `.nodeterm/project.json`, titles,
@@ -176,6 +251,14 @@ come from git-shared JSON and can end up interpolated into a shell command line.
 `/bin/sh` against a fixture tree. A composed fixture will not tell you that `echo ##MEM` prints an
 empty line because `#` starts a comment.
 
+**A shared agent daemon is live-session infrastructure.** Codex's app-server control socket is
+shared by every `--remote` TUI in an account scope, so stopping or replacing one daemon disconnects
+every attached canvas node. A managed launcher must keep the already-bound thread under a bounded
+supervisor: resume only when protocol health failed or the known socket generation changed, never
+loop an unrelated client error, and never replay the original prompt after reconnect. Probe a
+responsive daemon before invoking lifecycle repair; stale PID bookkeeping is not permission to kill
+working sessions. See `docs/shared-codex-node-identity.md`.
+
 **Credentials never ride argv — local or SSH.** Not a tmux `-e` pair, not `curl -H`, not a remote
 command string. `/proc/<pid>/cmdline` is mode 444 on a stock Linux, and a remote command line is argv
 on the host too: we shipped the hook bearer that way and any other account on the machine could read
@@ -196,6 +279,20 @@ wire sent.
 Put the rule in one predicate under `src/shared` and have every mint site ask it, and derive the
 things that follow from it (a node's color, say) from that same call rather than re-deriving the
 condition per caller.
+
+**A feature that creates links owes an ownership rule, and it must be a property of the plan.**
+"Share `~/.claude/skills` with this account" (issue #643) links each system skill into a managed
+account's own `skills/` and removes those links again when switched off — one wrong removal deletes
+somebody's real skills folder. Three habits made it safe and they generalize: link the LEAVES, not
+the containing directory (nodeterm writes its own canvas skill into `<configDir>/skills/`, so a
+directory-level link would have written it into the user's system folder); decide ownership by an
+anchored SHAPE (a symlink at `<name>` pointing at `<system>/<name>`) so what the on-switch creates
+is exactly what the off-switch removes, and a real directory can never qualify; and compare
+REALPATHS before acting, because the hand-made version of the same feature makes the two directories
+one and linking into it would plant links in the folder you are about to clean up. Verify the
+removal against a real filesystem with real symlinks and real content — a mocked `fs` agrees with
+whatever the code believed. And a launch-time sweep may re-create, never delete: ownership inferred
+from shape cannot tell your link from an identical one the user made by hand.
 
 **Do not take scrolling away from tmux.** It owns the mouse, the scrollback and the alternate
 screen. A previous design moved that into the emulator and failed structurally; `CLAUDE.md` explains
@@ -289,15 +386,27 @@ retry anywhere, ask what the clock actually starts on and where its exhaustion b
 SOURCE, and React Flow holds only the ACTIVE project's nodes — so the dispatch used to travel to the
 caller's project before answering. For an OPEN that was a screen hijack: the user is looking at
 project B, an agent in project A runs `open-claude`, the tab switches and A's saved viewport is
-applied, so the camera appears to jump and zoom. The rule now has two tiers, both membership lists in
-`renderer/lib/controlRouting.ts`: `STORE_ANSWERED_VERBS` ("no canvas is needed at either end" —
-`list`, `send`, `reply`, `sticky`, `open-project`) and `canColdOpen` ("a canvas IS needed, but the
+applied, so the camera appears to jump and zoom. The rule now has three tiers, all membership lists
+in `renderer/lib/controlRouting.ts`: `STORE_ANSWERED_VERBS` ("no canvas is needed at either end" —
+`list`, `send`, `reply`, `sticky`, `open-project`), `canColdOpen` ("a canvas IS needed, but the
 serialized one will do" — `open-terminal`, `open-claude`, `open-agent`, which write into the owning
-project's stored nodes with their launch armed and report `queued: true`). Everything that acts on
-nodes which already exist still travels, because it reads live state the serialized copy does not
-carry. When you add a verb, decide which tier it is in — and if you change what a verb DOES, update
-`buildCanvasSkillBody` / `buildCanvasControlInstructions` in the same PR, with a test that goes red
-on the stale claim (`src/main/canvas-control-core.test.ts`).
+project's stored nodes with their launch armed and report `queued: true`) and `answersOffCanvas`
+("…and there is nothing to defer" — `show-image`, `show-video`, `show-web`, `open-browser`, whose
+node has no session behind it and is finished the moment it is written, so it reports `offCanvas:
+true` and never `queued`). Everything that acts on nodes which already exist still travels, because
+it reads live state the serialized copy does not carry — `browser` included, which navigates a
+mounted `<webview>` guest, unlike `open-browser`, which only places the node.
+
+Three things to carry over when you put a verb in one of the two off-screen tiers. **The acting
+project is the SOURCE's**: `ctlProject` decides the ssh flag, the browser session key and the media
+allowlist route, and reading `activeProjectId` there answers a background agent with whatever the
+human is looking at. **Nothing may reach the live canvas**: `setNodes` / `setControlEdges` /
+`markDirty` address the ACTIVE project, so the write goes through `applyNodeMutation` +
+`appendCanvasLinks` + `writeDisk`. And **tell the human** — the reply goes to the agent, so without
+a strip nothing anywhere reports that a node landed in another project; it is sticky, because it
+describes work the user was not watching. When you add a verb, decide which tier it is in — and if
+you change what a verb DOES, update `buildCanvasSkillBody` / `buildCanvasControlInstructions` in the
+same PR, with a test that goes red on the stale claim (`src/main/canvas-control-core.test.ts`).
 
 **Pointing a project at a folder is a WRITE — probe before you bind.** A project's canvas is
 written to `<cwd>/.nodeterm/project.json`, so the moment a project gains a `cwd` the next autosave
@@ -425,6 +534,10 @@ production socket on purpose; adding a third is a review conversation, not a che
 - Explain **why**, not just what. If a decision has a trade-off, name it and say what you rejected.
 - If you measured something, put the numbers in — they save the next person the same afternoon.
 - Say what you did **not** verify. That is more useful than a confident summary.
+- **Lead with what changed and why it matters.** A reviewer who reads only your first two
+  sentences should be able to decide whether to keep reading; implementation detail comes after.
+- **Match the length to the change.** A one line fix gets a paragraph, a change that moves a
+  boundary gets as much room as it needs, and neither is improved by headings it does not need.
 
 ## Documentation
 

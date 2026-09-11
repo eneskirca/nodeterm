@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { IconClose } from '../icons'
 import type { BoardLogAuthor, KanbanPriority, ProjectKanban } from '@shared/types'
 import { cardMeta, labelsForCard, setCardDue, setCardPriority, toggleAssignee } from '../../lib/kanban'
 import { LabelChips } from './LabelChips'
@@ -143,7 +144,7 @@ export function CardMetaBar({ nodeId, board, onChange }: CardMetaBarProps) {
               title="Clear due date"
               onClick={() => onChange(setCardDue(board, nodeId, null))}
             >
-              ✕
+              <IconClose />
             </button>
           )}
         </div>

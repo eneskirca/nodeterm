@@ -3,6 +3,7 @@ import {
   routeControlSource,
   needsLiveCanvas,
   canColdOpen,
+  answersOffCanvas,
   controlVerbSetsForTests,
   sourceIsControlCapable,
   storedNodeListing,
@@ -141,6 +142,58 @@ describe('canColdOpen — an OPEN is answered out of the store, not by moving th
     }
   })
 
+  it('answers the four DISPLAY verbs off canvas, and nothing else', () => {
+    for (const verb of ['show-image', 'show-video', 'show-web', 'open-browser']) {
+      expect(answersOffCanvas(verb), verb).toBe(true)
+    }
+    for (const verb of [
+      'open-terminal',
+      'open-claude',
+      'open-agent',
+      'list',
+      'send',
+      'reply',
+      'sticky',
+      'open-project',
+      'write',
+      'close',
+      'group',
+      'ungroup',
+      'move',
+      'arrange',
+      'align',
+      'link',
+      'rename',
+      'color',
+      'verify',
+      'spawn-team',
+      'open-worktree',
+      'board',
+      'assign'
+    ]) {
+      expect(answersOffCanvas(verb), verb).toBe(false)
+    }
+  })
+
+  it('keeps `browser` on the travelling path — it NAVIGATES a mounted guest', () => {
+    // The one pair worth stating side by side. `open-browser` places a node, which a serialized
+    // canvas can hold; `browser` drives an Electron <webview> guest that exists only while its
+    // project is on screen. Adding it here would answer "navigated" about a guest that is not
+    // there.
+    expect(answersOffCanvas('open-browser')).toBe(true)
+    expect(answersOffCanvas('browser')).toBe(false)
+    expect(needsLiveCanvas('browser')).toBe(true)
+  })
+
+  it('the display verbs still NEED a canvas — off-canvas is the narrower claim again', () => {
+    // Same relationship the cold-open set has to store-answered: these do need somewhere to put a
+    // node, they just do not need the LIVE one. Collapsing them into STORE_ANSWERED_VERBS would
+    // send `show-web` down the `list` branch and answer it with a node listing.
+    for (const verb of ['show-image', 'show-video', 'show-web', 'open-browser']) {
+      expect(needsLiveCanvas(verb), verb).toBe(true)
+    }
+  })
+
   it('still NEEDS a canvas — cold-openable is a narrower claim than store-answered', () => {
     // The whole reason this is a second set: `needsLiveCanvas` stays TRUE for an open (it does
     // need somewhere to put the node), it just does not need the LIVE one. Collapsing the two
@@ -151,12 +204,15 @@ describe('canColdOpen — an OPEN is answered out of the store, not by moving th
     }
   })
 
-  it('the two sets are DISJOINT', () => {
-    const { storeAnswered, coldOpenable } = controlVerbSetsForTests()
+  it('the three sets are DISJOINT', () => {
+    const { storeAnswered, coldOpenable, offCanvas } = controlVerbSetsForTests()
     expect(storeAnswered.filter((v) => coldOpenable.includes(v))).toEqual([])
-    // …and neither is empty, so the assertion above cannot pass vacuously.
+    expect(storeAnswered.filter((v) => offCanvas.includes(v))).toEqual([])
+    expect(coldOpenable.filter((v) => offCanvas.includes(v))).toEqual([])
+    // …and none is empty, so the assertions above cannot pass vacuously.
     expect(storeAnswered.length).toBeGreaterThan(0)
     expect(coldOpenable.length).toBeGreaterThan(0)
+    expect(offCanvas.length).toBeGreaterThan(0)
   })
 
   it('does NOT change which project answers — routing is still by source (cecb4dfe stands)', () => {

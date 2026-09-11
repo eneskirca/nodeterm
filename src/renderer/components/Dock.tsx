@@ -10,6 +10,7 @@ import { useProjects } from '../state/projects'
 import { accountsForProject, sshAccountsHint } from '../state/workspace'
 import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
 import { ZOOM_PRESETS, activeZoomPreset } from '../lib/zoomPresets'
+import { Tooltip } from './Tooltip'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
 
@@ -309,54 +310,62 @@ export function Dock({
           </div>
         )}
 
-        <button
-          className={`dock-btn dock-add${menuOpen ? ' active' : ''}`}
-          title="Add node"
-          onClick={() => {
-            setZoomMenuOpen(false)
-            setMenuOpen((v) => !v)
-          }}
-        >
-          <PlusIcon />
-        </button>
+        <Tooltip label="Add node" placement="top">
+          <button
+            className={`dock-btn dock-add${menuOpen ? ' active' : ''}`}
+            aria-label="Add node"
+            onClick={() => {
+              setZoomMenuOpen(false)
+              setMenuOpen((v) => !v)
+            }}
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
 
         <span className="dock-sep" />
 
-        <button className="dock-btn" title={commandTooltip('Undo', 'canvas.undo')} disabled={!canUndo} onClick={onUndo}>
-          <UndoIcon />
-        </button>
-        <button className="dock-btn" title={commandTooltip('Redo', 'canvas.redo')} disabled={!canRedo} onClick={onRedo}>
-          <RedoIcon />
-        </button>
-        <button
-          className="dock-btn"
-          title={commandTooltip('Go back', 'canvas.goBack')}
-          disabled={!canGoBack}
-          onClick={onGoBack}
-        >
-          <ArrowLeftIcon />
-        </button>
-        <button
-          className="dock-btn"
-          title={commandTooltip('Go forward', 'canvas.goForward')}
-          disabled={!canGoForward}
-          onClick={onGoForward}
-        >
-          <ArrowRightIcon />
-        </button>
+        <Tooltip label={commandTooltip('Undo', 'canvas.undo')} placement="top">
+          <button className="dock-btn" aria-label="Undo" disabled={!canUndo} onClick={onUndo}>
+            <UndoIcon />
+          </button>
+        </Tooltip>
+        <Tooltip label={commandTooltip('Redo', 'canvas.redo')} placement="top">
+          <button className="dock-btn" aria-label="Redo" disabled={!canRedo} onClick={onRedo}>
+            <RedoIcon />
+          </button>
+        </Tooltip>
+        <Tooltip label={commandTooltip('Go back', 'canvas.goBack')} placement="top">
+          <button className="dock-btn" aria-label="Go back" disabled={!canGoBack} onClick={onGoBack}>
+            <ArrowLeftIcon />
+          </button>
+        </Tooltip>
+        <Tooltip label={commandTooltip('Go forward', 'canvas.goForward')} placement="top">
+          <button
+            className="dock-btn"
+            aria-label="Go forward"
+            disabled={!canGoForward}
+            onClick={onGoForward}
+          >
+            <ArrowRightIcon />
+          </button>
+        </Tooltip>
 
         <span className="dock-sep" />
 
-        <button className="dock-btn" title="Save" onClick={onSave}>
-          <SaveIcon />
-          <span className={`dock-dirty${dirty ? ' dirty' : ''}`} />
-        </button>
-        <button className="dock-btn" title="Fit view" onClick={onFitView}>
-          <FrameIcon />
-        </button>
-        <button
-          className={`dock-btn${dictateActive ? ' active' : ''}`}
-          title={
+        <Tooltip label={dirty ? 'Save (unsaved changes)' : 'Save'} placement="top">
+          <button className="dock-btn" aria-label="Save" onClick={onSave}>
+            <SaveIcon />
+            <span className={`dock-dirty${dirty ? ' dirty' : ''}`} />
+          </button>
+        </Tooltip>
+        <Tooltip label="Fit view" placement="top">
+          <button className="dock-btn" aria-label="Fit view" onClick={onFitView}>
+            <FrameIcon />
+          </button>
+        </Tooltip>
+        <Tooltip
+          label={
             dictationOff
               ? 'Dictation off — choose a model in Settings → Speech'
               : // The user unbound the shortcut: the mic button still dictates, so the tooltip
@@ -367,16 +376,24 @@ export function Dock({
                   ? `Dictate (hold ${formatShortcut(dictationShortcut, isMac)})`
                   : `Dictate (${formatShortcut(dictationShortcut, isMac)})`
           }
-          onClick={onDictate}
+          placement="top"
         >
-          <MicIcon />
-        </button>
+          <button
+            className={`dock-btn${dictateActive ? ' active' : ''}`}
+            aria-label="Dictate"
+            onClick={onDictate}
+          >
+            <MicIcon />
+          </button>
+        </Tooltip>
 
         <span className="dock-sep" />
 
-        <button className="dock-btn dock-zoom-btn" title="Zoom out" onClick={onZoomOut}>
-          <MinusIcon />
-        </button>
+        <Tooltip label="Zoom out" placement="top">
+          <button className="dock-btn" aria-label="Zoom out" onClick={onZoomOut}>
+            <MinusIcon />
+          </button>
+        </Tooltip>
         <div className="dock-zoom-wrap">
           {zoomMenuOpen && (
             <div className="dock-menu dock-zoom-menu">
@@ -399,22 +416,26 @@ export function Dock({
               </button>
             </div>
           )}
-          <button
-            className={`dock-zoom${zoomMenuOpen ? ' active' : ''}`}
-            title="Zoom presets"
-            aria-haspopup="menu"
-            aria-expanded={zoomMenuOpen}
-            onClick={() => {
-              setMenuOpen(false)
-              setZoomMenuOpen((v) => !v)
-            }}
-          >
-            {zoomPct}%
-          </button>
+          <Tooltip label="Zoom presets" placement="top">
+            <button
+              className={`dock-zoom${zoomMenuOpen ? ' active' : ''}`}
+              aria-label="Zoom presets"
+              aria-haspopup="menu"
+              aria-expanded={zoomMenuOpen}
+              onClick={() => {
+                setMenuOpen(false)
+                setZoomMenuOpen((v) => !v)
+              }}
+            >
+              {zoomPct}%
+            </button>
+          </Tooltip>
         </div>
-        <button className="dock-btn dock-zoom-btn" title="Zoom in" onClick={onZoomIn}>
-          <PlusSmallIcon />
-        </button>
+        <Tooltip label="Zoom in" placement="top">
+          <button className="dock-btn" aria-label="Zoom in" onClick={onZoomIn}>
+            <PlusSmallIcon />
+          </button>
+        </Tooltip>
       </div>
     </>
   )
@@ -433,14 +454,14 @@ function PlusIcon() {
 function UndoIcon() {
   return (
     <svg {...S}>
-      <path d="M9 7L4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2" />
+      <path d="M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H10" />
     </svg>
   )
 }
 function RedoIcon() {
   return (
     <svg {...S}>
-      <path d="M15 7l5 5-5 5M20 12H9a5 5 0 0 0 0 10h2" />
+      <path d="M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H14" />
     </svg>
   )
 }
@@ -460,7 +481,7 @@ function ArrowRightIcon() {
 }
 function PlusSmallIcon() {
   return (
-    <svg {...S} width={15} height={15}>
+    <svg {...S}>
       <path d="M12 5v14M5 12h14" />
     </svg>
   )
@@ -474,7 +495,7 @@ function CheckIcon() {
 }
 function MinusIcon() {
   return (
-    <svg {...S} width={15} height={15}>
+    <svg {...S}>
       <path d="M5 12h14" />
     </svg>
   )
