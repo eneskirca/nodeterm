@@ -273,6 +273,7 @@ export async function performResumePhase(d: {
   command?: string
   /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
   deliveryTimeoutMs?: number
+  killLine?: string
   /**
    * Handed `deliverCommand`'s cancel the moment a delivery starts — and only then. The delivery
    * outlives this promise (it runs on its own echo-verify timers), so its lifetime belongs to
@@ -319,7 +320,12 @@ export async function performResumePhase(d: {
       // Two statements on purpose: `d.onDelivery?.(deliverCommand(…))` short-circuits the ARGUMENT
       // too when no callback was passed — nothing would be delivered and this promise would never
       // settle.
-      const cancelDelivery = deliverCommand(d.io, cmd, settle)
+      const cancelDelivery = deliverCommand(
+        d.io,
+        cmd,
+        settle,
+        d.killLine !== undefined ? { killLine: d.killLine } : undefined
+      )
       started = true
       d.onDelivery?.(cancelDelivery)
     } catch (e) {
@@ -360,6 +366,7 @@ export async function performRestartResume(d: {
   pollMs?: number
   /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
   deliveryTimeoutMs?: number
+  killLine?: string
   /** Handed `deliverCommand`'s cancel as the delivery starts; see `performResumePhase`. */
   onDelivery?: (cancel: () => void) => void
   /**
@@ -388,6 +395,7 @@ export async function performRestartResume(d: {
     io: d.io,
     command: d.command,
     deliveryTimeoutMs: d.deliveryTimeoutMs,
+    killLine: d.killLine,
     onDelivery: d.onDelivery,
     isLive: d.isLive
   })

@@ -18,9 +18,13 @@ import { fitsLaunchLine } from '@shared/canonical-line'
 
 export const VERIFY_TIMEOUT_MS = 2000
 export const DELIVERY_ATTEMPTS = 3
-/** Ctrl-U — clear the pending input line before a rewrite. Exported because the in-place restart
- *  choreography clears the line the same way before typing its exit command (agent-restart.ts). */
 export const KILL_LINE = '\x15'
+/** Escape — clear the pending input line in Windows shells (PowerShell, cmd.exe). */
+export const WINDOWS_KILL_LINE = '\x1b'
+
+export interface DeliverCommandOptions {
+  killLine?: string
+}
 
 // CSI (\x1b[...X), OSC (\x1b]...BEL|ST) and single-char ESC sequences.
 // eslint-disable-next-line no-control-regex
@@ -94,8 +98,10 @@ export interface DeliveryIo {
 export function deliverCommand(
   io: DeliveryIo,
   cmd: string,
-  onSettled?: (outcome: DeliveryOutcome) => void
+  onSettled?: (outcome: DeliveryOutcome) => void,
+  options?: DeliverCommandOptions
 ): () => void {
+  const killLine = options?.killLine ?? KILL_LINE
   let done = false
   let attempt = 0
   let echoed = ''
@@ -156,14 +162,14 @@ export function deliverCommand(
         // tail while the pane was in canonical mode, so Enter would submit a command we KNOW is
         // cut in half. Kill the pending line and report instead. See @shared/canonical-line.
         if (!fitsLaunchLine(cmd)) {
-          write(KILL_LINE)
+          write(killLine)
           finish('line-too-long')
           return
         }
         submit() // fail-open: unverified submit beats a never-launched agent
         return
       }
-      if (!write(KILL_LINE)) return // transport gone — the delivery is over, not stuck
+      if (!write(killLine)) return // transport gone — the delivery is over, not stuck
       tryOnce()
     }, VERIFY_TIMEOUT_MS)
     write(cmd, attempt === 1)

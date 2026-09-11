@@ -28,7 +28,7 @@ class FakePty {
   write(data: string): void {
     this.writes.push(data)
     this.onWrite?.(data)
-    if (this.echoWrites && data !== '\r' && data !== '\x15') this.emitData(data)
+    if (this.echoWrites && data !== '\r' && data !== '\x15' && data !== '\x1b') this.emitData(data)
   }
 
   emitData(data: string): void {

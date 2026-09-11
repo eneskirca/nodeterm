@@ -683,6 +683,29 @@ describe('performResumePhase', () => {
     expect(written.join('')).toContain('claude --resume sid-1 --permission-mode plan')
   })
 
+  it('forwards custom killLine to deliverCommand on verification retry', async () => {
+    const written: string[] = []
+    const io = {
+      write(d: string) {
+        written.push(d)
+      },
+      onData() {
+        return () => {}
+      }
+    }
+    const p = performResumePhase({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      killLine: '\x1b'
+    })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(written).toContain('\x1b')
+    expect(written).not.toContain('\x15')
+    await vi.advanceTimersByTimeAsync(10000)
+    await p
+  })
+
   it('keeps the bare command as the gate even when the caller overrides it', async () => {
     const { written, io } = fakeIo()
     expect(
