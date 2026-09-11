@@ -77,6 +77,28 @@ describe('ModelGatewaySection credential modes', () => {
     expect(useSettings.getState().settings.modelGateway.apiKey).toBe('${env:GATEWAY_KEY}')
   })
 
+  it('persists the selected discovery path and previews its resolved endpoint', async () => {
+    await mount()
+    expect(host.textContent).toContain(
+      'Discovery: https://gateway.example.test/v1/models'
+    )
+
+    const openAiPath = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
+      (input) => input.parentElement?.textContent?.includes('/openai/v1/models')
+    )!
+    await act(async () => {
+      openAiPath.click()
+    })
+
+    expect(useSettings.getState().settings.modelGateway.discoveryPath).toBe(
+      '/openai/v1/models'
+    )
+    expect(openAiPath.checked).toBe(true)
+    expect(host.textContent).toContain(
+      'Discovery: https://gateway.example.test/openai/v1/models'
+    )
+  })
+
   it('keeps a literal key write-only and stores only the secret sentinel in settings', async () => {
     await mount()
     const source = host.querySelector<HTMLSelectElement>('#model-gateway-credential-source')!

@@ -28,7 +28,7 @@ async function discoverModels(
   saved: ModelGatewaySettings | undefined,
   storedSecret: string | null
 ): Promise<ModelDiscoveryResult> {
-  const routes = modelGatewayRoutes(settings?.baseUrl ?? '')
+  const routes = modelGatewayRoutes(settings?.baseUrl ?? '', settings?.discoveryPath)
   const apiKeyField = settings?.apiKey ?? ''
   // SECURITY GATE — this handler is reachable by relay peers and Server Edition WS clients, and
   // `settings` (URL included) is caller-supplied. `${secret:…}` / `${env:…}` references resolve
@@ -37,6 +37,11 @@ async function discoverModels(
   // your own host. References therefore resolve ONLY when the requested baseUrl is byte-identical
   // to the persisted gateway URL; a literal key pasted into the form is the caller's own and may
   // be tested against any URL (the pre-save "does this key work?" flow in Settings).
+  //
+  // The discovery PATH needs no such byte-identity gate: `modelGatewayRoutes` reduces it to a
+  // validated path SUFFIX on the same baseUrl, so a forged one cannot aim the request — or the
+  // resolved key — at a different host; worst case is a 404 on the saved gateway, surfaced as an
+  // ordinary discovery error.
   const isReference = apiKeyField.includes('${')
   const trusted = !!settings?.baseUrl && settings.baseUrl === saved?.baseUrl
   if (isReference && !trusted) {

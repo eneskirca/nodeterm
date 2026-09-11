@@ -21,6 +21,11 @@ const ROWS = {
     description: 'One gateway root URL for OpenAI-compatible discovery and agent routes.',
     keywords: ['openai compatible', 'bifrost', 'litellm', 'model', 'provider', 'base url', 'endpoint']
   },
+  discoveryPath: {
+    title: 'Discovery path',
+    description: 'Path the model catalogue is read from, appended to the gateway root.',
+    keywords: ['discover', 'models route', 'v1/models', 'openai/v1/models', 'catalogue path']
+  },
   key: {
     title: 'API key',
     description: 'A gateway bearer key from protected storage or an environment variable.',
@@ -67,7 +72,13 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
     useState<ModelGatewayCredentialStatus | null>(null)
   const [credentialBusy, setCredentialBusy] = useState(false)
   const [credentialNotice, setCredentialNotice] = useState('')
-  const routes = modelGatewayRoutes(gateway.baseUrl)
+
+  // The "Model discovery endpoint" picker's transient editing state. The CURRENT selection is
+  // derived from `gateway.discoveryPath` every render (the source of truth); these locals only
+  // hold whether the custom text input is open and what the user is mid-typing into it.
+  const [customMode, setCustomMode] = useState(false)
+  const [customPath, setCustomPath] = useState('')
+  const routes = modelGatewayRoutes(gateway.baseUrl, gateway.discoveryPath)
 
   const patchGateway = (patch: Partial<typeof gateway>): void => {
     const current = useSettings.getState().settings.modelGateway
@@ -132,7 +143,10 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
       const current = useSettings.getState().settings.modelGateway
       // Replacing a key leaves the settings sentinel unchanged, so Canvas's value-based effect has
       // no dependency change to observe. A first save does change it and gets the normal debounce.
-      if (replacingStoredKey && modelGatewayRoutes(current.baseUrl)) {
+      if (
+        replacingStoredKey &&
+        modelGatewayRoutes(current.baseUrl, current.discoveryPath)
+      ) {
         void discover({ ...current, apiKey: MODEL_GATEWAY_SECRET_REF })
       }
       setCredentialNotice('API key saved securely.')
@@ -201,6 +215,137 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
             <div>Anthropic: {routes.anthropic}</div>
           </div>
         ) : null}
+      </SearchableRow>
+
+      <SearchableRow {...ROWS.discoveryPath}>
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-6">
+            <div>
+              <div className="text-sm font-medium text-text">Model discovery endpoint</div>
+              <p className="mt-1 max-w-xl text-[13px] text-muted">
+                Which gateway endpoint the model catalogue is read from. Only the discovery request
+                changes — agent launches keep using the OpenAI and Anthropic routes shown under the
+                Gateway URL.
+              </p>
+            </div>
+            {routes ? (
+              <div className="shrink-0 font-mono text-[11px] text-muted">
+                Discovery: {routes.discovery}
+              </div>
+            ) : null}
+          </div>
+          {/* Vertical radio group (the Speech-section pattern): one bordered row per endpoint.
+              `discoveryPath` absent = the conventional /v1/models row. Custom reveals a free-text
+              path so a layout this picker doesn't know is still expressible; the undefined spelling
+              means "use the conventional suffix" on ModelGatewaySettings. */}
+          {(() => {
+            const isCustomValue =
+              !!gateway.discoveryPath &&
+              gateway.discoveryPath !== '/v1/models' &&
+              gateway.discoveryPath !== '/openai/v1/models' &&
+              gateway.discoveryPath !== '/anthropic/v1/models'
+            return (
+              <div role="radiogroup" aria-label="Model discovery endpoint" className="space-y-2">
+                {(
+                  [
+                    {
+                      option: '/v1/models',
+                      label: '/v1/models',
+                      hint: 'OpenAI convention — the default.'
+                    },
+                    {
+                      option: '/openai/v1/models',
+                      label: '/openai/v1/models',
+                      hint: 'Same catalogue under the OpenAI launch-route prefix.'
+                    },
+                    {
+                      option: '/anthropic/v1/models',
+                      label: '/anthropic/v1/models',
+                      hint: 'Same catalogue under the Anthropic launch-route prefix.'
+                    },
+                    { option: 'custom', label: 'Custom path…', hint: 'Enter an exact path below.' }
+                  ] as const
+                ).map((opt) => {
+                  // Custom is a MODE, not a stored alias value: `customMode` (this render
+                  // session's Custom selection) OR a persisted non-canonical path claims the
+                  // custom row. A custom seed of '/v1/models' before typing must NOT light the
+                  // first row — checked is single-owner: while customMode, the canonical rows
+                  // never light, whatever the field currently contains.
+                  const checked =
+                    opt.option === 'custom'
+                      ? customMode || isCustomValue
+                      : !customMode && !isCustomValue && (gateway.discoveryPath ?? '/v1/models') === opt.option
+                  return (
+                    <div
+                      key={opt.option}
+                      className={
+                        'flex items-center justify-between gap-3 rounded-md border p-3 transition-colors' +
+                        // The selected row is the one thing a scan must land on: accent border +
+                        // tinted fill, not just the (small, unstyled) native radio dot.
+                        (checked
+                          ? ' border-[color:var(--accent)] bg-[color:var(--accent)]/10'
+                          : ' border-border')
+                      }
+                    >
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+                        <input
+                          type="radio"
+                          name="gateway-discovery-path"
+                          className="shrink-0"
+                          style={{ accentColor: 'var(--accent)' }}
+                          checked={checked}
+                          onChange={() => {
+                            if (opt.option === 'custom') {
+                              // Seed the input with the CURRENT stored path (or the conventional
+                              // default) so the box never shows empty over a live value. The
+                              // stored path is NOT rewritten here — Custom is only a mode until
+                              // the input itself is edited.
+                              setCustomMode(true)
+                              setCustomPath(gateway.discoveryPath ?? '/v1/models')
+                            } else {
+                              setCustomMode(false)
+                              setCustomPath('')
+                              patchGateway({
+                                discoveryPath: opt.option === '/v1/models' ? undefined : opt.option
+                              })
+                            }
+                          }}
+                        />
+                        <div className="min-w-0">
+                          <span
+                            className={
+                              checked
+                                ? 'font-mono text-[13px] font-medium text-text'
+                                : 'font-mono text-[13px] text-text'
+                            }
+                          >
+                            {opt.label}
+                          </span>
+                          <p className="text-[12px] text-muted">{opt.hint}</p>
+                        </div>
+                      </label>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
+          {customMode && (
+            <Input
+              id="model-gateway-discovery-path"
+              className="w-64 font-mono"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="/v1/models"
+              value={customPath}
+              onChange={(e) => {
+                setCustomPath(e.target.value)
+                patchGateway({ discoveryPath: e.target.value || undefined })
+              }}
+            />
+          )}
+        </div>
       </SearchableRow>
 
       <SearchableRow {...ROWS.key}>

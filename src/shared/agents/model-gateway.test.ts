@@ -37,6 +37,38 @@ describe('modelGatewayRoutes', () => {
     expect(modelGatewayRoutes('https://example.test/#fragment')).toBeNull()
     expect(modelGatewayRoutes('not a URL')).toBeNull()
   })
+
+  it('appends a supplied discovery path instead of the conventional /v1/models', () => {
+    expect(modelGatewayRoutes('https://bifrost.example.test', '/openai/v1/models')).toEqual({
+      discovery: 'https://bifrost.example.test/openai/v1/models',
+      openai: 'https://bifrost.example.test/openai/v1',
+      anthropic: 'https://bifrost.example.test/anthropic'
+    })
+  })
+
+  it('falls back to /v1/models when the discovery path is absent, empty, or unsafe', () => {
+    // Absent/empty = the conventional suffix. Unsafe values (full URLs — a caller-chosen host
+    // would be a credential-exfiltration oracle — query, fragment, traversal) degrade to the
+    // derived default, never to a fetch somewhere unvetted.
+    expect(modelGatewayRoutes('https://bifrost.example.test', undefined)?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+    expect(modelGatewayRoutes('https://bifrost.example.test', '')?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+    expect(modelGatewayRoutes('https://bifrost.example.test', 'https://evil.test/x')?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+    expect(modelGatewayRoutes('https://bifrost.example.test', '/../etc')?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+    expect(modelGatewayRoutes('https://bifrost.example.test', '/x?y=1')?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+    expect(modelGatewayRoutes('https://bifrost.example.test', '/x#f')?.discovery).toBe(
+      'https://bifrost.example.test/v1/models'
+    )
+  })
 })
 
 describe('parseGatewayModels', () => {

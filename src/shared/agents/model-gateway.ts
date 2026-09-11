@@ -8,6 +8,28 @@ export interface ModelGatewaySettings {
   baseUrl: string
   /** Literal legacy key, `${env:VAR}` reference, or `MODEL_GATEWAY_SECRET_REF`. */
   apiKey: string
+  /** Path the discovery (Models API) request is sent to, appended to `baseUrl` — e.g.
+   *  `/openai/v1/models` for a gateway that serves its model catalogue under a protocol prefix.
+   *  Deliberately a PATH SUFFIX and never a full URL: discovery sends the resolved API key to the
+   *  target, and a caller-chosen host would turn the pre-save/relay flow into a credential-exfil-
+   *  tration oracle (the same reason `${env:VAR}` references resolve only for the saved baseUrl).
+   *  Empty/absent = the conventional derived `/v1/models` (see `modelGatewayRoutes`). */
+  discoveryPath?: string
+}
+
+/** Characters a discovery path may contain, minus URL structure that could change WHERE the
+ *  request goes: no query (`?`), fragment (`#`), dot-dot traversal, or second scheme. The value is
+ *  hand-editable settings.json AND caller-supplied over IPC, so it is re-validated at the point it
+ *  is appended to the root (the same rule as permission modes / model ids on a command line) — an
+ *  unrecognized value yields the derived default path, never a guessed one. */
+const GATEWAY_DISCOVERY_PATH = /^\/[A-Za-z0-9\-._~!$&'()*+,;=:@/]*$/
+
+/** A validated discovery path, or null when absent/unsafe (null ⇒ use the derived default). */
+export function sanitizedGatewayDiscoveryPath(path: string | undefined): string | null {
+  const value = path?.trim() ?? ''
+  if (!value) return null
+  if (value.length > 500 || value.includes('..') || !GATEWAY_DISCOVERY_PATH.test(value)) return null
+  return value.replace(/\/+$/, '') || null
 }
 
 /** Stored in settings.json when the literal credential lives in the shell's secret store. */
@@ -100,8 +122,18 @@ export function resolveModelGatewayApiKey(
  * the provider-specific paths are the Bifrost layout requested by the launch mapping. Only http(s)
  * URLs are accepted: this value is later handed to `fetch` and agent CLIs, and settings.json is
  * hand-editable. Invalid input degrades to null, never to a guessed endpoint.
+ *
+ * `discoveryPath` (optional, from the same `ModelGatewaySettings`) replaces the conventional
+ * `/v1/models` suffix when it is present and passes `sanitizedGatewayDiscoveryPath`. It changes
+ * only WHICH path on the saved root the catalogue is read from — never the host — so the
+ * credential trust gate upstream (references resolve only for the saved baseUrl) is unaffected.
+ * An unsafe value falls back to the derived default rather than sending a fetch somewhere the
+ * user did not vet.
  */
-export function modelGatewayRoutes(baseUrl: string): ModelGatewayRoutes | null {
+export function modelGatewayRoutes(
+  baseUrl: string,
+  discoveryPath?: string
+): ModelGatewayRoutes | null {
   const raw = baseUrl.trim().replace(/\/+$/, '')
   if (!raw) return null
   try {
@@ -111,8 +143,9 @@ export function modelGatewayRoutes(baseUrl: string): ModelGatewayRoutes | null {
     // The separate API-key field exists precisely so a secret never has to live there.
     if (parsed.username || parsed.password || parsed.search || parsed.hash) return null
     const root = parsed.toString().replace(/\/+$/, '')
+    const discoverySuffix = sanitizedGatewayDiscoveryPath(discoveryPath) ?? '/v1/models'
     return {
-      discovery: `${root}/v1/models`,
+      discovery: `${root}${discoverySuffix}`,
       openai: `${root}/openai/v1`,
       anthropic: `${root}/anthropic`
     }
