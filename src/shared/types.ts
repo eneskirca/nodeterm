@@ -1606,6 +1606,11 @@ export interface Settings {
    *  hook holds briefly for a phone/canvas Approve/Deny before falling through to the normal
    *  interactive prompt. Off ⇒ the env var is absent ⇒ exact legacy behavior. Claude-only. */
   hookReplyApprovals: boolean
+  /** Remove a subagent's ephemeral canvas card the moment that subagent REPORTS finished, instead
+   *  of keeping it until the parent agent's next turn clears it. Default off ⇒ exact legacy
+   *  behavior. A card whose subagent is still running is never removed by this, and neither is one
+   *  the stale decay marked done because its end never arrived. Settings → Agents. */
+  autoHideFinishedSubagentCards: boolean
   /** Hold an idle-sleep power assertion while a LOCAL agent node is working, so long runs
    *  survive an unattended laptop. Released when the last one stops (or goes stale). Cannot
    *  hold through a closed lid. Asked in the setup tour; Settings → Behavior. */
@@ -1766,6 +1771,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Deterministic hook-reply approvals default ON (existing users pick it up on hydrate). Only
   // affects Claude terminal sessions; off reproduces the pre-feature launch bit-for-bit.
   hookReplyApprovals: true,
+  autoHideFinishedSubagentCards: false,
   // Keep-awake-while-agents-work default ON (existing users pick it up on hydrate — deliberate,
   // same note style as hookReplyApprovals). Held only while a local agent is actually working.
   keepAwakeWhileAgentsWork: true,

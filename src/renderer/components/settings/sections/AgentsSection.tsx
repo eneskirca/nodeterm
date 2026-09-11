@@ -96,6 +96,21 @@ const ROWS = {
     title: 'One-click approvals',
     keywords: ['approve', 'deny', 'approval', 'permission', 'hook', 'phone', 'canvas', 'one click', 'claude']
   },
+  autoHideFinishedSubagentCards: {
+    title: 'Hide finished subagent cards',
+    keywords: [
+      'subagent',
+      'card',
+      'fan out',
+      'hide',
+      'remove',
+      'finished',
+      'done',
+      'clutter',
+      'canvas',
+      'task'
+    ]
+  },
   controlConfirm: {
     title: 'Destructive canvas-control confirmations',
     keywords: [
@@ -474,6 +489,19 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               checked={settings.hookReplyApprovals}
               ariaLabel="One-click hook-reply approvals"
               onChange={(on) => update({ hookReplyApprovals: on })}
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.autoHideFinishedSubagentCards}>
+        <FieldRow
+          label="Hide finished subagent cards"
+          description="Remove a subagent's card from the canvas as soon as that subagent finishes, instead of keeping it until the agent's next turn. Cards for subagents that are still running are never removed."
+          control={
+            <Switch
+              checked={settings.autoHideFinishedSubagentCards}
+              ariaLabel="Hide finished subagent cards"
+              onChange={(on) => update({ autoHideFinishedSubagentCards: on })}
             />
           }
         />
