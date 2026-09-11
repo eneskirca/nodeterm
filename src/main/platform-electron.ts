@@ -81,6 +81,11 @@ export function electronPlatform(): ElectronPlatform {
     get resourcesPath() {
       return process.resourcesPath
     },
+    // `<resourcesPath>/app.asar` when packaged, the repo root under `electron-vite dev` — one
+    // candidate that answers for both, which is why the session-host lookup prefers it.
+    get appPath() {
+      return app.getAppPath()
+    },
     // The ipcMain half of each registration is UNCHANGED — the local window's call is bit-identical
     // to what it was before the table existed (same event-stripping, same sender id).
     handle: (ch, fn) => {
