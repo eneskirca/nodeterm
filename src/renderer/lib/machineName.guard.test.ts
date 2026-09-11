@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'fs'
-import { join, relative } from 'path'
+import { join, relative, sep } from 'path'
 import { describe, expect, it } from 'vitest'
 
 /**
@@ -58,7 +58,8 @@ describe('no user-visible copy calls this machine a Mac', () => {
     const offenders: string[] = []
     for (const root of ROOTS) {
       for (const file of sourceFiles(join(process.cwd(), root))) {
-        const rel = relative(process.cwd(), file)
+        // ALLOWED is keyed with forward slashes; on Windows `relative` returns backslashes.
+        const rel = relative(process.cwd(), file).split(sep).join('/')
         if (ALLOWED.has(rel)) continue
         readFileSync(file, 'utf8')
           .split('\n')
