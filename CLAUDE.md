@@ -3581,6 +3581,56 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   `dialog.showErrorBox` for a locked keyring is app-modal, unparented, and raised from the relay
   RECONNECT TIMER; the honest fix routes it to a non-modal in-app surface and owes a macOS check
   that a sheet on a background window does not activate.
+- **Window geometry is REMEMBERED** (`main/window-state.ts`, `<userData>/window-state.json`) — size,
+  position and maximized state, restored at the next launch. Before this the window opened at a
+  hard-coded 1400x900 every time, on every platform, so a user who works maximized re-maximized it
+  on every launch; Electron persists nothing on its own and no platform does it for us. The module
+  is Electron-free in the `keydown-intercept.ts` shape (pure decisions over plain rectangles,
+  structural window interfaces), so the refusals below can be pressed by a test instead of only by
+  someone with two monitors — `screen.getAllDisplays()` is called at the seam in `index.ts` and its
+  **work areas** (not full display bounds) are passed in. The refusals ARE the feature, because each
+  is a way the naive version is worse than the fixed size it replaces:
+  - **While MAXIMIZED the size comes from `getNormalBounds()`, never `getBounds()`.** The latter
+    returns the MAXIMIZED rectangle, so saving it makes the next un-maximize hand back a
+    screen-sized window — state that looks right and behaves wrong, and only for the users who
+    maximize. **Un-maximized it is `getBounds()`**, which is the same rectangle wherever both work:
+    Electron documents `getNormalBounds()` as supported only on some Linux desktop environments, and
+    the common case must not depend on the window manager. The maximized case still does and cannot
+    be helped from here, but it matters less, because that record restores by re-maximizing rather
+    than by its size.
+  - **A position that is no longer reachable is DROPPED, not clamped.** A laptop undocked from the
+    monitor its window was on would otherwise reopen the app off-screen: running, focusable from the
+    dock, visible nowhere, with no gesture that rescues it. Reachable means a real overlap with some
+    work area (`MIN_VISIBLE_WIDTH`/`HEIGHT`), judged against the CLAMPED size — a few pixels on
+    screen is not a title bar anyone can grab. **Overlap alone is not enough, because it is
+    symmetric**: a monitor mounted ABOVE the laptop and then unplugged leaves a record whose BOTTOM
+    edge clips the laptop's work area by enough to clear the height floor while the title bar sits
+    hundreds of px above the screen — and under `titleBarStyle: 'hiddenInset'` the title bar is the
+    whole drag region. So the window's TOP edge must also land on that work area, within
+    `TOP_OVERHANG_SLACK` (24px, because window managers report decorations inconsistently and a few
+    pixels of overhang must not cost the user their position every launch). The rule is per-display,
+    like the overlap it joins. Dropping keeps the user's size and lets the platform place a window it
+    knows how to place; inventing a corner for it is the guess.
+  - **No capture while minimized or fullscreen.** `isMaximized()` is FALSE while a macOS window is
+    fullscreen, so capturing there records `maximized: false` and erases exactly the preference this
+    exists to remember. The last non-fullscreen state stands, which also means the app never reopens
+    INTO fullscreen — deliberate: a fullscreen window is usually a temporary mode and is much harder
+    to escape on first launch than a maximized one.
+  - **Maximize before the first paint**, while the window is still `show: false`; maximizing after
+    `show()` is a visible jump from the restored size on every launch.
+  - Every field is **re-validated as a number on read** — the file is hand-editable and its values
+    reach the `BrowserWindow` constructor before there is a window in which to report a failure.
+  - Saves are debounced (`resize`/`move` fire continuously through a drag) and flushed
+    **synchronously** on `close`: that is the only moment guaranteed to see the final state, and an
+    awaited write there races the process exit. Published through `renameAtomicSync` with a
+    per-call unique temp, like every other store.
+  - **NT_MULTI is excluded**: a throwaway dev sandbox may share the real app's userData, and it must
+    not move the window of the app being developed.
+  - Desktop only, and genuinely so — a browser tab's geometry is the browser's, and the mobile
+    companion has no window. Nothing here belongs in `src/core`. **Wayland caveat**: a native-Wayland
+    client cannot set its own position (the compositor owns placement), so x/y is honoured under
+    XWayland and quietly ignored otherwise. Size and maximized restore either way, which is what the
+    drop-don't-clamp rule already degrades to.
 - **Window chrome**: macOS integrated title bar (`titleBarStyle: 'hiddenInset'`); the tab
   bar (`TabBar.tsx`) is the drag region with the `nodeterm` logo + a rounded pill of project
   tabs. The New-project `+` is a **sibling** of `.tabbar__tabs`, not its last child — inside
