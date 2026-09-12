@@ -154,7 +154,7 @@ import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { isHidden } from '../lib/ui-visibility'
 import { readsClaudeTranscript } from '../lib/transcriptGates'
 import { liveProjectJumpTarget } from '../lib/projectJump'
-import { renameCommand } from '../lib/sessionRename'
+import { pushSessionRename } from '../lib/sessionRename'
 import { useSettings } from '../state/settings'
 import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useAgentStatus, agentStatusForApi, inferInterruptAfterSettle } from '../state/agentStatus'
@@ -4856,34 +4856,38 @@ export function TerminalNode({
     })
   }
 
-  // A rename-capable agent's session name follows the node title: push `/rename <name>` into
-  // the live session (tmux send-keys, like Branch's /branch). No-op for other agents/shells.
-  // The line is composed by `renameCommand` — the shared one, which is what keeps a `\n` in the
-  // name from submitting a SECOND line here (✦ Name with AI feeds this a model's answer).
-  const pushSessionRename = (name: string) => {
-    if (canRenameNode && name) void api.pty.sendText(id, renameCommand(name))
-  }
-
   // The user took over the name (manual rename or ✦ AI-name): stop auto-tracking the session
   // and, for rename-capable agents, push the chosen name back to the session.
-  const applyManualTitle = (raw: string) => {
+  // Pushing delegates to `pushSessionRename` (lib/sessionRename.ts), which probes the pane
+  // so `/rename` is never spliced into a typing shell or run in a bare shell, and refuses
+  // unchanged names via `sessionNameUnchanged` (issues #582, #714).
+  const applyManualTitle = (raw: string, current: string) => {
     const name = raw.trim()
     updateNodeData(id, { title: name, titleAuto: false })
-    pushSessionRename(name)
+    if (canRenameNode && name) void pushSessionRename(api.pty, id, name, current)
   }
 
   // Close the rename box, committing only if the value actually changed (so just clicking in
-  // and out doesn't take ownership or fire a spurious /rename).
+  // and out doesn't take ownership or fire a spurious /rename). For a manual edit, pass
+  // the title when the edit began; routing the push through pushSessionRename handles
+  // the unchanged-command check separately from the ownership change.
   const commitTitleEdit = (value: string) => {
     setEditingTitle(false)
-    if (value.trim() !== titleEditStartRef.current.trim()) applyManualTitle(value)
+    if (value.trim() !== titleEditStartRef.current.trim()) {
+      applyManualTitle(value, titleEditStartRef.current)
+    }
   }
 
+  // AI-generated names compare against the node's current title (issue #714): the model can
+  // return the same name back, and clicking "Name with AI" repeatedly must not spam /rename.
   const nameWithAi = async () => {
     setNaming(true)
     const r = await api.pty.generateName(id, (data.cwd as string) ?? '')
     setNaming(false)
-    if (r.ok) applyManualTitle(r.message)
+    if (r.ok) {
+      const current = titleRef.current ?? (data.title as string) ?? ''
+      applyManualTitle(r.message, current)
+    }
   }
 
   // Read state is separate from workflow state: selection clears the unread notification, while
