@@ -16,7 +16,14 @@ const LAUNCH_READINESS_POLL_MS = 100
 const VERIFY_TIMEOUT_MS = 2_000
 const ECHO_EDGE_CHARS = 24
 const DELIVERY_ATTEMPTS = 3
-const KILL_LINE = '\x15'
+import {
+  KILL_LINE,
+  WINDOWS_KILL_LINE,
+  shellKillLineSequence
+} from '../shared/shell-kill-line'
+
+export { KILL_LINE, WINDOWS_KILL_LINE, shellKillLineSequence }
+
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 // eslint-disable-next-line no-control-regex
 const ESC_SEQ = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g
@@ -167,6 +174,10 @@ export class HostSession {
 
   get suppressingPrivateLaunchOutput(): boolean {
     return this.privateLaunchOutput
+  }
+
+  get killLineSequence(): string {
+    return shellKillLineSequence(this.launchDialect, this.shellExecutableName)
   }
 
   /** True once a successful explicit kill has claimed the name but before node-pty proves process
@@ -576,11 +587,11 @@ export class HostSession {
           if (attempt >= DELIVERY_ATTEMPTS) {
             // Never submit an unverified/mangled command. Clear it so the terminal remains
             // recoverable, cache the fixed failure, and let explicit user action decide next.
-            write(KILL_LINE)
+            write(this.killLineSequence)
             finish(new Error('session-host could not verify launch command delivery'))
             return
           }
-          if (!write(KILL_LINE)) return
+          if (!write(this.killLineSequence)) return
           tryOnce()
         }, VERIFY_TIMEOUT_MS)
         timer.unref?.()

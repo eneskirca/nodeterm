@@ -4,6 +4,7 @@ import {
   DELIVERY_ATTEMPTS,
   KILL_LINE,
   VERIFY_TIMEOUT_MS,
+  WINDOWS_KILL_LINE,
   cleanEcho,
   deliverCommand,
   echoedIntact
@@ -57,6 +58,11 @@ describe('cleanEcho', () => {
   it('strips CSI, OSC and other escape sequences plus line breaks', () => {
     const noisy = '\x1b[1;32mprompt\x1b[0m \x1b]0;title\x07ec' + '\r\n' + 'ho text\x1b[K'
     expect(cleanEcho(noisy)).toBe('prompt echo text')
+  })
+
+  it('strips PSReadLine CSI erase sequences (e.g. \\x1b[9X)', () => {
+    const psreadlineErase = '\x1b[18X' + CMD
+    expect(cleanEcho(psreadlineErase)).toBe(CMD)
   })
 })
 
@@ -122,6 +128,25 @@ describe('deliverCommand', () => {
     // attempt 1..N writes, N-1 kill-lines between them, final bare Enter.
     expect(f.writes.filter((w) => w === CMD)).toHaveLength(DELIVERY_ATTEMPTS)
     expect(f.writes.filter((w) => w === '\x15')).toHaveLength(DELIVERY_ATTEMPTS - 1)
+    expect(f.writes[f.writes.length - 1]).toBe('\r')
+  })
+
+  it('uses custom killLine (WINDOWS_KILL_LINE) when provided in options', () => {
+    const f = fakeIo()
+    deliverCommand(f.io, CMD, undefined, { killLine: WINDOWS_KILL_LINE })
+    f.emit(CMD.slice(0, 30))
+    vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
+    expect(f.writes).toEqual([CMD, WINDOWS_KILL_LINE, CMD])
+    f.emit(CMD)
+    expect(f.writes).toEqual([CMD, WINDOWS_KILL_LINE, CMD, '\r'])
+  })
+
+  it('fails open with WINDOWS_KILL_LINE between retries when echo never arrives', () => {
+    const f = fakeIo()
+    deliverCommand(f.io, CMD, undefined, { killLine: WINDOWS_KILL_LINE })
+    for (let i = 0; i < DELIVERY_ATTEMPTS; i++) vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
+    expect(f.writes.filter((w) => w === CMD)).toHaveLength(DELIVERY_ATTEMPTS)
+    expect(f.writes.filter((w) => w === WINDOWS_KILL_LINE)).toHaveLength(DELIVERY_ATTEMPTS - 1)
     expect(f.writes[f.writes.length - 1]).toBe('\r')
   })
 
@@ -309,5 +334,18 @@ describe('a launch line longer than the tty can carry (issue #706)', () => {
     f.emit(LONG)
     expect(outcome).toBe('submitted')
     expect(f.writes).toContain('\r')
+  })
+
+  it('clears line with WINDOWS_KILL_LINE on line-too-long when configured', () => {
+    const f = fakeIo()
+    let outcome: string | undefined
+    deliverCommand(f.io, LONG, (o) => (outcome = o), { killLine: WINDOWS_KILL_LINE })
+    for (let i = 0; i < DELIVERY_ATTEMPTS; i++) {
+      f.emit(truncatedEcho(LONG))
+      vi.advanceTimersByTime(VERIFY_TIMEOUT_MS)
+    }
+    expect(outcome).toBe('line-too-long')
+    expect(f.writes).not.toContain('\r')
+    expect(f.writes[f.writes.length - 1]).toBe(WINDOWS_KILL_LINE)
   })
 })

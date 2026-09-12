@@ -106,7 +106,12 @@ import {
   validCellSize,
   type Vec2
 } from '../lib/glyphGridNode'
-import { cleanEcho, deliverCommand, KILL_LINE, type DeliveryIo } from '../terminal/command-delivery'
+import {
+  cleanEcho,
+  deliverCommand,
+  type DeliveryIo
+} from '../terminal/command-delivery'
+import { terminalKillLine } from '../terminal/terminal-kill-line'
 import {
   RESUME_MISS_WINDOW_MS,
   detectsResumeMiss,
@@ -1559,6 +1564,16 @@ export function TerminalNode({
     !parentWtStale &&
     !remoteSession &&
     (data.cwd as string | undefined) !== parentWtPath
+  const getTerminalKillLine = (): string => {
+    return terminalKillLine({
+      source: session.source,
+      browserRuntime: isBrowserRuntime(),
+      viewerWindows: isWindowsPlatform(),
+      corePlatform: corePlatformRef.current,
+      remoteSession,
+      shell: data.shell || useSettings.getState().settings.defaultShell || undefined
+    })
+  }
   const status = useAgentStatus((s) => s.byId[id])
   /**
    * Which Claude account this node is ACTUALLY on. `data.accountId` is what nodeterm launched
@@ -3329,7 +3344,8 @@ export function TerminalNode({
                   if (outcome === 'line-too-long') {
                     setCo(termKey, { launchTooLongBytes: lineBytes(cmd) })
                   }
-                }
+                },
+                { killLine: getTerminalKillLine() }
               )
             )
           })
@@ -3767,6 +3783,7 @@ export function TerminalNode({
           // An unusable session id leaves this undefined and performRestartResume refuses the
           // restart on its own `resumeCommand` gate — nothing is written either way.
           command,
+          killLine: getTerminalKillLine(),
           // Session-scoped (`api`, not the global preload), like readScrollback above: a relay
           // tab's pane lives on the host, and only its own api can see it.
           paneCommand: () => api.pty.paneCommand(id),
@@ -3908,12 +3925,14 @@ export function TerminalNode({
         // reason; the wake half owes the same. Deliberately HERE and not inside
         // `performResumePhase`: that function's output is pinned byte-for-byte by Task 8's tests,
         // and the restart path (which just cleared the line itself) must not clear it twice.
-        restartIo.write(KILL_LINE)
+        const killLine = getTerminalKillLine()
+        restartIo.write(killLine)
         return performResumePhase({
           agentId,
           sessionId: agentSessionId,
           io: restartIo,
           command,
+          killLine,
           isLive: restartTarget,
           onDelivery: (cancel) => {
             if (life.dead) cancel()
