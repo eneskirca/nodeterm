@@ -37,11 +37,11 @@ describe('session-name title gates', () => {
   })
 
   it('the `/rename` push is gated on the WRITE capability', () => {
-    // Matched on `renameCommand(` rather than the literal `/rename `: the line is no longer
-    // composed here — see the next test for why that matters.
+    // Matched on `pushSessionRename(`: the push is delegated to the shared helper,
+    // which owns both the pane probe and renameCommand composition.
     const pushes = terminalNode
       .split('\n')
-      .filter((l) => l.includes('renameCommand(') && l.includes('sendText'))
+      .filter((l) => l.includes('pushSessionRename('))
     expect(pushes.length).toBe(1)
     expect(pushes[0]).toContain('canRenameNode')
   })

@@ -127,6 +127,8 @@ describe('sessionNameUnchanged', () => {
     expect(sessionNameUnchanged('Trial 1.08', 'Trial 1.08')).toBe(true)
     expect(sessionNameUnchanged('Trial 1.08', 'Trial 1.09')).toBe(false)
     expect(sessionNameUnchanged('Trial 1.08', '')).toBe(false)
+    expect(sessionNameUnchanged('', '')).toBe(true)
+    expect(sessionNameUnchanged('   ', '')).toBe(true)
     // Normalized exactly as `renameCommand` normalizes: trimmed, control runs collapsed.
     expect(sessionNameUnchanged('  Trial 1.08  ', 'Trial 1.08')).toBe(true)
     expect(sessionNameUnchanged('Trial\r\n1.08', 'Trial 1.08')).toBe(true)
