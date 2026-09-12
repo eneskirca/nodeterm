@@ -16,36 +16,13 @@ const LAUNCH_READINESS_POLL_MS = 100
 const VERIFY_TIMEOUT_MS = 2_000
 const ECHO_EDGE_CHARS = 24
 const DELIVERY_ATTEMPTS = 3
-export const KILL_LINE = '\x15'
-export const WINDOWS_KILL_LINE = '\x1b'
+import {
+  KILL_LINE,
+  WINDOWS_KILL_LINE,
+  shellKillLineSequence
+} from '../shared/shell-kill-line'
 
-export function shellKillLineSequence(
-  dialect?: SessionHostShellDialect,
-  shellExecutableName?: string,
-  platform: NodeJS.Platform = process.platform
-): string {
-  if (dialect === 'pwsh' || dialect === 'windows-powershell' || dialect === 'cmd') {
-    return WINDOWS_KILL_LINE
-  }
-  if (dialect === 'posix') {
-    return KILL_LINE
-  }
-  const exe = (shellExecutableName ?? '').toLowerCase()
-  if (
-    exe === 'powershell' ||
-    exe === 'powershell.exe' ||
-    exe === 'pwsh' ||
-    exe === 'pwsh.exe' ||
-    exe === 'cmd' ||
-    exe === 'cmd.exe'
-  ) {
-    return WINDOWS_KILL_LINE
-  }
-  if (exe === 'bash' || exe === 'bash.exe' || exe === 'zsh' || exe === 'sh' || exe === 'fish') {
-    return KILL_LINE
-  }
-  return platform === 'win32' ? WINDOWS_KILL_LINE : KILL_LINE
-}
+export { KILL_LINE, WINDOWS_KILL_LINE, shellKillLineSequence }
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 // eslint-disable-next-line no-control-regex

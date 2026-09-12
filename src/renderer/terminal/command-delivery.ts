@@ -15,12 +15,11 @@
 // @shared/canonical-line.
 
 import { fitsLaunchLine } from '@shared/canonical-line'
+import { KILL_LINE, WINDOWS_KILL_LINE } from '@shared/shell-kill-line'
 
 export const VERIFY_TIMEOUT_MS = 2000
 export const DELIVERY_ATTEMPTS = 3
-export const KILL_LINE = '\x15'
-/** Escape — clear the pending input line in Windows shells (PowerShell, cmd.exe). */
-export const WINDOWS_KILL_LINE = '\x1b'
+export { KILL_LINE, WINDOWS_KILL_LINE }
 
 export interface DeliverCommandOptions {
   killLine?: string

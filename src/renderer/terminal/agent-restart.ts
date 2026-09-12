@@ -205,7 +205,10 @@ export async function performExitPhase(d: {
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than
-  // today's blind write. Belongs in the manual test matrix.
+  // CRITICAL LOAD-BEARING SPLIT: This line-clear writes into a pane owned by an AGENT TUI, not
+  // a shell. A lone Escape (\x1b) into a live agent is the user-interrupt gesture (cancels turns/thinking),
+  // whereas \x15 is the safe line-clear attempt. Keep \x15 here even on Windows; WINDOWS_KILL_LINE
+  // (\x1b) is strictly for shell panes (command delivery retry and hibernation wake).
   d.io.write(KILL_LINE)
   // opencode's TUI does not submit when text and CR arrive in the same input burst
   // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:

@@ -109,10 +109,9 @@ import {
 import {
   cleanEcho,
   deliverCommand,
-  KILL_LINE,
-  WINDOWS_KILL_LINE,
   type DeliveryIo
 } from '../terminal/command-delivery'
+import { terminalKillLine } from '../terminal/terminal-kill-line'
 import {
   RESUME_MISS_WINDOW_MS,
   detectsResumeMiss,
@@ -1565,10 +1564,14 @@ export function TerminalNode({
     !remoteSession &&
     (data.cwd as string | undefined) !== parentWtPath
   const getTerminalKillLine = (): string => {
-    const isWindows =
-      (corePlatformRef.current === 'win32' || (isWindowsPlatform() && session.source === 'local')) &&
-      !remoteSession
-    return isWindows ? WINDOWS_KILL_LINE : KILL_LINE
+    return terminalKillLine({
+      source: session.source,
+      browserRuntime: isBrowserRuntime(),
+      viewerWindows: isWindowsPlatform(),
+      corePlatform: corePlatformRef.current,
+      remoteSession,
+      shell: data.shell || useSettings.getState().settings.defaultShell || undefined
+    })
   }
   const status = useAgentStatus((s) => s.byId[id])
   /**

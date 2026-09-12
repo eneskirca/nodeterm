@@ -58,6 +58,11 @@ describe('cleanEcho', () => {
     const noisy = '\x1b[1;32mprompt\x1b[0m \x1b]0;title\x07ec' + '\r\n' + 'ho text\x1b[K'
     expect(cleanEcho(noisy)).toBe('prompt echo text')
   })
+
+  it('strips PSReadLine CSI erase sequences (e.g. \\x1b[9X)', () => {
+    const psreadlineErase = '\x1b[18X' + CMD
+    expect(cleanEcho(psreadlineErase)).toBe(CMD)
+  })
 })
 
 describe('echoedIntact', () => {
