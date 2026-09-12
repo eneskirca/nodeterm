@@ -12,7 +12,8 @@ CLI reference:
 - `copilot --interactive <prompt>` opens the normal interactive TUI and submits the initial prompt;
   `--prompt` is non-interactive and exits after the response.
 - `--session-id=<uuid>` creates a caller-addressable session, `--resume=<uuid>` resumes it, `/exit`
-  cleanly returns to the shell, and `--model` selects a GitHub-routed model.
+  cleanly returns to the shell, and `--model` (or `COPILOT_MODEL`) selects the startup model,
+  including in BYOK mode.
 - BYOK mode activates through `COPILOT_PROVIDER_BASE_URL`. The implementation also sets
   `COPILOT_PROVIDER_TYPE`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_MODEL_ID`, and
   `COPILOT_PROVIDER_WIRE_MODEL`; GPT-5-family OpenAI models use
@@ -24,6 +25,7 @@ CLI reference:
 Primary references:
 
 - <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference>
+- <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models>
 - <https://docs.github.com/en/copilot/reference/hooks-reference>
 - <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions>
 
@@ -42,10 +44,15 @@ model:
 - Every other provider-prefixed model uses provider type `openai`, base URL `<root>/openai/v1`, an
   unprefixed internal id, and the original provider-prefixed wire id.
 
+Launch and resume commands also pass `--model <internal-id>` explicitly. The provider metadata
+variables do not replace Copilot's startup selection, and an ordinary in-place restart reuses the
+existing shell environment. The flag must match `COPILOT_PROVIDER_MODEL_ID`; the provider-prefixed
+gateway id remains in `COPILOT_PROVIDER_WIRE_MODEL`.
+
 Copilot BYOK is not activated merely because gateway settings exist: a model must be selected for
 that node first. This preserves ordinary GitHub Copilot routing for untouched nodes. Model changes
-recycle the tmux session after a clean `/exit`, then cold-resume the same Copilot session under the
-new environment; the key is never typed into the pane.
+stop the agent's foreground process group, recycle the tmux session, then cold-resume the same
+Copilot session under the new environment; the key is never typed into the pane.
 
 ## Status hooks
 

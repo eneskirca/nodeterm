@@ -298,7 +298,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     }
   })
 
-  it('maps a selected Copilot model into its BYOK environment, never a model flag', async () => {
+  it('maps Copilot provider metadata into the spawn environment without exposing credentials on argv', async () => {
     const { PtyManager } = await import('./pty-manager')
     const m = new PtyManager()
     m.init(() => ({
@@ -324,7 +324,8 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     // never the argv (see the claude case above for why).
     expect(spawnArgs[0].args.join(' ')).not.toContain('vk-secret')
     expect(spawnArgs[0].args.join(' ')).not.toContain('COPILOT_PROVIDER')
-    expect(spawnArgs[0].args.join(' ')).not.toContain('--model')
+    // This is the tmux client's argv. Copilot's --model selection is delivered later by the
+    // shared launch/resume command assembler, using this provider's internal model id.
   })
 
   it('reads a stored gateway key through the shell-owned secret cache', async () => {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { assembleLaunchCommand, assembleResumeCommand, promptFilePathError } from './launch'
 import { setCustomAgentBaseResolver } from './config'
+import { modelGatewayEnv } from './model-gateway'
 import type { CustomAgent } from '../types'
 
 const ENV = { MY_MODEL: 'sonnet', MY_TOKEN: 'sk-abc' }
@@ -157,13 +159,44 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
 })
 
 describe('assembleResumeCommand — Copilot', () => {
-  it('uses Copilot resume grammar while leaving a gateway model to the environment', () => {
+  it('resumes the same conversation with an explicit internal model selection', () => {
     expect(
       assembleResumeCommand(
         { agentId: 'copilot', sessionId: 'abc-123', model: 'openai/gpt-5.5' },
         ENV
       ).command
-    ).toBe('copilot --resume=abc-123')
+    ).toBe("copilot --resume=abc-123 --model 'gpt-5.5'")
+  })
+
+  it.skipIf(process.platform === 'win32').each([
+    ['openai/gpt-5.5', 'gpt-5.5'],
+    ['anthropic/claude-sonnet-4.6', 'claude-sonnet-4.6'],
+    ['custom/org/model', 'org/model'],
+    ["custom/o'model; $(exit 42)", "o'model; $(exit 42)"]
+  ])('delivers %s on fresh launch and restart, preserving its separate wire id', (wireModel, modelId) => {
+    const env = modelGatewayEnv(
+      { baseUrl: 'https://gateway.example.test', apiKey: 'test-key' },
+      'copilot',
+      wireModel
+    )
+    // Run the generated commands in a real shell with a harmless CLI stand-in. There is no
+    // COPILOT_MODEL in this old shell: --model must select the model on an in-place restart too.
+    const probe = 'copilot() { printf "%s\\n" "$COPILOT_PROVIDER_WIRE_MODEL" "$@"; }; '
+    for (const resume of [false, true]) {
+      const { command } = resume
+        ? assembleResumeCommand({ agentId: 'copilot', sessionId: 'abc-123', model: wireModel }, {})
+        : assembleLaunchCommand({ agentId: 'copilot', model: wireModel }, {})
+      const output = execFileSync('/bin/sh', ['-c', probe + command], {
+        env,
+        encoding: 'utf8'
+      })
+      expect(output.trimEnd().split('\n')).toEqual([
+        wireModel,
+        ...(resume ? ['--resume=abc-123'] : []),
+        '--model',
+        modelId
+      ])
+    }
   })
 })
 

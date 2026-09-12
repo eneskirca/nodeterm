@@ -264,6 +264,14 @@ export function tmuxUpdateEnvironmentLine(extraNames: readonly string[] = []): s
   return `set -g update-environment "${names.join(' ')}"`
 }
 
+/** Copilot selects the provider's internal model id; the gateway keeps the full wire id. */
+function copilotModelParts(wireModel: string): { provider: string; modelId: string } {
+  const slash = wireModel.indexOf('/')
+  return slash > 0
+    ? { provider: wireModel.slice(0, slash).toLowerCase(), modelId: wireModel.slice(slash + 1) }
+    : { provider: '', modelId: wireModel }
+}
+
 export function modelGatewayEnv(
   settings: ModelGatewaySettings,
   agentId: AgentId,
@@ -299,9 +307,7 @@ export function modelGatewayEnv(
       // would activate an incomplete provider and make every new Copilot node fail to launch.
       const wireModel = normalizedAgentModel(agentId, model)
       if (!wireModel) return {}
-      const slash = wireModel.indexOf('/')
-      const provider = slash > 0 ? wireModel.slice(0, slash).toLowerCase() : ''
-      const modelId = slash > 0 ? wireModel.slice(slash + 1) : wireModel
+      const { provider, modelId } = copilotModelParts(wireModel)
       const anthropic = provider === 'anthropic'
       return {
         COPILOT_PROVIDER_BASE_URL: anthropic ? routes.anthropic : routes.openai,
@@ -351,9 +357,9 @@ export function normalizedAgentModel(agentId: AgentId, model: string | undefined
 export function withAgentModel(cmd: string, agentId: AgentId, model: string | undefined): string {
   const value = normalizedAgentModel(agentId, model)
   if (!value) return cmd
-  // Copilot receives the model through COPILOT_PROVIDER_MODEL_ID/WIRE_MODEL. Appending --model
-  // would collapse those two distinct values back together and send the unrecognized
-  // provider-prefixed Bifrost id through Copilot's internal catalogue.
-  if (capabilityAgentId(agentId) === 'copilot') return cmd
-  return `${cmd} --model ${shellSingleQuote(value)}`
+  // COPILOT_PROVIDER_MODEL_ID/WIRE_MODEL describe the provider; Copilot still requires a startup
+  // selection via --model or COPILOT_MODEL. Use a flag so an in-place restart also selects it in
+  // an existing shell. Match the internal id above, keeping the gateway prefix in WIRE_MODEL only.
+  const modelId = capabilityAgentId(agentId) === 'copilot' ? copilotModelParts(value).modelId : value
+  return `${cmd} --model ${shellSingleQuote(modelId)}`
 }

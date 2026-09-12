@@ -153,9 +153,19 @@ describe('agent mappings', () => {
 
   it('does not activate Copilot BYOK until a model is selected', () => {
     expect(modelGatewayEnv(gateway, 'copilot')).toEqual({})
-    expect(withAgentModel('copilot --resume=abc', 'copilot', 'openai/gpt-5.5')).toBe(
+    expect(withAgentModel('copilot --resume=abc', 'copilot', undefined)).toBe(
       'copilot --resume=abc'
     )
+  })
+
+  it('selects the Copilot internal model explicitly without changing its gateway wire id', () => {
+    expect(withAgentModel('copilot --resume=abc', 'copilot', 'openai/gpt-5.5')).toBe(
+      "copilot --resume=abc --model 'gpt-5.5'"
+    )
+    expect(withAgentModel('copilot', 'copilot', 'claude-sonnet-4.6')).toBe(
+      "copilot --model 'claude-sonnet-4.6'"
+    )
+    expect(withAgentModel('copilot', 'copilot', 'bad\nmodel')).toBe('copilot')
   })
 
   it('quotes model ids and refuses unsupported/control-bearing values', () => {
@@ -218,7 +228,7 @@ describe('agent mappings', () => {
       })
       expect(
         withAgentModel('copilot-wrapper', 'custom:copilot-proxy', 'openai/gpt-5.5')
-      ).toBe('copilot-wrapper')
+      ).toBe("copilot-wrapper --model 'gpt-5.5'")
     } finally {
       setCustomAgentBaseResolver(null)
     }
