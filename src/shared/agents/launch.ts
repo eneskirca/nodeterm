@@ -21,6 +21,7 @@ import {
   capabilityAgentId,
   mintsSessionId,
   resumeCommandWith,
+  vanillaEnvStripPattern,
   withSessionId,
   type AgentId,
   type AgentPermissionMode
@@ -78,6 +79,9 @@ export interface ResumeInputs {
   permissionMode?: AgentPermissionMode
   /** Per-node model override, applied through the effective base harness. */
   model?: string
+  /** Resume on the agent's own provider/default model after stripping gateway env. Codex also
+   * needs an explicit provider override: omitting --model restores the thread's saved model. */
+  clearEnv?: boolean
   /** Should a SHARED_IDENTITY_CAPABLE agent (codex) name its managed launcher on resume? Same
    *  semantics as `LaunchInputs.sharedIdentity`. */
   sharedIdentity?: boolean
@@ -245,6 +249,8 @@ export function assembleResumeCommand(
 ): AssembledCommand {
   const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent)
   const capId = capabilityAgentId(inputs.agentId)
+  const subscription = inputs.clearEnv === true && !!vanillaEnvStripPattern(capId)
+  const codexSubscription = subscription && capId === 'codex'
 
   // A per-builtin launch-command override wins over the program and the launcher (same rule as the
   // fresh-launch path), so a cold-restore / restart resumes through the same wrapper.
@@ -254,7 +260,7 @@ export function assembleResumeCommand(
   // its managed launcher so the resumed session re-claims its own thread. Skipped for an override.
   const program = overrideCmd
     ? launchCmd
-    : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity)
+    : agentLaunchProgram(inputs.agentId, launchCmd, inputs.sharedIdentity && !codexSubscription)
   const { fragment: argsFragment, missing: m2 } = expandedArgs(inputs.customAgent?.args ?? '', env)
   const baseCmd = argsFragment ? `${program} ${argsFragment}` : program
 
@@ -263,6 +269,13 @@ export function assembleResumeCommand(
   const withMode = inputs.permissionMode
     ? withPermissionMode(base, capId, inputs.permissionMode)
     : base
-  const command = withAgentModel(withMode, capId, inputs.model)
+  const withModel = withAgentModel(withMode, capId, subscription ? undefined : inputs.model)
+  // Codex resumes the model saved with the conversation unless a launch setting explicitly
+  // overrides it. Selecting its built-in provider reloads the configured/default model too;
+  // there is no hard-coded model or edit to the user's config/auth files. Use a plain client for
+  // this restart: a shared app-server can retain a loaded thread and ignore resume overrides.
+  const command = codexSubscription
+    ? `${withModel} -c 'model_provider="openai"'`
+    : withModel
   return { command, missingEnv: [...m1, ...m2] }
 }
