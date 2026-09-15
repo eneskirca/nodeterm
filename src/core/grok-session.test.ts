@@ -52,6 +52,42 @@ describe('pickGrokSessionMeta', () => {
     expect(pickGrokSessionMeta(JSON.stringify({ generated_title: 'auto' }))?.title).toBe('auto')
   })
 
+  it('falls back to session_summary when grok has not generated a title yet', () => {
+    // Measured: 20 of 49 local summary.json files (1.0.13) carry session_summary and no
+    // generated_title — young sessions. Those used to read as nameless.
+    expect(
+      pickGrokSessionMeta(JSON.stringify({ session_summary: 'Release checklist review' }))?.title
+    ).toBe('Release checklist review')
+  })
+
+  it('prefers generated_title over session_summary', () => {
+    expect(
+      pickGrokSessionMeta(
+        JSON.stringify({ generated_title: 'Plan the release', session_summary: 'Something else' })
+      )?.title
+    ).toBe('Plan the release')
+  })
+
+  it('refuses a session_summary longer than the cap rather than truncating it', () => {
+    // The cap exists because pickGrokSessionMeta feeds the node title with no other length
+    // bound, so a sentence adopted here reaches the header, the sidebar, the kanban card,
+    // the window title and project.json. A truncated sentence is "degrades to something
+    // wrong"; null is the node keeping its own name.
+    const long = 'x'.repeat(81)
+    expect(pickGrokSessionMeta(JSON.stringify({ session_summary: long }))?.title).toBeNull()
+    expect(pickGrokSessionMeta(JSON.stringify({ session_summary: 'x'.repeat(80) }))?.title).toBe(
+      'x'.repeat(80)
+    )
+  })
+
+  it('does not let an over-long session_summary hide a generated title', () => {
+    expect(
+      pickGrokSessionMeta(
+        JSON.stringify({ generated_title: 'Plan the release', session_summary: 'x'.repeat(200) })
+      )?.title
+    ).toBe('Plan the release')
+  })
+
   it('returns a null TITLE (not a null meta) when the session has no name yet', () => {
     // A session with a model but no title is normal early in its life — the node keeps its own
     // title and the poll simply finds nothing to adopt.

@@ -49,19 +49,26 @@ export interface GrokSessionMeta {
 /**
  * Title keys in PREFERENCE order.
  *
- * MEASURED (grok 1.0.13, 2026-09-02): there is only ONE key. `/rename <name>` typed into a live
- * session rewrites **`generated_title`** in place — the same field the model-generated name uses —
- * and no `title` key ever appears in `summary.json`. Grok does not distinguish a manual title from a
- * generated one the way claude's `custom-title` / `ai-title` pair does.
+ * MEASURED (grok 1.0.13, 2026-09-02): `/rename <name>` typed into a live session rewrites
+ * **`generated_title`** in place — the same field the model-generated name uses — and no `title`
+ * key ever appears in `summary.json`. Grok does not distinguish a manual title from a generated one
+ * the way claude's `custom-title` / `ai-title` pair does.
  *
- * `'title'` was here as an explicitly-marked guess at the manual key, kept first so a real manual
- * title would win the moment someone confirmed it. Someone did, and the answer is that the key does
- * not exist. It stays in the list ONLY as a harmless forward compatibility: if a future grok ever
- * splits the two, a manual title would win immediately. A key that is absent from every file costs
- * one failed lookup and can never produce a wrong name — which is why removing it would buy nothing
- * and lose that.
+ * `'title'` stays first as forward compatibility: a key absent from every file costs one failed
+ * lookup and can never produce a wrong name. If a future grok splits the two, a manual title wins.
+ *
+ * `session_summary` is the fallback for a session too young to have `generated_title` yet. Measured
+ * across 49 local summary.json files (1.0.13): 20 of them carry `session_summary` and no
+ * `generated_title`; where both exist they are identical in 28 of 29; the longest value in the
+ * corpus is 49 characters. It is accepted only under SESSION_SUMMARY_TITLE_MAX: a longer value is
+ * **refused, not truncated**, because this result is adopted as the node title with no other length
+ * cap on the path (header, sidebar, kanban card, window title, project.json). Null is the node
+ * keeping its own name; a truncated sentence is a wrong name.
  */
-const TITLE_KEYS = ['title', 'generated_title'] as const
+const TITLE_KEYS = ['title', 'generated_title', 'session_summary'] as const
+
+/** Longest observed title in the 1.0.13 corpus is 49 characters. 80 is "a title, generously". */
+const SESSION_SUMMARY_TITLE_MAX = 80
 
 /** Pure: the meta from a summary.json body. null when this is not a summary object at all. */
 export function pickGrokSessionMeta(summaryJson: string): GrokSessionMeta | null {
@@ -76,10 +83,12 @@ export function pickGrokSessionMeta(summaryJson: string): GrokSessionMeta | null
   let title: string | null = null
   for (const k of TITLE_KEYS) {
     const v = rec[k]
-    if (typeof v === 'string' && v.trim()) {
-      title = v.trim()
-      break
-    }
+    if (typeof v !== 'string') continue
+    const trimmed = v.trim()
+    if (!trimmed) continue
+    if (k === 'session_summary' && trimmed.length > SESSION_SUMMARY_TITLE_MAX) continue
+    title = trimmed
+    break
   }
   const model = typeof rec.current_model_id === 'string' ? rec.current_model_id : null
   return { title, model }

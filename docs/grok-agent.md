@@ -275,7 +275,15 @@ resolve **nothing** there (`GROK_ENCODED_CWD_MAX_BYTES`); a session id must matc
 
 The session **name** (what `/resume` shows and what a node title with `titleAuto` adopts) is read by
 `core/grok-session.ts` → `pickGrokSessionMeta` over `summary.json`, in preference order
-`TITLE_KEYS = ['title', 'generated_title']`, plus `current_model_id` as the model. Reads are capped
+`TITLE_KEYS = ['title', 'generated_title', 'session_summary']`, plus `current_model_id` as the model.
+`generated_title` is the real key (`/rename` rewrites it in place). `session_summary` is accepted
+only as a fallback, and only when it is ≤ 80 characters — the longest observed title in a 49-file
+1.0.13 corpus is 49 characters; a longer value is **refused, not truncated**, because this result
+is adopted as the node title with no other length cap (header, sidebar, kanban card, window title,
+`project.json`). 20 of those 49 files have `session_summary` and no `generated_title` yet (young
+sessions); without the fallback they read as nameless. `'title'` stays first as forward
+compatibility: it is absent from every real file, costs one failed lookup, and would win the day
+grok splits a manual title from a generated one. Reads are capped
 at 256 KB and answer `null` — never a throw — for an absent, oversized or unparseable file.
 Resolution is a **direct open** of the directory a hook told us about: `rememberGrokSessionDir` /
 `grokSessionDirFor` / `forgetGrokSession` keep a bounded (512-entry, least-recently-seen-evicted)
