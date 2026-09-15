@@ -122,7 +122,7 @@ export interface DeliveryDeps {
    * the envelope did not reach the pane; a post-paste submit failure remains eligible for the
    * receipt watch's honest `stalled` outcome.
    */
-  sendEnvelope(nodeId: string, envelope: string): Promise<boolean>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean>
   /** The target's status mirror entry — gate 2's whole input. */
   mirrorEntry(nodeId: string): MirrorEntry | undefined
   /** `nodeTokenFilePresent(nodeId)`. */
@@ -182,6 +182,12 @@ function samePane(
   if (isAgentPane(after, agentId, binaries) !== 'agent') return false
   const wasPid = agentPidIn(before, agentId, binaries)
   const nowPid = agentPidIn(after, agentId, binaries)
+  if (before.processBirths) {
+    const beforeIndex = before.pids?.indexOf(wasPid ?? -1) ?? -1
+    const afterIndex = after.pids?.indexOf(nowPid ?? -1) ?? -1
+    if (!before.processBirths[beforeIndex] ||
+        before.processBirths[beforeIndex] !== after.processBirths?.[afterIndex]) return false
+  }
   return wasPid !== null && nowPid !== null && wasPid === nowPid
 }
 
@@ -441,7 +447,7 @@ export async function deliverAgentMessage(
     // subscription opened after that probe would miss it and report `stalled` for a message that
     // demonstrably landed. See `watchForReceipt`: that miss is what makes an LLM send it twice.
     const watch = watchForReceipt(req.targetNodeId, deps.subscribeEvents)
-    const wrote = await deps.sendEnvelope(req.targetNodeId, payload)
+    const wrote = await deps.sendEnvelope(req.targetNodeId, payload, owner)
     // The pane went away between the gate and the write. Not a failure of ours and not retryable:
     // the node is gone. It IS traced: a `sendEnvelope` that fails after a partial write has left
     // bytes in somebody's pane, and that must not be the one event with no record.

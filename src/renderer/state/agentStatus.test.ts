@@ -19,6 +19,40 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('sessionEnded — an announced exit is its own fact, not an idle state', () => {
+  it('is set explicitly and withdrawn by the next state transition', () => {
+    const id = nid()
+    const s = useAgentStatus.getState()
+    s.setState(id, 'done', 'claude')
+    s.setState(id, undefined, 'claude')
+    useAgentStatus.getState().setSessionEnded(id, true)
+    expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBe(true)
+    const same = useAgentStatus.getState().byId
+    useAgentStatus.getState().setSessionEnded(id, true)
+    expect(useAgentStatus.getState().byId).toBe(same)
+    useAgentStatus.getState().setState(id, 'working', 'claude', true)
+    expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBeUndefined()
+  })
+
+  it('can be recorded for a node whose status entry was already cleared (a parked pane)', () => {
+    const id = nid()
+    useAgentStatus.getState().setSessionEnded(id, true)
+    expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBe(true)
+    useAgentStatus.getState().setSessionEnded(id, false)
+    expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBeUndefined()
+  })
+
+  it('Canvas records it on SessionEnd and withdraws it on SessionStart', () => {
+    // A store flag with no writer is the bug in a new place: the levers would type-check and stay
+    // protected forever. Pinned at source level, like the setState argument list above.
+    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
+    const end = src.slice(src.indexOf("if (e.sessionPhase === 'end') {"))
+    expect(end.slice(0, 600)).toMatch(/cs\.setSessionEnded\(e\.nodeId, true\)/)
+    const start = src.slice(src.indexOf("if (e.sessionPhase === 'start') {"), src.indexOf("if (e.sessionPhase === 'end') {"))
+    expect(start).toMatch(/cs\.setSessionEnded\(e\.nodeId, false\)/)
+  })
+})
+
 describe('done-holdoff race guard', () => {
   // Claude Code runs hooks in parallel: the last PostToolUse's curl can land AFTER the
   // Stop's curl. Without a holdoff that late "working" resurrects a finished turn.

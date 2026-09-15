@@ -209,16 +209,8 @@ async function fetchOpencodeExport(node: LinkDocEntry): Promise<string | null> {
       ? await deps.runRemoteCommand(node.id, `opencode export ${shellQuote(node.sessionId)}`)
       : null
   }
-  try {
-    const { execFile } = await import('node:child_process')
-    return await new Promise<string | null>((resolve) => {
-      execFile('opencode', ['export', node.sessionId ?? ''], { encoding: 'utf-8' }, (err, stdout) =>
-        resolve(err ? null : stdout)
-      )
-    })
-  } catch {
-    return null
-  }
+  const { readOpencodeExport } = await import('./opencode-export')
+  return readOpencodeExport(node.sessionId)
 }
 
 /** Single-quote for a POSIX shell. The session id reaches a remote command line, and it is

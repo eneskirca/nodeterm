@@ -302,8 +302,18 @@ function identityRefusal(
       ...(typeof e.clientRevision === 'number' ? { observedRevision: e.clientRevision } : {})
     }
   if (!f.tokenFilePresent) return { kind: 'targetStatusUnverified', note: NO_TOKEN_FILE_NOTE }
+  // A node that HAS proven itself and whose CLI then crossed a session boundary (started, resumed,
+  // ended) is not "stale" — it is between sessions, which is `idleRefusal`'s fact. Reporting it as
+  // `targetStatusStale` told the caller the identity was the problem, while the real fact is that
+  // no turn has been reported since the boundary.
+  if (observed && e.state === undefined && typeof e.verifiedAt === 'number')
+    return { kind: 'targetNotIdleUnknown', reason: SESSION_BOUNDARY_REASON }
   return { kind: 'targetStatusStale' }
 }
+
+export const SESSION_BOUNDARY_REASON =
+  'the node crossed a session boundary (its CLI started, resumed or exited) and has not reported ' +
+  'a turn since'
 
 /**
  * The gates that cost NOTHING to evaluate — decided before any pane is touched.

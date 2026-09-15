@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { WORKING_STALE_MS } from '@shared/agents/stale'
-import { effectiveAgentState, parkedStateFloor, wouldKillLiveWork } from './live-work'
+import {
+  agentProcessInPane,
+  effectiveAgentState,
+  parkedStateFloor,
+  wouldKillLiveWork
+} from './live-work'
 
 describe('wouldKillLiveWork', () => {
   it('is true only for a NON-tmux session whose agent is working/waiting/blocked', () => {
@@ -17,6 +22,28 @@ describe('wouldKillLiveWork', () => {
   it('is false for a finished or unknown agent, and for a terminal with no agent at all', () => {
     expect(wouldKillLiveWork({ tmuxBacked: false, agentState: 'done' })).toBe(false)
     expect(wouldKillLiveWork({ tmuxBacked: false })).toBe(false)
+  })
+  it('protects an IDLE agent CLI on a non-tmux pty — killing it forces a resume that strands messaging', () => {
+    for (const agentState of ['done', undefined] as const) {
+      expect(wouldKillLiveWork({ tmuxBacked: false, agentState, agentProcess: true })).toBe(true)
+    }
+    expect(wouldKillLiveWork({ tmuxBacked: true, agentState: 'done', agentProcess: true })).toBe(false)
+  })
+})
+
+describe('agentProcessInPane', () => {
+  it('is true for an agent node whose CLI we have not exited or seen die', () => {
+    expect(agentProcessInPane('claude', undefined)).toBe(true)
+    expect(agentProcessInPane('claude', {})).toBe(true)
+  })
+  it('is false with no agent, or once the pane holds only a shell', () => {
+    expect(agentProcessInPane(undefined, undefined)).toBe(false)
+    expect(agentProcessInPane('claude', { hibernated: true })).toBe(false)
+    expect(agentProcessInPane('claude', { paused: true })).toBe(false)
+    expect(agentProcessInPane('claude', { dropped: true })).toBe(false)
+    // A SessionEnd (`/exit`) records only `state: undefined`, which is also what an idle agent
+    // looks like. Without its own flag the pane stayed protected for the rest of the run.
+    expect(agentProcessInPane('claude', { sessionEnded: true })).toBe(false)
   })
 })
 

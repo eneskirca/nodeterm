@@ -51,6 +51,21 @@ The repo is split by Electron process boundary and the split is enforced, not ad
 seam the Server Edition boots from; logic left in `src/main` silently does not exist there, and the
 boundary tests cannot tell you a feature is *missing*.
 
+**Windows agent messaging:** direct ConPTY terminals are looked up by the runtime node index,
+not the persistence key. `NativeWindowsPane` checks console membership, the unambiguous native
+process chain and process birth times, and frames paste only after the terminal requested it.
+Do not replace that read with a stored `agentId` or the restart heuristic's deepest descendant.
+An interpreter such as `node` is named by its script's package `bin` entry, never as `node`, so
+npm-installed CLIs such as Codex are recognized. A session released by park expiry or offscreen
+release is still messageable: existence and routing ask the backend, not the attached client.
+Never put the submitting Enter in the same write as a message paste: `core/settled-submit.ts`
+pastes, waits for the envelope to render, then submits separately, on every backend.
+The persistent session-host transport has its own versioned messaging extension: the host checks
+its session generation, OS process identity and emulator before writing. An older live host keeps
+its terminals and refuses the extension; never restart it automatically or fall back to sendKeys.
+Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
+an unresolved file conflict. See `docs/windows-session-host.md`.
+
 ## Three surfaces
 
 A feature is not done until you have decided how it behaves on each — even if the decision is "not

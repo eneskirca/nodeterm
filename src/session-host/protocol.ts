@@ -12,6 +12,11 @@
  * whose attach/flow contract predates its own. */
 export const SESSION_HOST_PROTOCOL_VERSION = 2
 
+// Independently versioned, additive messaging extension. The v1/v2 terminal/attach contract is
+// unchanged: an older live host rejects these unknown commands but is NEVER replaced to enable
+// them. A future incompatible messaging shape gets new command names, not a forced host restart.
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+
 /** Concrete parser owned by the live terminal generation. Kept in the host so a new renderer/main
  * process can safely encode a delayed launch without re-guessing from a stale profile id. */
 export type SessionHostShellDialect = 'posix' | 'pwsh' | 'windows-powershell' | 'cmd'
@@ -80,6 +85,9 @@ export type SessionHostRequest =
   | { id: number; cmd: 'resume'; name: string }
   | { id: number; cmd: 'sendKeys'; name: string; text: string; enter: boolean }
   | { id: number; cmd: 'paneCommand'; name: string }
+  | { id: number; cmd: 'messageOwnerV1'; name: string }
+  | { id: number; cmd: 'messagePasteReadyV1'; name: string }
+  | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
   | { id: number; cmd: 'capture'; name: string; full: boolean }
   | {
       id: number
