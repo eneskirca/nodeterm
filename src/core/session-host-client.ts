@@ -239,6 +239,7 @@ export class SessionHostClient {
     private readonly deps: {
       userDataDir: string
       resourcesPath?: string | null
+      appPath?: string | null
       repoRoot?: string | null
     }
   ) {}
@@ -247,6 +248,7 @@ export class SessionHostClient {
     return (
       resolveSessionHostScript({
         resourcesPath: this.deps.resourcesPath,
+        appPath: this.deps.appPath,
         repoRoot: this.deps.repoRoot
       }) !== null
     )
@@ -346,6 +348,7 @@ export class SessionHostClient {
 
     const script = resolveSessionHostScript({
       resourcesPath: this.deps.resourcesPath,
+      appPath: this.deps.appPath,
       repoRoot: this.deps.repoRoot
     })
     if (!script) {

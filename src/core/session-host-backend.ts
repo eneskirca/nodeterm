@@ -20,6 +20,10 @@ function getClient(): SessionHostClient {
     client = new SessionHostClient({
       userDataDir: platform().userDataDir,
       resourcesPath: platform().resourcesPath,
+      // The one that actually answers in a packaged build: `app.getAppPath()` is the asar, where
+      // `build.files` already carries `out/session-host/host.cjs`. In dev it is the repo root, so
+      // the same candidate covers both.
+      appPath: platform().appPath,
       // Dev-mode fallback, mirroring `findTmux`'s own `process.cwd()` use: under `electron-vite
       // dev` the cwd is the repo root, which is where `npm run host:build` writes its bundle.
       repoRoot: process.cwd()
@@ -30,7 +34,7 @@ function getClient(): SessionHostClient {
 
 /**
  * Is the session-host bundle actually present on this machine? False only in a dev checkout that
- * never ran `npm run host:build` (or `npm run build`, which now runs it too) — unlike tmux, this
+ * never ran `npm run host:build` (or `npm run build`, which runs it too) — unlike tmux, this
  * backend has no external binary to be "missing"; the only way it can be unavailable is an
  * incomplete build. `pty-manager.ts` combines this with "no local tmux was found" and the
  * `tmuxEnabled` setting to decide whether to actually select this backend for a given session.

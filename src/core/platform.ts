@@ -13,6 +13,12 @@ export interface CorePlatform {
    *  because it is an Electron notion: the Server Edition has no such directory and simply omits
    *  it, which is also how src/core stays Electron-free (no-electron.test.ts). */
   readonly resourcesPath?: string
+  /** Electron's `app.getAppPath()` — `<resourcesPath>/app.asar` when packaged, the repo root in
+   *  dev. This is where `build.files` carries `out/**`, so it is where the session-host bundle
+   *  lands; see session-host-launcher.ts for why it must be resolved from INSIDE the asar rather
+   *  than copied beside it. OPTIONAL for the same reason as `resourcesPath`: an Electron notion
+   *  the Server Edition omits. */
+  readonly appPath?: string
   /** Seal / unseal a secret at rest, byte-in byte-out. Present together on a shell that can
    *  encrypt (Desktop: Electron safeStorage). Their ABSENCE is a supported configuration, not a
    *  degradation: the Server Edition runs headless with no OS keychain and deliberately stores
