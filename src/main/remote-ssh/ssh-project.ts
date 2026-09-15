@@ -1743,7 +1743,9 @@ export class SshProjectManager {
         const { code, stdout } = await this.r.run(
           childArgs(c.conn, c.controlPath, REMOTE_GRANT_SCAN_CMD)
         )
-        if (code === 0 && stdout) out.push(...parseRemoteGrants(stdout))
+        // Tagged with the host it came from: a grant authorizes pushes about THAT host only, and
+        // push-notify routes a node's events to its own host's grants (PushGrant.host).
+        if (code === 0 && stdout) out.push(...parseRemoteGrants(stdout, hk))
       } catch {
         // best-effort per host — a failed read just keeps the previous sweep's grants
       }

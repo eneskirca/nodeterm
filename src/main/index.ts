@@ -2071,11 +2071,25 @@ app.whenReady().then(async () => {
   // by a timer below; `get()` is sync so it can sit behind `getGrants`. See
   // core/remote-push-grants.ts.
   const remoteGrants = createRemoteGrantsCache()
-  /** Local grants first (this machine's own phone), then the hosts'. ORDER MATTERS: one phone that
-   *  reached both this Mac and an SSH host dropped a different token on each, and push-notify's
-   *  `dedupeGrantsByDevice` keeps the FIRST occurrence per deviceId — so the local token, the one
-   *  that needs no host round-trip to stay fresh, is the survivor. */
+  /** This machine's own grants (untagged) plus every connected host's (tagged `host`). They are NOT
+   *  collapsed per phone any more: one phone that reached both this Mac and an SSH host dropped a
+   *  different token on each, each signed for its connectionId for THAT host, and push-notify routes
+   *  a node's events to the grants of the node's own host (`grantHostFor` below). Collapsing them
+   *  sent a remote host's events under another host's grant, past the phone's per-host mute
+   *  (issue #435). */
   const allPushGrants = (): PushGrant[] => [...pushGrants.get(), ...remoteGrants.get()]
+  /** The SSH host a node lives on, for the granted leg's per-host routing — or undefined for a
+   *  local node. Resolved from the project's INDEX entry (`projectTargetInfo`), not the live
+   *  connection: a remote node whose host is momentarily disconnected must still not fall back to
+   *  "local" and ride out under this Mac's own grant. An ssh project with no resolvable host key
+   *  gets a key that matches no grant, so its events are dropped from the granted leg rather than
+   *  misattributed (the relay leg still carries them). */
+  const pushGrantHostFor = (nodeId: string): string | undefined => {
+    const projectId = workspaceStore.sshProjectIdForNode(nodeId)
+    if (!projectId) return undefined
+    const ssh = workspaceStore.projectTargetInfo(projectId)?.ssh
+    return ssh ? sshHostKey(ssh.server) : `ssh:${projectId}`
+  }
   /** A 401/403 could be on either side's token; neither accessor knows the other's. */
   const markPushGrantDead = (grant: string): void => {
     pushGrants.markDead(grant)
@@ -2163,6 +2177,7 @@ app.whenReady().then(async () => {
     // block comment above). resolveTarget keeps a single sender: host wins when paired.
     getGrants: allPushGrants,
     markGrantDead: markPushGrantDead,
+    grantHostFor: pushGrantHostFor,
     hostLabel: () => hostname(),
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobilePushNeedsYou: () => settingsStore.get().mobilePushNeedsYou !== false,
@@ -2199,6 +2214,7 @@ app.whenReady().then(async () => {
         : null,
     getGrants: allPushGrants,
     markGrantDead: markPushGrantDead,
+    grantHostFor: pushGrantHostFor,
     hostLabel: () => hostname(),
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobileLiveActivities: () => settingsStore.get().mobileLiveActivities !== false,

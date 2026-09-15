@@ -25,6 +25,12 @@ export interface PushGrant {
   grant: string
   /** The phone's connection UUID, if the file carried one. */
   connectionId?: string
+  /** The SSH host (`user@host`, `sshHostKey`) this grant was swept FROM, when it lives on a remote
+   *  host rather than in this machine's own `~/.nodeterm/push-grants` (then absent). A grant
+   *  authorizes pushes about the host it was dropped on and nothing else: the phone signs it for
+   *  that host's connectionId, which is also the scope its per-host mute is keyed by — so the
+   *  senders route a node's events to the grants of the node's OWN host (issue #435). */
+  host?: string
 }
 
 /** The slice of `fs` the loader needs — injectable so tests drive it without touching disk. */

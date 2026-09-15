@@ -44,8 +44,11 @@ const DEVICE_ID_MAX = 128
 /**
  * Parse the sweep's stdout into grants. Every malformed line is skipped silently: a partial write,
  * a non-JSON file someone dropped in the directory, a schema-version bump, a truncated giant.
+ *
+ * `host` is the `sshHostKey` of the machine the listing came from; every grant is tagged with it so
+ * the senders can route a node's events to the grants of the node's own host (`PushGrant.host`).
  */
-export function parseRemoteGrants(stdout: string): PushGrant[] {
+export function parseRemoteGrants(stdout: string, host?: string): PushGrant[] {
   const out: PushGrant[] = []
   for (const line of stdout.split('\n')) {
     const tab = line.indexOf('\t')
@@ -65,15 +68,16 @@ export function parseRemoteGrants(stdout: string): PushGrant[] {
     out.push({
       deviceId,
       grant: rec.grant,
-      ...(typeof rec.connectionId === 'string' ? { connectionId: rec.connectionId } : {})
+      ...(typeof rec.connectionId === 'string' ? { connectionId: rec.connectionId } : {}),
+      ...(host ? { host } : {})
     })
   }
   return out
 }
 
 export interface RemoteGrantsCache {
-  /** The live remote grants: dead-marked tokens dropped, then ONE per device id. Sync, so it can
-   *  sit behind `push-notify`'s `getGrants`. */
+  /** The live remote grants: dead-marked tokens dropped, then ONE per (host, device id). Sync, so
+   *  it can sit behind `push-notify`'s `getGrants`. */
   get(): PushGrant[]
   /** Replace the cache with a completed sweep's result (all hosts). */
   set(grants: readonly PushGrant[]): void
@@ -85,10 +89,16 @@ export interface RemoteGrantsCache {
 /**
  * The cache `src/main` refreshes on a timer and `push-notify` reads synchronously.
  *
- * Device-id dedupe happens at READ time, after the dead filter, deliberately: one phone paired to
- * two hosts drops a different token on each, and pushing both would double every notification.
- * Picking the survivor after the dead filter means a 401 on the first host's (stale) token
- * promotes the other host's on the very next send — self-healing, no extra round-trip.
+ * Dedupe is per (host, device id), at READ time after the dead filter. It used to be per device id
+ * alone — one phone that reached two hosts dropped a different token on each, and "pushing both
+ * would double every notification". That was true only because every event was posted under every
+ * grant. Each of those tokens is signed for a DIFFERENT connectionId (the phone's saved connection
+ * for THAT host — the scope its per-host mute is keyed by), so collapsing them sent host 2's events
+ * under host 1's grant, and the backend consulted host 1's mute for a host 2 event: a host the user
+ * had turned OFF kept ringing (issue #435). Both grants now survive, tagged with their host, and
+ * `push-notify` routes each node's events to its own host's grant — one push per event, under the
+ * right identity. Within one host a device has exactly one file (the filename is the deviceId), so
+ * the per-host first-wins is defensive only.
  */
 export function createRemoteGrantsCache(): RemoteGrantsCache {
   let all: PushGrant[] = []
@@ -100,8 +110,9 @@ export function createRemoteGrantsCache(): RemoteGrantsCache {
       const out: PushGrant[] = []
       for (const g of all) {
         if (dead.has(g.grant)) continue
-        if (seen.has(g.deviceId)) continue
-        seen.add(g.deviceId)
+        const key = `${g.host ?? ''}\u0000${g.deviceId}`
+        if (seen.has(key)) continue
+        seen.add(key)
         out.push(g)
       }
       return out

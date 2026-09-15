@@ -13,6 +13,14 @@ const grantFile = (grant: string, connectionId?: string): string =>
   JSON.stringify({ v: 1, grant, ...(connectionId ? { connectionId } : {}) })
 
 describe('parseRemoteGrants', () => {
+  it('tags every grant with the host it was swept from, and leaves it untagged without one', () => {
+    const line = `phone\t${grantFile('tok', 'conn-1')}`
+    expect(parseRemoteGrants(line, 'u@host1')).toEqual([
+      { deviceId: 'phone', grant: 'tok', connectionId: 'conn-1', host: 'u@host1' }
+    ])
+    expect(parseRemoteGrants(line)).toEqual([{ deviceId: 'phone', grant: 'tok', connectionId: 'conn-1' }])
+  })
+
   it('parses `<deviceId>\\t<json>` lines', () => {
     const out = parseRemoteGrants(
       `dev-a\t${grantFile('tok-a', 'conn-a')}\ndev-b\t${grantFile('tok-b')}\n`
@@ -47,27 +55,40 @@ describe('createRemoteGrantsCache', () => {
     expect(createRemoteGrantsCache().get()).toEqual([])
   })
 
-  it('keeps ONE grant per device id — two hosts holding the same phone must not double-push', () => {
+  // One phone that reaches two hosts drops a DIFFERENT grant on each, each signed for that host's
+  // connectionId — the scope the phone's per-host mute is keyed by. Both must survive, tagged with
+  // their host, so push-notify can route a host's events under that host's grant (issue #435).
+  // Collapsing them per device here sent host 2's events under host 1's grant.
+  it('keeps every host\u2019s grant for one phone, each tagged with the host it came from', () => {
     const c = createRemoteGrantsCache()
     c.set([
-      { deviceId: 'phone', grant: 'tok-host1' },
-      { deviceId: 'phone', grant: 'tok-host2' },
-      { deviceId: 'other', grant: 'tok-other' }
+      ...parseRemoteGrants(`phone\t${grantFile('tok-host1', 'conn-1')}`, 'u@host1'),
+      ...parseRemoteGrants(`phone\t${grantFile('tok-host2', 'conn-2')}\nother\t${grantFile('tok-other')}`, 'u@host2')
     ])
     expect(c.get()).toEqual([
-      { deviceId: 'phone', grant: 'tok-host1' },
-      { deviceId: 'other', grant: 'tok-other' }
+      { deviceId: 'phone', grant: 'tok-host1', connectionId: 'conn-1', host: 'u@host1' },
+      { deviceId: 'phone', grant: 'tok-host2', connectionId: 'conn-2', host: 'u@host2' },
+      { deviceId: 'other', grant: 'tok-other', host: 'u@host2' }
     ])
   })
 
-  it('a 401 on the chosen token promotes the OTHER host’s grant for the same device', () => {
+  it('dedupes only WITHIN a host: the same device listed twice for one host keeps the first', () => {
     const c = createRemoteGrantsCache()
     c.set([
-      { deviceId: 'phone', grant: 'tok-host1' },
-      { deviceId: 'phone', grant: 'tok-host2' }
+      { deviceId: 'phone', grant: 'tok-a', host: 'u@host1' },
+      { deviceId: 'phone', grant: 'tok-b', host: 'u@host1' }
+    ])
+    expect(c.get()).toEqual([{ deviceId: 'phone', grant: 'tok-a', host: 'u@host1' }])
+  })
+
+  it('a 401 on one host\u2019s token drops that grant and leaves the other host\u2019s standing', () => {
+    const c = createRemoteGrantsCache()
+    c.set([
+      { deviceId: 'phone', grant: 'tok-host1', host: 'u@host1' },
+      { deviceId: 'phone', grant: 'tok-host2', host: 'u@host2' }
     ])
     c.markDead('tok-host1')
-    expect(c.get()).toEqual([{ deviceId: 'phone', grant: 'tok-host2' }])
+    expect(c.get()).toEqual([{ deviceId: 'phone', grant: 'tok-host2', host: 'u@host2' }])
   })
 
   it('a dead mark survives later sweeps while the token is still there', () => {

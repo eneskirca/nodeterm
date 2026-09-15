@@ -86,22 +86,49 @@ interface SendTarget {
 }
 
 /**
- * One POST per DEVICE, not per grant FILE.
+ * One POST per (host, device), not per grant FILE.
  *
  * `src/main`'s `allPushGrants` concatenates this machine's `~/.nodeterm/push-grants` with a sweep of
- * every connected SSH host, and one phone that reached two of them dropped a DIFFERENT token on
- * each — so the same `deviceId` can appear twice in the merged list and would earn that phone two
- * notifications for one event. (`remote-push-grants`'s cache dedupes only within its own half.)
- * First occurrence wins, which is why main puts the local grants first; a 401/403 on the survivor
- * marks it dead and the next send promotes the other, the same self-healing the remote cache does.
+ * every connected SSH host, so one phone that reached several of them appears several times — once
+ * per host, with a DIFFERENT token each time. Those are not duplicates: each token is signed for
+ * the phone's connectionId for THAT host, which is also the scope its per-host mute is keyed by.
+ * This used to collapse them per deviceId ("first occurrence wins") and post every event under the
+ * survivor, so host B's events went out under host A's grant and the backend consulted A's mute for
+ * a B event — a host the user had turned OFF kept ringing the phone (issue #435). Events are now
+ * routed per host (`grantsFor` / `groupByGrantHost`); within one host a device has exactly one file
+ * (the filename is the deviceId), so the first-wins here is defensive only.
  */
-function dedupeGrantsByDevice(grants: readonly PushGrant[]): PushGrant[] {
+function dedupeGrants(grants: readonly PushGrant[]): PushGrant[] {
   const seen = new Set<string>()
   const out: PushGrant[] = []
   for (const g of grants) {
-    if (seen.has(g.deviceId)) continue
-    seen.add(g.deviceId)
+    const key = `${g.host ?? ''}\u0000${g.deviceId}`
+    if (seen.has(key)) continue
+    seen.add(key)
     out.push(g)
+  }
+  return out
+}
+
+/** The grants that may carry an event about `host` (undefined = a node on THIS machine): exactly
+ *  the ones swept from that host. A grant dropped here never carries a remote node's event, and a
+ *  remote host's grant never carries another host's — the phone signed each for one host. */
+function grantsFor(grants: readonly PushGrant[], host: string | undefined): PushGrant[] {
+  return grants.filter((g) => (g.host ?? undefined) === host)
+}
+
+/** Bucket a batch by the host each item's node lives on. Without a `hostOf` resolver (the Server
+ *  Edition: one machine, its own grant dir) everything is local — one bucket, the legacy fan-out. */
+function groupByGrantHost<T extends { nodeId: string }>(
+  items: readonly T[],
+  hostOf: ((nodeId: string) => string | undefined) | undefined
+): Map<string | undefined, T[]> {
+  const out = new Map<string | undefined, T[]>()
+  for (const it of items) {
+    const host = hostOf ? hostOf(it.nodeId) : undefined
+    const bucket = out.get(host)
+    if (bucket) bucket.push(it)
+    else out.set(host, [it])
   }
   return out
 }
@@ -134,6 +161,12 @@ function dedupeGrantsByDevice(grants: readonly PushGrant[]): PushGrant[] {
  * knowable — either the backend does it (it sees the relay device row AND the grant's deviceId, so
  * it is the only party holding both halves) or the desktop starts persisting the phone's deviceId
  * beside its pinned pubkey at pair time. Both are protocol changes, not a filter we can add here.
+ *
+ * **The grants are the whole list, tagged by host — the SPLIT happens at send time.** The relay leg
+ * carries every event under this machine's identity (the backend has no other host identity to
+ * check a per-host mute against — see the known gap in the PR). The granted leg is per host: each
+ * event goes only under the grants swept from the host its node lives on (`grantHostFor`), because
+ * a grant is signed for that one host's connectionId and the phone's mute is keyed by exactly that.
  */
 function resolveSendTarget(
   getHostIdentity: () => PushHostIdentity | null,
@@ -142,7 +175,7 @@ function resolveSendTarget(
   const id = getHostIdentity()
   // The paired-phone gate is host-mode only — a grant IS the phone's opt-in.
   const host = id && id.hasPairedPhone ? id : null
-  const grants = dedupeGrantsByDevice(getGrants?.() ?? [])
+  const grants = dedupeGrants(getGrants?.() ?? [])
   if (!host && grants.length === 0) return null
   return { host, grants }
 }
@@ -189,6 +222,13 @@ export interface PushNotifyDeps {
   getGrants?: () => PushGrant[]
   /** Mark a grant dead after a 401/403 (dropped until its file changes). Paired with `getGrants`. */
   markGrantDead?: (grant: string) => void
+  /** The SSH host (`sshHostKey`, `user@host`) a node's project lives on, or undefined for a node on
+   *  THIS machine. Drives the granted leg's per-host routing: an event goes only under the grants
+   *  swept from its node's host (`PushGrant.host`), never under another host's — each grant is
+   *  signed for one host's connectionId, the scope the phone's per-host mute is keyed by (issue
+   *  #435). Absent (the Server Edition) ⇒ every node is local and every grant is local: the legacy
+   *  fan-out. In production this is `workspaceStore.sshProjectIdForNode` → the project's host key. */
+  grantHostFor?: (nodeId: string) => string | undefined
   /** `os.hostname()`, passed in to keep core pure — the granted-mode `hostLabel` (a granted send
    *  carries no host identity, so this is the only host label the backend sees). */
   hostLabel?: () => string
@@ -375,17 +415,21 @@ export function createPushNotify(deps: PushNotifyDeps): PushNotifyHandle {
       })
     }
     // …and the grants, in the SAME flush (see resolveSendTarget: a paired phone must not silence
-    // the SSH-only ones). One POST per live grant, Bearer-authorized, NO host identity fields —
-    // just `hostLabel` (os.hostname(), injected). A 401/403 marks that grant dead.
+    // the SSH-only ones). PER HOST: each event goes only under the grants swept from the host its
+    // node lives on — a grant is signed for that one host's connectionId, which is what the phone's
+    // per-host mute is keyed by (issue #435). One POST per live grant, Bearer-authorized, NO host
+    // identity fields — just `hostLabel` (os.hostname(), injected). A 401/403 marks that grant dead.
     const label = deps.hostLabel?.()
-    for (const g of target.grants) {
-      const res = await postJson(
-        fetchImpl,
-        url,
-        { ...(label ? { hostLabel: label } : {}), events },
-        g.grant
-      )
-      if (res && (res.status === 401 || res.status === 403)) deps.markGrantDead?.(g.grant)
+    for (const [host, group] of groupByGrantHost(events, deps.grantHostFor)) {
+      for (const g of grantsFor(target.grants, host)) {
+        const res = await postJson(
+          fetchImpl,
+          url,
+          { ...(label ? { hostLabel: label } : {}), events: group },
+          g.grant
+        )
+        if (res && (res.status === 401 || res.status === 403)) deps.markGrantDead?.(g.grant)
+      }
     }
   }
 
@@ -490,6 +534,9 @@ export interface LiveUpdateDeps {
   getGrants?: () => PushGrant[]
   /** Mark a grant dead after a 401/403 (dropped until its file changes). Paired with `getGrants`. */
   markGrantDead?: (grant: string) => void
+  /** See the identical field on `PushNotifyDeps`: the node → SSH host resolver behind the granted
+   *  leg's per-host routing. Absent ⇒ every node and every grant is local. */
+  grantHostFor?: (nodeId: string) => string | undefined
   /** `os.hostname()`, passed in to keep core pure — the granted-mode `hostLabel`. */
   hostLabel?: () => string
   /** The `settings.mobilePushEnabled` master switch. */
@@ -713,17 +760,20 @@ export function createLiveUpdatePush(deps: LiveUpdateDeps): LiveUpdateHandle {
         updates
       })
     }
-    // …and the grants, in the SAME flush (see resolveSendTarget). One POST per live grant,
+    // …and the grants, in the SAME flush (see resolveSendTarget), PER HOST exactly like notify:
+    // an update goes only under the grants swept from its node's host. One POST per live grant,
     // Bearer-authorized, NO host identity fields.
     const label = deps.hostLabel?.()
-    for (const g of target.grants) {
-      const res = await postJson(
-        fetchImpl,
-        url,
-        { ...(label ? { hostLabel: label } : {}), updates },
-        g.grant
-      )
-      if (res && (res.status === 401 || res.status === 403)) deps.markGrantDead?.(g.grant)
+    for (const [host, group] of groupByGrantHost(updates, deps.grantHostFor)) {
+      for (const g of grantsFor(target.grants, host)) {
+        const res = await postJson(
+          fetchImpl,
+          url,
+          { ...(label ? { hostLabel: label } : {}), updates: group },
+          g.grant
+        )
+        if (res && (res.status === 401 || res.status === 403)) deps.markGrantDead?.(g.grant)
+      }
     }
   }
 

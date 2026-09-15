@@ -617,10 +617,16 @@ describe('createPushNotify', () => {
       h.stop()
     })
 
-    // The one overlap the desktop CAN see: the same phone dropped a grant on this Mac AND on an SSH
-    // host it reaches (src/main's allPushGrants concatenates both lists), so the same deviceId shows
-    // up twice with different tokens. First occurrence wins — main puts the local grants first.
-    it('OVERLAP: two grants for the same deviceId collapse to ONE POST (first wins)', async () => {
+    // A grant authorizes pushes about the HOST it was dropped on — nothing else. src/main's
+    // allPushGrants concatenates this machine's grants with a sweep of every connected SSH host, so
+    // one phone that reached three hosts contributes three grants, each signed for a DIFFERENT
+    // connectionId (the phone's own saved-connection UUID for that host — exactly the scope its
+    // per-host mute is keyed by). Collapsing them per deviceId and posting every event under the
+    // survivor sent host B's events under host A's grant: the backend then consulted A's mute for
+    // B's event, and a host the user had turned OFF kept ringing the phone (issue #435, field
+    // report). Events are routed to the grants swept from THEIR host; a node with no host
+    // attribution (a local node, or the Server Edition) goes to this machine's own grants.
+    it('PER-HOST: an event routes ONLY to the grants swept from the host its node lives on', async () => {
       const em = makeEmitter()
       const h = createPushNotify(
         baseDeps({
@@ -628,7 +634,68 @@ describe('createPushNotify', () => {
           getHostIdentity: () => null,
           getGrants: () => [
             { deviceId: 'dev-A', grant: 'tok-local' },
-            { deviceId: 'dev-A', grant: 'tok-remote' },
+            { deviceId: 'dev-A', grant: 'tok-h1', host: 'u@h1' },
+            { deviceId: 'dev-A', grant: 'tok-h2', host: 'u@h2' },
+            { deviceId: 'dev-B', grant: 'tok-h2-B', host: 'u@h2' }
+          ],
+          grantHostFor: (nodeId) => ({ a: 'u@h1', b: 'u@h2' })[nodeId],
+          hostLabel: () => 'niova'
+        })
+      )
+      em.emit(iev({ nodeId: 'a', title: 'A' }))
+      em.emit(iev({ nodeId: 'b', title: 'B' }))
+      em.emit(iev({ nodeId: 'c', title: 'C' })) // no attribution → local
+      await vi.advanceTimersByTimeAsync(2000)
+      const sent = fetchMock.mock.calls.map((c) => [
+        c[1].headers.authorization,
+        JSON.parse(c[1].body).events.map((e: { title: string }) => e.title)
+      ])
+      expect(sent).toEqual(
+        expect.arrayContaining([
+          ['Bearer tok-h1', ['A']],
+          ['Bearer tok-h2', ['B']],
+          ['Bearer tok-h2-B', ['B']],
+          ['Bearer tok-local', ['C']]
+        ])
+      )
+      expect(sent).toHaveLength(4)
+      h.stop()
+    })
+
+    it('PER-HOST: a phone holding grants on two hosts gets ONE push per event, under the right host', async () => {
+      const em = makeEmitter()
+      const h = createPushNotify(
+        baseDeps({
+          subscribe: em.subscribe,
+          getHostIdentity: () => null,
+          getGrants: () => [
+            { deviceId: 'dev-A', grant: 'tok-h1', host: 'u@h1' },
+            { deviceId: 'dev-A', grant: 'tok-h2', host: 'u@h2' }
+          ],
+          grantHostFor: () => 'u@h2',
+          hostLabel: () => 'niova'
+        })
+      )
+      em.emit(iev({ nodeId: 'a', title: 'A' }))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe('Bearer tok-h2')
+      h.stop()
+    })
+
+    // Without any host attribution (the Server Edition: one machine, its own grant dir) every
+    // grant is local and every event is local — the pre-existing fan-out, unchanged. Two files
+    // for one device cannot exist in one dir (the filename IS the deviceId), so the within-host
+    // first-wins dedupe is defensive only.
+    it('no grantHostFor (Server Edition): every event goes to every local grant, first-wins per device', async () => {
+      const em = makeEmitter()
+      const h = createPushNotify(
+        baseDeps({
+          subscribe: em.subscribe,
+          getHostIdentity: () => null,
+          getGrants: () => [
+            { deviceId: 'dev-A', grant: 'tok-A' },
+            { deviceId: 'dev-A', grant: 'tok-A-dup' },
             { deviceId: 'dev-B', grant: 'tok-B' }
           ],
           hostLabel: () => 'niova'
@@ -636,11 +703,30 @@ describe('createPushNotify', () => {
       )
       em.emit(iev({ nodeId: 'a', title: 'A' }))
       await vi.advanceTimersByTimeAsync(2000)
-      expect(fetchMock).toHaveBeenCalledTimes(2)
       expect(fetchMock.mock.calls.map((c) => c[1].headers.authorization)).toEqual([
-        'Bearer tok-local',
+        'Bearer tok-A',
         'Bearer tok-B'
       ])
+      h.stop()
+    })
+
+    // A remote node's event must NEVER fall back to this machine's grants: a grant dropped here
+    // authorizes pushes about this machine only, and a phone that only reaches host h1 has no
+    // connection to open a "local" event with anyway.
+    it('PER-HOST: a remote node with no grant on its host is dropped from the granted leg', async () => {
+      const em = makeEmitter()
+      const h = createPushNotify(
+        baseDeps({
+          subscribe: em.subscribe,
+          getHostIdentity: () => null,
+          getGrants: () => [{ deviceId: 'dev-A', grant: 'tok-local' }],
+          grantHostFor: () => 'u@h1',
+          hostLabel: () => 'niova'
+        })
+      )
+      em.emit(iev({ nodeId: 'a', title: 'A' }))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(fetchMock).not.toHaveBeenCalled()
       h.stop()
     })
 
@@ -1447,19 +1533,29 @@ describe('createLiveUpdatePush', () => {
       h.stop()
     })
 
-    it('OVERLAP: two grants for the same deviceId collapse to ONE POST (first wins)', async () => {
+    // Same per-host routing as notify (issue #435): a Live Activity update about a node on host h2
+    // goes ONLY under h2's grant — never under another host's, whose connectionId names a host the
+    // phone may have muted, and whose card the phone would then attribute to the wrong connection.
+    it('PER-HOST: an update routes ONLY to the grants swept from the host its node lives on', async () => {
       const { h, st } = wire({
         getHostIdentity: () => null,
         getGrants: () => [
           { deviceId: 'dev-A', grant: 'tok-local' },
-          { deviceId: 'dev-A', grant: 'tok-remote' }
+          { deviceId: 'dev-A', grant: 'tok-h1', host: 'u@h1' },
+          { deviceId: 'dev-A', grant: 'tok-h2', host: 'u@h2' }
         ],
+        grantHostFor: (nodeId) => ({ a: 'u@h2' })[nodeId],
         hostLabel: () => 'niova'
       })
       st.emit({ nodeId: 'a', event: 'start', state: 'working', ts: 1 })
+      st.emit({ nodeId: 'c', event: 'start', state: 'working', ts: 2 }) // unattributed → local
       await vi.advanceTimersByTimeAsync(1000)
-      expect(fetchMock).toHaveBeenCalledTimes(1)
-      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe('Bearer tok-local')
+      const sent = fetchMock.mock.calls.map((c) => [
+        c[1].headers.authorization,
+        JSON.parse(c[1].body).updates.map((u: { nodeId: string }) => u.nodeId)
+      ])
+      expect(sent).toEqual(expect.arrayContaining([['Bearer tok-h2', ['a']], ['Bearer tok-local', ['c']]]))
+      expect(sent).toHaveLength(2)
       h.stop()
     })
 
