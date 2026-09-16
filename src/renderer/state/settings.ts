@@ -24,6 +24,12 @@ function scheduleSave(next: Settings): void {
   if (saveTimer) return
   saveTimer = setTimeout(() => {
     saveTimer = null
+    // Re-checked at fire time: a jsdom test file can end inside the coalesce window, and vitest
+    // deletes `window` from the globals while this Node timer is still pending. Drop the save.
+    if (typeof window === 'undefined') {
+      pendingSave = null
+      return
+    }
     if (pendingSave) void window.nodeTerminal.settings.save(pendingSave)
     pendingSave = null
   }, SAVE_COALESCE_MS)
