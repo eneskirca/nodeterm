@@ -77,10 +77,20 @@ export const CODEX_WINDOWS_WRAPPER_FILE = 'codex-hook.cmd'
  * written with CRLF regardless of the host that generated it (an SSH host never runs it — see
  * `buildManagedCommand`'s platform parameter).
  */
+/**
+ * The batch lines that leave `NT_SH` naming a POSIX shell (or undefined): the candidates above in
+ * order, then PATH. Shared with the antigravity wrapper so the two cannot disagree about where Git
+ * Bash lives. The caller must `set "NT_SH="` first.
+ */
+export function windowsShProbeBatch(): string[] {
+  return [
+    ...WINDOWS_SH_CANDIDATES.map((p) => `if not defined NT_SH if exist "${p}" set "NT_SH=${p}"`),
+    // PATH last: least predictable, and a WSL shim there cannot run a Windows-path script.
+    'if not defined NT_SH for %%I in (sh.exe) do if not defined NT_SH set "NT_SH=%%~$PATH:I"'
+  ]
+}
+
 export function buildCodexWindowsWrapper(): string {
-  const probe = WINDOWS_SH_CANDIDATES.map(
-    (p) => `if not defined NT_SH if exist "${p}" set "NT_SH=${p}"`
-  )
   const lines = [
     '@echo off',
     'rem Managed by nodeterm (agent-hooks). Regenerated on every app launch; edits are lost.',
@@ -88,9 +98,7 @@ export function buildCodexWindowsWrapper(): string {
     'set "NT_SCRIPT=%~dp0codex.sh"',
     'if not exist "%NT_SCRIPT%" goto :nt_drain',
     'set "NT_SH="',
-    ...probe,
-    // PATH last: least predictable, and a WSL shim there cannot run a Windows-path script.
-    'if not defined NT_SH for %%I in (sh.exe) do if not defined NT_SH set "NT_SH=%%~$PATH:I"',
+    ...windowsShProbeBatch(),
     'if not defined NT_SH goto :nt_drain',
     'set "NT_ARG=%NT_SCRIPT:\\=/%"',
     '"%NT_SH%" "%NT_ARG%"',

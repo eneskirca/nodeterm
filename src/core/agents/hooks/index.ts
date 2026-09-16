@@ -8,6 +8,7 @@ import { installOpencodeHooks, removeOpencodeHooks } from './opencode'
 import { installGrokHooks, removeGrokHooks } from './grok'
 import { ensureGrokHomeProbed, grokHomeDir, grokHomeFallbackWasSilent } from '../grok-paths'
 import { installCopilotHooks, removeCopilotHooks } from './copilot'
+import { installAntigravityHooksWithProbe, removeAntigravityHooks } from './antigravity'
 
 type HookInstaller = readonly [string, () => void]
 
@@ -17,7 +18,12 @@ export const MANAGED_HOOK_INSTALLERS: readonly HookInstaller[] = [
   ['gemini', installGeminiHooks],
   ['opencode', installOpencodeHooks],
   ['grok', installGrokHooks],
-  ['copilot', installCopilotHooks]
+  ['copilot', installCopilotHooks],
+  // Writes the GLOBAL ~/.gemini/config/hooks.json: a synchronous gate in front of every agy tool
+  // call on the machine. Only where agy is installed, decided in two passes around the login-shell
+  // PATH probe (the same shape as grok's $GROK_HOME re-install below); refuses on Windows while
+  // cmd.exe has an AutoRun (antigravity-autorun.ts).
+  ['antigravity', () => void installAntigravityHooksWithProbe()]
 ]
 
 export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
@@ -26,7 +32,8 @@ export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
   ['gemini', removeGeminiHooks],
   ['opencode', removeOpencodeHooks],
   ['grok', removeGrokHooks],
-  ['copilot', removeCopilotHooks]
+  ['copilot', removeCopilotHooks],
+  ['antigravity', () => removeAntigravityHooks()]
 ]
 
 export function installManagedAgentHooks(): void {
