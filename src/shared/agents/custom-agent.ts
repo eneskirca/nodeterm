@@ -29,6 +29,8 @@ export interface EffectiveAgentConfig {
   launchCmd: string
   promptInjectionMode: PromptInjectionMode
   argvPromptSeparator?: string
+  /** See `AgentConfig.promptFlag` — inherited from the base harness only, like the separator. */
+  promptFlag?: string
   expectedProcess?: string
   /** `true` for a custom agent (`CustomAgent`), `false` for a builtin. */
   custom: boolean
@@ -76,6 +78,7 @@ export function resolveAgentConfig(
     launchCmd,
     promptInjectionMode,
     argvPromptSeparator: base?.argvPromptSeparator,
+    promptFlag: base?.promptFlag,
     expectedProcess: base?.expectedProcess,
     custom: true,
     baseAgent: customAgent?.baseAgent

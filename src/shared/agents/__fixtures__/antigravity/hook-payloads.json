@@ -1,0 +1,205 @@
+{
+  "_provenance": "Captured live from the Antigravity CLI (agy) 1.2.3 on Windows 11, real Google account, 2026-09-15, with a temporary HOME. The 'event' of each entry is NOT from the payload: agy does not send the event name; the capture .cmd wrapper recorded it from an environment variable. Paths, conversationId and artifactDirectoryPath are anonymised; KEYS AND SHAPES ARE UNCHANGED (camelCase, as protojson emits them).",
+  "_eventNameIsNotInPayload": true,
+  "_terminationReasonEnum": [
+    "UNSPECIFIED",
+    "ERROR",
+    "USER_CANCELED",
+    "MAX_INVOCATIONS",
+    "NO_TOOL_CALL",
+    "MAX_FORCED_INVOCATIONS",
+    "EARLY_CONTINUE",
+    "TERMINAL_STEP_TYPE",
+    "TERMINAL_CUSTOM_HOOK",
+    "INJECTED_RESPONSE",
+    "MAX_TOKEN_BUDGET_EXCEEDED",
+    "HALTED_STEP"
+  ],
+  "_terminationReasonObserved": [
+    "NO_TOOL_CALL",
+    "TERMINAL_CUSTOM_HOOK"
+  ],
+  "events": [
+    {
+      "event": "PreInvocation",
+      "note": "start of the turn; invocationNum starts at 0",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "initialNumSteps": 1,
+        "invocationNum": 0,
+        "modelName": "gemini-3.8-flash-high",
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "note": "an ordinary tool call (run_command in the background); args carries the readable toolAction/toolSummary",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "modelName": "gemini-3.8-flash-high",
+        "stepIdx": 2,
+        "toolCall": {
+          "args": {
+            "CommandLine": "ping -n 30 127.0.0.1",
+            "Cwd": "C:\\Users\\user\\.gemini\\antigravity-cli\\scratch",
+            "WaitMsBeforeAsync": 500,
+            "toolAction": "Running ping command in background",
+            "toolSummary": "Background ping"
+          },
+          "name": "run_command"
+        },
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "note": "SAME stepIdx as its PreToolUse; arrived 27.5 s AFTER the Stop fullyIdle:false because the tool ran in the background",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "error": "",
+        "modelName": "gemini-3.8-flash-high",
+        "stepIdx": 2,
+        "toolCall": {
+          "args": {
+            "CommandLine": "ping -n 30 127.0.0.1",
+            "Cwd": "C:\\Users\\user\\.gemini\\antigravity-cli\\scratch",
+            "WaitMsBeforeAsync": 500,
+            "toolAction": "Running ping command in background",
+            "toolSummary": "Background ping"
+          },
+          "name": "run_command"
+        },
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "PostInvocation",
+      "note": "same fields as PreInvocation",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "initialNumSteps": 1,
+        "invocationNum": 0,
+        "modelName": "gemini-3.8-flash-high",
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "Stop",
+      "note": "INTERMEDIATE Stop: the model turn ended while a background task was still alive -> fullyIdle:false",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "error": "",
+        "executionNum": 0,
+        "fullyIdle": false,
+        "modelName": "gemini-3.8-flash-high",
+        "terminationReason": "NO_TOOL_CALL",
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "Stop",
+      "note": "FINAL Stop of the same turn, after the background task finished",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+        "conversationId": "00000000-0000-4000-8000-000000000001",
+        "error": "",
+        "executionNum": 0,
+        "fullyIdle": true,
+        "modelName": "gemini-3.8-flash-high",
+        "terminationReason": "NO_TOOL_CALL",
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "note": "ask_question: the only measured path to NEEDS YOU; args.questions[].question/options carry the text",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000002",
+        "conversationId": "00000000-0000-4000-8000-000000000002",
+        "modelName": "gemini-3.8-flash-high",
+        "stepIdx": 2,
+        "toolCall": {
+          "args": {
+            "questions": [
+              {
+                "is_multi_select": false,
+                "options": [
+                  "JSON",
+                  "YAML",
+                  "TOML"
+                ],
+                "question": "Qual formato de arquivo de configuração você prefere utilizar?"
+              }
+            ],
+            "toolAction": "Asking format preference",
+            "toolSummary": "Configuration format inquiry"
+          },
+          "name": "ask_question"
+        },
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000002/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": [
+          "C:/work/project"
+        ]
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "note": "the pair of the ask_question: arrived only 63 s later, when the question left the screen",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000002",
+        "conversationId": "00000000-0000-4000-8000-000000000002",
+        "error": "",
+        "modelName": "gemini-3.8-flash-high",
+        "stepIdx": 2,
+        "toolCall": {
+          "args": {
+            "questions": [
+              {
+                "is_multi_select": false,
+                "options": [
+                  "JSON",
+                  "YAML",
+                  "TOML"
+                ],
+                "question": "Qual formato de arquivo de configuração você prefere utilizar?"
+              }
+            ],
+            "toolAction": "Asking format preference",
+            "toolSummary": "Configuration format inquiry"
+          },
+          "name": "ask_question"
+        },
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000002/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": [
+          "C:/work/project"
+        ]
+      }
+    },
+    {
+      "event": "Stop",
+      "note": "terminationReason TERMINAL_CUSTOM_HOOK, produced by PostInvocation answering terminationBehavior=terminate",
+      "payload": {
+        "artifactDirectoryPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000003",
+        "conversationId": "00000000-0000-4000-8000-000000000003",
+        "error": "",
+        "executionNum": 0,
+        "fullyIdle": true,
+        "modelName": "gemini-3.8-flash-high",
+        "terminationReason": "TERMINAL_CUSTOM_HOOK",
+        "transcriptPath": "C:/Users/user/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000003/.system_generated/logs/transcript_full.jsonl",
+        "workspacePaths": []
+      }
+    }
+  ]
+}

@@ -143,6 +143,34 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
       ).command
     ).toBe("copilot --interactive 'fix it' --session-id=abc-123")
   })
+  it('Antigravity delivers its prompt through --prompt-interactive, never a positional', () => {
+    // `agy` 1.2.3 has no positional prompt (subcommands sit in that slot) and spells its
+    // interactive-with-prompt flag `--prompt-interactive`; copilot's `--interactive` is an error.
+    expect(
+      assembleLaunchCommand({ agentId: 'antigravity', initialPrompt: 'fix  it\nnow' }, ENV).command
+    ).toBe("agy --prompt-interactive 'fix it now'")
+    expect(assembleLaunchCommand({ agentId: 'antigravity' }, ENV).command).toBe('agy')
+    // No minted id and no permission flag: antigravity is in neither list yet.
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'antigravity', sessionId: 'abc-123', sessionIdFlagSupported: true, permissionMode: 'plan' },
+        ENV
+      ).command
+    ).toBe('agy')
+  })
+  it('a custom agent built on Antigravity inherits its prompt flag', () => {
+    setCustomAgentBaseResolver((id) => (id === 'custom:agy' ? 'antigravity' : undefined))
+    const agyCustom: CustomAgent = {
+      id: 'custom:agy',
+      label: 'agy (mine)',
+      launchCmd: 'agy-wrapper',
+      baseAgent: 'antigravity',
+      promptInjectionMode: 'argv'
+    }
+    expect(
+      assembleLaunchCommand({ agentId: 'custom:agy', customAgent: agyCustom, initialPrompt: 'go' }, ENV).command
+    ).toBe("agy-wrapper --prompt-interactive 'go'")
+  })
   it('adds a safely quoted model override after the ordinary Claude launch flags', () => {
     expect(
       assembleLaunchCommand(
