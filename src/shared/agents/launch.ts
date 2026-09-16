@@ -206,7 +206,7 @@ export function assembleLaunchCommand(
     eff.promptInjectionMode === 'flag-prompt'
       ? '--prompt'
       : eff.promptInjectionMode === 'flag-interactive'
-        ? '--interactive'
+        ? (eff.promptFlag ?? '--interactive')
         : null
   const isFlagPrompt = !!promptFlag
   const usesSep = !!promptArg && !!sep && !isFlagPrompt

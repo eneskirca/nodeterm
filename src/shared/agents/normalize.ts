@@ -841,6 +841,107 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
   return null
 }
 
+// Antigravity CLI (`agy`) hook payload — camelCase, as its protojson writer emits it. Measured on
+// agy 1.2.3 (fixture: __fixtures__/antigravity/hook-payloads.json).
+//
+// THE EVENT NAME IS NOT IN THE PAYLOAD. None of the five events carries it, and PreInvocation and
+// PostInvocation are indistinguishable by their keys. The managed hook command exports it as
+// NODETERM_AGY_EVENT and the script POSTs it as the `nodeterm_hook_event` form field, which the hook
+// server merges into this object AFTER parsing the agent's JSON — so a value planted inside the
+// agent's payload never wins.
+interface AntigravityPayload {
+  nodeterm_hook_event?: unknown
+  conversationId?: unknown
+  fullyIdle?: unknown
+  terminationReason?: unknown
+  invocationNum?: unknown
+  toolCall?: { name?: unknown } | null
+}
+
+/**
+ * The tool names that put a human in the loop, matched EXACTLY (rule 7: a closed set, never a
+ * substring). `ask_question` is the only one: `agy`'s own step-type enum (`CORTEX_STEP_TYPE_*`,
+ * read out of the 1.2.3 binary) has ASK_QUESTION and no ASK_PERMISSION, so there is no
+ * `ask_permission` tool to match.
+ *
+ * What this CANNOT see, and nobody should try to guess: `agy`'s own permission prompt ("Run this
+ * command?") fires NO hook. A session parked on it looks exactly like a slow tool.
+ */
+const ANTIGRAVITY_ASK_TOOLS = new Set(['ask_question'])
+
+const antigravityToolName = (p: AntigravityPayload): string | undefined => {
+  const name = p.toolCall && typeof p.toolCall === 'object' ? p.toolCall.name : undefined
+  return typeof name === 'string' ? name : undefined
+}
+
+/**
+ * PURE — no state, on purpose. Three decisions carry the whole mapping:
+ *
+ * 1. `Stop` with `fullyIdle === false` is NOT terminal (→ `working`). `agy` stops its model loop
+ *    between steps while a background tool still runs, then reports `fullyIdle:true` at the real
+ *    end. Strict `=== false`: a payload missing the field reads as "finished", the safe direction
+ *    for a badge that would otherwise stick. With this rule the `PostToolUse` that arrives AFTER
+ *    such a Stop is simply the end of that background tool.
+ *
+ * 2. NEEDS YOU is bracketed by the ask tool itself, never by adjacency. `PreToolUse` and
+ *    `PostToolUse` do not alternate: a whole invocation can open and close between them (measured:
+ *    63 s between the pair while a question sat on screen), and a BACKGROUND tool's `PostToolUse`
+ *    can land in the middle of a pending question. So only the ask tool's own `PostToolUse` clears
+ *    the question (→ `working`); every other tool's `PostToolUse` says nothing we did not already
+ *    know and maps to null, which keeps a finished background ping from wiping a live NEEDS YOU.
+ *    Correlating on `stepIdx` exactly would need state across events; naming the tool gives the
+ *    same answer for the one open question `agy` can have, without it.
+ *
+ * 3. `errored` is set only for `terminationReason === 'ERROR'`, UPPER_SNAKE — the real enum
+ *    (12 values, read from the binary; the bundled docs' lowercase example is wrong). It keeps an
+ *    `--after` dependent from launching on a broken turn (#521). NOT produced on a device yet: see
+ *    docs/antigravity-agent.md. `MAX_*`, `USER_CANCELED` and the rest are unhappy ends, not API
+ *    errors, and calling them errors would be a guess.
+ *
+ * 4. `newTurn` ONLY on the `PreInvocation` whose `invocationNum === 0`. `PreInvocation` fires per
+ *    MODEL CALL, so flagging every one would be wrong; but agy numbers the calls of one execution
+ *    from 0, and the measurement shows a 0 at the start of every execution — including the one that
+ *    resumes after a background tool finished (log-bg.jsonl: 0, 1, then 0 again). A turn boundary
+ *    IS load-bearing here: `lastTurnError` (#521) is retired only by `newTurn`, so without it one
+ *    errored turn would hold every `--after` dependent QUEUED for the rest of the app run; and the
+ *    done-holdoff drops a non-newTurn `working` that follows a `done` by < 3 s, which is exactly a
+ *    quick follow-up prompt. Strict `=== 0`: a missing or non-numeric value marks nothing. The
+ *    other effects of `newTurn` (fan-out clears, the prompt line) have nothing to act on for agy —
+ *    it emits no subagent events and no prompt text.
+ */
+export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent | null {
+  const p = env.payload as AntigravityPayload
+  const ev = typeof p.nodeterm_hook_event === 'string' ? p.nodeterm_hook_event : undefined
+  const sessionId = typeof p.conversationId === 'string' ? p.conversationId : undefined
+  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId }
+
+  if (ev === 'PreInvocation') {
+    return { ...base, kind: 'state', state: 'working', ...(p.invocationNum === 0 ? { newTurn: true } : {}) }
+  }
+  if (ev === 'PreToolUse') {
+    const tool = antigravityToolName(p)
+    const asks = tool !== undefined && ANTIGRAVITY_ASK_TOOLS.has(tool)
+    return { ...base, kind: 'state', state: asks ? 'waiting' : 'working' }
+  }
+  if (ev === 'PostToolUse') {
+    const tool = antigravityToolName(p)
+    if (tool !== undefined && ANTIGRAVITY_ASK_TOOLS.has(tool)) {
+      return { ...base, kind: 'state', state: 'working' }
+    }
+    return null
+  }
+  if (ev === 'Stop') {
+    if (p.fullyIdle === false) return { ...base, kind: 'state', state: 'working' }
+    return {
+      ...base,
+      kind: 'state',
+      state: 'done',
+      ...(p.terminationReason === 'ERROR' ? { errored: true } : {})
+    }
+  }
+  return null
+}
+
 export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): NormalizedAgentEvent | null {
   if (agentId === 'claude') return normalizeClaude(env)
   if (agentId === 'codex') return normalizeCodex(env)
@@ -848,5 +949,6 @@ export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): Normalized
   if (agentId === 'opencode') return normalizeOpencode(env)
   if (agentId === 'grok') return normalizeGrok(env)
   if (agentId === 'copilot') return normalizeCopilot(env)
+  if (agentId === 'antigravity') return normalizeAntigravity(env)
   return null
 }
