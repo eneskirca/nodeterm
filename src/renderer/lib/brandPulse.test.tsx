@@ -26,7 +26,7 @@ import { BrandPulse } from './agentIcons'
  */
 describe('brandPulsePlan', () => {
   it('gives mascot-less asset agents their own mark', () => {
-    for (const agentId of ['gemini', 'opencode'] as const) {
+    for (const agentId of ['devin', 'gemini', 'opencode'] as const) {
       const plan = brandPulsePlan(agentId, 16)
       expect(plan, agentId).toEqual({ kind: 'asset', src: expect.any(String), size: 16 })
       // A real, non-empty URL — an asset import that silently resolved to '' would render an
@@ -60,7 +60,7 @@ describe('brandPulseBackground', () => {
   // marks (backgroundImage came back ''), because Vite inlines them as data URIs carrying literal
   // `'` and, for three of them, literal `(`/`)`. The notch strip would have shown an empty box.
   it('survives a real CSS parser for every mark', () => {
-    for (const agentId of ['claude', 'codex', 'gemini', 'opencode'] as const) {
+    for (const agentId of ['claude', 'codex', 'devin', 'gemini', 'opencode'] as const) {
       const plan = brandPulsePlan(agentId, 13)
       const src = plan?.kind === 'asset' ? plan.src : ''
       const el = document.createElement('span')
@@ -86,7 +86,7 @@ describe('hasBrandLogo', () => {
   })
 
   it('counts every asset mark and nothing else', () => {
-    for (const agentId of ['claude', 'codex', 'gemini', 'opencode', 'copilot'] as const) {
+    for (const agentId of ['claude', 'codex', 'devin', 'gemini', 'opencode', 'copilot'] as const) {
       expect(hasBrandLogo(agentId), agentId).toBe(true)
     }
     expect(hasBrandLogo('custom:abc')).toBe(false)

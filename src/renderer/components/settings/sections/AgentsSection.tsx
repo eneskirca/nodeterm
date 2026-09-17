@@ -61,7 +61,7 @@ import { FieldRow } from '../FieldRow'
 const ROWS = {
   agents: {
     title: 'Agents',
-    keywords: ['agent', 'claude', 'codex', 'gemini', 'enable', 'disable', 'default']
+    keywords: ['agent', 'claude', 'codex', 'gemini', 'devin', 'enable', 'disable', 'default']
   },
   launchCommands: {
     title: 'Launch commands',
@@ -79,7 +79,8 @@ const ROWS = {
       'codex',
       'gemini',
       'grok',
-      'opencode'
+      'opencode',
+      'devin'
     ]
   },
   vanillaLaunch: {
@@ -121,6 +122,7 @@ const ROWS = {
       'grok',
       'gemini',
       'codex',
+      'devin',
       'approval',
       'shift tab'
     ]

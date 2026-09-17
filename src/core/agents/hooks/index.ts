@@ -8,6 +8,7 @@ import { installOpencodeHooks, removeOpencodeHooks } from './opencode'
 import { installGrokHooks, removeGrokHooks } from './grok'
 import { ensureGrokHomeProbed, grokHomeDir, grokHomeFallbackWasSilent } from '../grok-paths'
 import { installCopilotHooks, removeCopilotHooks } from './copilot'
+import { installDevinHooks, removeDevinHooks } from './devin'
 
 type HookInstaller = readonly [string, () => void]
 
@@ -17,7 +18,8 @@ export const MANAGED_HOOK_INSTALLERS: readonly HookInstaller[] = [
   ['gemini', installGeminiHooks],
   ['opencode', installOpencodeHooks],
   ['grok', installGrokHooks],
-  ['copilot', installCopilotHooks]
+  ['copilot', installCopilotHooks],
+  ['devin', installDevinHooks]
 ]
 
 export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
@@ -26,7 +28,8 @@ export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
   ['gemini', removeGeminiHooks],
   ['opencode', removeOpencodeHooks],
   ['grok', removeGrokHooks],
-  ['copilot', removeCopilotHooks]
+  ['copilot', removeCopilotHooks],
+  ['devin', removeDevinHooks]
 ]
 
 export function installManagedAgentHooks(): void {

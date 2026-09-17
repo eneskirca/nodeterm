@@ -1450,7 +1450,7 @@ the wire never see any of it):
   both directions. Server Edition: inert (no `<webview>` in a plain browser — ghosts are empty
   husks, nothing to preserve). Mobile: N/A (no canvas).
 
-## Agent support (Claude / Codex / Gemini / Copilot / opencode / Grok / custom)
+## Agent support (Claude / Codex / Gemini / Copilot / opencode / Grok / Devin / custom)
 
 The app is a pluggable multi-agent system: Claude Code is one builtin of
 several. Extra terminal-node behavior is driven per agent by a registry + capability lists, a
@@ -1462,7 +1462,7 @@ key. `agentId` is durable because a hand-launched `claude` in a plain terminal i
 else, and its context links must keep classifying across restarts).
 
 - **Agent registry + capabilities** — `src/shared/agents/config.ts` holds `AGENT_CONFIG`
-  (claude/codex/gemini/copilot/opencode/grok: id, label, spawn command, color, `promptInjectionMode`, …) keyed
+  (claude/codex/gemini/copilot/opencode/grok/devin: id, label, spawn command, color, `promptInjectionMode`, …) keyed
   by an **open** `AgentId`
   type (so custom ids fit). Capabilities are membership lists, not flags:
   `AGENT_HOOK_TARGETS`, `RESUMABLE_AGENTS`, `SUBAGENT_CAPABLE`, `RECURRING_CAPABLE`,
@@ -1481,18 +1481,18 @@ else, and its context links must keep classifying across restarts).
   "claude-only" (all verified against `config.ts`, 2026-09-02): the per-node **context meter** is
   `USAGE_CAPABLE = claude/codex/gemini/grok` — grok states BOTH numbers, and its own percentage, in
   `signals.json`;
-  the **permission mode** is `PERMISSION_MODE_CAPABLE = claude/grok/gemini/codex`; the session-name
+  the **permission mode** is `PERMISSION_MODE_CAPABLE = claude/grok/gemini/codex/devin`; the session-name
   sync is **split in two** — `TITLE_READ_CAPABLE = claude/codex/grok/gemini` (read) ⊇
   `RENAME_CAPABLE = claude/grok` (write), because gemini and codex name their own sessions but have
   no rename command (codex's read leg is `readCodexSessionName`);
-  **Context Link** spans five builtins
-  (`CONTEXT_LINK_CAPABLE = claude/codex/gemini/opencode/grok`; the one builtin outside it is
+  **Context Link** spans six builtins
+  (`CONTEXT_LINK_CAPABLE = claude/codex/gemini/opencode/grok/devin`; the one builtin outside it is
   copilot). UI gates
   on these helpers — no hardcoded `=== 'claude'`. **Custom agents** (user-defined in Settings,
   `customAgents`) inherit the declared `baseAgent` harness through `capabilityAgentId`; a custom
   agent with no base remains spawn + terminal-title + process status only. Per-agent write-ups:
-  **`docs/grok-agent.md`**, **`docs/gemini-agent.md`**, **`docs/copilot-agent.md`** (there is none for codex — its approval mapping
-  and every value's reasoning live in `src/shared/agents/approval-mode.ts`);
+  **`docs/grok-agent.md`**, **`docs/gemini-agent.md`**, **`docs/copilot-agent.md`**, **`docs/devin-agent.md`**
+  (codex has none — its approval mapping and every value's reasoning live in `src/shared/agents/approval-mode.ts`);
   the distilled rules are **Adding a new agent** at the end of this section.
 - **Model gateway / switcher** — `settings.modelGateway` stores one gateway root + a NON-SECRET
   credential reference: `${env:VAR}` for environment mode or
@@ -1509,7 +1509,7 @@ else, and its context links must keep classifying across restarts).
   Bifrost's `x-bf-vk` header (needed by legacy, non-`sk-bf-` virtual keys), and runs in core
   (`agent:discover-models`) so browser CORS cannot block the Server Edition and the key never
   enters a terminal command. Support is a
-  capability (`MODEL_SWITCH_CAPABLE = claude/codex/copilot`) resolved through `capabilityAgentId`, so a
+  capability (`MODEL_SWITCH_CAPABLE = claude/codex/copilot/grok`) resolved through `capabilityAgentId`, so a
   custom agent with a supported `baseAgent` inherits it automatically — the settings UI and canvas
   menu carry no agent allowlist. A model switch SIGTERMs the pane's foreground non-shell process
   group (never types `/exit`) and RECYCLES the tmux session before cold-resume: an existing shell may
@@ -1589,7 +1589,7 @@ else, and its context links must keep classifying across restarts).
     because `/quit --delete` exits *and permanently deletes* the session history, i.e. exactly what the
     restart exists to resume (pinned by its own test).
   Full picture, measurements, gaps and a device checklist: **`docs/gemini-agent.md`**.
-- **Permission mode** (agents in `PERMISSION_MODE_CAPABLE` — claude, grok, **gemini**, **codex**) —
+- **Permission mode** (agents in `PERMISSION_MODE_CAPABLE` — claude, grok, **gemini**, **codex**, **devin**) —
   the mode a session **starts** in (`claude --permission-mode <mode>`; Shift+Tab still cycles it at
   runtime). Membership no longer implies claude's flag spelling: **the per-agent translation lives in
   `src/shared/agents/approval-mode.ts`** (`approvalFlags` / `modeSupported`), which is also where
@@ -2566,7 +2566,7 @@ else, and its context links must keep classifying across restarts).
   caller's. The judge is armed on ids that exist only in that tick, which is why `armAfter` takes
   `extraLive` — without it the reviewers would look *deleted*, deletion counts as satisfied, and
   the judge would fire before a single review existed.
-- **Context Link** — a node action gated by `CONTEXT_LINK_CAPABLE` (claude/codex/gemini/opencode/grok;
+- **Context Link** — a node action gated by `CONTEXT_LINK_CAPABLE` (claude/codex/gemini/opencode/grok/devin;
   custom agents + plain terminals excluded). **grok joined in 2026-09, and the file matters:** its
   readable conversation is `chat_history.jsonl`, NOT the `updates.jsonl` its own hook payloads
   advertise and this line used to name. Routing through the advertised path does not error — it opens

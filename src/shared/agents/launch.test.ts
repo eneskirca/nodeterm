@@ -79,6 +79,19 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
     ).toBe('grok')
   })
 
+  it('devin puts the prompt BEHIND a -- separator and the permission flag BEFORE it', () => {
+    expect(
+      assembleLaunchCommand({ agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits' }, ENV).command
+    ).toBe("devin --permission-mode accept-edits -- 'version'")
+  })
+  it('devin does NOT add a --model flag, because Devin has no model gateway and --model takes native slugs', () => {
+    expect(
+      assembleLaunchCommand(
+        { agentId: 'devin', initialPrompt: 'version', permissionMode: 'acceptEdits', model: 'claude-sonnet-4' },
+        ENV
+      ).command
+    ).toBe("devin --permission-mode accept-edits -- 'version'")
+  })
   it('composes session id AND model together, in one line, before the -- separator', () => {
     // launch.ts:226 is the ONLY line where minting and the model flag meet, and until this test it
     // was uncovered: the session-id tests pass no model, the model tests pass no session id and take
@@ -266,6 +279,11 @@ describe('assembleResumeCommand', () => {
   it('claude resumes with --resume', () => {
     expect(assembleResumeCommand({ agentId: 'claude', sessionId: 'abc-123' }, ENV).command).toBe(
       'claude --resume abc-123'
+    )
+  })
+  it('devin resumes with --resume <sid>', () => {
+    expect(assembleResumeCommand({ agentId: 'devin', sessionId: 'abc-123' }, ENV).command).toBe(
+      'devin --resume abc-123'
     )
   })
   it('codex resumes with the subcommand form', () => {

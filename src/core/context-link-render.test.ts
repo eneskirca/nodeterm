@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
-import { linesFromGrok, renderTranscriptLines } from './context-link-render'
+import { linesFromDevin, linesFromGrok, renderTranscriptLines } from './context-link-render'
 
 const buf = readFileSync(path.join(__dirname, '__fixtures__/grok/chat_history.jsonl'), 'utf8')
 
@@ -104,5 +104,49 @@ describe('linesFromGrok over a real chat_history.jsonl', () => {
 
   it('is routed by agent id, with no call-site comparison', () => {
     expect(renderTranscriptLines('grok', buf)).toEqual(linesFromGrok(buf))
+  })
+})
+
+describe('linesFromDevin', () => {
+  it('renders user and agent steps, skipping system steps', () => {
+    const raw = JSON.stringify({
+      schema_version: 'ATIF-v1.7',
+      session_id: 'quartz-lens',
+      steps: [
+        { step_id: 1, source: 'system', message: 'You are Devin...' },
+        { step_id: 2, source: 'user', message: 'list the files in /tmp' },
+        { step_id: 3, source: 'agent', message: 'Here are the files:\nfoo\nbar' }
+      ]
+    })
+    expect(linesFromDevin(raw)).toEqual([
+      'user: list the files in /tmp',
+      'assistant: Here are the files: foo bar'
+    ])
+  })
+
+  it('collapses whitespace and drops empty messages', () => {
+    const raw = JSON.stringify({
+      steps: [
+        { step_id: 1, source: 'user', message: '   ' },
+        { step_id: 2, source: 'agent', message: '\n\nhello\tworld\n\n' },
+        { step_id: 3, source: 'agent', message: '' }
+      ]
+    })
+    expect(linesFromDevin(raw)).toEqual(['assistant: hello world'])
+  })
+
+  it('returns nothing for malformed JSON or missing steps', () => {
+    expect(linesFromDevin('not json')).toEqual([])
+    expect(linesFromDevin(JSON.stringify({ session_id: 'x' }))).toEqual([])
+    expect(linesFromDevin(JSON.stringify({ steps: 'nope' }))).toEqual([])
+  })
+})
+
+describe('renderTranscriptLines', () => {
+  it('routes devin to the devin parser', () => {
+    const raw = JSON.stringify({
+      steps: [{ source: 'user', message: 'hi' }]
+    })
+    expect(renderTranscriptLines('devin', raw)).toEqual(['user: hi'])
   })
 })

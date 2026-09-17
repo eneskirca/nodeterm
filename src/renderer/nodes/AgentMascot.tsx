@@ -12,7 +12,7 @@ const BRAND_BADGE_SIZE = 16
  * - claude → the runtime-drawn coral pixel critter (data-URI spritesheet; the walk is CSS
  *   `steps(1)` over three keyframes, NOT `steps(2)` — see .term-node__mascot--claude).
  * - codex  → pet-codex.webp, first-row walk cycle (CSS `steps(8)`).
- * - grok / gemini / opencode / copilot → their own BRAND MARK, pulsing and blooming rather than walking. Grok
+ * - grok / gemini / opencode / copilot / devin → their own BRAND MARK, pulsing and blooming rather than walking. Grok
  *   had a quadrant critter first; a hand-drawn creature next to two real mascots read as neither, so
  *   the glyph the agent actually has is what animates. gemini and opencode used to fall through to
  *   the plain dot, which says "something is happening" but not WHO. The decision and the bloom's
