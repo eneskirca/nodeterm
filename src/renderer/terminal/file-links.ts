@@ -16,10 +16,11 @@
 //     full-width rows with NO wrapped flags. This is what a `claude /login` OAuth URL looks
 //     like in practice; matching per-row opened just the clicked row's fragment (a truncated,
 //     wrong URL). A row is treated as continuing onto the next when it is full to the LAST
-//     column and the next row starts at column 0 with a non-space — a heuristic (the buffer
-//     genuinely cannot distinguish a repainted wrap from prose that exactly fills the row),
-//     gated tightly and capped at MAX_JOIN_ROWS, and the regex still has to match across the
-//     seam for a link to result.
+//     column and the next row starts at column 0 with a non-space. Claude's TUI additionally
+//     repeats its two-column content indent on a continuation; the file-link path may normalize
+//     that indent while retaining a per-character buffer map for accurate hit testing. Both are
+//     heuristics (the buffer cannot distinguish a repainted wrap from prose that fills the row),
+//     gated tightly and capped at MAX_JOIN_ROWS, and a real existing path is still required.
 import type { ILink, ILinkHandler, ILinkProvider, Terminal } from '@xterm/xterm'
 
 export interface FileToken {
@@ -30,6 +31,8 @@ export interface FileToken {
   /** The cleaned path portion. */
   path: string
   line?: number
+  /** True when the terminal printed an explicit file:/// URL rather than a path token. */
+  fileUrl?: boolean
 }
 
 // Path-ish token: an optional ./ ../ / prefix, then segments of path-safe chars with at
@@ -65,15 +68,55 @@ const SUFFIX_RE = /^(.*?):(\d+)(?::\d+)?$/
 const TRAILING_PUNCT = /[.,;:!?'")\]}>]+$/
 /** `C:\…`, `C:/…`, or a UNC `\\host\share` / `//host/share`. */
 const WIN_ABSOLUTE_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/
+const FILE_URL_RE = /\bfile:\/\/[^\s"'`<>()[\]{}|\\^]+/gi
 
 export interface PathConventionOpts {
   /** Match and resolve Windows-shaped paths. Off by default, so POSIX behaviour is unchanged. */
   windows?: boolean
 }
 
-export function matchFileTokens(lineText: string, opts: PathConventionOpts = {}): FileToken[] {
+/**
+ * Convert a local file URL to the path owned by the terminal's filesystem.
+ *
+ * Only an empty host or `localhost` is local. Encoded separators are refused instead of being
+ * decoded into a different path shape, and query/fragment suffixes are refused because the
+ * canvas viewers open a filesystem path rather than a browser URL. The returned path is therefore
+ * safe to existence-check through the same project-fs route as ordinary terminal file links.
+ */
+export function pathFromFileUrl(text: string, opts: PathConventionOpts = {}): string | null {
+  try {
+    const u = new URL(text)
+    if (u.protocol !== 'file:') return null
+    if (u.hostname && u.hostname.toLowerCase() !== 'localhost') return null
+    if (u.username || u.password || u.port || u.search || u.hash) return null
+    if (/%(?:00|2f|5c)/i.test(u.pathname)) return null
+    let path = decodeURIComponent(u.pathname)
+    if (!path || path.includes('\0')) return null
+    if (opts.windows) {
+      if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1)
+      return /^[A-Za-z]:\//.test(path) ? path : null
+    }
+    return path.startsWith('/') ? path : null
+  } catch {
+    return null
+  }
+}
+
+function matchFileUrlTokens(lineText: string, opts: PathConventionOpts): FileToken[] {
   const out: FileToken[] = []
-  if (opts.windows) return matchWindowsFileTokens(lineText)
+  for (const m of lineText.matchAll(FILE_URL_RE)) {
+    const text = m[0].replace(TRAILING_PUNCT, '')
+    const path = pathFromFileUrl(text, opts)
+    if (!path) continue
+    out.push({ text, startIndex: m.index, path, fileUrl: true })
+  }
+  return out
+}
+
+export function matchFileTokens(lineText: string, opts: PathConventionOpts = {}): FileToken[] {
+  const out = matchFileUrlTokens(lineText, opts)
+  if (opts.windows)
+    return [...out, ...matchWindowsFileTokens(lineText)].sort((a, b) => a.startIndex - b.startIndex)
   for (const m of lineText.matchAll(TOKEN_RE)) {
     let text = m[0]
     // URLs (and protocol-ish tokens) belong to the web-links addon. A token preceded by
@@ -96,7 +139,7 @@ export function matchFileTokens(lineText: string, opts: PathConventionOpts = {})
     if (!path || !path.includes('/')) continue
     out.push({ text, startIndex: m.index, path, line })
   }
-  return out
+  return out.sort((a, b) => a.startIndex - b.startIndex)
 }
 
 /**
@@ -274,6 +317,12 @@ export interface FileLinkDeps {
   convention?: () => PathConventionOpts | null
   lookup(abs: string): Promise<{ exists: boolean; dir: boolean }>
   activate(abs: string, dir: boolean): void
+  /** False on surfaces that support explicit file URLs but cannot route relative/path tokens. */
+  pathEnabled?(): boolean
+  /** Explicit file:/// links may use a distinct activation path on a hosting surface. */
+  activateFileUrl?(abs: string, dir: boolean): void
+  /** False when this surface cannot route a file URL to the filesystem that printed it. */
+  fileUrlEnabled?(): boolean
 }
 
 /** The minimal buffer slice paragraph joining needs — unit tests drive a fake. */
@@ -301,19 +350,46 @@ export function bufferView(term: Terminal): BufferView {
  *  full-width walls of text; a wrapped OAuth URL is ~7 rows at 80 cols. */
 const MAX_JOIN_ROWS = 32
 
+export interface ParagraphOpts {
+  /** Claude's TUI repaints a wrapped paragraph with its two-column content indent on EVERY row.
+   *  File matching may discard that repeated indent; web URLs deliberately keep the stricter
+   *  behavior so ordinary indented prose cannot silently extend an http(s) URL. */
+  indentedFileWraps?: boolean
+}
+
+export interface LogicalParagraph {
+  text: string
+  startRow: number
+  rows: number
+  /** Buffer cell for every character in `text` (indent-normalized paragraphs are not rectangular). */
+  positions: Array<{ row: number; col: number }>
+}
+
 // Whether `row` runs into `row + 1`: the successor carries xterm's soft-wrap flag, OR the
-// hard-wrap heuristic holds — `row` is full to its last column (untrimmed non-space in the
-// final cell) and the successor starts at column 0 with a non-space. See the header comment.
-function continuesOnNextRow(view: BufferView, row: number): boolean {
+// hard-wrap heuristic holds — `row` is full to its last column. Usually the successor must start
+// at column 0; the file-only mode also recognizes Claude's repeated 1–4 column content indent.
+function continuationToNext(
+  view: BufferView,
+  row: number,
+  opts: ParagraphOpts
+): { skipNext: number } | null {
   const next = view.line(row + 1)
-  if (!next) return false
-  if (next.isWrapped) return true
+  if (!next) return null
+  if (next.isWrapped) return { skipNext: 0 }
   const cur = view.line(row)
-  if (!cur) return false
+  if (!cur) return null
   const raw = cur.text(false)
-  if (raw.length < view.cols || raw[view.cols - 1] === ' ') return false
+  if (raw.length < view.cols || raw[view.cols - 1] === ' ') return null
   const nextRaw = next.text(false)
-  return nextRaw.length > 0 && nextRaw[0] !== ' '
+  if (nextRaw.length > 0 && nextRaw[0] !== ' ') return { skipNext: 0 }
+  if (!opts.indentedFileWraps) return null
+  const indent = /^( {1,4})(\S)/.exec(nextRaw)
+  if (!indent) return null
+  const last = raw[view.cols - 1]
+  // Both sides must look like file-URL/path characters. This mode is consumed only by the file
+  // provider and still has to produce an existing path before a link is offered.
+  if (!/[\w.@+~%:/\\-]/.test(last) || !/[\w.@+~%:/\\-]/.test(indent[2])) return null
+  return { skipNext: indent[1].length }
 }
 
 /**
@@ -324,36 +400,53 @@ function continuesOnNextRow(view: BufferView, row: number): boolean {
  */
 export function paragraphContaining(
   view: BufferView,
-  row: number
-): { text: string; startRow: number; rows: number } | null {
+  row: number,
+  opts: ParagraphOpts = {}
+): LogicalParagraph | null {
   if (!view.line(row)) return null
   let start = row
-  while (start > 0 && row - start < MAX_JOIN_ROWS && continuesOnNextRow(view, start - 1)) start--
+  while (
+    start > 0 &&
+    row - start < MAX_JOIN_ROWS &&
+    continuationToNext(view, start - 1, opts)
+  )
+    start--
   let text = ''
+  const positions: LogicalParagraph['positions'] = []
   let r = start
+  let skipStart = 0
   for (;;) {
-    const joins = r - start + 1 < MAX_JOIN_ROWS && continuesOnNextRow(view, r)
-    const lineText = view.line(r)!.text(!joins)
-    // Continuing rows must contribute exactly `cols` chars so the index math above holds.
-    text += joins ? lineText.padEnd(view.cols).slice(0, view.cols) : lineText
-    if (!joins) break
+    const continuation =
+      r - start + 1 < MAX_JOIN_ROWS ? continuationToNext(view, r, opts) : null
+    const joins = !!continuation
+    const raw = view.line(r)!.text(!joins)
+    const lineText = joins ? raw.padEnd(view.cols).slice(0, view.cols) : raw
+    const kept = lineText.slice(skipStart)
+    text += kept
+    for (let col = skipStart; col < lineText.length; col++) positions.push({ row: r, col })
+    if (!continuation) break
+    skipStart = continuation.skipNext
     r++
   }
-  return { text, startRow: start, rows: r - start + 1 }
+  return { text, startRow: start, rows: r - start + 1, positions }
 }
 
 /** ILink range (1-based, inclusive) for a token at `startIndex..+len` of a paragraph. */
 function tokenRange(
-  startRow: number,
-  cols: number,
+  logical: LogicalParagraph,
   startIndex: number,
   len: number
 ): ILink['range'] {
-  const endIndex = startIndex + len - 1
+  const start = logical.positions[startIndex]
+  const end = logical.positions[startIndex + len - 1]
   return {
-    start: { x: (startIndex % cols) + 1, y: startRow + Math.floor(startIndex / cols) + 1 },
-    end: { x: (endIndex % cols) + 1, y: startRow + Math.floor(endIndex / cols) + 1 }
+    start: { x: start.col + 1, y: start.row + 1 },
+    end: { x: end.col + 1, y: end.row + 1 }
   }
+}
+
+function logicalIndexAt(logical: LogicalParagraph, row: number, col: number): number {
+  return logical.positions.findIndex((p) => p.row === row && p.col === col)
 }
 
 /** xterm link provider for file paths. Register once per terminal with a reachable filesystem. */
@@ -362,7 +455,9 @@ export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILin
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
       // Resolve the paragraph CONTAINING the hovered row (not just one starting at it), so
       // hovering any wrapped tail row of a long path underlines and activates the whole token.
-      const logical = paragraphContaining(bufferView(term), bufferLineNumber - 1)
+      const logical = paragraphContaining(bufferView(term), bufferLineNumber - 1, {
+        indentedFileWraps: true
+      })
       if (!logical) {
         callback(undefined)
         return
@@ -377,19 +472,22 @@ export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILin
         callback(undefined)
         return
       }
-      const cols = term.cols
       void Promise.all(
         tokens.map(async (t): Promise<ILink | null> => {
+          if (t.fileUrl && (!deps.activateFileUrl || !(deps.fileUrlEnabled?.() ?? true))) return null
+          if (!t.fileUrl && !(deps.pathEnabled?.() ?? true)) return null
           const abs = resolveFileToken(t.path, deps.getCwd(), convention)
           if (!abs) return null
           const found = await deps.lookup(abs)
           if (!found.exists) return null
           return {
             text: t.text,
-            range: tokenRange(logical.startRow, cols, t.startIndex, t.text.length),
+            range: tokenRange(logical, t.startIndex, t.text.length),
             activate: (event: MouseEvent) => {
               if (!(event.metaKey || event.ctrlKey)) return
-              deps.activate(abs, found.dir)
+              if (t.fileUrl) {
+                if (deps.fileUrlEnabled?.() ?? true) deps.activateFileUrl?.(abs, found.dir)
+              } else deps.activate(abs, found.dir)
             }
           }
         })
@@ -418,7 +516,7 @@ export function createUrlLinkProvider(term: Terminal, openUrl: (url: string) => 
       const links = matchUrlTokens(logical.text).map(
         (u): ILink => ({
           text: u.text,
-          range: tokenRange(logical.startRow, term.cols, u.startIndex, u.text.length),
+          range: tokenRange(logical, u.startIndex, u.text.length),
           activate: (event: MouseEvent) => {
             if (event.metaKey || event.ctrlKey) openUrl(u.url)
           }
@@ -495,6 +593,8 @@ export interface LinkClickDeps {
   convention?: () => PathConventionOpts | null
   lookup(abs: string): Promise<{ exists: boolean; dir: boolean }>
   activateFile(abs: string, dir: boolean): void
+  activateFileUrl?(abs: string, dir: boolean): void
+  fileUrlEnabled?(): boolean
   openUrl(url: string): void
   /** False while no correctly-routed filesystem/dialect is available. */
   fileEnabled(): boolean
@@ -534,7 +634,8 @@ export function installLinkClickFallback(
     }
     const logical = paragraphContaining(bufferView(term), pos.row)
     if (!logical) return
-    const idx = (pos.row - logical.startRow) * term.cols + pos.col
+    const idx = logicalIndexAt(logical, pos.row, pos.col)
+    if (idx < 0) return
     const inRange = (startIndex: number, len: number): boolean =>
       idx >= startIndex && idx < startIndex + len
 
@@ -547,11 +648,22 @@ export function installLinkClickFallback(
         return
       }
     }
-    if (!deps.fileEnabled()) return
+    const pathEnabled = deps.fileEnabled()
+    const fileUrlEnabled = !!deps.activateFileUrl && (deps.fileUrlEnabled?.() ?? true)
+    if (!pathEnabled && !fileUrlEnabled) return
     const convention = deps.convention ? deps.convention() : { windows: deps.windows }
     if (!convention) return
-    for (const t of matchFileTokens(logical.text, convention)) {
-      if (inRange(t.startIndex, t.text.length)) {
+    const fileLogical = paragraphContaining(bufferView(term), pos.row, {
+      indentedFileWraps: true
+    })
+    if (!fileLogical) return
+    const fileIdx = logicalIndexAt(fileLogical, pos.row, pos.col)
+    if (fileIdx < 0) return
+    const inFileRange = (startIndex: number, len: number): boolean =>
+      fileIdx >= startIndex && fileIdx < startIndex + len
+    for (const t of matchFileTokens(fileLogical.text, convention)) {
+      if (inFileRange(t.startIndex, t.text.length)) {
+        if (t.fileUrl ? !fileUrlEnabled : !pathEnabled) return
         const abs = resolveFileToken(t.path, deps.getCwd(), convention)
         if (!abs) return
         // Swallow the click NOW so tmux never gets the mouse report; existence is async and a
@@ -560,7 +672,10 @@ export function installLinkClickFallback(
         ev.stopPropagation()
         term.clearSelection()
         void deps.lookup(abs).then((f) => {
-          if (f.exists) deps.activateFile(abs, f.dir)
+          if (!f.exists) return
+          if (t.fileUrl) {
+            if (deps.fileUrlEnabled?.() ?? true) deps.activateFileUrl?.(abs, f.dir)
+          } else deps.activateFile(abs, f.dir)
         })
         return
       }

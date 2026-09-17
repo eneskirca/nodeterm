@@ -43,6 +43,10 @@ import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
 import { NoteMarkdown } from '../NoteMarkdown'
 import { relativeTime } from '../../lib/relativeTime'
+import {
+  LocalFilePreviewModal,
+  type LocalFileTarget
+} from './LocalFilePreviewModal'
 
 interface CardModalProps {
   session: KanbanSession
@@ -75,6 +79,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
   const [editingTitle, setEditingTitle] = useState(false)
   const [title, setTitle] = useState(session.title)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [previewFile, setPreviewFile] = useState<LocalFileTarget | null>(null)
   // Sticky body: rendered markdown until clicked, the plain textarea while editing (mirrors
   // StickyNode's toggle, so the canvas and the card can't disagree about how a note reads).
   const [editingNote, setEditingNote] = useState(false)
@@ -450,6 +455,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                     spawn={session.spawn}
                     searchOpen={searchOpen}
                     onCloseSearch={() => setSearchOpen(false)}
+                    onOpenFile={setPreviewFile}
                   />
                 ) : isBrowser ? (
                   // A live browser webview seeded with the node's URL; navigation persists back to
@@ -471,6 +477,9 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           {panelOpen && <BoardLogPanel card={session} />}
         </div>
       </div>
+      {previewFile && (
+        <LocalFilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
+      )}
     </div>,
     document.body
   )

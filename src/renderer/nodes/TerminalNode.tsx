@@ -2927,11 +2927,18 @@ export function TerminalNode({
             new CustomEvent('nodeterm:open-file', { detail: { path: abs, ssh: projectFs().ssh } })
           )
       }
+      // file:/// URLs use the same routed canvas viewers as ordinary paths. This keeps generated
+      // HTML, Markdown, PDFs and images beside the session, and remains safe for SSH projects:
+      // `openFile` carries the remote-fs flag instead of handing the path to this Mac's OS.
+      const fileUrlEnabled = (): boolean => pathConvention() !== null
+      const openFileUrl = openFile
       term.registerLinkProvider(
         createFileLinkProvider(term, {
           getCwd,
           lookup,
           activate: openFile,
+          activateFileUrl: openFileUrl,
+          fileUrlEnabled,
           convention: pathConvention
         })
       )
@@ -2944,6 +2951,8 @@ export function TerminalNode({
           getCwd,
           lookup,
           activateFile: openFile,
+          activateFileUrl: openFileUrl,
+          fileUrlEnabled,
           openUrl: (uri) => window.nodeTerminal.shell.openExternal(uri),
           fileEnabled: () => pathConvention() !== null,
           convention: pathConvention
