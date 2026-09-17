@@ -19,10 +19,17 @@ import { LocalTransport } from '../../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../../terminal/file-drop'
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
 import {
+  createFileLinkProvider,
   createOsc8LinkHandler,
   createUrlLinkProvider,
-  installLinkClickFallback
+  installLinkClickFallback,
+  makeDirListingLookup
 } from '../../terminal/file-links'
+import { isBrowserRuntime } from '../../bridge/runtime'
+import { isWindowsPlatform } from '@shared/platform-utils'
+import { fileLinkDialect } from '../../terminal/file-link-dialect'
+import { hostPlatformFor } from '../../terminal/host-platform'
+import { sshFs } from '../../terminal/ssh-fs'
 import { parseOsc52 } from '../../terminal/osc52'
 import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
@@ -46,6 +53,7 @@ import {
   sshConnectionScope
 } from '../../nodes/TerminalNode'
 import { buildSshArgs, type SshConnection } from '@shared/ssh'
+import type { LocalFileTarget } from './LocalFilePreviewModal'
 
 /** The subset of a node's `data` a SECOND client needs to attach to its session the same way the
  *  canvas TerminalNode does. Canvas fills it from the node's data; sticky/chat cards pass `{}`. */
@@ -78,10 +86,32 @@ interface ModalTerminalProps {
   /** The modal header's 🔍 toggle — the FindBar renders inside this pane. */
   searchOpen: boolean
   onCloseSearch: () => void
+  /** Kanban keeps document links in its own overlay instead of uncovering the canvas. */
+  onOpenFile?: (file: LocalFileTarget) => void
 }
 
-export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: ModalTerminalProps) {
-  const { api } = useSession()
+export function ModalTerminal({
+  nodeId,
+  spawn,
+  searchOpen,
+  onCloseSearch,
+  onOpenFile
+}: ModalTerminalProps) {
+  const session = useSession()
+  const { api } = session
+  // File-path syntax belongs to the core that owns this session, which may not be the machine
+  // showing the modal (relay / Server Edition). Resolve it once without respawning the terminal.
+  const corePlatformRef = useRef<string | null>(null)
+  useEffect(() => {
+    let live = true
+    corePlatformRef.current = null
+    void hostPlatformFor(api).then((platform) => {
+      if (live) corePlatformRef.current = platform
+    })
+    return () => {
+      live = false
+    }
+  }, [api])
   const hostRef = useRef<HTMLDivElement>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
@@ -202,24 +232,73 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     let dead = false
     const cleanups: Array<() => void> = []
 
-    // MIRROR TerminalNode's link wiring, minus file links. The provider handles Cmd/Ctrl+click on
+    // MIRROR TerminalNode's link wiring. The URL provider handles Cmd/Ctrl+click on
     // URL text when mouse-reporting is off (plain-shell sessions); the capture-phase fallback is
     // what works under tmux/agent mouse-reporting — the norm, and the only path on which the OSC 8
     // linkHandler above can ever fire in a tmux-backed session (xterm's own link activation is
-    // swallowed by the mouse report, see installLinkClickFallback). File links stay a canvas-node
-    // affordance: the modal has no project-fs/dialect routing, and resolving a path against the
-    // wrong machine is worse than not linking it — hence fileEnabled: false, not stub deps that
-    // pretend to resolve.
+    // swallowed by the mouse report, see installLinkClickFallback). File paths — including
+    // relative paths and explicit file:/// URLs — resolve against the SAME cwd and routed
+    // filesystem as the canvas terminal, then ask Canvas to open its built-in viewer.
     const openUrl = (uri: string): void => window.nodeTerminal.shell.openExternal(uri)
+    const projectFs = (): { fs: typeof api.fs; ssh: boolean } => {
+      const st = useProjects.getState()
+      const project = st.projects.find((p) => p.id === st.activeProjectId)
+      return project?.ssh ? { fs: sshFs(project.id), ssh: true } : { fs: api.fs, ssh: false }
+    }
+    const fileConvention = (): { windows?: boolean } | null => {
+      const st = useProjects.getState()
+      const project = st.projects.find((p) => p.id === st.activeProjectId)
+      const dialect = fileLinkDialect({
+        source: session.source,
+        browserRuntime: isBrowserRuntime(),
+        viewerWindows: isWindowsPlatform(),
+        corePlatform: corePlatformRef.current,
+        sshProject: !!project?.ssh,
+        standaloneSsh: !project?.ssh && !!spawn.ssh
+      })
+      return dialect ? { windows: dialect === 'windows' } : null
+    }
+    const fileLookup = makeDirListingLookup(
+      async (dir) => projectFs().fs.list(dir),
+      3000,
+      fileConvention
+    )
+    const openFile = (abs: string, isDir: boolean): void => {
+      if (isDir) {
+        window.dispatchEvent(new CustomEvent('nodeterm:reveal-file', { detail: { path: abs } }))
+      } else if (onOpenFile) {
+        onOpenFile({ path: abs, ssh: projectFs().ssh })
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('nodeterm:open-file', {
+            detail: { path: abs, ssh: projectFs().ssh }
+          })
+        )
+      }
+    }
+    const fileEnabled = (): boolean => fileConvention() !== null
     term.registerLinkProvider(createUrlLinkProvider(term, openUrl))
+    term.registerLinkProvider(
+      createFileLinkProvider(term, {
+        getCwd: () => spawn.cwd,
+        convention: fileConvention,
+        lookup: fileLookup,
+        activate: openFile,
+        activateFileUrl: openFile,
+        fileUrlEnabled: fileEnabled
+      })
+    )
     if (term.element) {
       cleanups.push(
         installLinkClickFallback(term, term.element, {
-          getCwd: () => undefined,
-          lookup: () => Promise.resolve({ exists: false, dir: false }),
-          activateFile: () => {},
+          getCwd: () => spawn.cwd,
+          convention: fileConvention,
+          lookup: fileLookup,
+          activateFile: openFile,
+          activateFileUrl: openFile,
+          fileUrlEnabled: fileEnabled,
           openUrl,
-          fileEnabled: () => false
+          fileEnabled
         }).dispose
       )
     }

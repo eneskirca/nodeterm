@@ -31,9 +31,23 @@ vi.mock('../ContextMeter', () => ({
 
 // Mock ModalTerminal and BrowserSurface to keep tests lightweight and focused on CardModal
 vi.mock('./ModalTerminal', () => ({
-  ModalTerminal: ({ nodeId }: { nodeId: string }) => (
+  ModalTerminal: ({ nodeId, onOpenFile }: { nodeId: string; onOpenFile?: (file: { path: string; ssh: boolean }) => void }) => (
     <div className="kanban-modal__term" data-node-id={nodeId} tabIndex={0}>
       Terminal Mock
+      <button
+        className="modal-terminal-file-link"
+        onClick={() => onOpenFile?.({ path: '/project/docs/plan.md', ssh: false })}
+      >
+        Open file
+      </button>
+    </div>
+  )
+}))
+
+vi.mock('./LocalFilePreviewModal', () => ({
+  LocalFilePreviewModal: ({ file, onClose }: { file: { path: string }; onClose: () => void }) => (
+    <div className="local-file-preview-mock" data-path={file.path}>
+      <button className="local-file-preview-close" onClick={onClose}>Close preview</button>
     </div>
   )
 }))
@@ -65,6 +79,52 @@ describe('CardModal', () => {
   afterEach(() => {
     resetDialogStack()
     document.body.innerHTML = ''
+  })
+
+  it('opens a terminal file link in an overlay without leaving the Kanban card', () => {
+    const session: KanbanSession = {
+      id: 'node-term-preview',
+      title: 'Preview docs',
+      color: '#0a84ff',
+      kind: 'terminal',
+      spawn: { cwd: '/project' }
+    }
+    const onClose = vi.fn()
+    const onOpenCanvas = vi.fn()
+    const root = createRoot(host)
+
+    act(() =>
+      root.render(
+        <CardModal
+          session={session}
+          columnTitle="To Do"
+          board={board}
+          onChangeBoard={vi.fn()}
+          onClose={onClose}
+          onOpenCanvas={onOpenCanvas}
+          onRename={vi.fn()}
+          onEditSticky={vi.fn()}
+          onSetIcon={vi.fn()}
+          onBrowserNav={vi.fn()}
+        />
+      )
+    )
+
+    act(() => {
+      document.body.querySelector<HTMLButtonElement>('.modal-terminal-file-link')!.click()
+    })
+    const preview = document.body.querySelector<HTMLElement>('.local-file-preview-mock')
+    expect(preview?.dataset.path).toBe('/project/docs/plan.md')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onOpenCanvas).not.toHaveBeenCalled()
+
+    act(() => {
+      document.body.querySelector<HTMLButtonElement>('.local-file-preview-close')!.click()
+    })
+    expect(document.body.querySelector('.local-file-preview-mock')).toBeNull()
+    expect(document.body.querySelector('.kanban-modal')).toBeTruthy()
+
+    act(() => root.unmount())
   })
 
   it('writes through raw textarea value on sticky note edit (including whitespace and newlines)', () => {

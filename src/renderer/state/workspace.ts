@@ -934,10 +934,26 @@ export function createEditorNode(
 
 const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'ogv', 'avi']
 
+const HTML_EXTS = ['html', 'htm']
+
+/** True when a local file can be rendered as a page inside a WebNode. */
+export function isHtmlFile(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  return HTML_EXTS.includes(ext)
+}
+
 /** True when a path looks like a playable video file (by extension). */
 export function isVideoFile(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
   return VIDEO_EXTS.includes(ext)
+}
+
+/** Pick the canvas surface used for a linked file. Remote HTML stays source-editable because a
+ *  WebNode can only serve a local file; every other preview works through EditorNode's routed fs. */
+export function fileViewerKind(path: string, sshFs = false): 'editor' | 'video' | 'web' {
+  if (!sshFs && isHtmlFile(path)) return 'web'
+  if (isVideoFile(path)) return 'video'
+  return 'editor'
 }
 
 /** Creates a video player node for a video file (streamed via nt-media://). When `sshFs` is true,
