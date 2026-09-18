@@ -12,6 +12,10 @@ describe('vanillaEnvStripPattern', () => {
     expect(re.test('ANTHROPIC_AUTH_TOKEN')).toBe(true)
     expect(re.test('ANTHROPIC_API_KEY')).toBe(true)
     expect(re.test('CLAUDE_CODE_OAUTH_TOKEN')).toBe(true)
+    expect(re.test('CLAUDE_CODE_SUBAGENT_MODEL')).toBe(true)
+    expect(re.test('CLAUDE_CODE_SUBAGENT_MODEL_FORCE')).toBe(true)
+    expect(re.test('CLAUDE_CODE_EFFORT_LEVEL')).toBe(true)
+    expect(re.test('CLAUDE_CODE_MAX_OUTPUT_TOKENS')).toBe(false)
     // The managed-account config dir is NOT a provider credential — stripping it would break
     // account isolation, so the pattern must leave it alone.
     expect(re.test('CLAUDE_CONFIG_DIR')).toBe(false)
