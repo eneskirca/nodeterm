@@ -2370,6 +2370,7 @@ export function Canvas() {
               title: n.data.title ?? n.id,
               color: n.data.color ?? '#888',
               agentId: n.data.agentId,
+              agentLaunchContextWindow: n.data.agentLaunchContextWindow,
               // The node's creation-time account, for the sidebar row's account chip (the
               // serialized nodes of inactive projects carry it already).
               accountId: n.data.accountId,
