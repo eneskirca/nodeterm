@@ -647,6 +647,7 @@ export function buildAgentApi(
 ): Pick<
   NodeTerminalApi,
   | 'onAgentStatus'
+  | 'agentStatusSnapshot'
   | 'onSubagentActivity'
   | 'onUnreadClear'
   | 'answerPermission'
@@ -671,6 +672,8 @@ export function buildAgentApi(
     onRemoteViewers: () => () => undefined,
     onAgentRefreshNode: () => () => undefined,
     onAgentRenameNode: () => () => undefined,
+    agentStatusSnapshot: () =>
+      client.request(IPC.agentStatusSnapshot) as ReturnType<NodeTerminalApi['agentStatusSnapshot']>,
     // Host swept a phone read-ack → drop this browser canvas's unread flag (external clear, no re-ack).
     onUnreadClear: (listener) => client.subscribe(IPC.agentUnreadClear, listener as Listener),
     onSubagentActivity: (listener) =>

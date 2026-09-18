@@ -110,16 +110,26 @@ function connectCodexAppServer(socketPath: string): WebSocket {
   return new WebSocket(codexUnixWebSocketUrl(socketPath), { perMessageDeflate: false })
 }
 
-export function readCodexSessionNameAt(
+export interface CodexThreadSnapshot {
+  id: string
+  name?: string | null
+  /** Absolute rollout path when the app-server reports one (cross-account switch locates it). */
+  path?: string | null
+  status?: { type?: unknown; activeFlags?: unknown }
+  updatedAt?: number
+}
+
+/** One read-only `thread/read` request, shared by title and status consumers. */
+export function readCodexThreadAt(
   socketPath: string,
   threadId: string,
   timeoutMs = REQUEST_TIMEOUT_MS
-): Promise<string | null> {
+): Promise<CodexThreadSnapshot | null> {
   if (!isSafeThreadId(threadId)) return Promise.resolve(null)
   return new Promise((resolve) => {
     let settled = false
     let ws: WebSocket
-    const finish = (name: string | null): void => {
+    const finish = (thread: CodexThreadSnapshot | null): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -128,7 +138,7 @@ export function readCodexSessionNameAt(
       } catch {
         /* the connection may never have opened */
       }
-      resolve(name)
+      resolve(thread)
     }
     const timer = setTimeout(() => finish(null), timeoutMs)
     timer.unref?.()
@@ -166,13 +176,39 @@ export function readCodexSessionNameAt(
           })
         )
       } else if (message.id === 2) {
-        const name = message.result?.thread?.name
-        finish(typeof name === 'string' && name.trim() ? name.trim() : null)
+        const thread = message.result?.thread
+        finish(
+          !message.error && thread && thread.id === threadId
+            ? {
+                id: thread.id as string,
+                name:
+                  typeof thread.name === 'string' && thread.name.trim()
+                    ? thread.name.trim()
+                    : null,
+                path:
+                  typeof thread.path === 'string' && path.isAbsolute(thread.path)
+                    ? thread.path
+                    : null,
+                status: thread.status as CodexThreadSnapshot['status'] | undefined,
+                updatedAt: typeof thread.updatedAt === 'number' ? thread.updatedAt : undefined
+              }
+            : null
+        )
       }
     })
     ws.once('error', () => finish(null))
     ws.once('close', () => finish(null))
   })
+}
+
+export async function readCodexSessionNameAt(
+  socketPath: string,
+  threadId: string,
+  timeoutMs = REQUEST_TIMEOUT_MS
+): Promise<string | null> {
+  const thread = await readCodexThreadAt(socketPath, threadId, timeoutMs)
+  const name = thread?.name
+  return typeof name === 'string' && name.trim() ? name.trim() : null
 }
 
 /**
@@ -521,9 +557,11 @@ export function rememberCodexSessionName(
 }
 
 /** Read a thread's full identity from an app-server socket: its id (must come back UNCHANGED), name,
- * and absolute rollout path. Used by the cross-account switch to locate a foreign rollout. Fails to
- * `null` rather than throwing into a poll loop. */
-export function readCodexThreadAt(
+ * and absolute rollout path. Used by the cross-account switch to locate a foreign rollout. Distinct
+ * from `readCodexThreadAt` (which exposes runtime `status` for agent-status recovery): this one
+ * resolves the on-disk rollout `path` the account switch follows. Fails to `null` rather than
+ * throwing into a poll loop. */
+export function readCodexThreadRollout(
   socketPath: string,
   threadId: string,
   timeoutMs = REQUEST_TIMEOUT_MS

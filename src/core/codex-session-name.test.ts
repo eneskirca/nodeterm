@@ -19,6 +19,7 @@ import {
   readCodexSessionName,
   readCodexSessionNameAt,
   readCodexThreadAt,
+  readCodexThreadRollout,
   relayedCodexSessionName,
   rememberCodexSessionName,
   waitForCodexAppServer
@@ -54,7 +55,18 @@ function handle(ws: WebSocket): void {
         ws.send(JSON.stringify({ id: msg.id, error: { message: 'no rollout found' } }))
         return
       }
-      ws.send(JSON.stringify({ id: msg.id, result: { thread: { id, name: threads.get(id) } } }))
+      ws.send(
+        JSON.stringify({
+          id: msg.id,
+          result: {
+            thread: {
+              id,
+              name: threads.get(id),
+              status: id === 'thread-known' ? { type: 'active', activeFlags: [] } : { type: 'idle' }
+            }
+          }
+        })
+      )
     }
   })
 }
@@ -160,6 +172,16 @@ describe('readCodexSessionNameAt', () => {
   })
 })
 
+describe('readCodexThreadAt', () => {
+  it('shares the read-only thread request and exposes runtime status', async () => {
+    expect(await readCodexThreadAt(sock, 'thread-known')).toMatchObject({
+      id: 'thread-known',
+      name: 'Named by codex',
+      status: { type: 'active', activeFlags: [] }
+    })
+  })
+})
+
 describe('codexUnixWebSocketUrl', () => {
   it('refuses a socket path that could not survive being put in a URL', () => {
     expect(() => codexUnixWebSocketUrl('relative/app-server.sock')).toThrow()
@@ -226,7 +248,7 @@ describe('rememberCodexSessionName', () => {
   })
 })
 
-describe('readCodexThreadAt / readCodexAccountAt', () => {
+describe('readCodexThreadRollout / readCodexAccountAt', () => {
   let d = ''
   let s = ''
   let srv: http.Server
@@ -277,18 +299,18 @@ describe('readCodexThreadAt / readCodexAccountAt', () => {
   })
 
   it('reads id, name and absolute path; drops a non-absolute path to null', async () => {
-    expect(await readCodexThreadAt(s, 'thread-a')).toEqual({
+    expect(await readCodexThreadRollout(s, 'thread-a')).toEqual({
       id: 'thread-a',
       name: 'A',
       path: '/abs/rollout-thread-a.jsonl'
     })
-    expect(await readCodexThreadAt(s, 'thread-b')).toEqual({ id: 'thread-b', name: null, path: null })
+    expect(await readCodexThreadRollout(s, 'thread-b')).toEqual({ id: 'thread-b', name: null, path: null })
   })
 
   it('refuses a response whose thread id does not match the one asked for', async () => {
-    expect(await readCodexThreadAt(s, 'thread-forked')).toBeNull()
-    expect(await readCodexThreadAt(s, 'thread-unknown')).toBeNull()
-    expect(await readCodexThreadAt(s, '../../etc/passwd')).toBeNull()
+    expect(await readCodexThreadRollout(s, 'thread-forked')).toBeNull()
+    expect(await readCodexThreadRollout(s, 'thread-unknown')).toBeNull()
+    expect(await readCodexThreadRollout(s, '../../etc/passwd')).toBeNull()
   })
 
   it('reads and trims the account email', async () => {

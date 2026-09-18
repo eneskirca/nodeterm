@@ -5,6 +5,7 @@ import { DEFAULT_WORKTREE_PATH_TEMPLATE } from './worktree'
 import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
 import type { NormalizedAgentEvent } from './agents/normalize'
+import type { AgentStatusSnapshot } from './agents/status-snapshot'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
@@ -3535,6 +3536,11 @@ export interface NodeTerminalApi {
    *  through the same `renameSession` funnel as the node header. Desktop-only signal, like
    *  `onAgentRefreshNode`. */
   onAgentRenameNode(listener: (payload: { nodeId: string; title: string }) => void): () => void
+  /**
+   * Last-known workflow state retained by the core across restarts. Display-only: entries are not
+   * live evidence and must not drive notifications, authorization, or process control.
+   */
+  agentStatusSnapshot(): Promise<AgentStatusSnapshot>
   /** Fires with live subagent transcript chunks while a subagent runs. Returns unsubscribe. */
   onSubagentActivity(listener: (e: SubagentActivity) => void): () => void
   /** Fires when an agent's `nodeterm` CLI requests a canvas action. Returns unsubscribe. */

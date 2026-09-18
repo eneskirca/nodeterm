@@ -19,6 +19,7 @@ import {
   _inboxSnapshot,
   _snapshot,
   workingNodes,
+  agentStatusSnapshot,
   type InboxEvent
 } from './agent-status-mirror'
 
@@ -141,5 +142,51 @@ describe('agent-status mirror — restart survival of the done dedup', () => {
     await restart()
 
     expect(workingNodes().map((w) => w.nodeId)).toEqual(['n1'])
+  })
+
+  it('restores display state after operational evidence has expired', () => {
+    const old = Date.now() - 7 * 60 * 60_000
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        v: 1,
+        updatedAt: old,
+        nodes: { n1: { state: 'done', agentId: 'claude', sessionId: 's1', updatedAt: old } },
+        lastKnown: {
+          n1: { state: 'done', agentId: 'claude', sessionId: 's1', changedAt: old }
+        }
+      })
+    )
+
+    initAgentStatusMirror(file)
+
+    expect(_snapshot().n1).toBeUndefined()
+    expect(agentStatusSnapshot().n1).toEqual({
+      state: 'done',
+      agentId: 'claude',
+      sessionId: 's1',
+      changedAt: old
+    })
+  })
+
+  it('migrates an old file without lastKnown from its node table', () => {
+    const updatedAt = Date.now() - 60_000
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        v: 1,
+        updatedAt,
+        nodes: { n1: { state: 'waiting', agentId: 'codex', sessionId: 's1', updatedAt } }
+      })
+    )
+
+    initAgentStatusMirror(file)
+
+    expect(agentStatusSnapshot().n1).toEqual({
+      state: 'waiting',
+      agentId: 'codex',
+      sessionId: 's1',
+      changedAt: updatedAt
+    })
   })
 })

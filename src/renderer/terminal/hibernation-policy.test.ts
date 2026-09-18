@@ -15,6 +15,7 @@ const base = (id: string, over: object = {}) => ({
   offscreen: true,
   hibernated: false,
   paused: false,
+  restored: false,
   remote: false,
   recurring: false,
   liveSubagents: false,
@@ -76,6 +77,10 @@ describe('planHibernation', () => {
 
   it('never hibernates a node with no lastEventAt — unknown idle is not idle', () => {
     expect(planHibernation([base('a', { lastEventAt: undefined })], NOW, cfg)).toEqual([])
+  })
+
+  it('never hibernates a display-only status restored after restart', () => {
+    expect(planHibernation([base('a', { restored: true })], NOW, cfg)).toEqual([])
   })
 
   it('disabled → empty', () => {

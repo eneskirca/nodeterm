@@ -29,6 +29,7 @@ describe('buildHibernationCandidates', () => {
         offscreen: true,
         hibernated: false,
         paused: false,
+        restored: false,
         remote: false,
         recurring: false,
         liveSubagents: false,
@@ -166,6 +167,17 @@ describe('buildHibernationCandidates', () => {
       })
     )
     expect(rows[0]).toMatchObject({ hibernated: false, paused: true })
+  })
+
+  it('carries restored provenance so old display state cannot drive Eco', () => {
+    const rows = buildHibernationCandidates(
+      inputs({
+        statusById: {
+          a: { state: 'done', sessionId: 'sid-a', lastEventAt: IDLE, restored: true }
+        }
+      })
+    )
+    expect(rows[0].restored).toBe(true)
     expect(planHibernation(rows, NOW, { enabled: true, idleMinutes: 30 })).toEqual([])
   })
 

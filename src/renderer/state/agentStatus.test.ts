@@ -83,6 +83,83 @@ describe('stale-working sweeper', () => {
     expect(useAgentStatus.getState().byId[a].state).toBe('done')
     expect(useAgentStatus.getState().byId[b].state).toBe('waiting')
   })
+
+  it('never decays a display-only restored working state', () => {
+    const { store } = createAgentStatusSession()
+    store.getState().hydrateSnapshot({
+      n1: { state: 'working', agentId: 'claude', changedAt: Date.now() - STALE_WORKING_MS * 2 }
+    })
+    store.getState().sweepStaleWorking()
+    expect(store.getState().byId.n1).toMatchObject({ state: 'working', restored: true })
+  })
+})
+
+describe('restart snapshot hydration', () => {
+  it('restores workflow context without changing durable read state', () => {
+    const acked: string[] = []
+    const { store } = createAgentStatusSession(undefined, (id) => acked.push(id))
+    store.getState().markUnread('n1')
+
+    store.getState().hydrateSnapshot({
+      n1: { state: 'done', agentId: 'claude', sessionId: 's1', changedAt: 123 }
+    })
+
+    expect(store.getState().byId.n1).toMatchObject({
+      state: 'done',
+      restored: true,
+      lastEventAt: 123,
+      unread: true,
+      stateVerified: false
+    })
+    expect(acked).toEqual([])
+  })
+
+  it('a live same-state event replaces restored provenance and stamps a live clock', () => {
+    const { store } = createAgentStatusSession()
+    store.getState().hydrateSnapshot({ n1: { state: 'done', changedAt: 123 } })
+    store.getState().setState('n1', 'done', 'claude')
+    expect(store.getState().byId.n1.restored).toBeUndefined()
+    expect(store.getState().byId.n1.stateAt).toBe(Date.now())
+    expect(store.getState().byId.n1.lastEventAt).toBe(Date.now())
+  })
+
+  it('a late snapshot never rewinds state already observed live', () => {
+    const { store } = createAgentStatusSession()
+    store.getState().setState('n1', 'working', 'claude')
+    store.getState().hydrateSnapshot({ n1: { state: 'done', changedAt: 123 } })
+    expect(store.getState().byId.n1).toMatchObject({ state: 'working' })
+    expect(store.getState().byId.n1.restored).toBeUndefined()
+  })
+
+  it('preserves same-conversation completion through a process restart as display-only', () => {
+    const { store } = createAgentStatusSession()
+    store.getState().hydrateSnapshot({
+      n1: { state: 'done', agentId: 'claude', sessionId: 's1', changedAt: 123 }
+    })
+    store.getState().setSessionBoundary('n1', 'start', 'claude', 's1')
+    expect(store.getState().byId.n1).toMatchObject({
+      state: 'done',
+      restored: true,
+      lastEventAt: 123,
+      sessionId: 's1'
+    })
+  })
+
+  it('makes a new session or a mid-turn session end Unknown', () => {
+    const { store } = createAgentStatusSession()
+    store.getState().hydrateSnapshot({
+      n1: { state: 'working', agentId: 'claude', sessionId: 's1', changedAt: 123 },
+      n2: { state: 'done', agentId: 'claude', sessionId: 's1', changedAt: 123 }
+    })
+    store.getState().setSessionBoundary('n1', 'end', 'claude', 's1')
+    store.getState().setSessionBoundary('n2', 'start', 'claude', 's2')
+    expect(store.getState().byId.n1).toMatchObject({ state: undefined, restored: true })
+    expect(store.getState().byId.n2).toMatchObject({
+      state: undefined,
+      restored: true,
+      sessionId: 's2'
+    })
+  })
 })
 
 describe('focus tracking', () => {
