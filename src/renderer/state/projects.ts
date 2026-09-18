@@ -25,6 +25,7 @@ import {
 import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 import { markWorkspaceDirty } from './workspaceDirty'
 import { folderName } from '../lib/projectOpen'
+import { popoutProjectId } from './windows'
 // One order-independent key for an edge's endpoints — the SAME rule `hiddenLinkIds` uses, so a
 // rope and the bridge it covers are recognized as one relationship here too.
 import { pairKey as bridgePairKey } from '../lib/noteLink'
@@ -368,6 +369,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   },
 
   setActive(id) {
+    // A pop-out window owns ONE project and never shows another (docs/popout-windows.md). Every
+    // switch path — the sidebar, ⌘1-9, the palette, a cross-project focus, control routing —
+    // funnels through here, so this is the one place the refusal has to live. `hydrate` sets the
+    // id directly: main hands a pop-out a one-project slice whose active id IS its project.
+    const own = popoutProjectId()
+    if (own !== null && id !== own) return
     set({ activeProjectId: id })
   },
 

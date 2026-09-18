@@ -1,5 +1,6 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import type { NodeTerminalApi } from '@shared/types'
+import { isPopoutWindow } from './windows'
 import {
   nextFreeColor,
   peersOnProject,
@@ -501,6 +502,11 @@ function buildPresenceSession(api: NodeTerminalApi): PresenceSession {
       }
       return () => {}
     }
+    // A pop-out project window (docs/popout-windows.md) is the SAME person as the main window, not a
+    // teammate: it never says hello, draws no cursor and sees no peers. Without this the hub answered
+    // its hello with the main window's own entry and the "Someone else is on this canvas" prompt
+    // came up in a window the user had just opened themselves (measured on the first sandbox run).
+    if (isPopoutWindow()) return () => {}
     if (live) return () => {}
 
     const unSync = api.presence.onSync((peers) => store.getState().applySync(peers))

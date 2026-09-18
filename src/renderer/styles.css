@@ -13223,3 +13223,57 @@ body.focus-mode .dock:hover {
 .files-node.collapsed .files-node__header {
   border-bottom: none;
 }
+
+/* ── Pop-out project windows (docs/popout-windows.md) ─────────────────────────────────────── */
+
+/* A project living in its own window: the tab stays in the strip as a ghost — a place to click to
+   bring that window forward, not a canvas this window shows. Same weight as `.tab.unavailable`
+   (both are "not here"), but no strike-through: the project is fine, it is just elsewhere. */
+.tab.detached {
+  opacity: 0.55;
+}
+.tab.detached .tab__name {
+  font-style: italic;
+}
+
+/* The "it is in another window" marker on a ghosted tab, drawn where the SSH chip sits. */
+.tab__popout {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.tab__popout svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* Inside a pop-out: the one control the strip needs, where the + button sits in the main window
+   (a pop-out cannot mint projects, so the + is not drawn there at all). */
+.tab__return {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: 6px;
+  height: 24px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.tab__return svg {
+  width: 12px;
+  height: 12px;
+}
+.tab__return:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text);
+}

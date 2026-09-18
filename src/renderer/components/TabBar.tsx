@@ -12,7 +12,10 @@ import { sessionCount, sessionForProject, useProjectSession } from '../session/s
 import { tabClickAction } from '../session/relay-tab'
 import { useMenuFlip } from '../ui/useMenuFlip'
 import { commandTooltip } from '../lib/keybindingOverrides'
-import { IconCanvasView, IconKanban, IconMoreVertical, IconPlus } from './icons'
+import { IconCanvasView, IconKanban, IconMoreVertical, IconOpenExternal, IconPlus } from './icons'
+import { useWindows } from '../state/windows'
+import { isTabTearOff } from '../lib/popout'
+import { isBrowserRuntime } from '../bridge/runtime'
 import { ProjectGlyph } from './ProjectGlyph'
 import {
   ALL_PERMISSION_MODES,
@@ -35,6 +38,13 @@ interface TabBarProps {
   onSetFolder: (id: string) => void
   /** Close (hide) the project without destroying it, reopenable from the start screen. */
   onCloseProject: (id: string) => void
+  /** Tear the project off into its own window — a tab dragged off the strip, or the caret menu's
+   *  "Open in new window" (docs/popout-windows.md). Desktop only; the caller decides eligibility. */
+  onPopOut: (id: string) => void
+  /** MAIN window, on a ghosted tab: close that project's window, bringing it back to this strip. */
+  onClosePopout: (id: string) => void
+  /** POP-OUT window: close this window, returning the project to the main window. */
+  onReturnToMain: () => void
   /** Open the Remote access dialog (host/share + connect). Shown for every project. */
   onRemoteAccess: () => void
   /** Set (or clear, with undefined) the project's default Claude account for new nodes. */
@@ -76,6 +86,9 @@ export function TabBar({
   onRename,
   onSetFolder,
   onCloseProject,
+  onPopOut,
+  onClosePopout,
+  onReturnToMain,
   onRemoteAccess,
   onSetDefaultAccount,
   onSetDefaultPermissionMode,
@@ -84,8 +97,16 @@ export function TabBar({
   // Select the raw array and filter in a memo, a `.filter()` inside the selector returns a
   // fresh array every store snapshot, which re-rendered the TabBar on EVERY projects change.
   const allProjects = useProjects((s) => s.projects)
+  // Pop-out windows (docs/popout-windows.md): inside one, the strip shows exactly the project it
+  // owns; in the main window, projects living in their own windows stay in the strip as GHOSTS.
+  const popoutId = useWindows((s) => s.popoutProjectId)
+  const detached = useWindows((s) => s.detached)
+  const popoutMode = popoutId !== null
   // Closed projects are hidden here (reopen them from the start screen's "Recently closed").
-  const projects = useMemo(() => allProjects.filter((p) => !p.closed), [allProjects])
+  const projects = useMemo(
+    () => allProjects.filter((p) => !p.closed && (popoutId === null || p.id === popoutId)),
+    [allProjects, popoutId]
+  )
   const activeId = useProjects((s) => s.activeProjectId)
   const omniEnabled = useSettings((s) => isOmniKanbanEnabled(s.settings))
   const globalKanban = useViewMode((s) => s.globalKanban)
@@ -112,6 +133,11 @@ export function TabBar({
   // Tab drag-reorder: the project id being dragged + the current drop target ('' = end zone).
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropId, setDropId] = useState<string | null>(null)
+  // Whether the strip's own drop targets consumed the drag (a reorder landed). A drag they did NOT
+  // consume, released below the strip or outside the window, is a TEAR-OFF (`isTabTearOff`) — the
+  // way a browser tab dragged off its strip opens a new window. A ref, not state: `dragend` reads
+  // it in the same event turn the drop handler wrote it.
+  const dragHandledRef = useRef(false)
   // Whether the caret menu's "Default Claude account" group is expanded (inline, in-place).
   const [acctOpen, setAcctOpen] = useState(false)
   // Whether the caret menu's "Default permission mode" group is expanded (same idiom as acctOpen).
@@ -198,6 +224,7 @@ export function TabBar({
   const onEndZoneDrop = (e: DragEvent) => {
     if (!dragId) return
     e.preventDefault()
+    dragHandledRef.current = true
     onReorder(dragId, null)
     setDragId(null)
     setDropId(null)
@@ -288,23 +315,42 @@ export function TabBar({
             const active = isGlobal ? (highlightedId ? p.id === highlightedId : p.id === activeId) : p.id === activeId
             const swimlaneHighlight = isGlobal && p.id === highlightedId
             const unreadCount = p.nodes.filter((n) => unreadSet.has(n.id)).length
+            const isDetached = detached.has(p.id)
             return (
               <div
                 key={p.id}
-                className={`tab${active ? ' active' : ''}${swimlaneHighlight ? ' tab--swimlane-highlight' : ''}${p.unavailable ? ' unavailable' : ''}${dropId === p.id ? ' is-drop-before' : ''}${menuId === p.id ? ' tab--menu-open' : ''}`}
+                className={`tab${active ? ' active' : ''}${swimlaneHighlight ? ' tab--swimlane-highlight' : ''}${p.unavailable ? ' unavailable' : ''}${isDetached ? ' detached' : ''}${dropId === p.id ? ' is-drop-before' : ''}${menuId === p.id ? ' tab--menu-open' : ''}`}
                 // The project colour rides the GLYPH (below), not the label: `.tab.active` is
                 // neutral text on the page's own surface, like a browser tab. The one exception is
                 // the swimlane highlight, whose underline is `currentColor` and is meant to be the
                 // project's colour.
                 style={swimlaneHighlight ? { color: p.color } : undefined}
-                draggable={editingId !== p.id}
+                // A ghosted tab is not this window's to move, and a pop-out's single tab has
+                // nowhere to go.
+                draggable={editingId !== p.id && !isDetached && !popoutMode}
                 onDragStart={(e) => {
                   e.dataTransfer.effectAllowed = 'move'
+                  dragHandledRef.current = false
                   setDragId(p.id)
                 }}
-                onDragEnd={() => {
+                onDragEnd={(e) => {
+                  // Decided from the release point, not from `dropEffect`: a terminal's file-drop
+                  // zone under the strip accepts any drag, which would read as a completed drop.
+                  const strip = e.currentTarget.closest('.tabbar')?.getBoundingClientRect()
+                  const tearOff =
+                    !popoutMode &&
+                    !isBrowserRuntime() &&
+                    isTabTearOff({
+                      clientX: e.clientX,
+                      clientY: e.clientY,
+                      handledByStrip: dragHandledRef.current,
+                      stripBottom: strip?.bottom ?? 0,
+                      innerWidth: window.innerWidth,
+                      innerHeight: window.innerHeight
+                    })
                   setDragId(null)
                   setDropId(null)
+                  if (tearOff) onPopOut(p.id)
                 }}
                 onDragOver={(e) => {
                   if (!dragId) return
@@ -320,12 +366,19 @@ export function TabBar({
                   if (!dragId || dragId === p.id) return
                   e.preventDefault()
                   e.stopPropagation()
+                  dragHandledRef.current = true
                   onReorder(dragId, p.id)
                   setDragId(null)
                   setDropId(null)
                 }}
                 onClick={() => {
                   if (editingId) return
+                  // A ghosted tab is a place to click to bring that project's window forward:
+                  // `onSwitch` routes a detached id to the window, never to this canvas.
+                  if (isDetached) {
+                    onSwitch(p.id)
+                    return
+                  }
                   // In global swimlane overview, clicking the top project tab jumps to its
                   // swimlane instead of switching the canvas project (analog zu Cmd+1..9).
                   if (isGlobal) {
@@ -338,7 +391,9 @@ export function TabBar({
                   else if (action === 'reconnect') onReconnect(p.id)
                 }}
                 title={
-                  p.unavailable
+                  isDetached
+                    ? `${p.name} is open in its own window — click to bring it forward`
+                    : p.unavailable
                     ? sessionForProject(p.id).source === 'local'
                       ? `${p.cwd ?? 'project'} is unavailable (folder missing or unreachable)`
                       : `${p.name} disconnected, click to reconnect`
@@ -362,6 +417,11 @@ export function TabBar({
                 {p.ssh && (
                   <span className="tab__ssh" title={`${p.ssh.server.user}@${p.ssh.server.host}`}>
                     SSH
+                  </span>
+                )}
+                {isDetached && (
+                  <span className="tab__popout" aria-label="Open in its own window">
+                    <IconOpenExternal />
                   </span>
                 )}
                 {editingId === p.id ? (
@@ -453,15 +513,29 @@ export function TabBar({
               cancel its own width so appearing costs no layout shift. */}
           {dragId && dropId === '' && <span className="tab__dropline" aria-hidden />}
           </div>
-          <button
-            type="button"
-            className="tab__add"
-            title="New project"
-            aria-label="New project"
-            onClick={onOpenWelcome}
-          >
-            <IconPlus />
-          </button>
+          {popoutMode ? (
+            // A pop-out cannot mint projects (its saves are scoped to the one it owns), so the +
+            // is replaced by the one control its strip needs.
+            <button
+              type="button"
+              className="tab__return"
+              title="Close this window and put the project back in the main window's tab strip"
+              onClick={onReturnToMain}
+            >
+              <IconOpenExternal />
+              Back to main window
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="tab__add"
+              title="New project"
+              aria-label="New project"
+              onClick={onOpenWelcome}
+            >
+              <IconPlus />
+            </button>
+          )}
         </div>
       </div>
 
@@ -475,7 +549,41 @@ export function TabBar({
             style={{ top: menuFlip.top, left: menuFlip.left }}
             onClick={(e) => e.stopPropagation()}
           >
+            {detached.has(menuProject.id) ? (
+              // A ghosted tab: the project is another window's. Rename / folder / accounts here
+              // would be written into a copy this window does not own and dropped by the save
+              // scope, so the menu offers only what this window can do — go there, or bring it back.
+              <>
+                <button
+                  onClick={() => {
+                    onSwitch(menuProject.id)
+                    closeMenu()
+                  }}
+                >
+                  Show window
+                </button>
+                <button
+                  onClick={() => {
+                    onClosePopout(menuProject.id)
+                    closeMenu()
+                  }}
+                >
+                  Bring back to this window
+                </button>
+              </>
+            ) : (
+            <>
             <button onClick={() => startRename(menuProject.id, menuProject.name)}>Rename</button>
+            {!popoutMode && !isBrowserRuntime() && !menuProject.remote && !menuProject.unavailable && (
+              <button
+                onClick={() => {
+                  onPopOut(menuProject.id)
+                  closeMenu()
+                }}
+              >
+                Open in new window
+              </button>
+            )}
             <button
               onClick={() => {
                 onSetFolder(menuProject.id)
@@ -614,8 +722,10 @@ export function TabBar({
                 closeMenu()
               }}
             >
-              Close project
+              {popoutMode ? 'Back to main window' : 'Close project'}
             </button>
+            </>
+            )}
           </div>,
           document.body
         )}

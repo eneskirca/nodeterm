@@ -120,6 +120,18 @@ import {
 } from '../core/agents/pending-approvals'
 import { setMainWindow, getMainWindow, sendToMain, closeAction, createCrashReloadPolicy } from './main-window'
 import {
+  detachedProjectIds,
+  onDetachedChange,
+  popoutForProject,
+  popoutProjectOf,
+  registerPopout,
+  saveScopeFor,
+  sendToAppWindows,
+  windowShowingProject,
+  type PopoutWindowLike
+} from './popout-windows'
+import { popoutHash } from '../shared/popout-window'
+import {
   MENU_ITEM_ID_CLOSE,
   MENU_ITEM_ID_KANBAN,
   MENU_ITEM_ID_MINIMIZE,
@@ -492,6 +504,23 @@ const remoteWorkspaceIO = makeRemoteWorkspaceIO(
   (projectId) => workspaceStore.markUnmirrored(projectId)
 )
 const workspaceStore = new WorkspaceStore(remoteWorkspaceIO)
+// Pop-out project windows (docs/popout-windows.md): a save may only write the projects its
+// sending WINDOW owns — a pop-out its one project, everything else all but the popped-out ones —
+// and a pop-out's save is forwarded to the main window so its serialized copy of that project
+// never goes stale (the main window shows a ghosted tab for it and edits nothing).
+workspaceStore.setSaveScopeResolver(saveScopeFor)
+workspaceStore.onProjectSaved = (_projectId, project, scope) => {
+  if (scope?.kind === 'popout') sendToMain(IPC.windowPopoutProjectSaved, project)
+}
+/** The window that shows the project owning `nodeId` — its pop-out, else the main window. For
+ *  every per-node round trip main starts (a control request, a browser popup, a notification
+ *  click): the node's canvas is mounted in exactly one window, and only that window can answer. */
+const windowForNode = (nodeId: string | undefined): PopoutWindowLike | ReturnType<typeof getMainWindow> => {
+  const projectId = nodeId
+    ? workspaceStore.persistedCanvases().find((c) => c.nodes.some((n) => n.id === nodeId))?.id
+    : undefined
+  return windowShowingProject(projectId)
+}
 // Watch each local ref's project.json for outside edits (git pull, a teammate's commit).
 // Self-writes match the store's last-written cache and are ignored. Re-synced after every
 // store load/save via onPersist; disposed on quit next to ptyManager.killAll().
@@ -500,7 +529,7 @@ const workspaceWatcher = new WorkspaceWatcher({
   isSelfWrite: (p, c) => workspaceStore.isSelfWrite(p, c),
   onExternalChange: (filePath) => {
     void workspaceStore.readLocalRefByPath(filePath).then((changed) => {
-      if (changed) sendToMain(IPC.workspaceExternalChange, changed)
+      if (changed) sendToAppWindows(IPC.workspaceExternalChange, changed)
     })
   }
 })
@@ -959,16 +988,189 @@ function syncMenuForStandDown(): void {
   }
 }
 
+/** The macOS trackpad-vs-mouse ledger for one window (see the comment at its call in
+ *  `createWindow`). Shared with pop-out windows: their canvas routes the wheel the same way. */
+function attachTrackpadGestureLedger(win: BrowserWindow): void {
+  // Attached on macOS ONLY (issue #535; pinned at source level by trackpad-gesture.test.ts).
+  if (process.platform === 'darwin') {
+    const trackpadLedger = new TrackpadGestureLedger()
+    const sendGesture = (active: boolean): void => {
+      if (!win.isDestroyed()) win.webContents.send(IPC.canvasTrackpadGesture, active)
+    }
+    win.webContents.on('input-event', (_event, input) => {
+      const active = trackpadLedger.observe(input.type)
+      if (active !== null) sendGesture(active)
+    })
+    // A gesture cannot survive a focus loss, and an End that never arrives (⌘Tab / hide / minimize
+    // mid-scroll) would otherwise leave the ledger stuck open for the life of the window — with
+    // wheel zoom silently dead until restart. `reset()` reports whether anything was actually
+    // open, so an ordinary blur between gestures sends nothing.
+    win.on('blur', () => {
+      if (trackpadLedger.reset()) sendGesture(false)
+    })
+  }
+}
+
+/** The renderer's own preferences: one definition for the main window and every pop-out, so a
+ *  pop-out can never be a less locked-down page than the main window. */
+function rendererWebPreferences(): Electron.WebPreferences {
+  return {
+    preload: join(__dirname, '../preload/index.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false,
+    // Enables the <webview> tag used by WebNode (embedded content stays locked down —
+    // no nodeintegration is set on the webview element itself).
+    webviewTag: true,
+    // Chromium's built-in PDF viewer is gated behind `plugins`, and without it an EditorNode
+    // showing a .pdf renders nothing at all. This is not the old NPAPI/Flash surface (that is
+    // long gone from Chromium) — in a current Electron the only thing it turns on is the PDF
+    // viewer. The browser (Server Edition) needs no equivalent: it has the viewer already.
+    plugins: true
+  }
+}
+
+/** Linux gets its window/taskbar icon from the bundled png (no app bundle supplies one there);
+ *  mac/win are untouched — an icon would do nothing useful and could clobber the bundled .icns. */
+function linuxWindowIcon(): string | undefined {
+  if (process.platform !== 'linux') return undefined
+  return app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png')
+}
+
+/** Lock every window to the app's own origin: external links go to the system browser, a
+ *  top-level navigation away from the app is refused (defense in depth), popups are denied. */
+function lockNavigationToApp(win: BrowserWindow): void {
+  // Open external links in the system browser — only safe schemes (no file://, no custom
+  // protocol handlers). Reachable from remotely-fetched announcement URLs and rendered
+  // markdown links, so the allowlist mirrors the shellOpenExternal IPC handler.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSafeExternalUrl(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  // Block any in-page top-level navigation away from the app origin (defense in depth).
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith('file://') && !url.startsWith(process.env['ELECTRON_RENDERER_URL'] ?? '\0')) {
+      e.preventDefault()
+      if (isSafeExternalUrl(url)) void shell.openExternal(url)
+    }
+  })
+}
+
+/**
+ * A pop-out asked to save before it closes: main sends `window:popout-flush`, the renderer
+ * commits its canvas + saves and answers `window:popout-flushed`. Bounded, because a renderer that
+ * is wedged (or already gone) must not hold the window open — the ack means "you may close me",
+ * and a save that did not land is the same debounced-autosave exposure the main window has on
+ * quit. Keyed by webContents id so two pop-outs closing at once cannot answer for each other.
+ */
+const POPOUT_FLUSH_TIMEOUT_MS = 2500
+const pendingPopoutFlush = new Map<number, () => void>()
+function requestPopoutFlush(win: BrowserWindow): Promise<void> {
+  return new Promise((resolve) => {
+    const id = win.webContents.id
+    const done = (): void => {
+      clearTimeout(timer)
+      pendingPopoutFlush.delete(id)
+      resolve()
+    }
+    const timer = setTimeout(done, POPOUT_FLUSH_TIMEOUT_MS)
+    pendingPopoutFlush.set(id, done)
+    win.webContents.send(IPC.windowPopoutFlush)
+  })
+}
+
+/** Bring a pop-out to the front. Every caller is a CLICK — the ghosted tab, a sidebar row, a
+ *  notification (see window-raise.guard.test.ts, which counts these). */
+function raisePopout(win: PopoutWindowLike): void {
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+/**
+ * A pop-out project window: the same renderer, loaded with `#popout=<id>` so it boots as that
+ * one project (docs/popout-windows.md). It is a full app window — same preload, same
+ * lock-down, same keydown intercepts, same trackpad ledger — with three differences from
+ * `createWindow`: it does not become THE main window (main-window.ts still names one), it does
+ * not join presence (the user would see themselves twice in the facepile), and closing it hands
+ * the project back rather than hiding: `close` first asks the renderer to flush (bounded), then
+ * really closes, and the registry's `closed` handler is what returns ownership to the main window.
+ */
+function createPopoutWindow(projectId: string): BrowserWindow {
+  // Cascade from the main window, a size step down: visibly a second window, not a replacement.
+  const main = getMainWindow() as unknown as BrowserWindow | null
+  const base = main && !main.isDestroyed() ? main.getBounds() : { x: 80, y: 80, width: 1400, height: 900 }
+  const win = new BrowserWindow({
+    x: base.x + 48,
+    y: base.y + 48,
+    width: Math.max(900, Math.round(base.width * 0.85)),
+    height: Math.max(600, Math.round(base.height * 0.85)),
+    show: false,
+    backgroundColor: '#1e1e1e',
+    title: NT_MULTI ? 'node-terminal (test instance)' : 'node-terminal',
+    icon: linuxWindowIcon(),
+    ...macTitleBarOptions(process.platform, resolveTabBarHeight(settingsStore.get().tabBarHeight)),
+    webPreferences: rendererWebPreferences()
+  })
+  registerPopout(projectId, win)
+  const clientId = win.webContents.id
+  win.on('closed', () => {
+    // Same reasoning as the main window's `closed`: a destroyed window sends no `pty:kill`, so
+    // its pty subscriptions must be dropped here or its sessions stay paused/attached forever.
+    ptyManager.dropClient(clientId)
+    pendingPopoutFlush.get(clientId)?.()
+  })
+  const crashReload = createCrashReloadPolicy()
+  win.webContents.on('render-process-gone', (_event, details) => {
+    ptyManager.dropClient(clientId)
+    pendingPopoutFlush.get(clientId)?.()
+    if (quitting || win.isDestroyed()) return
+    // The hash survives a reload, so the page comes back as the SAME pop-out. Past the budget the
+    // window closes and the project returns to the main window — a dead pop-out must not hold a
+    // project hostage the way a dead main window holds the app.
+    const action = crashReload(details.reason, Date.now())
+    if (action === 'reload') win.webContents.reload()
+    else if (action === 'give-up') win.destroy()
+  })
+  attachTrackpadGestureLedger(win)
+  // FIRST PAINT ONLY — `once`, never `on`, the #737 rule. The user tore a tab off to get this
+  // window, which is the user action the raise guard requires.
+  win.once('ready-to-show', () => win.show())
+  let flushed = false
+  win.on('close', (e) => {
+    // On quit every window closes; the main window's quit flush covers the store. Otherwise ask
+    // the renderer to save first — a close that skips this loses up to one autosave debounce of
+    // edits in a window the user deliberately closed.
+    if (quitting || flushed) return
+    e.preventDefault()
+    flushed = true
+    void requestPopoutFlush(win).finally(() => {
+      if (!win.isDestroyed()) win.close()
+    })
+  })
+  installKeydownIntercepts(
+    win,
+    currentInterceptBindings,
+    interceptIsMac,
+    () => shortcutRecording,
+    () => policyStandsDown(currentInterceptPolicy(), terminalFocused),
+    () => closeStandsDownInTerminal(interceptIsMac, terminalFocused)
+  )
+  lockNavigationToApp(win)
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + popoutHash(projectId))
+  } else {
+    // `hash` is appended by Electron with its own '#'.
+    win.loadFile(join(__dirname, '../renderer/index.html'), { hash: popoutHash(projectId).slice(1) })
+  }
+  return win
+}
+
 function createWindow(): BrowserWindow {
   // On Linux the window/taskbar icon is not supplied by an app bundle (unlike macOS),
   // so set it explicitly from the bundled png (extraResources). mac/win are untouched —
   // an icon there would do nothing useful and could clobber the bundled .icns.
-  const linuxIcon =
-    process.platform === 'linux'
-      ? app.isPackaged
-        ? join(process.resourcesPath, 'icon.png')
-        : join(__dirname, '../../build/icon.png')
-      : undefined
+  const linuxIcon = linuxWindowIcon()
   // Reopen where the user left off (issue: the window forgot its size/position every launch).
   // A throwaway NT_MULTI sandbox is deliberately excluded: it may share the real app's userData,
   // and a dev instance must not move the window of the app being developed.
@@ -995,20 +1197,7 @@ function createWindow(): BrowserWindow {
     // The lights are centred on the user's tab-bar height (Settings → Appearance); a later change
     // re-centres them live through the `settingsStore.onChange` hook below.
     ...macTitleBarOptions(process.platform, resolveTabBarHeight(settingsStore.get().tabBarHeight)),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      // Enables the <webview> tag used by WebNode (embedded content stays locked down —
-      // no nodeintegration is set on the webview element itself).
-      webviewTag: true,
-      // Chromium's built-in PDF viewer is gated behind `plugins`, and without it an EditorNode
-      // showing a .pdf renders nothing at all. This is not the old NPAPI/Flash surface (that is
-      // long gone from Chromium) — in a current Electron the only thing it turns on is the PDF
-      // viewer. The browser (Server Edition) needs no equivalent: it has the viewer already.
-      plugins: true
-    }
+    webPreferences: rendererWebPreferences()
   })
 
   // Maximize BEFORE the first paint. The window is `show: false` until `ready-to-show`, so doing it
@@ -1070,23 +1259,7 @@ function createWindow(): BrowserWindow {
   // scrolling on Windows and Linux too, so a touch-enabled non-mac machine paid per-gesture IPC
   // for a flag the renderer's router discards off macOS. Gating the attach makes the "desktop
   // macOS only" contract true by construction rather than by the consumer's good manners.
-  if (process.platform === 'darwin') {
-    const trackpadLedger = new TrackpadGestureLedger()
-    const sendGesture = (active: boolean): void => {
-      if (!win.isDestroyed()) win.webContents.send(IPC.canvasTrackpadGesture, active)
-    }
-    win.webContents.on('input-event', (_event, input) => {
-      const active = trackpadLedger.observe(input.type)
-      if (active !== null) sendGesture(active)
-    })
-    // A gesture cannot survive a focus loss, and an End that never arrives (⌘Tab / hide / minimize
-    // mid-scroll) would otherwise leave the ledger stuck open for the life of the window — with
-    // wheel zoom silently dead until restart. `reset()` reports whether anything was actually
-    // open, so an ordinary blur between gestures sends nothing.
-    win.on('blur', () => {
-      if (trackpadLedger.reset()) sendGesture(false)
-    })
-  }
+  attachTrackpadGestureLedger(win)
   const crashReload = createCrashReloadPolicy()
   win.webContents.on('render-process-gone', (_event, details) => {
     ptyManager.dropClient(presenceId)
@@ -1203,21 +1376,7 @@ function createWindow(): BrowserWindow {
     if (navigationClearsRecording(details)) clearRendererKeyState()
   })
 
-  // Open external links in the system browser — only safe schemes (no file://, no custom
-  // protocol handlers). Reachable from remotely-fetched announcement URLs and rendered
-  // markdown links, so the allowlist mirrors the shellOpenExternal IPC handler.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-
-  // Block any in-page top-level navigation away from the app origin (defense in depth).
-  win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith('file://') && !url.startsWith(process.env['ELECTRON_RENDERER_URL'] ?? '\0')) {
-      e.preventDefault()
-      if (isSafeExternalUrl(url)) void shell.openExternal(url)
-    }
-  })
+  lockNavigationToApp(win)
 
   // Load the electron-vite dev server if present, otherwise the built file.
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -1263,7 +1422,7 @@ app.whenReady().then(async () => {
     contents.setWindowOpenHandler(({ url }) => {
       const sourceNodeId = browserGuests.get(contents.id)?.nodeId
       if (sourceNodeId && /^https?:\/\//i.test(url)) {
-        sendToMain(IPC.browserNewWindow, { url, sourceNodeId })
+        windowForNode(sourceNodeId)?.webContents.send(IPC.browserNewWindow, { url, sourceNodeId })
       }
       return { action: 'deny' }
     })
@@ -1293,7 +1452,7 @@ app.whenReady().then(async () => {
           // Same route a popup takes: a new browser node, never a real window.
           openLinkInNode: (url) => {
             const sourceNodeId = browserGuests.get(contents.id)?.nodeId
-            if (sourceNodeId) sendToMain(IPC.browserNewWindow, { url, sourceNodeId })
+            if (sourceNodeId) windowForNode(sourceNodeId)?.webContents.send(IPC.browserNewWindow, { url, sourceNodeId })
           },
           copyText: (text) => clipboard.writeText(text),
           copyImage: () => contents.copyImageAt(params.x, params.y),
@@ -1490,6 +1649,54 @@ app.whenReady().then(async () => {
 
   ipcMain.on(IPC.appCloseWindow, () => BrowserWindow.getFocusedWindow()?.close())
 
+  // Pop-out project windows (docs/popout-windows.md). Raw ipcMain on purpose: these act on THIS
+  // machine's windows, never on a core, so a relay peer must not reach them. Every handler that
+  // raises a window is sender-guarded to an app window (the main one or a pop-out): a <webview>
+  // guest is a webContents in this process too, and "raise a window" must stay a click's power.
+  const isAppWindowSender = (senderId: number): boolean =>
+    getMainWindow()?.webContents.id === senderId || popoutProjectOf(senderId) !== null
+  ipcMain.handle(IPC.windowPopout, (event, projectId: unknown) => {
+    if (typeof projectId !== 'string' || !projectId) return { ok: false, error: 'no project id' }
+    // Only the main window tears tabs off: a pop-out shows one project and cannot hand one out.
+    if (getMainWindow()?.webContents.id !== event.sender.id) {
+      return { ok: false, error: 'only the main window can open a project in its own window' }
+    }
+    const existing = popoutForProject(projectId)
+    if (existing) {
+      raisePopout(existing)
+      return { ok: true }
+    }
+    // The new window is booted from the project as LAST SAVED (the store's memory slice), so the
+    // caller must have saved first — the renderer awaits its own writeDisk before asking.
+    if (!workspaceStore.lastSavedProject(projectId)) {
+      return { ok: false, error: 'the project has not been saved yet — try again in a moment' }
+    }
+    createPopoutWindow(projectId)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.windowFocusProject, (event, projectId: unknown) => {
+    if (!isAppWindowSender(event.sender.id) || typeof projectId !== 'string') return
+    const win = popoutForProject(projectId)
+    if (win) raisePopout(win)
+  })
+  ipcMain.handle(IPC.windowClosePopout, (event, projectId: unknown) => {
+    if (!isAppWindowSender(event.sender.id) || typeof projectId !== 'string') return
+    // `close`, not `destroy`: the window's own close handler runs the flush handshake first.
+    popoutForProject(projectId)?.close()
+  })
+  ipcMain.handle(IPC.windowFocusNode, (event, projectId: unknown, nodeId: unknown) => {
+    if (!isAppWindowSender(event.sender.id)) return
+    if (typeof projectId !== 'string' || typeof nodeId !== 'string' || !nodeId) return
+    const win = popoutForProject(projectId)
+    if (!win) return
+    raisePopout(win)
+    win.webContents.send(IPC.appFocusNode, nodeId)
+  })
+  ipcMain.handle(IPC.windowDetached, () => detachedProjectIds())
+  ipcMain.on(IPC.windowPopoutFlushed, (event) => pendingPopoutFlush.get(event.sender.id)?.())
+  // The main window mirrors the set (ghosted tabs, save scope is main's own business).
+  onDetachedChange((ids) => sendToMain(IPC.windowDetachedChange, ids))
+
   // Settings' shortcut recorder arming/disarming. Guarded on the sender being the live main window
   // (the same `getMainWindow()?.webContents.id !== event.sender.id` test `registerElectronGitHubControl`
   // uses): a <webview> guest — a browser node showing an arbitrary page — is a webContents in this
@@ -1576,8 +1783,9 @@ app.whenReady().then(async () => {
       if (!payload.force && win.isFocused()) return 'skipped'
       const n = new Notification({ title: payload.title, body: payload.body })
       n.on('click', () => {
-        // Re-resolve at click time — the window may have been hidden/recreated since.
-        const w = getMainWindow()
+        // Re-resolve at click time — the window may have been hidden/recreated since, and the
+        // node's project may live in a pop-out window by now.
+        const w = windowForNode(payload.nodeId)
         if (!w) return
         if (w.isMinimized()) w.restore()
         w.show()
@@ -1883,7 +2091,7 @@ app.whenReady().then(async () => {
   // told "no". Reordering it later only delays that answer; leaving it out would stall those
   // callers until their own timeout, so it is not optional.
   void refreshCodexIdentityCaps()
-  hookServer.setCodexIdentityListener((ev) => sendToMain(IPC.codexIdentity, ev))
+  hookServer.setCodexIdentityListener((ev) => sendToAppWindows(IPC.codexIdentity, ev))
   // A node still on a canvas is "live". A thread whose recorded owner is gone (node deleted, or a
   // workspace that no longer holds it) is free to be re-claimed; one whose owner is still there is
   // not, and the launcher then falls back rather than putting two clients on one conversation.
@@ -2306,7 +2514,7 @@ app.whenReady().then(async () => {
       kind: 'state',
       state: 'working'
     } satisfies NormalizedAgentEvent
-    sendToMain(IPC.agentStatus, ev)
+    sendToAppWindows(IPC.agentStatus, ev)
     recordAgentEvent(ev)
   }
   const onTaskNotification = (sessionId: string, n: TaskNotification): void => {
@@ -2321,7 +2529,7 @@ app.whenReady().then(async () => {
       toolUseId: n.toolUseId,
       result: n.result
     } satisfies NormalizedAgentEvent
-    sendToMain(IPC.agentStatus, taskDoneEvent)
+    sendToAppWindows(IPC.agentStatus, taskDoneEvent)
     recordAgentEvent(taskDoneEvent)
     subagentTail.finish(n.toolUseId)
     remoteSubagentTail.untrack(n.toolUseId)
@@ -2697,7 +2905,7 @@ app.whenReady().then(async () => {
     // event ENRICHED for a needs-you edge (a question strips its pendingId), so the canvas keys off
     // the same single source of truth as the mirror/phone. Then broadcast the enriched event.
     const enriched = recordAgentEvent(e) ?? e
-    sendToMain(IPC.agentStatus, enriched)
+    sendToAppWindows(IPC.agentStatus, enriched)
     // Feed the macOS Notch HUD its prompt (ev.task on newTurn) + subagent grouping (no-op off/non-darwin).
     notchHudOnAgentEvent(enriched)
     // Agent messaging taps the SAME stream: the sender's newTurn resets its fan-out budget, and
@@ -2783,7 +2991,7 @@ app.whenReady().then(async () => {
   // try/catch is the backstop, not the primary.
   createMemoryPressureMonitor({
     onPressure: (severity) => {
-      sendToMain(IPC.appMemoryPressure, severity)
+      sendToAppWindows(IPC.appMemoryPressure, severity)
       if (severity === 'critical') void sessionReaper.sweep()
     }
   }).start()
@@ -2801,7 +3009,7 @@ app.whenReady().then(async () => {
   // would and widens no exemption — attached and in-grace sessions stay untouchable.
   const ptyPressure = createPtyPressureMonitor({
     onLevel: (reading) => {
-      sendToMain(IPC.ptyPressure, reading)
+      sendToAppWindows(IPC.ptyPressure, reading)
       if (reading.level === 'critical') void sessionReaper.sweep({ pressure: 'pty' })
     }
   })
@@ -2849,7 +3057,7 @@ app.whenReady().then(async () => {
     }
   })
   const ackSweeper = createAckSweeper({
-    handlers: { ackDone, onUnreadClear: (id) => sendToMain(IPC.agentUnreadClear, id) }
+    handlers: { ackDone, onUnreadClear: (id) => sendToAppWindows(IPC.agentUnreadClear, id) }
   })
   let remoteAckSweepBusy = false
   const ackSweepTimer = setInterval(() => {
@@ -2861,7 +3069,7 @@ app.whenReady().then(async () => {
       .then((ids) => {
         for (const id of ids) {
           ackDone(id)
-          sendToMain(IPC.agentUnreadClear, id)
+          sendToAppWindows(IPC.agentUnreadClear, id)
         }
       })
       .catch(() => {})
@@ -3475,7 +3683,7 @@ app.whenReady().then(async () => {
   // against its own 2s timeout. The renderer NEVER runs a CDP command; it answers existence + project
   // + capability only.
   const askRendererResolve = (sourceNodeId: string, browserNodeId: string): Promise<BrowserResolve> => {
-    const w = getMainWindow()
+    const w = windowForNode(sourceNodeId)
     if (!w || w.isDestroyed()) {
       return Promise.resolve({ ok: false, refusal: 'source node is not on an open canvas' })
     }
@@ -3584,7 +3792,9 @@ app.whenReady().then(async () => {
       })
       if (gate !== 'allow') return { ok: false, error: gate.refuse, message: gate.refuse }
     }
-    const target = getMainWindow()
+    // The window whose canvas holds the source node: a popped-out project answers from its own
+    // window, everything else from the main one (docs/popout-windows.md).
+    const target = windowForNode(nodeId)
     if (!target) return { ok: false, error: 'window unavailable' }
     const requestId = randomUUID()
     const result = await new Promise<{ ok: boolean; message?: string; result?: unknown; error?: string }>((resolve) => {
@@ -3974,7 +4184,7 @@ app.whenReady().then(async () => {
       void workspaceStore
         .refreshSshProject(projectId)
         .then((adopted) => {
-          if (adopted) sendToMain(IPC.workspaceExternalChange, adopted)
+          if (adopted) sendToAppWindows(IPC.workspaceExternalChange, adopted)
         })
         .catch(() => {})
     },
@@ -4137,7 +4347,7 @@ app.whenReady().then(async () => {
         void workspaceStore
           .refreshSshProject(projectId, { pushIfStanding: false })
           .then((adopted) => {
-            if (adopted) sendToMain(IPC.workspaceExternalChange, adopted)
+            if (adopted) sendToAppWindows(IPC.workspaceExternalChange, adopted)
           })
           .catch(() => { /* fail-open: the next tick retries */ })
           .finally(() => inFlight.delete(projectId))

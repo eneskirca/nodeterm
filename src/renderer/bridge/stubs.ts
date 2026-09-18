@@ -211,6 +211,20 @@ export function buildStubApi(): Omit<
       stopAll: noop,
       stopProject: noop
     },
+    windows: {
+      // Pop-out project windows are DESKTOP-ONLY: a browser tab cannot spawn app windows, and a
+      // relay tab is a view of someone else's machine. `popout` refuses so the caller can say so;
+      // the queries answer "nothing is popped out", which is the permanently true answer here,
+      // and the tab strip hides the affordance behind `isBrowserRuntime()` anyway.
+      popout: () => Promise.resolve({ ok: false as const, error: 'pop-out windows need the desktop app' }),
+      focusProject: pnoop,
+      closePopout: pnoop,
+      focusNode: pnoop,
+      detached: () => Promise.resolve([]),
+      onDetachedChange: noopUnsub,
+      onProjectSaved: noopUnsub,
+      onFlush: noopUnsub
+    },
     updates: {
       onAvailable: noopUnsub,
       onDownloaded: noopUnsub,

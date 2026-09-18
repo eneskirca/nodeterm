@@ -118,6 +118,21 @@ export const IPC = {
    *  Desktop-only, for the same reason as the recording bit — the Server Edition stubs it. */
   uiTerminalFocus: 'ui:terminal-focus',
   appCloseWindow: 'app:close-window',
+  // Pop-out project windows (desktop only — see docs/popout-windows.md). `windowPopout` /
+  // `windowFocusProject` / `windowFocusNode` / `windowDetached` are renderer → main invokes;
+  // `windowDetachedChange` is pushed to the MAIN window whenever the set of popped-out projects
+  // changes; `windowPopoutFlush` is pushed to a POP-OUT before it closes and answered with
+  // `windowPopoutFlushed` once its canvas is saved; `windowPopoutProjectSaved` carries a pop-out's
+  // saved project to the main window so its serialized copy never goes stale.
+  windowPopout: 'window:popout',
+  windowFocusProject: 'window:focus-project',
+  windowClosePopout: 'window:close-popout',
+  windowFocusNode: 'window:focus-node',
+  windowDetached: 'window:detached',
+  windowDetachedChange: 'window:detached-change',
+  windowPopoutFlush: 'window:popout-flush',
+  windowPopoutFlushed: 'window:popout-flushed',
+  windowPopoutProjectSaved: 'window:popout-project-saved',
   /** Main → renderer: the native application menu's "Settings…" item (⌘,) was clicked. The
    *  renderer opens the settings page — same path as the in-canvas gear button / Cmd+, keydown. */
   appOpenSettings: 'app:open-settings',

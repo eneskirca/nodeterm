@@ -1,6 +1,7 @@
 import { app, ipcMain, safeStorage, shell, webContents } from 'electron'
 import type { CorePlatform } from '../core/platform'
 import { mainWindowClientIds, sendToMain } from './main-window'
+import { popoutClientIds, sendToPopouts } from './popout-windows'
 import { peerRegistry } from './peer-registry'
 import { HOST_ONLY_REFUSAL, isHostOnlyChannel } from '../shared/host-control'
 import { E_NO_HANDLER, type RpcErr, type RpcOk, type RpcRequest } from '../shared/rpc'
@@ -174,6 +175,9 @@ export function electronPlatform(): ElectronPlatform {
     },
     broadcast: (ch, ...args) => {
       sendToMain(ch, ...args) // the main window, exactly as before
+      // …and every pop-out project window: a broadcast is "every attached UI", and a pop-out is
+      // one (agent status, external changes, presence). No-op with none open.
+      sendToPopouts(ch, ...args)
       // …plus every relay peer. Not optional: presence diffs (presence:peer) and canvas mutations
       // fan out via broadcast, so a peer that only received sendTo would still see nothing.
       const peers = peerRegistry()
@@ -194,7 +198,9 @@ export function electronPlatform(): ElectronPlatform {
         }
       }
     },
-    clientIds: () => [...mainWindowClientIds(), ...peerRegistry().ids()],
+    // Pop-outs are attached clients too (the pty manager's "attached" test reads this list — a
+    // pop-out's sessions must not read as detached to the reaper).
+    clientIds: () => [...mainWindowClientIds(), ...popoutClientIds(), ...peerRegistry().ids()],
     openExternal: (url) => shell.openExternal(url),
     // Seal / unseal node secrets at rest with the OS keychain. Byte-in byte-out, mirroring #167's
     // codex-node-auth-key.json shape: encrypt the UTF-8 content of the passed buffer, decrypt back to

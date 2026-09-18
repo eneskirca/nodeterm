@@ -33,6 +33,7 @@ import {
   sanitizeLayouts
 } from '../shared/canvas-layout'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
+import { ownsProject, scopeIndex, type SaveScope } from './workspace-scope'
 import { ensureProjectBoard, setProjectCardColumn } from './project-kanban-write'
 
 /** Checked remote read: `absent` (no file — safe to push our cache) is NOT `error` (connection
@@ -196,6 +197,18 @@ export class WorkspaceStore {
   private index: WorkspaceIndexV3 | null = null
   /** Optional hook fired after every load()/save() — the watcher re-syncs its watch set (Task 5). */
   onPersist?: () => void
+  /**
+   * Pop-out windows (docs/popout-windows.md). `saveScopeFor` is the shell's answer to "which
+   * projects may THIS sender write" — the Electron shell resolves it from the window that sent
+   * the save; the Server Edition sets none, so every save there stays unscoped. `lastSaved` is the
+   * renderer-shaped Project each owner last handed us, which is how a pop-out is booted (its
+   * `workspace:load` answers from here, not from disk — see `loadFor`) and how the main window
+   * is kept fresh (`onProjectSaved`) while it does not own the project.
+   */
+  private saveScopeFor?: (senderId: number) => SaveScope | undefined
+  private readonly lastSaved = new Map<string, Project>()
+  /** Fired after a save landed, once per project the sender OWNED, with the sender's scope. */
+  onProjectSaved?: (projectId: string, project: Project, scope: SaveScope | undefined) => void
 
   constructor(private remoteIO?: RemoteWorkspaceIO) {}
 
@@ -204,8 +217,9 @@ export class WorkspaceStore {
   }
 
   registerIpc(): void {
-    platform().handle(IPC.workspaceLoad, () => this.load())
-    platform().handle(IPC.workspaceSave, (workspace: Workspace) => this.save(workspace))
+    platform().handleWithSender(IPC.workspaceLoad, (senderId: number) => this.loadFor(senderId))
+    platform().handleWithSender(IPC.workspaceSave, (senderId: number, workspace: Workspace) =>
+      this.save(workspace, this.saveScopeFor?.(senderId)))
     platform().handle(IPC.workspaceProbeFolder, (folder: string) => this.probeFolder(folder))
     platform().handle(IPC.workspaceProjectFileState, (cwd: unknown) =>
       typeof cwd === 'string' && cwd ? this.projectFileState(cwd) : 'unreadable')
@@ -224,6 +238,38 @@ export class WorkspaceStore {
    * correct for boot/renderer loads. Read-only callers (e.g. the relay `projects.list` blob, which
    * a phone can trigger mid git-merge) pass false so a conflict-marked file is left hand-resolvable.
    */
+  /** The shell's ownership rule for `workspace:save` / `workspace:load` senders (pop-out windows). */
+  setSaveScopeResolver(resolve: ((senderId: number) => SaveScope | undefined) | undefined): void {
+    this.saveScopeFor = resolve
+  }
+
+  /** The renderer-shaped project the owner last saved, if any save has carried it this run. */
+  lastSavedProject(projectId: string): Project | undefined {
+    return this.lastSaved.get(projectId)
+  }
+
+  /**
+   * `workspace:load` for ONE sender. A pop-out window is answered with a one-project slice — the
+   * project as its previous owner last saved it, from memory — rather than a second full disk
+   * load: `load()` is the boot path (it sidelines corrupt files, runs migrations, re-seeds `revs`
+   * and `lastWritten`), and re-running it under a live main window would race that window's
+   * autosaves for the store's own bookkeeping. Main saves before it opens a pop-out, so the slice
+   * is exactly the content on disk. If no save has carried the project (never on the app's own
+   * path), fall back to a real load filtered to it, so the window is still not a second main.
+   */
+  private async loadFor(senderId: number): Promise<Workspace> {
+    const scope = this.saveScopeFor?.(senderId)
+    if (scope?.kind !== 'popout') return this.load()
+    const snapshot = this.lastSaved.get(scope.projectId)
+    if (snapshot) return { version: 2, activeProjectId: scope.projectId, projects: [snapshot] }
+    const full = await this.load()
+    return {
+      version: 2,
+      activeProjectId: scope.projectId,
+      projects: full.projects.filter((p) => p.id === scope.projectId)
+    }
+  }
+
   async load(opts?: { sideline?: boolean }): Promise<Workspace> {
     const result = await this.loadInner(opts?.sideline ?? true)
     this.onPersist?.()
@@ -932,13 +978,13 @@ export class WorkspaceStore {
    *  projects went blank after tab switching" wipe. */
   private saveChain: Promise<unknown> = Promise.resolve()
 
-  save(workspace: Workspace): Promise<void> {
-    const run = this.saveChain.then(() => this.saveNow(workspace))
+  save(workspace: Workspace, scope?: SaveScope): Promise<void> {
+    const run = this.saveChain.then(() => this.saveNow(workspace, scope))
     this.saveChain = run.catch(() => {})
     return run
   }
 
-  private async saveNow(workspace: Workspace): Promise<void> {
+  private async saveNow(workspace: Workspace, scope?: SaveScope): Promise<void> {
     if (!workspace.projects.length && !this.index) {
       // A store that never read the index may not replace a populated one with "no projects":
       // that is the boot-save wipe — load() failed transiently, the renderer hydrated zero
@@ -952,7 +998,21 @@ export class WorkspaceStore {
     }
     const savedAt = new Date().toISOString()
     const previousIndex = this.index
-    const { index, files, dataFiles } = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
+    const split = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
+    const { files, dataFiles } = split
+    let index = split.index
+    if (scope) {
+      // A scoped save (pop-out windows) may write ONLY the projects its sender owns: everything
+      // else keeps the store's previous entry and is not written at all — see workspace-scope.ts
+      // for the stale-copy overwrite this prevents. `files` is keyed by cwd, so the incoming
+      // entries are the join back to a project id.
+      for (const e of index.entries) {
+        if (ownsProject(scope, e.id)) continue
+        if (e.cwd) files.delete(e.cwd)
+        dataFiles.delete(e.id)
+      }
+      index = scopeIndex(this.index, index, scope)
+    }
 
     for (const entry of index.entries) {
       const previous = this.index?.entries.find((candidate) => candidate.id === entry.id)
@@ -1058,6 +1118,8 @@ export class WorkspaceStore {
     // ssh caches: bump rev on change so a later remote write can win; mirror write in Task 8.
     for (const e of index.entries) {
       if (!e.ssh || !e.cache) continue
+      // Not this sender's to mirror: its entry is the previous one, unchanged (pop-out scope).
+      if (scope && !ownsProject(scope, e.id)) continue
       const prevRev = this.revs.get(e.id) ?? 0
       const previousCache = this.index?.entries.find((old) => old.id === e.id && old.cache)?.cache
       const changedSinceLoad = !(previousCache && sameProjectContent(previousCache, e.cache))
@@ -1115,6 +1177,15 @@ export class WorkspaceStore {
     if (this.pendingExecNote) {
       this.pendingExecNote = false
       platform().broadcast(IPC.workspaceMigrated, 'exec')
+    }
+
+    // What each OWNER last handed us, by id — the pop-out boot slice and the main window's live
+    // copy of a project it does not own both read from here. A relay tab is not a workspace on
+    // this disk (splitWorkspace drops it) and is not recorded either; neither is a placeholder.
+    for (const p of workspace.projects) {
+      if (p.remote || p.unavailable || !ownsProject(scope, p.id)) continue
+      this.lastSaved.set(p.id, p)
+      this.onProjectSaved?.(p.id, p, scope)
     }
 
     this.onPersist?.()

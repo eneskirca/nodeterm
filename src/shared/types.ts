@@ -2278,6 +2278,41 @@ export interface UpdateProgress {
   bytesPerSecond: number
 }
 
+/**
+ * Pop-out project windows (desktop only): one project shown in its own OS window, torn off the
+ * tab strip. The MAIN window owns every project except the popped-out ones; a POP-OUT owns
+ * exactly one and can never switch. Ownership is enforced in main (the save scope) — the renderer
+ * only mirrors it. Full write-up: docs/popout-windows.md.
+ */
+export interface WindowsApi {
+  /**
+   * Open `projectId` in its own window. The caller must have SAVED first (main hands the new
+   * window the project as last saved). An already-popped-out project is focused instead.
+   * Server Edition / relay: rejects with E_UNSUPPORTED (a browser tab cannot spawn app windows).
+   */
+  popout(projectId: string): Promise<{ ok: true } | { ok: false; error: string }>
+  /** Bring the window showing `projectId` to the front (a click on its ghosted tab). No-op when
+   *  no pop-out shows it. */
+  focusProject(projectId: string): Promise<void>
+  /** Close the window showing `projectId`, returning the project to the main window's tab strip
+   *  (its canvas is saved first; its sessions are untouched). No-op when it is not popped out. */
+  closePopout(projectId: string): Promise<void>
+  /** Focus `nodeId` in whichever window shows its project: raises that window and forwards the
+   *  same `app:focus-node` an OS-notification click sends. No-op when the project is not popped
+   *  out (the caller handles its own canvas). */
+  focusNode(projectId: string, nodeId: string): Promise<void>
+  /** Project ids currently shown in their own windows. Empty in a browser / relay tab. */
+  detached(): Promise<string[]>
+  /** MAIN window: the set of popped-out projects changed. Returns unsubscribe. */
+  onDetachedChange(listener: (ids: string[]) => void): () => void
+  /** MAIN window: a pop-out saved this project — adopt it into the store (the pop-out owns it, so
+   *  the main copy is never dirty and a plain replace is safe). Returns unsubscribe. */
+  onProjectSaved(listener: (project: Project) => void): () => void
+  /** POP-OUT window: main is about to close this window and waits (bounded) for the listener's
+   *  promise — commit the canvas and save. Returns unsubscribe. */
+  onFlush(listener: () => Promise<void>): () => void
+}
+
 export interface UpdateApi {
   /** A newer version was found and is downloading. Returns unsubscribe. */
   onAvailable(listener: (info: UpdateInfo) => void): () => void
@@ -3395,6 +3430,7 @@ export interface NodeTerminalApi {
   browser: BrowserApi
   files: FilesApi
   updates: UpdateApi
+  windows: WindowsApi
   announcements: AnnouncementsApi
   license: LicenseApi
   contextLink: ContextLinkApi

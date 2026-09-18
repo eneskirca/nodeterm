@@ -120,6 +120,18 @@ lane unaffected.
   consumer reads the class and no per-element opt-out can reach it. Deep version: CLAUDE.md §
   Terminal node lifecycle.
 
+- **A renderer may only WRITE the projects its window shows.** Since pop-out project windows
+  (`docs/popout-windows.md`) there can be two renderers on one workspace, and each still saves the
+  WHOLE workspace from its own copy. The store therefore takes a scope with every save
+  (`WorkspaceStore.save(ws, scope)`, derived in main from the sending window) and keeps its previous
+  entry for anything outside it. Two things follow for you: never add a second path that writes a
+  project file or the index outside `saveNow` (it would bypass the scope), and never make a
+  pop-out do something with another project — a pop-out cannot switch (`useProjects.setActive`
+  refuses), joins no presence, and any new "act on project X" IPC you add should resolve the
+  window that shows X (`windowShowingProject` / `windowForNode` in main) rather than
+  `getMainWindow()`. Per-node pushes go to every app window (`sendToAppWindows`), never to
+  `sendToMain` alone.
+
 - **The node colour palette is ONE list, and it is also the control boundary.**
   `src/shared/node-colors.ts` is what every picker draws and what `nodeterm color --color C`
   validates against — so a colour the UI offers and a colour the CLI accepts cannot drift apart.

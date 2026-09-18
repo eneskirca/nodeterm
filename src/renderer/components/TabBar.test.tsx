@@ -95,6 +95,9 @@ describe('TabBar caret menu', () => {
           onRemoteAccess={vi.fn()}
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
+          onPopOut={vi.fn()}
+          onClosePopout={vi.fn()}
+          onReturnToMain={vi.fn()}
           onOpenProjectSettings={onOpenProjectSettings}
         />
       )
@@ -171,6 +174,9 @@ describe('TabBar New-project pin', () => {
           onRemoteAccess={vi.fn()}
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
+          onPopOut={vi.fn()}
+          onClosePopout={vi.fn()}
+          onReturnToMain={vi.fn()}
           onOpenProjectSettings={vi.fn()}
         />
       )
@@ -243,6 +249,9 @@ describe('TabBar drag-reorder', () => {
           onRemoteAccess={vi.fn()}
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
+          onPopOut={vi.fn()}
+          onClosePopout={vi.fn()}
+          onReturnToMain={vi.fn()}
           onOpenProjectSettings={vi.fn()}
         />
       )
@@ -312,6 +321,9 @@ describe('TabBar options button', () => {
           onRemoteAccess={vi.fn()}
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
+          onPopOut={vi.fn()}
+          onClosePopout={vi.fn()}
+          onReturnToMain={vi.fn()}
           onOpenProjectSettings={vi.fn()}
         />
       )
@@ -337,3 +349,131 @@ describe('TabBar options button', () => {
   })
 })
 
+
+describe('TabBar pop-out windows', () => {
+  let root: Root
+  let host: HTMLElement
+
+  async function render(props: Partial<React.ComponentProps<typeof import('./TabBar').TabBar>> = {}) {
+    const { TabBar } = await load()
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <TabBar
+          onSwitch={vi.fn()}
+          onReconnect={vi.fn()}
+          onReorder={vi.fn()}
+          onOpenWelcome={vi.fn()}
+          onRename={vi.fn()}
+          onSetFolder={vi.fn()}
+          onCloseProject={vi.fn()}
+          onRemoteAccess={vi.fn()}
+          onSetDefaultAccount={vi.fn()}
+          onSetDefaultPermissionMode={vi.fn()}
+          onPopOut={vi.fn()}
+          onClosePopout={vi.fn()}
+          onReturnToMain={vi.fn()}
+          onOpenProjectSettings={vi.fn()}
+          {...props}
+        />
+      )
+    })
+  }
+
+  afterEach(() => {
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  const names = () => [...host.querySelectorAll('.tab__name')].map((n) => n.textContent)
+
+  it('a ghosted tab: marked, not draggable, click brings its window forward, menu offers only window actions', async () => {
+    const { useProjects } = await load()
+    const { useWindows } = await import('../state/windows')
+    useProjects.setState({ projects: [project(), project({ id: 'p2', name: 'Beta' })], activeProjectId: 'p1' })
+    useWindows.getState().setDetached(['p2'])
+    const onSwitch = vi.fn()
+    const onClosePopout = vi.fn()
+    await render({ onSwitch, onClosePopout })
+    const tabs = host.querySelectorAll<HTMLElement>('.tab')
+    expect(tabs[1].classList.contains('detached')).toBe(true)
+    expect(tabs[1].draggable).toBe(false)
+    expect(tabs[1].querySelector('.tab__popout')).not.toBeNull()
+    expect(tabs[0].querySelector('.tab__popout')).toBeNull()
+    await click(tabs[1])
+    expect(onSwitch).toHaveBeenCalledWith('p2') // Canvas routes a detached id to focusProject
+    await click(tabs[1].querySelector<HTMLButtonElement>('.tab__caret')!)
+    const rows = [...document.querySelectorAll('.tab-menu button')].map((b) => b.textContent)
+    expect(rows).toEqual(['Show window', 'Bring back to this window'])
+    await click(document.querySelectorAll<HTMLButtonElement>('.tab-menu button')[1])
+    expect(onClosePopout).toHaveBeenCalledWith('p2')
+  })
+
+  it('an ordinary tab offers "Open in new window" in its menu', async () => {
+    const onPopOut = vi.fn()
+    const { useProjects } = await load()
+    useProjects.setState({ projects: [project()], activeProjectId: 'p1' })
+    await render({ onPopOut })
+    await click(host.querySelector<HTMLButtonElement>('.tab__caret')!)
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.tab-menu button')].find(
+      (b) => b.textContent === 'Open in new window'
+    )
+    expect(row).toBeDefined()
+    await click(row!)
+    expect(onPopOut).toHaveBeenCalledWith('p1')
+  })
+
+  it('inside a pop-out: only its project, no +, a way back, and the menu closes the window instead of the project', async () => {
+    const { useProjects } = await load()
+    const { useWindows } = await import('../state/windows')
+    useProjects.setState({ projects: [project(), project({ id: 'p2', name: 'Beta' })], activeProjectId: 'p2' })
+    useWindows.setState({ popoutProjectId: 'p2' })
+    const onReturnToMain = vi.fn()
+    const onCloseProject = vi.fn()
+    await render({ onReturnToMain, onCloseProject })
+    expect(names()).toEqual(['Beta'])
+    expect(host.querySelector('.tab__add')).toBeNull()
+    expect(host.querySelector<HTMLElement>('.tab')!.draggable).toBe(false)
+    await click(host.querySelector<HTMLButtonElement>('.tab__return')!)
+    expect(onReturnToMain).toHaveBeenCalled()
+    await click(host.querySelector<HTMLButtonElement>('.tab__caret')!)
+    const rows = [...document.querySelectorAll('.tab-menu button')].map((b) => b.textContent)
+    expect(rows).not.toContain('Open in new window')
+    expect(rows).not.toContain('Close project')
+    expect(rows).toContain('Back to main window')
+  })
+
+  it('dragging a tab off the strip (released below it) tears it off; a reorder does not', async () => {
+    const { useProjects } = await load()
+    useProjects.setState({ projects: [project(), project({ id: 'p2', name: 'Beta' })], activeProjectId: 'p1' })
+    const onPopOut = vi.fn()
+    const onReorder = vi.fn()
+    await render({ onPopOut, onReorder })
+    const [alpha, beta] = host.querySelectorAll<HTMLElement>('.tab')
+    const strip = host.querySelector<HTMLElement>('.tabbar')!
+    strip.getBoundingClientRect = () => ({ top: 0, bottom: 40, left: 0, right: 1200, width: 1200, height: 40, x: 0, y: 0, toJSON: () => ({}) })
+    // jsdom has no DragEvent: a MouseEvent carries the release point, and `dataTransfer` is stubbed
+    // the way the reorder suite above stubs it.
+    const drag = (target: HTMLElement, type: string, init: MouseEventInit) =>
+      act(async () => {
+        const e = new MouseEvent(type, { bubbles: true, cancelable: true, ...init })
+        Object.defineProperty(e, 'dataTransfer', { value: { effectAllowed: '', setData: (): void => {} } })
+        target.dispatchEvent(e)
+      })
+    // Released on the canvas, well below the strip → tear-off.
+    await drag(alpha, 'dragstart', {})
+    await drag(alpha, 'dragend', { clientX: 300, clientY: 400 })
+    expect(onPopOut).toHaveBeenCalledWith('p1')
+    expect(onReorder).not.toHaveBeenCalled()
+    // A drop on another tab → reorder, and NOT a tear-off even though dragend follows.
+    onPopOut.mockClear()
+    await drag(alpha, 'dragstart', {})
+    await drag(beta, 'dragover', { clientX: 200, clientY: 20 })
+    await drag(beta, 'drop', { clientX: 200, clientY: 20 })
+    await drag(alpha, 'dragend', { clientX: 200, clientY: 20 })
+    expect(onReorder).toHaveBeenCalledWith('p1', 'p2')
+    expect(onPopOut).not.toHaveBeenCalled()
+  })
+})
