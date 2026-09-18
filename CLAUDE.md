@@ -709,6 +709,29 @@ Lifecycle, by intent:
   isolated in `server/codex-shared-identity.ts` and behavior-tested. The old Server Edition
   "deliberate plain Codex" answer bypassed the launcher entirely, so a reconnect implementation in
   the launcher could be perfectly green while every headless pane still fell back to its shell.
+  **No approval override ever rides that remote resume** (issue #811). MEASURED on
+  `codex-cli 0.154.0` against a real thread on a running shared app-server, under a pty:
+  `codex --remote unix:// resume <thread> --ask-for-approval on-request` answers
+  `Error: Permission overrides are not supported when resuming a remote task.` and exits 1 —
+  `on-request` being that build's own default policy and a member of its enum, so this is **not**
+  the missing `untrusted` of #785. The same command with the flag removed resumes and the TUI stays
+  up, and `-c approval_policy=never` is refused identically: the rule is about the OVERRIDE, not
+  about a value or a spelling, so there is no mapping of `manual`/`auto`/`bypassPermissions` that
+  survives this path and nothing to decide. Since `withPermissionMode` appends the flag to every
+  agent launch, every shared-identity Codex node died on its first turn at a bare shell.
+  `nt_run_shared` therefore strips `--ask-for-approval`/`-a` (both the spaced and the `=` form)
+  from the first-launch argv. **The strip is in the LAUNCHER, not in the TypeScript that builds the
+  line, and that placement is the invariant**: every identity-setup failure above it ends in
+  `exec codex "$@"` — plain codex, no `--remote` — where 0.154 still accepts the flag, so
+  suppressing it one layer up would take the permission mode away from exactly the nodes that could
+  not get a managed identity. The `else` branch has always resumed with no caller options at all,
+  so this only makes the first launch agree with the recovery beside it; the cost on an older codex
+  that still accepts the flag on a resume is that the mode is not applied on the managed path, which
+  after the first daemon reset was already true. **There is deliberately no capability gate**: the
+  refusal is a runtime check, absent from `--help`, so `codexCliSupportsRemote`'s shape does not
+  transfer — and it fires AFTER the session lookup, so a throwaway thread id answers "no saved
+  session" with or without the flag. Probing costs a real resumable thread, which is the thing being
+  launched.
 - **"Restart agent (resume)"** → deliberately NOT a session lifecycle event: `terminal/
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only

@@ -750,6 +750,58 @@ nt_run_shared() {
   nt_first_launch=1
   nt_rapid_resets=0
 
+  # An approval OVERRIDE is refused on a remote resume, whatever its value:
+  #
+  #   codex --remote unix:// resume <thread> --ask-for-approval on-request
+  #   Error: Permission overrides are not supported when resuming a remote task.
+  #
+  # MEASURED on codex-cli 0.154.0 (macOS 27.0, arm64) against a real thread on a running shared
+  # app-server, under a pty. \`on-request\` is in that build's own enum and is its default policy,
+  # and it dies exactly like \`never\`; the same command with the flag REMOVED resumes and the TUI
+  # stays up; and \`-c approval_policy=never\` is refused identically. So the rule is about the
+  # override, not about a value or a spelling, and there is no mapping of \`manual\`/\`auto\`/
+  # \`bypassPermissions\` that survives this path. nodeterm appends the flag through
+  # \`approvalFlags\` (src/shared/agents/approval-mode.ts), so every shared-identity Codex node
+  # reached this line carrying it and died on its first turn, leaving the pane at a bare shell
+  # (issue #811).
+  #
+  # Stripped HERE rather than in the TypeScript that builds the launch line, because the flag is
+  # still valid on this script's OTHER exit: every identity-setup failure above ends in
+  # \`exec codex "$@"\` — plain codex, no \`--remote\` — where 0.154 accepts it
+  # (\`codex --ask-for-approval never --version\` prints the version). Suppressing it one layer up
+  # would take the permission mode away from exactly the nodes that could not get a managed
+  # identity, against this launcher's own rule that such a node must still be a working node.
+  #
+  # The \`else\` branch below has always resumed with NO caller options, so "a remote resume
+  # carrying no approval flag" is behaviour this launcher already ships — this only makes the first
+  # launch agree with the recovery sitting beside it. On an older codex that still accepts the flag
+  # on a resume the cost is that the mode is not applied on the managed path, which after the first
+  # daemon reset was already true. There is deliberately no capability gate: the refusal is a
+  # runtime check (absent from \`--help\`, so \`codexCliSupportsRemote\`'s shape does not transfer)
+  # and it fires AFTER the session lookup, so a throwaway thread id answers "no saved session"
+  # whether or not the flag is present — probing costs a real resumable thread, which is the thing
+  # we are trying to launch.
+  #
+  # Both spellings and both forms, because a user's \`settings.agentLaunchCommands\` wrapper may
+  # spell the flag itself (\`withPermissionMode\` then suppresses ours and lets theirs through).
+  # Rebuilt by rotating the positional list, which is the only way sh can edit "$@" without an array.
+  nt_drop_next=0
+  nt_left=$#
+  while [ "$nt_left" -gt 0 ]; do
+    nt_arg=$1
+    shift
+    nt_left=$((nt_left - 1))
+    if [ "$nt_drop_next" -eq 1 ]; then
+      nt_drop_next=0
+      continue
+    fi
+    case "$nt_arg" in
+      --ask-for-approval|-a) nt_drop_next=1; continue ;;
+      --ask-for-approval=*|-a=*) continue ;;
+    esac
+    set -- "$@" "$nt_arg"
+  done
+
   while :; do
     nt_generation_before=$(nt_app_server_generation) || nt_generation_before=''
     nt_run_started=$(nt_epoch)
