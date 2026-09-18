@@ -68,11 +68,12 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     promptInjectionMode: 'argv',
     expectedProcess: 'claude',
     // `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` (gateway + inherited) + the
-    // OAuth token. Deliberately EXCLUDES `CLAUDE_CONFIG_DIR` — that is the managed-account dir, not
+    // OAuth token, plus gateway subagent routing/effort controls that must not survive a switch to
+    // subscription. Deliberately EXCLUDES `CLAUDE_CONFIG_DIR` — that is the managed-account dir, not
     // a provider credential; stripping it would break account isolation and is unrelated to "run on
     // subscription". A broad `CLAUDE_*` is unsafe (`CLAUDE_CONFIG_DIR`, and nodeterm's own
     // `CLAUDE_HOOK_EVENTS` etc. are code constants, not env the pane sets).
-    vanillaEnvPattern: '^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$)'
+    vanillaEnvPattern: '^(ANTHROPIC_|CLAUDE_CODE_(OAUTH_TOKEN|SUBAGENT_MODEL(_FORCE)?|EFFORT_LEVEL)$)'
   },
   codex: {
     label: 'Codex',

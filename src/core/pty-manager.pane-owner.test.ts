@@ -11,6 +11,7 @@ import { fakePlatform } from './platform-fake'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
 import { PANE_OWNER_FMT } from './agents/pane-owner'
 import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import type { AgentProcessProof, TerminateForegroundOutcome } from '../shared/types'
 
 /** Every `runAsync` in pty-manager lands here. `answer` decides what each call resolves to. */
 const calls: Array<{ file: string; args: string[] }> = []
@@ -252,7 +253,8 @@ async function killManager(opts: { customAgents?: unknown[] } = {}) {
     tmuxPath: string | null
     sessions: Map<string, unknown>
     getSettings: () => unknown
-    terminateForeground(k: string, expected?: string): Promise<boolean>
+    terminateForeground(k: string, expected?: string): Promise<TerminateForegroundOutcome>
+    agentProcess(k: string, expected: string): Promise<AgentProcessProof>
   }
   mgr.tmuxPath = '/usr/bin/tmux'
   mgr.sessions.set('sess-1', { persistKey: NODE, sshRemote: undefined })
@@ -297,11 +299,72 @@ describe('PtyManager.terminateForeground — identity gate', () => {
   it('KILLS the foreground group when the expected agent owns it', async () => {
     script.answer = claudeForeground
     const mgr = await killManager()
-    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(true)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('terminated')
     expect(killed).toEqual([-2503294]) // SIGTERM to the negative process group
   })
 
-  it('REFUSES (no kill) when the pane belongs to a different program than expected', async () => {
+  it('reports already-exited when the original pane shell owns the foreground', async () => {
+    script.answer = (file, args) => {
+      if (args.includes(PANE_OWNER_FMT)) return { stdout: `2485382|${TTY}|-zsh|%3\n` }
+      if (file === 'ps') return { stdout: '2485382 2485382 Ss+  -zsh' }
+      return { stdout: '' }
+    }
+    const mgr = await killManager()
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('already-exited')
+    expect(killed).toEqual([])
+  })
+
+  it('forces respawn when a nested shell replaced the expected agent', async () => {
+    script.answer = (file, args) => {
+      if (args.includes(PANE_OWNER_FMT)) return { stdout: `2485382|${TTY}|bash|%3\n` }
+      if (file === 'ps') return { stdout: '2503294 2503294 S+   bash ./long-running-script.sh' }
+      return { stdout: '' }
+    }
+    const mgr = await killManager()
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('already-exited')
+    expect(killed).toEqual([])
+  })
+
+  it('REFUSES when the argv-verified agent PID exited before the kill boundary', async () => {
+    script.answer = (file, args) => {
+      // paneOwner identified PID 2503294 as Claude, but its liveness/tpgid re-check is now empty:
+      // the agent exited and whatever owns the pane next must not inherit its kill authorization.
+      if (args.includes('tpgid=') && args.at(-1) === '2503294') return { stdout: '' }
+      return claudeForeground(file, args)
+    }
+    const mgr = await killManager()
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('refused')
+    expect(killed).toEqual([])
+  })
+
+  it('recovers when the verified agent exits at the kill boundary and the login shell takes over', async () => {
+    let ownerReads = 0
+    script.answer = (file, args) => {
+      if (args.includes(PANE_OWNER_FMT)) {
+        ownerReads++
+        return {
+          stdout:
+            ownerReads === 1
+              ? `2485382|${TTY}|node|%3\n`
+              : `2485382|${TTY}|-zsh|%3\n`
+        }
+      }
+      if (args.includes('tpgid=')) {
+        return { stdout: args.at(-1) === '2503294' ? '' : '2503294' }
+      }
+      if (file === 'ps') {
+        return {
+          stdout: ownerReads === 1 ? PS_OUT : '2485382 2485382 Ss+  -zsh'
+        }
+      }
+      return { stdout: '' }
+    }
+    const mgr = await killManager()
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('already-exited')
+    expect(killed).toEqual([])
+  })
+
+  it('forces respawn without signalling when a different program replaced the expected agent', async () => {
     // Foreground group is vim, not the agent.
     script.answer = (file, args) => {
       if (args.includes(PANE_OWNER_FMT)) return { stdout: `2485382|${TTY}|vim|%3\n` }
@@ -312,7 +375,7 @@ describe('PtyManager.terminateForeground — identity gate', () => {
       return { stdout: '' }
     }
     const mgr = await killManager()
-    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('already-exited')
     expect(killed).toEqual([])
   })
 
@@ -320,7 +383,7 @@ describe('PtyManager.terminateForeground — identity gate', () => {
     script.answer = (file, args) =>
       args.includes(PANE_OWNER_FMT) ? { stdout: `2485382|${TTY}|node\n` } : { stdout: '' } // ps empty ⇒ null owner
     const mgr = await killManager()
-    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('refused')
     expect(killed).toEqual([])
   })
 
@@ -336,15 +399,57 @@ describe('PtyManager.terminateForeground — identity gate', () => {
     const mgr = await killManager({
       customAgents: [{ id: 'custom:x', label: 'Aider', launchCmd: 'aider' }]
     })
-    expect(await mgr.terminateForeground(NODE, 'custom:x')).toBe(true)
+    expect(await mgr.terminateForeground(NODE, 'custom:x')).toBe('terminated')
     expect(killed).toEqual([-2503294])
+  })
+
+  it('proves the exact expected agent is running without signalling it', async () => {
+    script.answer = claudeForeground
+    const mgr = await killManager()
+
+    expect(await mgr.agentProcess(NODE, 'claude')).toEqual({
+      verdict: 'agent',
+      shellPid: 2485382,
+      agentPid: 2503294
+    })
+    expect(killed).toEqual([])
+    expect(calls).toHaveLength(2)
+  })
+
+  it('reports a successful owner mismatch when the launched agent already exited', async () => {
+    script.answer = (file, args) => {
+      if (args.includes(PANE_OWNER_FMT)) return { stdout: `2485382|${TTY}|-zsh|%3\n` }
+      if (file === 'ps') return { stdout: '2485382 2485382 Ss+  -zsh' }
+      return { stdout: '' }
+    }
+    const mgr = await killManager()
+
+    expect(await mgr.agentProcess(NODE, 'claude')).toEqual({
+      verdict: 'not-agent',
+      shellPid: 2485382,
+      agentPid: undefined
+    })
+    expect(killed).toEqual([])
+  })
+
+  it('reports unknown when the post-launch owner cannot be read', async () => {
+    script.answer = (file, args) =>
+      args.includes(PANE_OWNER_FMT) ? { stdout: `2485382|${TTY}|node\n` } : { stdout: '' }
+    const mgr = await killManager()
+
+    expect(await mgr.agentProcess(NODE, 'claude')).toEqual({
+      verdict: 'unknown',
+      shellPid: undefined,
+      agentPid: undefined
+    })
+    expect(killed).toEqual([])
   })
 
   it('with no expected id, keeps the legacy shell-only guard (kills a non-shell foreground)', async () => {
     script.answer = claudeForeground
     const mgr = await killManager()
     // No identity read happens (no PANE_OWNER_FMT call) — only the tpgid path.
-    expect(await mgr.terminateForeground(NODE)).toBe(true)
+    expect(await mgr.terminateForeground(NODE)).toBe('terminated')
     expect(killed).toEqual([-2503294])
     expect(calls.some((c) => c.args.includes(PANE_OWNER_FMT))).toBe(false)
   })
