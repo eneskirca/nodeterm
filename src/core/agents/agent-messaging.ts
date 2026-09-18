@@ -54,12 +54,14 @@ import type {
   CapabilityMachineDefaults,
   ProjectCapability
 } from '../../shared/project-capabilities'
+import { createdAgentHarnessId } from '../../shared/agents/config'
 
 /** The little the service needs to know about a stored node. */
 export interface MessagingStoredNode {
   id: string
   title?: string
   agentId?: string
+  agentBaseId?: string
 }
 
 /**
@@ -537,8 +539,9 @@ export async function runDelivery(
   const targetNode = owner?.nodes.find((n) => n.id === req.targetNodeId)
   // A plain terminal is not Claude by default. A hand-launched agent may still prove its runtime
   // identity through a hook event; absent either stored or runtime evidence, the binary predicate
-  // receives an unknowable identity and refuses instead of guessing a provider.
-  const targetAgentId = targetNode?.agentId ??
+  // receives an unknowable identity and refuses instead of guessing a provider. When the node's
+  // stored id resolves, it names the CURRENT harness (agentBaseId wins for a custom agent).
+  const targetAgentId = createdAgentHarnessId(targetNode) ??
     (deps.mirrorEntry ?? coreMirrorEntry)(req.targetNodeId)?.agentId ?? ''
 
   const delivery: DeliveryDeps = {

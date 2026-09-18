@@ -222,14 +222,16 @@ export function createCanvasPublisher(
 }
 
 /**
- * Ephemeral canvas nodes — subagent cards (ids tracked in the agentNodes store) and /loop, /schedule
- * and /cron cards (`loop-<parentId>`). They are DERIVED on every client from the already-broadcast
- * `agent:status` stream, live outside React Flow's managed `nodes` array, and are never persisted.
+ * Ephemeral canvas nodes — subagent cards (ids tracked in the agentNodes store), /loop, /schedule
+ * and /cron cards (`loop-<parentId>`), and cross-project projections (`xproj-<projectId>-<nodeId>`,
+ * ticket 05). They are DERIVED on every client from the already-broadcast `agent:status` stream
+ * (subagent/loop) or from a persisted `lineage` Link + the foreign project's serialized nodes
+ * (projection), live outside React Flow's managed `nodes` array, and are never persisted.
  * Publishing them would render each card twice on a peer. They are never published — full stop.
  * This is the one definition of "ephemeral"; Canvas's own change-list filter uses it too.
  */
 export function isEphemeralNodeId(id: string, ephemeralIds: ReadonlySet<string>): boolean {
-  return ephemeralIds.has(id) || id.startsWith('loop-')
+  return ephemeralIds.has(id) || id.startsWith('loop-') || id.startsWith('xproj-')
 }
 
 /** The node states that may go on the wire: everything except the ephemeral cards. */

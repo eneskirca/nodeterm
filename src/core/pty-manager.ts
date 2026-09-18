@@ -105,13 +105,19 @@ import {
 } from './codex-identity-proxy'
 import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents/node-token-service'
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
-import { hasSharedIdentity, setCustomAgentBaseResolver, vanillaEnvStripPattern, type AgentId } from '../shared/agents/config'
+import {
+  hasSharedIdentity,
+  setCustomAgentBaseResolver,
+  vanillaEnvStripPattern,
+  type AgentId
+} from '../shared/agents/config'
 import { findCustomAgent } from '../shared/agents/custom-agent'
 import { applyCustomAgentEnv, customAgentEnvArgs } from './custom-agent-env'
 import {
   MODEL_GATEWAY_ENV_KEYS,
   modelGatewayEnv,
-  tmuxUpdateEnvironmentLine
+  tmuxUpdateEnvironmentLine,
+  type GatewayModel
 } from '../shared/agents/model-gateway'
 import { leadPaneHookLines } from '../shared/tmux-lead-pane'
 import {
@@ -943,6 +949,12 @@ export class PtyManager {
   private readProjectSpawnOverrides: ProjectSpawnOverridesReader | null = null
   /** "Which SSH host owns this node?", from the persisted index — see `setRemoteNodeOwner`. */
   private remoteNodeOwner: RemoteNodeOwnerResolver | null = null
+  /** Discovered gateway models keyed by the (trimmed) gateway baseUrl — populated by model
+   *  discovery and read at spawn time to inject Copilot BYOK max-context env vars
+   *  (COPILOT_PROVIDER_MAX_PROMPT_TOKENS / COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). The limits live on
+   *  the model objects; a model the gateway never reported limits for is absent there, and the env
+   *  vars are omitted rather than guessed. */
+  private gatewayModelCache = new Map<string, GatewayModel[]>()
   /** ONE shared snapshot interval for all persisted sessions — a per-session interval spawned
    *  one tmux/ssh capture subprocess per session per tick, forever, even for idle terminals. */
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
@@ -1572,6 +1584,24 @@ export class PtyManager {
     }
   }
 
+  /** Cache the discovered models for a gateway URL. Called by the discovery IPC handler so that
+   *  spawn-time env injection (Copilot BYOK max-context) can read the reported token limits without
+   *  re-discovering on every spawn. A successful discovery REPLACES the cache for that URL; an
+   *  empty/failed result clears it so stale limits are not served after the gateway changes. */
+  setGatewayModels(baseUrl: string, models: GatewayModel[]): void {
+    const key = baseUrl.trim()
+    if (!key) return
+    if (models.length) this.gatewayModelCache.set(key, models)
+    else this.gatewayModelCache.delete(key)
+  }
+
+  /** Resolve the discovered models for the CURRENTLY CONFIGURED gateway, or [] if none cached. */
+  private gatewayModelsForCurrent(): GatewayModel[] {
+    const gw = this.getSettings().modelGateway
+    if (!gw?.baseUrl) return []
+    return this.gatewayModelCache.get(gw.baseUrl.trim()) ?? []
+  }
+
   /** Probe tmux and write/push the generated config. Idempotent and safe to re-run: a later
    *  successful probe (the banner's install command finishing, or init()'s post-PATH-probe re-run
    *  finding a tmux only the login shell knew about) brings tmux up for NEW sessions without an
@@ -2021,6 +2051,16 @@ export class PtyManager {
     // AFTER the in-flight barrier so a create racing the owner's own respawn joins it instead.
     const tomb = this.liveTombstone(key)
     if (tomb && tomb.by !== clientId) return { sessionId: '', fresh: false, closed: { by: tomb.by } }
+    // A projection of a FOREIGN node (ticket 05's `requireExisting`) must never SPAWN its target's
+    // session — it is a viewer, not the owner, and spawning would steal pane ownership + run under
+    // the wrong project's resolved context. By this point every legitimate join path has been
+    // exhausted: `join()` missed (no live session), the in-flight spawn it might have been racing
+    // has resolved (and its `late` re-join also missed, or there was no in-flight spawn at all),
+    // and the node was not tombstoned (a `closed` refusal already won above). So there is genuinely
+    // no session to join — refuse. The owning project's next mount spawns the session and the
+    // projection retries. See `PtyCreateOptions.requireExisting` for why this lives in `create`
+    // (not `spawnNew`) — the projection has no valid spawn branch at all.
+    if (options.requireExisting) return { sessionId: '', fresh: false, unavailable: 'no-session' }
     const spawn = this.spawnNew(clientId, options)
     this.inflight.set(key, spawn)
     // Clear on settle — INCLUDING on failure, or a single failed spawn would leave a rejected
@@ -2198,7 +2238,7 @@ export class PtyManager {
     // Rewrite the launcher on every create: it is generated, so an app upgrade must not leave an
     // old copy behind. Failure is not fatal — `installCodexLauncher` answers null, the caps probe
     // says "no shared identity", and the launch line the renderer already chose is the bare CLI.
-    if (options.agentId && hasSharedIdentity(options.agentId as AgentId) && !options.sshRemote) {
+    if (options.agentId && hasSharedIdentity((options.agentBaseId ?? options.agentId) as AgentId) && !options.sshRemote) {
       installCodexLauncher()
     }
     // Resolved HERE rather than inside `spawnSession` because that function is synchronous and two
@@ -2827,7 +2867,12 @@ export class PtyManager {
     if (options.persistKey && !options.sshRemote) ensureNodeToken(options.persistKey)
     const hookEnv =
       options.persistKey && !options.sshRemote
-        ? hookServer.buildPtyEnv(options.persistKey, options.agentId, permWaitSecs)
+        ? hookServer.buildPtyEnv(
+            options.persistKey,
+            options.agentId,
+            permWaitSecs,
+            (options.agentBaseId ?? options.agentId) as AgentId | undefined
+          )
         : {}
     for (const [k, v] of Object.entries(hookEnv)) env[k] = v
 
@@ -2835,7 +2880,7 @@ export class PtyManager {
     // managed launcher by NAME, so its directory goes first on THIS session's PATH only. A plain
     // terminal, and every other agent, sees the PATH it always saw. The launcher itself falls back
     // to the bare CLI, so a session that gets the PATH but no identity is still a working session.
-    if (options.agentId && hasSharedIdentity(options.agentId as AgentId) && !options.sshRemote) {
+    if (options.agentId && hasSharedIdentity((options.agentBaseId ?? options.agentId) as AgentId) && !options.sshRemote) {
       env.PATH = `${codexLauncherDir()}${path.delimiter}${env.PATH ?? ''}`
     }
 
@@ -2896,10 +2941,10 @@ export class PtyManager {
     // "Restart on subscription" / launch mode: strip the gateway + inherited provider env
     // so the agent runs against its OWN default provider (Claude's subscription, Copilot's GitHub
     // routing). `vanillaEnvStripPattern` resolves through the base harness (`capabilityAgentId` of
-    // the agent id, so a custom agent inheriting a builtin gets the builtin's strip set); null ⇒ the
-    // agent has no strip set ⇒ no-op (gemini/grok/opencode are left alone). `buildPtyEnv` runs only
-    // in `spawnNew` (a fresh session), never on a warm reattach, so toggling the setting never strips
-    // an already-running session — only the next fresh launch.
+    // the base-agent id, so a custom agent inheriting a builtin gets the builtin's strip set); null ⇒
+    // the agent has no strip set ⇒ no-op (gemini/grok/opencode are left alone). `buildPtyEnv` runs
+    // only in `spawnNew` (a fresh session), never on a warm reattach, so toggling the setting never
+    // strips an already-running session — only the next fresh launch.
     // The launch mode is a tri-state (`agentLaunchMode`); a per-node one-shot `clearEnv` (the
     // "Restart on subscription" action) forces the subscription/vanilla path for THIS spawn. The
     // old boolean `vanillaLaunchDefault` is now a migration mirror kept in lockstep with the mode
@@ -2907,18 +2952,19 @@ export class PtyManager {
     const launchMode = options.clearEnv ? 'subscription' : this.getSettings().agentLaunchMode
     const stripRe =
       launchMode === 'subscription'
-        ? options.agentId
-          ? vanillaEnvStripPattern(options.agentId)
+        ? (options.agentBaseId ?? options.agentId)
+          ? vanillaEnvStripPattern((options.agentBaseId ?? options.agentId) as AgentId)
           : null
         : null
     const gatewayEnv =
       options.agentId && !stripRe
         ? modelGatewayEnv(
             this.getSettings().modelGateway,
-            options.agentId,
+            options.agentBaseId ?? options.agentId,
             options.agentModel,
             process.env as Record<string, string | undefined>,
-            this.getModelGatewaySecret()
+            this.getModelGatewaySecret(),
+            this.gatewayModelsForCurrent()
           )
         : {}
     if (!options.sshRemote) {
@@ -3046,7 +3092,8 @@ export class PtyManager {
               hookServer.getVersion(),
               // Plain terminals carry no agent identity or control grant. An explicit agent node
               // matches the local `buildPtyEnv` path exactly.
-              options.agentId
+              options.agentId,
+              options.agentBaseId
             ),
             // Arm the remote permission hook's wait-branch too (deterministic approvals over SSH):
             // the request/answer files live on the REMOTE host; the desktop answers over the

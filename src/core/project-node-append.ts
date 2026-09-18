@@ -8,8 +8,9 @@
 // parse must never be invented or overwritten), a duplicate id (a retry must not churn rev), or
 // an unsafe id (it becomes a tmux session name).
 
-import { agentConfig } from '../shared/agents/config'
+import { agentConfig, type BuiltinAgentId } from '../shared/agents/config'
 import { boundAccountId } from '../shared/agents/account-binding'
+import { resolveAgentBase } from '../shared/agents/custom-agent'
 import { isSafeAccountId } from './claude-accounts-core'
 
 /** What the phone is allowed to choose; everything else is host-derived. */
@@ -17,6 +18,8 @@ export interface RemoteNodeInput {
   id: string
   title?: string
   agentId?: string
+  /** Builtin harness snapshot for a custom agent; builtins are always derived host-side. */
+  agentBaseId?: string
   /**
    * Managed Claude account the phone actually launched the session under (its `CLAUDE_CONFIG_DIR`).
    * Not host-derivable: the desktop cannot tell from the outside which identity a session runs as,
@@ -125,6 +128,14 @@ export function appendProjectNode(
   const agentId = typeof input.agentId === 'string' ? input.agentId : undefined
   const bound = boundAccountId(input.accountId, agentId)
   const agent = agentId !== undefined ? agentConfig(agentId) : undefined
+  const suppliedBase =
+    typeof input.agentBaseId === 'string' && agentConfig(input.agentBaseId)
+      ? (input.agentBaseId as BuiltinAgentId)
+      : undefined
+  const agentBaseId =
+    typeof input.agentId === 'string'
+      ? resolveAgentBase(input.agentId, undefined, suppliedBase)
+      : undefined
   const node: Record<string, unknown> = {
     id: input.id,
     kind: 'terminal',
@@ -143,6 +154,7 @@ export function appendProjectNode(
     cwd: typeof sibling?.cwd === 'string' ? sibling.cwd : '.'
   }
   if (agentId !== undefined) node.agentId = agentId
+  if (agentId !== undefined && agentBaseId) node.agentBaseId = agentBaseId
   if (bound) node.accountId = bound
   // Desktop remote nodes carry the connection spec PER NODE — a sibling terminal in the same
   // project has the right values; copy verbatim. No genuine donor → a plain local node.

@@ -5,6 +5,7 @@ import {
   IconChat,
   IconClose,
   IconExternal,
+  IconLink,
   IconMaximize,
   IconMic,
   IconRestoreSize,
@@ -40,6 +41,7 @@ import { CardMetaBar } from './CardMetaBar'
 import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
+import { LinkInspectorPanel } from '../links/LinkInspectorPanel'
 import { NoteMarkdown } from '../NoteMarkdown'
 import { relativeTime } from '../../lib/relativeTime'
 
@@ -89,6 +91,8 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
   // choice is remembered (localStorage) — once collapsed, later cards open collapsed too.
   const panelOpen = useCardPanel((s) => s.open)
   const togglePanel = useCardPanel((s) => s.toggle)
+  // Off-canvas link inspector (ticket 06): a portal over the modal, opened from the header 🔗.
+  const [linksOpen, setLinksOpen] = useState(false)
   const isTerminal = session.kind === 'terminal'
   const isBrowser = session.kind === 'browser'
 
@@ -370,6 +374,14 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           >
             {maximized ? <IconRestoreSize /> : <IconMaximize />}
           </button>
+          <button
+            className="kanban-modal__action"
+            title="Links — connect to a node, foreign canvas, or branch"
+            aria-pressed={linksOpen}
+            onClick={() => setLinksOpen((v) => !v)}
+          >
+            <IconLink />
+          </button>
           <button className="kanban-modal__action" title="Open on canvas" onClick={onOpenCanvas}>
             <IconExternal />
           </button>
@@ -469,6 +481,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           {panelOpen && <BoardLogPanel card={session} />}
         </div>
       </div>
+      {linksOpen && <LinkInspectorPanel nodeId={session.id} mount="portal" onClose={() => setLinksOpen(false)} />}
     </div>,
     document.body
   )

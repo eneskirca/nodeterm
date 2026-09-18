@@ -116,5 +116,9 @@ const REFUSERS = new Set([
   'open-worktree',
   'close-worktree',
   // Needs a mounted <webview> guest to drive.
-  'browser'
+  'browser',
+  // STAGED (ticket 03): main parses them, no canvas answers them anywhere yet — the refusal is
+  // the honest answer both on and off screen, and it is deliberate (see OFF_SCREEN_REFUSALS).
+  'link-branches',
+  'sync-stack'
 ])

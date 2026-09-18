@@ -1,10 +1,12 @@
 import type { AgentNodeStatus } from '../state/agentStatus'
-import type { AgentId } from '@shared/agents/config'
+import type { AgentId, BuiltinAgentId } from '@shared/agents/config'
 import type { NodeKind, ObservedClaudeAccount } from '@shared/types'
 import type { NodeIcon } from '@shared/node-icon'
 import { hasUsage } from '@shared/agents/config'
-import type { SshConnection } from '@shared/ssh'
+import { sshHostKey, type SshConnection } from '@shared/ssh'
 import type { ProjectIcon } from '@shared/project-icon'
+import { normWorktreePath } from '@shared/worktree-reconcile'
+import type { WorktreeEntry } from '@shared/worktree'
 import { relativeTime } from './relativeTime'
 
 export interface SessionNodeInput {
@@ -13,6 +15,7 @@ export interface SessionNodeInput {
   title: string
   color: string
   agentId?: AgentId
+  agentBaseId?: BuiltinAgentId
   /** The node's creation-time managed/linked Claude account (`data.accountId`), for the row's
    *  account chip. Absent for a plain terminal — which is exactly the case the OBSERVED account
    *  on the status entry covers. */
@@ -33,6 +36,10 @@ export interface ProjectInput {
    *  `SessionGroup`) so the sidebar can show it instead of the plain color monogram. */
   icon?: ProjectIcon
   cwd?: string
+  /** When set, this is an SSH project: its repo root is on `server` (a different machine), so it
+   *  must NOT be grouped under the same `RepoGroup` as a local project with a matching path string.
+   *  Mirrors `Project.ssh`; the machine-identity rule reuses `usageScopeFor` (`sshHostKey`). */
+  ssh?: { server: SshConnection; remoteCwd: string }
   nodes: SessionNodeInput[]
 }
 
@@ -120,15 +127,18 @@ export function isGroupCollapsed(
  * to `settings.json`, so without pruning it grows forever: one entry per project and per group
  * frame that ever existed, kept alive long after the node was deleted or the project closed.
  */
-export function liveCollapseKeys(groups: SessionGroup[]): Set<string> {
+export function liveCollapseKeys(groups: RepoGroup[]): Set<string> {
   const keys = new Set<string>()
-  const walk = (projectId: string, bucket: GroupBucket): void => {
+  const walkBucket = (projectId: string, bucket: GroupBucket): void => {
     keys.add(groupCollapseKey(projectId, bucket.id))
-    bucket.children.forEach((child) => walk(projectId, child))
+    bucket.children.forEach((child) => walkBucket(projectId, child))
   }
-  for (const group of groups) {
-    keys.add(projectCollapseKey(group.projectId))
-    group.groups.forEach((bucket) => walk(group.projectId, bucket))
+  for (const repo of groups) {
+    keys.add(repo.key)
+    for (const group of repo.projects) {
+      keys.add(projectCollapseKey(group.projectId))
+      group.groups.forEach((bucket) => walkBucket(group.projectId, bucket))
+    }
   }
   return keys
 }
@@ -191,6 +201,22 @@ export function projectSignalCounts(group: SessionGroup): { attention: number; u
   return { attention, unread, working }
 }
 
+/** Same signals as `projectSignalCounts`, summed across every project in a `RepoGroup` — the repo
+ *  header aggregates the attention/unread/working counts of all the projects nested under it. */
+export function repoSignalCounts(repo: RepoGroup): { attention: number; unread: number; working: number } {
+  return repo.projects.reduce(
+    (acc, g) => {
+      const c = projectSignalCounts(g)
+      return {
+        attention: acc.attention + c.attention,
+        unread: acc.unread + c.unread,
+        working: acc.working + c.working
+      }
+    },
+    { attention: 0, unread: 0, working: 0 }
+  )
+}
+
 export function sessionStatusKind(state: AgentNodeStatus['state']): StatusKind {
   switch (state) {
     case 'working':
@@ -230,6 +256,7 @@ export interface SessionRowVM {
   title: string
   color: string
   agentId?: AgentId
+  agentBaseId?: BuiltinAgentId
   icon?: NodeIcon
   isAgent: boolean
   statusKind: StatusKind
@@ -291,6 +318,48 @@ export interface SessionGroup {
   ungrouped: SessionRowVM[]
 }
 
+/** Machine identity of a project's repo — `''` for local/relay, `user@host` for an SSH project.
+ *  Reuses the same rule `usageScopeFor` (`usageScope.ts`) applies to the usage scope: a local
+ *  project and an SSH project whose path strings coincide are on DIFFERENT machines and must not
+ *  share a `RepoGroup`. */
+function repoMachineKey(p: ProjectInput): string {
+  return p.ssh ? (sshHostKey(p.ssh.server) || '') : ''
+}
+
+/** A worktree on disk with no bound canvas group, surfaced as an adoptable row under its `RepoGroup`.
+ *  The Bind action reads the full `entries` list from the worktree store at click time to resolve the
+ *  base ref (the main checkout's branch) — exactly as `bindExistingWorktree` does — so the row carries
+ *  only the entry and its repo root. Only the ACTIVE project's orphans are resolved (see
+ *  `buildSessionList`). */
+export interface AdoptableWorktreeRow {
+  kind: 'adoptable-worktree'
+  entry: WorktreeEntry
+  repoRoot: string
+}
+
+/** One repo's projects and their sessions, keyed by the resolved git repo root. The repo level sits
+ *  ABOVE the project level: when `collapsedProject` is true the sidebar renders the repo header and
+ *  the (single) project header as ONE row; when false (multiple projects share the repo, or a
+ *  project's cwd is a subdirectory of the repo root) a project-header row renders under the repo. */
+export interface RepoGroup {
+  /** Stable disclosure + identity key: `repo:<machineKey>:<normRepoRoot>`, or
+   *  `repo:__norepo__:<projectId>` for a degenerate (no-git / cwd-less) project — two cwd-less
+   *  projects must never share a key, so the project id is folded in. */
+  key: string
+  /** Normalized repo root git reports for every project that maps here, or null when the project is
+   *  not a git repo / has no cwd (the degenerate case). */
+  repoRoot: string | null
+  /** Display label: the repo's folder name when there is one, else the single project's name. */
+  repoName: string
+  /** True when exactly one project maps here AND `cwd === repoRoot`. The collapse is purely visual —
+   *  each `SessionGroup` still carries its own `projectId` for callbacks. */
+  collapsedProject: boolean
+  /** The projects that share this repo, in store order. Length 1 when `collapsedProject`. */
+  projects: SessionGroup[]
+  /** Unbound worktrees for the ACTIVE project in this repo (active project only; `[]` otherwise). */
+  adoptable: AdoptableWorktreeRow[]
+}
+
 function toRow(
   n: SessionNodeInput,
   status: AgentNodeStatus | undefined,
@@ -304,6 +373,7 @@ function toRow(
     title: n.title,
     color: n.color,
     agentId: n.agentId,
+    agentBaseId: n.agentBaseId,
     icon: n.icon,
     isAgent: !!n.agentId,
     statusKind,
@@ -322,7 +392,7 @@ function toRow(
     sessionId: status?.sessionId,
     accountId: n.accountId,
     account: status?.account,
-    usesContext: n.agentId ? hasUsage(n.agentId) : false,
+    usesContext: n.agentBaseId || n.agentId ? hasUsage(n.agentBaseId ?? n.agentId!) : false,
     // Only populated in status mode (flattened across projects); absent in project mode.
     projectId: project?.id,
     projectName: project?.name,
@@ -367,12 +437,23 @@ export function buildSessionList(
   liveActiveNodes: SessionNodeInput[] | null,
   activeProjectId: string,
   statusById: Record<string, AgentNodeStatus>,
-  filter: string
-): SessionGroup[] {
+  filter: string,
+  /** Per-project repo roots + unbound worktrees, from the worktree store.
+   *  `repoRootByProject[p.id]` = resolved git repo root (null/undefined = not a repo / cwd-less /
+   *  not yet resolved). `orphansByProject[p.id]` = the active project's unbound `WorktreeEntry[]`
+   *  (only the active project is resolved — non-active projects get `[]`). */
+  worktreeFacts: {
+    repoRootByProject: Record<string, string | null | undefined>
+    orphansByProject: Record<string, WorktreeEntry[]>
+  }
+): RepoGroup[] {
   const needle = filter.trim().toLowerCase()
   const nameMatched = projectsMatchingNeedle(projects, needle)
 
-  const groups: SessionGroup[] = projects.map((p) => {
+  // Step 1 — build the per-project SessionGroup[] exactly as before. The repo grouping is a
+  // post-partition step on these already-built groups, so the per-project ownership/dedup logic
+  // (persisted nodes own; live overlays the active project) is untouched.
+  const sessionGroups: SessionGroup[] = projects.map((p) => {
     const isActive = p.id === activeProjectId
     // The project answered the needle itself → it is shown whole (frames included), exactly as
     // if nothing were being filtered.
@@ -446,15 +527,106 @@ export function buildSessionList(
     }
   })
 
-  // Store order, NOT active-first: the sidebar mirrors the tab bar (both read the projects
-  // array), and hoisting the active project to the top made every click reshuffle the list.
-  // A project whose own name/cwd matched survives even with nothing inside it (issue #543) —
-  // that is the case the old "something inside survived" rule could never express.
-  return needle
-    ? groups.filter(
+  // Step 2 — partition the SessionGroup[] into RepoGroups by (machineKey, normalized repo root).
+  // The composite key is what keeps a local project and an SSH project with a matching path string
+  // in SEPARATE RepoGroups: the machine half differs even when the path half is identical.
+  const { repoRootByProject, orphansByProject } = worktreeFacts
+  const repoOrder: string[] = []
+  const repoMap = new Map<
+    string,
+    { machine: string; repoRoot: string | null; sessionGroups: SessionGroup[]; projectIds: string[] }
+  >()
+  for (const sg of sessionGroups) {
+    const p = projects.find((pr) => pr.id === sg.projectId)!
+    const resolved = repoRootByProject[sg.projectId]
+    if (resolved) {
+      const machine = repoMachineKey(p)
+      const key = `repo:${machine}:${normWorktreePath(resolved)}`
+      const existing = repoMap.get(key)
+      if (existing) {
+        existing.sessionGroups.push(sg)
+        existing.projectIds.push(sg.projectId)
+      } else {
+        repoOrder.push(key)
+        repoMap.set(key, {
+          machine,
+          repoRoot: normWorktreePath(resolved),
+          sessionGroups: [sg],
+          projectIds: [sg.projectId]
+        })
+      }
+    } else {
+      // Degenerate: not a git repo, cwd-less, or repoRoot not yet resolved. One RepoGroup PER
+      // project (fold the project id into the key so two cwd-less projects never share one), and
+      // show the project name — there is no repo folder name to display.
+      const key = `repo:__norepo__:${sg.projectId}`
+      repoOrder.push(key)
+      repoMap.set(key, {
+        machine: repoMachineKey(p),
+        repoRoot: null,
+        sessionGroups: [sg],
+        projectIds: [sg.projectId]
+      })
+    }
+  }
+
+  // Step 3 — assemble RepoGroups. Store order is preserved by `repoOrder` (first sighting wins, so
+  // the repo header sits where its earliest project appeared — the tab-bar mirror the sidebar kept).
+  const repos: RepoGroup[] = repoOrder.map((key) => {
+    const entry = repoMap.get(key)!
+    const { sessionGroups: sgs, repoRoot } = entry
+    const sole = sgs.length === 1 ? sgs[0] : undefined
+    const collapsedProject = (() => {
+      if (!repoRoot) return true // degenerate (no repo) always collapses to one header
+      if (!sole) return false // multiple projects share the repo → split
+      // cwd === repoRoot → collapse; cwd is a SUBDIR of repoRoot → split (Q7=a: a subdir project
+      // nests under the repo, not as its own top-level repo).
+      const normCwd = sole.cwd ? normWorktreePath(sole.cwd) : undefined
+      return !!normCwd && normCwd === repoRoot
+    })()
+    const repoName = repoRoot
+      ? (repoRoot.split('/').filter(Boolean).pop() ?? repoRoot)
+      : (sole?.projectName ?? sgs[0]?.projectName ?? 'Repo')
+    // Adoptable rows: only the repo that holds the ACTIVE project gets them (the worktree store
+    // resolves orphans for the active project only — non-active projects show bound groups).
+    const adoptable: AdoptableWorktreeRow[] = []
+    const activeInThisRepo = sgs.some((sg) => sg.isActive)
+    if (activeInThisRepo && repoRoot) {
+      const orphans = orphansByProject[sgs.find((sg) => sg.isActive)!.projectId] ?? []
+      // Detached-HEAD entries (branch === null) are kept here — the Bind action reads the store's
+      // full `entries` to resolve the base ref and `worktreeFromEntry` returns null for a detached
+      // HEAD, which the UI surfaces as a disabled row / error. Nothing here decides that.
+      for (const entry of orphans) {
+        adoptable.push({ kind: 'adoptable-worktree', entry, repoRoot })
+      }
+    }
+    return {
+      key,
+      repoRoot,
+      repoName,
+      collapsedProject,
+      projects: sgs,
+      adoptable
+    }
+  })
+
+  // Step 4 — filter. The needle applies across a whole RepoGroup: keep it when any session in any
+  // of its projects matches (the per-project build already filtered rows/buckets), OR the project
+  // itself answered the needle (issue #543 — a project typed by name is shown whole, empty frames
+  // and all), OR an adoptable row's branch/path matches. Unfiltered, every repo is kept (store
+  // order preserved).
+  if (!needle) return repos
+  const adoptableMatches = (a: AdoptableWorktreeRow): boolean => {
+    const hay = `${a.entry.branch ?? ''} ${a.entry.path}`.toLowerCase()
+    return hay.includes(needle)
+  }
+  return repos.filter(
+    (repo) =>
+      repo.adoptable.some(adoptableMatches) ||
+      repo.projects.some(
         (g) => nameMatched.has(g.projectId) || g.groups.length > 0 || g.ungrouped.length > 0
       )
-    : groups
+  )
 }
 
 /** A status section in status-grouping mode: one status group and the sessions in it, flattened

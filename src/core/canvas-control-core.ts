@@ -146,6 +146,8 @@ export type ControlVerb =
   | 'spawn-team'
   | 'open-worktree'
   | 'close-worktree'
+  | 'link-branches'
+  | 'sync-stack'
   | 'branch'
   | 'rename'
   | 'color'
@@ -185,6 +187,13 @@ const VERBS: ControlVerb[] = [
   'spawn-team',
   'open-worktree',
   'close-worktree',
+  // STAGED (ticket 03, branch-dependency links): registered in the model (parse + the
+  // non-destructive verdict run in main), but INERT until the renderer dispatch cases land —
+  // today the renderer's `default:` answers `unknown verb`. Deliberately undocumented in the
+  // skill/instructions bodies until then (spec §8: docs land in the same PR that makes the verb
+  // reachable), exactly as open-project was staged by issue #338 PR 1.
+  'link-branches',
+  'sync-stack',
   'branch',
   'rename',
   'color',
@@ -276,6 +285,8 @@ export function parseControlRequest(
   if (v === 'assign' && !args.node) return { error: 'assign requires --node <id>' }
   if (v === 'open-worktree' && !args.branch) return { error: 'open-worktree requires --branch <name>' }
   if (v === 'close-worktree' && !args.group) return { error: 'close-worktree requires --group <id>' }
+  if (v === 'link-branches' && !args.base) return { error: 'link-branches requires --base <parent branch>' }
+  if (v === 'link-branches' && !args.branch) return { error: 'link-branches requires --branch <child branch>' }
   if (v === 'branch' && !args.node) return { error: 'branch requires --node <id>' }
   if (v === 'rename' && !args.node) return { error: 'rename requires --node <id>' }
   if (v === 'rename' && !args.title) return { error: 'rename requires --title' }
@@ -367,10 +378,13 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `list` — current nodes (id, kind, title). Start here when you need a node id.',
     '- `help` — print the verb list. Answered by the shim itself, so it works even if the app is down.',
     '- `open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]` — open N plain terminals.',
-    '- `open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]` — open N Claude sessions.',
-    `- \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open`,
+    '- `open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--title T] [--project <id>]` — open N Claude sessions.',
+    `- \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--title T] [--project <id>]\` — open`,
     '  any agent CLI. `--group` parents the node(s) into a group frame; a worktree-bound group also',
-    '  hands its worktree path down as the cwd. `--after <id,id>` opens the node ARMED: it does not',
+    '  hands its worktree path down as the cwd. `--title T` names the node at creation (pinned, so the',
+    '  agent\'s own session name does not overwrite it) — pass it when you open one station per worktree',
+    '  so each is distinguishable instead of all defaulting to the agent label. For `--count N > 1` the',
+    '  2nd..Nth get a ` #2`, ` #3`… suffix. `--after <id,id>` opens the node ARMED: it does not',
     '  start until every listed station has finished a turn SUCCESSFULLY. It is',
     '  roped to each listed station (one edge, dashed while it waits, solid once it runs) and can read',
     '  their work with get-linked-context when it wakes — nothing to `link`. Use it for "B needs what',
@@ -418,6 +432,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  and copilot (and custom agents based on them); any other agent ignores it and launches',
     '  exactly as it would without the flag. The id is passed to the CLI as-is, so a name that',
     '  agent does not recognise fails inside the session, not at open time — name a model you know.',
+
     '- `open-project --cwd </abs/path> [--name N] [--color C]` — register (or find) the project for a',
     '  local directory; the reply carries `{ projectId, name, cwd, created }`. Idempotent: the same',
     '  cwd always returns the same project, never a duplicate. Creating/adding asks the user to',
@@ -524,10 +539,11 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'downstream one with `--after <upstream-id>` and it starts itself when the upstream goes',
     'idle (do not poll for that yourself). Then break the task into 2-5 workstreams;',
     'per stream `open-worktree --branch <slug>` then `open-agent --agent claude --group <groupId>',
-    '--prompt "<concrete task>"` (each stream on its own branch, no tree conflicts). Members land',
-    'in grid slots inside the frame automatically; align the frames themselves with',
+    '--prompt "<concrete task>" --title "<short subject>"` (each stream on its own branch, no tree',
+    'conflicts; `--title` names the station so it is distinguishable, not a bare "Claude"/"Codex").',
+    'Members land in grid slots inside the frame automatically; align the frames themselves with',
     '`arrange --nodes <groupId,…> --layout row` (pass sibling GROUP ids from one container)',
-    'and `rename` each by subject. When a station goes idle, READ what it did through the',
+    'and `rename` any you did not title. When a station goes idle, READ what it did through the',
     'context link (the linked-context CLI — see the get-linked-context section in your global',
     'agent instructions) and reconcile the streams into ONE synthesis yourself; a station you',
     'never read is one you cannot vouch for. The user merges when a stream is done;',
@@ -819,10 +835,15 @@ Verbs:
 - \`help\` — print the verb list. The shim answers this itself, without reaching the app, so it
   is also what to run when you are unsure whether the control endpoint is alive.
 - \`open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]\` — open N plain terminals (default 1).
-- \`open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open N Claude sessions (default 1).
-- \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open N sessions of any agent CLI.
+- \`open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--title T] [--project <id>]\` — open N Claude sessions (default 1).
+- \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--title T] [--project <id>]\` — open N sessions of any agent CLI.
+
   \`--group\` parents the node(s) into an existing group frame; a worktree-bound group also
   hands its worktree path down as the cwd.
+  \`--title T\` names the node at creation (pinned — the agent's own session name will not overwrite
+  it). Pass it whenever you open one station per worktree, so each is distinguishable instead of
+  every station defaulting to the agent label ("Codex", "Claude", …). For \`--count N > 1\` the
+  2nd..Nth get a \` #2\`, \` #3\`… suffix.
   \`--after <id,id>\` opens the node **armed**: it does NOT start yet, and launches itself once
   every listed station has finished a turn successfully — that is how you express "B needs what A produces" without
   sitting in a poll loop. The armed node is roped to each listed station (one edge,
@@ -1080,13 +1101,15 @@ across Nodeterm sessions), be the orchestration chef — plan the kitchen, then 
 1. Break the task into 2–5 independent workstreams (by subsystem, not by file).
 2. Per workstream, give it its own branch + kitchen station:
    \`open-worktree --branch <slug>\` → note the returned \`groupId\`, then
-   \`open-agent --agent claude --group <groupId> --prompt "<concrete, self-contained task>"\`.
-   Each stream now works on its own branch in its own worktree group — no tree conflicts.
+   \`open-agent --agent claude --group <groupId> --prompt "<concrete, self-contained task>" --title "<short subject>"\`.
+   \`--title\` names the station at creation so each is distinguishable (not a bare "Claude"/"Codex");
+   the group frame is already labelled with the branch. Each stream now works on its own branch in
+   its own worktree group — no tree conflicts.
 3. Keep the kitchen tidy: members opened with \`--group\` land in neat grid slots inside the
    frame automatically (the frame grows to fit), and successive \`open-worktree\` frames fan
    out side by side — after opening all stations, align the frames with
    \`arrange --nodes <groupId,groupId,…> --layout row\` (pass sibling GROUP ids from one
-   container, not their children). \`rename\` each group by subject.
+   container, not their children). \`rename\` any station or group you did not title with \`--title\`.
 4. Track progress (their status badges show working/waiting) and coordinate.
 5. Collect the results yourself — this is the half most orchestrators skip. Every station you
    opened is context-linked to you, so when one goes idle, read what it actually did with the

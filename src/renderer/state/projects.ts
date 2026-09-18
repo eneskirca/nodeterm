@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import type { AgentPermissionMode } from '@shared/agents/config'
 import type {
-  BridgeLink,
   CanvasMutation,
   CanvasNodeState,
+  BridgeLink,
   ClosedSessionEntry,
+  Link,
   NavStop,
   Project,
   ProjectKanban,
@@ -39,6 +40,79 @@ import { pairKey as bridgePairKey } from '../lib/noteLink'
  * is exactly the failure this return value exists to prevent.
  */
 export type SaveLayoutResult = 'saved' | 'cap-reached' | 'invalid-name' | 'unknown-project'
+
+/**
+ * The on-canvas half of a project's unified link substrate. `Project.links` is the ONLY persisted
+ * form (a legacy file's `bridges`/`ropes` are migrated on load — see `migrateLinks` in
+ * core/workspace-files.ts — and the writer emits `links` only), while the canvas keeps reasoning
+ * in two plain `{id, source, target}` edge arrays. These helpers are the conversion seam, used by
+ * every store mutator that receives or reports canvas edges:
+ *
+ * - `bridgeViews`/`ropeViews` project `links` down to the node-id pairs the canvas dedupes and
+ *   renders with — a link whose endpoints are not BOTH `ref:'node'` (an `xnode` cross-project
+ *   target or a `branch` dependency) has no on-canvas pair and is never reported to the canvas.
+ *   Ids are preserved verbatim (`bridge-…`/`ctrl-…`), so dedup and the covered-rope logic
+ *   (`hiddenLinkIds` / `linkIdsCoveredByRopes`) keep working unchanged.
+ * - `withOnCanvasLinks` replaces the project's on-canvas context/lineage links with what the
+ *   canvas just committed (whole-arrays contract, same as `nodes`/`viewport`) while keeping every
+ *   OFF-canvas link (xnode/branch/dependency) the canvas cannot see. A dependency link is left
+ *   alone here: it is authored by the inspectors and the `link-branches` verb, never by drawing on
+ *   the canvas, so a commit cannot drop one. Empty in-arrays omit the field (the shared project
+ *   file is committed; an empty key is a diff for everyone).
+ */
+function nodeKindOf(l: Link): 'context' | 'lineage' | null {
+  if (l.kind !== 'context' && l.kind !== 'lineage') return null
+  return l.source.ref === 'node' && l.target.ref === 'node' ? l.kind : null
+}
+
+function linkView(l: Link): BridgeLink {
+  const s = l.source as { ref: 'node'; nodeId: string }
+  const t = l.target as { ref: 'node'; nodeId: string }
+  return { id: l.id, source: s.nodeId, target: t.nodeId }
+}
+
+function viewsOf(p: Project, kind: 'context' | 'lineage'): BridgeLink[] {
+  return (p.links ?? []).flatMap((l) => {
+    const k = nodeKindOf(l)
+    return k === kind ? [linkView(l)] : []
+  })
+}
+
+function bridgeViews(p: Project): BridgeLink[] {
+  return viewsOf(p, 'context')
+}
+
+function ropeViews(p: Project): BridgeLink[] {
+  return viewsOf(p, 'lineage')
+}
+
+function withOnCanvasLinks(
+  p: Project,
+  bridges: readonly BridgeLink[],
+  ropes: readonly BridgeLink[]
+): { links?: Link[] } {
+  const offCanvas = (p.links ?? []).filter((l) => nodeKindOf(l) === null)
+  const rebuilt: Link[] = []
+  for (const b of bridges) {
+    rebuilt.push({
+      id: b.id,
+      kind: 'context',
+      source: { ref: 'node', nodeId: b.source },
+      target: { ref: 'node', nodeId: b.target }
+    })
+  }
+  for (const r of ropes) {
+    rebuilt.push({
+      id: r.id,
+      kind: 'lineage',
+      source: { ref: 'node', nodeId: r.source },
+      target: { ref: 'node', nodeId: r.target },
+      meta: { displayOnly: true }
+    })
+  }
+  const links = [...rebuilt, ...offCanvas]
+  return links.length ? { links } : {}
+}
 
 interface ProjectsState {
   projects: Project[]
@@ -127,7 +201,10 @@ interface ProjectsState {
   /** Replaces the project's breadcrumb (navigation history) list wholesale — the UI computes the
    *  next list via lib/breadcrumbs and hands it over whole, same convention as setProjectKanban. */
   setProjectBreadcrumbs(id: string, breadcrumbs: NavStop[]): void
-  /** Writes the serialized canvas (nodes + viewport + bridge links + control ropes) back into a project. */
+  /** Writes the serialized canvas (nodes + viewport + on-canvas link edges) back into a project.
+   *  `bridges` are the context/note edges React Flow holds in `linkEdges`; `ropes` are the lineage
+   *  edges in `controlEdges`. Both persist into the unified `Project.links` substrate — this
+   *  method is the ONE conversion site, so the canvas never learns the Link shape. */
   commitCanvas(
     id: string,
     nodes: CanvasNodeState[],
@@ -135,6 +212,11 @@ interface ProjectsState {
     bridges?: BridgeLink[],
     ropes?: BridgeLink[]
   ): void
+  /** The link-authoring twin: writes the WHOLE link list (on-canvas AND off-canvas — an xnode or
+   *  branch/dependency link the canvas does not render) into `Project.links`. Off-canvas links
+   *  would be lost through the edge-view overload above, which rebuilds only what React Flow
+   *  holds. */
+  commitLinks(id: string, links: Link[]): void
   /**
    * Appends context bridges / control ropes to a project that is loaded but NOT active — the edge
    * counterpart of `applyNodeMutation`, and for the same reason: React Flow holds only the active
@@ -154,6 +236,13 @@ interface ProjectsState {
    * they deleted on the very next save — the data-loss shape canvas sync exists to fix.
    */
   applyNodeMutation(projectId: string, mutation: CanvasMutation): boolean
+  /**
+   * Append a fully-formed `CanvasNodeState` to a (possibly NON-active) project's serialized nodes.
+   * The seam for canvas-control `open-agent --project <B>` (ticket 05): the node is created in
+   * project B, which is not the active canvas, so it cannot go through live `setNodes` — it lands
+   * in B's `Project.nodes` and appears when B is next loaded. Other projects are untouched.
+   */
+  addNodeToProject(projectId: string, node: CanvasNodeState): void
   /** Renames a node within a project (source of truth for inactive projects). */
   renameNode(projectId: string, nodeId: string, title: string): void
   /** Recolors a node within a project. */
@@ -547,7 +636,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === id
-          ? { ...p, nodes, viewport, ...(bridges ? { bridges } : {}), ...(ropes ? { ropes } : {}) }
+          ? {
+              ...p,
+              nodes,
+              viewport,
+              ...withOnCanvasLinks(p, bridges ?? [], ropes ?? [])
+            }
           : p
       )
     }))
@@ -571,9 +665,22 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === projectId
-          ? { ...p, bridges: add(p.bridges, links.bridges), ropes: add(p.ropes, links.ropes) }
+          ? {
+              ...p,
+              ...withOnCanvasLinks(
+                p,
+                add(bridgeViews(p), links.bridges) ?? [],
+                add(ropeViews(p), links.ropes) ?? []
+              )
+            }
           : p
       )
+    }))
+  },
+
+  commitLinks(id, links) {
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === id ? { ...p, ...(links.length ? { links } : {}) } : p))
     }))
   },
 
@@ -585,6 +692,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       )
     }))
     return true
+  },
+
+  addNodeToProject(projectId, node) {
+    if (!get().projects.some((p) => p.id === projectId)) return
+    set((s) => ({
+      projects: mapProjectNodes(s.projects, projectId, (nodes) => [...nodes, node])
+    }))
   },
 
   renameNode(projectId, nodeId, title) {

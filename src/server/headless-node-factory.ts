@@ -27,8 +27,8 @@ import { assembleLaunchCommand } from '../shared/agents/launch'
 import type { AgentState, NormalizedAgentEvent } from '../shared/agents/normalize'
 import { oneLine } from '../shared/one-line'
 import type {
-  BridgeLink,
   CanvasNodeState,
+  Link,
   ClaudeCliCaps,
   GrokCliCaps,
   Project,
@@ -248,12 +248,41 @@ function placeRight(
   }
 }
 
-function addEdge(list: BridgeLink[], source: string, target: string, prefix: string): void {
+function nodePair(l: Link): { source: string; target: string } | null {
+  return l.source.ref === 'node' && l.target.ref === 'node'
+    ? { source: l.source.nodeId, target: l.target.nodeId }
+    : null
+}
+
+// Appends a node-pair link to the unified `Project.links` substrate. `ctrl` = a lineage rope
+// (display-only); anything else = a context link. Dedupe is by ENDPOINT PAIR in either
+// direction — one relationship, one edge — regardless of the id minted.
+function addEdge(list: Link[], source: string, target: string, prefix: string): void {
   if (source === target) return
-  if (list.some((edge) =>
-    (edge.source === source && edge.target === target) ||
-    (edge.source === target && edge.target === source))) return
-  list.push({ id: edgeId(prefix, source, target), source, target })
+  // Dedupe WITHIN the kind being added: a lineage rope and the context bridge covering the same
+  // pair are two facts (the bridge survives the rope's deletion), so they coexist.
+  const kind = prefix === 'ctrl' ? 'lineage' : 'context'
+  if (list.some((l) => {
+    if (l.kind !== kind) return false
+    const pair = nodePair(l)
+    return !!pair && ((pair.source === source && pair.target === target) || (pair.source === target && pair.target === source))
+  })) return
+  list.push(
+    prefix === 'ctrl'
+      ? {
+          id: edgeId(prefix, source, target),
+          kind: 'lineage',
+          source: { ref: 'node', nodeId: source },
+          target: { ref: 'node', nodeId: target },
+          meta: { displayOnly: true }
+        }
+      : {
+          id: edgeId(prefix, source, target),
+          kind: 'context',
+          source: { ref: 'node', nodeId: source },
+          target: { ref: 'node', nodeId: target }
+        }
+  )
 }
 
 function nodeProjects(workspace: Workspace, nodeId: string): Project[] {
@@ -798,11 +827,14 @@ export class HeadlessNodeFactory {
         } else {
           project.nodes = project.nodes.filter((node) => node.id !== id)
         }
-        if (project.ropes) {
-          project.ropes = project.ropes.filter((edge) => edge.source !== id && edge.target !== id)
-        }
-        if (project.bridges) {
-          project.bridges = project.bridges.filter((edge) => edge.source !== id && edge.target !== id)
+        // Node links die with their endpoints; off-canvas links (xnode / branch) are kept — an
+        // xnode endpoint naming this id refers to a node in a DIFFERENT project (ownerOf just
+        // proved this id belongs to this one).
+        if (project.links) {
+          project.links = project.links.filter((link) =>
+            !(link.source.ref === 'node' && link.source.nodeId === id) &&
+            !(link.target.ref === 'node' && link.target.nodeId === id)
+          )
         }
         const removed = removedByProject.get(project) ?? []
         removed.push(id)
@@ -882,7 +914,12 @@ export class HeadlessNodeFactory {
       if (!byId.has(from)) {
         return { ok: false, error: `link: --from names no existing node (${from})` }
       }
-      const existing = [...(source.project.bridges ?? [])]
+      // The plan dedupes against the project's existing CONTEXT node pairs (the unified
+      // substrate's context links); off-canvas link kinds are not linkable peers.
+      const existing = (source.project.links ?? []).flatMap((l) => {
+        const pair = l.kind === 'context' ? nodePair(l) : null
+        return pair ? [pair] : []
+      })
       const plan = planBridges(
         from,
         targets,
@@ -901,7 +938,15 @@ export class HeadlessNodeFactory {
         }
       }
 
-      source.project.bridges = [...existing, ...plan.edges]
+      source.project.links = [
+        ...(source.project.links ?? []),
+        ...plan.edges.map((edge) => ({
+          id: edge.id,
+          kind: 'context' as const,
+          source: { ref: 'node' as const, nodeId: edge.source },
+          target: { ref: 'node' as const, nodeId: edge.target }
+        }))
+      ]
       await this.deps.workspaceStore.save(workspace)
       // An edge-only change has no node mutation to publish; the full-project event is the fanout.
       this.publish(source.project, [])
@@ -1104,8 +1149,7 @@ export class HeadlessNodeFactory {
       const count = parseCount(args.count, verb === 'open-terminal' ? TERMINAL_LIMIT : AGENT_LIMIT)
       const created: CanvasNodeState[] = []
       const commands = new Map<string, string>()
-      const ropes = [...(target.ropes ?? [])]
-      const bridges = [...(target.bridges ?? [])]
+      const links = [...(target.links ?? [])]
       const startIndex = target.nodes.length
       const cwd = args.cwd || (target.id === source.project.id ? source.node.cwd : undefined) || target.cwd
       // Snapshot dependency state at the arm boundary. A `working` state is already positive
@@ -1190,25 +1234,24 @@ export class HeadlessNodeFactory {
         }
         created.push(node)
         if (command && !pendingLaunch) commands.set(id, command)
-        addEdge(ropes, source.node.id, id, 'ctrl')
+        addEdge(links, source.node.id, id, 'ctrl')
 
         if (verb === 'open-agent') {
           const sourceAgent = effectiveAgentId(source.node, this.deps.agentIdOf)
           if (sourceAgent && canContextLink(sourceAgent) && canContextLink(agentId as AgentId)) {
-            addEdge(bridges, source.node.id, id, 'link')
+            addEdge(links, source.node.id, id, 'link')
           }
           for (const depId of after) {
             const dep = target.nodes.find((candidate) => candidate.id === depId)
             const depAgent = dep ? effectiveAgentId(dep, this.deps.agentIdOf) : undefined
             if (depAgent && canContextLink(depAgent) && canContextLink(agentId as AgentId))
-              addEdge(bridges, id, depId, 'link')
+              addEdge(links, id, depId, 'link')
           }
         }
       }
 
       target.nodes.push(...created)
-      target.ropes = ropes
-      target.bridges = bridges
+      target.links = links
       await this.deps.workspaceStore.save(workspace)
       for (const node of created) {
         this.ownership.record(node.id, { sourceNodeId, projectId: target.id })
@@ -1287,9 +1330,9 @@ export class HeadlessNodeFactory {
           text: ''
         }
         source.project.nodes.push(node)
-        const ropes = [...(source.project.ropes ?? [])]
-        addEdge(ropes, source.node.id, node.id, 'ctrl')
-        source.project.ropes = ropes
+        const links = [...(source.project.links ?? [])]
+        addEdge(links, source.node.id, node.id, 'ctrl')
+        source.project.links = links
       } else {
         return {
           ok: false,

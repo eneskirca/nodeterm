@@ -2,23 +2,148 @@
 // agent nodes vs. note link between a sticky and a terminal), build the one-shot push
 // message a note link injects into an agent session, and re-export the link-map builders.
 // Kept free of React/store imports so the connection matrix is unit-testable.
+import type { Link } from '@shared/types'
 import { oneLine } from '@shared/one-line'
-import {
-  classifyLink,
-  planBridges,
-  type LinkEndpoint
-} from '@shared/canvas-link'
 
-// Kept as renderer-facing re-exports so existing canvas and tests retain one import surface while
-// Server Edition consumes the same pure planner directly from shared.
-export {
-  classifyLink,
-  planBridges,
-  type BridgePlan,
-  type LinkEndpoint,
-  type LinkKind,
-  type SkippedBridge
-} from '@shared/canvas-link'
+export interface LinkEndpoint {
+  /** React Flow node type: 'terminal' | 'sticky' | 'editor' | … */
+  kind: string
+  /** Terminal node whose agent is CONTEXT_LINK_CAPABLE (claude/codex/gemini). */
+  contextCapable: boolean
+}
+
+export type LinkKind = 'context' | 'note'
+
+/** Decide what kind of link (if any) a new edge between two nodes forms. */
+export function classifyLink(a: LinkEndpoint, b: LinkEndpoint): LinkKind | null {
+  const stickies = (a.kind === 'sticky' ? 1 : 0) + (b.kind === 'sticky' ? 1 : 0)
+  if (stickies === 0) return a.contextCapable && b.contextCapable ? 'context' : null
+  if (stickies === 2) return null
+  const other = a.kind === 'sticky' ? b : a
+  return other.kind === 'terminal' ? 'note' : null
+}
+
+/**
+ * Project a {@link Link} down to the `{ id, source, target }` node-id pair the renderer's edge
+ * state + the rope-cover helpers reason in. Returns `null` for a link whose endpoints are not BOTH
+ * `ref:'node'` (an `xnode` cross-project target or a `branch` dependency endpoint) — such a link
+ * has no on-canvas node pair to draw or to share a rope with. On-canvas context/lineage links are
+ * always node↔node today; the null branch is the seam tickets 03/04/05 extend through.
+ */
+export function nodeEndpoints(link: Link): { id: string; source: string; target: string } | null {
+  if (link.source.ref !== 'node' || link.target.ref !== 'node') return null
+  return { id: link.id, source: link.source.nodeId, target: link.target.nodeId }
+}
+
+/** Build a `kind:'context'` node↔node link with a stable id (the `bridge-` prefix is kept for
+ *  back-compat with any persisted id a migrated file already carries). */
+export function contextLink(source: string, target: string, note?: string): Link {
+  return {
+    id: `bridge-${source}-${target}`,
+    kind: 'context',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target },
+    ...(note != null ? { meta: { note } } : {})
+  }
+}
+
+/** Build a `kind:'lineage'` (display-only rope) node↔node link with a `ctrl-` id. */
+export function lineageLink(source: string, target: string): Link {
+  return {
+    id: `ctrl-${source}-${target}`,
+    kind: 'lineage',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target },
+    meta: { displayOnly: true }
+  }
+}
+
+/** Build a `kind:'dependency'` node↔node link with a `dep-` id. Used by the meta-canvas submodule
+ *  auto-link (ticket 09): a same-canvas `dependency` edge between two `projectRef` group frames.
+ *  Unlike the cross-project/branch dependency links (off-canvas, inspector-only), a node↔node
+ *  dependency is a real on-canvas edge — `linksToRuntime` renders it (amber, dashed) and
+ *  `runtimeToLinks` round-trips it, so it survives the load→commit cycle. */
+export function dependencyLink(source: string, target: string): Link {
+  return {
+    id: `dep-${source}-${target}`,
+    kind: 'dependency',
+    source: { ref: 'node', nodeId: source },
+    target: { ref: 'node', nodeId: target }
+  }
+}
+
+/** One node the plan refused to link, with the reason to report back to the caller. */
+export interface SkippedBridge {
+  id: string
+  why: string
+}
+
+export interface BridgePlan {
+  /** Links to append (already deduped against `existing` AND within the batch). */
+  edges: Link[]
+  linked: string[]
+  skipped: SkippedBridge[]
+}
+
+/**
+ * Plan the link edges connecting `fromId` to each of `targetIds` — the batch form of what
+ * onConnect does for one hand-drawn edge, used by the canvas-control `link` verb and by the
+ * open-agent / spawn-team fan-out (which link every session they open back to the opener).
+ *
+ * Pure so the refusal matrix is testable: the callers live inside Canvas.tsx, where node
+ * lookup is a ref read and the result is a setState. `lookup` is injected because a caller
+ * that links nodes it created in the SAME tick cannot resolve them off the canvas yet
+ * (setNodes is async), and `existing` is passed in rather than read, so a batch also dedupes
+ * against itself and not just against what is already on screen.
+ *
+ * `existing` is a node-pair projection (`{source, target}[]`) of the links already on screen,
+ * not `Link[]` — dedup is endpoint-pair based and a caller holds the projection already.
+ */
+export function planBridges(
+  fromId: string,
+  targetIds: string[],
+  lookup: (id: string) => LinkEndpoint | null,
+  existing: readonly { source: string; target: string }[]
+): BridgePlan {
+  const edges: Link[] = []
+  const linked: string[] = []
+  const skipped: SkippedBridge[] = []
+  const se = lookup(fromId)
+  const linkedAlready = (a: string, b: string) =>
+    [...existing, ...edges.map((e) => nodeEndpoints(e)!)].some(
+      (e) => (e.source === a && e.target === b) || (e.source === b && e.target === a)
+    )
+  for (const tid of targetIds) {
+    if (tid === fromId) {
+      skipped.push({ id: tid, why: 'same node' })
+      continue
+    }
+    const te = lookup(tid)
+    if (!se || !te) {
+      skipped.push({ id: tid, why: 'no such node' })
+      continue
+    }
+    const kind = classifyLink(se, te)
+    if (!kind) {
+      skipped.push({
+        id: tid,
+        why: 'not linkable (needs two context-capable agents, or a sticky + terminal)'
+      })
+      continue
+    }
+    // Note edges are stored sticky→terminal regardless of the direction they were requested
+    // in, so styling and the link map can key off "source is sticky" (mirrors onConnect).
+    const source = kind === 'note' && te.kind === 'sticky' ? tid : fromId
+    const target = source === fromId ? tid : fromId
+    if (linkedAlready(source, target)) {
+      skipped.push({ id: tid, why: 'already linked' })
+      continue
+    }
+    edges.push(contextLink(source, target))
+    linked.push(tid)
+  }
+  return { edges, linked, skipped }
+}
 
 /** Order-independent key for an edge's endpoints (a↔b and b↔a are the same connection). */
 export function pairKey(a: string, b: string): string {

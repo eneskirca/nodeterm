@@ -1,4 +1,4 @@
-import { capabilityAgentId, type AgentId } from '@shared/agents/config'
+import { capabilityAgentId, type AgentId, type BuiltinAgentId } from '@shared/agents/config'
 import { IconTerminal } from '../components/icons'
 import { BRAND_PULSE_CLASS, brandLogoSrc, brandPulsePlan } from './brandPulse'
 import { GROK_MARK_PATH, GROK_MARK_VIEWBOX } from './grokMark'
@@ -94,11 +94,20 @@ export function BrandPulse({ agentId, size }: { agentId?: AgentId; size: number 
   )
 }
 
-export function AgentIcon({ agentId, size = 16 }: { agentId: AgentId; size?: number }): React.JSX.Element {
+export function AgentIcon({
+  agentId,
+  agentBaseId,
+  size = 16
+}: {
+  agentId: AgentId
+  /** Node-persisted harness snapshot; wins when the custom-agent definition no longer exists. */
+  agentBaseId?: BuiltinAgentId
+  size?: number
+}): React.JSX.Element {
   // A custom agent with `baseAgent` speaks that harness's protocol and should carry its visual
   // identity too. The renderer registers a live custom-id resolver at boot, so settings edits are
   // reflected on the next render without duplicating custom-agent lookup logic in every menu.
-  const iconAgentId = capabilityAgentId(agentId)
+  const iconAgentId = agentBaseId ?? capabilityAgentId(agentId)
   if (iconAgentId === 'grok') return <GrokMark size={size} />
   if (iconAgentId === 'copilot') return <CopilotMark size={size} />
   // `brandLogoSrc`, not `AGENT_LOGO[iconAgentId]`: the id can be anything a hand-edited

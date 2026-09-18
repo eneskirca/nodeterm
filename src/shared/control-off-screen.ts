@@ -252,7 +252,12 @@ const OFF_SCREEN_REFUSALS: Readonly<Record<string, string>> = {
   'close-worktree': 'the worktree store only answers for the project on screen',
   // The CDP driving in main needs a mounted <webview> guest. Placing a browser node
   // (`open-browser`) does not and is in OFF_CANVAS_VERBS; navigating one does.
-  browser: 'driving a browser node needs its webview mounted'
+  browser: 'driving a browser node needs its webview mounted',
+  // STAGED (ticket 03): registered in main's verb model but not yet answered by ANY canvas —
+  // the renderer dispatch has no case for them, so "off screen" is not what makes them unable
+  // to act. The refusal says so rather than promising a wait that would never end.
+  'link-branches': 'branch-dependency links are not wired to the canvas yet',
+  'sync-stack': 'stack sync is not wired to the canvas yet'
 }
 
 /**

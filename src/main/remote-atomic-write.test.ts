@@ -60,7 +60,10 @@ describe('remoteAtomicWrite', () => {
     expect(second.temporaryPath).not.toBe(first.temporaryPath)
     expect(first.command).toContain('umask 077; mkdir -p -- ~/' + "'a b'")
     expect(first.command).toContain(`cat > ${quoteRemotePath(first.temporaryPath)}`)
-    expect(first.command).toContain(`chmod 600 -- ${quoteRemotePath(first.temporaryPath)}`)
+    // `chmod` carries NO `--` terminator: BSD chmod (macOS) rejects `--` as a literal filename,
+    // unlike GNU chmod — and unlike `mv`/`rm` below, which accept `--` on both. The temp leaf is
+    // always `.nodeterm-<uuid>.tmp` (dot-prefixed, never option-like), so it needs no terminator.
+    expect(first.command).toContain(`chmod 600 ${quoteRemotePath(first.temporaryPath)}`)
     expect(first.command).toContain(`mv -f -- ${quoteRemotePath(first.temporaryPath)} ${quoteRemotePath("~/a b/quo'te\\name.json")}`)
     expect(first.command).toContain(`rm -f -- ${quoteRemotePath(first.temporaryPath)}`)
     expect(first.command).toContain('exit "$nt_status"')

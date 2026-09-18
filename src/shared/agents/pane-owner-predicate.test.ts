@@ -93,6 +93,17 @@ describe('isAgentPane', () => {
       .toBe('not-agent')
   })
 
+  it('verifies either the wrapper or inherited harness for a base-backed custom agent', () => {
+    const customAgents = [
+      { id: 'custom:muse', launchCmd: 'claude-wopr', baseAgent: 'claude' }
+    ]
+    const binaries = binariesFor('custom:muse', customAgents)
+    expect(binaries).toEqual(['claude-wopr', ...AGENT_BINARIES.claude])
+    expect(isAgentPane(owner(['claude-wopr --resume sid']), 'custom:muse', binaries)).toBe('agent')
+    expect(isAgentPane(owner(['claude --resume sid']), 'custom:muse', binaries)).toBe('agent')
+    expect(isAgentPane(owner(['codex resume sid']), 'custom:muse', binaries)).toBe('not-agent')
+  })
+
   it('proves the agent is IN the foreground group, not that it is READING the tty', () => {
     // `sh -c "sleep 600 | claude"`: claude really is in the group, so `agent` is the honest answer —
     // but its stdin is the pipe, and text written to the pane waits in the tty buffer for the shell.
@@ -159,7 +170,8 @@ describe('binaryFromLaunchCmd', () => {
 describe('binariesFor', () => {
   const customAgents = [
     { id: 'custom:abc', launchCmd: 'npx -y my-agent' },
-    { id: 'custom:shell', launchCmd: 'bash -lc "run-me"' }
+    { id: 'custom:shell', launchCmd: 'bash -lc "run-me"' },
+    { id: 'custom:base', launchCmd: 'claude-wopr', baseAgent: 'claude' }
   ]
 
   it('answers the built-in table for a built-in id', () => {
@@ -168,6 +180,13 @@ describe('binariesFor', () => {
 
   it('derives a custom agent binary from its launch command — the dead end, closed', () => {
     expect(binariesFor('custom:abc', customAgents)).toEqual(['my-agent'])
+  })
+
+  it('adds the canonical base harness binaries for an inheriting custom agent', () => {
+    expect(binariesFor('custom:base', customAgents)).toEqual([
+      'claude-wopr',
+      ...AGENT_BINARIES.claude
+    ])
   })
 
   it('stays null when the custom agent is not in the list we were handed', () => {

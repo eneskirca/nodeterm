@@ -37,6 +37,20 @@ export interface EffectiveAgentConfig {
 }
 
 /**
+ * Resolve an agent's current builtin harness without duplicating builtin/custom precedence at
+ * every caller. A builtin is always itself; for a custom id the node-persisted snapshot wins over
+ * the mutable registry record. Unknown/baseless custom agents have no builtin harness.
+ */
+export function resolveAgentBase(
+  id: AgentId,
+  customAgent?: CustomAgent,
+  persistedBaseAgent?: BuiltinAgentId
+): BuiltinAgentId | undefined {
+  if (agentConfig(id)) return id as BuiltinAgentId
+  return persistedBaseAgent ?? customAgent?.baseAgent
+}
+
+/**
  * Resolve `id` to its effective config. For a builtin, returns its `AGENT_CONFIG` entry. For a
  * custom agent, `customAgent` is the matching `CustomAgent` record (the caller looks it up by id
  * from settings); fields inherit from `baseAgent` and the custom record overrides:
@@ -51,13 +65,16 @@ export interface EffectiveAgentConfig {
  */
 export function resolveAgentConfig(
   id: AgentId,
-  customAgent?: CustomAgent
+  customAgent?: CustomAgent,
+  /** Node-persisted current harness. Wins over the mutable/deletable registry record. */
+  baseAgentId?: BuiltinAgentId
 ): EffectiveAgentConfig {
   const builtin = agentConfig(id)
   if (builtin) {
     return { ...builtin, custom: false }
   }
-  const base = customAgent?.baseAgent ? AGENT_CONFIG[customAgent.baseAgent] : undefined
+  const resolvedBase = resolveAgentBase(id, customAgent, baseAgentId)
+  const base = resolvedBase ? AGENT_CONFIG[resolvedBase] : undefined
   const launchCmd = customAgent?.launchCmd?.trim() || base?.launchCmd || id
   // The prompt grammar is a property of the HARNESS, not a user preference: `flag-prompt`
   // (emitting `--prompt <p>`) is opencode-specific — claude/codex/grok take a POSITIONAL (`argv`)
@@ -78,7 +95,7 @@ export function resolveAgentConfig(
     argvPromptSeparator: base?.argvPromptSeparator,
     expectedProcess: base?.expectedProcess,
     custom: true,
-    baseAgent: customAgent?.baseAgent
+    baseAgent: resolvedBase
   }
 }
 

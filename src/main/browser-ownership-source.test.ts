@@ -47,7 +47,19 @@ describe('ownership is never read out of Project.ropes — behavioural', () => {
     const reparsed = JSON.parse(serializeProjectFile(file))
     const reloaded = fileToProject(reparsed, { id: project.id, cwd: project.cwd })
 
-    expect(reloaded.ropes).toEqual([{ id: 'r1', source: 'claude-1', target: 'browser-1' }])
+    // The lineage rope migrates to the unified `Link[]` (`kind:'lineage'`) on the save/reload
+    // round-trip — `Project.ropes` is legacy read-only and new writes emit `links` only. The hostile
+    // lineage is still durable across the file boundary; what matters is that durability grants
+    // nothing, asserted below.
+    expect(reloaded.links).toEqual([
+      {
+        id: 'r1',
+        kind: 'lineage',
+        source: { ref: 'node', nodeId: 'claude-1' },
+        target: { ref: 'node', nodeId: 'browser-1' },
+        meta: { displayOnly: true }
+      }
+    ])
 
     const ledger = new BrowserControlLedger()
     expect(ledger.get('browser-1', 'claude-1')).toBe(null)

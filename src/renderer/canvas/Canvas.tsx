@@ -78,7 +78,7 @@ import {
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
 import { StickyNode } from '../nodes/StickyNode'
-import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
+import { GroupNode, setWorktreeActionHandler, type WorktreeAction } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -456,7 +456,7 @@ import {
   reconnectRelayTab,
   type RelayTab,
 } from '../session/relay-tab'
-import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, hiddenLinkIds, linkIdsCoveredByRopes, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
+import { buildBackgroundLinkMaps, buildContextLinkNote, buildLinkMap, buildNotePushMessage, classifyLink, hiddenLinkIds, linkIdsCoveredByRopes, nodeEndpoints, pairKey, planBridges, type LinkEndpoint } from '../lib/noteLink'
 import {
   launchesToFire,
   launchRetryDelay,
@@ -510,6 +510,7 @@ import type {
   BridgeLink,
   CanvasNodeState,
   ClosedSessionEntry,
+  Link,
   NodeKind,
   PendingLaunch,
   Project,
@@ -5989,7 +5990,10 @@ export function Canvas() {
   // merge / remove teardown actions (Tasks 8 & 9) slot in as new cases. `unbind` forgets the
   // binding without touching disk; `merge` merges to base; `remove` opens the safety dialog.
   const onWorktreeAction = useCallback(
-    (groupId: string, action: 'merge' | 'remove' | 'unbind' | 'rerun-setup') => {
+    // The `sync` case is NOT handled here yet — GroupNode's ↻ button was shipped with the
+    // handler seam (422) but the canvas action lands with the branch-dependency wiring
+    // (ticket 03); `default:` swallows the click the same way it did in that branch.
+    (groupId: string, action: WorktreeAction) => {
       // A binding can only predate the SSH gate (hand-edited project file, or a project that became
       // an SSH project), but it can still exist — and merge/remove would run against the LOCAL
       // filesystem for a project whose git and terminals live on the remote host. Refuse them, out
@@ -10286,17 +10290,24 @@ export function Canvas() {
             }
             const coldExistingBridges = [...(owner.bridges ?? [])]
             const coldPlan = coldTerminal
-              ? { edges: [] as BridgeLink[], linked: [] as string[] }
+              ? { edges: [] as Link[], linked: [] as string[] }
               : planBridges(sourceNodeId, coldIds, coldEndpoint, coldExistingBridges)
+            // `planBridges` returns the unified `Link[]`; the store conversion seam (projects.ts
+            // `withOnCanvasLinks`) takes the plain node-id-pair view, so project here. `planBridges`
+            // only mints node↔node links, so the projection never drops one.
+            const coldPlanViews = coldPlan.edges.map((l) => nodeEndpoints(l)!)
             const coldDepPlans = coldTerminal
               ? []
               : coldIds.map((nid) =>
                   planBridges(nid, coldAfterIds, coldEndpoint, [
                     ...coldExistingBridges,
-                    ...coldPlan.edges
+                    ...coldPlanViews
                   ])
                 )
-            const coldBridges = [...coldPlan.edges, ...coldDepPlans.flatMap((p) => p.edges)]
+            const coldBridges = [
+              ...coldPlanViews,
+              ...coldDepPlans.flatMap((p) => p.edges.map((l) => nodeEndpoints(l)!))
+            ]
             coldStore.appendCanvasLinks(owner.id, { bridges: coldBridges, ropes: coldRopes })
             void writeDisk()
             const coldWhat = coldTerminal ? 'terminal' : coldAgentId
@@ -10506,20 +10517,28 @@ export function Canvas() {
         targetIds: string[],
         lookup: (id: string) => LinkEndpoint | null = ctlLinkEndpointOf
       ) => {
-        // Off canvas the existing edges are the OWNING project's persisted `bridges` — React
-        // Flow's array belongs to whatever the human is looking at, so deduping against it would
-        // let a link be drawn twice (or refuse one that does not exist yet).
-        const existing = offCanvas ? (offCanvas.project.bridges ?? []) : linkEdgesRef.current
+        // Off canvas the existing edges are the OWNING project's persisted on-canvas links (the
+        // node-id-pair view of `Project.links`) — React Flow's array belongs to whatever the human
+        // is looking at, so deduping against it would let a link be drawn twice (or refuse one
+        // that does not exist yet).
+        const existing = offCanvas
+          ? (offCanvas.project.links ?? []).flatMap((l) => {
+              const e = nodeEndpoints(l)
+              return e && l.kind === 'context' ? [e] : []
+            })
+          : linkEdgesRef.current
         const plan = planBridges(fromId, targetIds, lookup, [...existing, ...drawn])
+        // `planBridges` mints node↔node links only, so the view projection is total.
+        const planViews = plan.edges.map((l) => nodeEndpoints(l)!)
         if (plan.edges.length) {
-          drawn.push(...plan.edges)
+          drawn.push(...planViews)
           if (offCanvas) {
             // The same store path the cold open takes for the bridges IT owes. `appendCanvasLinks`
             // dedupes by id AND by endpoint pair, so a re-link is a no-op rather than a duplicate.
-            useProjects.getState().appendCanvasLinks(offCanvas.project.id, { bridges: plan.edges })
+            useProjects.getState().appendCanvasLinks(offCanvas.project.id, { bridges: planViews })
             void writeDisk()
           } else {
-            setLinkEdges((es) => [...es, ...plan.edges])
+            setLinkEdges((es) => [...es, ...planViews])
             markDirty()
           }
         }
@@ -14863,6 +14882,19 @@ export function Canvas() {
           void writeDisk()
         }}
         onOpenClosedTranscript={openClosedTranscript}
+        // An adoptable row's Bind: the sidebar row is only rendered for the ACTIVE project, so the
+        // dialog-less target is the canvas itself (a fresh group frame at the view center) — the
+        // same flow `bindExistingWorktree` runs from the creation dialog, minus its dialog guards.
+        onBindWorktree={(entry) => {
+          const { repoRoot, entries } = useWorktrees.getState()
+          if (!repoRoot) return
+          const wt = worktreeFromEntry(entry, repoRoot, resolveBaseRef(entries))
+          if (!wt) {
+            setNotice({ kind: 'error', text: 'That worktree has a detached HEAD. Check out a branch in it first.' })
+            return
+          }
+          attachWorktree({ groupId: null, at: viewCenter() ?? undefined }, wt)
+        }}
         onMouseEnter={openSessionsPeek}
         onMouseLeave={closeSessionsPeekSoon}
       />
@@ -15071,6 +15103,13 @@ export function Canvas() {
         <SpawnTeamDialog
           worktreesAvailable={!isSshProject && !!worktreeRepoRoot}
           worktreeNote={isSshProject ? WORKTREE_SSH_HINT : 'not a git repository'}
+          // Same default the submit handler resolves a conductor launch from: this project's
+          // own `agents.defaultAgentId`, else the global one.
+          defaultAgent={resolveNewNodeAgent(
+            undefined,
+            useProjects.getState().activeProjectId,
+            useSettings.getState().settings
+          )}
           onSubmit={spawnTeam}
           onCancel={() => setSpawnTeamDialog(null)}
         />

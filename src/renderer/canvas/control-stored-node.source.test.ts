@@ -141,8 +141,9 @@ describe('the stored-node dispatch cases (source pins)', () => {
     const body = src.slice(at, src.indexOf('const addAndConnect = (', at))
     // React Flow's edge array belongs to whatever is on screen; deduping against it off canvas
     // would draw a link that already exists, or refuse one that does not.
-    expect(body).toContain('offCanvas ? (offCanvas.project.bridges ?? []) : linkEdgesRef.current')
-    expect(body).toContain('appendCanvasLinks(offCanvas.project.id, { bridges: plan.edges })')
+    expect(body).toContain("offCanvas")
+    expect(body).toContain("(offCanvas.project.links ?? [])")
+    expect(body).toContain('appendCanvasLinks(offCanvas.project.id, { bridges: planViews })')
     // The live writers stay on the live branch.
     const off = code(body.slice(body.indexOf('if (offCanvas) {'), body.indexOf('} else {')))
     expect(off).not.toContain('setLinkEdges')

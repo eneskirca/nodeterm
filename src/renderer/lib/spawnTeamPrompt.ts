@@ -7,6 +7,27 @@
 /** Hard cap on team size — must match the spawn-team handler's `.slice(0, 8)` in Canvas.tsx. */
 export const MAX_TEAM_ROLES = 8
 
+/** One explicitly-defined role in the "Spawn a team…" dialog. Mirrors the canvas-control
+ *  `spawn-team` verb's `{ title?, prompt, agent? }` role shape, so the dialog and the verb speak
+ *  the same language — a role with `title` pins the node name (titleAuto off), and `agent` selects
+ *  the harness for that role (a control-capable builtin or custom agent). */
+export interface TeamRole {
+  title?: string
+  prompt: string
+  agent: string
+}
+
+/** The dialog's submit payload. With no `roles`, the app opens ONE conductor pre-prompted with the
+ *  task (today's behavior); with `roles`, it composes the team inline — no conductor — using the
+ *  same member-building the `spawn-team` verb does. `conductorAgent` lets even the conductor path
+ *  pick its harness (defaults to `settings.defaultAgent`). */
+export interface SpawnTeamInput {
+  task: string
+  worktrees: boolean
+  conductorAgent?: string
+  roles?: TeamRole[]
+}
+
 /**
  * The prompt the conductor node launches with.
  *

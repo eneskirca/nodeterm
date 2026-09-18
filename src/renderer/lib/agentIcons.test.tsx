@@ -39,4 +39,13 @@ describe('AgentIcon custom-agent inheritance', () => {
     setCustomAgentBaseResolver((id) => (id === 'custom:claude' ? 'claude' : undefined))
     expect(renderIcon('custom:claude', 23)).toBe(renderIcon('claude', 23))
   })
+
+  it('uses the node snapshot when the custom definition no longer exists', () => {
+    setCustomAgentBaseResolver(() => undefined)
+    expect(
+      renderToStaticMarkup(
+        <AgentIcon agentId="custom:deleted" agentBaseId="claude" size={21} />
+      )
+    ).toBe(renderIcon('claude', 21))
+  })
 })

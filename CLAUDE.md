@@ -1519,6 +1519,20 @@ else, and its context links must keep classifying across restarts).
   the shared mapping. Desktop and Server Edition use the same core handler; relay tabs deliberately
   do not apply this machine's gateway to another core. Mobile needs a settings/model-picker surface
   before it can expose the feature.
+  **Copilot max-context from discovery (2026-08):** Copilot BYOK honors
+  `COPILOT_PROVIDER_MAX_PROMPT_TOKENS` / `COPILOT_PROVIDER_MAX_OUTPUT_TOKENS`, sourced from the
+  gateway's `/v1/models` response. `parseGatewayModels` reads the limits under the common field
+  names (`context_length` / `max_context_length` / `context_window` for the prompt cap;
+  `max_output_tokens` / `max_completion_tokens` for output) onto `GatewayModel.contextWindow` /
+  `maxOutputTokens`, tolerant of strings/garbage (absent ⇒ undefined ⇒ no env var). `modelGatewayEnv`
+  resolves the chosen model by id from a discovered-models list and emits the vars **only when the
+  limit is known** — never guess (a percentage over a guessed window is the "wrong number as a fact"
+  trap). The list is threaded from discovery: `agent-env-ipc.ts` `discoverModels` takes an
+  `onDiscovered(baseUrl, models)` callback that `ptyManager.setGatewayModels` caches (keyed by
+  gateway URL), and `buildPtyEnv` passes the current gateway's cache into `modelGatewayEnv`. The
+  remote path picks the new keys up automatically (`...gatewayEnv` spread into the remote tmux `-e`).
+  The two keys are in `MODEL_GATEWAY_ENV_KEYS` (lockstep with the tmux `update-environment` conf,
+  pinned by `model-gateway.test.ts`) — a missed key never reaches a shared tmux server.
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE`, `CANVAS_CONTROL_CAPABLE`,
   `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE`,

@@ -1338,7 +1338,13 @@ app.whenReady().then(async () => {
   sshStore.registerIpc()
   // Gateway discovery/credential IPC (peer-reachable by design; the renderer never receives a
   // stored literal key, and discovery resolves key REFERENCES only for the saved gateway URL).
-  registerAgentEnvIpc(() => settingsStore.get().modelGateway, gatewayCredentials)
+  registerAgentEnvIpc(
+    () => settingsStore.get().modelGateway,
+    gatewayCredentials,
+    // Cache discovered gateway models so spawn-time Copilot BYOK env injection can read the
+    // reported context/output token limits (COPILOT_PROVIDER_MAX_PROMPT/OUTPUT_TOKENS).
+    (baseUrl, models) => ptyManager.setGatewayModels(baseUrl, models)
+  )
   // The `${env:VAR}` snapshot for custom-agent expansion is DESKTOP-WINDOW-ONLY, so it is a raw
   // `ipcMain.handle` on purpose (see the handler-table comment in platform-electron.ts): a
   // `platform().handle` registration would answer relay peers too — a paired phone or remote tab
@@ -3767,7 +3773,13 @@ app.whenReady().then(async () => {
     // declared here too, or the wire's honest shape stops at this boundary (see RemoteNodeInput).
     registerNode: (
       projectId: string,
-      node: { id: string; title?: string; agentId?: string; accountId?: string }
+      node: {
+        id: string
+        title?: string
+        agentId?: string
+        agentBaseId?: string
+        accountId?: string
+      }
     ) =>
       workspaceStore.appendRemoteNode(
         projectId,
@@ -3785,90 +3797,6 @@ app.whenReady().then(async () => {
           codex: settingsStore.get().codexAccounts ?? []
         })
       ),
-    // The phone's Board sheet. Two verbs, both landing in the store's own read-modify-write (which
-    // queues them behind save() and announces the result to the renderer, so the canvas adopts the
-    // change live instead of the next autosave reverting it):
-    //
-    //  - `ensureBoard` seeds the default To Do / In Progress / Done columns on a project that has
-    //    never had a `kanban` block. The desktop writes one only on the user's FIRST board edit
-    //    (the lazy default in `lib/kanban.defaultKanban`), which is invisible there — the canvas
-    //    renders the default either way — but left the phone, which knows a project only by its
-    //    file, with no board to show and so no Board button at all on nearly every project.
-    //  - `setCardColumn` moves one card. The phone could already do this over direct SSH, but only
-    //    for a project whose folder is on THIS machine and only while the whole file still fits in
-    //    one argv string.
-    kanban: {
-      ensureBoard: (projectId: string) => workspaceStore.ensureRemoteBoard(projectId),
-      setCardColumn: (projectId: string, nodeId: string, columnId: string | null) =>
-        workspaceStore.setRemoteCardColumn(projectId, nodeId, columnId)
-    },
-    // "End session" from the phone (`pty.destroy`): the SAME two steps the desktop × performs —
-    // kill the tmux session on every socket it could live on (the sweep may have seen it on either
-    // — see the session-memory panel's kill rule), then take the node off its project's canvas
-    // (written as an outside edit, so the watcher broadcasts it and the canvas drops the node
-    // live). Node removal is best-effort by design: an unregistered phone session or an inline
-    // project has no file entry to remove, and that must not fail a destroy that already landed.
-    //
-    // The kill is VERIFIED before the node comes off the canvas (issue #581): destroySession
-    // swallows its per-step failures by design, so it can resolve having ended nothing — and
-    // removing the node then would strand a live session with no canvas entry pointing at it.
-    // The throw also rides back to the phone as the verb's honest error.
-    destroyNode: async (nodeId: string) => {
-      await ptyManager.destroySession(null, nodeId, { everySocket: true })
-      if (await ptyManager.sessionExists(nodeId).catch(() => true)) {
-        throw new Error('The session is still running — the host could not end it.')
-      }
-      await workspaceStore.removeRemoteNode(nodeId).catch(() => false)
-    },
-    // Relay-viewer presence (Eco × phone): a COUNT per node id, shared by the interactive host and
-    // every standing-host pool session (several phones can watch at once, and one phone switching
-    // sessions overlaps its old and new streams). Two consumers, both renderer-side:
-    //  - `agent:remote-viewers` carries the full watched SET each change, so Eco's `isNodeWatched`
-    //    stops hibernating a session someone is watching from a phone (the phone viewer used to be
-    //    invisible to every attention predicate — the kanban-modal gap, one surface further out);
-    //  - `agent:wake` fires on each attach, so a hibernated node someone just opened on their
-    //    phone resumes its CLI — the same nudge contract as `wakeHibernatedNode` (re-reads the
-    //    flag, no-ops when not hibernated or not mounted).
-    remoteViewer: (() => {
-      const counts = new Map<string, number>()
-      const toRenderer = (channel: string, payload: unknown): void => {
-        if (!win.isDestroyed()) win.webContents.send(channel, payload)
-      }
-      const broadcast = (): void => toRenderer(IPC.agentRemoteViewers, [...counts.keys()])
-      return {
-        attached(nodeId: string) {
-          counts.set(nodeId, (counts.get(nodeId) ?? 0) + 1)
-          broadcast()
-          toRenderer(IPC.agentWake, nodeId)
-        },
-        detached(nodeId: string) {
-          const n = (counts.get(nodeId) ?? 0) - 1
-          if (n <= 0) counts.delete(nodeId)
-          else counts.set(nodeId, n)
-          broadcast()
-        }
-      }
-    })(),
-    // Renderer-nudge node actions for the phone's session-LIST long-press menu (`node.wake` /
-    // `node.refresh` / `node.rename`). Each returns whether it reached a LIVE window — the verb
-    // answers ok only on delivery, never on outcome (nudge contract: the renderer re-reads its
-    // own state and no-ops for a node it cannot resolve). `wake` reuses the exact `agent:wake`
-    // channel the attach path fires, so the renderer needs no new wiring for it; `rename` rides
-    // `agent:rename-node` into the renderer's `renameSession` funnel (titleAuto:false + `/rename`
-    // push) — deliberately NOT canvas:mutate's raw title write, which the session-name poll would
-    // overwrite on the next tick.
-    nodeActions: (() => {
-      const deliver = (channel: string, payload: unknown): boolean => {
-        if (win.isDestroyed()) return false
-        win.webContents.send(channel, payload)
-        return true
-      }
-      return {
-        wake: (nodeId: string) => deliver(IPC.agentWake, nodeId),
-        refresh: (nodeId: string) => deliver(IPC.agentRefreshNode, nodeId),
-        rename: (nodeId: string, title: string) => deliver(IPC.agentRenameNode, { nodeId, title })
-      }
-    })(),
     // Jail roots beyond the active canvas: the phone browses EVERY project (projects.list), so
     // its fs/git access spans every local project root — not just the tab the desktop happens
     // to have focused (that gap read as "cwd is outside the shared project roots" on the phone).

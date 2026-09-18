@@ -18,7 +18,7 @@ import { setNodeTranscript } from '../core/context-link-core'
 import { hookServer } from '../core/agents/hook-server'
 import { initPlatform, resetPlatformForTests } from '../core/platform'
 import { fakePlatform } from '../core/platform-fake'
-import type { CanvasNodeState } from '../shared/types'
+import type { CanvasNodeState, Link } from '../shared/types'
 import type { PtyManager } from '../core/pty-manager'
 
 const dir = mkdtempSync(join(tmpdir(), 'srv-ctxlink-'))
@@ -50,7 +50,12 @@ function node(id: string, over: Partial<CanvasNodeState> = {}): CanvasNodeState 
   } as CanvasNodeState
 }
 
-const bridge = (source: string, target: string) => ({ id: `bridge-${source}-${target}`, source, target })
+const bridge = (source: string, target: string): Link => ({
+  id: `bridge-${source}-${target}`,
+  kind: 'context',
+  source: { ref: 'node', nodeId: source },
+  target: { ref: 'node', nodeId: target }
+})
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'srv-ctxlink-home-'))
@@ -74,7 +79,7 @@ describe('deriveLinkMap', () => {
         {
           id: 'p1',
           nodes: [node('term-a', { title: 'Alpha' }), node('term-b', { title: 'Beta' })],
-          bridges: [bridge('term-a', 'term-b')]
+          links: [bridge('term-a', 'term-b')]
         }
       ]
     })
@@ -85,8 +90,8 @@ describe('deriveLinkMap', () => {
   it('covers EVERY canvas — headless, no project is the active one', () => {
     const map = deriveLinkMap({
       canvases: () => [
-        { id: 'p1', nodes: [node('a'), node('b')], bridges: [bridge('a', 'b')] },
-        { id: 'p2', nodes: [node('c'), node('d')], bridges: [bridge('c', 'd')] }
+        { id: 'p1', nodes: [node('a'), node('b')], links: [bridge('a', 'b')] },
+        { id: 'p2', nodes: [node('c'), node('d')], links: [bridge('c', 'd')] }
       ]
     })
     // The desktop skips the active project (its renderer supplies that one live). There is no
@@ -97,7 +102,7 @@ describe('deriveLinkMap', () => {
   it('drops bridges whose endpoints are no longer on the canvas', () => {
     const map = deriveLinkMap({
       canvases: () => [
-        { id: 'p1', nodes: [node('a')], bridges: [bridge('a', 'deleted')] }
+        { id: 'p1', nodes: [node('a')], links: [bridge('a', 'deleted')] }
       ]
     })
     expect(map).toEqual({})
@@ -113,7 +118,7 @@ describe('deriveLinkMap', () => {
         {
           id: 'p1',
           nodes: [node('sticky-1', { kind: 'sticky', title: 'Spec', text: 'ship it' }), node('term-a')],
-          bridges: [bridge('sticky-1', 'term-a')]
+          links: [bridge('sticky-1', 'term-a')]
         }
       ]
     })
@@ -125,7 +130,7 @@ describe('deriveLinkMap', () => {
     // A plain terminal the user started an agent CLI in by hand: project.json carries no agentId,
     // but the status mirror learned both from the hook events.
     const map = deriveLinkMap({
-      canvases: () => [{ id: 'p1', nodes: [node('a'), node('b')], bridges: [bridge('a', 'b')] }],
+      canvases: () => [{ id: 'p1', nodes: [node('a'), node('b')], links: [bridge('a', 'b')] }],
       agentSessions: () => [{ nodeId: 'b', agentId: 'codex', sessionId: 'sess-b' }]
     })
     expect(map['a']).toEqual([{ id: 'b', title: 'b', cwd: '', agentId: 'codex', sessionId: 'sess-b' }])
@@ -150,7 +155,7 @@ describe('initServerContextLink', () => {
         {
           id: 'p1',
           nodes: [node('term-a', { title: 'Alpha' }), node('term-b', { title: 'Beta' })],
-          bridges: [bridge('term-a', 'term-b')]
+          links: [bridge('term-a', 'term-b')]
         }
       ],
       installAgentIntegrations: false
@@ -211,16 +216,16 @@ describe('initServerContextLink', () => {
   })
 
   it('picks up a bridge drawn after boot', async () => {
-    let bridges = [] as ReturnType<typeof bridge>[]
+    let links = [] as ReturnType<typeof bridge>[]
     const { link, handler } = start({
       ptyManager: fakePty(),
-      canvases: () => [{ id: 'p1', nodes: [node('term-a'), node('term-b', { title: 'Beta' })], bridges }],
+      canvases: () => [{ id: 'p1', nodes: [node('term-a'), node('term-b', { title: 'Beta' })], links }],
       installAgentIntegrations: false
     })
     await link.refresh()
     expect(await handler({ verb: 'list', nodeId: 'term-a', args: {} })).toContain('No linked nodes')
     // What a browser drawing the edge produces: a workspace save, and the onPersist refresh.
-    bridges = [bridge('term-a', 'term-b')]
+    links = [bridge('term-a', 'term-b')]
     await link.refresh()
     expect(await handler({ verb: 'list', nodeId: 'term-a', args: {} })).toContain('Beta')
     await link.stop()
@@ -233,7 +238,7 @@ describe('initServerContextLink', () => {
       {
         id: 'p1',
         nodes: [node('term-a'), node('term-b', { title: 'Beta', agentId: 'claude' as const })],
-        bridges: [bridge('term-a', 'term-b')]
+        links: [bridge('term-a', 'term-b')]
       }
     ]
     const { link, handler } = start({
@@ -257,7 +262,7 @@ describe('initServerContextLink', () => {
     const { link } = start({
       ptyManager: fakePty(),
       canvases: () => [
-        { id: 'p1', nodes: [node('term-a'), node('term-b')], bridges: [bridge('term-a', 'term-b')] }
+        { id: 'p1', nodes: [node('term-a'), node('term-b')], links: [bridge('term-a', 'term-b')] }
       ],
       installAgentIntegrations: false
     })
@@ -277,7 +282,7 @@ describe('initServerContextLink', () => {
     const { link } = start({
       ptyManager: fakePty(),
       canvases: () => [
-        { id: 'p1', nodes: [node('term-a'), node('term-b')], bridges: [bridge('term-a', 'term-b')] }
+        { id: 'p1', nodes: [node('term-a'), node('term-b')], links: [bridge('term-a', 'term-b')] }
       ],
       installAgentIntegrations: false
     })

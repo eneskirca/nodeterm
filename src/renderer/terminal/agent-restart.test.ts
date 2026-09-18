@@ -10,6 +10,7 @@ import {
   exitSequence,
   guardConcurrentRestart,
   isShellCommand,
+  modelSwitchEligibility,
   performExitPhase,
   performRestartResume,
   performResumePhase,
@@ -113,6 +114,26 @@ describe('clearEnvEligibility', () => {
     // separate fact from "has a strip set." The menu row is hidden upstream on the pattern, so
     // the gate is only ever reached for claude/codex/copilot. Tested in vanilla-env.test.ts.
     expect(clearEnvEligibility('gemini', 'abc')).toEqual({ ok: true })
+  })
+})
+
+describe('modelSwitchEligibility', () => {
+  it('permits an explicit PID-terminated switch while the current harness is busy', () => {
+    // Unlike restartEligibility, no slash command is written into the working composer or dialog.
+    expect(modelSwitchEligibility('claude', 'abc')).toEqual({ ok: true })
+    expect(modelSwitchEligibility('codex', 'abc')).toEqual({ ok: true })
+  })
+
+  it('still requires a resumable harness and provider session id', () => {
+    expect(modelSwitchEligibility('claude', undefined)).toEqual({
+      ok: false,
+      reason: 'no-session'
+    })
+    // Model capability is checked separately by the base-agent registry; this gate owns resume.
+    expect(modelSwitchEligibility('my-custom', 'abc')).toEqual({
+      ok: false,
+      reason: 'not-resumable'
+    })
   })
 })
 

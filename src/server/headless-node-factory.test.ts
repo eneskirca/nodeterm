@@ -318,20 +318,22 @@ describe('HeadlessNodeFactory', () => {
     const workspace = await new WorkspaceStore().load({ sideline: false })
     const project = workspace.projects[0]
     expect(project.nodes.some((node) => node.id === id)).toBe(false)
-    expect(project.ropes?.some((edge) => edge.source === id || edge.target === id)).toBe(false)
-    expect(project.bridges?.some((edge) => edge.source === id || edge.target === id)).toBe(false)
+    // Persistence is the unified `Project.links` substrate: the factory's rope/bridge removal is
+    // asserted against the link kinds the closed node touched (node ids live under
+    // `{ref:'node'}` endpoints).
+    const touches = (link: { source: unknown; target: unknown }): boolean =>
+      JSON.stringify(link).includes(`"nodeId":"${id}"`)
+    expect((project.links ?? []).every((l) => !touches(l))).toBe(true)
     expect(publishedProjects.at(-1)?.nodes.some((node) => node.id === id)).toBe(false)
 
     const projectFile = JSON.parse(
       fs.readFileSync(path.join(projectDir, '.nodeterm', 'project.json'), 'utf8')
     ) as {
       nodes: CanvasNodeState[]
-      ropes?: Array<{ source: string; target: string }>
-      bridges?: Array<{ source: string; target: string }>
+      links?: Array<{ source: unknown; target: unknown }>
     }
     expect(projectFile.nodes.some((node) => node.id === id)).toBe(false)
-    expect(projectFile.ropes?.some((edge) => edge.source === id || edge.target === id)).toBe(false)
-    expect(projectFile.bridges?.some((edge) => edge.source === id || edge.target === id)).toBe(false)
+    expect((projectFile.links ?? []).every((l) => !touches(l))).toBe(true)
   })
 
   it('refuses a different caller without killing or removing the owned spawn', async () => {
@@ -456,11 +458,11 @@ describe('HeadlessNodeFactory', () => {
     })
     expect(pty.sends).toEqual([])
     const workspace = await new WorkspaceStore().load({ sideline: false })
-    expect(workspace.projects[0].bridges).toEqual([])
+    expect(workspace.projects[0].links).toBeUndefined()
     const projectFile = JSON.parse(
       fs.readFileSync(path.join(projectDir, '.nodeterm', 'project.json'), 'utf8')
-    ) as { bridges?: Array<{ source: string; target: string }> }
-    expect(projectFile.bridges).toEqual([])
+    ) as { links?: unknown[] }
+    expect(projectFile.links).toBeUndefined()
     expect(published).toEqual([])
     expect(publishedProjects).toEqual([])
   })
@@ -477,9 +479,16 @@ describe('HeadlessNodeFactory', () => {
       ok: true,
       result: { from: 'term-upstream', linked: ['term-third'] }
     })
-    expect((await store.load({ sideline: false })).projects[0].bridges).toEqual([
-      expect.objectContaining({ source: 'term-upstream', target: 'term-third' })
-    ])
+    const linkView = (l: { source: unknown; target: unknown }): { source: string; target: string } => {
+      const src = l.source as { ref: string; nodeId: string }
+      const tgt = l.target as { ref: string; nodeId: string }
+      return { source: src.nodeId, target: tgt.nodeId }
+    }
+    expect(
+      (await store.load({ sideline: false })).projects[0].links
+        ?.filter((l) => l.kind === 'context')
+        .map(linkView)
+    ).toEqual([{ source: 'term-upstream', target: 'term-third' }])
     expect(pty.sends).toEqual([])
   })
 
@@ -510,7 +519,7 @@ describe('HeadlessNodeFactory', () => {
       ok: false,
       error: expect.stringContaining('link-project-refused')
     })
-    expect((await store.load({ sideline: false })).projects[0].bridges).toEqual([])
+    expect((await store.load({ sideline: false })).projects[0].links).toBeUndefined()
     expect(publishedProjects).toEqual([])
     expect(pty.sends).toEqual([])
   })
@@ -1003,10 +1012,15 @@ describe('HeadlessNodeFactory', () => {
       command: "claude 'consume result'",
       executor: 'server'
     })
-    expect(workspace.projects[0].bridges).toEqual(
+    const linkView = (l: { source: unknown; target: unknown }): { source: string; target: string } => {
+      const src = l.source as { ref: string; nodeId: string }
+      const tgt = l.target as { ref: string; nodeId: string }
+      return { source: src.nodeId, target: tgt.nodeId }
+    }
+    expect(workspace.projects[0].links?.filter((l) => l.kind === 'context').map(linkView)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ source: 'term-source', target: id }),
-        expect.objectContaining({ source: id, target: 'term-upstream' })
+        { source: 'term-source', target: id },
+        { source: id, target: 'term-upstream' }
       ])
     )
 
@@ -1102,9 +1116,14 @@ describe('HeadlessNodeFactory', () => {
       text: 'Round 1 complete',
       textUpdatedBy: 'Director'
     })
-    expect(workspace.projects[0].ropes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ source: 'term-source', target: id })])
-    )
+    const stickyLinkView = (l: { source: unknown; target: unknown }): { source: string; target: string } => {
+      const src = l.source as { ref: string; nodeId: string }
+      const tgt = l.target as { ref: string; nodeId: string }
+      return { source: src.nodeId, target: tgt.nodeId }
+    }
+    expect(
+      workspace.projects[0].links?.filter((l) => l.kind === 'lineage').map(stickyLinkView)
+    ).toEqual(expect.arrayContaining([{ source: 'term-source', target: id }]))
 
     const updatedReply = await factory.sticky('term-source', {
       node: id,

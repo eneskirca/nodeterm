@@ -14,7 +14,7 @@
  *
  *  1. The switch alone grants nothing. Every capability must additionally require state this app
  *     run built and never persisted (browser control: the in-memory ownership ledger; a cloned
- *     project.json cannot pre-populate it, and `Project.ropes` — which IS persisted and git-shared —
+ *     project.json cannot pre-populate it, and `Project.links` — which IS persisted and git-shared —
  *     is deliberately never consulted for ownership).
  *  2. First use in a project the user has not personally switched on raises a one-time notice,
  *     recorded MACHINE-LOCALLY (IndexEntryV3.capabilityAck), never in project.json.

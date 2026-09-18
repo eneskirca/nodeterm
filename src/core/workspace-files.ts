@@ -9,7 +9,7 @@ import {
   type LocalNodeExecMap
 } from '../shared/node-exec'
 import { CLOSED_SESSIONS_CAP } from '../shared/types'
-import type { BridgeLink, CanvasNodeState, ClosedSessionEntry, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
+import type { BridgeLink, CanvasNodeState, ClosedSessionEntry, Link, NavStop, Project, ProjectKanban, Viewport, Workspace } from '../shared/types'
 import { projectCapabilityFields, readProjectCapabilities } from '../shared/project-capabilities'
 import { loadedAgentBrowserPartition } from '../shared/browser-partition'
 import { sanitizeProjectIcon, type ProjectIcon } from '../shared/project-icon'
@@ -86,6 +86,47 @@ export function inlineProjectFileRelPath(id: string): string {
 }
 
 /**
+ * Lift the legacy `bridges`/`ropes` arrays into the unified `Link[]` on load — a one-time,
+ * forward-compatible migration (a pre-`Link` build ignores `links`; a post-`Link` file stops
+ * emitting `bridges`/`ropes`, so a file never carries both for long).
+ *
+ *  - `bridges` → `kind:'context'`, node↔node endpoints (a sticky→terminal note link is already a
+ *    bridge in the legacy shape; `meta.note` is the renderer's concern at author time, not here).
+ *  - `ropes`  → `kind:'lineage'`, `meta:{displayOnly:true}` — the "never a context link" invariant.
+ *
+ * Existing ids (`bridge-…`/`ctrl-…`) are preserved VERBATIM so the dedup / covered-rope logic
+ * (`noteLink.hiddenLinkIds` / `linkIdsCoveredByRopes`) is undisturbed. Returns `undefined` when
+ * the result is empty so a link-less project stays byte-identical to a pre-`Link` file (the same
+ * omit-when-empty posture `kanban`/`worktree` use). Pure so it is unit-testable in isolation.
+ */
+export function migrateLinks(f: {
+  links?: Link[]
+  bridges?: BridgeLink[]
+  ropes?: BridgeLink[]
+}): Link[] | undefined {
+  if (f.links) return f.links
+  const out: Link[] = []
+  for (const b of f.bridges ?? []) {
+    out.push({
+      id: b.id,
+      kind: 'context',
+      source: { ref: 'node', nodeId: b.source },
+      target: { ref: 'node', nodeId: b.target }
+    })
+  }
+  for (const r of f.ropes ?? []) {
+    out.push({
+      id: r.id,
+      kind: 'lineage',
+      source: { ref: 'node', nodeId: r.source },
+      target: { ref: 'node', nodeId: r.target },
+      meta: { displayOnly: true }
+    })
+  }
+  return out.length ? out : undefined
+}
+
+/**
  * On-disk shape of <cwd>/.nodeterm/project.json — a GIT-SHARED document (users are asked to
  * commit it so the canvas travels with the repo).
  *
@@ -132,7 +173,12 @@ export interface ProjectFileV1 {
    */
   viewport?: Viewport
   nodes: CanvasNodeState[]
+  /** The unified typed link substrate (replaces bridges/ropes). Written by new builds; see
+   *  {@link migrateLinks}. Optional and additive — a pre-`Link` build ignores it. */
+  links?: Link[]
+  /** LEGACY read-only migration source (see {@link migrateLinks}); new writes omit this. */
   bridges?: BridgeLink[]
+  /** LEGACY read-only migration source (see {@link migrateLinks}); new writes omit this. */
   ropes?: BridgeLink[]
   /**
    * LEGACY (read-only), same rule as `viewport`: a managed Claude account id names a credential
@@ -357,6 +403,9 @@ export function projectToFile(
   // as IN. Validating one direction only passes every round-trip test while leaving the other one
   // open. See @shared/canvas-layout.
   const layouts = sanitizeLayouts(p.layouts)
+  // New builds write the unified `links` only. A project still carrying legacy `bridges`/`ropes`
+  // (during the renderer repoint) is migrated here so the file is always in the new shape.
+  const links = p.links ?? migrateLinks(p)
   return {
     version: 1,
     rev,
@@ -367,8 +416,7 @@ export function projectToFile(
     viewport: framingViewport(nodes),
     nodes,
     ...(icon ? { icon } : {}),
-    ...(p.bridges ? { bridges: p.bridges } : {}),
-    ...(p.ropes ? { ropes: p.ropes } : {}),
+    ...(links ? { links } : {}),
     ...(p.defaultPermissionMode ? { defaultPermissionMode: p.defaultPermissionMode } : {}),
     // Strict-normalised (literal true only, known keys only) and omitted when off — an off
     // capability adds no bytes to the committed file. `capabilityAck` is deliberately NOT here:
@@ -506,6 +554,7 @@ export function fileToProject(
   // (they are shared content, the cameras are not), or a hand edit dropped it. Pruning on the way
   // in as well as out is what stops workspace.json accumulating orphans forever.
   const layoutViewports = pruneLayoutViewports(base.layoutViewports, layouts)
+  const links = migrateLinks(f)
   return {
     id: base.id,
     // A project whose stored name IS its own path is one this machine (or a teammate's) created
@@ -529,8 +578,9 @@ export function fileToProject(
         base.id
       )
     ),
-    ...(f.bridges ? { bridges: f.bridges } : {}),
-    ...(f.ropes ? { ropes: f.ropes } : {}),
+    // Migrate legacy bridges/ropes into the unified `links` on read. A file already carrying
+    // `links` passes through; a link-less project stays link-less (migrateLinks returns undefined).
+    ...(links ? { links } : {}),
     ...(defaultAccountId ? { defaultAccountId } : {}),
     ...(f.defaultPermissionMode ? { defaultPermissionMode: f.defaultPermissionMode } : {}),
     // The file is hostile input: only a literal `true` under a known key survives the read

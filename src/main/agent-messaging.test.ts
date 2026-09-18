@@ -104,6 +104,28 @@ describe('deliverFromControl', () => {
     expect(deps.rec.sent[0].payload).toContain('hello')
   })
 
+  it('targets an orphaned custom node through its persisted base harness', async () => {
+    const deps = fakeDeps({
+      projects: () => [
+        {
+          id: 'p1',
+          nodes: [
+            { id: 'a1', title: 'Alpha', agentId: 'claude' },
+            {
+              id: 'b1',
+              title: 'Proxy',
+              agentId: 'custom:deleted',
+              agentBaseId: 'claude'
+            }
+          ]
+        }
+      ]
+    })
+    const { outcome } = await deliverFromControl(req(), deps)
+    expect(outcome.kind).toBe('delivered')
+    expect(deps.rec.sent).toHaveLength(1)
+  })
+
   it('refuses when the per-project switch is off — before any pane is touched', async () => {
     const deps = fakeDeps({ messagingEnabled: () => false })
     const { outcome, reply } = await deliverFromControl(req(), deps)

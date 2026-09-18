@@ -75,3 +75,36 @@ describe('applyNodeMutation', () => {
     expect(useProjects.getState().projects).toHaveLength(0)
   })
 })
+
+/** `addNodeToProject` — the seam canvas-control `open-agent --project <B>` (ticket 05) writes a
+ *  foreign node through: B's canvas is NOT the active one, so the node has to land in B's
+ *  serialized store directly (no live `setNodes`), and B's project.json must carry it so a cold
+ *  start of B reattaches it. A plain append (not an upsert mutation), so it has its own helper. */
+describe('addNodeToProject', () => {
+  it('appends a node to the named project only', () => {
+    const a = useProjects.getState().addProject('a')
+    const b = useProjects.getState().addProject('b')
+    useProjects.getState().commitCanvas(b.id, [node('b1')], { x: 0, y: 0, zoom: 1 })
+
+    useProjects.getState().addNodeToProject(b.id, node('b2', 200))
+
+    expect(useProjects.getState().getProject(b.id)?.nodes.map((n) => n.id)).toEqual(['b1', 'b2'])
+  })
+
+  it('leaves every other project untouched', () => {
+    const a = useProjects.getState().addProject('a')
+    const b = useProjects.getState().addProject('b')
+    useProjects.getState().commitCanvas(a.id, [node('a1')], { x: 0, y: 0, zoom: 1 })
+    useProjects.getState().commitCanvas(b.id, [node('b1')], { x: 0, y: 0, zoom: 1 })
+
+    useProjects.getState().addNodeToProject(b.id, node('b2', 50))
+
+    expect(useProjects.getState().getProject(a.id)?.nodes.map((n) => n.id)).toEqual(['a1'])
+    expect(useProjects.getState().getProject(b.id)?.nodes.map((n) => n.id)).toEqual(['b1', 'b2'])
+  })
+
+  it('is a no-op for an unknown project (never invents one)', () => {
+    useProjects.getState().addNodeToProject('nope', node('x'))
+    expect(useProjects.getState().projects).toHaveLength(0)
+  })
+})

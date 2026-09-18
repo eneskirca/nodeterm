@@ -6,12 +6,12 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
   DEFAULT_PROJECT_ID, EMPTY_WORKSPACE,
-  type BridgeLink, type CanvasNodeState, type KanbanColumn, type Project, type Workspace,
+  type BridgeLink, type CanvasNodeState, type KanbanColumn, type Link, type Project, type Workspace,
   type WorkspaceV1
 } from '../shared/types'
 import {
   PROJECT_DIR, PROJECT_FILE, fileToProject, inlineProjectFileRelPath, isInlineProjectFileId,
-  projectToFile, resolveNodes, sameProjectContent,
+  migrateLinks, projectToFile, resolveNodes, sameProjectContent,
   sanitizeLoadedClosedSessions, sanitizeNodeTriggers, serializeProjectFile, splitWorkspace,
   validKanban,
   type IndexEntryV3, type ProjectFileV1, type WorkspaceIndexV3
@@ -320,6 +320,8 @@ export class WorkspaceStore {
         // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
         // and the same trigger shape rule (workspace.json is hand-editable input too).
         // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
+        // Likewise lift legacy bridges/ropes into `links` (migrateLinks) the way fileToProject does
+        // for ref'd projects, so an inline canvas written by a pre-`Link` build still loads edges.
         const { kanban, closedSessions, layouts, layoutViewports, ...rest } = e.project
         const base = validKanban(kanban) ? { ...rest, kanban } : rest
         // An inline project's embedded layouts are hand-editable input exactly like a git-shared
@@ -332,6 +334,7 @@ export class WorkspaceStore {
         // non-array throws and takes the whole sidebar render down) and hands each entry's node
         // to React Flow.
         const history = sanitizeLoadedClosedSessions(closedSessions)
+        const links = migrateLinks(e.project)
         built.push({
           entry: e,
           project: {
@@ -339,7 +342,8 @@ export class WorkspaceStore {
             nodes: sanitizeNodeTriggers(base.nodes),
             ...(history ? { closedSessions: history } : {}),
             ...(admitted ? { layouts: admitted } : {}),
-            ...(views ? { layoutViewports: views } : {})
+            ...(views ? { layoutViewports: views } : {}),
+            ...(links ? { links } : {})
           }
         })
       } else if (e.cwd) {
@@ -1433,13 +1437,13 @@ export class WorkspaceStore {
    * project.json, so a project whose file has never been read this run is simply absent (it
    * appears after the next load/save, which is also what re-derives the map).
    */
-  persistedCanvases(): Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> {
-    const out: Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> = []
+  persistedCanvases(): Array<{ id: string; nodes: CanvasNodeState[]; links?: Link[] }> {
+    const out: Array<{ id: string; nodes: CanvasNodeState[]; links?: Link[] }> = []
     for (const e of this.index?.entries ?? []) {
       if (e.project) {
-        out.push({ id: e.project.id, nodes: e.project.nodes, bridges: e.project.bridges })
+        out.push({ id: e.project.id, nodes: e.project.nodes, links: e.project.links })
       } else if (e.cache) {
-        out.push({ id: e.id, nodes: e.cache.nodes, bridges: e.cache.bridges })
+        out.push({ id: e.id, nodes: e.cache.nodes, links: migrateLinks(e.cache) })
       } else if (e.cwd) {
         const raw = this.lastWritten.get(projectFilePath(e.cwd))
         if (!raw) continue
@@ -1449,7 +1453,7 @@ export class WorkspaceStore {
           // a caller sees the same absolute paths the desktop's renderer would have handed it.
           // Keyed by the ENTRY id — the map's consumers look projects up by the id the renderer
           // knows, which is never the git-shared file's (it no longer has one).
-          out.push({ id: e.id, nodes: resolveNodes(f.nodes, e.cwd), bridges: f.bridges })
+          out.push({ id: e.id, nodes: resolveNodes(f.nodes, e.cwd), links: migrateLinks(f) })
         } catch {
           // Corrupt cached content: skip this entry, keep scanning the others.
         }
