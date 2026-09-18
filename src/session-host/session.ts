@@ -287,6 +287,13 @@ export class HostSession {
     return this.term.bracketedPasteRequested()
   }
 
+  /** Agent messaging's stricter form of the same read: the pane must also still be alive and not
+   * inside a private launch, because the envelope is only ever written as a framed paste. */
+  async messagePasteReady(): Promise<boolean> {
+    await this.outputTail
+    return !this.exited && !this.suppressingPrivateLaunchOutput && this.term.bracketedPasteRequested()
+  }
+
   /** Stage an attach's explicit flow state and per-socket geometry before the warm screen barrier.
    * The returned commit is the only operation that activates live delivery. */
   async prepareAttachment(

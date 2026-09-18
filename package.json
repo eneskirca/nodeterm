@@ -124,6 +124,27 @@
     },
     "win": {
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "out/session-host",
+          "to": "session-host",
+          "filter": [
+            "host.cjs"
+          ]
+        },
+        {
+          "from": "node_modules/node-pty",
+          "to": "session-host/node_modules/node-pty",
+          "filter": [
+            "package.json",
+            "lib/**/*.js",
+            "!lib/**/*.test.js",
+            "build/Release/*.node",
+            "build/Release/*.exe",
+            "build/Release/*.dll"
+          ]
+        }
+      ],
       "target": [
         {
           "target": "nsis",

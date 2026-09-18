@@ -40,6 +40,9 @@ export interface PaneOwner {
    * makes the second case ordinary rather than exotic.
    */
   pids?: readonly number[]
+  /** Native Windows process birth times, paired with pids. Guards PID reuse when the
+   * console root outlives a child. POSIX readers retain their existing contract. */
+  processBirths?: readonly string[]
 }
 
 /**

@@ -71,6 +71,43 @@ means — and what you may assume when writing a feature — is three tiers, not
 
 ## Commands
 
+**Direct Windows agent messaging:** `core/native-windows-pane.ts` owns a headless screen for
+non-persistent native PTYs. Lookup uses the runtime node index, and the console identity probe
+uses `GetConsoleProcessList` plus OS executable paths/birth times. A single process reached
+through an unambiguous shell chain is required; detached or ambiguous candidates refuse. This
+is not a POSIX foreground-process-group claim. **An interpreter (`node`, `bun`, `python`, …) is
+named by its script, never by its own executable**: every npm-installed agent CLI on Windows is
+`cmd` → `node <package>\bin\<cli>.js`, and naming that pane `node` made Codex and every npx
+custom agent `not-agent`. The probe keeps only the interpreter's FIRST positional argument
+(`CommandLineToArgvW`, inside PowerShell; the rest of the command line, prompt text included, never
+leaves the probe) and `scriptCommandName` maps it to the key of its package's `bin` map, which is
+the table npm generated the `.cmd` shim from, falling back to the script basename exactly as the
+POSIX predicate does. The interpreter is the leaf, never a hop, so a CLI's own children (Codex's
+native `codex.exe`, MCP servers) cannot make the pane ambiguous.
+**A RELEASED session is still a messaging target.** Park expiry and the offscreen release drop the
+`Session`, but the host keeps it running, so `targetLive` asks `PtyManager.sessionExists` (attached,
+else tmux, else the host, with a failed read answering "exists") and the owner/paste/envelope probes
+route through `sessionHostOwns`, which falls back to the release record. Asking only for an attached
+client answered `targetGone`, terminal and never queued, about a live agent in another project. The project/verified-hook/idle/receipt gates still
+apply, paste mode must be observed, and the exact generation/process is checked before writing.
+`PtyManager.sendText` (the confirmed `write` verb, rename, note push, dictation) also routes a
+direct native PTY through `NativeWindowsPane.sendText` — framed only when paste mode was requested,
+no process attestation. It used to fall through to the session-host backend, which has no entry for
+a direct PTY, so every `write` to such a pane failed.
+Do not route the persistent session-host backend through this direct-PTY adapter. Its independently
+versioned `messageOwnerV1` / `messagePasteReadyV1` / `messageEnvelopeV1` extension runs in the host:
+the OS probe is bound to `HostSession.generation`, the session registry is rechecked after every
+await, and the emulator's paste mode is checked again immediately before the synchronous write.
+**The Enter is a SECOND write, sent only once the pane shows the envelope** — every backend
+(Server Edition tmux, session host, direct PTY) runs the one `core/settled-submit.ts`. Measured on
+the installed build (2026-09-14): with the `\r` in the same write as the paste, Codex rendered the
+whole envelope in its composer and never submitted it, so the delivery reported `stalled`; a
+separate Enter moments later sent it. A pane that never shows the envelope gets no Enter at all.
+An older live host refuses these unknown commands while keeping the v1/v2 terminal contract intact;
+never replace it automatically or fall back to name-only input to enable messaging. Windows OpenCode
+context exports go through `directExecutableInvocation` like every other app-owned subprocess (see
+Platform support), never a bare `execFile('opencode')`, which cannot execute the npm shim.
+
 ```bash
 npm install        # deps + rebuilds node-pty against Electron's ABI (postinstall hook)
 npm run dev        # dev mode with renderer HMR
@@ -567,8 +604,16 @@ Lifecycle, by intent:
   identical call kills it and everything under it — an agent CLI mid-turn included. Issue #126: a
   project switch terminated a working Claude agent, which then auto-resumed from wherever the kill
   landed. The predicate is deliberately the narrowest one that closes it — a tmux-backed session is
-  never protected (the kill costs a redraw), and neither is a plain terminal, a finished agent or
-  an unknown state (nothing is running to lose). **A fifth lever owes the same gate.**
+  never protected (the kill costs a redraw), and neither is a plain terminal. **An IDLE agent CLI on
+  a non-persistent pty IS protected** (`agentProcess`, `agentProcessInPane`; not once hibernated,
+  paused, dropped, or once its CLI announced a SessionEnd, `sessionEnded`, which is its own
+  transient flag because `state: undefined` alone is also what an idle agent looks like): killing it looked free because cold restore `--resume`s it on revive, but the
+  resumed CLI fires `SessionStart:resume` and idles with no further hook event, the status mirror
+  leaves it unverified, and agent messaging refused it for as long as it stayed idle — measured
+  2026-09-13 on Windows native ptys. The mirror now also lets a verified `idle_prompt` right after a
+  verified `SessionStart` commit a verified non-inferred `done` (`MirrorEntry.sessionStarted`), and
+  the decider reports a proven node reset by a boundary as `targetNotIdleUnknown`, not
+  `targetStatusStale`. **A fifth lever owes the same gate.**
   The fifth is the offscreen release of an ARMED node (`--after`, `shouldDeferReleaseForHeldLaunch`,
   2026-09-02): the held launch is delivered by session NAME, so with tmux underneath the release is
   harmless and the node stays `sessionReady` (the teardown keeps the flag for an offscreen release
@@ -1451,6 +1496,16 @@ the wire never see any of it):
   husks, nothing to preserve). Mobile: N/A (no canvas).
 
 ## Agent support (Claude / Codex / Gemini / Copilot / opencode / Grok / custom)
+
+**Message scope publication:** desktop `send`/`reply`/`notify` wait for pending active-canvas edits
+to be saved when either endpoint is on that canvas (`renderer/lib/messageScopeSync.ts`). `list`
+and context links can already see a newly opened node while main's `persistedCanvases()` cannot;
+the scope resolver reports that absent target as `cross-project`. The publication barrier never
+travels, never overrides an external-edit conflict, and does not authorize anything: main still
+checks unique project membership, runtime ownership, consent, verified status and the native pane.
+An unrelated active canvas is not saved for a background message. Server control already writes
+its nodes through the authoritative store; the renderer barrier is a desktop concern. Mobile is
+not an agent-message sender.
 
 The app is a pluggable multi-agent system: Claude Code is one builtin of
 several. Extra terminal-node behavior is driven per agent by a registry + capability lists, a

@@ -3,6 +3,7 @@
 // ordinary traffic through a replacement connection.
 
 import net from 'net'
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { randomUUID } from 'crypto'
 // The REAL scheduler, immune to vi.useFakeTimers (which patches the global, not this module's
 // exports): requestOnSocket defers each frame's write by one genuine event-loop turn so queued
@@ -1423,6 +1424,24 @@ export class SessionHostClient {
     } catch {
       return null
     }
+  }
+
+  async messageOwner(name: string): Promise<PaneOwner | null> {
+    try {
+      return await this.request<PaneOwner | null>({ cmd: 'messageOwnerV1', name })
+    } catch { return null } // Older live hosts refuse; never replace them or use name-only input.
+  }
+
+  async messagePasteReady(name: string): Promise<boolean> {
+    try {
+      return await this.request<boolean>({ cmd: 'messagePasteReadyV1', name }) === true
+    } catch { return false }
+  }
+
+  async messageEnvelope(name: string, envelope: string, expected: PaneOwner): Promise<boolean> {
+    try {
+      return await this.request<boolean>({ cmd: 'messageEnvelopeV1', name, envelope, expected }) === true
+    } catch { return false }
   }
 
   async capture(name: string, full: boolean): Promise<string> {

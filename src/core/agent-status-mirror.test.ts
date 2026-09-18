@@ -2063,6 +2063,48 @@ describe('reduceEntry records whether the state transition was verified', () => 
     expect(b.verifiedAt).toBe(1000)
   })
 
+  describe('idle rescue after a verified session start (resumed CLI idling at its prompt)', () => {
+    const started = (verified = true) =>
+      reduceEntry(
+        reduceEntry(undefined, ev({ state: 'done', verified: true }), 1000),
+        ev({ kind: 'session', sessionPhase: 'start', verified }),
+        2000
+      )
+
+    it('a verified idle_prompt commits a verified, NON-inferred done', () => {
+      const c = reduceEntry(started(), ev({ state: 'done', idle: true, interrupted: true, verified: true }), 3000)
+      expect(c.state).toBe('done')
+      expect(c.stateVerified).toBe(true)
+      expect(c.idleInferred).toBeUndefined()
+      expect(c.sessionStarted).toBeUndefined()
+    })
+
+    it('an unverified idle_prompt is still ignored', () => {
+      const c = reduceEntry(started(), ev({ state: 'done', idle: true, verified: false }), 3000)
+      expect(c.state).toBeUndefined()
+      expect(c.stateVerified).toBe(false)
+    })
+
+    it('an unverified session start does not arm the rescue', () => {
+      const c = reduceEntry(started(false), ev({ state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBeUndefined()
+    })
+
+    it('a session END never arms the rescue', () => {
+      const a = reduceEntry(undefined, ev({ state: 'done', verified: true }), 1000)
+      const b = reduceEntry(a, ev({ kind: 'session', sessionPhase: 'end', verified: true }), 2000)
+      const c = reduceEntry(b, ev({ state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBeUndefined()
+    })
+
+    it('any state commit after the start disarms it (a turn may hold an approval)', () => {
+      const b = reduceEntry(started(), ev({ state: 'blocked', verified: true }), 2500)
+      expect(b.sessionStarted).toBeUndefined()
+      const c = reduceEntry(b, ev({ state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBe('blocked')
+    })
+  })
+
   it('a session boundary drops the proof with the state it was about', () => {
     // SessionStart/End reset the node to idle. A `stateVerified: true` left standing beside a
     // state of `undefined` would assert proof about a state that no longer exists.

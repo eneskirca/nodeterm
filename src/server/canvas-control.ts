@@ -192,7 +192,8 @@ export async function initServerCanvasControl(
     // separate paste from Enter so a fresh TUI cannot swallow the first submit keystroke.
     sendEnvelope: (nodeId, envelope) =>
       sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
-    hasLiveSession: (nodeId) => deps.ptyManager.hasLiveSession(nodeId),
+    // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
+    hasLiveSession: (nodeId) => deps.ptyManager.sessionExists(nodeId),
     mirrorEntry,
     projects: () => deps.workspaceStore.persistedCanvases(),
     isRemoteNode: () => false,

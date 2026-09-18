@@ -67,6 +67,13 @@ export interface ParkedEntryState {
   parkedAt?: number
   /** The node's agent state RIGHT NOW, read from that node's own agent-status store. */
   liveAgentState?: AgentState
+  /** An agent CLI was running in the pane AT PARK TIME (`agentProcessInPane`). Snapshotted for
+   *  the same reason as `parkedAgentState`: the parking unmount clears the node's status. */
+  agentProcess?: boolean
+  /** The node's CLI has announced its exit SINCE the park (`AgentNodeStatus.sessionEnded`, read
+   *  live). A veto over the `agentProcess` snapshot, which only says what was true at park time:
+   *  an unmounted pane keeps running, and its CLI can still exit (the kanban card modal). */
+  liveSessionEnded?: boolean
 }
 
 /** `canDisposePark` for a park entry: the live read, with the AGED park-time snapshot under it.
@@ -76,6 +83,7 @@ export interface ParkedEntryState {
 export function canDisposeParkedEntry(e: ParkedEntryState, now: number = Date.now()): boolean {
   return canDisposePark({
     tmuxBacked: e.tmuxBacked,
+    agentProcess: e.agentProcess === true && e.liveSessionEnded !== true,
     agentState: effectiveAgentState(
       e.liveAgentState,
       parkedStateFloor(e.parkedAgentState, e.parkedAt, now)

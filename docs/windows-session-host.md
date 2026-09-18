@@ -475,6 +475,89 @@ you chose and why") rather than an oversight.
 
 ## Automated verification
 
+### Direct ConPTY agent messages (separate from the persistent host)
+
+The desktop can also hold a **non-persistent native PTY**, indexed by canvas node id but
+without `Session.persistKey`. Checking only persisted sessions incorrectly returned `targetGone`
+for such a running OpenCode. `hasLiveSession` now uses the common runtime lookup.
+
+`core/native-windows-pane.ts` implements message delivery for those direct PTYs. It uses a
+headless terminal for observed bracketed-paste mode and capture, and reads native executable
+identity through console membership and an unambiguous shell-child chain. Process birth times
+and a generation id detect replacement/PID reuse. It deliberately does not choose an arbitrary
+deepest descendant, interpret prompt text as an executable, or accept a detached console.
+This Windows ownership evidence is not POSIX foreground-group semantics; ambiguous console
+trees refuse. An interpreter is identified by its script: the probe keeps only the first
+positional argument (`CommandLineToArgvW`, inside PowerShell) and `scriptCommandName` resolves it
+to the command its npm package publishes in `bin`, else to the script basename. Measured on
+Windows 11 (2026-09-14) against a live Codex pane opened from the canvas: the PR-era probe read
+`node` and the installed app refused `send` with `targetNotAgentPane (observed: node)`, while the
+new probe read `codex` (`agent`) from the same console. A fake npm package in a separate console
+confirmed the prompt argument never appears in the probe output. The
+interpreter is the leaf; its children (a native `codex.exe`, MCP servers) do not count. Existing project consent, verified idle hooks,
+delivery locks, post-write verification and receipt tracking remain in force.
+
+The persistent host has a separate, additive messaging extension (`messageOwnerV1`,
+`messagePasteReadyV1`, `messageEnvelopeV1`). `session-host/message-pane.ts` observes the OS console
+under the **host's** session generation and reads the host's existing emulator after its output
+barrier. Before sending, it repeats the identity probe, checks paste mode again, and confirms
+that the same session object is still registered after every await. It then writes one sanitized
+multiline bracketed paste, watches its own emulator until the envelope footer renders, and sends
+Enter as a second write, only while the same generation is still registered
+(`core/settled-submit.ts`, shared with the Server Edition). With the Enter inside the paste write,
+Codex 0.154 left the envelope unsent in its composer and the delivery reported `stalled`. Main still owns the project/consent/hook/binary
+and receipt gates. The direct adapter is never used for host-backed sessions.
+
+A host-backed session stays addressable after the desktop releases its client (park expiry,
+offscreen release). `targetLive` comes from `PtyManager.sessionExists`, and the three messaging
+probes route by `sessionHostOwns`, which reads the release record when no `Session` is left and
+otherwise applies `sendText`'s rule (no local tmux means the host owns persistence).
+
+The extension is independently versioned so the existing terminal protocol v1/v2 is unchanged.
+Old live hosts reject the new command names, and the client returns null/false without falling
+back to `write`, `sendKeys`, or a local tmux. **Installing a new app does not upgrade an already
+running host.** It must retire after its existing sessions have ended, at a user-coordinated time;
+the next host starts from the new bundle. Never terminate a user's live host as an upgrade step.
+There is no hot migration of an existing ConPTY generation to another host.
+
+`scripts/smoke-session-host-messaging.ts` exercises a separate real Windows host over its named
+pipe, using a native fake reader (no model/API call): OS identity, probe latency within the 2 s
+budget, exact multiline framing, stale-generation refusal, and retirement of the isolated fixture.
+This proves the transport extension, not message/reply delivery between actual OpenCode agents.
+
+Installed-device acceptance (2026-09-13, local build `0.3.5-windows-messaging.2`): after each
+resumed OpenCode posted a fresh verified status, the coordinator's native messages reached both
+architect and coder; their `NT2-ARQ-OK` / `NT2-CODER-OK` replies arrived as native message
+envelopes in the coordinator transcript. Board-log traces confirmed delivery in both directions,
+including queued replies delivered after the coordinator became idle. These resumed sessions
+were **direct Windows PTYs** (their shell processes were children of the desktop main process);
+the old persistent host was no longer running. This acceptance therefore proves the installed
+message workflow on that backend, while the persistent extension remains covered by the separate
+real-host fixture above, not by a claim that these OpenCodes ran inside it.
+
+Desktop message dispatch also waits for pending canvas publication before asking main to authorize
+the pair. Without it, a newly opened node can appear in `list` and context links but be absent
+from main's persisted project snapshot, whose scope resolver labels it `cross-project`. A file
+conflict blocks that publication; it is never silently answered as Keep mine. Server control
+already persists its creations; mobile is not a sender of these agent messages.
+
+`scripts/smoke-windows-agent-messaging.ts` tests a real isolated ConPTY with a native reader:
+console identity, one multiline bracketed paste, and refusal after disposal. It makes no LLM
+call. The installed-app message/reply check with actual OpenCode agents is a separate acceptance.
+
+`scripts/sim-agent-messaging-windows.ts` runs the coordinator ↔ architect ↔ coder scenario end to
+end against an isolated real host, with the real mirror, decider, `deliverFromControl`, queue and
+receipt watch; only the agent CLIs (paste-aware fake composers) and the hook transport are
+simulated. Measured 2026-09-15: three rounds of send/reply pass, including busy targets queued
+and flushed on idle, and a verified `SessionStart` + `idle_prompt` committing a verified idle
+without a turn. Two findings it pins: after an app restart an idle agent whose CLI emits no hook
+stays `targetStatusStale` on every retry (whether real Claude emits one there is not measured);
+and against a reader that drains input every 150 ms, the `sendKeys` plan (paste, then an
+immediate Enter write) had its Enter swallowed into the paste while the settled envelope
+submitted.
+OpenCode transcript export on Windows is not part of this change: it runs the resolved npm shim
+through `directExecutableInvocation` (`opencodeExportAt`, #655).
+
 The focused suites exercise behaviour rather than scan implementation source:
 
 - the Windows profile resolver covers detection precedence, standard Git Bash locations, custom

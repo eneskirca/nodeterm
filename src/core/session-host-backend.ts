@@ -12,6 +12,21 @@ import {
 import { SessionHostPty } from './session-host-pty'
 import type { ExecuteLaunchResult, SessionHostSpawnOptions } from '../session-host/protocol'
 import type { PreparedAgentLaunch } from './agent-launch'
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+
+export async function sessionHostMessageOwner(name: string): Promise<PaneOwner | null> {
+  return getClient().messageOwner(name)
+}
+
+export async function sessionHostMessagePasteReady(name: string): Promise<boolean> {
+  return getClient().messagePasteReady(name)
+}
+
+export async function sessionHostMessageEnvelope(
+  name: string, envelope: string, expected: PaneOwner
+): Promise<boolean> {
+  return getClient().messageEnvelope(name, envelope, expected)
+}
 
 let client: SessionHostClient | null = null
 

@@ -14,6 +14,7 @@
 
 import fs from 'fs'
 import net from 'net'
+import { hostMessagePane } from './message-pane'
 import path from 'path'
 import crypto from 'crypto'
 import { sessionHostPaths, currentProtocolVersion, type SessionHostState } from './paths'
@@ -835,6 +836,15 @@ async function main(): Promise<void> {
         const command = await readPaneCommand(s.proc.pid)
         return { ok: true, result: { command } satisfies PaneCommandResult }
       }
+      case 'messageOwnerV1':
+        return { ok: true, result: await hostMessagePane(() => sessions.get(req.name)).owner() }
+      case 'messagePasteReadyV1':
+        return { ok: true, result: await hostMessagePane(() => sessions.get(req.name)).pasteReady() }
+      case 'messageEnvelopeV1':
+        return {
+          ok: true,
+          result: await hostMessagePane(() => sessions.get(req.name)).send(req.envelope, req.expected)
+        }
       case 'capture': {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: true, result: { text: '' } satisfies CaptureResult }

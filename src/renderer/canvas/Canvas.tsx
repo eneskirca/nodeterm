@@ -157,6 +157,7 @@ import {
   type SaveDelivery
 } from '../lib/savePersistence'
 import { SaveFailureBar } from '../components/SaveFailureBar'
+import { syncMessageScope } from '../lib/messageScopeSync'
 import {
   adoptedNodesNotice,
   decideExternalChange,
@@ -2756,22 +2757,23 @@ export function Canvas() {
       // backoff delay) and let the strip say so. Never clear `dirty` — nothing reached disk.
       console.warn('[canvas] workspace save failed', err)
       setSaveDelivery((prev) => nextSaveDelivery(prev, Date.now()))
-      return
+      return false
     }
     setSaveDelivery(undefined)
     if (canClearDirty(gen, dirtyGenRef.current)) {
       setDirty(false)
-      return
+      return true
     }
     // An edit raced the save: leave `dirty` set so nothing believes the canvas is on disk. But the
     // debounce effect only re-arms when one of its deps changes, and `dirty` never went false —
     // nudge it explicitly, or the racing edit would wait for an unrelated later edit to be saved.
     setResaveTick((v) => v + 1)
+    return true
   }, [])
 
   const persist = useCallback(async () => {
     commitActiveToStore()
-    await writeDisk()
+    return await writeDisk()
   }, [commitActiveToStore, writeDisk])
 
   // Global kanban reads ALL lanes from serialized `p.nodes`, but the active project's
@@ -2815,6 +2817,8 @@ export function Canvas() {
   // Mirror `dirty` into a ref so the external-change listener (mounted once) reads the
   // live value without re-subscribing on every edit.
   const dirtyRef = useRef(false)
+  const conflictRef = useRef(conflict)
+  conflictRef.current = conflict
   useEffect(() => {
     dirtyRef.current = dirty
   }, [dirty])
@@ -9555,6 +9559,20 @@ export function Canvas() {
         let delivered: { ok: boolean; message?: string; result?: unknown; error?: string } | null =
           null
         const outcome = await guardConcurrentRestart(targetId, async () => {
+          // Main authorizes against its persisted store, whereas open-agent/list can already see
+          // unsaved live nodes. Publish before crossing that boundary, without travelling or
+          // choosing "Keep mine" on an unresolved conflict. Main's security gates remain intact.
+          const scopeSync = await syncMessageScope({
+            needed: dirtyRef.current && nodesRef.current.some(
+              (n) => n.id === sourceNodeId || n.id === targetId
+            ),
+            conflict: !!conflictRef.current,
+            save: persist
+          })
+          if (!scopeSync.ok) {
+            delivered = scopeSync
+            return 'done' as const
+          }
           delivered = await api.agentMessage.deliver({
             verb,
             sourceNodeId,
@@ -13036,9 +13054,15 @@ export function Canvas() {
             // (the cold-restore's own resume, or a hand-launched relaunch) is the only live proof
             // that node was watching for.
             cs.setPaused(e.nodeId, false)
+            // A new CLI is in the pane: whatever exited before it no longer describes this node.
+            cs.setSessionEnded(e.nodeId, false)
           }
           if (e.sessionPhase === 'end') {
             cs.setState(e.nodeId, undefined, e.agentId)
+            // Recorded as its OWN fact, after the state: `state: undefined` alone is what an idle
+            // agent looks like, and the memory levers would keep protecting a pane that now holds
+            // only a shell (see `agentProcessInPane`).
+            cs.setSessionEnded(e.nodeId, true)
             // In-session /loop dies with its session; cron (and scheduled cloud routines)
             // keep running after it — their cards stay until CronDelete / manual dismiss.
             const kind = cs.byId[e.nodeId]?.loop?.kind
