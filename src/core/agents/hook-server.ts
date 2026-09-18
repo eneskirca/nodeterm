@@ -763,6 +763,14 @@ class HookServer {
           // so the normalizer sees it and maps it to a synthetic working transition. See
           // docs/hook-reply-approvals.md.
           if (form.nodeterm_answered) payload.nodeterm_answered = form.nodeterm_answered
+          // The EVENT NAME, for an agent whose hook payload does not carry one. Antigravity (`agy`)
+          // sends five events with no name in any of them, and two of them (Pre/PostInvocation) have
+          // identical keys, so the managed command exports the name and the script sends it as this
+          // field. Assigned AFTER JSON.parse, so the form wins over a value planted in the agent's
+          // JSON. Deliberately NOT `hook_event_name`: that is a real payload field for claude, codex,
+          // gemini and copilot, and a name of our own cannot collide with any of them. The value is
+          // only ever compared against a closed set (normalizeAntigravity), never interpolated.
+          if (form.nodeterm_hook_event) payload.nodeterm_hook_event = form.nodeterm_hook_event
           // Raw listener first: it drives the transcript-tailing features (which need
           // transcript_path). Inside the try so a throwing raw listener still ends 204.
           this.rawListener?.(agentId, nodeId, payload, { verified })

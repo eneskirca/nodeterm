@@ -1491,7 +1491,7 @@ else, and its context links must keep classifying across restarts).
   on these helpers — no hardcoded `=== 'claude'`. **Custom agents** (user-defined in Settings,
   `customAgents`) inherit the declared `baseAgent` harness through `capabilityAgentId`; a custom
   agent with no base remains spawn + terminal-title + process status only. Per-agent write-ups:
-  **`docs/grok-agent.md`**, **`docs/gemini-agent.md`**, **`docs/copilot-agent.md`** (there is none for codex — its approval mapping
+  **`docs/grok-agent.md`**, **`docs/gemini-agent.md`**, **`docs/copilot-agent.md`**, **`docs/antigravity-agent.md`** (there is none for codex — its approval mapping
   and every value's reasoning live in `src/shared/agents/approval-mode.ts`);
   the distilled rules are **Adding a new agent** at the end of this section.
 - **Model gateway / switcher** — `settings.modelGateway` stores one gateway root + a NON-SECRET
@@ -1548,6 +1548,39 @@ else, and its context links must keep classifying across restarts).
   harmful. The `auto` permission-mode **version gate is claude's alone** (it is fed by a `claude
   --version` probe), and grok's mode flag must go **BEFORE** its `--` separator, which is
   end-of-options. Full picture, dialect traps and the device checklist: **`docs/grok-agent.md`**.
+- **Antigravity** (`agy` 1.2.3, builtin since 2026-09) — in `AGENT_HOOK_TARGETS` ONLY:
+  badge, NEEDS YOU (`ask_question`, a closed set of one), `--after` and triggers. Launch is
+  `agy --prompt-interactive '<p>'` via the new optional `AgentConfig.promptFlag` (agy has no
+  positional prompt). Its hooks live in the GLOBAL `~/.gemini/config/hooks.json` under our own
+  `nodeterm-status` bundle, and **each one is a synchronous gate whose stdout agy reads as a
+  decision** — we subscribe `PreToolUse`, so a wrong byte denies tools in every `agy` on the
+  machine, inside nodeterm and outside it. Three rules for whoever touches it:
+  - **The stdout table is written ONCE** (`core/agents/hooks/antigravity-decision.ts`): `PreToolUse`
+    → `{"decision":"ask"}`, `Stop` → `{"decision":""}`, the rest → `{}`, an unknown/empty event →
+    NOTHING. Measured on 1.2.3: silence runs the tool, while `{}`, `{"decision":""}`, any non-JSON
+    byte and exit ≠ 0 DENY it. Never `allow`, never `force_ask`, never `"continue"` on `Stop`. The
+    script answers first and then sends stdout/stderr to `/dev/null`, because hook stdout is also
+    model input (`injectSteps`).
+  - **No quotes in the Windows command.** agy passes it to `cmd /c` with inner `"` escaped as `\"`,
+    which cmd.exe does not understand — the codex form (`cmd.exe /d /c call "…"`) exits 1 = DENY.
+    The command is relative to the hooks.json directory (agy's hook cwd) and guarded:
+    `if exist ..\..\.nodeterm\agent-hooks\antigravity-hook.cmd (call … <Event>) & exit 0`. Test
+    Windows dispatch WITHOUT `windowsVerbatimArguments` — Node's default escaping is agy's.
+  - **AutoRun blocks the install.** agy's `cmd /c` has no `/d`, so a registry `AutoRun` runs first
+    and its output would deny tools; the installer reads the three `Command Processor\AutoRun`
+    values (`reg query`, absence decided by listing the parent key — reg's errors are localized)
+    and installs NOTHING — and withdraws a bundle an earlier launch wrote — if one is set or the
+    registry cannot be read.
+  **Installed only where `agy` exists** (a file lookup — PATH, then the vendor's install dirs —
+  never a spawn), in two passes per launch: the boot pass may only see the inherited PATH, so a miss
+  there does NOTHING; after the login-shell PATH probe settles, a final pass repeats the lookup and
+  only then withdraws a bundle of ours when agy is not found. An `agy` installed later gets the
+  hook the next time nodeterm opens; there is no opt-out yet. The event name is not in agy's payloads: the command exports `NODETERM_AGY_EVENT`, the script
+  POSTs `nodeterm_hook_event`, the hook server merges it after `JSON.parse`. `newTurn` rides only the
+  `PreInvocation` with `invocationNum === 0` (without it `lastTurnError` is never retired). Measured
+  cost ~520 ms per event inside nodeterm (a follow-up tracks backgrounding the POST). Full picture,
+  limits (permission prompt and ESC fire no hook) and the device checklist:
+  **`docs/antigravity-agent.md`**.
 - **Gemini + codex parity** (2026-08-09) — brought both up to grok's level in the lists above. Unlike
   grok, **both CLIs are installed** and gemini **ships its own hook reference**
   (`/usr/lib/node_modules/@google/gemini-cli/bundle/docs/hooks/reference.md`), so almost every fact is
