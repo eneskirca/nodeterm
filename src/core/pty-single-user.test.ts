@@ -6,8 +6,22 @@ import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS } from '../shared/types'
-import { MODEL_GATEWAY_SECRET_REF } from '../shared/agents/model-gateway'
+import {
+  MODEL_GATEWAY_SECRET_REF,
+  type ModelGatewaySettings
+} from '../shared/agents/model-gateway'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
+import { currentModelGatewayDiscoveryScope } from './model-gateway-scope'
+
+const gatewayScope = (
+  settings: { baseUrl: string; apiKey: string; discoveryPath?: string },
+  storedSecret: string | null = null,
+  env: Record<string, string | undefined> = process.env
+) => {
+  const scope = currentModelGatewayDiscoveryScope(settings, storedSecret, env)
+  if (!scope) throw new Error('test gateway scope did not resolve')
+  return scope
+}
 
 /**
  * SINGLE-USER REGRESSION.
@@ -155,6 +169,35 @@ vi.mock('./pty-devices', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./pty-devices')>()),
   readPtyDevices: () => ({ ceiling: 511, inUse: 8 })
 }))
+
+/**
+ * The autocompact env vars may be present in THIS process's environment when the suite runs under
+ * a nodeterm-spawned Claude shell (the dev machine exports them). Tests that assert "not injected"
+ * scrub the inherited values so undefined reads as undefined, not as the host's leak. Each test
+ * saves + restores around itself rather than mutating the shared beforeEach, so tests that DO want
+ * to observe an inherited value are unaffected.
+ */
+function saveAndScrubAutocompactEnv(): Record<string, string | undefined> {
+  const saved: Record<string, string | undefined> = {
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
+    CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+    CLAUDE_CODE_SUBAGENT_MODEL_FORCE: process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE,
+    CLAUDE_CODE_EFFORT_LEVEL: process.env.CLAUDE_CODE_EFFORT_LEVEL
+  }
+  delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+  delete process.env.CLAUDE_CODE_EFFORT_LEVEL
+  return saved
+}
+function restoreAutocompactEnv(saved: Record<string, string | undefined>): void {
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+}
 
 describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () => {
   let fake: FakePlatform
@@ -615,6 +658,235 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(spawnArgs[2].env.ANTHROPIC_AUTH_TOKEN).toBe('vk-gateway')
   })
 
+  // ── Claude Code autocompact: a claude-base agent whose gateway model reports a context window
+  //    above the threshold gets the autocompact env vars so the CLI compacts against the REAL
+  //    window (not its 200k default). The matching [1m] suffix on --model is applied at command
+  //    assembly (launch.ts); these tests cover the ENV half that pty-manager injects. ──
+  it('injects autocompact env for a claude model whose discovered window is large', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    const m = new PtyManager()
+    m.init(() => ({
+      ...DEFAULT_SETTINGS,
+      modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+    }))
+    m.registerIpc()
+    // Seed the discovery cache the spawn site reads (`gatewayModelsForCurrent`).
+    m.setGatewayModels(gatewayScope({ baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }), [
+      { id: 'anthropic/claude-opus-5', contextWindow: 1_000_000 }
+    ])
+
+    await create(80, 24, 'autocompact-claude-large', { agentId: 'claude', agentModel: 'anthropic/claude-opus-5' })
+    const env = spawnArgs[0].env
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://bifrost.example.test/anthropic')
+    expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000')
+    expect(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('80')
+  })
+
+  it('never reuses launch metadata after path, environment, or stored-key scope changes', async () => {
+    const savedEnv = process.env.NODETERM_TEST_GATEWAY_KEY
+    const scrubbed = saveAndScrubAutocompactEnv()
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      let storedSecret = 'stored-old'
+      let gateway: ModelGatewaySettings = {
+        baseUrl: 'https://bifrost.example.test',
+        apiKey: MODEL_GATEWAY_SECRET_REF
+      }
+      const m = new PtyManager()
+      m.init(
+        () => ({ ...DEFAULT_SETTINGS, modelGateway: gateway }),
+        () => storedSecret
+      )
+      m.registerIpc()
+      const models = [{ id: 'anthropic/claude-opus-5', contextWindow: 1_000_000 }]
+
+      m.setGatewayModels(gatewayScope(gateway, storedSecret), models)
+      await create(80, 24, 'scope-stored-old', {
+        agentId: 'claude', agentModel: 'anthropic/claude-opus-5'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000')
+      storedSecret = 'stored-new'
+      await create(80, 24, 'scope-stored-new', {
+        agentId: 'claude', agentModel: 'anthropic/claude-opus-5'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+
+      process.env.NODETERM_TEST_GATEWAY_KEY = 'env-old'
+      gateway = {
+        baseUrl: 'https://bifrost.example.test',
+        apiKey: '${env:NODETERM_TEST_GATEWAY_KEY}'
+      }
+      m.setGatewayModels(gatewayScope(gateway, null, process.env), models)
+      await create(80, 24, 'scope-env-old', {
+        agentId: 'claude', agentModel: 'anthropic/claude-opus-5'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000')
+      process.env.NODETERM_TEST_GATEWAY_KEY = 'env-new'
+      await create(80, 24, 'scope-env-new', {
+        agentId: 'claude', agentModel: 'anthropic/claude-opus-5'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+
+      gateway = {
+        baseUrl: 'https://bifrost.example.test',
+        apiKey: 'literal',
+        discoveryPath: '/v1/models'
+      }
+      m.setGatewayModels(gatewayScope(gateway), models)
+      gateway = { ...gateway, discoveryPath: '/openai/v1/models' }
+      await create(80, 24, 'scope-path-new', {
+        agentId: 'claude', agentModel: 'anthropic/claude-opus-5'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    } finally {
+      if (savedEnv === undefined) delete process.env.NODETERM_TEST_GATEWAY_KEY
+      else process.env.NODETERM_TEST_GATEWAY_KEY = savedEnv
+      restoreAutocompactEnv(scrubbed)
+    }
+  })
+
+  it('sets no autocompact env for a claude model at or below the threshold, or unknown to discovery', async () => {
+    // The host this suite runs on may itself export the autocompact vars (a nodeterm-under-Claude
+    // dev shell). Scrub them so "not injected" reads as undefined, not as the inherited value.
+    const saved = saveAndScrubAutocompactEnv()
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }))
+      m.registerIpc()
+      m.setGatewayModels(gatewayScope({ baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }), [
+        { id: 'anthropic/claude-sonnet-5', contextWindow: 200_000 },
+        { id: 'anthropic/claude-haiku-5', contextWindow: 100_000 }
+      ])
+
+      // At the threshold (200k) — not above it.
+      await create(80, 24, 'autocompact-claude-200k', { agentId: 'claude', agentModel: 'anthropic/claude-sonnet-5' })
+      expect(spawnArgs[0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+      expect(spawnArgs[0].env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBeUndefined()
+      // Below the threshold.
+      await create(80, 24, 'autocompact-claude-100k', { agentId: 'claude', agentModel: 'anthropic/claude-haiku-5' })
+      expect(spawnArgs[1].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+      // Unknown to discovery — never guessed.
+      await create(80, 24, 'autocompact-claude-unknown', { agentId: 'claude', agentModel: 'anthropic/claude-future' })
+      expect(spawnArgs[2].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+      // The gateway env is still injected in all three (autocompact is orthogonal to the gateway).
+      expect(spawnArgs[2].env.ANTHROPIC_BASE_URL).toBe('https://bifrost.example.test/anthropic')
+    } finally {
+      restoreAutocompactEnv(saved)
+    }
+  })
+
+  it('sets no autocompact env for a non-claude agent even with a large-context model', async () => {
+    const saved = saveAndScrubAutocompactEnv()
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }))
+      m.registerIpc()
+      m.setGatewayModels(gatewayScope({ baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }), [
+        { id: 'openai/gpt-5.5-codex', contextWindow: 1_000_000 }
+      ])
+
+      await create(80, 24, 'autocompact-codex', { agentId: 'codex', agentModel: 'openai/gpt-5.5-codex' })
+      expect(spawnArgs[0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+      expect(spawnArgs[0].env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBeUndefined()
+      // Codex gateway env is unaffected.
+      expect(spawnArgs[0].env.OPENAI_BASE_URL).toBe('https://bifrost.example.test/openai/v1')
+    } finally {
+      restoreAutocompactEnv(saved)
+    }
+  })
+
+  it('subscription launch mode strips the autocompact env too (no gateway model to read a window from)', async () => {
+    const saved = saveAndScrubAutocompactEnv()
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      const m = new PtyManager()
+      m.init(() => ({
+        ...DEFAULT_SETTINGS,
+        agentLaunchMode: 'subscription',
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }))
+      m.registerIpc()
+      m.setGatewayModels(gatewayScope({ baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }), [
+        { id: 'anthropic/claude-opus-5', contextWindow: 1_000_000 }
+      ])
+
+      await create(80, 24, 'autocompact-subscription', { agentId: 'claude', agentModel: 'anthropic/claude-opus-5' })
+      const env = spawnArgs[0].env
+      // No gateway, no autocompact — the subscription CLI's own window applies.
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    } finally {
+      restoreAutocompactEnv(saved)
+    }
+  })
+
+  it('routes Claude subagents through a served model regardless of the parent window size', async () => {
+    const saved = saveAndScrubAutocompactEnv()
+    try {
+      const { PtyManager } = await import('./pty-manager')
+      let settings = {
+        ...DEFAULT_SETTINGS,
+        modelGatewayDefaultModel: 'vllm/zeta',
+        modelGateway: { baseUrl: 'https://bifrost.example.test', apiKey: 'vk-gateway' }
+      }
+      const m = new PtyManager()
+      m.init(() => settings)
+      m.registerIpc()
+      m.setGatewayModels(gatewayScope(settings.modelGateway), [
+        { id: 'vllm/zeta', contextWindow: 200_000 },
+        { id: 'anthropic/alpha' }
+      ])
+
+      await create(80, 24, 'subagent-default', {
+        agentId: 'claude',
+        agentModel: 'vllm/zeta'
+      })
+      expect(spawnArgs.at(-1)?.env).toMatchObject({
+        CLAUDE_CODE_SUBAGENT_MODEL: 'vllm/zeta',
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+        CLAUDE_CODE_EFFORT_LEVEL: 'xhigh'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+
+      settings = { ...settings, modelGatewayDefaultModel: 'missing' }
+      await create(80, 24, 'subagent-fallback', {
+        agentId: 'claude',
+        agentModel: 'vllm/zeta'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe('anthropic/alpha')
+
+      for (const agentId of ['codex', undefined]) {
+        await create(80, 24, `subagent-non-claude-${agentId ?? 'terminal'}`, { agentId })
+        expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined()
+        expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE).toBeUndefined()
+        expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined()
+      }
+
+      settings = { ...settings, agentLaunchMode: 'subscription' }
+      // A restart must also remove values inherited from a gateway-backed parent shell.
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'vllm/zeta'
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '1'
+      process.env.CLAUDE_CODE_EFFORT_LEVEL = 'medium'
+      await create(80, 24, 'subagent-subscription', {
+        agentId: 'claude',
+        agentModel: 'vllm/zeta'
+      })
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined()
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE).toBeUndefined()
+      expect(spawnArgs.at(-1)?.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined()
+    } finally {
+      restoreAutocompactEnv(saved)
+    }
+  })
+
   // ── `fresh` drives scrollback replay + agent resume: it must still be computed from tmux ──
   it('fresh:false on a WARM reattach (tmux session already exists) — no cold restore', async () => {
     await tmuxManager()
@@ -756,7 +1028,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
 
     // No expectedAgentId here — the legacy shell-only guard path (an SSH/codex node's own
     // model switch passes its id; this asserts the base kill mechanism stays intact).
-    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe(true)
+    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe('terminated')
 
     expect(signal).toHaveBeenCalledWith(-33319, 'SIGTERM')
     expect(tmuxCalls('send-keys')).toEqual([])
@@ -770,7 +1042,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     processGroupReply = '33293\n'
     const signal = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe(false)
+    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe('refused')
 
     expect(signal).not.toHaveBeenCalled()
   })

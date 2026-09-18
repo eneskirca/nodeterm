@@ -70,6 +70,19 @@ export interface GatewayModel {
   id: string
   name?: string
   provider?: string
+  /** Maximum prompt context window in tokens, when the gateway reports one. The autocompact helper sizes
+   *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` off it for a claude-base agent. Absent ⇒ the env var is
+   *  omitted and the CLI falls back to its own default — never guessed (a percentage over a guessed
+   *  window is a wrong number presented as a fact). */
+  contextWindow?: number
+  /** Maximum output/completion tokens the model may produce, when reported. Retained as catalogue
+   *  metadata for consumers; absent stays absent, never guessed. */
+  maxOutputTokens?: number
+  /** Thinking-level metadata the gateway reports for the route (Bifrost's `reasoning` block on
+   *  `/v1/models`). `supportedEfforts` is the ordered list the route accepts and `defaultEffort`
+   *  its own preference; either may be absent, and a model with no reasoning metadata is NOT
+   *  evidence it lacks thinking — consumers must fall back rather than infer a capability. */
+  reasoning?: { supportedEfforts: readonly string[]; defaultEffort?: string }
 }
 
 export interface ModelDiscoveryResult {
@@ -154,6 +167,32 @@ export function modelGatewayRoutes(
   }
 }
 
+/** Accept only positive integer token limits; invalid or absent metadata stays unknown. */
+function coerceTokenLimit(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value.trim()) : typeof value === 'number' ? value : NaN
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return undefined
+  return n
+}
+
+/** Normalize one thinking-level word for comparison. Unknown shapes degrade to nothing: the
+ *  consumer falls back to its own default rather than sending an effort a route may reject. */
+function coerceEffortLevel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const effort = value.trim().toLowerCase()
+  return /^[a-z0-9_-]{1,32}$/.test(effort) ? effort : undefined
+}
+
+/** Parse a gateway's `reasoning` model metadata (Bifrost shape: `{supported_efforts, default_effort}`). */
+function parseGatewayReasoning(value: unknown): GatewayModel['reasoning'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const row = value as { supported_efforts?: unknown; default_effort?: unknown }
+  const supportedEfforts = Array.isArray(row.supported_efforts)
+    ? [...new Set(row.supported_efforts.map(coerceEffortLevel).filter((e): e is string => !!e))]
+    : []
+  const defaultEffort = coerceEffortLevel(row.default_effort)
+  return supportedEfforts.length ? { supportedEfforts, ...(defaultEffort ? { defaultEffort } : {}) } : undefined
+}
+
 /** Parse OpenAI-compatible model-list responses, dropping unsafe/empty/duplicate ids. */
 export function parseGatewayModels(payload: unknown): GatewayModel[] {
   if (!payload || typeof payload !== 'object') return []
@@ -162,7 +201,18 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
   const byId = new Map<string, GatewayModel>()
   for (const raw of data) {
     if (!raw || typeof raw !== 'object') continue
-    const row = raw as { id?: unknown; name?: unknown; provider?: unknown; owned_by?: unknown }
+    const row = raw as {
+      id?: unknown
+      name?: unknown
+      provider?: unknown
+      owned_by?: unknown
+      context_length?: unknown
+      max_context_length?: unknown
+      context_window?: unknown
+      max_output_tokens?: unknown
+      max_completion_tokens?: unknown
+      reasoning?: unknown
+    }
     const id = typeof row.id === 'string' ? row.id.trim() : ''
     if (!id || id.length > 500 || /[\u0000-\u001f\u007f]/.test(id)) continue
     const prefix = id.includes('/') ? id.slice(0, id.indexOf('/')) : ''
@@ -172,10 +222,24 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
         : typeof row.owned_by === 'string'
           ? row.owned_by.trim()
           : ''
+    // Context window: gateways disagree on the field name. The OpenAI convention (`context_length`)
+    // and the `context_window` alias cover the providers Copilot BYOK targets; `max_context_length`
+    // is the max variant some report. The FIRST present, finite value wins (they are synonyms), and
+    // an absent one stays undefined so the env var is omitted rather than guessed.
+    const contextWindow =
+      coerceTokenLimit(row.context_length) ??
+      coerceTokenLimit(row.max_context_length) ??
+      coerceTokenLimit(row.context_window)
+    const maxOutputTokens =
+      coerceTokenLimit(row.max_output_tokens) ?? coerceTokenLimit(row.max_completion_tokens)
+    const reasoning = parseGatewayReasoning(row.reasoning)
     byId.set(id, {
       id,
       ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name.trim() } : {}),
-      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {})
+      ...(explicitProvider || prefix ? { provider: explicitProvider || prefix } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      ...(reasoning ? { reasoning } : {})
     })
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
@@ -188,7 +252,7 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
  * inherit it from their declared base harness.
  */
 export function modelsForAgent(
-  models: GatewayModel[],
+  models: readonly GatewayModel[],
   agentId: AgentId,
   grokModels: readonly GatewayModel[] = []
 ): GatewayModel[] {
@@ -199,7 +263,7 @@ export function modelsForAgent(
   // gateway catalogue would put ids on the menu that its CLI rejects at launch: a picker that looks
   // like it worked and kills the node.
   if (capabilityAgentId(agentId) === 'grok') return [...grokModels]
-  return models
+  return [...models]
 }
 
 /**
@@ -266,6 +330,34 @@ export const MODEL_GATEWAY_ENV_KEYS = [
   'COPILOT_PROVIDER_WIRE_API'
 ] as const
 
+/** Claude Code autocompact env vars, injected for a claude-base agent whose resolved gateway model
+ *  reports a context window above `AUTOCOMPACT_THRESHOLD`. These are Claude Code's OWN conventions:
+ *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` sizes the compaction window, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+ *  sets the % threshold at which it fires. Listed alongside `MODEL_GATEWAY_ENV_KEYS` in the tmux
+ *  `update-environment` conf so a re-attached client inherits them (unset on a non-claude session ⇒
+ *  no effect, so including them in the shared conf is harmless). Sourced ONLY from discovery — never
+ *  guessed — by `claudeAutocompactFor` below. */
+export const AUTOCOMPACT_THRESHOLD = 200_000
+export const AUTOCOMPACT_PCT_OVERRIDE = '80'
+export const AUTOCOMPACT_ENV_KEYS = [
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+  'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'
+] as const
+
+/** Claude gateway routing and compatibility controls. Kept separate from autocompact so they
+ *  also reach sessions whose discovered models have no context-window metadata. */
+export const CLAUDE_CODE_SUBAGENT_MODEL_KEY = 'CLAUDE_CODE_SUBAGENT_MODEL'
+export const CLAUDE_SUBAGENT_ENV_KEYS = [
+  CLAUDE_CODE_SUBAGENT_MODEL_KEY,
+  'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+  'CLAUDE_CODE_EFFORT_LEVEL'
+] as const
+
+/** The effort level requested when a model carries no discovered reasoning metadata. Kept as a
+ *  named constant because `claudeEffortFor`'s fallback and every test pinning the fallback must
+ *  not drift apart. */
+export const CLAUDE_SUBAGENT_EFFORT_FALLBACK = 'xhigh'
+
 /** tmux's own stock `update-environment` entries (tmux 3.4 defaults, measured via
  *  `show-options -g`). Assigning the option as a whole REPLACES the array, so the defaults must be
  *  restated or SSH agent forwarding et al. silently break. */
@@ -293,7 +385,15 @@ const TMUX_STOCK_UPDATE_ENV = [
  *  Deduped so an overlap (e.g. ANTHROPIC_AUTH_TOKEN, in both the gateway list and the claude
  *  auth strip) cannot double an entry. */
 export function tmuxUpdateEnvironmentLine(extraNames: readonly string[] = []): string {
-  const names = [...new Set([...TMUX_STOCK_UPDATE_ENV, ...MODEL_GATEWAY_ENV_KEYS, ...extraNames])]
+  const names = [
+    ...new Set([
+      ...TMUX_STOCK_UPDATE_ENV,
+      ...MODEL_GATEWAY_ENV_KEYS,
+      ...AUTOCOMPACT_ENV_KEYS,
+      ...CLAUDE_SUBAGENT_ENV_KEYS,
+      ...extraNames
+    ])
+  ]
   return `set -g update-environment "${names.join(' ')}"`
 }
 
@@ -395,4 +495,162 @@ export function withAgentModel(cmd: string, agentId: AgentId, model: string | un
   // an existing shell. Match the internal id above, keeping the gateway prefix in WIRE_MODEL only.
   const modelId = capabilityAgentId(agentId) === 'copilot' ? copilotModelParts(value).modelId : value
   return `${cmd} --model ${shellSingleQuote(modelId)}`
+}
+
+/**
+ * For a claude-base agent and its resolved model, return the `[1m]`-suffixed model id and the
+ * Claude Code autocompact env, sourced ONLY from the gateway's discovered model list.
+ *
+ * Claude Code sizes its autocompact window off the model id and fires compaction at a default %
+ * of that window. A gateway model whose real context window is large (e.g. a 1M model surfaced
+ * through a proxy as `vllm/GLM-5.2-NVFP4-MTP[1m]`) would otherwise still use the 200k default and
+ * compact a long session early. Two levers fix it, both Claude-Code-specific:
+ *
+ *  1. A `[1m]` suffix on the model id marks a LARGE window. Appended when the discovered window
+ *     is above `AUTOCOMPACT_THRESHOLD` (see the comment at the suffix below for what each lever
+ *     actually moves — the env var sizes compaction, the suffix is what the CLI's own meter
+ *     honors).
+ *  2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (the window size) and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+ *     (the % threshold) env vars, set to the discovered window and `AUTOCOMPACT_PCT_OVERRIDE`.
+ *
+ * Everything is sourced from discovery — never guessed. An unknown model, or one the gateway did
+ * not report a `contextWindow` for, yields NO env and NO suffix (fail open to the CLI's own
+ * behavior). A percentage over a guessed window is a wrong number presented as a fact, the same
+ * rule used throughout gateway model metadata. Non-claude agents get neither: the env
+ * var names and the `[1m]` convention are Claude Code's own and mean nothing to codex/copilot.
+ *
+ * `modelId` is the (possibly suffixed) id a caller should pass to `withAgentModel`; `env` is the
+ * map a spawn site merges into the session environment. The two come from ONE call so the suffix
+ * and the env can never disagree about whether this is a large-context session.
+ */
+export function claudeAutocompactFor(
+  agentId: AgentId,
+  model: string | undefined,
+  models: readonly GatewayModel[]
+): { modelId: string | undefined; env: Record<string, string> } {
+  // Only a claude-base harness. The env var names are Claude Code's; a codex/copilot node would
+  // silently ignore them, and appending [1m] to its --model would send an unknown id to that CLI.
+  if (capabilityAgentId(agentId) !== 'claude') return { modelId: model, env: {} }
+  const id = normalizedAgentModel(agentId, model)
+  if (!id) return { modelId: model, env: {} }
+  // The discovered model is the ONLY source of the window. A model not in the catalogue tells us
+  // nothing — ship no env and no suffix rather than a guess. Exact ids first; then the
+  // `[1m]`-stripped pair, because the SAME model is listed plain and suffixed depending on who
+  // stored it (`modelAvailability` already treats either spelling as available — judging the
+  // window exact-only here would let a suffixed catalogue spelling silently skip both the env
+  // and the shape-mismatch ask for a session launched plain).
+  const discovered = models.find((m) => m.id === id) ??
+    models.find((m) => m.id.replace(/\[1m\]$/, '') === id.replace(/\[1m\]$/, ''))
+  const window = discovered?.contextWindow
+  if (!window) return { modelId: id, env: {} }
+  if (window <= AUTOCOMPACT_THRESHOLD) {
+    return { modelId: id.replace(/\[1m\]$/, ''), env: {} }
+  }
+  // Append the [1m] marker for EVERY above-threshold window — restored 2026-08-31 after the
+  // mid-band "env only" rule measured as a regression: Misc Bugs (5.3 plain, env 400000) still
+  // metered 200k in its status line, so `CLAUDE_CODE_AUTO_COMPACT_WINDOW` does NOT drive the
+  // CLI's own meter, and the suffix is the only lever that resizes it. The env rides alongside
+  // to size the compaction point; the suffix carries the window to the meter. (A suffixed 5.2 in
+  // the field metered ~400k, so the suffix claims the window per model — it is not a fixed 1M
+  // escalation — which also means a mid-band identifier is safe to suffix.)
+  // Symmetric strip: a record whose window dropped below the threshold must NOT keep an old
+  // suffix — re-launching it would re-claim the large window.
+  //
+  // PAIRING INVARIANT (belt-and-suspenders, pinned by model-gateway.test.ts): every branch that
+  // emits a suffixed modelId MUST also emit the autocompact env, and the env is emitted ONLY on
+  // a suffixed branch. The two halves of the mechanism are one mechanism: the `[1m]` suffix lifts
+  // Claude Code's OWN window ceiling (it is what the CLI's status meter honors) and
+  // `CLAUDE_CODE_AUTO_COMPACT_WINDOW` pulls the compaction point back DOWN to the discovered
+  // size. A suffix without the env lets the context grow toward the ceiling with no autocompact
+  // headroom — past what the gateway can serve; an env without the suffix meters 200k while
+  // compaction reads the larger window — two windows disagreeing in one session. `pty-manager`
+  // asserts the invariant at the composed-env site (refuses the spawn loud) so a future caller
+  // that half-applies the pair is caught the day it ships.
+  const modelId = window > AUTOCOMPACT_THRESHOLD
+    ? (id.endsWith('[1m]') ? id : `${id}[1m]`)
+    : id.replace(/\[1m\]$/, '')
+  return {
+    modelId,
+    env: {
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window),
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    }
+  }
+}
+
+/** The gateway-served alias to prefer for Claude's subagent route when no explicit default is
+ *  configured. Our inference box serves reasoning work under this alias; an administrator-defined
+ *  id is ordinary catalogue data, so discovery alone cannot know it is THE alias. */
+const CLAUDE_SUBAGENT_PREFERRED_ALIAS = 'reasoning'
+
+/** Choose only a model the current gateway catalogue says it serves. The configured default wins
+ *  when present; otherwise the `reasoning` alias when the catalogue lists it (the inference box's
+ *  heavy-work route); otherwise sort here so callers need not know how the catalogue was produced. */
+export function claudeSubagentModelFor(
+  models: readonly GatewayModel[],
+  defaultModel?: string
+): string | undefined {
+  const ids = [...new Set(modelsForAgent(models, 'claude').map((model) => model.id.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+  const preferred = defaultModel?.trim()
+  if (preferred && ids.includes(preferred)) return preferred
+  if (ids.includes(CLAUDE_SUBAGENT_PREFERRED_ALIAS)) return CLAUDE_SUBAGENT_PREFERRED_ALIAS
+  return ids[0]
+}
+
+/** The highest effort a route accepts — thinking scales with capability, and the list order carries
+ *  no ranking of its own. */
+function highestSupportedEffort(supported: readonly string[]): string | undefined {
+  return supported.length ? supported[supported.length - 1] : undefined
+}
+
+/** The thinking level to request from one discovered model: the route's own `default_effort` when
+ *  reported (the provider knows its model), else its highest supported level, else the launcher's
+ *  prior static default. Absent reasoning metadata is NOT evidence thinking is unsupported —
+ *  discovery omits the block on some served routes — so the fallback is the default, never an
+ *  omission: Claude clamps unknown levels itself, and a route that rejects one errors noisily
+ *  rather than silently un-thinking every subagent. */
+export function claudeEffortFor(models: readonly GatewayModel[], modelId: string | undefined): string {
+  const base = modelId?.trim().replace(/\[1m\]$/, '')
+  const model = models.find((m) => m.id.replace(/\[1m\]$/, '') === base)
+  return (
+    model?.reasoning?.defaultEffort ??
+    (model?.reasoning ? highestSupportedEffort(model.reasoning.supportedEfforts) : undefined) ??
+    CLAUDE_SUBAGENT_EFFORT_FALLBACK
+  )
+}
+
+/** Build Claude's gateway subagent routing independently from large-context launch handling.
+ *  Since Claude Code 2.1.251, an Agent call's explicit model (e.g. `sonnet`) beats SUBAGENT_MODEL.
+ *  FORCE (2.1.257+) restores the override, keeping those calls on a model the gateway serves:
+ *  https://code.claude.com/docs/en/sub-agents#run-every-subagent-on-one-model
+ *
+ *  The effort level comes from the selected model's discovered `reasoning` metadata (see
+ *  `claudeEffortFor`). This env var affects the parent AND children;
+ *  there is no subagent-only effort env. Project/custom-agent env is merged later and can override
+ *  the default. With no served route, emit no controls or guessed capabilities. */
+export function claudeSubagentEnvFor(
+  agentId: AgentId,
+  models: readonly GatewayModel[],
+  defaultModel?: string
+): Record<string, string> {
+  if (capabilityAgentId(agentId) !== 'claude') return {}
+  const model = claudeSubagentModelFor(models, defaultModel)
+  return model ? {
+    [CLAUDE_CODE_SUBAGENT_MODEL_KEY]: model,
+    CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+    CLAUDE_CODE_EFFORT_LEVEL: claudeEffortFor(models, model)
+  } : {}
+}
+
+/** Current reported window for either plain or `[1m]` spelling of one model id. */
+export function modelContextWindow(
+  modelId: string | undefined,
+  models: readonly GatewayModel[]
+): number | undefined {
+  const id = modelId?.trim()
+  if (!id) return undefined
+  const base = id.replace(/\[1m\]$/, '')
+  const value = models.find((model) => model.id.replace(/\[1m\]$/, '') === base)?.contextWindow
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }

@@ -22,7 +22,7 @@ describe('ModelGatewaySection credential modes', () => {
     ;(window as unknown as { nodeTerminal: any }).nodeTerminal = {
       settings: { save: vi.fn() },
       agent: {
-        discoverModels: vi.fn(),
+        discoverModels: vi.fn(async () => ({ models: [] })),
         gatewayCredentialStatus: vi.fn(async () => ({
           hasStoredKey: false,
           storage: 'encrypted' as const
@@ -132,5 +132,45 @@ describe('ModelGatewaySection credential modes', () => {
     )
     expect(input.value).toBe('')
     expect(host.textContent).not.toContain('literal-secret')
+  })
+
+  it('invalidates a stored-key catalogue before discovering with its replacement', async () => {
+    useSettings.setState({
+      settings: {
+        ...useSettings.getState().settings,
+        modelGateway: {
+          ...useSettings.getState().settings.modelGateway,
+          apiKey: MODEL_GATEWAY_SECRET_REF
+        }
+      }
+    })
+    ;(window as unknown as { nodeTerminal: any }).nodeTerminal.agent.gatewayCredentialStatus =
+      vi.fn(async () => ({ hasStoredKey: true, storage: 'encrypted' as const }))
+    useModelGateway.setState({
+      models: [{ id: 'old/model' }],
+      status: 'ready',
+      error: ''
+    })
+    await mount()
+
+    const input = host.querySelector<HTMLInputElement>('#model-gateway-key')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        'replacement-secret'
+      )
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const save = [...host.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Save key'
+    )!
+    await act(async () => {
+      save.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useModelGateway.getState().models).toEqual([])
+    expect(window.nodeTerminal.agent.discoverModels).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: MODEL_GATEWAY_SECRET_REF })
+    )
   })
 })
