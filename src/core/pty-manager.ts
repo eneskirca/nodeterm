@@ -10,11 +10,13 @@ import { safeSessionProgram } from '../shared/node-exec'
 import { REF_MAX_LEN } from '../shared/presence'
 import {
   DEFAULT_SETTINGS,
+  type AgentProcessProof,
   type PaneCursor,
   type PtyCreateOptions,
   type PtyCreateResult,
   type PtyRecycleTarget,
   type Settings,
+  type TerminateForegroundOutcome,
   type TmuxStatus
 } from '../shared/types'
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
@@ -57,7 +59,12 @@ import {
   shouldRecordOwnership
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
-import { binariesFor, isAgentPane, type PaneOwner } from '../shared/agents/pane-owner-predicate'
+import {
+  agentPidIn,
+  binariesFor,
+  isAgentPane,
+  type PaneOwner
+} from '../shared/agents/pane-owner-predicate'
 import { readSpawnResources, spawnResourceNote } from './spawn-resources'
 import {
   primePtyCeiling,
@@ -122,6 +129,7 @@ import {
 } from './remote-ssh/session-env'
 import { foregroundProcessGroup, parsePaneProcess } from './pane-process'
 import { isShellCommand } from '../shared/agents/pane'
+import { modelRespawnErrorKind, modelRespawnTrace } from '../shared/model-respawn-trace'
 // Third persistence backend, selected when no local tmux was found (primarily Windows, where
 // tmux does not exist at all) — see docs/windows-session-host.md. Deliberately a thin, separate
 // module rather than inline here: this is the one narrow seam this file needed to grow for a
@@ -1776,6 +1784,9 @@ export class PtyManager {
     platform().handle(IPC.ptyTerminateForeground, (persistKey: string, expectedAgentId?: string) =>
       this.terminateForeground(persistKey, expectedAgentId)
     )
+    platform().handle(IPC.ptyAgentProcess, (persistKey: string, expectedAgentId: string) =>
+      this.agentProcess(persistKey, expectedAgentId)
+    )
   }
 
   /** Feeds the renderer's "tmux not found" banner. Without tmux the app silently degrades to a
@@ -1855,10 +1866,23 @@ export class PtyManager {
     everySocket = false,
     acknowledged = true
   ): Promise<void> {
-    if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN)
+    modelRespawnTrace('pty.end-requested', {
+      nodeId: typeof persistKey === 'string' ? persistKey : 'invalid',
+      intent,
+      acknowledged
+    })
+    if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN) {
+      modelRespawnTrace('pty.end-refused', { intent, reason: 'invalid-node-id' })
       return this.refuseClientEnd(channel, acknowledged, 'invalid node id')
-    if (!this.allowEnd(clientId, channel))
+    }
+    if (!this.allowEnd(clientId, channel)) {
+      modelRespawnTrace('pty.end-refused', {
+        nodeId: persistKey,
+        intent,
+        reason: 'rate-limited'
+      })
       return this.refuseClientEnd(channel, acknowledged, 'rate limit exceeded; retry later')
+    }
     return this.endSession(clientId, persistKey, intent, everySocket)
   }
 
@@ -4270,6 +4294,73 @@ export class PtyManager {
   }
 
   /**
+   * Read-only proof that the expected agent owns the pane after a replacement launch. Unlike the
+   * restart acknowledgement in the renderer, this does not infer success from bytes written to a
+   * terminal: it re-reads the pane owner and its foreground process group from the kernel. The
+   * exact PID is intentionally not cached — an exited PID can be reused, so each poll must prove
+   * the current process identity afresh.
+   */
+  async agentProcess(persistKey: string, expectedAgentId: string): Promise<AgentProcessProof> {
+    const finish = (
+      proof: AgentProcessProof,
+      reason: string,
+      fields: Record<string, string | number | boolean | null | undefined> = {}
+    ): AgentProcessProof => {
+      modelRespawnTrace('pty.agent-process', {
+        nodeId: typeof persistKey === 'string' ? persistKey : 'invalid',
+        expectedAgentId:
+          typeof expectedAgentId === 'string' && expectedAgentId.length <= REF_MAX_LEN
+            ? expectedAgentId
+            : 'invalid',
+        verdict: proof.verdict,
+        reason,
+        shellPid: proof.shellPid,
+        agentPid: proof.agentPid,
+        ...fields
+      })
+      return proof
+    }
+
+    if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN)
+      return finish({ verdict: 'unknown' }, 'invalid-node-id')
+    if (
+      typeof expectedAgentId !== 'string' ||
+      !expectedAgentId ||
+      expectedAgentId.length > REF_MAX_LEN
+    )
+      return finish({ verdict: 'unknown' }, 'invalid-agent-id')
+
+    try {
+      const owner = await this.paneOwner(persistKey)
+      const expectedBinaries = binariesFor(expectedAgentId, this.getSettings().customAgents)
+      const verdict = isAgentPane(owner, expectedAgentId, expectedBinaries)
+      const agentPid =
+        verdict === 'agent'
+          ? (agentPidIn(owner, expectedAgentId, expectedBinaries) ?? undefined)
+          : undefined
+      // `isAgentPane` can name an agent from argv without a PID on a legacy/partial PaneOwner. That
+      // is sufficient for display, but cannot prove the SAME replacement survived stabilization.
+      if (verdict === 'agent' && !agentPid)
+        return finish({ verdict: 'unknown', shellPid: owner?.panePid }, 'agent-pid-missing', {
+          paneCommand: owner?.command ?? 'unavailable',
+          processCount: owner?.argv.length ?? 0
+        })
+      return finish(
+        { verdict, shellPid: owner?.panePid, agentPid },
+        verdict === 'agent' ? 'expected-agent-running' : 'owner-verdict',
+        {
+          paneCommand: owner?.command ?? 'unavailable',
+          processCount: owner?.argv.length ?? 0
+        }
+      )
+    } catch (error) {
+      return finish({ verdict: 'unknown' }, 'probe-threw', {
+        errorKind: modelRespawnErrorKind(error)
+      })
+    }
+  }
+
+  /**
    * Terminate the foreground agent process group in a node's tmux pane without writing anything
    * into the terminal. This is intentionally narrower than recycling the session: model switching
    * first stops the harness by PID, then uses the existing recycle path to rebuild the shell with
@@ -4279,12 +4370,55 @@ export class PtyManager {
    * model switch fires from a possibly-stale menu, and hours after the agent exited the pane may
    * belong to vim, a build, or an ssh the user started — none of which should be SIGTERM'd. When an
    * expected id is given, the foreground group's full argv is read (`paneOwner`) and the kill
-   * happens ONLY when `isAgentPane` confirms the expected harness owns the group; `not-agent` and
-   * `unknown` both refuse (fail-closed — we are about to send a signal). Omitting the id preserves
-   * the legacy shell-only guard for any caller that has no agent to assert.
+   * happens ONLY when `isAgentPane` confirms the expected harness owns the group. The one
+   * non-agent state distinguished from refusal is a successful kernel probe that shows the
+   * expected harness is no longer in the foreground group. Callers use that state to force a full
+   * session respawn, regardless of whether the pane currently holds the login shell, an editor, or
+   * another command. An unreadable/unknown probe still fails closed. Omitting the id preserves the
+   * legacy shell-only guard for any caller that has no agent to assert.
    */
-  async terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean> {
-    if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN) return false
+  async terminateForeground(
+    persistKey: string,
+    expectedAgentId?: string
+  ): Promise<TerminateForegroundOutcome> {
+    const finish = (
+      outcome: TerminateForegroundOutcome,
+      reason: string,
+      fields: Record<string, string | number | boolean | null | undefined> = {}
+    ): TerminateForegroundOutcome => {
+      modelRespawnTrace('pty.terminate-complete', {
+        nodeId: typeof persistKey === 'string' ? persistKey : 'invalid',
+        expectedAgentId,
+        outcome,
+        reason,
+        ...fields
+      })
+      return outcome
+    }
+    modelRespawnTrace('pty.terminate-begin', {
+      nodeId: typeof persistKey === 'string' ? persistKey : 'invalid',
+      expectedAgentId,
+      hasExpectedAgent: !!expectedAgentId
+    })
+    if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN)
+      return finish('refused', 'invalid-node-id')
+    let expectedAgentPid: number | undefined
+    let verifiedPane: PaneOwner | undefined
+    let expectedBinaries: readonly string[] | null | undefined
+    const classifyLostAgent = async (): Promise<TerminateForegroundOutcome> => {
+      if (!expectedAgentId) return finish('refused', 'no-expected-agent')
+      try {
+        const owner = await this.paneOwner(persistKey)
+        const verdict = isAgentPane(owner, expectedAgentId, expectedBinaries)
+        return verdict === 'not-agent'
+          ? finish('already-exited', 'agent-absent-on-recheck')
+          : finish('refused', 'owner-recheck-uncertain', { verdict })
+      } catch (error) {
+        return finish('refused', 'owner-recheck-threw', {
+          errorKind: modelRespawnErrorKind(error)
+        })
+      }
+    }
     // Identity gate: prove the expected harness owns the foreground group before signalling it.
     // `paneOwner` reads the full argv (local or over the project's ControlMaster) and is null on
     // any uncertainty, which `isAgentPane` maps to `unknown` → refuse.
@@ -4292,43 +4426,124 @@ export class PtyManager {
       const owner = await this.paneOwner(persistKey)
       // Pass the custom-agent list so a `custom:<uuid>` harness is verifiable by its launchCmd
       // binary instead of collapsing to `unknown` (which would fail-closed on every model switch).
-      const binaries = binariesFor(expectedAgentId, this.getSettings().customAgents)
-      if (isAgentPane(owner, expectedAgentId, binaries) !== 'agent') return false
+      expectedBinaries = binariesFor(expectedAgentId, this.getSettings().customAgents)
+      const verdict = isAgentPane(owner, expectedAgentId, expectedBinaries)
+      modelRespawnTrace('pty.terminate-owner-verdict', {
+        nodeId: persistKey,
+        expectedAgentId,
+        verdict,
+        shellPid: owner?.panePid,
+        paneCommand: owner?.command ?? 'unavailable',
+        processCount: owner?.argv.length ?? 0
+      })
+      if (verdict !== 'agent') {
+        // `not-agent` is positive kernel evidence, not a failed probe. The expected harness no
+        // longer owns this session, so the restart caller must skip signalling and force the full
+        // respawn path. `unknown` remains a refusal because it proves nothing.
+        return verdict === 'not-agent'
+          ? finish('already-exited', 'expected-agent-absent')
+          : finish('refused', 'owner-unknown')
+      }
+      // Keep the exact PID the verdict rested on. A name-only verdict followed by a second pane
+      // read has a TOCTOU hole: the agent can exit between them and a raw shell program can become
+      // foreground before the kill. The kill legs below prove THIS PID is still live in the group
+      // they are about to signal; a changed owner refuses instead of terminating the newcomer.
+      expectedAgentPid = agentPidIn(owner, expectedAgentId, expectedBinaries) ?? undefined
+      if (!expectedAgentPid) return finish('refused', 'agent-pid-not-found')
+      verifiedPane = owner ?? undefined
+      modelRespawnTrace('pty.terminate-agent-pid', {
+        nodeId: persistKey,
+        expectedAgentId,
+        agentPid: expectedAgentPid,
+        shellPid: verifiedPane?.panePid
+      })
     }
     const target = sessionName(persistKey)
     const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
     try {
       if (sshRemote) {
         const ssh = findSsh()
-        if (!ssh) return false
-        const { stdout } = await runAsync(
-          ssh,
-          remotePaneProcessArgs(sshRemote.conn, sshRemote.controlPath, target)
-        )
-        const pane = parsePaneProcess(stdout)
-        if (!pane || isShellCommand(pane.command)) return false
+        if (!ssh) return finish('refused', 'ssh-unavailable', { remote: true })
+        // The identity read already returned the pane root + command. Reuse it instead of opening
+        // a second SSH round-trip whose newer-but-unverified result could drift from the PID we
+        // authorized. The remote kill command revalidates both live tpgids atomically below.
+        let pane = verifiedPane
+          ? { panePid: verifiedPane.panePid, command: verifiedPane.command }
+          : null
+        if (!pane) {
+          const { stdout } = await runAsync(
+            ssh,
+            remotePaneProcessArgs(sshRemote.conn, sshRemote.controlPath, target)
+          )
+          pane = parsePaneProcess(stdout)
+        }
+        if (!pane || isShellCommand(pane.command))
+          return finish('refused', 'remote-pane-not-signalable', {
+            remote: true,
+            paneCommand: pane?.command ?? 'unavailable'
+          })
+        modelRespawnTrace('pty.terminate-signal', {
+          nodeId: persistKey,
+          expectedAgentId,
+          remote: true,
+          shellPid: pane.panePid,
+          agentPid: expectedAgentPid
+        })
         await runAsync(
           ssh,
-          remoteTerminateForegroundArgs(sshRemote.conn, sshRemote.controlPath, pane.panePid)
+          remoteTerminateForegroundArgs(
+            sshRemote.conn,
+            sshRemote.controlPath,
+            pane.panePid,
+            expectedAgentPid
+          )
         )
-        return true
+        return finish('terminated', 'remote-sigterm-sent', { remote: true })
       }
-      if (!this.tmuxPath) return false
-      const { stdout } = await runAsync(this.tmuxPath, [
-        '-L',
-        TMUX_SOCKET,
-        'display-message',
-        '-p',
-        '-t',
-        target,
-        '#{pane_pid}|#{pane_current_command}'
-      ])
-      const pane = parsePaneProcess(stdout)
-      if (!pane) return false
+      if (!this.tmuxPath) return finish('refused', 'tmux-unavailable', { remote: false })
+      let pane = verifiedPane
+        ? { panePid: verifiedPane.panePid, command: verifiedPane.command }
+        : null
+      if (!pane) {
+        const { stdout } = await runAsync(this.tmuxPath, [
+          '-L',
+          TMUX_SOCKET,
+          'display-message',
+          '-p',
+          '-t',
+          target,
+          '#{pane_pid}|#{pane_current_command}'
+        ])
+        pane = parsePaneProcess(stdout)
+      }
+      if (!pane) return finish('refused', 'pane-unavailable', { remote: false })
       const processTable = await runAsync('ps', ['-o', 'tpgid=', '-p', String(pane.panePid)])
       const processGroup = foregroundProcessGroup(pane, processTable.stdout)
-      if (!processGroup) return false
+      if (!processGroup)
+        return expectedAgentId
+          ? await classifyLostAgent()
+          : finish('refused', 'foreground-group-unavailable', { remote: false })
+      if (expectedAgentPid) {
+        // A successful `ps` row is the liveness proof; matching tpgid ties the exact argv-verified
+        // agent PID to the group below. If the agent exited or another program took foreground,
+        // the row is empty/different and nothing is signalled.
+        const expected = await runAsync('ps', [
+          '-o',
+          'tpgid=',
+          '-p',
+          String(expectedAgentPid)
+        ])
+        if (Number(expected.stdout.trim()) !== processGroup) return classifyLostAgent()
+      }
       process.kill(-processGroup, 'SIGTERM')
+      modelRespawnTrace('pty.terminate-signal', {
+        nodeId: persistKey,
+        expectedAgentId,
+        remote: false,
+        shellPid: pane.panePid,
+        agentPid: expectedAgentPid,
+        processGroup
+      })
       // Grace: give the harness a window to flush session state (transcript, --resume id) before
       // the caller recycles the session (tmux kill-session). Poll the group with signal 0 —
       // ESRCH means it is gone — up to ~1.5s, then return regardless (the recycle is a kill either
@@ -4341,9 +4556,14 @@ export class PtyManager {
         }
         await new Promise((r) => setTimeout(r, 50))
       }
-      return true
-    } catch {
-      return false
+      return finish('terminated', 'local-process-group-exited', { remote: false, processGroup })
+    } catch (error) {
+      modelRespawnTrace('pty.terminate-threw', {
+        nodeId: persistKey,
+        expectedAgentId,
+        errorKind: modelRespawnErrorKind(error)
+      })
+      return classifyLostAgent()
     }
   }
 
@@ -4853,8 +5073,19 @@ export class PtyManager {
     /** Trusted replacement identity; present only after confirmed profile preflight. */
     replacementTarget?: PtyRecycleTarget
   ): Promise<void> {
+    modelRespawnTrace('pty.end-begin', {
+      nodeId: persistKey,
+      intent,
+      backendAlreadyEnded,
+      hasReplacementTarget: !!replacementTarget
+    })
     const current = this.ending.get(persistKey)
     if (current) {
+      modelRespawnTrace('pty.end-coalesced', {
+        nodeId: persistKey,
+        intent,
+        currentIntent: current.intent
+      })
       // Identical repeats share one acknowledgement only when the in-flight target scope covers
       // this caller. An every-socket request, a pre-confirmed backend outcome, and an exact profile
       // reservation are each stronger than their generic counterpart, so a stronger request waits
@@ -5000,6 +5231,13 @@ export class PtyManager {
       live: dying?.sshRemote,
       owner: this.remoteNodeOwner?.(persistKey) ?? null,
       ssh: findSsh()
+    })
+    modelRespawnTrace('pty.end-session-state', {
+      nodeId: persistKey,
+      intent,
+      hadLiveSession: !!dying,
+      remote: remoteEnd.kind !== 'none',
+      backendAlreadyEnded
     })
     // SessionHostClient has a real request/response acknowledgement. Await it BEFORE any local
     // deletion claim: on transport failure the node, tombstone, subscribers and transcript tails
@@ -5174,6 +5412,12 @@ export class PtyManager {
         )
       }
     }
+    modelRespawnTrace('pty.end-complete', {
+      nodeId: persistKey,
+      intent,
+      hadLiveSession: !!dying,
+      remote: remoteEnd.kind !== 'none'
+    })
   }
 
   /**
