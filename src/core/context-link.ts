@@ -203,6 +203,21 @@ async function fetchTranscript(node: LinkDocEntry): Promise<string | null> {
   }
 }
 
+/** An export names ONE provider session. The id reaches us from a hook payload, so it is re-checked
+ *  here, where it becomes an argv entry: `directExecutableInvocation` stops it being read as shell
+ *  syntax, and nothing but this stops a leading `-` being read by opencode as an option. */
+const SAFE_OPENCODE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/
+
+export function isSafeOpencodeSessionId(sessionId: string): boolean {
+  return SAFE_OPENCODE_SESSION_ID.test(sessionId)
+}
+
+// A whole conversation comes back on stdout. execFile's default 1 MiB buffer turns a long session
+// into an error, which reads here as "no transcript"; and with no timeout a wedged CLI holds the
+// linked agent's read open for good.
+const OPENCODE_EXPORT_MAX_BYTES = 32 * 1024 * 1024
+const OPENCODE_EXPORT_TIMEOUT_MS = 60_000
+
 export async function opencodeExportAt(bin: string, sessionId: string): Promise<string | null> {
   const invocation = directExecutableInvocation(bin, ['export', sessionId])
   if (!invocation) return null
@@ -212,7 +227,12 @@ export async function opencodeExportAt(bin: string, sessionId: string): Promise<
       execFile(
         invocation.executable,
         invocation.args,
-        { ...invocation.options, encoding: 'utf-8' },
+        {
+          ...invocation.options,
+          encoding: 'utf-8',
+          maxBuffer: OPENCODE_EXPORT_MAX_BYTES,
+          timeout: OPENCODE_EXPORT_TIMEOUT_MS
+        },
         (err, stdout) => resolve(err ? null : stdout)
       )
     })
@@ -222,7 +242,7 @@ export async function opencodeExportAt(bin: string, sessionId: string): Promise<
 }
 
 async function fetchOpencodeExport(node: LinkDocEntry): Promise<string | null> {
-  if (!node.sessionId) return null
+  if (!node.sessionId || !isSafeOpencodeSessionId(node.sessionId)) return null
   if (deps.isRemoteNode?.(node.id)) {
     return deps.runRemoteCommand
       ? await deps.runRemoteCommand(node.id, `opencode export ${shellQuote(node.sessionId)}`)
