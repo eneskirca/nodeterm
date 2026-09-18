@@ -84,7 +84,11 @@ const STORE_ANSWERED_VERBS: ReadonlySet<string> = new Set([
   'open-project',
   // Reads settings.json and the projects store, and its dialog is app-global — no canvas at either
   // end, and a background agent asking must never travel the user's view (@shared/settings-verb).
-  'settings'
+  'settings',
+  // Talks to GitHub on behalf of the caller's OWN project. No node at either end and no dialog, so
+  // travelling the user's view would be pure interruption — and the point of the verb is that it
+  // works while nobody is watching.
+  'report-issue'
 ])
 
 /**

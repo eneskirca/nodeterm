@@ -107,6 +107,23 @@ export interface ListIssueOptions {
   perPage: number
   since?: string
   etag?: string
+  /**
+   * Comma-separated label filter, passed straight to the REST list endpoint.
+   *
+   * The dedupe lookup for agent-filed reports uses THIS rather than the search API on purpose:
+   * `/search/issues` is served from an index that lags its writes, so two agents hitting one gap a
+   * minute apart would both search, both miss, and both file — the exact duplicate the fingerprint
+   * exists to prevent. The list endpoint reads the database and is immediately consistent.
+   */
+  labels?: string
+}
+
+/** What `createIssue` needs. `labels` are names, and the caller ensures they exist first —
+ *  GitHub creates an unknown label implicitly, with a random colour and no description. */
+export interface CreateIssueInput {
+  title: string
+  body: string
+  labels?: string[]
 }
 
 export interface IssuePageResult {

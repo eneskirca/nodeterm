@@ -1,4 +1,5 @@
 import type {
+  CreateIssueInput,
   CreateMappedLabelsResult,
   GitHubIssue,
   GitHubIssueCardView,
@@ -47,6 +48,11 @@ export interface GitHubIssuesClientLike {
     repository: string,
     input: { name: string; color: string; description?: string }
   ): Promise<GitHubRepositoryLabel>
+  /** Agent-filed gap reports (@core/github/report-issue-service). Declared here rather than only
+   *  on the concrete client so `contextForProject` hands one caller everything it needs — the
+   *  report path must never build a second authenticated client of its own. */
+  createIssue(repository: string, input: CreateIssueInput): Promise<GitHubIssue>
+  createIssueComment(repository: string, issueNumber: number, body: string): Promise<{ id: number }>
 }
 
 export interface GitHubIssueProjectContext {

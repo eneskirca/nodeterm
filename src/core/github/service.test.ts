@@ -93,6 +93,14 @@ class FixtureClient implements GitHubIssuesClientLike {
     this.repositoryLabels.push(label)
     return label
   }
+
+  // The report path does not run through GitHubIssueService, so these are declaration-only here.
+  // They must still THROW rather than return a fake issue: a test that accidentally reaches them
+  // should fail loudly instead of asserting against a value nothing produced.
+  async createIssue(): Promise<never> { throw new Error('createIssue not used by this fixture') }
+  async createIssueComment(): Promise<never> {
+    throw new Error('createIssueComment not used by this fixture')
+  }
 }
 
 function context(client: FixtureClient, over: Partial<GitHubIssueServiceContext> = {}): GitHubIssueServiceContext {

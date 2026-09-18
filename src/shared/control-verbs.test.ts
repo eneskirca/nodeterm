@@ -25,9 +25,13 @@ describe('dryRunRequested', () => {
 })
 
 describe('DRY_RUN_VERBS', () => {
-  it('covers exactly the spawn verbs', () => {
+  it('covers the spawn verbs, plus the one verb whose mutation cannot be undone', () => {
+    // The set was "exactly the spawn verbs" until `report-issue` joined it. The rule it actually
+    // encodes is the asymmetry in the header — easy to call, expensive or impossible to reverse —
+    // and publishing an issue to a repository is the strongest case of that in the whole verb
+    // list: a spawned node can be deleted, a filed issue is already on the internet.
     expect([...DRY_RUN_VERBS].sort()).toEqual(
-      ['open-agent', 'open-claude', 'open-terminal', 'open-worktree', 'spawn-team'].sort()
+      ['open-agent', 'open-claude', 'open-terminal', 'open-worktree', 'report-issue', 'spawn-team'].sort()
     )
   })
   it('never contains a destructive or read verb', () => {

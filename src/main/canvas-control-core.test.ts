@@ -16,6 +16,11 @@ import { RETRYABLE } from '../core/agents/agent-message-decide'
 import { PROJECT_TARGETABLE_VERBS } from '../core/project-grants'
 import { DRY_RUN_VERBS } from '../shared/control-verbs'
 import { SETTINGS_VERB_KEYS, SETTINGS_VERB_KEY_LIST } from '../shared/settings-verb'
+import {
+  REPORT_CAP_PER_DAY,
+  REPORT_CAP_PER_RUN,
+  REPORT_LABEL
+} from '../core/github/report-issue-core'
 import { STRICT_CONTROL_VERBS } from '../core/agents/node-identity-policy'
 import { BROWSER_ACTION_KEYS } from '../core/browser-verb'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from '../core/browser-outcomes'
@@ -548,6 +553,34 @@ describe('parseControlRequest', () => {
       expect(lower).toMatch(/no set-cookie|writes are not|cannot set|no cookie-write/)
       // Server Edition has no browser control.
       expect(lower).toContain('server edition')
+    }
+  })
+
+  it('both bodies teach WHEN to file a report, with the caps rendered from the real constants', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      expect(body).toContain('`report-issue --kind <code> --title <one line> --body <text> [--dry-run]`')
+      // The caps are RENDERED, so tuning either constant without moving the prose reddens here —
+      // an agent that believes a stale limit retries into a refusal it was told would not happen.
+      expect(body).toContain(`${REPORT_CAP_PER_RUN} reports per nodeterm run`)
+      expect(body).toContain(`${REPORT_CAP_PER_DAY} per day`)
+      expect(body).toContain(`\`${REPORT_LABEL}\``)
+      // The load-bearing half is WHEN, not the flags: the three non-cases must be named, or an
+      // agent files its own mistakes into a public tracker.
+      expect(body).toMatch(/DO NOT FILE for your own mistakes/)
+      expect(body).toMatch(/for a failing\s+test/)
+      expect(body).toMatch(/FILE WHEN the thing you could not do is a gap in the product/)
+      // Duplicate suppression is automatic; telling an agent to check first would have it burn a
+      // turn searching and then file anyway when the search came back empty.
+      expect(body).toMatch(/Do not check first and do not search for duplicates/)
+      expect(body).toMatch(/Keep `--kind` STABLE/)
+      // Default-off, and the refusal names are the agent's whole vocabulary for giving up.
+      expect(body).toMatch(/Off by\s+default/)
+      for (const refusal of ['report-disabled', 'report-no-repo', 'report-scope-missing', 'report-cap-run', 'report-cap-day']) {
+        expect(body, `refusal ${refusal} documented`).toContain(`\`${refusal}\``)
+      }
+      // The no-repo refusal must not read as an invitation to find another repository.
+      expect(body).toMatch(/do NOT file it somewhere\s+else/)
+      expect(body).toMatch(/Server Edition refuses this verb by name/)
     }
   })
 

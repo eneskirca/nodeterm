@@ -40,11 +40,12 @@
  */
 import type { Settings } from './types'
 
-export type ProjectCapability = 'agentBrowserControl' | 'agentMessaging'
+export type ProjectCapability = 'agentBrowserControl' | 'agentMessaging' | 'agentIssueReporting'
 
 export const PROJECT_CAPABILITIES: readonly ProjectCapability[] = [
   'agentBrowserControl',
-  'agentMessaging'
+  'agentMessaging',
+  'agentIssueReporting'
 ] as const
 
 export interface ProjectCapabilityCopy {
@@ -81,6 +82,23 @@ export const PROJECT_CAPABILITY_COPY: Record<ProjectCapability, ProjectCapabilit
     cloneWarning:
       'This setting is saved in the project file (.nodeterm/project.json), so if you commit it, ' +
       'everyone who clones the repo gets it too.'
+  },
+  agentIssueReporting: {
+    label: 'Let agents file GitHub issues for gaps they hit',
+    description:
+      'When an agent in this project runs into something nodeterm cannot do, it can open an issue ' +
+      'in THIS project’s GitHub repository by itself — no prompt, and nobody reads the text first. ' +
+      'That text is written by a machine out of whatever it was looking at: error output, the ' +
+      'command it ran, file paths, branch and project names. Secrets with a recognisable shape are ' +
+      'stripped first (tokens, keys, home directories, ssh addresses, environment values) and the ' +
+      'report is shortened — but ONLY recognisable shapes can be stripped, so a customer name, an ' +
+      'internal hostname or a private project name inside an error message is published as ' +
+      'written. Assume the repository is public. Repeats fold into the existing issue, there is a ' +
+      'daily limit, and every issue is labelled and says plainly that a machine filed it.',
+    cloneWarning:
+      'This setting is saved in the project file (.nodeterm/project.json), so if you commit it, ' +
+      'everyone who clones the repo gets it too — and on their machine it publishes their text, to ' +
+      'whichever repository their copy of the project points at.'
   }
 }
 

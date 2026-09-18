@@ -127,6 +127,12 @@ export const SETTINGS_VERB_FORBIDDEN = new Set<keyof Settings | keyof Project>([
   'hookIdentityStrict',
   // Browser control — a capability that acts as the user on the web.
   'agentBrowserControl',
+  // Issue reporting — the only capability whose effect LEAVES THE MACHINE. An agent that could
+  // switch on its own auto-reporting is a self-granting loop aimed at a public tracker, so this
+  // is never settable from the CLI whatever the allowlist says. (The name pattern below does not
+  // catch it — none of "issue", "report" or "github" is a forbidden name class — so this explicit
+  // entry is the whole fence.)
+  'agentIssueReporting',
   // This machine's consent record for capabilities; writable only by the human's answer.
   'capabilityAck',
   // Accounts, credentials, model gateway, and anything that decides WHAT COMMAND runs.

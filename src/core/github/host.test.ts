@@ -91,7 +91,9 @@ function fixture() {
     getIssue: vi.fn(),
     updateIssue: vi.fn(),
     listRepositoryLabels: vi.fn(),
-    createLabel: vi.fn()
+    createLabel: vi.fn(),
+    createIssue: vi.fn(),
+    createIssueComment: vi.fn()
   }
   const controller = new GitHubHostController({
     project: vi.fn(async (id: string) => id === project.id

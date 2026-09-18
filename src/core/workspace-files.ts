@@ -151,6 +151,11 @@ export interface ProjectFileV1 {
   /** Per-project capability switch (@shared/project-capabilities): agents may message other agent
    *  nodes in this project. Git-shared like `agentBrowserControl`, read with the same strictness. */
   agentMessaging?: boolean
+  /** Per-project capability switch (@shared/project-capabilities): agents may file GitHub issues
+   *  for product gaps they hit. Git-shared like the two above, read with the same strictness —
+   *  and the only one of the three whose effect leaves this machine, so a stranger's `true` here
+   *  buys nothing until this machine's user answers its notice. */
+  agentIssueReporting?: boolean
   dinoHighScore?: number
   kanban?: ProjectKanban
   /**

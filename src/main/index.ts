@@ -109,7 +109,14 @@ import {
 import { generateCommitMessage, generateGroupName, generateTerminalName } from '../core/commit-message'
 import { initUpdater } from './updater'
 import { fetchCheck } from '../core/check'
-import { hookServer, OPEN_PROJECT_CONTROL_REFUSAL } from '../core/agents/hook-server'
+import {
+  hookServer,
+  OPEN_PROJECT_CONTROL_REFUSAL,
+  REPORT_ISSUE_CONTROL_REFUSAL
+} from '../core/agents/hook-server'
+import { reportIssue } from '../core/github/report-issue-service'
+import { ReportLedgerStore } from '../core/github/report-ledger'
+import { projectCapabilityGrantedFor } from '../shared/project-capability-consent'
 import { askpassServer, ensureAskpassScript } from './remote-ssh/ssh-askpass'
 import { appSshAgent } from './remote-ssh/ssh-agent'
 import {
@@ -1707,6 +1714,9 @@ app.whenReady().then(async () => {
     run: runGitHubCliCommand
   })
   dropGitHubRelayClient = (id) => github.service.dropClient(id)
+  // Machine-local record of what has already been reported, per project — never git-shared, or a
+  // cloned repo could hand this machine a pre-loaded "already reported" ledger.
+  const reportLedger = new ReportLedgerStore(app.getPath('userData'))
   registerElectronGitHubControl(
     ipcMain,
     () => getMainWindow()?.webContents.id,
@@ -3530,6 +3540,77 @@ app.whenReady().then(async () => {
   // node inside the save debounce, or an id main never saved): the project gates fail closed.
   const projectIdOfNode = (id: string): string | undefined =>
     workspaceStore.persistedCanvases().find((c) => c.nodes.some((n) => n.id === id))?.id
+  /**
+   * `report-issue`, answered entirely in MAIN like `browser` and for the same reason: the GitHub
+   * credential, the repository resolution and the network call are all main-side, and the renderer
+   * is the more attackable half. There is deliberately no confirmation dialog — an agent that hits
+   * a product gap while nobody is watching is the case this verb exists for — so the gates below
+   * are the whole of the consent, and each one refuses on its own:
+   *
+   *   - node identity must be `verified` (already enforced at the hook-server route; this is the
+   *     belt every other verified-only verb in this file also wears);
+   *   - the report goes to the CALLER'S OWN project, never a `--project` id. Reporting into
+   *     somebody else's repository is not something an agent should reach by naming an id, so the
+   *     flag does not exist rather than being gated;
+   *   - the per-project capability must be GRANTED — the file bit AND this machine's 'kept'
+   *     answer — read per call off the store, exactly as messaging's switch is, so revoking it
+   *     stops the next report rather than the one after a restart.
+   */
+  const handleReportIssueVerb = async (
+    nodeId: string,
+    args: Record<string, string>,
+    verified: boolean
+  ): Promise<{ ok: boolean; message?: string; error?: string }> => {
+    const refuse = (error: string) => ({ ok: false, error, message: error })
+    if (!verified) return refuse(REPORT_ISSUE_CONTROL_REFUSAL)
+    const projectId = projectIdOfNode(nodeId)
+    // Unresolved caller ⇒ fail closed, the same rule the project gates above follow: we cannot
+    // name the repository a report belongs to, and guessing one is the failure mode this whole
+    // feature is shaped around.
+    if (!projectId) {
+      return refuse(
+        'report-no-project: this node is not in a saved project, so there is no repository to ' +
+        'report to. Do not retry.'
+      )
+    }
+    return reportIssue(
+      {
+        contextForProject: async (id) => {
+          const context = await github.controller.contextForProject(id)
+          return { repository: context.repository, client: context.client }
+        },
+        granted: () =>
+          projectCapabilityGrantedFor(
+            workspaceStore.capabilityProjectFor(projectId),
+            'agentIssueReporting',
+            settingsStore.get()
+          ),
+        loadLedger: (id) => reportLedger.load(id),
+        saveLedger: (id, ledger) => reportLedger.save(id, ledger),
+        env: { version: app.getVersion(), os: process.platform, edition: 'desktop' }
+      },
+      {
+        projectId,
+        dryRun: dryRunRequested(args),
+        input: {
+          kind: args.kind ?? '',
+          title: args.title ?? '',
+          detail: args.body ?? '',
+          ...(args.output ? { excerpt: args.output } : {}),
+          ...(args.agent ? { agent: args.agent } : {})
+        }
+      }
+    ).then((result) =>
+      result.ok
+        ? {
+            ok: true,
+            message: result.action === 'dry-run' && result.preview
+              ? `${result.message}\n\n${result.preview}`
+              : result.message
+          }
+        : { ok: false, error: result.error, message: result.message }
+    )
+  }
   hookServer.setControlHandler(async ({ verb, nodeId, args, verified }) => {
     // `--dry-run` (issue #532) is honoured by the spawn verbs only, and this gate runs FIRST —
     // before the browser intercept, the open-project gates and the renderer forward — because a
@@ -3544,6 +3625,8 @@ app.whenReady().then(async () => {
     // the debugger handle and the CDP allowlist are main-side, and the renderer is the more
     // attackable half. Every other verb still round-trips to the renderer below.
     if (verb === 'browser') return handleBrowserVerb(nodeId, args, verified)
+    // Answered in MAIN for the same reasons as `browser`; see handleReportIssueVerb.
+    if (verb === 'report-issue') return handleReportIssueVerb(nodeId, args, verified)
     // ── `open-project` + `--project` targeting, gated in MAIN before anything is forwarded
     // (issue #338 PR 1). The renderer never sees an invalid cwd or an unauthorized `--project`.
     // The verb itself is verified-only at the hook-server route (requiresVerified) — by the time

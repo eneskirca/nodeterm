@@ -786,6 +786,12 @@ export interface Project {
    *  rules as `agentBrowserControl` above — git-shared hostile input, strict `=== true` read,
    *  never a grant without this machine's recorded 'kept' (`projectCapabilityGrantedFor`). */
   agentMessaging?: boolean
+  /** Per-project capability switch: agents may file a GitHub issue in THIS project's repository
+   *  when they hit a nodeterm gap. Same rules as the two above — git-shared hostile input, strict
+   *  `=== true` read, never a grant without this machine's recorded 'kept'
+   *  (`projectCapabilityGrantedFor`). Unlike them, what it grants is PUBLICATION: the text leaves
+   *  the machine, so the copy in `PROJECT_CAPABILITY_COPY` says so in as many words. */
+  agentIssueReporting?: boolean
   /**
    * MACHINE-LOCAL record of what this machine's user ANSWERED for each capability switch —
    * 'kept' or 'declined', not a bare bit, because a declined switch whose hostile `true`

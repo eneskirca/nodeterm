@@ -66,6 +66,46 @@ function settingsVerbDocLines(): string[] {
 }
 
 /**
+ * The `report-issue` verb's help, with the caps RENDERED from the constants that enforce them
+ * (`report-issue-core.ts`) rather than re-typed — the same discipline as `messagingGuidanceLines`
+ * and `settingsVerbDocLines`. A number typed into prose drifts the day someone tunes the cap, and
+ * an agent that believes a stale limit retries into a refusal it was told would not happen.
+ *
+ * WHEN TO FILE is the load-bearing half of this text, not the flags. An agent that files whenever
+ * anything goes wrong turns a public tracker into its own scratchpad, so the wording names the
+ * three non-cases (own mistake, failing test, broken code) before it names the case.
+ */
+function reportIssueDocLines(): string[] {
+  return [
+    '- `report-issue --kind <code> --title <one line> --body <text> [--dry-run]` — open a GitHub',
+    '  issue in THIS project\'s repository when NODETERM ITSELF could not do something. Off by',
+    '  default: the user switches it on per project, and until then this is refused by name.',
+    '  FILE WHEN the thing you could not do is a gap in the product: a verb refused because this',
+    '  edition does not implement it, a capability that does not exist, a refusal whose reason is',
+    '  "nodeterm cannot do this", something the skill told you to do that has no way to be done.',
+    '  DO NOT FILE for your own mistakes (wrong flags, a bad id, a verb you misread), for a failing',
+    '  test, for code that is broken in the repository you are working on, or for anything the user',
+    '  asked you to do and you simply found hard. Those are your work, not a product gap.',
+    '  ONE ISSUE PER DISTINCT GAP. Do not check first and do not search for duplicates: repeats are',
+    '  recognised automatically by `--kind` plus the title and folded into the existing issue, so',
+    '  filing the same gap again is free and costs nobody a duplicate. Keep `--kind` STABLE for the',
+    `  same gap (it is half the fingerprint) — a code like \`verb-unsupported\` or`,
+    '  `capability-missing`, never a sentence and never something that changes per run.',
+    `  Limits: ${REPORT_CAP_PER_RUN} reports per nodeterm run and ${REPORT_CAP_PER_DAY} per day, per project; past either you are`,
+    '  refused by name and must tell the user instead. Everything you send is redacted (tokens,',
+    '  keys, home directories, ssh addresses, environment values) and shortened before it is',
+    '  published, but write it as if it were public anyway: do not paste credentials, customer',
+    '  names or private hostnames into `--body`, because only recognisable shapes can be stripped.',
+    '  `--dry-run` returns the exact text that would be published without publishing it.',
+    `  Every issue is labelled \`${REPORT_LABEL}\` and says plainly that a machine filed it.`,
+    '  Refusals are terminal unless they say otherwise: `report-disabled` (the user has not turned',
+    '  it on), `report-no-repo` (this project has no GitHub repository — do NOT file it somewhere',
+    '  else), `report-scope-missing` (the token cannot write issues), `report-cap-run` /',
+    '  `report-cap-day`. Server Edition refuses this verb by name.'
+  ]
+}
+
+/**
  * The `browser` verb's retry guidance, RENDERED from `BROWSER_RETRYABLE` + `BROWSER_OUTCOME_LABEL`
  * (`src/core/browser-outcomes.ts`) — same discipline as `messagingGuidanceLines`: the table is the
  * source, re-typing the split in prose is how the two drift. The parity test walks the real table
@@ -160,6 +200,7 @@ export type ControlVerb =
   | 'browser'
   | 'open-project'
   | 'settings'
+  | 'report-issue'
 
 export interface ControlCommand {
   verb: ControlVerb
@@ -204,7 +245,12 @@ const VERBS: ControlVerb[] = [
   'open-project',
   // Read and ask to change the few settings on the allowlist (@shared/settings-verb). Every change
   // is confirmed by the user on the desktop; the Server Edition refuses `--set` by name.
-  'settings'
+  'settings',
+  // File a GitHub issue in the CALLER'S OWN project's repository when nodeterm could not do
+  // something (@core/github/report-issue-service). Off by default per project; there is no
+  // `--project` flag on purpose — reporting into somebody else's repository is not a capability
+  // an agent should be able to reach by naming an id.
+  'report-issue'
 ]
 
 /**
@@ -233,6 +279,11 @@ import {
   SETTINGS_VERB_KEY_LIST,
   parseSettingsRequest
 } from '../shared/settings-verb'
+import {
+  REPORT_CAP_PER_DAY,
+  REPORT_CAP_PER_RUN,
+  REPORT_LABEL
+} from './github/report-issue-core'
 
 /** The `--dry-run` paragraph both agent-facing bodies share, rendered from `DRY_RUN_VERBS`. */
 function dryRunDocLines(): string[] {
@@ -273,6 +324,12 @@ export function parseControlRequest(
   if (v === 'link' && !args.to) return { error: 'link requires --to <id,id>' }
   if (v === 'verify' && !args.node) return { error: 'verify requires --node <id>' }
   if (v === 'spawn-team' && !args.team) return { error: 'spawn-team requires --team <json>' }
+  // Both halves are required and neither may be guessed: `--kind` is the stable half of the dedupe
+  // fingerprint (a drifting kind files a fresh issue per turn, which is the spam case) and
+  // `--title` is what a maintainer reads in the issue list.
+  if (v === 'report-issue' && !args.kind) return { error: 'report-issue requires --kind <code>' }
+  if (v === 'report-issue' && !args.title) return { error: 'report-issue requires --title <one line>' }
+  if (v === 'report-issue' && !args.body) return { error: 'report-issue requires --body <text>' }
   if (v === 'assign' && !args.node) return { error: 'assign requires --node <id>' }
   if (v === 'open-worktree' && !args.branch) return { error: 'open-worktree requires --branch <name>' }
   if (v === 'close-worktree' && !args.group) return { error: 'close-worktree requires --group <id>' }
@@ -508,6 +565,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  never moves the node on the canvas or changes its group. Use it to reflect progress: move a card',
     '  to your "In Progress"/"Done" column as work advances.',
     ...settingsVerbDocLines(),
+    ...reportIssueDocLines(),
     ...browserVerbDocLines(),
     '',
     ...offScreenGuidanceLines(),
@@ -1027,6 +1085,7 @@ Verbs:
   its group, or touches the running session. Use it to reflect progress: as a station finishes,
   move its card into your "In Progress" / "Done" column so the board tells the real story.
 ${settingsVerbDocLines().join('\n')}
+${reportIssueDocLines().join('\n')}
 ${browserVerbDocLines().join('\n')}
 
 ${offScreenGuidanceLines().join('\n')}

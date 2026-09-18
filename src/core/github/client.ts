@@ -1,4 +1,5 @@
 import type {
+  CreateIssueInput,
   GitHubIssue,
   GitHubIssueLabel,
   GitHubIssueUser,
@@ -220,6 +221,15 @@ export class GitHubIssuesClient {
       if (!isoDate(options.since)) throw new GitHubClientError('invalid-request')
       query.set('since', options.since)
     }
+    if (options.labels !== undefined) {
+      // Label names are `,`-joined by the API, so one containing a comma cannot be expressed here.
+      // Refuse rather than silently query for two labels that do not exist and get an empty page —
+      // which the dedupe lookup would read as "nothing upstream" and answer by filing a duplicate.
+      if (!string(options.labels, 1_000) || !options.labels.trim()) {
+        throw new GitHubClientError('invalid-request')
+      }
+      query.set('labels', options.labels)
+    }
     const response = await this.request(`/repos/${repository}/issues?${query}`, {
       method: 'GET',
       ...(options.etag ? { headers: { 'if-none-match': options.etag } } : {})
@@ -277,6 +287,58 @@ export class GitHubIssuesClient {
     const decoded = issueFrom(await this.json(response))
     if (!decoded) throw new GitHubClientError('malformed-response')
     return decoded
+  }
+
+  /**
+   * Open a new issue. Bounds mirror GitHub's own: a 256-character title and a body the report
+   * composer has already clamped far below the API's 65 536.
+   *
+   * A 403 here is the one a caller must not paper over: a token with `issues: read` lists and gets
+   * issues perfectly and fails only at the write, so the feature looks configured right up to the
+   * moment it matters. `request()` already classifies a non-rate-limit 403 as
+   * `insufficient-permission`; the report service turns that code into the sentence naming the
+   * missing scope.
+   */
+  async createIssue(repository: string, input: CreateIssueInput): Promise<GitHubIssue> {
+    safeRepository(repository)
+    if (!string(input.title, 256) || !input.title.trim() || !string(input.body, 60_000) ||
+        (input.labels !== undefined && (!Array.isArray(input.labels) || input.labels.length > 100 ||
+          input.labels.some((label) => !string(label, 50) || !label.trim())))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/issues`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: input.title,
+        body: input.body,
+        ...(input.labels?.length ? { labels: input.labels } : {})
+      })
+    })
+    const decoded = issueFrom(await this.json(response))
+    if (!decoded) throw new GitHubClientError('malformed-response')
+    return decoded
+  }
+
+  /** Comment on an existing issue. Returns the comment id; the caller only needs "it landed". */
+  async createIssueComment(
+    repository: string,
+    issueNumber: number,
+    body: string
+  ): Promise<{ id: number }> {
+    safeRepository(repository)
+    if (!positiveInteger(issueNumber, Number.MAX_SAFE_INTEGER) || !string(body, 60_000) ||
+        !body.trim()) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/issues/${issueNumber}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body })
+    })
+    const value = object(await this.json(response))
+    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) {
+      throw new GitHubClientError('malformed-response')
+    }
+    return { id: Number(value.id) }
   }
 
   async listRepositoryLabels(
