@@ -61,8 +61,8 @@ export class LocalTransport implements TerminalTransport {
     this.pty.destroy(persistKey, opts)
   }
 
-  recycle(persistKey: string): void {
-    this.pty.recycle(persistKey)
+  recycle(persistKey: string): Promise<void> {
+    return this.pty.recycle(persistKey)
   }
 
   onData(sessionId: string, listener: (data: string) => void): () => void {
