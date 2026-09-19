@@ -2,12 +2,30 @@ import { describe, it, expect } from 'vitest'
 import {
   createVideoNode,
   createWebNode,
+  fileViewerKind,
+  isHtmlFile,
   isVideoFile,
   nodeStatesToFlow,
   flowToNodeStates
 } from './workspace'
 
 describe('video/web nodes', () => {
+  it('isHtmlFile matches local page extensions only', () => {
+    expect(isHtmlFile('/a/b/report.html')).toBe(true)
+    expect(isHtmlFile('/a/b/REPORT.HTM')).toBe(true)
+    expect(isHtmlFile('/a/b/readme.md')).toBe(false)
+    expect(isHtmlFile('/a/b/report.pdf')).toBe(false)
+  })
+
+  it('routes generated documents to their built-in canvas viewers', () => {
+    expect(fileViewerKind('/tmp/page.html')).toBe('web')
+    expect(fileViewerKind('/tmp/page.htm')).toBe('web')
+    expect(fileViewerKind('/tmp/notes.md')).toBe('editor')
+    expect(fileViewerKind('/tmp/report.pdf')).toBe('editor')
+    expect(fileViewerKind('/tmp/screenshot.png')).toBe('editor')
+    expect(fileViewerKind('/tmp/page.html', true)).toBe('editor')
+  })
+
   it('isVideoFile matches common video extensions, not images', () => {
     expect(isVideoFile('/a/b/clip.mp4')).toBe(true)
     expect(isVideoFile('/a/b/CLIP.WEBM')).toBe(true)
