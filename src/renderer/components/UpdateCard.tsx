@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { IconClose } from './icons'
+import { noSelfInstallCopy } from '@shared/update-platform'
 import type { UpdateProgress } from '@shared/types'
 
 // The full updater lifecycle as one status union, driving a fixed bottom-right card.
@@ -11,6 +12,10 @@ type Status =
   | { kind: 'available'; version: string; percent: number }
   // A .deb/.rpm Linux install can't self-install — show a manual download link, no progress/restart.
   | { kind: 'manual'; version: string }
+  // This build has no update channel at all, so no version is known and none ever will be
+  // (issue #814). Same mechanism as `manual` — one card, one download link — different sentence,
+  // because "we cannot look" is not "we looked and you are current".
+  | { kind: 'noChannel' }
   | { kind: 'downloaded'; version: string }
   | { kind: 'upToDate' }
   | { kind: 'required'; minSupported: string | null }
@@ -48,6 +53,11 @@ export function UpdateCard(): JSX.Element | null {
         4000
       )
     })
+    const offNoChannel = window.nodeTerminal.updates.onNoChannel(() => {
+      // Never auto-hides, unlike `upToDate`: this card carries the only action the user has.
+      setStatus((s) => (s.kind === 'required' ? s : { kind: 'noChannel' }))
+      setMinimized(false)
+    })
     const offError = window.nodeTerminal.updates.onError((message) => {
       setStatus({ kind: 'error', message })
       setMinimized(false)
@@ -57,6 +67,7 @@ export function UpdateCard(): JSX.Element | null {
       offProgress()
       offDownloaded()
       offNotAvailable()
+      offNoChannel()
       offError()
       if (upToDateTimer.current) window.clearTimeout(upToDateTimer.current)
     }
@@ -136,7 +147,9 @@ export function UpdateCard(): JSX.Element | null {
       : status.kind === 'available'
         ? 'Downloading Update'
         : status.kind === 'manual'
-          ? 'Update available'
+          ? noSelfInstallCopy('manual-install', status.version).title
+          : status.kind === 'noChannel'
+            ? noSelfInstallCopy('no-channel').title
           : status.kind === 'downloaded'
           ? 'Update ready'
           : status.kind === 'upToDate'
@@ -148,6 +161,7 @@ export function UpdateCard(): JSX.Element | null {
   const canMinimize = status.kind === 'available' || status.kind === 'downloaded'
   const canDismiss =
     status.kind === 'manual' ||
+    status.kind === 'noChannel' ||
     status.kind === 'downloaded' ||
     status.kind === 'upToDate' ||
     status.kind === 'error'
@@ -188,10 +202,19 @@ export function UpdateCard(): JSX.Element | null {
       {status.kind === 'manual' && (
         <>
           <p className="update-card__body">
-            nodeterm v{status.version} is available. Download it to update.
+            {noSelfInstallCopy('manual-install', status.version).body}
           </p>
           <button className="update-card__btn" onClick={openReleases}>
-            Download
+            {noSelfInstallCopy('manual-install', status.version).action}
+          </button>
+        </>
+      )}
+
+      {status.kind === 'noChannel' && (
+        <>
+          <p className="update-card__body">{noSelfInstallCopy('no-channel').body}</p>
+          <button className="update-card__btn" onClick={openReleases}>
+            {noSelfInstallCopy('no-channel').action}
           </button>
         </>
       )}

@@ -11,11 +11,7 @@ import path from 'path'
 // electron-vite v5's CJS interop.
 import { autoUpdater } from 'electron-updater'
 import { IPC } from '../shared/ipc'
-import {
-  isManualUpdatePlatform,
-  shouldEnableUpdater,
-  toUpdateAvailablePayload
-} from '../shared/update-platform'
+import { toUpdateAvailablePayload, updateDelivery } from '../shared/update-platform'
 import { getMainWindow, sendToMain } from './main-window'
 import { retainUntilDismissed } from './notifications'
 
@@ -31,9 +27,12 @@ const SIX_HOURS = 6 * 60 * 60 * 1000
  * never published there and logged a 404 on `latest*.yml` every six hours.
  *
  * The trade-off, stated plainly: a `dist*` package can no longer smoke-test the updater wiring
- * itself — a manual check there now answers "up to date" without going near the network. The old
- * behaviour at least proved the wiring was live, at the cost of a recurring 404 in every local
- * build's log. Verifying the real feed is the job of a `release` package, which carries no marker.
+ * itself — a manual check there does not go near the network. The old behaviour at least proved
+ * the wiring was live, at the cost of a recurring 404 in every local build's log. Verifying the
+ * real feed is the job of a `release` package, which carries no marker.
+ *
+ * The marker is therefore also what `no-channel` means at runtime (see `updateDelivery`): such a
+ * build now SAYS it has no channel instead of claiming to be up to date, which is issue #814.
  */
 function packagedUpdateMode(): unknown {
   if (!app.isPackaged) return undefined
@@ -71,17 +70,33 @@ export function initUpdater(onBeforeRestart?: () => void): void {
     autoUpdater.quitAndInstall()
   })
 
-  if (!shouldEnableUpdater(app.isPackaged, packagedUpdateMode())) {
-    // Dev and explicitly local/unsigned packages have no update channel. A manual check reports
-    // "up to date" for feedback; automatic networking and updater event wiring stay disabled.
-    ipcMain.on(IPC.appCheckForUpdates, () => send(IPC.appUpdateNotAvailable))
+  const delivery = updateDelivery({
+    isPackaged: app.isPackaged,
+    updateMode: packagedUpdateMode(),
+    platform: process.platform,
+    hasAppImage: !!process.env.APPIMAGE
+  })
+
+  if (delivery === 'dev' || delivery === 'no-channel') {
+    // Neither can reach a feed, so automatic networking and updater event wiring stay off — but
+    // the two answer a MANUAL check differently, because only one of them has a user to mislead.
+    //
+    // `no-channel` is a packaged app someone installed (a Windows build today: no signed release
+    // job, no `latest.yml`). Telling them "up to date" is a statement this build is structurally
+    // unable to make — it was issue #814's actual complaint, read by the reporter as a dead
+    // button. It now says it has no channel and points at the download page.
+    //
+    // `dev` keeps the old quiet "up to date": `npm run dev` has no install to be wrong about.
+    ipcMain.on(IPC.appCheckForUpdates, () =>
+      send(delivery === 'no-channel' ? IPC.appUpdateNoChannel : IPC.appUpdateNotAvailable)
+    )
     return
   }
 
   // A Linux .deb/.rpm install (no APPIMAGE env) cannot self-install and would re-download the
   // full AppImage every 6h only to throw on install. Degrade to a manual-download link: don't
   // auto-download; surface update-available with `manual: true` so the card shows a Download link.
-  const manualUpdates = isManualUpdatePlatform(process.platform, !!process.env.APPIMAGE)
+  const manualUpdates = delivery === 'manual-install'
 
   autoUpdater.autoDownload = !manualUpdates
   autoUpdater.autoInstallOnAppQuit = !manualUpdates

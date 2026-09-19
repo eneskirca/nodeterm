@@ -3,8 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import {
   isManualUpdatePlatform,
+  noSelfInstallCopy,
   shouldEnableUpdater,
-  toUpdateAvailablePayload
+  toUpdateAvailablePayload,
+  updateDelivery
 } from './update-platform'
 
 describe('isManualUpdatePlatform', () => {
@@ -81,5 +83,112 @@ describe('toUpdateAvailablePayload', () => {
     expect(
       toUpdateAvailablePayload({ version: '1.2.0', releaseNotes: [{ note: 'x' }] }, false).notes
     ).toBe('')
+  })
+})
+
+
+/**
+ * Issue #814: a Windows build carries `nodeTermUpdates=disabled` (no signed release job, no
+ * `latest.yml`), so the updater never wires a feed — and the one thing that branch DID wire was a
+ * manual check answering "up to date". These pin the three delivery paths apart, and pin that the
+ * macOS and Linux release paths are untouched by the new one.
+ */
+describe('updateDelivery', () => {
+  const pkgd = { isPackaged: true, updateMode: undefined as unknown, hasAppImage: false }
+
+  it('a packaged build with updates switched off has NO CHANNEL — it is not up to date', () => {
+    expect(updateDelivery({ ...pkgd, updateMode: 'disabled', platform: 'win32' })).toBe('no-channel')
+  })
+
+  it('decides no-channel from the build marker, never from the platform name', () => {
+    // The same marker on every platform: `dist`, `dist:linux` and `dist:win` all set it, and the
+    // day a Windows RELEASE ships with a feed it carries no marker and takes the ordinary path
+    // below with nothing to edit here.
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      expect(updateDelivery({ ...pkgd, updateMode: 'disabled', platform })).toBe('no-channel')
+    }
+  })
+
+  it('a future signed Windows release self-installs, by carrying no marker', () => {
+    expect(updateDelivery({ ...pkgd, platform: 'win32' })).toBe('self-install')
+  })
+
+  it('macOS is unchanged: a release self-installs', () => {
+    expect(updateDelivery({ ...pkgd, platform: 'darwin' })).toBe('self-install')
+    expect(updateDelivery({ ...pkgd, platform: 'darwin', hasAppImage: true })).toBe('self-install')
+  })
+
+  it('Linux is unchanged: .deb/.rpm stays manual, AppImage stays self-installing', () => {
+    expect(updateDelivery({ ...pkgd, platform: 'linux' })).toBe('manual-install')
+    expect(updateDelivery({ ...pkgd, platform: 'linux', hasAppImage: true })).toBe('self-install')
+  })
+
+  it('dev stays its own state — quiet, not a no-channel card in every `npm run dev`', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      expect(updateDelivery({ isPackaged: false, updateMode: undefined, platform, hasAppImage: false })).toBe('dev')
+      // Even with the marker a dist build would carry, an unpackaged run is dev first.
+      expect(updateDelivery({ isPackaged: false, updateMode: 'disabled', platform, hasAppImage: false })).toBe('dev')
+    }
+  })
+
+  it('stays composed from the two primitives — no second definition to drift', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      for (const hasAppImage of [false, true]) {
+        for (const updateMode of [undefined, 'enabled', 'disabled']) {
+          const d = updateDelivery({ isPackaged: true, updateMode, platform, hasAppImage })
+          expect(d === 'no-channel').toBe(!shouldEnableUpdater(true, updateMode))
+          if (d !== 'no-channel') {
+            expect(d === 'manual-install').toBe(isManualUpdatePlatform(platform, hasAppImage))
+          }
+        }
+      }
+    }
+  })
+})
+
+describe('noSelfInstallCopy', () => {
+  const manual = noSelfInstallCopy('manual-install', '0.3.8')
+  const none = noSelfInstallCopy('no-channel')
+
+  it('the Linux .deb sentence is byte-identical to the one that shipped', () => {
+    expect(manual).toEqual({
+      title: 'Update available',
+      body: 'nodeterm v0.3.8 is available. Download it to update.',
+      action: 'Download'
+    })
+  })
+
+  it('the no-channel card names the reason and the remedy, and claims no version', () => {
+    expect(none.title).toBe('No update channel')
+    expect(none.body).toBe(
+      'This build has no update channel, so it cannot tell you when a new version is out. ' +
+        'Download the latest installer to update.'
+    )
+    expect(none.action).toBe('Open download page')
+  })
+
+  it('never says "up to date", and never promises a self-install', () => {
+    const words = `${none.title} ${none.body} ${none.action}`.toLowerCase()
+    expect(words).not.toContain('up to date')
+    expect(words).not.toContain('latest version')
+    expect(words).not.toContain('restart')
+    expect(words).not.toContain('install itself')
+  })
+
+  it('the two reasons never collapse into one sentence — the remedies differ', () => {
+    expect(none.title).not.toBe(manual.title)
+    expect(none.body).not.toBe(manual.body)
+    // `manual` knows which version is out; `no-channel` structurally cannot.
+    expect(manual.body).toContain('0.3.8')
+    expect(none.body).not.toMatch(/\bv?\d+\.\d+/)
+  })
+
+  it('names no platform — the state decides the copy, not an OS typed into a string', () => {
+    for (const copy of [manual, none]) {
+      const words = `${copy.title} ${copy.body} ${copy.action}`.toLowerCase()
+      for (const os of ['windows', 'win32', 'macos', 'linux', 'deb', 'rpm']) {
+        expect(words).not.toContain(os)
+      }
+    }
   })
 })

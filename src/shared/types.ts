@@ -2289,6 +2289,12 @@ export interface UpdateApi {
   onError(listener: (message: string) => void): () => void
   /** No newer version is available (also the dev no-op reply to check()). Returns unsubscribe. */
   onNotAvailable(listener: () => void): () => void
+  /**
+   * This build has no update channel and can never learn whether a newer version exists
+   * (issue #814). Deliberately separate from `onNotAvailable`: "we looked and you are current"
+   * and "we cannot look" are different facts with different remedies. Returns unsubscribe.
+   */
+  onNoChannel(listener: () => void): () => void
   /** Trigger a manual update check. */
   check(): void
   /** The running app version. */

@@ -441,6 +441,11 @@ const api: NodeTerminalApi = {
       ipcRenderer.on(IPC.appUpdateNotAvailable, handler)
       return () => ipcRenderer.removeListener(IPC.appUpdateNotAvailable, handler)
     },
+    onNoChannel: (listener) => {
+      const handler = () => listener()
+      ipcRenderer.on(IPC.appUpdateNoChannel, handler)
+      return () => ipcRenderer.removeListener(IPC.appUpdateNoChannel, handler)
+    },
     check: () => ipcRenderer.send(IPC.appCheckForUpdates),
     getVersion: () => ipcRenderer.invoke(IPC.appGetVersion),
     getPolicy: () => ipcRenderer.invoke(IPC.appUpdatePolicy),

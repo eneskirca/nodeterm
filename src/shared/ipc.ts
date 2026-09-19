@@ -242,6 +242,8 @@ export const IPC = {
   appUpdateProgress: 'app:update-progress',
   appUpdateError: 'app:update-error',
   appUpdateNotAvailable: 'app:update-not-available',
+  /** This build has no update channel at all (issue #814) — distinct from "up to date". */
+  appUpdateNoChannel: 'app:update-no-channel',
   appCheckForUpdates: 'app:check-for-updates',
   appGetVersion: 'app:get-version',
   appUserDataDir: 'app:user-data-dir',

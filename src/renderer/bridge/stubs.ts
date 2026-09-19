@@ -217,6 +217,9 @@ export function buildStubApi(): Omit<
       onProgress: noopUnsub,
       onError: noopUnsub,
       onNotAvailable: noopUnsub,
+      // Server Edition has no updater at all (initUpdater runs only in src/main) and a browser
+      // tab cannot self-install, so there is no channel state to report either way.
+      onNoChannel: noopUnsub,
       check: noop,
       getVersion: U('updates.getVersion'),
       // Boot path awaits this and reads `p.mandatory` UNGUARDED (UpdateCard.tsx), so the old
