@@ -96,41 +96,40 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
     expect(Date.now() - st.lastEventAt!).toBeLessThan(5000) // hours-old clock replaced
   })
 
-  it('persists `hibernatedPane` with the flag and drops it on wake', async () => {
-    // What the pane settled to when the CLI let go: the wake's second way of recognizing a pane it
-    // may type into, for shells the `isShellCommand` allowlist does not know (nu/xonsh/pwsh).
-    // Kept past a wake it would be a standing permission to type into whatever that string names.
+  it('persists `hibernatedContext` with the flag and drops it on wake', async () => {
+    // The pane the CLI let go of: what the wake re-checks before it types a launch line. Kept past
+    // a wake it would be a standing permission to type into whatever that record names.
     const store = memStorage()
     vi.stubGlobal('localStorage', store)
     const { useAgentStatus } = await import('./agentStatus')
-    useAgentStatus.getState().setHibernatedPane('n15', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n15', { command: 'nu', panePid: 7, paneId: '%3' })
     useAgentStatus.getState().setHibernated('n15', true)
     expect(JSON.parse(store.getItem('nodeterm.agentStatus')!).n15).toMatchObject({
       hibernated: true,
-      hibernatedPane: 'nu'
+      hibernatedContext: { command: 'nu', panePid: 7, paneId: '%3' }
     })
     useAgentStatus.getState().setHibernated('n15', false)
-    expect(useAgentStatus.getState().byId['n15'].hibernatedPane).toBeUndefined()
-    expect(JSON.parse(store.getItem('nodeterm.agentStatus')!).n15?.hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n15'].hibernatedContext).toBeUndefined()
+    expect(JSON.parse(store.getItem('nodeterm.agentStatus')!).n15?.hibernatedContext).toBeUndefined()
   })
 
   it('forgets the recorded pane when the exit could not read one (null)', async () => {
     vi.stubGlobal('localStorage', memStorage())
     const { useAgentStatus } = await import('./agentStatus')
-    useAgentStatus.getState().setHibernatedPane('n16', 'nu')
-    useAgentStatus.getState().setHibernatedPane('n16', null)
-    // A stale string must never stand in as permission to type into TODAY's pane.
-    expect(useAgentStatus.getState().byId['n16'].hibernatedPane).toBeUndefined()
+    useAgentStatus.getState().setHibernatedContext('n16', { command: 'nu', panePid: 7 })
+    useAgentStatus.getState().setHibernatedContext('n16', null)
+    // A stale record must never stand in as permission to type into TODAY's pane.
+    expect(useAgentStatus.getState().byId['n16'].hibernatedContext).toBeUndefined()
   })
 
-  it('drops `hibernatedPane` with the flag on the live-state self-heal', async () => {
+  it('drops `hibernatedContext` with the flag on the live-state self-heal', async () => {
     vi.stubGlobal('localStorage', memStorage())
     const { useAgentStatus } = await import('./agentStatus')
-    useAgentStatus.getState().setHibernatedPane('n17', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n17', { command: 'nu', panePid: 7 })
     useAgentStatus.getState().setHibernated('n17', true)
     useAgentStatus.getState().setState('n17', 'working', 'claude')
     expect(useAgentStatus.getState().byId['n17'].hibernated).toBeUndefined()
-    expect(useAgentStatus.getState().byId['n17'].hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n17'].hibernatedContext).toBeUndefined()
   })
 
   it('never restores a recorded pane without the flag it belongs to', async () => {
@@ -138,12 +137,12 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
       'localStorage',
       memStorage({
         'nodeterm.agentStatus': JSON.stringify({
-          n18: { unread: false, sessionId: 's', hibernatedPane: 'nu' }
+          n18: { unread: false, sessionId: 's', hibernatedContext: { command: 'nu', panePid: 7 } }
         })
       })
     )
     const { useAgentStatus } = await import('./agentStatus')
-    expect(useAgentStatus.getState().byId['n18'].hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n18'].hibernatedContext).toBeUndefined()
   })
 
   it('setHibernated(false) on a node that is not hibernated changes NOTHING', async () => {
@@ -193,45 +192,48 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
     expect(saved.hibernated).toBeUndefined()
   })
 
-  it('persists `hibernatedPane` for a PAUSED node even with `hibernated` unset — the deep pause records what its recycled pane settled to, and needs the record to survive a restart just as `paused` does', async () => {
+  it('persists `hibernatedContext` for a PAUSED node even with `hibernated` unset — the deep pause records what its recycled pane settled to, and needs the record to survive a restart just as `paused` does', async () => {
     const store = memStorage()
     vi.stubGlobal('localStorage', store)
     const { useAgentStatus } = await import('./agentStatus')
     useAgentStatus.getState().setPaused('n26', true)
-    useAgentStatus.getState().setHibernatedPane('n26', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n26', { command: 'nu', panePid: 7 })
     const saved = JSON.parse(store.getItem('nodeterm.agentStatus')!).n26
-    expect(saved).toMatchObject({ paused: true, hibernatedPane: 'nu' })
+    expect(saved).toMatchObject({ paused: true, hibernatedContext: { command: 'nu', panePid: 7 } })
     expect(saved.hibernated).toBeUndefined()
   })
 
-  it('restores `hibernatedPane` on load for a paused (not hibernated) node', async () => {
+  it('restores `hibernatedContext` on load for a paused (not hibernated) node', async () => {
     vi.stubGlobal(
       'localStorage',
       memStorage({
         'nodeterm.agentStatus': JSON.stringify({
-          n27: { unread: false, sessionId: 's', paused: true, hibernatedPane: 'nu' }
+          n27: { unread: false, sessionId: 's', paused: true, hibernatedContext: { command: 'nu', panePid: 7 } }
         })
       })
     )
     const { useAgentStatus } = await import('./agentStatus')
-    expect(useAgentStatus.getState().byId['n27']).toMatchObject({ paused: true, hibernatedPane: 'nu' })
+    expect(useAgentStatus.getState().byId['n27']).toMatchObject({
+      paused: true,
+      hibernatedContext: { command: 'nu', panePid: 7 }
+    })
   })
 
-  it('setPaused(false) drops `hibernatedPane` when it was the only owner, but leaves it standing for `hibernated`', async () => {
+  it('setPaused(false) drops `hibernatedContext` when it was the only owner, but leaves it standing for `hibernated`', async () => {
     const store = memStorage()
     vi.stubGlobal('localStorage', store)
     const { useAgentStatus } = await import('./agentStatus')
     // paused-only: resuming drops the pane record too.
     useAgentStatus.getState().setPaused('n28', true)
-    useAgentStatus.getState().setHibernatedPane('n28', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n28', { command: 'nu', panePid: 7 })
     useAgentStatus.getState().setPaused('n28', false)
-    expect(useAgentStatus.getState().byId['n28'].hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n28'].hibernatedContext).toBeUndefined()
     // hibernated AND paused together: resuming `paused` alone leaves `hibernated`'s copy intact.
     useAgentStatus.getState().setHibernated('n29', true)
-    useAgentStatus.getState().setHibernatedPane('n29', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n29', { command: 'nu', panePid: 7 })
     useAgentStatus.getState().setPaused('n29', true)
     useAgentStatus.getState().setPaused('n29', false)
-    expect(useAgentStatus.getState().byId['n29'].hibernatedPane).toBe('nu')
+    expect(useAgentStatus.getState().byId['n29'].hibernatedContext).toMatchObject({ command: 'nu' })
   })
 
   it('clears `paused` on a LIVE state — same self-heal as `hibernated`', async () => {
@@ -247,20 +249,20 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
     }
   })
 
-  it('the LIVE-state self-heal drops `hibernatedPane` alongside a paused-only flag (deep pause), but NOT when `hibernated` still owns it', async () => {
+  it('the LIVE-state self-heal drops `hibernatedContext` alongside a paused-only flag (deep pause), but NOT when `hibernated` still owns it', async () => {
     const { useAgentStatus } = await import('./agentStatus')
     // paused-only (the deep "pause & end session" shape): the pane record goes with it.
     useAgentStatus.getState().setPaused('n30', true)
-    useAgentStatus.getState().setHibernatedPane('n30', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n30', { command: 'nu', panePid: 7 })
     useAgentStatus.getState().setState('n30', 'working', 'claude')
-    expect(useAgentStatus.getState().byId['n30'].hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n30'].hibernatedContext).toBeUndefined()
     // hibernated AND paused together (shallow pause): the shared `hibernated` clear already drops
     // it — this is not a NEW case, just confirming the paused-only branch doesn't double-clear.
     useAgentStatus.getState().setHibernated('n31', true)
     useAgentStatus.getState().setPaused('n31', true)
-    useAgentStatus.getState().setHibernatedPane('n31', 'nu')
+    useAgentStatus.getState().setHibernatedContext('n31', { command: 'nu', panePid: 7 })
     useAgentStatus.getState().setState('n31', 'working', 'claude')
-    expect(useAgentStatus.getState().byId['n31'].hibernatedPane).toBeUndefined()
+    expect(useAgentStatus.getState().byId['n31'].hibernatedContext).toBeUndefined()
   })
 
   it('keeps `paused` through a `done` event — same as `hibernated`, and through a cold restart (this store never clears it on its own)', async () => {

@@ -52,6 +52,8 @@ export interface HibernationStatusInput {
   /** When this node last launched a background shell task, if no turn has started since — the
    *  third safety fact this adapter exists for (see the header). Present at all = live task. */
   backgroundTaskAt?: number
+  /** The last exit attempt found no agent in this pane — see the policy's `paneUnverified`. */
+  paneUnverified?: boolean
 }
 
 /** One subagent card, narrowed: whose it is, and whether it has finished. */
@@ -97,6 +99,7 @@ export function buildHibernationCandidates(
       recurring: !!st?.loop,
       liveSubagents: liveParents.has(n.id),
       liveBackgroundTask: st?.backgroundTaskAt !== undefined,
+      paneUnverified: !!st?.paneUnverified,
       lastEventAt: st?.lastEventAt
     }
   })

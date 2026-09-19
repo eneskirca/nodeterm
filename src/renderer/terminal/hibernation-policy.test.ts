@@ -19,6 +19,7 @@ const base = (id: string, over: object = {}) => ({
   recurring: false,
   liveSubagents: false,
   liveBackgroundTask: false,
+  paneUnverified: false,
   lastEventAt: 0,
   ...over
 })
@@ -40,7 +41,13 @@ describe('planHibernation', () => {
         base('i', { state: 'waiting' }),
         base('j', { recurring: true }),
         base('k', { liveSubagents: true }),
-        base('l', { liveBackgroundTask: true })
+        base('l', { liveBackgroundTask: true }),
+        // A node whose last exit attempt found no agent in its pane is excluded HERE, not merely
+        // refused at fire time. It is `done`, offscreen and idle and nothing about it will change
+        // on its own, so left in the plan it would hold a batch slot on every sweep for the rest
+        // of the run — the same starvation `remote` is excluded at plan time to avoid. See
+        // wake-identity.ts / issue #823.
+        base('m', { paneUnverified: true, lastEventAt: 0 })
       ],
       NOW,
       cfg

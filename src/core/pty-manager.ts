@@ -1773,6 +1773,9 @@ export class PtyManager {
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string) => this.paneCommand(persistKey))
+    // Registered HERE, beside its name-only sibling, rather than in either shell: core owns both
+    // reads, so the desktop and the Server Edition are served by one line and cannot drift.
+    platform().handle(IPC.ptyPaneOwner, (persistKey: string) => this.paneOwner(persistKey))
     platform().handle(IPC.ptyTerminateForeground, (persistKey: string, expectedAgentId?: string) =>
       this.terminateForeground(persistKey, expectedAgentId)
     )

@@ -3,6 +3,7 @@ import { WORKING_STALE_MS } from '@shared/agents/stale'
 import type { AgentId } from '@shared/agents/config'
 import type { AgentState } from '@shared/agents/normalize'
 import type { NodeTerminalApi, ObservedClaudeAccount } from '@shared/types'
+import type { WakeContext } from '../terminal/wake-identity'
 
 /**
  * Transient per-node status for agent (e.g. Claude Code) sessions, driven by the agent's hooks.
@@ -90,8 +91,37 @@ export interface AgentNodeStatus {
    * and a `nu` user could be hibernated and then never woken: the chip would refuse forever.
    * Remembering what we exited TO closes that gap, and it is narrow by construction: it permits
    * one specific string, on one specific node, recorded by us.
+   *
+   * It is a RECORD, not just a string, because the name alone was not enough: a pane whose agent
+   * was reached over an interactive `ssh` presents the same local shell after that ssh dies as it
+   * would if the CLI had run here, so the wake typed the resume into the wrong machine's login
+   * shell (issue #823). The pane identity travels with the name, and — more importantly — this
+   * field is only ever written by an exit that first PROVED the agent owned the pane. An entry
+   * without one is refused rather than guessed at, which is also how pre-fix records retire.
    */
-  hibernatedPane?: string
+  hibernatedContext?: WakeContext
+  /**
+   * The last hibernation attempt found no agent in this node's pane, so nothing was exited
+   * (`decideHibernateExit` → `'not-in-this-pane'`: the pane holds a plain shell, or an interactive
+   * `ssh` whose agent lives on another machine — see wake-identity.ts).
+   *
+   * TRANSIENT, and read by the sweep's PLAN, not only by the exit. That placement is the whole
+   * point: the plan is a deterministic sort-and-slice over the oldest-idle nodes, and a node in
+   * this state stays `done`, offscreen and idle forever — so it would sit at the head of that
+   * order and occupy a batch slot on every single pass, refusing each time, while no eligible node
+   * behind it was ever reached. That is the identical starvation the policy's `remote` field is
+   * excluded at plan time to avoid; this is the same rule for the same reason.
+   *
+   * Withdrawn by any live hook event (the CLI is demonstrably back in the pane) — see `setState`.
+   */
+  paneUnverified?: boolean
+  /**
+   * Why the last wake refused, in one sentence for the chip's tooltip. Transient: it describes the
+   * pane as it was a moment ago, and a stale reason on a pane that has since been fixed would be a
+   * worse lie than no reason at all. Cleared by a resume, by any live hook event, and by the next
+   * wake that does not refuse.
+   */
+  wakeBlocked?: string
   /**
    * The user (or Eco's idle sweep, when `settings.agentHibernationPersistAcrossRestart` is on)
    * explicitly PAUSED this node: its CLI was exited (and, for the deeper "pause & end session"
@@ -231,9 +261,14 @@ export interface AgentStatusStore {
    *  Waking also restarts the idle clock (`lastEventAt`), so a quiet resumed session is not
    *  re-hibernated on the next sweep. */
   setHibernated(id: string, on: boolean): void
-  /** Record what the pane settled to when this node's CLI let go of it (`null` = forget: a stale
-   *  value must never permit a wake into a pane we did not measure). See `hibernatedPane`. */
-  setHibernatedPane(id: string, pane: string | null): void
+  /** Record the pane this node's CLI let go of (`null` = forget: a stale record must never permit
+   *  a wake into a pane we did not measure). See `hibernatedContext`. */
+  setHibernatedContext(id: string, ctx: WakeContext | null): void
+  /** Record (or withdraw) "the last hibernation attempt found no agent in this pane". Transient;
+   *  see `paneUnverified`. Withdrawn automatically by any live hook event. */
+  setPaneUnverified(id: string, on: boolean): void
+  /** Record (or clear) why the last wake refused, for the chip's tooltip. See `wakeBlocked`. */
+  setWakeBlocked(id: string, reason: string | null): void
   /** Mark the node explicitly paused (true) or resumed (false). Persisted; see `paused`. Waking
    *  restarts the idle clock, same as `setHibernated` — a resumed session must not read as having
    *  been idle since before the pause. */
@@ -367,8 +402,19 @@ export function createAgentStatusSession(
         // and this is the only record of what that pane turned out to be (see the cold-restore
         // gate in TerminalNode.tsx). Meaningless (and, as a wake permission, unwanted) once
         // NEITHER flag holds.
-        if ((v.hibernated || v.paused) && typeof v.hibernatedPane === 'string')
-          out[id].hibernatedPane = v.hibernatedPane
+        if (v.hibernated || v.paused) {
+          // Shape-checked, not trusted: localStorage is hand-editable, and this record is what
+          // authorises a write into a pane. A partial or mistyped one is dropped entirely (⇒ the
+          // wake's `'no-proof'` refusal), never half-applied — the same rule the `loop` entry
+          // below follows, for a much cheaper mistake.
+          const c = v.hibernatedContext
+          if (c && typeof c.command === 'string' && typeof c.panePid === 'number' && c.panePid > 0)
+            out[id].hibernatedContext = {
+              command: c.command,
+              panePid: c.panePid,
+              paneId: typeof c.paneId === 'string' ? c.paneId : undefined
+            }
+        }
         // Independent of `hibernated`: the deep "pause & end session" choice recycles the tmux
         // session, so a paused node can perfectly well hydrate with `hibernated` unset.
         if (v.paused) out[id].paused = true
@@ -420,8 +466,8 @@ export function createAgentStatusSession(
             account: v.account,
             loop: v.loop,
             hibernated: v.hibernated,
-            // Never written without a flag it belongs to (see `hibernatedPane`'s load comment).
-            hibernatedPane: v.hibernated || v.paused ? v.hibernatedPane : undefined,
+            // Never written without a flag it belongs to (see `hibernatedContext`'s load comment).
+            hibernatedContext: v.hibernated || v.paused ? v.hibernatedContext : undefined,
             paused: v.paused
           }
         }
@@ -540,7 +586,7 @@ export function createAgentStatusSession(
         const alive = state === 'working' || state === 'blocked' || state === 'waiting'
         if (alive && prev.hibernated) {
           next.hibernated = undefined
-          next.hibernatedPane = undefined // goes with the flag, always
+          next.hibernatedContext = undefined // goes with the flag, always
         }
         // Same self-heal, same reasoning: a live hook event is proof the CLI is running, whatever
         // brought it back (our own resume, or the user typing the launch line by hand) — a standing
@@ -552,8 +598,15 @@ export function createAgentStatusSession(
           // `hibernated` to protect it, so without this an in-memory record describing a pane that
           // is now demonstrably running something else would linger, and stand as permission for
           // the next deep pause to be typed into recognizing a pane it never measured.
-          if (!next.hibernated) next.hibernatedPane = undefined
+          if (!next.hibernated) next.hibernatedContext = undefined
         }
+        // A hook event of ANY kind — `done` included — is the CLI reporting from inside the pane,
+        // which is exactly the fact both of these withdraw. `paneUnverified` said "no agent is in
+        // this pane"; a hook event says otherwise, and without this the node would stay out of the
+        // sweep's plan for the rest of the run. `wakeBlocked` described a refusal that is now moot.
+        // Gated on neither `alive` nor `newTurn`: a `done` POST still comes from a live CLI.
+        if (prev.paneUnverified) next.paneUnverified = undefined
+        if (prev.wakeBlocked) next.wakeBlocked = undefined
         // A hook event of ANY kind is proof the CLI is alive — it is the CLI that fired it — so a
         // standing DROPPED verdict is withdrawn here, `done` included. That is the one self-heal
         // above which deliberately does NOT gate on `alive`: `done` must not clear `hibernated`
@@ -643,7 +696,9 @@ export function createAgentStatusSession(
           ...prev,
           hibernated: on ? true : undefined,
           // Hibernating KEEPS what the exit closure just recorded; waking drops it.
-          hibernatedPane: on ? prev.hibernatedPane : undefined
+          hibernatedContext: on ? prev.hibernatedContext : undefined,
+          // A wake that succeeded answers whatever the last refusal said.
+          wakeBlocked: on ? prev.wakeBlocked : undefined
         }
         // Waking RESTARTS the idle clock. Without this, a node whose conversation was resumed but
         // whose CLI then sits quiet (an agent that fires no hook until you talk to it) still
@@ -657,14 +712,39 @@ export function createAgentStatusSession(
         return { byId }
       }),
 
-    setHibernatedPane: (id, pane) =>
+    setHibernatedContext: (id, ctx) =>
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
-        const next = pane ?? undefined
-        if (prev.hibernatedPane === next) return s
-        const byId = { ...s.byId, [id]: { ...prev, hibernatedPane: next } }
+        const next = ctx ?? undefined
+        // Value equality, not identity: the caller builds a fresh object from every pane read, and
+        // an identity compare would write (and persist) on each one.
+        if (
+          prev.hibernatedContext?.command === next?.command &&
+          prev.hibernatedContext?.panePid === next?.panePid &&
+          prev.hibernatedContext?.paneId === next?.paneId
+        )
+          return s
+        const byId = { ...s.byId, [id]: { ...prev, hibernatedContext: next } }
         save(byId)
         return { byId }
+      }),
+
+    setPaneUnverified: (id, on) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        const next = on ? true : undefined
+        if (prev.paneUnverified === next) return s
+        // Transient: no `save`. It describes this run's reading of a live pane, and a persisted
+        // copy would keep a node out of the sweep across a restart on evidence nobody re-took.
+        return { byId: { ...s.byId, [id]: { ...prev, paneUnverified: next } } }
+      }),
+
+    setWakeBlocked: (id, reason) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        const next = reason ?? undefined
+        if (prev.wakeBlocked === next) return s
+        return { byId: { ...s.byId, [id]: { ...prev, wakeBlocked: next } } }
       }),
 
     setPaused: (id, on) =>
@@ -682,7 +762,8 @@ export function createAgentStatusSession(
           // both flags together, in which case `setHibernated(id, false)` already dropped this —
           // but `setPaused` must be correct standing alone, for the deep-pause case where
           // `hibernated` was never set and this is the only owner).
-          if (!prev.hibernated) next.hibernatedPane = undefined
+          if (!prev.hibernated) next.hibernatedContext = undefined
+          next.wakeBlocked = undefined
         }
         const byId = { ...s.byId, [id]: next }
         save(byId)

@@ -5,6 +5,7 @@ import { DEFAULT_WORKTREE_PATH_TEMPLATE } from './worktree'
 import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
 import type { NormalizedAgentEvent } from './agents/normalize'
+import type { PaneOwner } from './agents/pane-owner-predicate'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
@@ -1000,6 +1001,11 @@ export interface PtyApi {
    *  node persistKey. null when it is unknown — no session, no tmux, or the query failed — which
    *  callers must read as "not observed", never as evidence of a particular command. */
   paneCommand(persistKey: string): Promise<string | null>
+  /** Kernel truth about a node's pane — its root pid, tty, tmux pane id and the full argv of its
+   *  foreground process group — so a caller can ask WHO owns the pane rather than what tmux calls
+   *  it. `null` is "could not read", never evidence that the pane is free (see `isAgentPane`'s
+   *  three-valued verdict, which is what consumers should decide on). */
+  paneOwner(persistKey: string): Promise<PaneOwner | null>
   /** Terminate the foreground process group in a node's pane. Returns false when the pane/process
    *  cannot be safely identified; it never kills the pane's login shell. When `expectedAgentId` is
    *  given, the kill happens only if that harness actually owns the foreground group (argv-verified)

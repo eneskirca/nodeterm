@@ -33,9 +33,30 @@ describe('buildHibernationCandidates', () => {
         recurring: false,
         liveSubagents: false,
         liveBackgroundTask: false,
+        paneUnverified: false,
         lastEventAt: IDLE
       }
     ])
+  })
+
+  it('lifts `paneUnverified` — the plan needs it, and an omitted field would read as eligible', () => {
+    // The flag the exit sets when the kernel says no agent owns this node's pane (issue #823).
+    // It is a PLAN-time exclusion, so it has to survive this adapter: dropped here, a node that
+    // can never be exited would hold a batch slot on every sweep for the rest of the run.
+    const rows = buildHibernationCandidates(
+      inputs({
+        nodes: [
+          { id: 'a', agentId: 'claude' },
+          { id: 'b', agentId: 'claude' }
+        ],
+        statusById: {
+          a: { state: 'done', sessionId: 'sid-a', lastEventAt: IDLE },
+          b: { state: 'done', sessionId: 'sid-b', lastEventAt: IDLE, paneUnverified: true }
+        }
+      })
+    )
+    expect(rows.map((r) => r.paneUnverified)).toEqual([false, true])
+    expect(planHibernation(rows, NOW, { enabled: true, idleMinutes: 30 })).toEqual(['a'])
   })
 
   it('liveBackgroundTask mirrors backgroundTaskAt presence', () => {

@@ -32,6 +32,12 @@ export const IPC = {
   /** The foreground command of a node's tmux pane (`#{pane_current_command}`) — how the in-place
    *  agent restart sees that the CLI has exited and a shell owns the pane again. */
   ptyPaneCommand: 'pty:pane-command',
+  /** Kernel truth about a node's tmux pane: its root pid, tty, tmux pane id, and the full argv of
+   *  its FOREGROUND process group (`PaneOwner`). The name-only `ptyPaneCommand` above cannot tell
+   *  an agent from anything else — an npm-installed CLI reports as `node`, and an agent reached
+   *  over an interactive `ssh` reports as `ssh` — so the hibernation exit asks this instead before
+   *  it types `/exit` into a pane. null when the pane cannot be read. */
+  ptyPaneOwner: 'pty:pane-owner',
   /** Renderer → core: SIGTERM the non-shell foreground process group in this node's pane.
    *  Model switching uses this instead of typing an exit slash-command into an agent composer. */
   ptyTerminateForeground: 'pty:terminate-foreground',

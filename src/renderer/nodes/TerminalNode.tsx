@@ -118,6 +118,15 @@ import {
   resumeSessionMissing
 } from '../terminal/resume-fallback'
 import { MAX_LAUNCH_LINE_BYTES, lineBytes } from '@shared/canonical-line'
+import { binariesFor, type PaneOwner } from '@shared/agents/pane-owner-predicate'
+import {
+  captureWakeContext,
+  decideHibernateExit,
+  decideWakeResume,
+  wakeRefusalReason,
+  wakeVerdictIsTransient,
+  type WakeVerdict
+} from '../terminal/wake-identity'
 import {
   agentHibernateFns,
   exitSequence,
@@ -1692,6 +1701,14 @@ export function TerminalNode({
         // 'not-eligible' — usually timing, not a refusal that will stand: at mount the spawn is
         // still in flight (no session id yet), and right after a reveal tmux may not have answered
         // `paneCommand` yet. See `retryLater`.
+        //
+        // …unless the resume half wrote a REASON. That is its standing refusals only (the pane
+        // belongs to something else now, or the record predates the proof) — the transient one
+        // leaves the field null on purpose. Retrying a standing refusal only burns the attempts
+        // that the genuinely-transient cases need, and re-asks a question whose answer cannot
+        // change without the user doing something. The chip carries the sentence; its click is
+        // the way forward, and it re-checks.
+        if (useAgentStatus.getState().byId[id]?.wakeBlocked) return
         retryLater()
       })
       .catch(() => {
@@ -2023,6 +2040,40 @@ export function TerminalNode({
     if (offscreenDownRef.current) return
     const container = bodyRef.current
     if (!container) return
+
+    /**
+     * Kernel truth about this node's pane, within the same budget the pane-command polls use.
+     *
+     * One `display-message` plus one `ps` locally (one ControlMaster exec channel for a remote
+     * pane), and it is asked at most twice per hibernation — once before the exit, once after it —
+     * for at most `HIBERNATE_BATCH_MAX` nodes a sweep. It is deliberately NOT on any timer: the
+     * question it answers is only meaningful at the instant something is about to be written.
+     *
+     * `null` on anything that is not a clean answer, including the deadline: every caller treats
+     * that as "we cannot see this pane", which is a refusal on both sides of the pair.
+     */
+    const readPaneOwner = async (): Promise<PaneOwner | null> => {
+      let lapse: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          api.pty.paneOwner(id),
+          new Promise<null>((r) => {
+            lapse = setTimeout(() => r(null), RESTART_EXIT_TIMEOUT_MS)
+          })
+        ])
+      } catch {
+        return null
+      } finally {
+        clearTimeout(lapse)
+      }
+    }
+    /** The binary names this node's agent actually runs as. Passed explicitly so a CUSTOM agent is
+     *  verifiable from its own launch command — without it `binariesFor` cannot name a
+     *  `custom:<uuid>` and answers `unknown`, which here is a refusal, i.e. Eco silently off for
+     *  every custom agent on the canvas. */
+    const paneBinaries = (): readonly string[] | null =>
+      agentId ? binariesFor(agentId, useSettings.getState().settings.customAgents) : null
+
 
     // Adopt-or-create: a parked terminal (this node unmounted less than TERM_PARK_MS ago) is
     // re-adopted with its live PTY session and full xterm state intact; otherwise a fresh
@@ -3646,15 +3697,17 @@ export function TerminalNode({
           // The auto-resume above was skipped (that's the feature), but this mount's PANE is
           // brand new either way — tmux respawned it, whether from the deep "pause & end session"
           // recycle or from a genuine reboot that took a shallow-paused session's tmux with it.
-          // The later Resume's pane-recognition (`isShellCommand(pane)` OR the recorded
-          // `hibernatedPane` — see performExitPhase's wake half) would otherwise refuse a user
-          // whose default shell sits outside the `isShellCommand` allowlist (nu/xonsh/pwsh)
+          // The later Resume's pane-recognition (see `decideWakeResume`) would otherwise refuse a
+          // user whose default shell sits outside the `isShellCommand` allowlist (nu/xonsh/pwsh)
           // forever: a PAUSED chip that can never resume, with a live conversation on disk. Record
           // what this fresh pane actually is, the same way the exit half does — replacing any
-          // stale value a pre-reboot shallow pause left behind, which described a pane that no
+          // stale record a pre-reboot shallow pause left behind, which described a pane that no
           // longer exists.
-          const settled = await queryPaneWithin(() => api.pty.paneCommand(id), RESTART_EXIT_TIMEOUT_MS)
-          useAgentStatus.getState().setHibernatedPane(id, settled)
+          //
+          // No ownership gate here, and none is owed: nothing is being QUIT: this pane was just
+          // respawned by tmux and holds a brand-new shell, which is the context the later resume
+          // is meant to launch into. The gate belongs where an exit is written.
+          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
         }
       })
       .catch((err: unknown) => {
@@ -3925,6 +3978,28 @@ export function TerminalNode({
         // permission prompt ANSWERS it).
         const gate = restartEligibility(agentId, st?.state, agentSessionId)
         if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
+        // ── IS THE CLI ACTUALLY IN THIS PANE? (issue #823) ──────────────────────────────────────
+        // Everything above asks about the node's STATE; this asks about the pane, and it is the
+        // only question that makes "resume it where we exited it" a promise we can keep. `done`
+        // is a memory of the last hook event, and hooks arrive over a reverse tunnel from wherever
+        // the agent actually runs: a node whose agent was reached over an interactive `ssh` that
+        // has since died still reads `done`, and its pane is now the LOCAL login shell. Exiting it
+        // types `/exit` into that shell, records it as SLEEPING, and hands the later wake a pane
+        // in which the remote session id cannot resolve — which is exactly the reported bug.
+        //
+        // `isAgentPane` (via `decideHibernateExit`) answers from the kernel's foreground process
+        // group, so it sees through both disguises the name-based read cannot: `node` for every
+        // npm-installed CLI, and `ssh` for an agent on another machine. Refusing costs one sweep;
+        // being wrong costs a conversation.
+        const exitVerdict = decideHibernateExit(await readPaneOwner(), agentId, paneBinaries())
+        if (exitVerdict !== 'agent-owns-pane') {
+          // Only the TERMINAL verdict is recorded. `'unreadable'` is a probe that failed (no tmux,
+          // a pane mid-teardown, a lapsed deadline) and the next sweep re-asks; latching it would
+          // drop the node out of the plan for the rest of the run on no evidence at all.
+          useAgentStatus.getState().setPaneUnverified(id, exitVerdict === 'not-in-this-pane')
+          return 'not-eligible'
+        }
+        useAgentStatus.getState().setPaneUnverified(id, false)
         const outcome = await performExitPhase({
           agentId,
           sessionId: agentSessionId,
@@ -3933,19 +4008,19 @@ export function TerminalNode({
           isLive: restartTarget
         })
         if (outcome === 'exited') {
-          // Remember WHAT the pane settled to. The wake will only type into a pane it recognizes,
-          // and its `isShellCommand` allowlist does not know `nu`, `xonsh` or `pwsh` — while the
-          // exit half accepts those through its allowlist-free "the command stopped being the CLI"
-          // signal. Without this record the wake is STRICTER than the exit that produced it, and
-          // such a user is hibernated and then never woken: the chip refuses forever.
-          // One extra poll rather than a value out of `performExitPhase`, whose behavior is pinned
+          // Remember the pane we exited INTO — the proof the wake spends. It carries the command
+          // (the wake's recognition allowlist does not know `nu`, `xonsh` or `pwsh`, while the exit
+          // half accepts those through its allowlist-free "the command stopped being the CLI"
+          // signal, so without it the wake would be STRICTER than the exit that produced it and
+          // such a user would be hibernated and never woken) AND the pane's own identity, so a
+          // record cannot authorise a write into a pane it never described.
+          //
+          // One extra read rather than a value out of `performExitPhase`, whose behavior is pinned
           // byte-for-byte by Task 8's tests. `null` (a pane we could not read) FORGETS the old
-          // value: a stale string must never stand in as permission to type into today's pane.
-          const settled = await queryPaneWithin(
-            () => api.pty.paneCommand(id),
-            RESTART_EXIT_TIMEOUT_MS
-          )
-          useAgentStatus.getState().setHibernatedPane(id, settled)
+          // record: absent is refused, and that is the correct answer for an exit whose landing we
+          // did not witness. A stale record must never stand in as permission to type into today's
+          // pane.
+          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
         }
         return outcome
       }),
@@ -3997,15 +4072,34 @@ export function TerminalNode({
         // resume, and the pane is a REPL the user can type into: by now it may belong to vim, to
         // `top`, or to a claude the user launched by hand — and a launch line typed into a live
         // program is sent to that program, as a message or a mangled command. A pane we cannot
-        // READ answers null and is refused for the same reason.
+        // READ is refused for the same reason.
         //
-        // Two ways to recognize it, mirroring the exit half's two: a KNOWN shell, or the exact
-        // command this node's own exit measured the pane settling to (`hibernatedPane`). The
-        // second is what keeps a `nu` / `xonsh` / `pwsh` user — whom the exit accepts through its
-        // allowlist-free signal — from being hibernated and never woken.
-        const pane = await queryPaneWithin(() => api.pty.paneCommand(id), RESTART_EXIT_TIMEOUT_MS)
-        const settled = useAgentStatus.getState().byId[id]?.hibernatedPane
-        if (!isShellCommand(pane) && !(pane !== null && pane === settled)) return 'not-eligible'
+        // What this asks is not "is a shell here?" but "is this the pane we exited the CLI in?".
+        // The difference is the whole of issue #823: a name-based read cannot tell the local login
+        // shell that an agent's `ssh` died back to apart from the shell that agent would have left
+        // behind, so it typed the resume into the wrong machine. The proof travels with the
+        // hibernation record instead, taken at the exit while the difference was still visible
+        // (`decideHibernateExit`), and this is where it is spent. See wake-identity.ts for the
+        // measurements and for why a node with no proof — every node hibernated by the build that
+        // shipped the bug — is refused rather than guessed at.
+        //
+        // `exitedByUs` splits the two wake families: a deep "pause & end session" RECYCLES the tmux
+        // session and a `dropped` node's CLI died on its own, so neither has a pane of ours to
+        // match; both keep exactly the shell recognition they have today, and both gain the
+        // agent-running refusal they did not.
+        const stWake = useAgentStatus.getState().byId[id]
+        const verdict: WakeVerdict = decideWakeResume({
+          owner: await readPaneOwner(),
+          recorded: stWake?.hibernatedContext,
+          exitedByUs: !!stWake?.hibernated,
+          agentId,
+          binaries: paneBinaries()
+        })
+        // Always written, so a refusal that has since been fixed does not leave a stale sentence on
+        // the chip. `null` for `'resume'` and for the transient `'unreadable'` — the latter is
+        // timing, and the trigger's bounded retry (which reads this field) owns it.
+        useAgentStatus.getState().setWakeBlocked(id, wakeRefusalReason(verdict))
+        if (verdict !== 'resume') return 'not-eligible'
         // Clear the line before the launch line goes in. The shell above is the one WE exited to,
         // hours ago — nothing stops a passer-by (or a stray paste, or the user's own aborted
         // command) from having left a half-typed line at its prompt, and `deliverCommand`'s first
@@ -4054,6 +4148,20 @@ export function TerminalNode({
         // real command — junk output, and it would eat any half-typed line the user left there.
         // Skip straight to marking (and, if deep, recycling) — there is nothing left to exit.
         const alreadyExited = !!st?.hibernated
+        // The same pane-ownership question Eco's exit asks, and for the same reason: a manual pause
+        // ends in the same SLEEPING record and the same much-later wake, so a pause whose CLI is
+        // not in this pane would leave behind the exact record #823 is about. Skipped when the pane
+        // was ALREADY exited by us — there is no agent to find, and `alreadyExited` is precisely the
+        // case where that is expected rather than suspicious.
+        //
+        // Unlike the sweep this refusal is NOT latched into `paneUnverified`: that flag exists to
+        // keep a node out of the automatic plan, and a user who presses Pause is entitled to press
+        // it again. They get the ordinary `'not-eligible'`, which the menu already has wording for.
+        if (
+          !alreadyExited &&
+          decideHibernateExit(await readPaneOwner(), agentId, paneBinaries()) !== 'agent-owns-pane'
+        )
+          return 'not-eligible'
         const outcome = alreadyExited
           ? 'exited'
           : await performExitPhase({
@@ -4083,8 +4191,7 @@ export function TerminalNode({
           // it so the SLEEPING machinery (pane-recognition on wake) still applies — plus `paused`,
           // which is the only thing that changes: no auto-wake on reveal, and no auto-resume should
           // the tmux session itself later die and come back `fresh` (a reboot, e.g.).
-          const settled = await queryPaneWithin(() => api.pty.paneCommand(id), RESTART_EXIT_TIMEOUT_MS)
-          useAgentStatus.getState().setHibernatedPane(id, settled)
+          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
           useAgentStatus.getState().setHibernated(id, true)
           useAgentStatus.getState().setPaused(id, true)
         }
@@ -5344,15 +5451,24 @@ export function TerminalNode({
         ) : (
           status?.hibernated && (
             <button
-              className="term-node__status term-node__status--sleeping nodrag"
-              title="Agent hibernated to save memory — click to resume"
+              className={
+                'term-node__status term-node__status--sleeping nodrag' +
+                (status.wakeBlocked ? ' term-node__status--wake-blocked' : '')
+              }
+              /* A refused wake used to be visible only as whatever the pane said afterwards — in
+                 the reported case, claude's own red "No conversation found" in a shell the user
+                 never asked to be typed into. The node believed it had woken. Now the refusal has
+                 a sentence, and it lives on the chip that is already the way back: still clickable,
+                 because a re-check is exactly what the user wants once they have fixed the pane
+                 (ssh'd back in, quit whatever took it over). */
+              title={status.wakeBlocked ?? 'Agent hibernated to save memory — click to resume'}
               onClick={(e) => {
                 e.stopPropagation()
                 wakeRef.current()
               }}
             >
               <span className="term-node__status-dot" />
-              SLEEPING
+              {status.wakeBlocked ? 'SLEEPING — NOT RESUMED' : 'SLEEPING'}
             </button>
           )
         )}

@@ -2046,6 +2046,19 @@ body,
   color: var(--text);
 }
 
+/* SLEEPING, but the wake refused: the pane is no longer the one this session was exited in, so
+   nothing was typed into it (see wake-identity.ts). Warning-coloured like DROPPED rather than
+   muted like plain SLEEPING, because this one needs the user — the conversation will not come back
+   on its own. Still the same button; its click re-checks the pane. */
+.term-node__status--wake-blocked {
+  color: var(--warn);
+}
+
+.term-node__status--wake-blocked:hover {
+  color: var(--warn);
+  opacity: 0.85;
+}
+
 /* PAUSED: same quiet treatment as SLEEPING (a click resumes) — distinct label because a paused
    node will NOT auto-resume when reopened, which SLEEPING does. */
 .term-node__status--paused {
