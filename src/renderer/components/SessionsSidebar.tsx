@@ -5,6 +5,7 @@ import {
   groupCollapseKey,
   groupSessionCount,
   groupSessionRows,
+  groupSignalCounts,
   isGroupCollapsed,
   liveCollapseKeys,
   projectCollapseKey,
@@ -15,6 +16,7 @@ import {
   type GroupBucket,
   type SessionNodeInput,
   type SessionRowVM,
+  type SignalCounts,
   type StatusSection
 } from '../lib/sessionList'
 import { sidebarEmptyState, sidebarFilterKeyAction } from '../lib/sidebarFilter'
@@ -29,6 +31,63 @@ import { useSessionNaming } from '../state/sessionNaming'
 import { useSession } from '../session/session'
 
 const HISTORY_COLLAPSE_KEY = 'history'
+
+/**
+ * Titles per scope. Spelled out rather than composed from a fragment: the group's `working` badge
+ * answers a different question from the project's ("is this delegated task still moving?"), and a
+ * concatenated suffix would bury that difference.
+ */
+const SIGNAL_TITLES = {
+  project: {
+    attention: 'Sessions that need you',
+    unread: 'Finished — new for you',
+    working: 'Sessions running right now'
+  },
+  group: {
+    attention: 'Sessions in this group that need you',
+    unread: 'Finished in this group — new for you',
+    working: 'CLIs running in this group right now'
+  }
+} as const
+
+/**
+ * The three header badges, rendered identically for a project and for a canvas frame. ONE
+ * component on purpose: the project header and the frame headers below it are read as one column,
+ * so a badge that means "running" in one row and something subtly else in the next is worse than
+ * no badge at all. A zero count renders nothing (that is the badges' whole grammar) — which is
+ * also why the ABSENCE of the working badge is what says "this group is waiting for you".
+ */
+function SignalBadges({
+  counts,
+  scope
+}: {
+  counts: SignalCounts
+  scope: 'project' | 'group'
+}): JSX.Element {
+  const titles = SIGNAL_TITLES[scope]
+  return (
+    <>
+      {counts.attention > 0 && (
+        <span className="ss-group__sig ss-group__sig--attention" title={titles.attention}>
+          <IconBellFilled />
+          {counts.attention}
+        </span>
+      )}
+      {counts.unread > 0 && (
+        <span className="ss-group__sig ss-group__sig--unread" title={titles.unread}>
+          <IconCircleCheck />
+          {counts.unread}
+        </span>
+      )}
+      {counts.working > 0 && (
+        <span className="ss-group__sig ss-group__sig--working" title={titles.working}>
+          <span className="ss-group__sig-spin" />
+          {counts.working}
+        </span>
+      )}
+    </>
+  )
+}
 
 export interface SessionsSidebarProps {
   open: boolean
@@ -390,7 +449,12 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
               {bucket.title}
             </span>
           )}
-          <span className="ss-group__count">{groupSessionCount(bucket)}</span>
+          {/* Badges + count are one right-aligned tail: the name is `flex: 0 1 auto` and the
+              tail must not be split across the free space between them. */}
+          <span className="ss-subgroup__tail">
+            <SignalBadges counts={groupSignalCounts(bucket)} scope="group" />
+            <span className="ss-group__count">{groupSessionCount(bucket)}</span>
+          </span>
           {members.length > 0 && (
             <button
               className="ss-subgroup__ai"
@@ -666,24 +730,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                 {branches[g.projectId] && (
                   <span className="ss-group__branch">⎇ {branches[g.projectId]}</span>
                 )}
-                {signals.attention > 0 && (
-                  <span className="ss-group__sig ss-group__sig--attention" title="Sessions that need you">
-                    <IconBellFilled />
-                    {signals.attention}
-                  </span>
-                )}
-                {signals.unread > 0 && (
-                  <span className="ss-group__sig ss-group__sig--unread" title="Finished — new for you">
-                    <IconCircleCheck />
-                    {signals.unread}
-                  </span>
-                )}
-                {signals.working > 0 && (
-                  <span className="ss-group__sig ss-group__sig--working" title="Sessions running right now">
-                    <span className="ss-group__sig-spin" />
-                    {signals.working}
-                  </span>
-                )}
+                <SignalBadges counts={signals} scope="project" />
                 <span className="ss-group__count">{projectCount(g)}</span>
                 <button
                   className="ss-group__add"

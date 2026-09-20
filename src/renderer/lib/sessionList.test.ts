@@ -12,6 +12,7 @@ import {
   projectIdAtIndex,
   isGroupCollapsed,
   projectHeadClickAction,
+  groupSignalCounts,
   projectSignalCounts,
   type ProjectInput,
   type SessionRowVM,
@@ -429,6 +430,69 @@ describe('projectSignalCounts', () => {
     const [p1] = buildSessionList(proj, null, 'p1', status, '')
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['a1', 'a2']) // sanity: sessions really live under group.groups
     expect(projectSignalCounts(p1)).toEqual({ attention: 1, unread: 0, working: 1 })
+  })
+})
+
+describe('groupSignalCounts', () => {
+  // One frame holding a nested frame, so the subtree walk is exercised rather than assumed:
+  // g1 { a1 blocked, g2 { c1 working } } plus an ungrouped working session in the project.
+  const proj: ProjectInput[] = [
+    {
+      id: 'p1',
+      name: 'Alpha',
+      color: '#111',
+      nodes: [
+        node('g1', { kind: 'group', title: 'Team A', color: '#abc' }),
+        node('g2', { kind: 'group', title: 'Sub', color: '#abc', parentId: 'g1' }),
+        node('a1', { agentId: 'claude', parentId: 'g1' }),
+        node('c1', { agentId: 'claude', parentId: 'g2' }),
+        node('t1', { agentId: 'claude' })
+      ]
+    }
+  ]
+  const status: Record<string, AgentNodeStatus> = {
+    a1: { unread: true, state: 'blocked' }, // attention wins over unread
+    c1: { unread: true, state: 'working' }, // working is not counted as unread
+    t1: { unread: false, state: 'working' } // outside the frame entirely
+  }
+
+  it('counts the frame whole subtree, nested frames included', () => {
+    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 1, unread: 0, working: 1 })
+  })
+
+  it('counts only its own subtree, not the rest of the project', () => {
+    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    // The inner frame sees only c1; the ungrouped t1 belongs to no frame and is the difference
+    // between the frame totals and the project total.
+    expect(groupSignalCounts(g.groups[0].children[0])).toEqual({
+      attention: 0,
+      unread: 0,
+      working: 1
+    })
+    expect(projectSignalCounts(g)).toEqual({ attention: 1, unread: 0, working: 2 })
+  })
+
+  it('is zero for a frame with nothing running or waiting', () => {
+    const quiet: ProjectInput[] = [
+      {
+        id: 'p1',
+        name: 'Alpha',
+        color: '#111',
+        nodes: [node('g1', { kind: 'group', title: 'Team A', color: '#abc' }), node('x', { parentId: 'g1' })]
+      }
+    ]
+    // The absence of a working badge is what tells the user the task is waiting for them, so a
+    // quiet frame must report zeros rather than anything the header could render.
+    const [g] = buildSessionList(quiet, null, 'p1', {}, '')
+    expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 0, unread: 0, working: 0 })
+  })
+
+  it('counts the rows the sidebar is showing, so an active filter narrows it', () => {
+    const [g] = buildSessionList(proj, null, 'p1', status, 'c1')
+    // a1 is filtered out of the tree, so the badge must not claim an attention the user cannot
+    // see or click — the same rule the project badge already follows.
+    expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 0, unread: 0, working: 1 })
   })
 })
 
