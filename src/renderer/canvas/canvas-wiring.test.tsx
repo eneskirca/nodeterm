@@ -110,6 +110,41 @@ describe('the trailing gestures are handed to the dispatcher', () => {
   })
 })
 
+describe('model-switch repair controls stay owned by the live Canvas', () => {
+  it('does not split a preserved popup from a module-global retry controller', () => {
+    expect(CANVAS_SRC).not.toContain('let modelSwitchRepair:')
+    expect(CANVAS_SRC).toContain('const modelSwitchRepairRef = useRef<ModelSwitchRepair | null>(null)')
+    expect(CANVAS_SRC).toContain("modelRespawnTrace('retry.all-clicked'")
+    expect(CANVAS_SRC).toContain('controllerAvailable: !!repair')
+  })
+
+  it('makes the initial pass repeat one full recycle after a replacement agent exits', () => {
+    expect(CANVAS_SRC).toContain('await repairOne(item, true)')
+    expect(CANVAS_SRC).toContain("modelRespawnTrace('repair.auto-force-retry'")
+  })
+
+  it('spends a verified cure inside the repair path shared by initial and button retries', () => {
+    const repair = CANVAS_SRC.slice(
+      CANVAS_SRC.indexOf('const repairOne = async'),
+      CANVAS_SRC.indexOf('// The repair handlers the strip\'s buttons call')
+    )
+    expect(repair).toContain('modelRecoveryCure(')
+    expect(repair).toContain('modelGoneAsked.set(item.askKey, true)')
+    expect(CANVAS_SRC).not.toContain('const appliedModels = new Map')
+  })
+
+  it('clears the prior refusal before deciding the current attempt deserves an automatic retry', () => {
+    const repair = CANVAS_SRC.slice(
+      CANVAS_SRC.indexOf('const repairOne = async'),
+      CANVAS_SRC.indexOf('// The repair handlers the strip\'s buttons call')
+    )
+    const clear = repair.indexOf('setLastRestartRefusal(item.id, null)')
+    const invoke = repair.indexOf('await fn(undefined, target)')
+    expect(clear).toBeGreaterThan(-1)
+    expect(clear).toBeLessThan(invoke)
+  })
+})
+
 describe('the end-session confirm describes both things it does', () => {
   // `closeSession` stops the tmux session AND deletes the canvas node. The wording is inherited
   // from the sessions sidebar, where deleting the node is the obvious intent — but the
