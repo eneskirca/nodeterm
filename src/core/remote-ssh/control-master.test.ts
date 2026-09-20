@@ -9,6 +9,7 @@ import {
   probeSaysAbsent,
   remoteCapturePaneArgs,
   remotePaneCommandArgs,
+  remoteShowEnvironmentArgs,
   remotePaneProcessArgs,
   remoteTerminateForegroundArgs,
   remoteListSessionsArgs,
@@ -263,6 +264,15 @@ describe('remotePaneCommandArgs', () => {
     const args = remotePaneCommandArgs(conn, '/s.sock', 'nt-x')
     expect(args[args.length - 1]).toBe(
       `${TP}tmux -L ${RMT_TMUX_SOCKET} display-message -p -t nt-x '#{pane_current_command}'`
+    )
+  })
+})
+
+describe('remoteShowEnvironmentArgs', () => {
+  it('asks remote tmux for strict shell-formatted session environment records', () => {
+    const args = remoteShowEnvironmentArgs(conn, '/s.sock', 'nt-x')
+    expect(args[args.length - 1]).toBe(
+      `${TP}tmux -L ${RMT_TMUX_SOCKET} show-environment -s -t nt-x`
     )
   })
 })
