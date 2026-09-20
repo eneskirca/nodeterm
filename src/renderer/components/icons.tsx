@@ -108,6 +108,16 @@ export const IconGrid = () => (
   </svg>
 )
 
+/** Layer bands with a shared opener above them: the lineage tidy. */
+export const IconLineage = () => (
+  <svg {...S}>
+    <rect x="9.5" y="3" width="5" height="4" rx="1" />
+    <rect x="3" y="17" width="5" height="4" rx="1" />
+    <rect x="16" y="17" width="5" height="4" rx="1" />
+    <path d="M12 7v4M5.5 17v-2.5h13V17" />
+  </svg>
+)
+
 export const IconCollapse = () => (
   <svg {...S}>
     <path d="M8 4v4H4M16 4v4h4M8 20v-4H4M16 20v-4h4" />

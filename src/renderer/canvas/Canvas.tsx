@@ -105,6 +105,7 @@ import {
   IconFit,
   IconGear,
   IconGrid,
+  IconLineage,
   IconGroup,
   IconJump,
   IconKanban,
@@ -574,7 +575,9 @@ import {
   claudeLaunchCommand,
   COLLAPSED_HEIGHT,
   alignNodes,
+  arrangeByLineage,
   arrangeNodes,
+  lineageLayers,
   commonParentId,
   fitGroupToChildren,
   createAccountLoginNode,
@@ -6905,6 +6908,36 @@ export function Canvas() {
     fitAll()
   }, [setNodes, markDirty, fitAll])
 
+  // The lineage ropes as the layout reads them: `controlEdges` is the live copy of what the
+  // project persists as `ropes` ("opened by" and `--after`), which is exactly the relation the
+  // user means by "who opened whom".
+  const lineageEdges = useCallback(
+    () => controlEdgesRef.current.map((e) => ({ source: e.source, target: e.target })),
+    []
+  )
+  // Whether the lineage tidy has anything to say. Asked when the menu OPENS so the row can be
+  // disabled with its reason instead of silently doing nothing on click: on a canvas nobody
+  // spawned anything into, every node is loose and the result would just be a worse Tidy canvas.
+  const hasLineageLayers = useCallback(
+    () => lineageLayers(nodesRef.current, lineageEdges()).layers.length > 0,
+    [lineageEdges]
+  )
+  // Lineage bands: one row per layer, growing downward, with the nodes no rope touches last.
+  // Mirrors arrangeAllNodes exactly — same kanban guard, same markDirty + fitAll — except that
+  // the refusal is `arrangeByLineage` returning the SAME array, which is also what keeps a
+  // no-op out of the undo stack and out of project.json.
+  const arrangeByLineageAction = useCallback(() => {
+    if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+    const edges = lineageEdges()
+    // Decided against nodesRef BEFORE the write, never from inside the updater: a React updater
+    // runs when the state is processed, so a flag set in there is still false on the next line
+    // and markDirty/fitAll would never fire. The transform is pure, so asking it twice is free.
+    if (arrangeByLineage(nodesRef.current, edges) === nodesRef.current) return
+    setNodes((ns) => arrangeByLineage(ns, edges))
+    markDirty()
+    fitAll()
+  }, [setNodes, markDirty, fitAll, lineageEdges])
+
   /** Report a refusal the user cannot act on any other way. One dismiss button, no default. */
   const alertLayout = useCallback(
     (message: string) => {
@@ -7809,6 +7842,7 @@ export function Canvas() {
       'canvas.goForward': () => { goForward(); return true },
       'canvas.fitAll': () => { fitAll(); return true },
       'canvas.tidy': () => { arrangeAllNodes(); return true },
+      'canvas.tidyLineage': () => { arrangeByLineageAction(); return true },
       'canvas.deleteSelection': deleteSelectionCommand,
       'node.newTerminal': () => { addTerminal(); return true },
       'node.newAgent': () => {
@@ -8878,6 +8912,21 @@ export function Canvas() {
           ...(hasArrangeableNodes()
             ? [{ label: 'Tidy canvas', icon: <IconGrid />, onClick: arrangeAllNodes } as MenuItem]
             : []),
+          // Same visibility gate as Tidy canvas, then disabled WITH the reason when this canvas
+          // has no lineage to lay out — a row that is off for an invisible reason teaches nothing.
+          ...(hasArrangeableNodes()
+            ? [
+                {
+                  label: 'Arrange by lineage',
+                  icon: <IconLineage />,
+                  disabled: !hasLineageLayers(),
+                  hint: hasLineageLayers()
+                    ? 'One row per level: who opened whom, top to bottom.'
+                    : 'Nothing on this canvas was opened by another node yet.',
+                  onClick: arrangeByLineageAction
+                } as MenuItem
+              ]
+            : []),
           // Project-wide: restart every idle agent CLI in place (new model pickup). Hidden on a
           // canvas with no restartable agent node — there it could only ever report "0 restarted".
           ...(hasRestartableAgents()
@@ -8901,7 +8950,9 @@ export function Canvas() {
       selectAll,
       fitAll,
       arrangeAllNodes,
+      arrangeByLineageAction,
       hasArrangeableNodes,
+      hasLineageLayers,
       hasRestartableAgents,
       restartIdleAgents
     ]
@@ -13983,6 +14034,19 @@ export function Canvas() {
               hint: 'arrange grid layout organize clean up',
               icon: <IconGrid />,
               run: arrangeAllNodes
+            } as Command
+          ]
+        : []),
+      // Omitted rather than disabled when there is no lineage: the palette has no disabled
+      // state, so an entry that does nothing would surface as a search hit that goes nowhere.
+      ...(hasArrangeableNodes() && hasLineageLayers()
+        ? [
+            {
+              id: 'arrange-lineage',
+              label: 'Arrange by lineage',
+              hint: 'layers levels who opened whom tree hierarchy organize',
+              icon: <IconLineage />,
+              run: arrangeByLineageAction
             } as Command
           ]
         : []),
