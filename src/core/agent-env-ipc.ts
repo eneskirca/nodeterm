@@ -11,10 +11,16 @@ import {
   modelGatewayRoutes,
   parseGatewayModels,
   resolveModelGatewayApiKey,
+  type GatewayModel,
   type ModelDiscoveryResult,
   type ModelGatewaySettings
 } from '../shared/agents/model-gateway'
 import type { ModelGatewayCredentialService } from './model-gateway-credentials'
+import {
+  currentModelGatewayDiscoveryScope,
+  modelGatewayDiscoveryScope,
+  type ModelGatewayDiscoveryScope
+} from './model-gateway-scope'
 
 const DISCOVERY_TIMEOUT_MS = 10_000
 
@@ -26,7 +32,8 @@ const DISCOVERY_TIMEOUT_MS = 10_000
 async function discoverModels(
   settings: ModelGatewaySettings,
   saved: ModelGatewaySettings | undefined,
-  storedSecret: string | null
+  storedSecret: string | null,
+  onSuccessfulDiscovery?: (resolvedCredential: string, models: GatewayModel[]) => void
 ): Promise<ModelDiscoveryResult> {
   const routes = modelGatewayRoutes(settings?.baseUrl ?? '', settings?.discoveryPath)
   const apiKeyField = settings?.apiKey ?? ''
@@ -87,6 +94,7 @@ async function discoverModels(
       return { models: [], error: `Model discovery failed (HTTP ${response.status}).` }
     }
     const models = parseGatewayModels(await response.json())
+    onSuccessfulDiscovery?.(apiKey, models)
     return models.length
       ? { models }
       : { models: [], error: 'The gateway returned no usable models.' }
@@ -108,11 +116,34 @@ async function discoverModels(
  *  env key references for a caller-chosen URL (see the gate in `discoverModels`). */
 export function registerAgentEnvIpc(
   getSavedGateway: () => ModelGatewaySettings | undefined,
-  credentials?: ModelGatewayCredentialService
+  credentials?: ModelGatewayCredentialService,
+  onDiscovered?: (scope: ModelGatewayDiscoveryScope, models: GatewayModel[]) => void
 ): void {
-  platform().handle(IPC.agentDiscoverModels, (settings: ModelGatewaySettings) =>
-    discoverModels(settings, getSavedGateway(), credentials?.readForHost() ?? null)
-  )
+  // Latest invocation wins even when two requests for the same configuration resolve out of order.
+  // Increment before validation so a later invalid attempt also prevents an older fetch from
+  // repopulating launch state after the user has moved on.
+  let requestSeq = 0
+  platform().handle(IPC.agentDiscoverModels, (settings: ModelGatewaySettings) => {
+    const seq = ++requestSeq
+    return discoverModels(
+      settings,
+      getSavedGateway(),
+      credentials?.readForHost() ?? null,
+      (resolvedCredential, models) => {
+        if (!onDiscovered || seq !== requestSeq) return
+        const requestScope = modelGatewayDiscoveryScope(settings, resolvedCredential)
+        const current = getSavedGateway()
+        const currentScope = current
+          ? currentModelGatewayDiscoveryScope(
+              current,
+              credentials?.readForHost() ?? null,
+              process.env
+            )
+          : null
+        if (requestScope && requestScope === currentScope) onDiscovered(requestScope, models)
+      }
+    )
+  })
   platform().handle(IPC.agentGatewayCredentialStatus, () =>
     credentials?.status() ?? { hasStoredKey: false, storage: 'unavailable' as const }
   )
