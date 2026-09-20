@@ -134,6 +134,13 @@ export function nodeFitRect(node: FocusableNode, all: readonly FocusableNode[]):
  * reproduces exactly where maximize put it. Everything else still centres in the whole pane,
  * because `insets` is `NO_INSETS` unless the caller says otherwise.
  *
+ * **Opting into the free band (`settings.focusAvoidsPinnedPanels`, default off).** The trade-off
+ * above is the right default for a narrow sidebar, but a user whose PINNED sidebar is wide enough
+ * that "a couple of dozen pixels" becomes a third of a terminal can flip it: the caller then passes
+ * `measurePinnedInsets(box)` for EVERY node, not only a maximized one, and every focus lands in the
+ * region the pinned chrome leaves over. The default is bit-identical to before — this only widens
+ * which nodes get the same inset the maximized case already used.
+ *
  * `zoom` keeps the camera at a scale the caller already has (`settings.focusZoomToNode` off): the
  * node is centred exactly as it would be, at that zoom, so "go to" stays a pan. It is passed
  * through UNCLAMPED — it is a zoom the canvas is already displaying, and re-clamping it to the

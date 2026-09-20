@@ -3634,6 +3634,13 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   A pane narrower than the panels over it falls back to the whole pane rather than solving against
   a negative width. `measurePinnedInsets` reads the DOM, so it is asked only for a node that can
   use the answer.
+  **Opt-in: `settings.focusAvoidsPinnedPanels`** (Behavior, default OFF) widens that maximized
+  exception to EVERY framing — `insets` becomes `measurePinnedInsets(box)` for every node, so no
+  focus path parks a node half under a PINNED sidebar. It is off by default because the trade-off
+  above (a couple of dozen hidden pixels beat losing the centre) holds for a narrow sidebar; a user
+  whose pinned sidebar is wide enough that those pixels become a third of a terminal turns it on.
+  `measurePinnedInsets` counts only PINNED panels, so an unpinned hover-peek is still 0 insets and
+  the node still centres in the whole pane even with the setting on.
   `settings.focusZoomToNode` (Behavior, default ON) is the escape hatch for the rescale: off, the
   camera keeps the zoom `getZoom()` reports and only pans, and that zoom is passed through
   **unclamped** — it is one the canvas is already displaying, and re-clamping it to the framing

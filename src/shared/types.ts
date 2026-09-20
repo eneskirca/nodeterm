@@ -1479,6 +1479,13 @@ export interface Settings {
    *  costs them the sense of where they were. Either way the node is centred and kept clear of the
    *  floating chrome (renderer/lib/nodeFocus). */
   focusZoomToNode: boolean
+  /** "Go to node" frames every focused node inside the region a PINNED sidebar/drawer leaves free,
+   *  instead of centring it in the whole pane. OFF by default: for a narrow sidebar the couple of
+   *  dozen pixels that end up behind it cost less than losing the centre, so the default keeps the
+   *  node in the middle of the pane (a maximized node is always inset — issue #743 — regardless of
+   *  this flag). Users whose pinned sidebar is wide enough that a focused node lands a third behind
+   *  it turn this on (renderer/lib/nodeFocus, renderer/lib/pinnedInsets). */
+  focusAvoidsPinnedPanels: boolean
   /** Whether the bottom-left canvas lock survives a restart. OFF by default, and deliberately so:
    *  the lock was transient by design, because a canvas that will not pan on the next launch reads
    *  as "the app is frozen" to whoever opens it, and the lit button is a small thing to spot. Users
@@ -1847,6 +1854,7 @@ export const DEFAULT_SETTINGS: Settings = {
   panHoverDelay: 600,
   doubleClickFocus: true,
   focusZoomToNode: true,
+  focusAvoidsPinnedPanels: false,
   rememberCanvasLock: false,
   openMarkdownPreview: true,
   openMarkdownPreviewMigrated: true,

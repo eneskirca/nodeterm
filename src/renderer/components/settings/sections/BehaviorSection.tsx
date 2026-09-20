@@ -40,6 +40,10 @@ const ROWS = {
     title: 'Zoom when going to a node',
     keywords: ['zoom', 'focus', 'go to', 'node', 'jump', 'camera', 'session', 'sidebar']
   },
+  focusAvoidPinned: {
+    title: 'Keep a focused node clear of pinned panels',
+    keywords: ['focus', 'pinned', 'sidebar', 'panel', 'drawer', 'node', 'go to', 'clear', 'centre']
+  },
   rememberLock: {
     title: 'Remember the canvas lock',
     keywords: ['lock', 'canvas', 'view', 'pan', 'zoom', 'freeze', 'remember', 'restart', 'persist']
@@ -233,6 +237,19 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
               checked={settings.focusZoomToNode}
               onChange={(v) => update({ focusZoomToNode: v })}
               ariaLabel="Zoom when going to a node"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.focusAvoidPinned}>
+        <FieldRow
+          label="Keep a focused node clear of pinned panels"
+          description="Frames a node you go to inside the space a pinned sidebar leaves free, instead of centring it in the whole pane. Off: the node is centred in the pane, as before."
+          control={
+            <Switch
+              checked={settings.focusAvoidsPinnedPanels}
+              onChange={(v) => update({ focusAvoidsPinnedPanels: v })}
+              ariaLabel="Keep a focused node clear of pinned panels"
             />
           }
         />

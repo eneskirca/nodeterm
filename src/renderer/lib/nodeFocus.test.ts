@@ -262,6 +262,41 @@ describe('viewportForRect — the maximized exception (issue #743)', () => {
   })
 })
 
+describe('viewportForRect — a focused node is framed inside the pinned-chrome-free region', () => {
+  /*
+   * The helper's inset contract, exercised directly (it is what frameNode hands it when
+   * focusAvoidsPinnedPanels is on): given a left inset, viewportForRect frames the node inside the
+   * region the pinned chrome leaves over instead of centring it in the whole pane, so part of the
+   * node no longer sits behind the sidebar. With 0 insets it is identical to whole-pane centring.
+   */
+  const PANE = { w: 1280, h: 900 }
+  const INSETS = { left: 400, right: 0 }
+  const node = { x: 5050, y: 260, width: 600, height: 400 }
+
+  it('puts the whole node to the right of a 400px left inset and centres it in the 880px remainder', () => {
+    const vp = viewportForRect(node, PANE.w, PANE.h, undefined, INSETS)!
+    const leftEdge = vp.x + node.x * vp.zoom
+    const rightEdge = vp.x + (node.x + node.width) * vp.zoom
+    const centreX = vp.x + (node.x + node.width / 2) * vp.zoom
+    // Entirely clear of the sidebar, and inside the pane.
+    expect(leftEdge).toBeGreaterThanOrEqual(INSETS.left)
+    expect(rightEdge).toBeLessThanOrEqual(PANE.w)
+    // Centred in the free region: 400 + (1280 - 400) / 2 = 840.
+    expect(centreX).toBeCloseTo(INSETS.left + (PANE.w - INSETS.left) / 2, 6)
+  })
+
+  it('differs from plain whole-pane centring (the previous behaviour)', () => {
+    const framed = viewportForRect(node, PANE.w, PANE.h, undefined, INSETS)!
+    const wholePane = viewportForRect(node, PANE.w, PANE.h)!
+    // Whole-pane centring put the node centre at 1280 / 2 = 640, so its left edge fell behind the
+    // 400px sidebar. That is what the insets fix.
+    expect(wholePane.x + (node.x + node.width / 2) * wholePane.zoom).toBeCloseTo(PANE.w / 2, 6)
+    expect(framed.x).not.toBeCloseTo(wholePane.x, 3)
+    // An UNPINNED sidebar measures 0 insets, so the common case is untouched — same as whole pane.
+    expect(viewportForRect(node, PANE.w, PANE.h, undefined, { left: 0, right: 0 })).toEqual(wholePane)
+  })
+})
+
 describe('isMaximized', () => {
   it('keys on premaxRect — the flag maximize itself writes and restore clears', () => {
     expect(isMaximized({ data: { premaxRect: { x: 0, y: 0, width: 10, height: 10 } } })).toBe(true)
