@@ -163,11 +163,21 @@ describe('buildSessionList', () => {
     expect(a1.usesContext).toBe(true) // claude is USAGE_CAPABLE
   })
 
+  it('carries the recorded launch window to the sidebar context chip', () => {
+    const proj = projects()
+    const agent = proj[0].nodes.find((n) => n.id === 'a1')!
+    agent.agentLaunchContextWindow = 400_000
+    const groups = buildSessionList(proj, null, 'p1', {}, '')
+
+    expect(groups[0].ungrouped.find((s) => s.id === 'a1')?.agentLaunchContextWindow).toBe(400_000)
+  })
+
   it('uses live nodes for the active project instead of serialized ones', () => {
-    const live = [node('t1', { title: 'renamed live' })]
+    const live = [node('t1', { title: 'renamed live', agentLaunchContextWindow: 500_000 })]
     const groups = buildSessionList(projects(), live, 'p1', {}, '')
     const p1 = groups.find((g) => g.projectId === 'p1')!
     expect(p1.ungrouped.map((s) => s.title)).toEqual(['renamed live'])
+    expect(p1.ungrouped[0].agentLaunchContextWindow).toBe(500_000)
   })
 
   it('nests sessions under their canvas group and separates ungrouped ones', () => {

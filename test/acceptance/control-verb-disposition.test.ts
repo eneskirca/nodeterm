@@ -92,9 +92,13 @@ describe('every control verb has an off-screen disposition, and none of them tra
       .join('\n')
     expect(code).not.toContain('travelToProjectRef')
     // `travelToProject` itself survives for the facepile — the user's own explicit navigation —
-    // and that is the ONLY place allowed to call it.
+    // plus the grouped-recovery batch's publish (modelSwitchTravelRef.current = travelToProject),
+    // which is also a USER action: the Retry / "Retry failed" buttons and the batch return-home
+    // are clicks, not agent verbs, and the batch repairs rows across projects. The ban this test
+    // enforces is on AGENT control taking a screen; a flow the human clicked is the same class as
+    // the facepile. Everything agent-reachable stays at zero.
     const calls = [...code.matchAll(/travelToProject\b/g)].length
-    expect(calls, 'travelToProject: its definition plus the facepile prop').toBe(2)
+    expect(calls, 'travelToProject: its definition, the facepile prop, and the grouped-recovery publish').toBe(3)
   })
 })
 

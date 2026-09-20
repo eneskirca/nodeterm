@@ -22,7 +22,8 @@ describe('PtyManager platform registration', () => {
       IPC.ptyKill,
       IPC.ptyDestroy,
       IPC.ptySendText,
-      IPC.ptyReadScrollback
+      IPC.ptyReadScrollback,
+      IPC.ptyAgentProcess
     ]) {
       // ptyKill is sender-aware (co-attach: unsubscribe ONE client) → senderListeners.
       expect(fake.handlers[ch] ?? fake.listeners[ch] ?? fake.senderListeners[ch], ch).toBeDefined()

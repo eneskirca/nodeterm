@@ -13,10 +13,12 @@ export interface SessionNodeInput {
   title: string
   color: string
   agentId?: AgentId
-  /** The node's creation-time managed/linked Claude account (`data.accountId`), for the row's
+  /** The node's creation-time managed/linked Claude account (data.accountId), for the row's
    *  account chip. Absent for a plain terminal — which is exactly the case the OBSERVED account
    *  on the status entry covers. */
   accountId?: string
+  /** Context window baked into this node's launch environment, when discovery knew it. */
+  agentLaunchContextWindow?: number
   cwd?: string
   ssh?: SshConnection
   /** Parent group node id when this node lives inside a canvas group frame. */
@@ -247,6 +249,8 @@ export interface SessionRowVM {
   accountId?: string
   account?: ObservedClaudeAccount
   usesContext: boolean
+  /** Launch-record denominator for the row's context chip; the transcript can trail a switch. */
+  agentLaunchContextWindow?: number
   /** Populated only when the sidebar is grouped by status (rows are flattened across projects):
    *  the project the session belongs to, so the row can show a project monogram and route
    *  project-scoped callbacks. Absent in project mode, where the enclosing group carries it. */
@@ -323,6 +327,7 @@ function toRow(
     accountId: n.accountId,
     account: status?.account,
     usesContext: n.agentId ? hasUsage(n.agentId) : false,
+    agentLaunchContextWindow: n.agentLaunchContextWindow,
     // Only populated in status mode (flattened across projects); absent in project mode.
     projectId: project?.id,
     projectName: project?.name,
