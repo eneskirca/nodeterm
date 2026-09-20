@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { DEFAULT_SETTINGS, type Settings } from '@shared/types'
+import { sameModelGatewayDiscoveryConfig, useModelGateway } from './modelGateway'
 
 interface SettingsState {
   settings: Settings
@@ -43,7 +44,11 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   async hydrate() {
     const s = await window.nodeTerminal.settings.load()
-    set({ settings: { ...DEFAULT_SETTINGS, ...s }, hydrated: true })
+    const next = { ...DEFAULT_SETTINGS, ...s }
+    if (!sameModelGatewayDiscoveryConfig(get().settings.modelGateway, next.modelGateway)) {
+      useModelGateway.getState().clear()
+    }
+    set({ settings: next, hydrated: true })
   },
 
   update(patch) {
@@ -54,6 +59,11 @@ export const useSettings = create<SettingsState>((set, get) => ({
     // on write.) `'subscription'` ⇒ true (strip env), anything else ⇒ false.
     if ('agentLaunchMode' in patch) {
       next.vanillaLaunchDefault = patch.agentLaunchMode === 'subscription'
+    }
+    if (!sameModelGatewayDiscoveryConfig(get().settings.modelGateway, next.modelGateway)) {
+      // Invalidate now, before Canvas's debounced discovery starts. Otherwise an older response can
+      // land in that interval and feed a launch or recovery pass for the new settings.
+      useModelGateway.getState().clear()
     }
     set({ settings: next })
     scheduleSave(next)
