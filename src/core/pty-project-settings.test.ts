@@ -8,6 +8,7 @@
 //  - and every miss path (no ownerProjectId, no reader, a reader that throws, a reader that HANGS)
 //    spawns exactly the session it spawned before this feature existed.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 import { setRemoteSessionEnvWriter } from './remote-ssh/session-env'
@@ -62,6 +63,14 @@ vi.mock('./exec-path', async (importOriginal) => ({
   resolveShellPath: async () => '/usr/bin:/bin'
 }))
 
+const fakeAgy = vi.hoisted(() =>
+  process.platform === 'win32' ? 'C:\\vendor\\agy\\bin\\agy.exe' : '/vendor/agy/bin/agy'
+)
+vi.mock('./agents/hooks/antigravity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agents/hooks/antigravity')>()),
+  findAgy: () => fakeAgy
+}))
+
 // Every tmux/ssh side-call (the freshness probe, `set-option`) answers "fine" without a subprocess.
 vi.mock('child_process', () => {
   type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
@@ -114,6 +123,16 @@ describe('project settings at the spawn — LOCAL leg', () => {
     await manager(async () => ({ env: { PROJECT_TOKEN: 'abc' } }))
     await create({ persistKey: NODE, ownerProjectId: PROJECT })
     expect(spawns[0].env.PROJECT_TOKEN).toBe('abc')
+  })
+
+  it('puts the detected agy directory on only an Antigravity session PATH', async () => {
+    await manager(null)
+    await create({ persistKey: 'antigravity-node', agentId: 'antigravity' })
+    await create({ persistKey: 'plain-node' })
+
+    expect(spawns[0].env.PATH?.split(path.delimiter)[0]).toBe(path.dirname(fakeAgy))
+    expect(Object.keys(spawns[0].env).filter((key) => key.toUpperCase() === 'PATH')).toEqual(['PATH'])
+    expect(spawns[1].env.PATH).toBe('/usr/bin:/bin')
   })
 
   it('asks the reader with the OWNING project id, once per spawn', async () => {

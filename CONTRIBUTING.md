@@ -134,6 +134,13 @@ lane unaffected.
   cannot read) and test Windows dispatch WITHOUT `windowsVerbatimArguments`; keep the `AutoRun`
   refusal. Deep version: `docs/antigravity-agent.md` and CLAUDE.md § Agent support.
 
+- **Finding `agy` for hook installation is not enough to launch it.** The measured Windows
+  installer wrote `%LOCALAPPDATA%\agy\bin` into a `REG_SZ` user PATH, so command lookup kept the
+  percent expression literal and `agy` was not found even though its executable existed. Local
+  Antigravity PTYs therefore prepend the directory returned by the same vendor-location lookup the
+  hook installer uses. Keep that correction scoped to Antigravity sessions; do not change plain
+  terminals or inject a local path into SSH sessions.
+
 - **Every loosening of a security gate must be a SETTING the user can see and revoke.** A "don't
   ask again" that lives only in a dialog is a permission granted once and never findable again. The
   canvas-control destructive confirm is the pattern to copy (`@shared/control-confirm`): a CANCEL

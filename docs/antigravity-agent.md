@@ -8,6 +8,12 @@ capability list, `AGENT_HOOK_TARGETS`: the RUNNING / NEEDS YOU badge, the unread
 notifications, `--after` dependencies and trigger targets come from that. Everything else is a leaf
 that does not exist yet (§7).
 
+On Windows, launch reachability uses the same vendor-location lookup as hook installation. The
+measured agy 1.2.7 installer wrote `%LOCALAPPDATA%\agy\bin` into the user PATH as `REG_SZ`; Windows
+kept the percent expression literal, so `where agy` failed while the executable at that location
+ran normally. A local Antigravity PTY prepends the detected executable's directory to its own PATH.
+Plain terminals and SSH sessions remain untouched.
+
 > Sibling documents: `docs/grok-agent.md`, `docs/gemini-agent.md`, `docs/copilot-agent.md`. The
 > distilled rules are **Adding a new agent** in `CLAUDE.md`.
 

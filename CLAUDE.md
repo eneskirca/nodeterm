@@ -1571,6 +1571,14 @@ else, and its context links must keep classifying across restarts).
     values (`reg query`, absence decided by listing the parent key — reg's errors are localized)
     and installs NOTHING — and withdraws a bundle an earlier launch wrote — if one is set or the
     registry cannot be read.
+  **The vendor-location fallback also owns launch reachability.** Measured on Windows 11 with agy
+  1.2.7: the vendor installer wrote `%LOCALAPPDATA%\agy\bin` into the user PATH as `REG_SZ`, so the
+  process inherited the percent expression literally and both `where agy` and `cmd /c agy` failed
+  while `%LOCALAPPDATA%\agy\bin\agy.exe` existed and ran. `PtyManager` therefore prepends the
+  directory returned by `findAgy()` to the PATH of a LOCAL Antigravity session. The gate uses
+  `capabilityAgentId`, so an Antigravity-based custom agent inherits it; plain terminals and SSH
+  sessions do not. Detecting the binary only for hook installation recreates the original split:
+  a configured badge for an agent the pane cannot launch.
   **Installed only where `agy` exists** (a file lookup — PATH, then the vendor's install dirs —
   never a spawn), in two passes per launch: the boot pass may only see the inherited PATH, so a miss
   there does NOTHING; after the login-shell PATH probe settles, a final pass repeats the lookup and
