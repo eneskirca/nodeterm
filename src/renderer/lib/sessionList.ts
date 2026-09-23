@@ -179,16 +179,42 @@ export function projectHeadClickAction(isActive: boolean): ProjectHeadAction {
  * Mirrors the row glyph's precedence — an attention session is never double-counted as unread,
  * and a working one isn't unread yet (a new turn is running; the old mark resurfaces when it ends).
  */
-export function projectSignalCounts(group: SessionGroup): { attention: number; unread: number; working: number } {
+export interface SignalCounts {
+  attention: number
+  unread: number
+  working: number
+}
+
+/**
+ * The counting rule itself, over an already-resolved set of rows. It is ONE definition because the
+ * project header and each frame header show the SAME three badges: two copies of this loop is how
+ * a frame starts disagreeing with the project that contains it about what "running" means.
+ */
+export function signalCounts(rows: SessionRowVM[]): SignalCounts {
   let attention = 0
   let unread = 0
   let working = 0
-  for (const s of [...group.ungrouped, ...group.groups.flatMap(groupSessionRows)]) {
+  for (const s of rows) {
     if (s.statusKind === 'attention') attention++
     else if (s.unread && s.statusKind !== 'working') unread++
     if (s.statusKind === 'working') working++
   }
   return { attention, unread, working }
+}
+
+export function projectSignalCounts(group: SessionGroup): SignalCounts {
+  return signalCounts([...group.ungrouped, ...group.groups.flatMap(groupSessionRows)])
+}
+
+/**
+ * The same badges for ONE canvas frame, over its whole subtree (`groupSessionRows`, which is what
+ * the project count already sums). A frame is how a delegated task is held together, so `working`
+ * answers the question the project badge cannot: is THIS task still moving, or is it waiting for
+ * me? Counted over the rows the sidebar is actually showing, so an active filter narrows the
+ * badges exactly as it narrows the project's — never a hidden session the user cannot reach.
+ */
+export function groupSignalCounts(group: GroupBucket): SignalCounts {
+  return signalCounts(groupSessionRows(group))
 }
 
 export function sessionStatusKind(state: AgentNodeStatus['state']): StatusKind {

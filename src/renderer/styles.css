@@ -8257,7 +8257,10 @@ button.group-node__setup:disabled {
 /* Content-sized (not flex:1): the row click navigates to the group on the canvas, so the
    rename target must be only as wide as the name itself. */
 .ss-subgroup__name { flex: 0 1 auto; min-width: 0; font-size: 11.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-subgroup__head .ss-group__count { margin-left: auto; }
+/* Signal badges + count ride together at the right edge of a frame row. The count alone used to
+   carry `margin-left: auto`; with badges beside it that would strand them against the (truncating)
+   name, so the whole tail is one shrink-to-fit block instead. */
+.ss-subgroup__tail { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; }
 .ss-subgroup__ai { opacity: 0; border: none; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; flex: 0 0 auto; }
 .ss-subgroup__head:hover .ss-subgroup__ai { opacity: 0.6; }
 .ss-subgroup__ai:hover { opacity: 1 !important; color: var(--accent); }
