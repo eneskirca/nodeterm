@@ -2,7 +2,14 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
-export type BuiltinAgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'grok' | 'copilot'
+export type BuiltinAgentId =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'opencode'
+  | 'grok'
+  | 'copilot'
+  | 'antigravity'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -17,6 +24,16 @@ export interface AgentConfig {
   color: string // node color
   launchCmd: string // base launch command
   promptInjectionMode: PromptInjectionMode
+  /**
+   * The flag `flag-interactive` emits before the prompt. Absent = `--interactive`, which is
+   * copilot's spelling and stays byte-identical for it.
+   *
+   * antigravity (`agy`) is the case that needs it: its interactive-with-prompt flag is
+   * `--prompt-interactive` (`-i`), measured with `agy --help` on 1.2.3, and it has NO positional
+   * prompt at all — the usage lists subcommands instead — so neither `argv` nor
+   * `stdin-after-start` could deliver a prompt without producing a silently wrong command line.
+   */
+  promptFlag?: string
   /**
    * Put this between the command and an `argv` prompt — in practice `'--'`, and only for a CLI
    * whose grammar has BOTH a positional prompt and subcommands.
@@ -57,7 +74,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'gemini',
   'opencode',
   'grok',
-  'copilot'
+  'copilot',
+  'antigravity'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -126,13 +144,35 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // All `COPILOT_PROVIDER_*` gateway vars. Excludes `COPILOT_HOME` (config dir) and
     // `COPILOT_HOOK_*` (nodeterm constants).
     vanillaEnvPattern: '^COPILOT_PROVIDER_'
+  },
+  antigravity: {
+    // Google Antigravity CLI. Measured on `agy` 1.2.3 (Windows 11) — docs/antigravity-agent.md.
+    label: 'Antigravity',
+    color: '#00a3a3',
+    launchCmd: 'agy',
+    // `agy` has no positional prompt (its usage lists subcommands in that slot), and its
+    // interactive-with-prompt flag is `--prompt-interactive`, not copilot's `--interactive`.
+    promptInjectionMode: 'flag-interactive',
+    promptFlag: '--prompt-interactive',
+    expectedProcess: 'agy'
   }
 }
 
 // Capabilities = const builtin membership lists. A custom agent resolves through its declared
 // base harness (capabilityAgentId); one with no base automatically gets only spawn + terminal-title
 // + process status.
-export const AGENT_HOOK_TARGETS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+// antigravity joined with ONLY this list: its normalizer (normalizeAntigravity) and its
+// installer are the leaves that exist. Every other list below is a separate leaf it does not have
+// yet — see the `antigravity capabilities` block in config.capabilities.test.ts for each reason.
+export const AGENT_HOOK_TARGETS = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'copilot',
+  'antigravity'
+] as const
 export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.

@@ -130,6 +130,22 @@ lane unaffected.
   white, take `SYSTEM_NODE_COLOR_SWATCHES` instead, with the contrast reason in a comment. Deep
   version, including the measured numbers: CLAUDE.md § Node colors.
 
+- **The Antigravity hook is a gate in front of every `agy` tool call on the machine — treat its
+  stdout as a decision.** `agy` reads hook stdout as JSON and our hook, in the global
+  `~/.gemini/config/hooks.json`, is subscribed to `PreToolUse`. Measured: silence runs the tool, but
+  `{}`, any stray non-JSON byte and a non-zero exit DENY it — in nodeterm and in the user's own
+  terminals. So: change answers only in `antigravity-decision.ts` (the one table); print nothing
+  after the answer; keep the Windows command free of quotes (agy escapes them as `\"`, which cmd.exe
+  cannot read) and test Windows dispatch WITHOUT `windowsVerbatimArguments`; keep the `AutoRun`
+  refusal. Deep version: `docs/antigravity-agent.md` and CLAUDE.md § Agent support.
+
+- **Finding `agy` for hook installation is not enough to launch it.** The measured Windows
+  installer wrote `%LOCALAPPDATA%\agy\bin` into a `REG_SZ` user PATH, so command lookup kept the
+  percent expression literal and `agy` was not found even though its executable existed. Local
+  Antigravity PTYs therefore prepend the directory returned by the same vendor-location lookup the
+  hook installer uses. Keep that correction scoped to Antigravity sessions; do not change plain
+  terminals or inject a local path into SSH sessions.
+
 - **Every loosening of a security gate must be a SETTING the user can see and revoke.** A "don't
   ask again" that lives only in a dialog is a permission granted once and never findable again. The
   canvas-control destructive confirm is the pattern to copy (`@shared/control-confirm`): a CANCEL
