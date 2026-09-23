@@ -1,3 +1,4 @@
+import type { PanePresence, PresenceMap } from './pane-presence'
 import fs from 'fs'
 import path from 'path'
 import { writeFileAtomic } from './fs-atomic'
@@ -188,6 +189,8 @@ export interface MirrorFile {
   nodes: Record<
     string,
     {
+      /** Independent foreground observation; expired/absent means unknown, never idle. */
+      panePresence?: PanePresence
       state?: AgentState
       agentId?: AgentId
       sessionId?: string
@@ -1936,6 +1939,34 @@ function scheduleWrite(): void {
   writeTimer.unref?.()
 }
 
+let panePresence: PresenceMap = {}
+
+/** Replace the whole sampled set, including failures/deletions. Never touches hook state or
+ * its clock, and never restores cached process observations from disk at startup. */
+export function setPanePresence(snapshot: PresenceMap): void {
+  const now = Date.now()
+  const kindAt = (sample: PanePresence): PanePresence['kind'] =>
+    sample.checkedAt <= now && sample.expiresAt > now ? sample.kind : 'unknown'
+  const changed = Object.keys(panePresence).length !== Object.keys(snapshot).length ||
+    Object.entries(snapshot).some(([id, sample]) =>
+      !panePresence[id] || kindAt(panePresence[id]) !== kindAt(sample))
+  // Retain fresh clocks for the ordinary mirror heartbeat, but do not trigger SSH pushes
+  // just because an otherwise identical observation was sampled again. Readers expire it
+  // independently; a refresh arriving after expiry is a semantic unknown → known change.
+  panePresence = snapshot
+  if (changed) scheduleWrite()
+}
+
+export function mergePanePresence(doc: MirrorFile, snapshot: PresenceMap, now: number): void {
+  for (const [id, observation] of Object.entries(snapshot)) {
+    const fresh = observation.checkedAt <= now && observation.expiresAt > now
+    const panePresence = fresh ? observation : { ...observation, kind: 'unknown' as const }
+    // No hook event was seen for this row. Zero is deliberately NOT a new hook timestamp.
+    const entry = doc.nodes[id] ?? { updatedAt: 0 }
+    doc.nodes[id] = { ...entry, panePresence }
+  }
+}
+
 /** Prune + atomically write the file (tmp + rename, mode 0600). Best-effort. */
 export async function flush(): Promise<void> {
   const file = resolveFile()
@@ -1968,6 +1999,7 @@ export async function flush(): Promise<void> {
   }
   const inbox: MirrorInbox = { events: inboxEvents, nodes: Object.fromEntries(inboxNodes) }
   const doc = buildFile(Object.fromEntries(state), now, undefined, safeSettings(), safeUsage(), inbox, safeServer())
+  mergePanePresence(doc, panePresence, now)
   // Also drop expired entries from memory so the map itself can't grow without bound.
   for (const [id, e] of state) if (now - e.updatedAt > EXPIRE_MS) state.delete(id)
   // Prune stale per-node activity the same way (events stay — they are capped feed history).
@@ -1990,6 +2022,7 @@ export async function flush(): Promise<void> {
 
 /** Reset all module state (in-memory map + config + listeners + inbox). Test-only. */
 export function _resetForTest(): void {
+  panePresence = {}
   state.clear()
   if (sweepTimer) clearInterval(sweepTimer)
   sweepTimer = null
