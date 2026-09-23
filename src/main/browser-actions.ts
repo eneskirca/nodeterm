@@ -50,6 +50,7 @@ export interface LayoutMetrics {
  *  measure + cache the viewport so a synthesized coordinate validates against the REAL page, not the
  *  0×0 placeholder. A {@link import('./browser-lease').BrowserSession} implements it. */
 export interface Driver extends Sendable {
+  isAttached?(): boolean
   refreshViewport(): Promise<LayoutMetrics>
 }
 
@@ -398,6 +399,29 @@ function inViewport(x: number, y: number, m: LayoutMetrics): boolean {
   return x >= 0 && y >= 0 && x <= m.width && y <= m.height
 }
 
+/** Wait for compositor-driven scrolling before measuring a target or reporting movement.
+ * Wheel acknowledgement precedes its first frame. Require an initial grace period as well as
+ * consecutive quiet samples; continuously moving pages fail explicitly within a bounded budget. */
+export async function settledViewport(
+  s: Driver,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+): Promise<LayoutMetrics> {
+  let previous = await s.refreshViewport()
+  let quiet = 0
+  for (let elapsed = 50; elapsed <= 1500; elapsed += 50) {
+    await sleep(50)
+    if (s.isAttached?.() === false) throw new Error('browser: control lease detached while waiting for the page')
+    const current = await s.refreshViewport()
+    const unchanged = current.scrollX === previous.scrollX && current.scrollY === previous.scrollY &&
+      current.width === previous.width && current.height === previous.height &&
+      current.contentWidth === previous.contentWidth && current.contentHeight === previous.contentHeight
+    quiet = unchanged ? quiet + 50 : 0
+    if (elapsed >= 200 && quiet >= 150) return current
+    previous = current
+  }
+  throw new Error('browser: page scrolling did not settle; wait for the page to stop moving before trying again')
+}
+
 /** A synthesized left click: press then release at (x, y). Both events are bounded by the allowlist. */
 async function dispatchClick(s: Sendable, x: number, y: number): Promise<void> {
   const at = { x, y, button: 'left', clickCount: 1 }
@@ -411,6 +435,7 @@ async function dispatchClick(s: Sendable, x: number, y: number): Promise<void> {
  * a coordinate: `clicked @7 (button "Sign in") on browser-3`.
  */
 export async function browserClick(s: Driver, refs: RefTable, nodeId: string, target: string): Promise<ActionResult> {
+  await settledViewport(s)
   const t = await resolveTarget(s, refs, nodeId, target)
   if (!t.ok) return { ok: false, message: t.message }
   const m = await s.refreshViewport()
@@ -437,6 +462,7 @@ export async function browserType(
   const { text, into, clear } = opts
   let desc: string
   if (into) {
+    await settledViewport(s)
     const t = await resolveTarget(s, refs, nodeId, into)
     if (!t.ok) return { ok: false, message: t.message }
     const m = await s.refreshViewport()
@@ -519,12 +545,12 @@ function scrollDeltaY(where: string, m: LayoutMetrics): number {
  * nothing — and a requested-delta reply would hide exactly that (it shows as `0px`).
  */
 export async function browserScroll(s: Driver, nodeId: string, where: string): Promise<ActionResult> {
-  const before = await s.refreshViewport()
+  const before = await settledViewport(s)
   const deltaY = scrollDeltaY(where, before)
   const cx = Math.floor(before.width / 2)
   const cy = Math.floor(before.height / 2)
   await s.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY })
-  const after = await s.refreshViewport()
+  const after = await settledViewport(s)
   const moved = Math.round(after.scrollY - before.scrollY)
   const posPart = `(at ${Math.round(after.scrollY)}/${Math.round(after.contentHeight)})`
   const movePart = moved === 0 ? '0px' : `${moved > 0 ? 'down' : 'up'} ${Math.abs(moved)}px`

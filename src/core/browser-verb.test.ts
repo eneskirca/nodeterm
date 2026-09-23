@@ -115,3 +115,12 @@ describe('parseBrowserArgs — the whole flag table (design §2.2)', () => {
     expect(press).toMatchObject({ times: 4 })
   })
 })
+
+describe('issue 539 browser flags', () => {
+  it.each(['+200', '-200', '200', '+0'])('accepts signed pixel count %s', (scroll) => {
+    expect(parseBrowserArgs({ node: 'b1', scroll })).toMatchObject({ action: { kind: 'scroll', where: scroll } })
+  })
+  it.each(['width', 'height', 'viewport', 'size', 'preset', 'resize', 'ful'])('refuses unknown --%s', (key) => {
+    expect(parseBrowserArgs({ node: 'b1', read: 'text', [key]: '123' })).toEqual({ error: `browser: unknown flag --${key}` })
+  })
+})

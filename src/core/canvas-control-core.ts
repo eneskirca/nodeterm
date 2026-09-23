@@ -10,7 +10,7 @@ import { AGENT_CONFIG, AGENT_HOOK_TARGETS, BUILTIN_AGENT_IDS } from '@shared/age
 import { RETRYABLE } from './agents/agent-message-decide'
 import { FANOUT_PER_TURN, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
-import { BROWSER_KEYS, BROWSER_TIMEOUT_DEFAULT_MS, BROWSER_TIMEOUT_MAX_MS } from './browser-verb'
+import { BROWSER_FLAGS, BROWSER_KEYS, BROWSER_TIMEOUT_DEFAULT_MS, BROWSER_TIMEOUT_MAX_MS } from './browser-verb'
 import { nodeColorChoices } from '@shared/node-colors'
 import { offScreenGuidanceLines } from '@shared/control-off-screen'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
@@ -305,6 +305,14 @@ export function parseControlRequest(
 ): ControlCommand | { error: string } {
   if (!VERBS.includes(verb as ControlVerb)) return { error: `Unknown verb: ${verb}` }
   const v = verb as ControlVerb
+  // Reject unsupported browser flags before either shell can create/drive a page.
+  // dry-run keeps its existing, explicit disposition in the shell's common gate.
+  const browserFlags = v === 'browser' ? BROWSER_FLAGS
+    : v === 'open-browser' ? new Set(['url', 'project']) : undefined
+  if (browserFlags) {
+    const unknown = Object.keys(args).find((key) => key !== 'dry-run' && !browserFlags.has(key))
+    if (unknown) return { error: `${v}: unknown flag --${unknown}` }
+  }
   if (v === 'close' && !args.node) return { error: 'close requires --node <id>' }
   if (v === 'write' && !args.node) return { error: 'write requires --node <id>' }
   if (v === 'write' && !args.text) return { error: 'write requires --text' }

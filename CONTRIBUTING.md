@@ -690,3 +690,9 @@ Two files, two audiences:
 **If you change or discover something other contributors must know, update this file too.** An
 invariant that only lives in a commit message is one refactor away from being violated by someone
 who never saw it.
+
+**Browser control must measure settled geometry.** A CDP wheel acknowledgement precedes
+Chromium's scroll frames. Use the bounded settlement helper before reporting movement or
+resolving pointer targets. Keep actions on one guest exclusive. A temporary CDP viewport
+override survives debugger detach and loses scroll position; a screenshot repair must address
+that lifecycle, including revocation, before adding emulation to the production allowlist.
