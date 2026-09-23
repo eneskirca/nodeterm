@@ -391,6 +391,7 @@ export function buildRealApi(
   }
 
   const settings: SettingsApi = {
+    integrationStatus: () => client.request(IPC.integrationStatus) as Promise<{ retained: string[] }>,
     load: () => client.request(IPC.settingsLoad) as Promise<Settings>,
     save: (s: Settings) => client.request(IPC.settingsSave, s) as Promise<void>
   }

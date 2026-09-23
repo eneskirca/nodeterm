@@ -1,3 +1,5 @@
+import { removeExactHooks } from './remove-exact'
+import { updateSettingsFile } from './settings-file'
 // Codex hook service. Codex gates every hook behind a TRUST entry in
 // ~/.codex/config.toml: a hook command in ~/.codex/hooks.json will NOT fire
 // unless config.toml has a matching [hooks.state."<key>"] block whose
@@ -427,29 +429,7 @@ export function removeCodexHooks(): void {
   const command = buildManagedCommand(scriptPath())
 
   try {
-    const config = readHooksJson(hooksFile)
-    if (config && existsSync(hooksFile)) {
-      const nextHooks: Record<string, HookDefinition[]> = { ...(config.hooks ?? {}) }
-      let removed = false
-      for (const [eventName, defs] of Object.entries(nextHooks)) {
-        if (!Array.isArray(defs)) {
-          continue
-        }
-        const cleaned = removeManagedFromDefinitions(defs)
-        if (JSON.stringify(cleaned) !== JSON.stringify(defs)) {
-          removed = true
-        }
-        if (cleaned.length === 0) {
-          delete nextHooks[eventName]
-        } else {
-          nextHooks[eventName] = cleaned
-        }
-      }
-      if (removed) {
-        config.hooks = nextHooks
-        writeHooksJson(hooksFile, config)
-      }
-    }
+    updateSettingsFile(hooksFile, (config) => removeExactHooks(config, [command]), false)
   } catch (e) {
     console.warn('[agent-hooks] codex hooks.json remove failed', e)
   }

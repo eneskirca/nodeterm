@@ -1880,6 +1880,15 @@ else, and its context links must keep classifying across restarts).
   launch agents with the desktop's permission mode + managed accounts, and SSH slices get their
   **per-host** settings (remote CLI caps + host-matched accounts) injected via
   `remote-status-push`'s `settingsFor` dep.
+- **Integration consent (#744)** — `core/agent-integrations.ts` owns local install/cleanup after
+  a persisted `settings.agentIntegrations` choice. Absence is never consent, including on upgrades.
+  Each SSH connection has separate per-agent choices (`shared/agent-integrations.ts`); remote
+  reconciliation is serialized. Canvas/context runtime startup writes only nodeterm data, not
+  global instructions. Claude TUI preferences are no longer side effects of hook installation.
+  Local Claude/Codex discovery uses on-demand skills and exact-byte ownership receipts; edited or
+  unrecognized files are retained and reported. Do not add an installer around this lifecycle or
+  reintroduce large global instruction blocks. Details and remaining platform checks:
+  `docs/agent-integration-consent.md`.
 - **Hook installers** — `src/core/agents/hooks/` holds per-agent hook services + an installer
   registry `MANAGED_HOOK_INSTALLERS`. `managed-script.ts` builds the POSIX hook script that
   POSTs to the server (env-gated: a no-op in the user's normal terminals, active only in

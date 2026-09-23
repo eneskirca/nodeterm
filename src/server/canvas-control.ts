@@ -1,5 +1,5 @@
+import { installAccountDiscovery } from '../core/agent-integrations'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
 import {
@@ -16,10 +16,7 @@ import {
 } from '../core/agent-status-mirror'
 import type { BoardLogHandlers } from '../core/board-log-handlers'
 import {
-  buildControlShimScript,
-  buildCanvasControlInstructions,
-  buildCanvasSkillBody,
-  mergeCanvasControlBlock
+  buildControlShimScript
 } from '../core/canvas-control-core'
 import { codexIdentityCaps } from '../core/codex-identity-caps'
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
@@ -27,7 +24,6 @@ import { claudeCliCaps, type ClaudeCliCaps } from '../core/claude-cli'
 import { grokCliCaps } from '../core/grok-cli'
 import { codexCliCaps } from '../core/codex-cli'
 import type { CodexCliCaps, GrokCliCaps } from '../shared/types'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
 import { platform } from '../core/platform'
 import type { PtyManager } from '../core/pty-manager'
 import type { WorkspaceStore } from '../core/workspace-store'
@@ -53,26 +49,8 @@ export interface ServerCanvasControlDeps {
   codexCaps?: () => Promise<CodexCliCaps>
   /** Test seam for the boot-populated shared Codex capability answer. */
   codexSharedIdentity?: () => Promise<boolean>
-  /**
-   * Whether to write this server's discovery surface into the machine's REAL agent configuration
-   * directories: `~/.claude/skills/manage-nodeterm-canvas/SKILL.md`, the marker block in
-   * `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md`, and the same skill in every managed Claude
-   * account dir. `true` = the server's `installHooks` gate said yes; `false` = leave them alone.
-   *
-   * REQUIRED, and deliberately not defaulted. A service process editing files inside a user's
-   * `$HOME` is a documented hazard in this repo — those instruction files are loaded by EVERY
-   * agent session on the machine, nodeterm's or not, so a stray write follows the user into work
-   * that has nothing to do with this server (issue #490). The previous shape was an OPTIONAL flag
-   * read as `!== false`, which meant OMITTING the decision installed: the dangerous direction was
-   * the one you got by saying nothing, and a new call site or a test that simply forgot the field
-   * would rewrite the developer's own agent configuration with no diagnostic. Making it required
-   * turns "I did not think about this" into a compile error — the same asymmetry
-   * `session-memory-service.ts` uses for its `remote.isRemoteProject` dep, where
-   * reading-without-knowing is likewise refused at the type level.
-   *
-   * Production passes `config.installHooks !== false`; every test must pass `false` unless it is
-   * specifically exercising the install and has redirected `HOME` to a scratch directory first.
-   */
+  /** Legacy runtime option, retained for callers. Global installation is exclusively handled
+   * by initAgentIntegrations after persisted consent; this flag grants nothing. */
   installAgentIntegrations: boolean
 }
 
@@ -89,10 +67,6 @@ function canvasControlDir(): string {
 
 function shimPath(): string {
   return path.join(canvasControlDir(), 'nodeterm.sh')
-}
-
-function skillPathIn(configDir: string): string {
-  return path.join(configDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md')
 }
 
 function writeShim(): void {
@@ -112,28 +86,7 @@ function writeShim(): void {
   }
 }
 
-function installInstructions(file: string, body: string): void {
-  try {
-    let existing = ''
-    try {
-      existing = fs.readFileSync(file, 'utf8')
-    } catch {
-      /* first install */
-    }
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, mergeCanvasControlBlock(existing, body), 'utf8')
-  } catch (error) {
-    console.warn('[server-canvas-control] instruction install failed', file, error)
-  }
-}
 
-/**
- * Boot the Server Edition canvas runtime and install its discovery surface.
- *
- * The shim itself always lives under the configured server dataDir, never under a hard-coded
- * `~/.nodeterm-server`. Writes to real Claude/Codex/Gemini homes are separately controlled by the
- * existing `installHooks` gate, exactly like `initServerContextLink`.
- */
 export async function initServerCanvasControl(
   deps: ServerCanvasControlDeps
 ): Promise<ServerCanvasControl> {
@@ -144,28 +97,7 @@ export async function initServerCanvasControl(
     console.warn('[server-canvas-control] shim install failed', error)
   }
 
-  const skillBody = buildCanvasSkillBody(shimPath())
-  const instructions = buildCanvasControlInstructions(shimPath())
-  const installSkillInto = (configDir: string): void => {
-    const file = skillPathIn(configDir)
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, skillBody, 'utf8')
-    } catch (error) {
-      console.warn('[server-canvas-control] skill install failed', file, error)
-    }
-  }
-
-  // Required field, so this is a plain read of a decision the caller had to make — never a
-  // default. See ServerCanvasControlDeps.installAgentIntegrations for why omission must not
-  // be spellable here.
-  if (deps.installAgentIntegrations) {
-    installSkillInto(path.join(os.homedir(), '.claude'))
-    installInstructions(path.join(os.homedir(), '.codex', 'AGENTS.md'), instructions)
-    installInstructions(path.join(os.homedir(), '.gemini', 'GEMINI.md'), instructions)
-    // Managed accounts resolve skills relative to their own CLAUDE_CONFIG_DIR.
-    installHooksIntoLocalAccounts(deps.settings().claudeAccounts ?? [], installSkillInto)
-  }
+  const installSkillInto = installAccountDiscovery
 
   const factory = new HeadlessNodeFactory({
     workspaceStore: deps.workspaceStore,

@@ -157,6 +157,7 @@ export const SETTINGS_VERB_FORBIDDEN = new Set<keyof Settings | keyof Project>([
   // Confirm waivers / "don't ask again" and one-click approvals: a CLI that could set these would
   // make every confirm decorative (see @shared/control-confirm).
   'controlConfirmWaivers',
+  'agentIntegrations',
   'confirmBeforeQuit',
   'hookReplyApprovals',
   // Remote reach into this machine.
@@ -166,7 +167,7 @@ export const SETTINGS_VERB_FORBIDDEN = new Set<keyof Settings | keyof Project>([
 /** Name classes that are forbidden even for a key nobody has thought of yet. The allowlist walk
  *  in the test fails on any entry matching this. */
 export const SETTINGS_VERB_FORBIDDEN_PATTERN =
-  /permission|identity|browser|account|credential|token|secret|password|apikey|gateway|telemetry|keybinding|shortcut|waiver|confirm|approval|consent|ack$|launch|command|shell|phone|push/i
+  /integration|permission|identity|browser|account|credential|token|secret|password|apikey|gateway|telemetry|keybinding|shortcut|waiver|confirm|approval|consent|ack$|launch|command|shell|phone|push/i
 
 /** Is this string a key on the allowlist? Own-property lookup: `constructor` / `__proto__` are
  *  not keys, whatever the prototype chain says. */

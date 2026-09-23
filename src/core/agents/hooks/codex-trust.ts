@@ -563,7 +563,7 @@ export function removeHookTrustEntries(configPath: string, keys: readonly string
   writeConfigAtomically(configPath, updated)
 }
 
-function removeTrustBlock(content: string, key: string): string {
+export function removeTrustBlock(content: string, key: string): string {
   const ranges = findTrustBlockRanges(content, key)
   if (ranges.length === 0) {
     return content
@@ -583,7 +583,11 @@ export function readHookTrustEntries(configPath: string): Map<string, CodexHookT
   if (!existsSync(configPath)) {
     return result
   }
-  const content = readTomlFile(configPath)
+  return parseHookTrustEntries(readTomlFile(configPath))
+}
+
+export function parseHookTrustEntries(content: string): Map<string, CodexHookTrustState> {
+  const result = new Map<string, CodexHookTrustState>()
   // Why: walk line-by-line so `[hooks.state."..."]` inside a `"""..."""` or
   // `'''...'''` multi-line string isn't mistaken for a real header.
   // Why: accept an optional `# inline comment` after `]` — TOML permits it,

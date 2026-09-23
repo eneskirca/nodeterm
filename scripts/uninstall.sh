@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# nodeterm uninstaller — removes the app and every trace it leaves on this machine.
+# nodeterm uninstaller — removes the app and safely recognized integration entries.
+# Edited or unrecognized integration files are preserved and reported for manual review.
 #
 #   curl -fsSL https://nodeterm.dev/uninstall.sh | bash -s -- --dry-run   # list what would happen
 #   curl -fsSL https://nodeterm.dev/uninstall.sh | bash -s -- --yes       # actually uninstall
@@ -104,7 +105,14 @@ jsedit() {
 const fs = require('fs')
 const path = require('path')
 const [mode, target] = process.argv.slice(2)
-const MARKER = /agent-hooks|claude-signals/
+const ownedCommands = new Set()
+for (const agent of ['claude', 'codex', 'gemini', 'grok', 'copilot']) {
+  const script = path.join(require('os').homedir(), '.nodeterm', 'agent-hooks', `${agent}.sh`)
+  const q = "'" + script.replaceAll("'", "'\\''") + "'"
+  ownedCommands.add(`if [ -r ${q} ]; then sh ${q}; else cat >/dev/null 2>&1 || :; fi`)
+  ownedCommands.add(`if [ -x ${q} ]; then /bin/sh ${q}; else cat >/dev/null 2>&1 || :; fi`)
+}
+const MARKER = { test: (command) => ownedCommands.has(command) }
 
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return null }
@@ -249,7 +257,26 @@ function listProjects(file) {
   return [...cwds]
 }
 
-if (mode === 'clean-hooks') {
+if (mode === 'clean-skill') {
+  // Receipts are exact installed bytes. Never remove a whole directory or an edited skill.
+  if (!fs.existsSync(target)) process.exit(0)
+  if (!fs.lstatSync(target).isFile()) process.exit(4)
+  const before = fs.readFileSync(target, 'utf8')
+  const owned = process.argv.slice(4).some((file) => readJson(file)?.[target] === before)
+  if (!owned || fs.readFileSync(target, 'utf8') !== before) process.exit(4)
+  fs.unlinkSync(target)
+  try { fs.rmdirSync(path.dirname(target)) } catch {} // preserve any user-added references
+} else if (mode === 'clean-copilot') {
+  const before = fs.readFileSync(target, 'utf8')
+  const config = JSON.parse(before)
+  if (!isObj(config) || !isObj(config.hooks)) process.exit(4)
+  for (const [event, defs] of Object.entries(config.hooks)) {
+    if (!Array.isArray(defs)) continue
+    config.hooks[event] = defs.filter((h) => !MARKER.test(h?.bash))
+    if (!config.hooks[event].length) delete config.hooks[event]
+  }
+  if (fs.readFileSync(target, 'utf8') === before) fs.writeFileSync(target, JSON.stringify(config, null, 2))
+} else if (mode === 'clean-hooks') {
   process.stdout.write(String(cleanHooks(target, false)))
 } else if (mode === 'clean-codex') {
   const r = cleanCodex(target, false)
@@ -265,24 +292,11 @@ JSEOF
 # strip_blocks <file> — remove every nodeterm marker block; delete the file if only whitespace
 # remains (the installer created it in that case).
 strip_blocks() {
-  local f="$1" tmp
+  local f="$1"
   [ -f "$f" ] || return 0
-  tmp="$(mktemp)"
-  awk -v s1="$CC_START" -v e1="$CC_END" -v s2="$CL_START" -v e2="$CL_END" '
-    index($0, s1) || index($0, s2) { skip = 1 }
-    !skip { print }
-    index($0, e1) || index($0, e2) { skip = 0 }
-  ' "$f" > "$tmp"
-  if ! cmp -s "$f" "$tmp"; then
-    if [ -z "$(tr -d '[:space:]' < "$tmp")" ]; then
-      rm -f "$f"
-      ok "Removed $f (contained only nodeterm blocks)"
-    else
-      cat "$tmp" > "$f"
-      ok "Removed nodeterm blocks from $f"
-    fi
+  if grep -q '<!-- nodeterm:' "$f"; then
+    warn "Preserved historical instruction blocks for manual review: $f (use Settings → Agents cleanup before uninstalling)"
   fi
-  rm -f "$tmp"
 }
 
 has_blocks() {
@@ -337,8 +351,8 @@ if [ -f "$HOME/.codex/hooks.json" ] && grep -Eq "$HOOK_MARKERS" "$HOME/.codex/ho
   plan "Remove nodeterm hook entries from ~/.codex/hooks.json + matching trust entries in ~/.codex/config.toml"
   FOUND_ANY=1
 fi
-for d in "$HOME/.claude/skills/manage-nodeterm-canvas" "$HOME/.claude/skills/get-linked-context"; do
-  [ -d "$d" ] && { plan "Delete skill dir $d"; FOUND_ANY=1; }
+for d in "$HOME/.claude/skills/manage-nodeterm-canvas" "$HOME/.claude/skills/get-linked-context" "$HOME/.agents/skills/manage-nodeterm-canvas" "$HOME/.agents/skills/get-linked-context"; do
+  [ -d "$d" ] && { plan "Remove unchanged receipted SKILL.md in $d; preserve edited or unrecognized files"; FOUND_ANY=1; }
 done
 for f in "$GROK_HOME/hooks/nodeterm-status.json" "$COPILOT_HOME/hooks/nodeterm-status.json"; do
   [ -f "$f" ] && { plan "Delete $f"; FOUND_ANY=1; }
@@ -485,10 +499,20 @@ if [ -f "$HOME/.codex/hooks.json" ] && grep -Eq "$HOOK_MARKERS" "$HOME/.codex/ho
     warn "Could not clean ~/.codex — left as is (entries are inert without the hook script)"
   fi
 fi
-rm -rf "$HOME/.claude/skills/manage-nodeterm-canvas" "$HOME/.claude/skills/get-linked-context" 2>/dev/null || true
-rm -f "$GROK_HOME/hooks/nodeterm-status.json" "$COPILOT_HOME/hooks/nodeterm-status.json" 2>/dev/null || true
-if [ -f "$OPENCODE_PLUGIN" ] && head -1 "$OPENCODE_PLUGIN" | grep -qF "$OPENCODE_PLUGIN_MARKER"; then
-  rm -f "$OPENCODE_PLUGIN"
+for root in "$HOME/.claude" "$HOME/.agents"; do
+  for skill in manage-nodeterm-canvas get-linked-context; do
+    f="$root/skills/$skill/SKILL.md"
+    jsedit clean-skill "$f" "$USER_DATA/integration-receipts.json" "$SERVER_DATA/integration-receipts.json" || warn "Preserved skill (edited, unrecognized, or no JS runtime): $f"
+  done
+done
+if [ -f "$GROK_HOME/hooks/nodeterm-status.json" ]; then
+  jsedit clean-hooks "$GROK_HOME/hooks/nodeterm-status.json" || warn "Preserved Grok hooks for manual review"
+fi
+if [ -f "$COPILOT_HOME/hooks/nodeterm-status.json" ]; then
+  jsedit clean-copilot "$COPILOT_HOME/hooks/nodeterm-status.json" || warn "Preserved Copilot hooks for manual review"
+fi
+if [ -f "$OPENCODE_PLUGIN" ]; then
+  warn "Preserved plugin without an ownership receipt: $OPENCODE_PLUGIN (remove through Settings → Agents before uninstalling)"
 fi
 for f in "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md" "$COPILOT_HOME/copilot-instructions.md" "$OPENCODE_DIR/AGENTS.md"; do
   strip_blocks "$f"

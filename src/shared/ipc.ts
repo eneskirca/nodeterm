@@ -426,6 +426,7 @@ export const IPC = {
   filesSaveUpload: 'files:save-upload',
   /** Write a canvas image into the project's own `.nodeterm/images/` (see core/canvas-images.ts). */
   filesSaveCanvasImage: 'files:save-canvas-image',
+  integrationStatus: 'settings:integration-status',
   settingsLoad: 'settings:load',
   settingsSave: 'settings:save',
   sshList: 'ssh:list',

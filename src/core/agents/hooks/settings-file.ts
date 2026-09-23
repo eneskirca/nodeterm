@@ -1,5 +1,6 @@
 // User-owned JSON is never repaired by an installer. Only ENOENT means a new config.
-import { lstatSync, readFileSync, mkdirSync, rmdirSync, statSync, writeFileSync, rmSync, chmodSync, realpathSync, openSync, closeSync, fstatSync, constants } from 'fs'
+import { existsSync, lstatSync, readFileSync, mkdirSync, rmdirSync, statSync, writeFileSync, rmSync, chmodSync, realpathSync, openSync, closeSync, fstatSync, constants } from 'fs'
+
 import path from 'path'
 import { renameAtomicSync, tempNameFor } from '../../fs-atomic'
 
@@ -42,7 +43,8 @@ function settingsTarget(file: string): string {
 
 /** Serialize our writers, stage before publishing, and refuse stale snapshots. Other programs
  * do not honor our lock: the final comparison narrows, but cannot eliminate, their rename race. */
-export function updateSettingsFile(requested: string, update: (config: Record<string, unknown>) => Record<string, unknown>): boolean {
+export function updateSettingsFile(requested: string, update: (config: Record<string, unknown>) => Record<string, unknown>, create = true): boolean {
+  if (!create && !existsSync(requested)) return false
   let lock = ''
   let locked = false
   let tmp: string | undefined
@@ -56,6 +58,7 @@ export function updateSettingsFile(requested: string, update: (config: Record<st
     }
     locked = true
     const before = snapshot(file)
+    if (before === null && !create) return false
     const config = before === null ? {} : parseSettings(before)
     const original = JSON.stringify(config)
     const updated = update(config)

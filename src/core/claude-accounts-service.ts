@@ -1,3 +1,4 @@
+import { agentIntegrationAllowed } from './integration-policy'
 // Impure lifecycle for managed Claude accounts: config-dir creation/deletion, login capture
 // (poll .claude.json), CLI version check, per-account hook install. The account LIST lives in
 // settings.json (renderer-owned via useSettings); this module only owns the filesystem.
@@ -26,7 +27,7 @@ import {
   linkedClaudeConfigDirFor
 } from './claude-config-dir'
 import { applySkillShare, EMPTY_SKILL_SHARE } from './claude-skill-share'
-import { installClaudeHooksInto, ensureClaudeFullscreenTuiInto } from './agents/hooks/claude'
+import { installClaudeHooksInto } from './agents/hooks/claude'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
 import { copyClaudeSession, type ClaudeSessionCopyOutcome } from './claude-session-copy'
@@ -131,11 +132,8 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // Install the managed hook (+ the canvas skill where the shell has one) up front so the very
     // first session in this account already reports status (badges/notifications/subagent viz)
     // and can control the canvas (Claude resolves both relative to CLAUDE_CONFIG_DIR, not ~/.claude).
-    installClaudeHooksInto(configDir)
-    deps.installSkill?.(configDir)
-    // Ensure fullscreen TUI in the new account dir (write-if-absent, version-gated). Best-effort,
-    // off the response path — the memoized probe + write both fail open.
-    void ensureClaudeFullscreenTuiInto(configDir)
+    if (agentIntegrationAllowed('claude')) installClaudeHooksInto(configDir)
+    if (agentIntegrationAllowed('claude')) deps.installSkill?.(configDir)
     const versionSupported = await checkClaudeVersion()
     return { id, configDir, versionSupported }
   })
@@ -263,8 +261,8 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // to its resolved target without replacing a symlink — the two-profile layout where
     // `<dir>/settings.json` is a symlink into `~/.claude/` keeps its symlink and the shared target
     // gains the managed hook (pinned by test).
-    installClaudeHooksInto(configDir)
-    void ensureClaudeFullscreenTuiInto(configDir)
+    if (agentIntegrationAllowed('claude')) installClaudeHooksInto(configDir)
+
     return { id: randomUUID(), configDir, email }
   })
 
@@ -385,8 +383,10 @@ export function installHooksIntoLocalAccounts(
     if (acct.host) continue // remote accounts live on another host; nothing to install locally
     try {
       const configDir = claudeConfigDirFor(acct.id)
-      installClaudeHooksInto(configDir)
-      extra?.(configDir)
+      if (agentIntegrationAllowed('claude')) {
+        installClaudeHooksInto(configDir)
+        extra?.(configDir)
+      }
       // Shared-skills reconcile (issue #643) — the ON direction ONLY, and that asymmetry is the
       // safety property. ON has real work to do at every boot: a skill the user added to
       // `~/.claude/skills` since the last run needs a new link, and one they deleted leaves a
@@ -400,9 +400,6 @@ export function installHooksIntoLocalAccounts(
       // is flipped — links, not data, and visible in the account's own folder.
       // AFTER `extra`, so the canvas skill's own directory exists before anything looks at it.
       if (acct.shareSystemSkills) void applySkillShare(configDir, true)
-      // Off the critical path: it awaits the memoized CLI probe, then writes fail-open. (The
-      // system ~/.claude is handled by installManagedAgentHooks, which covers both shells.)
-      void ensureClaudeFullscreenTuiInto(configDir)
     } catch (e) {
       console.warn(`[agent-hooks] account ${acct.id} hook install failed`, e)
     }

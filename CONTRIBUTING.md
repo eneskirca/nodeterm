@@ -728,6 +728,14 @@ never-attempted; it must not poison the writer or trigger a retry timer.
 Held Desktop launches retain their attached transport even offscreen with tmux (large fan-outs cost
 memory). Server deferred delivery is one-shot: a failed probe/send needs explicit recovery.
 
+## Agent integration ownership
+
+Persistent changes to another agent's global configuration require explicit **per-agent, per-machine**
+opt-in. Use the core integration lifecycle; neither runtime startup, an existing file, a linked
+account nor the server install flag implies consent. SSH hosts have separate machine-local choices.
+Do not add global instruction injection. On cleanup, preserve edited/unrecognized content and report
+it; skill receipts record exact bytes. See `docs/agent-integration-consent.md` for lifecycle and limits.
+
 ## Testing
 
 **Screenshot paste has one route per gesture.** On macOS, Cmd+V saves/uploads a file and

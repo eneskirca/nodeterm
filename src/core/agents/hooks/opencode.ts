@@ -182,7 +182,7 @@ export function installOpencodeHooks(): void {
 export function removeOpencodeHooks(): void {
   const p = pluginPath()
   try {
-    if (fs.readFileSync(p, 'utf8').startsWith(PLUGIN_MARKER)) fs.rmSync(p, { force: true })
+    if (fs.readFileSync(p, 'utf8') === buildOpencodePlugin()) fs.rmSync(p, { force: true })
   } catch {
     /* absent — nothing to remove */
   }

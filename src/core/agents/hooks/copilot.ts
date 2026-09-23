@@ -8,7 +8,7 @@ import os from 'os'
 import path from 'path'
 import { COPILOT_HOOK_EVENTS } from '@shared/agents/hook-events'
 import {
-  buildManagedHookCommand,
+  buildManagedHookCommand, managedHookScriptPath,
   installManagedHookScript
 } from './install-helper'
 
@@ -99,12 +99,22 @@ export function installCopilotHooks(): void {
 export function removeCopilotHooks(): void {
   const configPath = copilotHookConfigPath()
   try {
-    fs.writeFileSync(
-      configPath,
-      `${JSON.stringify({ version: 1, hooks: {} }, null, 2)}\n`,
-      'utf8'
-    )
-  } catch {
-    /* fail open */
-  }
+    const before = fs.readFileSync(configPath, 'utf8')
+    const config = JSON.parse(before)
+    if (!config || typeof config !== 'object' || !config.hooks || typeof config.hooks !== 'object') return
+    let changed = false
+    for (const [event, defs] of Object.entries(config.hooks)) {
+      if (!Array.isArray(defs)) continue
+      const next = defs.filter((d) => {
+        const ours = d?.bash === buildManagedHookCommand(managedHookScriptPath(SCRIPT_FILE_NAME))
+        changed ||= ours
+        return !ours
+      })
+      if (next.length) config.hooks[event] = next
+      else delete config.hooks[event]
+    }
+    if (changed && fs.readFileSync(configPath, 'utf8') === before) {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8')
+    }
+  } catch { /* malformed/unreadable/edited config belongs to the user */ }
 }

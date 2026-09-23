@@ -1,3 +1,4 @@
+import { IntegrationConsent } from '../IntegrationConsent'
 import { useEffect, useMemo, useState } from 'react'
 import type { Project } from '@shared/types'
 import {
@@ -206,6 +207,7 @@ function EditableProjectSection({
       searchEntries={entries}
       forceVisible={forceVisible}
     >
+      {project.ssh && <IntegrationConsent connection={project.ssh.server} />}
       {conflict ? (
         <div
           role="status"

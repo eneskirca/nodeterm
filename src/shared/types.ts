@@ -1387,6 +1387,9 @@ export type TerminalCursorInactiveStyle = TerminalCursorStyle | 'outline' | 'non
 
 /** User-configurable application settings (settings.json). */
 export interface Settings {
+  /** Explicit machine-local integration installation choices; absent is NOT consent. */
+  agentIntegrations?: import('./agent-integrations').AgentIntegrationConsent
+
   fontSize: number
   fontFamily: string
   /** Characters that end a word during xterm double-click selection. */
@@ -1978,6 +1981,7 @@ export const DEFAULT_SETTINGS: Settings = {
 }
 
 export interface SettingsApi {
+  integrationStatus?(): Promise<{ retained: string[] }>
   load(): Promise<Settings>
   save(settings: Settings): Promise<void>
 }

@@ -52,6 +52,7 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
     // allowlist the key AND drop it from the set, in one edit — must redden a test. This one.
     expect([...SETTINGS_VERB_FORBIDDEN].sort()).toEqual([
       'agentBrowserControl',
+      'agentIntegrations',
       'agentIssueReporting',
       'agentLaunchCommands',
       'agentMessagingDefault',
