@@ -5,7 +5,12 @@ import type { ContextLinkInfo } from '../shared/types'
 import { sessionName } from './tmux-naming'
 import { HOOK_CURL_HEADERS_SH } from './agents/hook-curl-config-sh'
 import { CODEX_SANDBOX_BLOCKED_LINE, CODEX_SANDBOX_HINT_SH } from './agents/hook-sandbox-hint-sh'
-import { HOOK_ENDPOINT_FALLBACK_SH, STALE_ENDPOINT_HINT } from './agents/hook-endpoint-failover-sh'
+import {
+  HOOK_ENDPOINT_FALLBACK_SH,
+  OWNED_ENDPOINT_FALLBACK_SH,
+  FOREIGN_ENDPOINT_HINT,
+  STALE_ENDPOINT_HINT
+} from './agents/hook-endpoint-failover-sh'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
 
@@ -192,6 +197,8 @@ fi
 # falls back to the standard locations rather than reading as \`legacy\` forever (issue #384).
 ${NODE_TOKEN_READ_SH}
 nt_read_node_token
+nt_owner_node_token="$nt_node_token"
+nt_skipped_foreign_endpoint=""
 
 ${HOOK_CURL_HEADERS_SH}
 
@@ -219,6 +226,7 @@ while [ "$nt_i" -lt "$nt_count" ]; do
 done
 
 ${HOOK_ENDPOINT_FALLBACK_SH}
+${OWNED_ENDPOINT_FALLBACK_SH}
 
 nt_out=$(mktemp 2>/dev/null || echo "/tmp/nodeterm-context.$$")
 
@@ -265,12 +273,9 @@ if ! nt_reached && { [ "$nt_code" = "421" ] || [ -z "$CODEX_SANDBOX_NETWORK_DISA
     # (and nt_code) survive it. "$@" still holds the translated curl args.
     while IFS= read -r nt_ep; do
       [ -n "$nt_ep" ] || continue
+      [ "$nt_n" -lt "$nt_fallback_max" ] || break
+      nt_adopt_for_node "$nt_ep" || continue
       nt_n=$((nt_n + 1))
-      [ "$nt_n" -le "$nt_fallback_max" ] || break
-      nt_adopt "$nt_ep" || continue
-      # Re-read the token FROM THE ADOPTED ENDPOINT's dir (node-token-sh.ts): the capability must
-      # come from the instance we are about to call, never the one we are walking away from.
-      nt_read_node_token "$nt_ep"
       nt_ctx_post "$@"
       nt_reached && break
     done <<NT_CANDIDATES
@@ -283,6 +288,9 @@ if [ "$nt_code" = "200" ]; then
   cat "$nt_out" 2>/dev/null
   rm -f "$nt_out"
   exit 0
+fi
+if [ -n "$nt_skipped_foreign_endpoint" ] && ! nt_reached; then
+  echo "${FOREIGN_ENDPOINT_HINT}" >&2
 fi
 cat "$nt_out" >&2 2>/dev/null
 rm -f "$nt_out"

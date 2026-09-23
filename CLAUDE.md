@@ -2138,6 +2138,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     the launcher and the prelude, pass `npm run typecheck` and every unit test, and ship INERT.
     `main/codex-identity-record-wiring.test.ts` pins it at source level, the same remedy
     `hook-verified-parity.test.ts` uses for the same class of hole.
+  - Control/context endpoint discovery retains a known node capability. A dead Desktop SSH tunnel
+    must not redirect a command to a local Server Edition that has no matching token for that node:
+    its unsupported-edition response describes the wrong instance. The two shims use
+    `nt_adopt_for_node` and read only the candidate's advertised token directory (or adjacent
+    `node-tokens` for old endpoint files), never borrow a global token for a candidate. Unknown
+    legacy callers retain existing discovery; actual owning-endpoint refusals remain final.
+    Skipped foreign candidates do not consume the three-network-attempt budget. Hook event
+    delivery retains its existing independent failover policy.
   - **Every generated sh client walks the SAME endpoint failover** (`nt_candidates`/`nt_adopt`,
     `core/agents/hook-endpoint-failover-sh.ts`) — issue #445, the endpoint-level twin of #384: a
     session is pinned for life to the endpoint PATH it got at tmux creation, so an app
