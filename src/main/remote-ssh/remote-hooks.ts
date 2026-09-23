@@ -444,10 +444,9 @@ export class RemoteHooks {
           if (account.host !== sshHostKey(conn) || !/^[a-zA-Z0-9_-]+$/.test(account.id)) continue
           const dir = `${remoteDir}/claude-accounts/${account.id}`
           await this.removeRemoteHooks(conn, controlPath, `${dir}/settings.json`, [command])
-          // Historical account skills have no receipt; preserve rather than guess at edits.
-          reportIntegrationRetained(`${conn.user}@${conn.host}: ${dir}/skills (review historical skills)`)
+          await this.removeRemoteSkills(conn, controlPath, home, dir)
         }
-        reportIntegrationRetained(`${conn.user}@${conn.host}: ${home}/.claude/skills (review historical skills)`)
+        await this.removeRemoteSkills(conn, controlPath, home, `${home}/.claude`)
       }
       const installs = await Promise.allSettled([
         ...AGENT_TARGETS.map((t) => this.installJsonAgentRemote(conn, controlPath, home, remoteDir, t)),
@@ -469,17 +468,53 @@ export class RemoteHooks {
     return next
   }
 
+  private async removeRemoteSkills(conn: SshConnection, controlPath: string, home: string, configDir: string): Promise<void> {
+    for (const [name, expected] of [
+      ['manage-nodeterm-canvas', buildCanvasSkillBody(`${home}/.nodeterm/nodeterm.sh`)],
+      ['get-linked-context', buildContextLinkSkillBody(`${home}/.nodeterm/context.sh`)]
+    ]) {
+      const file = `${configDir}/skills/${name}/SKILL.md`
+      const q = posixQuote(file)
+      const report = (): void => reportIntegrationRetained(`${conn.user}@${conn.host}: ${file}`)
+      try {
+        const read = await this.r.run(childArgs(conn, controlPath,
+          `if [ -L ${q} ]; then exit 1; elif [ -e ${q} ]; then [ -f ${q} ] && cat ${q}; else exit 44; fi`))
+        if (read.code === 44) continue
+        if (read.code !== 0 || read.stdout !== expected) { report(); continue }
+        // Compare immediately before removal, using stdin rather than putting the document in argv.
+        const result = await this.r.run(childArgs(conn, controlPath, `umask 077
+nt_tmp=$(mktemp ${posixQuote(`${dirnameOf(file)}/.nodeterm-cleanup-XXXXXXXX`)}) || exit 1
+trap 'rm -f -- "$nt_tmp"' EXIT
+cat > "$nt_tmp" || exit 1
+[ ! -L ${q} ] && [ -f ${q} ] && cmp -s "$nt_tmp" ${q} && rm -f -- ${q}`), read.stdout)
+        if (result.code !== 0) report()
+      } catch { report() }
+    }
+  }
+
   private async removeRemoteHooks(conn: SshConnection, controlPath: string, file: string, commands: string[]): Promise<void> {
     let changed = false
+    let observed = false
+    let missing = false
     const updated = await updateRemoteSettingsFile(file,
-      (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+      async (cmd, stdin) => {
+        const result = await this.r.run(childArgs(conn, controlPath, cmd), stdin)
+        if (result.code === 44) missing = true
+        return result
+      },
       (config) => {
+        observed = true
         const next = removeExactHooks(config, commands)
         changed = JSON.stringify(config) !== JSON.stringify(next)
         if (/agent-hooks[\\/]|claude-signals/.test(JSON.stringify(next))) reportIntegrationRetained(`${conn.user}@${conn.host}: ${file}`)
         return next
       }, false)
-    if (changed && !updated) reportIntegrationRetained(`${conn.user}@${conn.host}: ${file}`)
+    if (!updated && (changed || (!observed && !missing))) reportIntegrationRetained(`${conn.user}@${conn.host}: ${file}`)
+  }
+
+  private async runForIntegration(conn: SshConnection, agent: string, args: string[], stdin?: string): Promise<{ code: number; stdout: string }> {
+    if (!agentIntegrationAllowed(agent, conn)) return { code: 1, stdout: '' }
+    return this.r.run(args, stdin)
   }
 
   private async installJsonAgentRemote(
@@ -497,7 +532,7 @@ export class RemoteHooks {
         await this.removeRemoteHooks(conn, controlPath, config, [buildManagedHookCommand(script)])
         return
       }
-      await this.r.run(
+      await this.runForIntegration(conn, target.agentId,
         childArgs(
           conn,
           controlPath,
@@ -506,7 +541,7 @@ export class RemoteHooks {
         buildManagedScript(target.agentId, REMOTE_IDENTITY_ROOT)
       )
       await updateRemoteSettingsFile(config,
-        (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+        (cmd, stdin) => this.runForIntegration(conn, target.agentId, childArgs(conn, controlPath, cmd), stdin),
         (cfg) => mergeManagedHook(cfg, buildManagedHookCommand(script), target.events))
     } catch {
       /* fail-open: this agent's remote sessions run without status hooks */
@@ -540,7 +575,7 @@ export class RemoteHooks {
     }
     try {
       const script = `${remoteDir}/agent-hooks/codex.sh`
-      await this.r.run(
+      await this.runForIntegration(conn, 'codex',
         childArgs(
           conn,
           controlPath,
@@ -557,7 +592,7 @@ export class RemoteHooks {
 
       // Resolve the canonical remote hooks.json path (codex realpath's key_source before keying the
       // trust entry). Falls back to the plain path when readlink can't resolve it yet.
-      const { stdout: canonRaw } = await this.r.run(
+      const { stdout: canonRaw } = await this.runForIntegration(conn, 'codex',
         childArgs(
           conn,
           controlPath,
@@ -568,7 +603,7 @@ export class RemoteHooks {
 
       // Read the current hooks.json. `|| echo '{}'` only fires when the file is MISSING, so a
       // present-but-malformed file reaches JSON.parse and throws → we skip (never clobber it).
-      const { stdout: hooksRaw } = await this.r.run(
+      const { stdout: hooksRaw } = await this.runForIntegration(conn, 'codex',
         childArgs(conn, controlPath, `cat ${posixQuote(hooksFile)} 2>/dev/null || echo '{}'`)
       )
       let existing: CodexHooksConfig | null
@@ -584,19 +619,19 @@ export class RemoteHooks {
       const built = buildCodexHooksAndTrust(existing, command, sourcePath)
       if (!built) return // missing is fine ({}); unparseable/odd shape → leave the host's file alone
 
-      await this.r.run(
+      await this.runForIntegration(conn, 'codex',
         childArgs(conn, controlPath, `mkdir -p ${posixQuote(codexHome)} && cat > ${posixQuote(hooksFile)}`),
         `${JSON.stringify(built.config, null, 2)}\n`
       )
 
       // Trust LAST: read config.toml, line-merge our trust blocks (preserving all other content),
       // write back only if it changed. `|| true` so a missing config.toml reads as empty.
-      const { stdout: tomlRaw } = await this.r.run(
+      const { stdout: tomlRaw } = await this.runForIntegration(conn, 'codex',
         childArgs(conn, controlPath, `cat ${posixQuote(configToml)} 2>/dev/null || true`)
       )
       const nextToml = upsertHookTrustEntriesInContent(tomlRaw, built.trustEntries)
       if (nextToml !== tomlRaw) {
-        await this.r.run(
+        await this.runForIntegration(conn, 'codex',
           childArgs(conn, controlPath, `mkdir -p ${posixQuote(codexHome)} && cat > ${posixQuote(configToml)}`),
           nextToml
         )
@@ -646,7 +681,7 @@ export class RemoteHooks {
         return
       }
 
-      await this.r.run(
+      await this.runForIntegration(conn, 'grok',
         childArgs(
           conn,
           controlPath,
@@ -657,7 +692,7 @@ export class RemoteHooks {
       // `|| echo '{}'` fires ONLY when the file is missing — still the read that distinguishes a
       // missing file from an unreadable one. An unreadable one is then HEALED, not preserved: this
       // file is ours by name and we rewrite it wholesale, so there is no user content to lose.
-      const { stdout: cfgRaw } = await this.r.run(
+      const { stdout: cfgRaw } = await this.runForIntegration(conn, 'grok',
         childArgs(conn, controlPath, `cat ${posixQuote(config)} 2>/dev/null || echo '{}'`)
       )
       let cfg: HookSettings = {}
@@ -669,7 +704,7 @@ export class RemoteHooks {
       const merged = mergeManagedHook(cfg, buildManagedHookCommand(script), GROK_EVENTS)
       // The `$(dirname …)` is QUOTED: a valid $GROK_HOME may contain spaces, which would otherwise
       // word-split into two mkdir args, leave the directory absent, and fail the quoted `cat >`.
-      await this.r.run(
+      await this.runForIntegration(conn, 'grok',
         childArgs(conn, controlPath, `mkdir -p "$(dirname ${posixQuote(config)})" && cat > ${posixQuote(config)}`),
         JSON.stringify(merged, null, 2)
       )
@@ -694,7 +729,7 @@ export class RemoteHooks {
         await this.removeRemoteHooks(conn, controlPath, config, [buildManagedHookCommand(script)])
         return
       }
-      await this.r.run(
+      await this.runForIntegration(conn, 'copilot',
         childArgs(
           conn,
           controlPath,
@@ -702,7 +737,7 @@ export class RemoteHooks {
         ),
         buildManagedScript('copilot', REMOTE_IDENTITY_ROOT)
       )
-      await this.r.run(
+      await this.runForIntegration(conn, 'copilot',
         childArgs(
           conn,
           controlPath,
@@ -752,12 +787,12 @@ export class RemoteHooks {
       const config = `${accountDir}/settings.json`
       const events = AGENT_TARGETS.find((t) => t.agentId === 'claude')?.events ?? []
       // Idempotently (re)write the shared hook script — setup() may not have run (fail-open) yet.
-      await this.r.run(
+      await this.runForIntegration(conn, 'claude',
         childArgs(conn, controlPath, `mkdir -p ${posixQuote(`${remoteDir}/agent-hooks`)} && cat > ${posixQuote(script)} && chmod 755 ${posixQuote(script)}`),
         buildManagedScript('claude', REMOTE_IDENTITY_ROOT)
       )
       await updateRemoteSettingsFile(config,
-        (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+        (cmd, stdin) => this.runForIntegration(conn, 'claude', childArgs(conn, controlPath, cmd), stdin),
         (cfg) => mergeManagedHook(cfg, buildManagedHookCommand(script), events))
     } catch {
       /* fail-open: the account session simply runs without status hooks */
@@ -876,6 +911,7 @@ export class RemoteHooks {
     name: string,
     body: string
   ): Promise<void> {
+    if (!agentIntegrationAllowed('claude', conn)) return
     const skill = `${configDir}/skills/${name}/SKILL.md`
     await this.r.run(
       childArgs(conn, controlPath, `mkdir -p ${posixQuote(dirnameOf(skill))} && (set -C; cat > ${posixQuote(skill)})`),

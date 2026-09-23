@@ -29,3 +29,22 @@ it('remote decline removes only the exact owned hook, leaves edits, and stays de
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ model: 'user-model', hooks: { Stop: [{ hooks: [foreign, edited] }] } })
   expect(fs.existsSync(path.join(home, '.gemini'))).toBe(false)
 })
+it('cleans exactly recognized remote skills but keeps user modifications', async () => {
+  const { buildCanvasSkillBody } = await import('../../core/canvas-control-core')
+  const { buildContextLinkSkillBody } = await import('../../core/context-link-core')
+  const canvas = path.join(home, '.claude/skills/manage-nodeterm-canvas/SKILL.md')
+  const context = path.join(home, '.claude/skills/get-linked-context/SKILL.md')
+  fs.mkdirSync(path.dirname(canvas), { recursive: true }); fs.mkdirSync(path.dirname(context), { recursive: true })
+  fs.writeFileSync(canvas, buildCanvasSkillBody(`${home}/.nodeterm/nodeterm.sh`))
+  const edited = buildContextLinkSkillBody(`${home}/.nodeterm/context.sh`) + '\nUser addition\n'
+  fs.writeFileSync(context, edited)
+  setIntegrationConsent({ remote: { [integrationHostKey(conn)]: { claude: false } } })
+  const hooks = new RemoteHooks({ run: async (args, input) => {
+    const result = spawnSync('/bin/sh', ['-c', args.at(-1)!], { input, encoding: 'utf8' })
+    if (result.error) throw result.error
+    return { code: result.status ?? 1, stdout: result.stdout }
+  } })
+  await hooks.reconcileIntegrations(conn, '/fixture-control', home)
+  expect(fs.existsSync(canvas)).toBe(false)
+  expect(fs.readFileSync(context, 'utf8')).toBe(edited)
+})

@@ -30,7 +30,7 @@ The app removes exactly recognized hook commands, preserving neighboring handler
 commands. Skills carry an exact-content receipt in `integration-receipts.json`; a modified or
 unrecognized file is retained and reported in Settings. Known legacy instruction blocks are removed
 only when their complete content matches a shipped template. Unknown historical blocks, edited
-skills, legacy TUI preferences, and remote historical account skills require manual review.
+skills, legacy TUI preferences, and edited remote historical skills require manual review.
 Cleanup cannot prove ownership retroactively. It must not guess from a directory name or marker
 alone. The status panel reports retained paths; remote warnings last for the app run.
 

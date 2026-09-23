@@ -51,3 +51,15 @@ it('a queued disable observes current consent after an in-flight install and nev
   expect(run.mock.calls.filter(([, input]) => input).some(([args]) => args.join(' ').includes('.claude/settings.json'))).toBe(false)
   install.mockRestore()
 })
+it('revoking during an account script upload prevents the subsequent global config write', async () => {
+  setIntegrationConsent({ remote: { [integrationHostKey(conn)]: { claude: true } } })
+  const calls: { args: string[]; input?: string }[] = []
+  const hooks = new RemoteHooks({ run: async (args, input) => {
+    calls.push({ args, input })
+    if (input) setIntegrationConsent({ remote: { [integrationHostKey(conn)]: { claude: false } } })
+    return { code: 0, stdout: '{}' }
+  } })
+  await hooks.installIntoAccountDir(conn, '/fixture-control', '/home/u', 'account')
+  expect(calls.some((c) => c.input && c.args.join(' ').includes('settings.json'))).toBe(false)
+  expect(calls).toHaveLength(1)
+})

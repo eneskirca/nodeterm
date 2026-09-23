@@ -30,7 +30,7 @@ export function IntegrationConsent({ connection }: { connection?: SshConnection 
     <p className="font-medium">Agent integration setup — {connection ? `${connection.user}@${connection.host}:${connection.port ?? 22}` : 'this computer (server host in Server Edition)'}</p>
     <p>Optional hooks enable agent status, completion notifications and context updates. Without them terminals still work; hook-based features may be unavailable. Existing installations need a new choice too.</p>
     <p>Enable authorizes the files below and hook scripts in ~/.nodeterm. Local Claude and Codex get on-demand skills; global instruction files are never injected. Disable removes identifiable entries; edited or unrecognized files are preserved. Remove integrations here before uninstalling: deleting the app alone cannot clean them up.</p>
-    {connection && <p>These choices apply only to this SSH connection. Connected hosts are updated now; offline hosts are updated at the next connection. Edited legacy files and remote account skills may require manual cleanup.</p>}
+    {connection && <p>These choices apply only to this SSH connection. Connected hosts are updated now; offline hosts are updated at the next connection. Edited or unrecognized legacy files require manual cleanup.</p>}
     {INTEGRATION_AGENTS.filter((agent) => !connection || agent !== 'opencode').map((agent) => {
       const choice = integrationChoice(settings.agentIntegrations, agent, connection)
       return <div key={agent} className="space-y-1 border-t border-border pt-2">
