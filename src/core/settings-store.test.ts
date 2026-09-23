@@ -60,6 +60,26 @@ describe('SettingsStore nested-default merge', () => {
     expect(store.get().ptyShadowClients).toBe(false)
   })
 
+  it('defaults focusAvoidsPinnedPanels OFF for a settings.json that predates the key', () => {
+    // The opt-in must stay off for every existing install, so "go to node" behaviour is unchanged
+    // for anyone who never asked for it: a missing key resolves to the default through the merge.
+    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ tmuxEnabled: true }), 'utf-8')
+    const store = new SettingsStore()
+    store.init()
+    expect(store.get().focusAvoidsPinnedPanels).toBe(false)
+  })
+
+  it('keeps an explicit focusAvoidsPinnedPanels:true across a load', () => {
+    writeFileSync(
+      path.join(dir, 'settings.json'),
+      JSON.stringify({ focusAvoidsPinnedPanels: true }),
+      'utf-8'
+    )
+    const store = new SettingsStore()
+    store.init()
+    expect(store.get().focusAvoidsPinnedPanels).toBe(true)
+  })
+
   it('turns markdown auto-preview ON for a settings.json that predates the key', () => {
     // Every pre-v0.3.3 install upgrades with no `openMarkdownPreview` in its file: the shallow
     // merge plus the one-shot migration deliver the flipped default (#495) to that population.

@@ -170,10 +170,10 @@ describe('breadcrumb wiring the CLAUDE.md bullet calls load-bearing', () => {
     expect(frame).toContain('setViewport(viewport, { duration: 300 })')
   })
 
-  it('centres the node in the pane and never solves chrome around it', () => {
-    // Framing a single focused node against the chrome-free rectangle was reported wrong twice
-    // ("too far right", "not in the middle"): the sessions sidebar is a 300px overlay and it is
-    // open exactly when this is used. The free-rect solve stays in fitAll, which fits every node.
+  it('frames the node through viewportForRect with insets, keep-zoom preserved', () => {
+    // frameNode hands viewportForRect(..., insets) the pane and lets it centre the node in the
+    // region the insets leave over. It never solves the chrome around the node itself; the flat
+    // free-rect solve stays in fitAll (which fits EVERY node and would tuck them under the dock).
     const frame = CANVAS_SRC.slice(
       CANVAS_SRC.indexOf('const frameNode = useCallback'),
       CANVAS_SRC.indexOf('const goToNode = useCallback')
@@ -183,16 +183,20 @@ describe('breadcrumb wiring the CLAUDE.md bullet calls load-bearing', () => {
     expect(frame).toContain('settings.focusZoomToNode ? undefined : getZoom()')
   })
 
-  it('insets that framing ONLY for a maximized node (issue #743)', () => {
-    // The trade-off above is about how much of the node ends up behind the panel, and for a
-    // maximized node that number is set by the PANEL, not the node: it is exactly as wide as the
-    // free area, so centring it in the wider pane buries half the inset less the margin. Keying
-    // on anything looser would walk back the whole-pane rule for ordinary nodes.
+  it('insets are gated on focusAvoidsPinnedPanels, with the maximized exception in both branches', () => {
+    // Default (setting off): only a MAXIMIZED node is inset, everything else is NO_INSETS —
+    // upstream's whole-pane behaviour, bit-identical. Setting on: EVERY node is inset with the
+    // pinned chrome, so no focus path parks a node half behind a pinned sidebar. Deleting the gate
+    // in either direction (unconditional insets, or dropping the maximized arm) is the regression
+    // this pins, so the test asserts all three tokens are present.
     const frame = CANVAS_SRC.slice(
       CANVAS_SRC.indexOf('const frameNode = useCallback'),
       CANVAS_SRC.indexOf('const goToNode = useCallback')
     )
-    expect(frame).toContain('const insets = isMaximized(node) ? measurePinnedInsets(box) : NO_INSETS')
+    expect(frame).toContain('settings.focusAvoidsPinnedPanels')
+    expect(frame).toContain('isMaximized(node)')
+    expect(frame).toContain('measurePinnedInsets(box)')
+    expect(frame).toContain('NO_INSETS')
   })
 
   it('the resume card slot is spent only on a card that can render, and only when opted in', () => {

@@ -7258,9 +7258,17 @@ export function Canvas() {
       // lands in the middle, only the rescale is dropped.
       const keepZoom = useSettings.getState().settings.focusZoomToNode ? undefined : getZoom()
       // A MAXIMIZED node is framed against the rectangle its own placement used (issue #743);
-      // everything else is centred in the whole pane, as it always was. `measurePinnedInsets`
-      // reads the DOM, so it is asked only for the node that can use the answer.
-      const insets = isMaximized(node) ? measurePinnedInsets(box) : NO_INSETS
+      // everything else is centred in the whole pane, as it always was. With
+      // `focusAvoidsPinnedPanels` on, EVERY node is instead framed inside the region the PINNED
+      // chrome leaves over, so no focus path parks the node half under a pinned sidebar — for
+      // users whose pinned sidebar is wide enough that the couple of dozen hidden pixels matter.
+      // `measurePinnedInsets` counts only pinned panels (an unpinned hover-peek is 0 insets) and
+      // reads the DOM, so it is asked only for a node that can use the answer.
+      const insets = useSettings.getState().settings.focusAvoidsPinnedPanels
+        ? measurePinnedInsets(box)
+        : isMaximized(node)
+          ? measurePinnedInsets(box)
+          : NO_INSETS
       const viewport = viewportForRect(rect, box.width, box.height, keepZoom, insets)
       if (viewport) void setViewport(viewport, { duration: 300 })
     },
