@@ -445,7 +445,7 @@ describe('RemoteHooks.setup — grok', () => {
       responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home', 'nodeterm-status.json': '{ oops' }
     })
     await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
-    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('/opt/grok-home/hooks/nodeterm-status.json'))
     expect(write).toBeTruthy()
     const cfg = JSON.parse(write!.stdin!)
     expect(Object.keys(cfg.hooks).sort()).toEqual(GROK_EVENTS)
@@ -459,7 +459,7 @@ describe('RemoteHooks.setup — grok', () => {
       responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/my grok' }
     })
     await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
-    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('/opt/my grok/hooks/nodeterm-status.json'))
     expect(write!.cmd).toContain(`mkdir -p "$(dirname '/opt/my grok/hooks/nodeterm-status.json')"`)
   })
 

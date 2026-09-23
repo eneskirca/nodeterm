@@ -38,9 +38,9 @@ for (const account of [false, true]) {
       expect(await install(raw)).toBe(raw)
     })
 
-    it.each(['', ' \t\n'])('installs hooks and TUI into blank settings: %j', async (raw) => {
+    it.each(['', ' \t\n'])('installs hooks without changing TUI in blank settings: %j', async (raw) => {
       const result = JSON.parse(await install(raw))
-      expect(result.tui).toBe('fullscreen')
+      expect(result.tui).toBeUndefined()
       expect(result.hooks.Stop).toHaveLength(1)
     })
 

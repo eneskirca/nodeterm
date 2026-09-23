@@ -45,17 +45,17 @@ export async function updateRemoteSettingsFile(
     const original = JSON.stringify(config)
     const updated = update(config)
     return before !== null && JSON.stringify(updated) === original ? before : JSON.stringify(updated, null, 2)
-  })
+  }, create)
 }
 
 export async function updateRemoteTextFile(
-  file: string, run: SettingsRunner, update: (before: string | null) => string | null
+  file: string, run: SettingsRunner, update: (before: string | null) => string | null, create = false
 ): Promise<boolean> {
   const requested = posixQuote(file)
   try {
     const read = await run(`${resolveTarget}
 umask 077
-mkdir -p "$(dirname ${requested})" || exit 1
+${create ? `mkdir -p "$(dirname ${requested})" || exit 1` : `if [ ! -e ${requested} ] && [ ! -L ${requested} ]; then printf '%s\\n' ${requested}; exit 44; fi`}
 nt_resolve ${requested} || exit 1
 printf '%s\\n' "$nt_file"
 if [ -e "$nt_file" ]; then [ -f "$nt_file" ] && cat "$nt_file"; else exit 44; fi`)

@@ -9,7 +9,8 @@ function fixture() {
     const command = args.join(' ')
     if (command.includes('printf %s "$HOME"')) return { code: 0, stdout: '/home/u' }
     if (command.includes('%{http_code}')) return { code: 0, stdout: '204' }
-    if (command.includes('else exit 44; fi')) return { code: 44, stdout: '' }
+    const resolved = command.match(/nt_resolve '([^']+)' \|\| exit 1/)?.[1]
+    if (resolved) return { code: 44, stdout: `${resolved}\n` }
     return { code: 0, stdout: '' }
   })
   return { run, hooks: new RemoteHooks({ run }) }
