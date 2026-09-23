@@ -1,6 +1,6 @@
 # Mobile pane presence (#580)
 
-The host's `agent-status.json` v1 now adds `nodes[id].panePresence`:
+The dormant host producer supports this additive `agent-status.json` v1 field `nodes[id].panePresence`:
 
 ```json
 {"kind":"agent","checkedAt":1750000000000,"expiresAt":1750000030000}
@@ -11,15 +11,22 @@ independent of the hook-driven `state` and `updatedAt`; neither clock substitute
 A node without any recent hook can have presence with `updatedAt: 0` and no `state`. A stale
 `done` can coexist with a fresh `shell`. Old readers ignore the additive field.
 
-The core service samples every 15 seconds, sharing one tmux listing and one process-table read
-across local nodes. Each connected SSH project gets one combined command (maximum two scopes
-in flight); overlapping sweeps coalesce. It never opens an SSH connection to obtain display
-status: loss of the existing ControlMaster yields unknown. Missing panes, failed commands,
-ambiguous multi-pane sessions and unrecognized foreground programs also yield unknown. Native
-Windows session-host sessions have no POSIX foreground identity and deliberately yield unknown.
-Server Edition uses the same core service locally and reports unknown for SSH projects because
-it has no injected ControlMaster. Project identity, not connection liveness, determines routing.
-SSH mirror slices retain only their project's nodes, including the additive presence field.
+Neither Desktop nor Server starts the sampler: the current mobile decoder has no consumer.
+This PR therefore changes no production polling or session-row counts and does not resolve #580.
+Before enabling local sampling, wire demand from a presence-capable consumer AND enabled phone
+access. Pairing alone is insufficient. The core's explicit `enabled` predicate must cover both;
+disabling it clears observations and discards pending results. Do not add SSH polling: remote
+nodes remain unknown, with no local fallback. A future SSH consumer needs a separate on-demand
+integration, outside this PR.
+
+When explicitly enabled, the core samples local nodes every 15 seconds with one tmux listing
+and one process-table read; overlapping sweeps coalesce. Missing panes, failed commands,
+ambiguous multi-pane sessions and unrecognized programs yield unknown. Native Windows
+session-host sessions have no POSIX foreground identity and deliberately yield unknown.
+Only semantic changes (node membership or effective kind) schedule mirror writes. Fresh sample
+clocks are cached for the existing heartbeat or other writes, without accelerating SSH pushes.
+A reader may expire a sample between heartbeats; retain unknown until fresh evidence arrives,
+never extend the 30-second TTL to hide that gap.
 
 `agent` means a recognized agent executable was observed in the foreground process group. It
 is not a proof of responsiveness, successful turn completion, or exclusive ownership of input.

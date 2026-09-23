@@ -1944,8 +1944,17 @@ let panePresence: PresenceMap = {}
 /** Replace the whole sampled set, including failures/deletions. Never touches hook state or
  * its clock, and never restores cached process observations from disk at startup. */
 export function setPanePresence(snapshot: PresenceMap): void {
+  const now = Date.now()
+  const kindAt = (sample: PanePresence): PanePresence['kind'] =>
+    sample.checkedAt <= now && sample.expiresAt > now ? sample.kind : 'unknown'
+  const changed = Object.keys(panePresence).length !== Object.keys(snapshot).length ||
+    Object.entries(snapshot).some(([id, sample]) =>
+      !panePresence[id] || kindAt(panePresence[id]) !== kindAt(sample))
+  // Retain fresh clocks for the ordinary mirror heartbeat, but do not trigger SSH pushes
+  // just because an otherwise identical observation was sampled again. Readers expire it
+  // independently; a refresh arriving after expiry is a semantic unknown → known change.
   panePresence = snapshot
-  scheduleWrite()
+  if (changed) scheduleWrite()
 }
 
 export function mergePanePresence(doc: MirrorFile, snapshot: PresenceMap, now: number): void {

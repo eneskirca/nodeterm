@@ -99,6 +99,8 @@ lane unaffected.
 
 - **Mobile pane presence is sampled evidence, separate from hook activity.** Preserve its own
   expiry and unknown result; never use the cached display verdict for messaging or authorization.
+  Both shells leave the sampler dormant until phone access and a real consumer are wired.
+  Never poll SSH for presence or schedule mirror writes for timestamp-only refreshes.
   See `docs/mobile-pane-presence.md` for the wire contract and the separate iOS follow-up.
 
 - **Never call the user's machine a Mac in user-visible copy.** Use `thisMachine()` /

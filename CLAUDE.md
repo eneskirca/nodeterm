@@ -1821,8 +1821,10 @@ else, and its context links must keep classifying across restarts).
   launch agents with the desktop's permission mode + managed accounts, and SSH slices get their
   **per-host** settings (remote CLI caps + host-matched accounts) injected via
   `remote-status-push`'s `settingsFor` dep.
-- **Mobile pane presence (#580)** — `core/pane-presence.ts` publishes an independent, expiring
-  foreground observation through the mirror in both shells. Hooks never refresh its clock, and
+- **Mobile pane presence (#580)** — `core/pane-presence.ts` supports an independent, expiring
+  foreground observation. Both shells leave it dormant until enabled phone access AND an actual
+  consumer are wired; pairing alone is insufficient. SSH scopes are never polled. Timestamp-only
+  refreshes update the cache without scheduling mirror writes. Hooks never refresh its clock, and
   a failed read never reuses a successful verdict. See `docs/mobile-pane-presence.md`; cached
   display evidence is never an authorization or delivery gate.
 - **Hook installers** — `src/core/agents/hooks/` holds per-agent hook services + an installer

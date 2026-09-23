@@ -108,14 +108,15 @@ interface Deps {
   canvases: () => Array<{ id: string; nodes: Array<{ id: string; kind: string }> }>
   isRemote: (projectId: string) => boolean
   local: () => Promise<Map<string, PaneOwner | null>>
-  remote?: (projectId: string, command: string) => Promise<string | null>
+  // Both phone access and an actual presence consumer must be available. No shell wires this yet.
+  enabled: () => boolean
   customAgents: () => readonly CustomAgent[]
   publish: (presence: PresenceMap) => void
   now?: () => number
 }
 
-/** One serialized sweep, at most two remote projects concurrently. Cached snapshots are pushed
- * to the mirror; hook bursts never trigger probes. A stuck remote cannot accumulate new probes.
+/** Dormant until a consumer is wired. SSH scopes are never polled.
+ * One serialized local sweep; hook bursts never trigger probes.
  * Timestamp at START, so a late answer cannot extend stale evidence into the future. */
 export function startPanePresence(deps: Deps): { dispose(): void; refresh(): Promise<void> } {
   let stopped = false
@@ -125,37 +126,34 @@ export function startPanePresence(deps: Deps): { dispose(): void; refresh(): Pro
     if (stopped) return Promise.resolve()
     if (pending) return pending
     pending = (async () => {
+      if (!deps.enabled()) {
+        deps.publish({})
+        return
+      }
       const checkedAt = now()
       const canvases = deps.canvases()
       const custom = deps.customAgents()
       const snapshot: PresenceMap = {}
-      const tasks = new Map<string, string[]>()
+      const localIds: string[] = []
       for (const canvas of canvases) {
         const key = deps.isRemote(canvas.id) ? canvas.id : ''
         for (const node of canvas.nodes) {
           if (node.kind !== 'terminal') continue
           snapshot[node.id] = { kind: 'unknown', checkedAt, expiresAt: checkedAt + PRESENCE_TTL_MS }
-          const ids = tasks.get(key) ?? []
-          ids.push(node.id)
-          tasks.set(key, ids)
+          if (key) continue // Remote identity is unknown; never scan SSH or fall back locally.
+          localIds.push(node.id)
         }
       }
-      const work = [...tasks]
-      await Promise.all([0, 1].map(async () => {
-        while (work.length) {
-          const [project, ids] = work.shift()!
-          let owners = new Map<string, PaneOwner | null>()
-          try {
-            owners = project
-              ? parseRemotePresence(await deps.remote?.(project, remotePresenceCommand()) ?? null)
-              : await deps.local()
-          } catch { /* unknown; never reuse a previous success */ }
-          for (const id of ids) {
-            snapshot[id].kind = classifyPresence(owners.get(sessionName(id)) ?? null, custom)
-          }
+      if (localIds.length) {
+        let owners = new Map<string, PaneOwner | null>()
+        try {
+          owners = await deps.local()
+        } catch { /* unknown; never reuse a previous success */ }
+        for (const id of localIds) {
+          snapshot[id].kind = classifyPresence(owners.get(sessionName(id)) ?? null, custom)
         }
-      }))
-      if (!stopped) deps.publish(snapshot)
+      }
+      if (!stopped) deps.publish(deps.enabled() ? snapshot : {})
     })().catch(() => {
       if (!stopped) deps.publish({})
     }).finally(() => {
