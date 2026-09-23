@@ -22,6 +22,7 @@ import { IconAgent, IconNote, IconTerminal, IconTrash, IconExternal, IconSwitch,
 import { useBoardLog } from '../../state/boardLog'
 import { boardLogEvents } from '../../lib/boardLogDiff'
 import { markWorkspaceDirty } from '../../state/workspaceDirty'
+import { useWindows } from '../../state/windows'
 import type { KanbanCreateChoice, KanbanSession } from './KanbanView'
 import type { NodeIcon } from '@shared/node-icon'
 
@@ -291,6 +292,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView() {
   // Same rule as the per-project board: the canvas is covered but mounted underneath.
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const projects = useProjects(s => s.projects.filter(p => !p.closed))
+  const detached = useWindows(s => s.detached)
   const { api } = useSession()
   const modalRef = useRef<string | null>(null)
   const highlightId = useViewMode(s => s.highlightedSwimlaneId)
@@ -389,6 +391,20 @@ export const GlobalKanbanView = memo(function GlobalKanbanView() {
       </div>
       <div className="global-kanban__scroll">
         {projects.map((p, idx) => {
+          // A project popped out into its own window is edited there (docs/popout-windows.md): its
+          // lane names the window instead of offering cards whose edits this window may not make.
+          if (detached.has(p.id)) {
+            return (
+              <div key={p.id} id={`swimlane-${p.id}`} className="kanban-swimlane kanban-swimlane--collapsed" style={{ ['--swimlane-color' as string]: p.color || 'rgba(128,128,128,0.3)' }}>
+                <div className="kanban-swimlane__header">
+                  <span className="kanban-header__dot" style={{ background: p.color || '#444' }} />
+                  <span className="kanban-header__name">{`${idx+1}. ${p.name}`}</span>
+                  <span className="kanban-swimlane__count">Open in its own window</span>
+                  <button className="kanban-swimlane__window" onClick={() => void api.windows.focusProject(p.id)}>Show window</button>
+                </div>
+              </div>
+            )
+          }
           const board = p.kanban ?? defaultKanban()
           const sessions = p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
           return (

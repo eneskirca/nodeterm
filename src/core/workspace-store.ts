@@ -33,6 +33,7 @@ import {
   sanitizeLayouts
 } from '../shared/canvas-layout'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
+import { ownsProject, scopeIndex, type SaveScope } from './workspace-scope'
 import { editProjectCardLabels, ensureProjectBoard, setProjectCardColumn, type CardLabelEdit } from './project-kanban-write'
 import { boardLabels, cardMeta } from '../shared/kanban-labels'
 
@@ -197,6 +198,18 @@ export class WorkspaceStore {
   private index: WorkspaceIndexV3 | null = null
   /** Optional hook fired after every load()/save() — the watcher re-syncs its watch set (Task 5). */
   onPersist?: () => void
+  /**
+   * Pop-out windows (docs/popout-windows.md). `saveScopeFor` is the shell's answer to "which
+   * projects may THIS sender write" — the Electron shell resolves it from the window that sent
+   * the save; the Server Edition sets none, so every save there stays unscoped. `lastSaved` is the
+   * renderer-shaped Project each owner last handed us, which is how a pop-out is booted (its
+   * `workspace:load` answers from here, not from disk — see `loadFor`) and how the main window
+   * is kept fresh (`onProjectSaved`) while it does not own the project.
+   */
+  private saveScopeFor?: (senderId: number) => SaveScope | undefined
+  private readonly lastSaved = new Map<string, Project>()
+  /** Fired after a save landed, once per project the sender OWNED, with the sender's scope. */
+  onProjectSaved?: (projectId: string, project: Project, scope: SaveScope | undefined) => void
 
   constructor(private remoteIO?: RemoteWorkspaceIO) {}
 
@@ -205,8 +218,9 @@ export class WorkspaceStore {
   }
 
   registerIpc(): void {
-    platform().handle(IPC.workspaceLoad, () => this.load())
-    platform().handle(IPC.workspaceSave, (workspace: Workspace) => this.save(workspace))
+    platform().handleWithSender(IPC.workspaceLoad, (senderId: number) => this.loadFor(senderId))
+    platform().handleWithSender(IPC.workspaceSave, (senderId: number, workspace: Workspace) =>
+      this.save(workspace, this.saveScopeFor?.(senderId)))
     platform().handle(IPC.workspaceProbeFolder, (folder: string) => this.probeFolder(folder))
     platform().handle(IPC.workspaceProjectFileState, (cwd: unknown) =>
       typeof cwd === 'string' && cwd ? this.projectFileState(cwd) : 'unreadable')
@@ -225,6 +239,50 @@ export class WorkspaceStore {
    * correct for boot/renderer loads. Read-only callers (e.g. the relay `projects.list` blob, which
    * a phone can trigger mid git-merge) pass false so a conflict-marked file is left hand-resolvable.
    */
+  /** The shell's ownership rule for `workspace:save` / `workspace:load` senders (pop-out windows). */
+  setSaveScopeResolver(resolve: ((senderId: number) => SaveScope | undefined) | undefined): void {
+    this.saveScopeFor = resolve
+  }
+
+  /** The renderer-shaped project the owner last saved, if any save has carried it this run. */
+  lastSavedProject(projectId: string): Project | undefined {
+    return this.lastSaved.get(projectId)
+  }
+
+  /**
+   * `workspace:load` for ONE sender. A pop-out window is answered with a one-project slice built
+   * from the store's CURRENT knowledge of that project — the same per-entry assembly a full load
+   * runs (`buildEntry`: the folder's project.json, an ssh entry's cache, an inline data file) —
+   * never from the renderer's last save. A snapshot is stale the moment anything but its owner
+   * writes the project (a phone registering a session, a git pull the watcher adopts, an ssh
+   * reconcile, a kanban verb), and a pop-out reloaded from one would then SAVE that stale copy
+   * over the newer file. It is deliberately not a second full `load()`: that is the boot path (it
+   * sidelines corrupt files, runs migrations, re-seeds every project's `revs`/`lastWritten`), and
+   * re-running it under a live main window would race that window's autosaves for the store's
+   * bookkeeping. Queued on `saveChain`, so a write already in flight lands before the read.
+   */
+  private async loadFor(senderId: number): Promise<Workspace> {
+    const scope = this.saveScopeFor?.(senderId)
+    if (scope?.kind !== 'popout') return this.load()
+    // No index yet (never on the app's own path — main loads before it can pop anything out).
+    if (!this.index) await this.load()
+    const project = await this.currentProject(scope.projectId)
+    return { version: 2, activeProjectId: scope.projectId, projects: project ? [project] : [] }
+  }
+
+  /** The store's current assembled copy of one project, read without sidelining anything (a
+   *  probe must never mutate the disk). Falls back to the owner's last save only when the index
+   *  does not know the project at all. */
+  private async currentProject(projectId: string): Promise<Project | undefined> {
+    const run = this.saveChain.then(async () => {
+      const e = this.index?.entries.find((x) => x.id === projectId)
+      if (!e) return this.lastSaved.get(projectId)
+      return (await this.buildEntry(e, false)).project
+    })
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
   async load(opts?: { sideline?: boolean }): Promise<Workspace> {
     const result = await this.loadInner(opts?.sideline ?? true)
     this.onPersist?.()
@@ -308,105 +366,7 @@ export class WorkspaceStore {
     }
     this.index = index
     const built: LoadedEntry[] = []
-    for (const e of index.entries) {
-      // A LOCAL-DATA ref reads its own file first; `e.project` below is its cache and answers only
-      // when the file is missing or unreadable (and for a pre-file entry, which has no file yet).
-      const fromDataFile = e.dataFile && !e.cwd && !e.ssh
-        ? await this.loadDataFileEntry(e, sideline)
-        : null
-      if (fromDataFile) {
-        built.push(fromDataFile)
-      } else if (e.project) {
-        // Inline projects are stored verbatim in the index (no fileToProject pass), so apply the
-        // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
-        // and the same trigger shape rule (workspace.json is hand-editable input too).
-        // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
-        const { kanban, closedSessions, layouts, layoutViewports, ...rest } = e.project
-        const base = validKanban(kanban) ? { ...rest, kanban } : rest
-        // An inline project's embedded layouts are hand-editable input exactly like a git-shared
-        // file's, and they never pass through `fileToProject` on this branch, so they are
-        // sanitized (and their cameras pruned against them) here instead.
-        const admitted = sanitizeLayouts(layouts)
-        const views = pruneLayoutViewports(sanitizeLayoutViewports(layoutViewports), admitted)
-        // Same treatment for `closedSessions` as the ref'd-project entries above, and for the
-        // same reason: a malformed value here reaches `mergeClosedHistory`, which iterates it (a
-        // non-array throws and takes the whole sidebar render down) and hands each entry's node
-        // to React Flow.
-        const history = sanitizeLoadedClosedSessions(closedSessions)
-        built.push({
-          entry: e,
-          project: {
-            ...base,
-            nodes: sanitizeNodeTriggers(base.nodes),
-            ...(history ? { closedSessions: history } : {}),
-            ...(admitted ? { layouts: admitted } : {}),
-            ...(views ? { layoutViewports: views } : {})
-          }
-        })
-      } else if (e.cwd) {
-        if (sideline) await sweepStaleTmp(projectFilePath(e.cwd))
-        const read = await this.readProjectFile(e.cwd, sideline)
-        if (read) {
-          const p = read.file
-          this.revs.set(e.id, p.rev)
-          this.lastWritten.set(projectFilePath(e.cwd), read.raw)
-          built.push({
-            entry: e,
-            file: p,
-            project: fileToProject(p, {
-              // The ENTRY's id, always. The file's own `id` is a legacy compatibility field that
-              // git copies verbatim into every worktree — reading it is what let one machine's
-              // project id name two folders.
-              id: e.id,
-              cwd: e.cwd,
-              closed: e.closed,
-              closedAt: e.closedAt,
-              viewport: e.viewport,
-              defaultAccountId: e.defaultAccountId,
-              breadcrumbs: e.breadcrumbs,
-              closedSessions: e.closedSessions,
-              layoutViewports: e.layoutViewports,
-              capabilityAck: e.capabilityAck,
-              localExec: this.execOverlay(e, p)
-            })
-          })
-        } else {
-          this.deferExecMigration(e)
-          built.push({ entry: e, project: unavailableProject(e) })
-        }
-      } else if (e.ssh) {
-        if (e.cache) {
-          this.revs.set(e.id, e.cache.rev)
-          built.push({
-            entry: e,
-            project: fileToProject(e.cache, {
-              id: e.id,
-              ssh: e.ssh,
-              closed: e.closed,
-              closedAt: e.closedAt,
-              viewport: e.viewport,
-              defaultAccountId: e.defaultAccountId,
-              breadcrumbs: e.breadcrumbs,
-              closedSessions: e.closedSessions,
-              layoutViewports: e.layoutViewports,
-              capabilityAck: e.capabilityAck,
-              localExec: this.execOverlay(e, e.cache)
-            })
-          })
-        } else {
-          this.deferExecMigration(e)
-          built.push({ entry: e, project: unavailableProject(e) })
-        }
-      } else {
-        // Nothing this build recognises as content: a data-ref whose file is gone AND whose cache
-        // has already been dropped, or an entry written by a NEWER build carrying a ref kind this
-        // one has never heard of. It becomes the same labeled grey placeholder an unreadable
-        // folder does, because the one thing an entry may never do is silently vanish — the save
-        // that follows a silent drop writes it out of the index, and whatever it named is then
-        // unreachable for good.
-        built.push({ entry: e, project: unavailableProject(e) })
-      }
-    }
+    for (const e of index.entries) built.push(await this.buildEntry(e, sideline))
     await this.repairDuplicateIds(built, sideline)
     // AFTER the repair: it re-keys entries in place, and the maps are keyed by project id.
     this.adoptSettingsFromIndex(index)
@@ -415,6 +375,109 @@ export class WorkspaceStore {
       ? index.activeProjectId
       : (projects.find((p) => !p.closed && !p.unavailable)?.id ?? '')
     return { version: 2, activeProjectId: active, projects }
+  }
+
+  /** One index entry -> its assembled project, exactly as a full load builds it. Shared by
+   *  `loadV3` and by a pop-out's `workspace:load` (`currentProject`), so the two can never
+   *  disagree about what a project looks like. */
+  private async buildEntry(e: IndexEntryV3, sideline: boolean): Promise<LoadedEntry> {
+    // A LOCAL-DATA ref reads its own file first; `e.project` below is its cache and answers only
+    // when the file is missing or unreadable (and for a pre-file entry, which has no file yet).
+    const fromDataFile = e.dataFile && !e.cwd && !e.ssh
+      ? await this.loadDataFileEntry(e, sideline)
+      : null
+    if (fromDataFile) {
+      return fromDataFile
+    } else if (e.project) {
+      // Inline projects are stored verbatim in the index (no fileToProject pass), so apply the
+      // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
+      // and the same trigger shape rule (workspace.json is hand-editable input too).
+      // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
+      const { kanban, closedSessions, layouts, layoutViewports, ...rest } = e.project
+      const base = validKanban(kanban) ? { ...rest, kanban } : rest
+      // An inline project's embedded layouts are hand-editable input exactly like a git-shared
+      // file's, and they never pass through `fileToProject` on this branch, so they are
+      // sanitized (and their cameras pruned against them) here instead.
+      const admitted = sanitizeLayouts(layouts)
+      const views = pruneLayoutViewports(sanitizeLayoutViewports(layoutViewports), admitted)
+      // Same treatment for `closedSessions` as the ref'd-project entries above, and for the
+      // same reason: a malformed value here reaches `mergeClosedHistory`, which iterates it (a
+      // non-array throws and takes the whole sidebar render down) and hands each entry's node
+      // to React Flow.
+      const history = sanitizeLoadedClosedSessions(closedSessions)
+      return {
+        entry: e,
+        project: {
+          ...base,
+          nodes: sanitizeNodeTriggers(base.nodes),
+          ...(history ? { closedSessions: history } : {}),
+          ...(admitted ? { layouts: admitted } : {}),
+          ...(views ? { layoutViewports: views } : {})
+        }
+      }
+    } else if (e.cwd) {
+      if (sideline) await sweepStaleTmp(projectFilePath(e.cwd))
+      const read = await this.readProjectFile(e.cwd, sideline)
+      if (read) {
+        const p = read.file
+        this.revs.set(e.id, p.rev)
+        this.lastWritten.set(projectFilePath(e.cwd), read.raw)
+        return {
+          entry: e,
+          file: p,
+          project: fileToProject(p, {
+            // The ENTRY's id, always. The file's own `id` is a legacy compatibility field that
+            // git copies verbatim into every worktree — reading it is what let one machine's
+            // project id name two folders.
+            id: e.id,
+            cwd: e.cwd,
+            closed: e.closed,
+            closedAt: e.closedAt,
+            viewport: e.viewport,
+            defaultAccountId: e.defaultAccountId,
+            breadcrumbs: e.breadcrumbs,
+            closedSessions: e.closedSessions,
+            layoutViewports: e.layoutViewports,
+            capabilityAck: e.capabilityAck,
+            localExec: this.execOverlay(e, p)
+          })
+        }
+      } else {
+        this.deferExecMigration(e)
+        return { entry: e, project: unavailableProject(e) }
+      }
+    } else if (e.ssh) {
+      if (e.cache) {
+        this.revs.set(e.id, e.cache.rev)
+        return {
+          entry: e,
+          project: fileToProject(e.cache, {
+            id: e.id,
+            ssh: e.ssh,
+            closed: e.closed,
+            closedAt: e.closedAt,
+            viewport: e.viewport,
+            defaultAccountId: e.defaultAccountId,
+            breadcrumbs: e.breadcrumbs,
+            closedSessions: e.closedSessions,
+            layoutViewports: e.layoutViewports,
+            capabilityAck: e.capabilityAck,
+            localExec: this.execOverlay(e, e.cache)
+          })
+        }
+      } else {
+        this.deferExecMigration(e)
+        return { entry: e, project: unavailableProject(e) }
+      }
+    } else {
+      // Nothing this build recognises as content: a data-ref whose file is gone AND whose cache
+      // has already been dropped, or an entry written by a NEWER build carrying a ref kind this
+      // one has never heard of. It becomes the same labeled grey placeholder an unreadable
+      // folder does, because the one thing an entry may never do is silently vanish — the save
+      // that follows a silent drop writes it out of the index, and whatever it named is then
+      // unreachable for good.
+      return { entry: e, project: unavailableProject(e) }
+    }
   }
 
   /**
@@ -933,13 +996,13 @@ export class WorkspaceStore {
    *  projects went blank after tab switching" wipe. */
   private saveChain: Promise<unknown> = Promise.resolve()
 
-  save(workspace: Workspace): Promise<void> {
-    const run = this.saveChain.then(() => this.saveNow(workspace))
+  save(workspace: Workspace, scope?: SaveScope): Promise<void> {
+    const run = this.saveChain.then(() => this.saveNow(workspace, scope))
     this.saveChain = run.catch(() => {})
     return run
   }
 
-  private async saveNow(workspace: Workspace): Promise<void> {
+  private async saveNow(workspace: Workspace, scope?: SaveScope): Promise<void> {
     if (!workspace.projects.length && !this.index) {
       // A store that never read the index may not replace a populated one with "no projects":
       // that is the boot-save wipe — load() failed transiently, the renderer hydrated zero
@@ -953,7 +1016,21 @@ export class WorkspaceStore {
     }
     const savedAt = new Date().toISOString()
     const previousIndex = this.index
-    const { index, files, dataFiles } = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
+    const split = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
+    const { files, dataFiles } = split
+    let index = split.index
+    if (scope) {
+      // A scoped save (pop-out windows) may write ONLY the projects its sender owns: everything
+      // else keeps the store's previous entry and is not written at all — see workspace-scope.ts
+      // for the stale-copy overwrite this prevents. `files` is keyed by cwd, so the incoming
+      // entries are the join back to a project id.
+      for (const e of index.entries) {
+        if (ownsProject(scope, e.id)) continue
+        if (e.cwd) files.delete(e.cwd)
+        dataFiles.delete(e.id)
+      }
+      index = scopeIndex(this.index, index, scope)
+    }
 
     for (const entry of index.entries) {
       const previous = this.index?.entries.find((candidate) => candidate.id === entry.id)
@@ -1059,6 +1136,8 @@ export class WorkspaceStore {
     // ssh caches: bump rev on change so a later remote write can win; mirror write in Task 8.
     for (const e of index.entries) {
       if (!e.ssh || !e.cache) continue
+      // Not this sender's to mirror: its entry is the previous one, unchanged (pop-out scope).
+      if (scope && !ownsProject(scope, e.id)) continue
       const prevRev = this.revs.get(e.id) ?? 0
       const previousCache = this.index?.entries.find((old) => old.id === e.id && old.cache)?.cache
       const changedSinceLoad = !(previousCache && sameProjectContent(previousCache, e.cache))
@@ -1116,6 +1195,15 @@ export class WorkspaceStore {
     if (this.pendingExecNote) {
       this.pendingExecNote = false
       platform().broadcast(IPC.workspaceMigrated, 'exec')
+    }
+
+    // What each OWNER last handed us, by id — the pop-out boot slice and the main window's live
+    // copy of a project it does not own both read from here. A relay tab is not a workspace on
+    // this disk (splitWorkspace drops it) and is not recorded either; neither is a placeholder.
+    for (const p of workspace.projects) {
+      if (p.remote || p.unavailable || !ownsProject(scope, p.id)) continue
+      this.lastSaved.set(p.id, p)
+      this.onProjectSaved?.(p.id, p, scope)
     }
 
     this.onPersist?.()

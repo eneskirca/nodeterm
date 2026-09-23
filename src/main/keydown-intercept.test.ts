@@ -672,7 +672,8 @@ describe('the close leg stands down inside a terminal, off-mac only (#383)', () 
     // The menu leg cannot be pressed from here (it lives against a real Menu in index.ts), so the
     // wiring is pinned at source level — the same discipline as hook-verified-parity.
     const src = fs.readFileSync(path.join(__dirname, 'index.ts'), 'utf8')
-    expect(src).toContain('() => closeStandsDownInTerminal(interceptIsMac, terminalFocused)')
+    expect(src).toContain('() => closeStandsDownInTerminal(interceptIsMac, keyStateOf(presenceId).terminalFocused)')
+    expect(src).toContain('() => closeStandsDownInTerminal(interceptIsMac, keyStateOf(clientId).terminalFocused)')
     const menuSync = src.slice(
       src.indexOf('function syncMenuForStandDown'),
       src.indexOf('function createWindow')

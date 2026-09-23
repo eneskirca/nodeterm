@@ -379,6 +379,8 @@ import {
   writeSeenExplorerPinHint
 } from '../lib/explorerPinHint'
 import { useProjects } from '../state/projects'
+import { isPopoutWindow, ownsProjectHere, popoutProjectId, useWindows } from '../state/windows'
+import { alertsHere, nextActiveAfterDetach, popoutRefusal } from '../lib/popout'
 import { useAgentStatus } from '../state/agentStatus'
 import { useLaunchDelivery } from '../state/launchDelivery'
 import { useBrowserLease, drivingNodeIds } from '../state/browserLease'
@@ -1095,6 +1097,23 @@ export function Canvas() {
     const t = setTimeout(() => setNotice(null), noticeDwellMs(notice.text))
     return () => clearTimeout(t)
   }, [notice])
+  /**
+   * PR #804 review, blocking 1: a project popped out into its own window is edited THERE. Every
+   * main-window surface that acts on another project (sessions sidebar, session-memory kill, Omni
+   * Kanban lanes) asks this first, because the store guard (`OWNERSHIP_GUARDED`) refuses the
+   * project.json half of an edit but cannot stop a side effect outside it — a killed tmux session,
+   * a `/rename` typed into the pane. Refused with a reason and a way to the window that owns it.
+   */
+  const refuseForeignProject = useCallback((projectId: string): boolean => {
+    if (ownsProjectHere(projectId)) return false
+    const name = useProjects.getState().getProject(projectId)?.name ?? 'This project'
+    setNotice({
+      kind: 'info',
+      text: `${name} is open in its own window. Make that change there.`,
+      action: { label: 'Show window', run: () => void api.windows.focusProject(projectId) }
+    })
+    return true
+  }, [api])
   const [zoomPct, setZoomPct] = useState(100)
   // Canvas lock (bottom-left Controls): freezes the CAMERA against gestures, namely pan (drag +
   // scroll) and zoom (pinch / Cmd+wheel / double-click). Nodes stay draggable and connectable:
@@ -2417,6 +2436,9 @@ export function Canvas() {
       .getState()
       .hydrate()
       .then(() => {
+        // A pop-out is torn off an established workspace: no tour, no one-shot launch card there
+        // (the main window owns both, and they share its localStorage flags).
+        if (isPopoutWindow()) return
         const s = useSettings.getState().settings
         if (s.seenOnboarding) {
           // Established install: the one-shot mobile-launch card (fresh installs get the same
@@ -2443,6 +2465,14 @@ export function Canvas() {
       // persists the conversion, so the next load is a no-op.
       const projects = ws.projects.map(migrateProjectTags)
       useProjects.getState().hydrate({ ...ws, projects })
+      // A pop-out window shows ONE project (docs/popout-windows.md). If the slice main handed us
+      // does not carry it — deleted meanwhile, or this window reloaded after the project went
+      // away — there is nothing to show: close, rather than boot as a second, empty main window.
+      const own = popoutProjectId()
+      if (own !== null && !projects.some((p) => p.id === own)) {
+        api.closeWindow()
+        return
+      }
       // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
       // other save: a `void` here used to make the very first write of the session the one write
       // that could fail with no signal at all — including the format migration.
@@ -2455,6 +2485,21 @@ export function Canvas() {
       cancelled = true
     }
   }, [])
+
+  // Pop-out windows: mirror main's registry of popped-out projects. Main is the one authority
+  // (it owns the windows and scopes the saves); this window only ghosts their tabs and refuses to
+  // edit them. Inside a pop-out the set is always empty and the subscription is inert.
+  useEffect(() => {
+    let cancelled = false
+    void api.windows.detached().then((ids) => {
+      if (!cancelled) useWindows.getState().setDetached(ids)
+    })
+    const unsub = api.windows.onDetachedChange((ids) => useWindows.getState().setDetached(ids))
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [api])
 
   // 2) Whenever the active project changes — or an in-place reload is requested (`reloadNonce`,
   //    which changes even when the SAME project is reloaded) — load its canvas into React Flow.
@@ -2764,7 +2809,9 @@ export function Canvas() {
         )
   }, [])
 
-  const writeDisk = useCallback(async () => {
+  // Resolves whether the save LANDED — a caller that must not proceed on a refused save (pop-out:
+  // the new window boots from what is on disk) reads it; every autosave path ignores it.
+  const writeDisk = useCallback(async (): Promise<boolean> => {
     // Captured BEFORE the snapshot is built (`toWorkspace()` runs synchronously on this line), so
     // it names exactly the edits this save carries. A save is not instant — an SSH mirror write
     // takes seconds — and clearing `dirty` unconditionally afterwards marked edits made DURING the
@@ -2935,6 +2982,8 @@ export function Canvas() {
   // (below), because they are ours and there is nothing for the user to choose between.
   useEffect(() => {
     return api.workspace.onExternalChange((project) => {
+      // Reaches every app window; a project another window owns is that window's to adopt.
+      if (!ownsProjectHere(project.id)) return
       const { activeProjectId: current } = useProjects.getState()
       if (project.id !== current) {
         // Background project: adopt silently — it reloads into React Flow on next switch.
@@ -2976,6 +3025,82 @@ export function Canvas() {
       // 'ignore': a self-write echo / a change we already hold. Nothing to do, and above all no bar.
     })
   }, [reloadActiveProject, adoptIncomingNodes])
+
+  // Pop-out windows, MAIN side: a pop-out saved a project this window only ghosts — adopt it, so
+  // the sidebar, the board and every verb that answers from the store see what that window sees.
+  // The project is never active here (its tab focuses the other window) and this window never
+  // edits it, so a plain replace can clobber nothing; an active one is skipped as the one case
+  // that cannot legitimately arrive.
+  useEffect(() => {
+    return api.windows.onProjectSaved((project) => {
+      const store = useProjects.getState()
+      if (project.id === store.activeProjectId || !store.getProject(project.id)) return
+      store.replaceProject(project)
+    })
+  }, [api])
+
+  // Pop-out windows, POP-OUT side: main asks for a save before it closes this window (bounded on
+  // its side — the ack means "you may close me", and the save is the ordinary scoped one).
+  useEffect(() => {
+    if (!isPopoutWindow()) return
+    return api.windows.onFlush(async () => {
+      commitActiveToStore()
+      await writeDisk()
+    })
+  }, [api, commitActiveToStore, writeDisk])
+
+  /**
+   * Tear a project off into its own window (docs/popout-windows.md). Order matters: the canvas is
+   * committed and SAVED before main is asked, because the new window is booted from the project
+   * as last saved — main's memory slice, not a second disk load. The tab is marked detached
+   * optimistically (main's registry confirms it) and given back if main refuses.
+   */
+  const popOutProject = useCallback(
+    async (id: string) => {
+      const store = useProjects.getState()
+      const project = store.getProject(id)
+      if (!project) return
+      const windows = useWindows.getState()
+      const refusal = popoutRefusal(project, {
+        browser: isBrowserRuntime(),
+        popout: isPopoutWindow(),
+        detached: windows.detached
+      })
+      if (refusal === 'detached') {
+        void api.windows.focusProject(id)
+        return
+      }
+      if (refusal) return
+      if (id === store.activeProjectId) commitActiveToStore()
+      const nextActive = nextActiveAfterDetach(store.projects, store.activeProjectId, id, windows.detached)
+      windows.markDetached(id)
+      if (nextActive !== store.activeProjectId) {
+        store.setActive(nextActive)
+        // Nothing else to show: the start screen, exactly as closing the last open tab does.
+        if (nextActive === '') setWelcomeOpen(true)
+      }
+      // The new window is booted from what is on disk, so a save that did not land means it would
+      // open WITHOUT the edits it just carried — and its first autosave would make that permanent.
+      const saved = await writeDisk()
+      const result = saved
+        ? await api.windows.popout(id)
+        : { ok: false as const, error: 'Could not save this project, so it was not moved to a new window. Try again.' }
+      if (!result.ok) {
+        // Main opened nothing, so this window still owns the project: give its tab back, and the
+        // canvas it was showing.
+        const now = useWindows.getState()
+        now.setDetached([...now.detached].filter((d) => d !== id))
+        if (useProjects.getState().activeProjectId === nextActive && store.activeProjectId === id) {
+          useProjects.getState().setActive(id)
+          setWelcomeOpen(false)
+        }
+        window.dispatchEvent(
+          new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: result.error } })
+        )
+      }
+    },
+    [api, commitActiveToStore, writeDisk]
+  )
 
   // Writes this core made ITSELF: Server Edition headless canvas control (an agent ran
   // `nodeterm open-agent`, `rename`, `close`…). Never a bar and never a reload — see
@@ -7696,11 +7821,17 @@ export function Canvas() {
       // path returns early without touching any state.
       setWelcomeOpen(false)
       if (id === useProjects.getState().activeProjectId) return
+      // A project living in its own window is not switched TO — that window is brought forward.
+      // The main window keeps only a ghosted tab for it and never edits it (docs/popout-windows.md).
+      if (useWindows.getState().detached.has(id)) {
+        void api.windows.focusProject(id)
+        return
+      }
       commitActiveToStore()
       useProjects.getState().setActive(id)
       void writeDisk()
     },
-    [commitActiveToStore, writeDisk]
+    [api, commitActiveToStore, writeDisk]
   )
 
   /** Executes a `ReopenPlan` already decided by `planReopen` — the side-effecting half shared by
@@ -9466,11 +9597,17 @@ export function Canvas() {
         .getState()
         .projects.find((p) => p.nodes.some((n) => n.id === nodeId))
       if (owner && owner.id !== useProjects.getState().activeProjectId) {
+        // The node's project lives in its own window: focus it THERE (main raises that window and
+        // forwards the same app:focus-node a notification click sends) — never switch here.
+        if (useWindows.getState().detached.has(owner.id)) {
+          void api.windows.focusNode(owner.id, nodeId)
+          return
+        }
         pendingFocusRef.current = nodeId
         switchProject(owner.id)
       }
     },
-    [setNodes, goToNode, switchProject]
+    [api, setNodes, goToNode, switchProject]
   )
   focusNodeRef.current = focusNodeById
 
@@ -9581,6 +9718,7 @@ export function Canvas() {
   useEffect(() => {
     const handler = (e: CustomEvent<{ projectId: string; choice: KanbanCreateChoice; columnId: string | null }>) => {
       const { projectId, choice, columnId } = e.detail
+      if (refuseForeignProject(projectId)) return
       if (projectId !== useProjects.getState().activeProjectId) {
         switchProject(projectId)
         // Project switch is a synchronous store update but React Flow remount is async.
@@ -9592,7 +9730,7 @@ export function Canvas() {
     }
     window.addEventListener('nodeterm:create-node' as never, handler as never)
     return () => window.removeEventListener('nodeterm:create-node' as never, handler as never)
-  }, [createNodeInColumn, switchProject])
+  }, [createNodeInColumn, switchProject, refuseForeignProject])
 
 // Delete a session from the board — same confirm + teardown as the canvas Delete key.
   const deleteNodeFromKanban = useCallback(
@@ -12542,6 +12680,7 @@ export function Canvas() {
    */
   const closeStoredNodes = useCallback(
     (projectId: string, ids: readonly string[]) => {
+      if (refuseForeignProject(projectId)) return
       const store = useProjects.getState()
       const nodes = store.getProject(projectId)?.nodes ?? []
       for (const id of ids) {
@@ -12566,13 +12705,14 @@ export function Canvas() {
       }
       void writeDisk()
     },
-    [writeDisk]
+    [writeDisk, refuseForeignProject]
   )
 
   // Close (end) a session. tmux sessions are keyed by node id, so destroy works for an
   // inactive project's node even though it isn't mounted; then drop it from the store.
   const closeSession = useCallback(
     (projectId: string, id: string, alsoOnConfirm?: () => void) => {
+      if (refuseForeignProject(projectId)) return
       setConfirm({
         // Both halves, because this does both: the tmux session ends AND the node is removed from
         // its canvas (either branch below). The wording came from the sessions sidebar, where the
@@ -12597,7 +12737,7 @@ export function Canvas() {
         }
       })
     },
-    [activeProjectId, deleteNodes, closeStoredNodes]
+    [activeProjectId, deleteNodes, closeStoredNodes, refuseForeignProject]
   )
 
   /**
@@ -12707,6 +12847,7 @@ export function Canvas() {
 
   const renameSession = useCallback(
     (projectId: string, id: string, title: string) => {
+      if (refuseForeignProject(projectId)) return
       // Both facts about the node are read BEFORE the rename lands: `renameNode` mutates the
       // store synchronously, so reading the previous title afterwards would compare the new name
       // against itself and push a duplicate `/rename` on every no-op rename (#582).
@@ -12806,6 +12947,7 @@ export function Canvas() {
     }
     const onGlobalEditSticky = (e: CustomEvent<{ projectId: string; nodeId: string; text: string }>) => {
       const { projectId, nodeId, text } = e.detail
+      if (refuseForeignProject(projectId)) return
       if (projectId === useProjects.getState().activeProjectId) {
         setNodes((ns) =>
           ns.map((n) =>
@@ -12828,6 +12970,7 @@ export function Canvas() {
       e: CustomEvent<{ projectId: string; nodeId: string; patch: { url?: string; title?: string } }>
     ) => {
       const { projectId, nodeId, patch } = e.detail
+      if (refuseForeignProject(projectId)) return
       if (projectId === useProjects.getState().activeProjectId) {
         setNodes((ns) => ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n)))
         markDirty()
@@ -12842,6 +12985,7 @@ export function Canvas() {
     }
     const onGlobalDelete = (e: CustomEvent<{ projectId: string; nodeId: string }>) => {
       const { projectId, nodeId } = e.detail
+      if (refuseForeignProject(projectId)) return
       if (projectId === useProjects.getState().activeProjectId) {
         deleteNodeFromKanban(nodeId)
         return
@@ -12877,6 +13021,7 @@ export function Canvas() {
     }
     const onGlobalSetIcon = (e: CustomEvent<{ projectId: string; nodeId: string; icon: import('@shared/node-icon').NodeIcon | undefined }>) => {
       const { projectId, nodeId, icon } = e.detail
+      if (refuseForeignProject(projectId)) return
       if (projectId === useProjects.getState().activeProjectId) {
         setNodes((ns) => ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, icon } } : n)))
         markDirty()
@@ -12901,7 +13046,7 @@ export function Canvas() {
       window.removeEventListener('nodeterm:global-delete' as never, onGlobalDelete as never)
       window.removeEventListener('nodeterm:global-set-icon' as never, onGlobalSetIcon as never)
     }
-  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban])
+  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban, refuseForeignProject])
 
   // Sidebar "Name with AI": generate a title from the session's captured terminal output
   // (same BYO-agent path as the terminal node's ✦), then apply it via renameSession.
@@ -12942,6 +13087,7 @@ export function Canvas() {
   // non-active project it switches FIRST — see the closure caution inside (issue #443).
   const addToProject = useCallback(
     (projectId: string, e?: { clientX: number; clientY: number }) => {
+      if (refuseForeignProject(projectId)) return
       // The sessions-sidebar "+" used to open a bare terminal. It now opens the SAME content menu
       // the pane right-click uses (terminal + agents + browser/web/sticky/dino/file/worktree), so
       // adding to a project from the sidebar is no longer a bare-terminal-only affordance that
@@ -12973,12 +13119,13 @@ export function Canvas() {
         )
       })
     },
-    [activeProjectId, switchProject, addHandlers, addCtx, agentCreationEntries]
+    [activeProjectId, switchProject, addHandlers, addCtx, agentCreationEntries, refuseForeignProject]
   )
 
   // Sidebar drag-to-group: reparent a session into a canvas group (groupId) or out (null).
   const moveSessionToGroup = useCallback(
     (projectId: string, nodeId: string, groupId: string | null) => {
+      if (refuseForeignProject(projectId)) return
       if (projectId === activeProjectId) {
         setNodes((ns) => reparentNode(ns, nodeId, groupId))
         markDirty()
@@ -12987,7 +13134,7 @@ export function Canvas() {
         void writeDisk()
       }
     },
-    [activeProjectId, setNodes, markDirty, writeDisk]
+    [activeProjectId, setNodes, markDirty, writeDisk, refuseForeignProject]
   )
 
   // Sidebar reorder: place draggedId immediately before beforeId (sidebar order = node order),
@@ -13004,6 +13151,7 @@ export function Canvas() {
 
   const reorderSession = useCallback(
     (projectId: string, draggedId: string, beforeId: string) => {
+      if (refuseForeignProject(projectId)) return
       if (projectId === activeProjectId) {
         setNodes((ns) => reorderNodeBefore(ns, draggedId, beforeId))
         markDirty()
@@ -13012,13 +13160,14 @@ export function Canvas() {
         void writeDisk()
       }
     },
-    [activeProjectId, setNodes, markDirty, writeDisk]
+    [activeProjectId, setNodes, markDirty, writeDisk, refuseForeignProject]
   )
 
   // Sibling reorder for a FRAME row in the sessions sidebar. Distinct from reorderSession:
   // a frame carries its whole subtree, and the drop never changes its parent.
   const reorderSidebarGroup = useCallback(
     (projectId: string, draggedId: string, parentId: string | null, beforeId: string | null) => {
+      if (refuseForeignProject(projectId)) return
       if (projectId === activeProjectId) {
         setNodes((ns) => reorderGroupWithinParent(ns, draggedId, parentId, beforeId))
         markDirty()
@@ -13027,13 +13176,30 @@ export function Canvas() {
         void writeDisk()
       }
     },
-    [activeProjectId, setNodes, markDirty, writeDisk]
+    [activeProjectId, setNodes, markDirty, writeDisk, refuseForeignProject]
   )
 
   const onRowContextMenu = useCallback(
     (e: React.MouseEvent, projectId: string, id: string) => {
       e.preventDefault()
       e.stopPropagation()
+      // A popped-out project's sessions are acted on in ITS window: "Go to" brings that window
+      // forward on the node (focusNodeById forwards it); nothing here edits or ends them.
+      if (useWindows.getState().detached.has(projectId)) {
+        setMenu({
+          x: e.clientX,
+          y: e.clientY,
+          items: [
+            { label: 'Go to (in its window)', icon: <IconJump />, onClick: () => focusNodeById(id) },
+            {
+              label: 'Bring project back to this window',
+              icon: <IconProject />,
+              onClick: () => void api.windows.closePopout(projectId)
+            }
+          ]
+        })
+        return
+      }
       // Session-list-specific rows that have no canvas analogue: Go to (focus) and Rename (the
       // sidebar's prompt-dialog rename). These stay on top for every project.
       const head: MenuItem[] = [
@@ -13093,6 +13259,7 @@ export function Canvas() {
       setMenu({ x: e.clientX, y: e.clientY, items: [...head, ...body] })
     },
     [
+      api,
       activeProjectId,
       focusNodeById,
       renameSession,
@@ -13197,6 +13364,12 @@ export function Canvas() {
         sound: 'done' | 'needsYou',
         opts?: { quiet?: boolean }
       ) => {
+        // Agent status reaches EVERY app window (a node lives in whichever window shows its
+        // project, and main does not know which), so the bookkeeping above runs in each of them.
+        // The alert — unread, chime, notification — belongs to the ONE window that shows the node:
+        // otherwise a popped-out node chimes twice, and the main window marks unread (and
+        // notifies) a finish the user sat and watched in the pop-out.
+        if (!alertsHere(useProjects.getState().projects, e.nodeId, ownsProjectHere)) return
         // Unread unless the user is actively in this node's terminal (focused window +
         // this node is the active terminal). So a finish while you're in another terminal,
         // or with nothing focused, still flags unread.
@@ -13881,6 +14054,7 @@ export function Canvas() {
   // amnesia), and SSH masters are NOT disconnected (close never managed the connection before,
   // and a reopen expects it exactly as a project switch left it).
   const endProjectSessions = useCallback((id: string) => {
+    if (!ownsProjectHere(id)) return
     const project = useProjects.getState().getProject(id)
     if (!project) return
     project.nodes.forEach((n) => {
@@ -13917,6 +14091,7 @@ export function Canvas() {
   // confirm time, not the set that was counted when the dialog opened.
   const performCloseProject = useCallback(
     (id: string, endSessions = false) => {
+      if (refuseForeignProject(id)) return
       const store = useProjects.getState()
       if (id === store.activeProjectId) commitActiveToStore()
       if (endSessions) endProjectSessions(id)
@@ -13925,7 +14100,7 @@ export function Canvas() {
       store.closeProject(id)
       void writeDisk()
     },
-    [commitActiveToStore, writeDisk, disposeRelayTabForProject, endProjectSessions]
+    [commitActiveToStore, writeDisk, disposeRelayTabForProject, endProjectSessions, refuseForeignProject]
   )
 
   // The one entrance for both Close surfaces (tab caret menu + sidebar context menu). A project
@@ -13934,6 +14109,13 @@ export function Canvas() {
   // A relay tab or a project with no terminal nodes closes silently, exactly as before.
   const closeProject = useCallback(
     (id: string) => {
+      // Inside a pop-out "close project" is "close this window": the project returns to the main
+      // window's strip exactly as it is, its sessions untouched (main flushes the canvas first).
+      if (isPopoutWindow()) {
+        api.closeWindow()
+        return
+      }
+      if (refuseForeignProject(id)) return
       const store = useProjects.getState()
       // Count the LIVE canvas, not a stale serialization — agents may have spawned nodes since
       // the last commit.
@@ -13946,7 +14128,7 @@ export function Canvas() {
       }
       setCloseTarget({ id, name: project.name, count: plan.sessionCount, end: false })
     },
-    [commitActiveToStore, performCloseProject, setCloseTarget]
+    [api, commitActiveToStore, performCloseProject, setCloseTarget, refuseForeignProject]
   )
 
   // Right-click on a sidebar project header: mostly the same project actions as the tab caret
@@ -13957,6 +14139,22 @@ export function Canvas() {
       e.stopPropagation()
       const project = useProjects.getState().projects.find((p) => p.id === projectId)
       if (!project) return
+      // A popped-out project is edited in its own window: the same two rows as its ghost tab.
+      if (useWindows.getState().detached.has(projectId)) {
+        setMenu({
+          x: e.clientX,
+          y: e.clientY,
+          items: [
+            { label: 'Show window', icon: <IconSwitch />, onClick: () => void api.windows.focusProject(projectId) },
+            {
+              label: 'Bring back to this window',
+              icon: <IconProject />,
+              onClick: () => void api.windows.closePopout(projectId)
+            }
+          ]
+        })
+        return
+      }
       setMenu({
         x: e.clientX,
         y: e.clientY,
@@ -13995,6 +14193,7 @@ export function Canvas() {
       })
     },
     [
+      api,
       activeProjectId,
       switchProject,
       renameProject,
@@ -14031,6 +14230,12 @@ export function Canvas() {
   const travelToNode = useCallback(
     (nodeId: string) => {
       const { projects, activeProjectId: active } = useProjects.getState()
+      // A popped-out project's node is focused in ITS window (same forward as focusNodeById).
+      const owner = projects.find((p) => p.nodes.some((n) => n.id === nodeId))
+      if (owner && useWindows.getState().detached.has(owner.id)) {
+        void api.windows.focusNode(owner.id, nodeId)
+        return
+      }
       const travel = nodeTravel(projects, active, nodeId)
       if (travel.kind === 'blocked') return
       if (travel.kind === 'reopen') {
@@ -14040,7 +14245,7 @@ export function Canvas() {
       }
       focusNodeById(nodeId)
     },
-    [focusNodeById, reopenProject]
+    [api, focusNodeById, reopenProject]
   )
 
   // Published BELOW the callback it mirrors, not above it: an effect placed earlier would read a
@@ -14282,14 +14487,21 @@ export function Canvas() {
         icon: <IconGroup />,
         run: () => setSpawnTeamDialog({})
       },
-      { id: 'new-project', label: 'New project', icon: <IconProject />, run: () => addProject() },
-      { id: 'clone-repo', label: 'Clone repository…', icon: <IconProject />, run: () => setCloneDialogOpen(true) },
-      {
-        id: 'new-remote',
-        label: 'New Remote Connection',
-        icon: <IconRemote />,
-        run: () => void connectRemote()
-      },
+      // A pop-out window owns one project and cannot mint another (its saves are scoped to its own
+      // project, so a new one would never persist) — the palette omits the entries rather than
+      // offering a disabled row, the rule main's "New file…" already follows.
+      ...(isPopoutWindow()
+        ? []
+        : [
+            { id: 'new-project', label: 'New project', icon: <IconProject />, run: () => addProject() },
+            { id: 'clone-repo', label: 'Clone repository…', icon: <IconProject />, run: () => setCloneDialogOpen(true) },
+            {
+              id: 'new-remote',
+              label: 'New Remote Connection',
+              icon: <IconRemote />,
+              run: () => void connectRemote()
+            }
+          ]),
       {
         id: 'focus-node',
         label: 'Focus node',
@@ -14473,6 +14685,9 @@ export function Canvas() {
         onRename={renameProject}
         onSetFolder={setProjectFolder}
         onCloseProject={closeProject}
+        onPopOut={(id) => void popOutProject(id)}
+        onClosePopout={(id) => void api.windows.closePopout(id)}
+        onReturnToMain={() => api.closeWindow()}
         onRemoteAccess={() => setRemoteDialogOpen(true)}
         onSetDefaultAccount={setProjectDefaultAccount}
         onSetDefaultPermissionMode={setProjectDefaultPermissionMode}

@@ -25,6 +25,7 @@ import {
 import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 import { markWorkspaceDirty } from './workspaceDirty'
 import { folderName } from '../lib/projectOpen'
+import { ownsProjectHere, popoutProjectId } from './windows'
 // One order-independent key for an edge's endpoints — the SAME rule `hiddenLinkIds` uses, so a
 // rope and the bridge it covers are recognized as one relationship here too.
 import { pairKey as bridgePairKey } from '../lib/noteLink'
@@ -350,7 +351,86 @@ function mapProjectNodes(
   return projects.map((p) => (p.id === projectId ? { ...p, nodes: fn(p.nodes) } : p))
 }
 
-export const useProjects = create<ProjectsState>((set, get) => ({
+/**
+ * Every mutator that names ONE project by id as its first argument, with what it answers when this
+ * window does not own that project (docs/popout-windows.md): a project popped out into its own
+ * window is written by that window alone, and the main window's copy is only a mirror refreshed
+ * by `replaceProject`. An edit made here would be dropped by the save scope in main — silently,
+ * while any side effect outside project.json (a killed session, a closed tab) still happened — so
+ * it is refused at the store instead, and a surface nobody thought to gate fails CLOSED.
+ *
+ * `OWNERSHIP_EXEMPT` lists the id-taking methods that must keep working for a project owned
+ * elsewhere, each with its reason. `projects.ownership.test.ts` fails on a method that is in
+ * neither table, so a new mutator cannot slip past the rule by being forgotten.
+ */
+type Refusal = { value: unknown } | { active: true }
+export const OWNERSHIP_GUARDED: Readonly<Record<string, Refusal>> = {
+  renameProject: { value: undefined },
+  setProjectColor: { value: undefined },
+  setProjectIcon: { value: undefined },
+  setProjectCwd: { value: undefined },
+  setProjectDefaultAccount: { value: undefined },
+  setProjectDefaultPermissionMode: { value: undefined },
+  setProjectCapability: { value: undefined },
+  resetProjectCapabilityToDefault: { value: undefined },
+  recordProjectCapabilityAck: { value: undefined },
+  setDinoHighScore: { value: undefined },
+  setProjectKanban: { value: undefined },
+  setProjectBreadcrumbs: { value: undefined },
+  commitCanvas: { value: undefined },
+  appendCanvasLinks: { value: undefined },
+  applyNodeMutation: { value: false },
+  renameNode: { value: undefined },
+  recolorNode: { value: undefined },
+  removeNode: { value: undefined },
+  duplicateNode: { value: undefined },
+  moveNodeToGroup: { value: undefined },
+  reorderNode: { value: undefined },
+  reorderGroup: { value: undefined },
+  deleteProject: { active: true },
+  closeProject: { active: true },
+  reopenProject: { value: undefined },
+  recordClosedSessions: { value: undefined },
+  consumeClosedSession: { value: undefined },
+  discardClosedSession: { value: undefined },
+  saveLayout: { value: 'unknown-project' },
+  renameLayout: { value: undefined },
+  deleteLayout: { value: undefined },
+  recordLayoutViewport: { value: undefined }
+}
+
+export const OWNERSHIP_EXEMPT: Readonly<Record<string, string>> = {
+  hydrate: 'boot: takes the whole workspace main hands this window',
+  requestReload: 'no project argument',
+  getProject: 'read',
+  setActive: 'has its own pop-out refusal; the main window never activates a detached id (the tab click routes to the window)',
+  addProject: 'creates a new project, owned here by construction',
+  openFolderProject: 'creates or reopens by folder, never a detached id (reopen is guarded)',
+  openSshProject: 'creates or reopens by endpoint, never a detached id (reopen is guarded)',
+  adoptProject: 'creates a new project',
+  replaceProject: 'IS the mirror refresh: the owner\'s saved copy replacing this window\'s',
+  setProjectUnavailable: 'runtime flag, never persisted content',
+  reorderProject: 'tab ORDER is the main window\'s; the store keeps a pop-out\'s own order',
+  registerProject: 'creates or un-closes by folder, never a detached id',
+  toWorkspace: 'read'
+}
+
+function guardProjectOwnership(get: () => ProjectsState, state: ProjectsState): ProjectsState {
+  const guarded = { ...state } as unknown as Record<string, (...args: unknown[]) => unknown>
+  for (const [name, refusal] of Object.entries(OWNERSHIP_GUARDED)) {
+    const inner = guarded[name]
+    guarded[name] = (...args: unknown[]) => {
+      const id = args[0]
+      if (typeof id === 'string' && !ownsProjectHere(id)) {
+        return 'active' in refusal ? get().activeProjectId : refusal.value
+      }
+      return inner(...args)
+    }
+  }
+  return guarded as unknown as ProjectsState
+}
+
+export const useProjects = create<ProjectsState>((set, get) => guardProjectOwnership(get, {
   projects: [],
   activeProjectId: '',
   reloadNonce: 0,
@@ -368,6 +448,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   },
 
   setActive(id) {
+    // A pop-out window owns ONE project and never shows another (docs/popout-windows.md). Every
+    // switch path — the sidebar, ⌘1-9, the palette, a cross-project focus, control routing —
+    // funnels through here, so this is the one place the refusal has to live. `hydrate` sets the
+    // id directly: main hands a pop-out a one-project slice whose active id IS its project.
+    const own = popoutProjectId()
+    if (own !== null && id !== own) return
     set({ activeProjectId: id })
   },
 
