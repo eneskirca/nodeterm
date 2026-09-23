@@ -1,3 +1,4 @@
+import { startPanePresence, readLocalPresence, presenceSshArgs } from '../core/pane-presence'
 import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/grok-paths'
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -155,6 +156,7 @@ import {
 } from './notch-hud'
 import {
   initAgentStatusMirror,
+  setPanePresence,
   onMirrorFlush,
   flush as flushAgentStatusMirror,
   recordAgentEvent,
@@ -1958,6 +1960,21 @@ app.whenReady().then(async () => {
   })
   // Mirror live agent status to <userData>/agent-status.json for the external mobile host agent.
   initAgentStatusMirror()
+  const panePresenceService = startPanePresence({
+    canvases: () => workspaceStore.persistedCanvases(),
+    isRemote: (id) => workspaceStore.sshProjectIds().includes(id),
+    local: () => readLocalPresence(ptyManager.getTmuxBin()),
+    remote: async (projectId, command) => {
+      const mgr = sshProjectManager
+      const ref = mgr?.refForProject(projectId)
+      if (!mgr || !ref) return null
+      const { code, stdout } = await mgr.sshRun(presenceSshArgs(ref.conn, ref.controlPath, command))
+      return code === 0 ? stdout : null
+    },
+    customAgents: () => settingsStore.get().customAgents ?? [],
+    publish: setPanePresence
+  })
+  app.once('will-quit', () => panePresenceService.dispose())
 
   /** The one display-title rule for everything the HOST sends out (push alerts, Live Activity
    *  updates, the notch capsule): the live session name unless the node was hand-renamed. */

@@ -1,3 +1,4 @@
+import { startPanePresence, readLocalPresence } from '../core/pane-presence'
 import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -63,6 +64,7 @@ import { installManagedAgentHooks } from '../core/agents/hooks'
 import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
 import {
   initAgentStatusMirror,
+  setPanePresence,
   flush as flushAgentStatusMirror,
   recordAgentEvent,
   ackDone,
@@ -387,6 +389,13 @@ export async function startServer(
   // scripts → start the loopback hook server. The hook server binds its own port independent of
   // the main HTTP server below.
   initAgentStatusMirror()
+  const panePresenceService = startPanePresence({
+    canvases: () => workspaceStore.persistedCanvases(),
+    isRemote: (id) => workspaceStore.sshProjectIds().includes(id),
+    local: () => readLocalPresence(ptyManager.getTmuxBin()),
+    customAgents: () => settingsStore.get().customAgents ?? [],
+    publish: setPanePresence
+  })
 
   // Keep every agent node's session name fresh in the mirror — including nodes no canvas has
   // mounted (the phone lists them all; see core/session-name-sweep.ts).
@@ -805,6 +814,7 @@ export async function startServer(
     return {
       port: 0, // nothing bound
       async close() {
+        panePresenceService.dispose()
         // Kill any in-flight setup/archive run: it is a detached process group, so nothing else in
         // this teardown reaches it. Same call, same reason, in the serving branch's close() below.
         projectSetupService.disposeAll()
@@ -862,6 +872,7 @@ export async function startServer(
   return {
     port,
     async close() {
+      panePresenceService.dispose()
       // Kill any in-flight setup/archive run first: it is a detached process group (setsid), so
       // neither the WS teardown nor ptyManager.killAll() below would ever reach it.
       projectSetupService.disposeAll()

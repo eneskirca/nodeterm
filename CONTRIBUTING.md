@@ -97,6 +97,10 @@ lane unaffected.
 
 ## House rules
 
+- **Mobile pane presence is sampled evidence, separate from hook activity.** Preserve its own
+  expiry and unknown result; never use the cached display verdict for messaging or authorization.
+  See `docs/mobile-pane-presence.md` for the wire contract and the separate iOS follow-up.
+
 - **Never call the user's machine a Mac in user-visible copy.** Use `thisMachine()` /
   `thisMachineCap()` / `machineNoun()` from `src/renderer/lib/machineName.ts` — "this Mac" on
   macOS, "this PC" on Windows, "this computer" elsewhere and in any Server Edition browser tab

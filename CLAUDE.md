@@ -1821,6 +1821,10 @@ else, and its context links must keep classifying across restarts).
   launch agents with the desktop's permission mode + managed accounts, and SSH slices get their
   **per-host** settings (remote CLI caps + host-matched accounts) injected via
   `remote-status-push`'s `settingsFor` dep.
+- **Mobile pane presence (#580)** — `core/pane-presence.ts` publishes an independent, expiring
+  foreground observation through the mirror in both shells. Hooks never refresh its clock, and
+  a failed read never reuses a successful verdict. See `docs/mobile-pane-presence.md`; cached
+  display evidence is never an authorization or delivery gate.
 - **Hook installers** — `src/core/agents/hooks/` holds per-agent hook services + an installer
   registry `MANAGED_HOOK_INSTALLERS`. `managed-script.ts` builds the POSIX hook script that
   POSTs to the server (env-gated: a no-op in the user's normal terminals, active only in
