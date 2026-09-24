@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { resumeCommand } from '../../shared/agents/config'
+import { resumeCommand, setCustomAgentBaseResolver } from '../../shared/agents/config'
 import { withPermissionMode } from '../../shared/agents/approval-mode'
 import {
   __resetAgentRestartForTests,
@@ -741,7 +741,7 @@ describe('performExitPhase', () => {
       expect(await p).toBe('exited')
     }
     // Every other agent keeps the historical one-burst path byte-identical.
-    for (const agentId of ['claude', 'codex', 'grok', 'gemini', 'copilot'] as const) {
+    for (const agentId of ['claude', 'grok', 'gemini', 'copilot'] as const) {
       const { written, io } = fakeIo()
       let pane: string = agentId
       const p = performExitPhase({
@@ -759,6 +759,76 @@ describe('performExitPhase', () => {
       await vi.advanceTimersByTimeAsync(5000)
       expect(await p).toBe('exited')
     }
+  })
+
+  it('quits codex with two separate Ctrl-Cs and never types into its composer (issue #842)', async () => {
+    // codex-cli 0.155.1, isolated tmux socket: a one-burst `/quit\r` is never submitted, and Ctrl-U
+    // clears only one line of the composer, so any typed exit can end up submitting a leftover draft
+    // as a prompt. Ctrl-C clears the whole composer when it holds text and quits when it is empty:
+    // two of them, apart, quit with or without a draft, and nothing is ever submitted.
+    for (const agentId of ['codex', 'custom:codexish'] as const) {
+      setCustomAgentBaseResolver((id) => (id === 'custom:codexish' ? 'codex' : undefined))
+      const { written, io } = fakeIo()
+      let pane = 'codex'
+      const p = performExitPhase({
+        agentId,
+        sessionId: 'sid-1',
+        io,
+        paneCommand: async () => pane,
+        timeoutMs: 6000,
+        pollMs: 100
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(written).toEqual(['\x03']) // never in the same burst as the second one
+      await vi.advanceTimersByTimeAsync(150)
+      expect(written).toEqual(['\x03', '\x03'])
+      pane = 'zsh'
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await p).toBe('exited')
+      setCustomAgentBaseResolver(null)
+    }
+  })
+
+  it('still reports codex exited when the first Ctrl-C alone quit it (empty composer)', async () => {
+    const { written, io } = fakeIo()
+    let pane = 'codex'
+    const p = performExitPhase({
+      agentId: 'codex',
+      sessionId: 'sid-1',
+      io: {
+        ...io,
+        write: (data: string) => {
+          io.write(data)
+          pane = 'zsh' // an empty composer: codex quits on the very first Ctrl-C
+        }
+      },
+      paneCommand: async () => pane,
+      timeoutMs: 6000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(150)
+    expect(written).toEqual(['\x03', '\x03']) // the second one lands on the shell prompt
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('exited')
+  })
+
+  it('does not send codex its second Ctrl-C when the pane dies in between', async () => {
+    const { written, io } = fakeIo()
+    let live = true
+    const p = performExitPhase({
+      agentId: 'codex',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'codex',
+      timeoutMs: 6000,
+      pollMs: 100,
+      isLive: () => live
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    live = false
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await p).toBe('not-eligible')
+    expect(written).toEqual(['\x03'])
   })
 
   it('abandons the split CR when the pane dies mid-delay', async () => {
