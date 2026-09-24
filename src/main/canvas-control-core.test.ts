@@ -1006,3 +1006,12 @@ describe('trigger wording does not claim in-process subagent requests (issue #91
     expect(skill).toMatch(/independent workstreams step 0 identified/)
   })
 })
+
+describe('browser control unknown flags (#539)', () => {
+  it.each(['width', 'height', 'viewport', 'size', 'preset'])('refuses open-browser --%s before creating anything', (key) => {
+    expect(parseControlRequest('open-browser', { url: 'https://example.test', [key]: '375' })).toEqual({ error: `open-browser: unknown flag --${key}` })
+  })
+  it('refuses a browser typo at the shared Desktop/Server boundary', () => {
+    expect(parseControlRequest('browser', { node: 'b1', screenshot: 'x.png', ful: 'true' })).toEqual({ error: 'browser: unknown flag --ful' })
+  })
+})

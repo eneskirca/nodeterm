@@ -1533,6 +1533,27 @@ Monaco is wired in `renderer/editor/monaco-setup.ts` (language workers bundled v
 `?worker` — no CDN; CSP `worker-src` allows them). Markdown rendering is shared in
 `renderer/lib/markdown.ts` (`marked` + DOMPurify sanitize).
 
+### Browser control geometry (#539)
+
+`browser-actions.ts` waits for quiet layout metrics after wheel input and before resolving
+click/type targets; the CDP acknowledgement itself is not a rendered frame. Polling has an
+initial grace period, a quiet window and a bounded sample count. A continuously moving page
+returns a refusal instead of a misleading movement report.
+
+`driveBrowser` permits only one active action per guest session so a click cannot overtake a
+scroll's settlement. Revocation during a polling delay aborts without reattaching the debugger.
+
+Full-page screenshots remain unresolved: `captureBeyondViewport` misplaces sticky/fixed layers
+on a scrolled page. The disposable Electron probe (`scripts/probes/browser-539.ts`) also proves
+that a metrics override clamps scroll to zero and survives debugger detach; clearing it does
+not restore the old scroll position. A future repair must restore geometry even on revocation
+without reattaching a revoked lease. Do not ship an override with only a `finally` clear.
+
+`browser` and `open-browser` reject unknown flags at the shared parser boundary. This does not
+add resize, console, network or attribute-reading actions. Server Edition retains its explicit
+browser-control refusal; its supported `open-browser` route shares flag validation. Mobile has
+no new wire fields or UI; host-side Desktop control inherits the fix.
+
 ### Webview keep-alive across project switches (browser/web nodes)
 
 Issue #301: a project switch used to reload every browser node's page — SPA state, forms, scroll,
