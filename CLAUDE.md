@@ -4853,8 +4853,22 @@ is **NSIS via electron-builder** — the fork switched to Squirrel.Windows
 (`electron-builder-squirrel-windows` + an 800-line `windows-installer.mjs` wrapper + its own
 update feed), but our pipeline is electron-builder end-to-end and NSIS is built in, needs no
 extra dependency, and is what electron-updater's generic provider expects on Windows — so
-Squirrel was not adopted. Builds are **unsigned** (no Windows cert; electron-builder skips
-signing when no cert env is present; SmartScreen warns on install). Release wiring is
+Squirrel was not adopted. **Signing is wired but dormant until a certificate exists**
+(`scripts/dist-win.mjs`, which both `npm run dist:win` and `release-win` run). The repository
+variable `WIN_SIGN_PROVIDER` selects `esigner` (an SSL.com OV/IV certificate in their eSigner cloud
+HSM, driven by the pinned-by-hash CodeSignTool jar through an electron-builder `sign` hook) or
+`azure` (Azure Artifact Signing via `win.azureSignOptions`). **Azure is not the default because
+Microsoft issues Public Trust certificates only to organizations in a fixed country list and to
+individuals in the US/Canada** (Learn quickstart, checked 2026-09-24) — Turkey is on neither.
+Unset ⇒ the exact unsigned build as before (a contributor, a fork, the smoke workflow; SmartScreen
+warns on install); set but incomplete or unknown ⇒ the build FAILS, because a half-configured
+pipeline that quietly ships unsigned is worse than one that stops. The selector is our own name,
+never a credential variable — Azure CLI users commonly have `AZURE_*` exported for unrelated work.
+Two traps: electron-builder's default is DUAL signing (sha1 + sha256 = two hook calls per file),
+and eSigner bills per signing, so the hook is sha256-only; and CodeSignTool takes its password and
+TOTP secret ONLY as argv — a bounded exception to the no-credentials-on-argv rule that holds only
+because the signing build runs on an ephemeral single-tenant GitHub VM. Never sign on a shared host.
+Release wiring isRelease wiring is
 `release.yml`'s `release-win` job: on every version tag it uploads the NSIS installer + zip as
 GitHub Release assets — **best-effort by design** (the `publish` promote gate does not wait on
 it, so a Windows failure never strands the mac+linux release) and with **no update-feed leg**:
@@ -4884,7 +4898,8 @@ verify and stop any remaining host. Never recommend **End session** (it deletes 
 resume depends on supported, saved conversation history; it does not preserve running tasks.
 See `docs/windows-session-host.md` for the user-controlled preparation/recovery steps and limits.
 
-**Follow-ups, in order:** code signing, then Windows auto-update wiring (electron-updater NSIS leg
+**Follow-ups, in order:** code signing (the pipeline half is done — what remains is buying the
+certificate, identity validation and the repository variables/secrets), then Windows auto-update wiring (electron-updater NSIS leg
 + `latest.yml` on the nodeterm.dev feed — blocked on signing: an unsigned auto-update is a
 downgrade in trust), and the fork's PE-identity polish (electron-builder leaves `OriginalFilename`
 empty; the fork's

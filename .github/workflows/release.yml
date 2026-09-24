@@ -196,12 +196,19 @@ jobs:
             dist/*.rpm
             dist/latest-linux.yml
 
-  # Windows build: UNSIGNED BETA (#454), on a plain GitHub runner. Publishes the NSIS
-  # installer + zip as assets on the same tag's GitHub Release — and NOTHING to the update
-  # feed: `dist:win` stamps the package `nodeTermUpdates=disabled` (see src/main/updater.ts),
-  # so the shipped app's updater is cleanly off — no latest.yml is uploaded anywhere, no 404
-  # polling in the field. Auto-update arrives with code signing; an unsigned auto-update is a
-  # trust downgrade. Users update by downloading the next installer.
+  # Windows build: BETA (#454), on a plain GitHub runner. Publishes the NSIS installer + zip
+  # as assets on the same tag's GitHub Release — and NOTHING to the update feed: `dist:win`
+  # stamps the package `nodeTermUpdates=disabled` (see src/main/updater.ts), so the shipped
+  # app's updater is cleanly off — no latest.yml is uploaded anywhere, no 404 polling in the
+  # field. Users update by downloading the next installer.
+  #
+  # CODE SIGNING is OPTIONAL by construction (scripts/dist-win.mjs): the repository variable
+  # WIN_SIGN_PROVIDER selects `esigner` (SSL.com OV/IV certificate in their cloud HSM — the
+  # default, available worldwide) or `azure` (Azure Artifact Signing — only for a publisher in
+  # Microsoft's eligible countries). Unset ⇒ UNSIGNED, exactly as before (a fork, or this repo
+  # before a certificate exists). Set but incomplete ⇒ the build FAILS rather than quietly
+  # publishing an unsigned installer from a pipeline that believes it signs. Signing alone does
+  # not switch the updater on — that leg (latest.yml + blockmaps on the feed) is its own change.
   #
   # BEST-EFFORT by design: the `publish` promote gate below deliberately does NOT wait on
   # this job, so a Windows failure never strands the mac+linux release as a prerelease. A
@@ -223,10 +230,87 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # make-icon + electron-vite build + electron-builder --win --x64 --publish never.
-      # Unsigned: no signing secrets exist for Windows yet; SmartScreen will warn.
-      - name: Build Windows packages (NSIS installer + zip, unsigned)
+      # --- eSigner only: the signing tool, pinned. ---------------------------------------------
+      # SSL.com publishes CodeSignTool at an UNVERSIONED URL, so the bytes are pinned by hash: a
+      # new upstream release fails HERE with a message saying so, instead of changing the signer
+      # under a release with nobody having looked (the v0.3.8 mac lesson — tooling that moves on
+      # its own surfaces on release day looking like a bad secret). To bump: download, check the
+      # release notes, update CST_SHA256. The Linux/macOS zip is used even on Windows: it is the
+      # same jar without a bundled JDK, run with the Java pinned below instead of a 2019 JDK 11.
+      - name: Set up Java (CodeSignTool)
+        if: ${{ vars.WIN_SIGN_PROVIDER == 'esigner' }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install CodeSignTool (pinned)
+        if: ${{ vars.WIN_SIGN_PROVIDER == 'esigner' }}
+        shell: pwsh
+        env:
+          CST_URL: https://www.ssl.com/download/codesigntool-for-linux-and-macos/
+          # CodeSignTool 1.3.3 (zip dated 2026-07-16), measured 2026-09-24.
+          CST_SHA256: ecdb16fb60c9be1145f450924b8b1e615bee08ac45180d5f66b47712a223a6ec
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'cst.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'codesigntool'
+          Invoke-WebRequest -Uri $env:CST_URL -OutFile $zip -MaximumRetryCount 3 -RetryIntervalSec 5
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:CST_SHA256) {
+            Write-Output "::error::CodeSignTool download changed (sha256 $got). SSL.com shipped a new build: review its release notes, then update CST_SHA256 in release.yml."
+            exit 1
+          }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          "CODESIGNTOOL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # make-icon + electron-vite build + scripts/dist-win.mjs (electron-builder --win --x64,
+      # never publishes). Signing is decided by the env below — see the job comment.
+      #
+      # azure only: electron-builder installs Microsoft's `TrustedSigning` PowerShell module from
+      # PSGallery at run time with just a MINIMUM version (>= 0.5.0) — a floating dependency on a
+      # release path. If an azure signing run starts failing inside `Invoke-TrustedSigning` with
+      # the secrets unchanged, suspect the module version first (the verify step logs it).
+      - name: Build Windows packages (NSIS installer + zip)
         run: npm run dist:win
+        env:
+          # Selector + publisher → repository VARIABLES. Unset ⇒ empty ⇒ unsigned build.
+          WIN_SIGN_PROVIDER: ${{ vars.WIN_SIGN_PROVIDER }}
+          # Must equal the certificate subject CN exactly (electron-updater compares it later).
+          WIN_SIGN_PUBLISHER: ${{ vars.WIN_SIGN_PUBLISHER }}
+          # esigner — the SSL.com account that holds the eSigner certificate. The TOTP secret is
+          # the one shown when eSigner is enrolled for automated signing (not a 6-digit code).
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          ESIGNER_CREDENTIAL_ID: ${{ vars.ESIGNER_CREDENTIAL_ID }}
+          # azure — account coordinates (variables) + a service principal holding ONLY the
+          # "Artifact Signing Certificate Profile Signer" role (secrets).
+          WIN_SIGN_ENDPOINT: ${{ vars.WIN_SIGN_ENDPOINT }}
+          WIN_SIGN_ACCOUNT: ${{ vars.WIN_SIGN_ACCOUNT }}
+          WIN_SIGN_PROFILE: ${{ vars.WIN_SIGN_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      # When signing was configured, prove it landed on what users actually run: the installer
+      # (which is what SmartScreen judges at download) and the app exe inside the unpacked dir.
+      # forceCodeSigning already fails the build on a file that could not be signed; this is the
+      # independent check that the signature VERIFIES, and it prints the signer + module version
+      # into the log for whoever debugs the next failure.
+      - name: Verify Authenticode signatures
+        if: ${{ vars.WIN_SIGN_PROVIDER != '' }}
+        shell: pwsh
+        run: |
+          Get-InstalledModule TrustedSigning -ErrorAction SilentlyContinue | Format-Table Name, Version
+          $version = node -p "require('./package.json').version"
+          $files = @("dist/nodeterm-Setup-$version.exe", "dist/win-unpacked/nodeterm.exe")
+          $bad = $false
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f
+            "{0}: {1} — {2}" -f $f, $sig.Status, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid') { $bad = $true }
+          }
+          if ($bad) { Write-Error "Authenticode verification failed"; exit 1 }
 
       # The artifact names are the contract (same check as win-package-smoke.yml): a silent
       # target/artifactName regression must fail here, before the upload step lies about it.
@@ -268,8 +352,8 @@ jobs:
   # feeds) keeps serving the previous complete release — a mac-runner sleep or an upload
   # failure can no longer put a partial release in front of users. If one platform job
   # fails, fix/rerun it; this job then runs on the rerun and publishes.
-  # release-win is deliberately NOT in `needs`: the Windows asset is an unsigned beta with no
-  # update feed behind it, and its failure must never hold the mac+linux release hostage.
+  # release-win is deliberately NOT in `needs`: the Windows asset is a beta with no update
+  # feed behind it, and its failure must never hold the mac+linux release hostage.
   publish:
     runs-on: ubuntu-latest
     needs: [release-mac, release-linux]
