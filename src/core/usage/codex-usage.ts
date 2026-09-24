@@ -18,7 +18,7 @@ import type { ProviderUsage, UsageLimit } from '../../shared/types'
 import { parseResetTimestamp } from './claude-usage-map'
 import { directExecutableInvocation, findInLoginPath } from '../exec-path'
 
-const BACKEND_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+export const CODEX_BACKEND_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const FETCH_TIMEOUT_MS = 8000
 const APP_SERVER_TIMEOUT_MS = 10_000
 
@@ -132,7 +132,7 @@ async function fetchViaBackend(home: string): Promise<ProviderUsage | null> {
 
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
-  const res = await fetch(BACKEND_USAGE_URL, { signal: ctrl.signal, headers }).finally(() =>
+  const res = await fetch(CODEX_BACKEND_USAGE_URL, { signal: ctrl.signal, headers }).finally(() =>
     clearTimeout(t)
   )
   if (!res.ok) return null

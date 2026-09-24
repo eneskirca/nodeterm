@@ -64,6 +64,7 @@ export const IPC = {
   claudeAccountsRemove: 'claude-accounts:remove',
   claudeAccountsLink: 'claude-accounts:link',
   claudeAccountsSetSkillSharing: 'claude-accounts:set-skill-sharing',
+  claudeAccountsCopySession: 'claude-accounts:copy-session',
   // Machine-scoped managed Codex accounts (S6). Add/device-login/removal, plus the three-phase,
   // owner-authorized account switch (resume the SAME conversation id, never fork) and the
   // source-side leg of moving an idle conversation to an SSH account. See main/codex-accounts.ts.
@@ -77,6 +78,7 @@ export const IPC = {
   codexAccountsCommitSwitch: 'codex-accounts:commit-switch',
   codexAccountsFinishSwitch: 'codex-accounts:finish-switch',
   codexAccountsRollbackSwitch: 'codex-accounts:rollback-switch',
+  codexAccountsSwitchThreadRemote: 'codex-accounts:switch-thread-remote',
   codexAccountsTransferThreadToSsh: 'codex-accounts:transfer-thread-to-ssh',
   claudeCliCaps: 'claude-cli:caps',
   grokCliCaps: 'grok-cli:caps',
@@ -155,6 +157,7 @@ export const IPC = {
    *  Edition's browser tab has no raw input stream and keeps the heuristics. */
   canvasTrackpadGesture: 'canvas:trackpad-gesture',
   agentStatus: 'agent:status',
+  agentSubagentSnapshot: 'agent:subagent-snapshot',
   /** Renderer → main/server: answer a held Claude permission hook (deterministic approvals).
    *  Payload: `{ nodeId, pendingId, decision: 'allow'|'deny' }`; resolves boolean. See
    *  docs/hook-reply-approvals.md. */
@@ -530,6 +533,7 @@ export const IPC = {
   remoteHostPeerPending: 'remote:host:peer-pending',
   remoteHostPeerPendingCleared: 'remote:host:peer-pending-cleared',
   remoteHostApprove: 'remote:host:approve',
+  remotePhoneApprove: 'remote:phone:approve',
   remoteHostReject: 'remote:host:reject',
   // Host canvas mirror: renderer pushes its serialized active-project canvas to main;
   // main pushes a client's mutation back to the host renderer to apply.

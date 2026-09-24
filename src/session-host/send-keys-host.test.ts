@@ -37,18 +37,28 @@ function fakePtyPlugin(): Plugin {
         contents: `
           const fs = require('fs')
           export function spawn() {
-            let onExit
+            let onExit, output, draining = false
             const log = process.env.NT_TEST_WRITE_LOG
             const announce = process.env.NT_TEST_PTY_OUTPUT
             return {
               pid: 4242,
               onData(cb) {
+                output = cb
                 // Repeated so the announcement cannot be lost to the host registering late; a
                 // DECSET is idempotent, and every repeat crosses the same emulator tail.
                 if (announce) for (let i = 1; i <= 5; i++) setTimeout(() => cb(announce), i * 20)
               },
               onExit(cb) { onExit = cb },
-              write(data) { fs.appendFileSync(log, JSON.stringify(data) + '\\n') },
+              write(data) {
+                fs.appendFileSync(log, JSON.stringify(draining && data === '\\r' ? 'SWALLOWED' : data) + '\\n')
+                if (data.startsWith('\\x1b[200~') && process.env.NT_TEST_RENDER !== 'false') {
+                  draining = true
+                  setTimeout(() => {
+                    draining = false
+                    output?.(process.env.NT_TEST_RENDER === 'folded' ? '[Pasted text #1 +40 lines]' : data.slice(6, -6))
+                  }, 150)
+                }
+              },
               resize() {},
               pause() {},
               resume() {},
@@ -147,6 +157,7 @@ afterEach(() => {
 /** Boot the real bundled host against the fake pty and return the writes one sendKeys produced. */
 async function writesForSendKeys(opts: {
   announce?: string
+  render?: boolean | 'folded'
   text: string
   enter: boolean
   /** Poll `capture` until the serialized screen proves this mode reached the emulator. */
@@ -175,7 +186,7 @@ async function writesForSendKeys(opts: {
     cwd: process.cwd(),
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, NT_TEST_WRITE_LOG: writeLog, NT_TEST_PTY_OUTPUT: opts.announce ?? '' }
+    env: { ...process.env, NT_TEST_WRITE_LOG: writeLog, NT_TEST_PTY_OUTPUT: opts.announce ?? '', NT_TEST_RENDER: String(opts.render ?? true) }
   })
   let socket: Socket | null = null
   try {
@@ -203,9 +214,9 @@ async function writesForSendKeys(opts: {
     }
 
     socket.write(
-      encodeFrame({ id: 900, cmd: 'sendKeys', name: 'keys', text: opts.text, enter: opts.enter })
+      encodeFrame({ id: 900, cmd: 'sendKeysV2', name: 'keys', text: opts.text, enter: opts.enter })
     )
-    await expect(connected.response(900)).resolves.toMatchObject({ id: 900, ok: true })
+    await expect(connected.response(900)).resolves.toMatchObject({ id: 900, ok: true, result: { delivery: opts.render === false || opts.render === 'folded' ? 'pasted-not-submitted' : true } })
     return readFileSync(writeLog, 'utf8')
       .split('\n')
       .filter(Boolean)
@@ -228,6 +239,21 @@ describe('session-host sendKeys delivery', () => {
       enter: true
     })
     expect(writes).toEqual([`${PASTE_START}summarise the linked context${PASTE_END}`, '\r'])
+  }, 30_000)
+
+  it('returns partial delivery over the wire for a folded multiline paste', async () => {
+    const text = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n')
+    expect(await writesForSendKeys({
+      announce: '\x1b[?2004h', awaitMode: '\x1b[?2004h',
+      text, enter: true, render: 'folded'
+    })).toEqual([`${PASTE_START}${text}${PASTE_END}`])
+  }, 30_000)
+
+  it('does not submit a paste that never renders', async () => {
+    expect(await writesForSendKeys({
+      announce: '\x1b[?2004h', awaitMode: '\x1b[?2004h',
+      text: 'unseen', enter: true, render: false
+    })).toEqual([`${PASTE_START}unseen${PASTE_END}`])
   }, 30_000)
 
   it('leaves a pane that never asked byte-identical to the pre-fix single write', async () => {

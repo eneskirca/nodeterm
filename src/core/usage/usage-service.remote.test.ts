@@ -144,3 +144,53 @@ describe('usage:remote', () => {
     await expect(callRemote()).resolves.toEqual([])
   })
 })
+
+
+const CODEX_REPLY = '__NT_CODEX_USAGE_BEGIN__' + JSON.stringify({ status: 'ok',
+  rate_limit: { primary_window: { used_percent: 42 } } }) + '__NT_CODEX_USAGE_END__'
+
+describe('usage:remote Codex identity and connection cache', () => {
+  it('separates Claude/Codex rows with the same host and account id, caching each provider independently', async () => {
+    const run = vi.fn(async (t: RemoteUsageTarget) => t.provider === 'codex' ? CODEX_REPLY : OK_REPLY)
+    start({ targets: () => [target('u@h', 'same'), { ...target('u@h', 'same'), provider: 'codex', remoteHome: '/home/u' }], run })
+    const rows = await callRemote()
+    expect(rows.map(r => [r.provider ?? 'claude', r.usage.limits[0].usedPercent])).toEqual([['claude', 60], ['codex', 42]])
+    await callRemote(); expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates a replaced connection/home and cannot cache its late old reply', async () => {
+    const codex = { ...target('u@h'), provider: 'codex' as const, remoteHome: '/old', connectionKey: 'generation1' }
+    let connected: RemoteUsageTarget[] = [codex]
+    let finish: ((s: string) => void) | undefined
+    const run = vi.fn((t: RemoteUsageTarget) => t.connectionKey === 'generation1'
+      ? new Promise<string>(r => { finish = r }) : Promise.resolve(CODEX_REPLY))
+    start({ targets: () => connected, run })
+    const old = callRemote()
+    connected = [{ ...codex, remoteHome: '/new', connectionKey: 'generation2' }]
+    expect((await callRemote())[0].usage.limits[0].usedPercent).toBe(42)
+    finish?.(CODEX_REPLY.replace('42', '99')); await old
+    expect((await callRemote())[0].usage.limits[0].usedPercent).toBe(42)
+    expect(run).toHaveBeenCalledTimes(2)
+    connected = []; expect(await callRemote()).toEqual([])
+    connected = [{ ...codex, connectionKey: 'generation3' }]
+    await callRemote(); expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('limits remote Codex to the requested host and keeps errors as errors rather than zero', async () => {
+    const run = vi.fn(async () => null)
+    start({ targets: () => ['u@a', 'u@b'].map(h => ({ ...target(h), provider: 'codex' })), run })
+    const rows = await callRemote({ hostKey: 'u@b' })
+    expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({ provider: 'codex', hostKey: 'u@b', usage: { status: 'error', limits: [] } })
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+it('retains Codex discrimination when the target registry fails during late cache validation', async () => {
+  let calls = 0
+  start({ targets: () => {
+    if (++calls > 1) throw new Error('registry replaced')
+    return [{ ...target('u@h'), provider: 'codex' }]
+  }, run: async () => CODEX_REPLY })
+  expect(await callRemote()).toEqual([expect.objectContaining({ provider: 'codex', usage: expect.objectContaining({ provider: 'codex', status: 'error', limits: [] }) })])
+})

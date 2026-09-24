@@ -76,3 +76,14 @@ describe('cold-open pin (b): an empty `after` is vacuously ready', () => {
     expect(ready).toEqual([])
   })
 })
+
+it('retains a never-attempted UI command across a project switch', () => {
+  const live = nodeStatesToFlow([armedState])[0]
+  live.data.pendingLaunch = undefined
+  live.data.initialCommand = 'claude "complete original brief"'
+  const restored = nodeStatesToFlow(flowToNodeStates([live]))[0]
+  expect(restored.data.pendingLaunch).toEqual({
+    after: [], command: 'claude "complete original brief"', attempted: false
+  })
+  expect(launchesToFire([restored], {}, new Set([restored.id]))).toEqual([{ id: restored.id, command: 'claude "complete original brief"' }])
+})

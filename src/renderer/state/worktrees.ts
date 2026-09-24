@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { readBranchStatus } from './gitBranches'
 import { activeSessionApi } from '../session/session'
 import {
   normWorktreePath,
@@ -221,7 +222,7 @@ export const useWorktrees = create<WorktreesState>((set) => ({
     const git = activeSessionApi().git
     let status: Awaited<ReturnType<typeof git.status>>
     try {
-      status = await git.status(path)
+      status = await readBranchStatus(git, path)
     } catch {
       // Un-stamp, or a transient failure would lock the chip out of retrying for the whole window.
       if (lastStatusAt.get(path) === now) lastStatusAt.delete(path)

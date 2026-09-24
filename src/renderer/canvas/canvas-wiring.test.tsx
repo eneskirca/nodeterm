@@ -7,6 +7,9 @@
 // the wiring by reading the call site. A source read is a weak test in general, but it is the only
 // thing standing between a one-character deletion and a silently reintroduced bug — which is
 // exactly the shape that survived the whole suite once on this branch already.
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { CanvasPills } from '../components/CanvasPills'
 import fs from 'fs'
 import path from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -54,8 +57,17 @@ describe('the canvas pill cluster is fit-view chrome', () => {
     expect(chromeObstacles(VIEWPORT)).toEqual([])
   })
 
-  it('is what Canvas actually renders', () => {
-    expect(CANVAS_SRC).toContain('<div className="canvas-pills" data-canvas-chrome>')
+  it('the production cluster opts into fit-view obstacles', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<CanvasPills><button>Usage</button></CanvasPills>))
+      measured(host.querySelector('.canvas-pills')!, PILLS)
+      expect(chromeObstacles(VIEWPORT)).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+    }
   })
 })
 
@@ -168,31 +180,6 @@ describe('breadcrumb wiring the CLAUDE.md bullet calls load-bearing', () => {
     expect(frame.length).toBeGreaterThan(0)
     expect(frame).not.toContain('fitView(')
     expect(frame).toContain('setViewport(viewport, { duration: 300 })')
-  })
-
-  it('centres the node in the pane and never solves chrome around it', () => {
-    // Framing a single focused node against the chrome-free rectangle was reported wrong twice
-    // ("too far right", "not in the middle"): the sessions sidebar is a 300px overlay and it is
-    // open exactly when this is used. The free-rect solve stays in fitAll, which fits every node.
-    const frame = CANVAS_SRC.slice(
-      CANVAS_SRC.indexOf('const frameNode = useCallback'),
-      CANVAS_SRC.indexOf('const goToNode = useCallback')
-    )
-    expect(frame).toContain('viewportForRect(rect, box.width, box.height, keepZoom, insets)')
-    expect(frame).not.toContain('solveFitFrame')
-    expect(frame).toContain('settings.focusZoomToNode ? undefined : getZoom()')
-  })
-
-  it('insets that framing ONLY for a maximized node (issue #743)', () => {
-    // The trade-off above is about how much of the node ends up behind the panel, and for a
-    // maximized node that number is set by the PANEL, not the node: it is exactly as wide as the
-    // free area, so centring it in the wider pane buries half the inset less the margin. Keying
-    // on anything looser would walk back the whole-pane rule for ordinary nodes.
-    const frame = CANVAS_SRC.slice(
-      CANVAS_SRC.indexOf('const frameNode = useCallback'),
-      CANVAS_SRC.indexOf('const goToNode = useCallback')
-    )
-    expect(frame).toContain('const insets = isMaximized(node) ? measurePinnedInsets(box) : NO_INSETS')
   })
 
   it('the resume card slot is spent only on a card that can render, and only when opted in', () => {

@@ -17,7 +17,6 @@
 // shared with the interactive host via `connectHostSession`. Pin/lookup logic is the pure,
 // unit-tested `approved-devices-core`.
 
-import { randomUUID } from 'crypto'
 import { dialog, ipcMain, type BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc'
 import type { CanvasMutation, Settings } from '../../shared/types'
@@ -39,7 +38,8 @@ import { currentCanvas, initHostCanvasHub, subscribeCanvas } from './host-canvas
 import { hostIdFromPublicKeyB64 } from './relay-id'
 import { removeRelayAdvertisement, writeRelayAdvertisement } from './relay-advertise'
 import { isPinned, pinDevice } from './approved-devices-core'
-import { loadApprovedDevices, saveApprovedDevices } from './approved-devices'
+import { loadApprovedDevices, updateApprovedDevices } from './approved-devices'
+import { createPhoneApprovals } from '../../core/phone-approval'
 
 // Re-mint the token this long before its expiry (TTL is ~120s). Floored so a bogus/short exp can't
 // spin us.
@@ -150,7 +150,6 @@ export function initStandingHost(
     /** Per-session pending approval (unknown device awaiting the human's SAS decision). */
     approvalPub: string | null
     approvalId: string | null
-    approvalTimer: ReturnType<typeof setTimeout> | null
     refreshTimer: ReturnType<typeof setTimeout> | null
   }
 
@@ -177,17 +176,13 @@ export function initStandingHost(
   // deliberately does NOT fire onClose. `PhonePresence.leave()` (shared with the interactive host)
   // is exactly-once, so a peer never leaves twice (its color is never freed for someone else).
 
-  function clearApproval(p: Pooled): void {
-    if (p.approvalTimer) {
-      clearTimeout(p.approvalTimer)
-      p.approvalTimer = null
-    }
-    p.approvalPub = null
-    p.approvalId = null
-  }
+  const approvals = createPhoneApprovals({
+    persist: (pub) => updateApprovedDevices((store) => pinDevice(store, pub)),
+    cleared: (id) => send(IPC.remoteHostPeerPendingCleared, { id })
+  })
 
   function removeFromPool(p: Pooled): void {
-    clearApproval(p)
+    if (p.approvalId) approvals.clear(p.approvalId)
     p.presence.leave()
     if (p.refreshTimer) {
       clearTimeout(p.refreshTimer)
@@ -195,15 +190,6 @@ export function initStandingHost(
     }
     pool.delete(p)
     p.session.close()
-  }
-
-  // The peer's box key is STABLE across the phone's reconnect churn while the per-attach id
-  // dies with each socket, so an Approve clicked mid-retry still lands when matched by pub
-  // (issue #372's race note). The id stays as the exact-match fallback.
-  function findPending(msg: { id?: string; pub?: string }): Pooled | null {
-    if (msg.pub) for (const p of pool) if (p.approvalPub && p.approvalPub === msg.pub) return p
-    if (msg.id) for (const p of pool) if (p.approvalId && p.approvalId === msg.id) return p
-    return null
   }
 
   /** Keep the pool topped up with TARGET_PENDING un-bridged listeners. */
@@ -265,26 +251,14 @@ export function initStandingHost(
       s.approve() // pinned device → auto-approve silently
       return
     }
-    // Unknown device → require the host human's approval (shared SAS dialog). Remember the pubkey +
-    // a fresh id on THIS pooled session, so approval pins it even if the phone's browse socket
-    // closes first, and only the matching approve id acts on it.
+    // Keep the handshake-bound consent record after a browse socket closes (#819). The
+    // human may still compare its SAS and pin this exact identity until the bounded deadline.
+    if (!pub || !s.sas()) return // never offer consent without a verified handshake identity
     pooled.approvalPub = pub
-    pooled.approvalId = randomUUID()
-    if (pooled.approvalTimer) clearTimeout(pooled.approvalTimer)
-    pooled.approvalTimer = setTimeout(() => {
-      const expiredId = pooled.approvalId
-      pooled.approvalPub = null
-      pooled.approvalId = null
-      pooled.approvalTimer = null
-      // Tell the renderer the prompt died — without this the dialog outlives the id and
-      // Approve becomes a silent no-op (issue #372).
-      send(IPC.remoteHostPeerPendingCleared, { id: expiredId, pub })
-    }, 120_000)
-    pooled.approvalTimer.unref?.()
-    // `pub` rides along so the renderer can key the dialog on the STABLE device identity: a
-    // retry-churning phone re-raises this event with a fresh id but the same pub + SAS, and
-    // the open dialog just updates in place instead of flashing.
-    send(IPC.remoteHostPeerPending, { sas: s.sas(), id: pooled.approvalId, pub })
+    pooled.approvalId = approvals.add(pub)
+    send(IPC.remoteHostPeerPending, {
+      sas: s.sas(), id: pooled.approvalId, pub, standing: true
+    })
   }
 
   async function connectOne(): Promise<void> {
@@ -321,7 +295,6 @@ export function initStandingHost(
         presence: createPhonePresence(),
         approvalPub: null,
         approvalId: null,
-        approvalTimer: null,
         refreshTimer: null
       }
       pooled.session = connectHostSession({
@@ -344,7 +317,7 @@ export function initStandingHost(
         getClientId: () => pooled.presence.id(),
         onPeerReady: () => void onPeerReady(pooled),
         onClose: () => {
-          clearApproval(pooled)
+          console.info('[phone-approval] socket-closed', { pending: !!pooled.approvalId })
           pooled.presence.leave()
           if (pooled.refreshTimer) {
             clearTimeout(pooled.refreshTimer)
@@ -384,6 +357,7 @@ export function initStandingHost(
 
   function stop(): void {
     running = false
+    approvals.stop()
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -400,28 +374,31 @@ export function initStandingHost(
     else if (!want && running) stop()
   }
 
-  // Host human approved / rejected a pending phone (by its pending id). Shared with the interactive
-  // host; the id scoping means each acts only on its own pending session.
-  ipcMain.on(IPC.remoteHostApprove, (_e, msg: { id?: string; pub?: string } = {}) => {
-    const p = findPending(msg ?? {})
-    if (!p) return
-    // Pin the DEVICE (its stable box key), whether or not its session is still live — the phone's
-    // browse socket may have already closed. Prefer the live peer's key, else the remembered one.
-    const pub = p.session.peerPublicKeyB64() ?? p.approvalPub
-    clearApproval(p)
-    if (pub) {
-      void loadApprovedDevices()
-        .then((store) => saveApprovedDevices(pinDevice(store, pub)))
-        .catch(() => {
-          // A failed pin is non-fatal: the device re-prompts next connect. Never block on the write.
-        })
+  // Dedicated request/reply channel: a missing IPC handler rejects instead of silently
+  // discarding consent. Never expose this host-security operation through the relay RPC bridge.
+  ipcMain.handle(IPC.remotePhoneApprove, async (event, msg: { id?: string; pub?: string }) => {
+    if (event.sender !== win.webContents) return { status: 'stale' as const }
+    console.info('[phone-approval] received')
+    const result = await approvals.approve(msg)
+    console.info('[phone-approval] result', result.status)
+    if (result.status !== 'persisted') return result
+    let connected = false
+    for (const p of pool) {
+      if (p.bridged && p.session.peerPublicKeyB64() === msg.pub) {
+        if (p.approvalId) approvals.clear(p.approvalId)
+        p.approvalId = null
+        p.approvalPub = null
+        p.session.approve()
+        connected = true
+      }
     }
-    p.session.approve()
+    return { status: connected ? 'approved' as const : 'saved-disconnected' as const }
   })
-  ipcMain.on(IPC.remoteHostReject, (_e, msg: { id?: string; pub?: string } = {}) => {
-    const p = findPending(msg ?? {})
-    if (!p) return
-    removeFromPool(p) // drop this rejected session
+  ipcMain.on(IPC.remoteHostReject, (event, msg: { id?: string; pub?: string } = {}) => {
+    if (event.sender !== win.webContents || !approvals.reject(msg)) return
+    for (const p of [...pool]) {
+      if (p.approvalPub === msg.pub) removeFromPool(p)
+    }
     ensurePool()
   })
 

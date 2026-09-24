@@ -26,7 +26,7 @@ import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSessionNaming } from '../state/sessionNaming'
-import { useSession } from '../session/session'
+import { ProjectBranch } from './ProjectBranch'
 
 const HISTORY_COLLAPSE_KEY = 'history'
 
@@ -87,12 +87,9 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const statusById = useAgentStatus((s) => s.byId)
   const namingById = useSessionNaming((s) => s.byId)
-  // This sidebar's core api (a stable context read — the branch lookups run on the session's git).
-  const { api } = useSession()
 
   const [filter, setFilter] = useState('')
   const [statusNow, setStatusNow] = useState(() => Date.now())
-  const [branches, setBranches] = useState<Record<string, string>>({})
   // Drag-to-group: the object being dragged, and the current drop target for highlighting.
   // A group drag also remembers its parent frame, so a sibling-reorder drop zone can refuse a
   // drag that came from another container (that move is a REPARENT, which the head handles).
@@ -118,32 +115,6 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   const collapsedItems = useSettings((s) => s.settings.sidebarCollapsedItems)
   const grouping = useSettings((s) => s.settings.sidebarGrouping)
   const updateSettings = useSettings((s) => s.update)
-
-  // Look up the current git branch for each project cwd (best-effort, cached). Gated on `open`
-  // and caches a NEGATIVE result too — without the '' fallback a non-git cwd re-fired a git
-  // subprocess on every projects-store change, forever.
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    projects.forEach((p) => {
-      if (!p.cwd || branches[p.id] !== undefined) return
-      api.git
-        .status(p.cwd)
-        .then((st) => {
-          if (cancelled) return
-          const branch = st && typeof st.branch === 'string' ? st.branch : ''
-          setBranches((b) => ({ ...b, [p.id]: branch }))
-        })
-        .catch(() => {
-          if (!cancelled) setBranches((b) => ({ ...b, [p.id]: '' }))
-        })
-    })
-    return () => {
-      cancelled = true
-    }
-    // `api` is a safe dep: this effect only fetches (cancellation flag, no resource), and the
-    // local session's api is referentially stable, so adding it changes nothing today.
-  }, [open, projects, branches, api])
 
   // Gated on `open`: this component stays mounted while the sidebar is closed (the common
   // case), and the O(projects × nodes) rebuild re-ran on every agent hook event otherwise.
@@ -663,9 +634,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                   className="ss-group__monogram"
                 />
                 <span className="ss-group__name">{g.projectName}</span>
-                {branches[g.projectId] && (
-                  <span className="ss-group__branch">⎇ {branches[g.projectId]}</span>
-                )}
+                <ProjectBranch project={projects.find((p) => p.id === g.projectId)!} />
                 {signals.attention > 0 && (
                   <span className="ss-group__sig ss-group__sig--attention" title="Sessions that need you">
                     <IconBellFilled />

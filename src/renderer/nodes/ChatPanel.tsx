@@ -1,3 +1,4 @@
+import { TEXT_NOT_SUBMITTED } from '@shared/text-delivery'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
@@ -132,6 +133,11 @@ export function ChatPanel({
     const text = input.trim()
     if (!text || working) return
     const ok = await api.pty.sendText(nodeId, text)
+    if (ok === 'pasted-not-submitted') {
+      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: TEXT_NOT_SUBMITTED } }))
+      setInput('')
+      return
+    }
     if (!ok) {
       setReadonly(true)
       return

@@ -178,11 +178,11 @@ describe('idle reap of unwatched client PTYs', () => {
     expect(spawned[0].killed).toBe(false)
   })
 
-  it('never reaps before the threshold — it must not race the renderer 5-minute park', async () => {
+  it('never reaps before the threshold', async () => {
     await tmuxManager()
     await create(ALICE)
 
-    idle(6 * 60 * 1000) // one minute past TERM_PARK_MS
+    idle(6 * 60 * 1000) // well inside REAP_IDLE_MS
 
     expect(spawned[0].killed).toBe(false)
   })

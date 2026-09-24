@@ -125,11 +125,12 @@ export function scopeUsage(input: ScopeInput): ScopedUsage {
     }
   }
   const rows = remote.filter((r) => r.hostKey === scope.hostKey)
-  const system = rows.find((r) => r.accountId === null)
+  const claudeRows = rows.filter(r => r.provider !== 'codex')
+  const system = claudeRows.find((r) => r.accountId === null)
   const leading =
     system && system.usage.limits.length > 0
       ? system
-      : (rows.find((r) => r.usage.limits.length > 0) ?? system)
+      : (claudeRows.find((r) => r.usage.limits.length > 0) ?? system)
   return {
     // The local machine's Claude, its managed accounts and the local billing providers are all
     // credentials you are NOT spending while you work on the host.

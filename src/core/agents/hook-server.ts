@@ -1,9 +1,13 @@
+import { sessionContextWindow } from '../model-window'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomUUID, timingSafeEqual } from 'crypto'
-import { writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
+import { readFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
+import { assertHookEndpointAvailable, clearStaleHookSocket, HookSocketOwnedError } from './hook-socket-owner'
 import { homedir } from 'os'
 import path from 'path'
 import { platform } from '../platform'
+import { writeFileAtomic } from '../fs-atomic'
+import { parseEndpointEnv } from './hook-endpoint-parse'
 import { hookSockPath } from './hook-sock-path'
 import { canControlCanvas, type AgentId } from '../../shared/agents/config'
 import { normalizeFor, type NormalizedAgentEvent } from '../../shared/agents/normalize'
@@ -190,6 +194,8 @@ function observedClaudeAccount(
  * it. A later task makes the label useful; until then, false must cost a caller nothing.
  */
 export interface HookEventMeta {
+  /** undefined: old/unverified client; null: observed env has no valid override. */
+  contextWindow?: number | null
   verified: boolean
 }
 
@@ -259,6 +265,7 @@ export const REPORT_ISSUE_CONTROL_REFUSAL = 'Issue reporting refused.'
 
 /** The verified-only refusal, worded for the verb that was refused. */
 export function verifiedRefusalFor(verb: string): string {
+  if (verb === 'open-terminal') return 'Terminal command refused.'
   if (verb === 'settings') return SETTINGS_CONTROL_REFUSAL
   if (verb === 'report-issue') return REPORT_ISSUE_CONTROL_REFUSAL
   if (verb === 'sticky') return STICKY_CONTROL_REFUSAL
@@ -266,8 +273,9 @@ export function verifiedRefusalFor(verb: string): string {
   return MESSAGING_CONTROL_REFUSAL
 }
 
-class HookServer {
+export class HookServer {
   private server: Server | null = null
+  private starting: Promise<void> | null = null
   /**
    * The unix-domain twin of the loopback TCP listener (issue #367). Same HTTP handler, same
    * bearer + per-node token auth — the whole identity machinery is transport-agnostic (nothing
@@ -349,7 +357,12 @@ class HookServer {
       }) => Promise<void>)
     | null = null
   private codexIdentityListener: ((e: CodexIdentityEvent) => void) | null = null
+  private previousEndpointToken = ''
+
+  getPreviousEndpointToken(): string { return this.previousEndpointToken }
+
   private endpointPath = ''
+  private publishedEndpoint = ''
   private nodeAuthSecret: Buffer | null = null
   /**
    * `settings.hookIdentityStrict`, read LIVE (a getter, not a snapshot) so flipping it in Settings
@@ -546,8 +559,43 @@ class HookServer {
     this.identityNow = now
   }
 
+  /** Shell boot must continue even when optional hooks cannot safely take ownership. */
+  async startForApp(): Promise<string | null> {
+    try {
+      await this.start()
+      return null
+    } catch {
+      this.stop()
+      // Do not include raw errors: an invalid HTTP header may contain the bearer.
+      return `Agent hooks are disabled because their endpoint is occupied, malformed, or unavailable. ` +
+        `The application can still run, but agent status and canvas commands may be unavailable. ` +
+        `Close any other nodeterm instance using this data directory. If none is running, inspect ` +
+        `${this.endpointFilePath()} and its advertised listener; back up and remove a stale file, ` +
+        `then restart nodeterm. No other owner's endpoint was replaced.`
+    }
+  }
+
   async start(): Promise<void> {
+    if (this.starting) return this.starting
     if (this.server) return
+    this.starting = this.startOwnedEndpoint()
+    try {
+      await this.starting
+    } finally {
+      this.starting = null
+    }
+  }
+
+  private async startOwnedEndpoint(): Promise<void> {
+    await assertHookEndpointAvailable(this.endpointFilePath())
+    this.previousEndpointToken = ''
+    try {
+      const previous = parseEndpointEnv(readFileSync(this.endpointFilePath(), 'utf8'))
+      // Only our conventional local endpoint supplies upgrade proof, never a tunnel record.
+      if (previous.NODETERM_HOOK_SOCK === hookSockPath(platform().userDataDir)) {
+        this.previousEndpointToken = previous.NODETERM_HOOK_TOKEN ?? ''
+      }
+    } catch { /* a first run has no prior bearer */ }
     this.token = randomUUID()
     // ONE handler, shared verbatim by the TCP and the unix-socket listeners: every gate (bearer,
     // per-node verdict, verified-only verbs) runs identically on both transports.
@@ -560,8 +608,16 @@ class HookServer {
           return
         }
         if (!this.tokenMatches(req.headers['x-nodeterm-hook-token'])) {
-          res.writeHead(403)
-          res.end()
+          if (!req.headers['x-nodeterm-hook-token']) {
+            res.writeHead(403)
+            res.end()
+            return
+          }
+          res.writeHead(421, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end(
+            'hook-endpoint-wrong-owner: This endpoint does not own the presented bearer. ' +
+            'Retry after endpoint discovery; this is not an unsupported capability.\n'
+          )
           return
         }
         req.setTimeout(SLOWLORIS_MS, () => req.destroy())
@@ -616,7 +672,11 @@ class HookServer {
           // VERIFIED-ONLY VERBS, decided on the VERDICT and never on the decision: the policy's
           // `decision` is what the escape hatch and the warning window can reach, and neither may
           // reach these. See `requiresVerified` for the whole argument.
-          if (requiresVerified.has(verb) && verdict !== 'verified') {
+          // Issue #653: command execution requires proof even when rollout policy allows
+          // legacy callers. Presence (including empty --cmd and dry runs) decides this;
+          // plain terminals keep their existing policy. Both shells and transports use this gate.
+          const commandOpen = verb === 'open-terminal' && args.cmd !== undefined
+          if ((requiresVerified.has(verb) || commandOpen) && verdict !== 'verified') {
             const refusal = verifiedRefusalFor(verb)
             if (wantsText) {
               res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
@@ -771,7 +831,12 @@ class HookServer {
           if (form.nodeterm_answered) payload.nodeterm_answered = form.nodeterm_answered
           // Raw listener first: it drives the transcript-tailing features (which need
           // transcript_path). Inside the try so a throwing raw listener still ends 204.
-          this.rawListener?.(agentId, nodeId, payload, { verified })
+          this.rawListener?.(agentId, nodeId, payload, {
+            verified,
+            ...(verified && agentId === 'claude' && form.nodeterm_context_window !== undefined
+              ? { contextWindow: sessionContextWindow(form.nodeterm_context_window) }
+              : {})
+          })
           // WHICH CLAUDE ACCOUNT this session is on. A third LABEL alongside
           // `verified`/`clientRevision`, computed HERE so ONE implementation serves both shells —
           // the "both raw listeners change together" rule is sidestepped rather than violated,
@@ -798,8 +863,8 @@ class HookServer {
         // before the bind, so leaving it set makes every later start() a silent early-return with
         // port 0 — while a previous run's endpoint file keeps advertising a dead port to every
         // tmux session on the machine. Reset to the clean never-started state so start() can be
-        // retried without restarting the app, and drop the stale advertisement (the file reflects
-        // listener liveness; a client that still holds the path fails over — see the sh shims).
+        // retried without restarting the app. Only an advertisement this run actually published
+        // may be removed; a file found on disk can belong to a different live instance.
         this.server?.close()
         this.server = null
         this.port = 0
@@ -818,13 +883,21 @@ class HookServer {
       this.server!.listen(0, '127.0.0.1', onOk)
     })
     // Second leg, then ONE endpoint write that advertises whatever actually came up. A failed
-    // socket bind must not cost the TCP endpoint file (or the boot).
-    await this.startUnixListener(handler)
-    this.writeEndpointFile()
+    // unavailable transport can fall back to TCP, but a different owner must refuse the boot.
+    try {
+      await this.startUnixListener(handler)
+    } catch (e) {
+      this.server?.close()
+      this.server = null
+      this.port = 0
+      this.token = ''
+      throw e // Never publish over the listener whose ownership check refused this boot.
+    }
+    await this.writeEndpointFile()
   }
 
-  /** Bind the unix-socket twin (see `unixServer`). Never throws — a socket that cannot bind is
-   *  simply not advertised, and everything keeps running on loopback TCP. */
+  /** Bind the Unix twin. Transport unavailability can degrade to TCP; ownership conflicts throw
+   *  so a second instance cannot replace the first instance's endpoint advertisement. */
   private async startUnixListener(
     handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>
   ): Promise<void> {
@@ -839,15 +912,8 @@ class HookServer {
       // mode is what actually keeps other local users off the socket (the file chmod below only
       // lands after listen, and the socket is world-connectable for that instant otherwise).
       chmodSync(dir, 0o700)
-      // A stale socket file BLOCKS bind with EADDRINUSE even when nothing is listening — the
-      // StreamLocalBindUnlink lesson from the SSH reverse tunnels. Unlink-then-bind is safe here:
-      // the path is ours alone (0700 dir, digest-keyed fallback), so anything at it is our own
-      // leftover from a crash.
-      try {
-        unlinkSync(p)
-      } catch {
-        /* nothing stale to clear */
-      }
+      // A filesystem path is not proof of ownership: another live instance may hold it.
+      await clearStaleHookSocket(p)
       const srv = createServer(handler)
       await new Promise<void>((resolve, reject) => {
         const onErr = (e: Error): void => {
@@ -867,6 +933,7 @@ class HookServer {
       this.unixServer = srv
       this.sockPath = p
     } catch (e) {
+      if (e instanceof HookSocketOwnedError || (e as NodeJS.ErrnoException).code === 'EADDRINUSE') throw e
       console.warn('[agent-hooks] unix hook socket unavailable, staying TCP-only', e)
       this.unixServer = null
       this.sockPath = ''
@@ -1098,12 +1165,11 @@ class HookServer {
 
   // The managed script sources this file at invocation to get the LIVE port/token.
   // tmux sessions outlive the app, so env-baked coords go stale after a restart.
-  private writeEndpointFile(): void {
+  private async writeEndpointFile(): Promise<void> {
     try {
       const p = this.endpointFilePath()
       mkdirSync(path.dirname(p), { recursive: true })
-      writeFileSync(
-        p,
+      const contents =
         // Every value is `posixQuote`d: the managed script SOURCES this file (`. "$file"`) under
         // /bin/sh, so an unquoted space or shell metachar in a path or token would break the source
         // (issue #351: macOS userDataDir lives under "Application Support" — the space made sh try
@@ -1122,11 +1188,15 @@ class HookServer {
           // `[ -n "$NODETERM_HOOK_SOCK" ]` — so advertising it moves local hook traffic off the
           // TCP port; the PORT line stays above for sessions holding a pre-socket script. Quoted
           // like every other value (#351/#358): macOS data dirs carry a space.
-          (this.sockPath ? `NODETERM_HOOK_SOCK=${posixQuote(this.sockPath)}\n` : ''),
+          (this.sockPath ? `NODETERM_HOOK_SOCK=${posixQuote(this.sockPath)}\n` : '')
+      await writeFileAtomic(
+        p,
+        contents,
         // 0o600: this file holds the bearer token — owner read/write only so another local user
         // can't read it and forge hook events.
-        { encoding: 'utf8', mode: 0o600 }
+        { mode: 0o600 }
       )
+      this.publishedEndpoint = contents
     } catch (e) {
       console.warn('[agent-hooks] could not write endpoint file', e)
     }
@@ -1141,7 +1211,10 @@ class HookServer {
    */
   private removeEndpointFile(): void {
     try {
+      // A failed/unstarted instance must not erase another run's advertisement.
+      if (!this.publishedEndpoint || readFileSync(this.endpointFilePath(), 'utf8') !== this.publishedEndpoint) return
       unlinkSync(this.endpointFilePath())
+      this.publishedEndpoint = ''
     } catch {
       /* nothing to remove — or no booted platform to name the path (tests); both are fine */
     }
@@ -1197,7 +1270,7 @@ class HookServer {
     this.unixServer?.close()
     this.unixServer = null
     // Unlink so the NEXT bind is clean even if close() lost the race with process exit; the
-    // startup unlink above is still the backstop for a crash that skipped this entirely.
+    // startup probe can reclaim a confirmed stale socket after a crash.
     if (this.sockPath) {
       try {
         unlinkSync(this.sockPath)

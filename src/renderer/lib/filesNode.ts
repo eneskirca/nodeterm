@@ -16,7 +16,7 @@
  * the filesystem-owning CORE, not the viewer, which is the rule `terminal/file-links.ts` already
  * implements and the one to copy.
  */
-import { isVideoFile } from '../state/workspace'
+import { isMediaFile } from '../state/workspace'
 import { opensInEditor } from './openTarget'
 import { folderTitle } from './explorerCreate'
 
@@ -188,6 +188,6 @@ export function filterEntries<T extends { name: string }>(entries: T[], query: s
  */
 export function fileOpenTarget(path: string, opts: { remote?: boolean } = {}): 'canvas' | 'os' {
   if (opts.remote) return 'canvas'
-  if (isVideoFile(path)) return 'canvas'
+  if (isMediaFile(path)) return 'canvas'
   return opensInEditor(path) ? 'canvas' : 'os'
 }

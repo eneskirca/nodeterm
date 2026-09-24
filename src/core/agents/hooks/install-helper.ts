@@ -9,8 +9,10 @@
 //     the fresh one — matching on both sides through `normalizeHookCommand`, WITHOUT which
 //     Windows recognized none of its own entries and appended a fresh set per launch (#558);
 //   - preserve every other hook (other tools', other events);
-//   - fail open: a missing/unparseable settings.json defaults to {} (install) / returns
-//     early (remove); a write error is caught + warned, never thrown.
+//   - fail open for sessions, preserve user settings on errors. Only ENOENT creates a new
+//     shared config; malformed/read-error/concurrently modified files are left untouched.
+//     Grok alone owns its config outright and can heal a malformed copy.
+import { updateSettingsFile } from './settings-file'
 import path from 'path'
 import { homedir } from 'os'
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'fs'
@@ -42,9 +44,8 @@ export function writeManagedHookFileAtomic(
 }
 
 /**
- * Shared Claude/Gemini settings keep their existing write-through semantics so a user-owned
- * symlink and its target mode survive. Grok opts into atomic replacement for its nodeterm-owned
- * file under `$GROK_HOME/hooks/`.
+ * Legacy direct writer for owned config callers. Shared Claude/Gemini settings use the guarded
+ * updateSettingsFile transaction instead. Grok opts into atomic replacement for its owned file.
  */
 export function writeManagedHookConfig(target: string, data: string, atomic = false): void {
   if (atomic) writeManagedHookFileAtomic(target, data)
@@ -203,9 +204,23 @@ export function mergeManagedHook(
   command: string,
   events: readonly ManagedHookEvent[]
 ): HookSettings {
+  if (config.hooks !== undefined) {
+    if (!config.hooks || typeof config.hooks !== 'object' || Array.isArray(config.hooks)) throw new Error('Invalid hooks')
+    for (const defs of Object.values(config.hooks)) {
+      if (!Array.isArray(defs)) continue
+      for (const d of defs) {
+        if (!d || typeof d !== 'object' || (d.hooks !== undefined &&
+          (!Array.isArray(d.hooks) || d.hooks.some((h) => !h || typeof h !== 'object')))) throw new Error('Invalid hook handlers')
+      }
+    }
+  }
   const isOurs = managedCommandMatcher(managedMarkerFor(command), true)
   const next: HookSettings = { ...config, hooks: { ...(config.hooks ?? {}) } }
-  const definitionsAt = (ev: string): HookDef[] => (Array.isArray(next.hooks![ev]) ? next.hooks![ev] : [])
+  const definitionsAt = (ev: string): HookDef[] => {
+    const defs = next.hooks![ev]
+    if (defs !== undefined && !Array.isArray(defs)) throw new Error('Invalid hook definitions')
+    return defs ?? []
+  }
   for (const e of events) {
     const ev = eventNameOf(e)
     const matcher = matcherOf(e)
@@ -247,13 +262,18 @@ export function installHooksInto(opts: InstallHooksOptions): void {
   if (!sp) return
 
   const command = buildManagedHookCommand(sp)
+  if (!atomicConfig) {
+    updateSettingsFile(configPath, (config) => mergeManagedHook(config, command, events))
+    return
+  }
   let config: Settings = {}
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8')) as Settings
+    config = mergeManagedHook(config, command, events)
   } catch {
-    config = {}
+    // This branch owns the entire Grok config, including malformed hook shapes.
+    config = mergeManagedHook({}, command, events)
   }
-  config = mergeManagedHook(config, command, events)
   try {
     mkdirSync(path.dirname(configPath), { recursive: true })
     writeManagedHookConfig(configPath, JSON.stringify(config, null, 2), atomicConfig)
@@ -276,6 +296,19 @@ export function removeHooksFrom(opts: RemoveHooksOptions): void {
   // Same normalized comparison as the installer — a raw `includes` left every entry behind on
   // Windows (issue #558), so uninstall silently did nothing there.
   const isOurs = managedCommandMatcher(`agent-hooks/${scriptFileName}`, false)
+  if (!atomicConfig) {
+    updateSettingsFile(configPath, (config: Settings) => {
+      if (!config.hooks) return config
+      for (const e of events) {
+        const ev = eventNameOf(e)
+        if (!Array.isArray(config.hooks[ev])) continue
+        config.hooks[ev] = stripManaged(config.hooks[ev], isOurs)
+        if (config.hooks[ev].length === 0) delete config.hooks[ev]
+      }
+      return config
+    })
+    return
+  }
   let config: Settings
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8')) as Settings

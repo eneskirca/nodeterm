@@ -26,7 +26,7 @@ import {
  * Two invariants carry the whole design, and most of what follows asserts one of them:
  *  - a node never has a live painter AND a live shadow at the same time;
  *  - a shadow is INVISIBLE to everything that asks "is somebody watching" — the reap sweep (which
- *    decides against `platform().clientIds()`), the renderer's 5-minute park and the 10-minute
+ *    decides against `platform().clientIds()`), the renderer's park and the 10-minute
  *    offscreen dispose. It is not a subscriber, not a `Session`, and not a renderer client id.
  */
 

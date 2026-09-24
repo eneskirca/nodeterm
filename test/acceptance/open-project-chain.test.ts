@@ -142,7 +142,7 @@ describe('the open-project → targeted-open chain', () => {
       .getState()
       .getProject(r1.project.id)
       ?.nodes.find((n) => n.id === 'term-target1')
-    expect(stored?.pendingLaunch).toEqual({ after: [], command: 'claude "work in repoA"' })
+    expect(stored?.pendingLaunch).toEqual({ after: [], attempted: false, command: 'claude "work in repoA"' })
     // Still no travel.
     expect(useProjects.getState().activeProjectId).toBe(activeBefore)
 

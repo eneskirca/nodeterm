@@ -16,6 +16,7 @@ import { nodeIconDialog } from '../NodeIconPicker'
 import { applyIconChoice } from '../../lib/nodeIconChoice'
 import type { NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
+import { isRemoteSessionNode } from '@shared/worktree'
 import { AccountChip, useAccountChip } from '../AccountChip'
 import { useAgentStatus } from '../../state/agentStatus'
 import { useCardPanel } from '../../state/cardPanel'
@@ -78,6 +79,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
   // StickyNode's toggle, so the canvas and the card can't disagree about how a note reads).
   const [editingNote, setEditingNote] = useState(false)
   const agentSessionId = useAgentStatus((st) => st.byId[session.id]?.sessionId)
+  const observedAgentId = useAgentStatus((st) => st.byId[session.id]?.agentId)
   const paused = useAgentStatus((st) => !!st.byId[session.id]?.paused)
   const dropped = useAgentStatus((st) => !!st.byId[session.id]?.dropped)
   // Same chip as the card and the canvas node header — the modal is where a user checks WHICH
@@ -326,7 +328,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           {isTerminal && (
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}
-              <ContextMeter sessionId={agentSessionId ?? null} />
+              <ContextMeter sessionId={agentSessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} />
               <button
                 className="kanban-modal__action"
                 title="Search this terminal"

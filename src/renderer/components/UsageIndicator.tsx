@@ -1,4 +1,6 @@
+import { usageDiagnosticText } from '../lib/usageDiagnostic'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { UsageOrganization } from './UsageOrganization'
 import { IconReload } from './icons'
 import type { ClaudeUsage, ProviderUsage, RemoteAccountUsage, UsageLimit } from '@shared/types'
 import { AGENT_CONFIG } from '@shared/agents/config'
@@ -103,6 +105,62 @@ function DefaultAccountMark({
   )
 }
 
+/** Where a bulk move can send an account's sessions: another account on the same machine. */
+export interface MoveTarget {
+  id: string | undefined
+  label: string
+}
+
+/**
+ * "⇄ Move N sessions" on an account row — the bulk version of a node's "Switch Claude account":
+ * every Claude session on this canvas running on this account is quit, its conversation copied to
+ * the picked account, and resumed there (Canvas `moveAccountSessions`). It sits where the limit is
+ * read, because that is where the user learns an account is spent. Absent when there is nothing to
+ * move or nowhere to move it.
+ */
+function MoveSessionsControl({
+  count,
+  targets,
+  onMove
+}: {
+  count: number
+  targets: readonly MoveTarget[]
+  onMove: (to: MoveTarget) => void
+}) {
+  const [picking, setPicking] = useState(false)
+  if (count === 0 || targets.length === 0) return null
+  return (
+    <span className="usage-account__move">
+      <button
+        type="button"
+        className="usage-account__use"
+        aria-expanded={picking}
+        title="Quit these sessions, move their conversations to another account and resume them there — no login needed. Busy sessions are skipped."
+        onClick={() => setPicking((v) => !v)}
+      >
+        ⇄ Move {count} {count === 1 ? 'session' : 'sessions'}
+      </button>
+      {picking ? (
+        <span className="usage-account__move-targets" role="group" aria-label="Move sessions to">
+          {targets.map((t) => (
+            <button
+              key={t.id ?? 'system'}
+              type="button"
+              className="usage-account__use"
+              onClick={() => {
+                setPicking(false)
+                onMove(t)
+              }}
+            >
+              → {t.label}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
 /**
  * One account's limit bars under a label, for the multi-account popover. Reuses LimitRow's
  * markup — `u` is null while its on-demand fetch is in flight.
@@ -113,7 +171,8 @@ function AccountUsageBlock({
   u,
   mode,
   isDefault = false,
-  onUse
+  onUse,
+  move
 }: {
   label: string
   email?: string
@@ -121,18 +180,25 @@ function AccountUsageBlock({
   mode: 'used' | 'remaining' | 'tokens'
   isDefault?: boolean
   onUse?: () => void
+  move?: React.ReactNode
 }) {
   return (
     <div className="usage-account">
       <div className="usage-account__label">
         {label}
         <DefaultAccountMark isDefault={isDefault} onUse={onUse} />
+        {move}
       </div>
-      {(email ?? u?.email) && <div className="usage-account__email">{email ?? u?.email}</div>}
+      {(u?.email ?? email) && <div className="usage-account__email">{u?.email ?? email}</div>}
+      <UsageOrganization organization={u?.organization} />
       {u?.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
-      {u && u.limits.length === 0 && <div className="usage-popover__empty">No usage data.</div>}
+      {u && u.limits.length === 0 && (
+        <div className="usage-popover__empty">
+          {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
+        </div>
+      )}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
     </div>
   )
@@ -151,12 +217,14 @@ function RemoteUsageBlock({
   row,
   mode,
   isDefault = false,
-  onUse
+  onUse,
+  move
 }: {
-  row: RemoteAccountUsage
+  row: Extract<RemoteAccountUsage, { provider?: 'claude' }>
   mode: 'used' | 'remaining' | 'tokens'
   isDefault?: boolean
   onUse?: () => void
+  move?: React.ReactNode
 }) {
   if (row.usage.status === 'unavailable') return null
   const showHost = row.label !== row.hostKey
@@ -168,6 +236,7 @@ function RemoteUsageBlock({
           {showHost ? row.hostKey : 'SSH'}
         </span>
         <DefaultAccountMark isDefault={isDefault} onUse={onUse} />
+        {move}
       </div>
       {row.usage.email && <div className="usage-account__email">{row.usage.email}</div>}
       {row.usage.limits.map((l) => (
@@ -194,17 +263,24 @@ function labelFor(provider: string): string {
   return providerLabel(provider, agentLabel)
 }
 
-function ProviderBlock({ u, mode }: { u: ProviderUsage; mode: 'used' | 'remaining' | 'tokens' }) {
+function ProviderBlock({ u, mode, hostKey }: { u: ProviderUsage; mode: 'used' | 'remaining' | 'tokens'; hostKey?: string }) {
   if (u.status === 'unavailable') return null
   const label = labelFor(u.provider)
   return (
     <div className="usage-account">
-      <div className="usage-account__label">{label}</div>
+      <div className="usage-account__label">{label}
+        {hostKey && <span className="usage-account__host" title={`Read on ${hostKey} over SSH`}>{hostKey} · SSH</span>}
+      </div>
       {u.account && <div className="usage-account__email">{u.account}</div>}
       {u.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
-      {u.limits.length === 0 && (
+      {u.diagnostics?.map((diagnostic, index) => (
+        <div className="usage-popover__empty" key={index}>
+          {usageDiagnosticText(label, diagnostic)}
+        </div>
+      ))}
+      {u.limits.length === 0 && !u.diagnostics?.length && (
         <div className="usage-popover__empty">
           {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
         </div>
@@ -221,12 +297,19 @@ function ProviderBlock({ u, mode }: { u: ProviderUsage; mode: 'used' | 'remainin
  */
 export function UsageIndicator({
   overBoard = false,
-  onSetDefaultAccount
+  onSetDefaultAccount,
+  countAccountSessions,
+  onMoveSessions
 }: {
   overBoard?: boolean
   /** Writes `project.defaultAccountId` + persists (Canvas's own TabBar handler). When absent the
    *  popover is a pure readout, exactly as before issue #142. */
   onSetDefaultAccount?: (projectId: string, accountId: string | undefined) => void
+  /** Claude sessions on this canvas running on an account (undefined = system), on the scoped
+   *  machine. With `onMoveSessions`, turns on the rows' "Move N sessions". */
+  countAccountSessions?: (accountId: string | undefined) => number
+  /** Move every such session from one account to another (Canvas `moveAccountSessions`). */
+  onMoveSessions?: (from: string | undefined, to: string | undefined, toLabel: string) => void
 }): JSX.Element | null {
   const [usage, setUsage] = useState<ClaudeUsage | null>(null)
   const [open, setOpen] = useState(false)
@@ -287,6 +370,34 @@ export function UsageIndicator({
     }
   }
 
+  // The bulk move's control for one row. Targets are the OTHER accounts this project can launch on
+  // this machine (the same `eligibleAccounts` rule) plus the machine's system login — never an
+  // account on another machine, whose dir does not exist where these panes run.
+  const moveFor = (accountId: string | null): React.ReactNode => {
+    if (!countAccountSessions || !onMoveSessions) return null
+    const from = accountId ?? undefined
+    const systemTarget: MoveTarget = {
+      id: undefined,
+      label: scopeHostKey
+        ? `System account (${scopeHostKey})`
+        : systemAccountDisplay(systemLabelSetting, usage?.email)
+    }
+    const targets = [
+      systemTarget,
+      ...eligibleAccounts.map((a) => ({ id: a.id, label: a.label || a.email || 'Account' }))
+    ].filter((t) => t.id !== from)
+    return (
+      <MoveSessionsControl
+        count={countAccountSessions(from)}
+        targets={targets}
+        onMove={(to) => {
+          setOpen(false)
+          onMoveSessions(from, to.id, to.label)
+        }}
+      />
+    )
+  }
+
   useEffect(() => {
     void window.nodeTerminal.usage.fetch().then(setUsage)
     return window.nodeTerminal.usage.onUpdate(setUsage)
@@ -313,7 +424,13 @@ export function UsageIndicator({
   // pill stays empty until you click it). Never polled: each row is an ssh exec plus an HTTPS
   // request made on the host, which is not a price to pay every 15 minutes for a pill nobody may
   // be looking at.
-  const sshUp = useSshConn((s) => !!s.byProject[activeProjectId])
+  const sshConnection = useSshConn((s) => s.byProject[activeProjectId])
+  const sshUp = !!sshConnection
+  const remoteScope = useRef({ activeProjectId, scopeHostKey, sshConnection })
+  if (remoteScope.current.activeProjectId !== activeProjectId || remoteScope.current.scopeHostKey !== scopeHostKey ||
+      remoteScope.current.sshConnection !== sshConnection) {
+    remoteScope.current = { activeProjectId, scopeHostKey, sshConnection }
+  }
   useEffect(() => {
     if (!scopeHostKey || !sshUp) {
       // Leaving the rows up after a switch would attribute one machine's numbers to another.
@@ -327,7 +444,7 @@ export function UsageIndicator({
     return () => {
       cancelled = true
     }
-  }, [open, scopeHostKey, sshUp])
+  }, [open, scopeHostKey, sshUp, sshConnection])
 
   // Fetch each account's usage on demand when the popover opens (system row uses `usage`).
   // Skipped entirely on an SSH project: those identities are not what this project spends.
@@ -381,7 +498,7 @@ export function UsageIndicator({
     providers: providers.filter((p) => !hidden.has(p.provider)),
     // Its own switch, not Claude's: hiding the local rows must not silently take the SSH hosts
     // down with them, and vice versa.
-    remote: hidden.has('claude-remote') ? [] : remote
+    remote: remote.filter(r => !hidden.has(r.provider === 'codex' ? 'codex' : 'claude-remote'))
   })
   const claudeUsage = scoped.claude
   const visibleProviders = scoped.providers
@@ -390,7 +507,8 @@ export function UsageIndicator({
   // Only providers the user has actually enabled reach the pill; render whenever ANY of them
   // (Claude included) has something to say. Both rules are pure and pinned by tests — gating on
   // Claude alone, which is what this did, left a Codex-only user with no pill at all.
-  const enabled = enabledProviders(visibleProviders)
+  const enabled = enabledProviders([...visibleProviders,
+    ...visibleRemote.flatMap(r => r.provider === 'codex' ? [r.usage] : [])])
   if (!hasAnyUsage(claudeUsage, visibleProviders, visibleRemote)) return null
 
   // On an SSH project these are the HOST's limits — same shape, same labels, read somewhere else.
@@ -398,7 +516,11 @@ export function UsageIndicator({
   const status = claudeUsage?.status ?? visibleRemote[0]?.usage.status ?? 'unavailable'
   const hasData = limits.length > 0 || enabled.length > 0
   const fetching = refreshing
-  const isError = status === 'error'
+  const providerError = visibleProviders.some((p) => p.status === 'error') ||
+    visibleRemote.some(r => r.provider === 'codex' && r.usage.status === 'error')
+  const claudeError = claudeUsage?.status === 'error' ||
+    visibleRemote.some(r => r.provider !== 'codex' && r.usage.status === 'error')
+  const isError = claudeError || providerError
   // The pill leads with whatever is closest to biting, so a scoped model cap that is nearly
   // exhausted can't hide behind a comfortable 5h window. Considers every enabled provider, not
   // just Claude, so an exhausted Codex window drives the bar too.
@@ -409,16 +531,16 @@ export function UsageIndicator({
     e.stopPropagation()
     if (refreshing) return
     setRefreshing(true)
+    const requestedScope = remoteScope.current
     try {
       // ⟳ refreshes what is actually on screen. On an SSH project that is the host — forced past
       // its debounce, since this is the only way to make it re-read before the cache expires —
       // and the local snapshot is left alone rather than spending a request on rows nobody can see.
       if (scope.kind === 'ssh') {
-        setRemote(
-          await window.nodeTerminal.usage
-            .remote({ hostKey: scope.hostKey, force: true })
-            .catch((): RemoteAccountUsage[] => [])
-        )
+        const rows = await window.nodeTerminal.usage
+          .remote({ hostKey: scope.hostKey, force: true })
+          .catch((): RemoteAccountUsage[] => [])
+        if (remoteScope.current === requestedScope) setRemote(rows)
       } else {
         setUsage(await window.nodeTerminal.usage.refresh())
       }
@@ -460,7 +582,7 @@ export function UsageIndicator({
           const worst = primaryLimit(p.limits)
           if (!worst) return null
           return (
-            <span key={p.provider} className="usage-pill__provider">
+            <span key={providerRowKey(p)} className="usage-pill__provider">
               {(limits.length > 0 || i > 0) && <span className="usage-pill__sep">·</span>}
               <span className="usage-pill__num">
                 {percentNumber(worst.usedPercent, percentMode)}% {labelFor(p.provider)}
@@ -509,6 +631,7 @@ export function UsageIndicator({
                     email={systemLabelSetting.trim() ? (claudeUsage.email ?? undefined) : undefined}
                     u={claudeUsage}
                     {...rowMark(null)}
+                    move={moveFor(null)}
                   />
                   {scoped.accounts.map((a) => (
                     <AccountUsageBlock
@@ -518,6 +641,7 @@ export function UsageIndicator({
                       email={a.email}
                       u={acctUsage[a.id] ?? null}
                       {...rowMark(a.id)}
+                      move={moveFor(a.id)}
                     />
                   ))}
                 </>
@@ -525,17 +649,24 @@ export function UsageIndicator({
                 <>
                   {/* Claude's rows are bare when it is the only provider; once others share the
                       panel they need a heading of their own to stay attributable. */}
-                  {enabled.length > 0 && limits.length > 0 && (
+                  {enabled.length > 0 && (limits.length > 0 || claudeError) && (
                     <div className="usage-account__label">Claude</div>
                   )}
                   {limits.map((l) => (
                     <LimitRow key={limitKey(l)} limit={l} mode={percentMode} />
                   ))}
-                  {!hasData && <div className="usage-popover__empty">No usage data.</div>}
-                  {claudeUsage?.email && (
+                  {/* Another provider's data must not hide a failed Claude read. Keep any
+                      last-known Claude bars instead of replacing them with the empty state. */}
+                  {((!hasData && !providerError) || (claudeError && limits.length === 0)) && (
+                    <div className="usage-popover__empty">
+                      {claudeError ? 'Could not read usage.' : 'No usage data.'}
+                    </div>
+                  )}
+                  {(claudeUsage?.email || claudeUsage?.organization) && (
                     <div className="usage-account">
                       <div className="usage-account__label">Claude Account</div>
                       <div className="usage-account__email">{claudeUsage.email}</div>
+                      <UsageOrganization organization={claudeUsage.organization} />
                     </div>
                   )}
                 </>
@@ -544,12 +675,15 @@ export function UsageIndicator({
                 were read somewhere other than this machine. */}
             {/* The same offer on an SSH project's rows — scoped as ever: only the host's system
                 identity and THIS host's managed accounts are actionable (accountRowAction). */}
-            {visibleRemote.map((r) => (
+            {visibleRemote.map((r) => r.provider === 'codex' ? (
+              <ProviderBlock key={`codex:${r.hostKey}:${r.accountId ?? ''}`} u={r.usage} mode={percentMode} hostKey={r.hostKey} />
+            ) : (
               <RemoteUsageBlock
                 key={`${r.hostKey}#${r.accountId ?? ''}`}
                 row={r}
                 mode={percentMode}
                 {...rowMark(r.accountId)}
+                move={moveFor(r.accountId)}
               />
             ))}
             {scope.kind === 'ssh' && visibleRemote.length === 0 && (
@@ -588,7 +722,7 @@ export function UsageIndicator({
                 window.dispatchEvent(new CustomEvent('nodeterm:switch-system-account'))
               }}
             >
-              ⇄ Switch account…
+              ⇄ Switch Claude account…
             </button>
           )}
         </div>
@@ -604,7 +738,7 @@ export function UsageIndicator({
         title={scope.kind === 'ssh' ? `Agent usage on ${scope.hostKey}` : 'Agent usage'}
       >
         <span className="usage-pill__icon">✦</span>
-        {pillBody}
+        <span className="usage-pill__summary">{pillBody}</span>
       </button>
       <button
         className={`usage-refresh${fetching ? ' spin' : ''}`}

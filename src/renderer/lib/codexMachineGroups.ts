@@ -2,8 +2,10 @@
 // #112 inline `AccountsSection` logic so the "one panel per host, accounts under the right machine"
 // invariant is unit-tested apart from the JSX.
 //
-// Renderer-pure: no `src/core`, no IPC. It only rearranges the flat `settings.codexAccounts` array
-// (partitioned by `host`) alongside the deduped set of reachable SSH machines.
+// Renderer-pure: no `src/core`, no IPC. It only rearranges a flat account array (partitioned by
+// `host`) alongside the deduped set of reachable SSH machines. The grouping itself is generic
+// (`groupAccountsByMachine` / `strayAccounts`): the Accounts settings puts Claude AND Codex accounts
+// on the same machine panels, so the two providers can never disagree about where an account lives.
 
 import type { SshConnection } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
@@ -57,7 +59,20 @@ export function groupCodexAccountsByMachine(
   accounts: readonly CodexAccount[],
   remoteTargets: readonly CodexRemoteTarget[]
 ): CodexMachineGroup[] {
-  const local: CodexMachineGroup = {
+  return groupAccountsByMachine(accounts, remoteTargets)
+}
+
+/** A machine panel for any provider's account type (see `CodexMachineGroup`). */
+export interface AccountMachineGroup<T> extends Omit<CodexMachineGroup, 'accounts'> {
+  accounts: T[]
+}
+
+/** `groupCodexAccountsByMachine`, for any account type that carries an optional `host`. */
+export function groupAccountsByMachine<T extends { host?: string | null }>(
+  accounts: readonly T[],
+  remoteTargets: readonly CodexRemoteTarget[]
+): AccountMachineGroup<T>[] {
+  const local: AccountMachineGroup<T> = {
     host: '',
     remote: false,
     accounts: accounts.filter((account) => !account.host)
@@ -77,6 +92,14 @@ export function strayCodexAccounts(
   accounts: readonly CodexAccount[],
   remoteTargets: readonly CodexRemoteTarget[]
 ): CodexAccount[] {
+  return strayAccounts(accounts, remoteTargets)
+}
+
+/** `strayCodexAccounts`, for any account type that carries an optional `host`. */
+export function strayAccounts<T extends { host?: string | null }>(
+  accounts: readonly T[],
+  remoteTargets: readonly CodexRemoteTarget[]
+): T[] {
   const known = new Set(remoteTargets.map(([host]) => host))
   return accounts.filter((account) => account.host && !known.has(account.host))
 }

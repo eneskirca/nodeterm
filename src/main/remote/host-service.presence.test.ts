@@ -192,3 +192,16 @@ describe('interactive host presence peers', () => {
     presenceHub.leave(id)
   })
 })
+
+
+it('a standing phone rejection cannot reject an interactive offer with the same device key', async () => {
+  makeHost()
+  await start()
+  relays[0].opts.onReady()
+  ipc[IPC.remoteHostReject](null, { id: 'another-host-request', pub: 'phone-pub' })
+  expect(relays[0].closed).toBe(0)
+  ipc[IPC.remoteHostReject](null, { id: pendingApprovalId(), pub: 'wrong-key' })
+  expect(relays[0].closed).toBe(0)
+  ipc[IPC.remoteHostReject](null, { id: pendingApprovalId(), pub: 'phone-pub' })
+  expect(relays[0].closed).toBe(1)
+})

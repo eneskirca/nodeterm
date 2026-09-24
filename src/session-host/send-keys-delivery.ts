@@ -17,11 +17,9 @@
 //    hands an AGENT's text to this same path.
 //  - The frame is written only when the app REQUESTED bracketed paste. Writing markers at an app
 //    that never asked puts literal `[200~` in its input.
-//  - The Enter is its OWN write, after the close marker — not appended inside the framed burst.
-//    This is where the tmux leg moved after #453: a paste-aware composer cannot re-chunk a key
-//    event that arrives after a definitive close marker, while the "Enter inside the same write"
-//    shape the older comment described is the one that was mangled. Unframed, the Enter stays
-//    inside the single write, which is byte-identical to what this path did before.
+//  - The Enter is a separate write. This byte plan alone is NOT a timing guarantee: ConPTY
+//    can coalesce adjacent writes. `core/settled-text.ts` executes framed sendText with observed
+//    settlement before requesting the bare Enter. Unframed input retains its single write.
 //  - An empty payload with `enter` is a bare Enter — `sendText('', { enter: true })` is a live
 //    call meaning "submit whatever is composed" (`Canvas.tsx`'s write verb, `settled-envelope.ts`).
 //

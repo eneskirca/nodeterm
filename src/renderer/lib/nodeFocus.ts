@@ -1,6 +1,7 @@
 import { getViewportForBounds, type Rect, type Viewport } from '@xyflow/system'
 
-import { NO_INSETS, type ScreenInsets } from './pinnedInsets'
+import { NO_INSETS, type RectLike, type ScreenInsets } from './pinnedInsets'
+import { measureMaximizeInsets } from './maximizeInsets'
 
 /**
  * "Zoom to this node" geometry, computed without React Flow's `fitView`.
@@ -152,23 +153,26 @@ export function viewportForRect(
   const freeWidth = containerWidth - insets.left - insets.right
   const originX = freeWidth > 0 ? insets.left : 0
   const width = freeWidth > 0 ? freeWidth : containerWidth
+  const freeHeight = containerHeight - (insets.top ?? 0) - (insets.bottom ?? 0)
+  const originY = freeHeight > 0 ? (insets.top ?? 0) : 0
+  const height = freeHeight > 0 ? freeHeight : containerHeight
   if (zoom !== undefined) {
     if (!(zoom > 0)) return null
     return {
       x: originX + width / 2 - (rect.x + rect.width / 2) * zoom,
-      y: containerHeight / 2 - (rect.y + rect.height / 2) * zoom,
+      y: originY + height / 2 - (rect.y + rect.height / 2) * zoom,
       zoom
     }
   }
   const fitted = getViewportForBounds(
     rect,
     width,
-    containerHeight,
+    height,
     FIT_NODE_OPTIONS.minZoom,
     FIT_NODE_OPTIONS.maxZoom,
     FIT_NODE_OPTIONS.padding
   )
-  return originX ? { ...fitted, x: fitted.x + originX } : fitted
+  return { ...fitted, x: fitted.x + originX, y: fitted.y + originY }
 }
 
 /** Whether React Flow already knows this node's on-screen size — i.e. whether `fitView` will
@@ -178,4 +182,16 @@ export function isMeasured(
   node: { measured?: { width?: number | null; height?: number | null } } | null | undefined
 ): boolean {
   return !!(numeric(node?.measured?.width) && numeric(node?.measured?.height))
+}
+
+/** Shared Canvas focus policy: only maximized nodes use their placement's chrome reservations.
+ * Ordinary/restored nodes stay centred in the whole pane, without measuring overlay geometry. */
+export function viewportForNodeFocus(
+  node: { data?: { premaxRect?: unknown } },
+  rect: Rect,
+  box: RectLike & { width: number; height: number },
+  zoom?: number
+): Viewport | null {
+  const insets = isMaximized(node) ? measureMaximizeInsets(box) : NO_INSETS
+  return viewportForRect(rect, box.width, box.height, zoom, insets)
 }

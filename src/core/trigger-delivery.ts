@@ -1,3 +1,5 @@
+import { TEXT_NOT_SUBMITTED } from '../shared/text-delivery'
+import type { TextDeliveryResult } from '../shared/text-delivery'
 /**
  * Trigger DELIVERY (issue #493, phase 3) — the real implementation behind the scheduler's `fire`
  * seam: put the armed payload into the target's pane, or say honestly why not.
@@ -37,7 +39,7 @@ import type { TriggerFireResult, TriggerRow, TriggerRun } from './trigger-schedu
 
 export interface TriggerDeliveryDeps {
   /** `PtyManager.sendText` — the paste path; false = tmux unavailable / session doesn't exist. */
-  sendText(nodeId: string, text: string): Promise<boolean>
+  sendText(nodeId: string, text: string): Promise<TextDeliveryResult>
   /** `PtyManager.paneCommand` — null = no live session / unreadable, never evidence of a command. */
   paneCommand(nodeId: string): Promise<string | null>
   /** The mirror's live view of the target (`mirrorEntry`) — state undefined = unknown. */
@@ -99,7 +101,7 @@ export function createTriggerDelivery(deps: TriggerDeliveryDeps): TriggerDeliver
         return { act: 'missed', detail: `target pane is running '${pane}' — refusing to type into it` }
     }
     const sent = await deps.sendText(row.spec.target, row.spec.payload)
-    return sent ? { act: 'fired' } : { act: 'missed', detail: 'target session is not running' }
+    return sent === true ? { act: 'fired' } : { act: 'missed', detail: sent === 'pasted-not-submitted' ? TEXT_NOT_SUBMITTED : 'target session is not running' }
   }
 
   /**
@@ -125,6 +127,7 @@ export function createTriggerDelivery(deps: TriggerDeliveryDeps): TriggerDeliver
       // run recorded for the card comes from `onFlushed`, keyed on the kind alone.
       return { kind: 'delivered', traceId: randomUUID(), traced: 'memory', receipt: 'observed', signal: 'newTurn' }
     if (a.act === 'queue') return { kind: 'targetBusy', state: a.reason } // requeued, TTL keeps counting
+    if (a.detail === TEXT_NOT_SUBMITTED) return { kind: 'stalled', traceId: randomUUID(), traced: 'memory', waitedMs: 0 }
     return { kind: 'targetGone' } // terminal miss — the target left while the payload waited
   }
 
@@ -139,6 +142,8 @@ export function createTriggerDelivery(deps: TriggerDeliveryDeps): TriggerDeliver
       const run: TriggerRun =
         outcome.kind === 'delivered'
           ? { at: now(), outcome: 'delivered-late' }
+          : outcome.kind === 'stalled'
+            ? { at: now(), outcome: 'missed', detail: TEXT_NOT_SUBMITTED }
           : outcome.kind === 'notPermitted'
             ? { at: now(), outcome: 'missed', detail: 'disarmed or edited while queued — dropped' }
             : { at: now(), outcome: 'missed', detail: 'target went away while queued' }

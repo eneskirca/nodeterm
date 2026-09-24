@@ -182,7 +182,7 @@ export const DONE_BLOB = {
 
 // --- Codex pet spritesheet geometry (asset imported by the component) ----------------------
 
-/** pet-codex.webp layout: 8 cols × 9 rows of 192×208 frames; walk = the first row. */
+/** pet-codex.webp layout: 8 cols × 9 rows of 192×208 frames; first-row cycle = six populated frames, then two empty cells. */
 export const CODEX_MASCOT = {
   cols: 8,
   rows: 9,

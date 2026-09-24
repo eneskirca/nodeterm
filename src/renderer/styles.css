@@ -305,10 +305,12 @@ body,
   pointer-events: none;
 }
 
-/* Interactive elements inside the bar must not drag the window. */
-.tabbar button,
-.tabbar input,
-.tab,
+/* Only the stationary strip viewport excludes window dragging. Electron includes explicit
+   no-drag rectangles from scrolled-out descendants without clipping them to the viewport
+   (issue #847), so tab/button/input rectangles would cover the wordmark after scrolling.
+   Children need no region of their own: the viewport already keeps them interactive. */
+.tabbar button:not(.tabbar__tabs *),
+.tabbar input:not(.tabbar__tabs *),
 .tabbar__tabs {
   -webkit-app-region: no-drag;
 }
@@ -1974,20 +1976,20 @@ body,
   }
 }
 
-/* Codex: pet-codex.webp first row, 8-frame walk at ~8fps ⇒ 0.96s/cycle. Only the first row is
-   shown (background-position-y stays 0); steps(8) walks left one frame at a time. */
+/* Codex: the first row has six populated frames and two empty cells. Keep 120ms per frame
+   and loop before the empty cells; the sheet itself remains eight columns wide. */
 .term-node__mascot--codex {
   width: var(--cmascot-w);
   height: var(--cmascot-h);
   background-position: 0 0;
   background-size: var(--cmascot-sheet-w) var(--cmascot-sheet-h);
-  animation: mascot-walk-codex 0.96s steps(8) infinite;
+  animation: mascot-walk-codex 0.72s steps(6) infinite;
   animation-play-state: var(--nt-anim-state);
 }
 
 @keyframes mascot-walk-codex {
   to {
-    background-position-x: calc(var(--cmascot-w) * -8);
+    background-position-x: calc(var(--cmascot-w) * -6);
   }
 }
 
@@ -2515,18 +2517,14 @@ body,
 .term-node__xterm {
   position: absolute;
   inset: 0;
-  /* The BOTTOM inset is the one that has to be deliberate. FitAddon derives rows from this host's
-   * CONTENT height, so the space under the last line is `padding-bottom + fit slack` — and the
-   * slack swings between 0 and a full cell as the node is resized, which leaves padding-bottom as
-   * the only GUARANTEED gap there is. At 2px that guarantee sat under the selection ring, so a
-   * selected node's last line read as CLIPPED (reported 2026-08-05, with the ring drawn through
-   * the text). 6px matches the left inset and stays under the 8px the same terminal gets on the
-   * board (`.kanban-modal__termwrap`).
-   *
-   * Do NOT unify this with the modal by moving padding onto ITS host: that one is a flex item and
-   * padding there was measured to cost a whole row (see `.kanban-modal__term`). This host is
-   * `position: absolute; inset: 0` and has carried vertical padding all along without losing one.
-   * Two elements, two measured behaviours — re-measure before merging them. */
+  /* FitAddon reads the host's computed height/width and only subtracts padding on the
+   * xterm child. With the global border-box rule it counts this host's padding as cells,
+   * allowing the last row to extend under the node's clip (#671). For this auto-sized,
+   * absolutely inset host, content-box keeps the same outer rect while exposing the actual
+   * content dimensions to FitAddon. Keep the padding here: wheel hit testing and the shared
+   * glyph renderer's plate both use the host's full body-sized rect.
+   * The modal already puts its inset on a separate wrapper, outside its fit host. */
+  box-sizing: content-box;
   padding: 4px 2px 6px 6px;
 }
 
@@ -3560,11 +3558,23 @@ body,
   left: auto;
   right: calc(100% - 4px);
 }
+/* A flyout that holds submenu rows of its own must not scroll: `overflow-y: auto` would clip
+   the nested (absolutely positioned) flyout to nothing. Only short action lists host submenus;
+   long data lists (models, accounts) are leaves and keep the scroll cap above. */
+.ctx-submenu--host {
+  overflow: visible;
+  max-height: none;
+}
 .ctx-submenu .ctx-item {
   /* Keep the label and its default ✓ on one line (labels ellipsize past max-width). */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* …except a submenu row inside a flyout: its own flyout is an absolutely positioned CHILD of the
+   row, and `overflow: hidden` would clip it away entirely. */
+.ctx-submenu .ctx-item--submenu {
+  overflow: visible;
 }
 
 .ctx-sep {
@@ -3631,6 +3641,9 @@ body,
 .editor-node__monaco {
   position: absolute;
   inset: 0;
+  /* Keep Monaco's internal layers below the sibling markdown preview without unmounting
+     the editor (and losing its selection, scroll position or undo history). */
+  isolation: isolate;
 }
 
 .editor-node__toggle {
@@ -6048,6 +6061,13 @@ body,
   font-size: 13px;
 }
 
+.shortcuts__note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .shortcut-label {
   color: var(--text);
 }
@@ -6825,7 +6845,9 @@ button.group-node__setup:disabled {
 }
 
 /* ---- Minimap ---- */
-.minimap {
+.react-flow__minimap.minimap {
+  /* Monaco also mounts a .minimap even when disabled. Styling that zero-width element
+     adds a vertical border through the editor and, without isolation, its preview (#834). */
   /* React Flow places its panels with a 15px margin; the app's overlays all sit one --float-gap
      from their edge, and the minimap and the controls are the two the library positions. */
   margin: var(--float-gap) !important;
@@ -6904,6 +6926,7 @@ button.group-node__setup:disabled {
    The left offset clears the controls column, which shares this corner: --controls-w plus the 12px
    the other chrome already uses between two adjacent clusters (see .resume-card). */
 .canvas-pills {
+  width: max-content;
   position: absolute;
   left: calc(var(--float-gap) + var(--controls-w) + 12px);
   bottom: var(--float-gap);
@@ -7017,6 +7040,19 @@ button.group-node__setup:disabled {
   align-items: center;
   gap: 4px;
 }
+/* Only summary text may overflow: refresh and the usage opener remain reachable. Never clip
+   the indicator/row itself, since the popover must escape it. */
+.canvas-pills > .sysres-indicator { flex: 0 0 auto; }
+.usage-indicator { min-width: 0; }
+.usage-pill { min-width: 0; }
+.usage-pill__icon, .usage-refresh { flex: 0 0 auto; }
+.usage-pill__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-pill__summary > span + span { margin-left: 6px; }
 /* While the popover is open, rise above the sessions sidebar (z-index 12) — a tall sidebar
    reaches the bottom-left corner and would cover the panel. Closed pill keeps its low layer so
    it never draws over the sidebar itself.
@@ -7286,6 +7322,16 @@ button.group-node__setup:disabled {
 .usage-account__use:hover {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* The bulk "Move N sessions" control: the picked targets wrap onto their own line under the label. */
+.usage-account__move-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  margin-top: 3px;
+}
+.usage-account__move-targets .usage-account__use {
+  margin-left: 0;
 }
 
 /* Popover-footer action (issue #420): opens the system-scoped `claude /login` terminal. A quiet
@@ -7587,6 +7633,11 @@ button.group-node__setup:disabled {
 .ctx-popover__meta { margin-top: 8px; font-size: 12px; }
 .ctx-popover__sub { margin-top: 4px; font-size: 11px; color: rgba(var(--tint-rgb), 0.5); }
 .usage-account__email { font-size: 13px; }
+.usage-account__organization {
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.65);
+  overflow-wrap: anywhere;
+}
 
 .seg-pill {
   display: inline-flex;
@@ -8409,6 +8460,47 @@ button.group-node__setup:disabled {
 .browser-node__btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+.webview-zoom {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--border, #333);
+  border-radius: 5px;
+}
+.webview-zoom__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.webview-zoom__button:hover:not(:disabled) {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text);
+}
+.webview-zoom__button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.webview-zoom__button svg {
+  width: 13px;
+  height: 13px;
+}
+.webview-zoom__reset {
+  width: auto;
+  min-width: 34px;
+  padding: 0 3px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
 }
 .browser-node__address {
   flex: 1;
@@ -12284,6 +12376,72 @@ button.group-node__setup:disabled {
   50% { transform: rotate(8deg) scale(1.07); }
 }
 
+/* -- shortcuts scene: the palette chord goes down (~5%), the palette drops open under it and the
+   query types in on the shared 8s timeline (onb-type) -- */
+.onb-palette {
+  width: 250px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--surface-deep);
+  border: 1px solid var(--border);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: onb-palette-drop 8s ease infinite;
+  animation-play-state: var(--nt-anim-state);
+}
+.onb-palette__input {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  margin-bottom: 4px;
+  border-radius: 7px;
+  background: rgba(var(--tint-rgb), 0.06);
+  font-size: 12.5px;
+}
+.onb-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+.onb-palette__row .onb-mini__bar {
+  flex: 1;
+}
+.onb-palette__row.is-hl {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+@keyframes onb-palette-drop {
+  0%, 6% { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  12%, 94% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: none; }
+}
+
+/* ---- shortcuts step: the essentials list ---- */
+.onb-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.onb-keys__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.8);
+}
+.onb-keys__chord {
+  display: inline-flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
 /* ---- reduced motion: freeze every scene to a readable final frame ---- */
 @media (prefers-reduced-motion: reduce) {
   .onb-ghost,
@@ -12295,7 +12453,8 @@ button.group-node__setup:disabled {
   .onb-wave span,
   .onb-caret,
   .onb-bell,
-  .onb-notif {
+  .onb-notif,
+  .onb-palette {
     animation: none;
   }
   .onb-menu {

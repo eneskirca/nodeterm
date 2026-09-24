@@ -40,8 +40,33 @@ export function submenuSide(input: {
   return roomLeft > roomRight ? 'left' : 'right'
 }
 
+/** The flyout's resting offset above its row's top edge (the CSS `top: -6px`). */
+export const SUBMENU_TOP_PX = -6
+
 /**
- * Measure an open submenu flyout and answer which side it should open towards.
+ * How far to lift a flyout so its bottom stays inside the viewport. The side flip only fixes the
+ * horizontal axis; a flyout opened from a row near the bottom (typically a nested one — a model
+ * list three levels down) otherwise runs off-screen. Never lifts it above the top margin: a flyout
+ * taller than the viewport is capped by its own `max-height` and scrolls instead. Pure.
+ */
+export function submenuLift(input: {
+  /** The submenu ROW's viewport top. */
+  rowTop: number
+  /** Measured flyout height. */
+  height: number
+  viewportHeight: number
+  margin?: number
+}): number {
+  const margin = input.margin ?? M
+  const top = input.rowTop + SUBMENU_TOP_PX
+  const overflow = top + input.height - (input.viewportHeight - margin)
+  if (overflow <= 0) return 0
+  return Math.max(0, Math.min(overflow, top - margin))
+}
+
+/**
+ * Measure an open submenu flyout and answer which side it should open towards, and how far to
+ * lift it so it stays on screen vertically.
  *
  * Measured after render but BEFORE paint (`useLayoutEffect`), so a flyout never appears on the
  * wrong side first and jumps. Re-measured on size changes for the same reason `useMenuFlip` is: a
@@ -50,9 +75,14 @@ export function submenuSide(input: {
  * The rect read is the flyout's OFFSET PARENT — the submenu row — because the flyout's own rect
  * already carries the side we are deciding.
  */
-export function useSubmenuFlip(): { ref: RefObject<HTMLDivElement>; side: SubmenuSide } {
+export function useSubmenuFlip(): {
+  ref: RefObject<HTMLDivElement>
+  side: SubmenuSide
+  lift: number
+} {
   const ref = useRef<HTMLDivElement>(null)
   const [side, setSide] = useState<SubmenuSide>('right')
+  const [lift, setLift] = useState(0)
   useLayoutEffect(() => {
     const el = ref.current
     const row = el?.offsetParent as HTMLElement | null
@@ -66,11 +96,17 @@ export function useSubmenuFlip(): { ref: RefObject<HTMLDivElement>; side: Submen
         viewportWidth: window.innerWidth
       })
       setSide((cur) => (cur === next ? cur : next))
+      const up = submenuLift({
+        rowTop: r.top,
+        height: el.offsetHeight,
+        viewportHeight: window.innerHeight
+      })
+      setLift((cur) => (cur === up ? cur : up))
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  return { ref, side }
+  return { ref, side, lift }
 }

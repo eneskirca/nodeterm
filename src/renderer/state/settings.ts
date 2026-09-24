@@ -7,6 +7,8 @@ interface SettingsState {
   hydrated: boolean
   hydrate(): Promise<void>
   update(patch: Partial<Settings>): void
+  /** Publish current settings before an operation whose core-side decision depends on them. */
+  flush(): Promise<void>
 }
 
 // Coalesce disk writes: the settings inputs fire update() per keystroke/step-click, and each
@@ -40,6 +42,15 @@ if (typeof window !== 'undefined') {
 export const useSettings = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   hydrated: false,
+
+  async flush() {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    pendingSave = null
+    // Always send the current snapshot, even if the timer already dispatched an older save.
+    // Core's FIFO writer makes this acknowledgement a barrier for that earlier write too.
+    await window.nodeTerminal.settings.save(get().settings)
+  },
 
   async hydrate() {
     const s = await window.nodeTerminal.settings.load()

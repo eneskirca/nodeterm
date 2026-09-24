@@ -152,6 +152,16 @@ export class HostSession {
    * from the prior epoch can then observe cancellation instead of resurrecting a ghost socket. */
   private readonly attachmentEpochs = new WeakMap<Socket, number>()
   private appliedGeometry: Geometry
+  /** Told every time the pty is actually resized — the host pushes it to the connections that
+   *  negotiated the `geometry` feature, so each viewer can render the size the pty really has
+   *  instead of the one it asked for (issue #914). Called inside the emulator tail, after both
+   *  actuators succeeded; it must not throw back into it. */
+  onGeometryApplied?: (geometry: Geometry) => void
+
+  /** The size the pty runs at right now. */
+  get geometry(): Geometry {
+    return { ...this.appliedGeometry }
+  }
   /** Consecutive callers asking for the same effective target share one acknowledgement. If that
    * actuator attempt fails, every waiter sees the failure; a later exact retry starts a new one. */
   private pendingGeometry: { key: string; promise: Promise<void> } | null = null
@@ -285,6 +295,13 @@ export class HostSession {
   async bracketedPasteRequested(): Promise<boolean> {
     await this.outputTail
     return this.term.bracketedPasteRequested()
+  }
+
+  /** Agent messaging's stricter form of the same read: the pane must also still be alive and not
+   * inside a private launch, because the envelope is only ever written as a framed paste. */
+  async messagePasteReady(): Promise<boolean> {
+    await this.outputTail
+    return !this.exited && !this.suppressingPrivateLaunchOutput && this.term.bracketedPasteRequested()
   }
 
   /** Stage an attach's explicit flow state and per-socket geometry before the warm screen barrier.
@@ -692,6 +709,11 @@ export class HostSession {
       this.proc.resize(target.cols, target.rows)
       this.term.resize(target.cols, target.rows)
       this.appliedGeometry = target
+      try {
+        this.onGeometryApplied?.({ ...target })
+      } catch {
+        // A notification failure must not turn a successful resize into a failed one.
+      }
     })
     const pending = { key, promise: reconciled }
     this.pendingGeometry = pending

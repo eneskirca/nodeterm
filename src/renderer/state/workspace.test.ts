@@ -867,14 +867,14 @@ describe('pendingLaunch round-trip', () => {
     })
   })
 
-  it('stays undefined for an ordinary node', () => {
+  it('retains an ordinary node’s never-attempted command', () => {
     const node = {
       id: 'term-4', type: 'terminal', position: { x: 0, y: 0 }, width: 1, height: 1,
       data: { title: 'T', color: '#888', group: null, initialCommand: 'claude' }
     } as unknown as CanvasNode
     const states = flowToNodeStates([node])
-    expect(states[0].pendingLaunch).toBeUndefined()
-    // initialCommand is still not persisted — arming is what makes a launch durable.
+    expect(states[0].pendingLaunch).toEqual({ after: [], command: 'claude', attempted: false })
+    // The command is persisted as recoverable intent, never as a second initialCommand.
     expect((states[0] as { initialCommand?: string }).initialCommand).toBeUndefined()
   })
 })
@@ -936,6 +936,16 @@ describe('createCodexAccountLoginNode', () => {
       '/work/repo'
     )
     expect(createCodexAccountLoginNode('acct-2', 0).data.cwd).toBeUndefined()
+  })
+
+  it('logs a REMOTE account in on its host with the device flow (the browser callback cannot reach it)', () => {
+    const ssh = { server: { host: 'h', user: 'u' }, remoteCwd: '/srv/app' } as never
+    const node = createCodexAccountLoginNode('acct-2', 0, undefined, '/local/repo', ssh)
+    expect(node.data.initialCommand).toBe('codex login --device-auth')
+    expect(node.data.accountId).toBe('acct-2')
+    expect(node.data.ssh).toBeTruthy()
+    expect(node.data.cwd).toBe('/srv/app')
+    expect(createCodexAccountLoginNode('acct-2', 0).data.initialCommand).toBe('codex login')
   })
 })
 

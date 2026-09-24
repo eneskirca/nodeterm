@@ -292,6 +292,16 @@ These are the defaults — every one of them is remappable in **Settings → Key
 | `⌘,` | Settings · `⌘/` Shortcuts |
 | `Right-click` | Actions menu (empty space or node) |
 
+**Pasting screenshots on macOS:** in a terminal, **Cmd+V** saves the image and pastes its
+file path. **Ctrl+V** sends a control key to the foreground program. A local agent with
+clipboard-image support, such as Claude Code, may attach the image directly at its input
+prompt; shells and editors give that key other meanings. nodeterm does not detect this
+capability or retry with the other route. Use Cmd+V for SSH sessions: the image is uploaded
+and its remote path is pasted. In Server Edition, image paste uploads to the terminal host
+and depends on browser clipboard access; Ctrl+V does not transfer the browser's clipboard
+to the host. This distinction also appears in **Keyboard shortcuts → Pasting screenshots
+on macOS** and applies to both canvas and kanban terminals.
+
 ## 🏗 Architecture
 
 - **Electron, three contexts** — `src/main` (the Electron shell), `src/preload` (the only

@@ -21,7 +21,7 @@ import {
   type MirrorFile
 } from '../core/agent-status-mirror'
 import type { NormalizedAgentEvent } from '../shared/agents/normalize'
-import { createHudModel, type HudModel } from './notch-hud-model'
+import { createHudModel, type HudModel, type HudContextUpdate } from './notch-hud-model'
 import { hudGeometry, hudPlacement, type HudGeometry } from './notch-hud-geometry'
 import {
   sanitizeNotchAlign,
@@ -201,7 +201,7 @@ class NotchHudController {
   }
 
   /** Feed a context-update {sessionId, model, usedPercent} (the model name). */
-  onContextUpdate(p: { sessionId?: string; model?: string; usedPercent?: number }): void {
+  onContextUpdate(p: HudContextUpdate): void {
     this.onModelChange(() => this.model.applyContextUpdate(p))
   }
 
@@ -446,10 +446,6 @@ export function destroyNotchHud(): void {
 export function notchHudOnAgentEvent(ev: NormalizedAgentEvent): void {
   controller?.onAgentEvent(ev)
 }
-export function notchHudOnContextUpdate(p: {
-  sessionId?: string
-  model?: string
-  usedPercent?: number
-}): void {
+export function notchHudOnContextUpdate(p: HudContextUpdate): void {
   controller?.onContextUpdate(p)
 }

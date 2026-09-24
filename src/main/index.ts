@@ -1,3 +1,7 @@
+import { createRemoteContextEnsure } from '../core/remote-context-ensure'
+import { isKnownRemoteCodexAccount } from '../core/remote-ssh/codex-home'
+import { createRemoteCodexContext } from '../core/remote-ssh/codex-context'
+import { subagentReplay } from '../core/subagent-replay'
 import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/grok-paths'
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -18,6 +22,7 @@ installLogSink(logBuffer)
 import { writeFilesToClipboard } from './clipboard-files'
 import { pickProjectIcon } from './project-icon-upload'
 import { allowGuestNavigation } from './webview-nav'
+import { installWebviewZoom } from './webview-zoom'
 import { hostOsFromPlatform, sshServerCopy } from '../shared/ssh-server'
 import { macTitleBarOptions, trafficLightPositionFor } from './window-chrome'
 import { resolveTabBarHeight } from '@shared/window-chrome-metrics'
@@ -76,6 +81,7 @@ import type { TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
 import { PtyManager } from '../core/pty-manager'
 import { WorkspaceStore } from '../core/workspace-store'
+import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
 import { SettingsStore } from '../core/settings-store'
 import { registerAgentEnvIpc } from '../core/agent-env-ipc'
@@ -158,6 +164,8 @@ import {
   onMirrorFlush,
   flush as flushAgentStatusMirror,
   recordAgentEvent,
+  recordQuestionResult,
+  ignoreQuestionHook,
   ackDone,
   recordRawToolEvent,
   recordContextUsage,
@@ -200,7 +208,7 @@ import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
-import { codexContextParse } from '../core/codex-session'
+import { codexContextParse, codexContextModel } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
 import { codexHome } from '../core/usage/codex-usage'
 import { isAsyncSubagentLaunch, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
@@ -247,6 +255,7 @@ import {
   trackWindowState,
   writeWindowState
 } from './window-state'
+import { remoteCodexUsageTargets } from '../core/usage/remote-codex-usage'
 import { remoteUsageTargets } from '../core/usage/remote-claude-usage'
 import { initLicense, isPremium, getStoredEntitlement } from '../core/license'
 import { WhisperModelStore } from '../core/speech/whisper-models'
@@ -292,7 +301,7 @@ import { initStandingHost } from './remote/standing-host'
 import { killRelayHostsByPeerKey } from './remote/relay-host'
 import { initRelayHost } from './remote/relay-host-service'
 import { createRevoker } from './remote/revocation'
-import { loadApprovedDevices, saveApprovedDevices } from './remote/approved-devices'
+import { loadApprovedDevices, saveApprovedDevices, updateApprovedDevices } from './remote/approved-devices'
 import { publicKeyToB64 } from './remote/e2ee'
 import { connectRelayClient, type RelayClientSession } from './remote/relay-client'
 import { decodeOffer } from './remote/pairing'
@@ -1260,6 +1269,7 @@ app.whenReady().then(async () => {
         /* logging must never break a page */
       }
     })
+    installWebviewZoom(contents, process.platform === 'darwin')
     if (contents.getType() !== 'webview') return
     // Web nodes may only show http(s) pages, jailed nt-media:// content, or origin-gated
     // local file:// pages (policy + tests in webview-nav.ts).
@@ -1674,6 +1684,7 @@ app.whenReady().then(async () => {
   const peerRevoker = createRevoker({
     load: loadApprovedDevices,
     save: saveApprovedDevices,
+    update: updateApprovedDevices,
     onRevoke: (peerKeyB64) => killRelayHostsByPeerKey(peerKeyB64)
   })
   ipcMain.handle(IPC.remoteRevokePeer, (_e, peerKeyB64: string) =>
@@ -1809,8 +1820,10 @@ app.whenReady().then(async () => {
   // src/core/agents/agent-messaging.ts for the whole map.
   const messagingDeps: AgentMessagingDeps = {
     paneOwner: (id) => ptyManager.paneOwner(id),
-    sendEnvelope: (id, envelope) => ptyManager.sendEnvelope(id, envelope),
-    hasLiveSession: (id) => ptyManager.hasLiveSession(id),
+    sendEnvelope: (id, envelope, expected) => ptyManager.sendEnvelope(id, envelope, expected),
+    envelopePasteReady: (id) => ptyManager.envelopePasteReady(id),
+    // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
+    hasLiveSession: (id) => ptyManager.sessionExists(id),
     projects: () => workspaceStore.persistedCanvases(),
     isRemoteNode: (id) => !!ptyManager.sshRemoteForNode(id),
     // GLOBAL CONSTRAINT 11: every delivery path is gated behind the per-project switch. The switch
@@ -1866,7 +1879,7 @@ app.whenReady().then(async () => {
   // hook POST dies against a dead port with zero symptoms beyond "statuses stay idle". The
   // listeners (setListener/setRawListener/setControlHandler) attach later, which the server
   // tolerates — early hook POSTs are simply dropped, never mis-routed.
-  await hookServer.start()
+  const hookStartupWarning = await hookServer.startForApp()
   // ---- Node identity (src/core/agents/node-auth-secret.ts) ------------------------------------
   // One secret does two jobs: it arms the hook server's per-node capability (closing the "shared
   // bearer can name any sibling node" hole) and it signs the codex thread → node records the hook
@@ -1943,6 +1956,10 @@ app.whenReady().then(async () => {
     return undefined
   })
   const win = createWindow()
+  if (hookStartupWarning) {
+    console.error('[agent-hooks]', hookStartupWarning)
+    void dialog.showMessageBox(win, { type: 'warning', title: 'Agent hooks unavailable', message: hookStartupWarning })
+  }
   // NT_MULTI instances are throwaway dev sandboxes. The dock badge is the one marker that is
   // always visible on macOS (the window title is hidden by titleBarStyle: 'hiddenInset', and the
   // dev dock icon/name are Electron's own), so a test instance can never be mistaken for the
@@ -2324,24 +2341,15 @@ app.whenReady().then(async () => {
    * A tool RESULT landed in a tracked transcript. Only interesting while the node is still in
    * needs-you: an `AskUserQuestion` the user declined with Esc fires no PostToolUse and no Stop, so
    * nothing ever moved the node off NEEDS YOU — badge, notch capsule and phone card all stuck until
-   * the next prompt. The result proves the ask settled; `working` is the honest next state (Claude
+   * the next prompt. A matching session + tool-use ID proves the ask settled; `working` is the honest next state (Claude
    * carries on with "User declined to answer questions"), and any real event corrects it anyway.
    */
-  const onToolResult = (sessionId: string): void => {
+  const onToolResult = (sessionId: string, toolUseId: string): void => {
     let nodeId: string | undefined
     for (const [nid, sid] of nodeContextSession) if (sid === sessionId) nodeId = nid
     if (!nodeId) return
-    const st = nodeState(nodeId)
-    if (st !== 'blocked' && st !== 'waiting') return
-    const ev = {
-      nodeId,
-      agentId: 'claude',
-      sessionId,
-      kind: 'state',
-      state: 'working'
-    } satisfies NormalizedAgentEvent
-    sendToMain(IPC.agentStatus, ev)
-    recordAgentEvent(ev)
+    const ev = recordQuestionResult(nodeId, sessionId, toolUseId)
+    if (ev) sendToMain(IPC.agentStatus, ev)
   }
   const onTaskNotification = (sessionId: string, n: TaskNotification): void => {
     let nodeId: string | undefined
@@ -2366,12 +2374,12 @@ app.whenReady().then(async () => {
   const pushContextUpdate = (payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(IPC.contextUpdate, payload)
     // Feed the macOS Notch HUD the model name (keyed by sessionId; no-op off/non-darwin).
-    notchHudOnContextUpdate(payload as { sessionId?: string; model?: string; usedPercent?: number })
+    notchHudOnContextUpdate(payload as Parameters<typeof notchHudOnContextUpdate>[0])
     // Feed the mirror's per-node context ring (mobile-usage-inbox). The context tail keys by
     // sessionId; map it back to the node via the raw-listener's nodeId↔sessionId association.
-    const cw = payload as { sessionId?: string; usedPercent?: number }
+    const cw = payload as { nodeId?: string; sessionId?: string; usedPercent?: number }
     for (const [nid, sid] of nodeContextSession) {
-      if (sid === cw.sessionId && typeof cw.usedPercent === 'number') {
+      if ((cw.nodeId ? nid === cw.nodeId : sid === cw.sessionId) && typeof cw.usedPercent === 'number') {
         recordContextUsage(nid, cw.usedPercent)
         break
       }
@@ -2409,6 +2417,36 @@ app.whenReady().then(async () => {
     sshProjectManager ? sshProjectManager.sshRun(args) : Promise.resolve({ code: 1, stdout: '' })
   )
   const remoteContextTail = createRemoteContextTail(win, remoteFile, { onTaskNotification, onToolResult })
+  const remoteCodexContextTail = createRemoteContextTail((usage) => {
+    const scoped = remoteCodexContext.publish(usage)
+    if (scoped) pushContextUpdate(scoped)
+  }, remoteFile, { parse: codexContextParse, parseModel: codexContextModel })
+  // Persisted SSH ownership remains remote while the master is down or before PTY co-attach.
+  const remoteCodexContext = createRemoteCodexContext({
+    targetFor: (nodeId) => {
+      const projectId = workspaceStore.sshProjectIdForNode(nodeId)
+      const live = ptyManager.sshRemoteForNode(nodeId)
+      if (!projectId && !live) return undefined
+      const rt = live ?? (projectId ? sshProjectManager?.refForProject(projectId) : undefined)
+      const node = workspaceStore.getNode(nodeId)
+      if (!rt || !node) return null
+      return { conn: rt.conn, controlPath: rt.controlPath,
+        remoteHome: sshProjectManager?.remoteHomeForControlPath(rt.controlPath), accountId: node.accountId,
+        connectionKey: sshProjectManager?.connectionKeyForControlPath(rt.controlPath) }
+    },
+    knownAccount: (id, target) => isKnownRemoteCodexAccount(
+      settingsStore.get().codexAccounts ?? [], id, sshHostKey(target.conn)),
+    run: (target, command) => sshProjectManager
+      ? sshProjectManager.sshRun(childArgs(target.conn, target.controlPath, command))
+      : Promise.resolve({ code: 1, stdout: '' }),
+    tail: remoteCodexContextTail,
+    onTrack: (nodeId, sessionId) => { nodeContextSession.set(nodeId, sessionId) },
+    onClear: (nodeId, sessionId) => {
+      notchHudOnContextUpdate({ nodeId, sessionId, cleared: true })
+      if (!win.isDestroyed()) win.webContents.send(IPC.contextUpdate, { nodeId, sessionId, cleared: true,
+        usedTokens: 0, windowTokens: 0, usedPercent: 0, model: null, updatedAt: Date.now() })
+    }
+  })
   const remoteSubagentTail = createRemoteSubagentTail(win, remoteFile)
   // Remote transcript ref learned from the hook raw-listener, keyed by sessionId — lets the
   // search/chat read handlers (which receive only sessionId + cwd) read remotely without a
@@ -2633,6 +2671,7 @@ app.whenReady().then(async () => {
   // agent's tail, local or remote — lives in core so the Server Edition serves it too; this shell
   // supplies the one thing core cannot have, the remote leg (it needs a ControlMaster).
   registerContextEnsureIpc({
+    scopeKey: ({ nodeId }) => nodeId ? remoteCodexContext.scopeKey(nodeId) : undefined,
     // One tail per agent, matching the hook raw-listener's routing exactly. `undefined` is the
     // legacy call shape and stays on claude's tail. Grok is absent on purpose: its meter reads a
     // hook-derived `signals.json` path that no locator can reconstruct after a restart, so it has
@@ -2650,31 +2689,13 @@ app.whenReady().then(async () => {
           return undefined
       }
     },
-    ensureRemote: async ({ sessionId, cwd, accountId, nodeId, agentId }) => {
-      // Not an SSH-project node ⇒ `null`, and core takes its local path — the pre-existing
-      // behaviour for every local node, byte for byte.
-      if (!nodeId || !ptyManager.sshRemoteForNode(nodeId)) return null
-      // From here the session IS remote, so every answer below is terminal: core must never fall
-      // through to a local resolver for it.
-      //
-      // Remote metering is CLAUDE-only, the same boundary the hook raw-listener draws two hundred
-      // lines below ("Remote meters for these agents are out of scope"): `remote-context-tail.ts`
-      // parses claude's usage records, and `locateRemoteTranscriptCommand` searches claude's
-      // transcript roots. A remote codex/gemini node therefore gets no meter here — not a
-      // wrong-machine read, which is what falling through would produce.
-      if (agentId && agentId !== 'claude') return 'unresolved'
-      // Already tracked (a hook event landed, or an earlier mount resolved it) — nothing to ask.
-      if (remoteContextTail.pathFor(sessionId)) return 'tracked'
-      // Asks the HOST where the transcript is, jails the answer, and caches a HIT under the session
-      // id (shared with the ⌘M read path, which is the locator's first consumer). A clean miss and
-      // a failed ssh call both come back `undefined` and cache NOTHING — so a momentarily dead
-      // ControlMaster is never remembered as "this session has no transcript", and the next mount
-      // or hook event resolves it for real.
-      const ref = await remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
-      if (!ref) return 'unresolved'
-      remoteContextTail.track(sessionId, ref)
-      return 'tracked'
-    }
+    ensureRemote: createRemoteContextEnsure({
+      isRemoteNode: (nodeId) => !!ptyManager.sshRemoteForNode(nodeId) || !!workspaceStore.sshProjectIdForNode(nodeId),
+      codex: remoteCodexContext.ensure,
+      claude: remoteContextTail,
+      locateClaude: ({ sessionId, cwd, accountId, nodeId }) =>
+        remoteTranscriptRefFor(sessionId, cwd, accountId, nodeId)
+    })
   })
   // The remote half of a handoff. Same three-line shape as the context-link deps above and for
   // the same reason: reading (and here also WRITING) on an SSH project's host is the one thing
@@ -2770,6 +2791,7 @@ app.whenReady().then(async () => {
   // just-read node's latest state is `done`. The mirror resolves the node's done inbox event(s)
   // (phone Inbox archives the card) and re-sends an 'end' live-update so the paired phone dismisses
   // its lingering DONE Live Activity. Fire-and-forget; the mirror no-ops with no unresolved done.
+  corePlatform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
   corePlatform.handle(IPC.agentAckDone, (nodeId: string) => {
     ackDone(nodeId)
   })
@@ -2969,11 +2991,7 @@ app.whenReady().then(async () => {
     return isSafeRemoteTranscriptPath(abs, remoteHome) ? abs : undefined
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
-  // `meta` carries the per-node `verified` flag and is deliberately UNUSED here: A13 moved
-  // enforcement into the hook server, which refuses before a listener is ever called. This shell
-  // used to keep a `nodeVerified` map written on every event and read by nothing. The parameter
-  // stays because the flag is part of the listener contract and both shells must take it
-  // (invariant 4, pinned by hook-verified-parity.test.ts); a second copy of the answer is not.
+  // Hook server validates session-env capacity and caller identity once for both shells.
   hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
@@ -3087,15 +3105,11 @@ app.whenReady().then(async () => {
         hook_event_name?: string
         agent_id?: string
       }
-      // A REMOTE (SSH) node's transcript lives on the HOST, and these tails read the LOCAL disk —
-      // a host path like `~/.gemini/tmp/…` clears the local jail, so without this we would meter
-      // whatever same-named file happens to exist on THIS machine. Remote meters for these agents
-      // are out of scope (remote-context-tail.ts is that path), so skip rather than report the
-      // wrong machine's numbers. The Server Edition needs no counterpart: it has no SSH projects,
-      // which is why its copy of this branch is otherwise identical but lacks these two lines.
-      // (A remote codex node's subagent CARDS still work — normalize is machine-agnostic — it is
-      // only the live-activity tail that has no remote leg yet.)
-      if (nodeId && ptyManager.sshRemoteForNode(nodeId)) return
+      // Resolve on the owning host. Child rollouts cannot replace the parent's context.
+      if (nodeId && (ptyManager.sshRemoteForNode(nodeId) || workspaceStore.sshProjectIdForNode(nodeId))) {
+        if (agentId === 'codex') void remoteCodexContext.hook(nodeId, p)
+        return
+      }
       // Codex subagent events (spawn_agent), BEFORE the meter track: every agent_id-tagged event
       // carries the PARENT's session_id with the CHILD's rollout as transcript_path (measured,
       // codex-cli 0.146.0 — SubagentStart and the child's own tool events alike), so falling
@@ -3136,6 +3150,7 @@ app.whenReady().then(async () => {
     // Runs BEFORE the local/remote split so it covers remote (SSH) nodes too — it needs only
     // tool_name/tool_input, never the transcript path the split routes on.
     recordRawToolEvent(nodeId, payload)
+    if (ignoreQuestionHook(nodeId, payload)) return
     const p = payload as {
       hook_event_name?: string
       session_id?: string
@@ -3155,7 +3170,7 @@ app.whenReady().then(async () => {
       const transcriptPath = safeRemoteTranscriptPath(p.transcript_path, remoteHome)
       if (p.session_id && transcriptPath) {
         const ref: RemoteFileRef = { conn: rt.conn, controlPath: rt.controlPath, path: transcriptPath }
-        remoteContextTail.track(p.session_id, ref)
+        remoteContextTail.track(p.session_id, ref, _meta.contextWindow)
         remoteTranscriptBySession.set(p.session_id, ref)
       }
       if (nodeId && p.session_id) nodeContextSession.set(nodeId, p.session_id)
@@ -3211,7 +3226,7 @@ app.whenReady().then(async () => {
     }
     const transcriptPath = safeTranscriptPath(p.transcript_path)
     // Context-window meter: tail the session transcript (any event carrying both fields).
-    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath)
+    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath, _meta.contextWindow)
     if (nodeId && p.session_id) nodeContextSession.set(nodeId, p.session_id)
     if (nodeId && p.session_id && transcriptPath) setNodeTranscript(nodeId, p.session_id, transcriptPath)
     if (p.hook_event_name === 'SessionEnd' && p.session_id) contextTail.untrack(p.session_id)
@@ -3245,6 +3260,7 @@ app.whenReady().then(async () => {
   //    tails of the OLD session's transcript are just as dead; the respawned agent re-registers
   //    them under its new session id via the hook events).
   const releaseNodeTails = (nodeId: string): void => {
+    remoteCodexContext.release(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Untrack both tails — untracking a non-tracked session is a no-op, so this is safe
@@ -3830,15 +3846,22 @@ app.whenReady().then(async () => {
     // command and the parsing, main owns the ControlMaster. `sshProjectManager` is assigned just
     // below, so both closures read it lazily — they only ever run after a project has connected.
     remote: {
-      targets: () =>
-        remoteUsageTargets(
-          sshProjectManager?.connectedHosts() ?? [],
-          settingsStore.get().claudeAccounts ?? []
-        ),
+      targets: () => {
+        const connected = sshProjectManager?.connectedHosts() ?? []
+        return [...remoteUsageTargets(connected, settingsStore.get().claudeAccounts ?? []),
+          ...remoteCodexUsageTargets(connected.map(c => ({ ...c,
+            remoteHome: sshProjectManager?.remoteHomeFor(c.projectId),
+            connectionKey: sshProjectManager?.connectionKeyFor(c.projectId)
+          })), settingsStore.get().codexAccounts ?? [])]
+      },
       run: async (target, command) => {
         const mgr = sshProjectManager
         const ref = mgr?.refForProject(target.projectId)
         if (!mgr || !ref) return null
+        if (mgr.hostKeyFor(target.projectId) !== target.hostKey) return null
+        if (target.provider === 'codex' &&
+            (mgr.connectionKeyFor(target.projectId) !== target.connectionKey ||
+             mgr.remoteHomeFor(target.projectId) !== target.remoteHome)) return null
         try {
           const { stdout } = await mgr.sshRun(childArgs(ref.conn, ref.controlPath, command))
           // Deliberately not gated on the exit code: the remote script exits 0 on its own
@@ -3907,7 +3930,11 @@ app.whenReady().then(async () => {
     kanban: {
       ensureBoard: (projectId: string) => workspaceStore.ensureRemoteBoard(projectId),
       setCardColumn: (projectId: string, nodeId: string, columnId: string | null) =>
-        workspaceStore.setRemoteCardColumn(projectId, nodeId, columnId)
+        workspaceStore.setRemoteCardColumn(projectId, nodeId, columnId),
+      // The phone's long-press label sheet. Same store read-modify-write + renderer announce as the
+      // card move, so a label added on the phone lands on the canvas node and the kanban card live.
+      editCardLabels: (projectId: string, nodeId: string, edit: CardLabelEdit) =>
+        workspaceStore.editRemoteCardLabels(projectId, nodeId, edit)
     },
     // "End session" from the phone (`pty.destroy`): the SAME two steps the desktop × performs —
     // kill the tmux session on every socket it could live on (the sweep may have seen it on either

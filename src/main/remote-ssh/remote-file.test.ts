@@ -89,3 +89,14 @@ describe('RemoteFile.readFromCapped', () => {
     expect(Buffer.concat(chunks).toString('utf-8')).toBe('aé-tail\n')
   })
 })
+
+describe('RemoteFile.readContextWindow', () => {
+  it('propagates transport failure instead of returning an idle snapshot', async () => {
+    for (const run of [async () => ({ code: 1, stdout: '' }), async () => { throw new Error('offline') }]) {
+      await expect(new RemoteFile(run).readContextWindow(ref, 42, 1024)).rejects.toThrow()
+    }
+  })
+  it('rejects malformed responses instead of advancing the cursor', async () => {
+    await expect(new RemoteFile(async () => ({ code: 0, stdout: 'invalid' })).readContextWindow(ref, 42, 1024)).rejects.toThrow()
+  })
+})

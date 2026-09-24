@@ -1,3 +1,4 @@
+import { subagentReplay } from '../core/subagent-replay'
 import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -530,6 +531,7 @@ export async function startServer(
   // calls it when the just-read node's latest state is `done`. The mirror resolves the node's done
   // inbox event(s) + re-sends an 'end' live-update so the paired phone dismisses its lingering DONE
   // Live Activity. Fire-and-forget; no-op with no unresolved done.
+  platform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
   platform.handle(IPC.agentAckDone, (nodeId: string) => {
     ackDone(nodeId)
   })
@@ -616,7 +618,8 @@ export async function startServer(
     // this baseline hook pass stays unchanged when the feature flag is off.
     installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [])
   }
-  await hookServer.start()
+  const hookStartupWarning = await hookServer.startForApp()
+  if (hookStartupWarning) console.error('[nodeterm-server]', hookStartupWarning)
   // Safe default and rollback path. The opt-in runtime replaces this handler only after its
   // workspace-backed services are ready; a failed initialization therefore degrades to the same
   // named permanent refusal rather than a half-wired execution surface.

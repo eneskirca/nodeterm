@@ -123,12 +123,44 @@ export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
 
+/**
+ * How much longer a user-asked RESTART keeps watching after RESTART_EXIT_TIMEOUT_MS, as long as
+ * the pane can still be read (issue #899). The exit is irreversible and the resume is the only way
+ * back, so giving up at 6s on a CLI that is merely slow to quit is the worst outcome available: it
+ * DID quit a moment later, nothing was watching, and the node was left at a bare shell with no
+ * agent and no resume. Reported on a 19-hour cron session with a 28 MB transcript; a fresh claude
+ * quits in well under a second, so the base window stays short for the common case and only a CLI
+ * that is still visibly shutting down is waited on.
+ *
+ * Restart only. The Eco sweep and Pause keep the base window: the sweep is serialized across the
+ * canvas and must not stall on one node, and neither resumes into the pane afterwards.
+ */
+export const RESTART_LATE_EXIT_MS = 60_000
+
 /** How long the resume delivery may take before this restart stops waiting for it. The delivery's
  *  own retry chain is bounded (DELIVERY_ATTEMPTS × VERIFY_TIMEOUT_MS, then a fail-open submit), so
  *  the slack is only there to let the last attempt land. A backstop, not a policy: nothing in a
  *  restart may wait forever — the awaiting node is held un-restartable and, in a bulk run, every
  *  node after it is blocked and the summary the user is waiting for never arrives. */
 export const RESTART_DELIVERY_TIMEOUT_MS = DELIVERY_ATTEMPTS * VERIFY_TIMEOUT_MS + 1000
+
+/**
+ * The notice for an `'exit-timeout'` restart. It keeps the two facts the old sentence carried —
+ * the relaunch was not sent, and nothing was killed — and adds the one the user actually needs
+ * (issue #899): the CLI may still quit on its own a moment later, and with nothing watching any
+ * more, the pane is then a bare shell with no agent in it. So it hands over the exact resume line
+ * to type there. `resumeLine` is the BARE resume command (no permission mode, no launcher); a
+ * custom agent without one gets the sentence without the command rather than a guessed line.
+ */
+export function exitTimeoutNotice(action: string, resumeLine: string | null | undefined): string {
+  const waited = Math.round((RESTART_EXIT_TIMEOUT_MS + RESTART_LATE_EXIT_MS) / 1000)
+  const head =
+    `${action} failed: the pane did not return to a shell within ${waited}s, so the CLI was not ` +
+    'relaunched. Nothing was killed.'
+  return resumeLine
+    ? `${head} If the CLI has quit since, resume the conversation in that pane with: ${resumeLine}`
+    : `${head} Check the pane.`
+}
 
 /**
  * One bounded pane query. Unbounded, a wedged tmux server (or a relay whose IPC never answers)
@@ -193,6 +225,12 @@ export async function performExitPhase(d: {
   timeoutMs?: number
   pollMs?: number
   /**
+   * Extra time past `timeoutMs` to keep waiting for a CLI that has not let go of the pane yet
+   * (see RESTART_LATE_EXIT_MS). Only spent while the pane still READS: a pane we cannot see after
+   * the base window is given up on exactly as before. Absent = 0 = the base window alone.
+   */
+  lateExitMs?: number
+  /**
    * "Is the pane we are quitting still there?" — asked before the exit is written and on every
    * poll. A session can die under a restart (the node is deleted or respawned, or another client
    * destroys the tmux session), and there is then no pane left to fail in.
@@ -248,10 +286,15 @@ export async function performExitPhase(d: {
     d.io.write(exit + '\r')
   }
   const deadline = Date.now() + timeoutMs
+  // Equal to `deadline` when no late window was asked for, so every bound below is unchanged.
+  const lateDeadline = deadline + Math.max(0, d.lateExitMs ?? 0)
   let last: string | null = null
   for (;;) {
     await new Promise((r) => setTimeout(r, pollMs))
-    const pane = await queryPaneWithin(d.paneCommand, Math.max(0, deadline - Date.now()))
+    // Each query is bounded by the window it runs in: a query wedged inside the base window still
+    // lapses at `deadline` (and its null ends the run there), exactly as without a late window.
+    const until = Date.now() <= deadline ? deadline : lateDeadline
+    const pane = await queryPaneWithin(d.paneCommand, Math.max(0, until - Date.now()))
     if (gone()) return 'not-eligible' // stop polling a pane that no longer exists
     // Two ways to know the CLI let go of the pane. The allowlist is the confident one and is
     // taken immediately. The other — "the foreground command is no longer what it was before the
@@ -263,7 +306,10 @@ export async function performExitPhase(d: {
     if (isShellCommand(pane)) return 'exited'
     if (pane !== null && pane !== before && pane === last) return 'exited'
     last = pane
-    if (Date.now() > deadline) return 'exit-timeout'
+    // Past the base window, keep going only inside the late window and only while the pane is
+    // still readable — i.e. the CLI we asked to quit is visibly still there (or a changed reading
+    // is waiting for its confirming second poll). A pane we can no longer see is not "slow".
+    if (Date.now() >= deadline && (Date.now() > lateDeadline || pane === null)) return 'exit-timeout'
   }
 }
 
@@ -390,6 +436,8 @@ export async function performRestartResume(d: {
   command?: string
   timeoutMs?: number
   pollMs?: number
+  /** See `performExitPhase`; defaults to RESTART_LATE_EXIT_MS — this IS the user-asked restart. */
+  lateExitMs?: number
   /** Backstop for the resume delivery; see RESTART_DELIVERY_TIMEOUT_MS. */
   deliveryTimeoutMs?: number
   killLine?: string
@@ -410,6 +458,7 @@ export async function performRestartResume(d: {
     paneCommand: d.paneCommand,
     timeoutMs: d.timeoutMs,
     pollMs: d.pollMs,
+    lateExitMs: d.lateExitMs ?? RESTART_LATE_EXIT_MS,
     isLive: d.isLive
   })
   // `'exit-timeout'` / `'not-eligible'` mean the same things they always did, so they are the
@@ -491,7 +540,17 @@ export type AgentRestartFn = (
   // cold-restore auto-resume keeps the same conversation. Uses `clearEnvEligibility` (permits busy,
   // since `terminateForeground` is PID-safe — no `/exit` typed into a dialog) and recycles the same
   // way a model switch does, because tmux env changes do not retroactively change an existing shell.
-  clearEnv?: boolean
+  clearEnv?: boolean,
+  // Only with `restartShell`: runs AFTER the CLI has exited and BEFORE the pane is recycled — the
+  // one moment the conversation's transcript is final and nothing is writing it. The account switch
+  // copies the transcript into the target account here and rebinds the node, so the recycle's
+  // respawn launches under the new CLAUDE_CONFIG_DIR and its cold-restore `--resume` finds the SAME
+  // conversation. It cannot veto the recycle: the CLI is already gone, and the recycle + auto-resume
+  // is how the conversation comes back either way (on the old account when the step did nothing).
+  // The node-data patch it returns is merged into the SAME update as the respawn bump — a separate
+  // Canvas `setNodes` in the same tick races React Flow's `updateNodeData` queue, which rebuilds the
+  // node from the store's copy and can silently drop the rebind.
+  beforeRecycle?: () => Promise<Record<string, unknown> | void>
 ) => Promise<RestartOutcome>
 
 const restartFns = new Map<string, AgentRestartFn>()

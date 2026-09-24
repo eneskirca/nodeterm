@@ -18,10 +18,12 @@ export interface RectLike {
   bottom: number
 }
 
-/** Screen-px to keep clear on each horizontal edge of the canvas wrapper. */
+/** Screen-px to exclude before placement margins. Vertical edges are optional for side-only callers. */
 export interface ScreenInsets {
   left: number
   right: number
+  top?: number
+  bottom?: number
 }
 
 export const NO_INSETS: ScreenInsets = { left: 0, right: 0 }

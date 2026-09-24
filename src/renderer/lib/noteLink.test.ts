@@ -67,7 +67,21 @@ describe('planBridges', () => {
     expect(plan.edges).toEqual([])
     expect(plan.skipped).toEqual([
       { id: 'n1', why: 'same node' },
-      { id: 'ghost', why: 'no such node' }
+      { id: 'ghost', why: 'node not found in this project; cross-project linking is not supported' }
+    ])
+  })
+
+  it('refuses an outside-project id without claiming it does not exist or granting a link', () => {
+    // The target is known to the caller (e.g. returned by open-agent --project), but lookup
+    // is deliberately scoped to the calling project, for both live and stored canvases.
+    const projects = { caller: canvas, elsewhere: { remote: term(true) } }
+    const plan = planBridges('n1', ['remote', 'ghost', 'n2'],
+      (id) => projects.caller[id] ?? null, [])
+    expect(plan.linked).toEqual(['n2'])
+    expect(plan.edges).toEqual([{ id: 'bridge-n1-n2', source: 'n1', target: 'n2' }])
+    expect(plan.skipped).toEqual([
+      { id: 'remote', why: 'node not found in this project; cross-project linking is not supported' },
+      { id: 'ghost', why: 'node not found in this project; cross-project linking is not supported' }
     ])
   })
 
@@ -93,7 +107,7 @@ describe('planBridges', () => {
   it('refuses everything when the source node does not exist', () => {
     const plan = planBridges('ghost', ['n2'], lookup, [])
     expect(plan.edges).toEqual([])
-    expect(plan.skipped).toEqual([{ id: 'n2', why: 'no such node' }])
+    expect(plan.skipped).toEqual([{ id: 'n2', why: 'node not found in this project; cross-project linking is not supported' }])
   })
 })
 

@@ -21,3 +21,10 @@ export function isShellCommand(cmd: string | null | undefined): boolean {
   const base = cmd.replace(/^-/, '').split('/').pop() ?? ''
   return SHELLS.has(base)
 }
+
+/** Launch/retry gate, including native Windows shells. Unknown foregrounds are never writable. */
+export function isLaunchShell(cmd: string | null | undefined): boolean {
+  if (isShellCommand(cmd)) return true
+  const base = cmd?.split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
+  return base === 'pwsh' || base === 'powershell' || base === 'cmd'
+}

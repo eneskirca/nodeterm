@@ -3,6 +3,7 @@ import type { KanbanCardMeta, KanbanLabel, KanbanPriority } from '@shared/types'
 import { useAgentStatus } from '../../state/agentStatus'
 import { AccountChip, useAccountChip } from '../AccountChip'
 import { ContextMeter } from '../ContextMeter'
+import { isRemoteSessionNode } from '@shared/worktree'
 import { NodeIconView } from '../NodeIcon'
 import { LabelChips } from './LabelChips'
 import type { KanbanSession } from './KanbanView'
@@ -191,7 +192,7 @@ export const SessionCard = memo(function SessionCard({
             <span className="kanban-card__stickytext">{stickyPreview}</span>
           ) : (
             <>
-              <ContextMeter sessionId={status?.sessionId ?? null} />
+              <ContextMeter sessionId={status?.sessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
               <AccountChip chip={accountChip} />
               {status?.session && (
                 <span className="kanban-card__session" title={status.session}>

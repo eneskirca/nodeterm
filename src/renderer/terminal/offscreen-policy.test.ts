@@ -226,8 +226,8 @@ describe('shouldDeferReleaseForHeldLaunch — the fifth kill lever: an armed nod
     expect(shouldDeferReleaseForHeldLaunch({ tmuxBacked: false, armed: true })).toBe(true)
   })
 
-  it('never defers a TMUX-BACKED armed node — its session stays typeable by name through a release', () => {
-    expect(shouldDeferReleaseForHeldLaunch({ tmuxBacked: true, armed: true })).toBe(false)
+  it('retains a TMUX-BACKED armed node for echo verification', () => {
+    expect(shouldDeferReleaseForHeldLaunch({ tmuxBacked: true, armed: true })).toBe(true)
   })
 
   it('never defers a node that is not armed, on either backend', () => {

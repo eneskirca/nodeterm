@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { WORKING_STALE_MS } from '@shared/agents/stale'
 import {
   PARK_MAX,
+  PARK_MAX_LIMIT,
+  PARK_MINUTES_DEFAULT,
+  PARK_MINUTES_MAX,
   PARK_RECHECK_MS,
+  parkCap,
+  parkWindowMs,
   armParkExpiry,
   canDisposePark,
   canDisposeParkedEntry,
@@ -19,9 +24,9 @@ describe('planParkEviction', () => {
   it('evicts the oldest entries beyond the cap, oldest first', () => {
     expect(planParkEviction(['a', 'b', 'c', 'd'], 2)).toEqual(['a', 'b'])
   })
-  it('default cap is 12', () => {
-    expect(PARK_MAX).toBe(12)
-    const keys = Array.from({ length: 13 }, (_, i) => `k${i}`)
+  it('default cap is 20', () => {
+    expect(PARK_MAX).toBe(20)
+    const keys = Array.from({ length: 21 }, (_, i) => `k${i}`)
     expect(planParkEviction(keys, PARK_MAX)).toEqual(['k0'])
   })
   it('skips protected parks and takes the next disposable one instead', () => {
@@ -86,7 +91,7 @@ describe('a parked plain-shell agent survives the departure clear (#126)', () =>
     park('victim', { tmuxBacked: false, parkedAgentState: 'working', liveAgentState: 'working' })
     departureClear('victim')
     for (let i = 0; i < PARK_MAX; i++) park(`other${i}`, { tmuxBacked: true })
-    // 13 parks against a cap of 12, oldest ('victim') first — the exact >PARK_MAX project switch.
+    // PARK_MAX+1 parks against the cap, oldest ('victim') first — the exact >PARK_MAX project switch.
     const plan = planParkEviction([...registry.keys()], PARK_MAX, disposable)
     expect(plan).not.toContain('victim')
     expect(plan).toEqual(['other0']) // the cap still holds, paid by the next-oldest disposable park
@@ -143,6 +148,21 @@ describe('a parked plain-shell agent survives the departure clear (#126)', () =>
     it('protects inside the window and releases past it', () => {
       expect(canDisposeParkedEntry(working, parkedAt + WORKING_STALE_MS)).toBe(false)
       expect(canDisposeParkedEntry(working, parkedAt + WORKING_STALE_MS + 1)).toBe(true)
+    })
+
+    it('protects a park whose pane held an idle agent CLI on a non-tmux pty', () => {
+      const idleAgent: ParkedEntryState = { tmuxBacked: false, parkedAgentState: 'done', parkedAt, agentProcess: true }
+      expect(canDisposeParkedEntry(idleAgent, parkedAt + 10 * WORKING_STALE_MS)).toBe(false)
+      expect(canDisposeParkedEntry({ ...idleAgent, tmuxBacked: true })).toBe(true)
+      expect(canDisposeParkedEntry({ ...idleAgent, agentProcess: false })).toBe(true)
+    })
+
+    it('releases that park once its CLI announces an exit AFTER parking', () => {
+      // The snapshot was taken while the CLI ran; the live read is what can say it has since left.
+      const idleAgent: ParkedEntryState = { tmuxBacked: false, parkedAgentState: 'done', parkedAt, agentProcess: true }
+      expect(canDisposeParkedEntry({ ...idleAgent, liveSessionEnded: true })).toBe(true)
+      // The veto never overrides a live turn: exited-then-relaunched-and-working stays protected.
+      expect(canDisposeParkedEntry({ ...idleAgent, liveSessionEnded: true, liveAgentState: 'working' })).toBe(false)
     })
 
     it('keeps protecting a waiting snapshot past the same window', () => {
@@ -237,5 +257,71 @@ describe('armParkExpiry', () => {
     t.cancel()
     expect(armed[0].cleared).toBe(false) // already fired; the live one is the re-armed timer
     expect(armed[1].cleared).toBe(true)
+  })
+})
+
+describe('planParkEviction — remote parks go last (issue #886)', () => {
+  const remote = new Set(['r0', 'r1'])
+  const isRemote = (k: string): boolean => remote.has(k)
+  it('evicts a newer LOCAL park before an older REMOTE one', () => {
+    expect(planParkEviction(['r0', 'l0', 'r1', 'l1'], 3, undefined, isRemote)).toEqual(['l0'])
+    expect(planParkEviction(['r0', 'l0', 'r1', 'l1'], 2, undefined, isRemote)).toEqual(['l0', 'l1'])
+  })
+  it('falls through to remote parks, oldest first, once the local ones are gone', () => {
+    expect(planParkEviction(['r0', 'l0', 'r1', 'l1'], 1, undefined, isRemote)).toEqual([
+      'l0',
+      'l1',
+      'r0'
+    ])
+  })
+  it('still never evicts a protected park, local or remote', () => {
+    expect(planParkEviction(['r0', 'l0', 'r1'], 1, (k) => k !== 'l0', isRemote)).toEqual([
+      'r0',
+      'r1'
+    ])
+  })
+  it('without isRemote the plan is the historical oldest-first one', () => {
+    expect(planParkEviction(['r0', 'l0', 'r1', 'l1'], 2)).toEqual(['r0', 'l0'])
+  })
+})
+
+describe('parkWindowMs', () => {
+  it('defaults to 10 minutes', () => {
+    expect(PARK_MINUTES_DEFAULT).toBe(10)
+    expect(parkWindowMs(PARK_MINUTES_DEFAULT)).toBe(10 * 60_000)
+    expect(parkWindowMs(undefined)).toBe(10 * 60_000)
+  })
+  it('0 = no window at all (null), never Infinity', () => {
+    // setTimeout clamps a delay above 2^31-1 ms to ~1 ms: an Infinity window would dispose at once.
+    expect(parkWindowMs(0)).toBeNull()
+  })
+  it('a broken hand-edit falls back to the default, never to "keep forever"', () => {
+    for (const bad of [NaN, -1, Infinity, '30', null]) expect(parkWindowMs(bad)).toBe(10 * 60_000)
+  })
+  it('clamps to the ceiling, which stays under the setTimeout overflow', () => {
+    expect(parkWindowMs(1e9)).toBe(PARK_MINUTES_MAX * 60_000)
+    expect(PARK_MINUTES_MAX * 60_000).toBeLessThan(2 ** 31 - 1)
+  })
+})
+
+describe('parkCap', () => {
+  it('defaults to PARK_MAX and floors/clamps hand-edits', () => {
+    expect(parkCap(undefined)).toBe(PARK_MAX)
+    expect(parkCap(0)).toBe(PARK_MAX)
+    expect(parkCap(-3)).toBe(PARK_MAX)
+    expect(parkCap(NaN)).toBe(PARK_MAX)
+    expect(parkCap(40.7)).toBe(40)
+    expect(parkCap(1e6)).toBe(PARK_MAX_LIMIT)
+  })
+})
+
+describe('armParkExpiry with no window', () => {
+  it('arms nothing and never disposes', () => {
+    const set = vi.fn()
+    const dispose = vi.fn()
+    const t = armParkExpiry(() => true, dispose, null, { set, clear: vi.fn() })
+    expect(set).not.toHaveBeenCalled()
+    expect(dispose).not.toHaveBeenCalled()
+    t.cancel() // must not throw with no handle
   })
 })

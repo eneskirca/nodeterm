@@ -240,11 +240,11 @@ body {
   height: var(--cmascot-h);
   background-position: 0 0;
   background-size: var(--cmascot-sheet-w) var(--cmascot-sheet-h);
-  animation: mascot-walk-codex 0.96s steps(8) infinite;
+  animation: mascot-walk-codex 0.72s steps(6) infinite;
 }
 @keyframes mascot-walk-codex {
   to {
-    background-position-x: calc(var(--cmascot-w) * -8);
+    background-position-x: calc(var(--cmascot-w) * -6);
   }
 }
 

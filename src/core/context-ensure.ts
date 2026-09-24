@@ -56,6 +56,8 @@ export interface ContextEnsureQuery {
 export type RemoteEnsureOutcome = 'tracked' | 'unresolved'
 
 export interface ContextEnsureDeps {
+  /** Transport/account generation for remote requests; a reconnect must not join an older read. */
+  scopeKey?(q: ContextEnsureQuery): string | undefined
   /**
    * The tail that meters this agent locally, or `undefined` when the agent has no local
    * rehydration path. One tail per agent, each with its own `parse` — see `createContextTail`.
@@ -128,9 +130,7 @@ export function registerContextEnsureIpc(deps: ContextEnsureDeps): void {
     ): Promise<void> => {
       if (!sessionId || !SESSION_ID_RE.test(sessionId)) return
       const q: ContextEnsureQuery = { sessionId, cwd, accountId, nodeId, agentId }
-      // `SESSION_ID_RE` admits no separator character, so no pair of distinct (agent, session)
-      // inputs can collide on this key.
-      const key = `${agentId ?? ''}/${sessionId}`
+      const key = JSON.stringify([agentId, sessionId, nodeId, accountId, cwd, deps.scopeKey?.(q)])
       if (inFlight.has(key)) return
       inFlight.add(key)
       try {
@@ -142,7 +142,10 @@ export function registerContextEnsureIpc(deps: ContextEnsureDeps): void {
         if (!tail) return
         // The tail's own path is the authoritative hint for claude's resolver (hook-fed when
         // present) AND the early-out for everyone: a session already tracked needs no scan.
-        if (tail.pathFor(sessionId)) return
+        if (tail.pathFor(sessionId)) {
+          tail.replay(sessionId)
+          return
+        }
         const p = await localTranscriptFor(q, (s) => tail.pathFor(s))
         if (p) tail.track(sessionId, p)
       } finally {

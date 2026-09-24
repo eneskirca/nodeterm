@@ -2063,6 +2063,77 @@ describe('reduceEntry records whether the state transition was verified', () => 
     expect(b.verifiedAt).toBe(1000)
   })
 
+  describe('idle rescue after a verified session start (resumed CLI idling at its prompt)', () => {
+    const started = (verified = true) =>
+      reduceEntry(
+        reduceEntry(undefined, ev({ sessionId: 'current', state: 'done', verified: true }), 1000),
+        ev({ sessionId: 'current', kind: 'session', sessionPhase: 'start', verified }),
+        2000
+      )
+
+    it('does not broadcast stale idle state proof to renderer consumers', () => {
+      _resetForTest()
+      recordAgentEvent(ev({ nodeId: 'idle-proof', sessionId: 'current', kind: 'session', sessionPhase: 'start', verified: true }))
+      const out = recordAgentEvent(ev({ nodeId: 'idle-proof', sessionId: 'old', state: 'done', idle: true, verified: true }))
+      expect(out.state).toBeUndefined()
+      expect(out.verified).toBeUndefined()
+      expect(out.sessionId).toBe('current')
+    })
+    it.each([
+      { sessionId: 'old' }, { sessionId: undefined }, { agentId: 'codex' }
+    ])('rejects foreign or missing idle identity %j without overwriting the current session', (identity) => {
+      const start = started()
+      const result = reduceEntry(start, ev({ sessionId: 'current', state: 'done', idle: true, verified: true, ...identity }), 3000)
+      expect(result).toEqual(start)
+      const valid = reduceEntry(result, ev({ sessionId: 'current', state: 'done', idle: true, verified: true }), 3100)
+      expect(valid.state).toBe('done')
+      expect(valid.stateVerified).toBe(true)
+    })
+    it('does not arm a session start with no session id', () => {
+      const start = reduceEntry(undefined, ev({ kind: 'session', sessionPhase: 'start', verified: true }), 1000)
+      const idle = reduceEntry(start, ev({ state: 'done', idle: true, verified: true }), 2000)
+      expect(start.sessionStarted).toBeUndefined()
+      expect(idle.state).toBeUndefined()
+      expect(idle.stateVerified).toBe(false)
+    })
+    it('does not accept an idle observation older than the start', () => {
+      const start = started()
+      expect(reduceEntry(start, ev({ sessionId: 'current', state: 'done', idle: true, verified: true }), 1999)).toEqual(start)
+    })
+    it('a verified idle_prompt commits a verified, NON-inferred done', () => {
+      const c = reduceEntry(started(), ev({ sessionId: 'current', state: 'done', idle: true, interrupted: true, verified: true }), 3000)
+      expect(c.state).toBe('done')
+      expect(c.stateVerified).toBe(true)
+      expect(c.idleInferred).toBeUndefined()
+      expect(c.sessionStarted).toBeUndefined()
+    })
+
+    it('an unverified idle_prompt is still ignored', () => {
+      const c = reduceEntry(started(), ev({ sessionId: 'current', state: 'done', idle: true, verified: false }), 3000)
+      expect(c.state).toBeUndefined()
+      expect(c.stateVerified).toBe(false)
+    })
+
+    it('an unverified session start does not arm the rescue', () => {
+      const c = reduceEntry(started(false), ev({ sessionId: 'current', state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBeUndefined()
+    })
+
+    it('a session END never arms the rescue', () => {
+      const a = reduceEntry(undefined, ev({ sessionId: 'current', state: 'done', verified: true }), 1000)
+      const b = reduceEntry(a, ev({ sessionId: 'current', kind: 'session', sessionPhase: 'end', verified: true }), 2000)
+      const c = reduceEntry(b, ev({ sessionId: 'current', state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBeUndefined()
+    })
+
+    it('any state commit after the start disarms it (a turn may hold an approval)', () => {
+      const b = reduceEntry(started(), ev({ sessionId: 'current', state: 'blocked', verified: true }), 2500)
+      expect(b.sessionStarted).toBeUndefined()
+      const c = reduceEntry(b, ev({ sessionId: 'current', state: 'done', idle: true, verified: true }), 3000)
+      expect(c.state).toBe('blocked')
+    })
+  })
+
   it('a session boundary drops the proof with the state it was about', () => {
     // SessionStart/End reset the node to idle. A `stateVerified: true` left standing beside a
     // state of `undefined` would assert proof about a state that no longer exists.

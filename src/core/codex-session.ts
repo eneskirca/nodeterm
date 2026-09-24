@@ -71,7 +71,7 @@ export function pickCodexUsage(rollout: string | string[]): AgentUsage | null {
  * INITIAL_READ_CAP of the file, so in practice the model is settled on the very first tick and
  * sticks. Claiming a model we did not read would be worse than reporting none.
  */
-function codexModel(text: string | string[]): string | null {
+export function codexContextModel(text: string | string[]): string | null {
   return latestJsonLineWhere(text, '"turn_context"', (o) => {
     if (o.type !== 'turn_context') return null
     const model = (o.payload as { model?: unknown } | undefined)?.model
@@ -85,5 +85,5 @@ export function codexContextParse(
 ): { used: number; window: number | null; model: string | null } | null {
   const u = pickCodexUsage(text)
   if (!u) return null
-  return { used: u.usedTokens, window: u.windowTokens, model: codexModel(text) }
+  return { used: u.usedTokens, window: u.windowTokens, model: codexContextModel(text) }
 }

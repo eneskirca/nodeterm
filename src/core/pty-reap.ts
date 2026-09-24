@@ -6,7 +6,7 @@
  * ssh children. Every terminal after that spawned black (see pty-devices.ts, which now says so).
  *
  * The normal release paths — the last subscriber's `pty:kill`, `dropClient` when a window/tab
- * vanishes, the renderer's 5-minute park expiry — already return the pty client for anything the
+ * vanishes, the renderer's park expiry (`settings.terminalParkMinutes`) — already return the pty client for anything the
  * user actually closed. This sweep is the SAFETY NET underneath them: every one of those paths is a
  * hook that has to be wired (window 'closed', 'render-process-gone', the relay's socket teardown,
  * the peer registry's gone-hook), and a hook that is missed leaves a session subscribed to a client
@@ -31,10 +31,10 @@
 /**
  * How long a session must have been unwatched before its client pty is released.
  *
- * Comfortably longer than the renderer's park window (`TERM_PARK_MS`, 5 minutes in
- * renderer/nodes/TerminalNode.tsx), and deliberately not just longer: a parked terminal keeps its
- * subscription, so the sweep already skips it on the `watched` test — the margin is so that the two
- * mechanisms cannot come to depend on each other's timing. Ten minutes with nobody attached is also
+ * Independent of the renderer's park window (`settings.terminalParkMinutes`: default 10 minutes,
+ * user-tunable up to 24 h or "until quit", issue #886). A parked terminal keeps its subscription,
+ * so the sweep skips it on the `watched` test whatever the two durations are — that test, not a
+ * timing margin, is what keeps the reaper off a parked client. Ten minutes with nobody attached is also
  * far past any human "I'll be right back": the cost of reaping is one tmux redraw on return, the
  * cost of not reaping is a pty device held forever.
  */

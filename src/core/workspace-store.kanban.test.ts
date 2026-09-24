@@ -266,3 +266,100 @@ describe('an SSH project (the case the phone can never write itself)', () => {
     expect(entry.cache.kanban.columns).toHaveLength(3)
   })
 })
+
+describe('editRemoteCardLabels (the phone labelling a session)', () => {
+  // ONE label model: the palette in `kanban.labels` + ids in `kanban.meta[].labels`, the same the
+  // canvas node's "+ Label" row and the kanban card write. These pin that a phone edit lands there,
+  // is announced (so the live canvas adopts it rather than the next autosave reverting it), and that
+  // a desktop-authored label comes back to the phone in the answer.
+  const withLabels = (over: Partial<Project> = {}): Project =>
+    project({
+      cwd: projRoot,
+      kanban: {
+        columns: [{ id: 'kcol-a', title: 'To Do', color: '#0a84ff' }],
+        assignments: [],
+        labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' }]
+      },
+      ...over
+    })
+
+  it('applies a desktop label to the card, writes the file and announces it', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([withLabels()]))
+    fake.sent.length = 0
+
+    const res = await store.editRemoteCardLabels('p1', 'term-1', { add: ['klbl-bug'] })
+    expect(res).toEqual({
+      edited: true,
+      labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' }],
+      cardLabelIds: ['klbl-bug']
+    })
+    expect((await readFile()).kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+    expect(externalChanges()).toHaveLength(1)
+    expect(externalChanges()[0].kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+  })
+
+  it('the first label on a board-less project seeds the default board', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ cwd: projRoot })]))
+    const res = await store.editRemoteCardLabels('p1', 'term-1', { create: [{ name: 'ui', color: 'blue' }] })
+    expect(res?.edited).toBe(true)
+    expect(res?.labels.map((l) => l.name)).toEqual(['ui'])
+    expect(res?.cardLabelIds).toEqual([res?.labels[0].id])
+    expect((await readFile()).kanban.columns.map((c: { title: string }) => c.title))
+      .toEqual(DEFAULT_BOARD_COLUMNS.map((c) => c.title))
+  })
+
+  it('a stale add is `edited:false` WITH the current palette, so the sheet can redraw', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([withLabels()]))
+    const before = await readFile()
+    const res = await store.editRemoteCardLabels('p1', 'term-1', { add: ['klbl-deleted-elsewhere'] })
+    expect(res).toEqual({ edited: false, labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' }], cardLabelIds: [] })
+    expect(await readFile()).toEqual(before)
+  })
+
+  it('drops dangling ids from the answer exactly as the desktop readers do', async () => {
+    const store = new WorkspaceStore()
+    const p = withLabels()
+    p.kanban!.meta = [{ nodeId: 'term-1', labels: ['klbl-bug', 'klbl-ghost'] }]
+    await store.save(ws([p]))
+    const res = await store.editRemoteCardLabels('p1', 'term-1', { add: ['klbl-bug'] })
+    expect(res?.cardLabelIds).toEqual(['klbl-bug'])
+  })
+
+  it('answers null for a project it cannot write', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([withLabels(), project({ id: 'inline1' })]))
+    expect(await store.editRemoteCardLabels('nope', 'term-1', { add: ['klbl-bug'] })).toBeNull()
+    expect(await store.editRemoteCardLabels('inline1', 'term-1', { add: ['klbl-bug'] })).toBeNull()
+  })
+
+  it('is serialized with saves', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([withLabels()]))
+    const saving = store.save(ws([{ ...withLabels(), name: 'renamed' }]))
+    const labelling = store.editRemoteCardLabels('p1', 'term-1', { add: ['klbl-bug'] })
+    expect((await labelling)?.edited).toBe(true)
+    await saving
+    const file = await readFile()
+    expect(file.kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+    expect(file.name).toBe('renamed')
+  })
+
+  it('an SSH project: writes the cache, mirrors it, and the reload carries the label', async () => {
+    const io = fakeRemote()
+    const store = new WorkspaceStore(io)
+    await store.save(ws([project({
+      id: 'ssh1', cwd: undefined, ssh: SSH,
+      kanban: { columns: [{ id: 'kcol-a', title: 'To Do', color: '#0a84ff' }], assignments: [],
+        labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' }] }
+    })]))
+    const res = await store.editRemoteCardLabels('ssh1', 'term-1', { add: ['klbl-bug'] })
+    expect(res?.edited).toBe(true)
+    expect(JSON.parse(io.content!).kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+    const reloaded = await new WorkspaceStore(io).load()
+    expect(reloaded.projects.find((p) => p.id === 'ssh1')?.kanban?.meta)
+      .toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+  })
+})

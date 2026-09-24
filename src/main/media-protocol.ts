@@ -4,6 +4,7 @@
 import { createReadStream, mkdirSync, writeFileSync, promises as fsp } from 'fs'
 import { join, normalize, sep } from 'path'
 import { app, protocol } from 'electron'
+import { mediaRange } from '../core/media-range'
 
 export const MEDIA_SCHEME = 'nt-media'
 
@@ -163,19 +164,15 @@ export function initMediaProtocol(): void {
     }
     // Agent-authored HTML gets a restrictive CSP; video/image files get none (unchanged).
     const isAgentHtml = abs.startsWith(agentWebDir() + sep)
-    const range = req.headers.get('range')
-    const m = range && /bytes=(\d*)-(\d*)/.exec(range)
-    if (m) {
-      const start = m[1] ? parseInt(m[1], 10) : 0
-      let end = m[2] ? parseInt(m[2], 10) : size - 1
-      // Unsatisfiable range → 416 (NaN/negative start or start past EOF).
-      if (!Number.isFinite(start) || start < 0 || start >= size) {
-        return new Response('Range Not Satisfiable', {
-          status: 416,
-          headers: { 'Content-Range': `bytes */${size}` }
-        })
-      }
-      end = Math.min(end, size - 1)
+    const range = mediaRange(req.headers.get('range'), size)
+    if (range.kind === 'unsatisfiable') {
+      return new Response('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${size}` }
+      })
+    }
+    if (range.kind === 'partial') {
+      const { start, end } = range
       const stream = createReadStream(abs, { start, end })
       stream.on('error', () => stream.destroy())
       const headers: Record<string, string> = {

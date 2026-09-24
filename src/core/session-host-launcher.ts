@@ -83,16 +83,11 @@ export interface HostLinkFs {
  * The binary to spawn the host with — `execPath` everywhere, except on Windows, where it is a hard
  * link beside it named `nodeterm-session-host.exe`.
  *
- * The host is deliberately detached and outlives the app, and it is the Electron binary, so it runs
- * as `nodeterm.exe`. The one-click NSIS installer identifies the running app by image name plus
- * install directory and waits on it — so a host left running after a quit IS the app as far as the
- * installer can tell, and the install stalls until that process is killed by hand. Reported the
- * first time anyone installed a build carrying this feature.
- *
- * A hard link takes the host out of that match structurally rather than by exception: same file, no
- * second copy of a 224 MB binary, no admin, and Windows reports the process under the LINK's name
- * (measured). It must sit in the install directory — Electron needs its sibling DLLs, `locales/`
- * and `resources/`, and a link elsewhere exits immediately (0x80000003, measured).
+ * The separate image name makes the background host identifiable, but does NOT isolate it from
+ * updates: it still maps the installed Electron image and DLLs. NSIS can find processes by path
+ * as well as name. The installer preflight must refuse while this host (or the app) is running;
+ * it must never kill the host implicitly, because doing so ends every preserved session (#829).
+ * The link must sit beside Electron's sibling DLLs, locales/ and resources/ to run.
  *
  * Identity is compared with BIGINT stats. An NTFS file id is 64-bit and routinely exceeds
  * `Number.MAX_SAFE_INTEGER`, so the default numeric `ino` can report two different files as the
@@ -101,7 +96,7 @@ export interface HostLinkFs {
  *
  * Every failure — a read-only install dir, a filesystem without hard links, a directory squatting
  * the name, a link that cannot be removed — returns `execPath`, which is exactly today's behaviour.
- * The worst case is the installer annoyance this fixes, never a host that cannot start.
+ * The installer preflight checks both names, including this fallback.
  */
 export function hostLauncherPath(
   execPath: string,

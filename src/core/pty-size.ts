@@ -33,3 +33,49 @@ export function effectiveSize(sizes: Iterable<PtySize>): PtySize | null {
     rows: Number.isFinite(rows) ? Math.max(1, Math.floor(rows)) : 1
   }
 }
+
+/**
+ * One viewer's vote on a shared session's size, for `latestClaimSize`.
+ *
+ * `recency` orders the claims (higher = more recently active). `bounding` marks a viewer that
+ * cannot adapt to a grid other than its own — today the phone over the relay, whose app ignores
+ * the host's `Resized` frame. Such a viewer rendering a pty WIDER or TALLER than its own screen
+ * does not letterbox, it wraps and scrolls the other viewer's output into garbage, so its size is
+ * a ceiling for everyone rather than just a vote.
+ */
+export interface SizeClaim extends PtySize {
+  recency: number
+  bounding?: boolean
+}
+
+/**
+ * The size a session-host pty runs at when several viewers share it: the MOST RECENTLY ACTIVE
+ * viewer's size — tmux's `window-size latest`, which is what a tmux-backed session already does,
+ * because there the phone and the desktop are separate tmux clients (issue #914) — clamped
+ * componentwise to every `bounding` claim. Null when there are no claims.
+ *
+ * Why not the minimum any more: min is safe for every viewer, but it means a phone that dismisses
+ * its keyboard can never get its rows back while a shorter desktop node is attached, and nothing
+ * on the phone says why. The viewers that DO adapt (every renderer xterm, via `pty:size`) render a
+ * larger grid by clipping and a smaller one by letterboxing, exactly as a tmux client shows a
+ * window of another client's size — so "latest wins" costs them nothing but the clip.
+ *
+ * Ties go to the claim that comes LAST in iteration order (Map insertion order), so a caller that
+ * never bumps recency gets "most recently added" rather than an arbitrary pick.
+ */
+export function latestClaimSize(claims: Iterable<SizeClaim>): PtySize | null {
+  let latest: SizeClaim | null = null
+  let capCols = Infinity
+  let capRows = Infinity
+  for (const claim of claims) {
+    if (!latest || claim.recency >= latest.recency) latest = claim
+    if (claim.bounding) {
+      capCols = Math.min(capCols, claim.cols)
+      capRows = Math.min(capRows, claim.rows)
+    }
+  }
+  if (!latest) return null
+  return effectiveSize([
+    { cols: Math.min(latest.cols, capCols), rows: Math.min(latest.rows, capRows) }
+  ])
+}

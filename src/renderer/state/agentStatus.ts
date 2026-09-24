@@ -148,6 +148,19 @@ export interface AgentNodeStatus {
    * it can still see.
    */
   dropped?: boolean
+  /**
+   * This node's CLI announced its own exit (any SessionEnd hook: `/exit`, `/quit`,
+   * Ctrl+D) and nothing has started a session since.
+   *
+   * It exists because a SessionEnd used to be recorded only as `state: undefined`, which is also
+   * what an agent that is merely idle looks like. `agentId` is durable and outlives the CLI, so
+   * `agentProcessInPane` read every exited agent as still running, and the memory levers refused
+   * forever to release a non-persistent pane that held nothing but a shell.
+   *
+   * TRANSIENT, like `dropped`: it is a claim about a pane in this app run. Cleared by the next
+   * SessionStart and by any state transition, since only a live CLI fires those.
+   */
+  sessionEnded?: boolean
   /** Which agent this node is running (claude/codex/gemini/…), when known. */
   agentId?: AgentId
   /**
@@ -276,6 +289,9 @@ export interface AgentStatusStore {
   /** Record (or withdraw) the verdict that this node's CLI died unannounced. Transient; see
    *  `dropped`. Cheap to call repeatedly — it bails when the flag already reads that way. */
   setDropped(id: string, on: boolean): void
+  /** Record (or withdraw) that this node's CLI announced its exit. Transient; see `sessionEnded`.
+   *  Bails when the flag already reads that way. */
+  setSessionEnded(id: string, on: boolean): void
   /** Record that this node just launched a background shell task (see `backgroundTaskAt`).
    *  Transient — nothing is written to localStorage. */
   markBackgroundTask(id: string): void
@@ -613,6 +629,8 @@ export function createAgentStatusSession(
         // (a late Stop POST would undo a hibernation we just performed), but it absolutely does
         // disprove "this pane has no CLI in it". Nothing is saved — the flag is transient.
         if (prev.dropped) next.dropped = undefined
+        // Same reasoning: a state transition is fired by a live CLI, so "it exited" no longer holds.
+        if (prev.sessionEnded) next.sessionEnded = undefined
         const byId = { ...s.byId, [id]: next }
         // `state` itself is transient, so a plain transition writes nothing — but dropping a
         // PERSISTED flag has to reach disk, or a relaunch would restore a hibernated/paused node
@@ -780,6 +798,14 @@ export function createAgentStatusSession(
         // Transient: cleared by dropping the key, and NO `save()` — see the field comment. An entry
         // holding nothing else durable must not be conjured onto disk by a pane reading.
         return { byId: { ...s.byId, [id]: { ...prev, dropped: on ? true : undefined } } }
+      }),
+
+    setSessionEnded: (id, on) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        if (!!prev.sessionEnded === on) return s
+        // Transient, no `save()`: see the field comment.
+        return { byId: { ...s.byId, [id]: { ...prev, sessionEnded: on ? true : undefined } } }
       }),
 
     markBackgroundTask: (id) =>

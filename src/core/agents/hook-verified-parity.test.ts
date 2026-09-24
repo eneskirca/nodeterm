@@ -29,9 +29,9 @@ const NODE = 'node-verified-1'
 
 let dir = ''
 let events: NormalizedAgentEvent[] = []
-let raws: { agentId: string; nodeId: string; meta: { verified: boolean } | undefined }[] = []
+let raws: { agentId: string; nodeId: string; meta: { verified: boolean; contextWindow?: number | null } | undefined }[] = []
 
-function post(nodeId: string, token?: string): Promise<Response> {
+function post(nodeId: string, token?: string, contextWindow?: string): Promise<Response> {
   const headers: Record<string, string> = {
     'X-Nodeterm-Hook-Token': hookServer.getToken(),
     'content-type': 'application/x-www-form-urlencoded'
@@ -42,7 +42,7 @@ function post(nodeId: string, token?: string): Promise<Response> {
   return fetch(`http://127.0.0.1:${hookServer.getPort()}/hook/claude`, {
     method: 'POST',
     headers,
-    body: `nodeId=${encodeURIComponent(nodeId)}&payload=${encodeURIComponent(payload)}`
+    body: `nodeId=${encodeURIComponent(nodeId)}&payload=${encodeURIComponent(payload)}${contextWindow === undefined ? "" : `&nodeterm_context_window=${encodeURIComponent(contextWindow)}`}`
   })
 }
 
@@ -238,4 +238,20 @@ describe('both shells register a 4-arg raw listener', () => {
       expect(params[3]).toMatch(/meta/)
     })
   }
+})
+
+
+describe('session window metadata', () => {
+  it('accepts validated configuration only from this node identity', async () => {
+    await post(NODE, nodeAuthToken(SECRET, NODE), '1048576')
+    expect(raws[0].meta?.contextWindow).toBe(1048576)
+    await post('legacy', undefined, '32000')
+    expect(raws[1].meta?.contextWindow).toBeUndefined()
+  })
+  it('explicitly invalidates missing or malformed current configuration', async () => {
+    for (const value of ['', '0', '1e6', '32000oops']) {
+      await post(NODE, nodeAuthToken(SECRET, NODE), value)
+      expect(raws.at(-1)?.meta?.contextWindow).toBeNull()
+    }
+  })
 })

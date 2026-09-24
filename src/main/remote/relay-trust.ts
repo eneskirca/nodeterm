@@ -33,7 +33,7 @@ import {
   recordApproval,
   type MutualApproval
 } from './mutual-approval-core'
-import { loadApprovedDevices, saveApprovedDevices } from './approved-devices'
+import { loadApprovedDevices, saveApprovedDevices, updateApprovedDevices } from './approved-devices'
 import type { ApprovedDevices } from './approved-devices-core'
 import { parseRpcMessage } from '../../shared/rpc'
 
@@ -101,7 +101,8 @@ export function createTrustGate(opts: TrustGateOptions): TrustGate {
       const load = opts.load ?? loadApprovedDevices
       const save = opts.save ?? saveApprovedDevices
       try {
-        await save(recordApproval(await load(), pinned))
+        if (opts.load || opts.save) await save(recordApproval(await load(), pinned))
+        else await updateApprovedDevices((store) => recordApproval(store, pinned))
       } catch {
         // Persisting the pin is best-effort; consent for THIS session is already mutual.
       }

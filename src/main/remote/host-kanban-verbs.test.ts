@@ -39,6 +39,11 @@ function makeFakes(over: Partial<HostKanbanOps> = {}, served = true) {
   const kanban: HostKanbanOps = {
     ensureBoard: vi.fn(async () => COLUMNS),
     setCardColumn: vi.fn(async () => true),
+    editCardLabels: vi.fn(async () => ({
+      edited: true,
+      labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' as const }],
+      cardLabelIds: ['klbl-bug']
+    })),
     ...over
   }
   const handlers = createHostHandlers(
@@ -159,6 +164,69 @@ describe('projects.setCardColumn', () => {
       id: '1', method: 'projects.setCardColumn',
       params: { projectId: 'p1', nodeId: 'term-a-1', columnId: null }
     })
+    expect(responses[0].ok).toBe(false)
+    expect(String(responses[0].body.message)).toContain('not served')
+  })
+})
+
+describe('projects.editCardLabels (the phone\'s long-press label sheet)', () => {
+  const call = (handlers: ReturnType<typeof makeFakes>['handlers'], params: Record<string, unknown>) =>
+    handlers.onRpc({ id: '1', method: 'projects.editCardLabels', params })
+
+  it('passes a validated edit to the store and answers the palette + card ids', async () => {
+    const { handlers, responses, kanban } = makeFakes()
+    call(handlers, { projectId: 'p1', nodeId: 'term-a-1', add: ['klbl-bug'], create: [{ name: ' ui ', color: 'blue' }] })
+    await flush()
+    expect(kanban.editCardLabels).toHaveBeenCalledWith('p1', 'term-a-1', {
+      add: ['klbl-bug'], remove: [], create: [{ name: 'ui', color: 'blue' }]
+    })
+    expect(responses[0]).toEqual({
+      id: '1', ok: true,
+      body: { edited: true, labels: [{ id: 'klbl-bug', name: 'bug', color: 'red' }], cardLabelIds: ['klbl-bug'] }
+    })
+  })
+
+  // Validated at the write site, before the store is asked anything: these params end up in a
+  // git-shared file every collaborator's canvas renders.
+  it('refuses malformed edits without asking the store', () => {
+    for (const params of [
+      { projectId: 'p1', nodeId: 'term-a-1' },
+      { projectId: 'p1', nodeId: 'term-a-1', add: [42] },
+      { projectId: 'p1', nodeId: 'term-a-1', create: [{ name: 'x', color: '#f00' }] },
+      { projectId: 'p1', nodeId: 'term-a-1', create: [{ name: 'a\u001b[31m', color: 'red' }] },
+      { projectId: 'p1', nodeId: 'term-a-1', add: ['a'], remove: ['a'] },
+      { nodeId: 'term-a-1', add: ['a'] },
+      { projectId: 'p1', add: ['a'] }
+    ]) {
+      const { handlers, responses, kanban } = makeFakes()
+      call(handlers, params)
+      expect(responses[0].ok).toBe(false)
+      expect(kanban.editCardLabels).not.toHaveBeenCalled()
+    }
+  })
+
+  it('answers `labels: null` when the store has no writable file or throws', async () => {
+    for (const ops of [
+      { editCardLabels: async () => null },
+      { editCardLabels: async () => { throw new Error('boom') } }
+    ] as Partial<HostKanbanOps>[]) {
+      const { handlers, responses } = makeFakes(ops)
+      call(handlers, { projectId: 'p1', nodeId: 'term-a-1', add: ['klbl-bug'] })
+      await flush()
+      expect(responses[0]).toEqual({ id: '1', ok: true, body: { edited: false, labels: null, cardLabelIds: null } })
+    }
+  })
+
+  it('is not served by a host whose kanban ops predate the verb', () => {
+    const { handlers, responses } = makeFakes({ editCardLabels: undefined })
+    call(handlers, { projectId: 'p1', nodeId: 'term-a-1', add: ['klbl-bug'] })
+    expect(responses[0].ok).toBe(false)
+    expect(String(responses[0].body.message)).toContain('not served')
+  })
+
+  it('is not served when the host has no kanban ops at all', () => {
+    const { handlers, responses } = makeFakes({}, false)
+    call(handlers, { projectId: 'p1', nodeId: 'term-a-1', add: ['klbl-bug'] })
     expect(responses[0].ok).toBe(false)
     expect(String(responses[0].body.message)).toContain('not served')
   })

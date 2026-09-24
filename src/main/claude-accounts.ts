@@ -23,7 +23,9 @@ export function initClaudeAccounts(getSshManager?: () => SshProjectManager | und
       return {
         add: (projectId, id) => mgr.remoteAccountAdd(projectId, id),
         readLogin: (projectId, id) => mgr.remoteAccountReadLogin(projectId, id),
-        remove: (projectId, id) => mgr.remoteAccountRemove(projectId, id)
+        remove: (projectId, id) => mgr.remoteAccountRemove(projectId, id),
+        copySession: (projectId, sessionId, source, target) =>
+          mgr.remoteClaudeSessionCopy(projectId, sessionId, source, target)
       }
     }
   })

@@ -10,6 +10,7 @@ import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 import { useSshConn } from '../state/sshConn'
 import { useScmDraft } from '../state/scmDraft'
+import { readBranchStatus } from '../state/gitBranches'
 import { useScmCache } from '../state/scmCache'
 import { useSession } from '../session/session'
 import { GitHistoryPanel } from './git-history/GitHistoryPanel'
@@ -166,11 +167,12 @@ export function SourceControlPanel({
     })
 
   const refresh = useCallback(async () => {
-    setStatus(cwd ? await git.status(cwd) : null)
+    if (isSsh && !sshControlPath) return
+    setStatus(cwd ? await readBranchStatus(git, cwd, isSsh ? project?.id : undefined) : null)
     // `sshControlPath` is a dep so an SSH project whose master finishes connecting after the panel
     // opened re-fetches once the connection is live (instead of staying "no repo"/empty).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, git, sshControlPath])
+  }, [cwd, git, sshControlPath, isSsh, project?.id])
 
   const autoFetchOn = useSettings((s) => s.settings.gitAutoFetch)
 

@@ -13,6 +13,16 @@ const SHELL =
       ? '/bin/sh'
       : undefined
 
+// Every real-shell case spawns Git Bash's sh.exe two to four times (cygpath, then the command).
+// On a windows-latest runner a cold MSYS spawn can push one case past vitest's 5 s default, and CI
+// has timed out a different case of this file on two unrelated PRs. The work is unchanged; only
+// the budget for starting it is Windows-sized. POSIX keeps the default.
+const IS_WINDOWS = process.platform === 'win32'
+const REAL_SHELL_TIMEOUT_MS = IS_WINDOWS ? 30_000 : 5_000
+// Inside the test budget on Windows, so a writer that never starts fails with its own message
+// rather than a bare timeout. Unchanged on POSIX.
+const WAIT_FOR_TEMP_MS = IS_WINDOWS ? 25_000 : 5_000
+
 const roots: string[] = []
 
 afterEach(() => {
@@ -37,7 +47,7 @@ function finish(child: ChildProcessWithoutNullStreams): Promise<{ code: number |
 }
 
 async function waitForTemp(directory: string): Promise<void> {
-  const until = Date.now() + 5_000
+  const until = Date.now() + WAIT_FOR_TEMP_MS
   while (Date.now() < until) {
     if (readdirSync(directory).some((name) => name.endsWith('.tmp'))) return
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -45,7 +55,7 @@ async function waitForTemp(directory: string): Promise<void> {
   throw new Error('writer never opened its temporary file')
 }
 
-describe('remoteAtomicWrite', () => {
+describe('remoteAtomicWrite', { timeout: REAL_SHELL_TIMEOUT_MS }, () => {
   it('mints a shell-safe, per-call UUID temp and cleans only that temp after publishing', () => {
     const first = remoteAtomicWrite("~/a b/quo'te\\name.json", {
       restrictPermissions: true,

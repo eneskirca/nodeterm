@@ -474,7 +474,7 @@ describe('SessionHostClient subscriber flow and reconnect barriers', () => {
     expect(delivered).toEqual(['COLD-PRE-ACK', 'POST-ACK'])
   })
 
-  it('uses componentwise local geometry, normalizes invalid axes, and grows when the limiting view leaves', async () => {
+  it('follows the most recently active view, normalizes invalid axes, and falls back when it leaves (issue #914)', async () => {
     const { userDataDir, endpoint } = fixture('nodeterm-session-flow-geometry-')
     // `narrow`'s attach co-attaches to the already-live generation `wide` created, so it reaches
     // the host as `attachExisting` rather than a second `attach` — and `attachExisting` deliberately
@@ -484,7 +484,8 @@ describe('SessionHostClient subscriber flow and reconnect barriers', () => {
     const resizeRequests: Array<{ cols: number; rows: number }> = []
     const normalizedFirst = deferred<void>()
     const normalizedSecond = deferred<void>()
-    const grownAfterDetach = deferred<void>()
+    const wideLatest = deferred<void>()
+    const fellBackAfterDetach = deferred<void>()
 
     const server = net.createServer((socket) => {
       trackSocket(socket)
@@ -516,9 +517,12 @@ describe('SessionHostClient subscriber flow and reconnect barriers', () => {
           } else if (request.cmd === 'resize') {
             resizeRequests.push({ cols: request.cols, rows: request.rows })
             socket.write(encodeFrame({ id: request.id, ok: true }))
-            if (request.cols === 80 && request.rows === 1) normalizedFirst.resolve()
-            if (request.cols === 90 && request.rows === 1) normalizedSecond.resolve()
-            if (request.cols === 90 && request.rows === 40) grownAfterDetach.resolve()
+            if (request.cols === 120 && request.rows === 1) normalizedFirst.resolve()
+            if (request.cols === 90 && request.rows === 40) {
+              if (resizeRequests.length === 2) normalizedSecond.resolve()
+              else fellBackAfterDetach.resolve()
+            }
+            if (request.cols === 100 && request.rows === 20) wideLatest.resolve()
           } else if (request.cmd === 'detach' || request.cmd === 'write') {
             socket.write(encodeFrame({ id: request.id, ok: true }))
           }
@@ -542,21 +546,29 @@ describe('SessionHostClient subscriber flow and reconnect barriers', () => {
       500
     )
     await within(narrow.ready, 'narrow geometry attach')
+    // The newly attached view is the most recently active one, so the session takes ITS size —
+    // not the componentwise minimum (80x30) it used to, which is what left a phone that dismissed
+    // its keyboard stuck at a shorter desktop view's rows.
     expect(attachClaims).toEqual([
       { cmd: 'attach', cols: 120, rows: 30 },
-      { cmd: 'attachExisting', cols: 80, rows: 30 }
+      { cmd: 'attachExisting', cols: 80, rows: 40 }
     ])
 
+    // A CHANGED claim makes that view the active one; each axis still normalizes independently.
     wide.resize(Number.NaN, -5)
     await within(normalizedFirst.promise, 'NaN and negative geometry normalization')
     narrow.resize(90.9, Number.POSITIVE_INFINITY)
     await within(normalizedSecond.promise, 'fractional and infinite geometry normalization')
+    wide.resize(100, 20)
+    await within(wideLatest.promise, 'the resized view becomes the active one')
+    // The active view leaves: the session falls back to the one that was active before it.
     wide.destroy()
-    await within(grownAfterDetach.promise, 'geometry growth after limiting view detach')
+    await within(fellBackAfterDetach.promise, 'fallback to the previous view after detach')
 
     expect(resizeRequests).toEqual([
-      { cols: 80, rows: 1 },
-      { cols: 90, rows: 1 },
+      { cols: 120, rows: 1 },
+      { cols: 90, rows: 40 },
+      { cols: 100, rows: 20 },
       { cols: 90, rows: 40 }
     ])
   })

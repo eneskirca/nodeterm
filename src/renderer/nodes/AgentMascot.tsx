@@ -11,7 +11,7 @@ const BRAND_BADGE_SIZE = 16
  * The walking mascot shown inside the RUNNING badge (docs/mascot-sprites.md):
  * - claude → the runtime-drawn coral pixel critter (data-URI spritesheet; the walk is CSS
  *   `steps(1)` over three keyframes, NOT `steps(2)` — see .term-node__mascot--claude).
- * - codex  → pet-codex.webp, first-row walk cycle (CSS `steps(8)`).
+ * - codex  → pet-codex.webp, six-frame first-row cycle (CSS `steps(6)`).
  * - grok / gemini / opencode / copilot → their own BRAND MARK, pulsing and blooming rather than walking. Grok
  *   had a quadrant critter first; a hand-drawn creature next to two real mascots read as neither, so
  *   the glyph the agent actually has is what animates. gemini and opencode used to fall through to

@@ -32,6 +32,7 @@ export type OnRevoke = (peerId: string) => void | Promise<void>
 export interface RevocationDeps {
   load(): Promise<ApprovedDevices>
   save(store: ApprovedDevices): Promise<void>
+  update?(change: (store: ApprovedDevices) => ApprovedDevices): Promise<void>
   onRevoke: OnRevoke
 }
 
@@ -75,8 +76,8 @@ export function createRevoker(deps: RevocationDeps): {
     async revoke(peerKeyB64) {
       let persisted = false
       try {
-        const store = await deps.load()
-        await deps.save(revoke(store, peerKeyB64))
+        if (deps.update) await deps.update((store) => revoke(store, peerKeyB64))
+        else await deps.save(revoke(await deps.load(), peerKeyB64))
         persisted = true
       } catch {
         // load() or save() threw. Do NOT swallow silently: the on-disk pin may be intact, so the

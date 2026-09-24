@@ -205,7 +205,7 @@ describe('armForColdOpen — the launch moves (never copies) into pendingLaunch 
 
   it('moves initialCommand into pendingLaunch { after: [], command }', () => {
     const armed = armForColdOpen(like('claude "go"'))
-    expect(armed.data.pendingLaunch).toEqual({ after: [], command: 'claude "go"' })
+    expect(armed.data.pendingLaunch).toEqual({ after: [], command: 'claude "go"', attempted: false })
     // MOVED, not copied: initialCommand is deliberately never serialized (workspace.ts), so a
     // copy left behind is dead weight and a command left ONLY there is silently dropped — the
     // node would never start. The serialization round-trip pin lives in

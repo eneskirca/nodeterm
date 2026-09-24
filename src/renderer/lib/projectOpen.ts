@@ -185,7 +185,7 @@ export function openProjectReply(
 
 /**
  * Re-arm a freshly-built node for a COLD open (spec §2.2): its composed launch command is MOVED —
- * never copied — from `initialCommand` into `pendingLaunch: { after: [], command }`.
+ * never copied — from `initialCommand` into `pendingLaunch: { after: [], command, attempted: false }`.
  * `initialCommand` is deliberately never serialized (workspace.ts), while `pendingLaunch` is: a
  * command left in `initialCommand` on the store path would be silently dropped by serialization
  * and the node would never start; a copy left behind would double-deliver if that ever changed.
@@ -199,7 +199,7 @@ export function armForColdOpen<
   if (!command) return node
   return {
     ...node,
-    data: { ...node.data, initialCommand: undefined, pendingLaunch: { after: [], command } }
+    data: { ...node.data, initialCommand: undefined, pendingLaunch: { after: [], command, attempted: false } }
   }
 }
 

@@ -6,7 +6,7 @@
 import { promises as fs } from 'fs'
 import path from 'path'
 import { grokHomeDir } from '../agents/grok-paths'
-import type { ProviderUsage, UsageLimit } from '../../shared/types'
+import type { ProviderUsage, UsageLimit, UsageDiagnostic } from '../../shared/types'
 
 const DEFAULT_PROXY_BASE = 'https://cli-chat-proxy.grok.com/v1'
 const FETCH_TIMEOUT_MS = 8000
@@ -139,11 +139,14 @@ export function mapGrokLimits(body: unknown): UsageLimit[] {
   return [mapGrokWeekly(config), mapGrokMonthly(config)].filter((l): l is UsageLimit => l !== null)
 }
 
-function snapshot(limits: UsageLimit[], status: ProviderUsage['status']): ProviderUsage {
-  return { provider: 'grok', limits, account: null, updatedAt: Date.now(), status }
+function snapshot(limits: UsageLimit[], status: ProviderUsage['status'], diagnostics: UsageDiagnostic[] = []): ProviderUsage {
+  return { provider: 'grok', limits, account: null, updatedAt: Date.now(), status,
+    ...(diagnostics.length ? { diagnostics } : {}) }
 }
 
-async function getBilling(url: string, auth: GrokAuth): Promise<unknown | null> {
+type BillingResult = { ok: true; body: unknown } | { ok: false; diagnostic: UsageDiagnostic }
+
+async function getBilling(url: string, auth: GrokAuth, view: UsageDiagnostic['view']): Promise<BillingResult> {
   const headers: Record<string, string> = {
     authorization: `Bearer ${auth.key}`,
     accept: 'application/json'
@@ -156,9 +159,26 @@ async function getBilling(url: string, auth: GrokAuth): Promise<unknown | null> 
 
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
-  const res = await fetch(url, { headers, signal: ctrl.signal }).finally(() => clearTimeout(t))
-  if (!res.ok) return null
-  return res.json()
+  try {
+    const res = await fetch(url, { headers, signal: ctrl.signal })
+    if (!res.ok) return { ok: false, diagnostic: { view, reason: 'http', httpStatus: res.status } }
+    try {
+      const body: unknown = await res.json()
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return { ok: false, diagnostic: { view, reason: 'invalid-response' } }
+      }
+      return { ok: true, body }
+    } catch (error) {
+      return { ok: false, diagnostic: { view, reason: ctrl.signal.aborted ? 'timeout'
+        : error instanceof SyntaxError ? 'invalid-response' : 'network' } }
+    }
+  } catch {
+    // Exception messages can contain proxy URLs or credentials. Only send a safe category.
+    return { ok: false, diagnostic: { view, reason: ctrl.signal.aborted ? 'timeout' : 'network' } }
+  } finally {
+    // Keep the deadline active through body consumption, not just response headers.
+    clearTimeout(t)
+  }
 }
 
 /**
@@ -172,17 +192,19 @@ export async function fetchGrokUsage(home = grokHome()): Promise<ProviderUsage> 
     if (!auth.key) return snapshot([], 'unavailable')
 
     const base = proxyBase()
-    const credits = await getBilling(`${base}/billing?format=credits`, auth)
-    const fromCredits = credits ? mapGrokLimits(credits) : []
+    const diagnostics: UsageDiagnostic[] = []
+    const credits = await getBilling(`${base}/billing?format=credits`, auth, 'credits')
+    if (!credits.ok) diagnostics.push(credits.diagnostic)
+    const fromCredits = credits.ok ? mapGrokLimits(credits.body) : []
     if (fromCredits.length > 0) return snapshot(fromCredits, 'ok')
 
-    const dflt = await getBilling(`${base}/billing`, auth)
-    const fromDefault = dflt ? mapGrokLimits(dflt) : []
-    if (fromDefault.length > 0) return snapshot(fromDefault, 'ok')
+    const dflt = await getBilling(`${base}/billing`, auth, 'default')
+    if (!dflt.ok) diagnostics.push(dflt.diagnostic)
+    const fromDefault = dflt.ok ? mapGrokLimits(dflt.body) : []
+    if (fromDefault.length > 0) return snapshot(fromDefault, 'ok', diagnostics)
 
     // Both views answered but neither carried a quota: the account genuinely has none to show.
-    if (credits !== null || dflt !== null) return snapshot([], 'unavailable')
-    return snapshot([], 'error')
+    return snapshot([], diagnostics.length ? 'error' : 'unavailable', diagnostics)
   } catch {
     return snapshot([], 'error')
   }

@@ -12,6 +12,8 @@ import { describeLoadFailure, isReportableFailure, type WebviewLoadFailure } fro
 import { WebviewErrorPlate } from './WebviewErrorPlate'
 import { WebviewLoadingBar } from './WebviewLoadingBar'
 import { useWebviewKeepAlive } from '../state/webviewKeepAlive'
+import { WebviewZoomControls } from '../components/WebviewZoomControls'
+import type { ZoomableWebview } from '@shared/webview-zoom'
 
 /**
  * A web view node. When `data.url` is set it loads that live URL; otherwise it serves the
@@ -32,7 +34,7 @@ export default function WebNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const title = (data.title as string) || url || filePath.split('/').pop() || 'web'
   const rootRef = useRef<HTMLDivElement | null>(null)
   /** The guest, for the audible check only — a local html page can hold a playing <video>. */
-  const wvRef = useRef<(AudibleWebview & ReloadableWebview) | null>(null)
+  const wvRef = useRef<(AudibleWebview & ReloadableWebview & ZoomableWebview) | null>(null)
   // Memory saver — the same shared hook {@link BrowserSurface} uses: hidden long enough, the
   // <webview> is unmounted (its Chromium process exits) and rebuilt on reveal. `revive` is what
   // re-runs the source effect below, so the `nt-media://` grant is re-issued for a local file
@@ -183,6 +185,7 @@ export default function WebNode({ id, data, selected }: NodeProps<CanvasNode>) {
           {title}
         </span>
         <span className="term-node__spacer" />
+        {live && <WebviewZoomControls target={wvRef} />}
         {live && (
           <button
             className="term-node__close"
@@ -226,7 +229,7 @@ export default function WebNode({ id, data, selected }: NodeProps<CanvasNode>) {
               {/* eslint-disable-next-line react/no-unknown-property */}
               <webview
                 ref={(el) => {
-                  wvRef.current = el as unknown as (AudibleWebview & ReloadableWebview) | null
+                  wvRef.current = el as unknown as (AudibleWebview & ReloadableWebview & ZoomableWebview) | null
                 }}
                 src={src}
                 style={{ width: '100%', height: '100%' }}

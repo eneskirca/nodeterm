@@ -25,6 +25,7 @@ function fakeTail(): ContextTail & { tracked: [string | undefined, string | unde
   const tracked: [string | undefined, string | undefined][] = []
   return {
     tracked,
+    replay: vi.fn(),
     track: (sessionId, transcriptPath) => void tracked.push([sessionId, transcriptPath]),
     untrack: () => {},
     pathFor: () => undefined
@@ -88,6 +89,16 @@ afterEach(() => {
 })
 
 describe('local rehydration, per agent', () => {
+  it('replays a tracked session on each remount without resolving or tracking again', async () => {
+    claude.pathFor = () => '/already-tracked.jsonl'
+    registerContextEnsureIpc({ tailFor })
+    await ensure({ agentId: 'claude' })
+    await ensure({ agentId: 'claude' })
+    expect(claude.replay).toHaveBeenCalledTimes(2)
+    expect(claude.replay).toHaveBeenCalledWith(SID)
+    expect(claude.tracked).toEqual([])
+  })
+
   it('tracks a claude session on claude’s tail from its own transcript', async () => {
     const p = writeClaudeTranscript()
     registerContextEnsureIpc({ tailFor })

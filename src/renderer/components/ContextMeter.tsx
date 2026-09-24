@@ -1,14 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import { useContextWindow } from '../state/contextWindow'
 import { useSettings } from '../state/settings'
+import { capabilityAgentId } from '@shared/agents/config'
 import { barFillPercent, contextFillColor, contextPillText, formatModelLabel, formatTimeAgo, formatTokensShort, percentText } from '../lib/usageFormat'
 
 /**
  * Per-Claude-node context-window meter. A small header pill (mini-bar + "NN%") that toggles
  * a popover with token figures and model. Renders nothing until the session has usage data.
  */
-export function ContextMeter({ sessionId }: { sessionId: string | null }): JSX.Element | null {
-  const usage = useContextWindow((s) => (sessionId ? s.bySessionId[sessionId] : undefined))
+export function ContextMeter({ sessionId, nodeId, remote = false, agentId }: {
+  sessionId: string | null
+  nodeId?: string
+  remote?: boolean
+  agentId?: string
+}): JSX.Element | null {
+  const scoped = remote && !!agentId && capabilityAgentId(agentId) === 'codex'
+  // A copied rollout has the same session id on two hosts. SSH Codex observations belong
+  // to the node that requested them; never fall back to a local/session-only snapshot.
+  const usage = useContextWindow((s) => {
+    if (!sessionId) return undefined
+    const value = scoped ? (nodeId ? s.byNodeId[nodeId] : undefined) : s.bySessionId[sessionId]
+    return value?.sessionId === sessionId ? value : undefined
+  })
   const percentMode = useSettings((s) => s.settings.usagePercentMode)
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -28,13 +41,14 @@ export function ContextMeter({ sessionId }: { sessionId: string | null }): JSX.E
   // (issue #78).
   const pillText = contextPillText(usage.usedTokens, usage.windowTokens, usage.usedPercent, percentMode)
   const color = contextFillColor(usage.usedPercent)
+  const estimated = usage.windowSource === 'estimate'
   const modelLabel = formatModelLabel(usage.model)
 
   return (
     <div className="ctx-meter nodrag" ref={ref}>
       {open && (
         <div className="ctx-popover">
-          <div className="ctx-popover__title">Context</div>
+          <div className="ctx-popover__title">Context{estimated ? ' (estimated window)' : ''}</div>
           <div className="ctx-bar">
             <div className="ctx-bar__fill" style={{ width: `${barFillPercent(usage.usedPercent, percentMode)}%`, background: color }} />
           </div>
@@ -51,7 +65,7 @@ export function ContextMeter({ sessionId }: { sessionId: string | null }): JSX.E
       )}
       <button
         className="ctx-pill"
-        title={`Context window — ${percentText(usage.usedPercent, percentMode)}`}
+        title={`${estimated ? 'Estimated context window' : 'Context window'} — ${percentText(usage.usedPercent, percentMode)}`}
         onClick={(e) => {
           e.stopPropagation()
           setOpen((v) => !v)
@@ -61,7 +75,7 @@ export function ContextMeter({ sessionId }: { sessionId: string | null }): JSX.E
         <span className="ctx-pill__bar">
           <span className="ctx-pill__fill" style={{ width: `${barFillPercent(usage.usedPercent, percentMode)}%`, background: color }} />
         </span>
-        <span className="ctx-pill__num">{pillText}</span>
+        <span className="ctx-pill__num">{estimated ? '~' : ''}{pillText}</span>
       </button>
     </div>
   )

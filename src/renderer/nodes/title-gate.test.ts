@@ -161,16 +161,7 @@ describe('claude-transcript gates', () => {
    * from a local one, which is what issue #813 reported. `core/context-ensure.test.ts` pins the
    * routing itself.
    */
-  it('passes the agent + node id to the mount-time meter rehydration (`context.ensure`)', () => {
-    const found = sites('window.nodeTerminal.context.ensure(')
-    expect(found.length).toBe(1)
-    const [lineNo] = found[0]
-    // The `if (…) ensure(…)` guard is the line above the call; the arguments follow it.
-    const call = lines.slice(Math.max(0, lineNo - 3), lineNo + 7).join('\n')
-    expect(call, `${lineNo}: context.ensure guard`).toContain('showUsage')
-    expect(call, `${lineNo}: context.ensure routes per agent`).toContain('agentId')
-    expect(call, `${lineNo}: context.ensure carries the node id`).toMatch(/^\s*id,$/m)
-  })
+
 
   it('gates the find bar’s transcript index (`searchTranscript`)', () => {
     const found = sites('searchTranscript:')

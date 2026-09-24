@@ -23,6 +23,37 @@ export interface LaunchToFire {
   command: string
 }
 
+/** Control opens reply before the PTY exists. Keep their command durable until delivery lands,
+ * even with no dependencies (or dependencies that are already done). */
+export function queueControlLaunch<T extends { data: { initialCommand?: string; pendingLaunch?: PendingLaunch } }>(
+  node: T,
+  after: string[] = [],
+  awaitSetupGroup?: string
+): T & { data: { pendingLaunch?: PendingLaunch } } {
+  const command = node.data.initialCommand
+  if (!command) return node
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      initialCommand: undefined,
+      pendingLaunch: { after, command, attempted: false, ...(awaitSetupGroup ? { awaitSetupGroup } : {}) }
+    }
+  }
+}
+
+/** A list row states only observed facts; absence of a launch error is not proof of a live CLI. */
+export function controlLaunchState(
+  pending: boolean,
+  delivery: LaunchDelivery | undefined,
+  status?: { dropped?: boolean; state?: AgentState }
+): 'queued' | 'stalled' | 'failed' | 'dropped' | 'working' | undefined {
+  if (pending) return delivery?.kind ?? 'queued'
+  if (status?.dropped) return 'dropped'
+  if (status?.state === 'working') return 'working'
+  return undefined
+}
+
 /**
  * Is one dependency satisfied?
  *
@@ -87,12 +118,14 @@ export function launchesToFire(
   nodes: readonly ArmedNode[],
   status: StatusById,
   live: ReadonlySet<string>,
-  setupDone?: (groupId: string) => boolean
+  setupDone?: (groupId: string) => boolean,
+  deliveries?: Record<string, LaunchDelivery | undefined>
 ): LaunchToFire[] {
   const out: LaunchToFire[] = []
   for (const n of nodes) {
     const p = n.data.pendingLaunch
-    if (!p || !p.command || p.executor === 'server') continue
+    if (!p || !p.command || p.manualOnly || p.executor === 'server') continue
+    if (deliveries?.[n.id]?.kind === 'failed') continue
     if (p.awaitSetupGroup && !(setupDone?.(p.awaitSetupGroup) ?? true)) continue
     if (p.after.every((d) => depSatisfied(d, status, live))) out.push({ id: n.id, command: p.command })
   }
@@ -109,33 +142,6 @@ export function unmetDeps(
   if (!p) return []
   return p.after.filter((d) => !depSatisfied(d, status, live))
 }
-
-/**
- * The backoff between delivery attempts, in milliseconds, indexed by the number of attempts
- * ALREADY made. `null` = the schedule is exhausted; the launch has failed for good.
- *
- * This replaces a flat 5 × 400 ms budget (2 s from the moment the canvas mounted the node) that
- * measured the wrong thing entirely: it started when the CANVAS decided the node was ready to
- * launch, and spent itself while the terminal was still being spawned. A cold project switch —
- * load the canvas, mount the node, spawn tmux, settle the shell — routinely costs more than two
- * seconds, so the launch was abandoned before the session it was meant for existed. That is
- * issue #569 item 1: a node that says QUEUED forever with no way to tell it apart from one that
- * is simply waiting on a dependency.
- *
- * The fix is mostly NOT here: delivery is now gated on the node reporting its session ready
- * (`isSessionReady`), so the schedule below only has to cover the residual race between "the
- * shell settled" and "tmux will accept a paste for this session". It is nevertheless generous
- * and bounded — roughly 12 s across five attempts — because the alternative to a bound is a
- * retry loop nobody can see the end of.
- */
-const LAUNCH_RETRY_SCHEDULE_MS = [400, 800, 1600, 3200, 6400] as const
-
-export function launchRetryDelay(attemptsMade: number): number | null {
-  return LAUNCH_RETRY_SCHEDULE_MS[attemptsMade - 1] ?? null
-}
-
-/** Total attempts a refused delivery gets before it is reported as failed. */
-export const LAUNCH_DELIVERY_ATTEMPTS = LAUNCH_RETRY_SCHEDULE_MS.length
 
 /**
  * How long an armed node whose gate is OPEN may sit with no terminal to deliver into before the
@@ -169,9 +175,16 @@ export function launchTooltip(
   delivery: LaunchDelivery | undefined,
   waitingOn: string,
   command: string,
-  erroredOn?: string
+  erroredOn?: string,
+  relay = false
 ): string {
   const runs = `Runs:\n${command}`
+  if (relay) return `Launch delivery from a relay tab is unavailable. Open the host to run this command.\n${runs}`
+  if (delivery?.kind === 'failed')
+    return (
+      'Launch delivery is unconfirmed; automatic retry is stopped.\n' +
+      `Inspect the terminal, then press \u25b6 to retry at a shell prompt.\n${runs}`
+    )
   // Issue #521: an errored upstream is idle, so without this the tooltip would say "waiting for X
   // to finish" about a station that finished twenty minutes ago. Named first, because it is the
   // one case where waiting will not end on its own.
@@ -181,17 +194,13 @@ export function launchTooltip(
       'what it did not produce.\n' +
       `Retry or nudge it — a successful turn releases this — or press ▶ to run it now.\n${runs}`
     )
-  if (delivery?.kind === 'failed')
-    return (
-      `This session did not accept its launch — ${delivery.attempts} ` +
-      `attempt${delivery.attempts === 1 ? ' was' : 's were'} refused, and nothing will retry it.\n` +
-      `Press \u25b6 to run it now.\n${runs}`
-    )
   if (delivery?.kind === 'stalled')
     return (
       'Ready to run, but this terminal has not started yet — the launch is still held and ' +
       'fires as soon as it does.\n' +
       `Press \u25b6 to try it now.\n${runs}`
     )
-  return `Waiting for ${waitingOn} to finish, then runs:\n${command}`
+  return waitingOn
+    ? `Waiting for ${waitingOn} to finish, then runs:\n${command}`
+    : `Queued; waiting for launch delivery.\n${runs}`
 }

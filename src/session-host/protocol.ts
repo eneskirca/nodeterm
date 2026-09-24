@@ -12,6 +12,11 @@
  * whose attach/flow contract predates its own. */
 export const SESSION_HOST_PROTOCOL_VERSION = 2
 
+// Independently versioned, additive messaging extension. The v1/v2 terminal/attach contract is
+// unchanged: an older live host rejects these unknown commands but is NEVER replaced to enable
+// them. A future incompatible messaging shape gets new command names, not a forced host restart.
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+
 /** Concrete parser owned by the live terminal generation. Kept in the host so a new renderer/main
  * process can safely encode a delayed launch without re-guessing from a stale profile id. */
 export type SessionHostShellDialect = 'posix' | 'pwsh' | 'windows-powershell' | 'cmd'
@@ -43,7 +48,17 @@ export interface SessionHostSpawnOptions {
  *  same idiom `ControlModeClient` uses for tmux control-mode, minus the positional-FIFO fragility
  *  (JSON here carries its own id, so an out-of-order reply is still recoverable). */
 export type SessionHostRequest =
-  | { id: number; cmd: 'hello'; token: string; protocolVersion: number }
+  | {
+      id: number
+      cmd: 'hello'
+      token: string
+      protocolVersion: number
+      /** Additive capabilities this CLIENT understands, independent of the protocol version (which
+       * a long-lived host can only change by being replaced). The host answers with the subset it
+       * also speaks in `HelloResult.features`, and must never push a frame a connection did not
+       * opt into here: an older client reads ANY push frame that is not `data` as an exit. */
+      features?: SessionHostFeature[]
+    }
   | {
       id: number
       cmd: 'attach'
@@ -78,8 +93,11 @@ export type SessionHostRequest =
   | { id: number; cmd: 'resize'; name: string; cols: number; rows: number }
   | { id: number; cmd: 'pause'; name: string }
   | { id: number; cmd: 'resume'; name: string }
-  | { id: number; cmd: 'sendKeys'; name: string; text: string; enter: boolean }
+  | { id: number; cmd: 'sendKeys' | 'sendKeysV2'; name: string; text: string; enter: boolean }
   | { id: number; cmd: 'paneCommand'; name: string }
+  | { id: number; cmd: 'messageOwnerV1'; name: string }
+  | { id: number; cmd: 'messagePasteReadyV1'; name: string }
+  | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
   | { id: number; cmd: 'capture'; name: string; full: boolean }
   | {
       id: number
@@ -126,6 +144,11 @@ export type SessionHostEvent =
       exitCode: number
       generation?: string
     }
+  /** The size the host's pty now runs at, pushed whenever it changes (issue #914) — ONLY to a
+   *  connection that negotiated the `geometry` feature at hello. That gate is not a nicety: an
+   *  older client treats every non-`data` push frame as an exit and would retire a live session
+   *  on the first resize. */
+  | { type: 'geometry'; name: string; cols: number; rows: number; generation?: string }
 
 export type SessionHostFrame = SessionHostResponse | SessionHostEvent
 
@@ -142,7 +165,8 @@ export type SessionHostRequestBody = SessionHostRequest extends infer T
   : never
 
 export function isEventFrame(f: SessionHostFrame): f is SessionHostEvent {
-  return (f as SessionHostEvent).type === 'data' || (f as SessionHostEvent).type === 'exit'
+  const type = (f as SessionHostEvent).type
+  return type === 'data' || type === 'exit' || type === 'geometry'
 }
 
 /** Result payload shapes, `result` on a successful response — documented here rather than typed
@@ -170,7 +194,20 @@ export interface AttachResult {
   launchDialect?: SessionHostShellDialect
   /** Sanitized outcome for an atomic cold-start launch; no rendered input is reflected. */
   initialLaunchStatus?: 'executed' | 'already-executed'
+  /** The pty's size once this attach's own claim was applied. Present only for a connection that
+   *  negotiated the `geometry` feature (issue #914). */
+  geometry?: { cols: number; rows: number }
 }
+/** Additive, independently negotiated capabilities (see the `hello` request). */
+export type SessionHostFeature = 'geometry'
+export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry']
+
+/** `result` of a v2 `hello`. `features` is absent from a host that predates feature negotiation. */
+export interface HelloResult {
+  protocolVersion: number
+  features?: SessionHostFeature[]
+}
+
 export interface HasSessionResult {
   exists: boolean
   /** Required with exists:true in v2; legacy v1 hosts do not provide it. */

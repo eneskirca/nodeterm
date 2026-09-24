@@ -28,11 +28,12 @@ import path from 'path'
 import { app, ipcMain, type BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc'
 import { REF_MAX_LEN } from '../../shared/presence'
-import type { CanvasMutation, CanvasState, DirEntry, KanbanColumn, PtyCreateOptions } from '../../shared/types'
+import type { CanvasMutation, CanvasState, DirEntry, KanbanColumn, KanbanLabel, PtyCreateOptions } from '../../shared/types'
 import type { AgentId } from '../../shared/agents/config'
 import { PtyManager, type DetachedSinks } from '../../core/pty-manager'
 import * as fsOps from '../../core/fs-ops'
 import { TITLE_MAX, type RemoteNodeInput } from '../../core/project-node-append'
+import { parseCardLabelEdit, type CardLabelEdit } from '../../core/project-kanban-write'
 import { getStoredEntitlement, isPremium } from '../../core/license'
 import { publicKeyToB64, type KeyPair } from './e2ee'
 import { loadOrCreateHostKeyPair, HostKeyLockedError } from './host-identity'
@@ -167,6 +168,15 @@ export interface HostKanbanOps {
   ensureBoard(projectId: string): Promise<KanbanColumn[] | null>
   /** Move a card to a column (null = the virtual Ungrouped column). False = nothing was written. */
   setCardColumn(projectId: string, nodeId: string, columnId: string | null): Promise<boolean>
+  /** Add / remove / create board labels on one card (`projects.editCardLabels`) — the phone's
+   *  long-press label sheet. Answers the palette + the card's label ids as they now stand, or null
+   *  when the project has no writable file. Optional so a host (or test fake) built before the verb
+   *  answers an honest "not served" instead of failing to compile. */
+  editCardLabels?(
+    projectId: string,
+    nodeId: string,
+    edit: CardLabelEdit
+  ): Promise<{ edited: boolean; labels: KanbanLabel[]; cardLabelIds: string[] } | null>
 }
 
 interface Stream {
@@ -276,8 +286,23 @@ export function createHostHandlers(
 
   // Build the output/exit sinks for a new stream: pipe PTY output into OP.Output frames (with
   // relay backpressure -> setFlow pause/resume) and PTY exit into an OP.Error frame.
-  function makeSinks(streamId: number, stream: Stream): DetachedSinks {
+  //
+  // `resizedFrames` is the client saying it renders `OP.Resized` — the size the shared pty really
+  // runs at, same payload layout as `OP.Resize` (2x uint16 LE cols, rows). Only a session-host
+  // session ever sends one (issue #914: it follows its most recently active viewer, which may be a
+  // desktop node). The frame is sent either way — a client that does not know it drops it — but
+  // a client that did NOT opt in is treated as unable to adapt, so the session never grows past
+  // its screen: output wider than the phone would wrap into garbage there rather than clip.
+  function makeSinks(streamId: number, stream: Stream, resizedFrames: boolean): DetachedSinks {
     return {
+      adaptsToSize: resizedFrames,
+      onSize: (size) => {
+        const payload = new Uint8Array(4)
+        const view = new DataView(payload.buffer)
+        view.setUint16(0, Math.min(0xffff, Math.max(1, size.cols)), true)
+        view.setUint16(2, Math.min(0xffff, Math.max(1, size.rows)), true)
+        socket.sendFrame(OP.Resized, streamId, stream.seq++, payload)
+      },
       onData: (data) => {
         const bytes = textEncoder.encode(data)
         const ok = socket.sendFrame(OP.Output, streamId, stream.seq++, bytes)
@@ -342,7 +367,7 @@ export function createHostHandlers(
 
     const streamId = ++streamCounter
     const stream: Stream = { sessionId: '', persistKey: nodeId, seq: 0, paused: false }
-    const sinks = makeSinks(streamId, stream)
+    const sinks = makeSinks(streamId, stream, p.resizedFrames === true)
 
     // Reserve the stream, then respond so the client can route Input/Resize frames; the snapshot
     // + live attach then proceed. Capturing the screen is async (a tmux side-call).
@@ -550,6 +575,12 @@ export function createHostHandlers(
    *
    * `projects.setCardColumn { projectId, nodeId, columnId | null }` → `{ moved }`: move one card.
    *
+   * `projects.editCardLabels { projectId, nodeId, add?, remove?, create? }` →
+   * `{ edited, labels, cardLabelIds }`: the phone's long-press label sheet, writing the SAME board
+   * labels the canvas node's "+ Label" row and the kanban card edit (`@shared/kanban-labels`).
+   * `labels: null` = this project has no writable file; `edited: false` with a palette = nothing
+   * changed (a retry, or an `add` naming a label the phone's stale copy still had).
+   *
    * Validation lives in the store's pure transforms (`project-kanban-write.ts`), which refuse
    * anything they cannot do rather than inventing a board or a column — and a refusal is an
    * `ok:{...false}` ANSWER, not a protocol error, because the phone must be able to tell the user
@@ -579,7 +610,38 @@ export function createHostHandlers(
     }
     const nodeId = str(p.nodeId)
     if (!nodeId) {
-      socket.respond(req.id, false, { message: 'projects.setCardColumn requires a nodeId.' })
+      socket.respond(req.id, false, { message: `${req.method} requires a nodeId.` })
+      return
+    }
+    if (req.method === 'projects.editCardLabels') {
+      if (!kanban.editCardLabels) {
+        socket.respond(req.id, false, { message: `${req.method} is not served on this host.` })
+        return
+      }
+      // Validated HERE, at the write site, before the store is touched: the params are client-sent
+      // and end up in a git-shared, hand-editable file every collaborator's canvas renders. A
+      // malformed edit is a protocol error (the phone sent something it should never send), unlike
+      // a stale label id, which is an `edited:false` answer carrying the current palette.
+      const edit = parseCardLabelEdit({ add: p.add, remove: p.remove, create: p.create })
+      if (!edit) {
+        socket.respond(req.id, false, {
+          message:
+            'projects.editCardLabels requires add/remove (label ids) and/or create ' +
+            '({name, color}) with at least one entry; names must be 1–60 characters without ' +
+            'control characters and colors one of the board palette.'
+        })
+        return
+      }
+      void kanban
+        .editCardLabels(projectId, nodeId, edit)
+        .then((res) =>
+          socket.respond(
+            req.id,
+            true,
+            res ?? { edited: false, labels: null, cardLabelIds: null }
+          )
+        )
+        .catch(() => socket.respond(req.id, true, { edited: false, labels: null, cardLabelIds: null }))
       return
     }
     // `null` is a REAL value here (the virtual Ungrouped column), so it must be told apart from a
@@ -762,6 +824,7 @@ export function createHostHandlers(
           break
         case 'projects.ensureBoard':
         case 'projects.setCardColumn':
+        case 'projects.editCardLabels':
           handleKanban(req)
           break
         case 'node.wake':
@@ -1279,8 +1342,8 @@ export function initRemoteHost(
   // so an event meant for the phone must not disturb an already-approved interactive session.
   ipcMain.on(IPC.remoteHostApprove, (_e, msg: { id?: string; pub?: string } = {}) => {
     const matched =
-      (pendingApprovalId && msg?.id === pendingApprovalId) ||
-      (pendingApprovalPub && msg?.pub === pendingApprovalPub)
+      pendingApprovalId && msg?.id === pendingApprovalId &&
+      (msg.pub === undefined || msg.pub === pendingApprovalPub)
     if (!matched) return
     pendingApprovalId = null
     pendingApprovalPub = null
@@ -1289,8 +1352,8 @@ export function initRemoteHost(
   // Host human rejected the pending device → drop the connection entirely (pending sessions only).
   ipcMain.on(IPC.remoteHostReject, (_e, msg: { id?: string; pub?: string } = {}) => {
     const matched =
-      (pendingApprovalId && msg?.id === pendingApprovalId) ||
-      (pendingApprovalPub && msg?.pub === pendingApprovalPub)
+      pendingApprovalId && msg?.id === pendingApprovalId &&
+      (msg.pub === undefined || msg.pub === pendingApprovalPub)
     if (!matched) return
     pendingApprovalId = null
     pendingApprovalPub = null

@@ -40,3 +40,9 @@ describe('mediaCachePruneList', () => {
     expect(MEDIA_CACHE_KEEP).toBeGreaterThan(0)
   })
 })
+
+it('retains session media even when older than the cache cap', () => {
+  const entries = [{ name: 'playing', mtimeMs: 1 }, { name: 'old', mtimeMs: 2 }, { name: 'new', mtimeMs: 3 }]
+  expect(mediaCachePruneList(entries, 'new', 1, new Set(['playing']))).toEqual(['old'])
+  expect(mediaCachePruneList(entries, 'new', 1)).toEqual(['old', 'playing'])
+})

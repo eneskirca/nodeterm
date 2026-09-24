@@ -18,8 +18,8 @@
  * The predicate is deliberately the NARROWEST one that closes the bug: it takes both halves, and
  * either half alone leaves today's behavior untouched. A tmux-backed session is never protected
  * (the kill costs a redraw, and protecting it would forfeit real memory on the setups where
- * reclaiming it is free); a plain terminal, a finished agent and an unknown state are never
- * protected either (nothing is running to lose).
+ * reclaiming it is free); a plain terminal is never protected either. An agent CLI still running
+ * in the pane IS protected even when idle (`agentProcess`) — see `wouldKillLiveWork`.
  */
 import { WORKING_STALE_MS } from '@shared/agents/stale'
 import type { AgentState } from '@shared/agents/normalize'
@@ -45,11 +45,53 @@ export interface LiveWorkInput {
   /** The node's live agent state (`agentStatus.byId[nodeId].state`); absent = a plain terminal, or
    *  no hook event seen for it yet. */
   agentState?: AgentState
+  /**
+   * Is an agent CLI believed to be running in this pane, whatever its turn state
+   * (`agentProcessInPane`)? Absent = not known, which keeps the state-only rule.
+   */
+  agentProcess?: boolean
 }
 
-/** Would tearing down this terminal's PTY client destroy work that is still running? */
+/**
+ * Would tearing down this terminal's PTY client destroy work that is still running?
+ *
+ * On a non-persistent pty an IDLE agent is live work too. The CLI process is the conversation's
+ * only live holder: killing it and letting cold restore `--resume` it on revive looks harmless, but
+ * the resumed CLI fires `SessionStart:resume` and then sits at its prompt emitting nothing. The
+ * status mirror commits that boundary as unverified-and-stateless, so agent messaging refuses the
+ * node (`targetStatusStale`) for as long as it stays idle — and only a message could end the idle.
+ * Measured 2026-09-13 on Windows native ptys: an architect node idle at 12:39, resumed at 13:13 with
+ * no user turn, refused every send at 15:28 while its terminal showed Claude at the prompt.
+ */
 export function wouldKillLiveWork(i: LiveWorkInput): boolean {
-  return !i.tmuxBacked && !!i.agentState && LIVE_AGENT_STATES.has(i.agentState)
+  if (i.tmuxBacked) return false
+  if (i.agentProcess) return true
+  return !!i.agentState && LIVE_AGENT_STATES.has(i.agentState)
+}
+
+/**
+ * Is an agent CLI believed to be running in the pane? An agent node whose CLI we already exited
+ * (`hibernated`, `paused`), that we observed die (`dropped`) or that announced its own exit
+ * (`sessionEnded`) holds only a shell — killing that costs nothing a revive cannot restore, so it
+ * stays reclaimable.
+ *
+ * An agent whose hooks never report a session end (codex, opencode: see `SESSION_END_CAPABLE`)
+ * keeps reading as running after a deliberate quit. That is the safe direction: memory held, no
+ * work lost.
+ */
+export function agentProcessInPane(
+  agentId: string | undefined,
+  status:
+    | { hibernated?: boolean; paused?: boolean; dropped?: boolean; sessionEnded?: boolean }
+    | undefined
+): boolean {
+  return (
+    !!agentId &&
+    status?.hibernated !== true &&
+    status?.paused !== true &&
+    status?.dropped !== true &&
+    status?.sessionEnded !== true
+  )
 }
 
 /**

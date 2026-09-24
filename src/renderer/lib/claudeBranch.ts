@@ -1,3 +1,4 @@
+import { TEXT_NOT_SUBMITTED } from '@shared/text-delivery'
 // Drives Claude Code's own `/branch` slash command from a node action.
 //
 // Running `/branch` switches the CURRENT terminal onto a new branch and prints, e.g.:
@@ -25,6 +26,7 @@ export interface BranchResult {
 
 export async function branchClaudeSession(api: NodeTerminalApi, nodeId: string): Promise<BranchResult> {
   const sent = await api.pty.sendText(nodeId, '/branch')
+  if (sent === 'pasted-not-submitted') return { ok: false, error: TEXT_NOT_SUBMITTED }
   if (!sent) return { ok: false, error: 'Branch requires a persistent (tmux) session.' }
 
   // Poll the visible buffer until the branch output (with the original session id) appears.

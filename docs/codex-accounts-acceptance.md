@@ -53,10 +53,18 @@ Codex install + a **logged-in 2nd managed account**. Headless CI cannot run them
       conversation to an SSH account, then **recycle** the node onto the host. Owed on Mac + real host.
 - [ ] **The imperative pane-recycle glue** (commit → rebind → restartShell → finish) + a **live SSH
       remote-account switch.** The pure logic + the main-side switch are unit-tested; the imperative
-      renderer sequencing is only exercised against the running app.
-- [ ] **Remote-host account LIFECYCLE UI** (add / login / remove **on** an SSH host). The local picker +
-      switch are wired (PR 8.5); the remote-host lifecycle surface is **display + group only**,
-      fail-closed, owed to the host-relay follow-up. VERIFY it stays display-only and refuses to mint.
+      renderer sequencing is only exercised against the running app. The SSH switch is wired
+      (2026-09: node menu / kanban card → `switchThreadRemote` → relay `expose-thread` on the host →
+      recycle). VERIFY on a real host: switch an idle SSH Codex node A→B, the pane resumes the SAME
+      thread under B's `CODEX_HOME` (`echo $CODEX_HOME`, then the conversation history), and B's
+      usage moves; switch back B→A.
+- [ ] **Remote-host account LIFECYCLE** (add / login / remove **on** an SSH host). Wired 2026-09: the
+      machine panel's Add creates the home ON the host (`remoteCodexAccountAdd`), opens
+      `codex login --device-auth` in the host's tmux under that account's `CODEX_HOME`, and polls the
+      host for a real `auth.json`; Remove deletes it there. Unit-tested only. VERIFY on a real host:
+      the device flow completes, the row picks up the email (needs the relay runtime — without it the
+      login completes with no email), a new Codex node on that host runs under the managed home
+      (`echo $CODEX_HOME` in the pane), and Remove leaves no `~/.nodeterm/cx/<digest>` behind.
 
 ## Happy-path acceptance walk (the one a human runs end to end)
 

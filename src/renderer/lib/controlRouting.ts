@@ -14,6 +14,7 @@
 // that reads and changes nothing, answer straight out of its serialized nodes).
 
 import { canControlCanvas, type AgentId } from '@shared/agents/config'
+import { controlLaunchState, type LaunchDelivery, type StatusById } from './pendingLaunch'
 import { projectTravel } from './presenceTravel'
 import {
   projectCapabilityGrantedFor,
@@ -33,6 +34,8 @@ export interface StoredNode {
   id: string
   kind?: string
   title?: string
+  pendingLaunch?: unknown
+  agentId?: string
 }
 
 /**
@@ -167,7 +170,34 @@ export function answerBrowserResolve(
 /** `list`'s rows, built from serialized nodes — the same shape the live canvas answers with
  *  (`n.type` is the persisted `kind`, `n.data.title` the persisted `title`). */
 export function storedNodeListing(
-  nodes: readonly StoredNode[]
-): { id: string; kind: string; title: string }[] {
-  return nodes.map((n) => ({ id: n.id, kind: n.kind ?? 'terminal', title: n.title ?? '' }))
+  nodes: readonly StoredNode[],
+  statuses: StatusById & Record<string, { dropped?: boolean } | undefined> = {},
+  deliveries: Record<string, LaunchDelivery | undefined> = {}
+) {
+  return nodes.map((n) => {
+    const status = statuses[n.id]
+    const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status) ??
+      (n.agentId && !status?.state ? 'unconfirmed' as const : undefined)
+    return {
+      id: n.id, kind: n.kind ?? 'terminal', title: n.title ?? '',
+      ...(status?.lastTurnError ? { lastTurnErrored: true } : {}),
+      ...(launchState ? { launchState } : {})
+    }
+  })
+}
+
+const launchLabels = {
+  queued: 'QUEUED',
+  failed: 'LAUNCH FAILED',
+  stalled: 'QUEUED (terminal not ready)',
+  dropped: 'DROPPED',
+  working: 'WORKING',
+  unconfirmed: 'AGENT STATUS UNCONFIRMED'
+} as const
+
+export function controlListingText(rows: ReturnType<typeof storedNodeListing>): string {
+  return rows.map((n) => `${n.id} [${n.kind}] ${n.title}` +
+    (n.launchState ? ` — ${launchLabels[n.launchState]}` : '') +
+    (n.lastTurnErrored ? ' — LAST TURN ERRORED' : '')
+  ).join('\n')
 }

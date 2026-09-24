@@ -164,10 +164,10 @@ export function SessionRow({
           {row.usesContext && usage && (
             <span
               className="ss-ctx"
-              title={`Context window — ${percentText(usage.usedPercent, percentMode)}`}
+              title={`${usage.windowSource === 'estimate' ? 'Estimated context window' : 'Context window'} — ${percentText(usage.usedPercent, percentMode)}`}
               style={{ background: contextFillColor(usage.usedPercent) }}
             >
-              {contextPillText(usage.usedTokens, usage.windowTokens, usage.usedPercent, percentMode)}
+              {usage.windowSource === 'estimate' ? '~' : ''}{contextPillText(usage.usedTokens, usage.windowTokens, usage.usedPercent, percentMode)}
             </span>
           )}
           {/* Both buttons are invisible until the row is hovered, yet they used to hold 46px of a

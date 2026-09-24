@@ -32,6 +32,11 @@ const REMOTE_CURL_TIMEOUT_S = 10
 
 /** One remote Claude identity the usage popover can show a row for. */
 export interface RemoteUsageTarget {
+  /** Omitted on legacy Claude targets. */
+  provider?: 'claude' | 'codex'
+  remoteHome?: string
+  /** Changes when the reader connection is replaced; prevents reusing a former host session. */
+  connectionKey?: string
   /** Stable row identity: `<hostKey>#<accountId ?? ''>`. Also the service's cache key. */
   key: string
   /** `user@host` of the connection — matches `ClaudeAccount.host`. */

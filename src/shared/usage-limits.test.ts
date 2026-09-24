@@ -138,7 +138,7 @@ describe('hasAnyUsage', () => {
   })
 })
 
-function remoteRow(over: Partial<RemoteAccountUsage> & { limits?: UsageLimit[] } = {}): RemoteAccountUsage {
+function remoteRow(over: Partial<Extract<RemoteAccountUsage, { provider?: 'claude' }>> & { limits?: UsageLimit[] } = {}): RemoteAccountUsage {
   const { limits = [], ...rest } = over
   return {
     hostKey: 'root@alpha.example.com',

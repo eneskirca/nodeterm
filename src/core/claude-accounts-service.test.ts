@@ -11,7 +11,7 @@
  * the skill case and the local-fallback case redden.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -71,13 +71,14 @@ afterEach(() => {
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
-describe('registerClaudeAccountsIpc — the six channels', () => {
-  it('registers exactly the six claude-accounts channels', () => {
+describe('registerClaudeAccountsIpc — the seven channels', () => {
+  it('registers exactly the seven claude-accounts channels', () => {
     registerClaudeAccountsIpc()
     expect(Object.keys(fake.handlers).sort()).toEqual(
       [
         IPC.claudeAccountsAdd,
         IPC.claudeAccountsCancelWait,
+        IPC.claudeAccountsCopySession,
         IPC.claudeAccountsLink,
         IPC.claudeAccountsRemove,
         IPC.claudeAccountsSetSkillSharing,
@@ -382,5 +383,151 @@ describe('installHooksIntoLocalAccounts covers linked accounts', () => {
     ])
     installHooksIntoLocalAccounts([{ id: 'linked' }, { id: 'managed' }])
     expect(installed).toEqual(['/home/u/.claude-2', accountConfigDir(userDataDir, 'managed')])
+  })
+})
+
+// The running-node "Switch Claude account" copy. The renderer is not the boundary: core decides
+// which accounts are real targets, and it never copies into a pending/remote/unknown one.
+describe('claudeAccounts.copySession', () => {
+  const SID = '0123abcd-4567-89ef-0123-456789abcdef'
+  const acct = (id: string, extra: Partial<ClaudeAccount> = {}): ClaudeAccount => ({
+    id,
+    label: id,
+    createdAt: 0,
+    ...extra
+  })
+  const seed = (accountId: string, body: string): string => {
+    const dir = path.join(accountConfigDir(userDataDir, accountId), 'projects', '-work-repo')
+    mkdirSync(dir, { recursive: true })
+    const f = path.join(dir, `${SID}.jsonl`)
+    writeFileSync(f, body)
+    return f
+  }
+  const targetFile = (accountId: string): string =>
+    path.join(accountConfigDir(userDataDir, accountId), 'projects', '-work-repo', `${SID}.jsonl`)
+
+  it('copies the transcript into the target account under the same project dir', async () => {
+    registerClaudeAccountsSource(() => [acct('aaa'), acct('bbb')])
+    registerClaudeAccountsIpc()
+    seed('aaa', '{"a":1}\n')
+    expect(await call(IPC.claudeAccountsCopySession, SID, 'aaa', 'bbb')).toEqual({
+      ok: true,
+      copied: true
+    })
+    expect(readFileSync(targetFile('bbb'), 'utf8')).toBe('{"a":1}\n')
+  })
+
+  it('copies into the SYSTEM ~/.claude when the target is undefined', async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'nt-home-'))
+    const prev = process.env.HOME
+    process.env.HOME = home
+    try {
+      registerClaudeAccountsSource(() => [acct('aaa')])
+      registerClaudeAccountsIpc()
+      seed('aaa', 'x\n')
+      expect(await call(IPC.claudeAccountsCopySession, SID, 'aaa', undefined)).toEqual({
+        ok: true,
+        copied: true
+      })
+      expect(
+        readFileSync(path.join(home, '.claude', 'projects', '-work-repo', `${SID}.jsonl`), 'utf8')
+      ).toBe('x\n')
+    } finally {
+      process.env.HOME = prev
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a pending, remote or unlisted target — and copies nothing', async () => {
+    registerClaudeAccountsSource(() => [
+      acct('aaa'),
+      acct('pend', { pending: true }),
+      acct('rem', { host: 'u@h' })
+    ])
+    registerClaudeAccountsIpc()
+    seed('aaa', 'x\n')
+    for (const t of ['pend', 'rem', 'nope']) {
+      expect(await call(IPC.claudeAccountsCopySession, SID, 'aaa', t)).toEqual({
+        ok: false,
+        reason: 'unknown-account'
+      })
+      expect(existsSync(targetFile(t))).toBe(false)
+    }
+  })
+
+  it('refuses a malformed session id or account id', async () => {
+    registerClaudeAccountsSource(() => [acct('aaa'), acct('bbb')])
+    registerClaudeAccountsIpc()
+    expect(await call(IPC.claudeAccountsCopySession, '../../etc', 'aaa', 'bbb')).toEqual({
+      ok: false,
+      reason: 'bad-request'
+    })
+    expect(await call(IPC.claudeAccountsCopySession, SID, 42, 'bbb')).toEqual({
+      ok: false,
+      reason: 'bad-request'
+    })
+  })
+
+  it('answers no-transcript when the source account has no such conversation', async () => {
+    registerClaudeAccountsSource(() => [acct('aaa'), acct('bbb')])
+    registerClaudeAccountsIpc()
+    expect(await call(IPC.claudeAccountsCopySession, SID, 'aaa', 'bbb')).toEqual({
+      ok: false,
+      reason: 'no-transcript'
+    })
+  })
+})
+
+describe('claudeAccounts.copySession over SSH (ctx.projectId)', () => {
+  const SID = '0123abcd-4567-89ef-0123-456789abcdef'
+  const acct = (id: string, extra: Partial<ClaudeAccount> = {}): ClaudeAccount => ({
+    id,
+    label: id,
+    createdAt: 0,
+    ...extra
+  })
+  const remoteWith = (copySession?: unknown) => ({
+    remote: () => ({
+      add: async () => null,
+      readLogin: async () => null,
+      remove: async () => {},
+      ...(copySession ? { copySession } : {})
+    })
+  })
+
+  it('hands remote accounts (with their hosts) to the shell leg and never touches local disk', async () => {
+    const leg = vi.fn(async () => ({ ok: true as const, copied: true }))
+    registerClaudeAccountsSource(() => [acct('r1', { host: 'u@h' }), acct('r2', { host: 'u@h' })])
+    registerClaudeAccountsIpc(remoteWith(leg) as never)
+    expect(await call(IPC.claudeAccountsCopySession, SID, 'r1', 'r2', { projectId: 'p1' })).toEqual({
+      ok: true,
+      copied: true
+    })
+    expect(leg).toHaveBeenCalledWith('p1', SID, { id: 'r1', host: 'u@h' }, { id: 'r2', host: 'u@h' })
+    // The host's system ~/.claude is `{}` — no id, no host.
+    await call(IPC.claudeAccountsCopySession, SID, 'r1', undefined, { projectId: 'p1' })
+    expect(leg).toHaveBeenLastCalledWith('p1', SID, { id: 'r1', host: 'u@h' }, {})
+  })
+
+  it('refuses a LOCAL or pending account as an SSH target', async () => {
+    const leg = vi.fn()
+    registerClaudeAccountsSource(() => [acct('loc'), acct('pend', { host: 'u@h', pending: true })])
+    registerClaudeAccountsIpc(remoteWith(leg) as never)
+    for (const t of ['loc', 'pend']) {
+      expect(await call(IPC.claudeAccountsCopySession, SID, undefined, t, { projectId: 'p1' })).toEqual({
+        ok: false,
+        reason: 'unknown-account'
+      })
+    }
+    expect(leg).not.toHaveBeenCalled()
+  })
+
+  it('answers failed for an SSH ctx with no remote leg (the Server Edition) — not a local copy', async () => {
+    registerClaudeAccountsSource(() => [acct('r1', { host: 'u@h' })])
+    registerClaudeAccountsIpc()
+    expect(await call(IPC.claudeAccountsCopySession, SID, undefined, 'r1', { projectId: 'p1' })).toEqual({
+      ok: false,
+      reason: 'failed'
+    })
   })
 })

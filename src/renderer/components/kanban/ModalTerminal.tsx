@@ -1,3 +1,7 @@
+import { useContextEnsure } from '../../terminal/useContextEnsure'
+import { ptyRefusal } from '@shared/pty-refusal'
+
+import { patchImeModeSwitch } from '../../terminal/ime-mode-switch'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -103,12 +107,15 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
   const fitRef = useRef<FitAddon | null>(null)
   const transportRef = useRef<LocalTransport | null>(null)
   const agentSessionId = useAgentStatus((s) => s.byId[nodeId]?.sessionId)
+  const observedAgentId = useAgentStatus((s) => s.byId[nodeId]?.agentId)
   // MIRROR TerminalNode: transcript READS go to the account the session is actually running as,
   // which for a plain terminal is only ever the observed one. The spawn below keeps
   // `spawn.accountId` — launch identity stays creation-time.
   const observedAccount = useAgentStatus((s) => s.byId[nodeId]?.account)
   // …resolved against the live account list, so linking the dir repoints the reader at once.
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
+  useContextEnsure(api.context, nodeId, spawn.agentId ?? observedAgentId, agentSessionId, spawn.cwd,
+    effectiveAccountId(spawn.accountId, observedAccount, claudeAccounts))
   // One shallow-compared subscription for the whole appearance slice — see useXtermVisualSettings.
   // MIRROR TerminalNode: scoped to the OWNING project (`owningProjectId`, the active one — a modal
   // only ever opens over it), deliberately NOT this card's connection scope. `sshConnectionScope`
@@ -193,6 +200,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
     fitRef.current = fit
     transportRef.current = transport
     term.open(hostRef.current!)
+    patchImeModeSwitch(term)
     // Renderer-parity with the canvas terminals (see char-size-quantize): the modal co-views
     // the same session, so its column math must match what the canvas draws.
     quantizeCharSize(term)
@@ -314,8 +322,9 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch }: Moda
       })
       // Refused core-side (the master died inside our round-trip, or `ssh` is missing).
       if (res.unavailable) {
-        term.write('\r\n\x1b[90m[not connected — nothing was started locally]\x1b[0m\r\n')
-        if (projectId) reportSshDrop(projectId, nodeId)
+        const refusal = ptyRefusal(res.unavailable)
+        term.write(`\r\n\x1b[90m[${refusal.message}]\x1b[0m\r\n`)
+        if (refusal.connectionLost && projectId) reportSshDrop(projectId, nodeId)
         return
       }
       // Another client permanently deleted this node's session — never resurrect it (no live session

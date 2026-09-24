@@ -56,6 +56,43 @@ handler needs something only Electron has (an SSH ControlMaster, a native dialog
 **injected dep** whose absence is a documented degrade — see `registerTranscriptIpc` /
 `registerContextEnsureIpc` — rather than a reason to keep the whole handler in `src/main`.
 
+**Windows agent messaging:** direct ConPTY terminals are looked up by the runtime node index,
+not the persistence key. `NativeWindowsPane` checks console membership, the unambiguous native
+process chain and process birth times, and frames paste only after the terminal requested it.
+Do not replace that read with a stored `agentId` or the restart heuristic's deepest descendant.
+An interpreter such as `node` is named by its script's package `bin` entry, never as `node`, so
+npm-installed CLIs such as Codex are recognized. A session released by park expiry or offscreen
+release is still messageable: existence and routing ask the backend, not the attached client.
+Never put the submitting Enter in the same write as a message paste: `core/settled-submit.ts`
+pastes, waits for the envelope to render, then submits separately, on every backend.
+The persistent session-host transport has its own versioned messaging extension: the host checks
+its session generation, OS process identity and emulator before writing. An older live host keeps
+its terminals and refuses the extension; never restart it automatically or fall back to sendKeys.
+Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
+an unresolved file conflict. See `docs/windows-session-host.md`.
+
+Claude usage identity is scoped to the same config directory as its credentials. Read organization
+metadata even when credentials already include an email, and degrade to the email-only row when
+metadata cannot be read. Managed usage must never fall back to an unscoped system Keychain token:
+that would label one account's limits with another account's organization.
+
+Context-link maps authorize reads. Publish changes to edges, linked metadata, and background
+projects independently of canvas geometry updates; a debounce reset by every node render can
+starve publication indefinitely. Only merge projects owned by the same core, and use the rendered
+canvas's project epoch during tab switches. Core must revoke removed links before asynchronous
+transcript discovery or debug-file writes finish; an older write must never restore that access.
+Coalesce renderer updates before building the workspace map, without resetting the scheduled task.
+Intermediate publications retain resolved transcript paths only for unchanged identities; changing
+a session/account/location/hook path or removing the target invalidates that cache immediately.
+
+Windows installer safety (#829): `build/installer.nsh` overrides NSIS's process-killing check.
+A running app or session host blocks install/uninstall, and a failed process query blocks too.
+Never restore automatic host termination: quitting the app preserves those live sessions.
+Update preparation must keep saved canvas nodes: exit programs normally, quit, then have the user
+verify and stop any remaining host. Never recommend **End session** (it deletes nodes). Cold agent
+resume depends on supported, saved conversation history; it does not preserve running tasks.
+See `docs/windows-session-host.md` for the user-controlled preparation/recovery steps and limits.
+
 ## Three surfaces
 
 A feature is not done until you have decided how it behaves on each — even if the decision is "not
@@ -97,6 +134,13 @@ lane unaffected.
 
 ## House rules
 
+- **Branch labels describe a checkout on one core.** Share existing status reads through
+  `renderer/state/gitBranches.ts`; do not cache a branch forever by project id or copy a project
+  branch onto worktree nodes. Source, Sessions and worktree headers consume the same observations,
+  keyed by API identity, exact cwd and (for SSH) project identity. Never probe an SSH cwd locally
+  from a background header: only the active SSH project is git-routable. SSH headers observe
+  Source refreshes instead.
+
 - **Never call the user's machine a Mac in user-visible copy.** Use `thisMachine()` /
   `thisMachineCap()` / `machineNoun()` from `src/renderer/lib/machineName.ts` — "this Mac" on
   macOS, "this PC" on Windows, "this computer" elsewhere and in any Server Edition browser tab
@@ -106,6 +150,12 @@ lane unaffected.
   handing out shell access. `machineName.guard.test.ts` scans non-comment lines and will fail your
   PR; copy that really is macOS-specific (the ptmx-limit banner, the notch step) is exempt by name
   with its reason. Comments are not scanned.
+
+- **Bottom canvas pills must leave room for the measured dock.** `CanvasPills` bounds their row
+  and moves it above the dock when the side budget is too small. Only usage summary text may
+  truncate; keep refresh outside that overflow and keep the row free of stacking contexts so
+  popovers can still clear the sidebar/board. `scripts/usage-layout.test.ts` verifies real Chrome
+  layout and hit targets (set `CHROME_BIN` when Chrome is not at the Linux default path).
 
 - **An overlay you lay over a live terminal steals its wheel — give it `pointer-events: none`.**
   Wheel routing is a per-packet hit test on `closest('.nowheel')` (ours in `Canvas.tsx`, and React
@@ -232,6 +282,13 @@ lane unaffected.
   sees the pane app's own bytes — see CLAUDE.md's "We have our own VT emulator" for the one place
   that reasoning is inverted.
 
+- **A new session-host push frame must be negotiated at `hello`, never just sent.** An older
+  `SessionHostClient` treats EVERY push frame whose `type` is not `data` as an exit, and a
+  long-lived host routinely outlives the app that started it — so a frame the connection did not
+  opt into retires a live session. Add the capability to `SESSION_HOST_FEATURES`, send it only to
+  sockets that listed it (the `geometry` push of issue #914 is the worked example), and pin that
+  against the real bundled host as `session-host/geometry-host.test.ts` does.
+
 - **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
   correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
   shim directly. For short-lived app-owned subprocesses, pass the resolved path and argv through
@@ -247,6 +304,12 @@ lane unaffected.
   "fix" this by installing the key into `administrators_authorized_keys`. The phone tries SSH before
   the relay, so a key that works locks it onto a path that cannot work. CLAUDE.md, "Remote access",
   has the details.
+
+- **A relay channel that names a project needs a row in `relay-project-scope.ts`.** A relay guest
+  bound to one shared project must never reach another, and the jail is keyed on channel class:
+  anything named `githubIssues:*`, `board-log:*` or `projects.*` is refused on a scoped session
+  unless that table can read its projectId. Add the row in the same PR as the channel, or the verb
+  is refused for every scoped guest (and `relay-project-scope.test.ts` goes red telling you so).
 
 - **Normalize BOTH sides of a path comparison, through one function.** A marker normalized where
   it is built and matched raw where it is used is a no-op on the machine you wrote it on and a
@@ -298,8 +361,19 @@ lane unaffected.
   unmounting. `display:none` is safe (measured: state, scroll and viewport size survive); a reorder
   or unmount reloads the user's page and loses their in-page state.
 
+- **A `<webview>` page's wheel never reaches the host DOM.** The guest is an out-of-process frame:
+  measured on Electron 42, physical Ctrl/Cmd+wheel reached the page and emitted `zoom-changed` on
+  the guest `WebContents`, while no host `wheel` listener fired. Keep `nowheel` on the webview host
+  (it protects React Flow routing) and install page zoom in main through `installWebviewZoom`;
+  removing the class or adding a renderer wheel handler cannot implement guest zoom. The shared
+  renderer controls call the same `@shared/webview-zoom` policy directly on the attached guest.
+
 These are the ones that come up in review most often. Each exists because its absence caused a real
 bug.
+
+**A project-scoped lookup cannot prove a node does not exist elsewhere.** Link refusals must
+name the project boundary and explain that cross-project linking is unsupported; do not scan other
+projects just to improve a missing-endpoint diagnostic.
 
 **A failed read is never evidence of absence.** "Could not measure" and "there is nothing" are
 different facts and must stay distinguishable at every layer. Collapsing them is how a panel ends up
@@ -350,6 +424,11 @@ come from git-shared JSON and can end up interpolated into a shell command line.
 `/bin/sh` against a fixture tree. A composed fixture will not tell you that `echo ##MEM` prints an
 empty line because `#` starts a comment.
 
+**Remote context polling must bound bytes before SSH transports them.** Bootstrap from the
+file's measured end, keep offsets in raw bytes, and distinguish an idle read from failure so
+the poller can back off. Bootstrap history restores usage only, never task/result events.
+`core/remote-ssh/transcript-window.ts` and the real-shell remote-context tests pin this contract.
+
 **A shared agent daemon is live-session infrastructure.** Codex's app-server control socket is
 shared by every `--remote` TUI in an account scope, so stopping or replacing one daemon disconnects
 every attached canvas node. A managed launcher must keep the already-bound thread under a bounded
@@ -363,6 +442,13 @@ command string. `/proc/<pid>/cmdline` is mode 444 on a stock Linux, and a remote
 on the host too: we shipped the hook bearer that way and any other account on the machine could read
 it and open a terminal running an arbitrary command. Pass secrets by 0600 file or by **stdin**
 (`curl --config -`), and never add an argv fallback. See `docs/node-identity.md`.
+
+**A hook socket path is not ownership proof.** Never unlink a live listener to bind a hook
+socket, or overwrite an advertisement whose socket/TCP listener still answers. Local stale cleanup requires `ECONNREFUSED` and an unchanged socket inode; regular files,
+symlinks and uncertain probes are preserved. SSH setup allocates a fresh socket and publishes an
+installation-qualified endpoint only after bearer verification. A wrong bearer answers 421 before
+any handler runs; only that explicit wrong-owner response (or transport failure) permits endpoint
+failover. A node-identity 403 stays final. Test with disposable sockets, never a running user's tunnel.
 
 **Both raw listeners change together** — `src/main/index.ts` and `src/server/agent-status.ts`. A new
 field on a hook event that reaches only the desktop leaves the Server Edition quietly without the
@@ -573,6 +659,11 @@ arrangement on screen both confirm first, because layout edits are not in the un
 does not, because it is. Whether a dialog claims the edit reaches other people comes from
 `layoutIsShared`, which is true for an SSH project as well as a folder one.
 
+**Keep-alive webview ghosts must stay mounted, but must not enter minimap geometry.**
+They use `display:none`, not React Flow's `hidden` (which unmounts the guest). Render canvas maps
+through `VisibleMiniMap`: it filters both drawing and bounds in a minimap-only store while sharing
+the live camera. A transparent rectangle alone still distorts the map's scale.
+
 **React Flow's `fitView` is queued, not immediate — never use it to frame something automatically.**
 Calling it sets `fitViewQueued` and the fit runs from a later `setNodes` (only once every node is
 measured) or the next `updateNodeInternals`, against whatever the node lookup holds by then; a fit
@@ -611,7 +702,78 @@ examples). If the same effect also WRITES, latch its first run: otherwise switch
 mid-session applies stored state to whatever the user is doing right then, which is a different
 feature from the one they asked for.
 
+Maximize placement and refocusing must use the same measured usable rectangle
+(`measureMaximizeInsets`): pinned side panels plus persistent top controls and bottom dock.
+Do not hardcode chrome heights or add the outer margin twice; transient menus must not resize
+terminals. Ordinary focus and zone snap keep their own policies. Test the maximized-only
+focus decision through `viewportForNodeFocus`, the same helper Canvas calls, rather than
+passing preselected insets straight to the geometry function.
+
+**Usage readouts distinguish failed reads from empty data.** For Claude, show the failure when
+`status` is `error` and limits are empty, including beside other providers; preserve last-known
+bars when limits remain. Keep both single-account and multi-account views covered.
+
+**A context capacity needs session provenance.** Claude's effective `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+is reported by its managed hook, accepted only with verified node identity, and validated as a
+positive decimal safe integer. Never read the app's global env for another session or let a
+model-family guess enlarge an observed limit. Unobserved Claude windows are labelled estimates.
+The renderer rehydrates through `context.ensure`; it does not restore Claude denominators from
+storage. Other agents retain transcript-window persistence.
+Only an explicit ensure replays an unchanged live snapshot; repeated hook observations must not
+broadcast it again. Remote path, ControlMaster or connection changes replace the tracked generation.
+
+**Command-bearing terminal opens (issue #653):** the shared hook-server route requires verified
+node identity whenever `open-terminal` carries `cmd`, including an empty value or a dry run.
+The strict-policy override and foreign-instance fallback cannot release this gate. Desktop plain
+terminal opens keep their existing identity policy; Server Edition still requires verification
+for every control verb. Legacy mobile/SSH callers must present this instance’s node token for
+command-bearing opens; this does not add a human-confirm dialog or change mobile transport APIs.
+
+Grok billing diagnostics must keep HTTP codes and safe failure categories per billing view. Never send raw error messages, URLs or response bodies to the UI; credentials remain read-only. A failed view is not proof that there is no quota, even when the other view responds.
+
+## User-owned agent settings
+
+Claude/Gemini settings must go through the guarded transactions in
+`src/core/agents/hooks/{settings-file,remote-settings-file}.ts`. Confirmed absence or a successfully read empty/whitespace file may start from `{}`;
+malformed, non-object and unreadable files must survive unchanged.
+Keep unrelated settings and foreign hook handlers. Stage writes, serialize nodeterm writers,
+and compare the original bytes again before publishing; never use `cat … || echo '{}'` or a
+catch-all read fallback. Local and SSH symlinked profiles update and lock the resolved target without replacing
+the link; recheck resolution before publishing. SSH uses plain readlink and cd -P (no GNU -f),
+and refuses dangling/cyclic links and newline paths. A conflicting/stale lock skips installation
+with a diagnostic naming the lock and safe manual recovery; do not steal it from another process. These locks
+coordinate nodeterm, not external editors, so do not claim a filesystem-wide compare-and-swap.
+**Creating an agent node is not proof it started.** Control opens retain their launch command
+until delivery is acknowledged, and report `queued` while it is held. A successful terminal send
+proves delivery only; never describe it as a healthy/running agent without agent evidence.
+Desktop launches (automatic and Run now) use the echo-verified command writer, not `sendText`.
+Keep unsubmitted UI intent durable through shell settle/unmount. New intent carries `attempted:false`;
+Desktop and Server save `attempted:true` before input. Never-attempted warm `--after` launches may
+proceed after shell verification; attempted/legacy-unknown intent requires Run now. Only confirmed
+submission clears intent. Desktop open replies use `createControlOpenBatch` for queued accounting;
+protect that contract and concurrent submission with behavior tests, never source-text pins.
+Relay queued/restored launches and Run now are refused until a scoped durable claim API exists.
+A new relay UI initialCommand may run once on a fresh PTY through the verified writer, without
+workspace writes or pendingLaunch creation. Consume its transient attempt before shell settle;
+never retry it on remount or serialize it as durable intent.
+Never round-trip a relay workspace load into save: the load can contain only one shared project,
+while save replaces the entire host index. A pre-input parked-project deferral keeps intent
+never-attempted; it must not poison the writer or trigger a retry timer.
+Held Desktop launches retain their attached transport even offscreen with tmux (large fan-outs cost
+memory). Server deferred delivery is one-shot: a failed probe/send needs explicit recovery.
+
 ## Testing
+
+**Screenshot paste has one route per gesture.** On macOS, Cmd+V saves/uploads a file and
+pastes its path; Ctrl+V belongs to the foreground program. A node's configured agent is not
+proof of foreground clipboard-image support. Keep shell/SSH/Server file routing and capture
+suppression of accompanying text; do not synthesize Ctrl+V or try both routes without a
+capability and receipt protocol. The shortcuts panel documents this distinction (#712).
+
+The titlebar's scroll viewport owns its `no-drag` region. Do not add `app-region: no-drag`
+to tabs or their descendants: Electron can subtract their off-screen rectangles from the
+wordmark's drag area. `scripts/tabbar-drag.test.ts` checks native hit testing with isolated
+Electron/Xvfb on Linux; macOS traffic lights and actual window movement still need device checks.
 
 `npm test` must pass, and `npm run typecheck` is the fastest gate.
 
@@ -690,6 +852,80 @@ Two files, two audiences:
 **If you change or discover something other contributors must know, update this file too.** An
 invariant that only lives in a commit message is one refactor away from being violated by someone
 who never saw it.
+
+**Windows text submission waits for the composer.** Use `core/settled-text.ts` for native PTY and
+session-host `sendText`: adjacent paste/Enter writes can be consumed in one read. The bounded
+screen check may leave text unsubmitted; propagate `pasted-not-submitted` all the way to the
+caller and tell the user to inspect the terminal. Never treat that truthy string as success or
+automatically retry the paste. True means the requested writes completed, not that a turn began.
+The versioned `sendKeysV2` host request refuses old hosts without fallback or restart. Collapsed
+or hidden pastes may need manual Enter; device testing remains necessary.
+
+An unanswered Claude `AskUserQuestion` is correlated by session and tool-use ID in the core
+mirror, independently of its short-lived display stash. Ordinary hooks, subagent activity and
+unrelated transcript results must not clear attention or archive its inbox card. Both shells
+use `recordQuestionResult` for transcript rescue (including Escape/decline), and broadcast the
+mirror's effective event. Keep result IDs through local and SSH tails; a boolean “some tool
+finished” is insufficient. Explicit new user turns, interrupts and session boundaries reset it.
+
+Remote Codex account safety (#736): managed SSH Codex sessions and agent-less login terminals
+require a known safe account id and a safe resolved remote home before spawning. The remote env
+builder supplies their private `CODEX_HOME`; never fall back to the system login when that scope
+is unavailable. System SSH Codex retains the host environment, including during early attach
+before home discovery; never inject a guessed `HOME` or `CODEX_HOME`. Custom Codex harnesses use
+the same guard. Desktop supports remote account lifecycle; the Server browser still explicitly
+rejects managed Codex account management.
+
+- Media URLs live for the app run. Remote cache pruning must keep files already handed to
+  players; the cache cap is soft until restart. Use the existing `video` node for audio too.
+- Subagent reload replay is display-only and current-host-only. Never replay status/permission
+  events or treat a replayed card as verified process ownership; subscribe before taking its snapshot.
+
+**Phone consent belongs to the verified handshake, not the browse socket.** A standing phone's
+SAS request survives transport closure only until its 120-second deadline; approval requires the
+issued id and displayed box key together. Keep request/reply outcomes distinct (stale request,
+failed pin save, missing IPC response, saved-but-disconnected). All production pin/revoke writers
+must use `updateApprovedDevices` for the whole read/modify/write, so concurrent updates cannot
+lose approvals or resurrect revoked keys. Server Edition does not host this legacy relay path.
+
+Managed Codex login terminals are agent-less: core identifies their provider from the saved
+account list. Before opening one, await `useSettings.getState().flush()` after adding the account.
+The normal 300 ms coalesced save is too late: an unknown id can launch against the system home.
+
+Claude child `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks must not drive parent state.
+Child `PermissionRequest` and attention `Notification` hooks still reach needs-you and phone
+approvals, including the raw approval summary and deterministic reply ticket. Keep raw summary
+recording before the child transcript-association guard in both shells.
+
+A held parent question can overlap child permissions: retain its question card and waiting
+state while publishing each approval ticket separately. Approval replies resolve only their
+own ticket; the picker stays pending until its correlated answer or explicit reset.
+When the parent answers first, retain concurrent approval tickets and blocked attention until
+their own replies; ordinary tool activity cannot settle them. Explicit turn/session resets
+still cancel both kinds of pending attention.
+
+Optional hook ownership failures must never stop Desktop window creation or Server boot. Use the
+shared nonfatal startup path and surface its actionable diagnostic. A responding HTTP port is not
+nodeterm identity: verify bearer acceptance and rejection. Legacy SSH endpoint migration requires
+ownership proof, an unchanged-file check, and stdin-only credential transfer; a project name alone
+is not permission to replace another installation's advertisement.
+
+Held approval attention must not replace subagent, recurring or background-task events, or refresh
+state evidence from those lifecycle hooks. A parent may ask several questions while a child ticket
+is outstanding: track each new picker and preserve child approval cards independently, including
+when their display titles match. Answering either resolves only that question or ticket.
+
+SSH Codex metrics must stay scoped to the host and account being read. Credentials and quota
+HTTP requests remain on that host; only sanitized usage returns over SSH. Never route a failed
+remote context lookup into a local transcript reader, or reuse Claude's token formula/window
+estimate for Codex. The system account follows the host login environment; managed accounts
+use their validated private home. Usage refresh must not start or repair a shared Codex daemon.
+
+Delayed Windows message submission must recheck the attested child process/birth AND emulator
+paste mode immediately before Enter, not just the surviving PTY root. A missing host reply after
+a transmitted text request is uncertain delivery, never a pre-paste refusal; show the no-resend
+warning. SessionStart idle rescue is scoped to that same nonempty session and agent identity,
+and a foreign idle must not broadcast fresh state proof to the renderer.
 
 **Browser control must measure settled geometry.** A CDP wheel acknowledgement precedes
 Chromium's scroll frames. Use the bounded settlement helper before reporting movement or

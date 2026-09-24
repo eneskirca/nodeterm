@@ -1,6 +1,7 @@
 // Reads remote files over the project's existing ControlMaster (`ssh <childArgs> 'tail …'`).
 // Pure builders + an injected-runner class so the read logic is electron-free and unit-testable;
 // the actual ssh spawn is injected by the caller (Tasks 2/3 wire it to the project's runner).
+import { transcriptWindowCommand, parseTranscriptWindow, type TranscriptWindow } from '../../core/remote-ssh/transcript-window'
 import { childArgs } from '../../core/remote-ssh/control-master'
 import { posixQuote, type SshConnection } from '../../shared/ssh'
 
@@ -28,9 +29,17 @@ export function tailLastBytesArgs(conn: SshConnection, controlPath: string, path
   return childArgs(conn, controlPath, `tail -c ${bytes} ${posixQuote(path)}`)
 }
 
-/** Reads a remote file over the project's ControlMaster. Fail-open: errors → empty. */
+/** Reads over the project's ControlMaster. Legacy methods fail open; context reads throw. */
 export class RemoteFile {
   constructor(private run: (args: string[]) => Promise<{ code: number; stdout: string }>) {}
+
+  /** Strict snapshot read for the context poller: failure must trigger backoff, not look idle. */
+  async readContextWindow(ref: RemoteFileRef, offset: number | null, cap: number): Promise<TranscriptWindow> {
+    const { code, stdout } = await this.run(childArgs(ref.conn, ref.controlPath,
+      transcriptWindowCommand(ref.path, offset, cap)))
+    if (code !== 0) throw new Error('Remote transcript command failed')
+    return parseTranscriptWindow(stdout, cap)
+  }
 
   async readFrom(ref: RemoteFileRef, offset: number): Promise<{ text: string; newOffset: number }> {
     try {

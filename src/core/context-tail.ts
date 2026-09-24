@@ -4,7 +4,7 @@
 // as ContextWindowUsage keyed by sessionId.
 import fs from 'fs'
 import type { ContextWindowUsage } from '../shared/types'
-import { cachedWindowFor, resolveModelWindow } from './model-window'
+import { cachedWindowFor } from './model-window'
 import { splitCompleteLines } from './subagent-tail'
 
 const POLL_MS = 1000
@@ -107,19 +107,25 @@ export function parseTaskNotifications(text: string | string[]): TaskNotificatio
   return out
 }
 
-/**
- * Did this chunk of transcript carry a TOOL RESULT? That is the moment a tool the CLI was blocked
- * on has settled — which is the only signal we get when an ask ENDS without a hook.
- *
- * The case: an `AskUserQuestion` picker is up (node = needs-you) and the user presses Esc. Claude
- * records "User declined to answer questions" as the tool's result and carries on, but the aborted
- * tool fires no PostToolUse, and Stop does not run either — so nothing told us the ask was over and
- * the node sat on NEEDS YOU (badge, notch capsule, phone card) until the next prompt hours later.
- *
- * Deliberately not decline-specific: any tool_result means the blocking tool finished, whatever the
- * answer was. The caller only acts on it while the node is still in needs-you, so a normal turn's
- * constant stream of results costs nothing.
- */
+/** IDs of settled tools, including Escape/decline results. Never infer an answer from
+ * another tool's result or from result text. */
+export function parseToolResultIds(text: string | string[]): string[] {
+  const ids: string[] = []
+  for (const line of toLines(text)) {
+    if (!line.includes('tool_result')) continue
+    try {
+      const o = JSON.parse(line)
+      if (!Array.isArray(o.message?.content)) continue
+      for (const c of o.message.content) {
+        if (c?.type === 'tool_result' && typeof c.tool_use_id === 'string' && c.tool_use_id)
+          ids.push(c.tool_use_id)
+      }
+    } catch { /* torn or malformed transcript line */ }
+  }
+  return ids
+}
+
+/** Legacy presence scanner; answer consumers must use parseToolResultIds. */
 export function hasToolResult(text: string | string[]): boolean {
   for (const line of toLines(text)) {
     const s = line.trim()
@@ -141,8 +147,8 @@ export function hasToolResult(text: string | string[]): boolean {
 export interface ContextTailOptions {
   /** Fired when a tracked session's transcript announces a completed async subagent. */
   onTaskNotification?: (sessionId: string, n: TaskNotification) => void
-  /** Fired when a tracked session's transcript records a tool RESULT — see `hasToolResult`. */
-  onToolResult?: (sessionId: string) => void
+  /** Fired when a tracked session's transcript records a tool RESULT — see `parseToolResultIds`. */
+  onToolResult?: (sessionId: string, toolUseId: string) => void
   /**
    * How to read the used/window numbers out of this agent's transcript. Defaults to claude's
    * `parseLatestUsage`. gemini and codex pass their own (`core/gemini-session.ts`
@@ -179,6 +185,7 @@ interface Tracked {
   lastUsed: number
   lastModel: string | null
   lastWindow: number
+  sessionWindow: number | null
   /** An async read is in flight — the next tick skips this session instead of double-reading. */
   reading: boolean
   /**
@@ -196,7 +203,9 @@ interface Tracked {
 }
 
 export interface ContextTail {
-  track(sessionId: string | undefined, transcriptPath: string | undefined): void
+  track(sessionId: string | undefined, transcriptPath: string | undefined, sessionWindow?: number | null): void
+  /** Replay a live snapshot only when a consumer explicitly asks to rehydrate. */
+  replay(sessionId: string): void
   untrack(sessionId: string | undefined): void
   /** The transcript path currently tracked for a session, if any. */
   pathFor(sessionId: string | undefined): string | undefined
@@ -223,6 +232,7 @@ export function createContextTail(
       windowTokens: t.window,
       usedPercent,
       model: t.model,
+      windowSource: customParse ? 'transcript' : t.sessionWindow === null ? 'estimate' : 'session-env',
       updatedAt: Date.now()
     }
     send(payload)
@@ -287,28 +297,16 @@ export function createContextTail(
             for (const n of parseTaskNotifications(completeLines))
               opts.onTaskNotification(sessionId, n)
           }
-          if (opts?.onToolResult && hasToolResult(completeLines)) opts.onToolResult(sessionId)
+          if (opts?.onToolResult)
+            for (const id of parseToolResultIds(completeLines)) opts.onToolResult(sessionId, id)
         }
       }
 
-      // Reconcile the window every tick: kick off async API resolution once per model
-      // (self-gating), and use the best cached/static value now.
-      if (t.model) void resolveModelWindow(t.model)
-      // Whose number is the denominator: the transcript's own when the agent states one, else
-      // claude's model-family inference.
-      //
-      // `cachedWindowFor` is CLAUDE's inference and is consulted only on claude's path (no custom
-      // parser). It always answers a number — DEFAULT_WINDOW (200k) for anything it doesn't
-      // recognize — so handing it "gpt-5.6-sol" or "gemini-3.5-flash" would not fail, it would
-      // confidently return the wrong denominator. A custom parser that could not state a window
-      // therefore yields `null`, and null pushes NOTHING (the guard below): a meter is a
-      // percentage, and a used count over a guessed denominator is worse than no meter at all.
-      //
-      // Claude's path is unchanged by construction: no custom parser ⇒ `cachedWindowFor(t.model)`
-      // exactly as before, always > 0, so the added guard can never fire for it.
-      const win = customParse ? t.parsedWindow : cachedWindowFor(t.model)
+      // The observed session env outranks model-family estimates, even when it is smaller.
+      // Custom parsers own their denominator and never inherit Claude configuration.
+      const win = customParse ? t.parsedWindow : t.sessionWindow ?? cachedWindowFor(t.model)
 
-      if (!sessions.has(sessionId)) return // untracked while this async read was in flight
+      if (sessions.get(sessionId) !== t) return // untracked while this async read was in flight
       if (
         t.used > 0 &&
         win !== null &&
@@ -335,14 +333,14 @@ export function createContextTail(
   }
 
   return {
-    track(sessionId, transcriptPath) {
+    track(sessionId, transcriptPath, sessionWindow) {
       if (!sessionId || !transcriptPath) return
       const existing = sessions.get(sessionId)
-      if (existing) {
-        if (existing.path !== transcriptPath) {
-          existing.path = transcriptPath
-          existing.offset = 0
-          existing.carry = null
+      if (existing && existing.path === transcriptPath) {
+        if (sessionWindow !== undefined && sessionWindow !== existing.sessionWindow) {
+          existing.sessionWindow = sessionWindow
+          existing.lastWindow = 0 // publish even if only provenance changed
+          void read(sessionId, existing)
         }
         return
       }
@@ -355,6 +353,7 @@ export function createContextTail(
         lastUsed: 0,
         lastModel: null,
         lastWindow: 0,
+        sessionWindow: sessionWindow ?? null,
         reading: false,
         carry: null,
         parsedWindow: null
@@ -362,6 +361,10 @@ export function createContextTail(
       sessions.set(sessionId, t)
       void read(sessionId, t) // immediate first value (resumed sessions already have content)
       if (!timer) timer = setInterval(tick, POLL_MS)
+    },
+    replay(sessionId) {
+      const t = sessions.get(sessionId)
+      if (t && t.used > 0 && t.lastWindow > 0) push(sessionId, t)
     },
     untrack(sessionId) {
       if (!sessionId) return

@@ -40,3 +40,26 @@ describe('video/web nodes', () => {
     expect(w.data.url).toBe('http://localhost:5173')
   })
 })
+
+describe('audio routing', () => {
+  it('routes local and remote audio to the existing media node kind', async () => {
+    const { isAudioFile, isMediaFile } = await import('./workspace')
+    const { fileOpenTarget } = await import('../lib/filesNode')
+    for (const path of ['/host/song.mp3', String.raw`C:\Music\SONG.FLAC`, '/host/sound.m4a', '/host/sound.opus']) {
+      expect(isAudioFile(path)).toBe(true)
+      expect(isMediaFile(path)).toBe(true)
+      expect(fileOpenTarget(path)).toBe('canvas')
+      expect(fileOpenTarget(path, { remote: true })).toBe('canvas')
+      expect(nodeStatesToFlow(flowToNodeStates([createVideoNode(0, path, undefined, true)]))[0].data.filePath).toBe(path)
+    }
+    expect(isAudioFile('/x.mp4')).toBe(false)
+    expect(isMediaFile('/x.txt')).toBe(false)
+  })
+})
+
+it('repairs a legacy audio editor on reload without changing its identity or SSH ownership', () => {
+  const node = nodeStatesToFlow(flowToNodeStates([{ ...createVideoNode(0, '/host/a.mp3', undefined, true), id: 'legacy', type: 'editor' }]))[0]
+  expect(node.type).toBe('video')
+  expect(node.id).toBe('legacy')
+  expect(node.data.sshFs).toBe(true)
+})

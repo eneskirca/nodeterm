@@ -15,7 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, promises as fs, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import { loadApprovedDevices, saveApprovedDevices } from './approved-devices'
+import { loadApprovedDevices, saveApprovedDevices, updateApprovedDevices } from './approved-devices'
+import { pinDevice, unpinDevice } from './approved-devices-core'
 import type { ApprovedDevices } from './approved-devices-core'
 
 // `file()` resolves <userData> through `app.getPath` on every call, so a mutable dir set in
@@ -38,6 +39,34 @@ describe('approved-devices atomic write', () => {
 
   const tmpsLeft = async (): Promise<string[]> =>
     (await fs.readdir(userData)).filter((f) => f.endsWith('.tmp'))
+
+  it('serializes pin/pin/revoke transactions without losing or resurrecting keys', async () => {
+    await saveApprovedDevices({ pubkeys: ['revoked'] })
+    await Promise.all([
+      updateApprovedDevices((s) => pinDevice(s, 'phone-a')),
+      updateApprovedDevices((s) => unpinDevice(s, 'revoked')),
+      updateApprovedDevices((s) => pinDevice(s, 'phone-b'))
+    ])
+    expect(await loadApprovedDevices()).toEqual({ pubkeys: ['phone-a', 'phone-b'] })
+  })
+
+  it('does not overwrite unreadable or malformed trust data with a new pin', async () => {
+    writeFileSync(target, '{broken')
+    await expect(updateApprovedDevices((s) => pinDevice(s, 'phone'))).rejects.toThrow()
+    expect(await fs.readFile(target, 'utf-8')).toBe('{broken')
+    vi.spyOn(fs, 'readFile').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    await expect(updateApprovedDevices((s) => pinDevice(s, 'phone'))).rejects.toThrow('denied')
+    expect(await fs.readFile(target, 'utf-8')).toBe('{broken')
+  })
+
+  it('a failed transaction leaves prior pins intact and does not poison the next save', async () => {
+    await saveApprovedDevices({ pubkeys: ['existing'] })
+    vi.spyOn(fs, 'rename').mockRejectedValueOnce(Object.assign(new Error('fixture'), { code: 'EXDEV' }))
+    await expect(updateApprovedDevices((s) => pinDevice(s, 'failed'))).rejects.toThrow()
+    await updateApprovedDevices((s) => pinDevice(s, 'next'))
+    expect(await loadApprovedDevices()).toEqual({ pubkeys: ['existing', 'next'] })
+    expect(await tmpsLeft()).toEqual([])
+  })
 
   it('two overlapping saves never share a tmp file (no torn write, no leftovers)', async () => {
     // Payloads that differ in LENGTH and in every byte: a spliced result then keeps a tail of the

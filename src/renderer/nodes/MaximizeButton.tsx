@@ -12,7 +12,7 @@ import { commandTooltip } from '../lib/keybindingOverrides'
 import { markWorkspaceDirty } from '../state/workspaceDirty'
 import { maximizeNodeToRect, restoreMaximizedNode, type CanvasNode } from '../state/workspace'
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from '../lib/nodeMaximize'
-import { measurePinnedInsets } from '../lib/pinnedInsets'
+import { measureMaximizeInsets } from '../lib/maximizeInsets'
 
 export function MaximizeButton({ id, maximized }: { id: string; maximized: boolean }) {
   const { setNodes, getViewport } = useReactFlow()
@@ -31,7 +31,7 @@ export function MaximizeButton({ id, maximized }: { id: string; maximized: boole
         width,
         height,
         NODE_MAXIMIZE_MARGIN_PX,
-        wrap ? measurePinnedInsets(wrap) : undefined
+        wrap ? measureMaximizeInsets(wrap) : undefined
       )
       return rect ? maximizeNodeToRect(flow, id, rect) : ns
     })

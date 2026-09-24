@@ -66,12 +66,22 @@ export type CodexSwitchDecision =
  *   - the node must be a Codex node (`agentId === 'codex'`);
  *   - it must have a resumable conversation id (`sessionId`) and an absolute-ish cwd;
  *   - the target must differ from the source (a no-op switch is refused, not run);
- *   - the target must pass `codexAccountSelectable` (missing/hostile/unconnected ⇒ refused).
+ *   - the target must pass `codexAccountSelectable` (missing/hostile/unconnected ⇒ refused);
+ *   - the target must live on the node's OWN machine (`hostKey`: this one when undefined) — an
+ *     account on another machine has no home where the pane runs. Refused as `unavailable`.
  * The returned `plan.expected.sessionId` and `plan.sessionId` are BOTH the node's current id, so the
  * orchestration can never fork the conversation onto the switched account.
  */
 export function planCodexAccountSwitch(
-  node: { agentId?: string; cwd?: string; accountId?: string; ssh?: boolean; sessionId?: string },
+  node: {
+    agentId?: string
+    cwd?: string
+    accountId?: string
+    ssh?: boolean
+    sessionId?: string
+    /** `sshHostKey` of the host an SSH node's pane runs on; undefined = this machine. */
+    hostKey?: string
+  },
   targetAccountId: string | undefined,
   accounts: readonly CodexAccount[],
   connectedProjectIdForHost: (host: string) => string | undefined
@@ -84,6 +94,11 @@ export function planCodexAccountSwitch(
   if (source === target) return { ok: false, reason: 'same-account' }
   const selectable = codexAccountSelectable(target, accounts, connectedProjectIdForHost)
   if (!selectable.ok) return { ok: false, reason: selectable.reason }
+  if (
+    target !== undefined &&
+    (accounts.find((a) => a.id === target)?.host || undefined) !== (node.hostKey || undefined)
+  )
+    return { ok: false, reason: 'unavailable' }
   return {
     ok: true,
     plan: {

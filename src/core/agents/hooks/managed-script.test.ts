@@ -55,7 +55,7 @@ describe('buildManagedScript', () => {
     expect((s.match(/\n *curl -sS/g) ?? []).length).toBe(4)
     // The two answered POSTs are wrapped in a `{ … ; rm … } &` group that self-deletes the payload
     // temp file, so `nt_hook_headers |` there is preceded by `{ ` — match either form.
-    expect((s.match(/\n *(\{ )?nt_hook_headers \|/g) ?? []).length).toBe(4)
+    expect((s.match(/\n *(\{ |nt_code=\$\()?nt_hook_headers \|/g) ?? []).length).toBe(4)
     expect((s.match(/--config -/g) ?? []).length).toBe(4)
   })
 
@@ -1042,7 +1042,7 @@ describe('managed script presents the per-node token', () => {
   // different secret): if it survived the fallback — because the dir was not cleared, or because
   // the read happened once at the top — the server would see a foreign kid and label the event
   // `legacy`, i.e. verified:false. Only a genuine re-read produces verified:true.
-  it.skipIf(!shAvailable)('re-reads the token from the endpoint it FELL BACK to', async () => {
+  it.skipIf(!shAvailable).each(['dead', 'wrong-owner'])('re-reads the token after a %s endpoint', async (primary) => {
     const home = newHome('home-failover')
     const primaryTokens = tokenDirWith('tokens-primary', {
       [NODE]: nodeAuthToken(FOREIGN_SECRET, NODE)
@@ -1051,7 +1051,7 @@ describe('managed script presents the per-node token', () => {
     const dead = join(home, '.nodeterm', 'hook-endpoint-dead.env')
     writeFileSync(
       dead,
-      `NODETERM_HOOK_SOCK=${join(home, '.nodeterm', 'nothing-listens-here.sock')}\nNODETERM_HOOK_TOKEN=dead\nNODETERM_HOOK_VERSION=2\nNODETERM_NODE_TOKEN_DIR=${primaryTokens}\n`,
+      `NODETERM_HOOK_SOCK=${primary === 'dead' ? join(home, '.nodeterm', 'nothing-listens-here.sock') : hookServer.getSockPath()}\nNODETERM_HOOK_TOKEN=dead\nNODETERM_HOOK_VERSION=2\nNODETERM_NODE_TOKEN_DIR=${primaryTokens}\n`,
       'utf8'
     )
     const live = join(home, '.nodeterm', 'hook-endpoint-live.env')
@@ -1171,4 +1171,38 @@ describe('the managed script bail path (issues #186/#187), under /bin/sh', () =>
       expect(res.stdout).toBe('')
     }
   )
+})
+
+describe('session context env on the executed hook wire', () => {
+  const shAvailable = spawnSync('sh', ['-c', 'exit 0']).status === 0
+  it.skipIf(!shAvailable)('reports only Claude decimal context env and sends empty to invalidate it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-context-'))
+    try {
+      const bin = join(dir, 'bin')
+      mkdirSync(bin)
+      const log = join(dir, 'curl.log')
+      writeFileSync(join(bin, 'curl'), fakeCurlScript(log), { mode: 0o755 })
+      const script = join(dir, 'hook.sh')
+      for (const [agent, value, expected] of [
+        ['claude', '1048576', '1048576'],
+        ['claude', '', ''],
+        ['claude', '32000oops', ''],
+        ['claude', '9'.repeat(17), ''],
+        ['codex', '1048576', '']
+      ]) {
+        writeFileSync(script, buildManagedScript(agent, null))
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn('sh', [script], {
+            env: { PATH: `${bin}:${process.env.PATH}`, HOME: dir, NODETERM_NODE_ID: 'fixture', NODETERM_HOOK_PORT: '1', CLAUDE_CODE_MAX_CONTEXT_TOKENS: value },
+            stdio: ['pipe', 'pipe', 'pipe']
+          })
+          child.stdin.on('error', reject)
+          child.on('error', reject)
+          child.on('close', code => code === 0 ? resolve() : reject(new Error(`exit ${code}`)))
+          child.stdin.end('{"hook_event_name":"Stop"}')
+        })
+        expect(curlCalls(log).at(-1)?.argv).toContain(`--data-urlencode nodeterm_context_window=${expected} --data-urlencode`)
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
 })

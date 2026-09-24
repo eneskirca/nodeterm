@@ -29,6 +29,9 @@ import { applySkillShare, EMPTY_SKILL_SHARE } from './claude-skill-share'
 import { installClaudeHooksInto, ensureClaudeFullscreenTuiInto } from './agents/hooks/claude'
 import { findInLoginPath } from './pty-manager'
 import { platform } from './platform'
+import { copyClaudeSession, type ClaudeSessionCopyOutcome } from './claude-session-copy'
+import type { ClaudeSessionCopyResult } from '../shared/types'
+import { resolveTranscriptPath, transcriptRoot, SESSION_ID_RE } from './transcript-reader'
 
 const execFileP = promisify(execFile)
 const LOGIN_POLL_MS = 2000
@@ -52,6 +55,18 @@ export interface ClaudeAccountsRemote {
   ): Promise<{ configDir: string; versionSupported: boolean } | null>
   readLogin(projectId: string, id: string): Promise<string | null>
   remove(projectId: string, id: string): Promise<void>
+  /**
+   * Copy a conversation between two account dirs ON THE HOST (the SSH leg of `copySession`).
+   * `host` is each account's `ClaudeAccount.host` (undefined = the host's system `~/.claude`); the
+   * implementation refuses an account pinned to a different host than this project's connection.
+   * Optional: a shell without it (older wiring) answers `failed` for an SSH switch.
+   */
+  copySession?(
+    projectId: string,
+    sessionId: string,
+    source: { id?: string; host?: string },
+    target: { id?: string; host?: string }
+  ): Promise<ClaudeSessionCopyResult>
 }
 
 export interface ClaudeAccountsDeps {
@@ -245,7 +260,7 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     }
     // Same two writes an ADDED account gets, so a linked account reports agent status from its
     // very next session. `installClaudeHooksInto` MERGES into an existing settings.json and writes
-    // it back through `writeFileSync`, which follows a symlink — the two-profile layout where
+    // to its resolved target without replacing a symlink — the two-profile layout where
     // `<dir>/settings.json` is a symlink into `~/.claude/` keeps its symlink and the shared target
     // gains the managed hook (pinned by test).
     installClaudeHooksInto(configDir)
@@ -273,6 +288,80 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // hand-edited `configDir` of `~/.claude` from turning this into a self-link.
     return applySkillShare(claudeConfigDirFor(id), enabled)
   })
+
+  /**
+   * Copy a conversation into another LOCAL account so a switched node resumes it there (the
+   * running-node "Switch Claude account" menu). The renderer runs it between the CLI's exit and the
+   * pane recycle, so the source transcript is final; see `claude-session-copy.ts` for the
+   * never-overwrite-a-diverged-copy rule.
+   *
+   * The renderer is not the boundary: the target must be a settled LOCAL account from the live
+   * settings list (or `undefined` = the system `~/.claude`). A remote or pending account, or an id
+   * nothing lists, is refused — a switch onto a dir with no login would only trade one `/login`
+   * for another, and a remote account's dir is on another machine entirely.
+   */
+  platform().handle(
+    IPC.claudeAccountsCopySession,
+    async (
+      sessionId: unknown,
+      sourceAccountId: unknown,
+      targetAccountId: unknown,
+      ctx?: AccountCtx
+    ): Promise<ClaudeSessionCopyOutcome> => {
+      if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))
+        return { ok: false, reason: 'bad-request' }
+      const optId = (v: unknown): v is string | undefined =>
+        v === undefined || v === null || typeof v === 'string'
+      if (!optId(sourceAccountId) || !optId(targetAccountId)) return { ok: false, reason: 'bad-request' }
+      const source = sourceAccountId || undefined
+      const target = targetAccountId || undefined
+      if (source === target) return { ok: true, copied: false }
+      // SSH project: the transcripts and account dirs are on the host. Only REMOTE accounts (or the
+      // host's system dir) qualify; the shell's leg re-checks that each is pinned to THIS host.
+      // A projectId with no live remote leg (not connected, or the Server Edition, which has no SSH
+      // manager) is refused rather than answered from THIS machine's disk.
+      if (typeof ctx?.projectId === 'string' && ctx.projectId) {
+        const remote = remoteFor(ctx)
+        if (!remote?.r.copySession) return { ok: false, reason: 'failed' }
+        const accounts = claudeAccountsSnapshot()
+        const remoteAcct = (id: string | undefined, settled: boolean): { id?: string; host?: string } | null => {
+          if (id === undefined) return {}
+          const a = accounts.find((x) => x.id === id && x.host && (!settled || !x.pending))
+          return a ? { id: a.id, host: a.host } : null
+        }
+        const src = remoteAcct(source, false)
+        const tgt = remoteAcct(target, true)
+        if (!src || !tgt) return { ok: false, reason: 'unknown-account' }
+        return remote.r
+          .copySession(remote.projectId, sessionId, src, tgt)
+          .catch((): ClaudeSessionCopyOutcome => ({ ok: false, reason: 'failed' }))
+      }
+      const localSettled = (id: string): boolean =>
+        claudeAccountsSnapshot().some((a) => a.id === id && !a.host && !a.pending)
+      if (target !== undefined && !localSettled(target)) return { ok: false, reason: 'unknown-account' }
+      // A source that is not a local account (removed, remote) has no local transcript to move.
+      if (source !== undefined && !claudeAccountsSnapshot().some((a) => a.id === source && !a.host))
+        return { ok: false, reason: 'unknown-account' }
+      let sourceRoot: string
+      let targetRoot: string
+      try {
+        // Both resolve through the id-alphabet gate (`accountConfigDir`), which throws on a bad id.
+        sourceRoot = transcriptRoot(source)
+        targetRoot = transcriptRoot(target)
+      } catch {
+        return { ok: false, reason: 'bad-request' }
+      }
+      const sourceFile = await resolveTranscriptPath(sessionId, source)
+      if (!sourceFile) return { ok: false, reason: 'no-transcript' }
+      return copyClaudeSession({
+        sessionId,
+        sourceFile,
+        targetProjectsRoot: targetRoot,
+        sourceConfigDir: path.dirname(sourceRoot),
+        targetConfigDir: path.dirname(targetRoot)
+      })
+    }
+  )
 }
 
 /**

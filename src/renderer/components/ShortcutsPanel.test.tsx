@@ -203,6 +203,33 @@ describe('buildShortcutSections — platform and non-command rows', () => {
   })
 })
 
+describe('macOS screenshot paste discoverability', () => {
+  it('distinguishes file paste from a foreground control key without promising agent support', () => {
+    const sections = build(() => [])
+    expect(rowFor(sections, 'Save the image and paste its file path')).toEqual(['⌘', 'V'])
+    expect(rowFor(sections, 'Send a control key to the foreground program')).toEqual(['Ctrl', 'V'])
+    const note = sections.find((s) => s.title === 'Pasting screenshots on macOS')?.note
+    expect(note).toContain('only at that agent’s input prompt')
+    expect(note).toContain('For SSH sessions, use Cmd+V')
+    expect(note).toContain('does not detect image support or retry')
+  })
+
+  it('never advertises a local clipboard attachment from a Server browser', () => {
+    const note = build(() => [], { browser: true })
+      .find((s) => s.title === 'Pasting screenshots on macOS')?.note
+    expect(note).toContain('Ctrl+V does not transfer your browser clipboard')
+    expect(note).toContain('browser clipboard access')
+    expect(note).not.toContain('may attach an image')
+  })
+
+  it('does not teach the macOS Ctrl+V behavior on other platforms', () => {
+    for (const browser of [true, false]) {
+      expect(rowFor(build(() => [], { isMac: false, browser }),
+        'Send a control key to the foreground program')).toBeUndefined()
+    }
+  })
+})
+
 describe('ShortcutsPanel (DOM)', () => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   let root: Root | null = null
@@ -212,6 +239,7 @@ describe('ShortcutsPanel (DOM)', () => {
     root = null
     document.body.innerHTML = ''
     useSettings.setState({ settings: { ...DEFAULT_SETTINGS } })
+    vi.restoreAllMocks()
   })
 
   const render = (props: Partial<Parameters<typeof ShortcutsPanel>[0]> = {}): void => {
@@ -223,6 +251,15 @@ describe('ShortcutsPanel (DOM)', () => {
 
   const rowLabels = (): string[] =>
     [...document.querySelectorAll('.shortcut-label')].map((n) => n.textContent ?? '')
+
+  it('renders the screenshot explanation alongside both keys on macOS', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    render()
+    expect(rowLabels()).toContain('Save the image and paste its file path')
+    expect(rowLabels()).toContain('Send a control key to the foreground program')
+    expect(document.querySelector('.shortcuts__note')?.textContent)
+      .toContain('only at that agent’s input prompt')
+  })
 
   it('reads the live override map through the settings store', () => {
     useSettings.setState({

@@ -1,3 +1,4 @@
+import type { TextDeliveryResult } from '../shared/text-delivery'
 /**
  * The trigger node's whole host-side machine, composed ONCE (issue #493, phase 3): the
  * machine-local arm store + the scheduler + the delivery (with its deliver-on-idle queue) + the
@@ -39,7 +40,7 @@ export interface TriggerServiceDeps {
   /** `WorkspaceStore.getNode` — target resolution + the flush-time current-spec re-read. */
   getNode(nodeId: string): CanvasNodeState | undefined
   /** `PtyManager.sendText` / `PtyManager.paneCommand`. */
-  sendText(nodeId: string, text: string): Promise<boolean>
+  sendText(nodeId: string, text: string): Promise<TextDeliveryResult>
   paneCommand(nodeId: string): Promise<string | null>
   /**
    * Register one request/response IPC handler — both shells pass `platform().handle`. REQUIRED

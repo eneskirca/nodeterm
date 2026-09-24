@@ -76,7 +76,7 @@ export function hasAnyUsage(
   remote: readonly RemoteAccountUsage[] = []
 ): boolean {
   if (claude && (claude.status === 'ok' || claude.status === 'error')) return true
-  if (enabledProviders(providers).length > 0) return true
+  if (enabledProviders(providers).length > 0 || providers.some((p) => p.status === 'error')) return true
   // A remote row counts for the same reason a local Claude one does — and it is the whole point
   // of remote usage: someone whose Claude only ever runs on a server had no indicator at all.
   return remote.some((r) => r.usage.status === 'ok' || r.usage.status === 'error')

@@ -8,6 +8,7 @@ import {
   DECISION_ORDER,
   RETRYABLE,
   NO_TOKEN_FILE_NOTE,
+  SESSION_BOUNDARY_REASON,
   type AgentMessageOutcomeKind,
   type DeliveryFacts
 } from './agent-message-decide'
@@ -165,6 +166,27 @@ describe('the THREE unverified refusals — Correction C1 + Finding F2', () => {
     )
     expect(o).toEqual({ kind: 'targetStatusStale' })
     expect(retryable(o)).toBe(true)
+  })
+
+  it('a PROVEN node reset by a session boundary is between sessions, not stale', () => {
+    // Measured 2026-09-13: an idle architect was resumed (`SessionStart:resume`) with no turn after,
+    // and every send was refused as `targetStatusStale` — an identity accusation for a node whose
+    // identity was fine. The honest refusal is gate 2's.
+    const o = decideDelivery(
+      ready({
+        target: unverified({ state: undefined, verifiedAt: 900, clientRevision: MANAGED_SCRIPT_REVISION }),
+        tokenFilePresent: true
+      })
+    )
+    expect(o).toEqual({ kind: 'targetNotIdleUnknown', reason: SESSION_BOUNDARY_REASON })
+    expect(retryable(o)).toBe(true)
+  })
+
+  it('a node that has NEVER proven itself stays stale across a boundary', () => {
+    const o = decideDelivery(
+      ready({ target: unverified({ state: undefined, clientRevision: MANAGED_SCRIPT_REVISION }), tokenFilePresent: true })
+    )
+    expect(o.kind).toBe('targetStatusStale')
   })
 
   it('a current script with NO token file is not retryable and says what to do', () => {

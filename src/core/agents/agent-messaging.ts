@@ -68,8 +68,16 @@ export interface MessagingStoredNode {
  */
 export interface AgentMessagingDeps {
   paneOwner(nodeId: string): Promise<PaneOwner | null>
-  sendEnvelope(nodeId: string, envelope: string): Promise<boolean>
-  hasLiveSession(nodeId: string): boolean
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean>
+  envelopePasteReady?(nodeId: string): Promise<boolean>
+  /**
+   * Does a session exist for this node at all — attached in this process OR held by a backend
+   * after its client was released (`PtyManager.sessionExists`)? The delivery's `targetLive` fact.
+   * A probe that could not answer must answer true: only confirmed absence is `targetGone`, which
+   * is terminal and never queued. Asking only for an ATTACHED client told orchestrators that a
+   * parked or offscreen-released agent was gone while its session kept running.
+   */
+  hasLiveSession(nodeId: string): boolean | Promise<boolean>
   mirrorEntry?(nodeId: string): MirrorEntry | undefined
   /** The main-process projects store (`workspaceStore.persistedCanvases()` on the desktop). */
   projects(): readonly { id: string; nodes: readonly MessagingStoredNode[] }[]
@@ -554,8 +562,8 @@ export async function runDelivery(
     // TODO(pr7): a supported agent CLI idling WITHOUT bracketed paste on is asserted by no test —
     // if one exists, its deliveries splice line-by-line and only the receipt/trace make it
     // visible. Measure per CLI before relying on this any further.
-    bracketPasteRequested: async () => true,
-    sendEnvelope: (id, envelope) => deps.sendEnvelope(id, envelope),
+    bracketPasteRequested: (id) => deps.envelopePasteReady?.(id) ?? Promise.resolve(true),
+    sendEnvelope: (id, envelope, expected) => deps.sendEnvelope(id, envelope, expected),
     mirrorEntry: (id) => (deps.mirrorEntry ?? coreMirrorEntry)(id),
     tokenFilePresent: (id) => nodeTokenFilePresent(id),
     lock: (id, fn) => withNodeLock(id, fn),
@@ -586,7 +594,7 @@ export async function runDelivery(
         targetIsRemote: deps.isRemoteNode(req.targetNodeId),
         notPermitted,
         retryAfterMs,
-        targetLive: deps.hasLiveSession(req.targetNodeId)
+        targetLive: await deps.hasLiveSession(req.targetNodeId)
       },
       delivery
     )

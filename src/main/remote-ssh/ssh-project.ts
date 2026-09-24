@@ -14,7 +14,17 @@ import {
   sshHostKey,
   type SshConnection
 } from '../../shared/ssh'
-import type { DownloadResult, SshPassphraseRequest, SshProjectStatusEvent } from '../../shared/types'
+import type {
+  ClaudeSessionCopyResult,
+  DownloadResult,
+  SshPassphraseRequest,
+  SshProjectStatusEvent
+} from '../../shared/types'
+import {
+  parseRemoteSessionCopy,
+  remoteClaudeConfigDir,
+  remoteSessionCopyCommand
+} from '../../core/remote-claude-session-copy'
 import { candidateName, safeDownloadBasename } from '../../core/download-name'
 import { removeAtomic, renameAtomic } from '../../core/fs-atomic'
 import { findExecutableSync, shellPathNow } from '../../core/exec-path'
@@ -443,6 +453,17 @@ export class SshProjectManager {
   /** Consecutive failed tunnel repairs per project, so a host that can never forward is not
    *  re-installed on every watchdog tick. See `tunnel-repair.ts` for why the first one is free. */
   private tunnelRepair = new Map<string, TunnelRepairState>()
+  private lostHookTunnels = new Set<string>()
+
+  private hookTunnelHealth(projectId: string, verified: boolean): void {
+    if (verified) {
+      if (!this.lostHookTunnels.delete(projectId)) return
+    } else {
+      if (this.lostHookTunnels.has(projectId)) return
+      this.lostHookTunnels.add(projectId)
+    }
+    this.emitStatus({ projectId, status: 'connected', hookTunnelVerified: verified })
+  }
 
   /**
    * Re-verify a REUSED master's reverse hook tunnel, and rebuild it if it stopped answering
@@ -470,10 +491,14 @@ export class SshProjectManager {
       const hook = this.r.getHook()
       // No hook server yet ⇒ nothing to point at, and `setup()` would refuse anyway.
       if (!hook?.port || !hook.token) return
-      if (await this.remoteHooks.tunnelAlive(projectId, existing.conn, existing.controlPath, hook.token)) {
+      const alive = await this.remoteHooks.tunnelAlive(projectId, existing.conn, existing.controlPath, hook.token)
+      if (this.conns.get(projectId) !== existing) return
+      if (alive) {
         this.tunnelRepair.delete(projectId)
+        this.hookTunnelHealth(projectId, true)
         return
       }
+      this.hookTunnelHealth(projectId, false)
       const now = Date.now()
       if (!shouldAttemptTunnelRepair(this.tunnelRepair.get(projectId), now)) return
       const res = await this.remoteHooks.setup(projectId, existing.conn, existing.controlPath, hook)
@@ -485,6 +510,7 @@ export class SshProjectManager {
       // point sessions at a socket belonging to a connection nobody holds.
       if (this.conns.get(projectId) !== existing) return
       existing.hookEndpointPath = res.endpointPath
+      this.hookTunnelHealth(projectId, true)
       // Same contract as the establish path: hook events lost while the tunnel was down are gone
       // for good, so the working agents need a resync. Fire-and-forget behind a catch — a repair
       // job must never surface to the user as a dead SSH project.
@@ -958,6 +984,7 @@ export class SshProjectManager {
           entry.codexRelayRuntimePath = codexRuntime?.runtime
           entry.codexCliPath = codexRuntime?.codex
           this.emitStatus({ projectId, status: 'connected' })
+          if (hookEndpointPath) this.hookTunnelHealth(projectId, true)
           // The tunnel is live again on a master we just established (the reuse branch returned long
           // before this line), so this is exactly the moment the hook events lost while it was down
           // can be reconstructed from the host.
@@ -1267,6 +1294,10 @@ export class SshProjectManager {
     throw new Error('Could not reserve a download destination.')
   }
 
+  // URLs remain allowlisted until quit, so their cache files must live just as long.
+  private readonly retainedMedia = new Set<string>()
+  private readonly mediaPrunes = new Map<string, Promise<void>>()
+
   /**
    * Pull a remote FILE into the local media cache (for nt-media:// playback) and resolve its
    * cached absolute path. The entry is keyed by (host, remote path), see remoteMediaCacheName ,
@@ -1294,6 +1325,10 @@ export class SshProjectManager {
         childArgs(c.conn, c.controlPath, `wc -c < ${quoteRemotePath(remotePath)}`)
       )
       const remoteSize = sizeProbe.code === 0 ? parseInt(sizeProbe.stdout.trim(), 10) : NaN
+      // Pin before reading. A prune already in flight must settle before stat/reuse, or it
+      // could unlink the file just after we hand its URL to the player.
+      this.retainedMedia.add(path.basename(dest))
+      await this.mediaPrunes.get(dest)
       let cachedSize = -1
       try {
         cachedSize = (await fs.stat(dest)).size
@@ -1332,17 +1367,21 @@ export class SshProjectManager {
     }
   }
 
-  /** Best-effort, bounded cache: keep the newest MEDIA_CACHE_KEEP entries. An evicted entry that
-   *  is still playing in an open node stops being seekable, acceptable for a 20-deep cache of a
-   *  convenience copy; the node re-fetches on next open. */
+  /** The cap is soft for this run: an open player's next seek must still find its file.
+   * Prior-run entries are eligible again after restart. */
   private async pruneMediaCache(cacheDir: string, except: string): Promise<void> {
     try {
       const names = (await fs.readdir(cacheDir)).filter((n) => !n.endsWith('.part'))
       const entries = await Promise.all(
         names.map(async (n) => ({ name: n, mtimeMs: (await fs.stat(path.join(cacheDir, n))).mtimeMs }))
       )
-      for (const n of mediaCachePruneList(entries, except)) {
-        await fs.rm(path.join(cacheDir, n), { force: true }).catch(() => {})
+      for (const n of mediaCachePruneList(entries, except, undefined, this.retainedMedia)) {
+        if (this.retainedMedia.has(n)) continue
+        const file = path.join(cacheDir, n)
+        if (this.mediaPrunes.has(file)) continue
+        const removal = fs.rm(file, { force: true }).catch(() => {})
+        this.mediaPrunes.set(file, removal)
+        try { await removal } finally { this.mediaPrunes.delete(file) }
       }
     } catch {
       // pruning is best-effort, a fat cache is a nuisance, not a fault
@@ -1404,6 +1443,26 @@ export class SshProjectManager {
    * SshFs ops take). Returns `undefined` when the project isn't connected, so the `sshFs:*` IPC
    * handlers can fail open (empty result) rather than throw.
    */
+  private readonly connectionKeys = new WeakMap<object, string>()
+  private nextConnectionKey = 0
+
+  /** A reused control socket path is not a connection generation. New Conn objects invalidate
+   * in-flight metrics/discovery even when reconnect uses the same host, project and socket. */
+  connectionKeyFor(projectId: string): string | undefined {
+    const connection = this.conns.get(projectId)
+    if (!connection) return undefined
+    let key = this.connectionKeys.get(connection)
+    if (!key) { key = String(++this.nextConnectionKey); this.connectionKeys.set(connection, key) }
+    return key
+  }
+
+  connectionKeyForControlPath(controlPath: string): string | undefined {
+    for (const [projectId, connection] of this.conns) {
+      if (connection.controlPath === controlPath) return this.connectionKeyFor(projectId)
+    }
+    return undefined
+  }
+
   refForProject(
     projectId: string
   ): { conn: SshConnection; controlPath: string; remoteCwd?: string } | undefined {
@@ -1888,6 +1947,33 @@ export class SshProjectManager {
     }
   }
 
+  /**
+   * Has this managed remote account completed its device login? The same gate the local waitLogin
+   * uses — a REAL `auth.json`, never a symlink (shared assets are symlinked in from the system home;
+   * a credential riding the system login is not this account's). `null` = could not ask (not
+   * connected, unsafe `$HOME`, failed ssh), which a poll treats as "not yet", never as "yes".
+   */
+  async remoteCodexAuthPresent(projectId: string, accountId: string): Promise<boolean | null> {
+    assertCodexAccountId(accountId)
+    const c = this.conns.get(projectId)
+    if (!c || !isSafeRemoteHome(c.remoteHome)) return null
+    const auth = `${remoteCodexHome(c.remoteHome as string, accountId)}/auth.json`
+    try {
+      const { code, stdout } = await this.r.run(
+        childArgs(
+          c.conn,
+          c.controlPath,
+          `if test -f ${posixQuote(auth)} && test ! -L ${posixQuote(auth)}; then echo yes; else echo no; fi`
+        )
+      )
+      if (code !== 0) return null
+      const answer = stdout.trim().split('\n').pop()
+      return answer === 'yes' ? true : answer === 'no' ? false : null
+    } catch {
+      return null
+    }
+  }
+
   /** Stop the account's app-server and delete its home (credential jar included). Runs entirely on
    *  the host — the credential never travels. No-op false when not connected. */
   async remoteCodexAccountRemove(projectId: string, accountId: string): Promise<boolean> {
@@ -2027,6 +2113,27 @@ export class SshProjectManager {
     if ((await this.r.run(childArgs(c.conn, c.controlPath, command))).code !== 0) {
       throw new Error('SSH Codex session is unavailable or ambiguous')
     }
+  }
+
+  /**
+   * The SSH leg of a running Codex node's account SWITCH: expose the node's conversation to
+   * `targetAccountId` ON THE HOST (`remoteCodexExposeThread` — hardlink the one authoritative
+   * rollout into the target home, verify the target's app-server discovers it, roll the link back
+   * if not). `hostAccountIds` are every managed account on this host: the thread is resolved
+   * across all of their catalogs, and more than one distinct rollout is refused as ambiguous.
+   * Throws when the host is not connected or cannot run the relay.
+   */
+  async remoteCodexSwitchThread(
+    projectId: string,
+    threadId: string,
+    targetAccountId: string | undefined,
+    hostAccountIds: string[]
+  ): Promise<void> {
+    if (targetAccountId) assertCodexAccountId(targetAccountId)
+    if (!ACCOUNT_ID_RE.test(threadId)) throw new Error('Invalid Codex thread id')
+    const c = this.conns.get(projectId)
+    if (!c) throw new Error('The SSH project is not connected')
+    await this.remoteCodexExposeThread(c.controlPath, targetAccountId, threadId, hostAccountIds)
   }
 
   /**
@@ -2188,6 +2295,44 @@ export class SshProjectManager {
     if (!c) return
     const dir = remoteAccountConfigDir(accountId)
     await this.r.run(childArgs(c.conn, c.controlPath, `rm -rf ${quoteRemotePath(dir)}`))
+  }
+
+  /**
+   * The SSH leg of "Switch Claude account": copy a conversation between two account dirs ON THE
+   * HOST (`remote-claude-session-copy.ts` builds the script; it runs over this project's master).
+   * Refuses an account pinned to another host — its dir would name a path on a machine this
+   * connection does not reach — and a connection whose `$HOME` never resolved (the account dirs are
+   * absolute paths under it). A cut stream or failed ssh parses as `failed`, never as success.
+   */
+  async remoteClaudeSessionCopy(
+    projectId: string,
+    sessionId: string,
+    source: { id?: string; host?: string },
+    target: { id?: string; host?: string }
+  ): Promise<ClaudeSessionCopyResult> {
+    const c = this.conns.get(projectId)
+    if (!c || !c.remoteHome) return { ok: false, reason: 'failed' }
+    const here = sshHostKey(c.conn)
+    if ((source.id && source.host !== here) || (target.id && target.host !== here))
+      return { ok: false, reason: 'unknown-account' }
+    let cmd: string | null
+    try {
+      cmd = remoteSessionCopyCommand({
+        sessionId,
+        sourceConfigDir: remoteClaudeConfigDir(c.remoteHome, source.id),
+        targetConfigDir: remoteClaudeConfigDir(c.remoteHome, target.id),
+        tempId: randomUUID()
+      })
+    } catch {
+      return { ok: false, reason: 'bad-request' } // an account id outside the alphabet
+    }
+    if (!cmd) return { ok: false, reason: 'bad-request' }
+    try {
+      const { code, stdout } = await this.r.run(childArgs(c.conn, c.controlPath, cmd))
+      return code === 0 ? parseRemoteSessionCopy(stdout) : { ok: false, reason: 'failed' }
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
   }
 
   /**

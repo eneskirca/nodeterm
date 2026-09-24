@@ -57,8 +57,8 @@ export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
  * and answers `false` here (see the file header). And not "is this verb gated": the dialog itself
  * is hand-written per case, so this returning `true` for a new verb would gate nothing on its own.
  *
- * `open-terminal --cmd` is deliberately NOT in the set and never was; the 2026-08-13 argv-leak
- * writeup in `docs/node-identity.md` is the record of what that costs when the bearer leaks.
+ * `open-terminal --cmd` is not confirm-gated; hook-server requires verified node identity
+ * whenever cmd is present (issue #653), independently of the rollout policy.
  */
 export function isDestructiveVerb(verb: string): boolean {
   return DESTRUCTIVE_VERBS.has(verb)

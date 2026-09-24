@@ -41,11 +41,10 @@ describe('shouldReap', () => {
     expect(shouldReap(candidate({ unwatchedSince: null }), REAP_IDLE_MS * 100)).toBe(false)
   })
 
-  it('leaves comfortable room above the renderer park window', () => {
-    // TerminalNode parks an unmounted terminal (with its PTY subscription intact) for 5 minutes
-    // before detaching it. A parked terminal is still a SUBSCRIBER, so the sweep would skip it
-    // anyway — but the threshold must never be close enough for that to be the only reason.
-    const TERM_PARK_MS = 5 * 60 * 1000
-    expect(REAP_IDLE_MS).toBeGreaterThanOrEqual(2 * TERM_PARK_MS)
+  it('never reaps a parked terminal, however long the park window is', () => {
+    // TerminalNode parks an unmounted terminal WITH its PTY subscription intact, for a
+    // user-configurable window (default 10 min, up to "until quit" — issue #886). No timing margin
+    // can cover that range, so the guarantee is the subscriber test: a parked client is `watched`.
+    expect(shouldReap(candidate({ watched: true, unwatchedSince: 0 }), 365 * 86_400_000)).toBe(false)
   })
 })

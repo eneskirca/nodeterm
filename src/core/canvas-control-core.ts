@@ -1,3 +1,4 @@
+import { LINK_ENDPOINT_NOT_FOUND } from '../shared/canvas-link'
 // Pure core for agent canvas control: the verb model, request validation, and the standalone
 // CLI source. No electron imports, so this module + CONTROL_CLI_SCRIPT are unit-testable.
 // Electron/ipc/server wiring lives in canvas-control.ts + index.ts + hook-server.ts.
@@ -409,9 +410,10 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'When you run inside a node on the nodeterm canvas, you can create and control other',
     'nodes (the CLI refuses outside a nodeterm session — do not retry there). Every node',
     'you open is connected to your node by an edge. Use this when the user asks you to open',
-    'sessions/nodes/terminals, split or parallelize work across subagents/agents/worktrees,',
-    'delegate parts of a task, organize the canvas into groups, or show them an',
-    'image/video/web page you produced.',
+    'sessions/nodes/terminals, wants work run in separate, visible canvas sessions or',
+    'worktrees, asks you to organize the canvas into groups, or wants to see an',
+    'image/video/web page you produced. Background subagents you run in-process are a',
+    'different thing — this CLI is only for work that should live on the canvas.',
     '',
     '```sh',
     `sh "${shimPath}" <verb> [args]`,
@@ -431,7 +433,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'Verbs:',
     '- `list` — current nodes (id, kind, title). Start here when you need a node id.',
     '- `help` — print the verb list. Answered by the shim itself, so it works even if the app is down.',
-    '- `open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]` — open N plain terminals.',
+    '- `open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]` — open N plain terminals. `--cmd` requires verified node identity.',
     '- `open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]` — open N Claude sessions.',
     `- \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open`,
     '  any agent CLI. `--group` parents the node(s) into a group frame; a worktree-bound group also',
@@ -456,14 +458,16 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  returned to YOU in this session. A session opened into a non-active project',
     '  starts when the user next views that project — do not poll for it.',
     '  `--group`/`--after` cannot be combined with `--project`.',
-    '  The reply reports whether anything actually started: `queued` is true (and `queuedIds`',
-    '  lists which) when a node was opened ARMED — waiting on `--after`, on a worktree\'s',
+    '  The reply reports delivery: `queued` is true (and `queuedIds`',
+    '  lists which) while launch delivery is pending, including a visible node waiting for its PTY,',
+    '  or one waiting on `--after`, on a worktree\'s',
     '  setup script, or on a project the user has not viewed yet (a `--project` target, or your',
     '  own project while they are looking elsewhere). A queued node',
-    '  exists on the canvas but has no process behind it: do not route work to it, do not',
+    '  exists on the canvas but its agent launch has not been delivered: do not route work to it, do not',
     '  `send` to it and do not report it as started. It launches itself when its wait ends,',
     '  then reports through the ordinary status hooks — there is nothing to poll.',
-    '  `queued: false` means the session is running.',
+    '  `queued: false` is not proof the agent is running. `deliveredIds` confirms command delivery only.',
+    '  `list` names QUEUED, LAUNCH FAILED, DROPPED and AGENT STATUS UNCONFIRMED where observed.',
     '  `--prompt` arrives on ONE LINE: every run of whitespace in it, newlines included, is',
     '  collapsed to a single space before the session starts (the prompt rides the launch command',
     '  line typed into the pane). For a structured or multi-line brief use `--prompt-file <abs',
@@ -512,6 +516,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  on demand (nodeterm linked-context CLI). `--from` defaults to you; nothing is pushed into the',
     '  linked sessions. Agent sessions you open, and the stations you name in `--after`, are already',
     '  linked — nothing to `link`. Use `link` only for nodes you did not open, or to link two OTHER nodes.',
+    `  Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.`,
+    '  This does not reveal whether the id exists in another project.',
     '  On Server Edition the ownership rule is stricter: every endpoint must be a node you opened',
     '  during this server run.',
     '- `verify --node <id> [--lenses correctness,security,tests] [--focus "..."] [--synthesis off]` — open a',
@@ -766,8 +772,8 @@ nt_control_post() {
       --data-urlencode "nodeId=\${NODETERM_NODE_ID}" "$@" 2>/dev/null)
   fi
 }
-# An answer from the server — any HTTP code — is authoritative; only a dead transport fails over.
-nt_reached() { [ -n "$nt_code" ] && [ "$nt_code" != "000" ]; }
+# Only a dead transport or an explicit wrong-owner (421) answer permits failover; 403 stays final.
+nt_reached() { [ -n "$nt_code" ] && [ "$nt_code" != "000" ] && [ "$nt_code" != "421" ]; }
 
 nt_had_transport=""
 nt_control_post "$@"
@@ -778,8 +784,9 @@ nt_control_post "$@"
 # to it. Before this walk the hook script healed itself and this shim died on the SAME stale file —
 # "control endpoint unreachable" with the requested verb silently dropped. Skipped under a codex
 # sandbox: there the sandbox denies EVERY connect (issue #367), so each candidate would burn a
-# doomed curl and the sandbox hint below is already the right diagnosis.
-if ! nt_reached && [ -z "$CODEX_SANDBOX_NETWORK_DISABLED" ]; then
+# doomed curl and the sandbox hint below is already the right diagnosis. A 421 is different:
+# it proves the transport worked and the wrong owner rejected this request before dispatch.
+if ! nt_reached && { [ "$nt_code" = "421" ] || [ -z "$CODEX_SANDBOX_NETWORK_DISABLED" ]; }; then
   nt_list=$(nt_candidates "$NODETERM_HOOK_ENDPOINT")
   if [ -n "$nt_list" ]; then
     nt_n=0
@@ -850,7 +857,7 @@ export function buildCanvasSkillBody(shimPath: string): string {
   const agentLabels = BUILTIN_AGENT_IDS.map((id) => AGENT_CONFIG[id].label).join(' / ')
   return `---
 name: manage-nodeterm-canvas
-description: Create, organize and control nodes on the nodeterm canvas — open ${agentLabels} / terminal nodes, spawn a team of agents that divide up a task, create git worktrees as bound groups, wrap nodes in labeled groups, arrange/align/rename them, move nodes between frames, link nodes so you can read back what they produced, move session cards between kanban columns to track progress, show an image/video/web page, write to or close a terminal. Use whenever the user says "Build with Nodeterm orchestration", asks to create or open nodes/sessions/terminals, split or parallelize work across subagents/agents/sessions/worktrees, delegate parts of a task to other agents, work on several things at once, build something using multiple Claude (or other agent) sessions, collect or synthesize the results of agents you opened, organize the canvas into groups by topic, move tasks across a kanban board, or visualize code/output you produced. Only works inside a nodeterm agent session.
+description: Create, organize and control nodes on the nodeterm canvas — open ${agentLabels} / terminal nodes, spawn agent teams, create git worktrees as bound groups, group/arrange/align/rename/move nodes, link nodes to read back their work, move kanban cards, show an image/video/web page, write to or close a terminal. Use when the user says "Build with Nodeterm orchestration", asks to open nodes/sessions/terminals on the canvas, or wants work run in separate, visible canvas sessions or worktrees; wants the canvas or kanban board organized; wants results read back from nodes it opened; or wants output shown as a node. Not for in-process background subagents. Only works inside a nodeterm agent session.
 ---
 
 # Manage the nodeterm canvas
@@ -884,7 +891,7 @@ Verbs:
   not seven. It clears itself the moment that station completes another turn.
 - \`help\` — print the verb list. The shim answers this itself, without reaching the app, so it
   is also what to run when you are unsure whether the control endpoint is alive.
-- \`open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]\` — open N plain terminals (default 1).
+- \`open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--project <id>]\` — open N plain terminals (default 1). \`--cmd\` requires verified node identity.
 - \`open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open N Claude sessions (default 1).
 - \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--project <id>]\` — open N sessions of any agent CLI.
   \`--group\` parents the node(s) into an existing group frame; a worktree-bound group also
@@ -917,14 +924,15 @@ Verbs:
   **closed**, the node is still saved into it and the reply says so; the tab is not reopened for
   you. So: opening a station is safe to do at any time, but a station you opened while the user was
   elsewhere is not running yet — read \`queued\` before you route work to it.
-  **The reply tells you whether anything actually started.** \`queued\` is true — and
-  \`queuedIds\` names which of the returned ids — whenever a node was opened **armed**: waiting on
+  **The reply reports launch delivery, not agent health.** \`queued\` is true — and
+  \`queuedIds\` names which of the returned ids — while launch delivery is pending: waiting for its PTY, or on
   \`--after\`, on a worktree's setup script, or on a project the user has not viewed yet (a
   \`--project\` target, or your own project while they are looking elsewhere).
-  A queued node exists on the canvas but has **no process behind it**, so do not route work
+  A queued node exists on the canvas but its **agent launch has not been delivered**, so do not route work
   to it, do not \`send\` to it and do not report it as started. It launches itself when its wait
   ends and then reports through the ordinary status hooks, so there is nothing to poll.
-  \`queued: false\` means the session is running.
+  \`queued: false\` does not prove the agent is running. \`deliveredIds\` confirms command delivery only.
+  \`list\` names QUEUED, LAUNCH FAILED, DROPPED and AGENT STATUS UNCONFIRMED where observed.
   \`--prompt\` arrives on ONE LINE. Every run of whitespace in it — newlines included — is
   collapsed to a single space before the session starts, because the prompt is passed as an
   argument on the agent CLI's launch command line and that line is typed into the pane. Two
@@ -1003,6 +1011,8 @@ Verbs:
   Agent sessions you open (\`open-claude\`/\`open-agent\`/\`spawn-team\`) and the stations you name in
   \`--after\` are already linked — nothing to \`link\`. Use \`link\` only for nodes you did not open,
   or to link two OTHER nodes together.
+  Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.
+  This does not reveal whether the id exists in another project.
   On Server Edition the ownership rule is stricter: every endpoint must be a node you opened
   during this server run.
 - \`verify --node <id> [--lenses correctness,security,tests] [--focus "..."] [--agent <id>] [--synthesis off] [--label L]\` —
@@ -1144,7 +1154,7 @@ across Nodeterm sessions), be the orchestration chef — plan the kitchen, then 
    the dependency is real: open the downstream station with \`--after <upstream-id>\` and it
    will start itself when the upstream goes idle. Do not fake this by polling in your own
    session; that is what \`--after\` exists to replace.
-1. Break the task into 2–5 independent workstreams (by subsystem, not by file).
+1. Split the task into the independent workstreams step 0 identified.
 2. Per workstream, give it its own branch + kitchen station:
    \`open-worktree --branch <slug>\` → note the returned \`groupId\`, then
    \`open-agent --agent claude --group <groupId> --prompt "<concrete, self-contained task>"\`.
@@ -1155,8 +1165,8 @@ across Nodeterm sessions), be the orchestration chef — plan the kitchen, then 
    \`arrange --nodes <groupId,groupId,…> --layout row\` (pass sibling GROUP ids from one
    container, not their children). \`rename\` each group by subject.
 4. Track progress (their status badges show working/waiting) and coordinate.
-5. Collect the results yourself — this is the half most orchestrators skip. Every station you
-   opened is context-linked to you, so when one goes idle, read what it actually did with the
+5. Collect the results yourself. Every station you opened is context-linked to you, so when
+   one goes idle, read what it actually did with the
    **get-linked-context** skill (summary or transcript for that node id) instead of asking the
    user to relay it. Then do the work only you can do: reconcile the streams against each
    other, name the conflicts and the leftovers, and report ONE synthesis. A station you never

@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { hookServer } from './hook-server'
+import { HookServer, hookServer } from './hook-server'
 import { nodeAuthToken } from './node-auth-token'
 import { parseEndpointEnv } from './hook-endpoint-parse'
 import { initPlatform, resetPlatformForTests } from '../platform'
@@ -102,26 +102,19 @@ describe('hook server unix-socket listener', () => {
     received = []
     const sock = hookServer.getSockPath()
     expect((await post({ sock }, 'list', {})).status).toBe('403')
-    expect((await post({ sock }, 'list', { 'X-Nodeterm-Hook-Token': 'wrong' })).status).toBe('403')
+    expect((await post({ sock }, 'list', { 'X-Nodeterm-Hook-Token': 'wrong' })).status).toBe('421')
     expect(received).toEqual([])
   })
 
-  it('rebinds cleanly over a stale socket file left by a crash', async () => {
+  it('refuses a second live owner without touching its socket or endpoint', async () => {
     const sock = hookServer.getSockPath()
-    hookServer.stop()
-    expect(fs.existsSync(sock)).toBe(false) // stop() unlinked its own socket
-    // A crash skips stop(): fake the leftover. Anything occupying the path blocks bind with
-    // EADDRINUSE unless the server unlinks first — the StreamLocalBindUnlink lesson.
-    fs.mkdirSync(path.dirname(sock), { recursive: true })
-    fs.writeFileSync(sock, '')
-    await hookServer.start()
-    hookServer.setControlHandler(async (cmd) => {
-      received.push({ verb: cmd.verb, nodeId: cmd.nodeId, verified: cmd.verified })
-      return { ok: true, message: `did ${cmd.verb}` }
-    })
-    expect(hookServer.getSockPath()).toBe(sock)
-    const reply = await post({ sock }, 'list', { 'X-Nodeterm-Hook-Token': hookServer.getToken() })
-    expect(reply).toEqual({ status: '200', body: 'did list\n' })
+    const endpoint = fs.readFileSync(hookServer.endpointFilePath(), 'utf8')
+    const other = new HookServer()
+    await expect(other.start()).rejects.toThrow('hook-endpoint-owned')
+    other.stop()
+    expect(fs.readFileSync(hookServer.endpointFilePath(), 'utf8')).toBe(endpoint)
+    expect(await post({ sock }, 'list', { 'X-Nodeterm-Hook-Token': hookServer.getToken() }))
+      .toEqual({ status: '200', body: 'did list\n' })
   })
 })
 

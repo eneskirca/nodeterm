@@ -53,7 +53,7 @@ afterAll(() => {
 })
 
 describe('hook server start/stop lifecycle (issue #445)', () => {
-  it('a failed listen leaves the singleton retryable and drops the stale endpoint file', async () => {
+  it('a failed listen leaves the singleton retryable and preserves an advertisement it did not publish', async () => {
     // The file a previous app run left behind — it advertises a port nothing listens on.
     const ep = hookServer.endpointFilePath()
     fs.mkdirSync(path.dirname(ep), { recursive: true })
@@ -64,8 +64,8 @@ describe('hook server start/stop lifecycle (issue #445)', () => {
     // The singleton is back in the clean never-started state, not wedged with a dead Server…
     expect(hookServer.getPort()).toBe(0)
     expect(hookServer.getToken()).toBe('')
-    // …and the stale advertisement is gone rather than pointing clients at the dead port.
-    expect(fs.existsSync(ep)).toBe(false)
+    // A failed boot never takes ownership of a previous advertisement, even a stale one.
+    expect(fs.readFileSync(ep, 'utf8')).toContain("NODETERM_HOOK_TOKEN='stale'")
 
     // A retry — same process, no app restart — comes up and re-advertises.
     await hookServer.start()

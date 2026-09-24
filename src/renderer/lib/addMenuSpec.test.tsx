@@ -324,8 +324,8 @@ describe('buildGroupedAddMenu', () => {
     for (const a of agents) if ('label' in a.item) expect(reachable).toContain(a.item.label)
   })
 
-  // The structural invariant the whole shape rests on (MEASURED in
-  // components/ContextMenu.submenu-depth.test.tsx: a third level renders as NOTHING).
+  // The shape keeps account pickers one hover away: ContextMenu renders any depth now, so this is a
+  // design choice (see the grouping section of addMenuSpec), not a renderer limit.
   it('never emits a third level', () => {
     const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), ctx, agents)
     for (const item of items) {

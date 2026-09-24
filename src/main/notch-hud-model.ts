@@ -139,6 +139,14 @@ export function firstPromptLine(text: string | undefined, max = PROMPT_MAX): str
   return line.length > max ? line.slice(0, max - 1) + '…' : line
 }
 
+export interface HudContextUpdate {
+  sessionId?: string
+  nodeId?: string
+  model?: string | null
+  usedPercent?: number
+  cleared?: true
+}
+
 export interface HudModel {
   /** A main-state edge (working start / needsYou / done). Drives the row's live state + latch. */
   applyStateChange(c: NodeStateChange): void
@@ -149,7 +157,7 @@ export interface HudModel {
   /** The normalized agent-event stream — the ONLY source of the user prompt + subagent grouping. */
   applyAgentEvent(ev: NormalizedAgentEvent): void
   /** A context-update {sessionId, model, usedPercent} — the ONLY source of the model name. */
-  applyContextUpdate(p: { sessionId?: string; model?: string; usedPercent?: number }): void
+  applyContextUpdate(p: HudContextUpdate): void
   /** Clear ONE node's done highlight (the user opened that row). Read is per row on purpose:
    *  a blanket "the panel was opened, so everything is read" loses sessions the user never saw. */
   noteFocus(nodeId: string): void
@@ -170,6 +178,9 @@ export function createHudModel(): HudModel {
   const nodes = new Map<string, NodeAccum>()
   // Model name arrives keyed by sessionId (context tail) — joined to a node via its sessionId.
   const modelBySession = new Map<string, string>()
+  // A scoped entry remains present after a clear so this node cannot fall back to another
+  // host's session-id observation. Context never creates a phantom HUD row on its own.
+  const contextByNode = new Map<string, HudContextUpdate>()
 
   function ensure(nodeId: string, ts: number): NodeAccum {
     let a = nodes.get(nodeId)
@@ -277,12 +288,18 @@ export function createHudModel(): HudModel {
     }
   }
 
-  function applyContextUpdate(p: { sessionId?: string; model?: string; usedPercent?: number }): void {
+  function applyContextUpdate(p: HudContextUpdate): void {
     if (!p.sessionId) return
+    if (p.nodeId) {
+      const previous = contextByNode.get(p.nodeId)
+      if (p.cleared && previous && previous.sessionId !== p.sessionId) return
+      contextByNode.set(p.nodeId, p.cleared ? { nodeId: p.nodeId, sessionId: p.sessionId, cleared: true } : { ...p })
+      return
+    }
     if (p.model) modelBySession.set(p.sessionId, p.model)
     if (typeof p.usedPercent === 'number') {
-      for (const a of nodes.values()) {
-        if (a.sessionId === p.sessionId) {
+      for (const [nodeId, a] of nodes) {
+        if (!contextByNode.has(nodeId) && a.sessionId === p.sessionId) {
           a.contextPercent = p.usedPercent
           break
         }
@@ -312,6 +329,7 @@ export function createHudModel(): HudModel {
       if (a.presentInMirror) continue
       if (now - a.updatedAt > HUD_STALE_DROP_MS) {
         nodes.delete(nodeId)
+        contextByNode.delete(nodeId)
         changed = true
       }
     }
@@ -342,7 +360,10 @@ export function createHudModel(): HudModel {
       // node's display to idle and back without that counting as "it changed".
       if (a.dismissedAt === a.state) continue
       a.dismissedAt = undefined
-      const model = a.sessionId ? modelBySession.get(a.sessionId) : undefined
+      const scoped = contextByNode.get(nodeId)
+      const current = scoped?.sessionId === a.sessionId && !scoped?.cleared ? scoped : undefined
+      const model = scoped ? current?.model : a.sessionId ? modelBySession.get(a.sessionId) : undefined
+      const contextPercent = scoped ? current?.usedPercent : a.contextPercent
       rows.push({
         row: {
           nodeId,
@@ -352,7 +373,7 @@ export function createHudModel(): HudModel {
           state,
           ...(a.prompt ? { prompt: a.prompt } : {}),
           ...(a.activity ? { activity: a.activity } : {}),
-          ...(typeof a.contextPercent === 'number' ? { contextPercent: a.contextPercent } : {}),
+          ...(typeof contextPercent === 'number' ? { contextPercent } : {}),
           subagents: [...a.subagents.values()],
           // The latch, said out loud: a finished turn nobody has looked at. `noteFocus` / a
           // read-ack from the phone clears `doneSeen`, which retires the row entirely.

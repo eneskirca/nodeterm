@@ -72,6 +72,14 @@ function world(overrides: Partial<TriggerDeliveryDeps> = {}): World {
 }
 
 describe('trigger delivery — immediate outcomes', () => {
+  it('records an unsubmitted paste as a terminal miss with no retry', async () => {
+    const sendText = vi.fn(async () => 'pasted-not-submitted' as const)
+    const w = world({ sendText })
+    const result = await w.delivery.fire(row())
+    expect(result.outcome).toBe('missed')
+    expect(result.detail).toContain('Do not resend')
+    expect(sendText).toHaveBeenCalledTimes(1)
+  })
   it('delivers into an idle (done) agent target', async () => {
     const w = world()
     const r = await w.delivery.fire(row())
@@ -128,6 +136,17 @@ describe('trigger delivery — immediate outcomes', () => {
 })
 
 describe('trigger delivery — the deliver-on-idle queue', () => {
+  it('retains the partial-paste explanation after an idle queue flush and never retries', async () => {
+    const sendText = vi.fn(async () => 'pasted-not-submitted' as const)
+    const w = world({ sendText })
+    w.state = 'working'
+    expect((await w.delivery.fire(row())).outcome).toBe('queued')
+    w.state = 'done'
+    await w.delivery.onTargetIdle('term-tgt-1')
+    expect(w.runs[0].run).toMatchObject({ outcome: 'missed', detail: expect.stringContaining('Do not resend') })
+    await w.delivery.onTargetIdle('term-tgt-1')
+    expect(sendText).toHaveBeenCalledTimes(1)
+  })
   it('flushes on the idle edge and reports delivered-late', async () => {
     const w = world()
     w.state = 'working'

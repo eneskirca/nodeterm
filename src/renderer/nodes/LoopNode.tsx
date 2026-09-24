@@ -1,3 +1,4 @@
+import { reportTextDelivery } from '../lib/textDelivery'
 import { useEffect, useRef } from 'react'
 import { IconChevronDown, IconChevronRight, IconClose, IconPlay } from '../components/icons'
 import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react'
@@ -32,7 +33,7 @@ export function LoopNode({ id, data, selected }: NodeProps<CanvasNode>) {
 
   const trigger = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (task) void api.pty.sendText(id.replace(/^loop-/, ''), task)
+    if (task) void api.pty.sendText(id.replace(/^loop-/, ''), task).then(reportTextDelivery)
   }
 
   // Manual dismiss: cron/schedule cards persist across turns/sessions/restarts, so a job

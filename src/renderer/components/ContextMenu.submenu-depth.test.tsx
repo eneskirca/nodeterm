@@ -1,17 +1,13 @@
 // @vitest-environment jsdom
 //
-// MEASURES the submenu depth cap, rather than asserting it from the source.
+// MEASURES submenu nesting, rather than asserting it from the source.
 //
-// `ContextMenu` renders a submenu's children with
-// `if (child.type === 'colors' || child.type === 'submenu') return null` — so a THIRD level is
-// dropped with no error, no warning and nothing on screen. That is not a style rule anybody can
-// choose to ignore: it is why `lib/addMenuSpec`'s `isPinnedAgentEntry` refuses to nest an agent
-// row that is already a submenu. Claude's and Codex's account pickers ARE such rows, so nesting
-// one would silently delete the account picker for exactly the users who have managed accounts —
-// the "looks like it worked" failure, visible only to the people it breaks.
-//
-// If someone teaches ContextMenu to render a third level, this test goes red and the pin in
-// addMenuSpec can be reconsidered deliberately. Until then it is the fact the grouping rests on.
+// `ContextMenu` used to render a submenu's children with
+// `if (child.type === 'colors' || child.type === 'submenu') return null`, so a THIRD level was
+// dropped with no error, no warning and nothing on screen. The node menu now needs three levels
+// ("Transfer conversation ▸ Codex ▸ <model>", "Restart ▸ Switch model ▸ <model>"), so rows render
+// recursively — and this test is what proves a nested row is actually REACHABLE, including the
+// scroll rule that would otherwise clip it (`.ctx-submenu--host`).
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -35,6 +31,18 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+/** Hovers the submenu row whose OWN label is `label`, so its flyout opens. */
+function hover(label: string): void {
+  const row = [...document.querySelectorAll('.ctx-item--submenu')].find(
+    (el) => el.firstChild?.nextSibling?.textContent === label
+  )
+  if (!row) throw new Error(`no submenu row labelled ${label}`)
+  // React synthesises onMouseEnter from the delegated mouseover event.
+  act(() => {
+    row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  })
+}
+
 /** Renders into a body portal; hovers the row with `label` so its flyout opens. */
 function renderMenu(items: MenuItem[], hoverLabel?: string): void {
   const host = document.createElement('div')
@@ -42,15 +50,7 @@ function renderMenu(items: MenuItem[], hoverLabel?: string): void {
   act(() => {
     createRoot(host).render(<ContextMenu x={0} y={0} items={items} onClose={noop} />)
   })
-  if (!hoverLabel) return
-  const row = [...document.querySelectorAll('.ctx-item--submenu')].find((el) =>
-    el.textContent?.includes(hoverLabel)
-  )
-  if (!row) throw new Error(`no submenu row labelled ${hoverLabel}`)
-  // React synthesises onMouseEnter from the delegated mouseover event.
-  act(() => {
-    row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
-  })
+  if (hoverLabel) hover(hoverLabel)
 }
 
 describe('ContextMenu submenu depth', () => {
@@ -77,29 +77,46 @@ describe('ContextMenu submenu depth', () => {
     expect(leaf?.getAttribute('title')).toBe('Not supported in SSH')
   })
 
-  it('DROPS a third-level submenu silently — nothing is rendered for it', () => {
+  it('renders a third-level submenu and its leaves', () => {
+    let picked = ''
     renderMenu(
       [
         {
           type: 'submenu',
-          label: 'New agent',
+          label: 'Transfer conversation',
           children: [
-            { label: 'New Gemini', onClick: noop },
+            { label: 'Gemini', onClick: noop },
             {
               type: 'submenu',
-              label: 'New Codex',
-              children: [{ label: 'work@example.com', onClick: noop }]
+              label: 'Codex',
+              children: [{ label: 'gpt-5', onClick: () => (picked = 'gpt-5') }]
             }
           ]
         }
       ],
-      'New agent'
+      'Transfer conversation'
     )
     const flyout = document.querySelector('.ctx-submenu')
-    expect(flyout?.textContent).toContain('New Gemini')
-    // The measurement this whole design rests on: the nested submenu row is GONE, and so is the
-    // account it held. No error, no placeholder — which is why the grouping must never create one.
-    expect(flyout?.textContent).not.toContain('New Codex')
-    expect(flyout?.textContent).not.toContain('work@example.com')
+    expect(flyout?.textContent).toContain('Gemini')
+    expect(flyout?.textContent).toContain('Codex')
+    // A flyout that hosts a submenu must not scroll — overflow would clip the nested flyout.
+    expect(flyout?.classList.contains('ctx-submenu--host')).toBe(true)
+    hover('Codex')
+    const leaf = [...document.querySelectorAll('.ctx-submenu .ctx-submenu button')].find(
+      (b) => b.textContent?.includes('gpt-5')
+    ) as HTMLButtonElement | undefined
+    expect(leaf).toBeDefined()
+    act(() => leaf!.click())
+    expect(picked).toBe('gpt-5')
+  })
+
+  it('keeps a leaf-only flyout scrollable (no host class)', () => {
+    renderMenu(
+      [{ type: 'submenu', label: 'Models', children: [{ label: 'a', onClick: noop }] }],
+      'Models'
+    )
+    expect(document.querySelector('.ctx-submenu')?.classList.contains('ctx-submenu--host')).toBe(
+      false
+    )
   })
 })

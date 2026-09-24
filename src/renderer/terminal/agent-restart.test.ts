@@ -8,12 +8,15 @@ import {
   agentRestartFn,
   clearEnvEligibility,
   exitSequence,
+  exitTimeoutNotice,
   guardConcurrentRestart,
   isShellCommand,
   performExitPhase,
   performRestartResume,
   performResumePhase,
   planBulkRestart,
+  RESTART_EXIT_TIMEOUT_MS,
+  RESTART_LATE_EXIT_MS,
   registerAgentHibernate,
   registerAgentRestart,
   restartEligibility,
@@ -188,7 +191,8 @@ describe('performRestartResume', () => {
       timeoutMs: 1000,
       pollMs: 100
     })
-    await vi.advanceTimersByTimeAsync(2000)
+    // past the base window AND the restart's late window (RESTART_LATE_EXIT_MS)
+    await vi.advanceTimersByTimeAsync(62_000)
     expect(await p).toBe('exit-timeout')
     expect(written.join('')).not.toContain('--resume')
   })
@@ -300,7 +304,8 @@ describe('performRestartResume', () => {
     pane = 'node' // a momentary foreground child of the CLI, not its exit
     await vi.advanceTimersByTimeAsync(100)
     pane = 'claude'
-    await vi.advanceTimersByTimeAsync(2000)
+    // past the base window AND the restart's late window (RESTART_LATE_EXIT_MS)
+    await vi.advanceTimersByTimeAsync(62_000)
     expect(await p).toBe('exit-timeout')
     expect(written.join('')).not.toContain('--resume')
   })
@@ -482,9 +487,91 @@ describe('performRestartResume', () => {
       pollMs: 100,
       onDelivery: (c) => handles.push(c)
     })
-    await vi.advanceTimersByTimeAsync(2000)
+    // past the base window AND the restart's late window (RESTART_LATE_EXIT_MS)
+    await vi.advanceTimersByTimeAsync(62_000)
     expect(await p).toBe('exit-timeout')
     expect(handles).toEqual([])
+  })
+})
+
+describe('performRestartResume — a CLI that is slow to quit (issue #899)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('keeps watching past the base window and resumes a CLI that quits late', async () => {
+    const { written, io } = fakeIo()
+    let pane = '2.1.280' // what tmux reports for a running claude: its version, not `node`
+    const p = performRestartResume({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => pane,
+      pollMs: 250
+    })
+    await vi.advanceTimersByTimeAsync(RESTART_EXIT_TIMEOUT_MS + 14_000) // well past the base window
+    pane = 'zsh' // the CLI finally lets go
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('restarted')
+    expect(written.slice(0, 2)).toEqual(['\x15', '/exit\r'])
+    expect(written.join('')).toContain('claude --resume sid-1')
+  })
+
+  it('is still bounded: a CLI that never quits is reported once the late window runs out', async () => {
+    const { written, io } = fakeIo()
+    let settled = false
+    const p = performRestartResume({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'claude',
+      pollMs: 250
+    }).finally(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(RESTART_EXIT_TIMEOUT_MS + 1000)
+    expect(settled).toBe(false) // the base window alone no longer ends a restart
+    await vi.advanceTimersByTimeAsync(RESTART_LATE_EXIT_MS)
+    expect(await p).toBe('exit-timeout')
+    expect(written.join('')).not.toContain('--resume')
+  })
+
+  it('does not spend the late window on a pane it can no longer read', async () => {
+    const { io } = fakeIo()
+    let pane: string | null = 'claude'
+    let settled = false
+    const p = performRestartResume({
+      agentId: 'claude',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => pane,
+      pollMs: 250
+    }).finally(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(RESTART_EXIT_TIMEOUT_MS + 1000)
+    pane = null
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(settled).toBe(true)
+    expect(await p).toBe('exit-timeout')
+  })
+})
+
+describe('exitTimeoutNotice', () => {
+  it('hands over the resume line for a CLI that may quit after we stopped watching (#899)', () => {
+    const text = exitTimeoutNotice('Restart', resumeCommand('claude', 'sid-1'))
+    expect(text).toContain('Restart failed')
+    expect(text).toContain('Nothing was killed')
+    // The window it names is the one a restart actually waited, not the base 6s.
+    expect(text).toContain(`${(RESTART_EXIT_TIMEOUT_MS + RESTART_LATE_EXIT_MS) / 1000}s`)
+    expect(text).toContain('claude --resume sid-1')
+  })
+
+  it('falls back to "check the pane" when there is no resume line to offer', () => {
+    for (const line of [null, undefined, '']) {
+      const text = exitTimeoutNotice('Restart', line)
+      expect(text).toContain('Check the pane.')
+      expect(text).not.toContain('resume the conversation')
+    }
   })
 })
 
@@ -526,6 +613,16 @@ describe('performExitPhase', () => {
     // A pane we cannot WATCH must never be quit: the CLI would die with the resume never sent.
     expect(await p).toBe('not-eligible')
     expect(written).toEqual([])
+  })
+
+  it('has no late window unless the caller asks for one (Eco sweep, Pause)', async () => {
+    const { io } = fakeIo()
+    let pane = 'claude'
+    const p = performExitPhase({ agentId: 'claude', sessionId: 'sid-1', io, paneCommand: async () => pane })
+    await vi.advanceTimersByTimeAsync(RESTART_EXIT_TIMEOUT_MS + 1000)
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await p).toBe('exit-timeout')
   })
 
   it('reports exit-timeout, without a resume, when the CLI never lets go of the pane', async () => {

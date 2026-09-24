@@ -68,7 +68,7 @@ describe('ensureFullscreenTuiInFile (fail-open file wrapper)', () => {
     expect(readFileSync(p, 'utf8')).toBe('{ not json')
   })
 
-  it('an empty file is treated as {} and gets the key', () => {
+  it('initializes a successfully read empty file' , () => {
     const p = path.join(dir, 'empty.json')
     writeFileSync(p, '', 'utf8')
     expect(ensureFullscreenTuiInFile(p)).toBe(true)

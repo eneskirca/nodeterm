@@ -106,6 +106,7 @@ export const HOOK_ENDPOINT_FALLBACK_SH = [
   'nt_adopt() {',
   '  NODETERM_HOOK_SOCK=""',
   '  NODETERM_HOOK_PORT=""',
+  '  NODETERM_HOOK_TOKEN=""',
   '  NODETERM_NODE_TOKEN_DIR=""',
   // stdout swallowed for the same reason as the endpoint source at the top of every client (#186):
   // in the managed script's perm-wait branch this runs in the FOREGROUND of a hook whose stdout

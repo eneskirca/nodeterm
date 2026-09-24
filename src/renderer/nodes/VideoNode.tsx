@@ -3,7 +3,7 @@ import { Tooltip } from '../components/Tooltip'
 import { IconClose } from '../components/icons'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
-import type { CanvasNode } from '../state/workspace'
+import { isAudioFile, type CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
 
 /**
@@ -22,15 +22,19 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
   const filePath = (data.filePath as string) ?? ''
   const fileName = filePath.split('/').pop() || 'video'
   const remote = !!data.sshFs
+  const audio = isAudioFile(filePath)
 
   useEffect(() => {
+    setSrc('')
+    setError('')
+    setFetching(false)
     if (!filePath) return
     let alive = true
     if (remote) {
       // Remote fetch can take a while for a large file — say what the wait is.
       const projectId = useProjects.getState().activeProjectId
       if (!projectId) {
-        setError('Couldn’t load this video.')
+        setError('Couldn’t load this media file.')
         return
       }
       setFetching(true)
@@ -45,7 +49,7 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
         .catch(() => {
           if (!alive) return
           setFetching(false)
-          setError('Couldn’t load this video.')
+          setError('Couldn’t load this media file.')
         })
       return () => {
         alive = false
@@ -57,7 +61,7 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
         if (alive) setSrc(url)
       })
       .catch(() => {
-        if (alive) setError('Couldn’t load this video.')
+        if (alive) setError('Couldn’t load this media file.')
       })
     return () => {
       alive = false
@@ -95,14 +99,18 @@ export default function VideoNode({ id, data, selected }: NodeProps<CanvasNode>)
       </div>
 
       <div className="editor-node__body">
-        <div className="editor-node__image nodrag nowheel">
+        <div className="editor-node__image nodrag nowheel nopan">
           {src ? (
-            <video
-              src={src}
-              controls
-              preload="metadata"
-              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-            />
+            audio ? (
+              <audio src={src} controls preload="metadata" style={{ width: '100%' }} />
+            ) : (
+              <video
+                src={src}
+                controls
+                preload="metadata"
+                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              />
+            )
           ) : (
             <span className="editor-node__loading">
               {error || (fetching ? 'Fetching from the host…' : 'Loading…')}

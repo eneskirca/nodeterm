@@ -9,6 +9,8 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
+import type { NodeTerminalApi } from '@shared/types'
+import { SessionProvider, type WorkspaceSession } from '../session/session'
 import type { ProjectSetupEvent } from '@shared/project-settings'
 import { useProjectSetup } from '../state/projectSetup'
 import { useWorktrees } from '../state/worktrees'
@@ -51,7 +53,11 @@ function renderGroup(): { chip: () => HTMLButtonElement | HTMLElement | null; ho
     selected: false
   } as unknown as Parameters<typeof GroupNode>[0]
   act(() => {
-    root.render(<GroupNode {...props} />)
+    const session: WorkspaceSession = {
+      id: 'fixture', source: 'local', label: 'fixture', status: 'connected',
+      api: { git: {} } as NodeTerminalApi
+    }
+    root.render(<SessionProvider session={session}><GroupNode {...props} /></SessionProvider>)
   })
   return { chip: () => host.querySelector('.group-node__setup'), host }
 }

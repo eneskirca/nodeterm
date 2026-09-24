@@ -223,6 +223,13 @@ describe('initServerContextLink', () => {
     bridges = [bridge('term-a', 'term-b')]
     await link.refresh()
     expect(await handler({ verb: 'list', nodeId: 'term-a', args: {} })).toContain('Beta')
+    const docPath = join(dir, 'context-links', 'term-a.json')
+    expect(JSON.parse(readFileSync(docPath, 'utf8')).links[0].id).toBe('term-b')
+    expect(await handler({ verb: 'list', nodeId: 'term-b', args: {} })).toContain('term-a')
+    bridges = []
+    await link.refresh()
+    expect(await handler({ verb: 'list', nodeId: 'term-a', args: {} })).toContain('No linked nodes')
+    expect(existsSync(docPath)).toBe(false)
     await link.stop()
   })
 

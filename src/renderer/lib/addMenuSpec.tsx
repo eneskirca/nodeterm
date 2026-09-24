@@ -20,7 +20,7 @@
  *
  * Three render adapters map the same {@link AddItem} list to the menu worlds:
  *  - {@link buildGroupedAddMenu} → the GROUPED tree the two `ContextMenu` surfaces show (see the
- *    grouping section at the bottom of this file for why, and for the submenu depth cap).
+ *    grouping section at the bottom of this file for why).
  *  - {@link contentAddItemsToMenuItems} → the {@link MenuItem} type the `ContextMenu` component
  *    consumes (pane menu, project-header "+").
  *  - {@link contentAddItemsToDockRows} → the Dock's custom `<button>` JSX.
@@ -338,11 +338,11 @@ export function contentAddItemsToDockRows(
 // EXHAUSTIVE; it has to be FAST. Grouping trades one hover for a target you can hit without
 // reading, and leaves the exhaustive paths exactly where they already were.
 //
-// **The depth cap is structural, not stylistic.** `ContextMenu` renders a submenu's children with
-// `if (child.type === 'colors' || child.type === 'submenu') return null` — a third level is
-// silently dropped, with no error and nothing on screen. That single line decides the whole shape
-// below: an agent row that is ALREADY a submenu (Claude's and Codex's account pickers) can never
-// be nested, or the picker disappears for exactly the users who have managed accounts.
+// **Two levels here is a choice, not a cap.** `ContextMenu` used to drop a third level silently
+// (`if (child.type === 'submenu') return null`), and this shape was built around that. It now
+// renders any depth (the node menu's "Transfer conversation ▸ <agent> ▸ <model>" needs three), but
+// the rule below is kept: an agent row that is ALREADY a submenu (Claude's and Codex's account
+// pickers) stays at the first level, so picking an account never costs two hovers.
 
 /** Which section of the grouped menu a content kind belongs to. `top` = stays a first-level row. */
 export type AddGroupId = 'top' | 'view' | 'files' | 'orchestrate'
@@ -391,13 +391,11 @@ export interface AgentAddEntry {
 }
 
 /**
- * Whether an agent row must stay at the FIRST level. Two independent reasons, and both are
- * refusals rather than preferences:
+ * Whether an agent row must stay at the FIRST level. Two independent reasons:
  *
- *  1. **It is already a submenu.** Nesting it makes `ContextMenu` render it as nothing (see the
- *     depth cap above) — the account picker would vanish silently, for exactly the users who have
- *     accounts. This half is derived from the row itself, so an agent that grows a picker later is
- *     protected on the day it does.
+ *  1. **It is already a submenu.** Nesting it would put the account picker two hovers deep, for
+ *     exactly the users who have accounts. This half is derived from the row itself, so an agent
+ *     that grows a picker later is kept at the top on the day it does.
  *  2. **It CAN own a managed account** (`ACCOUNT_CAPABLE_AGENT_IDS`). Rule 1 alone would move a
  *     row in and out of the submenu as the user adds or removes accounts — a menu that rearranges
  *     itself is a menu you cannot learn. Pinning the account-capable agents keeps the shape stable
@@ -446,7 +444,7 @@ const GROUP_ICON: Record<Exclude<AddGroupId, 'top'>, ReactNode> = {
  * the Dock use — so a row's label, icon, handler and **disabled reason** are written exactly once.
  * That is what keeps "New worktree…" greyed with `WORKTREE_SSH_HINT` inside its submenu instead of
  * quietly losing the explanation on the way in: a `hint` on a leaf renders in a flyout the same as
- * at the top level (the depth cap drops nested SUBMENUS, never a leaf's disabled state).
+ * at the top level.
  *
  * Order is the canonical one: top rows, then agents, then view / files / orchestrate. A group
  * whose rows are all filtered out emits no submenu at all.

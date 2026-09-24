@@ -266,6 +266,44 @@ describe('pty.attach reports whether it had to CREATE the session', () => {
   })
 })
 
+// Issue #914: a session-host session follows its most recently active viewer, so the pty can run
+// at a size the phone did not ask for. The relay tells it with `OP.Resized` (same payload as
+// `OP.Resize`), and a phone that did not say it renders that frame is a ceiling for the session.
+describe('pty.attach forwards the real pty size as OP.Resized', () => {
+  function attachWith(params: Record<string, unknown>) {
+    const fakes = makeHostFakes()
+    const frames: Array<{ op: number; streamId: number; payload: Uint8Array }> = []
+    fakes.socket.sendFrame = (op, streamId, _seq, payload) => {
+      frames.push({ op, streamId, payload })
+      return true
+    }
+    const handlers = createHostHandlers(fakes.pty, fakes.socket, fakes.fs, () => ['/work'])
+    handlers.onRpc({ id: 'a', method: 'pty.attach', params: { nodeId: 'node-a', cols: 80, rows: 24, ...params } })
+    return { ...fakes, frames }
+  }
+  const sinksOf = async (pty: HostPtyManager) => {
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    return (pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][1] as import('../../core/pty-manager').DetachedSinks
+  }
+
+  it('encodes the size as two little-endian uint16s on the stream', async () => {
+    const { pty, frames } = attachWith({})
+    const sinks = await sinksOf(pty)
+    sinks.onSize?.({ cols: 132, rows: 43 })
+    const resized = frames.filter((frame) => frame.op === OP.Resized)
+    expect(resized).toHaveLength(1)
+    expect(resized[0].streamId).toBe(1)
+    const view = new DataView(resized[0].payload.buffer)
+    expect([view.getUint16(0, true), view.getUint16(2, true)]).toEqual([132, 43])
+  })
+
+  it('treats a phone as able to adapt only when it says so', async () => {
+    expect((await sinksOf(attachWith({}).pty)).adaptsToSize).toBe(false)
+    expect((await sinksOf(attachWith({ resizedFrames: 'yes' }).pty)).adaptsToSize).toBe(false)
+    expect((await sinksOf(attachWith({ resizedFrames: true }).pty)).adaptsToSize).toBe(true)
+  })
+})
+
 // Scrolling belongs to tmux (mouse on, alternate screen), and the phone cannot deliver the wheel
 // itself — its emulator swallows the gesture — so it asks the host to write it into the stream's
 // pty, which IS a tmux client. `lines` and the stream target both come off the wire.

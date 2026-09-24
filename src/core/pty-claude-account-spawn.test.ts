@@ -13,7 +13,8 @@
  * refusal and the spawn count.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { execFileSync } from 'child_process'
 import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -65,6 +66,7 @@ describe('a managed Claude account is not a Codex account (#345)', () => {
     mgr.registerIpc()
   })
   afterEach(() => {
+    vi.unstubAllEnvs()
     resetPlatformForTests()
     rmSync(userDataDir, { recursive: true, force: true })
   })
@@ -83,14 +85,14 @@ describe('a managed Claude account is not a Codex account (#345)', () => {
     expect(spawned).toHaveLength(1)
     // It is a Claude scope, not a Codex one.
     expect(spawned[0].env.CLAUDE_CONFIG_DIR).toContain(CLAUDE_ACCT)
-    expect(spawned[0].env.CODEX_HOME).toBeUndefined()
+    expect(spawned[0].env.CODEX_HOME).toBe(process.env.CODEX_HOME)
   })
 
   it('the agent-less `claude /login` terminal SPAWNS', async () => {
     const res = await create({ accountId: CLAUDE_ACCT, persistKey: 'node-2' })
     expect(res.unavailable).toBeUndefined()
     expect(spawned).toHaveLength(1)
-    expect(spawned[0].env.CODEX_HOME).toBeUndefined()
+    expect(spawned[0].env.CODEX_HOME).toBe(process.env.CODEX_HOME)
   })
 
   it('the agent-less `codex login` terminal STILL gets the managed Codex scope', async () => {
@@ -106,5 +108,32 @@ describe('a managed Claude account is not a Codex account (#345)', () => {
     const res = await create({ agentId: 'codex', accountId: CODEX_ACCT, persistKey: 'node-4' })
     expect(res.unavailable).toBe('codex-account')
     expect(spawned).toHaveLength(0)
+  })
+
+  it('login writes only the managed credential and strips inherited API keys (#683)', async () => {
+    const systemHome = path.join(userDataDir, 'system-codex')
+    mkdirSync(systemHome)
+    writeFileSync(path.join(systemHome, 'auth.json'), 'system-fixture-unchanged')
+    vi.stubEnv('CODEX_HOME', systemHome)
+    vi.stubEnv('OPENAI_API_KEY', 'fixture-openai-key')
+    vi.stubEnv('CODEX_API_KEY', 'fixture-codex-key')
+    const home = codexAccountHome(userDataDir, CODEX_ACCT)
+    mkdirSync(home, { recursive: true })
+    try {
+      const res = await create({ accountId: CODEX_ACCT, persistKey: 'fixture-login' })
+      expect(res.unavailable).toBeUndefined()
+      const env = spawned[0].env
+      expect(env.CODEX_HOME).toBe(home)
+      expect(env.OPENAI_API_KEY).toBeUndefined()
+      expect(env.CODEX_API_KEY).toBeUndefined()
+      // A disposable fake CLI consumes the actual spawn environment. No Codex login/network.
+      execFileSync(process.execPath, ['-e',
+        "require('fs').writeFileSync(require('path').join(process.env.CODEX_HOME, 'auth.json'), 'managed-fixture')"
+      ], { env })
+      expect(readFileSync(path.join(home, 'auth.json'), 'utf8')).toBe('managed-fixture')
+      expect(readFileSync(path.join(systemHome, 'auth.json'), 'utf8')).toBe('system-fixture-unchanged')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

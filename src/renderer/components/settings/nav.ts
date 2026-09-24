@@ -75,7 +75,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     sections: [
       { id: 'terminal', title: 'Terminal' },
       { id: 'shell', title: 'Shell' },
-      { id: 'tmux', title: 'tmux' },
+      { id: 'tmux', title: 'Session protection' },
       { id: 'github-issues', title: 'GitHub Issues' },
       { id: 'behavior', title: 'Behavior' }
     ]

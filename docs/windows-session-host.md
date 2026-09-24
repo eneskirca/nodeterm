@@ -69,6 +69,21 @@ Electron main process                    Session-host process (standalone, detac
   this backend between the tmux branch and the plain-shell fallback, and constructs a
   `SessionHostPty` instead of calling `pty.spawn` directly.
 
+## Availability notice
+
+`pty:tmux-status` retains its tmux-only `available` field and adds `persistence`: the
+user's `enabled` setting and the discovered `backend` (`tmux`, `session-host`, or null).
+Discovery does not start the host or certify runtime health. POSIX prefers tmux; Windows
+uses the session host. A missing/errored status stays unknown, including over Server Edition's
+WS bridge. Older peers without the field also remain unknown.
+
+The desktop/browser banner warns when protection is disabled, absent, or unknown; Settings
+shows the same state and refreshes it after a setting change and periodically. The state is
+about **new local terminals**, not SSH/relay hosts or an upgrade of existing plain shells.
+An installer is offered only from a local project, so it cannot run on the selected remote
+host by mistake. Runtime session-host attach failures still use the terminal's existing error
+path; a bundle being present is not proof an individual session attached successfully.
+
 ## Windows profile resolution
 
 The profile catalog is a trusted desktop service. Its public API returns only a stable `id`,
@@ -120,7 +135,7 @@ long-lived connection (no positional-FIFO fragility, unlike this app's tmux cont
 | `attach`                         | `new-session -A` / `attach-session`     | full, plus a screen the tmux path never needed (see below) |
 | `hasSession`                     | `has-session -t <name>`                 | full (implemented; not on the hot create path — see below) |
 | `write`                          | raw bytes on an attached client's stdin | full |
-| `resize`                         | ConPTY/pty resize + `refresh-client -C` | full; each view claims a size and the effective grid is the componentwise minimum |
+| `resize`                         | ConPTY/pty resize + `refresh-client -C` | full; each view claims a size, the app's grid follows its most recently active view (issue #914) |
 | `pause` / `resume`               | node-pty `pause()`/`resume()`           | full; per-viewer in core and per-connection in the host (first pause / last resume) |
 | `sendKeys`                       | `send-keys -l -- <text>` (+ `Enter`)    | full — works with no attached client, exactly like tmux |
 | `paneCommand`                    | `display-message -p '#{pane_current_command}'` | approximated — see `process-tree.ts` |
@@ -242,8 +257,42 @@ pause and geometry owner even though all of them share one `SessionHostClient` s
 sends a pause only on the local 0→1 edge and a resume only on 1→0; the host then combines that one
 connection-level ticket with other process sockets. Geometry follows the same shape: the client
 reduces its live view claims, the host reduces all socket claims componentwise, and it resizes the
-PTY and headless terminal before serializing a warm screen. Detaching a smaller viewer recomputes
-the grid so remaining viewers can grow.
+PTY and headless terminal before serializing a warm screen. Detaching a viewer recomputes the grid.
+
+**The client's reduction is "most recently active", not "smallest" (issue #914).** Under tmux a
+phone mirroring a node is its own tmux client, and tmux's default `window-size latest` gives the
+window to whichever client was active last — so a phone that dismissed its keyboard got its rows
+back. Here the phone (a relay-served `SessionHostPty`) and the desktop node share ONE client
+socket, and the old componentwise minimum held the phone to the desktop node's rows with nothing on
+screen saying why. `latestClaimSize` (`core/pty-size.ts`) now picks the claim with the highest
+recency: an attach, a claim that CHANGES (a re-fit to the same size does not count, or every fit
+would steal the session), and a write that is not a terminal report (`core/terminal-reports.ts` —
+every attached xterm answers a DA/CPR/OSC query, and counting those would hand the session to
+whoever answered last). Three rules come with it:
+
+- **A viewer that cannot adapt is a ceiling.** Every renderer view renders the size it is told
+  (`pty:size`: letterbox a smaller grid, clip a larger one, as a tmux client does). A pty wider than
+  the phone's screen would wrap into garbage there, or — rendered at the pty's size — be clipped to
+  its left ~45 columns, so a relay sink is `bounding` unless `pty.attach` carried
+  `resizedFrames: true`, and the chosen size is clamped componentwise to every bounding claim. The
+  iOS app keeps it that way on purpose: it reads `OP.Resized` only to explain the empty band
+  ("Sized to another screen") and to offer "Fit this screen", which re-claims the size with a
+  rows+1 → rows wiggle (an unchanged claim is not activity). Because the phone clears that hint
+  every time it sends a size, the host ANSWERS every sink report, unchanged or not — the sink's
+  `sinkShown` is forgotten on each report.
+- **The pty's real size flows back to every viewer.** `SessionHostPty.onSize` → `PtyManager`
+  `applyBackendSize` → `pty:size` to each view whose xterm is not already at it, and `OP.Resized`
+  (payload = `OP.Resize`'s, 2× uint16 LE) to the relay sink. A session-host `Session` only VOTES in
+  `applySize`; its views are corrected from the backend's answer, which the client sends after every
+  vote, changed or not.
+- **The host's `geometry` push is negotiated at hello, never assumed.** `hello` carries
+  `features: ['geometry']`; the host answers with the subset it speaks and pushes `geometry` frames
+  (and adds `geometry` to attach replies) ONLY on connections that asked. This is not caution: an
+  older client treats every push frame that is not `data` as an EXIT, so a geometry frame sent to it
+  retires a live session on the first resize (`session-host/geometry-host.test.ts` pins it against
+  the real bundled host). Against a host without the feature the client reports its own applied size,
+  which is exact while it is the host's only connection. Across connections (two apps on one host)
+  the HOST still takes the componentwise minimum.
 
 The same name is also a generation boundary. Data and exit events contain a session name but no
 generation id, so an exiting `HostSession` remains registered until its queued output, final exit
@@ -345,6 +394,66 @@ failure distinction across reconnects: an empty capture and an idempotently abse
 confirmed `{ok:true}` host responses, while a transport/request rejection remains unknown and is
 propagated. That propagation is what lets the periodic snapshot keep its dirty bit for a retry and
 what prevents a delete from claiming a persistent process is gone when the host never confirmed it.
+
+## Windows updates and uninstalls
+
+A running host maps the installed Electron executable and its DLLs. Its separate hard-link name
+makes it identifiable; it does **not** make the install directory safe to replace. Closing the app
+alone deliberately leaves the host and its sessions running (#829).
+
+The NSIS install/uninstall preflight now refuses to proceed while the app or host is running from
+any installation, or a process runs under the installation path prefix. It replaces electron-builder's
+automatic process termination, including
+its silent/`--updated` path. Cancel leaves sessions alone. Retry performs a fresh, read-only process
+query. A failed query (including an inaccessible nodeterm process with no executable path) blocks
+instead of guessing. Silent installation returns a nonzero exit code, without a dialog or kill.
+The query uses Windows PowerShell with a child-process-only execution policy; no persistent policy
+or trust setting is changed. Group Policy restrictions still cause a safe refusal.
+
+This is deliberately conservative: an old uninstaller may use a machine-wide name match or a
+path prefix without a directory boundary. Another installation (even a sibling directory whose
+name begins with this installation's name) can therefore block an update. The new preflight must
+cover those legacy targets before invoking the old executable; it never stops them on your behalf.
+
+To update while keeping your saved canvas:
+
+1. Cancel the installer and reopen nodeterm if you already quit it. Save work in every local
+   terminal and agent, including closed/other projects and sessions accessed from a phone.
+   Let active tasks finish, then use each program's normal exit command and exit its shell.
+   Leave the canvas nodes in place. **Do not use Sessions → End session or delete nodes to prepare
+   for an update**: those actions remove nodes, rather than just stopping their processes.
+2. Quit nodeterm normally so workspace changes are saved and it cannot start replacement sessions.
+   Wait at least 30 seconds after the last shell exits for the empty host to shut down naturally.
+   Quitting the app alone does not empty the host; a host with sessions will remain running.
+3. If the host remains, keep the installer cancelled. In Windows Task Manager's **Details** view,
+   verify the user and executable path of `nodeterm-session-host.exe` for this installation.
+   After saving work and accepting that **every terminal/agent process owned by that host will
+   stop**, end only that verified host. This is a manual process shutdown, not a graceful agent
+   exit, so complete step 1 first. Do not use a machine-wide name-based kill. If the host uses
+   the fallback name `nodeterm.exe`, verify its identity/path rather than guessing which process
+   to end. Another Windows user's host requires that user's decision.
+4. Run the installer from Downloads, outside the installation directory, or Retry its preflight.
+   Other nodeterm installations/users must prepare their own sessions too if they block the check.
+   Do not reopen the app or start sessions while installation is in progress.
+
+Stopping the host after quitting leaves saved node metadata (positions, groups, agent/session
+identities) and existing closed-session history in place; it does not call the node-deletion path
+or add deletion entries to `closedSessions`. Reopen nodeterm after installation to use those nodes.
+This is **cold recovery**, not preservation of live processes: shell jobs and unsaved terminal state
+are lost. An agent can resume only when its harness supports resume, nodeterm has saved a valid
+conversation id, and the matching account's conversation history is still available. A saved node
+alone does not guarantee resume, restore an in-flight task, or recover unsaved work.
+
+New installers run this check before invoking the previous version's uninstaller. Already shipped
+installers/uninstallers cannot be patched retroactively; use the same preparation steps for them.
+This is a safe refusal and manual recovery path, not live host migration: sessions cannot yet
+survive replacing the binaries they have mapped. A process could still start after the preflight;
+it is not an installation-wide launch lock.
+
+Server Edition has no NSIS updater and is unchanged. Mobile/relay clients must expect a disconnect
+when the user deliberately ends desktop sessions; they cannot authorize an update shutdown.
+Real Windows per-user/all-users upgrades, old uninstallers, PowerShell policy variations, and
+phone reconnection still require device verification (fixtures do not prove file-lock behavior).
 
 ## Lifetime
 
@@ -475,6 +584,89 @@ you chose and why") rather than an oversight.
 
 ## Automated verification
 
+### Direct ConPTY agent messages (separate from the persistent host)
+
+The desktop can also hold a **non-persistent native PTY**, indexed by canvas node id but
+without `Session.persistKey`. Checking only persisted sessions incorrectly returned `targetGone`
+for such a running OpenCode. `hasLiveSession` now uses the common runtime lookup.
+
+`core/native-windows-pane.ts` implements message delivery for those direct PTYs. It uses a
+headless terminal for observed bracketed-paste mode and capture, and reads native executable
+identity through console membership and an unambiguous shell-child chain. Process birth times
+and a generation id detect replacement/PID reuse. It deliberately does not choose an arbitrary
+deepest descendant, interpret prompt text as an executable, or accept a detached console.
+This Windows ownership evidence is not POSIX foreground-group semantics; ambiguous console
+trees refuse. An interpreter is identified by its script: the probe keeps only the first
+positional argument (`CommandLineToArgvW`, inside PowerShell) and `scriptCommandName` resolves it
+to the command its npm package publishes in `bin`, else to the script basename. Measured on
+Windows 11 (2026-09-14) against a live Codex pane opened from the canvas: the PR-era probe read
+`node` and the installed app refused `send` with `targetNotAgentPane (observed: node)`, while the
+new probe read `codex` (`agent`) from the same console. A fake npm package in a separate console
+confirmed the prompt argument never appears in the probe output. The
+interpreter is the leaf; its children (a native `codex.exe`, MCP servers) do not count. Existing project consent, verified idle hooks,
+delivery locks, post-write verification and receipt tracking remain in force.
+
+The persistent host has a separate, additive messaging extension (`messageOwnerV1`,
+`messagePasteReadyV1`, `messageEnvelopeV1`). `session-host/message-pane.ts` observes the OS console
+under the **host's** session generation and reads the host's existing emulator after its output
+barrier. Before sending, it repeats the identity probe, checks paste mode again, and confirms
+that the same session object is still registered after every await. It then writes one sanitized
+multiline bracketed paste, watches its own emulator until the envelope footer renders, and sends
+Enter as a second write, only while the same generation is still registered
+(`core/settled-submit.ts`, shared with the Server Edition). With the Enter inside the paste write,
+Codex 0.154 left the envelope unsent in its composer and the delivery reported `stalled`. Main still owns the project/consent/hook/binary
+and receipt gates. The direct adapter is never used for host-backed sessions.
+
+A host-backed session stays addressable after the desktop releases its client (park expiry,
+offscreen release). `targetLive` comes from `PtyManager.sessionExists`, and the three messaging
+probes route by `sessionHostOwns`, which reads the release record when no `Session` is left and
+otherwise applies `sendText`'s rule (no local tmux means the host owns persistence).
+
+The extension is independently versioned so the existing terminal protocol v1/v2 is unchanged.
+Old live hosts reject the new command names, and the client returns null/false without falling
+back to `write`, `sendKeys`, or a local tmux. **Installing a new app does not upgrade an already
+running host.** It must retire after its existing sessions have ended, at a user-coordinated time;
+the next host starts from the new bundle. Never terminate a user's live host as an upgrade step.
+There is no hot migration of an existing ConPTY generation to another host.
+
+`scripts/smoke-session-host-messaging.ts` exercises a separate real Windows host over its named
+pipe, using a native fake reader (no model/API call): OS identity, probe latency within the 2 s
+budget, exact multiline framing, stale-generation refusal, and retirement of the isolated fixture.
+This proves the transport extension, not message/reply delivery between actual OpenCode agents.
+
+Installed-device acceptance (2026-09-13, local build `0.3.5-windows-messaging.2`): after each
+resumed OpenCode posted a fresh verified status, the coordinator's native messages reached both
+architect and coder; their `NT2-ARQ-OK` / `NT2-CODER-OK` replies arrived as native message
+envelopes in the coordinator transcript. Board-log traces confirmed delivery in both directions,
+including queued replies delivered after the coordinator became idle. These resumed sessions
+were **direct Windows PTYs** (their shell processes were children of the desktop main process);
+the old persistent host was no longer running. This acceptance therefore proves the installed
+message workflow on that backend, while the persistent extension remains covered by the separate
+real-host fixture above, not by a claim that these OpenCodes ran inside it.
+
+Desktop message dispatch also waits for pending canvas publication before asking main to authorize
+the pair. Without it, a newly opened node can appear in `list` and context links but be absent
+from main's persisted project snapshot, whose scope resolver labels it `cross-project`. A file
+conflict blocks that publication; it is never silently answered as Keep mine. Server control
+already persists its creations; mobile is not a sender of these agent messages.
+
+`scripts/smoke-windows-agent-messaging.ts` tests a real isolated ConPTY with a native reader:
+console identity, one multiline bracketed paste, and refusal after disposal. It makes no LLM
+call. The installed-app message/reply check with actual OpenCode agents is a separate acceptance.
+
+`scripts/sim-agent-messaging-windows.ts` runs the coordinator ↔ architect ↔ coder scenario end to
+end against an isolated real host, with the real mirror, decider, `deliverFromControl`, queue and
+receipt watch; only the agent CLIs (paste-aware fake composers) and the hook transport are
+simulated. Measured 2026-09-15: three rounds of send/reply pass, including busy targets queued
+and flushed on idle, and a verified `SessionStart` + `idle_prompt` committing a verified idle
+without a turn. Two findings it pins: after an app restart an idle agent whose CLI emits no hook
+stays `targetStatusStale` on every retry (whether real Claude emits one there is not measured);
+and against a reader that drains input every 150 ms, the `sendKeys` plan (paste, then an
+immediate Enter write) had its Enter swallowed into the paste while the settled envelope
+submitted.
+OpenCode transcript export on Windows is not part of this change: it runs the resolved npm shim
+through `directExecutableInvocation` (`opencodeExportAt`, #655).
+
 The focused suites exercise behaviour rather than scan implementation source:
 
 - the Windows profile resolver covers detection precedence, standard Git Bash locations, custom
@@ -527,3 +719,15 @@ Windows named-pipe DACL hardening remain outside this profile pass as described 
   `spawnSession()`'s new branch automatically (they call it directly with no prior async
   pre-check), so they work, but were not separately hand-verified end-to-end through the relay
   feature itself in this pass — only the primary create/join/reconnect/capture/kill paths were.
+
+### Non-message delivery result (#780)
+
+New callers use additive `sendKeysV2`, returning `result.delivery`: `true` for completed
+requested writes, `false` before input, or `pasted-not-submitted` when paste landed but the
+settle/mode/generation checks withheld Enter, or a transmitted request lost its reply.
+The latter case is uncertain: neither paste nor submission is claimed confirmed. The last result is terminal for automatic
+delivery: inspect the terminal, do not resend or blindly press Enter. Canvas write, trigger
+run history, and one-way UI writers surface it. An older host refuses this command and keeps
+its sessions; there is no fallback to `sendKeys`, raw input, or automatic restart. Legacy
+clients retain their existing `sendKeys` wire contract. No real Windows TUI measurement is
+claimed by the fake-PTY regression fixtures.

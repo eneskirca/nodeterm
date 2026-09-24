@@ -9,10 +9,9 @@
 //     (FULLSCREEN_TUI_MIN_VERSION). This pure helper does not know the version; callers gate it.
 //
 // Merge semantics mirror install-helper.ts: pure transform on a parsed object (`ensureFullscreenTui`)
-// plus a thin fail-open file wrapper (`ensureFullscreenTuiInFile`) that tolerates a missing/empty/
-// corrupt settings.json the same way (defaults to `{}`), and only writes when something changed.
-import path from 'path'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+// plus a guarded file transaction. Only a missing file defaults to {}; malformed or unreadable
+// settings are preserved, and an existing tui value never causes a write.
+import { updateSettingsFile } from './settings-file'
 
 /** The settings.json value that turns on Claude's fullscreen rendering. */
 export const TUI_FULLSCREEN = 'fullscreen'
@@ -33,37 +32,9 @@ export function ensureFullscreenTui(config: TuiSettings): { config: TuiSettings;
 /**
  * Fail-open file wrapper for the local surfaces (system `~/.claude` + managed account dirs). Reads
  * `configPath`, applies `ensureFullscreenTui`, and writes back ONLY if the key was added. Returns
- * whether it wrote. A read or write error is swallowed + warned, never thrown.
- *
- * A file that EXISTS but does not parse is left completely alone — unlike install-helper, which
- * normalizes it. The hook merge usually runs first and normalizes a corrupt file, but when it bails
- * early (its managed-script write failed) this pass would be the FIRST writer, and "replace the
- * user's settings with {tui:...}" is data loss a cosmetic rendering default can never justify.
- * Only a genuinely missing/empty file is treated as `{}`.
+ * whether it wrote. Errors skip the update without preventing a session from starting.
+ * Uses the same lock, validation and stale-snapshot protection as hook installation/removal.
  */
 export function ensureFullscreenTuiInFile(configPath: string): boolean {
-  let config: TuiSettings = {}
-  let raw: string | null = null
-  try {
-    raw = readFileSync(configPath, 'utf8')
-  } catch {
-    raw = null // missing/unreadable → create from {}
-  }
-  if (raw !== null && raw.trim() !== '') {
-    try {
-      config = JSON.parse(raw) as TuiSettings
-    } catch {
-      return false // exists but unparseable: never replace the user's file
-    }
-  }
-  const { config: next, changed } = ensureFullscreenTui(config)
-  if (!changed) return false
-  try {
-    mkdirSync(path.dirname(configPath), { recursive: true })
-    writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf8')
-    return true
-  } catch (e) {
-    console.warn('[claude-tui] fullscreen tui write failed', e)
-    return false
-  }
+  return updateSettingsFile(configPath, (config) => ensureFullscreenTui(config).config)
 }

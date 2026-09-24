@@ -702,7 +702,7 @@ describe('size negotiation: smallest subscriber wins', () => {
   })
 
   // ── A PARKED terminal is subscribed but not looking ──────────────────────────────────────
-  // The renderer keeps a node's xterm+PTY alive for 5 minutes after unmount (TERM_PARK_MS), so a
+  // The renderer keeps a node's xterm+PTY alive for the park window after unmount (`settings.terminalParkMinutes`), so a
   // parked client stays a subscriber. Its (possibly tiny) last fit must NOT shrink the terminal
   // for the people still watching — it reports a null size instead: "listening, not viewing".
   it('a parked subscriber (null size) stops constraining the shared pty but keeps its output', async () => {

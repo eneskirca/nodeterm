@@ -13,6 +13,11 @@ export interface LinkEndpoint {
   contextCapable: boolean
 }
 
+// A project-scoped miss says nothing about existence elsewhere. Do not probe other projects
+// just to improve this diagnostic: that would turn a refusal into an existence oracle.
+export const LINK_PROJECT_ONLY = 'cross-project linking is not supported'
+export const LINK_ENDPOINT_NOT_FOUND = `node not found in this project; ${LINK_PROJECT_ONLY}`
+
 export type LinkKind = 'context' | 'note'
 
 /** Decide what kind of link (if any) a new edge between two nodes forms. */
@@ -68,7 +73,7 @@ export function planBridges(
     }
     const te = lookup(targetId)
     if (!se || !te) {
-      skipped.push({ id: targetId, why: 'no such node' })
+      skipped.push({ id: targetId, why: LINK_ENDPOINT_NOT_FOUND })
       continue
     }
     const kind = classifyLink(se, te)

@@ -7,6 +7,8 @@ import { ConfirmDialog } from '../../ConfirmDialog'
 import { ProCompare } from './ProCompare'
 import { Button } from '@renderer/ui/Button'
 import { machineNoun, otherMachines, thisMachine } from '@renderer/lib/machineName'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
+import type { SettingsSectionId } from '../nav'
 import { Input } from '@renderer/ui/Input'
 import {
   licenseSentence,
@@ -37,13 +39,38 @@ const ROWS = {
       'devices',
       'seats',
       'release',
-      'copy key'
+      'copy key',
+      'app store',
+      'iphone',
+      'pairing'
     ]
   }
 }
 const ENTRIES = Object.values(ROWS)
 
-export function LicenseSection({ isActive }: { isActive: boolean }): React.JSX.Element {
+// Pairing can expose an existing entitlement; it cannot repair a purchase without a linked
+// phone identity (nodeterm-ios#31). Keep the same qualification beside both purchase routes.
+function AppStorePairingHint(): React.JSX.Element {
+  return (
+    <p className="text-sm text-muted">
+      Already have Pro from the App Store? Pairing the phone with that subscription can unlock Pro
+      in the desktop app without a license key.{' '}
+      {isBrowserRuntime()
+        ? 'In the desktop app, open Settings → Phone to pair. Server Edition does not support this activation route. '
+        : 'Open Settings → Phone to pair. '}
+      Some purchases cannot be linked by pairing; if Pro stays inactive, contact support before
+      buying again.
+    </p>
+  )
+}
+
+export function LicenseSection({
+  isActive,
+  onNavigate
+}: {
+  isActive: boolean
+  onNavigate: (id: SettingsSectionId) => void
+}): React.JSX.Element {
   const ent = useEntitlement()
   const [licenseKey, setLicenseKey] = useState('')
   const [upgrading, setUpgrading] = useState(false)
@@ -170,6 +197,10 @@ export function LicenseSection({ isActive }: { isActive: boolean }): React.JSX.E
         ) : (
           <div className="space-y-3">
             <ProCompare />
+            <AppStorePairingHint />
+            {!isBrowserRuntime() ? (
+              <Button onClick={() => onNavigate('phone')}>Open Settings → Phone</Button>
+            ) : null}
             <Button
               variant="primary"
               onClick={() => {
@@ -182,11 +213,12 @@ export function LicenseSection({ isActive }: { isActive: boolean }): React.JSX.E
             <p className="text-sm text-muted">
               {upgrading
                 ? 'Complete your purchase in the browser — Pro unlocks here automatically.'
-                : 'Unlock remote access and Pro features.'}
+                : 'Unlock Pro features.'}
             </p>
             <details>
               <summary className="cursor-pointer text-sm text-muted">Have a license key?</summary>
               <div className="mt-3 space-y-2">
+                <AppStorePairingHint />
                 <FieldRow
                   label="License key"
                   control={

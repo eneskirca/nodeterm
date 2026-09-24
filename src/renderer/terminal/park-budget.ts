@@ -14,9 +14,51 @@ import type { AgentState } from '@shared/agents/normalize'
  * park just means the next remount is a warm tmux reattach (tmux redraws), the same path every
  * remount after the 5-minute window already takes.
  *
- * 12 ≈ one busy project's worth of terminals; the same order of magnitude as WEBGL_BUDGET.
+ * 20 (raised from 12 in issue #886): with several SSH projects open, 12 was hit long before the
+ * park window and turned ordinary project cycling into seconds-long remote reattaches. A parked
+ * tmux-backed terminal measured ≈ 2 MB (headless xterm, 200×50), so the raise costs ≈ 16 MB more
+ * in the common case; a plain shell with a full scrollback (≈ 27 MB) is the expensive exception,
+ * and the memory-pressure lever still drops every disposable park. User-tunable via
+ * `settings.terminalParkMax`.
  */
-export const PARK_MAX = 12
+export const PARK_MAX = 20
+
+/** Default park window in minutes (`settings.terminalParkMinutes`) — the historical
+ *  `TERM_PARK_MS` was 5 minutes; raised to 10 (issue #886) so a short detour through other
+ *  projects no longer lands an SSH project on the seconds-long reattach path. The memory it holds
+ *  is bounded by the count cap (`PARK_MAX`), not by the window. */
+export const PARK_MINUTES_DEFAULT = 10
+/** Settings UI ceilings. The window's `0` means "until the app quits", so the ceiling only
+ *  bounds a typed number; the cap's is a sanity bound for a hand-edited settings.json. */
+export const PARK_MINUTES_MAX = 24 * 60
+export const PARK_MAX_LIMIT = 500
+
+/**
+ * The park window in ms for `settings.terminalParkMinutes`, or `null` = never expire (the
+ * "keep terminals attached while the app is open" choice, issue #886). The value is
+ * hand-editable, so it is re-validated HERE rather than trusted by type:
+ *  - absent / non-finite / negative ⇒ the default (5 min) — a broken value must never silently
+ *    become "keep forever", which is the memory-expensive end;
+ *  - `0` ⇒ `null`, and the caller arms NO timer. Not `Infinity`: `setTimeout` clamps any delay
+ *    above 2^31-1 ms to 1 ms, so an "infinite" window would dispose every park immediately.
+ *  - above the ceiling ⇒ the ceiling (24 h, far under that 2^31 ms ≈ 24.8 day overflow).
+ */
+export function parkWindowMs(minutes: unknown): number | null {
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0) {
+    return PARK_MINUTES_DEFAULT * 60_000
+  }
+  if (minutes === 0) return null
+  return Math.min(minutes, PARK_MINUTES_MAX) * 60_000
+}
+
+/** The park count cap for `settings.terminalParkMax`: an integer in [1, PARK_MAX_LIMIT], with any
+ *  invalid hand-edit falling back to `PARK_MAX`. The floor is 1, not 0 — "never park" would make
+ *  every project switch a full reattach, which nobody asked for and the window already expresses
+ *  better as a short time. */
+export function parkCap(max: unknown): number {
+  if (typeof max !== 'number' || !Number.isFinite(max) || max < 1) return PARK_MAX
+  return Math.min(Math.floor(max), PARK_MAX_LIMIT)
+}
 
 /**
  * How long a PROTECTED park (see `canDisposePark`) waits before asking again whether it may be
@@ -67,6 +109,13 @@ export interface ParkedEntryState {
   parkedAt?: number
   /** The node's agent state RIGHT NOW, read from that node's own agent-status store. */
   liveAgentState?: AgentState
+  /** An agent CLI was running in the pane AT PARK TIME (`agentProcessInPane`). Snapshotted for
+   *  the same reason as `parkedAgentState`: the parking unmount clears the node's status. */
+  agentProcess?: boolean
+  /** The node's CLI has announced its exit SINCE the park (`AgentNodeStatus.sessionEnded`, read
+   *  live). A veto over the `agentProcess` snapshot, which only says what was true at park time:
+   *  an unmounted pane keeps running, and its CLI can still exit (the kanban card modal). */
+  liveSessionEnded?: boolean
 }
 
 /** `canDisposePark` for a park entry: the live read, with the AGED park-time snapshot under it.
@@ -76,6 +125,7 @@ export interface ParkedEntryState {
 export function canDisposeParkedEntry(e: ParkedEntryState, now: number = Date.now()): boolean {
   return canDisposePark({
     tmuxBacked: e.tmuxBacked,
+    agentProcess: e.agentProcess === true && e.liveSessionEnded !== true,
     agentState: effectiveAgentState(
       e.liveAgentState,
       parkedStateFloor(e.parkedAgentState, e.parkedAt, now)
@@ -92,18 +142,31 @@ export function canDisposeParkedEntry(e: ParkedEntryState, now: number = Date.no
  *  THE CAP YIELDS: the plan comes back short and the park runs over `max`. That is the same value
  *  judgment hibernation's exclusions make (a bounded cache overrun costs RAM; killing a plain
  *  shell costs the user's running work), and it is self-limiting: each protected park is released
- *  by its own expiry re-check (PARK_RECHECK_MS) as soon as its agent stops. */
+ *  by its own expiry re-check (PARK_RECHECK_MS) as soon as its agent stops — or, with the window
+ *  switched off (`parkWindowMs(0)`), by the next park's eviction pass after it becomes disposable.
+ *
+ *  `isRemote` (default: nothing) orders the victims: every disposable LOCAL park goes before any
+ *  REMOTE one, oldest first within each — see the loop for why. */
 export function planParkEviction(
   keysInParkOrder: string[],
   max: number,
-  canDispose: (key: string) => boolean = () => true
+  canDispose: (key: string) => boolean = () => true,
+  isRemote: (key: string) => boolean = () => false
 ): string[] {
   const overflow = keysInParkOrder.length - max
   if (overflow <= 0) return []
   const plan: string[] = []
-  for (const key of keysInParkOrder) {
-    if (plan.length >= overflow) break
-    if (canDispose(key)) plan.push(key)
+  // Two passes: LOCAL parks go first, oldest first, and only then REMOTE ones (issue #886). The
+  // cap is the same either way — what differs is what the user pays on the way back. A local
+  // re-adopt miss is a warm reattach on this machine (tens of ms); a remote one is a new PTY
+  // client over the ControlMaster, paced 4-per-master by the spawn gate, plus a full login when
+  // the master has idled out (`ControlPersist`) — seconds, per project. So when something must
+  // go, it should be the park that is cheap to rebuild.
+  for (const pass of [false, true]) {
+    for (const key of keysInParkOrder) {
+      if (plan.length >= overflow) return plan
+      if (isRemote(key) === pass && canDispose(key)) plan.push(key)
+    }
   }
   return plan
 }
@@ -137,7 +200,7 @@ interface ParkTimers<H> {
 export function armParkExpiry<H>(
   canDispose: () => boolean,
   dispose: () => void,
-  windowMs: number,
+  windowMs: number | null,
   timers: ParkTimers<H> = {
     set: (fn, ms) => setTimeout(fn, ms) as unknown as H,
     clear: (h) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>)
@@ -153,7 +216,9 @@ export function armParkExpiry<H>(
     }
     handle = timers.set(tick, PARK_RECHECK_MS)
   }
-  handle = timers.set(tick, windowMs)
+  // `null` = no window at all (`parkWindowMs(0)`): the park lives until a deliberate dispose, the
+  // LRU cap or the memory-pressure lever takes it. No timer, so nothing to re-arm either.
+  if (windowMs !== null) handle = timers.set(tick, windowMs)
   return {
     cancel: () => {
       if (handle !== undefined) timers.clear(handle)

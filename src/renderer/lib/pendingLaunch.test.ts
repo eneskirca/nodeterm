@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   launchesToFire,
-  launchRetryDelay,
+  queueControlLaunch,
+  controlLaunchState,
   launchTooltip,
   unmetDeps,
-  LAUNCH_DELIVERY_ATTEMPTS,
   LAUNCH_STALL_MS,
   type ArmedNode,
   type StatusById
@@ -174,26 +174,6 @@ describe('unmetDeps', () => {
  * dependency.
  */
 describe('launch delivery policy (#569 item 1)', () => {
-  it('the schedule backs off and is bounded — exhaustion is reachable, so "gave up" can be told', () => {
-    const delays: number[] = []
-    for (let attempt = 1; ; attempt++) {
-      const d = launchRetryDelay(attempt)
-      if (d === null) break
-      delays.push(d)
-      expect(attempt).toBeLessThan(20) // guard: a schedule that never ends is the bug, not a fix
-    }
-    expect(delays.length).toBe(LAUNCH_DELIVERY_ATTEMPTS)
-    // Strictly increasing: a flat schedule is what made the old budget a fixed 2 s wall.
-    for (let i = 1; i < delays.length; i++) expect(delays[i]).toBeGreaterThan(delays[i - 1])
-    // And the whole window is comfortably wider than the old one, measured from READINESS.
-    expect(delays.reduce((a, b) => a + b, 0)).toBeGreaterThan(10_000)
-  })
-
-  it('an attempt past the end has no delay — nothing silently retries forever', () => {
-    expect(launchRetryDelay(LAUNCH_DELIVERY_ATTEMPTS)).not.toBeNull()
-    expect(launchRetryDelay(LAUNCH_DELIVERY_ATTEMPTS + 1)).toBeNull()
-  })
-
   it('the stall warning waits longer than a cold project switch could plausibly take', () => {
     expect(LAUNCH_STALL_MS).toBeGreaterThanOrEqual(30_000)
   })
@@ -219,17 +199,17 @@ describe('launchTooltip — the QUEUED badge never goes silent (#569 item 1)', (
     expect(t.toLowerCase()).not.toMatch(/ssh|host is down|crash/)
   })
 
-  it('a failed launch reports the attempt count and that nothing will retry it', () => {
+  it('a failed launch reports uncertainty and requires explicit recovery', () => {
     const t = launchTooltip({ kind: 'failed', attempts: 5, at: 1 }, 'Builder', cmd)
-    expect(t).toContain('5 attempts')
-    expect(t).toContain('nothing will retry it')
+    expect(t).toContain('unconfirmed')
+    expect(t).toContain('automatic retry is stopped')
     expect(t).toContain('▶')
     expect(t).toContain(cmd)
   })
 
-  it('singularises one attempt (the manual ▶ reports exactly one refusal)', () => {
+  it('a manual refusal instructs the user to inspect the terminal', () => {
     expect(launchTooltip({ kind: 'failed', attempts: 1, at: 1 }, 'Builder', cmd)).toContain(
-      '1 attempt was refused'
+      'Inspect the terminal'
     )
   })
 
@@ -237,4 +217,78 @@ describe('launchTooltip — the QUEUED badge never goes silent (#569 item 1)', (
     const t = launchTooltip({ kind: 'failed', attempts: 5, at: 1 }, 'Builder', cmd)
     expect(t).not.toContain('Waiting for Builder')
   })
+})
+
+
+describe('control opens retain an unacknowledged launch (#827/#811)', () => {
+  it.each(['claude', 'codex'])('queues %s even on a visible canvas with no dependencies', (agent) => {
+    const original = { id: 'new', data: { initialCommand: `${agent} brief`, pendingLaunch: undefined } }
+    const node = queueControlLaunch(original)
+    expect(node.data.initialCommand).toBeUndefined()
+    expect(node.data.pendingLaunch).toEqual({ after: [], command: `${agent} brief`, attempted: false })
+    expect(controlLaunchState(!!node.data.pendingLaunch, undefined)).toBe('queued')
+    // Simulate a project save/view: only durable data survives; the command must still fire.
+    const restored = JSON.parse(JSON.stringify(node))
+    expect(launchesToFire([restored], {}, new Set(['new']))).toEqual([{ id: 'new', command: `${agent} brief` }])
+    expect(original.data.initialCommand).toBe(`${agent} brief`)
+  })
+
+  it('preserves dependency and setup gates until delivery, including already-done dependencies', () => {
+    const node = queueControlLaunch({ id: 'new', data: { initialCommand: 'claude brief' } }, ['upstream'], 'setup')
+    const live = new Set(['new', 'upstream'])
+    expect(launchesToFire([node], {}, live, () => true)).toEqual([])
+    expect(launchesToFire([node], { upstream: { state: 'done' } }, live, () => false)).toEqual([])
+    expect(launchesToFire([node], { upstream: { state: 'done' } }, live, () => true)).toEqual([{ id: 'new', command: 'claude brief' }])
+  })
+
+  it('does not invent a launch for a plain shell or overwrite an existing hold', () => {
+    const node = armed('held', ['upstream'])
+    expect(queueControlLaunch(node)).toBe(node)
+    const shell = { data: {} }
+    expect(queueControlLaunch(shell)).toBe(shell)
+  })
+
+  it('does not infer running from delivery, idle, or absence of errors', () => {
+    expect(controlLaunchState(false, undefined)).toBeUndefined()
+    expect(controlLaunchState(false, undefined, { state: 'done' })).toBeUndefined()
+    expect(controlLaunchState(false, undefined, { state: 'working' })).toBe('working')
+    expect(controlLaunchState(false, undefined, { state: 'working', dropped: true })).toBe('dropped')
+    expect(controlLaunchState(true, { kind: 'failed', attempts: 5, at: 1 })).toBe('failed')
+    expect(controlLaunchState(true, { kind: 'stalled', since: 1 })).toBe('stalled')
+  })
+})
+
+
+it('a dependency-free launch tooltip names delivery rather than an empty dependency', () => {
+  expect(launchTooltip(undefined, '', 'codex')).toBe('Queued; waiting for launch delivery.\nRuns:\ncodex')
+})
+
+
+it('an exhausted delivery stays held on rerender; a stalled terminal may still become ready', () => {
+  const node = armed('new', [])
+  const live = new Set(['new'])
+  expect(launchesToFire([node], {}, live, undefined, { new: { kind: 'failed', attempts: 5, at: 1 } })).toEqual([])
+  expect(node.data.pendingLaunch?.command).toBe('echo new')
+  expect(launchesToFire([node], {}, live, undefined, { new: { kind: 'stalled', since: 1 } })).toEqual([{ id: 'new', command: 'echo new' }])
+})
+
+ it('a durable manual-only launch stays held after a reload and unrelated successful hooks', () => {
+  const node = armed('new', [])
+  node.data.pendingLaunch!.manualOnly = true
+  const restored = JSON.parse(JSON.stringify(node))
+  expect(launchesToFire([restored], { other: { state: 'done' } }, new Set(['new', 'other']))).toEqual([])
+  expect(restored.data.pendingLaunch.command).toBe('echo new')
+})
+
+it('manual recovery does not promise that retrying an errored dependency will automatically release it', () => {
+  const tooltip = launchTooltip({ kind: 'failed', attempts: 1, at: 0 }, 'upstream', 'claude brief', 'upstream')
+  expect(tooltip).toContain('automatic retry is stopped')
+  expect(tooltip).not.toContain('successful turn releases')
+})
+
+it('a refused relay launch explains host recovery rather than promising a working retry', () => {
+  const text = launchTooltip({ kind: 'failed', attempts: 1, at: 0 }, '', 'claude brief', undefined, true)
+  expect(text).toContain('Open the host to run this command')
+  expect(text).toContain('claude brief')
+  expect(text).not.toContain('press ▶')
 })

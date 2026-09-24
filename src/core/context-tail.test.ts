@@ -256,3 +256,59 @@ describe('createContextTail — `wholeFile` (grok: a document rewritten, not app
     expect(JSON.stringify(pushes)).not.toContain('222222')
   }, 8000)
 })
+
+it('delivers each tool result ID across a torn local transcript read', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-question-tail-'))
+  const file = path.join(dir, 'session.jsonl')
+  const onToolResult = vi.fn()
+  const tail = createContextTail(() => {}, { onToolResult })
+  try {
+    fs.writeFileSync(file, '')
+    tail.track('session', file)
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    const line = JSON.stringify({ type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'other', content: 'ok' },
+      { type: 'tool_result', tool_use_id: 'ask', content: 'User declined to answer questions' }
+    ] } })
+    fs.appendFileSync(file, line.slice(0, 40))
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(onToolResult).not.toHaveBeenCalled()
+    fs.appendFileSync(file, line.slice(40) + '\n')
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(onToolResult.mock.calls).toEqual([['session', 'other'], ['session', 'ask']])
+  } finally {
+    tail.untrack('session')
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}, 8000)
+describe('session-scoped context configuration (#818)', () => {
+  it('overrides even a sonnet guess, isolates equal model ids, and invalidates changed/removed env', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'context-env-'))
+    const file = path.join(dir, 'session.jsonl')
+    fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { model: 'vendor-sonnet', usage: { input_tokens: 16000 } } }) + '\n')
+    const send = vi.fn()
+    const tail = createContextTail(send)
+    try {
+      tail.track('small', file, 32000)
+      tail.track('large', file, 1048576)
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+      expect(send.mock.calls.map(([p]) => p)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sessionId: 'small', windowTokens: 32000, usedPercent: 50, windowSource: 'session-env' }),
+        expect.objectContaining({ sessionId: 'large', windowTokens: 1048576, windowSource: 'session-env' })
+      ]))
+      send.mockClear()
+      tail.track('small', file, 32000)
+      tail.track('small', file) // legacy hook, no new observation
+      expect(send).not.toHaveBeenCalled()
+      tail.replay('small') // renderer reload: preserve observed env
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ windowTokens: 32000, windowSource: 'session-env' }))
+      tail.track('small', file, 64000)
+      await vi.waitFor(() => expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'small', windowTokens: 64000 })), { timeout: 1800 })
+      tail.track('small', file, null)
+      await vi.waitFor(() => expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'small', windowSource: 'estimate' })), { timeout: 1800 })
+    } finally {
+      tail.untrack('small'); tail.untrack('large')
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

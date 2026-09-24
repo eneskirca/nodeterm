@@ -198,7 +198,7 @@ export function buildStubApi(): Omit<
       // the project's ControlMaster). Resolve a typed refusal instead of rejecting so the
       // VideoNode shows the reason rather than a generic load failure.
       allowSsh: (): Promise<{ ok: false; error: string }> =>
-        Promise.resolve({ ok: false, error: 'Playing videos from an SSH host is not available in the browser.' }),
+        Promise.resolve({ ok: false, error: 'Playing media from an SSH host is not available in the browser.' }),
       writeHtml: U('media.writeHtml')
     },
     browser: {
@@ -379,7 +379,8 @@ export function buildStubApi(): Omit<
       cancelWaitLogin: U('claudeAccounts.cancelWaitLogin'),
       remove: U('claudeAccounts.remove'),
       link: U('claudeAccounts.link'),
-      setSkillSharing: U('claudeAccounts.setSkillSharing')
+      setSkillSharing: U('claudeAccounts.setSkillSharing'),
+      copySession: U('claudeAccounts.copySession')
     },
     codexAccounts: {
       add: U('codexAccounts.add'),
@@ -392,6 +393,7 @@ export function buildStubApi(): Omit<
       commitSwitch: U('codexAccounts.commitSwitch'),
       finishSwitch: U('codexAccounts.finishSwitch'),
       rollbackSwitch: U('codexAccounts.rollbackSwitch'),
+      switchThreadRemote: U('codexAccounts.switchThreadRemote'),
       transferThreadToSsh: U('codexAccounts.transferThreadToSsh')
     },
     transcripts: {
@@ -404,6 +406,8 @@ export function buildStubApi(): Omit<
       onApplyMutation: noopUnsub,
       onPeerPending: noopUnsub,
       onPeerPendingCleared: noopUnsub,
+      // Standing phone hosting is Desktop-only; never pretend that a browser pinned a phone.
+      approvePhone: U('remoteHost.approvePhone'),
       approve: (_id: string) => {},
       reject: (_id: string) => {},
       setPhoneAccess: noop

@@ -99,10 +99,11 @@ describe('buildRealApi: host platform', () => {
     const api = buildRealApi(c as never)
 
     await expect(api.pty.tmuxStatus()).resolves.toEqual({
-      available: true,
+      available: false,
       installCommand: null,
       installLabel: null,
-      platform: null
+      platform: null,
+      persistence: null
     })
   })
 })

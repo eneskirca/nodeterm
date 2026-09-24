@@ -20,6 +20,7 @@ import { TRUST_CONFIRM, createTrustGate, type TrustGate } from './relay-trust'
 // the production default path, not a test-only branch.
 let disk: ApprovedDevices = emptyApprovedDevices()
 vi.mock('./approved-devices', () => ({
+  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
   loadApprovedDevices: async () => disk,
   saveApprovedDevices: async (s: ApprovedDevices) => {
     disk = s

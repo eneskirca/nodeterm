@@ -23,6 +23,7 @@ import type { GatewayModel } from '@shared/agents/model-gateway'
 import type { CustomAgent } from '@shared/types'
 import type { MenuItem } from '../components/ContextMenu'
 import { AgentIcon } from './agentIcons'
+import { IconMoveTo } from '../components/icons'
 
 /**
  * Resolve an agent's base harness from the records passed in, WITHOUT the runtime's injected
@@ -89,8 +90,10 @@ export type TransferConversationHandler = (
 ) => void
 
 /**
- * Build the "Transfer conversation to" menu block (a label + one entry per target), or `[]` when
- * the node can't be a transfer source (not a transfer-capable agent, or no session id yet).
+ * Build the "Transfer conversation ▸" submenu (one entry per target), or `[]` when the node can't
+ * be a transfer source (not a transfer-capable agent, or no session id yet). It is ONE row in the
+ * node menu — the target list used to be spliced in flat under a label, which alone added a row
+ * per enabled agent to every agent node's right-click menu.
  *
  * A switch-capable target with discovered models becomes a submenu: a "Default model" row (transfer
  * with no `--model`) plus one row per gateway model. A non-capable target, a relay source, or a
@@ -113,43 +116,43 @@ export function transferConversationItems(
   if (!sourceAgentId || !sessionId || !canTransferFrom(sourceAgentId)) return []
   const targets = transferTargets(sourceAgentId, disabledAgents, customAgents)
   if (targets.length === 0) return []
-  return [
-    { type: 'label', label: 'Transfer conversation to' },
-    ...targets.map((tg): MenuItem => {
-      // A model submenu only for a switch-capable target with discovered models, and never for a
-      // relay source (its gateway is on another machine). Capability is resolved from the passed-in
-      // `customAgents` (base-resolved, so a claude-base custom agent qualifies) rather than the
-      // runtime's injected resolver, so this stays pure and testable. gemini/grok and baseless
-      // customs stay flat — no model grammar. The gateway is shared across harnesses, so the full
-      // model list applies to any capable target.
-      const base = baseOf(tg.id, customAgents)
-      const capable = !!base && (MODEL_SWITCH_CAPABLE as readonly string[]).includes(base)
-      const models = capable && !relaySession ? (gatewayModels as GatewayModel[]) : []
-      if (models.length === 0) {
-        return {
-          label: tg.label,
-          icon: <AgentIcon agentId={tg.id} />,
-          onClick: () => void handler(nodeId, tg.id, at)
-        }
-      }
+  const rows = targets.map((tg): MenuItem => {
+    // A model submenu only for a switch-capable target with discovered models, and never for a
+    // relay source (its gateway is on another machine). Capability is resolved from the passed-in
+    // `customAgents` (base-resolved, so a claude-base custom agent qualifies) rather than the
+    // runtime's injected resolver, so this stays pure and testable. gemini/grok and baseless
+    // customs stay flat — no model grammar. The gateway is shared across harnesses, so the full
+    // model list applies to any capable target.
+    const base = baseOf(tg.id, customAgents)
+    const capable = !!base && (MODEL_SWITCH_CAPABLE as readonly string[]).includes(base)
+    const models = capable && !relaySession ? (gatewayModels as GatewayModel[]) : []
+    if (models.length === 0) {
       return {
-        type: 'submenu',
         label: tg.label,
         icon: <AgentIcon agentId={tg.id} />,
-        children: [
-          // The agent's own default model — transfer with no `--model` flag.
-          {
-            label: 'Default model',
-            onClick: () => void handler(nodeId, tg.id, at)
-          },
-          ...models.map(
-            (m): MenuItem => ({
-              label: m.id,
-              onClick: () => void handler(nodeId, tg.id, at, m.id)
-            })
-          )
-        ]
+        onClick: () => void handler(nodeId, tg.id, at)
       }
-    })
+    }
+    return {
+      type: 'submenu',
+      label: tg.label,
+      icon: <AgentIcon agentId={tg.id} />,
+      children: [
+        // The agent's own default model — transfer with no `--model` flag.
+        {
+          label: 'Default model',
+          onClick: () => void handler(nodeId, tg.id, at)
+        },
+        ...models.map(
+          (m): MenuItem => ({
+            label: m.id,
+            onClick: () => void handler(nodeId, tg.id, at, m.id)
+          })
+        )
+      ]
+    }
+  })
+  return [
+    { type: 'submenu', label: 'Transfer conversation', icon: <IconMoveTo />, children: rows }
   ]
 }

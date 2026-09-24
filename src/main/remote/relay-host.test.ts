@@ -52,6 +52,7 @@ vi.mock('../main-window', () => ({
 import { emptyApprovedDevices, type ApprovedDevices } from './approved-devices-core'
 let disk: ApprovedDevices = emptyApprovedDevices()
 vi.mock('./approved-devices', () => ({
+  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
   loadApprovedDevices: async () => disk,
   saveApprovedDevices: async (s: ApprovedDevices) => {
     disk = s
@@ -455,6 +456,75 @@ describe('relay host — GitHub issue RPCs are scoped to the shared project', ()
     }))
 
     await vi.waitFor(() => expect(calls).toEqual([[uiId, 'proj-1']]))
+  })
+})
+
+describe('relay host — project-scoped channel CLASSES fail closed', () => {
+  // The jail used to be a per-feature switch whose default arm passed anything it did not list. It
+  // is now keyed on channel class (relay-project-scope.ts), so the phone board verbs — label edits
+  // included — and any future verb in a scoped class are judged by the shared project.
+  const collect = async (s: ReturnType<typeof openHostAgainstFakeRelay>, id: number) => {
+    await vi.waitFor(() => expect(s.textFrames.some((f) => JSON.parse(f).id === id)).toBe(true))
+    return s.textFrames.map((f) => JSON.parse(f)).find((m) => m.id === id)
+  }
+
+  it('refuses a label edit naming another project before any handler runs', async () => {
+    const reached: unknown[] = []
+    platform.handle('projects.editCardLabels', async (...args: unknown[]) => { reached.push(args) })
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+    s.peerSendsTunnelText(JSON.stringify({
+      t: 'req', id: 301, method: 'projects.editCardLabels',
+      args: [{ projectId: 'proj-2', nodeId: 'n', add: ['klbl-x'] }]
+    }))
+    const res = await collect(s, 301)
+    expect(res).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } })
+    expect(reached).toEqual([])
+  })
+
+  it('refuses an UNLISTED method in a scoped class even when it names the shared project', async () => {
+    const reached: string[] = []
+    platform.handle('githubIssues:future-verb', async () => { reached.push('gh') })
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+    s.peerSendsTunnelText(JSON.stringify({ t: 'req', id: 302, method: 'githubIssues:future-verb', args: ['proj-1'] }))
+    expect(await collect(s, 302)).toMatchObject({ ok: false, error: { code: 'E_FORBIDDEN' } })
+    expect(reached).toEqual([])
+  })
+
+  it('lets the shared project through to dispatch', async () => {
+    const reached: unknown[] = []
+    platform.handle('projects.editCardLabels', async (...args: unknown[]) => { reached.push(args); return 'ok' })
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+    s.peerSendsTunnelText(JSON.stringify({
+      t: 'req', id: 303, method: 'projects.editCardLabels', args: [{ projectId: 'proj-1', nodeId: 'n', add: ['l'] }]
+    }))
+    expect(await collect(s, 303)).toMatchObject({ ok: true })
+    expect(reached).toHaveLength(1)
+  })
+
+  it('an unscoped session is unaffected (legacy behaviour)', async () => {
+    const reached: string[] = []
+    platform.handle('githubIssues:future-verb', async () => { reached.push('gh'); return 1 })
+    const s = openHostAgainstFakeRelay()
+    await s.openMutually()
+    s.peerSendsTunnelText(JSON.stringify({ t: 'req', id: 304, method: 'githubIssues:future-verb', args: ['proj-2'] }))
+    expect(await collect(s, 304)).toMatchObject({ ok: true })
+    expect(reached).toEqual(['gh'])
+  })
+
+  it('drops an out-of-scope cast in a scoped class', async () => {
+    const calls: string[] = []
+    platform.onWithSender('board-log:future-cast', () => calls.push('future'))
+    platform.onWithSender(IPC.githubIssuesUnsubscribe, () => calls.push('listed'))
+    const s = openHostAgainstFakeRelay({ sharedProjectId: 'proj-1' })
+    await s.openMutually()
+    s.peerSendsTunnelText(JSON.stringify({ t: 'cast', method: 'board-log:future-cast', args: ['proj-1'] }))
+    // Positive control, sent AFTER: once the listed cast has arrived, the unlisted one had its turn.
+    s.peerSendsTunnelText(JSON.stringify({ t: 'cast', method: IPC.githubIssuesUnsubscribe, args: ['proj-1'] }))
+    await vi.waitFor(() => expect(calls).toContain('listed'))
+    expect(calls).toEqual(['listed'])
   })
 })
 

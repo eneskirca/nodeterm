@@ -6,7 +6,7 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
   DEFAULT_PROJECT_ID, EMPTY_WORKSPACE,
-  type BridgeLink, type CanvasNodeState, type KanbanColumn, type Project, type Workspace,
+  type BridgeLink, type CanvasNodeState, type KanbanColumn, type KanbanLabel, type Project, type Workspace,
   type WorkspaceV1
 } from '../shared/types'
 import {
@@ -33,7 +33,8 @@ import {
   sanitizeLayouts
 } from '../shared/canvas-layout'
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
-import { ensureProjectBoard, setProjectCardColumn } from './project-kanban-write'
+import { editProjectCardLabels, ensureProjectBoard, setProjectCardColumn, type CardLabelEdit } from './project-kanban-write'
+import { boardLabels, cardMeta } from '../shared/kanban-labels'
 
 /** Checked remote read: `absent` (no file — safe to push our cache) is NOT `error` (connection
  *  down / ssh failure — a failed read is never evidence of absence, so nothing may be pushed). */
@@ -1766,7 +1767,48 @@ export class WorkspaceStore {
   }
 
   /**
-   * The one read-modify-write behind both kanban verbs, for BOTH kinds of ref project.
+   * Add / remove / create board labels on one session card — the host side of the relay
+   * `projects.editCardLabels` verb, i.e. the phone's long-press label sheet.
+   *
+   * There is ONE label model (the per-project palette in `kanban.labels` + per-card ids in
+   * `kanban.meta[].labels`, the same one the canvas node's "+ Label" row and the kanban card edit),
+   * and this writes into it through the same shared transforms and the same `kanbanWriteNow`
+   * read-modify-write as `setRemoteCardColumn` — so the change is announced to the renderer and the
+   * canvas node + kanban card adopt it live, local and SSH projects alike.
+   *
+   * Answers the palette and this card's label ids AS THEY NOW STAND, whether or not this call
+   * changed them (`edited` says which): a refused `add` (the phone's palette is stale) comes back as
+   * `edited: false` with the current palette, so the sheet can redraw instead of guessing. Null =
+   * the project is unknown or has no readable project file.
+   */
+  editRemoteCardLabels(
+    projectId: string,
+    nodeId: string,
+    edit: CardLabelEdit,
+    now = new Date()
+  ): Promise<{ edited: boolean; labels: KanbanLabel[]; cardLabelIds: string[] } | null> {
+    const run = this.saveChain.then(() =>
+      this.kanbanWriteNow(projectId, (raw) => editProjectCardLabels(raw, nodeId, edit, now))
+    )
+    this.saveChain = run.catch(() => {})
+    return run.then((res) => {
+      if (!res) return null
+      const k = res.file.kanban
+      if (!k || typeof k !== 'object') return { edited: res.written, labels: [], cardLabelIds: [] }
+      const labels = boardLabels(k)
+      const known = new Set(labels.map((l) => l.id))
+      const ids = cardMeta(k, nodeId)?.labels
+      return {
+        edited: res.written,
+        labels,
+        // Dangling ids (a label deleted elsewhere) are dropped exactly as every desktop reader drops them.
+        cardLabelIds: Array.isArray(ids) ? ids.filter((id) => known.has(id)) : []
+      }
+    })
+  }
+
+  /**
+   * The one read-modify-write behind every kanban verb, for BOTH kinds of ref project.
    *
    * Queued on `saveChain` by its callers for the same reason `appendRemoteNode` is: this rewrites
    * the very file a save rewrites whole, and off the chain a save that read the file first lands

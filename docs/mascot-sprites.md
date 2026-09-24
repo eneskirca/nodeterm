@@ -66,7 +66,8 @@ happening" but not *who*.
 ## Codex pet (spritesheet asset)
 
 `pet-codex.webp` (checked into `resources/mascot/` here, `NodeTerm/Resources/Mascot/` on iOS):
-8 columns × 9 rows of 192×208 frames. Walk cycle = the first row's frames at ~8 fps
+8 columns × 9 rows of 192×208 frames. The first-row cycle has **six populated frames followed by two empty cells**; play only
+those six frames at ~8 fps
 (agent-notch uses a 0.12 s timer). Render small (~16–20 px tall), pixelated scaling
 (`image-rendering: pixelated` / `.interpolation(.none)`).
 
@@ -88,4 +89,6 @@ shimmer is noisy at small sizes — match agent-notch's panel behavior.
 - **Desktop canvas** (TerminalNode header, working state): prefer CSS `steps()` animation over
   JS timers (a canvas can hold dozens of terminals — zero per-node intervals). Render the two
   pixel-map frames once into a data-URI spritesheet at module load; the badge is a `<span>`
-  with `background-position` stepping. Codex: `steps(8)` over the webp's first row.
+  with `background-position` stepping. Codex: `steps(6)` over the first row's six populated cells (0.72 s cycle, 0.12 s per frame).
+  Keep the sheet eight columns wide; including its two empty cells makes the mascot disappear
+  for 0.24 s on every loop. This applies to the notch HUD too.

@@ -1,3 +1,4 @@
+import type { TextDeliveryResult } from '../shared/text-delivery'
 // The thin facade `pty-manager.ts` talks to — owns the ONE process-wide `SessionHostClient` (one
 // long-lived connection per app process, matching how `PtyManager` itself keeps one `tmuxPath`
 // for the whole process) and exposes exactly the operations pty-manager's existing tmux/ssh call
@@ -12,6 +13,21 @@ import {
 import { SessionHostPty } from './session-host-pty'
 import type { ExecuteLaunchResult, SessionHostSpawnOptions } from '../session-host/protocol'
 import type { PreparedAgentLaunch } from './agent-launch'
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+
+export async function sessionHostMessageOwner(name: string): Promise<PaneOwner | null> {
+  return getClient().messageOwner(name)
+}
+
+export async function sessionHostMessagePasteReady(name: string): Promise<boolean> {
+  return getClient().messagePasteReady(name)
+}
+
+export async function sessionHostMessageEnvelope(
+  name: string, envelope: string, expected: PaneOwner
+): Promise<boolean> {
+  return getClient().messageEnvelope(name, envelope, expected)
+}
 
 let client: SessionHostClient | null = null
 
@@ -68,7 +84,7 @@ export function attachExistingSessionHostPty(name: string): SessionHostPty {
 
 /** Background write — works whether or not this process currently has a live client for `name`,
  *  exactly like `sendText`'s tmux `send-keys -t <name>` needs no attached client. */
-export async function sessionHostSendKeys(name: string, text: string, enter: boolean): Promise<boolean> {
+export async function sessionHostSendKeys(name: string, text: string, enter: boolean): Promise<TextDeliveryResult> {
   return getClient().sendKeys(name, text, enter)
 }
 

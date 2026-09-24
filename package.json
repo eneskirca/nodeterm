@@ -1,6 +1,6 @@
 {
   "name": "node-terminal",
-  "version": "0.3.9",
+  "version": "0.3.13",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
@@ -29,10 +29,10 @@
     "server:dev": "npm run build && npm run server:build && node out/server/main.cjs",
     "make-icon": "node scripts/make-icon.mjs",
     "make-social": "node scripts/make-social.mjs",
-    "dist": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --mac --arm64 --publish never -c.mac.identity=null -c.mac.notarize=false -c.extraMetadata.nodeTermUpdates=disabled",
-    "dist:linux": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --linux --publish never -c.extraMetadata.nodeTermUpdates=disabled",
-    "dist:win": "npm run make-icon && electron-vite build && npm run host:build && electron-builder --win --x64 --publish never -c.extraMetadata.nodeTermUpdates=disabled",
-    "release": "npm run make-icon && electron-vite build && npm run host:build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
+    "dist": "npm run make-icon && npm run build && electron-builder --mac --arm64 --publish never -c.mac.identity=null -c.mac.notarize=false -c.extraMetadata.nodeTermUpdates=disabled",
+    "dist:linux": "npm run make-icon && npm run build && electron-builder --linux --publish never -c.extraMetadata.nodeTermUpdates=disabled",
+    "dist:win": "npm run make-icon && npm run build && electron-builder --win --x64 --publish never -c.extraMetadata.nodeTermUpdates=disabled",
+    "release": "npm run make-icon && npm run build && sh -c 'electron-builder --mac --arm64 --x64 --publish never; s=$?; npm run rebuild; exit $s'",
     "postinstall": "node scripts/patch-node-pty.mjs && electron-rebuild -f -w node-pty,smart-whisper"
   },
   "build": {
@@ -124,6 +124,27 @@
     },
     "win": {
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "out/session-host",
+          "to": "session-host",
+          "filter": [
+            "host.cjs"
+          ]
+        },
+        {
+          "from": "node_modules/node-pty",
+          "to": "session-host/node_modules/node-pty",
+          "filter": [
+            "package.json",
+            "lib/**/*.js",
+            "!lib/**/*.test.js",
+            "build/Release/*.node",
+            "build/Release/*.exe",
+            "build/Release/*.dll"
+          ]
+        }
+      ],
       "target": [
         {
           "target": "nsis",
@@ -142,7 +163,8 @@
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}",
       "oneClick": true,
-      "perMachine": false
+      "perMachine": false,
+      "include": "build/installer.nsh"
     },
     "publish": {
       "provider": "generic",

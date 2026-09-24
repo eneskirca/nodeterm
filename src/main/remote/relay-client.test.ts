@@ -51,6 +51,7 @@ vi.mock('../main-window', () => ({
 import { emptyApprovedDevices, type ApprovedDevices } from './approved-devices-core'
 let disk: ApprovedDevices = emptyApprovedDevices()
 vi.mock('./approved-devices', () => ({
+  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
   loadApprovedDevices: async () => disk,
   saveApprovedDevices: async (s: ApprovedDevices) => {
     disk = s

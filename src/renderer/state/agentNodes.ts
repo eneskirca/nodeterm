@@ -85,7 +85,7 @@ interface AgentNodesState {
   toggleExpanded(id: string): void
   /** Drop a card's dragged position + resized size, returning it to its laid-out spot. */
   resetPlacement(id: string): void
-  start(toolUseId: string, viz: Omit<SubagentViz, 'state' | 'startedAt'>): void
+  start(toolUseId: string, viz: Omit<SubagentViz, 'state' | 'startedAt'> & { startedAt?: number }): void
   finish(toolUseId: string, result: SubagentResult): void
   /** Append a chunk of the subagent's live transcript. */
   appendActivity(toolUseId: string, chunk: string): void
@@ -258,7 +258,7 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
 
   start: (toolUseId, viz) =>
     set((s) => ({
-      byId: { ...s.byId, [toolUseId]: { ...viz, state: 'working', startedAt: Date.now() } }
+      byId: { ...s.byId, [toolUseId]: { ...viz, state: 'working', startedAt: viz.startedAt ?? s.byId[toolUseId]?.startedAt ?? Date.now() } }
     })),
 
   finish: (toolUseId, result) =>

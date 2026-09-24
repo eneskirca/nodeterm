@@ -3,6 +3,7 @@ import { transferTargets, transferConversationItems, type TransferConversationAr
 import type { AgentId } from '@shared/agents/config'
 import type { CustomAgent } from '@shared/types'
 import type { GatewayModel } from '@shared/agents/model-gateway'
+import type { MenuItem } from '../components/ContextMenu'
 
 const customs: CustomAgent[] = [
   { id: 'custom:a', label: 'Agent A', launchCmd: 'a', promptInjectionMode: 'argv' },
@@ -63,13 +64,21 @@ describe('transferTargets', () => {
   })
 })
 
+/** The targets inside the single "Transfer conversation ▸" submenu the builder returns. */
+function rowsOf(items: MenuItem[]): MenuItem[] {
+  expect(items).toHaveLength(1)
+  const sub = items[0]
+  if (sub.type !== 'submenu') throw new Error('expected the Transfer conversation submenu')
+  expect(sub.label).toBe('Transfer conversation')
+  return sub.children
+}
+
 describe('transferConversationItems', () => {
   const handler = () => {}
 
-  it('returns the label + one item per target for a transfer-capable agent with a session', () => {
+  it('returns ONE submenu holding a row per target for a transfer-capable agent with a session', () => {
     const items = transferConversationItems('node-1', undefined, args({}), handler)
-    expect(items.length).toBeGreaterThan(1)
-    expect(items[0]).toMatchObject({ type: 'label', label: 'Transfer conversation to' })
+    expect(rowsOf(items).length).toBeGreaterThan(1)
   })
 
   it('returns [] when the agent is not transfer-capable', () => {
@@ -92,10 +101,8 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'grok' as AgentId, customAgents: [] }),
       handler
     )
-    expect(items.length).toBeGreaterThan(1)
-    expect(items[0]).toEqual({ type: 'label', label: 'Transfer conversation to' })
     // grok is never offered as a destination for itself; every other builtin still is.
-    const labels = items.slice(1).map((i) => ('label' in i ? i.label : ''))
+    const labels = rowsOf(items).map((i) => ('label' in i ? i.label : ''))
     expect(labels).not.toContain('Grok')
     expect(labels).toContain('Claude Code')
   })
@@ -129,7 +136,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'claude' as AgentId, customAgents: [], gatewayModels: models }),
       handler
     )
-    const codex = items.find(
+    const codex = rowsOf(items).find(
       (i): i is Extract<typeof i, { type: 'submenu' }> => i.type === 'submenu' && i.label === 'Codex'
     )
     expect(codex).toBeDefined()
@@ -147,7 +154,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'codex' as AgentId, customAgents: [claudeCustom], gatewayModels: models }),
       handler
     )
-    const proxy = items.find(
+    const proxy = rowsOf(items).find(
       (i): i is Extract<typeof i, { type: 'submenu' }> => i.type === 'submenu' && i.label === 'Claude Proxy'
     )
     expect(proxy).toBeDefined()
@@ -161,7 +168,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'claude' as AgentId, customAgents: [], gatewayModels: models }),
       handler
     )
-    const gemini = items.find((i) => 'label' in i && i.label === 'Gemini')
+    const gemini = rowsOf(items).find((i) => 'label' in i && i.label === 'Gemini')
     expect(gemini).toBeDefined()
     expect(gemini).not.toMatchObject({ type: 'submenu' }) // flat row, not a submenu
   })
@@ -174,7 +181,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'claude' as AgentId, customAgents: [], gatewayModels: [] }),
       handler
     )
-    const codex = items.find((i) => 'label' in i && i.label === 'Codex')
+    const codex = rowsOf(items).find((i) => 'label' in i && i.label === 'Codex')
     expect(codex).toBeDefined()
     expect(codex).not.toMatchObject({ type: 'submenu' })
   })
@@ -186,7 +193,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'claude' as AgentId, customAgents: [], gatewayModels: models, relaySession: true }),
       handler
     )
-    const codex = items.find((i) => 'label' in i && i.label === 'Codex')
+    const codex = rowsOf(items).find((i) => 'label' in i && i.label === 'Codex')
     expect(codex).toBeDefined()
     expect(codex).not.toMatchObject({ type: 'submenu' })
   })
@@ -201,7 +208,7 @@ describe('transferConversationItems', () => {
       args({ sourceAgentId: 'claude' as AgentId, customAgents: [], gatewayModels: models }),
       handler as never
     )
-    const codex = items.find(
+    const codex = rowsOf(items).find(
       (i): i is Extract<typeof i, { type: 'submenu' }> => i.type === 'submenu' && i.label === 'Codex'
     )!
     // "Default model" row → no model

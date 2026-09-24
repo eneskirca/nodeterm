@@ -66,6 +66,7 @@ export interface ShortcutRow {
 export interface ShortcutSection {
   title: string
   rows: ShortcutRow[]
+  note?: string
 }
 
 export interface ShortcutSectionsOptions {
@@ -183,6 +184,20 @@ export function buildShortcutSections(o: ShortcutSectionsOptions): ShortcutSecti
     if (rows.length) sections.push({ title: group, rows })
   }
   sections.push({ title: 'Terminal behavior', rows: behaviorRows(o) })
+  // These are platform/program keys, not remappable nodeterm commands. A configured agent
+  // cannot prove the foreground program reads images from this viewer's clipboard (#712).
+  if (o.isMac) {
+    sections.push({
+      title: 'Pasting screenshots on macOS',
+      rows: [
+        row(['⌘', 'V'], 'Save the image and paste its file path'),
+        row(['Ctrl', 'V'], 'Send a control key to the foreground program')
+      ],
+      note: o.browser
+        ? 'In Server Edition, the image is uploaded to the terminal host. Ctrl+V does not transfer your browser clipboard to that host. Image paste depends on browser clipboard access.'
+        : 'A local agent that supports clipboard images (such as Claude Code) may attach an image with Ctrl+V. Use it only at that agent’s input prompt; shells and editors give this key other meanings. For SSH sessions, use Cmd+V to upload the image and paste its remote path. nodeterm does not detect image support or retry with the other route.'
+    })
+  }
   return sections
 }
 
@@ -247,6 +262,7 @@ export function ShortcutsPanel({ onClose, onCustomize }: ShortcutsPanelProps) {
                   </span>
                 </div>
               ))}
+              {s.note && <p className="shortcuts__note">{s.note}</p>}
             </section>
           ))}
         </div>

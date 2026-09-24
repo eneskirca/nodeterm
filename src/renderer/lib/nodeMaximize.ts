@@ -23,7 +23,7 @@ export interface FlowRect {
 
 /**
  * The visible canvas area in FLOW coordinates, inset by `marginPx` (screen px) and by whatever
- * pinned side panels cover (`insets`). Null when the
+ * pinned panels and persistent chrome cover (`insets`). Null when the
  * container has no usable size yet (first tick after mount) or is too small for a node to mean
  * anything — the caller must then leave the node alone, exactly like `viewportForRect`'s null.
  */
@@ -37,13 +37,13 @@ export function maximizeTargetRect(
   if (!(viewport.zoom > 0)) return null
   const originX = marginPx + insets.left
   const innerW = containerWidth - marginPx * 2 - insets.left - insets.right
-  const innerH = containerHeight - marginPx * 2
+  const innerH = containerHeight - marginPx * 2 - (insets.top ?? 0) - (insets.bottom ?? 0)
   // Below this the "maximized" node would be smaller than a default terminal's header — refuse
   // rather than produce a comic-strip node the user then has to fish the restore button out of.
   if (!(innerW >= 120) || !(innerH >= 120)) return null
   return {
     x: (originX - viewport.x) / viewport.zoom,
-    y: (marginPx - viewport.y) / viewport.zoom,
+    y: (marginPx + (insets.top ?? 0) - viewport.y) / viewport.zoom,
     width: innerW / viewport.zoom,
     height: innerH / viewport.zoom
   }

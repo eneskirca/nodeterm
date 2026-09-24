@@ -168,6 +168,30 @@ describe('subagent grouping', () => {
 })
 
 describe('prompt / model / context join', () => {
+  it('keeps copied SSH thread ids isolated from each other and legacy local observations', () => {
+    const m = createHudModel()
+    for (const nodeId of ['local', 'a', 'b']) {
+      m.applyStateChange(stateChange({ nodeId, state: 'working', agentId: 'codex', sessionId: 'copied' }))
+    }
+    m.applyContextUpdate({ nodeId: 'a', sessionId: 'copied', cleared: true })
+    m.applyContextUpdate({ nodeId: 'b', sessionId: 'copied', model: 'remote-b', usedPercent: 75 })
+    m.applyContextUpdate({ sessionId: 'copied', model: 'local-model', usedPercent: 10 })
+    let rows = m.buildRows(T0, titleOf)
+    expect(rowFor(rows, 'local')).toMatchObject({ model: 'local-model', contextPercent: 10 })
+    expect(rowFor(rows, 'a')?.model).toBeUndefined()
+    expect(rowFor(rows, 'a')?.contextPercent).toBeUndefined()
+    expect(rowFor(rows, 'b')).toMatchObject({ model: 'remote-b', contextPercent: 75 })
+    m.applyContextUpdate({ nodeId: 'b', sessionId: 'copied', cleared: true })
+    rows = m.buildRows(T0, titleOf)
+    expect(rowFor(rows, 'b')?.model).toBeUndefined()
+    expect(rowFor(rows, 'b')?.contextPercent).toBeUndefined()
+    m.applyContextUpdate({ nodeId: 'b', sessionId: 'new', model: 'next-model', usedPercent: 25 })
+    m.applyStateChange(stateChange({ nodeId: 'b', state: 'working', sessionId: 'new' }))
+    m.applyContextUpdate({ nodeId: 'b', sessionId: 'copied', cleared: true })
+    expect(rowFor(m.buildRows(T0, titleOf), 'b')).toMatchObject({ model: 'next-model', contextPercent: 25 })
+    m.applyStateChange(stateChange({ nodeId: 'b', state: 'working', sessionId: 'another' }))
+    expect(rowFor(m.buildRows(T0, titleOf), 'b')?.model).toBeUndefined()
+  })
   it('joins model by sessionId and context% by now-change', () => {
     const m = createHudModel()
     m.applyStateChange(stateChange({ nodeId: 'a', state: 'working', agentId: 'claude', sessionId: 's1' }))

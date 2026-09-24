@@ -346,6 +346,44 @@ export function SceneKeepAwake({ agentId, label, color }: { agentId: AgentId; la
   )
 }
 
+/** Shortcuts: the palette chord goes down and a command palette drops open under it, a query
+ *  typing into it. The palette is the step's one key to remember, so it is the one acted out;
+ *  the user's own press of that chord (`pulseKey`) replays the drop. */
+export function SceneShortcuts({ keys, query, pulseKey }: { keys: string[]; query: string; pulseKey?: number }) {
+  return (
+    <div className="onb-scene-canvas onb-scene--dictation" aria-hidden="true">
+      {keys.length > 0 && (
+        <div className="onb-kbd-row">
+          {keys.map((k, i) => (
+            <kbd key={i} className="onb-kbd" style={{ animationDelay: `${i * 0.1}s` }}>
+              {k}
+            </kbd>
+          ))}
+        </div>
+      )}
+      {/* keyed on the pulse so a real press restarts the drop animation */}
+      <div key={pulseKey ?? 0} className="onb-palette">
+        <div className="onb-palette__input">
+          <span className="onb-term-typed">{query}</span>
+          <span className="onb-caret" />
+        </div>
+        <div className="onb-palette__row is-hl">
+          <span className="onb-mini__dot" style={{ background: '#d97757' }} />
+          <span className="onb-mini__bar" />
+        </div>
+        <div className="onb-palette__row">
+          <span className="onb-mini__dot" />
+          <span className="onb-mini__bar onb-mini__bar--short" />
+        </div>
+        <div className="onb-palette__row">
+          <span className="onb-mini__dot" />
+          <span className="onb-mini__bar" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** The mobile companion as a floating phone mockup: live session rows with real status
  *  badges + a terminal line — live on the App Store (the step links to it). */
 export function ScenePhone() {

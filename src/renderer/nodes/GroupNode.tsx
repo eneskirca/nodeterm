@@ -7,6 +7,8 @@ import { ungroupNodes, type CanvasNode } from '../state/workspace'
 import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { useProjects } from '../state/projects'
 import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
+import { useSession } from '../session/session'
+import { useGitBranch } from '../state/gitBranches'
 import { useProjectSetup } from '../state/projectSetup'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
@@ -64,6 +66,8 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   // behaviour is no facts at all, not local facts about a remote checkout.
   const sshProject = useProjects((s) => !!s.projects.find((p) => p.id === s.activeProjectId)?.ssh)
   const wtPath = sshProject ? undefined : wt?.path
+  const { api } = useSession()
+  const branch = useGitBranch(api.git, wtPath)
   // Asking once per render is NOT enough to make the chip live: nothing re-renders a group frame
   // while the user works inside its terminals, so the dirty count would freeze at whatever it was
   // when the node last happened to render (verified — it sat at "0 changed" until the canvas was
@@ -206,7 +210,7 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
               <span className="group-node__branch" title={wt.path}>
                 {/* The branch git reports NOW wins: the user may have switched branches inside
                     the worktree from a terminal, and the persisted name would then be a lie. */}
-                ⎇ {status?.branch || wt.branch}
+                ⎇ {branch || status?.branch || wt.branch}
                 {!!status && status.dirty > 0 && (
                   <em className="group-node__wt-dirty" title={`${status.dirty} changed file(s)`}>
                     {' '}

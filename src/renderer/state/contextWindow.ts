@@ -1,14 +1,9 @@
 import { create } from 'zustand'
 import type { ContextWindowUsage } from '@shared/types'
 
-// Per-session context-window fill, fed by context.onUpdate.
-//
-// Persisted to localStorage (like agentStatus' sessionId). Why: after an app restart the
-// node's sessionId is restored, but its tmux Claude session is now idle and emits no new
-// hook event — so the main-process tailer is never re-fed the transcript path and can't
-// re-push until the next prompt. Without persistence the meter would vanish on every restart
-// even though the session (and its fill) is unchanged. We restore the last-known value so the
-// meter survives the restart; the live tailer overwrites it on the next prompt.
+// Claude windows depend on session configuration: rehydrate them through context.ensure,
+// never restore a stale denominator. Agent-owned transcript windows may still be persisted
+// (notably Grok, which cannot locate its signals file until the next hook after restart).
 const KEY = 'nodeterm.contextWindow'
 // Hard cap on retained sessions. Every resume / `/clear` / restart mints a new sessionId, so
 // without a bound the map would grow forever (and we'd re-stringify the whole thing on every
@@ -22,10 +17,16 @@ function load(): Record<string, ContextWindowUsage> {
     const raw = localStorage.getItem(KEY)
     if (!raw) return {}
     const data = JSON.parse(raw) as Record<string, ContextWindowUsage>
-    return data && typeof data === 'object' ? prune(data) : {}
+    return data && typeof data === 'object' ? prune(persistable(data)) : {}
   } catch {
     return {}
   }
+}
+
+function persistable(map: Record<string, ContextWindowUsage>): Record<string, ContextWindowUsage> {
+  // Older records have no provenance; invalidate them instead of guessing their agent.
+  return Object.fromEntries(Object.entries(map).filter(([, usage]) =>
+    usage?.windowSource === 'transcript' && !usage.nodeId && !usage.cleared))
 }
 
 /** Keep only the MAX_SESSIONS most-recently-updated entries (LRU by updatedAt). */
@@ -46,7 +47,7 @@ function scheduleSave(bySessionId: Record<string, ContextWindowUsage>): void {
   saveTimer = setTimeout(() => {
     saveTimer = null
     try {
-      localStorage.setItem(KEY, JSON.stringify(bySessionId))
+      localStorage.setItem(KEY, JSON.stringify(persistable(bySessionId)))
     } catch {
       // ignore quota / serialization errors
     }
@@ -55,13 +56,26 @@ function scheduleSave(bySessionId: Record<string, ContextWindowUsage>): void {
 
 interface ContextWindowState {
   bySessionId: Record<string, ContextWindowUsage>
+  /** Remote observations are node-owned and never restored from browser storage. */
+  byNodeId: Record<string, ContextWindowUsage>
   set(usage: ContextWindowUsage): void
 }
 
 export const useContextWindow = create<ContextWindowState>((set) => ({
   bySessionId: load(),
+  byNodeId: {},
   set: (usage) =>
     set((s) => {
+      if (usage.nodeId) {
+        if (usage.cleared) {
+          if (s.byNodeId[usage.nodeId]?.sessionId !== usage.sessionId) return s
+          const byNodeId = { ...s.byNodeId }
+          delete byNodeId[usage.nodeId]
+          return { byNodeId }
+        }
+        return { byNodeId: prune({ ...s.byNodeId, [usage.nodeId]: usage }) }
+      }
+      if (usage.cleared) return s
       const merged = { ...s.bySessionId, [usage.sessionId]: usage }
       const bySessionId = prune(merged)
       scheduleSave(bySessionId)

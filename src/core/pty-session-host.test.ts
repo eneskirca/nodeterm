@@ -56,8 +56,13 @@ function fakeSessionHostPty(ready = Promise.resolve({ fresh: true })) {
   let dataCb: ((data: string) => void) | undefined
   let exitCb: ((e: { exitCode: number }) => void) | undefined
   let attachErrorCb: ((error: Error) => void) | undefined
+  let sizeCb: ((size: { cols: number; rows: number }) => void) | undefined
   return {
     ready,
+    onSize: vi.fn((cb: (size: { cols: number; rows: number }) => void) => {
+      sizeCb = cb
+    }),
+    emitSize: (cols: number, rows: number) => sizeCb?.({ cols, rows }),
     onData: vi.fn((cb: (data: string) => void) => {
       dataCb = cb
     }),
@@ -108,6 +113,91 @@ describe('PtyManager session-host contracts', () => {
     manager = new PtyManager()
     return manager
   }
+
+  describe('shared size follows the backend (issue #914)', () => {
+    function sizesSent(sessionId: string): Array<{ to: number | 'broadcast'; size: unknown }> {
+      return host.sent
+        .filter((message) => message.channel === IPC.ptySize(sessionId))
+        .map((message) => ({ to: message.to, size: message.args[0] }))
+    }
+
+    it('tells each view the size the host reports, once, and re-corrects a view that re-fits', async () => {
+      const shim = fakeSessionHostPty()
+      backend.create.mockReturnValue(shim)
+      const m = await makeManager()
+      m.registerIpc()
+      await host.handlers[IPC.ptyCreate](7, { cols: 80, rows: 24, persistKey: 'node-geo' })
+
+      // Another viewer of the session is the active one: the pty runs at ITS size.
+      shim.emitSize(100, 30)
+      shim.emitSize(100, 30)
+      expect(sizesSent('pty-1')).toEqual([{ to: 7, size: { cols: 100, rows: 30 } }])
+
+      // The view re-fits to its own grid. That is only a vote now — no local min broadcast — and
+      // the backend's answer (unchanged, the other viewer is still active) corrects it again.
+      m.resize(7, 'pty-1', 90, 20)
+      expect(shim.resize).toHaveBeenLastCalledWith(90, 20, false)
+      expect(sizesSent('pty-1')).toHaveLength(1)
+      shim.emitSize(100, 30)
+      expect(sizesSent('pty-1')).toEqual([
+        { to: 7, size: { cols: 100, rows: 30 } },
+        { to: 7, size: { cols: 100, rows: 30 } }
+      ])
+    })
+
+    it('re-sends the last answer when a view re-fits but the vote does not move', async () => {
+      const shim = fakeSessionHostPty()
+      backend.create.mockReturnValue(shim)
+      const m = await makeManager()
+      m.registerIpc()
+      await host.handlers[IPC.ptyCreate](7, { cols: 80, rows: 24, persistKey: 'node-geo-2' })
+      shim.emitSize(100, 30)
+      const resizes = shim.resize.mock.calls.length
+      // Same vote as the spawn size: nothing goes to the backend, so nothing would come back.
+      m.resize(7, 'pty-1', 80, 24)
+      expect(shim.resize.mock.calls.length).toBe(resizes)
+      expect(sizesSent('pty-1').at(-1)).toEqual({ to: 7, size: { cols: 100, rows: 30 } })
+      expect(sizesSent('pty-1')).toHaveLength(2)
+    })
+
+    it('makes a relay sink a ceiling unless it renders Resized, and forwards the answer to it', async () => {
+      const bounded = fakeSessionHostPty()
+      const adaptive = fakeSessionHostPty()
+      backend.create.mockReturnValueOnce(bounded).mockReturnValueOnce(adaptive)
+      const m = await makeManager()
+      const phoneSizes: unknown[] = []
+      const sid = m.createDetached(
+        { cols: 80, rows: 24, persistKey: 'node-phone' },
+        { onData: () => {}, onExit: () => {}, onSize: (size) => phoneSizes.push(size) }
+      )
+      m.resize(null, sid, 45, 40)
+      expect(bounded.resize).toHaveBeenLastCalledWith(45, 40, true)
+      bounded.emitSize(45, 30)
+      bounded.emitSize(45, 30)
+      expect(phoneSizes).toEqual([{ cols: 45, rows: 30 }])
+
+      // Every report from the phone is answered, even when the answer has not changed: the phone
+      // clears its "sized to another screen" hint on each resize it sends and needs the host to
+      // restate the truth — here an unchanged vote, re-answered from the last backend size.
+      m.resize(null, sid, 45, 40)
+      expect(phoneSizes).toEqual([
+        { cols: 45, rows: 30 },
+        { cols: 45, rows: 30 }
+      ])
+      // A changed vote is answered by the backend, and forwarded even when it equals the report.
+      m.resize(null, sid, 45, 38)
+      bounded.emitSize(45, 38)
+      expect(phoneSizes.at(-1)).toEqual({ cols: 45, rows: 38 })
+      expect(phoneSizes).toHaveLength(3)
+
+      const other = m.createDetached(
+        { cols: 80, rows: 24, persistKey: 'node-phone-2' },
+        { onData: () => {}, onExit: () => {}, adaptsToSize: true }
+      )
+      m.resize(null, other, 45, 40)
+      expect(adaptive.resize).toHaveBeenLastCalledWith(45, 40, false)
+    })
+  })
 
   it('asks the session host whether a no-tmux persisted session exists', async () => {
     const m = await makeManager()

@@ -13,7 +13,7 @@ import { platform } from './platform'
 // (`~/.claude/projects` when accountId is undefined — bit-for-bit the old behavior). Impure
 // wrapper over the pure `transcriptRootFor`: the userData dir comes from the CorePlatform seam
 // (and only for the account branch) so this module — and its vitest test — stays electron-free.
-function transcriptRoot(accountId?: string): string {
+export function transcriptRoot(accountId?: string): string {
   const userData = accountId ? platform().userDataDir : null
   // A LINKED account's transcripts live in the dir the USER owns (`~/.claude-2/projects`), not
   // under `{userData}`. Resolved through the registry so this — and with it `resolveTranscriptPath`,

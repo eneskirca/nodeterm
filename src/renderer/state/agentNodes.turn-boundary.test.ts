@@ -281,3 +281,11 @@ describe('Eco still sees the live subagent after a new turn (issue #547)', () =>
     expect(candidates()[0].liveSubagents).toBe(false)
   })
 })
+
+it('replayed starts retain host timing when a buffered live duplicate follows', () => {
+  const store = useAgentNodes.getState()
+  store.start('reload-child', { parentNodeId: 'reload-parent', startedAt: 123 })
+  store.start('reload-child', { parentNodeId: 'reload-parent' })
+  expect(useAgentNodes.getState().byId['reload-child'].startedAt).toBe(123)
+  store.clearForParent('reload-parent')
+})

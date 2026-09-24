@@ -116,7 +116,13 @@ export function SettingsPage({
             <CommitSection isActive={active === 'commit'} />
             <TmuxSection isActive={active === 'tmux'} />
             <GitHubIssuesSection isActive={active === 'github-issues'} />
-            <LicenseSection isActive={active === 'license'} />
+            <LicenseSection
+              isActive={active === 'license'}
+              onNavigate={(id) => {
+                setQuery('')
+                setActive(id)
+              }}
+            />
             <PresenceIdentitySection isActive={active === 'presence'} />
             <RemoteSection isActive={active === 'remote'} onClose={onClose} />
             <TeamAccessSection isActive={active === 'team-access'} onClose={onClose} />

@@ -1,3 +1,5 @@
+import { reportTextDelivery } from './textDelivery'
+import type { TextDeliveryResult } from '@shared/text-delivery'
 // Mirroring a node's title into its agent session as `/rename <name>`, safely.
 //
 // The io is injected so the gate below is unit-testable: it is the fix for a real data-loss bug,
@@ -46,7 +48,7 @@ export function sessionNameUnchanged(next: string, current: string): boolean {
 
 export interface RenamePushIo {
   paneCommand(persistKey: string): Promise<string | null>
-  sendText(persistKey: string, text: string): Promise<boolean>
+  sendText(persistKey: string, text: string): Promise<TextDeliveryResult>
   /** Injected so tests don't wait in real time. */
   sleep?(ms: number): Promise<void>
 }
@@ -88,8 +90,7 @@ export async function pushSessionRename(
     if (i > 0) await sleep(RENAME_PUSH_RETRY_MS)
     const pane = await io.paneCommand(nodeId).catch(() => null)
     if (pane && !isShellCommand(pane)) {
-      void io.sendText(nodeId, renameCommand(name))
-      return true
+      return reportTextDelivery(await io.sendText(nodeId, renameCommand(name)))
     }
   }
   return false

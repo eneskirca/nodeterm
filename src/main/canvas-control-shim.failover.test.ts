@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { CONTROL_SHIM_SCRIPT, CONTROL_UNREACHABLE_MSG } from '../core/canvas-control-core'
+import { CONTEXT_SHIM_SCRIPT } from '../core/context-link-core'
 import { STALE_ENDPOINT_HINT } from '../core/agents/hook-endpoint-failover-sh'
 import { hookServer } from '../core/agents/hook-server'
 import { nodeAuthToken } from '../core/agents/node-auth-token'
@@ -127,22 +128,43 @@ describe('canvas-control shim endpoint failover (issue #445)', () => {
     expect(err?.stderr).toContain(STALE_ENDPOINT_HINT)
   })
 
-  it('an HTTP answer from the server is authoritative — no failover on a 4xx', async () => {
-    // Wrong bearer → the REAL server answers 403. A live candidate exists, but an answered
-    // request must never be re-sent elsewhere: the server's refusal is the result.
+  it('keeps an actual node-identity 403 final even when another endpoint could accept it', async () => {
+    const secret = Buffer.alloc(32, 21)
+    hookServer.setNodeAuthSecret(secret)
+    const tokens = path.join(dir, 'forged-tokens')
+    fs.mkdirSync(tokens)
+    fs.writeFileSync(path.join(tokens, 'node-1'), nodeAuthToken(secret, 'another-node'))
+    const endpoint = path.join(dir, 'forged.env')
+    fs.writeFileSync(endpoint, `NODETERM_HOOK_PORT='${hookServer.getPort()}'\nNODETERM_HOOK_TOKEN='${hookServer.getToken()}'\nNODETERM_NODE_TOKEN_DIR='${tokens}'\n`)
+    received = []
+    try {
+      await expect(callShim(['list'], { NODETERM_HOOK_ENDPOINT: endpoint })).rejects.toMatchObject({ code: 1 })
+      expect(received).toEqual([])
+    } finally { hookServer.clearNodeAuthSecretForTests() }
+  })
+
+  it('the context shim also recovers from a wrong owner', async () => {
+    const contextShim = path.join(dir, 'context.sh')
+    fs.writeFileSync(contextShim, CONTEXT_SHIM_SCRIPT)
+    hookServer.setContextLinkHandler(async () => 'linked fixture')
+    const result = await run('/bin/sh', [contextShim, 'list'], {
+      env: { PATH: process.env.PATH, HOME: home, NODETERM_NODE_ID: 'node-1', NODETERM_CANVAS_CONTROL: '1',
+        NODETERM_HOOK_PORT: String(hookServer.getPort()), NODETERM_HOOK_TOKEN: 'wrong' }
+    })
+    expect(result.stdout).toContain('linked fixture')
+  })
+
+  it.each(['', '1'])('a wrong-owner response discovers the live endpoint (sandbox marker %s)', async (sandbox) => {
+    // A 421 proves that transport worked, even inside a sandbox with an allowed Unix socket.
+    // Discovery may retry because the first server rejected the bearer before dispatch.
     const answeredEndpoint = path.join(dir, 'answered-endpoint.env')
     fs.writeFileSync(
       answeredEndpoint,
       `NODETERM_HOOK_PORT='${hookServer.getPort()}'\nNODETERM_HOOK_TOKEN='wrong-bearer'\n`
     )
     received = []
-    const err = await callShim(['list'], { NODETERM_HOOK_ENDPOINT: answeredEndpoint }).then(
-      () => null,
-      (e: { code: number; stderr: string }) => e
-    )
-    expect(err?.code).toBe(1)
-    // No stale-endpoint diagnosis — the server was reached — and no fallback POST landed.
-    expect(err?.stderr ?? '').not.toContain(STALE_ENDPOINT_HINT)
-    expect(received).toEqual([])
+    const result = await callShim(['list'], { NODETERM_HOOK_ENDPOINT: answeredEndpoint, CODEX_SANDBOX_NETWORK_DISABLED: sandbox })
+    expect(result.stdout.trim()).toBe('did list')
+    expect(received).toEqual([{ verb: 'list', nodeId: 'node-1', verified: false }])
   })
 })

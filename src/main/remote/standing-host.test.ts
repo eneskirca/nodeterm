@@ -10,13 +10,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initPlatform, resetPlatformForTests } from '../../core/platform'
 import { fakePlatform } from '../../core/platform-fake'
 import { presenceHub } from '../../core/presence/hub'
+import type { ApprovedDevices } from './approved-devices-core'
 import type { HostSession, HostSessionOptions } from './host-service'
 
-const ipc: Record<string, (e: unknown, msg: unknown) => void> = {}
+const ipc: Record<string, (e: unknown, msg: unknown) => any> = {}
 const errorBoxes: Array<{ title: string; body: string }> = []
 
 vi.mock('electron', () => ({
   ipcMain: {
+    handle: (ch: string, fn: (e: unknown, msg: unknown) => unknown) => { ipc[ch] = fn },
     on: (ch: string, fn: (e: unknown, msg: unknown) => void) => {
       ipc[ch] = fn
     }
@@ -35,8 +37,12 @@ vi.mock('./host-canvas-hub', () => ({
   currentCanvas: () => null,
   subscribeCanvas: () => () => {}
 }))
+let disk: ApprovedDevices = { pubkeys: [] }
+const persist = vi.fn(async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) })
+vi.mock('./relay-advertise', () => ({ writeRelayAdvertisement: async () => {}, removeRelayAdvertisement: async () => {} }))
 vi.mock('./approved-devices', () => ({
-  loadApprovedDevices: async () => ({ pubkeys: [] as string[] }),
+  updateApprovedDevices: (update: (s: ApprovedDevices) => ApprovedDevices) => persist(update),
+  loadApprovedDevices: async () => disk,
   saveApprovedDevices: async () => {}
 }))
 vi.mock('./e2ee', () => ({ publicKeyToB64: () => 'host-pub' }))
@@ -58,7 +64,7 @@ vi.mock('./host-service', () => ({
   connectHostSession: (opts: HostSessionOptions): HostSession => {
     const entry = { opts, closed: 0, session: null as unknown as HostSession }
     entry.session = {
-      approve: () => {},
+      approve: vi.fn(),
       isApproved: () => false,
       sas: () => '12345',
       // A real relay socket close() is "intentional" and does NOT fire onClose — modelled here.
@@ -86,6 +92,7 @@ function phones(): number {
 
 const sentToWin: Array<{ channel: string; args: unknown[] }> = []
 
+let sender: unknown
 function makeHost() {
   const win = {
     isDestroyed: () => false,
@@ -93,6 +100,7 @@ function makeHost() {
       send: (channel: string, ...args: unknown[]) => sentToWin.push({ channel, args })
     }
   }
+  sender = win.webContents
   return initStandingHost(win as never, {} as never, () => ({ phoneAccessEnabled: true }) as never)
 }
 
@@ -107,6 +115,9 @@ beforeEach(() => {
   sessions.length = 0
   sentToWin.length = 0
   errorBoxes.length = 0
+  persist.mockReset()
+  disk = { pubkeys: [] }
+  persist.mockImplementation(async (update) => { disk = update(disk) })
   keyError = null
   for (const key of Object.keys(ipc)) delete ipc[key]
   vi.stubGlobal(
@@ -157,7 +168,7 @@ describe('standing host presence peers', () => {
 
     // Reject → removeFromPool → session.close(). A real relay socket treats an intentional close
     // as final and does NOT call onClose, so the leave has to happen on this path too.
-    ipc[IPC.remoteHostReject](null, { id: pendingApprovalId() })
+    ipc[IPC.remoteHostReject]({ sender }, { id: pendingApprovalId(), pub: 'phone-pub' })
     expect(sessions[0].closed).toBe(1)
     expect(phones()).toBe(0)
 
@@ -216,5 +227,68 @@ describe('standing host: the host key cannot be read (locked keyring)', () => {
     expect(sessions).toHaveLength(0)
 
     host.stop()
+  })
+})
+
+
+describe('standing phone approval lifecycle (#819)', () => {
+  async function pending() {
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+    sessions[0].opts.onPeerReady(sessions[0].session)
+    await settle()
+    return { host, msg: { id: pendingApprovalId(), pub: 'phone-pub' } }
+  }
+  it('pins the displayed handshake after its browse socket closes, without approving a dead session', async () => {
+    const { host, msg } = await pending()
+    sessions[0].opts.onClose()
+    expect(await ipc[IPC.remotePhoneApprove]({ sender }, msg)).toEqual({ status: 'saved-disconnected' })
+    expect(persist).toHaveBeenCalledOnce()
+    expect(sessions[0].session.approve).not.toHaveBeenCalled()
+    expect(disk.pubkeys).toEqual(['phone-pub'])
+    const count = sentToWin.filter((s) => s.channel === IPC.remoteHostPeerPending).length
+    sessions[1].opts.onPeerReady(sessions[1].session)
+    await settle()
+    expect(sessions[1].session.approve).toHaveBeenCalledOnce()
+    expect(sentToWin.filter((s) => s.channel === IPC.remoteHostPeerPending)).toHaveLength(count)
+    host.stop()
+  })
+  it('waits for persistence before granting access', async () => {
+    const { host, msg } = await pending()
+    let release!: () => void
+    persist.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve }))
+    const approval = ipc[IPC.remotePhoneApprove]({ sender }, msg)
+    expect(sessions[0].session.approve).not.toHaveBeenCalled()
+    release()
+    expect(await approval).toEqual({ status: 'approved' })
+    expect(sessions[0].session.approve).toHaveBeenCalledOnce()
+    host.stop()
+  })
+  it('reports a failed write and grants no access', async () => {
+    const { host, msg } = await pending()
+    persist.mockRejectedValueOnce(Object.assign(new Error('fixture'), { code: 'EACCES' }))
+    expect(await ipc[IPC.remotePhoneApprove]({ sender }, msg)).toEqual({ status: 'persistence-failed' })
+    expect(sessions[0].session.approve).not.toHaveBeenCalled()
+    host.stop()
+  })
+  it('rejects stale, mismatched and non-owner requests without writing', async () => {
+    const { host, msg } = await pending()
+    for (const [owner, request] of [[{}, msg], [sender, { ...msg, pub: 'other' }], [sender, { ...msg, id: 'stale' }]]) {
+      expect(await ipc[IPC.remotePhoneApprove]({ sender: owner }, request)).toEqual({ status: 'stale' })
+    }
+    expect(persist).not.toHaveBeenCalled()
+    host.stop()
+    expect(await ipc[IPC.remotePhoneApprove]({ sender }, msg)).toEqual({ status: 'stale' })
+  })
+  it('host stop during a save never grants a closed session access', async () => {
+    const { host, msg } = await pending()
+    let release!: () => void
+    persist.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve }))
+    const approval = ipc[IPC.remotePhoneApprove]({ sender }, msg)
+    host.stop()
+    release()
+    expect(await approval).toEqual({ status: 'saved-disconnected' })
+    expect(sessions[0].session.approve).not.toHaveBeenCalled()
   })
 })

@@ -18,11 +18,12 @@ function file(): string {
   return path.join(app.getPath('userData'), 'remote-approved-devices.json')
 }
 
-/** Load the pinned-device list; returns an empty list when the file is absent or malformed. */
+/** Load the pinned-device list; returns an empty list when the file is absent; other read/parse failures reject. */
 export async function loadApprovedDevices(): Promise<ApprovedDevices> {
   try {
     return parseApprovedDevices(JSON.parse(await fs.readFile(file(), 'utf-8')))
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
     return emptyApprovedDevices()
   }
 }
@@ -31,12 +32,9 @@ export async function loadApprovedDevices(): Promise<ApprovedDevices> {
  * Persist the pinned-device list atomically (unique temp + retrying rename, 0600) via
  * `writeFileAtomic`.
  *
- * The temp name is unique per call because three writers reach this from the main process with
- * nothing queueing them: the standing host's fire-and-forget pin on approval (standing-host.ts,
- * `void loadApprovedDevices().then(...)`), relay-trust's un-awaited pin when a mutual approval
- * settles, and the revoke IPC (src/main/index.ts → revocation.ts). With one shared `<file>.tmp`,
- * a writer's rename publishes the other's half-written list — or moves the file out from under it,
- * so the loser's rename fails.
+ * Production mutations use updateApprovedDevices to serialize read/modify/write. Unique temps
+ * still protect atomic publication, including explicit snapshot saves and separate processes.
+ * This is an in-process queue, not a cross-process trust-store lock.
  *
  * A failed write removes its own temp and rethrows, and the OLD file is left byte-for-byte
  * intact — revocation.ts's `persisted:false` contract depends on both halves.
@@ -47,4 +45,15 @@ export async function loadApprovedDevices(): Promise<ApprovedDevices> {
  */
 export async function saveApprovedDevices(store: ApprovedDevices): Promise<void> {
   await writeFileAtomic(file(), JSON.stringify(store), { mode: 0o600 })
+}
+
+// Queue the WHOLE read/modify/write, not just rename: otherwise concurrent approvals lose pins,
+// and an approval racing a revoke can resurrect the removed key from an obsolete snapshot.
+let updateTail: Promise<void> = Promise.resolve()
+export function updateApprovedDevices(update: (store: ApprovedDevices) => ApprovedDevices): Promise<void> {
+  const next = updateTail.then(async () => {
+    await saveApprovedDevices(update(await loadApprovedDevices()))
+  })
+  updateTail = next.catch(() => {}) // one failed save must not poison later attempts
+  return next
 }

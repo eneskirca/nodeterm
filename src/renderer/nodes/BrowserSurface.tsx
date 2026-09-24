@@ -9,9 +9,11 @@ import { reloadWebview, type ReloadableWebview } from './webviewReload'
 import { describeLoadFailure, isReportableFailure, type WebviewLoadFailure } from './webviewError'
 import { WebviewErrorPlate } from './WebviewErrorPlate'
 import { WebviewLoadingBar } from './WebviewLoadingBar'
+import { WebviewZoomControls } from '../components/WebviewZoomControls'
+import type { ZoomableWebview } from '@shared/webview-zoom'
 
 // Minimal typing for the Electron <webview> element methods/events we use.
-type WebviewEl = HTMLElement & {
+type WebviewEl = HTMLElement & ZoomableWebview & {
   goBack(): void
   goForward(): void
   reload(): void
@@ -293,6 +295,7 @@ export function BrowserSurface({
             if (e.key === 'Enter') go()
           }}
         />
+        <WebviewZoomControls target={ref} disabled={discarded || !src} />
       </div>
       <div className="browser-node__view nodrag nowheel">
         {/* The element is UNMOUNTED while discarded — that is what ends the guest process; an

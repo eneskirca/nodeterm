@@ -31,6 +31,7 @@ import { allocateRelayClientId, presenceHub } from '../../core/presence/hub'
 import { E_UNAUTHORIZED, parseRpcMessage, type RpcErr, type RpcOk } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
 import { scopeWorkspaceToProject } from '../../shared/relay-workspace-scope'
+import { outOfProjectScope } from './relay-project-scope'
 import type { Workspace } from '../../shared/types'
 
 export interface RelayHostSession {
@@ -196,40 +197,23 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
       ? { t: 'res', id, ok: true, result: { entries: [], unsupported: true } }
       : { t: 'res', id, ok: true, result: false }
 
-  const githubIssuesProject = (method: string, args: unknown[]): {
-    githubIssues: boolean
-    projectId: unknown
-  } => {
-    switch (method) {
-      case IPC.githubIssuesSubscribe:
-      case IPC.githubIssuesQuery:
-      case IPC.githubIssuesMove:
-        return {
-          githubIssues: true,
-          projectId: args[0] && typeof args[0] === 'object'
-            ? (args[0] as { projectId?: unknown }).projectId
-            : undefined
-        }
-      case IPC.githubIssuesRefresh:
-      case IPC.githubIssuesCreateLabels:
-      case IPC.githubIssuesClearCache:
-      case IPC.githubIssuesUnsubscribe:
-        return { githubIssues: true, projectId: args[0] }
-      default:
-        return { githubIssues: false, projectId: undefined }
-    }
-  }
+  /** SCOPE jail for every project-naming channel class (`relay-project-scope.ts`): a method in a
+   *  scoped class that names another project — or that the table cannot read a projectId out of —
+   *  is refused on a session bound to one project. Fail-closed by class, so a channel added to
+   *  `githubIssues:*` / `board-log:*` / `projects.*` without a table row is refused, not waved on. */
+  const projectOutOfScope = (method: string, args: unknown[]): boolean =>
+    outOfProjectScope(opts.sharedProjectId, method, args)
 
-  const githubIssuesOutOfScope = (method: string, args: unknown[]): boolean => {
-    const target = githubIssuesProject(method, args)
-    return !!opts.sharedProjectId && target.githubIssues && target.projectId !== opts.sharedProjectId
-  }
-
-  const githubIssuesRefusal = (id: number): RpcErr => ({
+  const projectScopeRefusal = (method: string, id: number): RpcErr => ({
     t: 'res',
     id,
     ok: false,
-    error: { code: 'E_FORBIDDEN', message: 'GitHub Issues project is outside this relay session' }
+    error: {
+      code: 'E_FORBIDDEN',
+      message: method.startsWith('githubIssues:')
+        ? 'GitHub Issues project is outside this relay session'
+        : 'That project is outside this relay session'
+    }
   })
 
   const socket = connectRelay({
@@ -285,12 +269,9 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
         return
       }
       if (m.t === 'req') {
-        if (githubIssuesOutOfScope(m.method, m.args)) {
-          socket.sendTunnelText(JSON.stringify(githubIssuesRefusal(m.id)))
-          return
-        }
         // Board-log read/append naming a project outside this session's scope: refuse WITHOUT
         // dispatching (the host router never resolves it), degrading exactly as an unknown project.
+        // Checked before the generic jail so these two keep their established degraded shape.
         if (
           (m.method === IPC.boardLogAppend || m.method === IPC.boardLogRead) &&
           boardLogOutOfScope(m.args[0])
@@ -298,12 +279,16 @@ export function connectRelayHost(opts: ConnectRelayHostOptions): RelayHostSessio
           socket.sendTunnelText(JSON.stringify(boardLogRefusal(m.method, m.id)))
           return
         }
+        if (projectOutOfScope(m.method, m.args)) {
+          socket.sendTunnelText(JSON.stringify(projectScopeRefusal(m.method, m.id)))
+          return
+        }
         const id = clientId
         void opts.platform
           .dispatch(id, m)
           .then((res) => socket.sendTunnelText(JSON.stringify(scopeResponse(m.method, res))))
       } else if (m.t === 'cast') {
-        if (githubIssuesOutOfScope(m.method, m.args)) return
+        if (projectOutOfScope(m.method, m.args)) return
         // Board-log subscribe/unsubscribe: scope-jail out-of-scope projects, and track this
         // connection's net per-project count so a dropped guest's watch is released in detach().
         if (m.method === IPC.boardLogSubscribe || m.method === IPC.boardLogUnsubscribe) {
