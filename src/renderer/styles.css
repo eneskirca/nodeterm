@@ -10912,6 +10912,118 @@ button.group-node__setup:disabled {
   color: #fff;
 }
 
+/* Read-only document preview stacked over a Kanban card. The card and board remain mounted below,
+   so closing this layer returns the user to exactly the terminal and scroll position they left. */
+.local-file-preview-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 62; /* above card modal (55), below confirmation/palette dialogs (70+) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.68);
+  animation: kanban-fade 0.14s ease-out;
+}
+.local-file-preview {
+  width: min(1180px, calc(100vw - 24px));
+  height: min(820px, calc(100vh - 24px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface-sunken);
+  border: 1px solid rgba(var(--tint-rgb), 0.15);
+  border-radius: 12px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, calc(0.72 * var(--shadow-k)));
+  animation: kanban-pop 0.16s ease-out;
+}
+.local-file-preview__header {
+  flex: 0 0 auto;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.09);
+}
+.local-file-preview__title {
+  min-width: 0;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(var(--tint-rgb), 0.92);
+  font-size: 14px;
+  font-weight: 700;
+}
+.local-file-preview__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(var(--tint-rgb), 0.4);
+  font-family: var(--mono-font, monospace);
+  font-size: 10px;
+}
+.local-file-preview__body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: auto;
+  background: var(--term-bg, var(--surface-sunken));
+}
+.local-file-preview__body webview,
+.local-file-preview__body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: flex;
+}
+.local-file-preview__body--image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.local-file-preview__body--image img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.local-file-preview__body--markdown .term-md__content {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 28px 34px 50px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.local-file-preview__body--text pre {
+  box-sizing: border-box;
+  min-height: 100%;
+  margin: 0;
+  padding: 22px 26px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(var(--tint-rgb), 0.88);
+  font: 12px/1.55 var(--mono-font, monospace);
+}
+.local-file-preview__message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(var(--tint-rgb), 0.45);
+  font-size: 12px;
+}
+.local-file-preview__message--error {
+  color: rgba(255, 120, 120, 0.88);
+}
+
 /* ---- Node comments flyout: the header 💬 expands the board-log feed to the node's right ---- */
 @keyframes kanban-slide-in {
   from {
