@@ -542,7 +542,15 @@ export function UsageIndicator({
           .catch((): RemoteAccountUsage[] => [])
         if (remoteScope.current === requestedScope) setRemote(rows)
       } else {
-        setUsage(await window.nodeTerminal.usage.refresh())
+        // The other providers sit behind the same debounce, so a stale failure (an expired token
+        // the CLI has since renewed) would otherwise stay on screen until it runs out. Settled
+        // separately: one read failing must not throw away the other's fresh answer.
+        const [claude, ps] = await Promise.allSettled([
+          window.nodeTerminal.usage.refresh(),
+          window.nodeTerminal.usage.providers(true)
+        ])
+        if (claude.status === 'fulfilled') setUsage(claude.value)
+        if (ps.status === 'fulfilled') setProviders(ps.value)
       }
     } finally {
       setRefreshing(false)
