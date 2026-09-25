@@ -46,6 +46,9 @@ import { relativeTime } from '../../lib/relativeTime'
 
 interface CardModalProps {
   session: KanbanSession
+  /** Owning project, supplied by the board (not necessarily the active project in Omni). */
+  projectName?: string
+  projectColor?: string
   /** Column title shown as a chip; null = Ungrouped. */
   columnTitle: string | null
   /** The live board + its pruned commit — the Members/Due strip edits through them. */
@@ -67,7 +70,7 @@ interface CardModalProps {
 /** Trello-style card popup over the board. Scrim click / Esc close it; the board (and the
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / markdown view (the node itself is hidden under the board). */
-export function CardModal({ session, columnTitle, board, onChangeBoard, onClose, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon }: CardModalProps) {
+export function CardModal({ session, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon }: CardModalProps) {
   const { api } = useSession()
   const idRef = useRef<string>()
   if (!idRef.current) idRef.current = nextDialogId()
@@ -266,31 +269,40 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
           >
             {session.icon ? <NodeIconView icon={session.icon} size={16} /> : <IconSmiley />}
           </button>
-          {editingTitle ? (
-            <input
-              className="kanban-modal__rename"
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={commitTitle}
-              onKeyDown={(e) => {
-                // Esc is owned by the capture-phase handler (cancels the edit).
-                if (e.key === 'Enter') commitTitle()
-              }}
-            />
-          ) : (
-            <span
-              className="kanban-modal__title"
-              onClick={() => {
-                if (session.kind === 'sticky') return // a note's label IS its first line
-                setTitle(session.title)
-                setEditingTitle(true)
-              }}
-            >
-              {session.title}
-            </span>
-          )}
-          <span className="kanban-modal__column">{columnTitle ?? 'Ungrouped'}</span>
+          <div className="kanban-modal__identity">
+            {editingTitle ? (
+              <input
+                className="kanban-modal__rename"
+                autoFocus
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={(e) => {
+                  // Esc is owned by the capture-phase handler (cancels the edit).
+                  if (e.key === 'Enter') commitTitle()
+                }}
+              />
+            ) : (
+              <span
+                className="kanban-modal__title"
+                title={session.title}
+                onClick={() => {
+                  if (session.kind === 'sticky') return // a note's label IS its first line
+                  setTitle(session.title)
+                  setEditingTitle(true)
+                }}
+              >
+                {session.title}
+              </span>
+            )}
+            {projectName && (
+              <span className="kanban-modal__project" title={projectName} aria-label={`Project: ${projectName}`}>
+                <span className="kanban-modal__project-dot" style={{ background: projectColor || 'currentColor' }} aria-hidden="true" />
+                <span className="kanban-modal__project-name">{projectName}</span>
+              </span>
+            )}
+            <span className="kanban-modal__column" title={columnTitle ?? 'Ungrouped'}>{columnTitle ?? 'Ungrouped'}</span>
+          </div>
           {isTerminal && <AccountChip chip={accountChip} />}
           {/* The driving chip, so a user watching a browser card THROUGH the modal is not
               driving-blind. The lease is keyed by node id (not by webview object), so this shows

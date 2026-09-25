@@ -67,6 +67,54 @@ describe('CardModal', () => {
     document.body.innerHTML = ''
   })
 
+  it.each([
+    { projectName: 'Example project', projectColor: '#32d74b', columnTitle: 'In Progress' },
+    { projectName: 'A very long project name with <literal> characters', projectColor: undefined, columnTitle: null },
+    { projectName: undefined, projectColor: undefined, columnTitle: 'To Do' }
+  ])('shows the owning project in the header: $projectName', ({ projectName, projectColor, columnTitle }) => {
+    const root = createRoot(host)
+    const session: KanbanSession = {
+      id: 'header-note', title: 'Review generated documentation', color: '#ffd60a',
+      kind: 'sticky', text: 'Review generated documentation', spawn: {}
+    }
+    act(() => root.render(
+      <CardModal
+        session={session}
+        projectName={projectName}
+        projectColor={projectColor}
+        columnTitle={columnTitle}
+        board={board}
+        onChangeBoard={vi.fn()}
+        onClose={vi.fn()}
+        onOpenCanvas={vi.fn()}
+        onRename={vi.fn()}
+        onEditSticky={vi.fn()}
+        onSetIcon={vi.fn()}
+        onBrowserNav={vi.fn()}
+      />
+    ))
+
+    const identity = document.body.querySelector<HTMLElement>('.kanban-modal__identity')!
+    expect(identity.querySelector<HTMLElement>('.kanban-modal__title')!.title).toBe(session.title)
+    const column = identity.querySelector<HTMLElement>('.kanban-modal__column')!
+    expect(column.textContent).toBe(columnTitle ?? 'Ungrouped')
+    expect(column.title).toBe(columnTitle ?? 'Ungrouped')
+    const project = identity.querySelector<HTMLElement>('.kanban-modal__project')
+    if (projectName) {
+      expect(project!.textContent).toBe(projectName)
+      expect(project!.title).toBe(projectName)
+      expect(project!.getAttribute('aria-label')).toBe(`Project: ${projectName}`)
+      expect(project!.previousElementSibling?.textContent).toBe(session.title)
+      expect(project!.nextElementSibling).toBe(column)
+      const dot = project!.querySelector<HTMLElement>('.kanban-modal__project-dot')!
+      expect(dot.style.background).toBe(projectColor ? 'rgb(50, 215, 75)' : 'currentcolor')
+      expect(dot.getAttribute('aria-hidden')).toBe('true')
+    } else {
+      expect(project).toBeNull()
+    }
+    act(() => root.unmount())
+  })
+
   it('writes through raw textarea value on sticky note edit (including whitespace and newlines)', () => {
     const session: KanbanSession = {
       id: 'node-sticky-1',
