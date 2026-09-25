@@ -200,7 +200,7 @@ import { getDeviceId } from '../core/device-id'
 import { initRemoteStatusPush } from './remote-ssh/remote-status-push'
 import { initCanvasSync } from '../core/canvas-sync'
 import { retainUntilDismissed } from './notifications'
-import { installManagedAgentHooks } from '../core/agents/hooks'
+import { initAgentIntegrations } from '../core/agent-integrations'
 import { createSubagentTail } from '../core/subagent-tail'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
 import { registerContextEnsureIpc } from '../core/context-ensure'
@@ -243,7 +243,7 @@ import { posixQuote, sshHostKey, type SshConnection } from '../shared/ssh'
 import { buildHandoff, type HandoffRemote } from './handoff'
 import { initContextLink, setNodeTranscript } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
-import { initCanvasControl, installCanvasSkillInto } from './canvas-control'
+import { initCanvasControl } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
 import { CONTROL_REQUEST_TIMEOUT_MS } from '../shared/control-confirm'
 import { initTranscriptIndex, searchTranscripts } from '../core/transcript-index'
@@ -289,7 +289,6 @@ import {
   isSafeRemoteTranscriptPath,
   remoteAccountConfigDirAbs
 } from '../core/claude-accounts-core'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
 import { createPairingService } from './pairing-service'
 import {
   initRemoteHost,
@@ -2739,13 +2738,14 @@ app.whenReady().then(async () => {
     ) => buildHandoff({ sessionId, agentId, sourceNodeId, cwd, accountId, remote: handoffRemote })
   )
 
-  installManagedAgentHooks()
-  // Managed accounts each carry their own settings.json AND skills/ (Claude Code resolves both
-  // relative to CLAUDE_CONFIG_DIR) — re-install the hook + canvas skill there too (idempotent),
-  // so an app update's new versions reach every account dir. The loop is shared with the Server
-  // Edition's boot (src/core/claude-accounts-service.ts); each shell supplies its own canvas-skill
-  // installer when that control surface is enabled.
-  installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [], installCanvasSkillInto)
+  initAgentIntegrations(settingsStore)
+  let lastRemoteIntegrations = JSON.stringify(settingsStore.get().agentIntegrations?.remote)
+  settingsStore.onChange((settings) => {
+    const next = JSON.stringify(settings.agentIntegrations?.remote)
+    if (next === lastRemoteIntegrations) return
+    lastRemoteIntegrations = next
+    void sshProjectManager?.refreshIntegrations()
+  })
   // Fan a normalized agent event to BOTH consumers: the renderer's agentStatus store (canvas badge)
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.
@@ -3809,10 +3809,8 @@ app.whenReady().then(async () => {
       }
     }
   }, {
-    // The desktop app is the surface Context Link's discovery was designed for, so it installs
-    // the skill + instruction blocks. Stated rather than defaulted: the flag is required so no
-    // caller can reach the write by omission (see initContextLink, issue #490).
-    installAgentIntegrations: true
+    // The common persisted-consent lifecycle owns global discovery.
+    installAgentIntegrations: false
   })
   initCanvasControl()
   // Usage service + the mobile `usage` mirror block (mobile-usage-inbox): poll all local managed

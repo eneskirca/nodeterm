@@ -7,18 +7,12 @@
 // body, but the LOCAL installer prepends the shared-Codex thread resolver with this machine's
 // ownership-record path; a desktop path must never be baked into the remote copy.
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { app } from 'electron'
 import {
-  buildControlShimScript,
-  buildCanvasControlInstructions,
-  buildCanvasSkillBody,
-  mergeCanvasControlBlock
+  buildControlShimScript
 } from '../core/canvas-control-core'
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
-import { opencodeConfigDir } from '../core/agents/hooks/opencode'
-import { copilotHomeDir } from '../core/agents/hooks/copilot'
 
 function dir(): string {
   return path.join(app.getPath('userData'), 'canvas-control')
@@ -26,13 +20,6 @@ function dir(): string {
 function shimPath(): string {
   return path.join(dir(), 'nodeterm.sh')
 }
-function skillPathIn(configDir: string): string {
-  return path.join(configDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md')
-}
-function skillBody(): string {
-  return buildCanvasSkillBody(shimPath())
-}
-
 function writeCliFiles(): void {
   const d = dir()
   fs.mkdirSync(d, { recursive: true })
@@ -57,49 +44,12 @@ function writeCliFiles(): void {
  * (config dir = {userData}/claude-accounts/<id>) need their own copy — mirroring how the
  * managed status hook is merged into each account dir's settings.json. Best-effort.
  */
-export function installCanvasSkillInto(configDir: string): void {
-  const p = skillPathIn(configDir)
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, skillBody(), 'utf8')
-  } catch (e) {
-    console.warn('[canvas-control] skill install failed', p, e)
-  }
-}
-
-// Codex/Gemini/Copilot/opencode use global instruction files here — merge the canvas-control block
-// instruction files (marker-delimited, idempotent, other content preserved). Same pattern
-// as context-link's get-linked-context block. The CLI env-gate keeps the block inert in
-// the user's normal (non-nodeterm) codex/gemini/opencode sessions.
-function installAgentInstructions(): void {
-  const block = buildCanvasControlInstructions(shimPath())
-  const targets = [
-    path.join(os.homedir(), '.codex', 'AGENTS.md'),
-    path.join(os.homedir(), '.gemini', 'GEMINI.md'),
-    path.join(copilotHomeDir(), 'copilot-instructions.md'),
-    path.join(opencodeConfigDir(), 'AGENTS.md')
-  ]
-  for (const p of targets) {
-    try {
-      let existing = ''
-      try {
-        existing = fs.readFileSync(p, 'utf8')
-      } catch {
-        /* new file */
-      }
-      fs.mkdirSync(path.dirname(p), { recursive: true })
-      fs.writeFileSync(p, mergeCanvasControlBlock(existing, block), 'utf8')
-    } catch (e) {
-      console.warn('[canvas-control] instructions install failed', p, e)
-    }
-  }
-}
+export { installAccountDiscovery as installCanvasSkillInto } from '../core/agent-integrations'
 
 export function initCanvasControl(): void {
   try {
     writeCliFiles()
-    installCanvasSkillInto(path.join(os.homedir(), '.claude'))
-    installAgentInstructions()
+
   } catch (e) {
     console.error('[canvas-control] setup failed', e)
   }

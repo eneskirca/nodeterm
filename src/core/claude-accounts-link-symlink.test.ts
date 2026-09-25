@@ -1,3 +1,4 @@
+import { setIntegrationConsent } from './integration-policy'
 /**
  * Linking a config dir whose `settings.json` is a SYMLINK must keep it a symlink.
  *
@@ -43,6 +44,7 @@ const call = (channel: string, ...args: unknown[]): Promise<any> =>
   Promise.resolve(fake.handlers[channel](...args))
 
 beforeEach(() => {
+  setIntegrationConsent({ local: { claude: true } })
   root = mkdtempSync(path.join(os.tmpdir(), 'nt-link-symlink-'))
   userDataDir = path.join(root, 'userData')
   mkdirSync(userDataDir, { recursive: true })
@@ -60,6 +62,7 @@ beforeEach(() => {
   registerClaudeAccountsIpc()
 })
 afterEach(() => {
+  setIntegrationConsent(undefined)
   if (realHome === undefined) delete process.env.HOME
   else process.env.HOME = realHome
   delete process.env.USERPROFILE

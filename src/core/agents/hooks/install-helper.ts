@@ -15,7 +15,7 @@
 import { updateSettingsFile } from './settings-file'
 import path from 'path'
 import { homedir } from 'os'
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync, existsSync } from 'fs'
 import type { ManagedHookEvent } from '@shared/agents/hook-events'
 import { renameAtomicSync, tempNameFor } from '../../fs-atomic'
 import { buildManagedScript } from './managed-script'
@@ -293,6 +293,7 @@ export interface RemoveHooksOptions {
 
 export function removeHooksFrom(opts: RemoveHooksOptions): void {
   const { configPath, events, scriptFileName, atomicConfig = false } = opts
+  if (!existsSync(configPath)) return
   // Same normalized comparison as the installer — a raw `includes` left every entry behind on
   // Windows (issue #558), so uninstall silently did nothing there.
   const isOurs = managedCommandMatcher(`agent-hooks/${scriptFileName}`, false)

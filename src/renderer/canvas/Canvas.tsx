@@ -6,6 +6,7 @@ import { LINK_ENDPOINT_NOT_FOUND } from '@shared/canvas-link'
 import { createControlOpenBatch } from '../lib/controlOpenBatch'
 import { commitOwnedLaunchAttempt, registerLaunchCommit } from '../terminal/launch-attempt'
 import { launchCommand } from '../terminal/launch-command'
+import { IntegrationSetupNotice } from '../components/settings/IntegrationSetupNotice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useContextLinkSync } from './useContextLinkSync'
 import { useShallow } from 'zustand/react/shallow'
@@ -15145,6 +15146,7 @@ export function Canvas() {
         />
       )}
 
+      {!settingsOpen && <IntegrationSetupNotice onConfigure={() => { setSettingsSection('agents'); setSettingsOpen(true) }} />}
       {settingsOpen && (
         <SettingsPage
           onClose={() => setSettingsOpen(false)}

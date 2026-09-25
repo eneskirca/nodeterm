@@ -24,8 +24,8 @@ export type ServerConfig = {
   headless: boolean
   /**
    * Merge the managed agent hooks into the user's real agent config dirs (~/.claude,
-   * ~/.codex, ~/.gemini) at boot. Defaults to true — the server needs them to receive
-   * agent status. Tests MUST pass false: installing rewrites the machine's REAL settings.json
+   * ~/.codex, ~/.gemini) at boot. This is a hard veto when false; true/absence still requires persisted per-agent
+   * opt-in from Settings → Agents. Tests MUST pass false: installing rewrites the machine's REAL settings.json
    * (the script lives at the stable `~/.nodeterm/agent-hooks/<agent>.sh`, shared by every
    * instance), so a test run would silently take over the developer's own hooks — and, before
    * that path was stabilized, leave them pointing into a temp dataDir that gets removed after

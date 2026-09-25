@@ -1,6 +1,8 @@
 import { createHash } from 'crypto'
+import { setIntegrationConsent } from '../../core/integration-policy'
+import { integrationHostKey } from '../../shared/agent-integrations'
 import { execFileSync } from 'child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RemoteHooks, openCodeInstructionsTarget } from './remote-hooks'
 import { isSafeRemoteHome } from '../../core/remote-safety'
 import { hookServer } from '../../core/agents/hook-server'
@@ -8,6 +10,8 @@ import { hookServer } from '../../core/agents/hook-server'
 const ownerT = createHash('sha256').update('t').digest('hex').slice(0, 16)
 const owner = createHash('sha256').update('tok').digest('hex').slice(0, 16)
 const conn = { host: 'h', user: 'u' }
+beforeEach(() => setIntegrationConsent({ remote: { [integrationHostKey(conn)]: { claude: true, codex: true, gemini: true, grok: true, copilot: true } } }))
+afterEach(() => setIntegrationConsent(undefined))
 
 function harness(
   opts: {
@@ -356,7 +360,7 @@ describe('RemoteHooks — the opencode XDG path expression', () => {
       const lines = runs
         .map((r) => r.args[r.args.length - 1])
         .filter((l) => l.includes('opencode/AGENTS.md'))
-      expect(lines.length).toBeGreaterThan(0)
+      expect(lines).toEqual([])
       for (const line of lines) {
         // The untrusted half is bound to a single-quoted shell variable; it never appears raw
         // inside the double-quoted expansion, where `$`/backticks would still be live.
@@ -368,24 +372,6 @@ describe('RemoteHooks — the opencode XDG path expression', () => {
   }
 })
 
-describe('RemoteHooks.ensureFullscreenTui — the fourth $(dirname …) site', () => {
-  it('quotes the substitution, so a home with a space gets ONE mkdir argument', async () => {
-    // Unquoted, `$(dirname '/Users/Enes Kirca/.claude/settings.json')` word-splits into two mkdir
-    // args (measured ARGC=2): junk directories, then the quoted `cat >` fails and the catch
-    // swallows it — fullscreen-TUI silently never written for any macOS user with a spaced home.
-    const { rh, conn: c, runs } = harness({ responses: { 'settings.json': '{}' } })
-    await rh.ensureFullscreenTui(c, '/s.sock', '/Users/Enes Kirca')
-    const write = runs.map((r) => r.args[r.args.length - 1]).find((l) => l.includes('mkdir -p'))
-    expect(write).toBeTruthy()
-    expect(write).toContain(`mkdir -p "$(dirname '/Users/Enes Kirca/.claude/settings.json')"`)
-    const argc = execFileSync(
-      '/bin/sh',
-      ['-c', `set -- "$(dirname '/Users/Enes Kirca/.claude/settings.json')"; echo "ARGC=$#|$1"`],
-      { encoding: 'utf8' }
-    ).trim()
-    expect(argc).toBe('ARGC=1|/Users/Enes Kirca/.claude')
-  })
-})
 
 describe('RemoteHooks.setup — grok', () => {
   // The host's $GROK_HOME is deliberately a path the `$HOME/.grok` fallback could NEVER produce.
@@ -459,7 +445,7 @@ describe('RemoteHooks.setup — grok', () => {
       responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home', 'nodeterm-status.json': '{ oops' }
     })
     await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
-    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('/opt/grok-home/hooks/nodeterm-status.json'))
     expect(write).toBeTruthy()
     const cfg = JSON.parse(write!.stdin!)
     expect(Object.keys(cfg.hooks).sort()).toEqual(GROK_EVENTS)
@@ -473,7 +459,7 @@ describe('RemoteHooks.setup — grok', () => {
       responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/my grok' }
     })
     await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
-    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('/opt/my grok/hooks/nodeterm-status.json'))
     expect(write!.cmd).toContain(`mkdir -p "$(dirname '/opt/my grok/hooks/nodeterm-status.json')"`)
   })
 
@@ -525,52 +511,12 @@ describe('RemoteHooks.setup — copilot', () => {
   })
 })
 
-describe('RemoteHooks.ensureFullscreenTui', () => {
-  // Paths are posixQuote'd (single-quoted) in the remote commands; a read is `cat '<path>' …`
-  // and a write is `… cat > '<path>'`, so we distinguish them by the presence of `cat >`.
-  const isWriteTo = (args: string[], p: string) => args.join(' ').includes(`cat > `) && args.join(' ').includes(p)
-  const isReadOf = (args: string[], p: string) =>
-    !args.join(' ').includes('cat > ') && args.join(' ').includes(`cat `) && args.join(' ').includes(p)
-
-  it('writes tui=fullscreen into the host settings when absent (preserving other keys)', async () => {
-    const target = '/home/u/.claude/settings.json'
-    const calls: { args: string[]; stdin?: string }[] = []
-    const run = vi.fn(async (args: string[], stdin?: string) => {
-      calls.push({ args, stdin })
-      if (isReadOf(args, target)) return { code: 0, stdout: `${target}\n` + JSON.stringify({ hooks: { Stop: [] } }) }
-      return { code: 0, stdout: '' }
-    })
-    const rh = new RemoteHooks({ run })
+describe('RemoteHooks does not change rendering preferences', () => {
+  it('writes no TUI settings, including account directories', async () => {
+    const { rh, run } = harness()
     await rh.ensureFullscreenTui(conn, '/s.sock', '/home/u')
-    const write = calls.find((c) => isWriteTo(c.args, target))
-    expect(write).toBeTruthy()
-    expect(JSON.parse(write!.stdin!.slice(JSON.stringify({ hooks: { Stop: [] } }).length))).toEqual({ hooks: { Stop: [] }, tui: 'fullscreen' })
-  })
-
-  it('never overwrites an existing tui value (write-if-absent) — no write issued', async () => {
-    const target = '/home/u/.claude/settings.json'
-    const calls: { args: string[]; stdin?: string }[] = []
-    const run = vi.fn(async (args: string[]) => {
-      calls.push({ args })
-      if (isReadOf(args, target)) return { code: 0, stdout: `${target}\n` + JSON.stringify({ tui: 'default' }) }
-      return { code: 0, stdout: '' }
-    })
-    const rh = new RemoteHooks({ run })
-    await rh.ensureFullscreenTui(conn, '/s.sock', '/home/u')
-    expect(calls.some((c) => isWriteTo(c.args, target))).toBe(false)
-  })
-
-  it('writes into the absolute account-dir settings path', async () => {
-    const target = '/home/u/.nodeterm/claude-accounts/acc-1/settings.json'
-    const calls: { args: string[]; stdin?: string }[] = []
-    const run = vi.fn(async (args: string[], stdin?: string) => {
-      calls.push({ args, stdin })
-      return { code: 0, stdout: `${target}\n{}` } // resolved target header + empty settings
-    })
-    const rh = new RemoteHooks({ run })
     await rh.ensureFullscreenTuiInAccountDir(conn, '/s.sock', '/home/u', 'acc-1')
-    expect(calls.some((c) => isWriteTo(c.args, target))).toBe(true)
-    expect(calls.some((c) => (c.stdin ?? '').includes('"tui": "fullscreen"'))).toBe(true)
+    expect(run).not.toHaveBeenCalled()
   })
 })
 
@@ -591,71 +537,13 @@ describe('RemoteHooks.teardown', () => {
 
 describe('RemoteHooks.installCanvasControl', () => {
   const isWriteTo = (args: string[], p: string) => args.join(' ').includes('cat > ') && args.join(' ').includes(p)
-
-  it('writes an executable shim + the skill, and merges every instruction-file block', async () => {
+  it('writes its shim and on-demand reference only under nodeterm data', async () => {
     const { rh, calls } = harness()
     await rh.installCanvasControl(conn, '/s.sock', '/home/u')
-    const joined = calls.map((c) => c.args.join(' '))
-    // The shim must land executable: the skill tells the agent to run it via `sh <path>`, but the
-    // instruction blocks and a user's own habits may exec it directly.
-    expect(joined.some((j) => j.includes('cat > \'/home/u/.nodeterm/nodeterm.sh\'') && j.includes('chmod 755'))).toBe(true)
-    // It is the POSIX shim, NOT the retired Electron-as-Node one — nothing may reference a local
-    // interpreter path, which is exactly what made the old CLI unusable off the desktop.
-    const shim = calls.find((c) => isWriteTo(c.args, '/home/u/.nodeterm/nodeterm.sh'))?.stdin ?? ''
-    expect(shim).toContain('#!/bin/sh')
-    expect(shim).toContain('--unix-socket')
-    expect(shim).not.toContain('ELECTRON_RUN_AS_NODE')
-    // The skill points at the REMOTE shim path (a desktop path would resolve to nothing here).
-    const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/manage-nodeterm-canvas/SKILL.md'))?.stdin ?? ''
-    expect(skill).toContain('name: manage-nodeterm-canvas')
-    expect(skill).toContain('sh "/home/u/.nodeterm/nodeterm.sh"')
-    // codex/gemini get the marker block; opencode's path is expanded by the REMOTE shell, since
-    // the desktop's XDG_CONFIG_HOME says nothing about the host's.
-    expect(joined.some((j) => j.includes('/home/u/.codex/AGENTS.md'))).toBe(true)
-    expect(joined.some((j) => j.includes('/home/u/.gemini/GEMINI.md'))).toBe(true)
-    // …with the remote $HOME bound to a shell variable first, so it is never live inside the
-    // double-quoted expansion (see "the opencode XDG path expression" below).
-    expect(joined.some((j) => j.includes(`NT_H='/home/u'`))).toBe(true)
-    expect(joined.some((j) => j.includes('${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md'))).toBe(true)
-    expect(joined.some((j) => j.includes('/home/u/.copilot/copilot-instructions.md'))).toBe(true)
-    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:manage-canvas:start'))).toBe(true)
-    // no unexpanded tilde survives in any remote path.
-    expect(joined.some((j) => j.includes('~/'))).toBe(false)
-  })
-
-  it('preserves existing instruction-file content and rewrites its own block only', async () => {
-    const existing = '# my notes\n\n<!-- nodeterm:manage-canvas:start -->\nSTALE\n<!-- nodeterm:manage-canvas:end -->\n'
-    const calls: { args: string[]; stdin?: string }[] = []
-    const run = vi.fn(async (args: string[], stdin?: string) => {
-      calls.push({ args, stdin })
-      const joined = args.join(' ')
-      if (joined.includes('.codex/AGENTS.md') && !joined.includes('cat >')) return { code: 0, stdout: existing }
-      return { code: 0, stdout: '' }
-    })
-    await new RemoteHooks({ run }).installCanvasControl(conn, '/s.sock', '/home/u')
-    const write = calls.find((c) => isWriteTo(c.args, '/home/u/.codex/AGENTS.md'))
-    expect(write?.stdin).toContain('# my notes')
-    expect(write?.stdin).not.toContain('STALE')
-    expect(write?.stdin).toContain('nodeterm canvas')
-  })
-
-  it('skips the write when the block is already current (idempotent reconnects)', async () => {
-    // A connect happens on every app start and every reconnect; rewriting an unchanged file each
-    // time would churn the user's instruction files (and their mtimes) for nothing.
-    const first = harness()
-    await first.rh.installCanvasControl(conn, '/s.sock', '/home/u')
-    const merged = first.calls.find((c) => c.args.join(' ').includes('cat > \'/home/u/.gemini/GEMINI.md\''))?.stdin ?? ''
-    expect(merged).toBeTruthy()
-
-    const calls: { args: string[]; stdin?: string }[] = []
-    const run = vi.fn(async (args: string[], stdin?: string) => {
-      calls.push({ args, stdin })
-      const joined = args.join(' ')
-      if (joined.includes('.gemini/GEMINI.md') && !joined.includes('cat >')) return { code: 0, stdout: merged }
-      return { code: 0, stdout: '' }
-    })
-    await new RemoteHooks({ run }).installCanvasControl(conn, '/s.sock', '/home/u')
-    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.gemini/GEMINI.md'))).toBe(false)
+    const reference = calls.find((c) => isWriteTo(c.args, '/home/u/.nodeterm/nodeterm.sh.md'))
+    expect(reference?.stdin).toContain('name: manage-nodeterm-canvas')
+    expect(calls.some((c) => /AGENTS\.md|GEMINI\.md|copilot-instructions/.test(c.args.join(' ')))).toBe(false)
+    expect(calls.find((c) => isWriteTo(c.args, '/home/u/.nodeterm/nodeterm.sh'))?.stdin).toContain('#!/bin/sh')
   })
 
   it('installs the skill into a remote managed-account config dir', async () => {
@@ -692,10 +580,10 @@ describe('RemoteHooks.installContextLink', () => {
     expect(shim).toContain('/context-link/')
     expect(shim).toContain('--unix-socket')
     expect(shim).not.toContain('ELECTRON_RUN_AS_NODE')
-    const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/get-linked-context/SKILL.md'))?.stdin ?? ''
+    const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.nodeterm/context.sh.md'))?.stdin ?? ''
     expect(skill).toContain('name: get-linked-context')
     expect(skill).toContain('sh "/home/u/.nodeterm/context.sh"')
-    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:get-linked-context:start'))).toBe(true)
+    expect(calls.some((c) => /AGENTS\.md|GEMINI\.md/.test(c.args.join(' ')))).toBe(false)
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
   })
 
@@ -713,8 +601,7 @@ describe('RemoteHooks.installContextLink', () => {
     })
     await new RemoteHooks({ run }).installContextLink(conn, '/s.sock', '/home/u')
     const write = calls.find((c) => isWriteTo(c.args, '/home/u/.codex/AGENTS.md'))
-    expect(write?.stdin).toContain('CANVAS BLOCK')
-    expect(write?.stdin).toContain('nodeterm:get-linked-context:start')
+    expect(write).toBeUndefined()
   })
 
   it('installs the skill into a remote managed-account config dir', async () => {

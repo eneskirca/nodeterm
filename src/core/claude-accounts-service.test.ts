@@ -1,3 +1,4 @@
+import { setIntegrationConsent } from './integration-policy'
 /**
  * Issue #313 — the managed-Claude-account LIFECYCLE lives in core, so both shells serve it.
  *
@@ -58,6 +59,7 @@ const call = (channel: string, ...args: unknown[]): Promise<any> =>
   Promise.resolve(fake.handlers[channel](...args))
 
 beforeEach(() => {
+  setIntegrationConsent({ local: { claude: true } })
   installed.length = 0
   tui.length = 0
   shared.length = 0
@@ -66,6 +68,7 @@ beforeEach(() => {
   initPlatform(fake)
 })
 afterEach(() => {
+  setIntegrationConsent(undefined)
   resetPlatformForTests()
   resetClaudeAccountsSourceForTests()
   rmSync(userDataDir, { recursive: true, force: true })
@@ -96,7 +99,7 @@ describe('registerClaudeAccountsIpc — the seven channels', () => {
     expect(existsSync(res.configDir)).toBe(true)
     expect(installed).toEqual([res.configDir])
     expect(skilled).toEqual([res.configDir])
-    expect(tui).toEqual([res.configDir])
+    expect(tui).toEqual([])
   })
 
   it('add() without an installSkill dep (the Server Edition) writes no skill', async () => {
@@ -189,7 +192,7 @@ describe('installHooksIntoLocalAccounts', () => {
     const dirs = ['aaa', 'ccc'].map((id) => accountConfigDir(userDataDir, id))
     expect(installed).toEqual(dirs)
     expect(extra).toEqual(dirs)
-    expect(tui).toEqual(dirs)
+    expect(tui).toEqual([])
   })
 
   it('one failing account never stops the rest (boot must not be blocked)', () => {
@@ -270,7 +273,7 @@ describe('claudeAccounts.link', () => {
     expect(res.email).toBe('second@example.com')
     // The same two writes an ADDED account gets — or the linked identity reports no agent status.
     expect(installed).toEqual([linkDir])
-    expect(tui).toEqual([linkDir])
+    expect(tui).toEqual([])
   })
 
   it('is email: null — not a failure — when the dir is not signed in yet', async () => {

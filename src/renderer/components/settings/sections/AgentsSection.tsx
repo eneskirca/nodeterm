@@ -1,3 +1,4 @@
+import { IntegrationConsent } from '../IntegrationConsent'
 import { useEffect, useState } from 'react'
 import { useSettings } from '../../../state/settings'
 import { useProjects } from '../../../state/projects'
@@ -455,6 +456,7 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
       isActive={isActive}
       searchEntries={ENTRIES}
     >
+      <IntegrationConsent />
       <SearchableRow {...ROWS.agents}>
         <div className="space-y-2">
           {rows.map((row) => {

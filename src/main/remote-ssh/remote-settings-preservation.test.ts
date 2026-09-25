@@ -1,3 +1,5 @@
+import { setIntegrationConsent } from '../../core/integration-policy'
+import { integrationHostKey } from '../../shared/agent-integrations'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { spawnSync } from 'child_process'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
@@ -6,8 +8,8 @@ import { tmpdir } from 'os'
 import { RemoteHooks } from './remote-hooks'
 
 let home: string
-beforeEach(() => { home = mkdtempSync(path.join(tmpdir(), 'nt-851-home-')) })
-afterEach(() => rmSync(home, { recursive: true, force: true }))
+beforeEach(() => { setIntegrationConsent({ remote: { [integrationHostKey(conn)]: { claude: true } } }); home = mkdtempSync(path.join(tmpdir(), 'nt-851-home-')) })
+afterEach(() => { setIntegrationConsent(undefined); rmSync(home, { recursive: true, force: true }) })
 const conn = { host: 'fixture', user: 'fixture' }
 for (const account of [false, true]) {
   describe.skipIf(process.platform === 'win32')(account ? 'remote Claude account settings' : 'remote system Claude settings', () => {
@@ -36,21 +38,23 @@ for (const account of [false, true]) {
       expect(await install(raw)).toBe(raw)
     })
 
-    it.each(['', ' \t\n'])('installs hooks and TUI into blank settings: %j', async (raw) => {
+    it.each(['', ' \t\n'])('installs hooks without changing TUI in blank settings: %j', async (raw) => {
       const result = JSON.parse(await install(raw))
-      expect(result.tui).toBe('fullscreen')
+      expect(result.tui).toBeUndefined()
       expect(result.hooks.Stop).toHaveLength(1)
     })
 
     it('preserves unrelated settings and foreign hooks through both writers', async () => {
       const foreign = { hooks: [{ type: 'command', command: 'foreign-command' }] }
       const result = JSON.parse(await install(JSON.stringify({ model: 'opus', outputStyle: 'caveman', hooks: { Stop: [foreign] } })))
-      expect(result).toMatchObject({ model: 'opus', outputStyle: 'caveman', tui: 'fullscreen' })
+      expect(result).toMatchObject({ model: 'opus', outputStyle: 'caveman' })
       expect(result.hooks.Stop[0]).toEqual(foreign)
+      expect(result.tui).toBeUndefined()
+      expect(result.hooks.Stop).toHaveLength(2)
     })
 
     it('cannot overwrite another writer between the SSH read and publish', async () => {
-      expect(await install('{}', true)).toBe('{"model":"concurrent-2"}')
+      expect(await install('{}', true)).toBe('{"model":"concurrent-1"}')
     })
   })
 }

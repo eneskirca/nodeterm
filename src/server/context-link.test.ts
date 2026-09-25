@@ -192,21 +192,16 @@ describe('initServerContextLink', () => {
     await link.stop()
   })
 
-  // The other half of the pair. With the flag REQUIRED, every other case in this file says
-  // `false`, so without this the install branch would have no coverage at all and "we stopped
-  // writing into $HOME" would be indistinguishable from "we can no longer write into $HOME".
-  // Safe to assert for real: `home` is a per-test scratch dir this suite points HOME at.
-  it('installs the discovery surface into the agent config dirs when asked to', async () => {
+  // A runtime flag is not user consent: discovery belongs to the common lifecycle.
+  it('runtime initialization never grants global integration consent', async () => {
     const { link, registered } = start({
       ptyManager: fakePty(),
       canvases: () => [],
       installAgentIntegrations: true
     })
     expect(registered).toBe(true)
-    expect(existsSync(join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md'))).toBe(true)
-    expect(readFileSync(join(home, '.codex', 'AGENTS.md'), 'utf8')).toContain(
-      'nodeterm:get-linked-context'
-    )
+    expect(existsSync(join(home, '.claude', 'skills', 'get-linked-context', 'SKILL.md'))).toBe(false)
+    expect(existsSync(join(home, '.codex', 'AGENTS.md'))).toBe(false)
     await link.stop()
   })
 

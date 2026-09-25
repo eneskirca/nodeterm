@@ -214,6 +214,7 @@ const api: NodeTerminalApi = {
     selectFile: () => ipcRenderer.invoke(IPC.dialogSelectFile)
   },
   settings: {
+    integrationStatus: () => ipcRenderer.invoke(IPC.integrationStatus),
     load: () => ipcRenderer.invoke(IPC.settingsLoad),
     save: (settings) => ipcRenderer.invoke(IPC.settingsSave, settings)
   },

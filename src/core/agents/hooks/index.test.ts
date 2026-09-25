@@ -25,10 +25,19 @@ vi.mock('../../exec-path', async (orig) => ({
   resolveShellEnvVar: async () => shellAnswer
 }))
 
+const fixtureHome = vi.hoisted(() => ({ value: '' }))
+vi.mock('os', async (original) => {
+  const actual = await original<typeof import('os')>()
+  return { ...actual, homedir: () => fixtureHome.value, default: { ...actual, homedir: () => fixtureHome.value } }
+})
 let home: string
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-probe-'))
+  fixtureHome.value = home
+  vi.stubEnv('GROK_HOME', '')
+  vi.stubEnv('COPILOT_HOME', path.join(home, '.copilot'))
+  vi.stubEnv('XDG_CONFIG_HOME', path.join(home, '.config'))
   vi.spyOn(os, 'homedir').mockReturnValue(home)
   initPlatform(fakePlatform({ userDataDir: home }))
   _resetGrokHomeProbeForTests()
@@ -37,6 +46,7 @@ afterEach(() => {
   _resetGrokHomeProbeForTests()
   resetPlatformForTests()
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -50,7 +60,7 @@ describe('installManagedAgentHooks — the $GROK_HOME probe (§8.9)', () => {
     // silent regression.
     expect(grokHomeDir()).not.toBe(elsewhere)
 
-    installManagedAgentHooks()
+    installManagedAgentHooks(() => true)
     await new Promise((r) => setTimeout(r, 50))
 
     expect(grokHomeDir()).toBe(elsewhere)
@@ -63,7 +73,7 @@ describe('installManagedAgentHooks — the $GROK_HOME probe (§8.9)', () => {
     // idea of the default instead of the code's.
     shellAnswer = null
     const target = grokHomeDir()
-    installManagedAgentHooks()
+    installManagedAgentHooks(() => true)
     await new Promise((r) => setTimeout(r, 20))
     expect(fs.existsSync(path.join(target, 'hooks', GROK_HOOK_FILE))).toBe(true)
   })

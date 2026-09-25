@@ -135,8 +135,8 @@ describe('initServerCanvasControl', () => {
     const accountDir = path.join(dataDir, 'test-account')
     runtime.installSkillInto(accountDir)
     expect(
-      fs.readFileSync(path.join(accountDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md'), 'utf8')
-    ).toContain(shim)
+      fs.existsSync(path.join(accountDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md'))
+    ).toBe(false)
 
     const opened = await runtime.handler({
       verb: 'open-agent',

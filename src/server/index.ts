@@ -60,8 +60,7 @@ import {
   isValidPendingId,
   syntheticAnsweredEvent
 } from '../core/agents/pending-approvals'
-import { installManagedAgentHooks } from '../core/agents/hooks'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
+import { initAgentIntegrations } from '../core/agent-integrations'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -604,21 +603,7 @@ export async function startServer(
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobileLiveActivities: () => settingsStore.get().mobileLiveActivities !== false
   })
-  // `installHooks: false` (tests) skips the merge into the user's real ~/.claude et al —
-  // the hook it would write points into `dataDir`, which a test then deletes.
-  if (config.installHooks !== false) {
-    try {
-      // Fail-open: installManagedAgentHooks is itself best-effort, but a throw must never block boot.
-      installManagedAgentHooks()
-    } catch (e) {
-      console.warn('[nodeterm-server] managed hook install failed', e)
-    }
-    // Managed Claude accounts each carry their OWN settings.json (Claude Code resolves it relative
-    // to CLAUDE_CONFIG_DIR), so the hook has to be re-installed there as well or a managed account
-    // reports no agent status at all. Canvas-control adds its skill in its own opt-in initializer;
-    // this baseline hook pass stays unchanged when the feature flag is off.
-    installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [])
-  }
+  const stopIntegrations = initAgentIntegrations(settingsStore, config.installHooks !== false)
   const hookStartupWarning = await hookServer.startForApp()
   if (hookStartupWarning) console.error('[nodeterm-server]', hookStartupWarning)
   // Safe default and rollback path. The opt-in runtime replaces this handler only after its
@@ -662,7 +647,7 @@ export async function startServer(
   const contextLink = initServerContextLink({
     ptyManager,
     canvases: () => workspaceStore.persistedCanvases(),
-    installAgentIntegrations: config.installHooks !== false
+    installAgentIntegrations: false
   })
   const workspaceWatcher = createServerWorkspaceWatcher(workspaceStore)
   // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
@@ -688,7 +673,7 @@ export async function startServer(
         ptyManager,
         settings: () => settingsStore.get(),
         boardLog,
-        installAgentIntegrations: config.installHooks !== false
+        installAgentIntegrations: false
       })
       hookServer.setControlHandler(canvasControl.handler)
     } catch (error) {
@@ -819,6 +804,7 @@ export async function startServer(
         canvasControl?.stop()
         workspaceWatcher.dispose()
         await contextLink.stop()
+      stopIntegrations()
         await ptyManager.killAll()
         // Same native hazard as the desktop app: a whisper transcribe still running when the
         // node env is torn down aborts the process. See SpeechService.shutdown.

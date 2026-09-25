@@ -15,7 +15,6 @@
 // that already knows the difference. The link documents are also still written to
 // <userData>/context-links/ as a debugging aid.
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { platform } from './platform'
 import { IPC } from '../shared/ipc'
@@ -25,10 +24,7 @@ import { directExecutableInvocation, findInLoginPath } from './exec-path'
 import { TMUX_SOCKET } from './tmux-naming'
 import {
   buildContextShimScript,
-  buildContextLinkSkillBody,
   buildLinkDoc,
-  buildLinkedContextInstructions,
-  mergeInstructionsBlock,
   resolveLinkTranscript,
   transcriptPathOf,
   type LinkDoc,
@@ -43,7 +39,6 @@ import {
 } from './context-link-render'
 import { hookServer } from './agents/hook-server'
 import { locateClaude, locateCodex, locateGemini, locateGrok } from './handoff/locate'
-import { opencodeConfigDir } from './agents/hooks/opencode'
 
 export { setNodeTranscript } from './context-link-core'
 
@@ -55,10 +50,6 @@ export function contextLinkDir(): string {
 function cliShimPath(): string {
   return path.join(contextLinkDir(), 'context.sh')
 }
-function skillPath(): string {
-  return path.join(os.homedir(), '.claude', 'skills', 'get-linked-context', 'SKILL.md')
-}
-
 function writeCliFiles(): void {
   const d = contextLinkDir()
   fs.mkdirSync(d, { recursive: true })
@@ -74,40 +65,6 @@ function writeCliFiles(): void {
     fs.rmSync(path.join(d, 'context-cli.mjs'), { force: true })
   } catch {
     /* fail open */
-  }
-}
-
-function installSkill(): void {
-  try {
-    fs.mkdirSync(path.dirname(skillPath()), { recursive: true })
-    fs.writeFileSync(skillPath(), buildContextLinkSkillBody(cliShimPath()), 'utf8')
-  } catch (e) {
-    console.warn('[context-link] skill install failed', e)
-  }
-}
-
-// Codex/Gemini/opencode have no skill system — merge an instructions block into their global
-// instruction files instead (marker-delimited, idempotent, other content preserved).
-function installAgentInstructions(): void {
-  const block = buildLinkedContextInstructions(cliShimPath())
-  const targets = [
-    path.join(os.homedir(), '.codex', 'AGENTS.md'),
-    path.join(os.homedir(), '.gemini', 'GEMINI.md'),
-    path.join(opencodeConfigDir(), 'AGENTS.md')
-  ]
-  for (const p of targets) {
-    try {
-      let existing = ''
-      try {
-        existing = fs.readFileSync(p, 'utf8')
-      } catch {
-        /* new file */
-      }
-      fs.mkdirSync(path.dirname(p), { recursive: true })
-      fs.writeFileSync(p, mergeInstructionsBlock(existing, block), 'utf8')
-    } catch (e) {
-      console.warn('[context-link] instructions install failed', p, e)
-    }
   }
 }
 
@@ -351,23 +308,8 @@ export function setContextLinks(map: ContextLinkMap): Promise<void> {
   return writeChain
 }
 
-/**
- * Boot Context Link: register the hook-server read handler, (re)write the shim under `dataDir`,
- * and — only when `options.installAgentIntegrations` says so — install the discovery surface into
- * the machine's REAL agent configuration directories (`~/.claude/skills/get-linked-context`, plus
- * the marker block in `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` and opencode's `AGENTS.md`).
- *
- * `options` is REQUIRED and its flag is a plain `boolean`, deliberately: those instruction files
- * belong to the user and are loaded by every agent session on the machine, ours or not, so
- * writing them is a decision each caller owes an answer to (issue #490). The previous shape —
- * an optional options bag whose flag was read as `!== false` — meant the WRITE was what you got
- * by saying nothing, which is the wrong default direction for a filesystem effect outside our own
- * data dir, and it is exactly how a unit test that never thought about `HOME` came to rewrite the
- * developer's own `~/.codex/AGENTS.md` on every run. Same asymmetry as
- * `session-memory-service.ts`'s required `remote.isRemoteProject`: acting-without-knowing is a
- * compile error. `platformDeps` lost its default with it — every caller already passes one, and a
- * defaulted parameter in front of a required one is unreachable anyway.
- */
+/** Boot the read runtime and app-owned shim. The legacy options field remains source-compatible,
+ * but cannot authorize global discovery; only the persisted integration lifecycle can do that. */
 export function initContextLink(
   ptyManager: PtyManager,
   platformDeps: ContextLinkDeps,
@@ -386,10 +328,8 @@ export function initContextLink(
       if (f.endsWith('.json')) fs.rmSync(path.join(d, f), { force: true })
     }
     writeCliFiles()
-    if (options.installAgentIntegrations) {
-      installSkill()
-      installAgentInstructions()
-    }
+    // Global discovery is reconciled by agent-integrations after persisted consent.
+    void options
   } catch (e) {
     console.error('[context-link] setup failed', e)
     return

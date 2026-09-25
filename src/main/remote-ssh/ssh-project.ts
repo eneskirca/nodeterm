@@ -432,6 +432,13 @@ export class SshProjectManager {
     { conn: SshConnection; attempt: Promise<ConnectResult>; ticket: symbol }
   >()
   private watchdog?: ReturnType<typeof setInterval>
+  /** A saved host-specific choice applies to connected hosts too; never restart their sessions. */
+  async refreshIntegrations(): Promise<void> {
+    await Promise.allSettled([...this.conns.values()].map((c) => c.remoteHome
+      ? this.remoteHooks.reconcileIntegrations(c.conn, c.controlPath, c.remoteHome)
+      : Promise.resolve()))
+  }
+
   constructor(private r: Runners) {
     this.remoteHooks = new RemoteHooks({ run: r.run })
   }
