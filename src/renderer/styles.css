@@ -3542,7 +3542,11 @@ body,
 
 .welcome__recent-name {
   font-size: 13px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .welcome__recent-path {
@@ -8422,7 +8426,7 @@ button.group-node__setup:disabled {
 }
 .ss-group__chev:hover { background: rgba(var(--tint-rgb), 0.12); color: var(--text); }
 .ss-group__dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.ss-group__name { font-size: 12px; font-weight: 600; color: var(--text); }
+.ss-group__name { flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group.is-active .ss-group__name { color: var(--accent); }
 .ss-group__branch { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group__count { font-size: 10px; color: var(--muted); }

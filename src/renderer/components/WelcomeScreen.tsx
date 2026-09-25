@@ -203,7 +203,7 @@ export function WelcomeScreen({
                   size={15}
                   className="welcome__recent-mark"
                 />
-                <span className="welcome__recent-name">{p.name}</span>
+                <span className="welcome__recent-name" title={p.name}>{p.name}</span>
                 {p.cwd && <span className="welcome__recent-path">{p.cwd}</span>}
                 {(sessionCounts?.[p.id] ?? 0) > 0 && (
                   <span
