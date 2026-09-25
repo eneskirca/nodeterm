@@ -164,9 +164,9 @@ describe('performRestartResume', () => {
 
   it('sends exit, waits for the shell, then delivers the resume command', async () => {
     const { written, io } = fakeIo()
-    let pane = 'grok'
+    let pane = 'gemini'
     const p = performRestartResume({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
       paneCommand: async () => pane,
@@ -178,7 +178,7 @@ describe('performRestartResume', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
     expect(written.slice(0, 2)).toEqual(['\x15', '/quit\r'])
-    expect(written.join('')).toContain('grok --resume sid-1')
+    expect(written.join('')).toContain('gemini --resume sid-1')
   })
 
   it('restarts claude with Ctrl-Cs only, then delivers its resume command (issue #928)', async () => {
@@ -273,9 +273,9 @@ describe('performRestartResume', () => {
 
   it('clears the pending input line before asking the CLI to quit', async () => {
     const { written, io } = fakeIo()
-    let pane = 'grok'
+    let pane = 'gemini'
     const p = performRestartResume({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
       paneCommand: async () => pane,
@@ -391,7 +391,7 @@ describe('performRestartResume', () => {
     const { written, io } = silentIo()
     let cancel: (() => void) | undefined
     const p = performRestartResume({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
       paneCommand: async () => 'zsh',
@@ -601,9 +601,9 @@ describe('performExitPhase', () => {
 
   it('quits the CLI and reports exited once the pane reports a shell — writing nothing after', async () => {
     const { written, io } = fakeIo()
-    let pane = 'grok'
+    let pane = 'gemini'
     const p = performExitPhase({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
       paneCommand: async () => pane,
@@ -648,10 +648,10 @@ describe('performExitPhase', () => {
   it('reports exit-timeout, without a resume, when the CLI never lets go of the pane', async () => {
     const { written, io } = fakeIo()
     const p = performExitPhase({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
-      paneCommand: async () => 'grok',
+      paneCommand: async () => 'gemini',
       timeoutMs: 1000,
       pollMs: 100
     })
@@ -701,19 +701,19 @@ describe('performExitPhase', () => {
     // CONSECUTIVE polls, because a single changed reading can be a momentary foreground CHILD of a
     // still-running CLI. Typing the resume line into a live CLI would send it as a message.
     const { io } = fakeIo()
-    const panes = ['grok', 'git', 'grok', 'nu', 'nu']
+    const panes = ['gemini', 'git', 'gemini', 'nu', 'nu']
     let i = 0
     const p = performExitPhase({
-      agentId: 'grok',
+      agentId: 'gemini',
       sessionId: 'sid-1',
       io,
-      // The pre-flight consumes the first reading, so `before` is 'grok'.
+      // The pre-flight consumes the first reading, so `before` is 'gemini'.
       paneCommand: async () => panes[Math.min(i++, panes.length - 1)] ?? null,
       timeoutMs: 5000,
       pollMs: 100
     })
     await vi.advanceTimersByTimeAsync(150) // poll 1 → 'git': changed, but not yet twice
-    await vi.advanceTimersByTimeAsync(100) // poll 2 → 'grok': the CLI is still there
+    await vi.advanceTimersByTimeAsync(100) // poll 2 → 'gemini': the CLI is still there
     await vi.advanceTimersByTimeAsync(250) // polls 3+4 → 'nu' twice in a row
     expect(await p).toBe('exited')
   })
@@ -736,32 +736,17 @@ describe('performExitPhase', () => {
     expect(await p).toBe('not-eligible') // not a timeout: there is no pane left to time out in
   })
 
-  it('splits opencode exit into text then CR (batched-input guard), leaving others one-burst', async () => {
-    // opencode's TUI swallows a one-burst `/exit\r` (measured 1.18.18-1.18.25, Linux, tmux, isolated
-    // socket: `/exit` left in composer with popup armed, exit-timeout at 6s; split CR by 100ms exits
-    // in ~500ms, shipped with 150ms). This pins the split so a refactor cannot silently re-batch it.
-    for (const agentId of ['opencode'] as const) {
-      const { written, io } = fakeIo()
-      let pane = 'opencode'
-      const p = performExitPhase({
-        agentId,
-        sessionId: 'sid-1',
-        io,
-        paneCommand: async () => pane,
-        timeoutMs: 6000,
-        pollMs: 100
-      })
-      // Pre-flight resolves; KILL_LINE + exit text are written, CR not yet.
-      await vi.advanceTimersByTimeAsync(0)
-      expect(written).toEqual(['\x15', '/exit'])
-      await vi.advanceTimersByTimeAsync(150)
-      expect(written).toEqual(['\x15', '/exit', '\r'])
-      pane = 'zsh'
-      await vi.advanceTimersByTimeAsync(5000)
-      expect(await p).toBe('exited')
-    }
-    // Every other agent keeps the historical one-burst path byte-identical.
-    for (const agentId of ['grok', 'gemini', 'copilot'] as const) {
+  it('quits grok, opencode and copilot with separate Ctrl-Cs and never types into the composer', async () => {
+    // Measured on grok 1.0.40, opencode 1.18.32 and copilot 1.0.88 (macOS, isolated tmux socket,
+    // CLI started from an interactive shell): Ctrl-U clears only the cursor's line, so a typed exit
+    // submitted the rest of a multi-line draft as a prompt. Ctrl-C clears the whole composer:
+    // grok then needs two more (arm + exit), opencode and copilot one more.
+    const cases = [
+      ['grok', 3],
+      ['opencode', 2],
+      ['copilot', 2]
+    ] as const
+    for (const [agentId, count] of cases) {
       const { written, io } = fakeIo()
       let pane: string = agentId
       const p = performExitPhase({
@@ -773,12 +758,34 @@ describe('performExitPhase', () => {
         pollMs: 100
       })
       await vi.advanceTimersByTimeAsync(0)
-      const exit = agentId === 'copilot' ? '/exit' : '/quit'
-      expect(written).toEqual(['\x15', `${exit}\r`])
+      expect(written, agentId).toEqual(['\x03']) // never in the same burst as the next one
+      await vi.advanceTimersByTimeAsync(150 * (count - 1))
+      expect(written, agentId).toEqual(Array(count).fill('\x03'))
       pane = 'zsh'
       await vi.advanceTimersByTimeAsync(5000)
-      expect(await p).toBe('exited')
+      expect(await p, agentId).toBe('exited')
+      expect(written, agentId).toEqual(Array(count).fill('\x03')) // no exit line, no CR, ever
     }
+  })
+
+  it('keeps gemini on its typed exit: line-clear, then a bare `/quit` in one burst', async () => {
+    // gemini is the one agent not measured (its composer is only reachable after a login), so it
+    // keeps the historical path byte-identical.
+    const { written, io } = fakeIo()
+    let pane = 'gemini'
+    const p = performExitPhase({
+      agentId: 'gemini',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => pane,
+      timeoutMs: 6000,
+      pollMs: 100
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(written).toEqual(['\x15', '/quit\r'])
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('exited')
   })
 
   it('quits codex with two separate Ctrl-Cs and never types into its composer (issue #842)', async () => {
@@ -903,26 +910,6 @@ describe('performExitPhase', () => {
     await vi.advanceTimersByTimeAsync(200)
     expect(await p).toBe('not-eligible')
     expect(written).toEqual(['\x03'])
-  })
-
-  it('abandons the split CR when the pane dies mid-delay', async () => {
-    const { written, io } = fakeIo()
-    let live = true
-    const p = performExitPhase({
-      agentId: 'opencode',
-      sessionId: 'sid-1',
-      io,
-      paneCommand: async () => 'opencode',
-      timeoutMs: 6000,
-      pollMs: 100,
-      isLive: () => live
-    })
-    await vi.advanceTimersByTimeAsync(0)
-    expect(written).toEqual(['\x15', '/exit'])
-    live = false
-    await vi.advanceTimersByTimeAsync(200)
-    expect(await p).toBe('not-eligible')
-    expect(written).toEqual(['\x15', '/exit']) // CR never sent into a dead pane
   })
 })
 
@@ -1058,7 +1045,7 @@ describe('performRestartResume — grok', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it("quits with grok's own exit line and resumes by session id", async () => {
+  it('quits grok with three Ctrl-Cs and resumes by session id', async () => {
     const { written, io } = fakeIo()
     let pane = 'grok'
     const p = performRestartResume({
@@ -1069,12 +1056,12 @@ describe('performRestartResume — grok', () => {
       timeoutMs: 6000,
       pollMs: 100
     })
-    await vi.advanceTimersByTimeAsync(250) // a few polls while the CLI is still up
+    await vi.advanceTimersByTimeAsync(400) // the three Ctrl-Cs, 150ms apart
+    expect(written).toEqual(['\x03', '\x03', '\x03'])
     pane = 'zsh'
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
-    // `/quit`, not claude's `/exit` — the table is per CLI.
-    expect(written.slice(0, 2)).toEqual(['\x15', '/quit\r'])
+    expect(written.join('')).not.toContain('/quit')
     expect(written.join('')).toContain('grok --resume abc-1')
   })
 
@@ -1262,7 +1249,7 @@ describe('guardConcurrentRestart', () => {
     const { written, io } = silentIo()
     const run = guardConcurrentRestart('n-overlap', () =>
       performRestartResume({
-        agentId: 'grok',
+        agentId: 'gemini',
         sessionId: 'sid-1',
         io,
         paneCommand: async () => 'zsh',
@@ -1274,7 +1261,7 @@ describe('guardConcurrentRestart', () => {
     const first = run()
     await vi.advanceTimersByTimeAsync(150)
     // The resume line is in the pane but NOT submitted (no echo to verify it).
-    expect(written.join('')).toContain('grok --resume sid-1')
+    expect(written.join('')).toContain('gemini --resume sid-1')
     // A second menu/bulk click landing in that window would splice `/exit` into the pending line
     // and submit `claude --resume sid-1/exit`.
     expect(await run()).toBe('not-eligible')

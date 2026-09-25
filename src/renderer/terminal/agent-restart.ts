@@ -48,8 +48,22 @@ const EXIT_SEQUENCES: Record<string, string> = {
  *  an agent can be quit in place at all.
  *   - codex (#842): one Ctrl-C clears the composer or, when it is empty, quits; two cover both.
  *   - claude (#928): one Ctrl-C clears the composer, the next arms "Press Ctrl-C again to exit" and
- *     the third exits; with an empty composer the second already exits. */
-const CTRL_C_QUITS: Record<string, number> = { codex: 2, claude: 3 }
+ *     the third exits; with an empty composer the second already exits.
+ *   - grok: same shape as claude — the first clears the whole composer ("Input cleared"), the next
+ *     arms "press again to quit" (a ~1.5 s window), the third exits. Measured on grok 1.0.40.
+ *   - opencode: one Ctrl-C clears the composer or, when it is empty, quits at once; two cover both.
+ *     Measured on 1.18.32.
+ *   - copilot: one Ctrl-C clears the composer AND arms "ctrl+c again to exit" (~2 s), the second
+ *     exits; two cover both. Measured on 1.0.88.
+ *  gemini is the one agent still on its typed exit: it was not measured (its composer is only
+ *  reachable after a login). */
+const CTRL_C_QUITS: Record<string, number> = {
+  codex: 2,
+  claude: 3,
+  grok: 3,
+  opencode: 2,
+  copilot: 2
+}
 const CTRL_C = '\x03'
 const CTRL_C_GAP_MS = 150
 
@@ -271,8 +285,8 @@ export async function performExitPhase(d: {
   // draft lost and a real turn started (tokens, possibly edits) — and the CLI, still running,
   // would then be reported as an exit timeout.
   //
-  // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI in
-  // EXIT_SEQUENCES (claude, codex, grok, gemini) — it is in every readline/ZLE prompt, and it is
+  // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI that still
+  // gets a typed exit (today only gemini) — it is in every readline/ZLE prompt, and it is
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than
@@ -280,23 +294,20 @@ export async function performExitPhase(d: {
   // a shell. A lone Escape (\x1b) into a live agent is the user-interrupt gesture (cancels turns/thinking),
   // whereas \x15 is the safe line-clear attempt. Keep \x15 here even on Windows; WINDOWS_KILL_LINE
   // (\x1b) is strictly for shell panes (command delivery retry and hibernation wake).
-  // codex and claude are quit with Ctrl-Cs instead of a typed exit (issues #842 and #928, measured
-  // on codex-cli 0.155.1 and Claude Code 2.1.282, macOS, isolated tmux socket). In both, Ctrl-U
-  // clears only the line the cursor is on, so once the CR of a typed exit arrives, the rest of a
-  // multi-line draft is submitted with it as a prompt (codex also ignores a CR in the same burst as
-  // the text). Ctrl-C clears the whole composer in both, and quits once it is empty, so a fixed
-  // number of them, apart, quits with or without a draft (CTRL_C_QUITS). Nothing is typed and no CR
+  // codex, claude, grok, opencode and copilot are quit with Ctrl-Cs instead of a typed exit (issues
+  // #842 and #928; versions in CTRL_C_QUITS; macOS, isolated tmux socket, CLI started from an
+  // interactive shell). In all five, Ctrl-U clears only the line the cursor is on, so once the CR
+  // of a typed exit arrives, the rest of a multi-line draft is submitted with it as a prompt (codex
+  // also ignores a CR in the same burst as the text). Ctrl-C clears the whole composer in all five,
+  // and quits once it is empty, so a fixed number of them, apart, quits with or without a draft
+  // (CTRL_C_QUITS). opencode used to get its typed `/exit` with the CR split off by 150 ms,
+  // because its batched-input handling swallows a one-burst `/exit\r`; the Ctrl-Cs send no CR, so
+  // that split has nothing left to do. Nothing is typed and no CR
   // is sent, so a draft is never submitted — but all of it is lost, where the line-clear lost only
   // the cursor's line. A Ctrl-C left over once the CLI has quit lands on the shell prompt, where it
   // does nothing.
   const ctrlCs = CTRL_C_QUITS[capabilityAgentId(d.agentId)] ?? 0
   if (!ctrlCs) d.io.write(KILL_LINE)
-  // opencode's TUI does not submit when text and CR arrive in the same input burst
-  // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
-  // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
-  // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
-  // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
-  // the minimal split so the other agents' blind-write contract stays unchanged.
   if (ctrlCs) {
     for (let i = 0; i < ctrlCs; i++) {
       if (i > 0) {
@@ -305,11 +316,6 @@ export async function performExitPhase(d: {
       }
       d.io.write(CTRL_C)
     }
-  } else if (d.agentId === 'opencode') {
-    d.io.write(exit)
-    await new Promise((r) => setTimeout(r, 150))
-    if (gone()) return 'not-eligible'
-    d.io.write('\r')
   } else {
     d.io.write(exit + '\r')
   }
