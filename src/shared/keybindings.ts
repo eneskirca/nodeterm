@@ -56,6 +56,7 @@ export type CommandId =
   | 'canvas.deleteSelection'
   | 'canvas.fitAll'
   | 'canvas.tidy'
+  | 'canvas.tidyLineage'
   | 'canvas.groupSelection'
   | 'node.newTerminal'
   | 'node.newAgent'
@@ -147,6 +148,10 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: 'canvas.tidy', title: 'Tidy canvas', group: 'Canvas', scope: 'canvas',
     // arrangeAllNodes self-guards (kanban open, <2 top-level nodes), same as the ⌘K/menu entries.
     defaultBindings: both('Cmd+Shift+A') },
+  { id: 'canvas.tidyLineage', title: 'Arrange by lineage', group: 'Canvas', scope: 'canvas',
+    // Ships unbound: it is the second tidy, and Cmd+Shift+A is already the first. Self-guards
+    // exactly like arrangeAllNodes (kanban open, <2 top-level nodes, no usable rope).
+    defaultBindings: both() },
   { id: 'canvas.groupSelection', title: 'Group selection', group: 'Canvas', scope: 'canvas',
     defaultBindings: both() },
 

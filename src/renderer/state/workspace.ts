@@ -1307,6 +1307,176 @@ export function arrangeNodes(
   return nodes.map((nd) => (pos.has(nd.id) ? { ...nd, position: pos.get(nd.id)! } : nd))
 }
 
+/** One lineage rope, as the canvas persists it (`project.ropes`): "opened by" / "--after". */
+export interface LineageEdge {
+  source: string
+  target: string
+}
+
+/**
+ * The top-level ancestor of every node, by id. A rope points at the NODE an agent opened, which is
+ * routinely a node inside a frame — and a frame moves as one rigid unit, so a layer layout has to
+ * ask which top-level object that rope really reaches. A parentId naming no live node, or a cycle
+ * (project.json is hand-editable), resolves to the last node still walkable rather than throwing.
+ */
+function topLevelAncestors(nodes: CanvasNode[]): Map<string, string> {
+  const byId = new Map(nodes.map((nd) => [nd.id, nd]))
+  const out = new Map<string, string>()
+  for (const nd of nodes) {
+    let cur = nd
+    const seen = new Set<string>([nd.id])
+    while (cur.parentId) {
+      const parent = byId.get(cur.parentId)
+      if (!parent || seen.has(parent.id)) break
+      seen.add(parent.id)
+      cur = parent
+    }
+    out.set(nd.id, cur.id)
+  }
+  return out
+}
+
+/**
+ * Splits the TOP-LEVEL nodes into lineage layers: layer 0 is every node nothing opened, layer k is
+ * a node whose deepest opener sits in layer k-1, and `loose` holds the nodes no rope touches at all.
+ *
+ * Three rules, each of which the naive version gets wrong:
+ *
+ * - **Ropes are LIFTED to the top-level ancestor.** The coordinator opens a team INSIDE a frame, so
+ *   the rope ends on a child; the frame is what gets placed. An edge whose two ends lift to the
+ *   same object is dropped — it is internal to that frame and would otherwise make it its own
+ *   opener.
+ * - **A node's layer is its LONGEST path from a root**, not its first: with `max` every rope points
+ *   strictly downward, which is the whole reason the layout reads as a flow. Taking the shortest
+ *   path would let a rope run backwards up the canvas.
+ * - **A cycle never hangs and never throws.** Ropes are "opened by" and `--after`, so a cycle is
+ *   not supposed to exist, but `--after` can be hand-built into one and project.json is editable.
+ *   The edge that closes a cycle contributes nothing (`0`), so the result stays deterministic for
+ *   a given edge order instead of recursing forever.
+ *
+ * `loose` is deliberately NOT layer 0: a node with no lineage is not a root of anything, and
+ * mixing the two would put every sticky note beside the coordinator.
+ */
+export function lineageLayers(
+  nodes: CanvasNode[],
+  edges: readonly LineageEdge[]
+): { layers: string[][]; loose: string[] } {
+  const tops = topLevelAncestors(nodes)
+  const topLevel = nodes.filter((nd) => !nd.parentId)
+  const live = new Set(topLevel.map((nd) => nd.id))
+
+  const preds = new Map<string, string[]>()
+  const touched = new Set<string>()
+  for (const e of edges) {
+    const from = tops.get(e.source)
+    const to = tops.get(e.target)
+    if (!from || !to || from === to || !live.has(from) || !live.has(to)) continue
+    const list = preds.get(to)
+    if (list) {
+      if (!list.includes(from)) list.push(from)
+    } else {
+      preds.set(to, [from])
+    }
+    touched.add(from)
+    touched.add(to)
+  }
+
+  const memo = new Map<string, number>()
+  const onStack = new Set<string>()
+  const levelOf = (id: string): number => {
+    const cached = memo.get(id)
+    if (cached !== undefined) return cached
+    if (onStack.has(id)) return 0
+    onStack.add(id)
+    let level = 0
+    for (const from of preds.get(id) ?? []) level = Math.max(level, levelOf(from) + 1)
+    onStack.delete(id)
+    memo.set(id, level)
+    return level
+  }
+
+  // Reading order of the canvas as it stands, used as the tie-break everywhere below so the
+  // result is stable and roughly preserves what the user already built.
+  const order = new Map<string, number>()
+  ;[...topLevel]
+    .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x || (a.id < b.id ? -1 : 1))
+    .forEach((nd, i) => order.set(nd.id, i))
+  const byReadingOrder = (a: string, b: string): number => (order.get(a) ?? 0) - (order.get(b) ?? 0)
+
+  const layers: string[][] = []
+  const loose: string[] = []
+  for (const nd of topLevel) {
+    if (!touched.has(nd.id)) {
+      loose.push(nd.id)
+      continue
+    }
+    const level = levelOf(nd.id)
+    while (layers.length <= level) layers.push([])
+    layers[level].push(nd.id)
+  }
+
+  // Inside a layer, siblings sit together: a node follows its earliest opener's slot in the layer
+  // above, so the ropes fan out instead of crossing. Layer 0 and `loose` have no opener to follow
+  // and keep the canvas's own reading order.
+  layers.forEach((layer, level) => {
+    if (level === 0) {
+      layer.sort(byReadingOrder)
+      return
+    }
+    const above = new Map(layers[level - 1].map((id, i) => [id, i]))
+    const slotOf = (id: string): number => {
+      let best = Number.MAX_SAFE_INTEGER
+      for (const from of preds.get(id) ?? []) {
+        const slot = above.get(from)
+        if (slot !== undefined && slot < best) best = slot
+      }
+      return best
+    }
+    layer.sort((a, b) => slotOf(a) - slotOf(b) || byReadingOrder(a, b))
+  })
+  loose.sort(byReadingOrder)
+  return { layers, loose }
+}
+
+/**
+ * Lays the top-level nodes out as lineage bands: one row per layer, growing downward, with the
+ * nodes no rope touches in a final band of their own. Returns the input unchanged when there is
+ * nothing to arrange (under two top-level nodes, or no usable rope) — an unchanged array is the
+ * caller's signal to skip the undo entry and the project.json write.
+ *
+ * Built ON `arrangeNodes` rather than beside it: each band is one `row` placement from a shared
+ * left origin, so the packing, the gap and the mixed-container refusal all stay in ONE place.
+ */
+export function arrangeByLineage(
+  nodes: CanvasNode[],
+  edges: readonly LineageEdge[],
+  opts?: { gap?: number; origin?: { x: number; y: number } }
+): CanvasNode[] {
+  const topLevel = nodes.filter((nd) => !nd.parentId)
+  if (topLevel.length < 2) return nodes
+  const { layers, loose } = lineageLayers(nodes, edges)
+  // No rope reached two different top-level objects: every node would land in the single `loose`
+  // band, which is a worse `Tidy canvas`, not a lineage view.
+  if (layers.length === 0) return nodes
+
+  const gap = opts?.gap ?? 40
+  const origin = opts?.origin ?? {
+    x: Math.min(...topLevel.map((nd) => nd.position.x)),
+    y: Math.min(...topLevel.map((nd) => nd.position.y))
+  }
+  const bands = loose.length > 0 ? [...layers, loose] : layers
+
+  let out = nodes
+  let y = origin.y
+  for (const band of bands) {
+    if (band.length === 0) continue
+    out = arrangeNodes(out, band, { layout: 'row', gap, origin: { x: origin.x, y } })
+    const tallest = Math.max(...band.map((id) => nodeH(out.find((nd) => nd.id === id)!)))
+    y += tallest + gap
+  }
+  return out
+}
+
 export type AlignEdge = 'left' | 'right' | 'top' | 'bottom' | 'hcenter' | 'vcenter'
 
 /**

@@ -4248,6 +4248,31 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   ids it knows — so Delete, restart-agent, branch/transfer, terminal Search and Close can never
   be hidden, whatever settings.json says. The group-frame menu's colors strip answers to the same
   `colors` id; builders run through `tidySeparators` so a hidden row leaves no dangling rule.
+- **Arrange by lineage** (`arrangeByLineage` / `lineageLayers` in `state/workspace.ts`; pane menu
+  beside Tidy canvas, ⌘K, and the registry command `canvas.tidyLineage`, which ships UNBOUND —
+  ⌘⇧A is already the first tidy) — the second tidy: one row per LAYER of the lineage ropes
+  (`project.ropes`, i.e. "opened by" and `--after`), growing downward, so a coordinator sits above
+  the team it opened and that team above what IT opened. Four rules, each of which the naive
+  version gets wrong: **(1)** a rope is LIFTED to its top-level ancestor before it counts — an
+  agent opens a team INSIDE a frame, and the frame is the rigid unit that moves; a rope whose two
+  ends lift to the SAME object is internal to that frame and dropped, or the frame would be its own
+  opener. **(2)** a node's layer is its LONGEST path from a root, never its first — with `max`
+  every rope points strictly downward, which is the whole reason the result reads as a flow; a
+  reducer that keeps the LAST opener happens to be right in one edge order and wrong in the other,
+  so the test asserts BOTH. **(3)** nodes no rope touches are NOT layer 0 — they are a final
+  `loose` band, because a node with no lineage is not a root of anything and mixing the two puts
+  every sticky note beside the coordinator. **(4)** a cycle never hangs and never throws (the edge
+  that closes it contributes `0`): a rope cycle is not supposed to exist, but `--after` can be
+  hand-built into one and `project.json` is editable. The refusal is the transform returning the
+  SAME array — no usable rope, or under two top-level nodes — which is also what keeps a no-op out
+  of the undo stack and out of `project.json`; **that verdict is taken from `nodesRef` BEFORE the
+  write, never from a flag set inside the `setNodes` updater**, which runs when the state is
+  processed and is therefore still false on the next line (it would cost every run its `markDirty`
+  + `fitAll`). The pane row is then DISABLED with its reason while the palette OMITS it (no
+  disabled state there). Built ON `arrangeNodes` — one `row` placement per band from a shared left
+  origin — so packing, gap and the mixed-container refusal stay in ONE place. Desktop + Server
+  Edition identical (pure renderer, no new IPC); kanban N/A (a board shows cards, and geometry is
+  exactly what a column layout discards); Mobile N/A (no canvas).
 - **Add menu** = bottom dock (`Dock.tsx`) `+`, mirrored by the pane menu and command palette.
   `lib/addMenuSpec` is the one source for WHICH kinds are addable, and since 2026-09 also for how
   the two `ContextMenu` surfaces GROUP them: `New terminal` · `New remote…` · the account-capable
