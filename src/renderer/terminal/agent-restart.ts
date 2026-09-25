@@ -43,6 +43,12 @@ const EXIT_SEQUENCES: Record<string, string> = {
   opencode: '/exit'
 }
 
+/** codex is quit with two Ctrl-Cs rather than a typed `/quit` — see `performExitPhase`. Its
+ *  `/quit` entry above still gates the restart and hibernation, which ask whether an agent can be
+ *  quit in place at all. */
+const CTRL_C = '\x03'
+const CODEX_CTRL_C_GAP_MS = 150
+
 export function exitSequence(agentId: string): string | null {
   // Resolve through the BASE harness so a custom agent that inherits claude (e.g. a proxy wrapper)
   // exits with claude's `/exit` — its own CLI grammar is claude's. A baseless custom agent has no
@@ -270,14 +276,28 @@ export async function performExitPhase(d: {
   // a shell. A lone Escape (\x1b) into a live agent is the user-interrupt gesture (cancels turns/thinking),
   // whereas \x15 is the safe line-clear attempt. Keep \x15 here even on Windows; WINDOWS_KILL_LINE
   // (\x1b) is strictly for shell panes (command delivery retry and hibernation wake).
-  d.io.write(KILL_LINE)
+  // codex is quit with Ctrl-C instead of its `/quit` (issue #842, codex-cli 0.155.1, macOS,
+  // isolated tmux socket). A typed exit fails there both ways: `/quit\r` in one burst is never
+  // submitted, and once the CR does arrive, Ctrl-U has cleared only one line of a multi-line draft,
+  // so the rest is submitted with the exit as a prompt. Ctrl-C clears the whole composer when it
+  // holds text and quits codex when it is empty, so two of them, apart, quit it with or without a
+  // draft. Nothing is typed and no CR is sent, so a draft is never submitted — but all of it is
+  // lost, where the line-clear lost only its last line. If the first one already quit codex, the
+  // second lands on the shell prompt, where it does nothing.
+  const quitWithCtrlC = capabilityAgentId(d.agentId) === 'codex'
+  if (!quitWithCtrlC) d.io.write(KILL_LINE)
   // opencode's TUI does not submit when text and CR arrive in the same input burst
   // (batched-input handling). Measured on 1.18.18-1.18.25, Linux, tmux, isolated socket:
   // one-burst `/exit\r` leaves `/exit` in the composer with popup armed and times out
   // at 6s; splitting CR by 100ms exits in ~500ms. The resume half already uses
   // echo-verified delivery (command-delivery.ts) for this shape; for exit we keep
   // the minimal split so the other agents' blind-write contract stays unchanged.
-  if (d.agentId === 'opencode') {
+  if (quitWithCtrlC) {
+    d.io.write(CTRL_C)
+    await new Promise((r) => setTimeout(r, CODEX_CTRL_C_GAP_MS))
+    if (gone()) return 'not-eligible'
+    d.io.write(CTRL_C)
+  } else if (d.agentId === 'opencode') {
     d.io.write(exit)
     await new Promise((r) => setTimeout(r, 150))
     if (gone()) return 'not-eligible'
