@@ -788,9 +788,12 @@ Lifecycle, by intent:
   agent-restart.ts` restarts the agent CLI *inside* the pane and leaves the PTY, the tmux session
   and its scrollback untouched. It exists for **new-model pickup** — a freshly released model only
   shows up in a CLI's model list on a fresh launch, and doing that by hand means closing and
-  re-resuming every agent node on the canvas. Choreography: write the CLI's own exit line (`/exit`
-  for claude, `/quit` for codex — that table is also the gate, an agent not in it can never be
-  restarted in place), poll `pty:pane-command` (`#{pane_current_command}`, local tmux socket or the
+  re-resuming every agent node on the canvas. Choreography: ask the CLI to quit — its own exit line
+  (`/quit` for grok and gemini, `/exit` for copilot and opencode), except for claude and codex,
+  which get a fixed number of Ctrl-Cs instead (`CTRL_C_QUITS`): in both, Ctrl-U clears only the
+  cursor's line, so a typed exit submitted the rest of a multi-line draft as a prompt, while Ctrl-C
+  clears the whole composer and quits once it is empty (#842, #928). `EXIT_SEQUENCES` is still the
+  gate — an agent not in it can never be restarted in place. Then poll `pty:pane-command` (`#{pane_current_command}`, local tmux socket or the
   project's SSH ControlMaster; any failure reads as "not a shell yet") every `RESTART_POLL_MS`
   (250 ms) until a SHELL owns the pane, then echo-deliver `resumeCommand(...)` — the same
   `claude --resume` / `codex resume` the cold restore uses. **Nothing is ever killed**: if the CLI
