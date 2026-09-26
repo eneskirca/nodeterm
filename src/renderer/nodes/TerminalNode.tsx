@@ -2973,6 +2973,7 @@ export function TerminalNode({
         createFileLinkProvider(term, {
           getCwd,
           lookup,
+          listDir: lookup.listDir,
           activate: openFile,
           convention: pathConvention
         })
@@ -2985,6 +2986,7 @@ export function TerminalNode({
         installLinkClickFallback(term, term.element, {
           getCwd,
           lookup,
+          listDir: lookup.listDir,
           activateFile: openFile,
           openUrl: (uri) => window.nodeTerminal.shell.openExternal(uri),
           fileEnabled: () => pathConvention() !== null,

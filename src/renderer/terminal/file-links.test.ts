@@ -7,6 +7,9 @@ import {
   matchUrlTokens,
   osc8UrlAt,
   paragraphContaining,
+  planFileLinkClick,
+  resolveExtendedFileLinkAt,
+  resolveFileLinks,
   resolveFileToken,
   type BufferView
 } from './file-links'
@@ -233,5 +236,440 @@ describe('osc8UrlAt', () => {
     expect(osc8UrlAt(fakeTerm(3, undefined), 0, 0)).toBeNull()
     const bare = { buffer: { active: { getLine: () => undefined } } } as unknown as Terminal
     expect(osc8UrlAt(bare, 0, 0)).toBeNull()
+  })
+})
+
+/** A fake filesystem: every listed path exists, with each ancestor as a directory. A path ending
+ *  in `/` is a directory itself. `listed` records every fs.list the lookups made. */
+function fakeFs(paths: string[]): {
+  list: (dir: string) => Promise<Array<{ name: string; dir: boolean }>>
+  listed: string[]
+} {
+  const dirs = new Map<string, Map<string, boolean>>()
+  for (const p of paths) {
+    const tilde = p.startsWith('~/')
+    const segs = (tilde ? p.slice(2) : p).split('/').filter(Boolean)
+    segs.forEach((name, i) => {
+      const parentSegs = segs.slice(0, i).join('/')
+      const parent = tilde ? (parentSegs ? `~/${parentSegs}` : '~') : `/${parentSegs}`
+      const isDir = i < segs.length - 1 || p.endsWith('/')
+      const entries = dirs.get(parent) ?? new Map<string, boolean>()
+      entries.set(name, (entries.get(name) ?? false) || isDir)
+      dirs.set(parent, entries)
+    })
+  }
+  const listed: string[] = []
+  return {
+    listed,
+    list: async (dir) => {
+      listed.push(dir)
+      return [...(dirs.get(dir) ?? new Map()).entries()].map(([name, dir]) => ({ name, dir }))
+    }
+  }
+}
+
+function fsDeps(paths: string[], cwd = '/repo') {
+  const fs = fakeFs(paths)
+  const lookup = makeDirListingLookup(fs.list)
+  return { fs, deps: { getCwd: () => cwd, lookup, listDir: lookup.listDir } }
+}
+
+describe('existence-guided extension (spaces + agent-wrapped paths)', () => {
+  const CODEX_PATH =
+    '/Users/someuser/Claude/Claude Code/example-project-name-demo.worktrees/feature-x/docs/gui-proposal/TEAM-ACCESS.md'
+  // Measured in a Codex session (codex-cli 0.155.1, 110 cols): Codex wrapped the reply itself at a
+  // word boundary with a 2-space hanging indent, so row 0 does NOT reach the last column.
+  const CODEX_ROWS = [
+    '• The file is located at /Users/someuser/Claude/Claude Code/example-project-name-demo.worktrees/feature-x/',
+    '  docs/gui-proposal/TEAM-ACCESS.md'
+  ]
+
+  it('links the Codex two-row example to the full path, spanning both rows, from either row', async () => {
+    const { deps } = fsDeps([CODEX_PATH])
+    for (const row of [0, 1]) {
+      const links = (await resolveFileLinks(view(110, CODEX_ROWS), row, deps)).filter(
+        (l) => l.abs === CODEX_PATH
+      )
+      expect(links).toHaveLength(1)
+      expect(links[0].dir).toBe(false)
+      expect(links[0].range).toEqual({ start: { x: 26, y: 1 }, end: { x: 34, y: 2 } })
+    }
+  })
+
+  it('activates the extended link from a click on either row (the tmux click fallback)', async () => {
+    const { deps } = fsDeps([CODEX_PATH])
+    const v = view(110, CODEX_ROWS)
+    await expect(resolveExtendedFileLinkAt(v, 1, 10, deps)).resolves.toEqual({
+      abs: CODEX_PATH,
+      dir: false
+    })
+    await expect(resolveExtendedFileLinkAt(v, 0, 60, deps)).resolves.toEqual({
+      abs: CODEX_PATH,
+      dir: false
+    })
+    // Before the path: nothing.
+    await expect(resolveExtendedFileLinkAt(v, 0, 5, deps)).resolves.toBeNull()
+  })
+
+  it('links a path with a space on one row when the listing has the spaced name', async () => {
+    const { deps } = fsDeps(['/data/My Docs/report.txt'])
+    const links = await resolveFileLinks(view(80, ['open /data/My Docs/report.txt now']), 0, deps)
+    expect(links.map((l) => [l.text, l.abs])).toEqual([
+      ['/data/My Docs/report.txt', '/data/My Docs/report.txt']
+    ])
+    expect(links[0].range).toEqual({ start: { x: 6, y: 1 }, end: { x: 29, y: 1 } })
+  })
+
+  it('keeps a :line suffix after a spaced name and drops trailing punctuation', async () => {
+    const { deps } = fsDeps(['/data/My Docs/a.ts'])
+    const [l] = await resolveFileLinks(view(80, ['at /data/My Docs/a.ts:12, then']), 0, deps)
+    expect(l.text).toBe('/data/My Docs/a.ts:12')
+    expect(l.abs).toBe('/data/My Docs/a.ts')
+  })
+
+  it('follows a name the TUI broke AT its space onto the indented row', async () => {
+    const { deps } = fsDeps(['/data/My Docs/r.txt'])
+    const links = await resolveFileLinks(view(40, ['see /data/My', '  Docs/r.txt']), 1, deps)
+    expect(links.map((l) => [l.abs, l.range])).toEqual([
+      ['/data/My Docs/r.txt', { start: { x: 5, y: 1 }, end: { x: 12, y: 2 } }]
+    ])
+  })
+
+  it('ends a spaced path at a closing backtick, but not inside a longer word', async () => {
+    const { deps } = fsDeps(['/data/My Docs/a.md'])
+    const [l] = await resolveFileLinks(view(80, ['see `/data/My Docs/a.md` here']), 0, deps)
+    expect(l.text).toBe('/data/My Docs/a.md')
+    await expect(resolveFileLinks(view(80, ['/data/My Docs/a.mdx']), 0, deps)).resolves.toEqual([])
+  })
+
+  it('does not swallow the sentence after an existing path', async () => {
+    const { deps } = fsDeps(['/tmp/a'])
+    const one = await resolveFileLinks(view(80, ['see /tmp/a for details']), 0, deps)
+    expect(one.map((l) => l.text)).toEqual(['/tmp/a'])
+    const two = await resolveFileLinks(view(80, ['/tmp/a b']), 0, deps)
+    expect(two.map((l) => l.text)).toEqual(['/tmp/a'])
+  })
+
+  it('lets an existing prefix yield to a longer entry the text spells', async () => {
+    const { deps } = fsDeps(['/tmp/a', '/tmp/a b.txt'])
+    const links = await resolveFileLinks(view(80, ['/tmp/a b.txt']), 0, deps)
+    expect(links.map((l) => [l.text, l.abs])).toEqual([['/tmp/a b.txt', '/tmp/a b.txt']])
+  })
+
+  it('keeps an existing token byte-identical when no longer entry is spelled', async () => {
+    const { deps, fs } = fsDeps(['/tmp/a', '/tmp/a c.txt'])
+    const withExt = await resolveFileLinks(view(80, ['see /tmp/a b.txt']), 0, deps)
+    const without = await resolveFileLinks(view(80, ['see /tmp/a b.txt']), 0, {
+      getCwd: deps.getCwd,
+      lookup: deps.lookup
+    })
+    expect(withExt).toEqual(without)
+    expect(withExt.map((l) => l.text)).toEqual(['/tmp/a'])
+    // Not followed by a space or seam: no extension, only the existence check's listing.
+    fs.listed.length = 0
+    const other = fsDeps(['/tmp/a'])
+    await resolveFileLinks(view(80, ['see /tmp/a, ok']), 0, other.deps)
+    expect(other.fs.listed).toEqual(['/tmp'])
+  })
+
+  it('offers no link when nothing exists', async () => {
+    const { deps, fs } = fsDeps([])
+    await expect(
+      resolveFileLinks(view(80, ['open /nope/My Docs/x.txt now']), 0, deps)
+    ).resolves.toEqual([])
+    // Only the existence checks' own parent listings — the extension found nothing to follow.
+    expect(fs.listed).toEqual(['/nope', '/repo/Docs'])
+  })
+
+  it('offers no link when a later segment cannot be resolved', async () => {
+    const { deps } = fsDeps(['/data/My Docs/real.txt'])
+    await expect(resolveFileLinks(view(80, ['/data/My Docs/ghost.txt']), 0, deps)).resolves.toEqual(
+      []
+    )
+  })
+
+  it('respects the space bound', async () => {
+    const four = '/d/a b c d e/x.txt'
+    const five = '/d/a b c d e f/x.txt'
+    const ok = fsDeps([four])
+    expect((await resolveFileLinks(view(80, [four]), 0, ok.deps)).map((l) => l.abs)).toEqual([four])
+    const over = fsDeps([five])
+    expect(await resolveFileLinks(view(80, [five]), 0, over.deps)).toEqual([])
+  })
+
+  it('respects the row bound on indented continuation rows', async () => {
+    const name = (n: number): string => 'p' + 'q'.repeat(n)
+    const rows = (n: number): string[] => ['see /d/p', ...Array.from({ length: n }, () => '  q')]
+    const short = fsDeps([`/d/${name(4)}`])
+    expect((await resolveFileLinks(view(20, rows(4)), 0, short.deps)).map((l) => l.abs)).toEqual([
+      `/d/${name(4)}`
+    ])
+    const long = fsDeps([`/d/${name(40)}`])
+    expect(await resolveFileLinks(view(20, rows(40)), 0, long.deps)).toEqual([])
+  })
+
+  it('only continues onto a row that starts with indentation', async () => {
+    const { deps } = fsDeps(['/d/pq'])
+    expect(await resolveFileLinks(view(20, ['see /d/p', 'q']), 0, deps)).toEqual([])
+  })
+
+  it('supports ~ paths through the same listing', async () => {
+    const { deps } = fsDeps(['~/My Docs/a.md'])
+    const [l] = await resolveFileLinks(view(80, ['plan: ~/My Docs/a.md']), 0, deps)
+    expect(l.abs).toBe('~/My Docs/a.md')
+  })
+
+  it('leaves the Windows dialect alone', async () => {
+    const { deps } = fsDeps(['/data/My Docs/report.txt'])
+    await expect(
+      resolveFileLinks(view(80, ['/data/My Docs/report.txt']), 0, {
+        ...deps,
+        convention: { windows: true }
+      })
+    ).resolves.toEqual([])
+  })
+
+  it('is a no-op without a listDir (existing links unchanged)', async () => {
+    const { deps } = fsDeps(['/data/My', '/data/My Docs/report.txt'])
+    const links = await resolveFileLinks(view(80, ['/data/My Docs/report.txt']), 0, {
+      getCwd: deps.getCwd,
+      lookup: deps.lookup
+    })
+    expect(links.map((l) => l.text)).toEqual(['/data/My'])
+  })
+
+  it('listDir shares the lookup cache', async () => {
+    const fs = fakeFs(['/repo/x'])
+    const lookup = makeDirListingLookup(fs.list)
+    await lookup('/repo/x')
+    await lookup.listDir('/repo')
+    expect(fs.listed).toEqual(['/repo'])
+  })
+})
+
+describe('review fixes: click fallback, seams before a slash, listing cache', () => {
+  const clickAt = async (
+    rows: string[],
+    row: number,
+    col: number,
+    paths: string[]
+  ): Promise<{ abs: string; dir: boolean } | null | 'not-swallowed'> => {
+    const { deps } = fsDeps(paths)
+    const click = planFileLinkClick(view(80, rows), row, col, deps)
+    return click ? click() : 'not-swallowed'
+  }
+
+  it('click fallback prefers the extended path over an existing relative fragment', async () => {
+    const rows = ['open /data/My Docs/a.ts']
+    const paths = ['/data/My Docs/a.ts', '/repo/Docs/a.ts']
+    // col 17 is inside the relative token `Docs/a.ts`, which exists under cwd /repo.
+    await expect(clickAt(rows, 0, 17, paths)).resolves.toEqual({
+      abs: '/data/My Docs/a.ts',
+      dir: false
+    })
+    const { deps } = fsDeps(paths)
+    const links = await resolveFileLinks(view(80, rows), 0, deps)
+    expect(links.map((l) => l.abs)).toEqual(['/data/My Docs/a.ts'])
+  })
+
+  it('click fallback still opens a plain token when no extension covers it', async () => {
+    await expect(clickAt(['see /tmp/a now'], 0, 6, ['/tmp/a'])).resolves.toEqual({
+      abs: '/tmp/a',
+      dir: false
+    })
+  })
+
+  it('a seam before a slash continues the path instead of ending it', async () => {
+    const { deps } = fsDeps(['/data/My Docs/a.ts'])
+    const links = await resolveFileLinks(view(40, ['see /data/My Docs', '  /a.ts']), 0, deps)
+    expect(links.map((l) => [l.abs, l.range])).toEqual([
+      ['/data/My Docs/a.ts', { start: { x: 5, y: 1 }, end: { x: 7, y: 2 } }]
+    ])
+  })
+
+  it('click on the space or a slash-less last segment opens the extended path', async () => {
+    const rows = ['open /x/My Report.txt now']
+    const paths = ['/x/My Report.txt']
+    await expect(clickAt(rows, 0, 10, paths)).resolves.toEqual({
+      abs: '/x/My Report.txt',
+      dir: false
+    }) // the space
+    await expect(clickAt(rows, 0, 15, paths)).resolves.toEqual({
+      abs: '/x/My Report.txt',
+      dir: false
+    }) // inside `Report.txt`
+  })
+
+  it('Cmd-click on an ordinary word outside any link reach does nothing', async () => {
+    await expect(clickAt(['hello world'], 0, 2, [])).resolves.toBe('not-swallowed')
+    // Six words after the path: past the space bound, never swallowed.
+    await expect(clickAt(['see /x/My a b c d e word'], 0, 22, ['/x/My Report.txt'])).resolves.toBe(
+      'not-swallowed'
+    )
+  })
+
+  it('does not cache a failed listing', async () => {
+    let calls = 0
+    const lookup = makeDirListingLookup(async () => {
+      calls++
+      if (calls === 1) throw new Error('EAGAIN')
+      return [{ name: 'a', dir: false }]
+    })
+    await expect(lookup('/d/a')).resolves.toEqual({ exists: false, dir: false })
+    await expect(lookup('/d/a')).resolves.toEqual({ exists: true, dir: false })
+  })
+
+  it('an older in-flight listing does not overwrite a newer one', async () => {
+    const resolvers: Array<(v: Array<{ name: string; dir: boolean }>) => void> = []
+    let calls = 0
+    const lookup = makeDirListingLookup(
+      (): Promise<Array<{ name: string; dir: boolean }>> =>
+        new Promise((r) => {
+          calls++
+          resolvers.push(r)
+        })
+    )
+    const older = lookup.listDir('/d')
+    const newer = lookup.listDir('/d')
+    resolvers[1]([{ name: 'new', dir: false }])
+    await newer
+    resolvers[0]([{ name: 'old', dir: false }])
+    await older
+    await expect(lookup('/d/new')).resolves.toEqual({ exists: true, dir: false })
+    expect(calls).toBe(2)
+  })
+
+  it('listDir returns a copy of the cached listing', async () => {
+    const lookup = makeDirListingLookup(async () => [{ name: 'a', dir: false }])
+    const first = await lookup.listDir('/d')
+    first.length = 0
+    await expect(lookup.listDir('/d')).resolves.toEqual([{ name: 'a', dir: false }])
+  })
+})
+
+describe('review fixes: symlinked directories and dot segments', () => {
+  /** Listings given verbatim, so an entry can be a directory symlink (reported `dir: false`). */
+  function rawDeps(listings: Record<string, Array<{ name: string; dir: boolean }>>) {
+    const lookup = makeDirListingLookup(async (dir) => listings[dir] ?? [])
+    return { getCwd: () => '/repo', lookup, listDir: lookup.listDir }
+  }
+
+  it('follows a directory symlink that the listing reports as a file', async () => {
+    const deps = rawDeps({
+      '/lnk': [{ name: 'My Docs', dir: false }],
+      '/lnk/My Docs': [{ name: 'a.txt', dir: false }]
+    })
+    const links = await resolveFileLinks(view(80, ['cat /lnk/My Docs/a.txt']), 0, deps)
+    expect(links.map((l) => l.abs)).toEqual(['/lnk/My Docs/a.txt'])
+  })
+
+  it('follows a symlinked directory across an indented wrap (/etc then /hosts)', async () => {
+    const deps = rawDeps({
+      '/': [{ name: 'etc', dir: false }],
+      '/etc': [{ name: 'hosts', dir: false }]
+    })
+    const links = await resolveFileLinks(view(40, ['see /etc', '  /hosts']), 1, deps)
+    expect(links.map((l) => l.abs)).toEqual(['/etc/hosts'])
+  })
+
+  it('rejects a non-directory followed by / when its listing is empty', async () => {
+    const deps = rawDeps({ '/lnk': [{ name: 'My Docs', dir: false }] })
+    await expect(resolveFileLinks(view(80, ['cat /lnk/My Docs/a.txt']), 0, deps)).resolves.toEqual(
+      []
+    )
+    // `…/My Docs/` then a space would otherwise link the FILE as a directory.
+    await expect(resolveFileLinks(view(80, ['cat /lnk/My Docs/ now']), 0, deps)).resolves.toEqual(
+      []
+    )
+  })
+
+  it('handles . and .. segments after the extension starts, normalized', async () => {
+    const { deps } = fsDeps(['/data/My Docs/report.txt', '/data/x/a.ts'])
+    const dot = await resolveFileLinks(view(80, ['/data/My Docs/./report.txt']), 0, deps)
+    expect(dot.map((l) => [l.text, l.abs])).toEqual([
+      ['/data/My Docs/./report.txt', '/data/My Docs/report.txt']
+    ])
+    const up = await resolveFileLinks(view(80, ['/data/My Docs/../x/a.ts']), 0, deps)
+    expect(up.filter((l) => l.text.startsWith('/data')).map((l) => [l.text, l.abs])).toEqual([
+      ['/data/My Docs/../x/a.ts', '/data/x/a.ts']
+    ])
+  })
+
+  it('never walks .. above / or above ~', async () => {
+    const { deps } = fsDeps(['/My Docs/', '/etc/', '~/My Docs/'])
+    const root = await resolveFileLinks(view(80, ['/My Docs/../../etc']), 0, deps)
+    expect(root.filter((l) => l.text.startsWith('/My'))).toEqual([])
+    const home = await resolveFileLinks(view(80, ['~/My Docs/../../etc']), 0, deps)
+    expect(home.filter((l) => l.text.startsWith('~'))).toEqual([])
+  })
+})
+
+describe('review fixes: unicode names, seam ties, join budget', () => {
+  it('treats a Unicode letter after a name as part of the word (no false link)', async () => {
+    const { deps } = fsDeps(['/data/My Docs'])
+    await expect(resolveFileLinks(view(80, ['open /data/My Docsé now']), 0, deps)).resolves.toEqual(
+      []
+    )
+    const combining = await resolveFileLinks(view(80, ['open /data/My Docsé now']), 0, deps)
+    expect(combining).toEqual([])
+    // Punctuation after the name still ends it.
+    const [l] = await resolveFileLinks(view(80, ['open "/data/My Docs".']), 0, deps)
+    expect(l.abs).toBe('/data/My Docs')
+  })
+
+  it('breaks an equal-span seam tie in favour of the longer name (the spaced one)', async () => {
+    // `MyDocs` is listed first, so a first-entry-wins rule would pick it.
+    const { deps } = fsDeps(['/data/MyDocs/report.txt', '/data/My Docs/report.txt'])
+    for (const row of [0, 1]) {
+      const links = await resolveFileLinks(
+        view(40, ['see /data/My', '  Docs/report.txt']),
+        row,
+        deps
+      )
+      expect(links.map((l) => l.abs)).toEqual(['/data/My Docs/report.txt'])
+    }
+  })
+
+  it('gives the same link from either row after a long run of indented prose', async () => {
+    const rows = [
+      ...Array.from({ length: 31 }, (_, i) => `  prose line ${i} ends here`),
+      '  see /data/My Docs/',
+      '  report.txt'
+    ]
+    const { deps } = fsDeps(['/data/My Docs/report.txt'])
+    for (const row of [31, 32]) {
+      const links = await resolveFileLinks(view(40, rows), row, deps)
+      expect(links.map((l) => l.abs)).toEqual(['/data/My Docs/report.txt'])
+    }
+  })
+})
+
+describe('review fixes: dot segments after a wrap, window from the token row', () => {
+  it('handles ./ and ../ on the indented continuation row, from both rows', async () => {
+    const { deps } = fsDeps(['/data/My Docs/report.txt', '/data/x/a.ts'])
+    const cases: Array<[string[], string]> = [
+      [['see /data/My Docs/', '  ./report.txt'], '/data/My Docs/report.txt'],
+      [['see /data/My Docs/', '  ../x/a.ts'], '/data/x/a.ts']
+    ]
+    for (const [rows, abs] of cases) {
+      for (const row of [0, 1]) {
+        const links = await resolveFileLinks(view(40, rows), row, deps)
+        expect(links.filter((l) => l.text.startsWith('/data')).map((l) => l.abs)).toEqual([abs])
+      }
+    }
+  })
+
+  it('counts the row budget from the token row, not a long soft-wrapped paragraph start', async () => {
+    const rows = [
+      'prose text here',
+      ...Array.from({ length: 30 }, () => 'w:more prose text'),
+      'w:see /data/My Docs/',
+      '  report.txt'
+    ]
+    const { deps } = fsDeps(['/data/My Docs/report.txt'])
+    for (const row of [31, 32]) {
+      const links = await resolveFileLinks(view(40, rows), row, deps)
+      expect(links.map((l) => l.abs)).toEqual(['/data/My Docs/report.txt'])
+    }
   })
 })

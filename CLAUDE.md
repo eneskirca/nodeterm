@@ -1362,7 +1362,26 @@ session.
   all terminals — harmless in a plain shell). **Cmd (mac) / Ctrl+click** opens links in the
   output: URLs → default browser (`@xterm/addon-web-links`), file paths → editor node and
   directories → Explorer reveal (`terminal/file-links.ts`, existence-verified against the project
-  fs via cached parent-dir listings, with `path:line[:col]` compiler-output suffixes). The path
+  fs via cached parent-dir listings, with `path:line[:col]` compiler-output suffixes).
+  **A path with a space, or one an agent's TUI wrapped itself** (word-boundary break, hanging
+  indent, row short of the last column — measured on codex-cli 0.155.1), links only through an
+  **existence-guided extension**: a POSIX token followed by a space or by such a wrap may run on
+  across the space, or onto an indented continuation row, only where its parent directory's
+  listing (the same cached listing) has an entry the text spells, segment by segment, longest
+  entry first — on an equal endpoint the longer name, so a wrap reads as the space it replaced;
+  a Unicode letter/digit/mark right after a name means no match (`planFileLinkExtension`,
+  `terminal/file-link-extension.ts`). TOKEN_RE and the
+  hard-wrap join are deliberately NOT widened — that swallowed sentences. An existing token yields
+  only to a LONGER entry the text spells (`/tmp/a` → `/tmp/a b.txt`), so `/tmp/a for details`
+  still links `/tmp/a`; bounded at 4 spaces and `MAX_JOIN_ROWS` rows counted from each token's
+  own row; Windows tokens and URLs are
+  out of scope. An extended link replaces a plain link it covers on hover AND in the tmux click
+  fallback (`planFileLinkClick`), which also opens it from a cell outside every token. Directory
+  symlinks (reported `dir: false`) are followed when the text continues with `/` and their
+  listing is non-empty; `.`/`..` are normalized within `/` and `~`; a path through `.git` gets no
+  extended link (`fs.list` hides `.git`, and no unfiltered listing is added for this). The listing
+  cache never caches a failed `list()` and an older in-flight listing never overwrites a newer
+  one. The path
   dialect follows the FILESYSTEM-OWNING CORE, not the viewer: desktop-local may use its own
   platform, Server Edition and relay tabs use the core's reported `process.platform`, and SSH
   projects are POSIX. A failed host-platform read disables file links for that connection — it
