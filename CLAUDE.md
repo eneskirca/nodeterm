@@ -4590,6 +4590,15 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   the bug). With no pinned panels or overlapping persistent controls, `insets` is zero.
   A pane narrower than the panels over it falls back to the whole pane rather than solving against
   a negative width. `measureMaximizeInsets` reads the DOM only when framing a maximized node.
+  **A second, narrower exception: a PINNED side panel (issue #854).** An ordinary node is still
+  centred in the pane, but if that lands part of it under a pinned sessions sidebar or explorer
+  (`measurePinnedInsets` — pinned only, never the hover overlay), `clearOfPinnedPanels` moves it
+  the least distance that uncovers it (plus a 12px gap when there is room). A node too wide for
+  the free area stays centred at a caller's zoom (a shift only swaps which edge is covered) and is
+  fitted into the free area when the zoom is ours. This is not the rejected nudge of 5e8abfe7:
+  that cleared the sidebar as an OVERLAY, which is open whenever the click comes from it, so every
+  jump moved; pinning is the user's statement that the panel stays. The reporter measured 36–47px
+  of a large node under a pinned 321px sidebar on every jump.
   `settings.focusZoomToNode` (Behavior, default ON) is the escape hatch for the rescale: off, the
   camera keeps the zoom `getZoom()` reports and only pans, and that zoom is passed through
   **unclamped** — it is one the canvas is already displaying, and re-clamping it to the framing

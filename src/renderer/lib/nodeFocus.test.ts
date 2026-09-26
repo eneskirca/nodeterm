@@ -9,6 +9,8 @@ import {
   viewportForRect
 } from './nodeFocus'
 import type { FocusableNode } from './nodeFocus'
+import { clearOfPinnedPanels } from './nodeFocus'
+import { NO_INSETS } from './pinnedInsets'
 import { NODE_MAXIMIZE_MARGIN_PX } from './nodeMaximize'
 
 const term = (over: Partial<FocusableNode> = {}): FocusableNode => ({
@@ -269,5 +271,72 @@ describe('isMaximized', () => {
     expect(isMaximized({})).toBe(false)
     expect(isMaximized(null)).toBe(false)
     expect(isMaximized(undefined)).toBe(false)
+  })
+})
+
+describe('clearOfPinnedPanels — a focused node lands clear of a PINNED panel (issue #854)', () => {
+  const W = 1470
+  const H = 862
+  const pinnedLeft = { left: 321, right: 0 }
+  // Screen x of the node's left and right edge under a viewport.
+  const edges = (v: { x: number; zoom: number }, r: { x: number; width: number }) => [
+    v.x + r.x * v.zoom,
+    v.x + (r.x + r.width) * v.zoom
+  ]
+  const centred = (r: { x: number; y: number; width: number; height: number }, zoom: number) => ({
+    x: W / 2 - (r.x + r.width / 2) * zoom,
+    y: H / 2 - (r.y + r.height / 2) * zoom,
+    zoom
+  })
+
+  it('leaves the pane-centred viewport alone when nothing is pinned', () => {
+    const r = { x: 0, y: 0, width: 900, height: 500 }
+    const v = centred(r, 1)
+    expect(clearOfPinnedPanels(v, r, W, H, NO_INSETS)).toBe(v)
+  })
+
+  it('leaves it alone when the centred node already clears the pinned panel', () => {
+    const r = { x: 0, y: 0, width: 600, height: 400 } // left edge at 435 > 321
+    const v = centred(r, 1)
+    expect(clearOfPinnedPanels(v, r, W, H, pinnedLeft)).toBe(v)
+  })
+
+  it('nudges a node that fits the free area just clear of the panel (the reported case)', () => {
+    // 900px wide centred in 1470 → left edge at 285, 36px under a panel ending at 321.
+    const r = { x: 0, y: 0, width: 900, height: 500 }
+    const v = centred(r, 1)
+    const out = clearOfPinnedPanels(v, r, W, H, pinnedLeft)
+    const [left, right] = edges(out, r)
+    expect(left).toBeGreaterThanOrEqual(321)
+    expect(left - 321).toBeLessThanOrEqual(12) // just clear, not re-centred in the free area
+    expect(right).toBeLessThanOrEqual(W)
+    expect(out.zoom).toBe(1)
+    expect(out.y).toBe(v.y) // vertical placement untouched
+  })
+
+  it('works the same for a panel pinned on the right (the explorer)', () => {
+    const r = { x: 0, y: 0, width: 900, height: 500 }
+    const v = centred(r, 1)
+    const out = clearOfPinnedPanels(v, r, W, H, { left: 0, right: 321 })
+    const [, right] = edges(out, r)
+    expect(right).toBeLessThanOrEqual(W - 321)
+    expect(W - 321 - right).toBeLessThanOrEqual(12)
+  })
+
+  it('keeps the user zoom and stays centred when the node is wider than the free area at that zoom', () => {
+    // A shift would only swap which edge is covered (the rule from 5e8abfe7).
+    const r = { x: 0, y: 0, width: 1300, height: 500 }
+    const v = centred(r, 1)
+    expect(clearOfPinnedPanels(v, r, W, H, pinnedLeft, 1)).toBe(v)
+  })
+
+  it('fits a too-wide node into the free area when the zoom is its own to choose', () => {
+    const r = { x: 0, y: 0, width: 1300, height: 500 }
+    const v = centred(r, 1)
+    const out = clearOfPinnedPanels(v, r, W, H, pinnedLeft)
+    const [left, right] = edges(out, r)
+    expect(left).toBeGreaterThanOrEqual(321)
+    expect(right).toBeLessThanOrEqual(W)
+    expect(out.zoom).toBeLessThan(1)
   })
 })
