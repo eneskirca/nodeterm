@@ -18,7 +18,9 @@ type Status =
   | { kind: 'noChannel' }
   | { kind: 'downloaded'; version: string }
   | { kind: 'upToDate' }
-  | { kind: 'required'; minSupported: string | null }
+  // `manual`: the update this build can reach must be downloaded by hand (a .deb/.rpm install, or
+  // automatic install switched off, issue #898) — the card stays required and links the download.
+  | { kind: 'required'; minSupported: string | null; manual?: boolean }
   | { kind: 'error'; message: string }
 
 const RELEASES_URL = 'https://nodeterm.dev/releases'
@@ -30,9 +32,12 @@ export function UpdateCard(): JSX.Element | null {
 
   useEffect(() => {
     const offAvailable = window.nodeTerminal.updates.onAvailable((info) => {
-      setStatus(
+      setStatus((s) =>
         info.manual
-          ? { kind: 'manual', version: info.version }
+          ? // A mandatory update must not turn into the optional, dismissible Download card.
+            s.kind === 'required'
+            ? { ...s, manual: true }
+            : { kind: 'manual', version: info.version }
           : { kind: 'available', version: info.version, percent: 0 }
       )
       setMinimized(false)
@@ -245,9 +250,15 @@ export function UpdateCard(): JSX.Element | null {
             {status.minSupported ? ` (minimum ${status.minSupported})` : ''}. Please update to
             continue.
           </p>
-          <button className="update-card__btn" onClick={() => window.nodeTerminal.updates.check()}>
-            Update now
-          </button>
+          {status.manual ? (
+            <button className="update-card__btn" onClick={openReleases}>
+              Download
+            </button>
+          ) : (
+            <button className="update-card__btn" onClick={() => window.nodeTerminal.updates.check()}>
+              Update now
+            </button>
+          )}
         </>
       )}
 

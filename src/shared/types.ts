@@ -1846,6 +1846,10 @@ export interface Settings {
    *  The auto-update "Restart to update" flow never asks — that decision was already made.
    *  Settings → Behavior. */
   confirmBeforeQuit: boolean
+  /** Download updates by themselves and install them on quit (issue #898). Off: the app still
+   *  checks, and shows the update card with a Download link instead. Only a literal `false`
+   *  switches it off (`installsItself`). Settings → Updates; desktop only. */
+  autoInstallUpdates: boolean
   /** macOS Notch HUD (docs/notch-hud.md): a transparent always-on-top strip by the notch showing
    *  walking agent mascots while agents work, expanding into a mini session panel. Default on;
    *  macOS + desktop only (ignored on other platforms / Server Edition). */
@@ -2035,6 +2039,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Confirm-before-quit default ON: sessions survive a quit anyway, but an accidental ⌘Q
   // tears down every window at once; the toggle is one switch away for who finds it noisy.
   confirmBeforeQuit: true,
+  // Auto-install default ON: what every build did before the option existed.
+  autoInstallUpdates: true,
   // macOS Notch HUD default ON (guarded to darwin at runtime; a no-op elsewhere).
   notchHud: true,
   notchWidth: 168,

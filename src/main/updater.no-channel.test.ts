@@ -61,7 +61,7 @@ vi.mock('./main-window', () => ({
 }))
 vi.mock('./notifications', () => ({ retainUntilDismissed: () => {} }))
 
-import { initUpdater } from './updater'
+import { initUpdater, setAutoInstallUpdates } from './updater'
 
 const realReadFileSync = fs.readFileSync
 
@@ -206,5 +206,63 @@ describe('the paths that must not move', () => {
     packageWith(null)
     initUpdater()
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Settings → "Download and install updates automatically" off (issue #898)', () => {
+  it('macOS release with the setting off: checks, but neither downloads nor installs', () => {
+    setPlatform('darwin')
+    packageWith(undefined)
+    initUpdater(undefined, { autoInstallUpdates: false })
+    expect(autoUpdater.autoDownload).toBe(false)
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false)
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1) // it still looks
+    updaterEvents['update-available']?.({ version: '9.9.9' })
+    expect(sent.at(-1)).toEqual({
+      channel: IPC.appUpdateAvailable,
+      payload: { version: '9.9.9', notes: '', manual: true } // the Download card
+    })
+  })
+
+  it('switching it off at runtime stops the download of the next update', () => {
+    setPlatform('darwin')
+    packageWith(undefined)
+    initUpdater(undefined, { autoInstallUpdates: true })
+    setAutoInstallUpdates(false)
+    expect(autoUpdater.autoDownload).toBe(false)
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false)
+    updaterEvents['update-available']?.({ version: '9.9.9' })
+    expect(sent.at(-1)?.payload).toEqual({ version: '9.9.9', notes: '', manual: true })
+  })
+
+  it('switching it back on resumes self-install and checks again, so a found update downloads', () => {
+    setPlatform('darwin')
+    packageWith(undefined)
+    initUpdater(undefined, { autoInstallUpdates: false })
+    autoUpdater.checkForUpdates.mockClear()
+    setAutoInstallUpdates(true)
+    expect(autoUpdater.autoDownload).toBe(true)
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(true)
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    setAutoInstallUpdates(true) // no change → no extra check
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  it('cannot make a Linux .deb self-install', () => {
+    setPlatform('linux')
+    packageWith(undefined)
+    initUpdater(undefined, { autoInstallUpdates: false })
+    setAutoInstallUpdates(true)
+    expect(autoUpdater.autoDownload).toBe(false)
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false)
+  })
+
+  it('does nothing on a build without a channel', () => {
+    setPlatform('win32')
+    packageWith('disabled')
+    initUpdater(undefined, { autoInstallUpdates: true })
+    setAutoInstallUpdates(false)
+    setAutoInstallUpdates(true)
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled()
   })
 })

@@ -11,11 +11,20 @@ import path from 'path'
 // electron-vite v5's CJS interop.
 import { autoUpdater } from 'electron-updater'
 import { IPC } from '../shared/ipc'
-import { toUpdateAvailablePayload, updateDelivery } from '../shared/update-platform'
+import { installsItself, toUpdateAvailablePayload, updateDelivery } from '../shared/update-platform'
 import { getMainWindow, sendToMain } from './main-window'
 import { retainUntilDismissed } from './notifications'
 
 const SIX_HOURS = 6 * 60 * 60 * 1000
+
+/** Re-applies `settings.autoInstallUpdates` (issue #898); set by `initUpdater` only on a build
+ *  that has a feed, so a change on a dev or no-channel build does nothing. */
+let applyAutoInstall: ((autoInstallUpdates: unknown) => void) | null = null
+
+/** Called on every settings change, so switching the option takes effect without a restart. */
+export function setAutoInstallUpdates(autoInstallUpdates: unknown): void {
+  applyAutoInstall?.(autoInstallUpdates)
+}
 
 /**
  * The `nodeTermUpdates` marker a LOCAL package carries in its packaged package.json, injected by
@@ -60,8 +69,12 @@ function packagedUpdateMode(): unknown {
  *   our `win.on('close')` hides the window (keeps the app alive) unless we're already quitting — so
  *   without this the window just hides, `app.quit()` never fires, and the update never installs.
  */
-export function initUpdater(onBeforeRestart?: () => void): void {
+export function initUpdater(
+  onBeforeRestart?: () => void,
+  opts: { autoInstallUpdates?: unknown } = {}
+): void {
   const send = (channel: string, payload?: unknown) => sendToMain(channel, payload)
+  applyAutoInstall = null
 
   // Always available, even in dev: current version, manual check, restart.
   ipcMain.handle(IPC.appGetVersion, () => app.getVersion())
@@ -96,10 +109,28 @@ export function initUpdater(onBeforeRestart?: () => void): void {
   // A Linux .deb/.rpm install (no APPIMAGE env) cannot self-install and would re-download the
   // full AppImage every 6h only to throw on install. Degrade to a manual-download link: don't
   // auto-download; surface update-available with `manual: true` so the card shows a Download link.
-  const manualUpdates = delivery === 'manual-install'
-
-  autoUpdater.autoDownload = !manualUpdates
-  autoUpdater.autoInstallOnAppQuit = !manualUpdates
+  // A user who switched off "Download and install updates automatically" (issue #898) gets the
+  // same card on any platform: the feed is still checked, nothing is downloaded or installed.
+  let manualUpdates = !installsItself(delivery, opts.autoInstallUpdates)
+  const applyPolicy = (): void => {
+    autoUpdater.autoDownload = !manualUpdates
+    autoUpdater.autoInstallOnAppQuit = !manualUpdates
+  }
+  applyPolicy()
+  applyAutoInstall = (autoInstallUpdates) => {
+    const next = !installsItself(delivery, autoInstallUpdates)
+    if (next === manualUpdates) return
+    // Switching OFF stops the NEXT download. It cannot retract one already downloaded: on macOS
+    // MacUpdater hands it to Squirrel.Mac at once (while autoInstallOnAppQuit was on), and a staged
+    // update installs on the next quit. Settings → Updates says so.
+    manualUpdates = next
+    applyPolicy()
+    // Switched back on: check now, so an update found while it was off downloads without
+    // waiting up to six hours for the next automatic check.
+    if (!manualUpdates) {
+      autoUpdater.checkForUpdates().catch((err) => console.error('[updater]', err?.message ?? err))
+    }
+  }
 
   autoUpdater.on('update-available', (info) => {
     send(IPC.appUpdateAvailable, toUpdateAvailablePayload(info, manualUpdates))
