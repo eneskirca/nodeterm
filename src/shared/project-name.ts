@@ -65,3 +65,27 @@ export function healPathAsName(name: string, cwd: string | undefined): string {
   if (!cwd || !name || !samePath(name, cwd)) return name
   return folderName(cwd) || name
 }
+
+/**
+ * The longest name a project may be given by a rename (issue #940). A project name is drawn in
+ * the tab strip, the sessions sidebar and the welcome screen, and it is stored in both
+ * workspace.json and the git-shared `.nodeterm/project.json` — so a prompt pasted into a rename
+ * field by mistake (2,798 characters in the report) was kept everywhere until renamed by hand.
+ * Canvas layout names have the same kind of cap (`CANVAS_LAYOUT_NAME_MAX`).
+ */
+export const PROJECT_NAME_MAX = 100
+
+/**
+ * Trim a candidate project name and cut it to `PROJECT_NAME_MAX` UTF-16 units — the unit the
+ * inputs' HTML `maxLength` counts in, so a name typed into a field and a name passed with
+ * `open-project --name` get the same limit. An emoji straddling the cut is dropped rather than
+ * split into a lone surrogate (a multi-code-point sequence such as a flag can still be cut
+ * between its code points). Whitespace left at the cut is trimmed too. Returns '' for a blank
+ * name; callers treat that as "no name given".
+ */
+export function clampProjectName(name: string): string {
+  let cut = name.trim().slice(0, PROJECT_NAME_MAX)
+  // Also when the name was not cut here: a field's maxLength can itself stop halfway an emoji.
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1)
+  return cut.trimEnd()
+}

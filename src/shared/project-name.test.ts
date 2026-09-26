@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { folderName, healPathAsName } from './project-name'
+import { PROJECT_NAME_MAX, clampProjectName, folderName, healPathAsName } from './project-name'
 
 describe('folderName', () => {
   it('takes the last segment of a POSIX path', () => {
@@ -61,5 +61,47 @@ describe('healPathAsName', () => {
   it('is a no-op without a cwd or a name', () => {
     expect(healPathAsName(cwd, undefined)).toBe(cwd)
     expect(healPathAsName('', cwd)).toBe('')
+  })
+})
+
+describe('clampProjectName', () => {
+  it('trims and keeps a name within the limit unchanged', () => {
+    expect(clampProjectName('  nodeterm  ')).toBe('nodeterm')
+    const exact = 'x'.repeat(PROJECT_NAME_MAX)
+    expect(clampProjectName(exact)).toBe(exact)
+  })
+
+  it('cuts a pasted wall of text to the limit (issue #940: a 2,798-character prompt)', () => {
+    const pasted = 'Please refactor the session sidebar so that '.repeat(64)
+    expect(pasted.length).toBeGreaterThan(2_000)
+    const clamped = clampProjectName(pasted)
+    expect(clamped.length).toBeLessThanOrEqual(PROJECT_NAME_MAX)
+    expect(pasted.startsWith(clamped)).toBe(true)
+  })
+
+  it('does not leave trailing whitespace where the cut landed', () => {
+    const name = `${'a'.repeat(PROJECT_NAME_MAX - 1)} tail`
+    expect(clampProjectName(name)).toBe('a'.repeat(PROJECT_NAME_MAX - 1))
+  })
+
+  it('counts UTF-16 units like an input maxLength, and drops an emoji the cut would halve', () => {
+    // Same unit as the HTML maxLength on the rename fields, so a field and the store agree.
+    const fits = `${'a'.repeat(PROJECT_NAME_MAX - 2)}😀`
+    expect(clampProjectName(fits)).toBe(fits)
+    const name = `${'a'.repeat(PROJECT_NAME_MAX - 1)}😀`
+    const clamped = clampProjectName(name)
+    expect(clamped).toBe('a'.repeat(PROJECT_NAME_MAX - 1))
+    // A lone surrogate would be invalid UTF-16 in project.json.
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(clamped)).toBe(false)
+  })
+
+  it('drops a lone high surrogate left at the end by a field maxLength', () => {
+    const halved = `${'a'.repeat(PROJECT_NAME_MAX - 1)}\uD83D`
+    expect(halved.length).toBe(PROJECT_NAME_MAX)
+    expect(clampProjectName(halved)).toBe('a'.repeat(PROJECT_NAME_MAX - 1))
+  })
+
+  it('answers empty for a blank name', () => {
+    expect(clampProjectName('   ')).toBe('')
   })
 })

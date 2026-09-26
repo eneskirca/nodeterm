@@ -280,6 +280,7 @@ import {
   SETTINGS_VERB_KEY_LIST,
   parseSettingsRequest
 } from '../shared/settings-verb'
+import { PROJECT_NAME_MAX } from '../shared/project-name'
 import {
   REPORT_CAP_PER_DAY,
   REPORT_CAP_PER_RUN,
@@ -481,7 +482,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  agent does not recognise fails inside the session, not at open time — name a model you know.',
     '- `open-project --cwd </abs/path> [--name N] [--color C]` — register (or find) the project for a',
     '  local directory; the reply carries `{ projectId, name, cwd, created }`. Idempotent: the same',
-    '  cwd always returns the same project, never a duplicate. Creating/adding asks the user to',
+    `  cwd always returns the same project, never a duplicate. A \`--name\` over ${PROJECT_NAME_MAX} characters is`,
+    '  cut to that length when the project is created. Creating/adding asks the user to',
     '  confirm (your first open of an already-registered project asks once too) and may be denied —',
     '  a denial is final, do not retry it. Local only (refused from an SSH project), and it never',
     '  focuses the new project\'s tab. The returned id is what `--project` accepts.',
@@ -961,7 +963,8 @@ Verbs:
   local directory; the reply carries \`{ projectId, name, cwd, created }\`. Idempotent: the same
   cwd always returns the same project, never a duplicate — and \`--name\`/\`--color\` apply only
   when the project is created (an existing project's name is never changed; the reply tells you
-  its real name). Creating/adding asks the user to confirm (your first open of an
+  its real name). A \`--name\` over ${PROJECT_NAME_MAX} characters is cut to that length when the
+  project is created. Creating/adding asks the user to confirm (your first open of an
   already-registered project asks once too) and may be denied — a denial is final, do not retry
   it. Local only (refused from an SSH project), and it never focuses the new project's tab: use
   the returned id with \`--project\` to open sessions there.

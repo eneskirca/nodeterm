@@ -8,6 +8,8 @@ interface InputDialogProps {
   placeholder?: string
   confirmLabel?: string
   cancelLabel?: string
+  /** Longest value the field accepts (the HTML attribute: typing and pasting stop there). */
+  maxLength?: number
   onSubmit: (value: string) => void
   onCancel: () => void
 }
@@ -23,6 +25,7 @@ export function InputDialog({
   placeholder,
   confirmLabel = 'OK',
   cancelLabel = 'Cancel',
+  maxLength,
   onSubmit,
   onCancel
 }: InputDialogProps) {
@@ -47,6 +50,7 @@ export function InputDialog({
           className="confirm__input"
           value={value}
           placeholder={placeholder}
+          maxLength={maxLength}
           spellCheck={false}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {

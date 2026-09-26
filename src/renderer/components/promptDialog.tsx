@@ -10,6 +10,7 @@ interface PromptOptions {
   initialValue?: string
   placeholder?: string
   confirmLabel?: string
+  maxLength?: number
 }
 
 interface PromptState {
@@ -61,6 +62,7 @@ export function PromptDialogHost() {
       initialValue={current.initialValue}
       placeholder={current.placeholder}
       confirmLabel={current.confirmLabel}
+      maxLength={current.maxLength}
       onSubmit={submit}
       onCancel={cancel}
     />

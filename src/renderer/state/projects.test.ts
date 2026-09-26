@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useProjects } from './projects'
+import { PROJECT_NAME_MAX } from '@shared/project-name'
 
 beforeEach(() => {
   useProjects.getState().hydrate({ version: 2, activeProjectId: '', projects: [] })
@@ -257,5 +258,36 @@ describe('capability setters schedule a workspace save', () => {
     } finally {
       unregister()
     }
+  })
+})
+
+describe('renameProject', () => {
+  it('cuts a pasted wall of text to PROJECT_NAME_MAX (issue #940)', () => {
+    const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
+    const pasted = 'Please refactor the session sidebar so that '.repeat(64)
+    useProjects.getState().renameProject(p.id, pasted)
+    const name = useProjects.getState().projects.find((q) => q.id === p.id)!.name
+    expect(name.length).toBeLessThanOrEqual(PROJECT_NAME_MAX)
+    expect(pasted.startsWith(name)).toBe(true)
+  })
+
+  it('trims the name, and leaves the project alone for a blank one', () => {
+    const p = useProjects.getState().addProject('my-app', '/Users/me/dev/my-app')
+    useProjects.getState().renameProject(p.id, '  renamed  ')
+    expect(useProjects.getState().projects.find((q) => q.id === p.id)!.name).toBe('renamed')
+    useProjects.getState().renameProject(p.id, '   ')
+    expect(useProjects.getState().projects.find((q) => q.id === p.id)!.name).toBe('renamed')
+  })
+})
+
+describe('addProject — the name a new project gets (issue #940)', () => {
+  it('cuts an over-long name, as a rename does', () => {
+    const p = useProjects.getState().addProject('y'.repeat(PROJECT_NAME_MAX * 3), '/Users/me/dev/x')
+    expect(p.name).toBe('y'.repeat(PROJECT_NAME_MAX))
+  })
+
+  it('keeps the default name when none, or a blank one, is given', () => {
+    expect(useProjects.getState().addProject().name).toMatch(/^Project \d+$/)
+    expect(useProjects.getState().addProject('   ').name).toMatch(/^Project \d+$/)
   })
 })
