@@ -17,8 +17,10 @@ build/icon.icns
 
 .playwright-mcp/
 
-# concurrent-session worktrees / local agent state
-.claude/
+# concurrent-session worktrees / local agent state; .claude/rules/ is the
+# per-subsystem half of CLAUDE.md and is committed
+.claude/*
+!.claude/rules/
 .worktrees/
 
 # backend lives in its own repo

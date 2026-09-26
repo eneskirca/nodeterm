@@ -2,8 +2,8 @@
 
 Thanks for looking. This file is the short door: enough to get running, plus the house rules that
 actually get a pull request sent back. The long version — every subsystem and the reasoning behind
-its invariants — lives in `CLAUDE.md` at the repo root, which is also loaded automatically if you
-work with an AI coding agent.
+its invariants — lives in `CLAUDE.md` at the repo root and the per-subsystem files it indexes under
+`.claude/rules/`, which are also loaded automatically if you work with an AI coding agent.
 
 nodeterm is licensed **BUSL-1.1** (converts to MIT after four years — see `LICENSE`). Contributions
 are accepted under that license.
@@ -853,7 +853,8 @@ in CLAUDE.md § Idle energy.
 Two files, two audiences:
 
 - **`CONTRIBUTING.md`** (this file) — what another human needs before touching the code.
-- **`CLAUDE.md`** — the deep invariants, per subsystem, with the reasoning and the measurements.
+- **`CLAUDE.md`** + **`.claude/rules/`** — the deep invariants, per subsystem, with the reasoning and
+  the measurements. `CLAUDE.md` holds the cross-cutting rules and an index of the rules files.
 
 **If you change or discover something other contributors must know, update this file too.** An
 invariant that only lives in a commit message is one refactor away from being violated by someone

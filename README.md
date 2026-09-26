@@ -327,8 +327,8 @@ under [`docs/`](./docs) for deeper notes.
 
 Issues and pull requests are welcome. **Start with [CONTRIBUTING.md](./CONTRIBUTING.md)** —
 setup, the process-boundary rules, and the house rules that come up in review.
-[CLAUDE.md](./CLAUDE.md) is the deep reference behind them (and is loaded automatically if
-you work with an AI coding agent). Questions or bug reports are also happy at
+[CLAUDE.md](./CLAUDE.md) and the [`.claude/rules/`](./.claude/rules) files it indexes are the
+deep reference behind them (and are loaded automatically if you work with an AI coding agent). Questions or bug reports are also happy at
 [nodeterm.dev/support](https://nodeterm.dev/support) / support@nodeterm.dev. nodeterm is licensed under the
 [Business Source License 1.1](https://mariadb.com/bsl11/) — you can use, modify,
 and redistribute it freely, including in production, except offering it as a
