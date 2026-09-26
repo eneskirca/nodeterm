@@ -21,6 +21,7 @@ import {
 } from '@shared/agents/config'
 import { bypassSandboxCaveat, permissionModeAgentsLabel } from '@shared/agents/approval-mode'
 import { codexApprovalCaps } from '@renderer/state/codexCli'
+import { PROJECT_NAME_MAX, clampProjectName } from '@shared/project-name'
 
 interface TabBarProps {
   onSwitch: (id: string) => void
@@ -110,6 +111,9 @@ export function TabBar({
   )
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  // The stored name the editor opened on. Committing the cut draft of an over-long one
+  // (issue #940) stores that cut: the user asked to rename and sees what will be stored.
+  const [draftStart, setDraftStart] = useState('')
   // Tab drag-reorder: the project id being dragged + the current drop target ('' = end zone).
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropId, setDropId] = useState<string | null>(null)
@@ -180,14 +184,16 @@ export function TabBar({
 
   const startRename = (id: string, current: string) => {
     setEditingId(id)
-    setDraft(current)
+    // Start from what a rename would store, so an over-long name (issue #940) is shown cut.
+    setDraft(clampProjectName(current))
+    setDraftStart(current)
     closeMenu()
   }
 
   const commitRename = () => {
     if (editingId) {
       const name = draft.trim()
-      if (name) onRename(editingId, name)
+      if (name && name !== draftStart) onRename(editingId, name)
     }
     setEditingId(null)
   }
@@ -374,6 +380,7 @@ export function TabBar({
                   <input
                     className="tab__edit"
                     value={draft}
+                    maxLength={PROJECT_NAME_MAX}
                     autoFocus
                     spellCheck={false}
                     onChange={(e) => setDraft(e.target.value)}

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useProjects } from './projects'
 import type { Project } from '@shared/types'
+import { PROJECT_NAME_MAX } from '@shared/project-name'
 
 /**
  * Issue #338 Task 2.1 — `registerProject`, the NON-ACTIVATING create/find used by the
@@ -133,5 +134,30 @@ describe('registerProject — adopt (spec §2.1 step 3)', () => {
     // Both projects present, ids unique.
     const ids = useProjects.getState().projects.map((p) => p.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('registerProject — the name an agent passes (issue #940)', () => {
+  it('cuts an over-long --name to PROJECT_NAME_MAX', () => {
+    const long = 'x'.repeat(PROJECT_NAME_MAX * 5)
+    const { project } = useProjects
+      .getState()
+      .registerProject({ resolvedCwd: '/Users/me/dev/long-name', name: long })
+    expect(project.name).toBe('x'.repeat(PROJECT_NAME_MAX))
+  })
+
+  it('caps the folder name it falls back to when no --name is given', () => {
+    const folder = 'f'.repeat(PROJECT_NAME_MAX + 20)
+    const { project } = useProjects
+      .getState()
+      .registerProject({ resolvedCwd: `/Users/me/dev/${folder}` })
+    expect(project.name).toBe('f'.repeat(PROJECT_NAME_MAX))
+  })
+
+  it('falls back to the folder name for a blank --name', () => {
+    const { project } = useProjects
+      .getState()
+      .registerProject({ resolvedCwd: '/Users/me/dev/blank-name', name: '   ' })
+    expect(project.name).toBe('blank-name')
   })
 })

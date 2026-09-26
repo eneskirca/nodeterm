@@ -23,6 +23,7 @@ import {
 } from '../shared/settings-verb'
 import { decideControlConfirm, isWaivableVerb } from '../shared/control-confirm'
 import { DEFAULT_SETTINGS } from '../shared/types'
+import { PROJECT_NAME_MAX } from '../shared/project-name'
 import { serverSettingsControl } from '../server/settings-control'
 import {
   REPORT_CAP_PER_DAY,
@@ -1004,5 +1005,14 @@ describe('trigger wording does not claim in-process subagent requests (issue #91
     const skill = buildCanvasSkillBody('/x/shim.sh')
     expect(skill).not.toMatch(/2–5 independent workstreams/)
     expect(skill).toMatch(/independent workstreams step 0 identified/)
+  })
+})
+
+describe('open-project --name limit in the agent-facing text (issue #940)', () => {
+  it('both bodies name the limit, rendered from PROJECT_NAME_MAX', () => {
+    const sentence = `\`--name\` over ${PROJECT_NAME_MAX} characters`
+    const squash = (s: string): string => s.replace(/\s+/g, ' ')
+    expect(squash(buildCanvasSkillBody('/tmp/nodeterm.sh'))).toContain(sentence)
+    expect(squash(buildCanvasControlInstructions('/tmp/nodeterm.sh'))).toContain(sentence)
   })
 })

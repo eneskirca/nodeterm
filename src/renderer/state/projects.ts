@@ -22,6 +22,7 @@ import {
   pruneLayoutViewports,
   type CanvasLayout
 } from '@shared/canvas-layout'
+import { clampProjectName } from '@shared/project-name'
 import { applyCanvasMutation, createProject, reorderGroupWithinParent } from './workspace'
 import { markWorkspaceDirty } from './workspaceDirty'
 import { folderName } from '../lib/projectOpen'
@@ -372,7 +373,10 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   },
 
   addProject(name, cwd, ssh) {
-    const project = createProject(get().projects.length, name, cwd, ssh)
+    // Every new project's name — a folder's own name, an SSH label, a relay host's project
+    // name — gets the same cap as a rename (issue #940). A blank one keeps createProject's default.
+    const clean = name === undefined ? undefined : clampProjectName(name) || undefined
+    const project = createProject(get().projects.length, clean, cwd, ssh)
     set((s) => ({ projects: [...s.projects, project] }))
     return project
   },
@@ -434,8 +438,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   },
 
   renameProject(id, name) {
+    // Every rename surface funnels through here, so the cap holds even for input that bypassed a
+    // field's maxLength (issue #940). A blank name is not a rename.
+    const clean = clampProjectName(name)
+    if (!clean) return
     set((s) => ({
-      projects: s.projects.map((p) => (p.id === id ? { ...p, name } : p))
+      projects: s.projects.map((p) => (p.id === id ? { ...p, name: clean } : p))
     }))
   },
 
@@ -894,9 +902,10 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       set((s) => ({ projects: [...s.projects, adopted] }))
       return { project: adopted, created: false, adopted: true }
     }
-    const fallbackName = folderName(cwd) || 'Project'
+    const fallbackName = clampProjectName(folderName(cwd)) || 'Project'
+    // `name` is the agent's `--name`, free text like a rename: same cap (issue #940).
     const project = {
-      ...createProject(get().projects.length, name ?? fallbackName, cwd),
+      ...createProject(get().projects.length, clampProjectName(name ?? '') || fallbackName, cwd),
       ...(color ? { color } : {})
     }
     set((s) => ({ projects: [...s.projects, project] }))
