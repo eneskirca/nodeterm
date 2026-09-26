@@ -43,8 +43,10 @@ import { assistantTurnEnds } from '../lib/chatThread'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
+// `breaks`: a single newline is a line break, as Claude Code's own TUI renders it — without it a
+// multi-line prompt, or a reply quoting one line by line (`> a` / `> b`), collapsed onto one line.
 export const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
-  const html = useMemo(() => renderMarkdown(text), [text])
+  const html = useMemo(() => renderMarkdown(text, { breaks: true }), [text])
   return <div className="term-chat__text" dangerouslySetInnerHTML={{ __html: html }} />
 })
 

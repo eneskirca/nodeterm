@@ -3315,6 +3315,14 @@ body,
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* Same treatment as the markdown view's quotes (.term-md__content blockquote); without it a quote
+   in the thread was only the browser's default indent. */
+.term-chat__text blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
 /* A tool call in the unbubbled assistant flow: a quiet chip on the panel itself (a light tint and a
    hairline), not a dark box nested in a bubble that is no longer there. */
 .term-chat__tool {

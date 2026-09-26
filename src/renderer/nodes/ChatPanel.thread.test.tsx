@@ -84,6 +84,19 @@ describe('⌘M thread look', () => {
     expect(assistant.querySelector('.term-chat__text strong')?.textContent).toBe('now')
   })
 
+  it('keeps single line breaks, as Claude Code renders them — in prompts and in quoted replies', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'This is a test\nof a multiline message' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'text', text: '> This is a test\n> of a multiline message' }], key: 10 }
+    ])
+
+    const user = host.querySelector('.term-chat__msg--user .term-chat__text')!
+    const quote = host.querySelector('.term-chat__msg--assistant .term-chat__text blockquote')!
+
+    expect(user.querySelector('br')).not.toBeNull()
+    expect(quote.querySelector('br')).not.toBeNull()
+  })
+
   it('one action row per assistant TURN (not per tool line), the latest always shown', async () => {
     await mount(thread)
     const rows = [...host.querySelectorAll('.term-chat__actions')]
