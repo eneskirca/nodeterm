@@ -316,6 +316,13 @@ export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'op
 // opencode has no remote leg either but is NOT here: its `unreadable` also means a failed LOCAL
 // `opencode export`, which Retry heals — the panel gives it its own copy (`exportError`) instead.
 export const CHAT_LOCAL_ONLY = ['gemini', 'copilot'] as const
+// CHAT_CAPABLE agents whose chat-view prompts are TYPED as keystrokes instead of pasted
+// (core/typed-input.ts): a multi-line paste is recorded by Claude Code as <pasted_content>, content
+// its model is told may not be the user's own words. The typed path puts a line break in as tmux's
+// M-Enter key — a newline in Claude Code (MEASURED, 2.1.281) but unmeasured in every other CLI,
+// where it could just as well SUBMIT, splitting one prompt into several. So only claude; the rest
+// keep the paste. An agent joins once someone has measured what its composer does with M-Enter.
+export const TYPED_INPUT_CAPABLE = ['claude'] as const
 // Agents whose transcript CLAUDE's own resolver can locate and parse — the gate for everything that
 // goes through `resolveTranscript` (the find bar's index, the meter's mount-time rehydration).
 //
@@ -537,6 +544,7 @@ export const canContextLink = (id: AgentId): boolean => includes(CONTEXT_LINK_CA
 export const hasUsage = (id: AgentId): boolean => includes(USAGE_CAPABLE, id)
 export const canChat = (id: AgentId): boolean => includes(CHAT_CAPABLE, id)
 export const chatReadsLocalOnly = (id: AgentId): boolean => includes(CHAT_LOCAL_ONLY, id)
+export const typesChatInput = (id: AgentId): boolean => includes(TYPED_INPUT_CAPABLE, id)
 /** Can CLAUDE's transcript resolver locate and parse this agent's conversation? Never widen this
  *  to mean "can we read this agent" — see CLAUDE_TRANSCRIPT_READABLE. */
 export const readsClaudeShapedTranscript = (id: AgentId): boolean =>

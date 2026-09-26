@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   AGENT_CONFIG,
+  CHAT_CAPABLE,
+  TYPED_INPUT_CAPABLE,
+  typesChatInput,
   BUILTIN_AGENT_IDS,
   canBranch,
   canChat,
@@ -453,5 +456,16 @@ describe('title read vs rename write', () => {
   it('a custom agent claims neither', () => {
     expect(canReadTitle('custom:abc')).toBe(false)
     expect(canRename('custom:abc')).toBe(false)
+  })
+})
+
+describe('typed chat input (TYPED_INPUT_CAPABLE)', () => {
+  it('types only for claude — M-Enter is a measured newline there and unmeasured anywhere else', () => {
+    expect(typesChatInput('claude')).toBe(true)
+    for (const id of CHAT_CAPABLE.filter((a) => a !== 'claude')) expect(typesChatInput(id)).toBe(false)
+  })
+
+  it('is a subset of CHAT_CAPABLE: only the chat view types', () => {
+    for (const id of TYPED_INPUT_CAPABLE) expect((CHAT_CAPABLE as readonly string[]).includes(id)).toBe(true)
   })
 })

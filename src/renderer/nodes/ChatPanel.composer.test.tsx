@@ -405,7 +405,7 @@ describe('model / effort labels', () => {
       textarea().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     })
     await flush()
-    expect(sendText).toHaveBeenCalledWith(NODE, 'go')
+    expect(sendText).toHaveBeenCalledWith(NODE, 'go', { typed: true })
     expect(modelBtn()!.disabled).toBe(true)
     expect(effortBtn()!.disabled).toBe(true)
     // The real state speaks (the turn ran and finished): the labels come back.

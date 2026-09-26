@@ -18,6 +18,7 @@ import {
   type PasteDelivery
 } from '../tmux-naming'
 import { sanitizePasteText } from '../paste-injection'
+import { typedInputScript } from '../typed-input'
 import { canControlCanvas } from '../../shared/agents/config'
 import { COMBINED_PANE_MARKER, PANE_OWNER_FMT, PS_FOREGROUND_FLAGS } from '../agents/pane-owner'
 // Dependency-free (no node-pty): safe to import from these pure builders.
@@ -326,6 +327,24 @@ export function remoteTmuxPasteArgs(
     `paste-buffer -d -p -r -b ${buffer} -t ${sessionId}`
   if (enter) cmd += ` ';' send-keys -t ${sessionId} Enter`
   return childArgs(conn, controlPath, tmuxCmd(cmd))
+}
+
+/**
+ * The TYPED delivery on the REMOTE server (see core/typed-input.ts): the same fixed script, run
+ * under `sh -c` so it does not depend on the user's login shell, with the text on stdin — never on
+ * the remote command line, where it would sit in the host's process list.
+ */
+export function remoteTypedArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string,
+  buffer: string
+): string[] {
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(`sh -c ${posixQuote(typedInputScript('tmux', RMT_TMUX_SOCKET, sessionId, buffer))}`)
+  )
 }
 
 /**

@@ -263,7 +263,7 @@ export function buildRealApi(
     readScrollback: (persistKey) =>
       client.request(IPC.ptyReadScrollback, persistKey) as Promise<string>,
     sendText: (persistKey, text, opts) =>
-      client.request(IPC.ptySendText, persistKey, text, opts?.enter) as Promise<boolean>,
+      client.request(IPC.ptySendText, persistKey, text, opts?.enter, opts?.typed) as Promise<boolean>,
     // A failed read is unknown, never evidence that persistence is available.
     tmuxStatus: () =>
       client

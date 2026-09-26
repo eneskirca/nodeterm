@@ -32,6 +32,8 @@ import {
   remoteTmuxPtyArgs,
   type RemoteSessionEnv,
   remotePasteDelivery,
+  remoteTypedArgs,
+  remoteTmuxEnterArgs,
   remoteCapturePaneArgs,
   remotePaneCommandArgs,
   remoteSessionAgeArgs,
@@ -75,8 +77,11 @@ import {
   sessionName,
   isSessionName,
   localPasteDelivery,
+  localTmuxEnterArgs,
+  pasteBufferName,
   runPasteDelivery
 } from './tmux-naming'
+import { localTypedArgs, typeThenSubmitWhenSettled } from './typed-input'
 import { encodeSendKeysHex } from './tmux-control'
 import { releasePty, type ReleasablePty } from './pty-release'
 import { terminateWindowsProcessTree } from '../session-host/windows-process-tree'
@@ -1839,8 +1844,12 @@ export class PtyManager {
     platform().handle(IPC.ptyReadScrollback, (persistKey: string) =>
       readScrollback(persistKey)
     )
-    platform().handle(IPC.ptySendText, (persistKey: string, text: string, enter?: boolean) =>
-      this.sendText(persistKey, text, enter === undefined ? undefined : { enter })
+    platform().handle(IPC.ptySendText, (persistKey: string, text: string, enter?: boolean, typed?: unknown) =>
+      // `typed` crosses a process boundary: only a literal `true` opts in to keystroke delivery.
+      this.sendText(persistKey, text, {
+        ...(enter === undefined ? {} : { enter }),
+        ...(typed === true ? { typed: true } : {})
+      })
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string) => this.paneCommand(persistKey))
@@ -4466,10 +4475,20 @@ export class PtyManager {
    * composition is exported, both callers use it, and the only thing left in this method is which
    * transport runs it.
    */
-  async sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult> {
+  async sendText(
+    persistKey: string,
+    text: string,
+    opts?: { enter?: boolean; typed?: boolean }
+  ): Promise<TextDeliveryResult> {
     const enter = opts?.enter ?? true
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
+    // `typed` (the ⌘M chat view): deliver as keystrokes, not a paste — see core/typed-input.ts.
+    // Only a SUBMITTED prompt on a tmux backend; everything else keeps the paste path below.
+    if (opts?.typed === true && enter && !live?.nativeWindowsPane) {
+      const typed = await this.sendTyped(persistKey, text)
+      if (typed !== null) return typed
+    }
     // A direct (non-persistent) Windows PTY has no session-host entry and no tmux: it is typed
     // into through the pane itself. Routing it to the session host below failed every time.
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendText(text, enter)
@@ -4498,6 +4517,59 @@ export class PtyManager {
       // Only a builder throwing (an unsafe target) reaches here — `runPasteDelivery` answers false
       // rather than throwing, precisely so the sweep cannot be skipped by an early exit.
       return false
+    }
+  }
+
+  /** Targets with a typed delivery in flight: two interleaved typings would splice their lines. */
+  private typedInFlight = new Set<string>()
+
+  /**
+   * The typed half of `sendText` — `null` when this session's backend has no typed path (the
+   * Windows session host, no tmux), so the caller falls back to the paste. A delivery already in
+   * flight for the same pane answers `false` rather than typing into the middle of it.
+   */
+  private async sendTyped(persistKey: string, text: string): Promise<TextDeliveryResult | null> {
+    const target = sessionName(persistKey)
+    const live = this.liveSessionForPersistKey(persistKey)
+    const sshRemote = live?.sshRemote
+    let type: (stdin: string) => Promise<unknown>
+    let submit: () => Promise<unknown>
+    if (sshRemote) {
+      const ssh = findSsh()
+      if (!ssh) return false
+      type = (stdin) =>
+        runWithStdin(ssh, remoteTypedArgs(sshRemote.conn, sshRemote.controlPath, target, pasteBufferName()), stdin)
+      submit = () => runAsync(ssh, remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target))
+    } else if (live?.sessionHost || !this.tmuxPath) {
+      return null
+    } else {
+      const tmuxPath = this.tmuxPath
+      type = (stdin) => runWithStdin('/bin/sh', localTypedArgs(tmuxPath, TMUX_SOCKET, target, pasteBufferName()), stdin)
+      submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target))
+    }
+    if (this.typedInFlight.has(target)) return false
+    this.typedInFlight.add(target)
+    const ok = async (run: () => Promise<unknown>): Promise<boolean> => {
+      try {
+        await run()
+        return true
+      } catch {
+        return false
+      }
+    }
+    try {
+      return await typeThenSubmitWhenSettled(text, {
+        capture: async () => {
+          const screen = await this.captureSession(persistKey)
+          return screen === '' ? null : screen
+        },
+        type: (stdin) => ok(() => type(stdin)),
+        submit: () => ok(submit)
+      })
+    } catch {
+      return 'pasted-not-submitted'
+    } finally {
+      this.typedInFlight.delete(target)
     }
   }
 

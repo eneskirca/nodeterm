@@ -84,7 +84,7 @@ describe('ChatPanel send gate', () => {
     expect(ta.disabled).toBe(false)
     await act(async () => type(ta, 'hello'))
     await act(async () => enter(ta))
-    expect(sendText).toHaveBeenCalledWith(NODE, 'hello')
+    expect(sendText).toHaveBeenCalledWith(NODE, 'hello', { typed: true })
   })
 
   it.each(['waiting', 'blocked'] as const)('disables the composer and explains while %s', async (state) => {

@@ -1113,8 +1113,11 @@ export interface PtyApi {
   /** Send literal text into a session, by default followed by Enter (e.g. a slash command).
    *  `opts.enter: false` writes the text without submitting it (dictation's Insert). Returns
    *  false if unavailable; `pasted-not-submitted` means input was accepted but Enter was not
-   *  confirmed written. Surface it without automatically resending. True is not an app receipt. */
-  sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult>
+   *  confirmed written. Surface it without automatically resending. True is not an app receipt.
+   *  `opts.typed` delivers as keystrokes rather than a bracketed paste, so an agent CLI records the
+   *  text as TYPED — the ⌘M chat view's prompts (core/typed-input.ts). tmux backends only;
+   *  elsewhere it is ignored and the paste path runs. */
+  sendText(persistKey: string, text: string, opts?: { enter?: boolean; typed?: boolean }): Promise<TextDeliveryResult>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>

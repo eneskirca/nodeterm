@@ -92,6 +92,20 @@ describe('ChatPanel — codex send asks the kernel', () => {
     expect(toasts).toEqual(['Codex is no longer running in this terminal — the message was not sent.'])
   })
 
+  it('pastes rather than types for codex: M-Enter is unmeasured in its composer', async () => {
+    paneOwner.mockResolvedValue(CODEX)
+
+    await send(await mount('codex'), 'first line\nsecond line')
+
+    expect(sendText).toHaveBeenCalledWith(NODE, 'first line\nsecond line')
+  })
+
+  it('types for claude (TYPED_INPUT_CAPABLE)', async () => {
+    await send(await mount('claude'), 'hello')
+
+    expect(sendText).toHaveBeenCalledWith(NODE, 'hello', { typed: true })
+  })
+
   it('claude is not probed (its hooks announce a quit)', async () => {
     await send(await mount('claude'), 'hello')
     expect(paneOwner).not.toHaveBeenCalled()

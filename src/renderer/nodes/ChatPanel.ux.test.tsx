@@ -124,7 +124,7 @@ describe('ChatPanel composer keys', () => {
     await act(async () => {
       key(textarea(), { key: 'Enter' })
     })
-    expect(sendText).toHaveBeenCalledWith(NODE, 'hi')
+    expect(sendText).toHaveBeenCalledWith(NODE, 'hi', { typed: true })
   })
 })
 

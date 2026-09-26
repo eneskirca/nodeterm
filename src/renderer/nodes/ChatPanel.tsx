@@ -24,7 +24,7 @@ import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError } from '@sh
 import { Spinner } from '../components/Spinner'
 import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS, chatActivity, planLiveReload } from '../lib/chatLive'
 import { sentCommand } from '@shared/chat-command'
-import { capabilityAgentId, chatReadsLocalOnly } from '@shared/agents/config'
+import { capabilityAgentId, chatReadsLocalOnly, typesChatInput } from '@shared/agents/config'
 import { ChatLoadingStatus } from './ChatPanelFallback'
 import { answerCardState, answerRebindPending, rebindRetryDelay, type BoundAnswerCard } from '../lib/chatAnswer'
 import { AnswerControlsUpdating, PlanAnswerControls, QuestionAnswerControls } from './ChatAnswerControls'
@@ -665,52 +665,68 @@ export function ChatPanel({
     maybeLoadOlder()
   }
 
+  // A typed send takes a moment (core waits for the pane to show the text before pressing Enter),
+  // and core refuses a second one into the same pane meanwhile — which this panel would misread as
+  // "can't write to this session". An Enter during a send is simply ignored.
+  const sendingRef = useRef(false)
+
   const send = useCallback(async () => {
     const text = input.trim()
+    if (!text || sendingRef.current) return
     // Read the store at SEND time, not the render-time values: a PermissionRequest (or an Eco
     // hibernation) that landed between the last render and this keypress must still block.
-    if (!text || chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
-    // The kernel's say (chatPaneGate.ts): an agent that announces no quit (codex) may have left a
-    // SHELL in the pane while the store still reads `done` — typed there, the message would run.
-    const pane = await chatPaneRefusal(agentId, nodeId, {
-      paneOwner: (n) => api.pty.paneOwner(n),
-      customAgents: useSettings.getState().settings.customAgents
-    })
-    if (pane) {
-      const message = chatPaneRefusalToast(pane, chatAgentLabel(agentId, useSettings.getState().settings.customAgents))
-      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
-      return
-    }
-    const ok = await api.pty.sendText(nodeId, text)
-    if (ok === 'pasted-not-submitted') {
-      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: TEXT_NOT_SUBMITTED } }))
-      setInput('')
-      return
-    }
-    if (!ok) {
-      setReadonly(true)
-      return
-    }
-    // Optimistic: show the prompt immediately. A live read keeps it until the transcript carries it
-    // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
-    justSentRef.current = true
-    setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
-    setOptimistic(true)
-    setInput('')
-    // A local command (`/model`, `!ls`) fires no hook: schedule ONE live tail read, one throttle
-    // interval out (claude writes the command record once the command ran), so its confirmation
-    // retires the working row instead of the 15 s timeout. A read already in flight defers it.
-    if (sentCommand(text)) {
-      if (commandReadTimerRef.current !== null) clearTimeout(commandReadTimerRef.current)
-      const fire = () => {
-        if (tailInFlightRef.current || olderInFlightRef.current) {
-          commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
-          return
-        }
-        commandReadTimerRef.current = null
-        loadRef.current(true)
+    if (chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
+    sendingRef.current = true
+    try {
+      // The kernel's say (chatPaneGate.ts): an agent that announces no quit (codex) may have left a
+      // SHELL in the pane while the store still reads `done` — typed there, the message would run.
+      const pane = await chatPaneRefusal(agentId, nodeId, {
+        paneOwner: (n) => api.pty.paneOwner(n),
+        customAgents: useSettings.getState().settings.customAgents
+      })
+      if (pane) {
+        const message = chatPaneRefusalToast(pane, chatAgentLabel(agentId, useSettings.getState().settings.customAgents))
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+        return
       }
-      commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
+      // Typed, not pasted, for an agent whose composer was measured (`typesChatInput`): Claude Code
+      // wraps a multi-line PASTE as <pasted_content>, content its model is told may not be the user's
+      // own words (core/typed-input.ts). Ignored off tmux. Every other agent keeps the paste.
+      const ok = typesChatInput(agentId)
+        ? await api.pty.sendText(nodeId, text, { typed: true })
+        : await api.pty.sendText(nodeId, text)
+      if (ok === 'pasted-not-submitted') {
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: TEXT_NOT_SUBMITTED } }))
+        setInput('')
+        return
+      }
+      if (!ok) {
+        setReadonly(true)
+        return
+      }
+      // Optimistic: show the prompt immediately. A live read keeps it until the transcript carries it
+      // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
+      justSentRef.current = true
+      setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
+      setOptimistic(true)
+      setInput('')
+      // A local command (`/model`, `!ls`) fires no hook: schedule ONE live tail read, one throttle
+      // interval out (claude writes the command record once the command ran), so its confirmation
+      // retires the working row instead of the 15 s timeout. A read already in flight defers it.
+      if (sentCommand(text)) {
+        if (commandReadTimerRef.current !== null) clearTimeout(commandReadTimerRef.current)
+        const fire = () => {
+          if (tailInFlightRef.current || olderInFlightRef.current) {
+            commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
+            return
+          }
+          commandReadTimerRef.current = null
+          loadRef.current(true)
+        }
+        commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
+      }
+    } finally {
+      sendingRef.current = false
     }
   }, [api, input, nodeId, agentId])
 
