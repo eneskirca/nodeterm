@@ -6,7 +6,8 @@ import {
   noSelfInstallCopy,
   shouldEnableUpdater,
   toUpdateAvailablePayload,
-  updateDelivery
+  updateDelivery,
+  installsItself
 } from './update-platform'
 
 describe('isManualUpdatePlatform', () => {
@@ -190,5 +191,26 @@ describe('noSelfInstallCopy', () => {
         expect(words).not.toContain(os)
       }
     }
+  })
+})
+
+describe('installsItself — the autoInstallUpdates setting (issue #898)', () => {
+  it('self-installs only on a self-install build with the setting on (the default)', () => {
+    expect(installsItself('self-install', true)).toBe(true)
+    expect(installsItself('self-install', undefined)).toBe(true) // a settings.json from before
+  })
+
+  it('does not download or install when the user switched it off', () => {
+    expect(installsItself('self-install', false)).toBe(false)
+  })
+
+  it('never turns a build that cannot self-install into one that does', () => {
+    expect(installsItself('manual-install', true)).toBe(false)
+    expect(installsItself('manual-install', false)).toBe(false)
+  })
+
+  it('only a literal false switches it off: a hand-edited value keeps the default', () => {
+    expect(installsItself('self-install', 'no')).toBe(true)
+    expect(installsItself('self-install', 0)).toBe(true)
   })
 })

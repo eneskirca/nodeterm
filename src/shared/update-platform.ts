@@ -69,6 +69,19 @@ export function updateDelivery(opts: {
   return isManualUpdatePlatform(opts.platform, opts.hasAppImage) ? 'manual-install' : 'self-install'
 }
 
+/**
+ * Whether the updater downloads an update by itself and installs it on quit (issue #898). Only a
+ * `self-install` build can, and only while `settings.autoInstallUpdates` is not switched off. With
+ * it off the app keeps checking the feed and shows the same "Download" card a .deb/.rpm install
+ * gets, so someone who rolls tools out under change management decides when an update lands.
+ *
+ * Only a literal `false` switches it off: settings.json is hand-editable, and a settings file from
+ * before this option (no key) must keep the behaviour it always had.
+ */
+export function installsItself(delivery: UpdateDelivery, autoInstallUpdates: unknown): boolean {
+  return delivery === 'self-install' && autoInstallUpdates !== false
+}
+
 /** What the update card says when this build will not install the update by itself. */
 export interface NoSelfInstallCopy {
   title: string

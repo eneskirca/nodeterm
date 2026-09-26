@@ -5502,6 +5502,19 @@ to the renderer over IPC. `components/UpdateCard.tsx` shows the strip + **Restar
 also fires when the window is unfocused. Exposed via `window.nodeTerminal.updates` (`UpdateApi`).
 macOS *silent* self-install requires a signed+notarized build; unsigned builds still surface
 the card for a manual download.
+**`settings.autoInstallUpdates`** (Settings → Updates, default ON, issue #898) switches the
+download + install-on-quit off: the feed is still checked, and the card shows the same Download
+link a Linux .deb/.rpm install gets (`manual: true`). The decision is `installsItself` in
+`@shared/update-platform` (only a `self-install` build, and only a literal `false` switches it
+off); `setAutoInstallUpdates` re-applies it on every settings change, so no restart is needed, and
+switching it back on runs one check so an update found meanwhile downloads. Switching it OFF
+cannot retract an update already downloaded: on macOS electron-updater hands the download to
+Squirrel.Mac at once while `autoInstallOnAppQuit` is on (`MacUpdater.doDownloadUpdate`), and a
+staged update installs on the next quit; the Settings text says so (NSIS and AppImage re-read the
+flag at quit in `BaseUpdater`, so there it holds). A MANDATORY update (`required`) whose
+update-available comes back `manual` keeps the non-dismissible required card and swaps "Update
+now" for a Download link, rather than becoming the dismissible manual card. Desktop only: the
+Server Edition hides the switch (it has no updater).
 
 **Backend check feed** (`src/core/check.ts`, successor to the static `announcements.json`): the
 **main process** calls `GET https://api.nodeterm.dev/v1/check?version=&os=&channel=stable` (so the
