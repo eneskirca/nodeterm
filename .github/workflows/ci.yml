@@ -30,8 +30,18 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # Skip postinstall's electron-rebuild (node-pty + whisper.cpp). Tests need neither the
+      # Electron build nor smart-whisper, but many suites import node-pty at runtime, so it is
+      # rebuilt for Node from the patched sources (Windows takes its shipped prebuild). The patch step
+      # also writes the markers src/main/node-pty-patch.test.ts asserts.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Patch node-pty sources
+        run: node scripts/patch-node-pty.mjs
+
+      - name: Build node-pty and link esbuild
+        run: npm rebuild node-pty esbuild
 
       - name: Type check
         run: npm run typecheck
@@ -61,8 +71,18 @@ jobs:
         shell: cmd
         run: call "%GITHUB_WORKSPACE%\bootstrap-windows.bat" --check-vs-build-tools
 
+      # Skip postinstall's electron-rebuild (node-pty + whisper.cpp). Tests need neither the
+      # Electron build nor smart-whisper, but many suites import node-pty at runtime, so it is
+      # rebuilt for Node from the patched sources (Windows takes its shipped prebuild). The patch step
+      # also writes the markers src/main/node-pty-patch.test.ts asserts.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Patch node-pty sources
+        run: node scripts/patch-node-pty.mjs
+
+      - name: Build node-pty and link esbuild
+        run: npm rebuild node-pty esbuild
 
       - name: Type check
         run: npm run typecheck
