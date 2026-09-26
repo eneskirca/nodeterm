@@ -51,6 +51,14 @@ vi.mock('node-pty', () => ({
   }
 }))
 
+// The fake pty never prints, so a slot on the process-wide remote spawn gate is only freed by its
+// 5 s settle timer; every spawn after the 4th on one ControlMaster waited it out. Pacing is not
+// under test here (pty-spawn-gate.test.ts covers it).
+vi.mock('./remote-ssh/pty-spawn-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./remote-ssh/pty-spawn-gate')>()
+  return { ...actual, remotePtySpawnGate: new actual.PtySpawnGate(Infinity) }
+})
+
 // Never let the developer's own pty pressure refuse a spawn (see pty-typing.test.ts).
 vi.mock('./pty-devices', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./pty-devices')>()),
