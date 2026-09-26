@@ -576,6 +576,14 @@ tmux 3.4:
   to `pbcopy` was macOS-only, and over SSH it would have copied on the *remote* host anyway. OSC 52
   is cross-platform and works over SSH.
 
+**Copy-on-select (opt-in, `copyOnSelect`, default off — #759)** is the route for a selection
+**xterm** owns, which OSC 52 never sees: a plain drag on Windows (no tmux), a forced Option/Shift
+drag inside a mouse-tracking app. `terminal/copy-on-select.ts` triggers on the GESTURE (a press
+xterm's SelectionService takes, then a release anywhere), not on `onSelectionChange` — the search
+addon's `select()` must never touch the clipboard. Canvas node and kanban modal only, never the
+settings preview; attached once per xterm (it survives park/adopt) and written via the bridge's
+`{ quiet: true }` path so a failed write raises no toast per drag.
+
 **A tmux client is not necessarily a watcher.** `SessionInfo.clients` is a COUNT
 (`#{session_attached}`), never a boolean, because one session can hold several: the app's painter,
 the user's own `tmux -L node-terminal attach`, a second nodeterm on the same socket, and our own

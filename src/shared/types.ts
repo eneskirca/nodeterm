@@ -1210,8 +1210,18 @@ export interface DialogApi {
   selectFile(): Promise<string | null>
 }
 
+export interface ClipboardWriteOptions {
+  /**
+   * Never raise a failure toast. For writes the user did not explicitly ask for as a copy — today
+   * only copy-on-select (issue #759), which writes on every completed drag, where a toast per drag
+   * would be unusable. The write still tries every route; only the banner is withheld. The desktop
+   * preload's write is fire-and-forget IPC with no failure surface at all, so it ignores this.
+   */
+  quiet?: boolean
+}
+
 export interface ClipboardApi {
-  writeText(text: string): void
+  writeText(text: string, opts?: ClipboardWriteOptions): void
   /** Copy local files so Finder and other file-aware macOS apps can paste them. */
   writeFiles(paths: string[]): Promise<boolean>
 }
@@ -1594,6 +1604,19 @@ export interface Settings {
    * click drops whatever was last selected anywhere on the machine into a live agent prompt.
    */
   terminalMiddleClickPaste: boolean
+  /**
+   * Copy a completed MOUSE selection that the terminal emulator (xterm) owns to the system
+   * clipboard (issue #759). OFF by default: it preserves the explicit-copy behaviour, and silently
+   * changing what is on the clipboard is a surprise worth opting into.
+   *
+   * Scope, stated honestly: it covers only selections xterm makes itself — a drag, double/triple
+   * click, or a FORCED selection (Option-drag on macOS, Shift-drag elsewhere) inside an app that
+   * tracks the mouse. It cannot copy a selection an app draws itself, and OSC 52 copies (tmux
+   * copy-mode, vim `"+y`) reach the clipboard whether this is on or off. Programmatic selections
+   * (find-bar hits) never copy. Read live, so a toggle applies to the next drag on every open
+   * terminal. Logic: `renderer/terminal/copy-on-select.ts`.
+   */
+  copyOnSelect: boolean
   /** Plain mouse wheel zooms the canvas (no Cmd/Ctrl needed). On macOS a two-finger trackpad
    *  scroll keeps panning independently (see canvas/wheel-gesture.ts), so mouse and trackpad
    *  coexist; elsewhere this still trades away scroll-to-pan, so it stays opt-in. */
@@ -1946,6 +1969,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openMarkdownPreview: true,
   openMarkdownPreviewMigrated: true,
   terminalMiddleClickPaste: false,
+  copyOnSelect: false,
   wheelZoom: false,
   wheelZoomSpeed: 1,
   trackpadPan: true,

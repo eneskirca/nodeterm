@@ -35,6 +35,13 @@ describe('reset key lists', () => {
     expect(TERMINAL_RESET_KEYS).not.toContain('tmuxScrollback')
   })
 
+  // Issue #759: the toggle lives in the Terminal section beside word selection, so its reset
+  // button owns it too — resetting puts the clipboard back to explicit-copy only.
+  it('claims copyOnSelect, whose default is off', () => {
+    expect(TERMINAL_RESET_KEYS).toContain('copyOnSelect')
+    expect(resetPatch(['copyOnSelect'] as const)).toEqual({ copyOnSelect: false })
+  })
+
   // A global "reset everything" would empty these; per-section lists must never reach them.
   it.each(['claudeAccounts', 'customAgents', 'seenOnboarding', 'phoneAccessEnabled'])(
     'never resets %s',

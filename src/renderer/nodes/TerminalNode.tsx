@@ -36,6 +36,7 @@ import { LocalTransport } from '../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../terminal/file-drop'
 import type { TerminalTransport } from '../terminal/transport'
 import { guardMiddleClickPaste } from '../terminal/middle-click'
+import { attachCopyOnSelect } from '../terminal/copy-on-select'
 import { patchTerminalScale } from '../terminal/scale-fix'
 import { focusedNodeId, subscribeFocusedNode, focusSurfaceEl } from '../state/focusNode'
 import { parseOsc52 } from '../terminal/osc52'
@@ -3060,6 +3061,26 @@ export function TerminalNode({
     // to the still-live session on first mount); everything below that pushes here is gated on
     // `!parked` so nothing is wired twice.
     const cleanups: Array<() => void> = parked ? parked.cleanups : []
+
+    // Copy-on-select (issue #759). REGISTERED ONCE, at construction, and disposed WITH THE TERMINAL
+    // — the OSC 52 handler's lifecycle, not a per-mount one: its only persistent listener lives on
+    // `term.element`, which travels with the xterm across a park/adopt, so re-attaching on adopt
+    // would stack a second copy per remount. `cleanups` is exactly the right owner — carried over
+    // by a park, run only on the final teardown (both `disposeParked` and the real-teardown branch
+    // below). Both deps are read at EVENT time, never captured: the setting via the store (a
+    // toggle applies to every open terminal on its next drag, parked ones included), and the
+    // clipboard via the QUIET path (a failure toast per drag would be unusable). No `Copied` pill:
+    // that pill exists because tmux copy-mode CLEARS the highlight as it copies; an xterm
+    // selection stays highlighted, so there is no "did it copy?" doubt to answer, and on the
+    // quiet path the pill would claim success for a write that may have failed.
+    if (!parked) {
+      cleanups.push(
+        attachCopyOnSelect(term, {
+          enabled: () => useSettings.getState().settings.copyOnSelect,
+          write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
+        })
+      )
+    }
 
     // Agent state (busy/idle/attention) comes from the agent's own hooks via the
     // agent:status IPC (handled centrally in Canvas) — not from parsing the output here.

@@ -25,6 +25,7 @@ import { useTerminalGlass } from '../../lib/useTerminalGlass'
 import { LocalTransport } from '../../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../../terminal/file-drop'
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
+import { attachCopyOnSelect } from '../../terminal/copy-on-select'
 import {
   createOsc8LinkHandler,
   createUrlLinkProvider,
@@ -247,6 +248,16 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
         }).dispose
       )
     }
+
+    // MIRROR TerminalNode's copy-on-select (issue #759): same helper, same live setting read, same
+    // quiet clipboard path. This xterm is created and disposed by this one effect (no park), so the
+    // per-mount `cleanups` is its whole lifetime.
+    cleanups.push(
+      attachCopyOnSelect(term, {
+        enabled: () => useSettings.getState().settings.copyOnSelect,
+        write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
+      })
+    )
 
     // MIRROR TerminalNode "WRITE-ONLY — `parseOsc52` returns null" — the OSC 52 clipboard-write path.
     // tmux's mouse is ON, so a drag-select in copy-mode emits OSC 52 to this client; this handler

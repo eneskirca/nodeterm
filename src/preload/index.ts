@@ -366,6 +366,8 @@ const api: NodeTerminalApi = {
   },
   clipboard: {
     // Route to the MAIN process: renderer-side `clipboard` access is deprecated in Electron.
+    // Fire-and-forget with no failure surface, so `ClipboardWriteOptions.quiet` has nothing to
+    // silence here and is ignored.
     writeText: (text: string) => ipcRenderer.send(IPC.clipboardWrite, text),
     writeFiles: (paths: string[]) => ipcRenderer.invoke(IPC.clipboardWriteFiles, paths)
   },

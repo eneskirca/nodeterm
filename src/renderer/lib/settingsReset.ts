@@ -15,6 +15,7 @@ export const TERMINAL_RESET_KEYS = [
   'fontFamily',
   'fontSize',
   'terminalWordSeparator',
+  'copyOnSelect',
   'fontWeight',
   'fontWeightBold',
   'drawBoldTextInBrightColors',

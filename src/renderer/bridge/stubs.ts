@@ -20,6 +20,7 @@ import {
   UNKNOWN_CODEX_IDENTITY_CAPS,
   UNKNOWN_CODEX_CLI_CAPS,
   type ClaudeUsage,
+  type ClipboardWriteOptions,
   type NodeTerminalApi,
   type NotifyPayload,
   type UpdatePolicy
@@ -63,7 +64,7 @@ const pnoop = (): Promise<void> => Promise.resolve()
  *  focused and `position:fixed` — i.e. it would swallow every subsequent keystroke. `select()` also
  *  steals focus from xterm's helper textarea, so the previously-focused element is restored too
  *  (the terminal's *selection* survives on its own — xterm paints it, it is not a DOM Selection). */
-function copyViaExecCommand(text: string): boolean {
+function copyViaExecCommand(text: string, quiet = false): boolean {
   const prev = document.activeElement as HTMLElement | null
   let ta: HTMLTextAreaElement | undefined
   try {
@@ -77,6 +78,10 @@ function copyViaExecCommand(text: string): boolean {
     if (!document.execCommand('copy')) throw new Error('execCommand returned false')
     return true
   } catch {
+    // A QUIET write (copy-on-select, issue #759) ends here: it fires on every drag, and a banner
+    // per drag would be unusable. The explicit copy chord still toasts, so a user on plain http
+    // learns the clipboard is blocked the first time they copy deliberately.
+    if (quiet) return false
     // Surfacing beats silence: the user needs to know why nothing landed in their clipboard. The
     // diagnosis differs — plain http has no Clipboard API at all, while in a secure context we got
     // here because the API rejected (permission denied / document not focused) AND the fallback
@@ -173,12 +178,13 @@ export function buildStubApi(): Omit<
       // context (https or localhost); over plain http on a LAN it is undefined, and the old
       // optional-chained call copied nothing and told nobody. execCommand('copy') is deprecated but
       // is the only thing that works there.
-      writeText: (text: string): void => {
+      writeText: (text: string, opts?: ClipboardWriteOptions): void => {
+        const quiet = opts?.quiet === true
         if (typeof navigator !== 'undefined' && navigator.clipboard) {
-          void navigator.clipboard.writeText(text).catch(() => copyViaExecCommand(text))
+          void navigator.clipboard.writeText(text).catch(() => copyViaExecCommand(text, quiet))
           return
         }
-        copyViaExecCommand(text)
+        copyViaExecCommand(text, quiet)
       },
       // A browser cannot place host-local file references on the viewer's OS clipboard.
       writeFiles: async (): Promise<boolean> => false
