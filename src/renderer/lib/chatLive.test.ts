@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS, chatActivity, planLiveReload } from './chatLive'
+import {
+  CHAT_LIVE_RELOAD_MIN_MS,
+  CHAT_OPTIMISTIC_WORKING_MS,
+  chatActivity,
+  planLiveReload,
+  turnEndReloadCarries
+} from './chatLive'
 
 describe('chatActivity — the status row at the end of the ⌘M thread', () => {
   it('a working agent shows the working row', () => {
@@ -50,5 +56,20 @@ describe('planLiveReload — throttled, single-flight, visible-only tail refresh
     expect(CHAT_LIVE_RELOAD_MIN_MS).toBeLessThanOrEqual(2000)
     expect(CHAT_OPTIMISTIC_WORKING_MS).toBeGreaterThan(0)
     expect(CHAT_OPTIMISTIC_WORKING_MS).toBeLessThanOrEqual(30_000)
+  })
+})
+
+describe('turnEndReloadCarries — which turn-end reloads keep unconfirmed sends', () => {
+  it('every reload but the last carries: a queued prompt lands only when the CLI takes it', () => {
+    expect(turnEndReloadCarries({ final: false, working: false })).toBe(true)
+    expect(turnEndReloadCarries({ final: false, working: true })).toBe(true)
+  })
+
+  it('the last reconciles outright while idle — a send that never landed must not linger', () => {
+    expect(turnEndReloadCarries({ final: true, working: false })).toBe(false)
+  })
+
+  it('…but keeps carrying if the agent is working again (that send is the turn now running)', () => {
+    expect(turnEndReloadCarries({ final: true, working: true })).toBe(true)
   })
 })

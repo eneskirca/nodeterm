@@ -87,6 +87,49 @@ describe('ChatPanel send gate', () => {
     expect(sendText).toHaveBeenCalledWith(NODE, 'hello', { typed: true })
   })
 
+  it('keeps the draft editable while Claude works, and Enter queues it as a "Queued" bubble', async () => {
+    setAgentState('working')
+    const ta = await mount()
+    expect(ta.disabled).toBe(false)
+    expect(ta.placeholder).toBe('Claude Code is working — Enter queues your message')
+    await act(async () => type(ta, 'and then this'))
+
+    await act(async () => enter(ta))
+
+    expect(sendText).toHaveBeenCalledWith(NODE, 'and then this', { typed: true })
+    const queued = host.querySelector('.term-chat__msg--queued')
+    expect(queued?.textContent).toContain('and then this')
+    expect(queued?.querySelector('.term-chat__queued-label')?.textContent).toBe('Queued')
+  })
+
+  it('a prompt sent while idle is not marked queued', async () => {
+    setAgentState('done')
+    const ta = await mount()
+    await act(async () => type(ta, 'hello'))
+
+    await act(async () => enter(ta))
+
+    expect(host.querySelector('.term-chat__msg--queued')).toBeNull()
+  })
+
+  it('keeps the draft editable while an agent with unmeasured mid-turn input works, but sends nothing', async () => {
+    useAgentStatus.setState((s) => ({
+      byId: { ...s.byId, [NODE]: { ...(s.byId[NODE] ?? {}), state: 'working' } as (typeof s.byId)[string] }
+    }))
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="grok" />)
+    })
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.disabled).toBe(false)
+    await act(async () => type(ta, 'later'))
+
+    await act(async () => enter(ta))
+
+    expect(sendText).not.toHaveBeenCalled()
+    expect(ta.value).toBe('later')
+    expect(ta.placeholder).toMatch(/send once the reply finishes/)
+  })
+
   it.each(['waiting', 'blocked'] as const)('disables the composer and explains while %s', async (state) => {
     setAgentState(state)
     const ta = await mount()

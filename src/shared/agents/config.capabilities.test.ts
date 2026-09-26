@@ -7,6 +7,7 @@ import {
   BUILTIN_AGENT_IDS,
   canBranch,
   canChat,
+  queuesInputWhileWorking,
   mintsSessionId,
   supportsSessionIdFlag,
   readsClaudeShapedTranscript,
@@ -238,6 +239,16 @@ describe('grok capabilities', () => {
     // for as long as it was claude-only.
     expect(canChat('claude')).toBe(true)
     expect(readsClaudeShapedTranscript('claude')).toBe(true)
+  })
+
+  it('is chat-capable but does NOT get send-while-working — its mid-turn input is unmeasured', () => {
+    // The chat view may only send into a `working` pane when the CLI is known to QUEUE that input
+    // rather than read it as an answer to whatever is on screen. Measured for claude only; adding
+    // grok here without a capture of what grok does with a mid-turn paste + Enter is a guess that
+    // types into a live turn.
+    expect(canChat('grok')).toBe(true)
+    expect(queuesInputWhileWorking('grok')).toBe(false)
+    expect(queuesInputWhileWorking('claude')).toBe(true)
   })
 
   it('fills a context meter from the numbers it states itself', () => {

@@ -128,6 +128,12 @@ describe('applyTail — unconfirmed optimistic sends (live reads)', () => {
     expect(out.messages.every((m) => m.key !== undefined)).toBe(true)
   })
 
+  it('matches regardless of whitespace — a typed send turns tabs into spaces, a paste doubles line breaks', () => {
+    const t = base([say(0, 'q'), say(undefined, 'a\tb\nc', 'user')], 0)
+    const out = applyTail(t, ID, page([say(0, 'q'), say(300, 'a b\n\nc ', 'user')], 0), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['q', 'a b\n\nc '])
+  })
+
   it('matches one-for-one, and never against a user line the thread already had', () => {
     // An OLD "yes" (key 100, already rendered) must not confirm the NEW unconfirmed "yes".
     const t = base([say(100, 'yes', 'user'), say(undefined, 'yes', 'user'), say(undefined, 'yes', 'user')], 100)

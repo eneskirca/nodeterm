@@ -3,8 +3,9 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
+import type { ChatMessage } from '@shared/types'
 import { chipFor } from '../lib/keybindingOverrides'
-import { chatComposerPlaceholder, chatSendRefusal } from '../lib/chatSendGate'
+import { chatComposerPlaceholder, chatSendMode, chatSendRefusal, composerStandsDown } from '../lib/chatSendGate'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
 import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
@@ -22,7 +23,14 @@ import {
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError } from '@shared/chat-page'
 import { Spinner } from '../components/Spinner'
-import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS, chatActivity, planLiveReload } from '../lib/chatLive'
+import {
+  CHAT_LIVE_RELOAD_MIN_MS,
+  CHAT_OPTIMISTIC_WORKING_MS,
+  TURN_END_RELOAD_DELAYS_MS,
+  chatActivity,
+  planLiveReload,
+  turnEndReloadCarries
+} from '../lib/chatLive'
 import { sentCommand } from '@shared/chat-command'
 import { capabilityAgentId, chatReadsLocalOnly, typesChatInput } from '@shared/agents/config'
 import { ChatLoadingStatus } from './ChatPanelFallback'
@@ -211,6 +219,8 @@ export function ChatPanel({
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
   const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
+  // What Enter does now — `queue` lifts the `working` refusal for a CLI that queues mid-turn input.
+  const sendMode = chatSendMode(agentId, { state, hibernated, paused, dropped, sessionEnded })
   const agentLabel = chatAgentLabel(agentId, customAgents)
   // What the row closing the thread says (lib/chatLive.ts). `optimistic` covers the gap between a
   // send and the first hook event: set by `send`, retired by the next state change (the real state
@@ -299,7 +309,9 @@ export function ChatPanel({
   // The ONE tail read a sent local command schedules (see `send`): `/model` or `!ls` fires no hook,
   // so neither a state change nor a live read would ever confirm it.
   const commandReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loadRef = useRef<(live?: boolean, rebind?: boolean) => void>(() => {})
+  const loadRef = useRef<(live?: boolean, rebind?: boolean, carry?: boolean) => void>(() => {})
+  // The turn-end settle reloads (TURN_END_RELOAD_DELAYS_MS) still to fire; cleared on unmount.
+  const settleTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const requestHeldReloadRef = useRef<() => void>(() => {})
 
   // `live` = a read driven by a hook event while the agent works (see `attemptLive`), as opposed to
@@ -311,7 +323,11 @@ export function ChatPanel({
   // `rebind` = the held-request reload (see `requestHeldReload`): QUIET like a live read (no
   // "Loading…", the older-page row left alone, unconfirmed sends kept), and it never cancels an
   // older-page fetch — it is only ever started with none in flight.
-  const load = useCallback((live = false, rebind = false) => {
+  //
+  // `carry` = keep unconfirmed sends (`carryUnconfirmed`). Every live and rebind read does; so do the
+  // turn-end settle reloads but the last (`turnEndReloadCarries`): a prompt queued mid-turn reaches
+  // the transcript only when the CLI takes it from its queue, which can be after the turn ends.
+  const load = useCallback((live = false, rebind = false, carry = live || rebind) => {
     const token = ++reqRef.current
     if (!rebind) olderReqRef.current++
     // The held request this read starts under: once it is applied, the thread is known to show the
@@ -385,7 +401,7 @@ export function ChatPanel({
         // command it is the ONLY signal (no hook fires). A command that starts a real turn is
         // still covered — its `working` state keeps the row (and the send refusal) on its own.
         if (tailConfirmsSends(threadRef.current, identity, res)) setOptimistic(false)
-        setThread((t) => applyTail(t, identity, res, { carryUnconfirmed: live || rebind }))
+        setThread((t) => applyTail(t, identity, res, { carryUnconfirmed: carry }))
         setLoadState('ok')
         setHeldRead({ identity, pendingId: heldAtStart })
         settleHeldReload(heldAtStart)
@@ -508,6 +524,8 @@ export function ChatPanel({
       attemptLiveRef.current = () => {}
       if (liveTimerRef.current !== null) clearTimeout(liveTimerRef.current)
       liveTimerRef.current = null
+      for (const t of settleTimersRef.current) clearTimeout(t)
+      settleTimersRef.current = []
     },
     []
   )
@@ -572,12 +590,26 @@ export function ChatPanel({
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
-  // Reload when a turn completes (working -> not working). Sessions whose hooks never report
-  // `working` never take this path — the bar's ↻ is their reload.
+  // Reload when a turn completes (working -> not working), then again on the settle schedule
+  // (TURN_END_RELOAD_DELAYS_MS): the Stop hook lands before the final reply is written, so the read
+  // at the edge usually misses it. A new turn does NOT cancel the schedule — a queued prompt starts
+  // one the instant the previous turn ends, and cancelling there would hide the finished turn's
+  // reply until the next one ended. Sessions whose hooks never report `working` never take this
+  // path — the bar's ↻ is their reload.
   useEffect(() => {
-    if (prevState.current === 'working' && state !== 'working') load()
+    if (prevState.current === 'working' && state !== 'working') {
+      load(false, false, true)
+      for (const t of settleTimersRef.current) clearTimeout(t)
+      const last = TURN_END_RELOAD_DELAYS_MS.length - 1
+      settleTimersRef.current = TURN_END_RELOAD_DELAYS_MS.map((ms, i) =>
+        setTimeout(() => {
+          const working = useAgentStatus.getState().byId[nodeId]?.state === 'working'
+          loadRef.current(false, false, turnEndReloadCarries({ final: i === last, working }))
+        }, ms)
+      )
+    }
     prevState.current = state
-  }, [state, load])
+  }, [state, load, nodeId])
 
   // Any state change retires the optimistic working row: from here the real state speaks.
   useEffect(() => {
@@ -669,13 +701,17 @@ export function ChatPanel({
   // and core refuses a second one into the same pane meanwhile — which this panel would misread as
   // "can't write to this session". An Enter during a send is simply ignored.
   const sendingRef = useRef(false)
+  // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
+  // has them. Object identity is enough: `applyTail` carries an unconfirmed send as the same object.
+  const queuedRef = useRef(new WeakSet<ChatMessage>())
 
   const send = useCallback(async () => {
     const text = input.trim()
     if (!text || sendingRef.current) return
     // Read the store at SEND time, not the render-time values: a PermissionRequest (or an Eco
     // hibernation) that landed between the last render and this keypress must still block.
-    if (chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
+    const mode = chatSendMode(agentId, useAgentStatus.getState().byId[nodeId] ?? {})
+    if (mode === null) return
     sendingRef.current = true
     try {
       // The kernel's say (chatPaneGate.ts): an agent that announces no quit (codex) may have left a
@@ -707,7 +743,9 @@ export function ChatPanel({
       // Optimistic: show the prompt immediately. A live read keeps it until the transcript carries it
       // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
       justSentRef.current = true
-      setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
+      const sent: ChatMessage = { role: 'user', parts: [{ kind: 'text', text }] }
+      if (mode === 'queue') queuedRef.current.add(sent)
+      setThread((t) => ({ ...t, messages: [...t.messages, sent] }))
       setOptimistic(true)
       setInput('')
       // A local command (`/model`, `!ls`) fires no hook: schedule ONE live tail read, one throttle
@@ -846,7 +884,9 @@ export function ChatPanel({
           // bubble) fall back to their position.
           <div
             key={m.key !== undefined ? `k${m.key}` : `i${i}`}
-            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}`}
+            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+              queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
+            }`}
           >
             {m.parts.map((p, j) =>
               p.kind === 'text' ? (
@@ -898,6 +938,7 @@ export function ChatPanel({
                 </details>
               )
             )}
+            {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
             {turnEnds.has(i) && (
               <ChatTurnActions
                 copyText={turnEnds.get(i)!.copyText}
@@ -938,9 +979,11 @@ export function ChatPanel({
             refusal,
             agentLabel,
             chip: mdChip,
-            answerOnCard: answerCard !== null
+            answerOnCard: answerCard !== null,
+            sendMode
           })}
-          disabled={readonly || refusal !== null}
+          disabled={readonly || composerStandsDown(refusal)}
+          agentBusy={refusal === 'working'}
           onWriteRefused={onWriteRefused}
           sendUnconfirmed={optimistic}
           pathsForFiles={pathsForFiles}

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { agentProcessInPane } from '../terminal/live-work'
-import { canSendFromChat, chatComposerPlaceholder, chatSendRefusal } from './chatSendGate'
+import {
+  canSendFromChat,
+  chatComposerPlaceholder,
+  chatSendMode,
+  chatSendRefusal,
+  composerStandsDown
+} from './chatSendGate'
 
 describe('chatSendRefusal / canSendFromChat', () => {
   it('allows a finished turn and an unknown state (no hook knowledge keeps the historical behavior)', () => {
@@ -71,6 +77,15 @@ describe('chatComposerPlaceholder', () => {
     expect(chatComposerPlaceholder({ ...base, refusal: 'working' })).toBe('Grok is working…')
   })
 
+  it('says what Enter will do mid-turn when the COMPOSER asks (it passes its send mode)', () => {
+    expect(chatComposerPlaceholder({ ...base, agentLabel: 'Claude Code', refusal: 'working', sendMode: 'queue' })).toBe(
+      'Claude Code is working — Enter queues your message'
+    )
+    expect(chatComposerPlaceholder({ ...base, refusal: 'working', sendMode: null })).toBe(
+      'Grok is working — you can type; send once the reply finishes'
+    )
+  })
+
   it('points a dialog at the answer card when that card has controls — the chord is the fallback', () => {
     expect(chatComposerPlaceholder({ ...base, refusal: 'dialog', answerOnCard: true })).toBe(
       'Grok is waiting for your answer — answer on the card above, or press ⌘M to answer in the terminal'
@@ -113,5 +128,35 @@ describe('chatComposerPlaceholder', () => {
     expect(chatComposerPlaceholder({ ...base, readonly: true, refusal: 'dialog' })).toBe(
       "Can't write to this session"
     )
+  })
+})
+
+describe('chatSendMode — what Enter does', () => {
+  it('sends when idle, for any agent', () => {
+    expect(chatSendMode('claude', { state: 'done' })).toBe('send')
+    expect(chatSendMode('grok', { state: 'done' })).toBe('send')
+  })
+
+  it('queues mid-turn only for a CLI measured to queue input (claude, and agents built on it)', () => {
+    expect(chatSendMode('claude', { state: 'working' })).toBe('queue')
+    expect(chatSendMode('grok', { state: 'working' })).toBeNull()
+  })
+
+  it('never lifts any other refusal: a dialog would be ANSWERED, a shell would EXECUTE the text', () => {
+    expect(chatSendMode('claude', { state: 'waiting' })).toBeNull()
+    expect(chatSendMode('claude', { state: 'blocked' })).toBeNull()
+    expect(chatSendMode('claude', { state: 'working', hibernated: true })).toBeNull()
+    expect(chatSendMode('claude', { state: undefined, sessionEnded: true })).toBeNull()
+  })
+})
+
+describe('composerStandsDown — is the whole composer disabled?', () => {
+  it('not while the agent merely works: the draft stays editable', () => {
+    expect(composerStandsDown('working')).toBe(false)
+    expect(composerStandsDown(null)).toBe(false)
+  })
+
+  it('for a dialog or a shell-owned pane', () => {
+    for (const r of ['dialog', 'asleep', 'paused', 'dropped', 'exited'] as const) expect(composerStandsDown(r)).toBe(true)
   })
 })

@@ -6,7 +6,7 @@ import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
 import type { ChatTranscriptPageRequest } from '@shared/chat-page'
 import { useAgentStatus } from '../state/agentStatus'
 import { CHAT_TAIL_PAGE_BYTES } from '../lib/chatPaging'
-import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS } from '../lib/chatLive'
+import { CHAT_LIVE_RELOAD_MIN_MS, CHAT_OPTIMISTIC_WORKING_MS, TURN_END_RELOAD_DELAYS_MS } from '../lib/chatLive'
 
 /**
  * The ⌘M panel's live progress glue (the decisions are unit-tested in `lib/chatLive.test.ts`): a
@@ -261,7 +261,7 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(1)
   })
 
-  it('done clears the row and takes the final reload', async () => {
+  it('done clears the row, takes a read at once and the settle reloads — then stops', async () => {
     await hook('working', true)
     await render()
     await settle(0, { messages: [say(0, 'q')] })
@@ -271,7 +271,104 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(2)
     await settle(1, { messages: [say(0, 'q'), say(100, 'answer')] })
     expect(bubbles()).toEqual(['q', 'answer'])
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+    expect(pending).toHaveLength(2 + TURN_END_RELOAD_DELAYS_MS.length)
     await advance(CHAT_LIVE_RELOAD_MIN_MS * 3)
+
+    expect(pending).toHaveLength(2 + TURN_END_RELOAD_DELAYS_MS.length)
+  })
+
+  it('shows a reply written AFTER the Stop hook without reopening the view', async () => {
+    // Claude Code fires Stop ~50 ms before it appends the final reply, so the read at `done` misses
+    // it; the first settle reload is what finds it.
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await settle(1, { messages: [say(0, 'q')] })
+    expect(bubbles()).toEqual(['q'])
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(2, { messages: [say(0, 'q'), say(100, 'the reply')] })
+
+    expect(bubbles()).toEqual(['q', 'the reply'])
+  })
+
+  it('a new turn does not cancel the settle reloads of the one that just ended', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await settle(1, { messages: [say(0, 'q')] })
+    // A queued prompt starts the next turn the instant this one ends.
+    await hook('working', true)
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(pending.length - 1, { messages: [say(0, 'q'), say(100, 'first reply')] })
+
+    expect(bubbles()).toContain('first reply')
+  })
+
+  it('a prompt queued mid-turn stays "Queued" across the turn-end reload until it lands', async () => {
+    const user = (key: number, t: string): ChatMessage => ({ role: 'user', key, parts: [{ kind: 'text', text: t }] })
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [user(0, 'q')] })
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, 'next')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await hook('done')
+    await settle(pending.length - 1, { messages: [user(0, 'q'), say(100, 'a')] })
+    expect(host.querySelector('.term-chat__msg--queued')?.textContent).toContain('next')
+
+    // Claude Code takes it from its queue and writes it; the next settle read has it.
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(pending.length - 1, { messages: [user(0, 'q'), say(100, 'a'), user(200, 'next')] })
+
+    expect(host.querySelector('.term-chat__msg--queued')).toBeNull()
+    expect(bubbles().filter((b) => b.startsWith('next'))).toHaveLength(1)
+  })
+
+  it('the last settle read drops a queued prompt that never landed while the agent is idle', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, 'removed from the queue')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await hook('done')
+    await settle(pending.length - 1, { messages: [say(0, 'q')] })
+    await advance(TURN_END_RELOAD_DELAYS_MS[0])
+    await settle(pending.length - 1, { messages: [say(0, 'q')] })
+    expect(host.querySelector('.term-chat__msg--queued')).not.toBeNull()
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+    await settle(pending.length - 1, { messages: [say(0, 'q')] })
+
+    expect(host.querySelector('.term-chat__msg--queued')).toBeNull()
+  })
+
+  it('unmounting cancels the settle reloads', async () => {
+    await hook('working', true)
+    await render()
+    await settle(0, { messages: [say(0, 'q')] })
+    await hook('done')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+
+    await advance(TURN_END_RELOAD_DELAYS_MS[TURN_END_RELOAD_DELAYS_MS.length - 1])
+
     expect(pending).toHaveLength(2)
   })
 
@@ -410,8 +507,10 @@ describe('ChatPanel — a sent local command', () => {
     }
     expect(pending.length).toBeGreaterThan(1)
     expect(activity()?.textContent).toBe('Claude Code is working…')
-    // The composer still refuses while the turn runs.
-    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true)
+    // The draft stays editable while the turn runs; for claude, Enter queues (chatSendMode).
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.disabled).toBe(false)
+    expect(ta.placeholder).toBe('Claude Code is working — Enter queues your message')
   })
 
   it('a tail read already in flight defers the command read instead of cancelling it', async () => {

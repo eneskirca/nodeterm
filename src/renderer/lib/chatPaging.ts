@@ -128,6 +128,12 @@ const userText = (m: ChatMessage): string =>
     .join('')
     .trim()
 
+// Whitespace-insensitive, for matching a send against its transcript copy, which is not always
+// byte-identical to what was sent — a typed send turns tabs into spaces (core/typed-input.ts), and a
+// multi-line paste is recorded with its line breaks doubled and trailing spaces kept. Not for
+// commands: `sentCommand` parses `userText` as typed.
+const matchText = (m: ChatMessage): string => userText(m).replace(/\s+/g, ' ')
+
 /** The thread's TRAILING unkeyed user messages — the optimistic sends a live read may still carry. */
 function trailingSends(t: ChatThread): ChatMessage[] {
   const trailing: ChatMessage[] = []
@@ -165,14 +171,16 @@ function commandPart(m: ChatMessage): { name: string; arg: string } | null {
  *
  * Carried: the thread's TRAILING unkeyed `user` messages (in a paged thread only sends are
  * unkeyed; grok's thread is unkeyed throughout, but its whole-file read contains every prompt it
- * rendered, so each one is matched and dropped). Each one is dropped when the new read contains a user message with
- * the same trimmed text, ONE-FOR-ONE, and only among messages NEWER than anything the thread had
- * keyed — an older identical "yes" already on screen must not confirm a new "yes". A sent slash
- * command / `!` line is confirmed the same way by a command tool part (`sentCommand`): same name,
- * and the same trimmed arg when both sides have one.
+ * rendered, so each one is matched and dropped). Each one is dropped when the new read contains a
+ * user message with the same text (whitespace-insensitive — `matchText`), ONE-FOR-ONE, and only
+ * among messages NEWER than anything the thread had keyed — an older identical "yes" already on
+ * screen must not confirm a new "yes". A sent slash command / `!` line is confirmed the same way by
+ * a command tool part (`sentCommand`): same name, and the same trimmed arg when both sides have one.
  *
- * A non-live reload (turn end, ↻) never carries: by then the transcript holds the prompt, and a
- * send whose transcript line never matches (a CLI that rewrites the prompt) must not stay duplicated.
+ * A plain reload (↻, and the LAST turn-end settle reload — `turnEndReloadCarries`) never carries: a
+ * send whose transcript line never matches (a CLI that rewrites the prompt, a queued prompt removed
+ * from the CLI's queue) must not stay duplicated. Earlier turn-end reloads do carry: a prompt queued
+ * mid-turn reaches the transcript only when the CLI takes it from its queue.
  */
 function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage[] {
   const trailing = trailingSends(t)
@@ -184,12 +192,12 @@ function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage
   // in the TERMINAL — is indistinguishable from the composer's own send and confirms it early. The
   // transcript records no sender to tell them apart.
   const fresh = res.messages.filter((m) => m.key === undefined || m.key > newest)
-  const available = fresh.filter((m) => m.role === 'user').map(userText)
+  const available = fresh.filter((m) => m.role === 'user').map(matchText)
   // A slash command / `!` line is recorded as a command, which the reader renders as an assistant
   // tool part — never as the typed text — so a send of one is confirmed by that part instead.
   const commands = fresh.map(commandPart).filter((c): c is { name: string; arg: string } => c !== null)
   return trailing.filter((m) => {
-    const i = available.indexOf(userText(m))
+    const i = available.indexOf(matchText(m))
     if (i >= 0) {
       available.splice(i, 1)
       return false

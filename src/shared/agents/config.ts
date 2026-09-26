@@ -332,6 +332,14 @@ export const TYPED_INPUT_CAPABLE = ['claude'] as const
 // wrong answer is a read of SOMEONE ELSE'S session (see the comment above), which fails OPEN — it
 // shows data rather than hiding it. `config.capabilities.test.ts` pins that grok is absent.
 export const CLAUDE_TRANSCRIPT_READABLE = ['claude'] as const
+// Agents whose CLI QUEUES a prompt submitted while a turn is running, instead of treating it as
+// input to whatever is on screen. The chat view (⌘M) sends into the pane exactly as typing would, so
+// only for these may it send while the agent is `working`. MEASURED for claude (2.1.281, 2026-09-23):
+// a prompt submitted mid-turn (pasted or typed) shows "Press up to edit queued messages" and is
+// delivered at the next tool boundary of the SAME turn (a `queued_command` transcript attachment, not
+// a new user turn).
+// grok is chat-capable but unmeasured here, so it keeps "wait for the reply" until someone checks.
+export const INPUT_QUEUE_CAPABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
 export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
 // Agents whose hooks announce that a session ENDED — i.e. whose orderly `/exit` we will hear about.
@@ -545,6 +553,7 @@ export const hasUsage = (id: AgentId): boolean => includes(USAGE_CAPABLE, id)
 export const canChat = (id: AgentId): boolean => includes(CHAT_CAPABLE, id)
 export const chatReadsLocalOnly = (id: AgentId): boolean => includes(CHAT_LOCAL_ONLY, id)
 export const typesChatInput = (id: AgentId): boolean => includes(TYPED_INPUT_CAPABLE, id)
+export const queuesInputWhileWorking = (id: AgentId): boolean => includes(INPUT_QUEUE_CAPABLE, id)
 /** Can CLAUDE's transcript resolver locate and parse this agent's conversation? Never widen this
  *  to mean "can we read this agent" — see CLAUDE_TRANSCRIPT_READABLE. */
 export const readsClaudeShapedTranscript = (id: AgentId): boolean =>
