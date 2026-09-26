@@ -40,6 +40,18 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
     secret: dependencies.secret,
     validate: validateToken
   })
+  // Built before the controller so the controller's boundary callback can reach it directly; its
+  // context lambdas only run on a request, after `controller` exists.
+  const service = new GitHubIssueService({
+    cache: new GitHubIssueCache(dependencies.userDataDir),
+    coordinator,
+    contextForProject: (projectId) => controller.contextForProject(projectId),
+    projectContextForCache: (projectId) => controller.projectContextForCache(projectId),
+    projectContextForCacheDeletion: (projectId) => controller.projectContextForCacheDeletion(projectId),
+    avatarFetcher: new GitHubAvatarFetcher(),
+    onDelta: (uiId, projectId, changedIssueNumbers) =>
+      dependencies.platform.sendTo(uiId, IPC.githubIssuesChanged(projectId), changedIssueNumbers)
+  })
   const controller = new GitHubHostController({
     project: dependencies.project,
     detectRepository: dependencies.detectRepository,
@@ -54,17 +66,9 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
     onCredentialBoundaryChange: () => {
       coordinator.cancelAll()
       resolver.invalidate()
+      // The branch-pull answers were read under the identity that just moved.
+      service.forgetBranchPulls()
     }
-  })
-  const service = new GitHubIssueService({
-    cache: new GitHubIssueCache(dependencies.userDataDir),
-    coordinator,
-    contextForProject: (projectId) => controller.contextForProject(projectId),
-    projectContextForCache: (projectId) => controller.projectContextForCache(projectId),
-    projectContextForCacheDeletion: (projectId) => controller.projectContextForCacheDeletion(projectId),
-    avatarFetcher: new GitHubAvatarFetcher(),
-    onDelta: (uiId, projectId, changedIssueNumbers) =>
-      dependencies.platform.sendTo(uiId, IPC.githubIssuesChanged(projectId), changedIssueNumbers)
   })
   registerGitHubIssueHandlers(dependencies.platform, service)
 

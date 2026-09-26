@@ -67,6 +67,9 @@ function render(accountMenuItems?: (id: string) => MenuItem[]): void {
         onModalNodeChange={noop}
         onBrowserNav={noop}
         onSetIcon={noop}
+        onChangeNodeLinks={noop}
+        onAttachNodeLink={noop}
+        onDetachNodeLink={noop}
         accountMenuItems={accountMenuItems}
       />
     )

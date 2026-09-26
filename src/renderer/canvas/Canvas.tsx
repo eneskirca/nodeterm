@@ -521,9 +521,11 @@ import { useSystemAccount } from '../state/systemAccount'
 import { useEntitlement } from '../state/entitlement'
 import type { SshServer } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
+import type { GitHubIssueCardView, GitHubLink } from '@shared/github-issues'
 import type {
   BridgeLink,
   ClaudeSessionCopyResult,
+  BoardLogEvent,
   CanvasNodeState,
   ClosedSessionEntry,
   NodeKind,
@@ -545,6 +547,20 @@ import { boardLogEvents } from '../lib/boardLogDiff'
 import { useBoardLog } from '../state/boardLog'
 import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, useViewMode, viewFor } from '../state/viewMode'
 import { GlobalKanbanView } from '../components/kanban/GlobalKanbanView'
+import { linkCard, useGitHubLinks } from '../state/githubLinks'
+import { setGitHubLinkHandler } from './githubLinkActions'
+import { GitHubLinkPicker } from '../components/github/GitHubLinkPicker'
+import { GitHubIssueSummaryModal } from '../components/kanban/GitHubIssueSummaryModal'
+import {
+  addLink,
+  hasLink,
+  linkKey,
+  linkRepository,
+  linkToBoardTitle,
+  removeLink,
+  worktreeBranch
+} from '../lib/githubLinks'
+import { readGitBranch } from '../state/gitBranches'
 import { useFocusNode, FOCUS_SURFACE_ID } from '../state/focusNode'
 import { focusTargetId } from '../lib/focusTarget'
 import {
@@ -2783,6 +2799,130 @@ export function Canvas() {
     },
     [markDirty, api, seedBoard]
   )
+
+  const githubRepository = useMemo(() => linkRepository(projectKanban), [projectKanban])
+  const [githubPicker, setGithubPicker] = useState<{
+    nodeId: string
+    /** Absent = the active project; the Omni board names the lane's project. */
+    projectId?: string
+    anchor: { x: number; y: number }
+    preset?: GitHubIssueCardView[]
+    kindFilter?: 'issue' | 'pull'
+  } | null>(null)
+  const [githubDetails, setGithubDetails] = useState<{ link: GitHubLink; projectId?: string } | null>(null)
+  const [githubDetailsCard, setGithubDetailsCard] = useState<GitHubIssueCardView | null>(null)
+  // The picker / details modal may name a non-active project (Omni kanban lane); resolve its board.
+  const pickerProjectId = githubPicker?.projectId ?? activeProjectId
+  const pickerRepository = useProjects((st) =>
+    githubPicker?.projectId ? linkRepository(st.getProject(githubPicker.projectId)?.kanban) : githubRepository)
+  const detailsKanban = useProjects((st) =>
+    githubDetails?.projectId ? st.getProject(githubDetails.projectId)?.kanban : projectKanban)
+
+  /**
+   * The ONE write path for a node's GitHub links: the node write, the dirty mark and the
+   * board-log event happen together, whichever surface asked (canvas chip, node menu, group
+   * frame, board card, card metadata strip). `boardLogDiff` cannot see this — it diffs the
+   * KANBAN only — so the event is emitted here, exactly as `createNodeInColumn` emits its own.
+   */
+  // Omni kanban names a NON-active project: React Flow holds only the active one, so that edit goes
+  // to the store and the debounced save instead — the same split the `nodeterm:global-*` handlers make.
+  const isLiveProject = (projectId: string | undefined): boolean =>
+    !projectId || projectId === useProjects.getState().activeProjectId
+
+  const nodeLinksIn = useCallback((nodeId: string, projectId?: string): GitHubLink[] | undefined => {
+    if (isLiveProject(projectId)) {
+      return nodesRef.current.find((n) => n.id === nodeId)?.data.github as GitHubLink[] | undefined
+    }
+    return useProjects.getState().getProject(projectId!)?.nodes.find((n) => n.id === nodeId)?.github
+  }, [])
+
+  const setNodeGitHubLinks = useCallback(
+    (nodeId: string, next: GitHubLink[] | undefined, event?: BoardLogEvent, projectId?: string) => {
+      const target = projectId ?? useProjects.getState().activeProjectId
+      if (isLiveProject(projectId)) {
+        setNodes((ns) => ns.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, github: next } } : n)))
+      } else {
+        useProjects.setState((st) => ({
+          projects: st.projects.map((p) =>
+            p.id === projectId
+              ? { ...p, nodes: p.nodes.map((n) => (n.id === nodeId ? { ...n, github: next } : n)) }
+              : p
+          )
+        }))
+      }
+      markDirty()
+      if (event && target) {
+        useBoardLog.getState().append(api, target, { kind: 'event', nodeId, event })
+      }
+    },
+    [setNodes, markDirty, api]
+  )
+
+  const attachNodeLink = useCallback(
+    (nodeId: string, link: GitHubLink, projectId?: string) => {
+      const current = nodeLinksIn(nodeId, projectId)
+      const next = addLink(current, link)
+      // `addLink` answers with the same array for a duplicate or a full node: no write, and no
+      // board-log line claiming something was attached.
+      if (next === current) return
+      setNodeGitHubLinks(nodeId, next, {
+        type: 'github-attached',
+        to: link.kind,
+        title: linkToBoardTitle(link)
+      }, projectId)
+    },
+    [nodeLinksIn, setNodeGitHubLinks]
+  )
+
+  const detachNodeLink = useCallback(
+    (nodeId: string, link: Pick<GitHubLink, 'kind' | 'number'>, projectId?: string) => {
+      const current = nodeLinksIn(nodeId, projectId)
+      if (!hasLink(current, link)) return
+      const removed = current?.find((entry) => entry.kind === link.kind && entry.number === link.number)
+      setNodeGitHubLinks(nodeId, removeLink(current, link), {
+        type: 'github-detached',
+        to: link.kind,
+        title: linkToBoardTitle(removed ?? { ...link })
+      }, projectId)
+    },
+    [nodeLinksIn, setNodeGitHubLinks]
+  )
+
+  // Bridge the link actions to the nodes React Flow instantiates itself, beside the worktree one.
+  useEffect(() => {
+    setGitHubLinkHandler({
+      attach: attachNodeLink,
+      detach: detachNodeLink,
+      set: setNodeGitHubLinks,
+      openPicker: (nodeId, anchor, projectId, options) =>
+        setGithubPicker({
+          nodeId,
+          anchor,
+          ...(projectId ? { projectId } : {}),
+          ...(options?.preset ? { preset: options.preset } : {}),
+          ...(options?.kindFilter ? { kindFilter: options.kindFilter } : {})
+        }),
+      openDetails: (link, projectId) => setGithubDetails({ link, ...(projectId ? { projectId } : {}) })
+    })
+    return () => setGitHubLinkHandler(null)
+  }, [attachNodeLink, detachNodeLink, setNodeGitHubLinks])
+
+  // The details modal renders a CARD, and a chip only knows a link. Resolve it through the same
+  // cache the chips use so the modal never opens on a placeholder.
+  useEffect(() => {
+    if (!githubDetails) { setGithubDetailsCard(null); return }
+    const projectId = githubDetails.projectId ?? useProjects.getState().activeProjectId
+    if (!projectId) return
+    const { link } = githubDetails
+    let live = true
+    const settle = (): void => {
+      const card = useGitHubLinks.getState().cards[projectId]?.[linkKey(link)]?.card
+      if (live && card) setGithubDetailsCard(card)
+    }
+    settle()
+    void useGitHubLinks.getState().ensureCard(api.githubIssues, projectId, link).then(settle)
+    return () => { live = false }
+  }, [githubDetails, api])
 
   // The node states that go on the wire: React Flow's managed nodes minus the ephemeral cards
   // (subagent / loop), which every client derives for itself from the agent:status stream.
@@ -8916,10 +9056,47 @@ export function Canvas() {
             ] as MenuItem[]
           })()
         : []),
+      // Attach a GitHub issue / PR (issue #462). Hidden ENTIRELY without a repository — an
+      // unconfigured project shows no GitHub surface at all, so there is nothing to explain — and
+      // single-target only: one link belongs to one session, and a multi-select attach would be a
+      // bulk claim nobody asked for.
+      ...(ids.length === 1 && githubRepository && !isHidden('github-attach', hidden) && (() => {
+        const n = nodesRef.current.find((nd) => nd.id === ids[0])
+        return n?.type === 'terminal' || n?.type === 'sticky' || n?.type === 'browser'
+      })()
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Attach GitHub issue / PR…',
+              onClick: () => setGithubPicker({ nodeId: ids[0], anchor: at ?? { x: 200, y: 200 } })
+            },
+            ...((): MenuItem[] => {
+              const links = (nodesRef.current.find((nd) => nd.id === ids[0])?.data.github ??
+                []) as GitHubLink[]
+              return links.length
+                ? [{
+                    type: 'submenu',
+                    label: 'Detach GitHub link',
+                    // The chip's own freshness story: the cached card's title when there is one.
+                    children: links.map((link): MenuItem => ({
+                      label: linkToBoardTitle(
+                        link,
+                        linkCard(useProjects.getState().activeProjectId, link)
+                      ),
+                      danger: true,
+                      onClick: () => detachNodeLink(ids[0], link)
+                    }))
+                  }]
+                : []
+            })()
+          ] as MenuItem[])
+        : []),
       { type: 'separator' },
       { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => deleteNodes(ids) }
     ])
   }, [
+    githubRepository,
+    detachNodeLink,
     groupSelection,
     addToExistingGroup,
     removeFromGroup,
@@ -9161,6 +9338,41 @@ export function Canvas() {
                 onClick: () => openWorktreeDialog(groupId)
               } as MenuItem
             ]),
+        // An explicit re-check for the frame's branch. The suggestion has no timer of its own, so
+        // this is how a pull request opened since the frame last looked becomes visible.
+        ...(githubRepository && !isSshProject && groupHasWorktree(groupId)
+          ? [
+              {
+                label: 'Check for pull request',
+                icon: <IconBranch />,
+                onClick: () => {
+                  const projectId = useProjects.getState().activeProjectId
+                  const wt = nodesRef.current.find((n) => n.id === groupId)?.data.worktree
+                  if (!wt) return
+                  // The branch the frame shows, not the binding: the frame drops an answer for
+                  // any other branch, so asking about the binding could change nothing.
+                  const branch = worktreeBranch(
+                    readGitBranch(api.git, wt.path),
+                    useWorktrees.getState().statusByPath[wt.path],
+                    wt
+                  )
+                  if (!projectId || !branch) return
+                  void useGitHubLinks.getState()
+                    .fetchPullsForBranch(api.githubIssues, projectId, groupId, branch, { force: true })
+                }
+              } as MenuItem
+            ]
+          : []),
+        ...(githubRepository &&
+        !isHidden('github-attach', useSettings.getState().settings.hiddenNodeMenuItems)
+          ? [
+              {
+                label: 'Attach GitHub issue / PR…',
+                onClick: () =>
+                  setGithubPicker({ nodeId: groupId, anchor: at ?? { x: 200, y: 200 } })
+              } as MenuItem
+            ]
+          : []),
         { label: 'Ungroup', icon: <IconUngroup />, onClick: () => ungroup(groupId) },
         {
           label: 'Delete (keeps nodes)',
@@ -9171,6 +9383,8 @@ export function Canvas() {
       ])
     },
     [
+      githubRepository,
+      api,
       setNodesColor,
       ungroup,
       groupHasWorktree,
@@ -14769,6 +14983,38 @@ export function Canvas() {
           onBrowserNav={browserNavFromKanban}
           onSetIcon={setNodeIcon}
           accountMenuItems={accountSwitchRows}
+          onChangeNodeLinks={setNodeGitHubLinks}
+          onAttachNodeLink={attachNodeLink}
+          onDetachNodeLink={detachNodeLink}
+          githubRepository={githubRepository}
+        />
+      )}
+      {githubPicker && pickerProjectId && pickerRepository && (
+        <GitHubLinkPicker
+          projectId={pickerProjectId}
+          repository={pickerRepository}
+          existing={nodeLinksIn(githubPicker.nodeId, githubPicker.projectId) ?? []}
+          anchor={githubPicker.anchor}
+          {...(githubPicker.preset ? { preset: githubPicker.preset } : {})}
+          {...(githubPicker.kindFilter ? { kindFilter: githubPicker.kindFilter } : {})}
+          onPick={(link) => {
+            attachNodeLink(githubPicker.nodeId, link, githubPicker.projectId)
+            setGithubPicker(null)
+          }}
+          onClose={() => setGithubPicker(null)}
+        />
+      )}
+      {githubDetails && githubDetailsCard && (
+        // Read-only: moving a card between columns is a board affair, and this modal is reached
+        // from a node's chip, which has no column of its own to move.
+        <GitHubIssueSummaryModal
+          issue={githubDetailsCard}
+          columns={(detailsKanban ?? seedBoard).columns}
+          moving={false}
+          readOnly
+          kind={githubDetails.link.kind}
+          onMove={() => undefined}
+          onClose={() => setGithubDetails(null)}
         />
       )}
       <UpdateCard />

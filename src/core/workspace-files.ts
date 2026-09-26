@@ -20,6 +20,7 @@ import {
   type CanvasLayout,
   type LayoutViewports
 } from '../shared/canvas-layout'
+import { sanitizeNodeGitHubLinks } from '../shared/github-link'
 
 /**
  * Drop a browser node's persisted `partition` unless it is exactly the jar THIS project (its
@@ -352,9 +353,9 @@ export function projectToFile(
   // Trigger specs are additionally normalized on the way OUT too, so a malformed spec that
   // reached the live nodes some other way (a peer mutation, a hand edit) is never written into
   // the shared file as if it were ours.
-  const nodes = sanitizeNodeTriggers(
+  const nodes = sanitizeNodeGitHubLinks(sanitizeNodeTriggers(
     stripSharedNodeExec(p.cwd ? toPortableNodes(p.nodes, p.cwd) : p.nodes)
-  )
+  ))
   const icon = sanitizeProjectIcon(p.icon)
   // The SECOND seam for layouts. Live project data is reachable by a peer canvas mutation and by a
   // hand edit that already got past a read, and whatever we write is what the next machine trusts:
@@ -460,7 +461,7 @@ export function sanitizeLoadedClosedSessions(x: unknown): ClosedSessionEntry[] |
     return {
       ...rest,
       ...(typeof sessionId === 'string' && sessionId ? { sessionId } : {}),
-      node: sanitizeNodeTriggers([e.node])[0]
+      node: sanitizeNodeGitHubLinks(sanitizeNodeTriggers([e.node]))[0]
     }
   })
 }
@@ -528,12 +529,12 @@ export function fileToProject(
     // `partition` survives only when it is exactly the one THIS project (base.id, machine-local)
     // would mint — a foreign/cloned/unsafe one drops to un-owned default session. See
     // loadedAgentBrowserPartition; without it a cloned project.json forges another project's jar.
-    nodes: sanitizeNodeTriggers(
+    nodes: sanitizeNodeGitHubLinks(sanitizeNodeTriggers(
       sanitizeBrowserPartitions(
         applyLocalNodeExec(base.cwd ? resolveNodes(f.nodes, base.cwd) : f.nodes, base.localExec),
         base.id
       )
-    ),
+    )),
     ...(f.bridges ? { bridges: f.bridges } : {}),
     ...(f.ropes ? { ropes: f.ropes } : {}),
     ...(defaultAccountId ? { defaultAccountId } : {}),

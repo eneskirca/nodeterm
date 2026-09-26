@@ -44,3 +44,8 @@ export async function readBranchStatus(git: GitApi, cwd: string, sshProjectId?: 
 export function useGitBranch(git: GitApi, cwd?: string, sshProjectId?: string): string | undefined {
   return useStore(storeFor(git), (s) => cwd ? s.branches[keyFor(cwd, sshProjectId)] : undefined)
 }
+
+/** Non-reactive read of the same observation, for event handlers. */
+export function readGitBranch(git: GitApi, cwd: string, sshProjectId?: string): string | undefined {
+  return storeFor(git).getState().branches[keyFor(cwd, sshProjectId)]
+}

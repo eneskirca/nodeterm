@@ -1,3 +1,5 @@
+import type { GitHubLink } from '@shared/github-issues'
+import { GitHubLinkChip } from '../components/github/GitHubLinkChip'
 import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
 import { Tooltip } from '../components/Tooltip'
 import { IconClose } from '../components/icons'
@@ -50,6 +52,7 @@ export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode
             with the one obvious Stop. Renders nothing otherwise (and, until PR 7 ships the verb that
             drives a lease, in every case today). */}
         <BrowserDrivingIndicator nodeId={id} />
+        <GitHubLinkChip nodeId={id} links={(data.github as GitHubLink[] | undefined) ?? []} variant="node" />
         <span className="term-node__spacer" />
         <Tooltip label="Close">
           <button className="term-node__close" aria-label="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>
