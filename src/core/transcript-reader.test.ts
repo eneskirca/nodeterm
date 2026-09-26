@@ -108,7 +108,7 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { parseChatMessages, parseChatWindow, readChatWindow } from './transcript-reader'
+import { parseChatMessages, parseChatWindow, readChatWindow, unwrapPastedContent } from './transcript-reader'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -804,5 +804,88 @@ describe('command args are capped like tool args', () => {
       name: '!',
       arg: 'a'.repeat(200)
     })
+  })
+})
+
+describe('parseChatMessages — prompts queued while a turn was running', () => {
+  // Shapes copied from a real claude 2.1.281 transcript: the prompt was sent mid-turn, and Claude
+  // Code recorded it only as queue-operation rows plus a `queued_command` attachment, delivered
+  // between the tool result and the final reply of the SAME turn.
+  const rows = [
+    { type: 'user', message: { role: 'user', content: 'Run sleep 8, then say done sleeping' } },
+    { type: 'queue-operation', operation: 'enqueue', content: 'What is 2+2?' },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'sleep 8' } }] } },
+    { type: 'queue-operation', operation: 'remove', content: 'What is 2+2?' },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: '' }] } },
+    { type: 'attachment', attachment: { type: 'queued_command', prompt: 'What is 2+2?' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done sleeping\n\n4' }] } }
+  ].map((r) => JSON.stringify(r))
+
+  it('shows the queued prompt as a user message, where it was delivered', () => {
+    const messages = parseChatMessages(rows)
+
+    expect(messages.map((m) => [m.role, m.parts[0]])).toEqual([
+      ['user', { kind: 'text', text: 'Run sleep 8, then say done sleeping' }],
+      ['assistant', { kind: 'tool', name: 'Bash', arg: 'sleep 8' }],
+      ['user', { kind: 'text', text: 'What is 2+2?' }],
+      ['assistant', { kind: 'text', text: 'done sleeping\n\n4' }]
+    ])
+  })
+
+  it('keys a queued prompt by its line in a paged read, like any other message', () => {
+    const file = Buffer.from(rows.map((r) => r + '\n').join(''))
+    const queuedAt = file.indexOf('{"type":"attachment"')
+
+    const r = parseChatWindow(file, 0)
+
+    expect(r.messages.find((m) => m.role === 'user' && m.parts[0]?.kind === 'text' && m.parts[0].text === 'What is 2+2?')?.key).toBe(queuedAt)
+  })
+
+  it('keeps the text of a queued prompt given as content blocks, and skips an empty one', () => {
+    const blocks = JSON.stringify({
+      type: 'attachment',
+      attachment: { type: 'queued_command', prompt: [{ type: 'image' }, { type: 'text', text: 'look at this' }] }
+    })
+    const empty = JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: '  ' } })
+    const other = JSON.stringify({ type: 'attachment', attachment: { type: 'hook_success', prompt: 'nope' } })
+
+    const messages = parseChatMessages([blocks, empty, other])
+
+    expect(messages).toEqual([{ role: 'user', parts: [{ kind: 'text', text: 'look at this' }] }])
+  })
+})
+
+describe("parseChatMessages — Claude Code's paste marker", () => {
+  it('unwraps a multi-line pasted prompt to the text the user typed', () => {
+    // Recorded verbatim by claude 2.1.281 for a prompt pasted into the pane.
+    const content =
+      '\n\n<pasted_content id="4dd6">\nWhere do they get these wonderful toys!?\n\nFrom outer space of course \n\n- terribly misquoted movies\n</pasted_content id="4dd6">\n'
+    const row = JSON.stringify({ type: 'user', message: { role: 'user', content } })
+
+    const [message] = parseChatMessages([row])
+
+    expect(message?.parts[0]).toEqual({
+      kind: 'text',
+      text: 'Where do they get these wonderful toys!?\n\nFrom outer space of course \n\n- terribly misquoted movies'
+    })
+  })
+
+  it('unwraps the marker in a queued prompt too', () => {
+    const row = JSON.stringify({
+      type: 'attachment',
+      attachment: { type: 'queued_command', prompt: '<pasted_content id="a1">\none\ntwo\n</pasted_content id="a1">' }
+    })
+
+    const [message] = parseChatMessages([row])
+
+    expect(message?.parts[0]).toEqual({ kind: 'text', text: 'one\ntwo' })
+  })
+
+  it('leaves a prompt alone when the tags are not a matched pair', () => {
+    const mentions = 'what does <pasted_content id="x"> mean?'
+    const mismatched = '<pasted_content id="a">hi</pasted_content id="b">'
+
+    expect(unwrapPastedContent(mentions)).toBe(mentions)
+    expect(unwrapPastedContent(mismatched)).toBe(mismatched)
   })
 })

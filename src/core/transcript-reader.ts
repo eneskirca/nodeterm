@@ -243,6 +243,32 @@ export async function readTranscriptLines(filePath: string): Promise<TranscriptL
   return parseTranscriptLines(buf)
 }
 
+/**
+ * Claude Code records a multi-line PASTE wrapped in its own marker —
+ * `<pasted_content id="4dd6">\n…\n</pasted_content id="4dd6">` (measured, 2.1.281). Rendered as
+ * markdown, the sanitizer drops the opening tag but the closing one (an attribute on an end tag is
+ * not HTML) showed as literal text. Only a matched pair with the same id is unwrapped, so a prompt
+ * that merely mentions the tag is left alone.
+ */
+export function unwrapPastedContent(text: string): string {
+  const unwrapped = text.replace(
+    /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g,
+    (_m, _id: string, inner: string) => inner
+  )
+  return unwrapped === text ? text : unwrapped.trim()
+}
+
+/** A queued prompt is a string, or content blocks (a prompt with a pasted image) — keep the text. */
+function queuedPromptText(prompt: unknown): string {
+  if (typeof prompt === 'string') return unwrapPastedContent(prompt)
+  if (!Array.isArray(prompt)) return ''
+  return prompt
+    .map((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+    .filter((t) => t !== '')
+    .map(unwrapPastedContent)
+    .join('\n')
+}
+
 // Reconstruct structured chat messages from raw transcript JSONL lines. An assistant line's
 // text + tool_use blocks become one message's ordered parts; a later user-line tool_result is
 // correlated back onto its tool part by tool_use_id. User lines that carry only tool_results
@@ -308,6 +334,7 @@ function parseChatRecords(
       timestamp?: unknown
       effort?: unknown
       message?: { content?: unknown; model?: unknown }
+      attachment?: { type?: unknown; prompt?: unknown }
     }
     try {
       o = JSON.parse(raw)
@@ -362,7 +389,7 @@ function parseChatRecords(
         content?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
-        if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
+        if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: unwrapPastedContent(c.text) })
         else if (c.type === 'tool_result') {
           const tool = c.tool_use_id ? toolById.get(c.tool_use_id) : undefined
           const s = summarizeResult(c.content)
@@ -393,8 +420,14 @@ function parseChatRecords(
           push({ role: 'assistant', parts: [{ kind: 'tool', name: COMMAND_OUTPUT_TOOL, arg: '', result: s }] }, offset)
         }
       } else {
-        push({ role: 'user', parts: [{ kind: 'text', text: content }] }, offset)
+        push({ role: 'user', parts: [{ kind: 'text', text: unwrapPastedContent(content) }] }, offset)
       }
+    } else if (o.type === 'attachment' && o.attachment?.type === 'queued_command') {
+      // A prompt submitted while a turn was running. Claude Code never records it as a `user`
+      // entry: it delivers it at the next tool boundary of the SAME turn as this attachment
+      // (measured, 2.1.281). Without this branch the prompt vanished from the chat history.
+      const text = queuedPromptText(o.attachment.prompt)
+      if (text.trim()) push({ role: 'user', parts: [{ kind: 'text', text }] }, offset)
     }
   }
   const out: ChatRecordsOut = { messages, unmatched }
