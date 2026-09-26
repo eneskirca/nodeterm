@@ -40,6 +40,8 @@ const fromFirstArgField = (args: unknown[]): unknown =>
 const EXTRACTORS: Record<string, (args: unknown[]) => unknown> = {
   [IPC.githubIssuesSubscribe]: fromFirstArgField,
   [IPC.githubIssuesQuery]: fromFirstArgField,
+  [IPC.githubIssuesLookup]: fromFirstArgField,
+  [IPC.githubIssuesSearch]: fromFirstArgField,
   [IPC.githubIssuesMove]: fromFirstArgField,
   [IPC.githubIssuesRefresh]: fromFirstArg,
   [IPC.githubIssuesCreateLabels]: fromFirstArg,

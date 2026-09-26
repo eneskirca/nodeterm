@@ -28,7 +28,8 @@ export const HIDEABLE_MENU_ITEMS: readonly HideableRow[] = [
   { id: 'collapse', label: 'Collapse / Expand' },
   { id: 'markdown-view', label: 'Markdown view' },
   { id: 'refresh-terminal', label: 'Refresh terminal' },
-  { id: 'vanilla-restart', label: 'Restart on subscription' }
+  { id: 'vanilla-restart', label: 'Restart on subscription' },
+  { id: 'github-attach', label: 'Attach GitHub issue / PR' }
 ]
 
 /** Hideable terminal node header buttons, in header order. */

@@ -182,6 +182,8 @@ import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
 import { ContextMeter } from '../components/ContextMeter'
+import type { GitHubLink } from '@shared/github-issues'
+import { GitHubLinkChip } from '../components/github/GitHubLinkChip'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { isHidden } from '../lib/ui-visibility'
 import { useTerminalGlass } from '../lib/useTerminalGlass'
@@ -5522,6 +5524,7 @@ export function TerminalNode({
             SSH {(data.ssh as SshConnection).user}@{(data.ssh as SshConnection).host}
           </span>
         ) : null}
+        <GitHubLinkChip nodeId={id} links={(data.github as GitHubLink[] | undefined) ?? []} variant="node" />
         {showUsage && <ContextMeter sessionId={status?.sessionId ?? null} nodeId={id} remote={!!remoteSession} agentId={agentId} />}
         {/* Who else is in this node. Subscribes to presence itself — see PresenceChips. */}
         <PresenceChips nodeId={id} />

@@ -21,6 +21,13 @@ describe('eventBody — the activity sentence', () => {
     )
   })
 
+  it('names the kind and the item for an attach / detach', () => {
+    expect(eventBody({ type: 'github-attached', to: 'pull', title: '#584 Pull cards' }))
+      .toBe('attached PR #584 Pull cards')
+    expect(eventBody({ type: 'github-detached', to: 'issue', title: '#462 Board' }))
+      .toBe('detached issue #462 Board')
+  })
+
   it('an unknown future type falls back neutrally', () => {
     expect(eventBody({ type: 'something-new' as BoardLogEvent['type'] })).toBe('updated this card')
   })

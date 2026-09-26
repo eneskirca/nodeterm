@@ -4862,6 +4862,34 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   scoped class has none, so the fail-closed default cannot silently swallow a shipped verb. Deliberate v1 gaps: column-level
   events are stored but no card feed shows them; canvas-born nodes get no card-created; no
   card-deleted type.
+  **Explicit node ↔ issue/PR links (issue #462 phase 3):** a node carries `CanvasNodeState.github`
+  (`GitHubLink[]` — kind + number + a title SNAPSHOT; the repository is the project's and is never
+  stored per link, the github.com URL is derived by `githubLinkUrl`). It is git-shared CONTENT, so
+  `sanitizeNodeGitHubLinks` (@shared/github-link) runs on EVERY crossing in BOTH directions
+  (`projectToFile`, `fileToProject`, `sanitizeLoadedClosedSessions`, `sanitizeInboundNode`) — the
+  same rule and the same reason as `sanitizeNodeTriggers`. **A link exists only because the user
+  made it**: nothing is inferred from output, transcripts or a branch name, and a bad guess is only
+  ever a suggestion the user can dismiss. Core serves two new reads that BOTH shells register
+  (`core/github/handlers.ts`): `lookup` resolves one number cache-first and falls back to
+  `client.getIssueOrPull` — a SIBLING of `getIssue`, whose pull-request refusal is load-bearing for
+  `moveIssue` and stays — reporting every refusal as a VALUE (`GitHubLookupResult`), because
+  Electron `invoke` and the ws-bridge's `RpcErr` both flatten a typed code and the picker must
+  render `not-approved` as a disabled row; and `search`, a METHOD rather than a `columnId` sentinel
+  on `query` (a sentinel would collide with a real column id, leak into `counts` keys and the relay
+  jail, and force every `query` caller to handle a third state), whose absent `kind` means BOTH
+  kinds — the opposite of `query`, where absent means issues so a pre-pull-request caller gets the
+  page it always got. `query` and `search` share the column-blind `candidates`. The renderer keeps
+  ONE write funnel (`setNodeGitHubLinks` in Canvas: node write + `markDirty` + the board-log
+  `github-attached` / `github-detached` event, which `boardLogDiff` cannot emit because it diffs
+  the KANBAN only), reached from every surface through the module bridge
+  `canvas/githubLinkActions.ts` — the same indirection `setWorktreeActionHandler` uses. Canvas
+  chips hold NO host subscription (the board's is ref-counted) and do NOT refresh while mounted:
+  `state/githubLinks.ts`'s 5-minute TTL only gates the NEXT `ensureCard` (a mount), and a board
+  load re-seeds the store. Its per-project `gate`, per-link `missing` and transient-failure
+  `backoff` are what stop a dozen chips re-asking; host-side, `lookup` single-flights per
+  `(repository, number)` and memoizes API answers for a minute (the `refresh` floor's reasoning).
+  The Omni board scopes a lane's chips with the `GitHubLinkProject` context, and the funnel takes
+  that `projectId`: the active project's edit goes to React Flow, any other to the store.
   Per-column "+ New session" menus create agents/terminal/sticky nodes assigned to the column
   (assignment written UN-pruned — the fresh node isn't in the derived list yet). The column
   half-pill itself: (`components/kanban/ColumnPill.tsx`, `columnForNode` in lib/kanban; rendered

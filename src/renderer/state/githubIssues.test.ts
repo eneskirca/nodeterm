@@ -28,6 +28,8 @@ function api(): GitHubIssuesApi {
     query: vi.fn(async (request) => request.kind === 'pull'
       ? pullPage(request.columnId === 'todo' ? 200 : 300, request.columnId)
       : page(request.columnId === 'todo' ? 2 : 3, request.columnId)),
+    lookup: vi.fn(async () => ({ ok: false as const, reason: 'not-found' as const })),
+    search: vi.fn(async () => ({ items: [], partial: false })),
     refresh: vi.fn(async () => {}),
     moveIssue: vi.fn(async () => ({ status: 'configuration-changed' as const })),
     createMissingLabels: vi.fn(async () => ({ status: 'confirmed' as const, created: [], remaining: [] })),

@@ -24,6 +24,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
       kind: 'browser',
       url: n.url,
       partition: n.partition,
+      github: n.github,
       spawn: {} as ModalSpawn
     }
   }
@@ -37,6 +38,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
       text: txt,
       textUpdatedAt: n.textUpdatedAt,
       textUpdatedBy: n.textUpdatedBy,
+      github: n.github,
       spawn: {} as ModalSpawn
     }
   }
@@ -60,6 +62,7 @@ export function toKanbanSessionState(n: CanvasNodeState): KanbanSession | null {
     color: n.color ?? SYSTEM_NODE_COLORS[0],
     kind: 'terminal',
     agentId: n.agentId,
+    github: n.github,
     spawn
   }
 }

@@ -14,6 +14,8 @@ describe('projectScopeOf', () => {
   it.each([
     [IPC.githubIssuesSubscribe, [{ projectId: 'p1' }]],
     [IPC.githubIssuesQuery, [{ projectId: 'p1' }]],
+    [IPC.githubIssuesLookup, [{ projectId: 'p1', number: 1 }]],
+    [IPC.githubIssuesSearch, [{ projectId: 'p1', search: 'x' }]],
     [IPC.githubIssuesMove, [{ projectId: 'p1' }]],
     [IPC.githubIssuesRefresh, ['p1', true]],
     [IPC.githubIssuesCreateLabels, ['p1']],

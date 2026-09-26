@@ -25,6 +25,9 @@ import { boardLogEvents } from '../../lib/boardLogDiff'
 import { markWorkspaceDirty } from '../../state/workspaceDirty'
 import type { KanbanCreateChoice, KanbanSession } from './KanbanView'
 import type { NodeIcon } from '@shared/node-icon'
+import { GitHubLinkProject } from '../github/GitHubLinkChip'
+import { openGitHubLinkPicker, setGitHubLinks } from '../../canvas/githubLinkActions'
+import { linkRepository } from '../../lib/githubLinks'
 
 /**
  * Global (Omni) Kanban overview — one swimlane per open project.
@@ -87,6 +90,9 @@ const Swimlane = memo(function Swimlane({
   }, [requestedCardNodeId, sessions])
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
+  // GitHub links go through Canvas's funnel with this lane's projectId, which routes the active
+  // project's edit to React Flow and any other project's to the store (see githubLinkActions).
+  const githubRepository = linkRepository(board)
   const sessionIds = useMemo(() => sessions.map(s => s.id), [sessions])
 
   const paletteLabels = useMemo(() => boardLabels(board), [board])
@@ -203,6 +209,15 @@ const Swimlane = memo(function Swimlane({
       { label: 'Open card', icon: <IconExternal />, onClick: () => setModalNodeId(nodeId) },
       { label: 'Open on canvas', icon: <IconExternal />, onClick: () => onOpenNode(nodeId, projectId) },
       ...(moveTargets.length ? [{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets } as MenuItem] : []),
+      ...(githubRepository
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Attach GitHub issue / PR…',
+              onClick: () => openGitHubLinkPicker(nodeId, cardMenu ?? { x: 200, y: 200 }, projectId)
+            }
+          ] as MenuItem[])
+        : []),
       { type: 'separator' },
       { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(projectId, nodeId) }
     ]
@@ -214,77 +229,82 @@ const Swimlane = memo(function Swimlane({
     setCollapsed((value) => !value)
   }
   return (
-    <div
-      id={`swimlane-${projectId}`}
-      className={`kanban-swimlane${highlight ? ' kanban-swimlane--highlight' : ''}${collapsed ? ' kanban-swimlane--collapsed' : ''}`}
-      style={{ ['--swimlane-color' as string]: projectColor || 'rgba(128,128,128,0.3)' }}
-    >
+    <GitHubLinkProject.Provider value={projectId}>
       <div
-        className="kanban-swimlane__header"
-        role="button"
-        tabIndex={0}
-        aria-expanded={!collapsed}
-        onClick={toggleCollapsed}
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter' && event.key !== ' ') return
-          event.preventDefault()
-          toggleCollapsed()
-        }}
-        title={collapsed ? 'Expand swimlane' : 'Collapse swimlane'}
+        id={`swimlane-${projectId}`}
+        className={`kanban-swimlane${highlight ? ' kanban-swimlane--highlight' : ''}${collapsed ? ' kanban-swimlane--collapsed' : ''}`}
+        style={{ ['--swimlane-color' as string]: projectColor || 'rgba(128,128,128,0.3)' }}
       >
-        <span className="kanban-swimlane__toggle" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
-        <span className="kanban-header__dot" style={{ background: projectColor || '#444' }} />
-        <span className="kanban-header__name">{projectName}</span>
-        <span className="kanban-swimlane__count">{sessions.length} sessions</span>
-      </div>
-      {!collapsed && (
-        <div className="kanban-board kanban-swimlane__board">
-          <div className="kanban-board__columns">
-            <KanbanColumn
-              column={null}
-              lanes={lanesFor(null)}
-              createOptions={createOptions}
-              onCreate={(choice, colId) => onCreateNode(projectId, choice, colId)}
-              onDragEnd={handleDragEnd}
-              onDropOnColumn={dropOnColumn}
-            />
-            {board.columns.map(col => (
+        <div
+          className="kanban-swimlane__header"
+          role="button"
+          tabIndex={0}
+          aria-expanded={!collapsed}
+          onClick={toggleCollapsed}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            toggleCollapsed()
+          }}
+          title={collapsed ? 'Expand swimlane' : 'Collapse swimlane'}
+        >
+          <span className="kanban-swimlane__toggle" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+          <span className="kanban-header__dot" style={{ background: projectColor || '#444' }} />
+          <span className="kanban-header__name">{projectName}</span>
+          <span className="kanban-swimlane__count">{sessions.length} sessions</span>
+        </div>
+        {!collapsed && (
+          <div className="kanban-board kanban-swimlane__board">
+            <div className="kanban-board__columns">
               <KanbanColumn
-                key={col.id}
-                column={col}
-                lanes={lanesFor(col.id)}
-                onRename={(id, t) => commit(renameColumn(board, id, t))}
-                onRecolor={(id, c) => commit(recolorColumn(board, id, c))}
-                onDelete={(id) => commit(deleteColumn(board, id))}
+                column={null}
+                lanes={lanesFor(null)}
                 createOptions={createOptions}
                 onCreate={(choice, colId) => onCreateNode(projectId, choice, colId)}
-                onColumnDragStart={handleColumnDragStart}
                 onDragEnd={handleDragEnd}
                 onDropOnColumn={dropOnColumn}
               />
-            ))}
-            <button className="kanban-add-col" onClick={() => commit(addColumn(board, 'New column', nextColumnColor(board)))}>+ Add column</button>
+              {board.columns.map(col => (
+                <KanbanColumn
+                  key={col.id}
+                  column={col}
+                  lanes={lanesFor(col.id)}
+                  onRename={(id, t) => commit(renameColumn(board, id, t))}
+                  onRecolor={(id, c) => commit(recolorColumn(board, id, c))}
+                  onDelete={(id) => commit(deleteColumn(board, id))}
+                  createOptions={createOptions}
+                  onCreate={(choice, colId) => onCreateNode(projectId, choice, colId)}
+                  onColumnDragStart={handleColumnDragStart}
+                  onDragEnd={handleDragEnd}
+                  onDropOnColumn={dropOnColumn}
+                />
+              ))}
+              <button className="kanban-add-col" onClick={() => commit(addColumn(board, 'New column', nextColumnColor(board)))}>+ Add column</button>
+            </div>
           </div>
-        </div>
-      )}
-      {cardMenu && byId.has(cardMenu.nodeId) && (
-        <ContextMenu x={cardMenu.x} y={cardMenu.y} zIndex={60} items={cardMenuItems(cardMenu.nodeId)} onClose={() => setCardMenu(null)} />
-      )}
-      {modalNodeId && byId.has(modalNodeId) && (
-        <CardModal
-          session={byId.get(modalNodeId)!}
-          columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
-          board={board}
-          onChangeBoard={commit}
-          onClose={() => setModalNodeId(null)}
-          onOpenCanvas={() => { setModalNodeId(null); onOpenNode(modalNodeId, projectId) }}
-          onRename={(t) => onRenameNode(modalNodeId, t)}
-          onEditSticky={(t) => onEditSticky(projectId, modalNodeId, t)}
-          onBrowserNav={(patch) => onBrowserNav(projectId, modalNodeId, patch)}
-          onSetIcon={(icon) => onSetIcon(projectId, modalNodeId, icon)}
-        />
-      )}
-    </div>
+        )}
+        {cardMenu && byId.has(cardMenu.nodeId) && (
+          <ContextMenu x={cardMenu.x} y={cardMenu.y} zIndex={60} items={cardMenuItems(cardMenu.nodeId)} onClose={() => setCardMenu(null)} />
+        )}
+        {modalNodeId && byId.has(modalNodeId) && (
+          <CardModal
+            session={byId.get(modalNodeId)!}
+            columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
+            board={board}
+            onChangeBoard={commit}
+            onClose={() => setModalNodeId(null)}
+            onOpenCanvas={() => { setModalNodeId(null); onOpenNode(modalNodeId, projectId) }}
+            onRename={(t) => onRenameNode(modalNodeId, t)}
+            onEditSticky={(t) => onEditSticky(projectId, modalNodeId, t)}
+            onBrowserNav={(patch) => onBrowserNav(projectId, modalNodeId, patch)}
+            onSetIcon={(icon) => onSetIcon(projectId, modalNodeId, icon)}
+            {...(githubRepository ? { githubRepository } : {})}
+            onChangeNodeLinks={(nodeId, next, event) => setGitHubLinks(nodeId, next, event, projectId)}
+            onAttachLink={(anchor) => openGitHubLinkPicker(modalNodeId, anchor, projectId)}
+          />
+        )}
+      </div>
+    </GitHubLinkProject.Provider>
   )
 })
 

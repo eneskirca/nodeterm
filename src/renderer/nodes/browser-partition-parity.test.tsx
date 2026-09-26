@@ -81,6 +81,8 @@ function partitionFromModal(sessionPartition: string | undefined): string | null
         onEditSticky={vi.fn()}
         onSetIcon={vi.fn()}
         onBrowserNav={vi.fn()}
+          onChangeNodeLinks={vi.fn()}
+          onAttachLink={vi.fn()}
       />
     )
   )
