@@ -128,25 +128,46 @@ export function usageFromPayload(data: unknown, email: string | null, now: numbe
   }
 }
 
+/** Who a set of limits belongs to: the identity of the SUCCESSFUL read that produced them. */
+export interface UsageOrigin {
+  email: string | null
+  orgUuid?: string
+}
+
+export function usageOrigin(u: ClaudeUsage): UsageOrigin {
+  const orgUuid = u.organization?.uuid
+  return orgUuid ? { email: u.email, orgUuid } : { email: u.email }
+}
+
 /**
  * A failed read (`fresh.failure` set) must not throw away numbers we already had: keep `prev`'s
  * limits and its `updatedAt` (the popover's "Updated N ago" must stay the age of the NUMBERS),
- * mark the result `error` + the failure, and take the identity from `fresh` (it is re-read every
- * attempt). Nothing is kept when there is nothing to keep, or when the identity changed — one
- * login's numbers must never be shown under another's email.
+ * mark the result `error` + the failure, and take the displayed identity from `fresh` (it is
+ * re-read every attempt). Nothing is kept when there is nothing to keep, or when the identity
+ * changed — one login's or organization's numbers must never be shown under another's.
+ *
+ * The identity check is against `origin` — the successful read the numbers came from — and NOT
+ * against `prev`, because a kept result carries the FRESH identity: after A (ok) → failure with
+ * no org metadata, `prev` no longer knows A, and a later failure in org B would pass as "same".
+ * The caller keeps the origin beside the cache; it defaults to `prev` itself, which is right only
+ * when `prev` is a fresh ok snapshot.
  */
-export function keepLastGood(prev: ClaudeUsage | undefined, fresh: ClaudeUsage): ClaudeUsage {
-  if (!fresh.failure || !prev || prev.limits.length === 0) return fresh
-  if (prev.email && fresh.email && prev.email !== fresh.email) return fresh
+export function keepLastGood(
+  prev: ClaudeUsage | undefined,
+  fresh: ClaudeUsage,
+  // `null` = explicitly unknown (nothing verifiable to keep); omitted = `prev` is its own origin.
+  origin: UsageOrigin | null = prev ? usageOrigin(prev) : null
+): ClaudeUsage {
+  if (!fresh.failure || !prev || !origin || prev.limits.length === 0) return fresh
+  if (origin.email && fresh.email && origin.email !== fresh.email) return fresh
   // The same email can sit in several organizations with separate quotas (the org-switch caveat
   // under "Active Claude organization"). Two KNOWN, different uuids prove a switch: drop. An
   // unknown uuid on either side proves nothing — org metadata is best-effort and missing for many
   // accounts (no/older `.claude.json`), so treating unknown as "switched" would mean those
   // accounts never keep numbers at all. The email guard then decides, and the result is only
   // ever labelled with the organization the FRESH read confirmed (none, if it confirmed none).
-  const prevOrg = prev.organization?.uuid
   const freshOrg = fresh.organization?.uuid
-  if (prevOrg && freshOrg && prevOrg !== freshOrg) return fresh
+  if (origin.orgUuid && freshOrg && origin.orgUuid !== freshOrg) return fresh
   const { organization: _previousOrganization, failure: _previousFailure, ...numbers } = prev
   return {
     ...numbers,

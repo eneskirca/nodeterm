@@ -17,7 +17,13 @@ import type {
   RemoteAccountUsage,
   RemoteUsageQuery
 } from '../../shared/types'
-import { emptyUsage, keepLastGood, usageFromPayload } from './claude-usage-map'
+import {
+  emptyUsage,
+  keepLastGood,
+  usageFromPayload,
+  usageOrigin,
+  type UsageOrigin
+} from './claude-usage-map'
 import {
   fetchRemoteUsage,
   type RemoteUsageRunner,
@@ -327,6 +333,10 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   // last 429, or of a 5xx that named one). EVERY read goes through `run`, so this one gate covers
   // the background poll, the focus refresh, the IPC fetch AND a forced ⟳ alike.
   const retryUntil = new Map<string, number>()
+  // Per account: the identity of the successful read the CACHED limits came from. Kept apart from
+  // the cached value because a kept (stale) result displays the fresh identity, which may lack
+  // the org uuid that proves a later switch. Internal only — never sent to the UI or the phone.
+  const origin = new Map<string, UsageOrigin>()
 
   const push = (key: string, u: ClaudeUsage): void => {
     last.set(key, u)
@@ -362,7 +372,13 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     const pending = inFlight.get(key)
     if (pending) return pending
     const p = (async (): Promise<ClaudeUsage> => {
-      const u = keepLastGood(last.get(key), await fetchUsage(accountId))
+      const prev = last.get(key)
+      const fresh = await fetchUsage(accountId)
+      // A cached failure with no recorded origin has nothing verifiable to keep.
+      const from = origin.get(key) ?? (prev && !prev.failure ? usageOrigin(prev) : null)
+      const u = keepLastGood(prev, fresh, from)
+      if (!u.failure) origin.set(key, usageOrigin(u))
+      else if (u === fresh) origin.delete(key)
       if (u.failure?.retryAt !== undefined) retryUntil.set(key, u.failure.retryAt)
       else retryUntil.delete(key)
       push(key, u)

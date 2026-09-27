@@ -60,7 +60,9 @@ beforeEach(() => {
     '/fixture-data/claude-accounts/team/.credentials.json': creds('team@example.test')
   }
   vi.mocked(fs.readFile).mockImplementation(async (file) => {
-    const raw = files[String(file)]
+    // usageCredsPaths joins with the NATIVE path module, so on Windows the requested path is
+    // backslash-separated; fixture keys are written POSIX-style and the lookup normalizes.
+    const raw = files[String(file).replace(/\\/g, '/')]
     if (raw === undefined) throw new Error('fixture missing')
     return raw
   })
@@ -191,6 +193,30 @@ describe('429 after a good snapshot', () => {
     expect(u.limits).toEqual([])
     expect(u.email).toBe('other@example.test')
     expect(u.failure?.reason).toBe('rate-limited')
+  })
+
+  it('compares every later failure with the identity the NUMBERS came from (A → unknown → B)', async () => {
+    const orgFile = (uuid: string) => JSON.stringify({ oauthAccount: {
+      emailAddress: 'me@example.test', organizationName: uuid, organizationUuid: uuid } })
+    const s = start()
+    files['/fixture-home/.claude.json'] = orgFile('org-A')
+    replies.push(good(12))
+    await s.refresh()
+    // Second read: org metadata unreadable — nothing proves a switch, so A's numbers stay.
+    delete files['/fixture-home/.claude.json']
+    replies.push({ status: 500 })
+    const mid = await s.refresh()
+    expect(mid.limits).toHaveLength(1)
+    expect(mid.organization).toBeUndefined()
+    // Third read identifies org B: A's numbers must not be shown under B.
+    files['/fixture-home/.claude.json'] = orgFile('org-B')
+    replies.push({ status: 500 })
+    const u = await s.refresh()
+    expect(u.limits).toEqual([])
+    expect(u.organization?.uuid).toBe('org-B')
+    // …and once dropped, a later failure in B has nothing of A's to resurrect.
+    replies.push({ status: 500 })
+    expect((await s.refresh()).limits).toEqual([])
   })
 
   it('gates each account on its own — a rate-limited system account does not silence a managed one', async () => {

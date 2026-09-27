@@ -3611,7 +3611,10 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `status: 'error'`, `updatedAt` STILL the numbers' own time (never the failed request's), identity
   from the fresh read, nothing kept across an email change or across two KNOWN, different
   organization uuids (same email, other org = other quota; an unknown uuid on either side proves
-  nothing, so the email guard decides and the result carries only the fresh read's org). `retryUntil` (per account) gates EVERY
+  nothing, so the email guard decides and the result carries only the fresh read's org). The comparison is
+  against the ORIGIN of the numbers (the successful read's email + org uuid, a service-internal
+  map never sent to the UI or phone), not the previous merged result: a kept result displays the
+  fresh identity, so A → failure-without-org → failure-in-B would otherwise pass as "same". `retryUntil` (per account) gates EVERY
   read — background poll, focus refresh, IPC fetch and a forced ⟳ all go through `run` — until
   `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h), counted from when the
   response ARRIVED (`failure.at`/`retryAt`), never from the request start (`updatedAt`); a 5xx that names a

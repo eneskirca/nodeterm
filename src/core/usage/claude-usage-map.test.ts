@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptyUsage, keepLastGood, mapUsageLimits, parseResetTimestamp, usageFromPayload } from './claude-usage-map'
+import { emptyUsage, keepLastGood, usageOrigin, mapUsageLimits, parseResetTimestamp, usageFromPayload } from './claude-usage-map'
 import { findLimit, limitLabel, limitShortLabel } from '../../shared/usage-limits'
 
 /**
@@ -172,6 +172,16 @@ describe('keepLastGood — organization identity', () => {
 
   it('keeps them when both organizations are known and equal', () => {
     expect(keepLastGood(prevIn('org-personal'), failIn('org-personal')).limits).toHaveLength(1)
+  })
+
+  it('a chain A → unknown → B is judged against the ORIGIN, not the merged middle step', () => {
+    const a = prevIn('org-A')
+    const mid = keepLastGood(a, failIn(null), usageOrigin(a))
+    expect(mid.limits).toHaveLength(1)
+    const f = failIn('org-B')
+    expect(keepLastGood(mid, f, usageOrigin(a))).toBe(f)
+    // Without an explicit origin the previous snapshot is its own origin (a fresh ok snapshot).
+    expect(keepLastGood(a, failIn('org-B'))).toEqual(failIn('org-B'))
   })
 
   it('an unknown organization on either side cannot prove a switch: the email guard decides', () => {
