@@ -386,7 +386,11 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
    * account switch is never hidden behind the window, whatever path the read came from.
    */
   const cacheAnswers = (key: string): boolean => {
-    if (!last.get(key) || due(key)) return false
+    const cached = last.get(key)
+    if (!cached || due(key)) return false
+    // The cached value's OWN window counts even if the map has moved on: a changed login's
+    // request may be in flight, and until push() replaces this value it is the old login's.
+    if (cached.failure?.retryAt !== undefined && Date.now() < cached.failure.retryAt) return false
     const until = retryUntil.get(key)
     return until === undefined || Date.now() >= until
   }
@@ -442,8 +446,8 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
         // unless the login itself changed. A logout, a revoked token or another email/org must not
         // keep showing the old login's numbers for up to an hour: the window was THAT login's.
         if (!identityChanged(key, creds)) return cached
-        retryUntil.delete(key)
-        clearWake(key)
+        // The window and its wake are replaced below, in the same turn as push() — never before
+        // the new login's answer is in the cache.
       }
       const prev = last.get(key)
       // No token → `unavailable` without a request (fetchUsageWith returns before any fetch).
@@ -473,6 +477,9 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
 
   platform().handle(IPC.usageFetch, async (accountId?: string) => {
     const key = accountId ?? ''
+    // A read already in flight for this account is the freshest answer there is — join it.
+    const pending = inFlight.get(key)
+    if (pending) return pending
     const cached = last.get(key)
     if (cached && cacheAnswers(key)) return cached
     return run(accountId)
@@ -694,7 +701,7 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     fetch: (accountId?: string) => run(accountId),
     refresh: (accountId?: string) => run(accountId),
     refreshIfStale: () => {
-      if (!cacheAnswers('')) void run().catch(() => {})
+      if (!inFlight.has('') && !cacheAnswers('')) void run().catch(() => {})
     },
     snapshot: () =>
       // System account (key '') first, then managed accounts in insertion order.

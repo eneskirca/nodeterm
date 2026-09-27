@@ -371,6 +371,29 @@ describe('identity changes inside the window', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
+  it('a read racing the new login’s in-flight request never gets the old login’s numbers', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh()
+    await s.refresh()
+    files['/fixture-home/.claude/.credentials.json'] = creds('other@example.test')
+    vi.setSystemTime(T0 + 60_000)
+    let answer!: (r: Response) => void
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { answer = resolve }))
+    const forced = s.refresh()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    // While the switched login's request is in flight, the popover and the focus refresh ask too.
+    const viaIpc = ipcFetch()
+    s.refreshIfStale()
+    answer(new Response(JSON.stringify({ five_hour: { utilization: 50 } }), { status: 200 }))
+    for (const u of [await forced, await viaIpc]) {
+      expect(u).toMatchObject({ status: 'ok', email: 'other@example.test', session: { leftPercent: 50 } })
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('an unchanged login inside the window is still answered from the cache', async () => {
     const s = start()
     replies.push(good(12), rateLimited('3600'))

@@ -3627,7 +3627,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   on success and in `dispose`), and `due()` makes a windowed failure stale exactly at `retryAt`, so
   the IPC fetch and focus refresh are not held shut by the 5-minute debounce. Only the SYSTEM row
   is pushed, so `UsageIndicator` re-reads an open popover's managed row 1 s after its `retryAt`
-  (answered from the service's fresh cache; in-flight coalescing keeps it to one request). 401/403 unchanged
+  (answered from the service's fresh cache; in-flight coalescing keeps it to one request). Two
+  race guards: the IPC fetch and focus refresh JOIN an in-flight read before looking at the cache,
+  and `cacheAnswers` refuses a cached value whose own `failure.retryAt` is still ahead even if the
+  window map moved on; `retryUntil`/the wake change only in the same turn as `push`, so a changed
+  login's request in flight can never be answered with the old login's numbers. 401/403 unchanged
   (`unavailable`, nothing kept, no window). The popover prints `claudeStaleNotice` under kept bars
   ("Rate limited — showing values from 14m ago, next try in 2m") and `claudeEmptyText` names the
   rate limit when there was nothing to keep. **Scope**: local Claude only. The remote SSH read
