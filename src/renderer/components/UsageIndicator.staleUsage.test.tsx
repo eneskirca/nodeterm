@@ -92,3 +92,59 @@ describe('stale Claude usage', () => {
     expect(notices()).toEqual([])
   })
 })
+
+describe('managed account rows after their retry window', () => {
+  it('re-reads a rate-limited row once its window has passed, while the popover is open', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    const recovered: ClaudeUsage = { status: 'ok', limits: [{ ...limit, usedPercent: 5 }], session: null,
+      weekly: null, email: null, updatedAt: NOW + 120_000 }
+    const accountReads: ClaudeUsage[] = [kept(), recovered]
+    const fetch = vi.fn(async (id?: string) => (id ? accountReads.shift() ?? recovered : kept({ status: 'ok', failure: undefined })))
+    useSettings.setState({ settings: {
+      ...DEFAULT_SETTINGS, usagePercentMode: 'remaining',
+      claudeAccounts: [{ id: 'work', label: 'Work', createdAt: 0 }]
+    } })
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    vi.stubGlobal('nodeTerminal', { usage: { fetch, providers: async () => [], onUpdate: () => () => {} } })
+    await act(async () => root.render(<UsageIndicator />))
+    await act(async () => host.querySelector('.usage-indicator')!.dispatchEvent(
+      new MouseEvent('mouseover', { bubbles: true })
+    ))
+    const workReads = () => fetch.mock.calls.filter(([id]) => id === 'work').length
+    expect(workReads()).toBe(1)
+    expect(notices()).toHaveLength(1)
+
+    // Not before the window (+ the grace that lets the service's own re-read land first)…
+    await act(async () => { await vi.advanceTimersByTimeAsync(118_000) })
+    expect(workReads()).toBe(1)
+    // …then exactly one re-read, and the row shows the recovered numbers.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(workReads()).toBe(2)
+    expect(notices()).toEqual([])
+    expect(host.textContent).toContain('95%')
+    // A recovered row arms nothing further.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(workReads()).toBe(2)
+  })
+
+  it('an unmounted popover never re-reads', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    const fetch = vi.fn(async () => kept())
+    useSettings.setState({ settings: {
+      ...DEFAULT_SETTINGS, usagePercentMode: 'remaining',
+      claudeAccounts: [{ id: 'work', label: 'Work', createdAt: 0 }]
+    } })
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    vi.stubGlobal('nodeTerminal', { usage: { fetch, providers: async () => [], onUpdate: () => () => {} } })
+    await act(async () => root.render(<UsageIndicator />))
+    await act(async () => host.querySelector('.usage-indicator')!.dispatchEvent(
+      new MouseEvent('mouseover', { bubbles: true })
+    ))
+    const calls = fetch.mock.calls.length
+    act(() => root.render(<></>))
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(fetch.mock.calls.length).toBe(calls)
+  })
+})

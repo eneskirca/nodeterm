@@ -446,6 +446,34 @@ describe('the read the window promised', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
+  it('a managed row re-read just after the service wake is answered from its fresh cache', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh('team')
+    await s.refresh('team')
+    polling = true
+    replies.push(good(30))
+    await vi.advanceTimersByTimeAsync(128_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    // The popover's re-read, one grace second later: no second request.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await ipcFetch('team')).toMatchObject({ status: 'ok', session: { leftPercent: 70 } })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('a re-read that lands BEFORE the wake makes the only request; the wake then stays quiet', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh('team')
+    await s.refresh('team')
+    polling = true
+    vi.setSystemTime(T0 + 128_000)
+    replies.push(good(30))
+    expect(await ipcFetch('team')).toMatchObject({ status: 'ok' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('dispose cancels a pending wake', async () => {
     const s = start()
     replies.push(good(12), rateLimited('128'))

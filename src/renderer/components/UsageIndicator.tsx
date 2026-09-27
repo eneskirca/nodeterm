@@ -39,6 +39,8 @@ import { systemAccountDisplay } from '../state/workspace'
 /** Grace period before a hover-opened popover closes, so the pointer can cross the pill's own
  *  gap (or clip a corner en route elsewhere) without the panel flickering shut. */
 const USAGE_HOVER_CLOSE_MS = 220
+/** How long after a managed row's retry window ends it is re-read (see the effect below). */
+const RETRY_REREAD_GRACE_MS = 1000
 
 /**
  * A single limit row in the popover: bar, "% left"/"% used", reset countdown. The bar's fill
@@ -469,6 +471,27 @@ export function UsageIndicator({
       cancelled = true
     }
   }, [open, accounts, scope.kind])
+
+  // A managed row that failed with a retry window is re-read when that window ends, while the
+  // popover is open. The service re-reads at the same moment (its own wake), but only the SYSTEM
+  // account is pushed — without this a managed row kept its "Rate limited" notice after recovery
+  // until the popover was reopened. The grace lets the service's wake land first, so this read is
+  // normally answered from its fresh cache (`cacheAnswers`); if it runs first, the service's
+  // in-flight coalescing and wake clearing still mean one request, never two.
+  useEffect(() => {
+    if (scope.kind !== 'local' || !open) return
+    const timers: number[] = []
+    for (const a of accounts) {
+      const retryAt = acctUsage[a.id]?.failure?.retryAt
+      if (retryAt === undefined) continue
+      timers.push(window.setTimeout(() => {
+        void window.nodeTerminal.usage.fetch(a.id).then((u) => {
+          setAcctUsage((m) => ({ ...m, [a.id]: u }))
+        })
+      }, Math.max(0, retryAt - Date.now()) + RETRY_REREAD_GRACE_MS))
+    }
+    return () => timers.forEach((t) => window.clearTimeout(t))
+  }, [open, accounts, acctUsage, scope.kind])
 
   // Close the popover on an outside click.
   useEffect(() => {
