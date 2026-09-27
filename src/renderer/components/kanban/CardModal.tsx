@@ -15,7 +15,7 @@ import {
 import { NodeIconView } from '../NodeIcon'
 import { nodeIconDialog } from '../NodeIconPicker'
 import { applyIconChoice } from '../../lib/nodeIconChoice'
-import type { NodeIcon } from '@shared/node-icon'
+import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { AccountChip, useAccountChip } from '../AccountChip'
@@ -83,6 +83,9 @@ interface CardModalProps {
  *  canvas node shows (the node itself is hidden under the board). */
 export function CardModal({ session, columnTitle, board, onChangeBoard, onClose, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon }: CardModalProps) {
   const { api } = useSession()
+  // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
+  // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
+  const sessionIcon = normalizeNodeIcon(session.icon)
   const idRef = useRef<string>()
   if (!idRef.current) idRef.current = nextDialogId()
   const id = idRef.current
@@ -308,17 +311,17 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
         >
           <span className="kanban-card__nodedot" style={{ background: session.color }} />
           <button
-            className={`kanban-modal__icon${session.icon ? '' : ' kanban-modal__icon--empty'}`}
-            title={session.icon ? 'Change icon' : 'Set icon'}
+            className={`kanban-modal__icon${sessionIcon ? '' : ' kanban-modal__icon--empty'}`}
+            title={sessionIcon ? 'Change icon' : 'Set icon'}
             onClick={() =>
               void nodeIconDialog({
                 nodeId: session.id,
                 title: session.title,
-                icon: session.icon
+                icon: sessionIcon
               }).then((choice) => applyIconChoice(choice, onSetIcon))
             }
           >
-            {session.icon ? <NodeIconView icon={session.icon} size={16} /> : <IconSmiley />}
+            {sessionIcon ? <NodeIconView icon={sessionIcon} size={16} /> : <IconSmiley />}
           </button>
           {editingTitle ? (
             <input

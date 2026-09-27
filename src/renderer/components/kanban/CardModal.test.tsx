@@ -120,6 +120,45 @@ describe('CardModal', () => {
     document.body.innerHTML = ''
   })
 
+  // #291 review: the header slot decided smiley-vs-icon on the RAW stored value, while
+  // NodeIconView normalizes — so an invalid stored icon drew an empty, un-muted slot.
+  it('shows the smiley "Set icon" slot for an icon that fails validation', () => {
+    const icon = (value: unknown): HTMLButtonElement => {
+      const root = createRoot(host)
+      act(() =>
+        root.render(
+          <CardModal
+            session={{ id: 'n1', title: 'db', color: '#fff', kind: 'sticky', text: '', spawn: {}, icon: value as never }}
+            columnTitle="To Do"
+            board={board}
+            onChangeBoard={vi.fn()}
+            onClose={vi.fn()}
+            onOpenCanvas={vi.fn()}
+            onRename={vi.fn()}
+            onEditSticky={vi.fn()}
+            onSetIcon={vi.fn()}
+            onBrowserNav={vi.fn()}
+          />
+        )
+      )
+      const button = document.body.querySelector<HTMLButtonElement>('.kanban-modal__icon')!
+      const snapshot = button.cloneNode(true) as HTMLButtonElement
+      act(() => root.unmount())
+      return snapshot
+    }
+    for (const bad of [{ type: 'lucide', name: '__proto__' }, { type: 'lucide', name: 'heart' }, { type: 'image', path: '/etc/passwd' }]) {
+      const button = icon(bad)
+      expect(button.title, JSON.stringify(bad)).toBe('Set icon')
+      expect(button.className).toContain('kanban-modal__icon--empty')
+      expect(button.querySelector('svg'), 'the smiley').toBeTruthy()
+      expect(button.querySelector('.node-icon')).toBeNull()
+    }
+    const good = icon({ type: 'lucide', name: 'database' })
+    expect(good.title).toBe('Change icon')
+    expect(good.className).not.toContain('kanban-modal__icon--empty')
+    expect(good.querySelector('.node-icon svg')).toBeTruthy()
+  })
+
   it('writes through raw textarea value on sticky note edit (including whitespace and newlines)', () => {
     const session: KanbanSession = {
       id: 'node-sticky-1',

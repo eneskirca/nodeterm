@@ -24,10 +24,19 @@ describe('NodeIconView glyphs', () => {
 
   // The canvas header is the other surface the issue names. TerminalNode is too large to mount
   // here, so pin that its header icon is this same component and not a per-surface copy.
+  // The header's icon BUTTON is conditional; it must be gated on the normalized icon, or an
+  // invalid stored value leaves an empty button (and a flex gap) in the header.
+  it('gates the terminal header icon button on the normalized icon', () => {
+    const src = readFileSync(join(__dirname, '..', 'nodes', 'TerminalNode.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    const header = src.slice(src.indexOf('<div className="term-node__header">'))
+    expect(header).toMatch(/\{headerIcon \? \(\s*<button\s+className="term-node__icon nodrag"/)
+    expect(src).toMatch(/const headerIcon = normalizeNodeIcon\(data\.icon\)/)
+  })
+
   it('is what the terminal node header renders', () => {
     const src = readFileSync(join(__dirname, '..', 'nodes', 'TerminalNode.tsx'), 'utf8').replace(/\r\n/g, '\n')
     const header = src.slice(src.indexOf('<div className="term-node__header">'))
-    expect(header).toMatch(/<NodeIconView icon=\{data\.icon as NodeIcon\}/)
+    expect(header).toMatch(/<NodeIconView icon=\{headerIcon\}/)
   })
 })
 

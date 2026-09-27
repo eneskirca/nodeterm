@@ -267,7 +267,7 @@ import { MaximizeButton } from './MaximizeButton'
 import { NodeIconView } from '../components/NodeIcon'
 import { nodeIconDialog } from '../components/NodeIconPicker'
 import { applyIconChoice } from '../lib/nodeIconChoice'
-import type { NodeIcon } from '@shared/node-icon'
+import { normalizeNodeIcon } from '@shared/node-icon'
 import { connectHostAttachment } from '../lib/sshAttachments'
 import { waitForSshRemote } from '../lib/sshRemoteWait'
 
@@ -5452,6 +5452,10 @@ export function TerminalNode({
   // The experimental shared glyph renderer paints text on a canvas BELOW the nodes, so a glass
   // tint would sit on top of every glyph: glass stands down while a grid is mounted.
   const glassOn = glassVars !== null && !glyphMounted
+  // The header's icon button is conditional, so it is gated on the NORMALIZED icon — the same
+  // answer NodeIconView gives. Gated on the raw value, an invalid stored icon left an empty button
+  // (and a flex gap) between the color swatch and the title.
+  const headerIcon = normalizeNodeIcon(data.icon)
   return (
     <>
     {/* Sibling of the root: .term-node is overflow:hidden and would clip the half-pill. */}
@@ -5540,7 +5544,7 @@ export function TerminalNode({
             }}
           />
         )}
-        {data.icon ? (
+        {headerIcon ? (
           <button
             className="term-node__icon nodrag"
             title="Change icon"
@@ -5549,13 +5553,13 @@ export function TerminalNode({
               void nodeIconDialog({
                 nodeId: id,
                 title: (data.title as string) ?? '',
-                icon: data.icon as NodeIcon
+                icon: headerIcon
               }).then((choice) =>
                 applyIconChoice(choice, (icon) => updateNodeData(id, { icon }))
               )
             }}
           >
-            <NodeIconView icon={data.icon as NodeIcon} size={15} />
+            <NodeIconView icon={headerIcon} size={15} />
           </button>
         ) : null}
         {editingTitle ? (
