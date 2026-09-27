@@ -3618,7 +3618,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   read — background poll, focus refresh, IPC fetch and a forced ⟳ all go through `run` — until
   `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h), counted from when the
   response ARRIVED (`failure.at`/`retryAt`), never from the request start (`updatedAt`); a 5xx that names a
-  Retry-After is honoured the same way, one that does not stays retryable. 401/403 unchanged
+  Retry-After is honoured the same way, one that does not stays retryable. The window is the LOGIN's:
+  every gated call first re-reads the local credentials (keychain/file, never the network), and a
+  logout (→ `unavailable` with no request), a different email or a different KNOWN org uuid than
+  the cached origin drops the window and reads for the new login. One `setTimeout` per account
+  re-reads at `retryAt` (same `shouldPoll || mirrorMayBeRead` gate as the poll, unref'd, cleared
+  on success and in `dispose`), and `due()` makes a windowed failure stale exactly at `retryAt`, so
+  the IPC fetch and focus refresh are not held shut by the 5-minute debounce. 401/403 unchanged
   (`unavailable`, nothing kept, no window). The popover prints `claudeStaleNotice` under kept bars
   ("Rate limited — showing values from 14m ago, next try in 2m") and `claudeEmptyText` names the
   rate limit when there was nothing to keep. **Scope**: local Claude only. The remote SSH read

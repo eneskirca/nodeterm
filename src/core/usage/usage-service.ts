@@ -208,7 +208,12 @@ const clampRetryMs = (ms: number): number =>
 
 export async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
   const now = Date.now()
-  const { accessToken, email, organization } = await resolveCreds(accountId)
+  return fetchUsageWith(await resolveCreds(accountId), now)
+}
+
+/** The HTTP half of `fetchUsage`, for callers that already hold the (local) credentials. */
+async function fetchUsageWith(creds: OAuthCreds, now: number): Promise<ClaudeUsage> {
+  const { accessToken, email, organization } = creds
   const identify = (usage: ClaudeUsage): ClaudeUsage =>
     organization ? { ...usage, organization } : usage
   if (!accessToken) return identify(emptyUsage(email, now, 'unavailable'))
@@ -337,6 +342,53 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   // the cached value because a kept (stale) result displays the fresh identity, which may lack
   // the org uuid that proves a later switch. Internal only — never sent to the UI or the phone.
   const origin = new Map<string, UsageOrigin>()
+  // Per account: the one timer that re-reads when its retry window ends, so "next try in 2m" is a
+  // promise kept rather than a hint — without it the next read waited for the 15-min poll.
+  const wakes = new Map<string, ReturnType<typeof setTimeout>>()
+  let disposed = false
+
+  const clearWake = (key: string): void => {
+    const t = wakes.get(key)
+    if (t !== undefined) clearTimeout(t)
+    wakes.delete(key)
+  }
+  const armWake = (key: string, at: number): void => {
+    clearWake(key)
+    if (disposed) return
+    const t = setTimeout(() => {
+      wakes.delete(key)
+      // Same gate as the background poll: nobody looking → nothing spent. The window is over
+      // either way, so the next focus refresh or popover open reads (see `due`).
+      if (disposed || (!shouldPoll() && !mirrorMayBeRead())) return
+      void run(key === '' ? undefined : key).catch(() => {})
+    }, Math.max(0, at - Date.now()))
+    ;(t as { unref?: () => void }).unref?.()
+    wakes.set(key, t)
+  }
+
+  /**
+   * Whether a cached answer is too old to serve. A failure that named a window is due exactly when
+   * that window ends — the 5-minute debounce, keyed on the failed attempt, would otherwise hold a
+   * 128 s Retry-After shut for 5 minutes.
+   */
+  const due = (key: string): boolean => {
+    const cached = last.get(key)
+    if (!cached) return true
+    const until = retryUntil.get(key)
+    if (cached.failure?.retryAt !== undefined && until !== undefined) return Date.now() >= until
+    return Date.now() - (lastFetchAt.get(key) ?? 0) >= REFETCH_DEBOUNCE_MS
+  }
+
+  /** The login on disk is no longer the one the cached answer describes (or there is none). */
+  const identityChanged = (key: string, creds: OAuthCreds): boolean => {
+    if (!creds.accessToken) return true
+    const cached = last.get(key)
+    const ref = origin.get(key) ?? (cached ? usageOrigin(cached) : null)
+    if (!ref) return false
+    if (ref.email && creds.email && ref.email !== creds.email) return true
+    const org = creds.organization?.uuid
+    return !!(ref.orgUuid && org && ref.orgUuid !== org)
+  }
 
   const push = (key: string, u: ClaudeUsage): void => {
     last.set(key, u)
@@ -364,23 +416,38 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
 
   const run = async (accountId?: string): Promise<ClaudeUsage> => {
     const key = accountId ?? ''
-    const cached = last.get(key)
-    const until = retryUntil.get(key)
-    // Inside the endpoint's own window: answer from the cache (which already carries the failure
-    // and its retryAt) without spending a request that would only extend the refusal.
-    if (cached && until !== undefined && Date.now() < until) return cached
     const pending = inFlight.get(key)
     if (pending) return pending
     const p = (async (): Promise<ClaudeUsage> => {
+      const now = Date.now()
+      // Local only (keychain / credentials file) — never the network.
+      const creds = await resolveCreds(accountId)
+      const cached = last.get(key)
+      const until = retryUntil.get(key)
+      if (cached && until !== undefined && Date.now() < until) {
+        // Inside the endpoint's own window: answer from the cache (which already carries the
+        // failure and its retryAt) without spending a request that would only extend the refusal —
+        // unless the login itself changed. A logout, a revoked token or another email/org must not
+        // keep showing the old login's numbers for up to an hour: the window was THAT login's.
+        if (!identityChanged(key, creds)) return cached
+        retryUntil.delete(key)
+        clearWake(key)
+      }
       const prev = last.get(key)
-      const fresh = await fetchUsage(accountId)
+      // No token → `unavailable` without a request (fetchUsageWith returns before any fetch).
+      const fresh = await fetchUsageWith(creds, now)
       // A cached failure with no recorded origin has nothing verifiable to keep.
       const from = origin.get(key) ?? (prev && !prev.failure ? usageOrigin(prev) : null)
       const u = keepLastGood(prev, fresh, from)
       if (!u.failure) origin.set(key, usageOrigin(u))
       else if (u === fresh) origin.delete(key)
-      if (u.failure?.retryAt !== undefined) retryUntil.set(key, u.failure.retryAt)
-      else retryUntil.delete(key)
+      if (u.failure?.retryAt !== undefined) {
+        retryUntil.set(key, u.failure.retryAt)
+        armWake(key, u.failure.retryAt)
+      } else {
+        retryUntil.delete(key)
+        clearWake(key)
+      }
       push(key, u)
       return u
     })()
@@ -393,9 +460,8 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   }
 
   platform().handle(IPC.usageFetch, async (accountId?: string) => {
-    const key = accountId ?? ''
-    const cached = last.get(key)
-    if (cached && Date.now() - (lastFetchAt.get(key) ?? 0) < REFETCH_DEBOUNCE_MS) return cached
+    const cached = last.get(accountId ?? '')
+    if (cached && !due(accountId ?? '')) return cached
     return run(accountId)
   })
   platform().handle(IPC.usageRefresh, (accountId?: string) => run(accountId))
@@ -615,13 +681,17 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     fetch: (accountId?: string) => run(accountId),
     refresh: (accountId?: string) => run(accountId),
     refreshIfStale: () => {
-      if (Date.now() - (lastFetchAt.get('') ?? 0) >= REFETCH_DEBOUNCE_MS) void run().catch(() => {})
+      if (due('')) void run().catch(() => {})
     },
     snapshot: () =>
       // System account (key '') first, then managed accounts in insertion order.
       [...last.entries()]
         .sort((a, b) => (a[0] === '' ? -1 : b[0] === '' ? 1 : 0))
         .map(([key, usage]) => ({ accountId: key === '' ? null : key, usage })),
-    dispose: () => clearInterval(interval)
+    dispose: () => {
+      disposed = true
+      clearInterval(interval)
+      for (const key of [...wakes.keys()]) clearWake(key)
+    }
   }
 }

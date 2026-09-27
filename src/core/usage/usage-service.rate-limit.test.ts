@@ -287,6 +287,129 @@ describe('the window starts when the response ARRIVES', () => {
   })
 })
 
+describe('identity changes inside the window', () => {
+  const orgFile = (uuid: string) => JSON.stringify({ oauthAccount: {
+    emailAddress: 'me@example.test', organizationName: uuid, organizationUuid: uuid } })
+
+  it('a logout during the window answers unavailable at once, without the endpoint', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    delete files['/fixture-home/.claude/.credentials.json']
+    const u = await s.refresh()
+    expect(u).toMatchObject({ status: 'unavailable', limits: [] })
+    expect(u.failure).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // The window went with the login: signing back in reads straight away.
+    files['/fixture-home/.claude/.credentials.json'] = creds('me@example.test')
+    replies.push(good(20))
+    expect(await s.refresh()).toMatchObject({ status: 'ok', session: { leftPercent: 80 } })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('another email during the window reads for the new login, never showing the old bars', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    files['/fixture-home/.claude/.credentials.json'] = creds('other@example.test')
+    replies.push(rateLimited('3600'))
+    const u = await s.refresh()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(u).toMatchObject({ status: 'error', limits: [], email: 'other@example.test' })
+  })
+
+  it('another organization during the window reads again, never showing the old org’s bars', async () => {
+    files['/fixture-home/.claude.json'] = orgFile('org-A')
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    files['/fixture-home/.claude.json'] = orgFile('org-B')
+    replies.push({ status: 500 })
+    const u = await s.refresh()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(u.limits).toEqual([])
+    expect(u.organization?.uuid).toBe('org-B')
+  })
+
+  it('the same identity with its org metadata gone stays gated (unknown proves nothing)', async () => {
+    files['/fixture-home/.claude.json'] = orgFile('org-A')
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    delete files['/fixture-home/.claude.json']
+    expect((await s.refresh()).limits).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('the read the window promised', () => {
+  it('fires once at retryAt when the app is being looked at', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh()
+    await s.refresh()
+    polling = true
+    // Calls inside the window neither fetch nor add wakes.
+    await s.refresh()
+    await s.refresh()
+    await vi.advanceTimersByTimeAsync(127_999)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    replies.push(good(30))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(s.snapshot()[0].usage).toMatchObject({ status: 'ok', session: { leftPercent: 70 } })
+    const pushed = platform.sent.filter((m) => m.channel === IPC.usageUpdate).at(-1)?.args[0] as ClaudeUsage
+    expect(pushed.status).toBe('ok')
+    // Nothing further is armed after the success.
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('a shut poll gate skips the wake; the 5-minute debounce does not outlive the window', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh()
+    await s.refresh()
+    await vi.advanceTimersByTimeAsync(130_000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // 130 s after the failure is well inside REFETCH_DEBOUNCE_MS, but the window has ended.
+    replies.push(good(30))
+    expect(await ipcFetch()).toMatchObject({ status: 'ok' })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('the focus refresh reads once the window has ended', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh()
+    await s.refresh()
+    s.refreshIfStale()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(T0 + 128_000)
+    replies.push(good(30))
+    s.refreshIfStale()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('dispose cancels a pending wake', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('128'))
+    await s.refresh()
+    await s.refresh()
+    polling = true
+    s.dispose()
+    service = undefined
+    await vi.advanceTimersByTimeAsync(200_000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('Retry-After forms', () => {
   it.each([
     ['absent', undefined, 60_000],
