@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { NODE_GLYPHS } from '@shared/node-icon'
 import { NodeIconView } from './NodeIcon'
+import { ProjectGlyph, lucideIcon } from './ProjectGlyph'
 
 // Issue #291: a glyph icon draws through the one NodeIconView every listing surface uses.
 describe('NodeIconView glyphs', () => {
@@ -27,5 +28,50 @@ describe('NodeIconView glyphs', () => {
     const src = readFileSync(join(__dirname, '..', 'nodes', 'TerminalNode.tsx'), 'utf8').replace(/\r\n/g, '\n')
     const header = src.slice(src.indexOf('<div className="term-node__header">'))
     expect(header).toMatch(/<NodeIconView icon=\{data\.icon as NodeIcon\}/)
+  })
+})
+
+// Codex review of #291: persisted icons reach NodeIconView WITHOUT passing through
+// `nodeStatesToFlow` (an inactive project's rows in `buildSessionList`, kanban, a relay mirror).
+// A bracket lookup on a plain object map answers `__proto__` / `constructor` / `toString` with an
+// inherited value, and React throws rendering it — taking the whole sidebar down.
+describe('NodeIconView at the render boundary', () => {
+  const hostile = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']
+
+  it('draws nothing, and does not throw, for a prototype key', () => {
+    for (const name of hostile) {
+      expect(() => renderToStaticMarkup(<NodeIconView icon={{ type: 'lucide', name }} />), name).not.toThrow()
+      expect(renderToStaticMarkup(<NodeIconView icon={{ type: 'lucide', name }} />), name).toBe('')
+    }
+  })
+
+  it('draws nothing for a project-only glyph outside NODE_GLYPHS', () => {
+    // `heart` is in LUCIDE_ICON_IDS (projects) but not a node glyph.
+    expect(renderToStaticMarkup(<NodeIconView icon={{ type: 'lucide', name: 'heart' }} />)).toBe('')
+  })
+
+  it('normalizes the other kinds too: a hostile image path draws nothing', () => {
+    expect(
+      renderToStaticMarkup(<NodeIconView icon={{ type: 'image', path: '/home/u/.ssh/id_rsa' }} />)
+    ).toBe('')
+    expect(renderToStaticMarkup(<NodeIconView icon={{ type: 'emoji', value: 'ab' }} />)).toContain('>a<')
+  })
+})
+
+describe('lucideIcon / ProjectGlyph prototype keys', () => {
+  it('answers only own entries of the map', () => {
+    expect(lucideIcon('database')).toBeTruthy()
+    for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      expect(lucideIcon(name), name).toBeUndefined()
+    }
+  })
+
+  it('a project glyph with a prototype-key name falls back instead of throwing', () => {
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+      const render = (): string =>
+        renderToStaticMarkup(<ProjectGlyph icon={{ type: 'lucide', name }} name="Proj" color="#123" />)
+      expect(render, name).not.toThrow()
+      expect(render()).toContain('>P<')
+    }
   })
 })

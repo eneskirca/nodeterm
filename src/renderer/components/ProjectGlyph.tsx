@@ -94,6 +94,16 @@ export const LUCIDE_ICONS: Record<string, LucideIcon> = {
   sparkles: Sparkles
 }
 
+/**
+ * The lucide component for an allowlisted id, or undefined. OWN entries only: `LUCIDE_ICONS` is a
+ * plain object, so `LUCIDE_ICONS['__proto__']` / `['constructor']` / `['toString']` answer with an
+ * inherited value — truthy, not a component — and React throws rendering it. The name comes from a
+ * persisted file, so the lookup itself has to be safe, not just the validator in front of it.
+ */
+export function lucideIcon(name: string): LucideIcon | undefined {
+  return Object.prototype.hasOwnProperty.call(LUCIDE_ICONS, name) ? LUCIDE_ICONS[name] : undefined
+}
+
 export interface ProjectGlyphProps {
   /** The project's icon, when it has one. Absent → render the site's pre-icon fallback. */
   icon?: ProjectIcon
@@ -154,7 +164,7 @@ export function ProjectGlyph({
   }
 
   if (icon?.type === 'lucide') {
-    const Icon = LUCIDE_ICONS[icon.name]
+    const Icon = lucideIcon(icon.name)
     if (Icon) {
       return (
         <span
