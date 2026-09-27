@@ -38,3 +38,31 @@ describe('SessionRow status age', () => {
     expect(html).toContain('Entered this state 5m ago')
   })
 })
+
+// Issue #291: the icon shows wherever the node is listed — the sidebar row draws it through the
+// same NodeIconView as the canvas header.
+describe('SessionRow icon', () => {
+  const render = (icon: SessionRowVM['icon']): string =>
+    renderToStaticMarkup(
+      <SessionRow
+        row={{ ...row, icon }}
+        onClick={vi.fn()}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onAiName={vi.fn()}
+        onContextMenu={vi.fn()}
+        onDragStart={vi.fn()}
+        onDragEnd={vi.fn()}
+      />
+    )
+
+  it('draws a glyph icon as an svg inside the row icon slot', () => {
+    const html = render({ type: 'lucide', name: 'database' })
+    expect(html).toMatch(/<span class="node-icon ss-row__icon"[^>]*><svg[^>]*lucide-database/)
+  })
+
+  it('draws nothing for a glyph name the allowlist does not know', () => {
+    const html = render({ type: 'lucide', name: 'skull' } as SessionRowVM['icon'])
+    expect(html).not.toContain('ss-row__icon')
+  })
+})

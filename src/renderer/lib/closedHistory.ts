@@ -3,6 +3,7 @@ import { canChat, createdAgentId } from '@shared/agents/config'
 import { flowToNodeStates, type CanvasNode } from '@renderer/state/workspace'
 import { snapshotNode, type ReopenNodeSnapshot, type RestorableNodeKind } from './reopenNode'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
+import { normalizeNodeIcon } from '@shared/node-icon'
 
 /**
  * Builds one `ClosedSessionEntry` per node in `deletedIds` that `snapshotNode` would also accept
@@ -136,6 +137,8 @@ export function stateToReopenSnapshot(entry: ClosedSessionEntry): ReopenNodeSnap
       tags: n.tags,
       collapsed: n.collapsed,
       hideFanout: n.hideFanout,
+      // Re-validated, not copied: this entry was read from hand-editable workspace.json.
+      icon: normalizeNodeIcon(n.icon),
       shell: n.shell,
       cwd: n.cwd,
       text: n.text,

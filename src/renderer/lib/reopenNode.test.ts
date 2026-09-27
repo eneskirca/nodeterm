@@ -117,6 +117,20 @@ describe('recreateNodeFromSnapshot', () => {
     expect(node).toBeNull()
   })
 
+  // ⇧⌘T used to bring a session back without its icon: `icon` was not a cosmetic key.
+  it('carries the node icon over, re-validated', () => {
+    const withIcon = (icon: unknown) =>
+      recreateNodeFromSnapshot(
+        snap({ type: 'terminal', data: { title: 'db', color: '#fff', group: null, icon: icon as never } }),
+        baseCtx()
+      )
+    expect(withIcon({ type: 'lucide', name: 'database' })!.data.icon).toEqual({
+      type: 'lucide',
+      name: 'database'
+    })
+    expect(withIcon({ type: 'lucide', name: 'nope' })!.data.icon).toBeUndefined()
+  })
+
   it('recreates a dino node carrying its high score', () => {
     const node = recreateNodeFromSnapshot(
       snap({ type: 'dino', data: { title: 'Dino', color: '#a2a2a2', group: null, highScore: 42 } }),

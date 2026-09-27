@@ -11,6 +11,7 @@
  */
 import type { NodeIcon } from '@shared/node-icon'
 import { useNodeIconSrc } from '../lib/nodeIconImage'
+import { LUCIDE_ICONS } from './ProjectGlyph'
 
 export interface NodeIconViewProps {
   icon?: NodeIcon
@@ -40,6 +41,18 @@ export function NodeIconView({
         aria-hidden
       >
         {icon.value}
+      </span>
+    )
+  }
+  if (icon.type === 'lucide') {
+    // Drawn in `currentColor`, so it reads as part of the title line it sits on; the node's color
+    // stays with the swatch beside it. An unknown name (never true of a normalized value) draws
+    // nothing, the same answer an unreadable image gets.
+    const Glyph = LUCIDE_ICONS[icon.name]
+    if (!Glyph) return null
+    return (
+      <span className={cls} style={{ width: size, height: size }} aria-hidden>
+        <Glyph width="100%" height="100%" strokeWidth={2} aria-hidden="true" />
       </span>
     )
   }

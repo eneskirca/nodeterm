@@ -664,6 +664,20 @@ describe('node icon serialization', () => {
     expect(nodeStatesToFlow(states)[0].data.icon).toEqual(icon)
   })
 
+  it('round-trips a glyph icon (#291)', () => {
+    const icon = { type: 'lucide', name: 'folder-git' }
+    const states = flowToNodeStates([withIcon(icon)])
+    expect(states[0].icon).toEqual(icon)
+    expect(nodeStatesToFlow(states)[0].data.icon).toEqual(icon)
+  })
+
+  it('drops a glyph outside the allowlist on the way in AND out (#291)', () => {
+    const junk = { type: 'lucide', name: 'not-a-glyph' }
+    expect(flowToNodeStates([withIcon(junk)])[0].icon).toBeUndefined()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(nodeStatesToFlow([stateWithIcon(junk) as any])[0].data.icon).toBeUndefined()
+  })
+
   it('leaves a node without one undefined, so an untouched canvas serializes as it always did', () => {
     expect(flowToNodeStates([withIcon(undefined)])[0].icon).toBeUndefined()
   })

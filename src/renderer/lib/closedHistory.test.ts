@@ -73,6 +73,28 @@ describe('stateToReopenSnapshot', () => {
     expect(snap.data.agentId).toBe('claude')
   })
 
+  // The persisted twin lives in workspace.json — hand-editable — so the icon is re-validated
+  // here rather than trusted: a reopened session keeps its icon, a garbage one is dropped.
+  it('carries the node icon through, and drops one that fails validation', () => {
+    const entry = (icon: unknown): ClosedSessionEntry => ({
+      id: 'e1', closedAt: 1,
+      node: {
+        id: 'n1', kind: 'terminal', position: { x: 0, y: 0 }, size: { width: 10, height: 10 },
+        title: 'db', color: '#fff', group: null, icon: icon as never
+      },
+      absolutePosition: { x: 0, y: 0 }
+    })
+    expect(stateToReopenSnapshot(entry({ type: 'lucide', name: 'database' })).data.icon).toEqual({
+      type: 'lucide',
+      name: 'database'
+    })
+    expect(stateToReopenSnapshot(entry({ type: 'emoji', value: '\u{1F680}' })).data.icon).toEqual({
+      type: 'emoji',
+      value: '\u{1F680}'
+    })
+    expect(stateToReopenSnapshot(entry({ type: 'lucide', name: 'nope' })).data.icon).toBeUndefined()
+  })
+
   it('omits parentId/extent when the node was never parented', () => {
     const entry: ClosedSessionEntry = {
       id: 'e1', closedAt: 1,

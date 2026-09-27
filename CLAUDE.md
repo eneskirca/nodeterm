@@ -253,7 +253,7 @@ Fire-time `TriggerArmStore.isArmed` re-ask everywhere; every rule test-pinned. T
 machine-local, content-bound `core/trigger-arm-store.ts` (a spec that arrives or CHANGES via git
 reads as disarmed until armed on this machine). A node's `data`
 carries `title, color, group, tags, collapsed, expandedHeight, shell, cwd, text,
-initialCommand, filePath, diffStaged`, `icon` (a user-chosen emoji or picture — see **Node icons**
+initialCommand, filePath, diffStaged`, `icon` (a user-chosen emoji, glyph or picture — see **Node icons**
 below), `agentId` (which agent CLI a terminal node runs —
 persisted), and `accountId` (which managed Claude account a terminal node runs under — resolved
 at creation, changed ONLY by the explicit account-switch actions, persisted; see **Managed Claude accounts**). `nodeStatesToFlow` defaults a
@@ -4032,10 +4032,10 @@ tokens `--danger --warn --caution --success --agent-working`, which the light th
   project files at creation), kanban label chips (own palette), presence colours, the onboarding
   scenes, the notch HUD's own stylesheet.
 
-## Node icons (emoji or picture)
+## Node icons (emoji, glyph or picture)
 
-A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}` or
-`{type:'image', path}`. Absent = the node draws exactly as it did before the feature, which is the
+A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}`,
+`{type:'lucide', name}` or `{type:'image', path}`. Absent = the node draws exactly as it did before the feature, which is the
 degrade every failure path falls back to. Set from the node right-click menu ("Set icon…", hideable
 like Colors — id `icon`), from the icon itself in the terminal node header, and from the kanban card
 modal's header slot; drawn by the one `NodeIconView` on all four surfaces that list a node (canvas
@@ -4045,6 +4045,20 @@ kind, deliberately: offering it on an editor or a group frame would persist a va
 which is the "looks like it worked" failure this file warns about elsewhere. Extending it to sticky
 or browser nodes means adding the draw and the set together, in one change.
 
+- **Glyphs (issue #291) are a closed allowlist, `NODE_GLYPHS`** — shell, git repo, database, server,
+  … with a label each (tooltip / accessible name, never stored). It is typed as a SUBSET of the
+  project icon's `LUCIDE_ICON_IDS`, so a glyph draws from the one `LUCIDE_ICONS` map `ProjectGlyph`
+  owns; a new glyph needs an id already in that map (or added to both). The name is matched exactly —
+  a name outside the list, a newer build's glyph, is no icon, and an OLDER build drops it on its next
+  save of a shared project.json (its `normalizeNodeIcon` does not know the variant). Picked from the
+  same dialog as emoji, drawn in `currentColor`. Agent nodes are terminal nodes, so they are offered
+  a glyph like any icon: it sits beside the agent's own identity, it does not replace it. No
+  auto-suggest (cwd is git → git glyph, pane command `psql` → database): an icon written without the
+  user choosing it would land in the git-shared file.
+- **The icon survives a close/reopen.** Both reopen paths carry it re-validated — `withCosmetics`
+  (⇧⌘T and the sidebar history both end there) and `stateToReopenSnapshot` (the persisted twin is
+  read from hand-editable workspace.json). Before, `icon` was not a cosmetic key and a reopened
+  session came back bare.
 - **`.nodeterm/project.json` is hostile input, so the icon is validated at BOTH serializer seams.**
   `normalizeNodeIcon` runs in `nodeStatesToFlow` (a cloned file becoming live state) *and* in
   `flowToNodeStates` (live state becoming the next reader's file — live node data is reachable by a

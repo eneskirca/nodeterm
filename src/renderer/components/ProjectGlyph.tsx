@@ -48,9 +48,10 @@ import {
  * so the bundler tree-shakes the rest of lucide's ~1k glyphs out; keyed by the same kebab ids as
  * `LUCIDE_ICON_IDS` (@shared/project-icon), which is the closed allowlist `sanitizeProjectIcon`
  * enforces AND the picker grid. An `icon.name` that isn't a key here degrades to the fallback
- * (belt-and-braces — a sanitized icon's name is always a key).
+ * (belt-and-braces — a sanitized icon's name is always a key). Also what `NodeIconView` draws a
+ * node glyph from (`NODE_GLYPHS` is a subset of these ids) — one lucide table, not two.
  */
-const LUCIDE_ICONS: Record<string, LucideIcon> = {
+export const LUCIDE_ICONS: Record<string, LucideIcon> = {
   folder: Folder,
   'folder-git': FolderGit,
   code: Code,

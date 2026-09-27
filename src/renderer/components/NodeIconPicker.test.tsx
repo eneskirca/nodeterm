@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeIconDialogHost, nodeIconDialog, type NodeIconChoice } from './NodeIconPicker'
 import { useProjects } from '../state/projects'
 import { popDialog, pushDialog, resetDialogStack } from './dialog-stack'
+import { NODE_GLYPHS, type NodeIcon } from '@shared/node-icon'
 
 // React refuses act() outside a configured test environment without this flag.
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -215,5 +216,63 @@ describe('NodeIconPicker escape', () => {
     popDialog('dialog-above')
     await pressEscape(document.body)
     await expect(choice).resolves.toBeUndefined()
+  })
+})
+
+// Issue #291: the curated glyph grid. Picking one resolves the SAME value the validator keeps, and
+// the current glyph is marked so the dialog shows what the node wears.
+describe('NodeIconPicker glyphs', () => {
+  let root: Root | undefined
+  let host: HTMLElement
+
+  const open = async (icon?: NodeIcon): Promise<{ choice: Promise<NodeIconChoice> }> => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    useProjects.setState({ activeProjectId: 'p1', getProject: () => PROJECT } as never)
+    const choice = nodeIconDialog({ nodeId: 'n1', title: 'Build', icon })
+    root = createRoot(host)
+    await act(async () => {
+      root!.render(<NodeIconDialogHost />)
+    })
+    return { choice }
+  }
+
+  afterEach(async () => {
+    await act(async () => root?.unmount())
+    root = undefined
+    host?.remove()
+    resetDialogStack()
+  })
+
+  it('offers every curated glyph as a named button', async () => {
+    const { choice } = await open()
+    for (const glyph of NODE_GLYPHS) {
+      const button = document.querySelector(`button[aria-label="${glyph.label}"]`)
+      expect(button, glyph.id).toBeTruthy()
+      expect(button!.querySelector('svg')).toBeTruthy()
+    }
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await choice
+  })
+
+  it('resolves the picked glyph as a lucide icon', async () => {
+    const { choice } = await open()
+    const git = NODE_GLYPHS.find((g) => g.id === 'folder-git')!
+    await act(async () => {
+      document
+        .querySelector(`button[aria-label="${git.label}"]`)!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await expect(choice).resolves.toEqual({ type: 'lucide', name: 'folder-git' })
+  })
+
+  it('marks the glyph the node already wears', async () => {
+    const { choice } = await open({ type: 'lucide', name: 'database' })
+    const db = NODE_GLYPHS.find((g) => g.id === 'database')!
+    const button = document.querySelector(`button[aria-label="${db.label}"]`)!
+    expect(button.className).toContain('is-current')
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await choice
   })
 })

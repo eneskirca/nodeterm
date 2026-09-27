@@ -13875,6 +13875,10 @@ body.focus-mode .dock:hover {
   text-align: center;
 }
 
+.node-icon svg {
+  display: block;
+}
+
 .node-icon img {
   width: 100%;
   height: 100%;
@@ -13957,6 +13961,16 @@ body.focus-mode .dock:hover {
 }
 .node-icon-dialog__swatch.is-current {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* A glyph swatch (issue #291) draws an svg in `currentColor`, so it needs the text color a
+   button does not inherit, and centering the emoji swatches get from their line box. */
+.node-icon-dialog__swatch--glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  padding: 5px 0;
 }
 
 .node-icon-dialog__row {
