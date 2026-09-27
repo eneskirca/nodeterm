@@ -3602,6 +3602,23 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   read usage." in both the single-account and multi-account popovers, including beside healthy
   provider rows. Nonempty snapshots retain their last-known bars on error; no error-specific
   authentication advice is inferred from the status.
+- **A failed Claude read keeps the last good numbers, and a 429 is a window, not a retry cue.**
+  Measured 2026-09-27: `/api/oauth/usage` answered a valid token `429 rate_limit_error` with
+  `retry-after: 128`, and `fetchUsage` used to replace the account's snapshot with an EMPTY
+  error — the pill fell to "Could not read usage." while the next poll or ⟳ asked again. Now the
+  failure rides `ClaudeUsage.failure` (`rate-limited` | `error`, `at`, `retryAt`), and the
+  service's `run` applies `keepLastGood` (`claude-usage-map.ts`): last good limits kept,
+  `status: 'error'`, `updatedAt` STILL the numbers' own time (never the failed request's), identity
+  from the fresh read, nothing kept across an email change. `retryUntil` (per account) gates EVERY
+  read — background poll, focus refresh, IPC fetch and a forced ⟳ all go through `run` — until
+  `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h); a 5xx that names a
+  Retry-After is honoured the same way, one that does not stays retryable. 401/403 unchanged
+  (`unavailable`, nothing kept, no window). The popover prints `claudeStaleNotice` under kept bars
+  ("Rate limited — showing values from 14m ago, next try in 2m") and `claudeEmptyText` names the
+  rate limit when there was nothing to keep. **Scope**: local Claude only. The remote SSH read
+  (`remote-claude-usage.ts`, curl on the host), Codex/Gemini/Grok and the other providers still
+  replace their snapshot on failure and ignore Retry-After; the phone mirror passes `status` +
+  `limits` through, so it now sees `error` WITH the kept bars (no `failure` field on the wire).
 
 - **Remote usage** (SSH hosts, `src/core/usage/remote-claude-usage.ts`) — the source behind the
   SSH scope above. v1 excluded remote accounts, which left a user whose Claude only ever runs on a

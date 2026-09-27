@@ -1,9 +1,10 @@
+import type { ClaudeUsage } from '@shared/types'
 import { SYSTEM_COLORS } from './palette'
 // Pure formatting helpers for the usage indicator.
 
 /** "just now" / "5m ago" / "2h ago". */
-export function formatTimeAgo(ts: number): string {
-  const diff = Date.now() - ts
+export function formatTimeAgo(ts: number, now: number = Date.now()): string {
+  const diff = now - ts
   if (diff < 60_000) return 'just now'
   const mins = Math.floor(diff / 60_000)
   if (mins < 60) return `${mins}m ago`
@@ -131,4 +132,32 @@ export function contextPillText(usedTokens: number, windowTokens: number, usedPe
   return mode === 'tokens'
     ? `${formatTokensShort(usedTokens)}/${formatTokensShort(windowTokens)}`
     : `${percentNumber(usedPercent, mode)}%`
+}
+
+/** Whole minutes until `at`, rounded UP and never below 1 — "try again in 0m" reads as now. */
+function minutesUntil(at: number, now: number): number {
+  return Math.max(1, Math.ceil((at - now) / 60_000))
+}
+
+/**
+ * The line under Claude bars that were KEPT across a failed read (usage-service `keepLastGood`),
+ * or null when the numbers are current. "Rate limited — showing values from 14m ago, next try in
+ * 2m": the age is the numbers' own (`updatedAt`), not the failed request's.
+ */
+export function claudeStaleNotice(u: ClaudeUsage | null | undefined, now: number = Date.now()): string | null {
+  if (!u?.failure || u.status !== 'error' || u.limits.length === 0) return null
+  const lead = u.failure.reason === 'rate-limited' ? 'Rate limited' : 'Could not refresh'
+  const line = `${lead} — showing values from ${formatTimeAgo(u.updatedAt, now)}`
+  const retryAt = u.failure.retryAt
+  return retryAt !== undefined && retryAt > now ? `${line}, next try in ${minutesUntil(retryAt, now)}m` : line
+}
+
+/** The empty-state line for a Claude snapshot with no limits to draw. */
+export function claudeEmptyText(u: ClaudeUsage, now: number = Date.now()): string {
+  if (u.status !== 'error') return 'No usage data.'
+  if (u.failure?.reason !== 'rate-limited') return 'Could not read usage.'
+  const retryAt = u.failure.retryAt
+  return retryAt !== undefined && retryAt > now
+    ? `Rate limited — try again in ${minutesUntil(retryAt, now)}m.`
+    : 'Rate limited — try again shortly.'
 }

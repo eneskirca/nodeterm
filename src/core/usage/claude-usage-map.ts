@@ -128,11 +128,33 @@ export function usageFromPayload(data: unknown, email: string | null, now: numbe
   }
 }
 
+/**
+ * A failed read (`fresh.failure` set) must not throw away numbers we already had: keep `prev`'s
+ * limits and its `updatedAt` (the popover's "Updated N ago" must stay the age of the NUMBERS),
+ * mark the result `error` + the failure, and take the identity from `fresh` (it is re-read every
+ * attempt). Nothing is kept when there is nothing to keep, or when the identity changed — one
+ * login's numbers must never be shown under another's email.
+ */
+export function keepLastGood(prev: ClaudeUsage | undefined, fresh: ClaudeUsage): ClaudeUsage {
+  if (!fresh.failure || !prev || prev.limits.length === 0) return fresh
+  if (prev.email && fresh.email && prev.email !== fresh.email) return fresh
+  const { organization: _previousOrganization, failure: _previousFailure, ...numbers } = prev
+  return {
+    ...numbers,
+    ...(fresh.organization ? { organization: fresh.organization } : {}),
+    email: fresh.email ?? prev.email,
+    status: 'error',
+    failure: fresh.failure
+  }
+}
+
 /** An empty snapshot carrying only the identity we managed to resolve. */
 export function emptyUsage(
   email: string | null,
   now: number,
-  status: ClaudeUsage['status']
+  status: ClaudeUsage['status'],
+  failure?: ClaudeUsage['failure']
 ): ClaudeUsage {
-  return { limits: [], session: null, weekly: null, email, updatedAt: now, status }
+  const u: ClaudeUsage = { limits: [], session: null, weekly: null, email, updatedAt: now, status }
+  return failure ? { ...u, failure } : u
 }

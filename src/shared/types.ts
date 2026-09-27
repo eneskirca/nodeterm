@@ -2663,6 +2663,23 @@ export interface ClaudeUsage {
    * 'fetching' = request in flight. 'ok' = windows present. 'error' = fetch failed.
    */
   status: 'unavailable' | 'fetching' | 'ok' | 'error'
+  /**
+   * Why the LATEST request failed, when it did (absent on a fresh 'ok' snapshot and on
+   * 'unavailable'). With `status: 'error'` and non-empty `limits`, the limits are the last good
+   * snapshot kept across the failure and `updatedAt` is still THAT snapshot's time — the numbers
+   * are stale, not fresh. With empty `limits` there was nothing to keep.
+   */
+  failure?: ClaudeUsageFailure
+}
+
+export interface ClaudeUsageFailure {
+  /** 'rate-limited' = HTTP 429 from the usage endpoint; 'error' = 5xx, network, timeout, bad body. */
+  reason: 'rate-limited' | 'error'
+  /** Unix ms of the failed request. */
+  at: number
+  /** Unix ms before which the service will not ask the endpoint again for this account
+   *  (Retry-After, clamped). Absent = no window: the next poll or ⟳ may ask. */
+  retryAt?: number
 }
 
 /**

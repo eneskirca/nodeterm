@@ -17,6 +17,8 @@ import {
 } from '../lib/usageScope'
 import {
   barFillPercent,
+  claudeEmptyText,
+  claudeStaleNotice,
   formatResetCountdown,
   formatTimeAgo,
   percentNumber,
@@ -194,14 +196,21 @@ function AccountUsageBlock({
       {u?.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
+      <StaleNotice u={u} />
       {u && u.limits.length === 0 && (
         <div className="usage-popover__empty">
-          {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
+          {claudeEmptyText(u)}
         </div>
       )}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
     </div>
   )
+}
+
+/** Kept-across-a-failure Claude bars say so, and why (usage-service `keepLastGood`). */
+function StaleNotice({ u }: { u: ClaudeUsage | null | undefined }) {
+  const notice = claudeStaleNotice(u)
+  return notice ? <div className="usage-popover__stale">{notice}</div> : null
 }
 
 /**
@@ -590,7 +599,9 @@ export function UsageIndicator({
             </span>
           )
         })}
-        {isError && hasData && <span className="usage-pill__dim">⚠</span>}
+        {isError && hasData && (
+          <span className="usage-pill__dim" title={claudeStaleNotice(claudeUsage) ?? undefined}>⚠</span>
+        )}
       </>
     )
   }
@@ -655,11 +666,12 @@ export function UsageIndicator({
                   {limits.map((l) => (
                     <LimitRow key={limitKey(l)} limit={l} mode={percentMode} />
                   ))}
+                  <StaleNotice u={claudeUsage} />
                   {/* Another provider's data must not hide a failed Claude read. Keep any
                       last-known Claude bars instead of replacing them with the empty state. */}
                   {((!hasData && !providerError) || (claudeError && limits.length === 0)) && (
                     <div className="usage-popover__empty">
-                      {claudeError ? 'Could not read usage.' : 'No usage data.'}
+                      {claudeError ? (claudeUsage ? claudeEmptyText(claudeUsage) : 'Could not read usage.') : 'No usage data.'}
                     </div>
                   )}
                   {(claudeUsage?.email || claudeUsage?.organization) && (

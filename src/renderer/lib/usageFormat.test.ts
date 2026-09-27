@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { barFillPercent, contextFillColor, formatModelLabel, percentNumber, severityColor } from './usageFormat'
+import {
+  barFillPercent,
+  claudeEmptyText,
+  claudeStaleNotice,
+  contextFillColor,
+  formatModelLabel,
+  percentNumber,
+  severityColor
+} from './usageFormat'
+import type { ClaudeUsage } from '@shared/types'
 
 describe('formatModelLabel', () => {
   it('formats family + version ids', () => {
@@ -76,5 +85,45 @@ describe('contextFillColor', () => {
     // 90% USED context is red; 90% REMAINING quota is green. Same number, opposite meaning.
     expect(contextFillColor(90)).toBe('#ff453a')
     expect(severityColor(null, 90)).toBe('#30d158')
+  })
+})
+
+describe('Claude stale / rate-limit wording', () => {
+  const NOW = 1_000_000_000
+  const limit = { kind: 'session', group: 'session', usedPercent: 10, severity: null, resetsAt: null,
+    windowMinutes: null, scopeLabel: null, isActive: false }
+  const usage = (over: Partial<ClaudeUsage>): ClaudeUsage => ({
+    limits: [], session: null, weekly: null, email: null, updatedAt: NOW, status: 'ok', ...over
+  })
+
+  it('says nothing for a current snapshot', () => {
+    expect(claudeStaleNotice(null, NOW)).toBeNull()
+    expect(claudeStaleNotice(usage({ limits: [limit] }), NOW)).toBeNull()
+    // An error with nothing kept is the empty-state line's job, not this one's.
+    expect(claudeStaleNotice(usage({ status: 'error', failure: { reason: 'error', at: NOW } }), NOW)).toBeNull()
+  })
+
+  it('names a rate limit, the age of the kept numbers and when it will ask again', () => {
+    const u = usage({ status: 'error', limits: [limit], updatedAt: NOW - 14 * 60_000,
+      failure: { reason: 'rate-limited', at: NOW - 10_000, retryAt: NOW + 118_000 } })
+    expect(claudeStaleNotice(u, NOW)).toBe('Rate limited — showing values from 14m ago, next try in 2m')
+    expect(claudeStaleNotice({ ...u, failure: { reason: 'rate-limited', at: NOW - 10_000, retryAt: NOW - 1 } }, NOW))
+      .toBe('Rate limited — showing values from 14m ago')
+  })
+
+  it('names a plain failure as a failed refresh', () => {
+    const u = usage({ status: 'error', limits: [limit], updatedAt: NOW - 30_000,
+      failure: { reason: 'error', at: NOW } })
+    expect(claudeStaleNotice(u, NOW)).toBe('Could not refresh — showing values from just now')
+  })
+
+  it('empty-state text: rate limit named, everything else as before', () => {
+    expect(claudeEmptyText(usage({ status: 'error', failure: { reason: 'rate-limited', at: NOW, retryAt: NOW + 128_000 } }), NOW))
+      .toBe('Rate limited — try again in 3m.')
+    expect(claudeEmptyText(usage({ status: 'error', failure: { reason: 'rate-limited', at: NOW } }), NOW))
+      .toBe('Rate limited — try again shortly.')
+    expect(claudeEmptyText(usage({ status: 'error', failure: { reason: 'error', at: NOW } }), NOW)).toBe('Could not read usage.')
+    expect(claudeEmptyText(usage({ status: 'error' }), NOW)).toBe('Could not read usage.')
+    expect(claudeEmptyText(usage({ status: 'ok' }), NOW)).toBe('No usage data.')
   })
 })

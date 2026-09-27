@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mapUsageLimits, parseResetTimestamp } from './claude-usage-map'
+import { emptyUsage, keepLastGood, mapUsageLimits, parseResetTimestamp, usageFromPayload } from './claude-usage-map'
 import { findLimit, limitLabel, limitShortLabel } from '../../shared/usage-limits'
 
 /**
@@ -153,5 +153,32 @@ describe('parseResetTimestamp', () => {
     expect(parseResetTimestamp(null)).toBeNull()
     expect(parseResetTimestamp('')).toBeNull()
     expect(parseResetTimestamp('not a date')).toBeNull()
+  })
+})
+
+describe('keepLastGood', () => {
+  const good = { ...usageFromPayload({ five_hour: { utilization: 12 } }, 'a@x.test', 1000),
+    organization: { name: 'Old org' } }
+  const failed = (email: string | null, organization?: { name: string }) => ({
+    ...emptyUsage(email, 5000, 'error', { reason: 'rate-limited' as const, at: 5000, retryAt: 65000 }),
+    ...(organization ? { organization } : {})
+  })
+
+  it('keeps the numbers and their time, takes the failure and the CURRENT identity', () => {
+    const u = keepLastGood(good, failed('a@x.test', { name: 'New org' }))
+    expect(u).toMatchObject({ status: 'error', updatedAt: 1000, email: 'a@x.test',
+      organization: { name: 'New org' }, failure: { reason: 'rate-limited', retryAt: 65000 } })
+    expect(u.limits).toEqual(good.limits)
+    // An organization the fresh read could not confirm is not carried over.
+    expect(keepLastGood(good, failed('a@x.test')).organization).toBeUndefined()
+  })
+
+  it('passes the fresh result through when there is nothing to keep or no failure', () => {
+    const ok = usageFromPayload({ five_hour: { utilization: 3 } }, 'a@x.test', 9000)
+    expect(keepLastGood(good, ok)).toBe(ok)
+    const f = failed('a@x.test')
+    expect(keepLastGood(undefined, f)).toBe(f)
+    expect(keepLastGood(emptyUsage('a@x.test', 1, 'ok'), f)).toBe(f)
+    expect(keepLastGood(good, failed('b@x.test'))).toEqual(failed('b@x.test'))
   })
 })

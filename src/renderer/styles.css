@@ -7937,6 +7937,8 @@ button.group-node__setup:disabled {
 .usage-popover__title { display: block; font-size: 15px; font-weight: 600; }
 .usage-popover__ago { font-size: 12px; color: rgba(var(--tint-rgb), 0.5); }
 .usage-popover__empty { font-size: 13px; color: rgba(var(--tint-rgb), 0.5); }
+/* Under Claude bars kept across a failed read (429 / 5xx): says they are old, and why. */
+.usage-popover__stale { margin-top: 10px; font-size: 12px; color: var(--warn); }
 .usage-row { margin-top: 14px; }
 .usage-row__title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 /* Marks the limit the server says is currently gating the account. */

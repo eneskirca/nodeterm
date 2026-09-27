@@ -17,7 +17,7 @@ import type {
   RemoteAccountUsage,
   RemoteUsageQuery
 } from '../../shared/types'
-import { emptyUsage, usageFromPayload } from './claude-usage-map'
+import { emptyUsage, keepLastGood, usageFromPayload } from './claude-usage-map'
 import {
   fetchRemoteUsage,
   type RemoteUsageRunner,
@@ -49,6 +49,14 @@ const FETCH_TIMEOUT_MS = 8000
 const POLL_MS = 15 * 60 * 1000
 /** Also the cache TTL for `usage.fetch` — a repeat call inside this window is served from cache. */
 const REFETCH_DEBOUNCE_MS = 5 * 60 * 1000
+/**
+ * Rate-limit window bounds. A 429 without a usable Retry-After waits the default; any stated
+ * window is clamped so a `0` cannot turn into a retry storm and a hostile/garbled huge value
+ * cannot silence the pill for a day. Measured 2026-09-27: the endpoint sent `retry-after: 128`.
+ */
+const RATE_LIMIT_DEFAULT_MS = 60 * 1000
+const RETRY_AFTER_MIN_MS = 30 * 1000
+const RETRY_AFTER_MAX_MS = 60 * 60 * 1000
 
 interface OAuthCreds {
   accessToken: string | null
@@ -175,6 +183,23 @@ export async function resolveClaudeAccessToken(accountId?: string): Promise<stri
   return (await resolveCreds(accountId)).accessToken
 }
 
+/**
+ * `Retry-After` as milliseconds from `now`: delta-seconds (digits only) or an HTTP-date (a date
+ * in the past is 0). null = absent or unparseable — the caller decides the default.
+ */
+export function parseRetryAfter(raw: string | null, now: number): number | null {
+  const v = raw?.trim()
+  if (!v) return null
+  if (/^\d+$/.test(v)) return Number(v) * 1000
+  // Date.parse accepts far more than HTTP-date; require a letter so "1.5" / "-5" never parse.
+  if (!/[a-z]/i.test(v)) return null
+  const at = Date.parse(v)
+  return Number.isFinite(at) ? Math.max(0, at - now) : null
+}
+
+const clampRetryMs = (ms: number): number =>
+  Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, ms))
+
 export async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
   const now = Date.now()
   const { accessToken, email, organization } = await resolveCreds(accountId)
@@ -191,13 +216,24 @@ export async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
     }).finally(() => clearTimeout(t))
     if (!res.ok) {
       // 401/403 → token is an API key or expired: no subscription windows to show.
-      const status = res.status === 401 || res.status === 403 ? 'unavailable' : 'error'
-      return identify(emptyUsage(email, now, status))
+      if (res.status === 401 || res.status === 403) return identify(emptyUsage(email, now, 'unavailable'))
+      const retryAfter = parseRetryAfter(res.headers.get('retry-after'), now)
+      if (res.status === 429) {
+        // The endpoint's own budget said no. Honour its window (or a sane default) — asking again
+        // sooner only extends the refusal.
+        const retryAt = now + clampRetryMs(retryAfter ?? RATE_LIMIT_DEFAULT_MS)
+        return identify(emptyUsage(email, now, 'error', { reason: 'rate-limited', at: now, retryAt }))
+      }
+      // A 5xx that names a window is honoured too; one that does not leaves ⟳ free to retry.
+      const failure = retryAfter === null
+        ? { reason: 'error' as const, at: now }
+        : { reason: 'error' as const, at: now, retryAt: now + clampRetryMs(retryAfter) }
+      return identify(emptyUsage(email, now, 'error', failure))
     }
     const data = (await res.json()) as Record<string, any>
     return identify(usageFromPayload(data, email, now))
   } catch {
-    return identify(emptyUsage(email, now, 'error'))
+    return identify(emptyUsage(email, now, 'error', { reason: 'error', at: now }))
   }
 }
 
@@ -284,10 +320,16 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   const last = new Map<string, ClaudeUsage>()
   const lastFetchAt = new Map<string, number>()
   const inFlight = new Map<string, Promise<ClaudeUsage>>()
+  // Per account: Unix ms before which the endpoint must not be asked again (Retry-After of the
+  // last 429, or of a 5xx that named one). EVERY read goes through `run`, so this one gate covers
+  // the background poll, the focus refresh, the IPC fetch AND a forced ⟳ alike.
+  const retryUntil = new Map<string, number>()
 
   const push = (key: string, u: ClaudeUsage): void => {
     last.set(key, u)
-    lastFetchAt.set(key, u.updatedAt)
+    // When we last ASKED, not the age of the numbers: a kept snapshot keeps its old `updatedAt`,
+    // and debouncing on that would re-ask on every call once its window has passed.
+    lastFetchAt.set(key, u.failure?.at ?? u.updatedAt)
     // Only the system account feeds the push channel — the collapsed chip tracks it.
     // Best-effort: a fetch launched before shutdown (or a test's platform reset) can land after
     // the shell is gone, and this runs inside an un-awaited promise chain — throwing here is an
@@ -309,14 +351,23 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
 
   const run = async (accountId?: string): Promise<ClaudeUsage> => {
     const key = accountId ?? ''
+    const cached = last.get(key)
+    const until = retryUntil.get(key)
+    // Inside the endpoint's own window: answer from the cache (which already carries the failure
+    // and its retryAt) without spending a request that would only extend the refusal.
+    if (cached && until !== undefined && Date.now() < until) return cached
     const pending = inFlight.get(key)
     if (pending) return pending
-    const p = fetchUsage(accountId)
-    inFlight.set(key, p)
-    try {
-      const u = await p
+    const p = (async (): Promise<ClaudeUsage> => {
+      const u = keepLastGood(last.get(key), await fetchUsage(accountId))
+      if (u.failure?.retryAt !== undefined) retryUntil.set(key, u.failure.retryAt)
+      else retryUntil.delete(key)
       push(key, u)
       return u
+    })()
+    inFlight.set(key, p)
+    try {
+      return await p
     } finally {
       inFlight.delete(key)
     }
