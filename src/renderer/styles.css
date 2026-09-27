@@ -8020,14 +8020,13 @@ button.group-node__setup:disabled {
   margin-left: 0;
 }
 
-/* Popover-footer action (issue #420): opens the system-scoped `claude /login` terminal. A quiet
-   full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it reads
-   in both themes. */
+/* "Switch Claude account…" (issue #420): opens the system-scoped `claude /login` terminal. A
+   quiet full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it
+   reads in both themes. It sits INSIDE the Claude / System block it acts on (issue #912) — as a
+   popover footer it read as the action of whichever provider happened to be listed last. */
 .usage-popover__switch {
   display: block;
   width: 100%;
-  /* Stays put below the scrolling account list (issue #503). */
-  flex: none;
   margin-top: 10px;
   padding: 5px 8px;
   border: none;
@@ -8324,6 +8323,9 @@ button.group-node__setup:disabled {
   color: rgba(var(--tint-rgb), 0.65);
   overflow-wrap: anywhere;
 }
+/* A personal organization's name is derived from the email printed right above it
+   ("<email>'s Organization"): kept (it is the real name), but quieter, since it repeats (#912). */
+.usage-account__organization--derived { color: rgba(var(--tint-rgb), 0.45); }
 
 .seg-pill {
   display: inline-flex;

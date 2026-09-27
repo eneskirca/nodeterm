@@ -1,4 +1,4 @@
-import { usageDiagnosticText } from '../lib/usageDiagnostic'
+import { usageDiagnosticLines } from '../lib/usageDiagnostic'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { UsageOrganization } from './UsageOrganization'
 import { IconReload } from './icons'
@@ -172,7 +172,8 @@ function AccountUsageBlock({
   mode,
   isDefault = false,
   onUse,
-  move
+  move,
+  action
 }: {
   label: string
   email?: string
@@ -181,7 +182,10 @@ function AccountUsageBlock({
   isDefault?: boolean
   onUse?: () => void
   move?: React.ReactNode
+  /** An action that belongs to THIS account (the system row's "Switch Claude account…"). */
+  action?: React.ReactNode
 }) {
+  const shownEmail = u?.email ?? email
   return (
     <div className="usage-account">
       <div className="usage-account__label">
@@ -189,8 +193,8 @@ function AccountUsageBlock({
         <DefaultAccountMark isDefault={isDefault} onUse={onUse} />
         {move}
       </div>
-      {(u?.email ?? email) && <div className="usage-account__email">{u?.email ?? email}</div>}
-      <UsageOrganization organization={u?.organization} />
+      {shownEmail && <div className="usage-account__email">{shownEmail}</div>}
+      <UsageOrganization organization={u?.organization} email={shownEmail} />
       {u?.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
@@ -200,6 +204,7 @@ function AccountUsageBlock({
         </div>
       )}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
+      {action}
     </div>
   )
 }
@@ -275,9 +280,11 @@ function ProviderBlock({ u, mode, hostKey }: { u: ProviderUsage; mode: 'used' | 
       {u.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
-      {u.diagnostics?.map((diagnostic, index) => (
-        <div className="usage-popover__empty" key={index}>
-          {usageDiagnosticText(label, diagnostic)}
+      {/* One line per distinct reason (issue #912): two views failing the same way are one
+          failure of this provider, not two paragraphs of the same sentence. */}
+      {usageDiagnosticLines(label, u.diagnostics).map((line) => (
+        <div className="usage-popover__empty" key={line}>
+          {line}
         </div>
       ))}
       {u.limits.length === 0 && !u.diagnostics?.length && (
@@ -549,6 +556,41 @@ export function UsageIndicator({
     }
   }
 
+  // Issue #420 — "Switch account" where the limit is displayed: opens a terminal running the
+  // SYSTEM-scoped `claude /login` (createSystemLoginNode), so picking the other org is one click
+  // from the panel that said you need to. Nothing changes until the user completes the login IN
+  // that terminal — the CLI's own org picker + OAuth — which is why there is no confirm dialog in
+  // front of it: the terminal is the confirmation surface, and the tooltip names what completing
+  // it changes. LOCAL scope only: on an SSH project a system login would rewrite the HOST's
+  // ~/.claude, and saying "switch account" while meaning another machine's identity is the kind of
+  // ambiguity this popover exists to avoid. Hidden with the Claude provider — a switch button for
+  // numbers the user chose not to see would be an orphan.
+  // Issue #912: it is rendered INSIDE the block of the account it switches (the Claude block, or
+  // the System row when managed accounts are listed). As a popover footer it sat under whichever
+  // provider happened to be last, and read as that provider's action.
+  const switchAction =
+    scope.kind === 'local' && !hidden.has('claude') ? (
+      <button
+        type="button"
+        className="usage-popover__switch"
+        title={
+          'Opens a terminal running `claude /login` for the system account (~/.claude). ' +
+          'Completing it switches the org/account all system sessions use — running ' +
+          'sessions carry on under the new one. Managed accounts keep their own logins.'
+        }
+        onClick={() => {
+          setOpen(false)
+          window.dispatchEvent(new CustomEvent('nodeterm:switch-system-account'))
+        }}
+      >
+        ⇄ Switch Claude account…
+      </button>
+    ) : null
+  // The single-account Claude block: its meters, its account and its action together. The
+  // heading appears once another provider shares the panel, exactly as before.
+  const claudeAccountShown = !!(claudeUsage?.email || claudeUsage?.organization)
+  const claudeHasContent = limits.length > 0 || claudeError || claudeAccountShown
+
   let pillBody: JSX.Element
   if (!hasData && fetching) {
     pillBody = <span className="usage-pill__dim usage-pill__pulse">···</span>
@@ -612,11 +654,12 @@ export function UsageIndicator({
               <span className="usage-popover__ago">Updated {formatTimeAgo(updatedAt)}</span>
             )}
           </div>
-          {/* Issue #503: the account blocks SCROLL, the heading and the footer action do not.
-              Each account is a tall block (name + Session/Weekly/Opus meters), so past about
-              four accounts the popover grew off the top of the window — the first account's
-              header and meter were clipped with no way to reach them. Same rule as the session
-              memory panel's row list: every row is rendered, the list scrolls. */}
+          {/* Issue #503: the account blocks SCROLL, the heading does not. Each account is a tall
+              block (name + Session/Weekly/Opus meters), so past about four accounts the popover
+              grew off the top of the window — the first account's header and meter were clipped
+              with no way to reach them. Same rule as the session memory panel's row list: every
+              row is rendered, the list scrolls. The switch action scrolls WITH its block since
+              issue #912 — it belongs to the Claude/System block, which is always first. */}
           <div className="usage-popover__body">
             {/* The local Claude section belongs to a LOCAL project only. On an SSH project the
                 remote blocks below carry the same limits, and rendering both would print the
@@ -632,6 +675,7 @@ export function UsageIndicator({
                     u={claudeUsage}
                     {...rowMark(null)}
                     move={moveFor(null)}
+                    action={switchAction}
                   />
                   {scoped.accounts.map((a) => (
                     <AccountUsageBlock
@@ -646,10 +690,10 @@ export function UsageIndicator({
                   ))}
                 </>
               ) : (
-                <>
+                <div className="usage-claude">
                   {/* Claude's rows are bare when it is the only provider; once others share the
                       panel they need a heading of their own to stay attributable. */}
-                  {enabled.length > 0 && (limits.length > 0 || claudeError) && (
+                  {enabled.length > 0 && claudeHasContent && (
                     <div className="usage-account__label">Claude</div>
                   )}
                   {limits.map((l) => (
@@ -662,14 +706,23 @@ export function UsageIndicator({
                       {claudeError ? 'Could not read usage.' : 'No usage data.'}
                     </div>
                   )}
-                  {(claudeUsage?.email || claudeUsage?.organization) && (
-                    <div className="usage-account">
-                      <div className="usage-account__label">Claude Account</div>
-                      <div className="usage-account__email">{claudeUsage.email}</div>
-                      <UsageOrganization organization={claudeUsage.organization} />
+                  {/* Issue #912: the account is part of Claude's block, set like a meter row
+                      under the provider heading — not a fourth peer section between Claude's
+                      meters and the next provider. */}
+                  {claudeAccountShown && (
+                    <div className="usage-row usage-claude__account">
+                      <div className="usage-row__title">Account</div>
+                      {claudeUsage?.email && (
+                        <div className="usage-account__email">{claudeUsage.email}</div>
+                      )}
+                      <UsageOrganization
+                        organization={claudeUsage?.organization}
+                        email={claudeUsage?.email}
+                      />
                     </div>
                   )}
-                </>
+                  {switchAction}
+                </div>
               ))}
             {/* On an SSH project these are the whole panel; the host badge is what says the numbers
                 were read somewhere other than this machine. */}
@@ -698,33 +751,6 @@ export function UsageIndicator({
               <ProviderBlock key={providerRowKey(p)} u={p} mode={percentMode} />
             ))}
           </div>
-          {/* Issue #420 — "Switch account" where the limit is displayed: opens a terminal
-              running the SYSTEM-scoped `claude /login` (createSystemLoginNode), so picking the
-              other org is one click from the panel that said you need to. Nothing changes until
-              the user completes the login IN that terminal — the CLI's own org picker + OAuth —
-              which is why there is no confirm dialog in front of it: the terminal is the
-              confirmation surface, and the tooltip names what completing it changes. LOCAL scope
-              only: on an SSH project a system login would rewrite the HOST's ~/.claude, and
-              saying "switch account" while meaning another machine's identity is the kind of
-              ambiguity this popover exists to avoid. Hidden with the Claude provider — a switch
-              button for numbers the user chose not to see would be an orphan. */}
-          {scope.kind === 'local' && !hidden.has('claude') && (
-            <button
-              type="button"
-              className="usage-popover__switch"
-              title={
-                'Opens a terminal running `claude /login` for the system account (~/.claude). ' +
-                'Completing it switches the org/account all system sessions use — running ' +
-                'sessions carry on under the new one. Managed accounts keep their own logins.'
-              }
-              onClick={() => {
-                setOpen(false)
-                window.dispatchEvent(new CustomEvent('nodeterm:switch-system-account'))
-              }}
-            >
-              ⇄ Switch Claude account…
-            </button>
-          )}
         </div>
       )}
       {/* The SSH pill is visually identical to the local one — same labels, same bar — so the

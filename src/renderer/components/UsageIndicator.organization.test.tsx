@@ -38,7 +38,7 @@ async function open() {
 }
 it('shows the active organization beside the system email and keeps the raw tier in the tooltip', async () => {
   await open()
-  const row = host.querySelector('.usage-account')!
+  const row = host.querySelector('.usage-claude__account')!
   expect(row.textContent).toContain('same@example.test')
   expect(row.textContent).toContain('Organization: Personal')
   expect(row.textContent).not.toContain('default_raven')
@@ -58,11 +58,12 @@ it('keeps same-email organizations in separate account rows and prefers the fetc
 it('keeps the email-only block when organization metadata is unavailable', async () => {
   system = snapshot()
   await open()
-  expect(host.querySelector('.usage-account')?.textContent).toBe('Claude Accountsame@example.test')
+  // Issue #912: the account is a row of the Claude block, not a "Claude Account" peer section.
+  expect(host.querySelector('.usage-claude__account')?.textContent).toBe('Accountsame@example.test')
   expect(host.querySelector('.usage-account__organization')).toBeNull()
 })
 it('shows an available organization even when no email was found', async () => {
   system.email = null
   await open()
-  expect(host.querySelector('.usage-account')?.textContent).toContain('Organization: Personal')
+  expect(host.querySelector('.usage-claude__account')?.textContent).toContain('Organization: Personal')
 })
