@@ -379,6 +379,18 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     return Date.now() - (lastFetchAt.get(key) ?? 0) >= REFETCH_DEBOUNCE_MS
   }
 
+  /**
+   * The ONE rule for "answer this read from the cache without calling `run`": the cached value is
+   * current AND no retry window is open. While a window IS open, every read goes through `run`,
+   * which re-checks the local login (no network) before serving the cache — so a logout or an
+   * account switch is never hidden behind the window, whatever path the read came from.
+   */
+  const cacheAnswers = (key: string): boolean => {
+    if (!last.get(key) || due(key)) return false
+    const until = retryUntil.get(key)
+    return until === undefined || Date.now() >= until
+  }
+
   /** The login on disk is no longer the one the cached answer describes (or there is none). */
   const identityChanged = (key: string, creds: OAuthCreds): boolean => {
     if (!creds.accessToken) return true
@@ -460,8 +472,9 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   }
 
   platform().handle(IPC.usageFetch, async (accountId?: string) => {
-    const cached = last.get(accountId ?? '')
-    if (cached && !due(accountId ?? '')) return cached
+    const key = accountId ?? ''
+    const cached = last.get(key)
+    if (cached && cacheAnswers(key)) return cached
     return run(accountId)
   })
   platform().handle(IPC.usageRefresh, (accountId?: string) => run(accountId))
@@ -681,7 +694,7 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
     fetch: (accountId?: string) => run(accountId),
     refresh: (accountId?: string) => run(accountId),
     refreshIfStale: () => {
-      if (due('')) void run().catch(() => {})
+      if (!cacheAnswers('')) void run().catch(() => {})
     },
     snapshot: () =>
       // System account (key '') first, then managed accounts in insertion order.

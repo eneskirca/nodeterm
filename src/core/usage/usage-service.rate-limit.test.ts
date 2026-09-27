@@ -334,6 +334,55 @@ describe('identity changes inside the window', () => {
     expect(u.organization?.uuid).toBe('org-B')
   })
 
+  it('ordinary reads (IPC fetch) see a logout inside the window, without the network', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    delete files['/fixture-home/.claude/.credentials.json']
+    vi.setSystemTime(T0 + 6 * 60_000)
+    const u = await ipcFetch()
+    expect(u).toMatchObject({ status: 'unavailable', limits: [], email: null })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('the focus refresh sees a logout inside the window, without the network', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    delete files['/fixture-home/.claude/.credentials.json']
+    vi.setSystemTime(T0 + 6 * 60_000)
+    s.refreshIfStale()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.snapshot()[0].usage).toMatchObject({ status: 'unavailable', limits: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('an IPC fetch inside the window reads for a switched email instead of serving the old bars', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    files['/fixture-home/.claude/.credentials.json'] = creds('other@example.test')
+    vi.setSystemTime(T0 + 6 * 60_000)
+    replies.push(good(50))
+    expect(await ipcFetch()).toMatchObject({ status: 'ok', email: 'other@example.test', session: { leftPercent: 50 } })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('an unchanged login inside the window is still answered from the cache', async () => {
+    const s = start()
+    replies.push(good(12), rateLimited('3600'))
+    await s.refresh()
+    await s.refresh()
+    vi.setSystemTime(T0 + 6 * 60_000)
+    expect((await ipcFetch()).limits).toHaveLength(1)
+    s.refreshIfStale()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('the same identity with its org metadata gone stays gated (unknown proves nothing)', async () => {
     files['/fixture-home/.claude.json'] = orgFile('org-A')
     const s = start()

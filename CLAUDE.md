@@ -3619,7 +3619,8 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h), counted from when the
   response ARRIVED (`failure.at`/`retryAt`), never from the request start (`updatedAt`); a 5xx that names a
   Retry-After is honoured the same way, one that does not stays retryable. The window is the LOGIN's:
-  every gated call first re-reads the local credentials (keychain/file, never the network), and a
+  while it is open NO read is answered from the cache outside `run` (`cacheAnswers` — IPC fetch
+  and focus refresh go through it too), and every gated call first re-reads the local credentials (keychain/file, never the network), and a
   logout (→ `unavailable` with no request), a different email or a different KNOWN org uuid than
   the cached origin drops the window and reads for the new login. One `setTimeout` per account
   re-reads at `retryAt` (same `shouldPoll || mirrorMayBeRead` gate as the poll, unref'd, cleared
