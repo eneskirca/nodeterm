@@ -16,15 +16,17 @@ import { COMPOSER_EFFORT_MIN_WIDTH, COMPOSER_MODEL_MIN_WIDTH } from '../lib/chat
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const { sendText, session } = vi.hoisted(() => {
+const { sendText, sendChatPrompt, session } = vi.hoisted(() => {
+  // Picker commands (`/model`, `/effort`) go through `sendText`; prompts through `sendChatPrompt`.
   const sendText = vi.fn((_id: string, _text: string): Promise<boolean | 'pasted-not-submitted'> => Promise.resolve(true))
+  const sendChatPrompt = vi.fn(async (_id: string, _text: string, _agent: string) => true as const)
   const session = {
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true }) },
-      pty: { sendText }
+      pty: { sendText, sendChatPrompt }
     }
   }
-  return { sendText, session }
+  return { sendText, sendChatPrompt, session }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -90,6 +92,7 @@ const flush = () => act(async () => {
 beforeEach(() => {
   sendText.mockReset()
   sendText.mockResolvedValue(true)
+  sendChatPrompt.mockClear()
   // Production's own escaper (the one `droppedPaths` applies), not a re-implementation of it.
   pathsForFiles = vi.fn(async (files: File[]) => files.map((f) => escapeDroppedPath(`/tmp/${f.name}`)))
   onShowTerminal = vi.fn()
@@ -405,7 +408,7 @@ describe('model / effort labels', () => {
       textarea().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     })
     await flush()
-    expect(sendText).toHaveBeenCalledWith(NODE, 'go', { typed: true })
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'go', 'claude')
     expect(modelBtn()!.disabled).toBe(true)
     expect(effortBtn()!.disabled).toBe(true)
     // The real state speaks (the turn ran and finished): the labels come back.

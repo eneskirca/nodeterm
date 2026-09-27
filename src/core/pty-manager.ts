@@ -1,4 +1,4 @@
-import type { TextDeliveryResult } from '../shared/text-delivery'
+import type { ChatPromptBlocked, ChatPromptResult, TextDeliveryResult } from '../shared/text-delivery'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
@@ -81,7 +81,8 @@ import {
   pasteBufferName,
   runPasteDelivery
 } from './tmux-naming'
-import { localTypedArgs, typeThenSubmitWhenSettled } from './typed-input'
+import { chatPromptPlan, localTypedArgs, typeThenSubmitWhenSettled } from './typed-input'
+import { claudeScreenBlocksInput, readClaudeScreen } from '../shared/agents/claude-screen'
 import { encodeSendKeysHex } from './tmux-control'
 import { releasePty, type ReleasablePty } from './pty-release'
 import { terminateWindowsProcessTree } from '../session-host/windows-process-tree'
@@ -118,6 +119,7 @@ import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
 import {
   capabilityAgentId,
   hasSharedIdentity,
+  readsScreenDialogs,
   setCustomAgentBaseResolver,
   vanillaEnvStripPattern,
   type AgentId
@@ -858,6 +860,13 @@ export const SHADOW_CMD_TIMEOUT_MS = 5_000
  * shorter it lives the smaller the window in which anything has to reason about it at all.
  */
 export const BACKGROUND_WRITE_LINGER_MS = 10_000
+
+/** The chat view's screen check for Claude (shared/agents/claude-screen.ts): a refusal, or null. */
+function screenGate(screen: string): ChatPromptBlocked | null {
+  const read = readClaudeScreen(screen)
+  if (!claudeScreenBlocksInput(read)) return null
+  return { blocked: 'screen', dialog: read.kind === 'dialog' ? read.text : null }
+}
 
 /**
  * Manages all live PTY processes and bridges them to the renderer over IPC.
@@ -1844,12 +1853,13 @@ export class PtyManager {
     platform().handle(IPC.ptyReadScrollback, (persistKey: string) =>
       readScrollback(persistKey)
     )
-    platform().handle(IPC.ptySendText, (persistKey: string, text: string, enter?: boolean, typed?: unknown) =>
-      // `typed` crosses a process boundary: only a literal `true` opts in to keystroke delivery.
-      this.sendText(persistKey, text, {
-        ...(enter === undefined ? {} : { enter }),
-        ...(typed === true ? { typed: true } : {})
-      })
+    platform().handle(IPC.ptySendText, (persistKey: string, text: string, enter?: boolean) =>
+      this.sendText(persistKey, text, enter === undefined ? undefined : { enter })
+    )
+    platform().handle(IPC.ptySendChatPrompt, (persistKey: string, text: string, agentId: unknown) =>
+      // `agentId` crosses a process boundary: it only picks the screen reader, and a non-string
+      // picks none (the pre-guard behaviour), never a wrong one.
+      this.sendChatPrompt(persistKey, text, typeof agentId === 'string' ? agentId : '')
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string) => this.paneCommand(persistKey))
@@ -4475,20 +4485,10 @@ export class PtyManager {
    * composition is exported, both callers use it, and the only thing left in this method is which
    * transport runs it.
    */
-  async sendText(
-    persistKey: string,
-    text: string,
-    opts?: { enter?: boolean; typed?: boolean }
-  ): Promise<TextDeliveryResult> {
+  async sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult> {
     const enter = opts?.enter ?? true
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
-    // `typed` (the ⌘M chat view): deliver as keystrokes, not a paste — see core/typed-input.ts.
-    // Only a SUBMITTED prompt on a tmux backend; everything else keeps the paste path below.
-    if (opts?.typed === true && enter && !live?.nativeWindowsPane) {
-      const typed = await this.sendTyped(persistKey, text)
-      if (typed !== null) return typed
-    }
     // A direct (non-persistent) Windows PTY has no session-host entry and no tmux: it is typed
     // into through the pane itself. Routing it to the session host below failed every time.
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendText(text, enter)
@@ -4520,6 +4520,33 @@ export class PtyManager {
     }
   }
 
+  /**
+   * A prompt from the ⌘M chat view: TYPED rather than pasted where the backend allows it (see
+   * core/typed-input.ts), and — for an agent whose screen we can read (`readsScreenDialogs`) —
+   * refused before anything is typed when the agent's own UI owns the keyboard. Such dialogs (the
+   * folder-trust prompt, `/model`, setup questions) fire no hook, so the chat view's state gate
+   * cannot see them; typing into one swallowed the text and let the Enter answer the dialog.
+   * The screen is asked again before the Enter (typed path) — see `typeThenSubmitWhenSettled`.
+   */
+  async sendChatPrompt(persistKey: string, text: string, agentId: string): Promise<ChatPromptResult> {
+    const plan = chatPromptPlan(agentId)
+    const gate = plan.readScreen ? screenGate : undefined
+    const live = this.liveSessionForPersistKey(persistKey)
+    if (plan.typed && !live?.nativeWindowsPane) {
+      const typed = await this.sendTyped(persistKey, text, gate)
+      if (typed !== null) return typed
+    }
+    // The paste — an agent not typed for (upstream's path, unchanged), or no typed path (Windows) —
+    // behind the same pre-check. There is no second look before its Enter: the paste path submits
+    // in its own settled step, which knows nothing of dialogs.
+    if (gate) {
+      const screen = await this.captureSession(persistKey)
+      const refused = screen === '' ? null : gate(screen)
+      if (refused) return refused
+    }
+    return this.sendText(persistKey, text)
+  }
+
   /** Targets with a typed delivery in flight: two interleaved typings would splice their lines. */
   private typedInFlight = new Set<string>()
 
@@ -4528,7 +4555,11 @@ export class PtyManager {
    * Windows session host, no tmux), so the caller falls back to the paste. A delivery already in
    * flight for the same pane answers `false` rather than typing into the middle of it.
    */
-  private async sendTyped(persistKey: string, text: string): Promise<TextDeliveryResult | null> {
+  private async sendTyped(
+    persistKey: string,
+    text: string,
+    gate?: (screen: string) => ChatPromptBlocked | null
+  ): Promise<ChatPromptResult | null> {
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
     const sshRemote = live?.sshRemote
@@ -4565,7 +4596,7 @@ export class PtyManager {
         },
         type: (stdin) => ok(() => type(stdin)),
         submit: () => ok(submit)
-      })
+      }, { gate })
     } catch {
       return 'pasted-not-submitted'
     } finally {

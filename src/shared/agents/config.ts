@@ -340,6 +340,13 @@ export const CLAUDE_TRANSCRIPT_READABLE = ['claude'] as const
 // a new user turn).
 // grok is chat-capable but unmeasured here, so it keeps "wait for the reply" until someone checks.
 export const INPUT_QUEUE_CAPABLE = ['claude'] as const
+// Agents whose own UI dialogs we can recognize on SCREEN (shared/agents/claude-screen.ts). A CLI's
+// built-in dialogs — the folder-trust prompt, /model, one-time setup questions — fire NO hook, so the
+// agent state still reads idle or working while the dialog owns the keyboard, and anything the chat
+// view types into the pane is swallowed, or worse: the trust prompt's default is "No, exit". The
+// reader matches claude's screen layout (MEASURED on 2.1.283); another CLI's layout would read as a
+// permanent dialog and lock its chat view, so each agent needs its own measured reader.
+export const SCREEN_DIALOG_READABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
 export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
 // Agents whose hooks announce that a session ENDED — i.e. whose orderly `/exit` we will hear about.
@@ -554,6 +561,7 @@ export const canChat = (id: AgentId): boolean => includes(CHAT_CAPABLE, id)
 export const chatReadsLocalOnly = (id: AgentId): boolean => includes(CHAT_LOCAL_ONLY, id)
 export const typesChatInput = (id: AgentId): boolean => includes(TYPED_INPUT_CAPABLE, id)
 export const queuesInputWhileWorking = (id: AgentId): boolean => includes(INPUT_QUEUE_CAPABLE, id)
+export const readsScreenDialogs = (id: AgentId): boolean => includes(SCREEN_DIALOG_READABLE, id)
 /** Can CLAUDE's transcript resolver locate and parse this agent's conversation? Never widen this
  *  to mean "can we read this agent" — see CLAUDE_TRANSCRIPT_READABLE. */
 export const readsClaudeShapedTranscript = (id: AgentId): boolean =>

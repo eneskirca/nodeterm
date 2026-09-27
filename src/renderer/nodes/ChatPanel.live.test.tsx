@@ -22,7 +22,7 @@ interface Pending {
   reject: (e: unknown) => void
 }
 
-const { pending, session, sendText } = vi.hoisted(() => {
+const { pending, session, sendChatPrompt } = vi.hoisted(() => {
   const pending: Pending[] = []
   const readTranscript = (
     _s: string | undefined,
@@ -32,9 +32,9 @@ const { pending, session, sendText } = vi.hoisted(() => {
     _g?: string,
     page?: ChatTranscriptPageRequest
   ) => new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ page, resolve, reject }))
-  const sendText = vi.fn(async (_id: string, _t: string) => true as const)
-  const session = { api: { chat: { readTranscript }, pty: { sendText } } }
-  return { pending, session, sendText }
+  const sendChatPrompt = vi.fn(async (_id: string, _t: string, _agent: string) => true as const)
+  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt } } }
+  return { pending, session, sendChatPrompt }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -76,7 +76,7 @@ async function advance(ms: number): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers()
   pending.length = 0
-  sendText.mockClear()
+  sendChatPrompt.mockClear()
   geo.clientHeight = 400
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -107,7 +107,7 @@ describe('ChatPanel live progress', () => {
     await act(async () => {
       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     })
-    expect(sendText).toHaveBeenCalledOnce()
+    expect(sendChatPrompt).toHaveBeenCalledOnce()
     const row = activity()!
     expect(row.textContent).toBe('Claude Code is working…')
     expect(row.getAttribute('role')).toBe('status')

@@ -556,6 +556,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                             cwd={session.spawn.cwd}
                             accountId={accountForReads}
                             agentId={createdAgent!}
+                            remote={!!session.spawn.sshRemoteTmux}
                             // Same resolution as a drop onto this card's live viewer (ModalTerminal):
                             // an SSH node uploads over the master its PTY runs on.
                             pathsForFiles={(files) =>

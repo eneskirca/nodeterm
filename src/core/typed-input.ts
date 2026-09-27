@@ -1,5 +1,6 @@
-import type { TextDeliveryResult } from '../shared/text-delivery'
+import type { ChatPromptBlocked, ChatPromptResult } from '../shared/text-delivery'
 import { posixQuote } from '../shared/ssh'
+import { readsScreenDialogs, typesChatInput } from '../shared/agents/config'
 import { assertPasteTarget } from './tmux-naming'
 import { ENVELOPE_SETTLE_POLLS, ENVELOPE_SETTLE_POLL_MS, type SettleOptions } from './settled-submit'
 
@@ -120,13 +121,21 @@ export const TYPED_NEEDLE_CHARS = 24
 export async function typeThenSubmitWhenSettled(
   text: string,
   surface: TypedSurface,
-  options: SettleOptions = {}
-): Promise<TextDeliveryResult> {
+  options: SettleOptions & {
+    /** Is the pane ready for typed input? A refusal (the agent's own dialog owns the keyboard) is
+     *  asked of the screen BEFORE typing — then nothing is typed and it is returned as-is — and
+     *  again right before the Enter: a dialog that appeared in between gets no Enter, and the
+     *  answer is `pasted-not-submitted` (the text sits unsent in the agent's input box). */
+    gate?: (screen: string) => ChatPromptBlocked | null
+  } = {}
+): Promise<ChatPromptResult> {
   const lines = typedLines(text)
   const joined = visible(lines.join(''))
   if (joined === '') return false
   const needle = joined.slice(-TYPED_NEEDLE_CHARS)
   const before = await surface.capture()
+  const refused = before !== null && options.gate ? options.gate(before) : null
+  if (refused) return refused
   if (!(await surface.type(typedStdin(lines)))) return 'pasted-not-submitted'
   if (before === null) return 'pasted-not-submitted'
   const baseline = occurrences(visible(before), needle)
@@ -138,8 +147,21 @@ export async function typeThenSubmitWhenSettled(
     await wait(ENVELOPE_SETTLE_POLL_MS)
     const now = await surface.capture()
     const shown = now !== null && occurrences(visible(now), needle) > baseline
-    if (shown && seenOnce) return (await surface.submit()) ? true : 'pasted-not-submitted'
+    if (shown && seenOnce) {
+      if (options.gate && now !== null && options.gate(now) !== null) return 'pasted-not-submitted'
+      return (await surface.submit()) ? true : 'pasted-not-submitted'
+    }
     seenOnce = shown
   }
   return 'pasted-not-submitted'
+}
+
+/**
+ * How a ⌘M chat-view prompt is delivered, by agent. `typed`: keystrokes rather than a paste, only
+ * where the agent's composer was measured (`typesChatInput` — M-Enter is a newline in Claude Code,
+ * unmeasured elsewhere). `readScreen`: refuse when the agent's own dialog owns the keyboard, only
+ * where its screen layout was measured (`readsScreenDialogs`). Everything else is the plain paste.
+ */
+export function chatPromptPlan(agentId: string): { typed: boolean; readScreen: boolean } {
+  return { typed: typesChatInput(agentId), readScreen: readsScreenDialogs(agentId) }
 }

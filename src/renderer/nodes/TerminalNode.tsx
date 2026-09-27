@@ -6297,6 +6297,7 @@ export function TerminalNode({
                 // system-root one. Spawn/env identity is unaffected — that stays creation-time.
                 accountId={accountForReads}
                 agentId={agentId}
+                remote={!!data.sshRemoteTmux}
                 // The composer's attach resolves files exactly as a drop onto THIS terminal does.
                 pathsForFiles={(files) =>
                   droppedPaths(files, {

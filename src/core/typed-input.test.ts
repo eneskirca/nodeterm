@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   TYPED_TAB,
+  chatPromptPlan,
   typeThenSubmitWhenSettled,
   typedInputScript,
   typedLines,
@@ -121,6 +122,44 @@ describe('typeThenSubmitWhenSettled', () => {
     expect(result).toBe('pasted-not-submitted')
   })
 
+  it('types NOTHING when the gate refuses the screen before typing, and returns its refusal', async () => {
+    const surface = fakeSurface({ screen: 'Select model\nEsc to cancel' })
+    const refusal = { blocked: 'screen' as const, dialog: 'Select model' }
+
+    const result = await typeThenSubmitWhenSettled('hello', surface, {
+      ...noWait,
+      gate: (screen) => (screen.includes('Esc to cancel') ? refusal : null)
+    })
+
+    expect(result).toEqual(refusal)
+    expect(surface.typed).toEqual([])
+    expect(surface.submit).not.toHaveBeenCalled()
+  })
+
+  it('withholds the Enter from a dialog that appeared after the text was typed', async () => {
+    const surface = fakeSurface({ lag: 1 })
+    let captures = 0
+
+    const result = await typeThenSubmitWhenSettled('hello there', surface, {
+      ...noWait,
+      // Clean before typing; a dialog from the second read on.
+      gate: () => (++captures > 1 ? { blocked: 'screen', dialog: null } : null)
+    })
+
+    expect(result).toBe('pasted-not-submitted')
+    expect(surface.typed).toEqual(['hello there\n'])
+    expect(surface.submit).not.toHaveBeenCalled()
+  })
+
+  it('submits normally when the gate passes every read', async () => {
+    const surface = fakeSurface({ lag: 1 })
+
+    const result = await typeThenSubmitWhenSettled('hello there', surface, { ...noWait, gate: () => null })
+
+    expect(result).toBe(true)
+    expect(surface.submit).toHaveBeenCalledTimes(1)
+  })
+
   it('types nothing for a message with no visible characters', async () => {
     const surface = fakeSurface({})
 
@@ -128,5 +167,17 @@ describe('typeThenSubmitWhenSettled', () => {
 
     expect(result).toBe(false)
     expect(surface.typed).toEqual([])
+  })
+})
+
+describe('chatPromptPlan — how a chat-view prompt is delivered, by agent', () => {
+  it('types and reads the screen for claude, the one agent both were measured on', () => {
+    expect(chatPromptPlan('claude')).toEqual({ typed: true, readScreen: true })
+  })
+
+  it('pastes, with no screen check, for every other chat agent — upstream\'s path unchanged', () => {
+    for (const id of ['codex', 'gemini', 'grok', 'copilot', 'opencode']) {
+      expect(chatPromptPlan(id)).toEqual({ typed: false, readScreen: false })
+    }
   })
 })

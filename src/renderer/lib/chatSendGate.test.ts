@@ -5,7 +5,8 @@ import {
   chatComposerPlaceholder,
   chatSendMode,
   chatSendRefusal,
-  composerStandsDown
+  composerStandsDown,
+  screenBlockedSentence
 } from './chatSendGate'
 
 describe('chatSendRefusal / canSendFromChat', () => {
@@ -158,5 +159,26 @@ describe('composerStandsDown — is the whole composer disabled?', () => {
 
   it('for a dialog or a shell-owned pane', () => {
     for (const r of ['dialog', 'asleep', 'paused', 'dropped', 'exited'] as const) expect(composerStandsDown(r)).toBe(true)
+  })
+})
+
+describe('screenBlockedSentence — the agent\'s own dialog is on screen', () => {
+  it('points at the terminal through the bound chord, or names the action when unbound', () => {
+    expect(screenBlockedSentence('dialog', 'Claude Code', '⌘M')).toBe(
+      'Claude Code is showing a dialog — press ⌘M to answer it in the terminal'
+    )
+    expect(screenBlockedSentence('dialog', 'Claude Code', '')).toBe(
+      'Claude Code is showing a dialog — switch back to the terminal to answer it'
+    )
+    expect(screenBlockedSentence('no-prompt', 'Claude Code', '⌘M')).toBe(
+      "Claude Code's input box isn't on screen — press ⌘M to check the terminal"
+    )
+  })
+
+  it('is what the composer placeholder says, over every state sentence but read-only', () => {
+    const base = { readonly: false, agentLabel: 'Claude Code', chip: '⌘M', refusal: 'working' as const, screen: 'dialog' as const }
+
+    expect(chatComposerPlaceholder(base)).toBe(screenBlockedSentence('dialog', 'Claude Code', '⌘M'))
+    expect(chatComposerPlaceholder({ ...base, readonly: true })).toBe("Can't write to this session")
   })
 })

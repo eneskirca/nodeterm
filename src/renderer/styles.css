@@ -3368,6 +3368,30 @@ body,
   font-size: 11px;
   opacity: 0.85;
 }
+/* The agent's OWN dialog is on the pane's screen (ChatPanel's `screenBlock`): the sentence saying
+   where to answer it, then the dialog's lines as the terminal shows them. Shaped like a tool card
+   so it reads as part of the thread; monospace because the options are laid out in columns. */
+.term-chat__screen-block {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
+  border-left: 2px solid var(--warn);
+  border-radius: 8px;
+  min-width: 0;
+}
+.term-chat__screen-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.term-chat__screen-block-text {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
 /* An expanded tool card: a tool part with a readable `body` (an ExitPlanMode plan, an
    AskUserQuestion question). Same tint as the chip so it still reads as "the agent's tool call",
    but open and full-width; no max-height, so a long plan scrolls with the thread. */

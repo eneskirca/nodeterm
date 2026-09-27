@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStatus } from '../state/agentStatus'
 
 /**
- * The composer must never type into a TUI dialog: `sendText` pastes and presses Enter, and Enter
+ * The composer must never type into a TUI dialog: `sendChatPrompt` types and presses Enter, and Enter
  * answers a permission / AskUserQuestion dialog the transcript view does not show. The pure rule
  * is `lib/chatSendGate.ts`; this file pins the GLUE — the textarea is disabled in a dialog state,
  * and `send` re-reads the store at send time, so a dialog that arrives between the last render and
@@ -16,15 +16,15 @@ import { useAgentStatus } from '../state/agentStatus'
 
 // ONE stable api object: `load` depends on `api`, so a fresh object per `useSession()` call would
 // re-run the load effect on every render and never settle.
-const { sendText, session } = vi.hoisted(() => {
-  const sendText = vi.fn(async (_id: string, _text: string) => true as const)
+const { sendChatPrompt, session } = vi.hoisted(() => {
+  const sendChatPrompt = vi.fn(async (_id: string, _text: string, _agent: string) => true as const)
   const session = {
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true }) },
-      pty: { sendText }
+      pty: { sendChatPrompt }
     }
   }
-  return { sendText, session }
+  return { sendChatPrompt, session }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -61,7 +61,7 @@ const enter = (ta: HTMLTextAreaElement): void => {
 }
 
 beforeEach(() => {
-  sendText.mockClear()
+  sendChatPrompt.mockClear()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -84,7 +84,7 @@ describe('ChatPanel send gate', () => {
     expect(ta.disabled).toBe(false)
     await act(async () => type(ta, 'hello'))
     await act(async () => enter(ta))
-    expect(sendText).toHaveBeenCalledWith(NODE, 'hello', { typed: true })
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'hello', 'claude')
   })
 
   it('keeps the draft editable while Claude works, and Enter queues it as a "Queued" bubble', async () => {
@@ -96,7 +96,7 @@ describe('ChatPanel send gate', () => {
 
     await act(async () => enter(ta))
 
-    expect(sendText).toHaveBeenCalledWith(NODE, 'and then this', { typed: true })
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'and then this', 'claude')
     const queued = host.querySelector('.term-chat__msg--queued')
     expect(queued?.textContent).toContain('and then this')
     expect(queued?.querySelector('.term-chat__queued-label')?.textContent).toBe('Queued')
@@ -125,7 +125,7 @@ describe('ChatPanel send gate', () => {
 
     await act(async () => enter(ta))
 
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
     expect(ta.value).toBe('later')
     expect(ta.placeholder).toMatch(/send once the reply finishes/)
   })
@@ -147,7 +147,7 @@ describe('ChatPanel send gate', () => {
       setAgentState('waiting')
       enter(ta)
     })
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
   })
 
   it('disables the composer on a hibernated node: its state still reads done, but a SHELL owns the pane', async () => {
@@ -165,7 +165,7 @@ describe('ChatPanel send gate', () => {
       setAgentState('done', { hibernated: true })
       enter(ta)
     })
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
   })
 
   it('disables the composer after the CLI exited (/exit, Ctrl+D): state undefined, a SHELL owns the pane', async () => {
@@ -183,6 +183,6 @@ describe('ChatPanel send gate', () => {
       setAgentState(undefined, { sessionEnded: true })
       enter(ta)
     })
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
   })
 })

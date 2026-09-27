@@ -8,6 +8,7 @@ import {
   canBranch,
   canChat,
   queuesInputWhileWorking,
+  readsScreenDialogs,
   mintsSessionId,
   supportsSessionIdFlag,
   readsClaudeShapedTranscript,
@@ -249,6 +250,11 @@ describe('grok capabilities', () => {
     expect(canChat('grok')).toBe(true)
     expect(queuesInputWhileWorking('grok')).toBe(false)
     expect(queuesInputWhileWorking('claude')).toBe(true)
+  })
+
+  it('has no measured screen reader — claude\'s would read every grok screen as a dialog', () => {
+    expect(readsScreenDialogs('grok')).toBe(false)
+    expect(readsScreenDialogs('claude')).toBe(true)
   })
 
   it('fills a context meter from the numbers it states itself', () => {

@@ -21,15 +21,15 @@ interface Pending {
 
 // ONE stable api object: `load` depends on `api`, so a fresh object per `useSession()` call would
 // re-run the load effect on every render and never settle.
-const { sendText, readTranscript, pending, session } = vi.hoisted(() => {
+const { sendChatPrompt, readTranscript, pending, session } = vi.hoisted(() => {
   const pending: Pending[] = []
-  const sendText = vi.fn(async (_id: string, _text: string) => true as const)
+  const sendChatPrompt = vi.fn(async (_id: string, _text: string, _agent: string) => true as const)
   const readTranscript = vi.fn(
     (sessionId: string | undefined) =>
       new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ sessionId, resolve, reject }))
   )
-  const session = { api: { chat: { readTranscript }, pty: { sendText } } }
-  return { sendText, readTranscript, pending, session }
+  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt } } }
+  return { sendChatPrompt, readTranscript, pending, session }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
@@ -76,7 +76,7 @@ function geometry(el: HTMLElement, g: { scrollHeight: number; clientHeight: numb
 }
 
 beforeEach(() => {
-  sendText.mockClear()
+  sendChatPrompt.mockClear()
   readTranscript.mockClear()
   pending.length = 0
   host = document.createElement('div')
@@ -103,7 +103,7 @@ describe('ChatPanel composer keys', () => {
     await act(async () => {
       ev = key(textarea(), { key: 'Enter', shiftKey: true })
     })
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
     expect(ev.defaultPrevented).toBe(false)
   })
 
@@ -114,7 +114,7 @@ describe('ChatPanel composer keys', () => {
     await act(async () => {
       key(textarea(), { key: 'Enter', isComposing: true })
     })
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendChatPrompt).not.toHaveBeenCalled()
   })
 
   it('plain Enter still sends', async () => {
@@ -124,7 +124,7 @@ describe('ChatPanel composer keys', () => {
     await act(async () => {
       key(textarea(), { key: 'Enter' })
     })
-    expect(sendText).toHaveBeenCalledWith(NODE, 'hi', { typed: true })
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'hi', 'claude')
   })
 })
 

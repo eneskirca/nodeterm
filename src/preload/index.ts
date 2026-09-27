@@ -97,7 +97,9 @@ const api: NodeTerminalApi = {
     sessionAge: (persistKey) => ipcRenderer.invoke(IPC.ptySessionAge, persistKey),
     readScrollback: (persistKey) => ipcRenderer.invoke(IPC.ptyReadScrollback, persistKey),
     sendText: (persistKey, text, opts) =>
-      ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter, opts?.typed),
+      ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter),
+    sendChatPrompt: (persistKey, text, agentId) =>
+      ipcRenderer.invoke(IPC.ptySendChatPrompt, persistKey, text, agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
     paneCommand: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey),
     launchHeadless: (req) => ipcRenderer.invoke(IPC.ptyLaunchHeadless, req),
