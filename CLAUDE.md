@@ -3609,9 +3609,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   failure rides `ClaudeUsage.failure` (`rate-limited` | `error`, `at`, `retryAt`), and the
   service's `run` applies `keepLastGood` (`claude-usage-map.ts`): last good limits kept,
   `status: 'error'`, `updatedAt` STILL the numbers' own time (never the failed request's), identity
-  from the fresh read, nothing kept across an email change. `retryUntil` (per account) gates EVERY
+  from the fresh read, nothing kept across an email change or across two KNOWN, different
+  organization uuids (same email, other org = other quota; an unknown uuid on either side proves
+  nothing, so the email guard decides and the result carries only the fresh read's org). `retryUntil` (per account) gates EVERY
   read — background poll, focus refresh, IPC fetch and a forced ⟳ all go through `run` — until
-  `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h); a 5xx that names a
+  `Retry-After` (seconds or HTTP-date, default 60 s, clamped 30 s–1 h), counted from when the
+  response ARRIVED (`failure.at`/`retryAt`), never from the request start (`updatedAt`); a 5xx that names a
   Retry-After is honoured the same way, one that does not stays retryable. 401/403 unchanged
   (`unavailable`, nothing kept, no window). The popover prints `claudeStaleNotice` under kept bars
   ("Rate limited — showing values from 14m ago, next try in 2m") and `claudeEmptyText` names the

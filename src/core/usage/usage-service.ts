@@ -214,26 +214,29 @@ export async function fetchUsage(accountId?: string): Promise<ClaudeUsage> {
       cache: 'no-cache',
       headers: { authorization: `Bearer ${accessToken}`, 'anthropic-beta': OAUTH_BETA }
     }).finally(() => clearTimeout(t))
+    // Retry-After's delta-seconds count from when the server ANSWERED, not from when we started
+    // (credential resolution + the request can take seconds). `now` stays the snapshot's time.
+    const answeredAt = Date.now()
     if (!res.ok) {
       // 401/403 → token is an API key or expired: no subscription windows to show.
       if (res.status === 401 || res.status === 403) return identify(emptyUsage(email, now, 'unavailable'))
-      const retryAfter = parseRetryAfter(res.headers.get('retry-after'), now)
+      const retryAfter = parseRetryAfter(res.headers.get('retry-after'), answeredAt)
       if (res.status === 429) {
         // The endpoint's own budget said no. Honour its window (or a sane default) — asking again
         // sooner only extends the refusal.
-        const retryAt = now + clampRetryMs(retryAfter ?? RATE_LIMIT_DEFAULT_MS)
-        return identify(emptyUsage(email, now, 'error', { reason: 'rate-limited', at: now, retryAt }))
+        const retryAt = answeredAt + clampRetryMs(retryAfter ?? RATE_LIMIT_DEFAULT_MS)
+        return identify(emptyUsage(email, now, 'error', { reason: 'rate-limited', at: answeredAt, retryAt }))
       }
       // A 5xx that names a window is honoured too; one that does not leaves ⟳ free to retry.
       const failure = retryAfter === null
-        ? { reason: 'error' as const, at: now }
-        : { reason: 'error' as const, at: now, retryAt: now + clampRetryMs(retryAfter) }
+        ? { reason: 'error' as const, at: answeredAt }
+        : { reason: 'error' as const, at: answeredAt, retryAt: answeredAt + clampRetryMs(retryAfter) }
       return identify(emptyUsage(email, now, 'error', failure))
     }
     const data = (await res.json()) as Record<string, any>
     return identify(usageFromPayload(data, email, now))
   } catch {
-    return identify(emptyUsage(email, now, 'error', { reason: 'error', at: now }))
+    return identify(emptyUsage(email, now, 'error', { reason: 'error', at: Date.now() }))
   }
 }
 

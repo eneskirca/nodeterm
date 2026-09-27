@@ -205,6 +205,62 @@ describe('429 after a good snapshot', () => {
   })
 })
 
+describe('the window starts when the response ARRIVES', () => {
+  it('a slow 429 does not lose its elapsed time; updatedAt keeps its meaning', async () => {
+    const s = start()
+    replies.push(good(12))
+    await s.refresh()
+    // The next request takes 7 s to answer: credentials read at T0+60s, response at T0+67s.
+    vi.setSystemTime(T0 + 60_000)
+    fetchMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(T0 + 67_000)
+      return new Response('{}', { status: 429, headers: { 'retry-after': '60' } })
+    })
+    const u = await s.refresh()
+    expect(u.failure).toEqual({ reason: 'rate-limited', at: T0 + 67_000, retryAt: T0 + 127_000 })
+    expect(u.updatedAt).toBe(T0)
+    // 53 s after the response (the old, too-early deadline) is still inside the window.
+    vi.setSystemTime(T0 + 120_000)
+    await s.refresh()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(T0 + 127_000)
+    replies.push(good(20))
+    await s.refresh()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('a slow 503 with Retry-After is measured from its arrival too', async () => {
+    const s = start()
+    fetchMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(T0 + 7_000)
+      return new Response('{}', { status: 503, headers: { 'retry-after': '120' } })
+    })
+    const u = await s.refresh()
+    expect(u.failure).toEqual({ reason: 'error', at: T0 + 7_000, retryAt: T0 + 127_000 })
+    expect(u.updatedAt).toBe(T0)
+  })
+
+  it('a network failure is stamped when it happened', async () => {
+    const s = start()
+    fetchMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(T0 + 8_000)
+      throw new TypeError('fetch failed')
+    })
+    const u = await s.refresh()
+    expect(u.failure).toEqual({ reason: 'error', at: T0 + 8_000 })
+  })
+
+  it('an HTTP-date is measured against the arrival clock', async () => {
+    const s = start()
+    fetchMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(T0 + 7_000)
+      return new Response('{}', { status: 429, headers: { 'retry-after': new Date(T0 + 5 * 60_000).toUTCString() } })
+    })
+    const u = await s.refresh()
+    expect(u.failure?.retryAt).toBe(T0 + 5 * 60_000)
+  })
+})
+
 describe('Retry-After forms', () => {
   it.each([
     ['absent', undefined, 60_000],

@@ -138,6 +138,15 @@ export function usageFromPayload(data: unknown, email: string | null, now: numbe
 export function keepLastGood(prev: ClaudeUsage | undefined, fresh: ClaudeUsage): ClaudeUsage {
   if (!fresh.failure || !prev || prev.limits.length === 0) return fresh
   if (prev.email && fresh.email && prev.email !== fresh.email) return fresh
+  // The same email can sit in several organizations with separate quotas (the org-switch caveat
+  // under "Active Claude organization"). Two KNOWN, different uuids prove a switch: drop. An
+  // unknown uuid on either side proves nothing — org metadata is best-effort and missing for many
+  // accounts (no/older `.claude.json`), so treating unknown as "switched" would mean those
+  // accounts never keep numbers at all. The email guard then decides, and the result is only
+  // ever labelled with the organization the FRESH read confirmed (none, if it confirmed none).
+  const prevOrg = prev.organization?.uuid
+  const freshOrg = fresh.organization?.uuid
+  if (prevOrg && freshOrg && prevOrg !== freshOrg) return fresh
   const { organization: _previousOrganization, failure: _previousFailure, ...numbers } = prev
   return {
     ...numbers,

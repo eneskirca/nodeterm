@@ -156,6 +156,34 @@ describe('parseResetTimestamp', () => {
   })
 })
 
+describe('keepLastGood — organization identity', () => {
+  const org = (uuid?: string) => ({ name: uuid ?? 'Unnamed', ...(uuid ? { uuid } : {}) })
+  const prevIn = (uuid?: string) =>
+    ({ ...usageFromPayload({ five_hour: { utilization: 12 } }, 'a@x.test', 1000), organization: org(uuid) })
+  const failIn = (uuid?: string | null) => ({
+    ...emptyUsage('a@x.test', 5000, 'error', { reason: 'rate-limited' as const, at: 5000, retryAt: 65000 }),
+    ...(uuid === null ? {} : { organization: org(uuid) })
+  })
+
+  it('drops the numbers when the same email is now in a DIFFERENT organization', () => {
+    const f = failIn('org-team')
+    expect(keepLastGood(prevIn('org-personal'), f)).toBe(f)
+  })
+
+  it('keeps them when both organizations are known and equal', () => {
+    expect(keepLastGood(prevIn('org-personal'), failIn('org-personal')).limits).toHaveLength(1)
+  })
+
+  it('an unknown organization on either side cannot prove a switch: the email guard decides', () => {
+    expect(keepLastGood(prevIn(undefined), failIn('org-team')).limits).toHaveLength(1)
+    expect(keepLastGood(prevIn('org-personal'), failIn(undefined)).limits).toHaveLength(1)
+    const noFreshOrg = keepLastGood(prevIn('org-personal'), failIn(null))
+    expect(noFreshOrg.limits).toHaveLength(1)
+    // …and the kept numbers are never labelled with an organization the fresh read did not confirm.
+    expect(noFreshOrg.organization).toBeUndefined()
+  })
+})
+
 describe('keepLastGood', () => {
   const good = { ...usageFromPayload({ five_hour: { utilization: 12 } }, 'a@x.test', 1000),
     organization: { name: 'Old org' } }
