@@ -6,6 +6,7 @@ import {
   labelHeldForRevision,
   MIN_STRUCTURED_ANSWER_REVISION,
   buildPermissionDecision,
+  clarifyMessage,
   isBoundedAnswerContent,
   parsePermissionAnswer,
   parsePendingRequest,
@@ -182,6 +183,31 @@ describe('buildPermissionDecision — plan', () => {
 const SURFACES = 'Which surfaces should get it?'
 const ANSWER_1 = { [QUESTION_TEXT]: 'Kim kimi okuyabilir (context)' }
 const ANSWER_2 = { [SURFACES]: ['Desktop'] }
+
+describe('buildPermissionDecision — question-clarify ("Chat about this")', () => {
+  it('parses from untrusted input', () => {
+    expect(parsePermissionAnswer({ kind: 'question-clarify' })).toEqual({ kind: 'question-clarify' })
+  })
+
+  it('is a deny carrying Claude Code\'s own clarify message, listing the HELD request\'s questions', () => {
+    const r = buildPermissionDecision(QUESTION_REQ, { kind: 'question-clarify' })
+    if (!r.ok) throw new Error(r.reason)
+
+    const d = decisionOf(r.content)
+    expect(r.decision).toBe('deny')
+    expect(d.behavior).toBe('deny')
+    expect(d.message).toBe(clarifyMessage([QUESTION_TEXT, 'Which surfaces should get it?']))
+    expect(d.message).toContain('Start by asking them what they would like to clarify.')
+    expect(d.message).toContain(`- "${QUESTION_TEXT}"\n  (No answer provided)`)
+    // The turn continues: Claude asks what to clarify, then stops at the prompt.
+    expect(d).not.toHaveProperty('interrupt')
+  })
+
+  it('refuses a hold that is not a question', () => {
+    expect(buildPermissionDecision(PLAN_REQ, { kind: 'question-clarify' }).ok).toBe(false)
+    expect(buildPermissionDecision(null, { kind: 'question-clarify' }).ok).toBe(false)
+  })
+})
 
 describe('buildPermissionDecision — question', () => {
   it('echoes the PENDING request\'s questions verbatim and adds answers keyed by the exact question text', () => {

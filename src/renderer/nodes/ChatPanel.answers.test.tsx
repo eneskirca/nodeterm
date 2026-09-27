@@ -240,6 +240,17 @@ describe('question card', () => {
     expect(sent().answer).toEqual({ kind: 'question', answers: { 'Pick one?': 'neither' }, freeText: ['Pick one?'] })
   })
 
+  it('"Chat about this" declines the question without picking anything — available at once', async () => {
+    await hold('waiting', held(['Pick one?']))
+    await mount([askMsg(0, [SINGLE])])
+    const chat = button(cards()[0], 'Chat about this')
+    expect(off(chat)).toBe(false)
+
+    await click(chat)
+
+    expect(sent()).toEqual({ nodeId: NODE, pendingId: 'n-q-1', answer: { kind: 'question-clarify' } })
+  })
+
   it('several questions: Submit waits for all of them', async () => {
     await hold('waiting', held(['Pick one?', 'Which surfaces?']))
     await mount([askMsg(0, [SINGLE, MULTI])])

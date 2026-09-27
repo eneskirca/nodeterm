@@ -33,6 +33,8 @@ export const INTERACTIVE_HOLD_TOOLS: readonly string[] = [EXIT_PLAN_MODE_TOOL, A
  *    option label, a string[] is several labels of a multiSelect question. A key listed in
  *    `freeText` carries typed text (the picker's "Other") instead of a label — that is the ONLY way
  *    an answer may be something other than an existing label.
+ *  - `question-clarify` — "Chat about this": decline the question so the user can talk it over. A
+ *    deny whose message is Claude Code's own for that choice, built by core from the held request.
  */
 export type PermissionAnswer =
   | { kind: 'allow' }
@@ -40,6 +42,7 @@ export type PermissionAnswer =
   | { kind: 'plan'; mode: 'restore' | 'acceptEdits' | 'manual' }
   | { kind: 'plan-revise'; message: string }
   | { kind: 'question'; answers: Record<string, string | string[]>; freeText?: string[] }
+  | { kind: 'question-clarify' }
 
 /** Typed text in an answer ("Revise…" feedback, a question's "Other"), in UTF-16 code units. ONE
  *  definition: core refuses past it and the answer fields stop at it, so a field can never accept
