@@ -168,17 +168,29 @@ export function toggleLabel(labels: readonly string[], label: string, on: boolea
 }
 
 /**
+ * The typed "Other" as one item of a multi-select answer, quoted the way Claude Code's own picker
+ * quotes it — MEASURED on 2.1.283: `Red, Blue, "teal, sort of"`, `Green, "say \"hi\""`, but
+ * `Red, teal`. Quoted (with the inner quotes escaped) only when it contains a comma or a quote, so
+ * the model can always tell where the user's own words start and end in the joined list.
+ */
+export function quoteCustomItem(text: string): string {
+  return /[,"]/.test(text) ? JSON.stringify(text) : text
+}
+
+/**
  * The free text a question's answer would carry, or null when it is not a free-text answer. ONE
  * definition, so the text that is capped is the text that is sent: on a multi choice with "Other" it
- * is the ticked labels (in option order) plus the typed text, joined with ", " — the TUI's own
- * multi-select format, and one string because core carries one free-text answer per question.
- * Core caps THAT string, so capping only the typed part let a long answer through to a refusal.
+ * is the ticked labels (in option order) plus the typed text (`quoteCustomItem`), joined with ", " —
+ * the TUI's own multi-select format, and one string because core carries one free-text answer per
+ * question. Core caps THAT string, so capping only the typed part let a long answer through to a
+ * refusal. A single choice's "Other" is the typed text as-is: it is the whole answer.
  */
 function freeTextOf(q: ChatQuestion, sel: QuestionSelection): string | null {
   if (!sel.other && q.options.length > 0) return null
   const typed = sel.otherText.trim()
+  if (!q.multiSelect || typed === '') return typed
   const labels = q.options.map((o) => o.label).filter((l) => sel.labels.includes(l))
-  return q.multiSelect && labels.length && typed ? [...labels, typed].join(', ') : typed
+  return [...labels, quoteCustomItem(typed)].join(', ')
 }
 
 /** The first question whose free-text answer is over the shared cap (core would refuse it), or null.
