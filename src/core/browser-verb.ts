@@ -74,6 +74,10 @@ export const BROWSER_ACTION_KEYS = [
   'cookies'
 ] as const
 
+export const BROWSER_FLAGS: ReadonlySet<string> = new Set([
+  ...BROWSER_ACTION_KEYS, 'node', 'timeout', 'clear', 'full', 'into', 'selector', 'max', 'times'
+])
+
 export type BrowserAction =
   | { kind: 'nav'; url: string }
   | { kind: 'read'; mode: BrowserReadMode }
@@ -163,7 +167,7 @@ function buildAction(key: string, value: string): BrowserAction | { error: strin
     }
     case 'scroll': {
       const named = (SCROLL_WORDS as readonly string[]).includes(value)
-      const pixels = /^-?\d+$/.test(value)
+      const pixels = /^[+-]?\d+$/.test(value)
       if (!named && !pixels) {
         return err('browser: --scroll takes up, down, top, bottom, or a signed pixel count')
       }
@@ -201,6 +205,9 @@ export function parseBrowserArgs(args: Record<string, string>): BrowserCall | { 
   const node = args.node
   if (!node) return err('browser: --node <id> is required')
   if (!isSafeNodeId(node)) return err(`browser: --node "${node}" is not a valid node id`)
+
+  const unknown = Object.keys(args).find((key) => !BROWSER_FLAGS.has(key))
+  if (unknown) return err(`browser: unknown flag --${unknown}`)
 
   const actions = presentActionKeys(args)
   if (actions.length !== 1) {

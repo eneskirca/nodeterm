@@ -105,6 +105,11 @@ describe('the control shim translates flags', () => {
     expect(run(['browser', '--scroll', '-600'])).toEqual(['arg.scroll=-600'])
   })
 
+  it('preserves explicitly positive scroll pixels in both flag forms (#539)', () => {
+    expect(run(['browser', '--scroll', '+200'])).toEqual(['arg.scroll=+200'])
+    expect(run(['browser', '--scroll=+200'])).toEqual(['arg.scroll=+200'])
+  })
+
   it('an ordinary --flag value pair is unchanged', () => {
     expect(run(['open-agent', '--agent', 'codex', '--count', '3'])).toEqual([
       'arg.agent=codex',
