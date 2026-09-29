@@ -22,12 +22,14 @@ import {
 } from '../core/agent-status-mirror'
 import type { NormalizedAgentEvent } from '../shared/agents/normalize'
 import { createHudModel, type HudModel, type HudContextUpdate } from './notch-hud-model'
-import { hudGeometry, hudPlacement, type HudGeometry } from './notch-hud-geometry'
+import { hudGeometry, hudPlacement, pickHudDisplay, type HudGeometry } from './notch-hud-geometry'
 import {
   sanitizeNotchAlign,
+  sanitizeNotchDisplay,
   sanitizeNotchOffsetY,
   sanitizeNotchWidth,
-  type NotchAlign
+  type NotchAlign,
+  type NotchDisplay
 } from '../shared/notch-hud'
 
 // The notch-width constants + `sanitizeNotchWidth` moved to src/shared/notch-hud.ts (2026-09) so
@@ -89,8 +91,10 @@ export interface NotchHudTunables {
   enabled: boolean
   /** Assumed physical notch width in px — the knob that makes the capsule sit flush. */
   notchWidth: number
-  /** Which side of the primary display the capsule sits on (settings.notchAlign). */
+  /** Which side of its display the capsule sits on (settings.notchAlign). */
   align: NotchAlign
+  /** Which display the HUD lives on (settings.notchDisplay). */
+  display: NotchDisplay
   /** Vertical offset from the capsule's resting place, px, positive = down (settings.notchOffsetY). */
   offsetY: number
   /** Expand the panel on hover (else click-only). */
@@ -240,6 +244,7 @@ class NotchHudController {
     this.tunables = {
       notchWidth: t.notchWidth,
       align: t.align,
+      display: t.display,
       offsetY: t.offsetY,
       hoverExpand: t.hoverExpand,
       percentMode: t.percentMode
@@ -254,9 +259,9 @@ class NotchHudController {
   }
 
   private geometry(): HudGeometry {
-    // Always the PRIMARY display's live bounds — never a cached rect — so a display change (or a
+    // Always the chosen display's live bounds — never a cached rect — so a display change (or a
     // resolution change under a placement edit) is answered from what the screen reports now.
-    const d = screen.getPrimaryDisplay()
+    const d = pickHudDisplay(screen.getAllDisplays(), screen.getPrimaryDisplay(), sanitizeNotchDisplay(this.tunables.display))
     return hudGeometry({
       bounds: d.bounds,
       workArea: d.workArea,

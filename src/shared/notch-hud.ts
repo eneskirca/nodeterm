@@ -14,6 +14,12 @@ export type NotchAlign = 'left' | 'center' | 'right'
 export const NOTCH_ALIGNS: readonly NotchAlign[] = ['left', 'center', 'right']
 export const NOTCH_ALIGN_DEFAULT: NotchAlign = 'center'
 
+/** Which display the HUD lives on: the MacBook's built-in screen (falls back to the main display
+ *  when there is none, e.g. lid closed) or whichever display macOS calls the main one. */
+export type NotchDisplay = 'builtin' | 'primary'
+export const NOTCH_DISPLAYS: readonly NotchDisplay[] = ['builtin', 'primary']
+export const NOTCH_DISPLAY_DEFAULT: NotchDisplay = 'builtin'
+
 /**
  * Assumed physical notch WIDTH (px). Electron exposes no `auxiliaryTopLeftArea`, so we assume a
  * centered notch of this width, and the capsule butts against its LEFT edge. Field-tuned to 168 px
@@ -47,6 +53,11 @@ export function sanitizeNotchWidth(px: unknown): number {
  *  centered layout — never a pill on a side nobody asked for. */
 export function sanitizeNotchAlign(v: unknown): NotchAlign {
   return typeof v === 'string' && (NOTCH_ALIGNS as readonly string[]).includes(v) ? (v as NotchAlign) : NOTCH_ALIGN_DEFAULT
+}
+
+/** An unknown display string draws on the built-in screen — never a pill on a monitor nobody asked for. */
+export function sanitizeNotchDisplay(v: unknown): NotchDisplay {
+  return typeof v === 'string' && (NOTCH_DISPLAYS as readonly string[]).includes(v) ? (v as NotchDisplay) : NOTCH_DISPLAY_DEFAULT
 }
 
 /** Non-finite / non-numeric → the default resting place (0); out of range → the nearest bound

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   hudGeometry,
   hudPlacement,
+  pickHudDisplay,
   HUD_EDGE_MARGIN,
   HUD_PANEL_WIDTH,
   NOTCH_BAR_FLOOR,
@@ -200,5 +201,22 @@ describe('hudPlacement — the expanded panel stays on screen', () => {
     // Narrower than the panel itself: still on screen at 0, never negative.
     expect(hudPlacement(place({ align: 'right', width: 300, notchCenterX: 150 })).panelLeft).toBe(0)
     expect(hudPlacement(place({ align: 'center', width: 300, notchCenterX: 150 })).panelLeft).toBe(0)
+  })
+})
+
+describe('pickHudDisplay', () => {
+  const builtin = { id: 1, internal: true }
+  const external = { id: 2, internal: false }
+  it('builtin pref picks the built-in display', () => {
+    expect(pickHudDisplay([builtin, external], builtin, 'builtin')).toBe(builtin)
+  })
+  it('builtin pref with an external as the main display still picks the built-in', () => {
+    expect(pickHudDisplay([external, builtin], external, 'builtin')).toBe(builtin)
+  })
+  it('builtin pref with no built-in display (lid closed) falls back to the primary', () => {
+    expect(pickHudDisplay([external], external, 'builtin')).toBe(external)
+  })
+  it('primary pref always picks the primary', () => {
+    expect(pickHudDisplay([external, builtin], external, 'primary')).toBe(external)
   })
 })

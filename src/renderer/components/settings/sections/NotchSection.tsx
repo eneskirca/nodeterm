@@ -10,8 +10,10 @@ import {
   NOTCH_WIDTH_MAX,
   NOTCH_WIDTH_MIN,
   sanitizeNotchAlign,
+  sanitizeNotchDisplay,
   sanitizeNotchOffsetY,
-  type NotchAlign
+  type NotchAlign,
+  type NotchDisplay
 } from '@shared/notch-hud'
 
 const ROWS = {
@@ -22,6 +24,10 @@ const ROWS = {
   width: {
     title: 'Notch width',
     keywords: ['notch', 'width', 'flush', 'align', 'capsule', 'position', 'offset', 'tune']
+  },
+  display: {
+    title: 'Display',
+    keywords: ['notch', 'display', 'screen', 'monitor', 'external', 'built-in', 'builtin', 'main', 'primary', 'macbook', 'capsule']
   },
   side: {
     title: 'Capsule side',
@@ -64,6 +70,7 @@ export function NotchSection({ isActive }: { isActive: boolean }): React.JSX.Ele
   // cannot represent (an unknown side, NaN) would render blank and overwrite the file on the next
   // interaction. Reading it as main will read it keeps the control honest about what is drawn.
   const notchAlign = useSettings((s) => sanitizeNotchAlign(s.settings.notchAlign))
+  const notchDisplay = useSettings((s) => sanitizeNotchDisplay(s.settings.notchDisplay))
   const notchOffsetY = useSettings((s) => sanitizeNotchOffsetY(s.settings.notchOffsetY))
   const hoverExpand = useSettings((s) => s.settings.notchHoverExpand)
   const update = useSettings((s) => s.update)
@@ -96,6 +103,24 @@ export function NotchSection({ isActive }: { isActive: boolean }): React.JSX.Ele
         }
         aria-disabled={!notchHud}
       >
+        <SearchableRow {...ROWS.display}>
+          <FieldRow
+            label="Display"
+            description="Which screen the HUD lives on when a monitor is plugged in. Built-in keeps it by the MacBook notch; falls back to the main display with the lid closed."
+            control={
+              <SegmentedPill<NotchDisplay>
+                value={notchDisplay}
+                options={[
+                  { value: 'builtin', label: 'Built-in screen' },
+                  { value: 'primary', label: 'Main display' }
+                ]}
+                onChange={(v) => update({ notchDisplay: v })}
+                ariaLabel="Notch HUD display"
+              />
+            }
+          />
+        </SearchableRow>
+
         <SearchableRow {...ROWS.side}>
           <FieldRow
             label="Capsule side"

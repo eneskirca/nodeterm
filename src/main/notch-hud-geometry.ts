@@ -1,12 +1,12 @@
 // Pure, Electron-free geometry for the macOS Notch HUD (docs/notch-hud.md).
 //
 // Split out of notch-hud.ts so vitest can cover notch DETECTION without an Electron runtime: the
-// controller reads `screen.getPrimaryDisplay()` and hands the plain numbers here. Everything the
+// controller reads the display from `screen` and hands the plain numbers here. Everything the
 // HUD window and its renderer position themselves by is decided in this module: `hudGeometry`
 // places the WINDOW (and detects the notch), `hudPlacement` places the CAPSULE and its expanded
 // panel inside that window from the user's side / vertical-offset settings.
 
-import type { NotchAlign } from '../shared/notch-hud'
+import type { NotchAlign, NotchDisplay } from '../shared/notch-hud'
 
 /** A rectangle in Electron's logical (point) coordinate space. */
 export interface Rect {
@@ -198,4 +198,11 @@ export function hudPlacement(input: HudPlacementInput): HudPlacement {
         : notchCenterX - panelWidth / 2
   const panelLeft = Math.round(Math.max(0, Math.min(maxLeft, desired)))
   return { fused, anchor, capsuleX, capsuleTop, panelLeft, panelWidth }
+}
+
+/** The display the HUD lives on. `builtin` → the built-in panel, else (clamshell) the primary;
+ *  `primary` → the macOS main display, whichever it is. */
+export function pickHudDisplay<D extends { id: number; internal?: boolean }>(displays: D[], primary: D, pref: NotchDisplay): D {
+  if (pref === 'primary') return primary
+  return displays.find((d) => d.internal === true) ?? primary
 }

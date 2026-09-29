@@ -221,8 +221,9 @@ and the pill's `--pill-radius` (18) / `--pill-height` (30).
 ## Settings + lifecycle
 
 **Settings → Interface → Notch** (`NotchSection.tsx`, macOS-only: `nav.ts` marks the section
-`macOnly` and `visibleSettingsGroups(isMac)` drops it elsewhere) owns all five knobs:
-`notchHud` (default **true**), `notchAlign` (default `center` — Left / Center / Right segmented
+`macOnly` and `visibleSettingsGroups(isMac)` drops it elsewhere) owns all six knobs:
+`notchHud` (default **true**), `notchDisplay` (default `builtin` — Built-in screen / Main display; no built-in
+display, e.g. lid closed, falls back to the main one; picked by pure `pickHudDisplay`), `notchAlign` (default `center` — Left / Center / Right segmented
 pill), `notchOffsetY` (default 0 — the "Vertical position" slider, signed readout, whose copy
 says up stops at the screen edge and that lowering the fused capsule detaches it into a pill),
 `notchWidth` (default 168 — the assumed notch width, i.e. the flush-alignment knob, clamped to
