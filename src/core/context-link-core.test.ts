@@ -11,6 +11,7 @@ import {
   CONTEXT_UNREACHABLE_MSG
 } from './context-link-core'
 import { CODEX_SANDBOX_BLOCKED_LINE } from './agents/hook-sandbox-hint-sh'
+import { FOREIGN_ENDPOINT_HINT, OWNER_UNREACHABLE_LEAD, TUNNEL_DOWN_HINT } from './agents/hook-endpoint-failover-sh'
 
 describe('buildLinkDoc', () => {
   it('enriches each link with tmux name, injected transcript path, and cwd', () => {
@@ -196,6 +197,16 @@ describe('mergeInstructionsBlock', () => {
     const out = mergeInstructionsBlock('', block)
     expect(out.startsWith('<!-- nodeterm:get-linked-context:start -->')).toBe(true)
   })
+  it('a stray end marker BEFORE the block does not make every merge append another copy', () => {
+    // A user who deletes our block by hand but leaves its end line: the end marker is found first,
+    // and a merge that took the first end marker anywhere read "no block" and appended — again on
+    // every connect, forever. The end marker is searched AFTER the start marker.
+    const stray = '# mine\n<!-- nodeterm:get-linked-context:end -->\n'
+    const once = mergeInstructionsBlock(stray, block)
+    expect(mergeInstructionsBlock(once, block)).toBe(once)
+    expect(once.match(/get-linked-context:start/g)).toHaveLength(1)
+    expect(once.startsWith(stray)).toBe(true)
+  })
 })
 
 describe('buildLinkedContextInstructions', () => {
@@ -218,6 +229,20 @@ describe('buildLinkedContextInstructions', () => {
       expect(body).toMatch(/never relink, reinstall or restart nodeterm/)
       expect(body).toContain('network.allow_unix_sockets')
       expect(body).toContain('~/.codex/config.toml')
+    }
+  })
+
+  // Same pin as canvas-control-core.test.ts: the context shim printed the foreign instance's
+  // "No linked nodes" on 2026-09-28/29, and the bodies tell an agent not to retry THAT. The
+  // owner-unreachable sentence that replaces it must be taught as temporary, in its own words.
+  it('both agent-facing texts teach the owner-unreachable failure as temporary', () => {
+    expect(CONTEXT_SHIM_SCRIPT).toContain(`echo "${FOREIGN_ENDPOINT_HINT}" >&2`)
+    // The tunnel variant (no foreign endpoint, SSH tunnel primary) opens with the same quoted lead.
+    expect(TUNNEL_DOWN_HINT.startsWith(OWNER_UNREACHABLE_LEAD)).toBe(true)
+    expect(CONTEXT_SHIM_SCRIPT).toContain(`echo "${TUNNEL_DOWN_HINT}" >&2`)
+    for (const body of [buildContextLinkSkillBody('/x/context.sh'), buildLinkedContextInstructions('/x/context.sh')]) {
+      expect(body).toContain(OWNER_UNREACHABLE_LEAD.replace(/\.$/, ''))
+      expect(body).toMatch(/This is temporary: *\n?retry the same *\n?command later/)
     }
   })
 

@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   iconFileName,
   localIconCwd,
+  NODE_GLYPHS,
   nodeIconMime,
   normalizeNodeIcon,
   portableIconPath,
   resolveIconPath
 } from './node-icon'
+import { LUCIDE_ICON_IDS } from './project-icon'
 
 // The value under test arrives from `.nodeterm/project.json` — git-shared, hand-editable, and on
 // an SSH project a file on someone else's host. Every case below is a thing that file can say.
@@ -290,5 +292,48 @@ describe('localIconCwd', () => {
   it('answers undefined for a cwd-less or unknown project rather than guessing', () => {
     expect(localIconCwd({})).toBeUndefined()
     expect(localIconCwd(undefined)).toBeUndefined()
+  })
+})
+
+// Issue #291: a curated glyph set — shell, git, database, … — beside emoji and image. Same file,
+// same hostility: the name is an allowlist key, never a free lucide export name.
+describe('glyph icons', () => {
+  it('keeps every curated glyph', () => {
+    for (const glyph of NODE_GLYPHS) {
+      expect(normalizeNodeIcon({ type: 'lucide', name: glyph.id })).toEqual({
+        type: 'lucide',
+        name: glyph.id
+      })
+    }
+  })
+
+  it('offers the kinds the issue names', () => {
+    const ids = NODE_GLYPHS.map((g) => g.id)
+    for (const id of ['terminal', 'folder-git', 'database', 'server', 'file-text']) {
+      expect(ids).toContain(id)
+    }
+  })
+
+  it('is a subset of the lucide ids the renderer can draw, with a label each', () => {
+    for (const glyph of NODE_GLYPHS) {
+      expect(LUCIDE_ICON_IDS as readonly string[]).toContain(glyph.id)
+      expect(glyph.label.trim()).not.toBe('')
+    }
+    expect(new Set(NODE_GLYPHS.map((g) => g.id)).size).toBe(NODE_GLYPHS.length)
+  })
+
+  it('drops a name outside the allowlist, so a shared file cannot name an arbitrary export', () => {
+    expect(normalizeNodeIcon({ type: 'lucide', name: 'skull' })).toBeUndefined()
+    expect(normalizeNodeIcon({ type: 'lucide', name: 'Terminal' })).toBeUndefined()
+    expect(normalizeNodeIcon({ type: 'lucide', name: ' terminal' })).toBeUndefined()
+    expect(normalizeNodeIcon({ type: 'lucide', name: 42 })).toBeUndefined()
+    expect(normalizeNodeIcon({ type: 'lucide' })).toBeUndefined()
+  })
+
+  it('keeps only the canonical fields', () => {
+    expect(normalizeNodeIcon({ type: 'lucide', name: 'database', color: 'red', path: '/x.png' })).toEqual({
+      type: 'lucide',
+      name: 'database'
+    })
   })
 })

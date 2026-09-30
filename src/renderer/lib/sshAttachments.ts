@@ -1,5 +1,7 @@
 import { sshConnectionIdForProject, sshHostKey, type SshConnection } from '@shared/ssh'
 import { useSshConn, type SshAttachment, type SshConnInfo } from '../state/sshConn'
+import { useProjects } from '../state/projects'
+import { projectMayDialSsh } from '../session/relay-ssh'
 
 /** One host a project's canvas has REMOTE nodes on, other than the project's own endpoint. */
 export interface HostAttachment {
@@ -104,6 +106,13 @@ export function connectHostAttachment(
   connect: SshConnectFn,
   disconnect?: (scopeId: string) => Promise<unknown>
 ): Promise<boolean> {
+  // A host attachment OWNED by a relay tab is another machine's node: never dialed from here, and
+  // never registered either — a registration is what the reconnect coordinator would redial.
+  if (
+    attachment.ownerProjectId &&
+    !projectMayDialSsh(useProjects.getState().getProject(attachment.ownerProjectId))
+  )
+    return Promise.resolve(false)
   useSshConn.getState().registerAttachment(scopeId, attachment)
   const inFlight = dialing.get(scopeId)
   if (inFlight) return inFlight
@@ -132,4 +141,24 @@ export function connectHostAttachment(
 /** Test seam only: forget in-flight dials between cases. */
 export function resetHostAttachmentDials(): void {
   dialing.clear()
+}
+
+/**
+ * Every ControlMaster the active-project effect opens for `project`: its own endpoint (when it is an
+ * SSH project) and its host attachments. A RELAY tab opens NOTHING, whatever it carries — its
+ * project and nodes belong to another machine, and dialing them would log THIS machine into a
+ * server the host named, with this machine's keys (see session/relay-ssh.ts). The relay adopt
+ * boundary already strips the connections; this is the second, independent half.
+ */
+export function planActiveProjectDials(project: {
+  id: string
+  remote?: boolean
+  ssh?: { server: SshConnection; remoteCwd: string }
+  nodes: readonly AttachableNode[]
+}): { own: { server: SshConnection; remoteCwd: string } | null; attachments: HostAttachment[] } {
+  if (!projectMayDialSsh(project)) return { own: null, attachments: [] }
+  return {
+    own: project.ssh ?? null,
+    attachments: hostAttachmentsFor(project.id, project.nodes, project.ssh?.server)
+  }
 }

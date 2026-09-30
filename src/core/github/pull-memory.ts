@@ -12,10 +12,12 @@
 // (which carries every PR's state), so an old merge is still noticed; one the harvest does not have
 // keeps its last known lifecycle, which for an open PR means "wait" — the safe answer.
 //
-// It also holds CLAIMS: one per (project, card, set of PRs) that has been moved. Every board in every
+// It also holds CLAIMS: one per (project, card, PR) that has moved the card. Every board in every
 // window asks the host before it moves a card, and only the first ask wins — so two Server Edition
 // tabs cannot both move the card, and a card the user dragged back is not moved again for the same
-// merges.
+// merges. A claim is per PR, never per SET of PRs: the linked set changes on its own (a merged PR
+// ages off the pull board, an unrelated PR on the same branch joins it), and a set-keyed claim read
+// every such change as a new transition and moved a card the user had dragged back.
 //
 // And WAIT NOTES: "card X was linked to PR #N while #N was still open". `mergedSeenAt` is a fact
 // about a PR, not about a card, so on its own it would let a card that first appeared AFTER the
@@ -55,8 +57,8 @@ export function emptyPullMemory(): PullMemory {
 }
 
 /** The memory keys. `\0` cannot occur in a project id, a card id (both validated) or a number. */
-export function claimKey(projectId: string, cardId: string, pulls: number[]): string {
-  return `${projectId}\0${cardId}\0${[...new Set(pulls)].sort((a, b) => a - b).join(',')}`
+export function claimKey(projectId: string, cardId: string, pull: number): string {
+  return `claim\0${projectId}\0${cardId}\0${pull}`
 }
 
 export function waitKey(projectId: string, cardId: string, pull: number): string {
@@ -173,17 +175,39 @@ export function withObservations(status: GitHubPullStatus, remembered: Remembere
   }
 }
 
-/** Records a claim; `claimed` is false when it was already there, or when none of `waitKeys` was
- *  ever noted (the card was never seen waiting on one of these PRs while it was open). */
+/** The PRs that have already moved this card. Reads both key shapes: the per-PR one, and the
+ *  `<project>\0<card>\0<n,n,…>` set key an earlier build wrote, as a claim on each PR it lists. */
+function claimedPulls(memory: PullMemory, projectId: string, cardId: string): Set<number> {
+  const claimed = new Set<number>()
+  for (const claim of memory.claims) {
+    const parts = claim.split('\0')
+    if (parts.length === 4 && parts[0] === 'claim' && parts[1] === projectId && parts[2] === cardId) {
+      claimed.add(Number(parts[3]))
+    } else if (parts.length === 3 && parts[0] === projectId && parts[1] === cardId) {
+      for (const pull of parts[2].split(',')) claimed.add(Number(pull))
+    }
+  }
+  return claimed
+}
+
+/**
+ * Records a claim for moving `cardId` because `pulls` merged. `claimed` is true only when the set
+ * holds a NEW transition for this card: a PR that has not moved it before AND that it was noted
+ * waiting on while the PR was open. The same merges (whatever else joins or leaves the set) are
+ * refused, and so is a card that first appeared after the merge.
+ */
 export function claimInMemory(
   memory: PullMemory,
-  key: string,
-  waitKeys: string[]
+  projectId: string,
+  cardId: string,
+  pulls: number[]
 ): { memory: PullMemory; claimed: boolean } {
-  if (memory.claims.includes(key)) return { memory, claimed: false }
+  const claimed = claimedPulls(memory, projectId, cardId)
+  const fresh = [...new Set(pulls)].filter((pull) => !claimed.has(pull))
   const noted = new Set(memory.waits)
-  if (!waitKeys.some((wait) => noted.has(wait))) return { memory, claimed: false }
-  return { memory: { ...memory, claims: [...memory.claims, key].slice(-PULL_CLAIMS_MAX) }, claimed: true }
+  if (!fresh.some((pull) => noted.has(waitKey(projectId, cardId, pull)))) return { memory, claimed: false }
+  const keys = fresh.map((pull) => claimKey(projectId, cardId, pull))
+  return { memory: { ...memory, claims: [...memory.claims, ...keys].slice(-PULL_CLAIMS_MAX) }, claimed: true }
 }
 
 /** Records wait notes; the same memory object back when every one was already there. */

@@ -68,17 +68,22 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderOpen(counts: Record<string, number>): Promise<void> {
+type Move = { from: string | undefined; count: number; scopeKey: string } | null
+
+const element = (counts: Record<string, number>, accountMove: Move = null) => (
+  <UsageIndicator
+    countAccountSessions={(id) => counts[id ?? 'system'] ?? 0}
+    onMoveSessions={onMove}
+    accountMove={accountMove}
+  />
+)
+
+async function renderOpen(counts: Record<string, number>, accountMove: Move = null): Promise<void> {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root.render(
-      <UsageIndicator
-        countAccountSessions={(id) => counts[id ?? 'system'] ?? 0}
-        onMoveSessions={onMove}
-      />
-    )
+    root.render(element(counts, accountMove))
   })
   await act(async () => (host.querySelector('.usage-pill') as HTMLButtonElement).click())
 }
@@ -110,5 +115,45 @@ describe('usage popover — Move N sessions', () => {
   it('shows no control on a row with no sessions', async () => {
     await renderOpen({})
     expect(buttons().some((b) => b.textContent?.startsWith('⇄ Move'))).toBe(false)
+  })
+})
+
+// A move takes seconds, and the sessions it is moving keep their OLD account until each one lands.
+// Reopening the popover meanwhile used to offer "Move 3 sessions" again — counting the sessions
+// already on their way — and the click was then silently refused (one bulk move at a time).
+describe('usage popover — while a move is running', () => {
+  it('the source row says the move is under way, and offers nothing to click', async () => {
+    await renderOpen({ w: 3 }, { from: 'w', count: 3, scopeKey: '' })
+    const moving = buttons().find((b) => b.textContent === '⇄ Moving 3 sessions…')
+    expect(moving).toBeTruthy()
+    expect(moving!.disabled).toBe(true)
+    expect(buttons().some((b) => b.textContent?.startsWith('⇄ Move '))).toBe(false)
+  })
+
+  it('keeps saying so even once the source row has emptied out', async () => {
+    await renderOpen({}, { from: 'w', count: 3, scopeKey: '' })
+    expect(buttons().find((b) => b.textContent === '⇄ Moving 3 sessions…')).toBeTruthy()
+  })
+
+  it('every other row’s move is disabled, since a second move would be refused', async () => {
+    await renderOpen({ w: 3, p: 2 }, { from: 'w', count: 3, scopeKey: '' })
+    const other = buttons().find((b) => b.textContent === '⇄ Move 2 sessions')!
+    expect(other.disabled).toBe(true)
+    await act(async () => other.click())
+    expect(buttons().some((b) => b.textContent?.startsWith('→ '))).toBe(false)
+    expect(onMove).not.toHaveBeenCalled()
+  })
+
+  it('a move on ANOTHER machine does not relabel this machine’s row as moving', async () => {
+    await renderOpen({ w: 3 }, { from: 'w', count: 3, scopeKey: 'u@h' })
+    expect(buttons().some((b) => b.textContent?.startsWith('⇄ Moving'))).toBe(false)
+    expect(buttons().find((b) => b.textContent === '⇄ Move 3 sessions')!.disabled).toBe(true)
+  })
+
+  it('when the move ends, the row offers the fresh count again', async () => {
+    await renderOpen({ w: 3 }, { from: 'w', count: 3, scopeKey: '' })
+    await act(async () => root.render(element({ w: 1, p: 2 }, null)))
+    const move = buttons().find((b) => b.textContent === '⇄ Move 1 session')!
+    expect(move.disabled).toBe(false)
   })
 })

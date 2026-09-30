@@ -40,8 +40,9 @@ interface BoardLogState {
   entriesFor(projectId: string): BoardLogEntry[]
   /** Read the log for a project and replace its list; records the unsupported/clears error flags. */
   load(api: NodeTerminalApi, projectId: string): Promise<void>
-  /** Stamp + optimistically prepend an entry, then fire-and-forget the api append. */
-  append(api: NodeTerminalApi, projectId: string, input: BoardLogAppendInput): void
+  /** Stamp + optimistically prepend an entry, then fire-and-forget the api append. Returns the
+   *  stamped entry (its id is what a board comment's delivery outcomes are filed under). */
+  append(api: NodeTerminalApi, projectId: string, input: BoardLogAppendInput): BoardLogEntry
   /** Wire `onChanged` → reload for a project; returns the unsubscribe. */
   subscribeChanged(api: NodeTerminalApi, projectId: string): () => void
 }
@@ -101,6 +102,7 @@ export const useBoardLog = create<BoardLogState>((set, get) => ({
         if (!ok) flagError()
       })
       .catch(flagError)
+    return entry
   },
 
   subscribeChanged: (api, projectId) =>

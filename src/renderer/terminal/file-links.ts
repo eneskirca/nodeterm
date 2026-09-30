@@ -1,7 +1,7 @@
 // Cmd/Ctrl+click links in terminal output. `createUrlLinkProvider` handles http(s) URLs;
-// `createFileLinkProvider` handles path-like tokens: absolute (`/x/y`), dot-relative
-// (`./x`, `../x`) and bare relatives with at least one slash (`src/a.ts`), with optional
-// `:line[:col]` suffixes (compiler/grep output), and home-relative `~/x` paths. A `~` path stays
+// `createFileLinkProvider` handles path-like tokens — what counts as one (separator paths with
+// Unicode, bracketed and spaced segments, bare filenames, `file://` URIs, `:line[:col]` suffixes,
+// home-relative `~/x`) is file-link-tokens.ts. A `~` path stays
 // `~`-rooted all the way to the filesystem call: the core that owns the filesystem expands it
 // against ITS home (`expandHomePath` in core/fs-handlers.ts; an SSH project's remote shell does it
 // for `sshFs`) — the renderer does not know that home, and on the Server Edition it is another
@@ -24,133 +24,31 @@
 //     gated tightly and capped at MAX_JOIN_ROWS, and the regex still has to match across the
 //     seam for a link to result.
 import type { ILink, ILinkHandler, ILinkProvider, Terminal } from '@xterm/xterm'
+import { linkOpenIntent } from './link-hover'
 
-export interface FileToken {
-  /** The raw matched span (drives the underline range), incl. any :line:col suffix. */
-  text: string
-  /** 0-based index of `text` within the logical line. */
-  startIndex: number
-  /** The cleaned path portion. */
-  path: string
-  line?: number
+/** What a hovered link resolved to — what the host's hover tooltip names (see link-hover.ts). */
+export type LinkHoverTarget = { kind: 'file'; abs: string; dir: boolean } | { kind: 'url'; url: string }
+
+/** The host's hover tooltip. Optional everywhere: a host without one (the kanban card modal)
+ *  keeps exactly the pre-tooltip behaviour. */
+export interface LinkHoverSink {
+  hover(target: LinkHoverTarget, event: MouseEvent): void
+  leave(): void
 }
 
-// Path-ish token: an optional ./ ../ / prefix, then segments of path-safe chars with at
-// least one internal slash — OR a prefixed single-segment (/tmp, ./x) — with an optional
-// trailing :line[:col]. Trailing punctuation is cleaned afterwards, not in the regex.
-const TOKEN_RE =
-  /(?:(?:\.{1,2}\/|\/)?[\w.@+-]+(?:\/[\w.@+~-]+)+|(?:\.{1,2}\/|\/)[\w.@+-]+)(?::\d+(?::\d+)?)?/g
+import {
+  matchFileTokens,
+  type FileToken,
+  type PathConventionOpts
+} from './file-link-tokens'
 
-/**
- * The same shape with Windows separators, plus drive and UNC prefixes. Used ONLY when the
- * filesystem-owning core reports Windows — never just because the viewing browser is on Windows,
- * and never for an SSH project, whose paths are POSIX however the viewer is spelled.
- *
- * A SEPARATE regex rather than widening TOKEN_RE's separator class, deliberately: the POSIX path
- * is what every existing user runs, and it stays byte-identical. Widening it would also start
- * matching Windows-shaped text inside a POSIX session, where it can only ever be wrong.
- *
- * Four alternatives, in order: a UNC path (consumed whole so it can be refused), a drive-absolute
- * path, a dot-prefixed relative, or a plain multi-segment relative. Both separators are accepted,
- * because Windows tools emit both. A bare single word is deliberately not a token — `readme` in a
- * sentence is not a path, and TOKEN_RE takes the same position for POSIX.
- *
- * SPACES ARE NOT PART OF A SEGMENT, even though `C:\Program Files\…` is everywhere on Windows.
- * An unquoted path in terminal output gives no way to tell where it ends, so allowing spaces made
- * `C:\Users\me\src\a.ts for detail` match as one token — it swallowed the rest of the sentence.
- * The existence check would have rejected that, which means a path with a space would simply never
- * have linked while quietly breaking the ones around it. The POSIX matcher takes the same
- * position, so this is parity rather than a Windows-specific shortfall.
- */
-const WIN_TOKEN_RE =
-  /(?:(?:\\\\|\/\/)[\w.@+~-]+[\\/][\w.@+~-]+(?:[\\/][\w.@+~-]+)*|[A-Za-z]:[\\/][\w.@+~-]*(?:[\\/][\w.@+~-]+)*|\.{1,2}[\\/][\w.@+~-]+(?:[\\/][\w.@+~-]+)*|[\w.@+-]+(?:[\\/][\w.@+~-]+)+)(?::\d+(?::\d+)?)?/g
-const SUFFIX_RE = /^(.*?):(\d+)(?::\d+)?$/
+// The matcher (what counts as a path in a line of output) lives in file-link-tokens.ts.
+export { looksLikeBareFilename, matchFileTokens } from './file-link-tokens'
+export type { FileToken, PathConventionOpts } from './file-link-tokens'
+
 const TRAILING_PUNCT = /[.,;:!?'")\]}>]+$/
 /** `C:\…`, `C:/…`, or a UNC `\\host\share` / `//host/share`. */
 const WIN_ABSOLUTE_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/
-
-export interface PathConventionOpts {
-  /** Match and resolve Windows-shaped paths. Off by default, so POSIX behaviour is unchanged. */
-  windows?: boolean
-}
-
-/** Characters that, right before a `~`, mean it is not the start of a home path (`a~/x`). */
-const HOME_LEAD_BLOCK_RE = /[\w.@+~\/-]/
-
-export function matchFileTokens(lineText: string, opts: PathConventionOpts = {}): FileToken[] {
-  const out: FileToken[] = []
-  if (opts.windows) return matchWindowsFileTokens(lineText)
-  for (const m of lineText.matchAll(TOKEN_RE)) {
-    let text = m[0]
-    let start = m.index
-    // URLs (and protocol-ish tokens) belong to the web-links addon.
-    const before = lineText.slice(Math.max(0, m.index - 8), m.index)
-    // `\w+:\/{1,2}$` (not just `://`): the optional leading-`/` in TOKEN_RE can swallow the
-    // second slash of `://`, so a URL's token starts at that slash and `before` ends `https:/`.
-    if (/\w+:\/{1,2}$/.test(before) || text.includes('//')) continue
-    // A token preceded by `~` is a home-relative path minus its tilde. Re-attach the tilde when it
-    // stands at a word start (`~/x`, ` ~/x`, `(~/x`) so it never mis-resolves as the absolute `/x`.
-    // Anything else before the `~` (`a~/x`, `~user/x`) is not a home path — skip it, as before.
-    if (m.index > 0 && lineText[m.index - 1] === '~') {
-      const lead = m.index > 1 ? lineText[m.index - 2] : ''
-      if (!text.startsWith('/') || HOME_LEAD_BLOCK_RE.test(lead)) continue
-      text = '~' + text
-      start = m.index - 1
-    }
-    text = text.replace(TRAILING_PUNCT, '')
-    if (text.length < 3) continue
-    let path = text
-    let line: number | undefined
-    const suffix = SUFFIX_RE.exec(text)
-    if (suffix) {
-      path = suffix[1]
-      line = parseInt(suffix[2], 10)
-    }
-    if (!path || !path.includes('/')) continue
-    out.push({ text, startIndex: start, path, line })
-  }
-  return out
-}
-
-/**
- * The Windows half of `matchFileTokens`. Kept separate so the POSIX path above is untouched.
- *
- * The existence check downstream (`makeDirListingLookup`) is what makes a slightly generous
- * matcher safe: a token that is not a real file simply never becomes a link. So this errs toward
- * matching, and lets the filesystem decide — the opposite trade from the traversal guards
- * elsewhere in this codebase, where guessing wrong has a cost.
- */
-function matchWindowsFileTokens(lineText: string): FileToken[] {
-  const out: FileToken[] = []
-  for (const m of lineText.matchAll(WIN_TOKEN_RE)) {
-    let text = m[0]
-    const before = lineText.slice(Math.max(0, m.index - 8), m.index)
-    // A URL's token can begin at the second slash of `://` — same guard as the POSIX branch.
-    if (/\w+:\/{1,2}$/.test(before) || text.includes('//')) continue
-    text = text.replace(TRAILING_PUNCT, '')
-    if (text.length < 3) continue
-    let path = text
-    // Refuse the WHOLE UNC token here. Without the explicit UNC alternative in WIN_TOKEN_RE the
-    // matcher started two characters in (`server\share\a.ts`), turning the network path into a
-    // relative path under cwd and bypassing resolveWindowsFileToken's UNC refusal.
-    if (/^(?:\\\\|\/\/)/.test(path)) continue
-    let line: number | undefined
-    const suffix = SUFFIX_RE.exec(text)
-    // `C:\src\a.ts:12` splits correctly because SUFFIX_RE anchors the digits at the END — the
-    // drive's own colon is not followed by digits-then-end. `C:12` would split into path `C`,
-    // which the separator requirement below then rejects.
-    if (suffix) {
-      path = suffix[1]
-      line = parseInt(suffix[2], 10)
-    }
-    if (!path) continue
-    // Must look like a path, not a bare word: either drive/UNC-qualified, or containing a
-    // separator. Without this a `:line` suffix on any word would produce a token.
-    if (!WIN_ABSOLUTE_RE.test(path) && !/[\\/]/.test(path)) continue
-    out.push({ text, startIndex: m.index, path, line })
-  }
-  return out
-}
 
 // http(s) URLs. Shared by createUrlLinkProvider (hover underline + click outside tmux) and
 // the mouse-up click fallback (below), which hit-tests URLs and file paths in one pass —
@@ -191,12 +89,25 @@ function isHttpUrl(text: string): boolean {
  * built-in fallback is a window.confirm). The URI is invisible text the label hides, so a
  * `javascript:`/`file:` link must never reach openExternal.
  */
-export function createOsc8LinkHandler(openUrl: (url: string) => void): ILinkHandler {
+export function createOsc8LinkHandler(
+  openUrl: (url: string) => void,
+  hoverSink?: LinkHoverSink
+): ILinkHandler {
   return {
     activate: (event: MouseEvent, text: string): void => {
       if (!(event.metaKey || event.ctrlKey)) return
+      hoverSink?.leave()
       if (isHttpUrl(text)) openUrl(text)
-    }
+    },
+    // The one link whose target the screen never shows — the hover is where the user learns it.
+    ...(hoverSink
+      ? {
+          hover: (event: MouseEvent, text: string): void => {
+            if (isHttpUrl(text)) hoverSink.hover({ kind: 'url', url: text }, event)
+          },
+          leave: (): void => hoverSink.leave()
+        }
+      : {})
   }
 }
 
@@ -284,34 +195,233 @@ function resolveWindowsFileToken(path: string, cwd: string | undefined): string 
   return `${drive}/${out.join('/')}`
 }
 
-export interface FileLinkDeps {
+/** The two cwds a relative path can be anchored on, in order. `getCwd` is the node's LAUNCH cwd
+ *  (persisted, synchronous); `getLiveCwd` is the pane's CURRENT directory (tmux
+ *  `#{pane_current_path}`, async, may be unknown). An agent printing `var/x/y.sql` prints it relative
+ *  to wherever IT runs, which is not always where the node was opened — the launch cwd alone left
+ *  every such path dead with no hint why. */
+export interface CwdSources {
   getCwd(): string | undefined
+  getLiveCwd?(): Promise<string | undefined>
+}
+
+/**
+ * What one existence check knows about one absolute path. `exists: false` WITHOUT `unverified` is a
+ * verified absence (the parent listed real entries and ours is not among them); WITH it, nothing is
+ * known and `unverified` says why. "Could not read" must never be laundered into "nothing there" —
+ * a dead ControlMaster is not evidence that a file is gone.
+ */
+export interface PathLookup {
+  exists: boolean
+  dir: boolean
+  unverified?: string
+}
+
+/** A candidate path that could not be checked, and why. */
+export interface UnverifiedPath {
+  abs: string
+  reason: string
+}
+
+/** Where a path token resolved: an existing entry, or every absolute path that was tried. A miss
+ *  carries `unverified` (non-empty) when any candidate could not be checked — then the answer is
+ *  "unknown", not "missing". Absent means every candidate was a verified absence. */
+export type PathResolution =
+  | { found: true; abs: string; dir: boolean }
+  | { found: false; tried: string[]; unverified?: UnverifiedPath[] }
+
+/** The short reason an error carries, for a toast or a menu row. */
+function reasonOf(err: unknown): string {
+  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
+  return msg.trim() || 'the lookup failed'
+}
+
+/**
+ * Resolve a path token to an EXISTING file or directory: absolute (and `~/`) tokens are tried as
+ * they are; a relative token against the launch cwd first, then the pane's live cwd. The launch cwd
+ * wins when both hold a match, so a link never changes meaning just because the pane moved. The
+ * live cwd is only asked when the first candidate misses — it is a tmux round trip, and the common
+ * case never pays it.
+ *
+ * Three outcomes, not two: found, a verified miss, or unknown. A lookup that throws or answers
+ * `unverified` records that candidate as UNCHECKED; if nothing is found, the result carries those
+ * so the caller says "couldn't check", never "not found".
+ *
+ * An unchecked launch-cwd candidate still lets the live cwd be tried. A hit there is real evidence
+ * (a listing returned the entry), whereas stopping would turn one flaky listing into a dead link for
+ * a file we can prove exists. The cost is the tie-break: if the launch cwd ALSO held a same-named
+ * file, the one we could not see would have won. Opening a file that provably exists at the path
+ * the pane is standing in is the lesser surprise than a toast saying we could not check.
+ */
+export async function findExistingPath(
+  token: string,
+  convention: PathConventionOpts,
+  deps: CwdSources & { lookup(abs: string): Promise<PathLookup> }
+): Promise<PathResolution> {
+  const tried: string[] = []
+  const unverified: UnverifiedPath[] = []
+  const attempt = async (cwd: string | undefined): Promise<PathResolution | null> => {
+    const abs = resolveFileToken(token, cwd, convention)
+    if (!abs || tried.includes(abs)) return null
+    tried.push(abs)
+    const f: PathLookup = await deps
+      .lookup(abs)
+      .catch((err: unknown) => ({ exists: false, dir: false, unverified: reasonOf(err) }))
+    if (f.exists) return { found: true, abs, dir: f.dir }
+    if (f.unverified !== undefined) unverified.push({ abs, reason: f.unverified || 'the lookup failed' })
+    return null
+  }
+  const miss = (): PathResolution =>
+    unverified.length ? { found: false, tried, unverified } : { found: false, tried }
+  const first = await attempt(deps.getCwd())
+  if (first) return first
+  if (deps.getLiveCwd && !isAnchoredToken(token, convention)) {
+    const live = await deps.getLiveCwd().catch(() => undefined)
+    if (live) {
+      const second = await attempt(live)
+      if (second) return second
+    }
+  }
+  return miss()
+}
+
+/** Does the token carry its own root (so no cwd can change where it points)? */
+function isAnchoredToken(token: string, convention: PathConventionOpts): boolean {
+  if (convention.windows) return WIN_ABSOLUTE_RE.test(token)
+  return token.startsWith('/') || token.startsWith('~/')
+}
+
+/**
+ * Memoize an async cwd read for `ttlMs`, coalescing concurrent calls. xterm asks every link
+ * provider on each hovered row, and a live-cwd read is a tmux (or ssh) exec — uncached, a mouse
+ * sweep over agent output would fire one per row. A failure reads as unknown and is not cached.
+ */
+export function cachedCwd(
+  read: () => Promise<string | null>,
+  ttlMs = 3000,
+  now: () => number = Date.now
+): () => Promise<string | undefined> {
+  let hit: { at: number; value: string } | null = null
+  let inFlight: Promise<string | undefined> | null = null
+  return () => {
+    if (hit && now() - hit.at < ttlMs) return Promise.resolve(hit.value)
+    if (inFlight) return inFlight
+    inFlight = read()
+      .then((v) => {
+        hit = v ? { at: now(), value: v } : null
+        return v || undefined
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        inFlight = null
+      })
+    return inFlight
+  }
+}
+
+/** The toast text for a Cmd/Ctrl+click on a path that exists nowhere we looked. Only for a
+ *  VERIFIED miss — see `fileMissMessage`. */
+export function missingFileMessage(token: string, tried: string[]): string {
+  if (!tried.length) return `File not found: ${token} (no working directory to resolve it against)`
+  return tried.length === 1
+    ? `File not found: ${tried[0]}`
+    : `File not found: ${token} — looked in ${tried.join(' and ')}`
+}
+
+/** The toast text when at least one candidate could not be checked and none was found. It must
+ *  not claim the file is gone: it names what it could not check and why, and a candidate that WAS
+ *  a verified miss is mentioned as exactly that. */
+export function unverifiableFileMessage(
+  token: string,
+  tried: string[],
+  unverified: UnverifiedPath[]
+): string {
+  const reasons = [...new Set(unverified.map((u) => u.reason))].join('; ')
+  const unchecked = unverified.map((u) => u.abs)
+  const missed = tried.filter((t) => !unchecked.includes(t))
+  const head =
+    unverified.length === 1
+      ? `Couldn't check ${unchecked[0]}: ${reasons}`
+      : `Couldn't check ${token} at ${unchecked.join(' or ')}: ${reasons}`
+  return missed.length ? `${head} (not found at ${missed.join(' or ')})` : head
+}
+
+/** The honest sentence for a Cmd/Ctrl+click miss: "couldn't check" when any candidate was
+ *  unchecked, "not found" only when every one was a verified absence. */
+export function fileMissMessage(
+  token: string,
+  miss: { tried: string[]; unverified?: UnverifiedPath[] }
+): string {
+  return miss.unverified?.length
+    ? unverifiableFileMessage(token, miss.tried, miss.unverified)
+    : missingFileMessage(token, miss.tried)
+}
+
+export interface FileLinkDeps extends CwdSources {
   /** Static compatibility option for direct unit consumers. Live terminals use `convention`. */
   windows?: boolean
   /** Dynamic host decision. `null` means the owning core's dialect was not observed, so file
    *  links fail closed instead of borrowing the browser's OS. Takes precedence over `windows`. */
   convention?: () => PathConventionOpts | null
-  lookup(abs: string): Promise<{ exists: boolean; dir: boolean }>
+  lookup(abs: string): Promise<PathLookup>
   activate(abs: string, dir: boolean): void
+  /** Shift+Cmd/Ctrl+click: hand the path to the OS default app (the host decides per surface —
+   *  see `systemOpenRefusal`). Absent = the plain `activate`, so a host that never wired it keeps
+   *  its old behaviour for the Shift variant too. */
+  openWithSystem?(abs: string, dir: boolean): void
+  /** Hover tooltip naming the resolved path. */
+  hoverSink?: LinkHoverSink
 }
 
 /** The minimal buffer slice paragraph joining needs — unit tests drive a fake. */
+/** One buffer cell: its text (`''` for a never-written cell) and its width — 2 for a wide (CJK,
+ *  emoji) glyph, 0 for the placeholder cell that follows one. */
+export interface BufferCell {
+  chars: string
+  width: number
+}
+
 export interface BufferView {
   cols: number
   length: number
-  line(row: number): { isWrapped: boolean; text(trimRight: boolean): string } | undefined
+  line(
+    row: number
+  ):
+    | {
+        isWrapped: boolean
+        text(trimRight: boolean): string
+        /** Per-cell content, when the buffer can say. Without it every UTF-16 unit is taken to be
+         *  one cell — true for ASCII, wrong after a wide glyph. */
+        cells?(): BufferCell[] | undefined
+      }
+    | undefined
 }
 
 export function bufferView(term: Terminal): BufferView {
   const buf = term.buffer.active
+  const cols = term.cols
   return {
-    cols: term.cols,
+    cols,
     length: buf.length,
     line: (row) => {
       const l = buf.getLine(row)
-      return l
-        ? { isWrapped: l.isWrapped, text: (trim: boolean) => l.translateToString(trim) }
-        : undefined
+      if (!l) return undefined
+      return {
+        isWrapped: l.isWrapped,
+        text: (trim: boolean) => l.translateToString(trim),
+        cells: () => {
+          const out: BufferCell[] = []
+          let cell = l.getCell?.(0)
+          if (!cell || typeof cell.getChars !== 'function') return undefined
+          const n = Math.min(l.length ?? cols, cols)
+          for (let x = 0; x < n; x++) {
+            cell = l.getCell(x, cell)
+            if (!cell) break
+            out.push({ chars: cell.getChars(), width: cell.getWidth() })
+          }
+          return out
+        }
+      }
     }
   }
 }
@@ -320,59 +430,134 @@ export function bufferView(term: Terminal): BufferView {
  *  full-width walls of text; a wrapped OAuth URL is ~7 rows at 80 cols. */
 const MAX_JOIN_ROWS = 32
 
+/** A row as cells: from the buffer when it can say, else one cell per UTF-16 unit of its text. */
+function rowCells(view: BufferView, row: number): BufferCell[] | null {
+  const l = view.line(row)
+  if (!l) return null
+  const cells = l.cells?.()
+  if (cells) return cells
+  return [...l.text(false).padEnd(view.cols)].slice(0, view.cols).map((chars) => ({ chars, width: 1 }))
+}
+
+const isBlank = (c: BufferCell | undefined): boolean => !c || c.chars === '' || c.chars === ' '
+
 // Whether `row` runs into `row + 1`: the successor carries xterm's soft-wrap flag, OR the
-// hard-wrap heuristic holds — `row` is full to its last column (untrimmed non-space in the
-// final cell) and the successor starts at column 0 with a non-space. See the header comment.
+// hard-wrap heuristic holds — `row` is full to its last column (a non-space in the final cell, or
+// the placeholder half of a wide glyph there) and the successor starts at column 0 with a
+// non-space. See the header comment.
 function continuesOnNextRow(view: BufferView, row: number): boolean {
   const next = view.line(row + 1)
   if (!next) return false
   if (next.isWrapped) return true
   const cur = view.line(row)
   if (!cur) return false
-  const raw = cur.text(false)
-  if (raw.length < view.cols || raw[view.cols - 1] === ' ') return false
-  const nextRaw = next.text(false)
-  return nextRaw.length > 0 && nextRaw[0] !== ' '
+  const cells = cur.cells?.()
+  if (!cells) {
+    // Text-only view: the original check, unit for unit.
+    const raw = cur.text(false)
+    if (raw.length < view.cols || raw[view.cols - 1] === ' ') return false
+    const nextRaw = next.text(false)
+    return nextRaw.length > 0 && nextRaw[0] !== ' '
+  }
+  const last = cells[view.cols - 1]
+  const full = last && (last.width === 0 ? !isBlank(cells[view.cols - 2]) : !isBlank(last))
+  if (!full) return false
+  return !isBlank(rowCells(view, row + 1)?.[0])
+}
+
+/** A logical paragraph, with the buffer cell of every UTF-16 unit of its text. */
+export interface Paragraph {
+  text: string
+  startRow: number
+  rows: number
+  /** Paragraph-relative cell index (`rowOffset * cols + col`) where each unit of `text` starts. */
+  cellStart: number[]
+  /** …and the last cell it occupies (one further for a wide glyph). */
+  cellEnd: number[]
 }
 
 /**
  * The logical paragraph containing `row` (0-based): walks up to the paragraph's first row,
- * then joins downward across soft AND hard wraps. Every row that continues contributes
- * EXACTLY `cols` characters (padded/truncated untrimmed read), so an index into `text` maps
- * back to the buffer as `(startRow + idx / cols, idx % cols)`; the final row is right-trimmed.
+ * then joins downward across soft AND hard wraps. Every row that continues contributes all its
+ * cells (untrimmed); the final row is right-trimmed. Text and cells are NOT one-to-one — a wide
+ * glyph is one character over two cells, an astral one two units in one cell — so `cellStart` /
+ * `cellEnd` carry the mapping, and every hit-test and underline range goes through them.
  */
-export function paragraphContaining(
-  view: BufferView,
-  row: number
-): { text: string; startRow: number; rows: number } | null {
+export function paragraphContaining(view: BufferView, row: number): Paragraph | null {
   if (!view.line(row)) return null
   let start = row
   while (start > 0 && row - start < MAX_JOIN_ROWS && continuesOnNextRow(view, start - 1)) start--
   let text = ''
+  const cellStart: number[] = []
+  const cellEnd: number[] = []
   let r = start
   for (;;) {
     const joins = r - start + 1 < MAX_JOIN_ROWS && continuesOnNextRow(view, r)
-    const lineText = view.line(r)!.text(!joins)
-    // Continuing rows must contribute exactly `cols` chars so the index math above holds.
-    text += joins ? lineText.padEnd(view.cols).slice(0, view.cols) : lineText
-    if (!joins) break
+    const base = (r - start) * view.cols
+    const cells = rowCells(view, r)!
+    let n = Math.min(cells.length, view.cols)
+    // A wide glyph that did not fit leaves the last cell of a soft-wrapped row empty; it is not
+    // a space in the text, or it would split a token across the seam.
+    if (joins && view.line(r + 1)?.isWrapped && cells[n - 1]?.chars === '' && cells[n - 1]?.width === 1)
+      n--
+    const rowStartLen = text.length
+    for (let x = 0; x < n; x++) {
+      const c = cells[x]
+      if (c.width === 0) continue
+      const chars = c.chars || ' '
+      for (let u = 0; u < chars.length; u++) {
+        cellStart.push(base + x)
+        cellEnd.push(base + x + Math.max(c.width, 1) - 1)
+      }
+      text += chars
+    }
+    if (!joins) {
+      // Right-trim the final row only.
+      let end = text.length
+      while (end > rowStartLen && text[end - 1] === ' ') end--
+      text = text.slice(0, end)
+      cellStart.length = end
+      cellEnd.length = end
+      break
+    }
     r++
   }
-  return { text, startRow: start, rows: r - start + 1 }
+  return { text, startRow: start, rows: r - start + 1, cellStart, cellEnd }
 }
 
 /** ILink range (1-based, inclusive) for a token at `startIndex..+len` of a paragraph. */
 function tokenRange(
-  startRow: number,
+  p: Paragraph,
   cols: number,
   startIndex: number,
   len: number
 ): ILink['range'] {
-  const endIndex = startIndex + len - 1
+  const first = p.cellStart[startIndex]
+  const last = p.cellEnd[startIndex + len - 1]
   return {
-    start: { x: (startIndex % cols) + 1, y: startRow + Math.floor(startIndex / cols) + 1 },
-    end: { x: (endIndex % cols) + 1, y: startRow + Math.floor(endIndex / cols) + 1 }
+    start: { x: (first % cols) + 1, y: p.startRow + Math.floor(first / cols) + 1 },
+    end: { x: (last % cols) + 1, y: p.startRow + Math.floor(last / cols) + 1 }
   }
+}
+
+/** Does paragraph cell `cell` fall inside the token at `startIndex..+len`? */
+function tokenCovers(p: Paragraph, startIndex: number, len: number, cell: number): boolean {
+  return len > 0 && cell >= p.cellStart[startIndex] && cell <= p.cellEnd[startIndex + len - 1]
+}
+
+/**
+ * Among links resolved from OVERLAPPING candidates (a spaced path and its pieces), keep the first
+ * in preference order and drop any later one that overlaps a kept one. Candidates arrive sorted by
+ * start, longer first, so a spaced path that exists wins over its fragments.
+ */
+function dropShadowed<T extends { startIndex: number; len: number }>(found: T[]): T[] {
+  const kept: T[] = []
+  for (const f of found) {
+    if (kept.some((k) => f.startIndex < k.startIndex + k.len && k.startIndex < f.startIndex + f.len))
+      continue
+    kept.push(f)
+  }
+  return kept
 }
 
 /** xterm link provider for file paths. Register once per terminal with a reachable filesystem. */
@@ -398,22 +583,41 @@ export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILin
       }
       const cols = term.cols
       void Promise.all(
-        tokens.map(async (t): Promise<ILink | null> => {
-          const abs = resolveFileToken(t.path, deps.getCwd(), convention)
-          if (!abs) return null
-          const found = await deps.lookup(abs)
-          if (!found.exists) return null
+        tokens.map(async (t): Promise<(ILink & { startIndex: number; len: number }) | null> => {
+          const found = await findExistingPath(t.path, convention, deps)
+          if (!found.found) return null
+          const { abs, dir } = found
+          const sink = deps.hoverSink
           return {
+            startIndex: t.startIndex,
+            len: t.text.length,
             text: t.text,
-            range: tokenRange(logical.startRow, cols, t.startIndex, t.text.length),
+            range: tokenRange(logical, cols, t.startIndex, t.text.length),
             activate: (event: MouseEvent) => {
-              if (!(event.metaKey || event.ctrlKey)) return
-              deps.activate(abs, found.dir)
-            }
+              const intent = linkOpenIntent(event)
+              if (intent === 'none') return
+              sink?.leave()
+              if (intent === 'system') {
+                // Shift also extends an xterm selection: a Shift+Cmd click that left one behind
+                // was a selection gesture, not an open.
+                if (term.hasSelection()) return
+                ;(deps.openWithSystem ?? deps.activate)(abs, dir)
+                return
+              }
+              deps.activate(abs, dir)
+            },
+            ...(sink
+              ? {
+                  hover: (event: MouseEvent) => sink.hover({ kind: 'file', abs, dir }, event),
+                  leave: () => sink.leave()
+                }
+              : {})
           }
         })
       ).then((links) => {
-        const real = links.filter((l): l is ILink => !!l)
+        const real = dropShadowed(links.filter((l) => !!l)).map(
+          ({ startIndex: _s, len: _l, ...link }): ILink => link
+        )
         callback(real.length ? real : undefined)
       })
     }
@@ -426,7 +630,11 @@ export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILin
  * underlined and opened just the first row's fragment of a long OAuth URL). Modifier-gated in
  * activate like the file provider, so plain clicks stay selections.
  */
-export function createUrlLinkProvider(term: Terminal, openUrl: (url: string) => void): ILinkProvider {
+export function createUrlLinkProvider(
+  term: Terminal,
+  openUrl: (url: string) => void,
+  hoverSink?: LinkHoverSink
+): ILinkProvider {
   return {
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
       const logical = paragraphContaining(bufferView(term), bufferLineNumber - 1)
@@ -437,10 +645,18 @@ export function createUrlLinkProvider(term: Terminal, openUrl: (url: string) => 
       const links = matchUrlTokens(logical.text).map(
         (u): ILink => ({
           text: u.text,
-          range: tokenRange(logical.startRow, term.cols, u.startIndex, u.text.length),
+          range: tokenRange(logical, term.cols, u.startIndex, u.text.length),
           activate: (event: MouseEvent) => {
-            if (event.metaKey || event.ctrlKey) openUrl(u.url)
-          }
+            if (!(event.metaKey || event.ctrlKey)) return
+            hoverSink?.leave()
+            openUrl(u.url)
+          },
+          ...(hoverSink
+            ? {
+                hover: (event: MouseEvent) => hoverSink.hover({ kind: 'url', url: u.url }, event),
+                leave: () => hoverSink.leave()
+              }
+            : {})
         })
       )
       callback(links.length ? links : undefined)
@@ -448,20 +664,43 @@ export function createUrlLinkProvider(term: Terminal, openUrl: (url: string) => 
   }
 }
 
-/** Existence+dir-ness via cached parent-dir listings (one list covers all siblings). */
+/**
+ * Existence+dir-ness via cached parent-dir listings (one list covers all siblings).
+ *
+ * Only a listing that came back WITH entries can prove absence. Two answers cannot, and are
+ * reported as `unverified` instead of a miss (the rule `lib/filesNode.ts classifyEmptyListing`
+ * states at length):
+ *  - a `list` that REJECTS (a transport failure, a relay refusal, a dropped bridge);
+ *  - a listing that is EMPTY. `FsApi` is fail-open by contract — `core/fs-ops.listDir` and
+ *    `SshFs.listDir` end `catch { return [] }`, and the SSH IPC resolves `[]` for a project whose
+ *    ControlMaster is down — so `[]` is what a dead master, a permission error or a timeout looks
+ *    like. It is also what a directory that does not exist looks like; we cannot tell those apart
+ *    from here, so the answer names the doubt rather than telling the user their file is gone.
+ * Plus one shape the listing can never answer: a `.git` entry, which both listing legs strip.
+ *
+ * A failure is cached as a FAILURE, for `failureTtlMs` (short: it only keeps a hover sweep from
+ * re-listing the same dead directory per row) — never as an empty directory for the full TTL, which
+ * used to turn one hiccup into three seconds of "not found".
+ */
 export function makeDirListingLookup(
   list: (dir: string) => Promise<Array<{ name: string; dir: boolean }>>,
   ttlMs = 3000,
-  convention: () => PathConventionOpts | null = () => ({})
-): (abs: string) => Promise<{ exists: boolean; dir: boolean }> {
-  const cache = new Map<string, { at: number; entries: Array<{ name: string; dir: boolean }> }>()
+  convention: () => PathConventionOpts | null = () => ({}),
+  opts: { failureTtlMs?: number; now?: () => number } = {}
+): (abs: string) => Promise<PathLookup> {
+  const failureTtlMs = opts.failureTtlMs ?? Math.min(1000, ttlMs)
+  const now = opts.now ?? Date.now
+  type Listing = { at: number; entries: Array<{ name: string; dir: boolean }> } | { at: number; error: string }
+  const cache = new Map<string, Listing>()
+  const fresh = (l: Listing | undefined): l is Listing =>
+    !!l && now() - l.at < ('error' in l ? failureTtlMs : ttlMs)
   return async (abs) => {
-    const opts = convention()
-    if (!opts) return { exists: false, dir: false }
+    const conv = convention()
+    if (!conv) return { exists: false, dir: false, unverified: 'no filesystem to check it on' }
     // On POSIX a backslash is legal filename text, not a separator. Only the Windows dialect may
     // split on it; resolved Windows tokens normally use `/`, but accepting a native path here keeps
     // this boundary honest if another caller supplies one later.
-    const i = opts.windows
+    const i = conv.windows
       ? Math.max(abs.lastIndexOf('/'), abs.lastIndexOf('\\'))
       : abs.lastIndexOf('/')
     // `C:/a.ts` splits to a dir of `C:`, which on Windows means "the current directory on drive
@@ -474,15 +713,25 @@ export function makeDirListingLookup(
           ? abs.slice(0, i) + separator
           : abs.slice(0, i)
     const name = abs.slice(i + 1)
-    const cacheKey = opts.windows ? dir.toLowerCase() : dir
-    const hit = cache.get(cacheKey)
-    const entries =
-      hit && Date.now() - hit.at < ttlMs ? hit.entries : await list(dir).catch(() => [])
-    if (!hit || Date.now() - (hit?.at ?? 0) >= ttlMs)
-      cache.set(cacheKey, { at: Date.now(), entries })
-    const e = entries.find((x) =>
-      opts.windows ? x.name.toLowerCase() === name.toLowerCase() : x.name === name
-    )
+    const same = (a: string, b: string): boolean =>
+      conv.windows ? a.toLowerCase() === b.toLowerCase() : a === b
+    if (same(name, '.git')) return { exists: false, dir: false, unverified: 'directory listings hide .git' }
+    const cacheKey = conv.windows ? dir.toLowerCase() : dir
+    const cached = cache.get(cacheKey)
+    let listing: Listing
+    if (fresh(cached)) listing = cached
+    else {
+      listing = await list(dir).then(
+        (entries): Listing =>
+          entries.length
+            ? { at: now(), entries }
+            : { at: now(), error: `nothing listed in ${dir} (it may not exist, or the filesystem is unreachable)` },
+        (err: unknown): Listing => ({ at: now(), error: reasonOf(err) })
+      )
+      cache.set(cacheKey, listing)
+    }
+    if ('error' in listing) return { exists: false, dir: false, unverified: listing.error }
+    const e = listing.entries.find((x) => same(x.name, name))
     return { exists: !!e, dir: !!e?.dir }
   }
 }
@@ -508,11 +757,24 @@ function bufferPosFromEvent(term: Terminal, ev: MouseEvent): { col: number; row:
 
 /** What sits under a buffer cell: a web URL (typed or OSC 8), or a path resolved to absolute.
  *  A path is NOT yet known to exist — that is the async `lookup`'s answer, taken by the caller. */
-export type LinkHit = { kind: 'url'; url: string } | { kind: 'path'; abs: string }
+export type LinkHit =
+  | { kind: 'url'; url: string }
+  /** `token` is the path as printed; `abs` its resolution against the LAUNCH cwd (null when that
+   *  cannot anchor it — a relative token on a cwd-less node — which the live cwd may still). */
+  | {
+      kind: 'path'
+      token: string
+      abs: string | null
+      /** Shorter readings of the same span, to try in order when `token` does not exist — a spaced
+       *  path's pieces (`/usr/bin/env node` → `/usr/bin/env`). Absent when there are none. */
+      alternatives?: string[]
+      /** `token` is a bare filename (`foo.ts`): Cmd+click tries it, a right-click does not claim
+       *  it, since prose is full of words shaped like a filename. */
+      bare?: true
+    }
 
 /** What `linkAtCell` needs to turn text into a path: the cwd and dialect the file providers use. */
-export interface LinkHitDeps {
-  getCwd(): string | undefined
+export interface LinkHitDeps extends CwdSources {
   /** See FileLinkDeps.windows. */
   windows?: boolean
   /** See FileLinkDeps.convention. */
@@ -539,7 +801,7 @@ export function linkAtCell(
   if (!logical) return null
   const idx = (row - logical.startRow) * term.cols + col
   const inRange = (startIndex: number, len: number): boolean =>
-    idx >= startIndex && idx < startIndex + len
+    tokenCovers(logical, startIndex, len, idx)
 
   for (const u of matchUrlTokens(logical.text)) {
     if (inRange(u.startIndex, u.text.length)) return { kind: 'url', url: u.url }
@@ -547,19 +809,53 @@ export function linkAtCell(
   if (!deps.fileEnabled()) return null
   const convention = deps.convention ? deps.convention() : { windows: deps.windows }
   if (!convention) return null
-  for (const t of matchFileTokens(logical.text, convention)) {
-    if (inRange(t.startIndex, t.text.length)) {
-      const abs = resolveFileToken(t.path, deps.getCwd(), convention)
-      return abs ? { kind: 'path', abs } : null
-    }
+  // Every candidate under the cell, in preference order: the first is the hit, the rest its
+  // fallbacks (the pieces of a spaced path that may not exist).
+  const under = matchFileTokens(logical.text, convention).filter((t) =>
+    inRange(t.startIndex, t.text.length)
+  )
+  const [t, ...others] = under
+  if (!t) return null
+  const abs = resolveFileToken(t.path, deps.getCwd(), convention)
+  // Unanchorable against the launch cwd is still a hit when a live cwd can be asked.
+  if (!abs && !deps.getLiveCwd) return null
+  const hit: LinkHit = { kind: 'path', token: t.path, abs }
+  if (others.length) hit.alternatives = others.map((o) => o.path)
+  if (t.bare) hit.bare = true
+  return hit
+}
+
+/** Try a hit's token, then its alternatives; the first that exists wins. `tried` accumulates
+ *  every absolute path looked at, for the not-found toast. */
+export async function findExistingForHit(
+  tokens: string[],
+  find: (token: string) => Promise<PathResolution>
+): Promise<PathResolution> {
+  const tried: string[] = []
+  const unverified: UnverifiedPath[] = []
+  for (const token of tokens) {
+    const r = await find(token)
+    if (r.found) return r
+    for (const p of r.tried) if (!tried.includes(p)) tried.push(p)
+    // An unchecked reading of ANY alternative keeps the whole miss unverified: the host must not
+    // say "not found" about a token one of whose readings could not be looked at.
+    for (const u of r.unverified ?? []) if (!unverified.some((x) => x.abs === u.abs)) unverified.push(u)
   }
-  return null
+  return unverified.length ? { found: false, tried, unverified } : { found: false, tried }
 }
 
 export interface LinkClickDeps extends LinkHitDeps {
-  lookup(abs: string): Promise<{ exists: boolean; dir: boolean }>
+  lookup(abs: string): Promise<PathLookup>
   activateFile(abs: string, dir: boolean): void
+  /** Shift+Cmd/Ctrl+click on a file — see FileLinkDeps.openWithSystem. Absent = `activateFile`. */
+  openFileWithSystem?(abs: string, dir: boolean): void
   openUrl(url: string): void
+  /** A Cmd/Ctrl+click on a path found under neither cwd. The click is already swallowed (it
+   *  must be, before the async lookup), so without this it would do nothing at all — the host says
+   *  where it looked instead. `tried` may be empty (nothing could anchor the token); `unverified`
+   *  (non-empty when present) lists candidates that could NOT be checked, in which case the host
+   *  must not say the file is missing (`fileMissMessage`). */
+  onMissing?(token: string, miss: { tried: string[]; unverified?: UnverifiedPath[] }): void
 }
 
 /**
@@ -569,16 +865,30 @@ export interface LinkClickDeps extends LinkHitDeps {
  * ⇒ early return). This capture-phase `mouseup` listener runs BEFORE xterm's mouse handler:
  * gated on the modifier, it hit-tests the buffer itself, opens the link, and stops propagation
  * so the mouse report is never sent. Non-modifier clicks/drags fall through untouched, so tmux
- * copy-mode selection and scrolling are unaffected. Attach to `term.element` so the listener
- * travels with the terminal across park/adopt. Returns a disposer.
+ * copy-mode selection and scrolling are unaffected. Shift added to the modifier routes a file to
+ * `openFileWithSystem` (`linkOpenIntent`); a modified press released on another cell is a drag
+ * and is left alone. Hover is NOT this listener's job: xterm's linkifier listens to `mousemove`
+ * on its screen element whatever the mouse-tracking mode, so the providers' `hover` fires in a
+ * tmux pane too. Attach to `term.element` so the listener travels with the terminal across
+ * park/adopt. Returns a disposer.
  */
 export function installLinkClickFallback(
   term: Terminal,
   host: HTMLElement,
   deps: LinkClickDeps
 ): { dispose(): void } {
+  // The cell a modified press landed on. A release on a DIFFERENT cell is a drag (off-mac,
+  // Shift+Ctrl+drag is xterm's forced selection even with mouse reporting on), never a click —
+  // opening whatever link the drag happened to end on would hijack the selection.
+  let down: { row: number; col: number } | null = null
+  const onMouseDown = (ev: MouseEvent): void => {
+    down = ev.button === 0 && linkOpenIntent(ev) !== 'none' ? bufferPosFromEvent(term, ev) : null
+  }
   const onMouseUp = (ev: MouseEvent): void => {
-    if (ev.button !== 0 || !(ev.metaKey || ev.ctrlKey)) return
+    const pressed = down
+    down = null
+    const intent = linkOpenIntent(ev)
+    if (ev.button !== 0 || intent === 'none') return
     // Only take over when the app has mouse-reporting on (tmux mouse / agent TUI) — that is the
     // exact case where xterm's own link `activate` never fires. With reporting OFF (a plain shell
     // when tmux is unavailable) the registered providers handle the click, so stepping in
@@ -586,6 +896,7 @@ export function installLinkClickFallback(
     if (term.modes.mouseTrackingMode === 'none') return
     const pos = bufferPosFromEvent(term, ev)
     if (!pos) return
+    if (pressed && (pressed.row !== pos.row || pressed.col !== pos.col)) return
     const hit = linkAtCell(term, pos.row, pos.col, deps)
     if (!hit) return
     // Swallow the click NOW so tmux never gets the mouse report. For a path, existence is async
@@ -597,13 +908,23 @@ export function installLinkClickFallback(
       deps.openUrl(hit.url)
       return
     }
-    void deps.lookup(hit.abs).then((f) => {
-      if (f.exists) deps.activateFile(hit.abs, f.dir)
+    const convention = (deps.convention ? deps.convention() : { windows: deps.windows }) ?? {}
+    const open =
+      intent === 'system' ? (deps.openFileWithSystem ?? deps.activateFile) : deps.activateFile
+    void findExistingForHit([hit.token, ...(hit.alternatives ?? [])], (token) =>
+      findExistingPath(token, convention, deps)
+    ).then((r) => {
+      if (r.found) open(r.abs, r.dir)
+      else deps.onMissing?.(hit.token, r)
     })
   }
+  host.addEventListener('mousedown', onMouseDown, { capture: true })
   host.addEventListener('mouseup', onMouseUp, { capture: true })
   return {
-    dispose: () => host.removeEventListener('mouseup', onMouseUp, { capture: true })
+    dispose: () => {
+      host.removeEventListener('mousedown', onMouseDown, { capture: true })
+      host.removeEventListener('mouseup', onMouseUp, { capture: true })
+    }
   }
 }
 
@@ -643,6 +964,9 @@ export function installLinkContextMenu(
     if (ev.button !== 2) return
     const pos = bufferPosFromEvent(term, ev)
     pending = pos ? linkAtCell(term, pos.row, pos.col, deps) : null
+    // A bare filename is not claimed: the press would be taken from tmux for a word that is most
+    // likely prose, and the menu could only say "Not found".
+    if (pending?.kind === 'path' && pending.bare) pending = null
     if (pending) swallow(ev)
   }
   const onMouseUp = (ev: MouseEvent): void => {

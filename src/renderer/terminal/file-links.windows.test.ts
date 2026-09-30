@@ -136,14 +136,47 @@ describe('resolving Windows tokens', () => {
   })
 })
 
-describe('a path containing a space, which is not supported', () => {
-  it('matches only up to the space, rather than swallowing the sentence', () => {
-    // `C:\Program Files\...` is everywhere on Windows, but an unquoted path in terminal output
-    // gives no way to tell where it ends. Allowing spaces made the matcher take the rest of the
-    // line; the existence check would then reject it, so a spaced path would never have linked
-    // while quietly breaking the tokens around it. Documented parity with the POSIX matcher.
+describe('a path containing a space', () => {
+  it('is offered whole, with its space-free pieces as fallbacks, and stops before the sentence', () => {
+    // `C:\Program Files\...` is everywhere on Windows. The spaced reading ends at the word that
+    // completes a file name (`a.exe`), so `crashed` is never swallowed; the pieces stay candidates
+    // because only the existence check can say which reading is real.
     const got = matchFileTokens(String.raw`C:\Program Files\app\a.exe crashed`, WIN)
-    expect(got.map((t) => t.path)).toEqual([String.raw`C:\Program`, String.raw`Files\app\a.exe`])
+    expect(got.map((t) => t.path)).toEqual([
+      String.raw`C:\Program Files\app\a.exe`,
+      String.raw`C:\Program`,
+      String.raw`Files\app\a.exe`
+    ])
+  })
+
+  it('keeps a parenthesised segment inside a spaced path', () => {
+    const got = matchFileTokens(String.raw`at C:\Program Files (x86)\tool\run.exe:4`, WIN)
+    expect(got[0]).toMatchObject({
+      path: String.raw`C:\Program Files (x86)\tool\run.exe`,
+      line: 4
+    })
+  })
+})
+
+describe('Unicode, brackets, bare names and file URIs in the Windows dialect', () => {
+  it('keeps Unicode letters and route brackets in a segment', () => {
+    expect(paths(String.raw`wrote C:\veri\çıktı\aktarım.sql`)).toEqual([
+      String.raw`C:\veri\çıktı\aktarım.sql`
+    ])
+    expect(paths(String.raw`app\(shop)\[id]\page.tsx`)).toEqual([String.raw`app\(shop)\[id]\page.tsx`])
+  })
+
+  it('offers a bare filename, and not the leaf of a Windows path read as POSIX', () => {
+    expect(matchFileTokens('see README.md', WIN)).toEqual([
+      { text: 'README.md', startIndex: 4, path: 'README.md', line: undefined, bare: true }
+    ])
+    expect(matchFileTokens(String.raw`C:\Users\me\a.ts`)).toEqual([])
+  })
+
+  it('decodes a drive-qualified file URI and refuses a POSIX-rooted one', () => {
+    expect(paths('open file:///C:/Users/me/My%20Docs/a.md now')).toEqual(['C:/Users/me/My Docs/a.md'])
+    expect(paths('open file:///home/me/a.md')).toEqual([])
+    expect(resolveFileToken('C:/Users/me/My Docs/a.md', CWD, WIN)).toBe('C:/Users/me/My Docs/a.md')
   })
 })
 

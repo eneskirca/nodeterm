@@ -65,6 +65,11 @@ export function createPhoneApprovals(deps: {
       return true
     },
     clear,
+    /** Drop every pending consent whose key satisfies `match` (a revoke: an open SAS dialog for a
+     *  revoked key must not be able to re-pin it afterwards). */
+    clearWhere(match: (pub: string) => boolean): void {
+      for (const [id, p] of [...pending]) if (match(p.pub)) clear(id)
+    },
     stop(): void {
       for (const id of pending.keys()) clear(id)
     }

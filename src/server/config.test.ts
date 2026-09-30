@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import os from 'os'
 import path from 'path'
-import { resolveConfig } from './config'
+import { resolveConfig, resolveDataDir } from './config'
 
 describe('resolveConfig', () => {
   it('has safe defaults', () => {
@@ -82,5 +82,36 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ NODETERM_TRUST_PROXY_NETS: '10.0.0.0/8' }, [])).toThrow(
       /TRUST_PROXY_HEADER/i
     )
+  })
+
+  it('never sets the TEST ONLY hosted-relay seams, whatever the env or argv says', () => {
+    const env = { NODETERM_RELAY_TEST_TRANSPORT: '1', NODETERM_RELAY_TEST_FETCH: '1', NODETERM_HEADLESS: '1' }
+    const argv = ['--relay-test-transport', 'x', '--relay-test-fetch', 'x', '--relayTestTransport', 'x']
+    for (const c of [resolveConfig({}, []), resolveConfig(env, argv)]) {
+      expect(Object.hasOwn(c, 'relayTestTransport')).toBe(false)
+      expect(Object.hasOwn(c, 'relayTestFetch')).toBe(false)
+    }
+  })
+})
+
+describe('resolveDataDir (the team admin CLI\'s data dir)', () => {
+  it('matches resolveConfig: argv > env > default, empty env = unset', () => {
+    expect(resolveDataDir({}, [])).toBe(path.join(os.homedir(), '.nodeterm-server'))
+    expect(resolveDataDir({ NODETERM_DATA_DIR: '' }, [])).toBe(path.join(os.homedir(), '.nodeterm-server'))
+    expect(resolveDataDir({ NODETERM_DATA_DIR: '/data' }, [])).toBe('/data')
+    expect(resolveDataDir({ NODETERM_DATA_DIR: '/data' }, ['--data-dir', '/cli'])).toBe('/cli')
+    for (const [env, argv] of [
+      [{}, []],
+      [{ NODETERM_DATA_DIR: '/data' }, []],
+      [{ NODETERM_DATA_DIR: '/data' }, ['--data-dir', '/cli']]
+    ] as Array<[NodeJS.ProcessEnv, string[]]>) {
+      expect(resolveDataDir(env, argv)).toBe(resolveConfig(env, argv).dataDir)
+    }
+  })
+
+  it('does not trip the serving-only refusals resolveConfig applies', () => {
+    const env = { NODETERM_HOST: '0.0.0.0', NODETERM_DATA_DIR: '/data' }
+    expect(() => resolveConfig(env, [])).toThrow(/non-loopback/)
+    expect(resolveDataDir(env, [])).toBe('/data')
   })
 })

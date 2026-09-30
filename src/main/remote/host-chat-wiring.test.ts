@@ -33,6 +33,14 @@ describe('phone chat verbs are wired end to end', () => {
     expect(block).toMatch(/getMainWindow\(\)/)
     expect(block).not.toMatch(/\bwin\.(webContents|isDestroyed)/)
   })
+  it('the phone catalog reads through the SAME deps the ⌘M composer\'s channel uses (remote leg included)', () => {
+    const src = read('main/index.ts')
+    expect(src).toMatch(/registerChatCatalogIpc\(chatCatalogDeps\)/)
+    expect(src).toMatch(/catalog: \(q\) => readChatCatalog\(q, chatCatalogDeps\)/)
+    expect(src).toMatch(/runRemote: async \(nodeId, cmd\) =>/)
+    // The Server Edition names an SSH-project node remote (built-ins + partial), never reads its own ~/.claude for it.
+    expect(read('server/index.ts')).toMatch(/registerChatCatalogIpc\(\{ isRemoteNode: \(nodeId\) => !!workspaceStore\.sshProjectIdForNode\(nodeId\) \}\)/)
+  })
   it('the renderer answers the round-trip', () => {
     const canvas = read('renderer/canvas/Canvas.tsx')
     expect(canvas).toMatch(/api\.onHostChatQuery\(/)

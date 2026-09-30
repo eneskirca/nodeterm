@@ -365,6 +365,8 @@ export function projectToFile(
   const layouts = sanitizeLayouts(p.layouts)
   // Same two-seam rule for the board (see `sanitizeKanban`).
   const kanban = p.kanban ? sanitizeKanban(p.kanban) : undefined
+  const bridges = p.bridges ? sanitizeLinks(p.bridges) : undefined
+  const ropes = p.ropes ? sanitizeLinks(p.ropes) : undefined
   return {
     version: 1,
     rev,
@@ -375,8 +377,9 @@ export function projectToFile(
     viewport: framingViewport(nodes),
     nodes,
     ...(icon ? { icon } : {}),
-    ...(p.bridges ? { bridges: p.bridges } : {}),
-    ...(p.ropes ? { ropes: p.ropes } : {}),
+    // The same two-seam rule as the board: what we write is what the next machine trusts.
+    ...(bridges ? { bridges } : {}),
+    ...(ropes ? { ropes } : {}),
     ...(p.defaultPermissionMode ? { defaultPermissionMode: p.defaultPermissionMode } : {}),
     // Strict-normalised (literal true only, known keys only) and omitted when off — an off
     // capability adds no bytes to the committed file. `capabilityAck` is deliberately NOT here:
@@ -404,6 +407,27 @@ export function validKanban(k: unknown): k is ProjectKanban {
 
 const isRecord = (x: unknown): x is Record<string, unknown> =>
   !!x && typeof x === 'object' && !Array.isArray(x)
+
+/**
+ * A project's `bridges` / `ropes` as they may be ADMITTED. Both come straight out of the git-shared,
+ * hand-editable project file, and every reader treats them as `BridgeLink[]`: the canvas restores
+ * them with `ropes.map((r) => ropeEdge(r.id, r.source, r.target))`, the server-change merge maps
+ * their ids, the headless factory spreads them. A non-list, or one `null` entry, threw on project
+ * load. The rule: a non-list is dropped; an entry that is not an object with non-empty string `id`,
+ * `source` and `target` is dropped; every other field an entry carries round-trips untouched.
+ *
+ * Returns the SAME array when nothing needed repair, so a clean file is never rewritten, and
+ * `undefined` for a non-list. Used on every seam `sanitizeKanban` is.
+ */
+export function sanitizeLinks(links: unknown): BridgeLink[] | undefined {
+  if (!Array.isArray(links)) return undefined
+  const ok = (l: unknown): l is BridgeLink =>
+    isRecord(l) &&
+    typeof l.id === 'string' && l.id !== '' &&
+    typeof l.source === 'string' && l.source !== '' &&
+    typeof l.target === 'string' && l.target !== ''
+  return links.every(ok) ? (links as BridgeLink[]) : links.filter(ok)
+}
 
 /**
  * The board as it may be ADMITTED: `validKanban`'s shape rule plus the per-entry repairs a
@@ -621,6 +645,8 @@ export function fileToProject(
   // in as well as out is what stops workspace.json accumulating orphans forever.
   const layoutViewports = pruneLayoutViewports(base.layoutViewports, layouts)
   const kanban = sanitizeKanban(f.kanban)
+  const bridges = f.bridges ? sanitizeLinks(f.bridges) : undefined
+  const ropes = f.ropes ? sanitizeLinks(f.ropes) : undefined
   return {
     id: base.id,
     // A project whose stored name IS its own path is one this machine (or a teammate's) created
@@ -644,8 +670,9 @@ export function fileToProject(
         base.id
       )
     ),
-    ...(f.bridges ? { bridges: f.bridges } : {}),
-    ...(f.ropes ? { ropes: f.ropes } : {}),
+    // Hostile input like the rest of the file: a non-list or a malformed entry threw on load.
+    ...(bridges ? { bridges } : {}),
+    ...(ropes ? { ropes } : {}),
     ...(defaultAccountId ? { defaultAccountId } : {}),
     ...(f.defaultPermissionMode ? { defaultPermissionMode: f.defaultPermissionMode } : {}),
     // The file is hostile input: only a literal `true` under a known key survives the read

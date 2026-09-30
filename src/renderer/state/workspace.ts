@@ -12,11 +12,12 @@ import { DEFAULT_SETTINGS } from '@shared/types'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId } from '@shared/agents/config'
 import {
   agentConfig,
+  canResumeWith,
   capabilityAgentId,
   FALLBACK_AGENT_COLOR,
   supportsSessionIdFlag
 } from '@shared/agents/config'
-import { assembleLaunchCommand } from '@shared/agents/launch'
+import { assembleLaunchCommand, assembleResumeCommand } from '@shared/agents/launch'
 import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
 import { agentEnvSnapshot } from '../lib/agentEnv'
@@ -33,15 +34,18 @@ import { folderTitle } from '../lib/explorerCreate'
 import { sshHostKey } from '@shared/ssh'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
+import { isSafeNodeId } from '@shared/safe-id'
+import { normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { useSettings } from './settings'
 
 // Re-exported so Canvas (and anything else in the renderer) keeps importing it from here, while the
 // single implementation lives in src/shared and is shared with the relay host + the canvas-sync
 // reflector.
-export { applyCanvasMutation } from '@shared/canvas-mutations'
+export { applyCanvasMutation, applyOwnCanvasMutation } from '@shared/canvas-mutations'
 export { accountNodeColor, agentAccountColor } from '@shared/agents/account-color'
-import { sanitizeInboundNode } from '@shared/node-exec'
+import { mutationTrustsLaunch, sanitizeInboundNode } from '@shared/node-exec'
 import { SYSTEM_NODE_COLORS } from '@shared/node-colors'
+import { groupsFirstBy } from '@shared/node-order'
 
 // Preserve the renderer's long-standing import surface; validation and the palette now live in
 // shared so Server Edition and canvas-control accept exactly what these pickers display.
@@ -150,6 +154,9 @@ export interface NodeData {
   /** The GitHub issue this agent session was started on (see `CanvasNodeState.issueRef`).
    *  Display + run history only — never read back into a launch line. */
   issueRef?: IssueRef
+  /** The agent that opened this node through a canvas-control open verb (see
+   *  `CanvasNodeState.openedBy`). Who is told when this station stops — never read as authority. */
+  openedBy?: string
   /**
    * Claude nodes only: the managed Claude account (config-dir isolated) this node runs under.
    * Persisted so cold-restore resume reads the transcript from the right account dir.
@@ -271,7 +278,7 @@ function placeNode(
  * to sane canvas bounds — settings.json is hand-editable, and a 0×0 or NaN node would be
  * unclickable/ungrabbable forever. Falls back to the historical 600×400.
  */
-function terminalNodeSize(): { width: number; height: number } {
+export function terminalNodeSize(): { width: number; height: number } {
   const s = useSettings.getState().settings
   const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => {
     const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : dflt
@@ -631,7 +638,15 @@ export function createAgentNode(
    *  brief survives the single-line typed delivery. Validated by the caller
    *  (`promptFilePathError` + an existence check) — the factory trusts it. Trailing/optional so
    *  every existing caller is unchanged. */
-  promptFile?: string
+  promptFile?: string,
+  /** RESUME this provider session instead of starting a new one ("Open recent", a transcript-search
+   *  hit). The line comes from the SAME resume assembler cold restore uses (`assembleResumeCommand`:
+   *  launch override, custom args, codex launcher, permission flag, model), no id is minted, and the
+   *  node persists THIS id as `agentSessionId`, so a later cold restore resumes the same
+   *  conversation. An id the resume grammar refuses (`resumeCommandWith` re-validates it against
+   *  SAFE_SESSION_ID) yields NO node-level resume: the caller must check `canResumeWith` first —
+   *  this factory never silently starts a fresh conversation under a resume request, it throws. */
+  resumeSessionId?: string
 ): CanvasNode {
   const { label, color: agentColor } = resolveAgent(agentId)
   // ONE binding decision, shared with the phone-registration path (core/project-node-append) so
@@ -680,7 +695,7 @@ export function createAgentNode(
   // synchronous against a warmed per-cwd memo (see grokSessionIds.ts for why the first mint in a
   // fresh cwd is deliberately unchecked), and `mintFreeGrokSessionId` returns undefined rather than
   // a taken id — which degrades to the pre-minting command line instead of a dead terminal.
-  const mintedSessionId = !sessionIdFlagSupported
+  const mintedSessionId = resumeSessionId !== undefined || !sessionIdFlagSupported
     ? undefined
     : capabilityAgentId(agentId) === 'grok'
       ? (ensureGrokTakenIds(cwd ?? ''), mintFreeGrokSessionId(grokTakenIdsNow(cwd ?? ''), uuid))
@@ -695,7 +710,22 @@ export function createAgentNode(
   const customAgent = agentConfig(agentId)
     ? undefined
     : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
-  const { command: initialCommand, missingEnv } = assembleLaunchCommand(
+  const resumeInputs = {
+    agentId,
+    customAgent,
+    launchCmdOverride,
+    sessionId: resumeSessionId,
+    permissionMode,
+    model,
+    sharedIdentity: codexSharedIdentity(ssh),
+    approvalCaps: codexApprovalCaps(ssh)
+  }
+  if (resumeSessionId !== undefined && !canResumeWith(capabilityAgentId(agentId), resumeSessionId)) {
+    throw new Error(`createAgentNode: refusing to resume ${agentId} session ${JSON.stringify(resumeSessionId)}`)
+  }
+  const { command: initialCommand, missingEnv } = resumeSessionId !== undefined
+    ? assembleResumeCommand(resumeInputs, agentEnvSnapshot())
+    : assembleLaunchCommand(
     {
       agentId,
       customAgent,
@@ -716,7 +746,7 @@ export function createAgentNode(
       // Which `--ask-for-approval` values this node's codex actually has. Same `ssh` truthiness as
       // the line above, and for a related reason: a remote session runs the HOST's codex, so the
       // local probe must not speak for it (it falls back to the baseline vocabulary instead).
-      approvalCaps: codexApprovalCaps(ssh),
+      approvalCaps: codexApprovalCaps(ssh, projectId),
       // A model picked at creation (e.g. Transfer-to-agent-with-model). `withAgentModel` appends
       // `--model <value>` for a switch-capable agent and no-ops otherwise, so the line stays
       // byte-identical when no model is chosen.
@@ -751,6 +781,8 @@ export function createAgentNode(
       // Persisted alongside the node (unlike initialCommand, which is consumed on first open), so
       // a cold restore months later still knows which conversation this node owns.
       ...(mintedSessionId ? { agentSessionId: mintedSessionId } : {}),
+      // A resumed conversation's own id: what cold restore falls back to before a hook names one.
+      ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId.trim() } : {}),
       // A model chosen at creation (Transfer-to-agent-with-model). Persisted so cold-restore and
       // later restarts keep it; `withAgentModel` re-applies it on relaunch. Only stamped when set.
       ...(model ? { agentModel: model } : {}),
@@ -1350,34 +1382,12 @@ export function alignNodes(nodes: CanvasNode[], ids: string[], edge: AlignEdge):
 }
 
 /**
- * Group (parent) nodes must precede their descendants in the array (React Flow requirement).
- * With nesting the old "all groups, then everything else" split is not enough — a child frame
- * could still be emitted before its parent — so groups are emitted depth-first from the root.
- *
- * This order is also the DOWNGRADE contract: `flowToNodeStates` preserves array order, and an
- * older build's flat `kind === 'group'` sort returns 0 for two groups, which a stable sort
- * (ES2019+) leaves alone. So a nested tree written by this build still hydrates parent-first,
- * and therefore still RENDERS, on a build that predates nesting.
+ * Parent-first order for the live React Flow array — the ONE definition is `groupsFirstBy`
+ * (@shared/node-order), which also documents the downgrade contract this order keeps. Only the
+ * group test differs here: a React Flow node says `type`, a persisted state says `kind`.
  */
 function groupsFirst(nodes: CanvasNode[]): CanvasNode[] {
-  const byId = new Map(nodes.map((node) => [node.id, node]))
-  const emitted = new Set<string>()
-  const visiting = new Set<string>()
-  const groups: CanvasNode[] = []
-  const emitGroup = (node: CanvasNode): void => {
-    if (emitted.has(node.id) || node.type !== 'group') return
-    if (visiting.has(node.id)) return // cyclic parentId: emit once, don't recurse forever
-    visiting.add(node.id)
-    const parent = node.parentId ? byId.get(node.parentId) : undefined
-    if (parent?.type === 'group') emitGroup(parent)
-    visiting.delete(node.id)
-    if (!emitted.has(node.id)) {
-      emitted.add(node.id)
-      groups.push(node)
-    }
-  }
-  nodes.forEach(emitGroup)
-  return [...groups, ...nodes.filter((node) => node.type !== 'group')]
+  return groupsFirstBy(nodes, (node) => node.type === 'group')
 }
 
 /** A node's position in ROOT space: its own position plus every ancestor frame's origin. */
@@ -1690,8 +1700,9 @@ export function duplicateNode(node: CanvasNode, offset = 28): CanvasNode {
     extent: undefined,
     // `issueRef` is not copied: a duplicate is a NEW session nobody started on the issue — carrying
     // the binding would put a phantom run on the issue card (a chip and `#N` with no run-started,
-    // then a run-ended when it closes).
-    data: { ...node.data, initialCommand: undefined, issueRef: undefined }
+    // then a run-ended when it closes). `openedBy` likewise: nobody's open verb made the copy, and
+    // an orchestrator told about it would be told about a station it never opened.
+    data: { ...node.data, initialCommand: undefined, issueRef: undefined, openedBy: undefined }
   }
 }
 
@@ -1894,6 +1905,13 @@ export function reorderNodeBefore(
   return groupsFirst(result)
 }
 
+/** `openedBy` as a serializer may carry it: a node id we would address, or nothing. Checked at
+ *  BOTH seams — the file is git-shared and hand-editable, and whatever we write is what the next
+ *  reader trusts (the same two-seam rule as the icon and the issue reference). */
+export function safeOpenedBy(raw: unknown): string | undefined {
+  return typeof raw === 'string' && isSafeNodeId(raw) ? raw : undefined
+}
+
 /** Converts persisted node states into live React Flow nodes (parents first). */
 export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
   // React Flow requires a parent node to appear before its children. With nested frames a flat
@@ -1972,9 +1990,13 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         // Same seam rule as the icon: a git-shared file becoming live data. A malformed or hostile
         // reference becomes no binding (the node is kept — only the chip and history go).
         issueRef: normalizeIssueRef(n.issueRef),
+        // Same seam rule: a hostile value becomes no lineage (the node is kept).
+        openedBy: safeOpenedBy(n.openedBy),
         accountId: n.accountId,
         agentSessionId: n.agentSessionId,
-        pendingLaunch: n.pendingLaunch,
+        // Same seam rule again: the launch loop iterates `after`, and a PR wait decides when a
+        // command is typed into a pane. An unreadable hold becomes one that waits for ▶.
+        pendingLaunch: normalizePendingLaunch(n.pendingLaunch),
         ssh: n.ssh,
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
@@ -2054,11 +2076,12 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         agentModel: n.data.agentModel,
         // Re-validated on the way OUT as well — the file is only as trustworthy as its last writer.
         issueRef: normalizeIssueRef(n.data.issueRef),
+        openedBy: safeOpenedBy(n.data.openedBy),
         accountId: n.data.accountId,
         agentSessionId: n.data.agentSessionId,
         // Owning-core UI intent is durable. Relay snapshots opt out: their new UI command
         // uses a transient one-shot writer, never a whole-workspace persistence claim.
-        pendingLaunch: n.data.pendingLaunch ?? (retainInitialCommand && n.data.initialCommand
+        pendingLaunch: normalizePendingLaunch(n.data.pendingLaunch) ?? (retainInitialCommand && n.data.initialCommand
           ? { after: [], command: n.data.initialCommand, attempted: false }
           : undefined),
         ssh: n.data.ssh,
@@ -2091,14 +2114,22 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
  * Flow re-measure from the incoming `style`, which is what the peer sent.
  */
 export function applyMutationToFlow(nodes: CanvasNode[], m: CanvasMutation): CanvasNode[] {
+  // An edge mutation addresses neither of these nodes — Canvas routes those to the edge state.
+  // Returned by REFERENCE so the caller's `next === prev` short-circuit still fires (same contract
+  // as `applyCanvasMutation`), rather than trusting every call site to have pre-filtered.
+  if (m.op === 'edge-upsert' || m.op === 'edge-remove') return nodes
   if (m.op === 'remove') {
     if (!nodes.some((n) => n.id === m.id)) return nodes // already gone — keep identity, skip render
     return nodes.filter((n) => n.id !== m.id)
   }
+  // A kanban op addresses the project's board, not the node list — same no-op, same reference.
+  if (m.op !== 'upsert') return nodes
   // A peer's node never brings the exec-enabling fields with it (@shared/node-exec): they are
   // per-machine settings, and letting one into the live array is exactly how it ends up harvested
   // into this machine's "trusted" workspace.json on the next save.
-  const incoming = nodeStatesToFlow([sanitizeInboundNode(m.node)])[0]
+  // …nor a held launch (`pendingLaunch`), unless the core vouched for an owner copy (@shared/node-exec).
+  const trustLaunch = mutationTrustsLaunch(m)
+  const incoming = nodeStatesToFlow([sanitizeInboundNode(m.node, trustLaunch)])[0]
   const idx = nodes.findIndex((n) => n.id === m.node.id)
   if (idx === -1) {
     // Append, then re-sort: React Flow requires a parent to appear BEFORE its children, and a peer
@@ -2122,6 +2153,8 @@ export function applyMutationToFlow(nodes: CanvasNode[], m: CanvasMutation): Can
       ...prev.data,
       ...incoming.data,
       shell: prev.data.shell,
+      // Ours, unless the core vouched for this copy — then it is authoritative, a clear included.
+      pendingLaunch: trustLaunch ? incoming.data.pendingLaunch : prev.data.pendingLaunch,
       ...(incoming.data.ssh && prev.data.ssh?.extraArgs
         ? {
             ssh: {

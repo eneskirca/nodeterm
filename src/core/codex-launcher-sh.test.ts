@@ -43,11 +43,17 @@ let startAnswer: (() => string) | null = null
 let startDelayMs = 0
 let bindAnswer: (() => void) | null = null
 
-/** A stand-in for the real `codex`, which records how it was invoked before the injected body. */
+/** A stand-in for the real `codex`, which records how it was invoked before the injected body.
+ *  `codex --help` is answered (and NOT logged): the plain-codex exits ask it whether `--no-daemon`
+ *  exists. By default the page does not advertise it — an older CLI, i.e. arguments untouched. */
+let fakeHelpNoDaemon = false
 function writeFakeCodex(body = 'exit 0'): void {
+  const help = fakeHelpNoDaemon
+    ? "printf '%s\\n' 'Options:' '      --no-daemon' '          Run without the shared background server, even if it is already running'"
+    : "printf '%s\\n' 'Options:' '      --no-alt-screen'"
   fs.writeFileSync(
     path.join(binDir, 'codex'),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\n${body}\n`,
+    `#!/bin/sh\nif [ "$1" = --help ]; then ${help}; exit 0; fi\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\n${body}\n`,
     { mode: 0o755 }
   )
 }
@@ -97,6 +103,8 @@ beforeEach(() => {
   startAnswer = () => 'thread-abc'
   startDelayMs = 0
   bindAnswer = () => {}
+  fakeHelpNoDaemon = false
+  writeFakeCodex()
   fs.writeFileSync(argvLog, '')
   // The capability arrives through the FILE channel now (0600 under nodeTokenDir(), advertised as
   // NODETERM_NODE_TOKEN_DIR in the endpoint file) — never through the tmux argv. Re-materialised
@@ -772,5 +780,57 @@ describe('the approval override never rides a remote resume (#811)', () => {
     })
     expect(codexArgv()).toEqual(['--ask-for-approval never fix the bug'])
     expect(fallbacks.map((f) => f.reason)).toContain('hook-endpoint-unavailable')
+  })
+})
+
+// From codex-cli 0.157.0 a plain Codex TUI starts — or joins — ONE auto-started app-server per
+// CODEX_HOME that keeps the environment of the pane that started it (`daemon_auto_start`, stable
+// and on). MEASURED on 0.159.2: a second pane's tool shell and hooks ran with the FIRST pane's
+// NODETERM_NODE_ID. The launch line therefore carries `--no-daemon` (shared/agents/codex-daemon.ts),
+// and this launcher has two exits that treat it oppositely:
+//  - the managed thread is `codex --remote unix:// resume …`, and codex REFUSES the pair
+//    ("ERROR: --no-daemon cannot be used with --remote.", measured) — so it is stripped there;
+//  - every plain-codex fallback must keep it, and on a host nobody probed (an SSH launcher) must ADD
+//    it when the codex about to run advertises it.
+describe('--no-daemon: stripped from the managed thread, kept or added on plain codex', () => {
+  it('never reaches the --remote resume (codex refuses the pair)', async () => {
+    await callLauncher(['fix the bug', '--ask-for-approval', 'never', '--no-daemon'])
+    expect(codexArgv()).toEqual(['--remote unix:// resume thread-abc fix the bug'])
+  })
+
+  it('never reaches a caller-supplied --remote resume either', async () => {
+    await callLauncher(['resume', 'thread-xyz', '--no-daemon'])
+    expect(codexArgv()).toEqual(['--remote unix:// resume thread-xyz'])
+  })
+
+  it('is kept on the plain-codex fallback, exactly once', async () => {
+    fakeHelpNoDaemon = true
+    writeFakeCodex()
+    await callLauncher(['fix the bug', '--no-daemon'], {
+      NODETERM_HOOK_ENDPOINT: '/nonexistent/hook-endpoint.env'
+    })
+    expect(codexArgv()).toEqual(['fix the bug --no-daemon'])
+  })
+
+  it('is ADDED on a fallback when the codex about to run advertises it', async () => {
+    fakeHelpNoDaemon = true
+    writeFakeCodex()
+    await callLauncher(['resume', 'thread-xyz'], { NODETERM_HOOK_ENDPOINT: '' })
+    expect(codexArgv()).toEqual(['--no-daemon resume thread-xyz'])
+  })
+
+  it('is added on every fallback exit, not only the preflight one', async () => {
+    fakeHelpNoDaemon = true
+    writeFakeCodex()
+    bindAnswer = null
+    await callLauncher(['resume', 'thread-xyz'])
+    startAnswer = () => 'not a thread id!'
+    await callLauncher(['hello'])
+    expect(codexArgv()).toEqual(['--no-daemon resume thread-xyz', '--no-daemon hello'])
+  })
+
+  it('is NOT added when the codex does not advertise it (clap exits on an unknown option)', async () => {
+    await callLauncher(['hello'], { NODETERM_HOOK_ENDPOINT: '' })
+    expect(codexArgv()).toEqual(['hello'])
   })
 })

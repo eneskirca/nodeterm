@@ -13,6 +13,8 @@ import { fetchRemoteSessionMemory, type RemoteSessionMemoryRunner } from './sess
 export interface SessionMemoryServiceOptions {
   /** Lazy tmux resolver (PtyManager resolves after init; null = tmux unavailable). */
   tmuxBin: () => string | null
+  /** Live local sessions the tmux sweep cannot measure (Zellij-backed; PtyManager answers). */
+  unmeasuredSessions?: () => Promise<number | null>
   /** Host RAM reader, injectable for tests. Defaults to the real `/proc/meminfo` read. */
   readMem?: () => MemInfo | null
   /**
@@ -110,7 +112,11 @@ export function startSessionMemoryService(opts: SessionMemoryServiceOptions): { 
         if (!run || !q.projectId) return EMPTY()
         return readRemote(q.projectId, run)
       }
-      return collectSessionMemory({ tmuxBin: opts.tmuxBin, readMem: opts.readMem })
+      const [report, unmeasured] = await Promise.all([
+        collectSessionMemory({ tmuxBin: opts.tmuxBin, readMem: opts.readMem }),
+        opts.unmeasuredSessions ? opts.unmeasuredSessions().catch(() => null) : Promise.resolve(0)
+      ])
+      return unmeasured === 0 ? report : { ...report, unmeasured }
     }
   )
 

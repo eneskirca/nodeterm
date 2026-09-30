@@ -1,6 +1,12 @@
 import type { AgentId } from './config'
 import type { ObservedClaudeAccount } from '../types'
 import { ASK_USER_QUESTION_TOOL, isSafeToolName, readQuestions, type HeldPermission } from './permission-answer'
+import {
+  isClaudeAgentId,
+  isInjectedSubagentPrompt,
+  liveBackgroundSubagentIds,
+  liveBackgroundTaskIds
+} from './claude-subagents'
 
 export type AgentState = 'working' | 'waiting' | 'blocked' | 'done'
 
@@ -55,6 +61,17 @@ export interface NormalizedAgentEvent {
   // true only for a genuine new turn (Claude UserPromptSubmit), so the renderer can
   // clear per-turn fan-out without clearing on every mid-turn tool event.
   newTurn?: boolean
+  /**
+   * Claude only, on the `UserPromptSubmit` that opens a turn: the CLI's own id for that turn
+   * (`prompt_id`). Claude writes the SAME id as `promptId` on every transcript record of the
+   * turn, including the `[Request interrupted by user]` marker it appends when the user presses
+   * Esc / Ctrl+C — the one trace an interrupted turn leaves, because no hook fires for it
+   * (measured on 2.1.285, `__fixtures__/claude/interrupt-capture.json`). The status mirror keeps
+   * this id so a marker can be matched to exactly the turn it ends (`recordTurnInterrupt`), never
+   * to an older one read back from the transcript. `''` when the prompt event has no usable id (none,
+   * or not a plain token) — which CLEARS the mirror's id; absent on every other event.
+   */
+  turnId?: string
   sessionId?: string
   lastMessage?: string
   // blocked (Claude PermissionRequest) only: the deterministic-approval ticket the managed hook
@@ -84,6 +101,38 @@ export interface NormalizedAgentEvent {
   // subagent
   toolUseId?: string
   subagentType?: string
+  /**
+   * Claude only: WHICH of Claude's two subagent signals produced this subagent event, so
+   * `core/claude-subagent-lifecycle.ts` can merge them into one card per subagent.
+   *  - `'native'` — Claude's own `SubagentStart`/`SubagentStop` hooks, keyed by `agent_id`.
+   *  - `'tool'` — the older reconstruction from `PreToolUse`/`PostToolUse` on the `Agent`/`Task`
+   *    tool, keyed by `tool_use_id`.
+   *  - `'transcript'` — the synthetic end the shells sniff out of a `<task-notification>`.
+   * Absent on every other agent's events, which the lifecycle passes through untouched.
+   */
+  subagentSignal?: 'native' | 'tool' | 'transcript'
+  /**
+   * subagent-start only (set by the lifecycle, never by a normalizer): this card REPLACES the card
+   * keyed by this id. Emitted once, when a session proves it sends native hooks while a card built
+   * from the tool path is already on screen — consumers move that card (its place, its start time)
+   * to the new key instead of drawing a second one.
+   */
+  supersedes?: string
+  /** Claude tool-path end only: the exact child `agent_id` its `tool_response.agentId` names. */
+  subagentAgentId?: string
+  /** Claude async-launch ack only (a `state: working` event): the exact tool_use_id → agent_id pair
+   *  the ack names, measured to arrive ~1 ms after the child's `SubagentStart`. */
+  subagentLaunch?: { toolUseId: string; agentId: string }
+  /**
+   * Claude `Stop` only: the ids of the BACKGROUND tasks (async subagents, background shells) the
+   * CLI reports still running at this turn end. Present only when the payload carried the
+   * inventory — absent from older CLIs, so absent means "unknown", never "none". See
+   * `liveBackgroundTaskIds`.
+   */
+  backgroundTaskIds?: string[]
+  /** The async SUBAGENTS among `backgroundTaskIds` (`liveBackgroundSubagentIds`) — the only
+   *  background work plain `--after` holds on. Present exactly when `backgroundTaskIds` is. */
+  backgroundSubagentIds?: string[]
   /** Host-observed start time for display-only renderer reload replay. */
   subagentStartedAt?: number
   // grok StopCancelled only: normalized state-less so the mirror can make the session-aware badge
@@ -150,8 +199,20 @@ export interface RawHookEnvelope {
 const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
 const RECURRING_TOOLS = new Set(['Skill', 'CronCreate', 'ScheduleWakeup'])
 
+/** A Claude turn id (`prompt_id`, a uuid today) as a plain bounded token, else nothing. */
+const TURN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+function turnIdOf(v: unknown): { turnId: string } {
+  // '' = "a prompt opened a turn, but with no usable id": the mirror then FORGETS the previous
+  // turn's id instead of keeping it, so no marker can be matched to a turn that has ended.
+  return { turnId: typeof v === 'string' && TURN_ID_RE.test(v) ? v : '' }
+}
+
 interface ClaudePayload {
-  agent_id?: string
+  /** SubagentStart/SubagentStop: the child. Any other event: the child that produced it. */
+  agent_id?: unknown
+  agent_type?: string
+  /** Stop / SubagentStop: the session's background-task inventory (see liveBackgroundTaskIds). */
+  background_tasks?: unknown
   hook_event_name?: string
   session_id?: string
   /** Deterministic-approval ticket the managed hook script added to its POST body and the hook
@@ -166,6 +227,8 @@ interface ClaudePayload {
   is_interrupt?: boolean
   last_assistant_message?: string
   prompt?: string
+  /** The CLI's id for the turn this event belongs to (see `NormalizedAgentEvent.turnId`). */
+  prompt_id?: unknown
   tool_name?: string
   tool_use_id?: string
   tool_input?: {
@@ -182,6 +245,8 @@ interface ClaudePayload {
   tool_response?: {
     status?: string
     isAsync?: boolean
+    /** Agent/Task only: the child's `agent_id` (measured, 2.1.284 — on the async ack and the sync end). */
+    agentId?: unknown
     content?: { type?: string; text?: string }[]
     totalDurationMs?: number
     totalTokens?: number
@@ -230,6 +295,29 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
   const ev = p.hook_event_name
   const tool = p.tool_name ?? ''
 
+  // Claude's native subagent hooks (since 2.0.43), keyed by the child's `agent_id`. MEASURED on
+  // 2.1.284 (fixture __fixtures__/claude/subagent-hook-payloads.json): both carry the PARENT's
+  // session_id; the start names the child only by agent_id + agent_type (no tool_use_id, no task
+  // text); the stop adds `last_assistant_message` and `agent_transcript_path`. A stop is the end of
+  // the child's TURN — sync or async, it arrives before the `<task-notification>` — but a background
+  // child that stops while its own children run is RESUMED later under the same agent_id (a second
+  // start). Claude also fires stops for internal side-agents (prompt suggestions) that never
+  // started: that one is dropped by the lifecycle, by id, not here.
+  if (ev === 'SubagentStart' || ev === 'SubagentStop') {
+    if (!isClaudeAgentId(p.agent_id)) return null
+    const subagentType = typeof p.agent_type === 'string' && p.agent_type ? p.agent_type : undefined
+    return ev === 'SubagentStart'
+      ? { ...base, kind: 'subagent-start', toolUseId: p.agent_id, subagentType, subagentSignal: 'native' }
+      : {
+          ...base,
+          kind: 'subagent-end',
+          toolUseId: p.agent_id,
+          subagentType,
+          subagentSignal: 'native',
+          result: typeof p.last_assistant_message === 'string' ? p.last_assistant_message : undefined
+        }
+  }
+
   if (ev === 'PreToolUse' || ev === 'PostToolUse') {
     if (tool === 'AskUserQuestion' && p.tool_use_id) {
       return ev === 'PreToolUse'
@@ -243,14 +331,26 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
           kind: 'subagent-start',
           toolUseId: p.tool_use_id,
           subagentType: p.tool_input?.subagent_type,
-          taskLabel: p.tool_input?.description ?? p.tool_input?.prompt
+          taskLabel: p.tool_input?.description ?? p.tool_input?.prompt,
+          subagentSignal: 'tool'
         }
       }
-      // Async launch acknowledgment — the subagent just started, it didn't finish.
-      if (isAsyncSubagentLaunch(p.tool_response)) return { ...base, kind: 'state', state: 'working' }
+      const childId = isClaudeAgentId(p.tool_response?.agentId) ? p.tool_response.agentId : undefined
+      // Async launch acknowledgment — the subagent just started, it didn't finish. It names the
+      // exact child, which is what lets the lifecycle pair this tool call with its SubagentStart.
+      if (isAsyncSubagentLaunch(p.tool_response)) {
+        return {
+          ...base,
+          kind: 'state',
+          state: 'working',
+          ...(childId && p.tool_use_id ? { subagentLaunch: { toolUseId: p.tool_use_id, agentId: childId } } : {})
+        }
+      }
       return {
         ...base,
         kind: 'subagent-end',
+        subagentSignal: 'tool',
+        ...(childId ? { subagentAgentId: childId } : {}),
         toolUseId: p.tool_use_id,
         durationMs: p.tool_response?.totalDurationMs,
         tokens: p.tool_response?.totalTokens,
@@ -296,21 +396,26 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
   }
 
   if (ev === 'UserPromptSubmit') {
-    // A completed async subagent is delivered back as a queued <task-notification> prompt.
-    // That's not a genuine user turn — flagging it newTurn would clear the subagent fan-out
-    // at the exact moment one of the cards completes.
-    if ((p.prompt ?? '').trimStart().startsWith('<task-notification>')) {
-      return { ...base, kind: 'state', state: 'working' }
+    // A completed async subagent is delivered back as a queued <task-notification> prompt (and,
+    // since the SubagentHandback tool, a `[Subagent hand-back]` message before it). Neither is a
+    // genuine user turn — flagging it newTurn would clear the subagent fan-out at the exact moment
+    // one of the cards completes.
+    if (isInjectedSubagentPrompt(p.prompt ?? '')) {
+      return { ...base, kind: 'state', state: 'working', ...turnIdOf(p.prompt_id) }
     }
-    return { ...base, kind: 'state', state: 'working', task: p.prompt, newTurn: true }
+    return { ...base, kind: 'state', state: 'working', task: p.prompt, newTurn: true, ...turnIdOf(p.prompt_id) }
   }
   if (ev === 'Stop') {
+    const backgroundTaskIds = liveBackgroundTaskIds(p.background_tasks)
+    const backgroundSubagentIds = liveBackgroundSubagentIds(p.background_tasks)
     return {
       ...base,
       kind: 'state',
       state: 'done',
       interrupted: p.is_interrupt === true,
-      lastMessage: p.last_assistant_message
+      lastMessage: p.last_assistant_message,
+      ...(backgroundTaskIds ? { backgroundTaskIds } : {}),
+      ...(backgroundSubagentIds ? { backgroundSubagentIds } : {})
     }
   }
   // The turn died on an API/model error — Claude Code skips the normal Stop hook here,
@@ -356,6 +461,10 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
     // while a turn runs, which makes it the ONE signal that rescues a node stuck on `working` when
     // no turn-end hook ever fired — the Esc-during-a-tool-call case, where Claude aborts the tool
     // and returns to "Interrupted · What should Claude do instead?" without running Stop.
+    // MEASURED on 2.1.285: it does NOT follow an interrupted turn (it came 60 s after a normal Stop,
+    // and not in 80 s after an Esc). The interrupt is now ended from the transcript's marker
+    // instead (`recordTurnInterrupt`, core/agent-status-mirror.ts); this rescue stays for any CLI
+    // build that does send it.
     //
     // Marked `idle` (and `interrupted`, since nothing was accomplished) so consumers can apply the
     // narrow rule this needs: it may only move a node that is still WORKING. It also fires after a
@@ -860,6 +969,10 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
     // leaves grok waiting for approval with the node showing nothing, and no later hook is
     // guaranteed to correct it. If a future grok does emit the routine prompt, it must be told apart
     // by something that actually differs — not by a message the real ask also carries.
+    // What this cannot see is the ANSWER: grok fires no hook when the dialog is approved (until the
+    // tool finishes) or dismissed (never). The hook server's grok permission gate
+    // (core/agents/grok-permission-gate.ts) confirms this `blocked` against grok's events.jsonl and
+    // clears it from there — this function stays a pure mapping of the hook.
     if (type === 'permission_prompt') {
       return { ...base, kind: 'state', state: 'blocked', lastMessage }
     }

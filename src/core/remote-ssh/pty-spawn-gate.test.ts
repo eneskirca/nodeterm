@@ -54,6 +54,42 @@ describe('PtySpawnGate', () => {
     expect(gate.inFlight('/cm/p1')).toBe(2)
   })
 
+  it('hands a freed permit to an on-screen waiter before older background ones, FIFO within a class', async () => {
+    const clock = fakeClock()
+    const gate = new PtySpawnGate(1, 5000, clock.schedule)
+    let release = await gate.acquire('/cm/p1')
+    const order: string[] = []
+    const wait = (name: string, background: boolean) =>
+      gate.acquire('/cm/p1', { background }).then((r) => {
+        order.push(name)
+        return r
+      })
+    const bg1 = wait('bg1', true)
+    const bg2 = wait('bg2', true)
+    const vis1 = wait('vis1', false)
+    const vis2 = wait('vis2', false)
+    await tick()
+    for (const p of [vis1, vis2, bg1, bg2]) {
+      release()
+      release = await p
+    }
+    expect(order).toEqual(['vis1', 'vis2', 'bg1', 'bg2'])
+  })
+
+  it('with no class given, stays the plain FIFO it was', async () => {
+    const clock = fakeClock()
+    const gate = new PtySpawnGate(1, 5000, clock.schedule)
+    let release = await gate.acquire('/cm/p1')
+    const order: string[] = []
+    const ps = ['a', 'b', 'c'].map((n) => gate.acquire('/cm/p1').then((r) => (order.push(n), r)))
+    await tick()
+    for (const p of ps) {
+      release()
+      release = await p
+    }
+    expect(order).toEqual(['a', 'b', 'c'])
+  })
+
   it('keeps hosts separate — one budget per ControlMaster, like MaxSessions itself', async () => {
     const clock = fakeClock()
     const gate = new PtySpawnGate(1, 5000, clock.schedule)

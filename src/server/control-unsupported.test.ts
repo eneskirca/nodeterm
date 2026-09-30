@@ -184,7 +184,58 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     sticky: vi.fn(async () => ({ ok: true as const, result: { id: 'sticky-new' } })),
     settings: vi.fn(async () => ({ ok: true as const, message: 'settings' })),
     run: vi.fn(async () => ({ ok: true as const })),
+    reportOutcome: vi.fn(async () => ({ ok: true as const, message: 'recorded' })),
+    githubRead: vi.fn(async () => ({ ok: true as const, message: 'lane' })),
     deliver: vi.fn(async () => ({ ok: true as const, message: 'queued' }))
+  })
+
+  it('routes report-outcome to its action, after the shared parse', async () => {
+    const a = actions()
+    const handler = createServerEditionControlHandler(a)
+    await handler({
+      verb: 'report-outcome',
+      nodeId: 'src',
+      args: { outcome: 'succeeded', note: 'done' },
+      verified: true
+    })
+    expect(a.reportOutcome).toHaveBeenCalledWith('src', { outcome: 'succeeded', note: 'done' }, true)
+    // The shared parser requires --outcome before the action is reached.
+    await expect(
+      handler({ verb: 'report-outcome', nodeId: 'src', args: {}, verified: true })
+    ).resolves.toEqual({ ok: false, error: 'report-outcome requires --outcome succeeded|failed' })
+    expect(a.reportOutcome).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes issues / prs to the GitHub read action, after the shared parse and the identity gate', async () => {
+    const a = actions()
+    const handler = createServerEditionControlHandler(a)
+    await expect(handler({ verb: 'issues', nodeId: 'src', args: { state: 'all' }, verified: true }))
+      .resolves.toEqual({ ok: true, message: 'lane' })
+    expect(a.githubRead).toHaveBeenCalledWith('issues', 'src', { state: 'all' })
+    await handler({ verb: 'prs', nodeId: 'src', args: {}, verified: true })
+    expect(a.githubRead).toHaveBeenLastCalledWith('prs', 'src', {})
+    await expect(handler({ verb: 'prs', nodeId: 'src', args: { state: 'draft' }, verified: true }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining('--state') })
+    await expect(handler({ verb: 'issues', nodeId: 'src', args: {}, verified: false }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining('identity-refused') })
+    expect(a.githubRead).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses the --after <id>:ok form and a malformed --after-success before any action', async () => {
+    const a = actions()
+    const handler = createServerEditionControlHandler(a)
+    await expect(
+      handler({ verb: 'open-agent', nodeId: 'src', args: { agent: 'claude', after: 'a1:ok' }, verified: true })
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('--after-success') })
+    await expect(
+      handler({
+        verb: 'open-agent',
+        nodeId: 'src',
+        args: { agent: 'claude', 'after-success': 'a1', after: 'a1' },
+        verified: true
+      })
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('name each station once') })
+    expect(a.openAgent).not.toHaveBeenCalled()
   })
 
   it('routes run to the factory (#925)', async () => {
@@ -405,6 +456,56 @@ describe('a failing verb that carries only `error` is rendered exactly as before
       expect((await text.text()).trim()).toBe('boom')
       const json = await control('open-terminal', 'n-6', 'application/json', nodeAuthToken(SECRET, 'n-6'))
       expect(await json.json()).toEqual({ ok: false, error: 'boom' })
+    } finally {
+      hookServer.setControlHandler(serverEditionControlHandler)
+    }
+  })
+})
+
+/**
+ * A retried open on the Server Edition. The request ledger lives in the hook-server route, which
+ * this edition's handler sits behind exactly as desktop main's does — so the edition inherits the
+ * dedupe without a line of its own. Proven here with the REAL enabled handler, so a future change
+ * that moves the ledger into one shell's handler goes red for the other.
+ */
+describe('the enabled Server Edition handler, behind the request ledger', () => {
+  it('opens ONE agent for a request id posted twice, and answers the second from the first', async () => {
+    const openAgent = vi.fn(async () => ({ ok: true as const, message: 'opened agent-new', result: { id: 'agent-new' } }))
+    const handler = createServerEditionControlHandler({
+      openProject: vi.fn(),
+      openTerminal: vi.fn(),
+      openAgent,
+      close: vi.fn(),
+      link: vi.fn(),
+      group: vi.fn(),
+      rename: vi.fn(),
+      color: vi.fn(),
+      sticky: vi.fn(),
+      settings: vi.fn(),
+      run: vi.fn(),
+      reportOutcome: vi.fn(),
+      githubRead: vi.fn(),
+      deliver: vi.fn()
+    })
+    hookServer.setControlHandler(handler)
+    try {
+      const post = () =>
+        fetch(`http://127.0.0.1:${hookServer.getPort()}/control/open-agent`, {
+          method: 'POST',
+          headers: {
+            'X-Nodeterm-Hook-Token': hookServer.getToken(),
+            'X-Nodeterm-Node-Token': nodeAuthToken(SECRET, 'se-src'),
+            'content-type': 'application/x-www-form-urlencoded',
+            accept: 'text/plain'
+          },
+          body: 'nodeId=se-src&requestId=cli-5e1f&arg.agent=claude'
+        })
+      expect((await (await post()).text()).trim()).toBe('opened agent-new')
+      const again = await (await post()).text()
+      expect(again).toMatch(/^replayed:/)
+      expect(again).toContain('opened agent-new')
+      expect(openAgent).toHaveBeenCalledTimes(1)
+      expect(openAgent).toHaveBeenCalledWith('se-src', { agent: 'claude' }, true)
     } finally {
       hookServer.setControlHandler(serverEditionControlHandler)
     }

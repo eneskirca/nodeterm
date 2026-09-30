@@ -36,6 +36,8 @@ export function writeManagedHookFileAtomic(
   const tmp = tempNameFor(target)
   try {
     writeFileSync(tmp, data, { encoding: 'utf8', flag: 'wx', ...(mode === undefined ? {} : { mode }) })
+    // Exact, not umask-filtered: the rename carries the temp's mode, so set it before publishing.
+    if (mode !== undefined) chmodSync(tmp, mode)
     publish(tmp, target)
   } catch (e) {
     rmSync(tmp, { force: true })

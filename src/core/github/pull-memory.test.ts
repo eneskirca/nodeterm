@@ -8,7 +8,8 @@ import {
   emptyPullMemory,
   rememberPulls,
   rememberedForBoard,
-  validPullMemory
+  validPullMemory,
+  waitKey
 } from './pull-memory'
 
 const status = (number: number, lifecycle: PullLifecycle, over: Partial<GitHubPullStatus> = {}): GitHubPullStatus =>
@@ -74,13 +75,40 @@ describe('rememberedForBoard', () => {
 
 describe('claims', () => {
   it('the first claim for a key wins — and only for a card noted waiting on one of its PRs', () => {
-    const noted = noteWaitsInMemory(emptyPullMemory(), ['wait|n|1'])
-    expect(claimInMemory(emptyPullMemory(), 'p|n|1', ['wait|n|1']).claimed).toBe(false)
-    const first = claimInMemory(noted, 'p|n|1', ['wait|n|1'])
+    const noted = noteWaitsInMemory(emptyPullMemory(), [waitKey('p', 'n', 1)])
+    expect(claimInMemory(emptyPullMemory(), 'p', 'n', [1]).claimed).toBe(false)
+    const first = claimInMemory(noted, 'p', 'n', [1])
     expect(first.claimed).toBe(true)
-    expect(claimInMemory(first.memory, 'p|n|1', ['wait|n|1']).claimed).toBe(false)
-    expect(claimInMemory(first.memory, 'p|n|1,2', ['wait|n|1', 'wait|n|2']).claimed).toBe(true)
-    expect(noteWaitsInMemory(noted, ['wait|n|1'])).toBe(noted)
+    expect(claimInMemory(first.memory, 'p', 'n', [1]).claimed).toBe(false)
+    // Another card is its own claim.
+    expect(claimInMemory(noteWaitsInMemory(first.memory, [waitKey('p', 'm', 1)]), 'p', 'm', [1]).claimed)
+      .toBe(true)
+    expect(noteWaitsInMemory(noted, [waitKey('p', 'n', 1)])).toBe(noted)
+  })
+
+  it('a claim is per PR: the set shrinking or growing by a merge this card never waited on never re-moves it', () => {
+    // The card waited on #1 and #2 and was moved when both merged; the user dragged it back.
+    const waited = noteWaitsInMemory(emptyPullMemory(), [waitKey('p', 'n', 1), waitKey('p', 'n', 2)])
+    const moved = claimInMemory(waited, 'p', 'n', [1, 2])
+    expect(moved.claimed).toBe(true)
+    // #2 ages off the pull board, so the linked set is now {1}: the same merge, not a new one.
+    expect(claimInMemory(moved.memory, 'p', 'n', [1]).claimed).toBe(false)
+    // A PR it never saw open joins the set: still no transition observed for THIS card.
+    expect(claimInMemory(moved.memory, 'p', 'n', [1, 3]).claimed).toBe(false)
+    // A new PR the card DID wait on merges: that is a new transition, and it moves the card again.
+    const waitedOnFour = noteWaitsInMemory(moved.memory, [waitKey('p', 'n', 4)])
+    expect(claimInMemory(waitedOnFour, 'p', 'n', [1, 4]).claimed).toBe(true)
+  })
+
+  it('reads a claim recorded under the older set-of-PRs key as a claim on each of its PRs', () => {
+    const legacy = {
+      ...noteWaitsInMemory(emptyPullMemory(), [waitKey('p', 'n', 1), waitKey('p', 'n', 2)]),
+      claims: ['p\0n\x001,2']
+    }
+    expect(validPullMemory(legacy)).toBe(true)
+    expect(claimInMemory(legacy, 'p', 'n', [1]).claimed).toBe(false)
+    expect(claimInMemory(legacy, 'p', 'n', [2]).claimed).toBe(false)
+    expect(claimInMemory(legacy, 'p', 'n', [1, 2]).claimed).toBe(false)
   })
 
   it('rejects a malformed memory file', () => {

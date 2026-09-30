@@ -305,7 +305,7 @@ describe('the verified evidence for a transition', () => {
     // argument list: nothing else in the suite would notice if the last argument disappeared.
     const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
     expect(src).toMatch(
-      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held\s*\)/
+      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\)\s*\)/
     )
   })
 

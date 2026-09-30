@@ -4,6 +4,7 @@ import { IconBellFilled, IconCircleCheck, IconClose } from './icons'
 import { NodeIconView } from './NodeIcon'
 import { ProjectGlyph } from './ProjectGlyph'
 import type { SessionRowVM } from '../lib/sessionList'
+import { sessionStateAgeTitle } from '../lib/sessionList'
 import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSettings } from '../state/settings'
@@ -201,7 +202,10 @@ export function SessionRow({
             {row.sshHost && <span className="ss-meta__ssh">⇅ {row.sshHost}</span>}
             {row.cwd && <span className="ss-meta__cwd">{dirName(row.cwd)}</span>}
             {stateAgeLabel && (
-              <span className="ss-meta__state-age" title={`Entered this state ${stateAgeLabel}`}>
+              <span
+                className={`ss-meta__state-age${row.statusClock === 'restored' ? ' ss-meta__state-age--restored' : ''}`}
+                title={sessionStateAgeTitle(stateAgeLabel, row.statusClock, row.lastSeenState)}
+              >
                 {stateAgeLabel}
               </span>
             )}

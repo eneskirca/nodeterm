@@ -83,6 +83,9 @@ export interface GitHubPullBoard {
   pulls: GitHubPullStatus[]
   /** Epoch ms of the last read that succeeded. Absent = none yet in this app run. */
   observedAt?: number
+  /** Epoch ms (host clock) when that read STARTED. A `--after-pr` `checks` wait armed later than
+   *  this cannot trust the read: a push in between carries other checks. */
+  readStartedAt?: number
   /** The latest read failed: `pulls` is the last snapshot that succeeded, kept on purpose. */
   stale: boolean
   /** False = the token may not read checks (ci) / mergeability (merge): hide that region. */

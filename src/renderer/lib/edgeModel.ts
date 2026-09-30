@@ -3,6 +3,7 @@
 // "sequenced after (--after)" — and its LOOK is derived from the target's pendingLaunch, never
 // stored: dashed while the target still waits on the rope's source, solid otherwise. Kept free of
 // React/store imports so Canvas.tsx only wraps these in a memo.
+import { normalizeSuccessWaitHold } from '@shared/station-outcome'
 import type { PendingLaunch } from '@shared/types'
 
 /** Rope colour for a source with no agent (a browser popup, a plain terminal that opened nothing). */
@@ -39,8 +40,19 @@ export function ropeVisual(
  * satisfied and fires the held command, which is exactly what removing the last wait should do.
  */
 export function dropAfterDep(p: PendingLaunch, depId: string): PendingLaunch {
-  if (!p.after.includes(depId)) return p
-  return { ...p, after: p.after.filter((d) => d !== depId) }
+  const success = normalizeSuccessWaitHold(p.afterSuccess)
+  const inSuccess = !!success && !success.invalid && success.deps.includes(depId)
+  if (!p.after.includes(depId) && !inSuccess) return p
+  const next: PendingLaunch = { ...p, after: p.after.filter((d) => d !== depId) }
+  // A `--after-success` station rides the same rope, so deleting that rope stops BOTH waits on it —
+  // "stop waiting for it" cannot leave the success half behind with no edge left to say so. A hold
+  // that names nobody any more is dropped whole: an empty success wait could never be met.
+  if (inSuccess && success) {
+    const deps = success.deps.filter((d) => d !== depId)
+    if (deps.length) next.afterSuccess = { ...success, deps }
+    else delete next.afterSuccess
+  }
+  return next
 }
 
 /** Nodes whose eye is closed (`hideFanout`): every edge touching them is hidden from the canvas. */
@@ -80,6 +92,75 @@ export function ropeInfoOf(
 }
 
 /**
+ * The id of a WAIT rope (`--after`, the verify panel's sequencing): `ctrl-after-<dep>-<node>`.
+ *
+ * A rope carries two relations — "opened by" and "waits for" — and for a long time both were minted
+ * as `ctrl-<source>-<target>`, so nothing could tell them apart except ORDER (every writer appends
+ * the opener's rope before the same command's waits). Order does not survive the canvas's own
+ * pruning: deleting the opener deletes its rope, and the first wait into the node then looked like
+ * its opener (team progress showed a pipeline's upstream station as the next one's team leader).
+ * A wait now says what it is in its id. Still `ctrl-`, so every path that routes on that prefix
+ * (edge changes, deletion, the store's pair-keyed dedupe) treats it exactly as before.
+ */
+export function waitRopeId(dep: string, node: string): string {
+  return `ctrl-after-${dep}-${node}`
+}
+
+/** Is this rope a wait? Exact match on the rope's own endpoints, so an opener rope whose SOURCE id
+ *  happens to begin with `after-` is never mistaken for one. */
+export function isWaitRope(rope: { id?: unknown; source: string; target: string }): boolean {
+  return rope.id === waitRopeId(rope.source, rope.target)
+}
+
+/**
+ * Canvases saved before waits were marked: every rope into a node AFTER the first one is a wait
+ * (the append-order rule above), so it is re-minted with `waitRopeId` — once, at load, BEFORE the
+ * prune can delete the opener's rope and erase the only evidence of which one it was. A marked
+ * rope and the first unmarked rope into each node are left alone. A re-minted id that already
+ * exists (the same pair twice) is dropped rather than duplicated — React Flow renders two edges
+ * with one id as one, and the next removal breaks. Returns the same array when nothing changed.
+ *
+ * Residual: a canvas that was pruned AND saved before this ran has already lost its opener rope;
+ * its first surviving wait still reads as the opener, and nothing left in the file can say
+ * otherwise.
+ */
+export function markLegacyWaitRopes<R extends { id: string; source: string; target: string }>(
+  ropes: readonly R[]
+): R[] {
+  const opened = new Set<string>()
+  const ids = new Set(ropes.map((r) => r.id))
+  let changed = false
+  const out: R[] = []
+  for (const r of ropes) {
+    if (isWaitRope(r)) {
+      out.push(r)
+      continue
+    }
+    if (!opened.has(r.target)) {
+      opened.add(r.target)
+      out.push(r)
+      continue
+    }
+    const id = waitRopeId(r.source, r.target)
+    changed = true
+    if (ids.has(id)) continue
+    ids.add(id)
+    out.push({ ...r, id })
+  }
+  return changed ? out : (ropes as R[])
+}
+
+/** The canvas's rope prune, as a pure step: a rope whose endpoint is not on the canvas goes. Same
+ *  array back when nothing did. */
+export function pruneRopes<R extends { source: string; target: string }>(
+  ropes: readonly R[],
+  nodeIds: ReadonlySet<string>
+): R[] {
+  const valid = ropes.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+  return valid.length === ropes.length ? (ropes as R[]) : valid
+}
+
+/**
  * The dep ropes an armed node is owed but does not have. A rope is what makes a wait VISIBLE, and
  * only the `open-*`/`verify` verbs write one — so a node armed by any other path, or armed by a
  * build that predates the rope (its `pendingLaunch` is persisted, the rope is not), would show a
@@ -100,7 +181,7 @@ export function missingDepRopes(
     for (const dep of n.data.pendingLaunch?.after ?? []) {
       if (!live.has(dep) || have.has(`${dep} ${n.id}`)) continue
       have.add(`${dep} ${n.id}`)
-      out.push({ id: `ctrl-${dep}-${n.id}`, source: dep, target: n.id })
+      out.push({ id: waitRopeId(dep, n.id), source: dep, target: n.id })
     }
   }
   return out

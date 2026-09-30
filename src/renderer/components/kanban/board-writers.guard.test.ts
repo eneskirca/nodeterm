@@ -23,7 +23,10 @@ const BOARD_WRITERS: Record<string, string[]> = {
   'canvas/Canvas.tsx': [
     'onKanbanChange — the per-project board committing a person\'s drag/edit',
     'createNodeInColumn — a person\'s "+ New" in a column',
-    'startIssueAgent — a person\'s "Start with agent" filing the new session under the issue card\'s column',
+    'fileIssueSession — a person\'s "Start with agent" or "Start with agent in a new worktree" filing ' +
+      'the new session under the issue card\'s column; also board dispatch, whose only trigger is a ' +
+      'person moving the issue card into the dispatch column they switched on for this machine ' +
+      '(lib/board-dispatch.guard.test pins that)',
     'the `assign` control verb — a session moving its OWN card (the issue-bound contract)',
     'autoMoveCardFromPulls — the merge-driven move: a person switched it on for this machine in ' +
       'Settings, and it fires only on a pull request MERGE this machine observed after that (never on ' +
@@ -33,10 +36,10 @@ const BOARD_WRITERS: Record<string, string[]> = {
   'components/kanban/NodeLabels.tsx': ['a person editing a node\'s labels'],
   'components/settings/sections/GitHubIssuesSection.tsx': ['a person editing the board\'s GitHub config'],
   'components/kanban/KanbanView.tsx': [
-    'requestGitHubMove — a person moving an issue card (drag, Move select, summary modal)',
-    'the close/reopen ConfirmDialog — a person confirming that move'
+    'moveIssueByUser — called only by requestGitHubMove (a person moving an issue card: drag, Move ' +
+      'select, summary modal) and the close/reopen ConfirmDialog (a person confirming that move)'
   ],
-  'state/githubIssues.ts': ['the store\'s `move`, called only by the two KanbanView sites above']
+  'state/githubIssues.ts': ['the store\'s `move`, called only by the KanbanView site above']
 }
 
 const WRITER = /\bsetProjectKanban\(|\bmoveGitHubState\(|\.moveIssue\(/g

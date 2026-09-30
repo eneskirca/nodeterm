@@ -7,9 +7,9 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { remoteSessionAgeArgs, parseSessionAge } from './control-master'
+import { testTmpDir } from '../test-tmp'
 
 const conn = { host: 'h.example.com', user: 'deploy' }
 let binDir: string
@@ -29,7 +29,7 @@ function runWithTmuxAnswer(line: string, created: string): string {
 }
 
 beforeAll(() => {
-  binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ntage-'))
+  binDir = testTmpDir('ntage-')
 })
 
 describe('remoteSessionAgeArgs (real /bin/sh)', () => {

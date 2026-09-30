@@ -3,9 +3,6 @@
 // budget left every node that mounted in the window on a permanent "could not be started" until
 // the user clicked Try again — and must stop waiting the moment nothing is starting any more.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtempSync } from 'fs'
-import os from 'os'
-import path from 'path'
 
 const launcherMocks = vi.hoisted(() => ({
   resolveSessionHostScript: vi.fn(() => 'fake-session-host.cjs'),
@@ -22,12 +19,13 @@ vi.mock('./session-host-launcher', () => launcherMocks)
 vi.mock('../session-host/existing-host-state', () => identityMocks)
 
 import { SessionHostClient } from './session-host-client'
+import { testTmpDir } from './test-tmp'
 
 const emptyLock = (): never => {
   throw new Error('invalid session-host state: file is empty')
 }
 
-const tempDir = (): string => mkdtempSync(path.join(os.tmpdir(), 'nt-host-wait-'))
+const tempDir = (): string => testTmpDir('nt-host-wait-')
 
 beforeEach(() => {
   vi.clearAllMocks()

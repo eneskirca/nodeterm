@@ -389,6 +389,35 @@ body,
   -webkit-app-region: no-drag;
 }
 
+/* Title-bar "Update" button (Figma-style): right after the traffic lights, deliberately loud and
+   not dismissible, shown only while an update is staged / owed (state/pendingUpdate.ts). */
+.tabbar__update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  background: var(--accent);
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tabbar__update:hover {
+  background: var(--accent-hover);
+}
+
+.tabbar__update svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.2;
+}
+
 /* Brand: gradient app-tile + wordmark */
 .brand {
   display: flex;
@@ -1566,14 +1595,14 @@ body,
 .term-node--glass .term-node__body {
   background: transparent;
 }
-/* Camera move (pan / zoom), every appearance: promote the viewport so the compositor scales the
-   already-rastered layer instead of re-rasterising every node's DOM at each intermediate zoom.
-   MEASURED (12 WebGL terminals, 60 Hz wheel zoom, M2): 41–48% → 30–36% total CPU, GPU process
-   22% → 15%. Only WHILE moving: the class is removed 150 ms after the move settles so text
-   re-rasters sharp at the final scale — a permanent will-change would leave it blurry. */
-.canvas-camera-moving .react-flow__viewport {
-  will-change: transform;
-}
+/* NO `will-change: transform` on `.react-flow__viewport`, not even while the camera moves. It was
+   tried (00c9c5fc) to let the compositor scale an already-rastered layer through a pan/zoom, and
+   on a real canvas it does the opposite of saving work: the viewport layer spans the WHOLE canvas,
+   and Chromium rasters it at a scale it ratchets up during a zoom and never lowers. MEASURED on a
+   46-node SSH canvas (41 terminals, 1470x923 @2x, CDP-driven wheel zoom 0.8 <-> 0.12 and pans):
+   with it, 41-252 "tile memory limits exceeded, some content may not draw" warnings per gesture
+   round (blank tiles = the canvas flickering) and no CPU gain (~170% during the gesture either
+   way, the scripted gesture 36 s vs 28 s); without it, 0. camera-moving.test.ts pins its absence. */
 /* The blur is re-rasterised for every glass node on every frame of a pan/zoom (their backdrop
    moves under them). With Keep blur while moving OFF (settings.glassBlurWhileMoving), Canvas marks
    the flow wrapper while the camera moves; the tint stays, and the tint alone is what keeps text at
@@ -1612,17 +1641,27 @@ body,
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--state-unread) 80%, transparent),
     0 0 26px 4px color-mix(in srgb, var(--state-unread) 60%, transparent);
-  opacity: 0;
-  animation: nt-unread-glow 2s ease-in-out infinite;
+  opacity: 0.85;
+  animation: nt-unread-glow 2s ease-in-out 4;
   will-change: opacity;
 }
 
+/* Bounded like the working glow (4 cycles, ~8 s) and resting LIT at 0.85, the value the idle gate
+   and Reduce Motion already hold it at, so the glow still says "finished while you were away" after
+   the pulse ends. It used to run forever: an unread node stays unread until someone looks at it,
+   which on a busy canvas is many nodes for hours, and one running animation keeps the compositor at
+   display rate for the whole window. MEASURED (46-node SSH canvas, 14 unread nodes, focused window,
+   dev build): pausing every status animation took idle renderer+GPU CPU from ~120% to ~26%, and no
+   single family alone got there — see styles.animation-gate.test.ts. */
 @keyframes nt-unread-glow {
   0%,
   100% {
-    opacity: 0;
+    opacity: 0.85;
   }
-  50% {
+  40% {
+    opacity: 0.1;
+  }
+  75% {
     opacity: 1;
   }
 }
@@ -2149,6 +2188,26 @@ body,
   color: var(--state-automation);
 }
 
+/* STATION FAILED: a station this agent opened has stopped and the agent was told
+   (station-notice.ts). On the ORCHESTRATOR, in the danger colour like TURN FAILED — a station's
+   work did not happen — and like DROPPED a <button> (click = go to the station), so it needs the
+   same base-chip reset. No pulse: it is a verdict, not a wait. */
+.term-node__status--station-failed {
+  color: var(--danger);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.term-node__status--station-failed:hover {
+  color: var(--text);
+}
+
 /* DROPPED: the agent process is gone and nothing accounted for it (see agent-liveness.ts). Warn
    colour, not danger — the conversation is intact on disk and one click brings it back — and the
    dot does NOT pulse: nothing is happening, this is a verdict about a process that already died.
@@ -2605,10 +2664,55 @@ body,
   animation: nt-copy-pill-in 120ms ease-out;
 }
 
+/* Image-paste receipt (terminal/image-paste-confirm.ts): "Image attached" once the agent's pane
+   shows the image, or a warning that only the path went in. Same chrome as the copy receipt, in the
+   TOP-right corner so the two can never cover each other or the agent's bottom-left input line. */
+.term-paste-pill {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  z-index: 5;
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--success);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  animation: nt-copy-pill-in 120ms ease-out;
+}
+.term-paste-pill--warn {
+  color: var(--caution);
+  border-color: color-mix(in srgb, var(--caution) 35%, transparent);
+}
+
 /* The hint is instruction, not status: quieter border, neutral text. */
 .term-copy-pill--hint {
   color: var(--text);
   border-color: var(--border);
+}
+
+/* Hovering a terminal link names what a click opens — the resolved path + the gestures
+   (terminal/link-hover.ts). Lives INSIDE the xterm element (`.xterm` is position:relative), so it
+   scales with the terminal text like the copy pill; same quiet chrome as the pill's hint variant.
+   `pointer-events: none`: it must never take a click, wheel or hover from the terminal under it. */
+.term-link-hint {
+  position: absolute;
+  z-index: 10;
+  max-width: calc(100% - 8px);
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 4px 8px;
+  border-radius: 7px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 35%);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* Downloads started from a terminal link's right-click menu (terminal/link-menu.ts): the shared
@@ -3575,9 +3679,62 @@ body,
   gap: 6px;
 }
 .term-chat__compose {
+  position: relative;
   flex: 0 0 auto;
   padding: 8px;
   border-top: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+/* The composer's `/` and `@` completion menu (ChatComposer), floating ABOVE the composer box. A solid
+   token, not a glass fill: it sits inside a glass node, which is a backdrop root (Liquid Glass). */
+.term-chat__complete {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% - 4px);
+  z-index: 8;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid rgba(var(--tint-rgb), 0.14);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.term-chat__complete-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.term-chat__complete-item.is-active {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text-strong);
+}
+.term-chat__complete-name {
+  flex: 0 0 auto;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  color: var(--text-strong);
+}
+.term-chat__complete-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.term-chat__complete-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--muted);
 }
 /* The claude.ai-style composer (ChatPanel): ONE rounded box holding the textarea on top and a
    compact toolbar under it — "+" attach on the left; model label, muted effort label and the mic
@@ -4110,7 +4267,11 @@ body,
 
 .welcome__recent-name {
   font-size: 13px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .welcome__recent-path {
@@ -4161,6 +4322,81 @@ body,
 .welcome__recent-del:hover {
   background: color-mix(in srgb, var(--state-error) 15%, transparent);
   color: var(--danger);
+}
+
+/* ---- "Recent conversations" on the start screen (core/recent-conversations.ts) ---- */
+.welcome__convs-list {
+  max-height: 300px;
+  gap: 2px;
+}
+
+.welcome__convs-group + .welcome__convs-group {
+  margin-top: 6px;
+}
+
+.welcome__convs-folder {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.welcome__convs-folder .welcome__recent-path {
+  font-weight: 400;
+}
+
+.welcome__conv-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome__conv-age {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.welcome__conv-action {
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.welcome__conv:hover .welcome__conv-action,
+.welcome__conv:focus-visible .welcome__conv-action {
+  opacity: 1;
+}
+
+.welcome__conv--disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.welcome__conv--disabled .welcome__conv-action {
+  color: var(--muted);
+}
+
+.welcome__convs-more {
+  margin-top: 4px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.welcome__convs-more:hover {
+  color: var(--text);
 }
 
 /* ---- Right-click context menu ---- */
@@ -7655,7 +7891,7 @@ button.group-node__setup:disabled {
 }
 .minimap .mm-working {
   filter: drop-shadow(0 0 3px color-mix(in srgb, var(--mm-working) 80%, transparent));
-  animation: mm-pulse-soft 2.6s ease-in-out infinite;
+  animation: mm-pulse-soft 2.6s ease-in-out 4;
   animation-play-state: var(--nt-anim-state);
 }
 .minimap .mm-attention {
@@ -7668,16 +7904,23 @@ button.group-node__setup:disabled {
    stroke THICKENS on the beat as well, which is what makes it findable on a busy map. */
 .minimap .mm-unread {
   filter: drop-shadow(0 0 4px color-mix(in srgb, var(--mm-unread) 95%, transparent));
-  animation: mm-pulse-unread 1.6s ease-in-out infinite;
+  animation: mm-pulse-unread 1.6s ease-in-out 4;
   animation-play-state: var(--nt-anim-state);
 }
+/* Working and unread beat 4 times and then REST at full stroke (the drop-shadow halo is static),
+   mirroring their bounded canvas glows: an infinite beat repainted the minimap's filtered SVG every
+   frame for as long as a node stayed unread. Needs-you keeps beating, like its canvas glow. */
 @keyframes mm-pulse-unread {
   0%,
   100% {
+    stroke-opacity: 1;
+    stroke-width: 4px;
+  }
+  40% {
     stroke-opacity: 0.3;
     stroke-width: 3px;
   }
-  50% {
+  75% {
     stroke-opacity: 1;
     stroke-width: 6px;
   }
@@ -7695,10 +7938,10 @@ button.group-node__setup:disabled {
 @keyframes mm-pulse-soft {
   0%,
   100% {
-    stroke-opacity: 0.45;
+    stroke-opacity: 1;
   }
   50% {
-    stroke-opacity: 1;
+    stroke-opacity: 0.45;
   }
 }
 
@@ -7944,6 +8187,15 @@ button.group-node__setup:disabled {
 /* Non-Claude provider segments read one step quieter than the Claude numbers, so a long pill
    still scans as "Claude first, others after" without needing separate icons per provider. */
 .usage-pill__provider .usage-pill__num { color: rgba(var(--tint-rgb), 0.75); font-size: 11px; }
+/* The managed account the pill describes (the project's "Use for new sessions" default). */
+.usage-pill__account {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.6);
+}
 .usage-pill__dim,
 .sysres-pill__dim { color: rgba(var(--tint-rgb), 0.5); }
 .usage-pill__pulse,
@@ -8143,9 +8395,13 @@ button.group-node__setup:disabled {
   vertical-align: middle;
   white-space: nowrap;
 }
-.usage-account__use:hover {
+.usage-account__use:hover:not(:disabled) {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* A bulk move in flight: "Moving N sessions…" on its row, every other row's move held. */
+.usage-account__use:disabled {
+  cursor: default;
 }
 /* The bulk "Move N sessions" control: the picked targets wrap onto their own line under the label. */
 .usage-account__move-targets {
@@ -8158,14 +8414,13 @@ button.group-node__setup:disabled {
   margin-left: 0;
 }
 
-/* Popover-footer action (issue #420): opens the system-scoped `claude /login` terminal. A quiet
-   full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it reads
-   in both themes. */
+/* "Switch Claude account…" (issue #420): opens the system-scoped `claude /login` terminal. A
+   quiet full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it
+   reads in both themes. It sits INSIDE the Claude / System block it acts on (issue #912) — as a
+   popover footer it read as the action of whichever provider happened to be listed last. */
 .usage-popover__switch {
   display: block;
   width: 100%;
-  /* Stays put below the scrolling account list (issue #503). */
-  flex: none;
   margin-top: 10px;
   padding: 5px 8px;
   border: none;
@@ -8462,6 +8717,9 @@ button.group-node__setup:disabled {
   color: rgba(var(--tint-rgb), 0.65);
   overflow-wrap: anywhere;
 }
+/* A personal organization's name is derived from the email printed right above it
+   ("<email>'s Organization"): kept (it is the real name), but quieter, since it repeats (#912). */
+.usage-account__organization--derived { color: rgba(var(--tint-rgb), 0.45); }
 
 .seg-pill {
   display: inline-flex;
@@ -8790,6 +9048,8 @@ button.group-node__setup:disabled {
 .ss-meta__cwd { font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-meta__ssh { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; }
 .ss-meta__state-age { margin-left: auto; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* A clock restored from before the restart: a record of the past, drawn quieter than a live age. */
+.ss-meta__state-age--restored { font-style: italic; }
 .ss-ctx { font-size: 9.5px; padding: 0 5px; border-radius: 4px; color: #000; font-weight: 600; flex: 0 0 auto; }
 /* Out of FLOW, not merely invisible. Both buttons already appeared only on hover, yet they held
    46px of a 253px line — measured — away from the name at every other moment. Floated over the
@@ -9079,7 +9339,7 @@ button.group-node__setup:disabled {
 }
 .ss-group__chev:hover { background: rgba(var(--tint-rgb), 0.12); color: var(--text); }
 .ss-group__dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.ss-group__name { font-size: 12px; font-weight: 600; color: var(--text); }
+.ss-group__name { flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group.is-active .ss-group__name { color: var(--accent); }
 .ss-group__branch { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group__count { font-size: 10px; color: var(--muted); }
@@ -11029,6 +11289,7 @@ button.pull-checks__name {
 }
 .github-issue-modal__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -11058,6 +11319,23 @@ button.pull-checks__name {
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.6;
+}
+/* Board dispatch's line on an issue card (queued / starting / not dispatched). Static text: the
+   run itself shows as a run chip once it exists. */
+.dispatch-chip {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.dispatch-chip--starting {
+  color: var(--text);
+}
+.dispatch-chip--refused {
+  color: var(--warn);
+}
+.dispatch-chip__reason {
+  color: var(--muted);
 }
 /* GitHub issue ↔ agent session binding. The issue card lists every session started on it as a
    live chip (state from the agent-status store — static, no animation: a card can carry several,
@@ -11135,6 +11413,129 @@ button.pull-checks__name {
 .issue-ref-chip:hover {
   color: var(--text);
   background: rgba(var(--tint-rgb), 0.08);
+}
+/* Dev-server ports a node's session listens on (components/PortsChip) — canvas node header and
+   the card modal header alike. Same quiet outline as `#N`; the port is monospace so `:5173` reads
+   as an address, not a count. */
+.ports-chip-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.ports-chip {
+  margin-left: 6px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(var(--tint-rgb), 0.16);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ports-chip:hover {
+  color: var(--text);
+  background: rgba(var(--tint-rgb), 0.08);
+}
+/* Team progress — "N of M done" over the stations a session opened (lib/teamProgress). One
+   component on the board card, the card modal header and the canvas node header. The arc is the
+   done fraction; the dot says the strongest thing a station is asking for. */
+.team-progress-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.team-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 0 6px 0 3px;
+  border: 1px solid rgba(var(--tint-rgb), 0.16);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.team-progress:hover {
+  color: var(--text);
+  background: rgba(var(--tint-rgb), 0.08);
+}
+.team-progress__ring {
+  flex: 0 0 auto;
+}
+.team-progress__track {
+  fill: none;
+  stroke: rgba(var(--tint-rgb), 0.2);
+  stroke-width: 2;
+}
+.team-progress__arc {
+  fill: none;
+  stroke: var(--state-success);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.team-progress--complete {
+  color: var(--text);
+}
+.team-progress__attn {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--state-working);
+}
+.team-progress--needs .team-progress__attn {
+  background: var(--state-attention);
+}
+.team-progress--error .team-progress__attn {
+  background: var(--state-error);
+}
+/* The station list's state dots (ContextMenu row icons). */
+.team-progress__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--tint-rgb), 0.35);
+}
+.team-progress__dot--done,
+.team-progress__dot--paused,
+.team-progress__dot--ended {
+  background: var(--state-success);
+  border-color: transparent;
+}
+.team-progress__dot--working {
+  background: var(--state-working);
+  border-color: transparent;
+}
+.team-progress__dot--needs {
+  background: var(--state-attention);
+  border-color: transparent;
+}
+.team-progress__dot--errored,
+.team-progress__dot--dropped {
+  background: var(--state-error);
+  border-color: transparent;
+}
+.team-progress__dot--queued {
+  background: var(--state-queued);
+  border-color: transparent;
+}
+/* Interrupted by the user: idle, not finished — `--after` holds its dependents on it. */
+.team-progress__dot--interrupted {
+  background: var(--state-warning);
+  border-color: transparent;
+}
+/* The session name in the card modal header: sized to its text, not a flex-filling detail line. */
+.kanban-modal__session {
+  flex: 0 1 auto;
+  max-width: 220px;
+  font-size: 11px;
 }
 @media (max-width: 520px) {
   .kanban-header {
@@ -11278,21 +11679,6 @@ button.pull-checks__name {
   border-color: var(--accent);
   color: #fff;
 }
-.kanban-header__close {
-  margin-left: 12px;
-  border: 0;
-  background: rgba(var(--tint-rgb), 0.06);
-  color: rgba(var(--tint-rgb), 0.6);
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-}
-.kanban-header__close:hover {
-  background: rgba(var(--tint-rgb), 0.12);
-  color: var(--text-strong);
-}
 .kanban-empty {
   padding: 40px 18px;
   color: rgba(var(--tint-rgb), 0.5);
@@ -11357,6 +11743,12 @@ button.pull-checks__name {
 .kanban-badge--dropped {
   color: var(--warn);
   background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+}
+.kanban-badge--station-failed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--state-error) 12%, transparent);
+  border: none;
+  cursor: pointer;
 }
 .kanban-card__unread {
   width: 7px;
@@ -11767,6 +12159,76 @@ button.pull-checks__name {
 }
 .board-log__composer:focus {
   border-color: var(--accent);
+}
+/* The composer + its @ mention picker (a board comment that mentions a session is delivered to it). */
+.board-log__compose {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.board-log__mention-picker {
+  position: absolute;
+  top: calc(100% - 6px);
+  left: 12px;
+  right: 12px;
+  z-index: 5;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid rgba(var(--tint-rgb), 0.14);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.board-log__mention-option {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: rgba(var(--tint-rgb), 0.85);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.board-log__mention-option.is-active,
+.board-log__mention-option:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+  color: var(--text-strong);
+}
+.board-log__deliver-note {
+  margin: -4px 14px 8px;
+  font-size: 10.5px;
+  color: rgba(var(--tint-rgb), 0.45);
+}
+.board-log__mention {
+  font-weight: 600;
+  color: var(--text-strong);
+  background: rgba(var(--tint-rgb), 0.08);
+  border-radius: 4px;
+  padding: 0 3px;
+}
+.board-log__deliveries {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.board-log__delivery--ok {
+  color: var(--success);
+}
+.board-log__delivery--pending {
+  color: rgba(var(--tint-rgb), 0.55);
+}
+.board-log__delivery--warn {
+  color: var(--warn);
+}
+.board-log__delivery--error {
+  color: var(--danger);
 }
 .board-log__hint {
   flex: 0 0 auto;
@@ -14423,6 +14885,10 @@ body.focus-mode .dock:hover {
   text-align: center;
 }
 
+.node-icon svg {
+  display: block;
+}
+
 .node-icon img {
   width: 100%;
   height: 100%;
@@ -14505,6 +14971,16 @@ body.focus-mode .dock:hover {
 }
 .node-icon-dialog__swatch.is-current {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* A glyph swatch (issue #291) draws an svg in `currentColor`, so it needs the text color a
+   button does not inherit, and centering the emoji swatches get from their line box. */
+.node-icon-dialog__swatch--glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  padding: 5px 0;
 }
 
 .node-icon-dialog__row {
@@ -15515,7 +15991,7 @@ body.focus-mode .dock:hover {
 :root[data-nt-glass='on'] .kanban-badge--running {
   color: var(--state-working);
 }
-:root[data-nt-glass='on'] :is(.kanban-badge--running, .kanban-badge--needs, .kanban-badge--dropped) {
+:root[data-nt-glass='on'] :is(.kanban-badge--running, .kanban-badge--needs, .kanban-badge--dropped, .kanban-badge--station-failed) {
   -webkit-text-fill-color: var(--text);
   background: color-mix(in srgb, currentColor 24%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent);

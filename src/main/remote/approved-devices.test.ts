@@ -1,4 +1,5 @@
-// Atomic-write behaviour of <userData>/remote-approved-devices.json.
+// Atomic-write behaviour of the relay pin stores (<userData>/remote-approved-phones.json and its
+// per-role siblings), plus the role split and the retirement of the pre-split mixed file.
 //
 // Three writers reach `saveApprovedDevices` from the main process with nothing queueing them:
 // the standing host's fire-and-forget pin (standing-host.ts, `void loadApprovedDevices().then(...)`),
@@ -15,7 +16,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, promises as fs, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import { loadApprovedDevices, saveApprovedDevices, updateApprovedDevices } from './approved-devices'
+import {
+  LEGACY_PIN_FILE,
+  PIN_ROLES,
+  guestPins,
+  joinedHostPins,
+  phonePins,
+  pinFileName,
+  retireLegacyPinFile
+} from './approved-devices'
 import { pinDevice, unpinDevice } from './approved-devices-core'
 import type { ApprovedDevices } from './approved-devices-core'
 
@@ -24,12 +33,16 @@ import type { ApprovedDevices } from './approved-devices-core'
 let userData = ''
 vi.mock('electron', () => ({ app: { getPath: () => userData } }))
 
+const loadApprovedDevices = (): Promise<ApprovedDevices> => phonePins.load()
+const saveApprovedDevices = (s: ApprovedDevices): Promise<void> => phonePins.save(s)
+const updateApprovedDevices = (u: (s: ApprovedDevices) => ApprovedDevices): Promise<void> => phonePins.update(u)
+
 describe('approved-devices atomic write', () => {
   let target: string
 
   beforeEach(() => {
     userData = mkdtempSync(path.join(tmpdir(), 'nt-approved-'))
-    target = path.join(userData, 'remote-approved-devices.json')
+    target = path.join(userData, 'remote-approved-phones.json')
   })
 
   afterEach(() => {
@@ -136,5 +149,65 @@ describe('approved-devices atomic write', () => {
     await expect(loadApprovedDevices()).resolves.toEqual(pinned)
     // A unique tmp name is never written again, so only this save's own cleanup collects it.
     expect(await tmpsLeft()).toEqual([])
+  })
+})
+
+describe('pin stores are split by role', () => {
+  beforeEach(() => {
+    userData = mkdtempSync(path.join(tmpdir(), 'nt-approved-'))
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    rmSync(userData, { recursive: true, force: true })
+  })
+
+  it('every role has its own file, and none of them is the legacy mixed file', () => {
+    const names = PIN_ROLES.map(pinFileName)
+    expect(new Set(names).size).toBe(PIN_ROLES.length)
+    expect(names).not.toContain(LEGACY_PIN_FILE)
+  })
+
+  it('a guest or joined-host pin is never visible to the phone store the standing host reads', async () => {
+    await guestPins.update((s) => pinDevice(s, 'team-guest'))
+    await joinedHostPins.update((s) => pinDevice(s, 'joined-host'))
+    expect(await phonePins.load()).toEqual({ pubkeys: [] })
+    expect(await guestPins.load()).toEqual({ pubkeys: ['team-guest'] })
+    expect(await joinedHostPins.load()).toEqual({ pubkeys: ['joined-host'] })
+  })
+})
+
+describe('retireLegacyPinFile (fail-closed migration)', () => {
+  let legacy: string
+  beforeEach(() => {
+    userData = mkdtempSync(path.join(tmpdir(), 'nt-approved-'))
+    legacy = path.join(userData, LEGACY_PIN_FILE)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    rmSync(userData, { recursive: true, force: true })
+  })
+
+  it('removes the mixed file and carries NONE of its keys into any role store', async () => {
+    // Nothing on disk says which of these was a phone, a joined host or a hosted guest.
+    writeFileSync(legacy, JSON.stringify({ pubkeys: ['maybe-phone', 'joined-host', 'revoked-guest'] }))
+    expect(await retireLegacyPinFile()).toBe(3)
+    await expect(fs.stat(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
+    for (const store of [phonePins, guestPins, joinedHostPins]) {
+      expect(await store.load()).toEqual({ pubkeys: [] })
+    }
+  })
+
+  it('keeps real phones re-approved after the split and is idempotent', async () => {
+    await phonePins.update((s) => pinDevice(s, 'phone-approved-after-split'))
+    writeFileSync(legacy, JSON.stringify({ pubkeys: ['old'] }))
+    await retireLegacyPinFile()
+    expect(await retireLegacyPinFile()).toBe(0)
+    expect(await phonePins.load()).toEqual({ pubkeys: ['phone-approved-after-split'] })
+  })
+
+  it('an unreadable legacy file is still removed (never left for a later reader)', async () => {
+    writeFileSync(legacy, '{broken')
+    expect(await retireLegacyPinFile()).toBe(0)
+    await expect(fs.stat(legacy)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

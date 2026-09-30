@@ -30,7 +30,6 @@ import {
 import type { PullStatusRead } from './graphql-pulls'
 import {
   claimInMemory,
-  claimKey,
   emptyPullMemory,
   noteWaitsInMemory,
   rememberPulls,
@@ -46,6 +45,8 @@ export type PullReadReason = 'heartbeat' | 'foreground' | 'chase'
 type PullRepositoryState = {
   pulls: GitHubPullStatus[]
   observedAt?: number
+  /** When the read behind `pulls` STARTED (host clock). A PR wait armed after it cannot trust it. */
+  readStartedAt?: number
   stale: boolean
   access: { ci: boolean; merge: boolean }
   truncated: boolean
@@ -108,6 +109,7 @@ export class GitHubPullStatusTracker {
       now,
       pulls: state.pulls.map((pull) => ({ ...pull, closes: [...pull.closes] })),
       ...(state.observedAt !== undefined ? { observedAt: state.observedAt } : {}),
+      ...(state.readStartedAt !== undefined ? { readStartedAt: state.readStartedAt } : {}),
       stale: state.stale,
       access: { ...state.access },
       undecided: !!state.chase && state.chase.attempts < PULL_CHASE_MAX,
@@ -137,21 +139,18 @@ export class GitHubPullStatusTracker {
   }
 
   /**
-   * The one-time permission to move a card for a set of merged PRs. The first caller for a key wins,
-   * whichever window it comes from, and the claim is persisted — a card the user dragged back is not
-   * moved again for the same merges. Refused unless this card was noted WAITING on one of those PRs
-   * while it was open (`noteWaits`): a card that first appeared after the merge never moves.
+   * The one-time permission to move a card for a set of merged PRs. The first caller wins, whichever
+   * window it comes from, and the claim is persisted PER PR — a card the user dragged back is not
+   * moved again for the same merges, even when the linked set later shrinks or grows. Refused unless
+   * the set holds a PR that has not moved this card yet and that this card was noted WAITING on while
+   * it was open (`noteWaits`): a card that first appeared after the merge never moves.
    */
   async claimMove(key: string, projectId: string, cardId: string, pulls: number[]): Promise<boolean> {
     const state = this.stateFor(key)
     const generation = state.generation
     const memory = await this.memoryFor(key, state)
     if (generation !== state.generation) return false
-    const { memory: next, claimed } = claimInMemory(
-      state.memory ?? memory,
-      claimKey(projectId, cardId, pulls),
-      pulls.map((pull) => waitKey(projectId, cardId, pull))
-    )
+    const { memory: next, claimed } = claimInMemory(state.memory ?? memory, projectId, cardId, pulls)
     if (!claimed) return false
     state.memory = next
     this.persist(key, state)
@@ -218,7 +217,7 @@ export class GitHubPullStatusTracker {
       return Promise.resolve()
     }
     const generation = state.generation
-    const work = this.perform(key, state, generation, userId, run)
+    const work = this.perform(key, state, generation, userId, run, reason)
     state.inFlight = work
     void work.finally(() => { if (state.inFlight === work) delete state.inFlight })
     return work
@@ -229,8 +228,10 @@ export class GitHubPullStatusTracker {
     state: PullRepositoryState,
     generation: number,
     userId: string,
-    run: () => Promise<PullStatusRead>
+    run: () => Promise<PullStatusRead>,
+    reason: PullReadReason
   ): Promise<void> {
+    const startedAt = this.now()
     let result: PullStatusRead
     try {
       result = await run()
@@ -246,7 +247,7 @@ export class GitHubPullStatusTracker {
       if (code === 'insufficient-permission') {
         await this.publish(key, state, generation, {
           open: [], recent: [], access: { ci: false, merge: false }, truncated: false
-        }, userId)
+        }, userId, startedAt, reason)
         return
       }
       const wasStale = state.stale
@@ -257,7 +258,7 @@ export class GitHubPullStatusTracker {
       return
     }
     if (generation !== state.generation) return
-    await this.publish(key, state, generation, result, userId)
+    await this.publish(key, state, generation, result, userId, startedAt, reason)
   }
 
   private async publish(
@@ -265,7 +266,9 @@ export class GitHubPullStatusTracker {
     state: PullRepositoryState,
     generation: number,
     result: PullStatusRead,
-    userId: string
+    userId: string,
+    startedAt: number,
+    reason: PullReadReason
   ): Promise<void> {
     const memory = await this.memoryFor(key, state)
     if (generation !== state.generation) return
@@ -313,13 +316,18 @@ export class GitHubPullStatusTracker {
     const chaseBefore = state.chase
     state.pulls = pulls
     state.observedAt = now
+    state.readStartedAt = startedAt
     state.stale = false
     state.owed = false
     state.access = { ...result.access }
     state.truncated = result.truncated
     state.chase = nextPullChase(state.chase, open, now)
     const chaseChanged = !!chaseBefore !== !!state.chase
-    if (changed.length || accessChanged || wasStale || chaseChanged) this.options.onChanged(key, changed)
+    // A FOREGROUND read was asked for (the board's refresh, or a pull request wait that needs a read
+    // taken after it was armed): its answer is news even when nothing in it changed.
+    if (changed.length || accessChanged || wasStale || chaseChanged || reason === 'foreground') {
+      this.options.onChanged(key, changed)
+    }
   }
 
   private memoryFor(key: string, state: PullRepositoryState): Promise<PullMemory> {

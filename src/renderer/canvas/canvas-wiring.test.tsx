@@ -349,10 +349,10 @@ describe('reopen-last-closed records and dispatches through the shared history s
     expect(CANVAS_SRC).toContain("'app.reopenLastClosed': reopenLastClosedCommand")
   })
 
-  it('never live-inserts into a non-active project — routes through applyNodeMutation instead', () => {
+  it('never live-inserts into a non-active project — routes through applyOwnNodeMutation instead', () => {
     // The bug this pins: a synchronous setNodes() right after switchProject()/reopenProject()
     // races the active-project load effect and silently loses the recreated nodes.
-    expect(CANVAS_SRC).toContain('.applyNodeMutation(plan.projectId, {')
+    expect(CANVAS_SRC).toContain('.applyOwnNodeMutation(plan.projectId, {')
   })
 
   it('arms a cold-open command before writing a restored node into a non-active project', () => {

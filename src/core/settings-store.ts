@@ -28,7 +28,7 @@ function mergeSettings(saved: Partial<Settings> | null | undefined): Settings {
   // A shortcut EQUAL to the default seeds nothing: the override would only restate what the
   // registry already says, and would then pin that chord against any future default change.
   // **The seeded value survives the read path.** `speech.dictation` has its OWN conflict bucket
-  // (`conflictBucket` in shared/keybindings.ts), so it can never be a participant in a
+  // (`conflictBuckets` in shared/keybindings.ts), so it can never be a participant in a
   // cross-command collision, and the READ path's sanitizer (`sanitizeKeybindingOverrides`) has
   // nothing to strip — neither the seed nor the user's own override on the same chord. (It used
   // not to: both were deleted on load, and dictation silently fell back to the registry default.)

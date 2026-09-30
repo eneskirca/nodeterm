@@ -376,10 +376,15 @@ export function bindingIdentity(binding: string, isMac: boolean): string {
   ].join('')
 }
 
-/** Commands sharing a bucket compete for the same keys. 'app', 'canvas' and 'board' share one
- *  global keyspace (all dispatch from the window listener; canvas commands are merely inert while
- *  the board is open, board commands while it is closed); terminal and scm are their own focused
- *  surfaces.
+/** A bucket is a dispatch CONTEXT: commands sharing one can resolve at the same moment, so they
+ *  compete for the same keys. All three view scopes dispatch from the window listener, but not at
+ *  the same moments: 'canvas' resolves only while the board is CLOSED and 'board' only while it is
+ *  OPEN, while 'app' resolves in both (`resolveCommandForKeyEvent`). So an app command sits in both
+ *  view buckets, a canvas command in 'canvas-view' and a board command in 'board-view' — a canvas
+ *  and a board command never compete. Folding the three into one global keyspace reported a
+ *  collision dispatch cannot produce, and `sanitizeKeybindingOverrides` then stripped a legitimate
+ *  override at load (a bare-arrow canvas command against the board's J/K/arrow keys). Terminal and
+ *  scm are their own focused surfaces.
  *
  *  **`speech.dictation` is its own fourth bucket, and the reason is dispatch, not scope.** It
  *  never competes for a chord: the resolver SKIPS it outright (see the `def.id ===
@@ -405,11 +410,16 @@ export function bindingIdentity(binding: string, isMac: boolean): string {
  *  before the page exists, so such a hand-edit survives sanitization as a permanently dead chord.
  *  The UI can never create it (`commitCandidate`'s reverse-shadow gate refuses it one step earlier
  *  than the dictation gates). */
-export function conflictBucket(
-  def: Pick<CommandDefinition, 'id' | 'scope'>
-): 'global' | 'terminal' | 'scm' | 'dictation' {
-  if (def.id === 'speech.dictation') return 'dictation'
-  return def.scope === 'app' || def.scope === 'canvas' || def.scope === 'board' ? 'global' : def.scope
+export type ConflictBucket = 'canvas-view' | 'board-view' | 'terminal' | 'scm' | 'dictation'
+
+export function conflictBuckets(def: Pick<CommandDefinition, 'id' | 'scope'>): readonly ConflictBucket[] {
+  if (def.id === 'speech.dictation') return ['dictation']
+  switch (def.scope) {
+    case 'app': return ['canvas-view', 'board-view']
+    case 'canvas': return ['canvas-view']
+    case 'board': return ['board-view']
+    default: return [def.scope]
+  }
 }
 
 export interface KeybindingConflict {
@@ -431,22 +441,30 @@ export function findKeybindingConflicts(
   const byBucketAndIdentity = new Map<string, { binding: string; ids: Set<CommandId> }>()
   for (const def of COMMAND_DEFINITIONS) {
     for (const binding of getEffectiveBindings(def.id, overrides, isMac)) {
-      const key = `${conflictBucket(def)} ${bindingIdentity(binding, isMac)}`
-      const entry = byBucketAndIdentity.get(key) ?? {
-        // Canonicalized, so a hand-edited `cmd+k` override is reported as `Cmd+K`.
-        binding: serializeShortcut(parseShortcut(binding)),
-        ids: new Set<CommandId>()
+      for (const bucket of conflictBuckets(def)) {
+        const key = `${bucket} ${bindingIdentity(binding, isMac)}`
+        const entry = byBucketAndIdentity.get(key) ?? {
+          // Canonicalized, so a hand-edited `cmd+k` override is reported as `Cmd+K`.
+          binding: serializeShortcut(parseShortcut(binding)),
+          ids: new Set<CommandId>()
+        }
+        entry.ids.add(def.id)
+        byBucketAndIdentity.set(key, entry)
       }
-      entry.ids.add(def.id)
-      byBucketAndIdentity.set(key, entry)
     }
   }
   const conflicts: KeybindingConflict[] = []
+  // Two app commands on one chord meet in BOTH view buckets; that is one conflict, not two.
+  const reported = new Set<string>()
   for (const { binding, ids } of byBucketAndIdentity.values()) {
     if (ids.size < 2) continue
     const commandIds = [...ids].sort()
     const touchesOverride = commandIds.some((id) => overrides[id] !== undefined)
-    if (opts.includeDefaults || touchesOverride) conflicts.push({ binding, commandIds })
+    if (!opts.includeDefaults && !touchesOverride) continue
+    const key = `${binding} ${commandIds.join(' ')}`
+    if (reported.has(key)) continue
+    reported.add(key)
+    conflicts.push({ binding, commandIds })
   }
   return conflicts
 }

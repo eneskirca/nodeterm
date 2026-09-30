@@ -158,7 +158,11 @@ same order. That is why a held question also carries its texts (`held.questions`
 before edits", "Revise…" (feedback → `plan-revise`). Question: radio (single) / checkbox (multiSelect),
 an "Other" text field (the only input on a question with no options), Submit once every question is
 answered; a multi-select "Other" joins the ticked labels and the text with `", "` as one free-text
-answer. The ticket is re-checked against the store at send time; `false` (or a rejection) shows
+answer, the text quoted (inner quotes escaped) when it contains a comma or a quote — Claude Code's own
+picker format, MEASURED on 2.1.283 (`Red, Blue, "teal, sort of"`, `Red, teal`), so the model can tell
+the user's words from the labels. "Chat about this" (`question-clarify`) declines the question: a deny
+whose message is the native clarify text, built by core from the pending file's questions; no
+`interrupt`, so Claude asks what to clarify and stops at the prompt. The ticket is re-checked against the store at send time; `false` (or a rejection) shows
 "Couldn't send — answer in the terminal (⌘M)" and leaves the controls usable — never a stuck "Sent".
 While controls are up, the composer placeholder and the status row point at the card
 (`chatComposerPlaceholder({answerOnCard})`). The kanban card modal mounts the same `ChatPanel`, so the

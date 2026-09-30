@@ -560,3 +560,54 @@ describe('ChatPanel — a sent local command', () => {
     expect(pending.length).toBe(after)
   })
 })
+
+describe('ChatPanel — a sent built-in that opens a dialog in the TUI', () => {
+  async function renderWith(onShowTerminal: () => void): Promise<void> {
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" onShowTerminal={onShowTerminal} />)
+    })
+  }
+  async function send(text: string): Promise<void> {
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, text)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+  }
+
+  it('/rewind is sent, THEN the view flips to the terminal (the dialog is there, and the next Enter would answer it)', async () => {
+    const onShowTerminal = vi.fn(() => {
+      // The flip happens only after the pane accepted the text.
+      expect(sendChatPrompt).toHaveBeenCalledWith(NODE, '/rewind', 'claude')
+    })
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/rewind')
+    expect(onShowTerminal).toHaveBeenCalledOnce()
+  })
+
+  it('a built-in that runs with no dialog (/compact) and a plain message stay in the view', async () => {
+    const onShowTerminal = vi.fn()
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/compact')
+    await send('please rewind the file')
+    expect(sendChatPrompt).toHaveBeenCalledTimes(2)
+    expect(onShowTerminal).not.toHaveBeenCalled()
+  })
+
+  it('a refused send (pane not writable) never flips', async () => {
+    const onShowTerminal = vi.fn()
+    sendChatPrompt.mockResolvedValueOnce(false as never)
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/model')
+    expect(onShowTerminal).not.toHaveBeenCalled()
+  })
+})

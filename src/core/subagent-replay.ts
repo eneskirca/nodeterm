@@ -15,12 +15,21 @@ export class SubagentReplay {
       this.starts.delete(this.key(event))
     } else if (event.kind === 'subagent-start' && event.toolUseId) {
       const key = this.key(event)
-      if (!this.starts.has(key)) {
+      // A native card REPLACING the card its tool call drew (core/claude-subagent-lifecycle.ts):
+      // the replayed card keeps the original start time under the new key.
+      const replaced = event.supersedes ? this.starts.get(this.key({ ...event, toolUseId: event.supersedes })) : undefined
+      if (event.supersedes) this.starts.delete(this.key({ ...event, toolUseId: event.supersedes }))
+      const running = this.starts.get(key)
+      if (running) {
+        // A repeated start of a running card corrects what it shows, never when it started.
+        if (event.taskLabel !== undefined) running.taskLabel = event.taskLabel.slice(0, 4000)
+        if (event.subagentType !== undefined) running.subagentType = event.subagentType
+      } else {
         // Copy just the display fields. In particular, a replay never carries verified identity.
         this.starts.set(key, {
           kind: 'subagent-start', nodeId: event.nodeId, agentId: event.agentId,
           toolUseId: event.toolUseId, subagentType: event.subagentType,
-          taskLabel: event.taskLabel?.slice(0, 4000), subagentStartedAt: now
+          taskLabel: event.taskLabel?.slice(0, 4000), subagentStartedAt: replaced?.subagentStartedAt ?? now
         })
       }
       while (this.starts.size > this.limit) this.starts.delete(this.starts.keys().next().value!)

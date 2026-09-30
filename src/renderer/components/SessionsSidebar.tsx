@@ -442,7 +442,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
         onContextMenu={(e) => props.onRowContextMenu(e, row.projectId!, row.id)}
         onDragStart={() => {}}
         onDragEnd={() => {}}
-        stateAgeLabel={sessionStateAgeLabel(row.statusUpdatedAt, statusNow)}
+        stateAgeLabel={sessionStateAgeLabel(row.statusUpdatedAt, statusNow, row.statusClock)}
       />
     </div>
   )
@@ -633,7 +633,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                   variant="monogram"
                   className="ss-group__monogram"
                 />
-                <span className="ss-group__name">{g.projectName}</span>
+                <span className="ss-group__name" title={g.projectName}>{g.projectName}</span>
                 <ProjectBranch project={projects.find((p) => p.id === g.projectId)!} />
                 {signals.attention > 0 && (
                   <span className="ss-group__sig ss-group__sig--attention" title="Sessions that need you">

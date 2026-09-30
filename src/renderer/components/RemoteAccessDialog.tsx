@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
 import { useEntitlement } from '../state/entitlement'
 import { useProjects } from '../state/projects'
-import { hostShareOptions } from '../lib/relayHostShare'
+import { hostShareOptions, relayShareGrantCopy } from '../lib/relayHostShare'
 import { thisMachine } from '../lib/machineName'
 import { Button } from '@renderer/ui/Button'
 import { CopyButton } from '@renderer/ui/CopyButton'
@@ -105,9 +105,13 @@ export function RemoteAccessDialog({ onClose }: { onClose: () => void }): React.
           hostOffer ? (
             <div className="remote-dialog__block">
               <p className="remote-dialog__hint">
-                Sharing <strong>{sharedName || 'this project'}</strong> — the joiner will see this
-                project and can run commands on {thisMachine()}. Share this pairing code (single
-                use):
+                {sharedName ? (
+                  <>
+                    Sharing <strong>{sharedName}</strong>.{' '}
+                  </>
+                ) : null}
+                {relayShareGrantCopy(sharedName || null, thisMachine())} Share this pairing code
+                (single use):
               </p>
               <Input
                 className="w-full"
@@ -137,12 +141,15 @@ export function RemoteAccessDialog({ onClose }: { onClose: () => void }): React.
                     ))}
                   </Select>
                 </label>
-              ) : (
-                <p className="remote-dialog__hint">
-                  Sharing <strong>{sharedName || 'this project'}</strong> — the joiner sees this
-                  project and can run commands on {thisMachine()}.
-                </p>
-              )}
+              ) : null}
+              <p className="remote-dialog__hint">
+                {sharedName && shareOptions.length <= 1 ? (
+                  <>
+                    Sharing <strong>{sharedName}</strong>.{' '}
+                  </>
+                ) : null}
+                {relayShareGrantCopy(sharedName || null, thisMachine())}
+              </p>
               <Button disabled={hostBusy} onClick={() => void startHosting()}>
                 {hostBusy ? 'Starting…' : 'Allow remote access'}
               </Button>

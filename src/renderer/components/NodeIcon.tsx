@@ -9,8 +9,9 @@
  * decoration — it must never occupy space it cannot fill, and it must never announce its own
  * failure in a header that is already carrying six chips.
  */
-import type { NodeIcon } from '@shared/node-icon'
+import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { useNodeIconSrc } from '../lib/nodeIconImage'
+import { lucideIcon } from './ProjectGlyph'
 
 export interface NodeIconViewProps {
   icon?: NodeIcon
@@ -23,11 +24,16 @@ export interface NodeIconViewProps {
 }
 
 export function NodeIconView({
-  icon,
+  icon: raw,
   size = 14,
   className,
   projectId
 }: NodeIconViewProps): React.JSX.Element | null {
+  // Normalized HERE, at the render boundary, not only at the serializer seams: persisted icons
+  // also reach this component without crossing `nodeStatesToFlow` — an inactive project's rows in
+  // the sessions sidebar (`buildSessionList` reads its stored nodes), the kanban board, a relay
+  // mirror. Cheap, pure, and it answers the same way the seams do: invalid → no icon.
+  const icon = normalizeNodeIcon(raw)
   // Called unconditionally (hook rules) — it answers null for an emoji icon and for no icon.
   const src = useNodeIconSrc(icon, projectId)
   if (!icon) return null
@@ -40,6 +46,18 @@ export function NodeIconView({
         aria-hidden
       >
         {icon.value}
+      </span>
+    )
+  }
+  if (icon.type === 'lucide') {
+    // Drawn in `currentColor`, so it reads as part of the title line it sits on; the node's color
+    // stays with the swatch beside it. `icon` is normalized above, so the name is a NODE_GLYPHS id;
+    // `lucideIcon` is an own-property lookup regardless, and a miss draws nothing.
+    const Glyph = lucideIcon(icon.name)
+    if (!Glyph) return null
+    return (
+      <span className={cls} style={{ width: size, height: size }} aria-hidden>
+        <Glyph width="100%" height="100%" strokeWidth={2} aria-hidden="true" />
       </span>
     )
   }

@@ -40,3 +40,20 @@ describe('hostShareOptions', () => {
     expect(opts).toEqual([{ id: 'a', name: 'A' }])
   })
 })
+
+describe('relayShareGrantCopy', () => {
+  it('names the project and the shell honestly for a scoped invite', async () => {
+    const { relayShareGrantCopy } = await import('./relayHostShare')
+    const s = relayShareGrantCopy('Alpha', 'this Mac')
+    expect(s).toContain('Alpha')
+    expect(s).toContain('other projects')
+    expect(s).toContain('still a shell on this Mac')
+    expect(s).not.toContain('full access')
+  })
+
+  it('says full access for an unscoped invite', async () => {
+    const { relayShareGrantCopy } = await import('./relayHostShare')
+    expect(relayShareGrantCopy(null, 'this PC')).toContain('full access to this PC as you')
+    expect(relayShareGrantCopy('', 'this PC')).toContain('full access')
+  })
+})

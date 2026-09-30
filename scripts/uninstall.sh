@@ -36,7 +36,7 @@
 #     with a warning — they are harmless: the installed hook command is self-guarded and becomes
 #     a silent no-op once the script it points to is deleted.
 #   - macOS and Linux. On Windows use the NSIS uninstaller (Add/Remove Programs), then delete
-#     %APPDATA%\nodeterm and %USERPROFILE%\.nodeterm.
+#     %APPDATA%\node-terminal and %USERPROFILE%\.nodeterm.
 set -u
 
 DRY_RUN=0
@@ -60,10 +60,15 @@ note()  { printf '  \033[2m%s\033[0m\n' "$1"; }
 HOME="${HOME:-$(cd ~ && pwd)}"
 
 # ---- locations (must mirror what the app writes; see docs/uninstall.md) ----------------------
+# Electron's app.name — and with it the user-data dir, the Keychain "Safe Storage" entry and
+# electron-updater's cache dir — is package.json's top-level `name`, NOT `build.productName`:
+# electron-builder strips `build` from the packaged package.json, so "nodeterm" only ever names
+# the bundle and the installer. Must equal package.json `name` (scripts/uninstall.test.ts).
+APP_NAME="node-terminal"
 if [ "$OS" = "Darwin" ]; then
-  USER_DATA="$HOME/Library/Application Support/nodeterm"
+  USER_DATA="$HOME/Library/Application Support/$APP_NAME"
 else
-  USER_DATA="${XDG_CONFIG_HOME:-$HOME/.config}/nodeterm"
+  USER_DATA="${XDG_CONFIG_HOME:-$HOME/.config}/$APP_NAME"
 fi
 NT_HOME="$HOME/.nodeterm"                       # agent-hooks, ssh-cm sockets, acks, push-grants…
 SERVER_APP="${NODETERM_APP_DIR:-$HOME/.nodeterm-server-app}"
@@ -357,16 +362,17 @@ add_dir() { [ -e "$1" ] && { DIRS_TO_REMOVE+=("$1"); plan "Delete $1"; FOUND_ANY
 add_dir "$NT_HOME"
 add_dir "$USER_DATA"
 if [ "$OS" = "Darwin" ]; then
-  add_dir "$HOME/Library/Caches/nodeterm"
+  add_dir "$HOME/Library/Caches/$APP_NAME"
   add_dir "$HOME/Library/Caches/com.nodeterm.app"
   add_dir "$HOME/Library/Caches/com.nodeterm.app.ShipIt"
-  add_dir "$HOME/Library/Application Support/Caches/nodeterm-updater"
+  add_dir "$HOME/Library/Caches/$APP_NAME-updater"
   add_dir "$HOME/Library/Preferences/com.nodeterm.app.plist"
   add_dir "$HOME/Library/Saved Application State/com.nodeterm.app.savedState"
   add_dir "$HOME/Library/HTTPStorages/com.nodeterm.app"
-  add_dir "$HOME/Library/Logs/nodeterm"
+  add_dir "$HOME/Library/Logs/$APP_NAME"
 else
-  add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/nodeterm"
+  add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/$APP_NAME"
+  add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/$APP_NAME-updater"
 fi
 add_dir "$SERVER_APP"
 add_dir "$SERVER_DATA"
@@ -379,8 +385,8 @@ if [ "$OS" = "Darwin" ]; then
   elif [ -d "$APP_BUNDLE" ]; then
     plan "Delete $APP_BUNDLE"; FOUND_ANY=1
   fi
-  if security find-generic-password -s "nodeterm Safe Storage" >/dev/null 2>&1; then
-    plan "Delete the 'nodeterm Safe Storage' Keychain entry"; FOUND_ANY=1
+  if security find-generic-password -s "$APP_NAME Safe Storage" >/dev/null 2>&1; then
+    plan "Delete the '$APP_NAME Safe Storage' Keychain entry"; FOUND_ANY=1
   fi
 fi
 
@@ -506,7 +512,7 @@ if [ "$OS" = "Darwin" ]; then
     rm -rf "$APP_BUNDLE" && ok "Deleted $APP_BUNDLE" \
       || warn "Could not delete $APP_BUNDLE — drag it to the Trash"
   fi
-  security delete-generic-password -s "nodeterm Safe Storage" >/dev/null 2>&1 || true
+  security delete-generic-password -s "$APP_NAME Safe Storage" >/dev/null 2>&1 || true
   defaults delete com.nodeterm.app >/dev/null 2>&1 || true
 fi
 

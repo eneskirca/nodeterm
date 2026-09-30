@@ -67,6 +67,23 @@ describe('statusChipSig — a derived signature, never the whole byId map', () =
     expect([...facts.unread].sort()).toEqual(['b', 'c'])
   })
 
+  it('a card id carrying the separators cannot forge another card\'s facts', () => {
+    // Node ids come from a git-shared, hand-editable project file.
+    const hostile: StatusChipCard[] = [
+      { id: 'x|victim', kind: 'terminal' },
+      { id: 'y:rnu|z', kind: 'terminal' },
+      { id: 'victim', kind: 'terminal' },
+      { id: 'z', kind: 'terminal' }
+    ]
+    const facts = parseStatusChipSig(statusChipSig({
+      'x|victim': st({ unread: true }),
+      'y:rnu|z': st({ state: 'working' })
+    }, hostile))
+    expect([...facts.unread]).toEqual(['x|victim'])
+    expect([...facts.running]).toEqual(['y:rnu|z'])
+    expect(facts.needs.size).toBe(0)
+  })
+
   it('a dropped agent is not "running" even if its last state said so', () => {
     const facts = parseStatusChipSig(statusChipSig({ a: st({ state: 'working', dropped: true }) }, cards))
     expect(facts.running.size).toBe(0)
@@ -74,7 +91,10 @@ describe('statusChipSig — a derived signature, never the whole byId map', () =
 })
 
 describe('matchesStatusChips', () => {
-  const facts = parseStatusChipSig('a:r..|b:.nu|')
+  const facts = parseStatusChipSig(statusChipSig(
+    { a: st({ state: 'working' }), b: st({ state: 'waiting', unread: true }) },
+    [{ id: 'a', kind: 'terminal' }, { id: 'b', kind: 'terminal' }]
+  ))
 
   it('no active chip matches everything', () => {
     expect(matchesStatusChips(facts, 'zzz', [])).toBe(true)

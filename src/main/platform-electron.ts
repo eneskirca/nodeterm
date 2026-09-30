@@ -195,6 +195,8 @@ export function electronPlatform(): ElectronPlatform {
       }
     },
     clientIds: () => [...mainWindowClientIds(), ...peerRegistry().ids()],
+    // The app's own window is the owner; every relay peer (peerRegistry) is not.
+    isOwnerClient: (id) => !peerRegistry().has(id) && mainWindowClientIds().includes(id),
     openExternal: (url) => shell.openExternal(url),
     // Seal / unseal node secrets at rest with the OS keychain. Byte-in byte-out, mirroring #167's
     // codex-node-auth-key.json shape: encrypt the UTF-8 content of the passed buffer, decrypt back to

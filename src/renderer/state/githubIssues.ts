@@ -6,8 +6,9 @@ import type {
   GitHubIssuesApi,
   GitHubMutationResult
 } from '@shared/github-issues'
-import type { GitHubPullBoard } from '@shared/github-pull-status'
+import type { GitHubPullBoard, PullLifecycle } from '@shared/github-pull-status'
 import { GITHUB_MAPPING_NOT_APPROVED } from '../lib/githubSyncStatus'
+import type { PrLookup } from '../lib/prWait'
 
 export interface GitHubProjectPages {
   pages: Record<string, GitHubIssuePage>
@@ -29,6 +30,12 @@ export interface GitHubProjectPages {
 
 interface GitHubIssuesState {
   projects: Record<string, GitHubProjectPages>
+  /** Pull request status kept for armed `--after-pr` nodes, whether or not a board is open. The
+   *  SAME host memory the board reads (`pullStatus`, no request), refreshed on the same change
+   *  events, and it rides the board's refcounted host subscription — the existing 60 s conditional
+   *  heartbeat, not a poller of its own. */
+  pullWatch: Record<string, GitHubPullBoard>
+  watchPulls(api: GitHubIssuesApi, projectId: string): Promise<() => void>
   connect(api: GitHubIssuesApi, projectId: string, columns: string[], labelFilter?: string[]): Promise<() => void>
   reload(api: GitHubIssuesApi, projectId: string): Promise<void>
   loadMore(
@@ -137,8 +144,171 @@ async function acquireHostSubscription(api: GitHubIssuesApi, projectId: string):
   }
 }
 
+type PullWatchRecord = { refs: number; ready: Promise<void>; teardown?: () => void }
+const pullWatches = new WeakMap<GitHubIssuesApi, Map<string, PullWatchRecord>>()
+
+/** The freshest pull request status known for a project: the open board's or the watch's, by the
+ *  host clock each was answered at. */
+export function pullBoardFor(
+  state: Pick<GitHubIssuesState, 'projects' | 'pullWatch'>,
+  projectId: string
+): GitHubPullBoard | undefined {
+  const fromBoard = state.projects[projectId]?.pullBoard
+  const fromWatch = state.pullWatch[projectId]
+  if (!fromBoard) return fromWatch
+  if (!fromWatch) return fromBoard
+  return (fromWatch.now ?? 0) > (fromBoard.now ?? 0) ? fromWatch : fromBoard
+}
+
+function lifecycleOf(item: GitHubIssuePage['items'][number]): PullLifecycle {
+  if (item.state === 'open') return item.pull?.draft ? 'draft' : 'open'
+  return item.pull?.mergedAt ? 'merged' : 'closed'
+}
+
+/**
+ * Does the board's repository have these pull requests, and where are they in their life? Read
+ * from the host's harvested issue list (#1008: pull requests ride the same REST snapshot). Holding
+ * the host subscription for the duration makes the host read the repository first when nothing has
+ * yet in this app run.
+ *
+ * Which columns: the first page's `counts` name every column that holds a match, so a PR the
+ * mapping files under a column the board has since deleted is still found.
+ *
+ * "Not found" is an ANSWER only from a snapshot a refresh STARTED after this call produced (B1). A
+ * snapshot from before it proves nothing — the headline flow is `gh pr create` then `open-* --after-pr`,
+ * and the board's last refresh can be a minute old — so a miss asks for one refresh and looks again.
+ * A refresh the floor swallowed, one already in flight from before the call, or one that failed
+ * leaves `complete: false`, which a caller must not read as absence. A truncated harvest is named:
+ * a PR it dropped is never listed however long one waits.
+ */
+export async function lookupPullRequests(
+  api: GitHubIssuesApi,
+  projectId: string,
+  columns: string[],
+  numbers: number[]
+): Promise<Map<number, PrLookup>> {
+  const release = await acquireHostSubscription(api, projectId)
+  try {
+    type Search = { item?: GitHubIssuePage['items'][number]; synced: boolean; partial: boolean; refreshedAt?: number }
+    const search = async (number: number): Promise<Search> => {
+      const pageOf = (columnId: string | null, cursor?: string) => api.query({
+        projectId, columnId, kind: 'pull', pageSize: 50, search: String(number), ...(cursor ? { cursor } : {})
+      })
+      const first = await pageOf(null)
+      const found: Search = {
+        synced: first.lastSuccessfulRefreshAt !== undefined,
+        partial: first.partial,
+        refreshedAt: first.lastSuccessfulRefreshAt
+      }
+      const fromCounts = Object.keys(first.counts).map((key) => (key === 'ungrouped' ? null : key))
+      const columnIds = [...new Set<string | null>([null, ...columns, ...fromCounts])]
+      for (const columnId of columnIds) {
+        let page: GitHubIssuePage | undefined = columnId === null ? first : undefined
+        let cursor: string | undefined
+        do {
+          page = page ?? await pageOf(columnId, cursor)
+          if (page.partial) found.partial = true
+          if (page.lastSuccessfulRefreshAt === undefined) found.synced = false
+          const item = page.items.find((candidate) => candidate.number === number)
+          if (item) return { ...found, item }
+          cursor = page.nextCursor
+          page = undefined
+        } while (cursor)
+      }
+      return found
+    }
+    const out = new Map<number, PrLookup>()
+    const first = await Promise.all(numbers.map(async (number) => [number, await search(number)] as const))
+    const missed: number[] = []
+    for (const [number, result] of first) {
+      if (result.item) out.set(number, { found: true, lifecycle: lifecycleOf(result.item) })
+      else missed.push(number)
+    }
+    if (!missed.length) return out
+    // One refresh for every miss, then look again. The host's clock is read BEFORE it, so a snapshot
+    // proves absence only if its refresh started at or after that moment.
+    const since = await api.pullStatus(projectId).then((board) => board.now, () => undefined)
+    const refreshed = await api.refresh(projectId).then(() => true, () => false)
+    await Promise.all(missed.map(async (number) => {
+      const result = await search(number)
+      if (result.item) {
+        out.set(number, { found: true, lifecycle: lifecycleOf(result.item) })
+        return
+      }
+      const fresh = refreshed && since !== undefined && result.refreshedAt !== undefined &&
+        result.refreshedAt >= since
+      const truncated = result.synced && result.partial
+      out.set(number, fresh && result.synced && !result.partial
+        ? { found: false, complete: true }
+        : { found: false, complete: false, ...(truncated ? { truncated: true as const } : {}) })
+    }))
+    return out
+  } finally {
+    release()
+  }
+}
+
 export const useGitHubIssues = create<GitHubIssuesState>((set, get) => ({
   projects: {},
+  pullWatch: {},
+
+  async watchPulls(api, projectId) {
+    let watches = pullWatches.get(api)
+    if (!watches) {
+      watches = new Map()
+      pullWatches.set(api, watches)
+    }
+    let record = watches.get(projectId)
+    if (!record) {
+      const fresh: PullWatchRecord = { refs: 0, ready: Promise.resolve() }
+      const load = async (): Promise<void> => {
+        const board = await loadPullBoard(api, projectId)
+        // A failed read keeps what was there (the host marks its own board stale).
+        if (board && watches!.get(projectId) === fresh) {
+          set((state) => ({ pullWatch: { ...state.pullWatch, [projectId]: board } }))
+        }
+      }
+      fresh.ready = (async () => {
+        const changed = api.onChanged(projectId, () => { void load() })
+        let releaseHost: (() => void) | undefined
+        fresh.teardown = () => {
+          changed()
+          releaseHost?.()
+        }
+        try {
+          releaseHost = await acquireHostSubscription(api, projectId)
+        } catch {
+          // No host subscription (sync not approved, offline): the memory may still answer, and a
+          // wait that never learns anything expires on its deadline rather than firing.
+        }
+        if (watches!.get(projectId) !== fresh) {
+          releaseHost?.()
+          return
+        }
+        await load()
+      })()
+      record = fresh
+      watches.set(projectId, record)
+    }
+    record.refs += 1
+    const current = record
+    await current.ready
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      current.refs -= 1
+      if (current.refs !== 0 || watches!.get(projectId) !== current) return
+      watches!.delete(projectId)
+      current.teardown?.()
+      set((state) => {
+        if (!(projectId in state.pullWatch)) return state
+        const pullWatch = { ...state.pullWatch }
+        delete pullWatch[projectId]
+        return { pullWatch }
+      })
+    }
+  },
 
   async connect(api, projectId, columns, labelFilter = []) {
     const generation = ++nextConnectionGeneration

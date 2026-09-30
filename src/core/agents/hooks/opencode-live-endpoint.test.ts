@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { buildOpencodePlugin } from './opencode'
 import { hookServer } from '../hook-server'
 import { initPlatform, resetPlatformForTests } from '../../platform'
 import { fakePlatform } from '../../platform-fake'
 import type { NormalizedAgentEvent } from '../../../shared/agents/normalize'
+import { testTmpDir } from '../../test-tmp'
 
 // Issue #351 follow-up: the plugin's `live()` re-parses the REAL endpoint file that
 // `writeEndpointFile()` writes — every fixture in opencode.test.ts hand-writes that file, so a
@@ -16,7 +16,7 @@ import type { NormalizedAgentEvent } from '../../../shared/agents/normalize'
 // is 401'd and the listener below never fires.
 let tmp = ''
 beforeAll(async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-oc-live-'))
+  const root = testTmpDir('nt-oc-live-')
   // Spaced userDataDir — the "Application Support" shape the quoting exists for.
   tmp = path.join(root, 'App Support', 'node-terminal')
   fs.mkdirSync(tmp, { recursive: true })

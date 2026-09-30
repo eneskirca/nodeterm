@@ -1,4 +1,5 @@
 import type { SshConnection } from '@shared/ssh'
+import { groupBoundBranch, nearestBoundBranch } from '@shared/pull-card-links'
 import type { NodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef } from '@shared/github-issue-ref'
 import { SYSTEM_NODE_COLORS, type CanvasNode } from '../state/workspace'
@@ -69,19 +70,13 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
  *  read; a stale binding (directory deleted) still names the branch, which is exactly when its PR
  *  tends to merge. Cycle-safe: a hand-edited parent loop ends the walk. */
 export function worktreeBranchOf(n: CanvasNode, byId: ReadonlyMap<string, CanvasNode>): string | undefined {
-  const seen = new Set<string>()
-  let parentId = n.parentId
-  while (parentId && !seen.has(parentId)) {
-    seen.add(parentId)
-    const parent = byId.get(parentId)
-    if (!parent) return undefined
-    const worktree = parent.data?.worktree as { branch?: unknown } | undefined
-    if (parent.type === 'group' && worktree && typeof worktree.branch === 'string' && worktree.branch) {
-      return worktree.branch
+  return nearestBoundBranch(n.parentId, (id) => {
+    const parent = byId.get(id)
+    return parent && {
+      parentId: parent.parentId,
+      boundBranch: groupBoundBranch(parent.type === 'group', parent.data?.worktree)
     }
-    parentId = parent.parentId
-  }
-  return undefined
+  })
 }
 
 /**

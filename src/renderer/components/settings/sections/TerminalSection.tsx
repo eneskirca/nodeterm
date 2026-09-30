@@ -63,6 +63,12 @@ const ROWS = {
     title: 'Middle-click paste',
     keywords: ['middle', 'click', 'mouse', 'paste', 'primary', 'selection', 'x11', 'linux', 'wheel']
   },
+  copyOnSelect: {
+    title: 'Copy on select',
+    keywords: [
+      'copy', 'select', 'selection', 'clipboard', 'drag', 'mouse', 'highlight', 'auto', 'windows'
+    ]
+  },
   wordSeparator: {
     title: 'Word selection',
     keywords: ['word', 'separator', 'selection', 'double click', 'identifier', 'hyphen']
@@ -321,6 +327,20 @@ export function TerminalSection({ isActive }: { isActive: boolean }): React.JSX.
             }
           />
         </div>
+      </SearchableRow>
+
+      <SearchableRow {...ROWS.copyOnSelect}>
+        <FieldRow
+          label="Copy on select"
+          description="Off by default. On, finishing a mouse selection in the terminal itself — a drag, a double or triple click, or inside an app that grabs the mouse an Option-drag (macOS) or Shift-drag (Windows, Linux) — copies it to the clipboard. It cannot copy a selection an app draws itself. Copies a program sends on its own (tmux copy mode, vim) reach the clipboard whether this is on or off."
+          control={
+            <Switch
+              checked={settings.copyOnSelect}
+              onChange={(v) => update({ copyOnSelect: v })}
+              ariaLabel="Copy on select"
+            />
+          }
+        />
       </SearchableRow>
 
       <SearchableRow {...ROWS.wordSeparator}>

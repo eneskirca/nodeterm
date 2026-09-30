@@ -41,7 +41,8 @@ const HOSTILE = [
   'o/..#1',
   'o/.#1',
   '-o/r#1',
-  'o-/r#1',
+  // A leading hyphen reads as a flag and GitHub has never issued one.
+  '---/r#1',
   'o/-r#1',
   'o//r#1',
   'o/r/x#1',
@@ -64,6 +65,16 @@ describe('parseIssueArg', () => {
 
   it('accepts #N as a reference to the project repository', () => {
     expect(parseIssueArg('#7')).toEqual({ ok: true, kind: 'local', number: 7 })
+  })
+
+  it('accepts the logins GitHub has actually issued: consecutive and trailing hyphens', () => {
+    // Real accounts, checked read-only against api.github.com (2026-09-29): `hello--world` (user,
+    // 2014), `foo--bar` (organization), `john-` (user, 2012), `Test-` (organization). GitHub's
+    // CURRENT sign-up rule is stricter, but the grammar answers for every account that exists.
+    for (const raw of ['hello--world/a#1', 'foo--bar/arthanaya#1', 'john-/x#1', 'Test-/r#2']) {
+      expect(parseIssueArg(raw), raw).toMatchObject({ ok: true })
+    }
+    expect(parseIssueArg(`${'x'.repeat(40)}/r#1`).ok).toBe(false)
   })
 
   it('accepts the repository names GitHub allows (dots, underscores, a leading dot)', () => {

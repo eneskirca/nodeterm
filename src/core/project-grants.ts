@@ -70,7 +70,10 @@ export const PROJECT_TARGETABLE_VERBS: ReadonlySet<string> = new Set([
   'open-agent',
   // #925: a node in another project is reached only through a granted --project.
   'run',
-  'settings'
+  'settings',
+  // Read-only GitHub lane of a project (core/github/control-read.ts): own or granted, like the rest.
+  'issues',
+  'prs'
 ])
 
 /** The flat refusal an UNVERIFIED caller's `--project` gets — one sentence, no diagnosis, no

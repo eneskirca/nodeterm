@@ -4,7 +4,7 @@
 // test is the pin on the desktop half — change it and the iOS twin (KanbanDefaultsTests) must move
 // in the same PR.
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_BOARD_COLUMNS, makeColumnId } from './kanban-default-board'
+import { DEFAULT_BOARD_COLUMNS, defaultKanbanFor, makeColumnId, seededColumnId } from './kanban-default-board'
 import { SYSTEM_NODE_COLORS } from './node-colors'
 
 describe('DEFAULT_BOARD_COLUMNS', () => {
@@ -36,5 +36,27 @@ describe('makeColumnId', () => {
     const ids = Array.from({ length: 50 }, () => makeColumnId())
     for (const id of ids) expect(id).toMatch(/^kcol-[a-z0-9]{1,8}$/)
     expect(new Set(ids).size).toBeGreaterThan(45)
+  })
+})
+
+// The LAZY default board (a project whose file has no `kanban` yet) is what every client renders
+// until the first edit. Its column ids must be the same on every client for one project, or two
+// people's first-ever board edits land on six columns instead of three (spec §11 amendment 5).
+describe('deterministic default board', () => {
+  it('same project → same ids on every client; different projects → different ids', () => {
+    expect(defaultKanbanFor('project-1')).toEqual(defaultKanbanFor('project-1'))
+    expect(defaultKanbanFor('project-1').columns[0].id).not.toBe(defaultKanbanFor('project-2').columns[0].id)
+  })
+  it('keeps the desktop id shape kcol-<8 base36>', () => {
+    for (let i = 0; i < 3; i++) expect(seededColumnId('project-1', i)).toMatch(/^kcol-[0-9a-z]{8}$/)
+  })
+  it('titles, order, colours and categories are the shared defaults', () => {
+    const b = defaultKanbanFor('p')
+    expect(b.columns.map((c) => [c.title, c.color, c.category])).toEqual(
+      DEFAULT_BOARD_COLUMNS.map((c) => [c.title, c.color, c.category]))
+    expect(b.assignments).toEqual([])
+  })
+  it('the three columns of one board have three distinct ids', () => {
+    expect(new Set(defaultKanbanFor('project-1').columns.map((c) => c.id)).size).toBe(3)
   })
 })

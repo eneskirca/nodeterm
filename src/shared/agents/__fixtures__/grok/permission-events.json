@@ -1,0 +1,715 @@
+{
+ "_provenance": "captured live from grok 1.0.13 (5e9a58528b76) on 2026-09-30, interactive TUI in a private tmux, pointed at a local fake chat_completions model (only the model is fake: every file and hook payload below was written by grok itself); paths redacted, KEYS, SHAPES, ORDER AND TIMESTAMPS UNCHANGED. Each scenario: a real permission dialog for run_terminal_command (or spawn_subagent), then answered in the pane.",
+ "scenarios": {
+  "allow": {
+   "answeredWith": "\"2 Yes, proceed\" then Enter; the approved command sleeps 10 s",
+   "hooks": [
+    {
+     "hookEventName": "session_start",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:14.083058151+00:00",
+     "permissionMode": "default",
+     "source": "new",
+     "hook_event_name": "SessionStart",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "user_prompt_submit",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:14.182167441+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "promptId": "3f38713d-d15f-4872-85ba-3a26a202356d",
+     "permissionMode": "default",
+     "prompt": "run the command",
+     "hook_event_name": "UserPromptSubmit",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "pre_tool_use",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:14.233662047+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_2",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "toolInputTruncated": false,
+     "hook_event_name": "PreToolUse",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "tool_use_id": "call_2"
+    },
+    {
+     "hookEventName": "notification",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:14.253791821+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permissionMode": "default",
+     "notificationType": "permission_prompt",
+     "message": "Tool permission requested",
+     "level": "info",
+     "hook_event_name": "Notification",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "post_tool_use",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:34.637661178+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_2",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "toolResult": {
+      "type": "Bash",
+      "output": [
+       115,
+       108,
+       101,
+       112,
+       116,
+       10
+      ],
+      "output_for_prompt": "exit: 0\nslept\n",
+      "exit_code": 0,
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "truncated": false,
+      "signal": null,
+      "timed_out": false,
+      "description": "sleep then echo",
+      "current_dir": "/work/project",
+      "output_file": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/terminal/call_2.log",
+      "total_bytes": 6
+     },
+     "toolInputTruncated": false,
+     "toolResultTruncated": false,
+     "durationMs": 10022,
+     "isBackgrounded": false,
+     "hook_event_name": "PostToolUse",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "tool_response": {
+      "type": "Bash",
+      "output": [
+       115,
+       108,
+       101,
+       112,
+       116,
+       10
+      ],
+      "output_for_prompt": "exit: 0\nslept\n",
+      "exit_code": 0,
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "truncated": false,
+      "signal": null,
+      "timed_out": false,
+      "description": "sleep then echo",
+      "current_dir": "/work/project",
+      "output_file": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/terminal/call_2.log",
+      "total_bytes": 6
+     },
+     "tool_use_id": "call_2",
+     "duration_ms": 10022
+    },
+    {
+     "hookEventName": "stop",
+     "sessionId": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:34.713896700+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "promptId": "3f38713d-d15f-4872-85ba-3a26a202356d",
+     "permissionMode": "default",
+     "reason": "end_turn",
+     "stopHookActive": false,
+     "lastAssistantMessage": "All done.",
+     "backgroundTasks": [],
+     "sessionCrons": [],
+     "hook_event_name": "Stop",
+     "session_id": "01a0f22e-e1fa-7f03-9eac-be5716664af7",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22e-e1fa-7f03-9eac-be5716664af7/updates.jsonl",
+     "permission_mode": "default"
+    }
+   ],
+   "sessions": {
+    "01a0f22e-e1fa-7f03-9eac-be5716664af7": [
+     "{\"ts\":\"2026-09-30T11:59:14.182Z\",\"type\":\"turn_started\",\"session_id\":\"01a0f22e-e1fa-7f03-9eac-be5716664af7\",\"turn_number\":0,\"model_id\":\"fake\",\"yolo_mode\":false,\"conversation_message_count\":3,\"session_relationship\":\"primary\",\"schema_version\":\"1.0\"}",
+     "{\"ts\":\"2026-09-30T11:59:14.223Z\",\"type\":\"loop_started\",\"loop_index\":0}",
+     "{\"ts\":\"2026-09-30T11:59:14.226Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T11:59:14.233Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T11:59:14.233Z\",\"type\":\"tool_started\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T11:59:14.248Z\",\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}",
+     "{\"ts\":\"2026-09-30T11:59:14.248Z\",\"type\":\"permission_requested\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T11:59:24.614Z\",\"type\":\"permission_resolved\",\"tool_name\":\"run_terminal_command\",\"decision\":\"allow\",\"wait_ms\":10365}",
+     "{\"ts\":\"2026-09-30T11:59:24.614Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T11:59:34.693Z\",\"type\":\"tool_completed\",\"tool_name\":\"run_terminal_command\",\"duration_ms\":10022,\"outcome\":\"success\",\"tool_call_id\":\"call_2\"}",
+     "{\"ts\":\"2026-09-30T11:59:34.693Z\",\"type\":\"loop_started\",\"loop_index\":1}",
+     "{\"ts\":\"2026-09-30T11:59:34.694Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T11:59:34.707Z\",\"type\":\"first_token\"}",
+     "{\"ts\":\"2026-09-30T11:59:34.707Z\",\"type\":\"phase_changed\",\"phase\":\"streaming_text\"}",
+     "{\"ts\":\"2026-09-30T11:59:34.735Z\",\"type\":\"turn_ended\",\"outcome\":\"completed\"}"
+    ]
+   }
+  },
+  "deny": {
+   "answeredWith": "\"3 No, reject\" then Enter",
+   "hooks": [
+    {
+     "hookEventName": "session_start",
+     "sessionId": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:55.434419195+00:00",
+     "permissionMode": "default",
+     "source": "new",
+     "hook_event_name": "SessionStart",
+     "session_id": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "user_prompt_submit",
+     "sessionId": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:55.509578387+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "promptId": "28765f9a-260a-4ea5-b24d-2a76d2f020ac",
+     "permissionMode": "default",
+     "prompt": "run the command",
+     "hook_event_name": "UserPromptSubmit",
+     "session_id": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "pre_tool_use",
+     "sessionId": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:55.574344639+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_6",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "toolInputTruncated": false,
+     "hook_event_name": "PreToolUse",
+     "session_id": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "tool_use_id": "call_6"
+    },
+    {
+     "hookEventName": "notification",
+     "sessionId": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:55.604339620+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permissionMode": "default",
+     "notificationType": "permission_prompt",
+     "message": "Tool permission requested",
+     "level": "info",
+     "hook_event_name": "Notification",
+     "session_id": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "permission_denied",
+     "sessionId": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T11:59:58.687401962+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_6",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "toolInputTruncated": false,
+     "hook_event_name": "PermissionDenied",
+     "session_id": "01a0f22f-839b-7481-a12b-cb87869b8ae0",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f22f-839b-7481-a12b-cb87869b8ae0/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "tool_use_id": "call_6"
+    }
+   ],
+   "sessions": {
+    "01a0f22f-839b-7481-a12b-cb87869b8ae0": [
+     "{\"ts\":\"2026-09-30T11:59:55.509Z\",\"type\":\"turn_started\",\"session_id\":\"01a0f22f-839b-7481-a12b-cb87869b8ae0\",\"turn_number\":0,\"model_id\":\"fake\",\"yolo_mode\":false,\"conversation_message_count\":3,\"session_relationship\":\"primary\",\"schema_version\":\"1.0\"}",
+     "{\"ts\":\"2026-09-30T11:59:55.555Z\",\"type\":\"loop_started\",\"loop_index\":0}",
+     "{\"ts\":\"2026-09-30T11:59:55.564Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T11:59:55.572Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T11:59:55.572Z\",\"type\":\"tool_started\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T11:59:55.598Z\",\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}",
+     "{\"ts\":\"2026-09-30T11:59:55.598Z\",\"type\":\"permission_requested\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T11:59:58.687Z\",\"type\":\"permission_resolved\",\"tool_name\":\"run_terminal_command\",\"decision\":\"deny\",\"wait_ms\":3088}",
+     "{\"ts\":\"2026-09-30T11:59:58.687Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T11:59:58.710Z\",\"type\":\"turn_ended\",\"outcome\":\"cancelled\",\"cancellation_category\":\"permission_rejected\",\"cancellation_context\":{\"tool_name\":\"run_terminal_command\",\"reason\":\"User rejected the execution\"}}"
+    ]
+   }
+  },
+  "cancel": {
+   "answeredWith": "Ctrl+C on the open dialog",
+   "hooks": [
+    {
+     "hookEventName": "session_start",
+     "sessionId": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:00:28.060258672+00:00",
+     "permissionMode": "default",
+     "source": "new",
+     "hook_event_name": "SessionStart",
+     "session_id": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "user_prompt_submit",
+     "sessionId": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:00:28.120724814+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "promptId": "b3bf1cfc-b230-4350-b898-8181f71b0caf",
+     "permissionMode": "default",
+     "prompt": "run the command",
+     "hook_event_name": "UserPromptSubmit",
+     "session_id": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "pre_tool_use",
+     "sessionId": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:00:28.181202308+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_8",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "toolInputTruncated": false,
+     "hook_event_name": "PreToolUse",
+     "session_id": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && sleep 10 && echo slept",
+      "description": "sleep then echo"
+     },
+     "tool_use_id": "call_8"
+    },
+    {
+     "hookEventName": "notification",
+     "sessionId": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:00:28.203048440+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "permissionMode": "default",
+     "notificationType": "permission_prompt",
+     "message": "Tool permission requested",
+     "level": "info",
+     "hook_event_name": "Notification",
+     "session_id": "01a0f230-031d-78c1-8e26-5b13fb9d266d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f230-031d-78c1-8e26-5b13fb9d266d/updates.jsonl",
+     "permission_mode": "default"
+    }
+   ],
+   "sessions": {
+    "01a0f230-031d-78c1-8e26-5b13fb9d266d": [
+     "{\"ts\":\"2026-09-30T12:00:28.120Z\",\"type\":\"turn_started\",\"session_id\":\"01a0f230-031d-78c1-8e26-5b13fb9d266d\",\"turn_number\":0,\"model_id\":\"fake\",\"yolo_mode\":false,\"conversation_message_count\":3,\"session_relationship\":\"primary\",\"schema_version\":\"1.0\"}",
+     "{\"ts\":\"2026-09-30T12:00:28.172Z\",\"type\":\"loop_started\",\"loop_index\":0}",
+     "{\"ts\":\"2026-09-30T12:00:28.174Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T12:00:28.180Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:00:28.180Z\",\"type\":\"tool_started\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T12:00:28.200Z\",\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}",
+     "{\"ts\":\"2026-09-30T12:00:28.200Z\",\"type\":\"permission_requested\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T12:00:31.414Z\",\"type\":\"permission_resolved\",\"tool_name\":\"run_terminal_command\",\"decision\":\"cancelled\",\"wait_ms\":3213}",
+     "{\"ts\":\"2026-09-30T12:00:31.414Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:00:31.418Z\",\"type\":\"turn_ended\",\"outcome\":\"cancelled\",\"cancellation_category\":\"permission_cancelled\"}"
+    ]
+   }
+  },
+  "subagent": {
+   "answeredWith": "parent prompt for spawn_subagent approved with \"2\"; the CHILD then asked for run_terminal_command and that dialog was approved at once. The child's notification carries the PARENT sessionId, while its permission_requested is in the CHILD's events.jsonl.",
+   "hooks": [
+    {
+     "hookEventName": "session_start",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:15.218974522+00:00",
+     "permissionMode": "default",
+     "source": "new",
+     "hook_event_name": "SessionStart",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "user_prompt_submit",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:15.265831116+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "promptId": "e69ebc16-d47b-4f74-a7b3-6eeac7b70770",
+     "permissionMode": "default",
+     "prompt": "spawn it",
+     "hook_event_name": "UserPromptSubmit",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "pre_tool_use",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:15.313846223+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "spawn_subagent",
+     "toolUseId": "call_2",
+     "toolInput": {
+      "prompt": "run the command",
+      "description": "run a command",
+      "background": false
+     },
+     "toolInputTruncated": false,
+     "hook_event_name": "PreToolUse",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "spawn_subagent",
+     "tool_input": {
+      "prompt": "run the command",
+      "description": "run a command",
+      "background": false
+     },
+     "tool_use_id": "call_2"
+    },
+    {
+     "hookEventName": "notification",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:15.347617151+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permissionMode": "default",
+     "notificationType": "permission_prompt",
+     "message": "Tool permission requested",
+     "level": "info",
+     "hook_event_name": "Notification",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "user_prompt_submit",
+     "sessionId": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.234516154+00:00",
+     "promptId": "01a0f232-c74f-7d93-8854-a732b0e19842",
+     "permissionMode": "default",
+     "prompt": "run the command",
+     "subagentType": "general-purpose",
+     "hook_event_name": "UserPromptSubmit",
+     "session_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "pre_tool_use",
+     "sessionId": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.267870106+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_4",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "description": "sleep then echo"
+     },
+     "toolInputTruncated": false,
+     "subagentType": "general-purpose",
+     "hook_event_name": "PreToolUse",
+     "session_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "description": "sleep then echo"
+     },
+     "tool_use_id": "call_4"
+    },
+    {
+     "hookEventName": "notification",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.291282873+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permissionMode": "default",
+     "notificationType": "permission_prompt",
+     "message": "Tool permission requested",
+     "level": "info",
+     "hook_event_name": "Notification",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "post_tool_use",
+     "sessionId": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.529761346+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "run_terminal_command",
+     "toolUseId": "call_4",
+     "toolInput": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "description": "sleep then echo"
+     },
+     "toolResult": {
+      "type": "Bash",
+      "output": [
+       111,
+       107,
+       10
+      ],
+      "output_for_prompt": "exit: 0\nok\n",
+      "exit_code": 0,
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "truncated": false,
+      "signal": null,
+      "timed_out": false,
+      "description": "sleep then echo",
+      "current_dir": "/work/project",
+      "output_file": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/terminal/call_4.log",
+      "total_bytes": 3
+     },
+     "toolInputTruncated": false,
+     "toolResultTruncated": false,
+     "durationMs": 22,
+     "isBackgrounded": false,
+     "subagentType": "general-purpose",
+     "hook_event_name": "PostToolUse",
+     "session_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "run_terminal_command",
+     "tool_input": {
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "description": "sleep then echo"
+     },
+     "tool_response": {
+      "type": "Bash",
+      "output": [
+       111,
+       107,
+       10
+      ],
+      "output_for_prompt": "exit: 0\nok\n",
+      "exit_code": 0,
+      "command": "mkdir -p /work/project/d && rm -rf /work/project/d && echo ok",
+      "truncated": false,
+      "signal": null,
+      "timed_out": false,
+      "description": "sleep then echo",
+      "current_dir": "/work/project",
+      "output_file": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/terminal/call_4.log",
+      "total_bytes": 3
+     },
+     "tool_use_id": "call_4",
+     "duration_ms": 22
+    },
+    {
+     "hookEventName": "session_end",
+     "sessionId": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.579889373+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permissionMode": "default",
+     "reason": "shutdown",
+     "subagentType": "general-purpose",
+     "hook_event_name": "SessionEnd",
+     "session_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-c731-7832-ae61-e1884d465d79/updates.jsonl",
+     "permission_mode": "default"
+    },
+    {
+     "hookEventName": "post_tool_use",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.604808729+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permissionMode": "default",
+     "toolName": "spawn_subagent",
+     "toolUseId": "call_2",
+     "toolInput": {
+      "prompt": "run the command",
+      "description": "run a command",
+      "background": false
+     },
+     "toolResult": {
+      "type": "SubagentCompleted",
+      "output": "All done.",
+      "subagent_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+      "subagent_type": "general-purpose",
+      "tool_calls": 1,
+      "turns": 1,
+      "duration_ms": 373,
+      "worktree_path": null,
+      "resume_from_hint": "01a0f232-c731-7832-ae61-e1884d465d79"
+     },
+     "toolInputTruncated": false,
+     "toolResultTruncated": false,
+     "durationMs": 403,
+     "isBackgrounded": false,
+     "hook_event_name": "PostToolUse",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default",
+     "tool_name": "spawn_subagent",
+     "tool_input": {
+      "prompt": "run the command",
+      "description": "run a command",
+      "background": false
+     },
+     "tool_response": {
+      "type": "SubagentCompleted",
+      "output": "All done.",
+      "subagent_id": "01a0f232-c731-7832-ae61-e1884d465d79",
+      "subagent_type": "general-purpose",
+      "tool_calls": 1,
+      "turns": 1,
+      "duration_ms": 373,
+      "worktree_path": null,
+      "resume_from_hint": "01a0f232-c731-7832-ae61-e1884d465d79"
+     },
+     "tool_use_id": "call_2",
+     "duration_ms": 403
+    },
+    {
+     "hookEventName": "stop",
+     "sessionId": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "cwd": "/work/project",
+     "workspaceRoot": "/work/project",
+     "timestamp": "2026-09-30T12:03:29.634196380+00:00",
+     "transcriptPath": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "promptId": "e69ebc16-d47b-4f74-a7b3-6eeac7b70770",
+     "permissionMode": "default",
+     "reason": "end_turn",
+     "stopHookActive": false,
+     "lastAssistantMessage": "All done.",
+     "backgroundTasks": [],
+     "sessionCrons": [],
+     "hook_event_name": "Stop",
+     "session_id": "01a0f232-900f-7a63-81ad-2b9bf2b32f8d",
+     "transcript_path": "/home/user/.grok/sessions/%2Fwork%2Fproject/01a0f232-900f-7a63-81ad-2b9bf2b32f8d/updates.jsonl",
+     "permission_mode": "default"
+    }
+   ],
+   "sessions": {
+    "01a0f232-900f-7a63-81ad-2b9bf2b32f8d": [
+     "{\"ts\":\"2026-09-30T12:03:15.265Z\",\"type\":\"turn_started\",\"session_id\":\"01a0f232-900f-7a63-81ad-2b9bf2b32f8d\",\"turn_number\":0,\"model_id\":\"fake\",\"yolo_mode\":false,\"conversation_message_count\":3,\"session_relationship\":\"primary\",\"schema_version\":\"1.0\"}",
+     "{\"ts\":\"2026-09-30T12:03:15.298Z\",\"type\":\"loop_started\",\"loop_index\":0}",
+     "{\"ts\":\"2026-09-30T12:03:15.304Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T12:03:15.313Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:03:15.313Z\",\"type\":\"tool_started\",\"tool_name\":\"spawn_subagent\"}",
+     "{\"ts\":\"2026-09-30T12:03:15.347Z\",\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}",
+     "{\"ts\":\"2026-09-30T12:03:15.347Z\",\"type\":\"permission_requested\",\"tool_name\":\"spawn_subagent\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.200Z\",\"type\":\"permission_resolved\",\"tool_name\":\"spawn_subagent\",\"decision\":\"allow\",\"wait_ms\":13853}",
+     "{\"ts\":\"2026-09-30T12:03:29.200Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.621Z\",\"type\":\"tool_completed\",\"tool_name\":\"spawn_subagent\",\"duration_ms\":403,\"outcome\":\"success\",\"tool_call_id\":\"call_2\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.622Z\",\"type\":\"loop_started\",\"loop_index\":1}",
+     "{\"ts\":\"2026-09-30T12:03:29.622Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.632Z\",\"type\":\"first_token\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.632Z\",\"type\":\"phase_changed\",\"phase\":\"streaming_text\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.662Z\",\"type\":\"turn_ended\",\"outcome\":\"completed\"}"
+    ],
+    "01a0f232-c731-7832-ae61-e1884d465d79": [
+     "{\"ts\":\"2026-09-30T12:03:29.234Z\",\"type\":\"turn_started\",\"session_id\":\"01a0f232-c731-7832-ae61-e1884d465d79\",\"turn_number\":0,\"model_id\":\"fake\",\"yolo_mode\":false,\"conversation_message_count\":1,\"session_relationship\":\"primary\",\"schema_version\":\"1.0\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.256Z\",\"type\":\"loop_started\",\"loop_index\":0}",
+     "{\"ts\":\"2026-09-30T12:03:29.261Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.267Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.267Z\",\"type\":\"tool_started\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.290Z\",\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.290Z\",\"type\":\"permission_requested\",\"tool_name\":\"run_terminal_command\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.506Z\",\"type\":\"permission_resolved\",\"tool_name\":\"run_terminal_command\",\"decision\":\"allow\",\"wait_ms\":216}",
+     "{\"ts\":\"2026-09-30T12:03:29.506Z\",\"type\":\"phase_changed\",\"phase\":\"tool_execution\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.546Z\",\"type\":\"tool_completed\",\"tool_name\":\"run_terminal_command\",\"duration_ms\":22,\"outcome\":\"success\",\"tool_call_id\":\"call_4\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.546Z\",\"type\":\"loop_started\",\"loop_index\":1}",
+     "{\"ts\":\"2026-09-30T12:03:29.547Z\",\"type\":\"phase_changed\",\"phase\":\"waiting_for_model\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.554Z\",\"type\":\"first_token\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.554Z\",\"type\":\"phase_changed\",\"phase\":\"streaming_text\"}",
+     "{\"ts\":\"2026-09-30T12:03:29.562Z\",\"type\":\"turn_ended\",\"outcome\":\"completed\"}"
+    ]
+   }
+  }
+ }
+}

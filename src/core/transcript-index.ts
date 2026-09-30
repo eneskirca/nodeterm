@@ -32,7 +32,13 @@ function indexFilePath(): string {
 // Every LOCAL transcript root to index: the system default plus each managed LOCAL account's
 // projects dir. Remote accounts (a `host` set) live on another host's fs → not scanned here.
 function projectsRoots(): string[] {
-  const roots = [path.join(os.homedir(), '.claude', 'projects')]
+  return accountRoots().map((r) => r.root)
+}
+
+function accountRoots(): Array<{ root: string; accountId?: string }> {
+  const roots: Array<{ root: string; accountId?: string }> = [
+    { root: path.join(os.homedir(), '.claude', 'projects') }
+  ]
   const userData = platform().userDataDir
   for (const acct of accountsGetter?.() ?? []) {
     if (acct.host || acct.pending) continue
@@ -41,7 +47,7 @@ function projectsRoots(): string[] {
       // trusted — settings.json is hand-editable — and an unusable value falls back to the managed
       // path, which simply contributes an absent root.
       const dir = normalizeLinkedConfigDir(acct.configDir) ?? accountConfigDir(userData, acct.id)
-      roots.push(path.join(dir, 'projects'))
+      roots.push({ root: path.join(dir, 'projects'), accountId: acct.id })
     } catch {
       /* invalid account id → skip that root (fail-open) */
     }
@@ -149,7 +155,10 @@ async function refresh(): Promise<void> {
 }
 
 export function searchTranscripts(query: string): TranscriptHit[] {
-  return searchEntries(entries, query)
+  const roots = accountRoots()
+  return searchEntries(entries, query, undefined, (p) =>
+    roots.find((r) => p.startsWith(r.root + path.sep))?.accountId
+  )
 }
 
 export function initTranscriptIndex(getAccounts?: () => ClaudeAccount[]): void {

@@ -6,14 +6,16 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
   DEFAULT_PROJECT_ID, EMPTY_WORKSPACE,
-  type BridgeLink, type CanvasNodeState, type KanbanColumn, type KanbanLabel, type Project, type Workspace, type WorkspaceSaveOptions,
-  type WorkspaceV1
+  type BridgeLink, type CanvasNodeState, type KanbanColumn, type KanbanLabel, type Project, type ProjectKanban,
+  type Workspace, type WorkspaceSaveOptions, type WorkspaceV1
 } from '../shared/types'
+import { contentOf, type CanvasContent } from '../shared/canvas-content'
 import {
   PROJECT_DIR, PROJECT_FILE, fileToProject, inlineProjectFileRelPath, isInlineProjectFileId,
   projectToFile, resolveNodes, sameProjectContent,
   sanitizeLoadedClosedSessions, sanitizeNodeTriggers, serializeProjectFile, splitWorkspace,
   sanitizeKanban,
+  sanitizeLinks,
   type IndexEntryV3, type ProjectFileV1, type WorkspaceIndexV3
 } from './workspace-files'
 import { readProjectSettingsFile, writeProjectSettingsFile } from './project-settings-files'
@@ -25,7 +27,7 @@ import {
 } from '../shared/project-settings'
 import { readProjectCapabilities, type ProjectCapability } from '../shared/project-capabilities'
 import type { CapabilityAckMap } from './project-capability-consent'
-import { hoistLegacyNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
+import { carryLocalNodeExec, hoistLegacyNodeExec, stripSharedNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
 import { collisionSeed, derivedProjectId, freshProjectId } from '../shared/project-id'
 import {
   pruneLayoutViewports,
@@ -35,6 +37,19 @@ import {
 import { appendProjectNode, removeProjectNode, type RemoteNodeInput } from './project-node-append'
 import { editProjectCardLabels, ensureProjectBoard, setProjectCardColumn, type CardLabelEdit } from './project-kanban-write'
 import { boardLabels, cardMeta } from '../shared/kanban-labels'
+
+/**
+ * The seam a content authority (the Server Edition's canvas authority, `core/canvas-authority.ts`)
+ * governs shared projects through. For every project it governs it is the one writer of the CONTENT
+ * fields (nodes, bridges, ropes, board items); the renderer's whole-workspace saves and this store's
+ * loads still carry everything else, so both are passed through it.
+ */
+export interface ContentAuthorityHooks {
+  /** Rewrite governed projects' content fields just before a save is split and written. */
+  overlaySave(ws: Workspace): Promise<Workspace>
+  /** Rewrite governed projects' content fields in a load result. */
+  overlayLoad(ws: Workspace): Promise<Workspace>
+}
 
 /** Checked remote read: `absent` (no file — safe to push our cache) is NOT `error` (connection
  *  down / ssh failure — a failed read is never evidence of absence, so nothing may be pushed). */
@@ -51,7 +66,21 @@ export interface RemoteWorkspaceIO {
   writeSettings?(projectId: string, ssh: NonNullable<Project['ssh']>, content: string): Promise<boolean>
 }
 
-const projectFilePath = (cwd: string): string => path.join(cwd, PROJECT_DIR, PROJECT_FILE)
+/** cwd -> its project-file path. The path is a pure function of the cwd string, and the hosted
+ *  relay's per-frame access check (`projectIdsForNode` → `canvasInputs`) needs it for every index
+ *  entry on every frame, where `path.join` was most of the cost. Bounded, oldest out: the key set is
+ *  the cwds the index has ever held, which only grows by the user adding folders. */
+const projectFilePaths = new Map<string, string>()
+const PROJECT_FILE_PATHS_CAP = 1024
+const projectFilePath = (cwd: string): string => {
+  let file = projectFilePaths.get(cwd)
+  if (file === undefined) {
+    file = path.join(cwd, PROJECT_DIR, PROJECT_FILE)
+    if (projectFilePaths.size >= PROJECT_FILE_PATHS_CAP) projectFilePaths.delete(projectFilePaths.keys().next().value!)
+    projectFilePaths.set(cwd, file)
+  }
+  return file
+}
 
 /** The data file of one cwd-less ("inline") project: `userData/inline-projects/<id>.json`. Only
  *  ever called with an id `isInlineProjectFileId` has already accepted — workspace.json is
@@ -64,7 +93,94 @@ const inlineFilePath = (projectId: string): string =>
  *  small enough that a server-side revert to genuinely old content still reads as external. */
 const RECENT_MIRROR_CAP = 8
 
+/** `projectIdsForNode`'s answer for an id no project holds (shared, frozen: callers only read it). */
+const NO_PROJECTS: readonly string[] = Object.freeze([])
+
 const contentHash = (content: string): string => createHash('sha256').update(content).digest('hex')
+
+/**
+ * This machine's exec values for one ref'd entry's file, exactly as the load computes them
+ * (`WorkspaceStore.execOverlay`) but without its bookkeeping, so a read-only caller can ask: a
+ * migrated entry answers with its own `localExec`; an entry still owed the one-time migration also
+ * hoists what its file carried from before the trust boundary (@shared/node-exec).
+ */
+function localExecOverlay(e: IndexEntryV3, f: ProjectFileV1): LocalNodeExecMap | undefined {
+  if (e.execMigrated) return e.localExec
+  const hoisted = hoistLegacyNodeExec(f.nodes)
+  return hoisted ? { ...hoisted, ...e.localExec } : e.localExec
+}
+
+/** A project file's `rev` as a number. The file is hand-editable input; a string there would turn
+ *  `rev + 1` into string concatenation. */
+const fileRev = (f: ProjectFileV1): number =>
+  typeof f.rev === 'number' && Number.isFinite(f.rev) ? f.rev : 0
+
+/** The board keys that belong to the FILE, not to the content vocabulary: the GitHub sync config
+ *  and the pull-request link overrides are coupled to columns but are never carried by a canvas
+ *  mutation, so a content write must not be able to change them. */
+const BOARD_CONFIG_KEYS = ['github', 'pullLinks'] as const
+
+/**
+ * `board` (the content's) with the file's own `github` / `pullLinks`, field-level: every other key
+ * comes from `board`, those two from `file` — present when the file has them, absent when it does
+ * not, whatever `board` says. Key order follows `board`, so a board that came out of this file
+ * serializes in the file's own order. When the content has no board, the file's board is kept as it
+ * is: a content write never deletes a board.
+ */
+function boardWithFileConfig(
+  board: ProjectKanban | undefined,
+  file: ProjectKanban | undefined
+): ProjectKanban | undefined {
+  if (!board) return file
+  const own = (file ?? {}) as Record<string, unknown>
+  const isConfig = (k: string): boolean => (BOARD_CONFIG_KEYS as readonly string[]).includes(k)
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(board)) {
+    if (!isConfig(k)) out[k] = v
+    else if (own[k] !== undefined) out[k] = own[k]
+  }
+  for (const k of BOARD_CONFIG_KEYS) if (!(k in out) && own[k] !== undefined) out[k] = own[k]
+  return out as unknown as ProjectKanban
+}
+
+/** An edge list to write: the content's, except that an EMPTY list does not add a key the base did
+ *  not carry — "no list" and "an empty list" are the same content, and writing `"bridges": []` into
+ *  a file nobody drew a link in is a diff in the user's repository nobody made. */
+const edgeList = (next: BridgeLink[], prev: BridgeLink[] | undefined): BridgeLink[] | undefined =>
+  next.length || prev !== undefined ? next : undefined
+
+/** `base` with its content fields replaced by `content`: nodes and edge lists whole, the board
+ *  field-level (`boardWithFileConfig`). Everything else — name, colour, icon, capabilities, layouts,
+ *  the machine-local half — is `base`'s. */
+function withContent(base: Project, content: CanvasContent): Project {
+  const out: Project = { ...base, nodes: content.nodes }
+  const bridges = edgeList(content.bridges, base.bridges)
+  const ropes = edgeList(content.ropes, base.ropes)
+  const kanban = boardWithFileConfig(content.kanban, base.kanban)
+  if (bridges) out.bridges = bridges
+  else delete out.bridges
+  if (ropes) out.ropes = ropes
+  else delete out.ropes
+  if (kanban) out.kanban = kanban
+  else delete out.kanban
+  return out
+}
+
+/** A cwd-less canvas's content out of its index cache, admitted with the sanitizers the inline load
+ *  branch applies: workspace.json is hand-editable, and the entry's `project` can be the raw copy
+ *  (the load sanitizes what it RETURNS, not the entry). Null for a cache with no node list. */
+function inlineContent(p: Project): CanvasContent | null {
+  if (!Array.isArray(p.nodes)) return null
+  return contentOf({
+    nodes: sanitizeNodeTriggers(p.nodes),
+    bridges: p.bridges ? sanitizeLinks(p.bridges) : undefined,
+    ropes: p.ropes ? sanitizeLinks(p.ropes) : undefined,
+    kanban: sanitizeKanban(p.kanban)
+  })
+}
+
+/** What `writeDataFile` did. The save path ignores it; `writeProjectContent` answers with it. */
+type DataFileWrite = 'written' | 'unchanged' | 'ahead' | 'refused' | 'failed' | 'skipped'
 
 /** Alias of the shared `ProjectSettingsSnapshot` (moved to `shared/project-settings.ts` so the
  *  renderer's `ProjectSettingsApi` can name the shape without importing core) — the store's
@@ -134,6 +250,8 @@ export class WorkspaceStore {
    *  its last write on EVERY autosave; re-parsing each file each time was pure waste. Keyed by the
    *  raw string, so any `lastWritten.set` elsewhere invalidates it by construction. */
   private lastWrittenParsed = new Map<string, { raw: string; parsed: ProjectFileV1 }>()
+  /** `projectIdsForNode`'s node → projects map, and the `canvasInputs` snapshot it was built from. */
+  private nodeProjectMemo: { inputs: unknown[]; map: Map<string, readonly string[]> } | null = null
   /** The index bytes we last wrote and the file's size/mtime/inode right after, so an unchanged
    *  index is not rewritten on every autosave — but one another writer changed on disk still is.
    *  The inode is what catches a same-size rewrite on a coarse-mtime filesystem: every writer
@@ -207,8 +325,17 @@ export class WorkspaceStore {
   private index: WorkspaceIndexV3 | null = null
   /** Optional hook fired after every load()/save() — the watcher re-syncs its watch set (Task 5). */
   onPersist?: () => void
+  /** The content authority, when this process runs one (Server Edition hosting a team). */
+  private contentAuthority: ContentAuthorityHooks | null = null
 
   constructor(private remoteIO?: RemoteWorkspaceIO) {}
+
+  /** Attach (or, with null, detach) the content authority whose overlays every later save and load
+   *  pass through. Set once at boot; the Server Edition sets it after its first index load (the
+   *  authority adopts every shared project itself) and clears it on close. */
+  setContentAuthority(hooks: ContentAuthorityHooks | null): void {
+    this.contentAuthority = hooks
+  }
 
   private get indexPath(): string {
     return path.join(platform().userDataDir, 'workspace.json')
@@ -237,7 +364,20 @@ export class WorkspaceStore {
    * a phone can trigger mid git-merge) pass false so a conflict-marked file is left hand-resolvable.
    */
   async load(opts?: { sideline?: boolean }): Promise<Workspace> {
-    const result = await this.loadInner(opts?.sideline ?? true)
+    let result = await this.loadInner(opts?.sideline ?? true)
+    const authority = this.contentAuthority
+    if (authority) {
+      try {
+        result = await authority.overlayLoad(result)
+      } catch (err) {
+        // Answer the load WITHOUT the overlay rather than throw. `loadInner` has already set
+        // `this.index`, so the empty-save guard at the top of `saveNow` (`!this.index`) no longer
+        // protects it: a renderer left without the projects this load failed to hand over can still
+        // save (a new project, say), and that save rebuilds the index without them and sweeps their
+        // inline data files. A stale copy is the safe side — the next save is overlaid again.
+        console.warn(`[workspace] content overlay failed on load; serving the stored workspace: ${String(err)}`)
+      }
+    }
     this.onPersist?.()
     return result
   }
@@ -332,9 +472,12 @@ export class WorkspaceStore {
         // same kanban shape guard here — a v1/hand-edited board would otherwise crash the render —
         // and the same trigger shape rule (workspace.json is hand-editable input too).
         // `rest` drops BOTH guarded fields; each is added back below only if it passes its guard.
-        const { kanban, closedSessions, layouts, layoutViewports, ...rest } = e.project
+        const { kanban, closedSessions, layouts, layoutViewports, bridges, ropes, ...rest } = e.project
         const admittedKanban = sanitizeKanban(kanban)
         const base = admittedKanban ? { ...rest, kanban: admittedKanban } : rest
+        // The canvas links, like the board: a non-list or a `null` entry threw on project load.
+        const admittedBridges = bridges ? sanitizeLinks(bridges) : undefined
+        const admittedRopes = ropes ? sanitizeLinks(ropes) : undefined
         // An inline project's embedded layouts are hand-editable input exactly like a git-shared
         // file's, and they never pass through `fileToProject` on this branch, so they are
         // sanitized (and their cameras pruned against them) here instead.
@@ -350,6 +493,8 @@ export class WorkspaceStore {
           project: {
             ...base,
             nodes: sanitizeNodeTriggers(base.nodes),
+            ...(admittedBridges ? { bridges: admittedBridges } : {}),
+            ...(admittedRopes ? { ropes: admittedRopes } : {}),
             ...(history ? { closedSessions: history } : {}),
             ...(admitted ? { layouts: admitted } : {}),
             ...(views ? { layoutViewports: views } : {})
@@ -513,11 +658,10 @@ export class WorkspaceStore {
     // the entry stays unmarked forever and the hoist re-runs on every full load, which would also
     // let a project.json swapped in AFTER the deferral get its exec fields hoisted as trusted.
     this.execUnmigrated.delete(e.id)
-    if (e.execMigrated) return e.localExec
-    const hoisted = hoistLegacyNodeExec(f.nodes)
-    if (!hoisted) return e.localExec
-    this.pendingExecNote = true
-    return { ...hoisted, ...e.localExec }
+    const overlay = localExecOverlay(e, f)
+    // A hoist happened exactly when the overlay is not the entry's own map (see `localExecOverlay`).
+    if (overlay !== e.localExec) this.pendingExecNote = true
+    return overlay
   }
 
   /** The file was unreadable, so the hoist could not run: leave the entry unmarked and retry it on
@@ -948,6 +1092,16 @@ export class WorkspaceStore {
   private saveChain: Promise<unknown> = Promise.resolve()
 
   /**
+   * Resolves once every write queued on `saveChain` so far (saves, content writes, reconciles) has
+   * finished, landed or failed; never rejects. The Server Edition's close awaits it BEFORE it stops
+   * the content authority: a browser save still queued behind a slow write would otherwise run after
+   * the authority was detached and write its stale content un-overlaid over the final flush.
+   */
+  idle(): Promise<void> {
+    return this.saveChain.then(() => undefined)
+  }
+
+  /**
    * `localOnly` makes the save durable on THIS machine only: every local file and the index (which
    * carries each SSH project's cache) are written, but no SSH project is read, reconciled or
    * mirrored — a changed, already-reconciled entry is marked `unmirrored` instead, so the next
@@ -974,6 +1128,154 @@ export class WorkspaceStore {
     return parsed
   }
 
+  /**
+   * The current content of a project as this store knows it, WITHOUT queueing on `saveChain`: the
+   * content authority calls it from inside `saveNow` (its save overlay), and a queued read would
+   * wait on the very save that is waiting on it. null = unknown project, SSH project (its file is
+   * on another machine), or a file this store cannot read.
+   *
+   * A folder project answers from the store's own last write or read of its file (`lastWritten`),
+   * else from one read off disk, converted the way a load converts it: portable cwds resolved
+   * against the folder and this machine's exec values re-applied. The read is NOT recorded:
+   * recording it would make the watcher take an outside edit it has not processed yet for one of
+   * our own writes. A cwd-less canvas answers from its index cache, which every save and every
+   * `writeProjectContent` keeps in step with its data file.
+   */
+  async readProjectContent(projectId: string): Promise<CanvasContent | null> {
+    const e = this.index?.entries.find((x) => x.id === projectId)
+    if (!e || e.ssh) return null
+    if (e.cwd) {
+      const file = await this.knownProjectFile(e.cwd)
+      if (!file) return null
+      return contentOf(fileToProject(file, { id: e.id, cwd: e.cwd, localExec: localExecOverlay(e, file) }))
+    }
+    return e.project ? inlineContent(e.project) : null
+  }
+
+  /** A folder project's file as this store last wrote or read it, else as it is on disk now. */
+  private async knownProjectFile(cwd: string): Promise<ProjectFileV1 | null> {
+    try {
+      const known = this.parsedLastWritten(projectFilePath(cwd))
+      if (known && Array.isArray(known.nodes)) return known
+    } catch { /* our own record, but never trusted blindly — fall back to the disk */ }
+    return (await this.readProjectFile(cwd, false))?.file ?? null
+  }
+
+  /**
+   * Replace a project's content fields (nodes, bridges, ropes, the board's items) atomically — the
+   * content authority's flush. Queued on `saveChain` like every other read-modify-write of a
+   * project file, so it can never interleave with a save.
+   *
+   * The file it writes is byte-identical to the one `save()` writes for the same project, apart
+   * from `rev` and `savedAt`: it goes through the same `projectToFile` (portable node cwds, exec
+   * fields stripped, triggers / links / board sanitized, the derived `viewport` and legacy `id`),
+   * and the project it hands that function is the file's own, read the way a load reads it, with
+   * only its content fields replaced. So the file keeps everything else it carried — name, colour,
+   * icon, capabilities, layouts — and its board keeps its own `github` and `pullLinks`.
+   *
+   * It does what a save does to the store's bookkeeping — `lastWritten` (so the watcher reads it
+   * as a self-write, never an outside edit), `revs`, a cwd-less canvas's `e.project` cache and the
+   * index write that carries it, and `onPersist` — and deliberately broadcasts nothing: every
+   * client already has the change from the reflector.
+   *
+   * Resolves false when nothing could be written: an unknown or SSH project, an unreadable file
+   * (never written over — a file mid-merge is left for the user), an I/O error, a cwd-less file
+   * whose disk rev is ahead of ours (another instance wrote it), or an empty canvas over a
+   * populated file this store has never read. The last two are the save path's own rules.
+   *
+   * An outside edit the watcher has NOT processed yet (inside its debounce) is not merged: the file
+   * is read from disk, so the edit's other fields survive, but its CONTENT is replaced by the
+   * authority's, which has not seen the edit; and `lastWritten` then records the bytes written, so
+   * the watcher's pending event reads the file as a self-write and the edit is never adopted. A
+   * save does exactly the same (it writes the whole project and records it). The rev never goes
+   * below the one on disk.
+   */
+  writeProjectContent(projectId: string, content: CanvasContent): Promise<boolean> {
+    const run = this.saveChain.then(() => this.writeProjectContentNow(projectId, content))
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
+  private async writeProjectContentNow(projectId: string, content: CanvasContent): Promise<boolean> {
+    const e = this.index?.entries.find((x) => x.id === projectId)
+    if (!e || e.ssh) return false
+    const savedAt = new Date().toISOString()
+    if (e.cwd) return this.writeFolderContent(e, e.cwd, content, savedAt)
+    if (e.project) return this.writeInlineContent(e, e.project, content, savedAt)
+    return false
+  }
+
+  /** The folder leg: `<cwd>/.nodeterm/project.json`, under the save's folder-leg rules. */
+  private async writeFolderContent(
+    e: IndexEntryV3,
+    cwd: string,
+    content: CanvasContent,
+    savedAt: string
+  ): Promise<boolean> {
+    const file = projectFilePath(cwd)
+    const read = await this.readProjectFile(cwd, false)
+    if (!read) return false
+    const candidate = projectToFile(withContent(fileToProject(read.file, { id: e.id, cwd }), content), 0, savedAt)
+    // Unchanged: nothing to write, and no rev to burn.
+    if (sameProjectContent(read.file, candidate)) return true
+    let known: ProjectFileV1 | null = null
+    try {
+      known = this.parsedLastWritten(file)
+    } catch { /* treated as never read */ }
+    // The save's rule: an empty canvas never overwrites a populated file this store has not read.
+    if (!known && candidate.nodes.length === 0 && read.file.nodes.length > 0) return false
+    const rev = Math.max(this.revs.get(e.id) ?? 0, fileRev(read.file)) + 1
+    const out = serializeProjectFile({ ...candidate, rev })
+    try {
+      await writeAtomic(file, out)
+    } catch {
+      return false
+    }
+    this.lastWritten.set(file, out)
+    this.revs.set(e.id, rev)
+    this.onPersist?.()
+    return true
+  }
+
+  /** The cwd-less leg: the data file under `writeDataFile`'s rules, then the index cache. A pre-file
+   *  canvas (no `dataFile`, or an id we will not turn into a path) is stored IN the index, so for
+   *  it the index write is the write.
+   *
+   *  The index `project` also holds this machine's exec values (`shell`, `ssh.extraArgs`): for a
+   *  pre-file canvas it is their ONLY store, and for a data-ref it is the cache a missing data file
+   *  falls back to. The content carries none (the authority strips them), so each node keeps the
+   *  cached node's values, and whatever the content carried is dropped first: the index is the
+   *  trusted store, and nothing but this machine's own save may put an exec value there
+   *  (@shared/node-exec). The data file is unaffected either way, since `projectToFile` strips. */
+  private async writeInlineContent(
+    e: IndexEntryV3,
+    cached: Project,
+    content: CanvasContent,
+    savedAt: string
+  ): Promise<boolean> {
+    const cachedById = new Map((Array.isArray(cached.nodes) ? cached.nodes : []).map((n) => [n.id, n]))
+    const nodes = stripSharedNodeExec(content.nodes).map((n) => carryLocalNodeExec(cachedById.get(n.id), n))
+    const updated = withContent(cached, { ...content, nodes })
+    const viaFile = e.dataFile === true && isInlineProjectFileId(e.id)
+    if (viaFile) {
+      const landed = await this.writeDataFile(e.id, projectToFile(updated, 0, savedAt))
+      if (landed !== 'written' && landed !== 'unchanged') return false
+    }
+    e.project = updated
+    try {
+      await this.writeIndexNow()
+    } catch {
+      // A data-ref's file already holds the content and wins at load, so a stale cache costs
+      // nothing lasting; a pre-file canvas has nowhere else to be.
+      if (!viaFile) {
+        e.project = cached
+        return false
+      }
+    }
+    this.onPersist?.()
+    return true
+  }
+
   private async saveNow(workspace: Workspace, localOnly = false): Promise<void> {
     if (!workspace.projects.length && !this.index) {
       // A store that never read the index may not replace a populated one with "no projects":
@@ -986,6 +1288,14 @@ export class WorkspaceStore {
         if ((disk.entries?.length ?? 0) > 0 || (disk.projects?.length ?? 0) > 0) return
       } catch { /* absent or unparsable (loadInner sidelines corruption) — an empty write is fresh */ }
     }
+    // A governed project's content comes from the content authority, never from this (possibly
+    // stale) copy of it. Applied BEFORE the split, so every leg below — the project file, the data
+    // file, the index cache — writes the overlaid content. The authority reads the current content
+    // through `readProjectContent`, which does not queue on `saveChain`: this code runs ON it.
+    // FAILS CLOSED: a rejecting overlay rejects the save before any leg below has written a byte
+    // (the project file, the data file and the index are all written after this line). Never catch
+    // it and write the workspace as handed: that is the stale copy the overlay exists to overrule.
+    if (this.contentAuthority) workspace = await this.contentAuthority.overlaySave(workspace)
     const savedAt = new Date().toISOString()
     const previousIndex = this.index
     const { index, files, dataFiles } = splitWorkspace(workspace, (id) => this.revs.get(id) ?? 0, savedAt)
@@ -1201,8 +1511,8 @@ export class WorkspaceStore {
    * canvas in `project` (the dual-write), so the content is readable either way round — which is
    * also what makes a half-done migration consistent in both directions.
    */
-  private async writeDataFile(projectId: string, candidate: ProjectFileV1): Promise<void> {
-    if (!isInlineProjectFileId(projectId)) return
+  private async writeDataFile(projectId: string, candidate: ProjectFileV1): Promise<DataFileWrite> {
+    if (!isInlineProjectFileId(projectId)) return 'skipped'
     const file = inlineFilePath(projectId)
     const prev = this.lastWritten.get(file)
     let prevParsed: ProjectFileV1 | null = null
@@ -1211,7 +1521,7 @@ export class WorkspaceStore {
         prevParsed = JSON.parse(prev) as ProjectFileV1
       } catch { /* our own cache, but never trusted blindly */ }
     }
-    if (prevParsed && sameProjectContent(prevParsed, candidate)) return
+    if (prevParsed && sameProjectContent(prevParsed, candidate)) return 'unchanged'
     const ourRev = this.revs.get(projectId) ?? 0
     // Read the file only when we are actually about to write it.
     const onDisk = await this.readDataFile(projectId, false)
@@ -1220,9 +1530,9 @@ export class WorkspaceStore {
       // against reality instead of re-deciding this every time.
       this.lastWritten.set(file, onDisk.raw)
       this.revs.set(projectId, onDisk.file.rev)
-      return
+      return 'ahead'
     }
-    if (!prevParsed && candidate.nodes.length === 0 && (onDisk?.file.nodes.length ?? 0) > 0) return
+    if (!prevParsed && candidate.nodes.length === 0 && (onDisk?.file.nodes.length ?? 0) > 0) return 'refused'
     const next: ProjectFileV1 = { ...candidate, rev: ourRev + 1 }
     const content = serializeProjectFile(next)
     try {
@@ -1230,7 +1540,11 @@ export class WorkspaceStore {
       await writeAtomic(file, content)
       this.lastWritten.set(file, content)
       this.revs.set(projectId, next.rev)
-    } catch { /* the index's `project` copy still holds this canvas; the next save retries */ }
+      return 'written'
+    } catch {
+      // the index's `project` copy still holds this canvas; the next save retries
+      return 'failed'
+    }
   }
 
   /**
@@ -1506,6 +1820,67 @@ export class WorkspaceStore {
   }
 
   /**
+   * EVERY project that holds this node id, in index order ([] = none) — exactly what a
+   * `persistedCanvases` scan answers. All of them, never the first: node ids travel in git-shared
+   * project files, so one id can sit in two projects, and the hosted team's access policy treats a
+   * node as shared only when every project holding it is shared. Memoized, because a hosted-team
+   * relay asks it once per access decision for every viewer (each agent:status event,
+   * subagent-activity chunk, unread-clear, snapshot element, terminal frame) and a
+   * `persistedCanvases()` call re-parses every local project's cached file.
+   *
+   * The memo is validated against the IDENTITY of every input `persistedCanvases` reads
+   * (`canvasInputs`), not a version counter: a counter is only as good as the writers that remember
+   * to bump it, and this class changes those inputs from a dozen places — `lastWritten.set`, index
+   * reassignment, and in-place entry updates (`e.cache = …`, `e.project = …`, `e.id = …` on a
+   * re-key). Every one of them replaces a reference, so a snapshot comparison sees all of them,
+   * including writers added later. The snapshot goes down to the node arrays themselves
+   * (`e.project.nodes`, `e.cache.nodes`) and the inline project's own id, so a writer that swaps
+   * `.nodes` or re-keys `.id` on the SAME entry and project/cache object is seen too. What it cannot
+   * see is an array MUTATED in place (a push into `nodes`): the rule this file keeps is that a
+   * project's node array is replaced, never mutated.
+   */
+  projectIdsForNode(nodeId: string): readonly string[] {
+    const inputs = this.canvasInputs()
+    const memo = this.nodeProjectMemo
+    const fresh =
+      memo !== null && memo.inputs.length === inputs.length && memo.inputs.every((v, i) => v === inputs[i])
+    if (fresh) return memo.map.get(nodeId) ?? NO_PROJECTS
+    const map = new Map<string, string[]>()
+    for (const c of this.persistedCanvases()) {
+      for (const n of c.nodes) {
+        const held = map.get(n.id)
+        if (!held) map.set(n.id, [c.id])
+        else if (!held.includes(c.id)) held.push(c.id)
+      }
+    }
+    for (const held of map.values()) Object.freeze(held)
+    this.nodeProjectMemo = { inputs, map }
+    return map.get(nodeId) ?? NO_PROJECTS
+  }
+
+  /** Every input `persistedCanvases` reads, by identity: the index object, and per entry the entry,
+   *  its id, its inline project with that project's id and node array, its ssh cache with its node
+   *  array, its cwd and the text last written/read for that cwd's project file. A node array is
+   *  compared by reference: it must be replaced, never mutated in place (see `projectIdsForNode`). */
+  private canvasInputs(): unknown[] {
+    const out: unknown[] = [this.index]
+    for (const e of this.index?.entries ?? []) {
+      out.push(
+        e,
+        e.id,
+        e.project,
+        e.project?.id,
+        e.project?.nodes,
+        e.cache,
+        e.cache?.nodes,
+        e.cwd,
+        e.cwd ? this.lastWritten.get(projectFilePath(e.cwd)) : undefined
+      )
+    }
+    return out
+  }
+
+  /**
    * Every node id in every project the index holds — open, closed and SSH alike — or `undefined`
    * when that set cannot be known: the index is not loaded, a local ref's project.json has not been
    * read this run (unavailable folder, corrupt file), or an SSH entry has no offline cache.
@@ -1548,13 +1923,37 @@ export class WorkspaceStore {
    * project.json, so a project whose file has never been read this run is simply absent (it
    * appears after the next load/save, which is also what re-derives the map).
    */
-  persistedCanvases(): Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> {
-    const out: Array<{ id: string; nodes: CanvasNodeState[]; bridges?: BridgeLink[] }> = []
+  // `bridges` and `ropes` go through `sanitizeLinks` on all three legs: the index entry and the
+  // last-written file are the raw, hand-editable JSON (not the admitted project), and the
+  // context-link map built from this (`buildBackgroundLinkMaps`) iterates every entry — as does the
+  // station-failure notice's recipient rule (`stationRecipient`), which reads the ropes.
+  persistedCanvases(): Array<{
+    id: string
+    nodes: CanvasNodeState[]
+    bridges?: BridgeLink[]
+    ropes?: BridgeLink[]
+  }> {
+    const out: Array<{
+      id: string
+      nodes: CanvasNodeState[]
+      bridges?: BridgeLink[]
+      ropes?: BridgeLink[]
+    }> = []
     for (const e of this.index?.entries ?? []) {
       if (e.project) {
-        out.push({ id: e.project.id, nodes: e.project.nodes, bridges: e.project.bridges })
+        out.push({
+          id: e.project.id,
+          nodes: e.project.nodes,
+          bridges: sanitizeLinks(e.project.bridges),
+          ropes: sanitizeLinks(e.project.ropes)
+        })
       } else if (e.cache) {
-        out.push({ id: e.id, nodes: e.cache.nodes, bridges: e.cache.bridges })
+        out.push({
+          id: e.id,
+          nodes: e.cache.nodes,
+          bridges: sanitizeLinks(e.cache.bridges),
+          ropes: sanitizeLinks(e.cache.ropes)
+        })
       } else if (e.cwd) {
         const raw = this.lastWritten.get(projectFilePath(e.cwd))
         if (!raw) continue
@@ -1564,7 +1963,12 @@ export class WorkspaceStore {
           // a caller sees the same absolute paths the desktop's renderer would have handed it.
           // Keyed by the ENTRY id — the map's consumers look projects up by the id the renderer
           // knows, which is never the git-shared file's (it no longer has one).
-          out.push({ id: e.id, nodes: resolveNodes(f.nodes, e.cwd), bridges: f.bridges })
+          out.push({
+            id: e.id,
+            nodes: resolveNodes(f.nodes, e.cwd),
+            bridges: sanitizeLinks(f.bridges),
+            ropes: sanitizeLinks(f.ropes)
+          })
         } catch {
           // Corrupt cached content: skip this entry, keep scanning the others.
         }
@@ -1828,8 +2232,8 @@ export class WorkspaceStore {
    * when this project cannot have a board written at all.
    *
    * **Why the phone needs a verb for this at all.** The desktop's board is a LAZY default: the
-   * canvas renders `kanban ?? defaultKanban()` and the `kanban` block is not written to the file
-   * until the user's first board edit. So on a fresh project the columns exist only in the
+   * canvas renders `kanban ?? defaultKanban(projectId)` and the `kanban` block is not written to
+   * the file until the user's first board edit. So on a fresh project the columns exist only in the
    * renderer's memory — and the phone, which knows a project solely by its `.nodeterm/project.json`,
    * saw a project with no board and could not offer one. (Measured on the author's own machine:
    * 1 of 13 project files had a `kanban` block.) Seeding the SAME three columns from the SAME
@@ -2327,13 +2731,20 @@ function migrateLegacy(parsed: unknown): Workspace {
       // migrates the file.
       const layouts = sanitizeLayouts(p.layouts)
       const views = pruneLayoutViewports(sanitizeLayoutViewports(p.layoutViewports), layouts)
+      // And the canvas links, for the same reason: a malformed rope threw at project load.
+      const bridges = p.bridges ? sanitizeLinks(p.bridges) : undefined
+      const ropes = p.ropes ? sanitizeLinks(p.ropes) : undefined
       const unchanged = history === p.closedSessions
         && layouts === p.layouts
         && views === p.layoutViewports
+        && bridges === p.bridges
+        && ropes === p.ropes
       if (unchanged) return p
-      const { closedSessions: _c, layouts: _l, layoutViewports: _v, ...rest } = p
+      const { closedSessions: _c, layouts: _l, layoutViewports: _v, bridges: _b, ropes: _r, ...rest } = p
       return {
         ...rest,
+        ...(bridges ? { bridges } : {}),
+        ...(ropes ? { ropes } : {}),
         ...(history ? { closedSessions: history } : {}),
         ...(layouts ? { layouts } : {}),
         ...(views ? { layoutViewports: views } : {})

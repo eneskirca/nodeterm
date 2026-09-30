@@ -37,13 +37,33 @@ vi.mock('../main-window', () => ({
 
 import { emptyApprovedDevices, type ApprovedDevices } from './approved-devices-core'
 let disk: ApprovedDevices = emptyApprovedDevices()
-vi.mock('./approved-devices', () => ({
-  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
-  loadApprovedDevices: async () => disk,
-  saveApprovedDevices: async (s: ApprovedDevices) => {
-    disk = s
+// Per-role pin stores (approved-devices.ts), in memory. The 'guest' store — the one this module
+// must write — is `disk`; every other role lives in `otherPins`, so a pin landing in the WRONG
+// store is visible to the assertions instead of indistinguishable from the right one.
+const otherPins: Record<string, ApprovedDevices> = {}
+vi.mock('./approved-devices', () => {
+  const mem = (role: string) => {
+    const get = (): ApprovedDevices => (role === 'guest' ? disk : (otherPins[role] ??= { pubkeys: [] }))
+    const set = (s: ApprovedDevices): void => {
+      if (role === 'guest') disk = s
+      else otherPins[role] = s
+    }
+    return {
+      load: async () => get(),
+      save: async (s: ApprovedDevices) => set(s),
+      update: role === 'guest' ? async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get())) : async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get()))
+    }
   }
-}))
+  const stores: Record<string, ReturnType<typeof mem>> = { phone: mem('phone'), guest: mem('guest'), joinedHost: mem('joinedHost') }
+  return {
+    PIN_ROLES: ['phone', 'guest', 'joinedHost'],
+    phonePins: stores.phone,
+    guestPins: stores.guest,
+    joinedHostPins: stores.joinedHost,
+    pinStore: (r: string) => stores[r],
+    retireLegacyPinFile: async () => 0
+  }
+})
 
 // Keep `connectRelayHost` (the reviewed handshake) REAL — the crypto tests below exercise it for
 // real — but spy `killRelayHostsByPeerKey` so the revoke test can assert the identity-based cut is
@@ -139,7 +159,14 @@ function wireHost(): {
     isPremium: () => true,
     relayAllowed: () => true,
     getEntitlement: () => 'ent-abc',
-    licensedSeats: () => 3
+    licensedSeats: () => 3,
+    // A scoped seat needs its policy deps; every node here belongs to whichever project is shared.
+    scope: {
+      projectsOfNode: () => [],
+      nodeOfSession: () => undefined,
+      projectCwd: () => undefined,
+      hostDataDir: '/nonexistent-app-data'
+    }
   })
 
   let peerGate: TrustGate | null = null
@@ -172,6 +199,7 @@ function wireHost(): {
     })
     peerSocket = sock
     peerGate = createTrustGate({
+      role: 'guest',
       peerKeyB64: sock.peerPublicKeyB64()!,
       sessionId: 'peer-side',
       sas: () => sock.sas(),
@@ -218,6 +246,7 @@ beforeEach(() => {
   h.handlers = {}
   h.sent = []
   disk = emptyApprovedDevices()
+  for (const k of Object.keys(otherPins)) delete otherPins[k]
   platform = electronPlatform()
   initPlatform(platform)
   wirePeerRegistry({
@@ -603,11 +632,18 @@ describe('initRelayHost — Team Access revoke + seat freeing', () => {
     // At cap: a fresh invite is refused...
     await expect(host.invite()).rejects.toThrow(E_SEATS_FULL)
 
+    // Both peers were mutually approved at some point: their keys sit in the GUEST store.
+    disk = { pubkeys: ['peer-0', 'peer-1'] }
+    otherPins.phone = { pubkeys: ['a-real-phone'] }
+
     h.handlers[IPC.relayHostRevoke]({}, { id: id0 })
 
     // Cut by the revoked peer's identity only.
     expect(killRelayHostsByPeerKey).toHaveBeenCalledTimes(1)
     expect(killRelayHostsByPeerKey).toHaveBeenCalledWith('peer-0')
+    // …and its pin is gone from the guest store (and only its pin; the phone store is not touched).
+    await vi.waitFor(() => expect(disk.pubkeys).toEqual(['peer-1']))
+    expect(otherPins.phone.pubkeys).toEqual(['a-real-phone'])
     // The renderer is told this seat closed.
     expect(openedIds(IPC.relayHostClosed).at(-1)).toEqual({ id: id0 })
 

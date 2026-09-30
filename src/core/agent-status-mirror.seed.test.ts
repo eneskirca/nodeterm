@@ -5,7 +5,7 @@
 // renderer's agentStatus store has kept that node's sessionId in localStorage all along. These tests
 // pin the seed that closes the gap: identity-only, add-never-overwrite, validated at the boundary,
 // existing nodes only, and carried into the pushed SSH slice.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -146,12 +146,20 @@ describe('seedNodeIdentities', () => {
   })
 
   it('a seeded entry reads as OLD: past EXPIRE_MS, inside the identity TTL, out of the name sweep', () => {
-    const before = Date.now()
-    seedNodeIdentities([{ nodeId: 'n1', agentId: 'claude', sessionId: 's' }])
-    const at = mirrorEntry('n1')!.updatedAt
-    expect(before - at).toBeGreaterThan(EXPIRE_MS)
-    expect(Date.now() - at).toBeLessThan(IDENTITY_EXPIRE_MS)
-    expect(sessionNameSweepEntries()).toEqual([])
+    // The clock is pinned: the seed dates the entry `now - EXPIRE_MS - 1`, so its age is exactly
+    // EXPIRE_MS + 1. Reading a real clock BEFORE the seed flaked whenever it ticked between the two
+    // reads (age measured as exactly EXPIRE_MS, which is not "past" it).
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(1_800_000_000_000)
+      seedNodeIdentities([{ nodeId: 'n1', agentId: 'claude', sessionId: 's' }])
+      const at = mirrorEntry('n1')!.updatedAt
+      expect(Date.now() - at).toBeGreaterThan(EXPIRE_MS)
+      expect(Date.now() - at).toBeLessThan(IDENTITY_EXPIRE_MS)
+      expect(sessionNameSweepEntries()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stays identity-only across a restart (the marker itself is not persisted)', async () => {

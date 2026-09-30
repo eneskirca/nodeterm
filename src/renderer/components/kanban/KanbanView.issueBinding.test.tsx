@@ -87,6 +87,7 @@ async function render(opts: {
   sessions?: KanbanSession[]
   onChange?: (b: ProjectKanban) => void
   issueAgentMenu?: (issue: GitHubIssueCardView) => MenuItem[]
+  issueWorktreeMenu?: (issue: GitHubIssueCardView) => { items: MenuItem[] } | { refusal: string }
 }): Promise<void> {
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -95,7 +96,7 @@ async function render(opts: {
   await act(async () => {
     root.render(
       <KanbanView
-        board={opts.board ?? { ...defaultKanban(), github: { columnMappings: [] } }}
+        board={opts.board ?? { ...defaultKanban('p'), github: { columnMappings: [] } }}
         sessions={opts.sessions ?? [bound]}
         onChange={opts.onChange ?? noop}
         onOpenNode={noop}
@@ -107,6 +108,7 @@ async function render(opts: {
         onBrowserNav={noop}
         onSetIcon={noop}
         issueAgentMenu={opts.issueAgentMenu}
+        issueWorktreeMenu={opts.issueWorktreeMenu}
       />
     )
   })
@@ -157,6 +159,46 @@ describe('KanbanView — GitHub issue ↔ session binding', () => {
     expect(menu).toHaveBeenCalledWith(expect.objectContaining({ number: 42 }))
   })
 
+  it('the issue card menu offers "Start with agent in a new worktree ▸" with the same picker', async () => {
+    const pick = vi.fn()
+    const menu = vi.fn((issue: GitHubIssueCardView) => ({
+      items: [{ label: 'Claude', onClick: () => pick(issue.number) }] as MenuItem[]
+    }))
+    await render({ issueAgentMenu: () => [], issueWorktreeMenu: menu })
+    act(() => {
+      issueCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 5, clientY: 5 }))
+    })
+    expect(menu).toHaveBeenCalledWith(expect.objectContaining({ number: 42 }))
+    const row = [...document.body.querySelectorAll<HTMLElement>('.ctx-item--submenu')].find((el) =>
+      el.textContent?.includes('Start with agent in a new worktree')
+    )
+    expect(row).toBeDefined()
+    act(() => {
+      row!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+    const claude = [...document.body.querySelectorAll<HTMLElement>('.ctx-item')].filter((el) =>
+      el.textContent === 'Claude'
+    )
+    act(() => claude[claude.length - 1].dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(pick).toHaveBeenCalledWith(42)
+  })
+
+  it('a project that cannot take a worktree shows the row DISABLED with its reason, never hides it', async () => {
+    await render({
+      issueAgentMenu: () => [],
+      issueWorktreeMenu: () => ({ refusal: 'Not supported in SSH projects yet' })
+    })
+    act(() => {
+      issueCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 5, clientY: 5 }))
+    })
+    const row = [...document.body.querySelectorAll<HTMLElement>('.ctx-item')].find((el) =>
+      el.textContent?.includes('Start with agent in a new worktree')
+    )
+    expect(row).toBeDefined()
+    expect(row!.getAttribute('title')).toBe('Not supported in SSH projects yet')
+    expect((row as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it("a session card's #N opens that issue's summary on the board", async () => {
     await render({})
     const chip = document.querySelector<HTMLElement>('.kanban-card--session .issue-ref-chip')!
@@ -169,7 +211,7 @@ describe('KanbanView — GitHub issue ↔ session binding', () => {
   })
 
   it('an issue the board cannot show opens on GitHub instead of doing nothing', async () => {
-    await render({ board: defaultKanban() })
+    await render({ board: defaultKanban('p') })
     await act(async () => {
       useViewMode.getState().requestIssue({ owner: 'other', repo: 'repo', number: 7 })
     })

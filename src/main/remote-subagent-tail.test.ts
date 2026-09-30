@@ -96,3 +96,43 @@ describe('createRemoteSubagentTail', () => {
     tail.untrack('tool-4')
   }, 5000)
 })
+
+describe('a resumed subagent (same id tracked again)', () => {
+  it('continues from the offset the untracked tail had reached, for the same file', async () => {
+    const { win } = fakeWin()
+    const first = Buffer.from(assistant('turn one') + '\n')
+    const remoteFile = {
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number) =>
+        o === 0 ? { data: first, newOffset: first.length } : { data: Buffer.alloc(0), newOffset: o }
+      )
+    }
+    const tail = createRemoteSubagentTail(win, remoteFile as never)
+    tail.track('a1', ref)
+    await tick()
+    tail.untrack('a1')
+    remoteFile.readFromCapped.mockClear()
+    tail.track('a1', ref)
+    await tick()
+    expect(remoteFile.readFromCapped.mock.calls[0][1]).toBe(first.length)
+    tail.untrack('a1')
+  })
+
+  it('a different file under the same id starts at 0', async () => {
+    const { win } = fakeWin()
+    const data = Buffer.from(assistant('x') + '\n')
+    const remoteFile = {
+      readFromCapped: vi.fn(async (_r: RemoteFileRef, o: number) =>
+        o === 0 ? { data, newOffset: data.length } : { data: Buffer.alloc(0), newOffset: o }
+      )
+    }
+    const tail = createRemoteSubagentTail(win, remoteFile as never)
+    tail.track('a1', ref)
+    await tick()
+    tail.untrack('a1')
+    remoteFile.readFromCapped.mockClear()
+    tail.track('a1', { ...ref, path: '/abs/other.jsonl' })
+    await tick()
+    expect(remoteFile.readFromCapped.mock.calls[0][1]).toBe(0)
+    tail.untrack('a1')
+  })
+})

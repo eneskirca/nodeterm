@@ -6,7 +6,7 @@ import {
   normalizeBindingForCommand,
   getEffectiveBindings,
   bindingIdentity,
-  conflictBucket,
+  conflictBuckets,
   findKeybindingConflicts,
   sanitizeKeybindingOverrides,
   resolveCommandForKeyEvent,
@@ -311,24 +311,49 @@ describe('bindingIdentity', () => {
   })
 })
 
-describe('conflictBucket', () => {
-  // The whole mapping, asserted over the REGISTRY rather than a hand-picked example per bucket:
-  // 'app' and 'canvas' share the global keyspace, 'terminal' and 'scm' are their own, and
-  // `speech.dictation` is the one command whose bucket comes from its id instead of its scope.
-  // Kills two mutants a per-bucket sample can miss: a scope-mapping typo (folding 'scm' — or a
-  // scope added later — into 'global', or dropping 'canvas' out of it), and the removal of the
-  // dictation branch, which would send Dictate back into 'global' and re-report the collision
-  // the bucket exists to stop.
-  it('maps every command to its scope bucket, dictation excepted', () => {
+describe('conflictBuckets', () => {
+  // The whole mapping, asserted over the REGISTRY rather than a hand-picked example per bucket.
+  // A bucket is a dispatch CONTEXT: the chords that can resolve at the same moment. 'canvas'
+  // resolves only with the board closed and 'board' only with it open, while 'app' resolves in
+  // both — so an app command sits in both view buckets and a canvas command never meets a board
+  // one. 'terminal' and 'scm' are their own; `speech.dictation` is the one command whose bucket
+  // comes from its id instead of its scope.
+  it('maps every command to the contexts its scope dispatches in, dictation excepted', () => {
+    const expected = {
+      app: ['canvas-view', 'board-view'],
+      canvas: ['canvas-view'],
+      board: ['board-view'],
+      terminal: ['terminal'],
+      scm: ['scm']
+    } as const
     for (const def of COMMAND_DEFINITIONS) {
       if (def.id === 'speech.dictation') continue
-      // 'board' joins the global keyspace for the same reason 'canvas' does: both dispatch from
-      // the window listener, each merely inert while the other view is up.
-      expect(conflictBucket(def)).toBe(
-        def.scope === 'app' || def.scope === 'canvas' || def.scope === 'board' ? 'global' : def.scope
-      )
+      expect(conflictBuckets(def)).toEqual(expected[def.scope])
     }
-    expect(conflictBucket(COMMANDS_BY_ID.get('speech.dictation')!)).toBe('dictation')
+    expect(conflictBuckets(COMMANDS_BY_ID.get('speech.dictation')!)).toEqual(['dictation'])
+  })
+
+  it('agrees with the dispatcher: two scopes share a bucket exactly when both can resolve at once', () => {
+    // Asked of the REAL resolver, never restated: a command can resolve in a context when, bound
+    // alone to a chord nothing else holds, a keydown of that chord resolves to it there.
+    const chord = 'Cmd+Alt+Shift+F12'
+    const press = { metaKey: true, ctrlKey: false, altKey: true, shiftKey: true, key: 'F12' }
+    const resolvesIn = (def: (typeof COMMAND_DEFINITIONS)[number], kanbanOpen: boolean): boolean =>
+      resolveCommandForKeyEvent(
+        press,
+        { typing: false, terminal: false, kanbanOpen, terminalFirst: false },
+        { [def.id]: [chord] },
+        true
+      ) === def.id
+    const views = COMMAND_DEFINITIONS.filter((def) =>
+      def.id !== 'speech.dictation' && (def.scope === 'app' || def.scope === 'canvas' || def.scope === 'board'))
+    for (const a of views) {
+      for (const b of views) {
+        const share = conflictBuckets(a).some((bucket) => conflictBuckets(b).includes(bucket))
+        const together = [true, false].some((open) => resolvesIn(a, open) && resolvesIn(b, open))
+        expect(share, `${a.id} × ${b.id}`).toBe(together)
+      }
+    }
   })
 })
 
@@ -365,11 +390,30 @@ describe('findKeybindingConflicts', () => {
     // terminal.find is Cmd+F in the terminal bucket; an app-bucket Cmd+F is legal.
     expect(findKeybindingConflicts({ 'canvas.fitAll': ['Cmd+F'] }, true)).toEqual([])
   })
-  it('the scm bucket is its own keyspace, not part of global', () => {
-    // scm.commit holds Cmd+Enter; a canvas (global-bucket) override on the same chord is legal,
-    // because Commit dispatches from the focused composer. Reds if conflictBucket folds 'scm'
-    // into 'global'.
+  it('the scm bucket is its own keyspace, not part of a view bucket', () => {
+    // scm.commit holds Cmd+Enter; a canvas (canvas-view bucket) override on the same chord is legal,
+    // because Commit dispatches from the focused composer. Reds if conflictBuckets folds 'scm'
+    // into a view bucket.
     expect(findKeybindingConflicts({ 'canvas.fitAll': ['Cmd+Enter'] }, true)).toEqual([])
+  })
+  it('a canvas override may share a chord with a board command — they never dispatch together', () => {
+    // board.nextCard holds bare ArrowDown and only resolves while a board is up; canvas commands
+    // are inert then. A bare-arrow canvas override used to be stripped at load for this "conflict".
+    expect(findKeybindingConflicts({ 'canvas.deleteSelection': ['ArrowDown'] }, true)).toEqual([])
+    expect(sanitizeKeybindingOverrides({ 'canvas.deleteSelection': ['ArrowDown'] }, true))
+      .toEqual({ overrides: { 'canvas.deleteSelection': ['ArrowDown'] }, warnings: [] })
+    // …and the other direction: a board override on a canvas command's chord.
+    expect(findKeybindingConflicts({ 'board.openCard': ['Cmd+Shift+F'] }, true)).toEqual([])
+  })
+  it('a board override still conflicts with an app command, which dispatches on the board too', () => {
+    expect(findKeybindingConflicts({ 'board.openCard': ['Cmd+K'] }, true)).toEqual([
+      { binding: 'Cmd+K', commandIds: ['app.commandPalette', 'board.openCard'] }
+    ])
+  })
+  it('reports a collision between two app commands once, not once per view', () => {
+    expect(findKeybindingConflicts({ 'app.settings': ['Cmd+K'] }, true)).toEqual([
+      { binding: 'Cmd+K', commandIds: ['app.commandPalette', 'app.settings'] }
+    ])
   })
   it('two disabled commands never conflict', () => {
     expect(

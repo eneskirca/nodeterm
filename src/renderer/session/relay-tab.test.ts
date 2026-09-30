@@ -15,8 +15,14 @@ import {
   resetSessionsForTest,
 } from './session'
 import { LocalTransport } from '../terminal/local-transport'
+import { planActiveProjectDials } from '../lib/sshAttachments'
 import type { NodeTerminalApi, Project, Workspace } from '@shared/types'
 import type { RelayApiHandle } from '../bridge/relay-api'
+import { emitLocalRelayClose } from '../bridge/relay-local-close'
+import { useHostedTeams } from '../state/hostedTeams'
+import { useHostedPending } from '../state/hostedPending'
+import { EMPTY_PENDING_QUEUE } from '../lib/hostedPendingQueue'
+import type { HostedPending, HostedSelf, RelayClosedReason } from '@shared/types'
 
 /** A fake relayClient.onClosed sink: keeps the callback so the test can fire a socket drop. */
 function fakeRelayClient() {
@@ -138,6 +144,34 @@ describe('openRelayTab (connect → tab → mount)', () => {
     expect(tab.projectId).toBe('host-proj-adopted')
     expect(sessionForProject('host-proj-adopted').id).toBe(tab.sessionId)
     expect(setActiveProject).toHaveBeenCalledWith('host-proj-adopted')
+  })
+
+  it('SECURITY: adopting a host SSH project brings no dial-capable ssh onto this machine', async () => {
+    const server = { host: 'evil.example', user: 'me', identityFile: '/home/me/.ssh/id_ed25519' }
+    const hostProject = {
+      id: 'host-proj',
+      name: 'P',
+      color: '#fff',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      ssh: { server, remoteCwd: '/srv' },
+      nodes: [
+        { id: 't1', kind: 'terminal', title: 'A', color: '#111', position: { x: 0, y: 0 }, ssh: server, sshRemoteTmux: true },
+      ],
+    } as unknown as Project
+    const { api } = fakeBridgedApi({ version: 2, activeProjectId: 'host-proj', projects: [hostProject] })
+    const handle: RelayApiHandle = { api, ready: () => Promise.resolve(), close: vi.fn() }
+    const { deps, adoptProject } = makeDeps({ handle })
+
+    await openRelayTab('conn-1', 'Host', deps)
+
+    const adopted = adoptProject.mock.calls[0][0] as Project
+    expect(adopted.ssh).toBeUndefined()
+    expect(adopted.nodes[0].ssh).toBeUndefined()
+    expect(adopted.relaySsh).toEqual({ user: 'me', host: 'evil.example', remoteCwd: '/srv' })
+    // …and the Canvas active-project effect's plan for it dials nothing.
+    expect(planActiveProjectDials(adopted)).toEqual({ own: null, attachments: [] })
+    // Even with `remote` forgotten, nothing dial-capable is left to find.
+    expect(planActiveProjectDials({ ...adopted, remote: false })).toEqual({ own: null, attachments: [] })
   })
 
   it('falls back to an empty labelled tab when the host shared nothing (no throw)', async () => {
@@ -306,5 +340,192 @@ describe('tabClickAction (which behavior a tab click gets)', () => {
   })
   it('an unavailable LOCAL tab is inert (a missing folder, not clickable-to-reconnect)', () => {
     expect(tabClickAction(true, 'local')).toBe('ignore')
+  })
+})
+
+// ── Hosted team tabs (joined by a `nodeterm://join` code) ─────────────────────────────────────────
+
+function fakeHostedApi(self: HostedSelf | Error, pulled: HostedPending[] = []) {
+  const log: string[] = []
+  const base = fakeBridgedApi()
+  const unPending = vi.fn()
+  const unClosed = vi.fn()
+  let pushPending: ((p: HostedPending) => void) | null = null
+  const api = {
+    ...base.api,
+    workspace: {
+      load: vi.fn(async () => {
+        log.push('workspace.load')
+        return { version: 2, activeProjectId: '', projects: [] }
+      })
+    },
+    hosted: {
+      self: vi.fn(async () => {
+        log.push('self')
+        if (self instanceof Error) throw self
+        return self
+      }),
+      pending: vi.fn(async () => {
+        log.push('pending')
+        return pulled
+      }),
+      inviteCode: vi.fn(),
+      approve: vi.fn(),
+      deny: vi.fn(),
+      onPeerPending: vi.fn((l: (p: HostedPending) => void) => {
+        log.push('sub:pending')
+        pushPending = l
+        return unPending
+      }),
+      onPendingClosed: vi.fn(() => {
+        log.push('sub:closed')
+        return unClosed
+      })
+    }
+  } as unknown as NodeTerminalApi
+  return { api, log, unPending, unClosed, push: (p: HostedPending) => pushPending?.(p) }
+}
+
+function reasonRelayClient() {
+  const cbs: Array<(reason?: RelayClosedReason) => void> = []
+  return {
+    onClosed: vi.fn((_id: string, cb: (reason?: RelayClosedReason) => void) => {
+      cbs.push(cb)
+      return () => {}
+    }),
+    fire: (reason?: RelayClosedReason) => cbs.forEach((cb) => cb(reason))
+  }
+}
+
+describe('openRelayTab — hosted team tabs', () => {
+  beforeEach(() => {
+    useHostedTeams.setState({ bySession: {} })
+    useHostedPending.setState({ queue: EMPTY_PENDING_QUEUE, notice: null })
+  })
+
+  it('learns its role BEFORE anything mounts, gates the api on it, and records it for the UI', async () => {
+    const h = fakeHostedApi({ role: 'viewer', label: 'laptop', hostLabel: 'box' })
+    const setHostedRole = vi.fn()
+    const handle: RelayApiHandle = { api: h.api, ready: () => Promise.resolve(), close: vi.fn(), setHostedRole }
+    const { deps } = makeDeps({ handle })
+    const tab = await openRelayTab('conn-h', 'from code', deps)
+    expect(h.log[0]).toBe('self')
+    expect(h.log.indexOf('self')).toBeLessThan(h.log.indexOf('workspace.load'))
+    expect(setHostedRole).toHaveBeenCalledWith('viewer')
+    expect(tab.hosted).toEqual({ role: 'viewer', teamLabel: 'box' })
+    expect(useHostedTeams.getState().bySession[tab.sessionId]).toEqual({ role: 'viewer', teamLabel: 'box' })
+    // A viewer is not an owner: it never subscribes to join requests, and never pulls them.
+    expect(h.log).not.toContain('pending')
+    expect(h.log).not.toContain('sub:pending')
+  })
+
+  it('an unreadable role is the LOWEST role (fail closed), and the tab still opens', async () => {
+    const h = fakeHostedApi(new Error('You are not a member of this team.'))
+    const setHostedRole = vi.fn()
+    const handle: RelayApiHandle = { api: h.api, ready: () => Promise.resolve(), close: vi.fn(), setHostedRole }
+    const tab = await openRelayTab('conn-h', 'box', makeDeps({ handle }).deps)
+    expect(setHostedRole).toHaveBeenCalledWith('viewer')
+    expect(tab.hosted).toEqual({ role: 'viewer', teamLabel: 'box' })
+  })
+
+  it('an OWNER subscribes first, then pulls the open requests into the queue (R25/R37)', async () => {
+    const waiting: HostedPending = { pendingId: 'p1', sas: '123 456', peerKeyB64: 'KEY', since: 1 }
+    const h = fakeHostedApi({ role: 'owner', label: 'me', hostLabel: 'box' }, [waiting])
+    const handle: RelayApiHandle = { api: h.api, ready: () => Promise.resolve(), close: vi.fn(), setHostedRole: vi.fn() }
+    const tab = await openRelayTab('conn-h', 'box', makeDeps({ handle }).deps)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(h.log.indexOf('sub:pending')).toBeLessThan(h.log.indexOf('pending'))
+    expect(useHostedPending.getState().queue.items.map((i) => i.pending.pendingId)).toEqual(['p1'])
+    expect(useHostedPending.getState().queue.items[0]).toMatchObject({ projectId: tab.projectId, teamLabel: 'box' })
+    // A second request is queued, not dropped.
+    h.push({ pendingId: 'p2', sas: '9', peerKeyB64: 'K2', since: 2 })
+    expect(useHostedPending.getState().queue.items).toHaveLength(2)
+    // The tab dropping takes its requests (and its subscriptions) with it.
+    handleRelayDrop(tab, { setProjectUnavailable: () => {} })
+    expect(h.unPending).toHaveBeenCalled()
+    expect(h.unClosed).toHaveBeenCalled()
+    expect(useHostedPending.getState().queue.items).toEqual([])
+  })
+
+  it('a Team Access relay tab (no hosted api) takes the old path: no role, no store entry', async () => {
+    const { api } = fakeBridgedApi()
+    const handle: RelayApiHandle = { api, ready: () => Promise.resolve(), close: vi.fn() }
+    const tab = await openRelayTab('conn-legacy', 'Mac', makeDeps({ handle }).deps)
+    expect(tab.hosted).toBeUndefined()
+    expect(useHostedTeams.getState().bySession).toEqual({})
+    expect(useHostedPending.getState().queue).toBe(EMPTY_PENDING_QUEUE)
+  })
+
+  it('a hosted refusal before approval rejects in the host\'s words and carries the reason', async () => {
+    const h = fakeHostedApi({ role: 'viewer', label: '', hostLabel: 'box' })
+    const handle: RelayApiHandle = { api: h.api, ready: () => new Promise<void>(() => {}), close: vi.fn(), setHostedRole: vi.fn() }
+    const relayClient = reasonRelayClient()
+    const bootstrap = openRelayTab('conn-h', 'box', makeDeps({ handle, relayClient }).deps)
+    relayClient.fire('denied')
+    const err = await bootstrap.catch((e: Error & { reason?: string }) => e)
+    expect((err as Error).message).toBe('An owner declined the request.')
+    expect((err as { reason?: string }).reason).toBe('denied')
+  })
+
+  it('a hosted connection closed HERE (a declined SAS) ends the approval wait at once, not after ten minutes', async () => {
+    const h = fakeHostedApi({ role: 'viewer', label: '', hostLabel: 'box' })
+    const close = vi.fn()
+    const handle: RelayApiHandle = { api: h.api, ready: () => new Promise<void>(() => {}), close, setHostedRole: vi.fn() }
+    const bootstrap = openRelayTab('conn-decl', 'box', makeDeps({ handle, relayClient: reasonRelayClient(), timeoutMs: 600_000 }).deps)
+    emitLocalRelayClose('conn-decl')
+    await expect(bootstrap).rejects.toThrow(/^The relay connection closed before it was approved\.$/)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Team Access tab does not listen for local closes (its old wait is unchanged)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { api } = fakeBridgedApi()
+      const handle: RelayApiHandle = { api, ready: () => new Promise<void>(() => {}), close: vi.fn() }
+      let settled = false
+      const bootstrap = openRelayTab('conn-legacy-decl', 'Mac', makeDeps({ handle, timeoutMs: 50 }).deps)
+      void bootstrap.catch(() => {}).finally(() => { settled = true })
+      emitLocalRelayClose('conn-legacy-decl')
+      await vi.advanceTimersByTimeAsync(10)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(60)
+      await expect(bootstrap).rejects.toThrow(/Timed out waiting for the host to approve/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a legacy close before approval keeps its old message exactly', async () => {
+    const { api } = fakeBridgedApi()
+    const handle: RelayApiHandle = { api, ready: () => new Promise<void>(() => {}), close: vi.fn() }
+    const relayClient = reasonRelayClient()
+    const bootstrap = openRelayTab('conn-l', 'Mac', makeDeps({ handle, relayClient }).deps)
+    relayClient.fire(undefined)
+    await expect(bootstrap).rejects.toThrow(/^The relay connection closed before it was approved\.$/)
+  })
+
+  it('R40: a hosted reconnect whose tab closed meanwhile never binds to it: no owner subscription, no role, closed', async () => {
+    const h = fakeHostedApi({ role: 'owner', label: 'me', hostLabel: 'box' }, [])
+    const close = vi.fn()
+    const handle: RelayApiHandle = { api: h.api, ready: () => Promise.resolve(), close, setHostedRole: vi.fn() }
+    const { deps } = makeDeps({ handle })
+    const gone = () => {
+      throw new Error('The tab this reconnect was for is closed.')
+    }
+    await expect(openRelayTab('conn-gone', 'box', { ...deps, addProject: gone, adoptProject: undefined })).rejects.toThrow(/closed/)
+    expect(h.log).not.toContain('sub:pending')
+    expect(h.log).not.toContain('pending')
+    expect(useHostedTeams.getState().bySession).toEqual({})
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(sessionCount()).toBe(1) // only the local session
+  })
+
+  it('a background reconnect binds the tab without switching to it (activate: false)', async () => {
+    const h = fakeHostedApi({ role: 'editor', label: '', hostLabel: 'box' })
+    const handle: RelayApiHandle = { api: h.api, ready: () => Promise.resolve(), close: vi.fn(), setHostedRole: vi.fn() }
+    const { deps, setActiveProject } = makeDeps({ handle })
+    const tab = await openRelayTab('conn-h', 'box', { ...deps, activate: false })
+    expect(setActiveProject).not.toHaveBeenCalled()
+    expect(sessionForProject(tab.projectId).id).toBe(tab.sessionId) // still bound
   })
 })

@@ -162,3 +162,32 @@ export function resolveDeliveryScope(
 export function scopeRefusal(scope: DeliveryScope): NotPermittedReason | undefined {
   return scope.kind === 'refused' ? scope.reason : undefined
 }
+
+/**
+ * WHO A BOARD COMMENT MAY ADDRESS — sessions on the comment's own board, resolved off the same
+ * serialized store as `resolveDeliveryScope`.
+ *
+ * A board comment has no sender node (a person wrote it), so "the project the sender shares with the
+ * target" becomes "the project whose board the comment is on". Every other rule is the agent path's,
+ * for the same reasons: an unaddressable id is refused by its own word, a target id claimed by more
+ * than one project is refused as ambiguous (one global pane, several claimed owners — the per-project
+ * grant cannot be attributed), and a target that is not on this board is `cross-project` whether it
+ * is on another board or on none. `projectId` comes from the local renderer; it only NAMES the board,
+ * and the delivery still has to prove at runtime that this project spawned the target's pane.
+ */
+export function resolveBoardCommentScope(
+  projects: readonly ScopeProject[],
+  projectId: string,
+  targetNodeId: string
+): DeliveryScope {
+  const has = (p: ScopeProject, id: string): boolean => p.nodes.some((n) => n.id === id)
+  const targetOwners = projects.filter((p) => has(p, targetNodeId))
+  const targetFound = targetOwners.length > 0
+  if (!isSafeNodeId(targetNodeId))
+    return { kind: 'refused', reason: 'unaddressable-node-id', targetFound }
+  if (!targetOwners.some((p) => p.id === projectId))
+    return { kind: 'refused', reason: 'cross-project', targetFound }
+  if (targetOwners.length > 1)
+    return { kind: 'refused', reason: 'ambiguous-target-node-id', targetFound: true }
+  return { kind: 'same-project', projectId }
+}

@@ -34,7 +34,12 @@ interface Tracked {
    * so two concurrent subagents sharing one closure would gate each other's output.
    */
   fmt?: (text: string) => string
+  /** finish() was called: the entry is dropped when this fires, unless a re-track revives it. */
+  finishing?: ReturnType<typeof setTimeout>
 }
+
+/** How many finished entries remember where they stopped (see `resumeAt`). */
+const RESUME_MEMORY = 256
 
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content
@@ -159,6 +164,22 @@ export function createSubagentTail(
 ): SubagentTail {
   const tracked = new Map<string, Tracked>()
   let timer: ReturnType<typeof setInterval> | null = null
+  // Where each finished entry stopped. A Claude background subagent that ends its turn while its own
+  // work runs fires SubagentStop and is RESUMED later under the same agent_id (measured, 2.1.284);
+  // the shells stop the tail at the stop and start it again at the resume, and re-reading the file
+  // from byte 0 would print the whole first turn a second time.
+  const resumeAt = new Map<string, { file: string; offset: number }>()
+
+  /** A re-track while finish() is still in its grace window: keep the entry, cancel the drop. */
+  const revive = (toolUseId: string): boolean => {
+    const e = tracked.get(toolUseId)
+    if (!e) return false
+    if (e.finishing) {
+      clearTimeout(e.finishing)
+      e.finishing = undefined
+    }
+    return true
+  }
 
   const emit = (toolUseId: string, chunk: string): void => {
     if (chunk) send({ toolUseId, chunk })
@@ -229,17 +250,19 @@ export function createSubagentTail(
 
   return {
     track(toolUseId, transcriptPath) {
-      if (!transcriptPath || tracked.has(toolUseId)) return
+      if (!transcriptPath || revive(toolUseId)) return
       const dir = path.join(transcriptPath.replace(/\.jsonl$/, ''), 'subagents')
       tracked.set(toolUseId, { dir, file: null, offset: 0 })
       if (!timer) timer = setInterval(tick, 400) // only runs while subagents are active
     },
     trackFile(toolUseId, filePath, newFormatter) {
-      if (!filePath || tracked.has(toolUseId)) return
+      if (!filePath || revive(toolUseId)) return
+      const resumed = resumeAt.get(toolUseId)
+      resumeAt.delete(toolUseId)
       tracked.set(toolUseId, {
         dir: path.dirname(filePath),
         file: filePath,
-        offset: 0,
+        offset: resumed?.file === filePath ? resumed.offset : 0,
         fmt: newFormatter?.()
       })
       if (!timer) timer = setInterval(tick, 400)
@@ -254,11 +277,18 @@ export function createSubagentTail(
         if (out) emit(toolUseId, out + '\n')
       }
       const e = tracked.get(toolUseId)
-      if (e) void readOne(toolUseId, e).then(() => flushCarry(e)) // final flush (completes well within the grace delay)
-      setTimeout(() => {
-        const late = tracked.get(toolUseId)
+      if (!e || e.finishing) return
+      void readOne(toolUseId, e).then(() => {
+        if (e.finishing) flushCarry(e) // final flush (completes well within the grace delay)
+      })
+      e.finishing = setTimeout(() => {
+        if (tracked.get(toolUseId) !== e) return
         tracked.delete(toolUseId)
-        if (late) flushCarry(late) // ticks during the grace window may have re-filled the carry
+        flushCarry(e) // ticks during the grace window may have re-filled the carry
+        if (e.file) {
+          resumeAt.set(toolUseId, { file: e.file, offset: e.offset })
+          if (resumeAt.size > RESUME_MEMORY) resumeAt.delete(resumeAt.keys().next().value!)
+        }
       }, 1500)
     }
   }

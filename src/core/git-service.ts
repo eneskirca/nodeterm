@@ -14,6 +14,7 @@ import { platform } from './platform'
 import { directExecutableInvocation } from './exec-path'
 import { ghPath } from './gh-path'
 import { gitEnv } from './git-env'
+import { worktreeTargetRefusal } from './worktree-target'
 import {
   isValidCloneUrl,
   expandCloneUrl,
@@ -315,6 +316,11 @@ export class GitService {
     // `wtPath` is computed from the LOCAL data dir, so adding it through a remote git would create a
     // worktree at a nonsense path on the host. Refuse (see `isRemoteRepo`).
     if (isRemoteRepo(repoPath)) return Promise.resolve(REMOTE_WORKTREE_REFUSAL())
+    // Every caller's backstop (dialog, `open-worktree`, the issue card, a relay or browser client):
+    // never into the repository's `.git`, never REDIRECTED by a symlink into a hidden folder of the
+    // home directory (see `worktree-target.ts`). Judged on real paths, which no renderer can see.
+    const refusal = worktreeTargetRefusal(wtPath, repoPath)
+    if (refusal) return Promise.resolve({ ok: false, message: refusal })
     return worktreeOps.worktreeAdd(git, repoPath, wtPath, branch, baseRef, isNew)
   }
   worktreeMerge(

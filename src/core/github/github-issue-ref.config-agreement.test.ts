@@ -17,6 +17,9 @@ const CORPUS = [
   'o/-r',
   '-o/r',
   'o-/r',
+  'hello--world/a',
+  'john-/x',
+  'a-b-c/r',
   'o/r;rm',
   'o/r`id`',
   'o/r$(id)',
@@ -30,6 +33,14 @@ const CORPUS = [
 ]
 
 describe('issue-reference grammar agrees with the board repository parser', () => {
+  it('both accept the logins GitHub has issued, consecutive and trailing hyphens included', () => {
+    // Real accounts (`hello--world`, `john-`); a board synced with one must keep syncing.
+    expect(parseGitHubRepository('https://github.com/hello--world/a.git')).toBe('hello--world/a')
+    expect(parseGitHubRepository('git@github.com:john-/x.git')).toBe('john-/x')
+    expect(resolveIssueArg('#1', 'hello--world/a').ok).toBe(true)
+    expect(parseGitHubRepository('-foo/r')).toBeNull()
+  })
+
   it.each(CORPUS)('%j', (slug) => {
     // `parseGitHubRepository` also accepts URLs and strips `.git`; compare only on the canonical
     // `owner/repo` form it returns, which is what the renderer is handed as the project repository.

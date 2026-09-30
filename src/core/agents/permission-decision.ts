@@ -109,6 +109,8 @@ export function parsePermissionAnswer(v: unknown): PermissionAnswer | null {
         : null
     case 'plan-revise':
       return typeof v.message === 'string' ? { kind: 'plan-revise', message: v.message } : null
+    case 'question-clarify':
+      return { kind: 'question-clarify' }
     case 'question': {
       if (!isPlainObject(v.answers)) return null
       const answers: Record<string, string | string[]> = Object.create(null)
@@ -158,6 +160,23 @@ function questionIndex(toolInput: Record<string, unknown>): Map<string, Question
     index.set(q.question, { labels, multiSelect: q.multiSelect === true })
   }
   return index
+}
+
+/**
+ * What Claude Code tells the model when the user picks "Chat about this" in its own question picker
+ * — MEASURED verbatim on 2.1.283 (the tool result after the native choice), minus the template's
+ * stray indentation. The question texts come from the PENDING FILE, never from the renderer.
+ */
+export function clarifyMessage(questions: readonly string[]): string {
+  return [
+    'The user wants to clarify these questions.',
+    'This means they may have additional information, context or questions for you.',
+    'Take their response into account and then reformulate the questions if appropriate.',
+    'Start by asking them what they would like to clarify.',
+    '',
+    'Questions asked:',
+    ...questions.map((q) => `- "${q}"\n  (No answer provided)`)
+  ].join('\n')
 }
 
 function buildQuestionDecision(
@@ -252,6 +271,14 @@ export function buildPermissionDecision(pending: PendingRequest | null, answer: 
     case 'question':
       if (pending?.toolName !== ASK_USER_QUESTION_TOOL) return { ok: false, reason: 'the held request is not a question' }
       return buildQuestionDecision(pending, answer.answers, answer.freeText)
+    case 'question-clarify': {
+      if (pending?.toolName !== ASK_USER_QUESTION_TOOL) return { ok: false, reason: 'the held request is not a question' }
+      const index = questionIndex(pending.toolInput)
+      if (!index) return { ok: false, reason: 'the held question has no readable questions' }
+      // No `interrupt`: the turn continues and Claude asks what the user wants to clarify, then
+      // stops at the prompt — exactly where the native "Chat about this" leaves it.
+      return capped(decisionJson({ behavior: 'deny', message: clarifyMessage([...index.keys()]) }), 'deny')
+    }
     default:
       return { ok: false, reason: 'unknown answer' }
   }

@@ -14,8 +14,11 @@ that stamps one total order (`seq`) and fans each mutation to every client, a di
 with an `adopt()` loop guard and a solo gate, per-node last-write-wins in that order
 (`canvas-order.ts`) so concurrent edits **converge** instead of splitting the canvas in two, an
 in-place apply into the live React Flow array, a real `window.nodeTerminal.canvas` on both surfaces,
-and per-project apply (including into a loaded-but-inactive project's serialized nodes). What it
-resolves and what it does not:
+and per-project apply (including into a loaded-but-inactive project's serialized nodes). Edges and
+board items now travel on the same channel, ordered by the same rules
+([Edge sync](#edge-sync-bridges--ropes), [Board sync](#board-sync-kanban)); on a Server Edition
+hosting a team, a shared project's content is written from these ops by the canvas authority
+(`docs/hosted-team-relay.md`). What it resolves and what it does not:
 [Concurrent-edit resolution](#concurrent-edit-resolution-what-converges-and-what-does-not).
 Deltas between this document and what actually shipped are recorded in
 [What Stage 1 changed](#what-stage-1-changed-relative-to-this-spec),
@@ -344,10 +347,14 @@ publishes a mutation (position-only, throttled to 20 Hz, while dragging; a full 
 settle; an upsert on add / remove / color / title / collapse), and the server reflects it to
 every client except the sender.
 
-Convergence makes persistence safe for free: because all clients converge on the same node set,
-whichever client calls `workspace.save` writes the same bytes, which defuses today's
-last-writer-wins save. The existing rev-based conflict bar (`workspace-watcher`) stays as the
-backstop.
+Convergence makes persistence safe for free: because all clients that saw the whole exchange
+converge on the same node set, whichever of them calls `workspace.save` writes the same canvas,
+which defuses today's last-writer-wins save. The exceptions (a client that loaded after a delete,
+board bytes in two cases) are in the
+[does-not-converge list](#concurrent-edit-resolution-what-converges-and-what-does-not). The existing rev-based conflict bar (`workspace-watcher`) stays as the
+backstop. On a Server Edition hosting a team, a shared project's content does not come from these
+saves at all: the canvas authority overlays each one with the content it applied from ops
+(`docs/hosted-team-relay.md`).
 
 Two things are deliberately **not** synced: ephemeral nodes (subagent / loop cards) are derived
 independently on each client from the already-broadcast `agent:status` stream; and undo stays
@@ -365,7 +372,13 @@ independently on each client from the already-broadcast `agent:status` stream; a
   re-render Canvas). With nobody else attached, `publish()` degrades to `adopt()`: it takes the
   snapshot as the baseline and does **no** diff, no `stableStringify` of every node, no IPC cast. A
   solo user pays nothing for team sync, and because the baseline still tracks the canvas, the first
-  edit after a peer joins diffs correctly — no resync step, no missed mutation.
+  edit after a peer joins diffs correctly — no resync step, no missed mutation. **The exception is a
+  governed project** (`shouldPublishCanvas`: peers OR governed). A canvas authority writes a project
+  only from the ops it hears, so an edit the solo gate swallowed there would be erased by the next
+  overlaid save. A Server Edition tab asks its core which projects are governed (`canvas:authority`),
+  publishes for every project until the first answer, and asks again on reconnect; the desktop
+  answers none, so its gate is unchanged. Only a cast from ANOTHER client proves a peer
+  (`provesPeer`): our own echo and a core-published op (no `src`) do not.
 - **Reflector** (`src/core/canvas-sync.ts`) — holds no canvas state and persists nothing, but it is
   **not** stateless: it stamps every mutation with a monotone **`seq`** and sends it to **every**
   attached client, the sender included (`CorePlatform.clientIds()` + `onWithSender`). `seq` is
@@ -388,7 +401,15 @@ independently on each client from the already-broadcast `agent:status` stream; a
   `order.reset()` is called whenever our presence clientId changes (i.e. on every (re)connect): if
   the core restarted, its `seq` restarted at 0 while our `seen` map still held high values, and we
   would silently drop every new mutation as a straggler. Correctness no longer depends on the
-  ws-bridge's `location.reload()`.
+  ws-bridge's `location.reload()`. The reset keeps one thing: our own causal position (`lastSeq`,
+  what rule 4's `seen` stamps). A reconnect to the SAME core also resets, and a first cast stamped
+  `seen: 0` there — ⌘Z of a node deleted before the drop — was a stale frame to every peer holding
+  the tombstone. After a real restart the kept value is above every new `seq`, so our casts read as
+  "never stale": the pre-rule-4 verdict, not a split. That window is bounded: the first stamped `seq`
+  heard after a reset re-bases the position when it is at or below it (the core restarted and its
+  counter began again), and leaves it alone when it is above it (the same core carried on). (The
+  reflector clamps it to `seq - 1`, which changes no verdict here; see the note on the clamp under
+  rule 4.)
 - **A cast the reflector would refuse is never made** — the publisher validates with the **same**
   predicate the reflector's ingest uses (`isCanvasMutation`, moved to `src/shared/canvas-mutations.ts`
   so both ends share one verdict) *before* recording a pending entry and *before* casting. A refusal
@@ -411,6 +432,162 @@ independently on each client from the already-broadcast `agent:status` stream; a
 - **Undo is rebased, not clobbered** — a peer's mutation is applied to the undo baseline
   (`committedRef`) rather than replacing it, so a local edit still inside the 300 ms undo debounce
   survives a peer's mutation landing on top of it.
+
+## Edge sync (bridges + ropes)
+
+Stage 3 addressed **nodes**. Edges — `bridges` (context links, which an agent actually reads
+through) and `ropes` (display-only "spawned by" lineage) — were left out, and that was the worst
+gap the stage shipped with, because they are **persisted in the same whole-file `workspace.save`**.
+An edge you drew never reached your teammate, and their next save — of a canvas that never had it —
+**deleted it**. Same in reverse.
+
+They are in the vocabulary now, and everything around them is the node machinery unchanged:
+
+- **Vocabulary** — `CanvasMutation` gains `edge-upsert` / `edge-remove`, each carrying a
+  `kind: 'bridge' | 'rope'` (which persisted list to write) and the edge's three ids. **Only the ids
+  travel.** A rope's colour and its waiting look are derived at render time from each client's own
+  nodes (`displayEdges` / `ropeVisual`), so sending them would ship one client's palette to another.
+- **Ordering** — the same `CanvasOrder`, keyed by `mutationKey`: `n:<id>` for nodes, `e:<id>` for
+  edges, one key space with a prefix (a node id and an edge id are generated independently and could
+  collide). The `kind` is deliberately **not** in the key: one id is one edge, and a bridge and a
+  rope claiming the same id must be resolved to one thing rather than held as two. Rule 4 (the
+  causal delete) therefore covers an edge exactly as it covers a node. The apply and the diff agree:
+  `applyEdgeMutationToScene` takes an upserted id out of the other list and a remove drops it from
+  both, and `diffToMutations` casts no remove for an id that only moved between the lists (a trailing
+  remove would delete it from both).
+- **Publisher** — the snapshot became a `CanvasScene` (`{nodes, bridges, ropes}`), so one diff, one
+  throttle and one baseline cover both. The Canvas publish effect has the edge arrays in its deps:
+  drawing a link never touches `nodes`, so without that the edit would never be published. React
+  Flow rebuilds those arrays on a mere **selection** change too — that costs one diff yielding no
+  mutation (the diff compares id/source/target only), and the solo gate means a solo user does not
+  pay even that.
+- **Batch order is load-bearing.** A peer applies mutations one at a time, so `diffToMutations`
+  emits **node adds → edge adds → edge removes → node removes**: an edge naming a node that has not
+  arrived yet would draw into nothing, and an edge whose node dies in the same batch has to be
+  removed while it is still there.
+- **Ephemeral endpoints are filtered** (`publishableScene`). An edge naming a subagent / loop card
+  addresses a node the peer derives itself, with its own lifetime — it would be pruned there at a
+  moment we do not control and re-published back at us.
+- **Background projects** get `useProjects.applyEdgeMutation`, for the same reason nodes do: that
+  project's serialized edges are what our next whole-file save writes.
+- **The snapshot thunk captures the edge arrays when it is CREATED** (`publishableLater`). The
+  publisher keeps an `adopt` baseline unresolved until the next publish, so a thunk that read the
+  edge refs when it RAN saw the link the user had drawn since the last peer op or project load: the
+  diff was empty, nothing was cast, and the teammate's next save deleted the link. Only the `.map`
+  is deferred (React state arrays are never mutated in place), so the solo gate still skips the cost.
+- **The edge refs move synchronously** with their setters on a project load and a server change,
+  and the render-time mirror copies the state only when it CHANGED. A zustand write re-renders on
+  the SyncLane and skips the pending DefaultLane setter (see `nodesEpoch.ts`), so an unconditional
+  mirror put the previous project's edges back into the ref — and a peer's edge op arriving before
+  the next render was applied to them and overwrote the load.
+- **An edge whose endpoint the peer does not have is held, not cast.** A node the size guard refuses
+  (an oversized sticky) never reaches the peer; an edge to it that did would be pruned there, and the
+  peer's `edge-remove` would delete the link on our canvas too. The publisher holds such an
+  `edge-upsert` inside the emit that refused the node (and on every later emit while the node's last
+  cast stays refused — `refusedNodeIds()`), keeps it owed, and casts it in the same batch as the node,
+  after it, on the first emit in which the node goes through. That holds across a peer's op too: the
+  adopt that applies it takes the scene on screen, which already contains the refused node and the
+  held edge, so the adopted baseline keeps the PREVIOUS baseline's entry for an owed node that scene
+  still holds and for every edge in it touching one (`adoptBaseline`) — otherwise the node would
+  re-diff only when it next changed, and the edge would never differ from the baseline again and
+  never be cast. Only what the adopted scene still holds: one publisher serves every local project,
+  so a project switch adopts ANOTHER project's scene, and re-emitting an owed node it lacks would
+  cast a `remove` of the old project's node under the new project's id (and a peer's delete, which
+  also arrives as an adopt, would be echoed back). The hold is in the publisher, not a filter on the
+  scene: dropping an edge the baseline already holds would diff as an `edge-remove` — the same
+  delete, cast by us. It is conservative: an edge to a node whose EARLIER version the peer has also
+  waits. What it does not cover: (1) a baseline taken while the solo gate is closed (`shouldPublish`
+  false) is not rebased, so an owed item swallowed there syncs only when it next changes — the gate
+  closes on an open publisher only when a hosted role drops to read-only; (2) a round trip to
+  another project (A → B → A), which in practice is almost ANY visit to B: an emit keeps owed only
+  the nodes of the scene it diffs, and the publisher emits on every change to B's `nodes` state
+  (React Flow's own measure and selection updates included, not only an edit), so the owed A node is
+  forgotten there; the load that returns to A adopts A's whole scene, so a held edge is not cast
+  after the node is trimmed until the edge itself changes; (3) a `remove` that was itself refused (no
+  active project) and then adopted over is not retried. None of the three is a regression — the
+  publisher behaved the same way before holds existed.
+- **"This note is too large" is said only for a node upsert.** An edge op is refused only for a
+  malformed or over-long id, so the sentence would name a cause nobody measured; the refusal is
+  logged instead.
+
+What this does **not** change: an edge is still pruned locally when an endpoint disappears, so a
+peer's node delete can leave one drawn against nothing for a tick (see Known risks). Also still
+open: a peer edge op applied in the same task as a local functional edge update overwrites that
+update (the node path no longer does: its receive `setNodes` is functional, `rebaseOnLatest`); a
+local node delete publishes its `remove` first and the
+pruned edges' `edge-remove`s one render later, and every peer prunes the same dangling edge itself
+(converges, with redundant casts); canvas-control writes into a project that is not on screen are
+not cast as edge ops. The Server Edition's headless canvas control is cast now: it diffs every
+project's whole content (nodes, edges, board) against what it last loaded or saved, and casts every
+op before it saves (`castAndSave`, `src/server/headless-node-factory.ts`).
+
+## Board sync (kanban)
+
+The board (`project.kanban`) had the edges' problem: `canvas:mut` carried no board item, and the
+board rode every whole-file save, so a teammate's card move never reached you and your next save
+wrote your board over theirs. Board items are in the vocabulary now, one op per item
+(`src/shared/kanban-ops.ts`), under a third key prefix:
+
+| Item | Ops | Order key |
+|---|---|---|
+| Column | `kb-column` / `kb-column-remove` | `k:col:<id>` |
+| Column order | `kb-column-order` | `k:colorder:<projectId>` |
+| Card placement | `kb-card` / `kb-card-remove` | `k:card:<nodeId>` |
+| Card metadata | `kb-meta` / `kb-meta-remove` | `k:meta:<nodeId>` |
+| Label | `kb-label` / `kb-label-remove` | `k:label:<id>` |
+| Label order | `kb-label-order` | `k:labelorder:<projectId>` |
+| Saved view | `kb-view` / `kb-view-remove` | `k:view:<id>` |
+
+- **Last writer wins per ITEM, not per board.** The node rules are unchanged: per key, the highest
+  `seq` wins. Two people moving two different cards at once both land; two moves of the same card
+  end on the later-ordered one. A card's placement and metadata key by its node id under their own
+  sub-prefix, so a card move is not a node edit, and deleting a node does not tombstone its card.
+- **The two order keys carry the project.** Each is a per-project singleton, and one `CanvasOrder`
+  orders every loaded project: unscoped, our unacked reorder in one project held off (rule 2) a
+  teammate's reorder in another.
+- **Rule 4 is for deletions only.** `kb-column-remove`, `kb-label-remove` and `kb-view-remove` mean
+  "this item is gone" and tombstone their key, exactly like `remove` and `edge-remove`.
+  `kb-card-remove` ("back to Ungrouped") and `kb-meta-remove` ("no metadata") are VALUES and order
+  like any other write (`isKanbanDeletion`): a card taken off the board and filed again is not a
+  resurrection, and a tombstone would drop a teammate's concurrent move as a stale frame.
+- **Order ops are cast on additions too.** An item op only says the item exists, and a peer that
+  applies it alone appends it. So the publisher also casts the list's order op whenever the list
+  gained an id or the relative order of the ids both sides share changed (`orderChanged`), and every
+  replica lands on the later order op's list. An order op lists only the ids its sender knew, so
+  ids other clients added in the same window are not in it: `reorder` puts those after the listed
+  ones SORTED BY ID, and the op's own sender applies the echo of its last order op for that list
+  instead of dropping it as an ack (`CanvasOrder.accept`). Without both, three concurrent adds
+  converged in only 30 of the 90 reflector interleavings; with them, all do
+  (`kanban-ops.convergence.test.ts` enumerates every interleaving for three clients).
+- **Names are repaired, not refused.** A column title, label name or assignee name is trimmed,
+  stripped of control and bidi-override characters and cut to its bound (`displayText`); only an
+  empty result is refused. The UI puts no length cap on them, so a refusal would be a rename that
+  silently never syncs. Ids are refused, never repaired. The sender casts the repaired form and keeps
+  it locally too, because its own echo is only an ack (`renderer/canvas/kanban-sync.ts`).
+- **Default columns are deterministic.** A project with no `kanban` block renders a lazy default
+  board that is not written until the first edit, and with live sync two people can make that edit
+  at once. Its column ids are a hash of the project id and the column's index (`seededColumnId`,
+  `defaultKanbanFor` in `src/shared/kanban-default-board.ts`): the same on every client, so the two
+  first edits land on the same three columns instead of six. A board created explicitly (the core's
+  `ensureProjectBoard`, the phone's first board) keeps random ids.
+- **The publisher hangs off the one store funnel.** Every board write goes through
+  `useProjects.setProjectKanban`, whose hook diffs the board item by item and casts through the same
+  send and the same publish gate as nodes: the board, the card modal, the Omni board, node labels and
+  the `assign` verb all publish without a call site of their own. A peer's board op is applied
+  through the store reducer (`applyCanvasOp`), never through `setProjectKanban`, so nothing received
+  is published again, and it writes no board-log entry: only the client that made a change records
+  it. The entries a board change writes go through the project's own session (a relay tab's to its
+  host).
+- **Prune removals are never cast.** Every board commit prunes the cards of nodes that are not live
+  locally. A teammate whose node op has not arrived yet would otherwise cast the removal of a fresh
+  card for everyone, so `diffKanbanOps` casts a card or metadata removal only for a node live in that
+  project: React Flow's nodes for the project it holds, the stored nodes for any other. While the Omni
+  board is open, React Flow ∩ the stored copy (`boardLiveNodeIds`): its lanes prune against the stored
+  copy, which lags React Flow for the rendered project, and a smaller live set can only cast fewer
+  removals. The cost: removing, on the Omni board, the card of a node created moments ago is not cast.
+- **A board edit is cast only to the active tab's core** (`castFor`), as a node edit is: the order
+  hears one core's echoes. A board edit to a lane on another core (the Omni board editing a relay
+  lane while a local tab is active, or the reverse) is not cast.
 
 ## UI
 
@@ -602,8 +779,9 @@ here so the delta is legible.
    two live paths still reach `create` for a deleted node, and both would spawn a fresh `nt-<id>`
    (the terminal its owner deliberately killed, as an empty shell) if the tombstone were deleted:
    - **Project-level operations are not in the mutation vocabulary.** `CanvasMutation` addresses
-     *nodes*. `deleteProject` (`src/renderer/canvas/Canvas.tsx`, the `×` on a "Recently closed"
-     entry) ends every terminal's tmux session via `transport.destroy(nodeId)` and publishes
+     nodes, edges and board items, never a project. `deleteProject`
+     (`src/renderer/canvas/Canvas.tsx`, the `×` on a "Recently closed" entry) ends every
+     terminal's tmux session via `transport.destroy(nodeId)` and publishes
      **nothing** — the project itself, with all of its nodes, is still in every peer's `projects`
      store. A peer that reopens it from *its* "Recently closed" list mounts those nodes and creates
      their ptys. Only the tombstone refuses that.
@@ -618,13 +796,11 @@ here so the delta is legible.
    (`TOMBSTONE_MAX` / `TOMBSTONE_TTL_MS`), still exempting the destroyer so their own ⌘Z works.
 
 5. **What canvas sync does NOT cover** (all deliberate; none of it is fixed by this stage):
-   - **Edges are NOT in the mutation vocabulary** — only nodes are, and edges (`edges`, `bridges`,
-     `ropes`) ride the same whole-file `workspace.save`, which is last-write-wins. So this is worse
-     than a cosmetic gap: an edge you draw does not appear on your peer's canvas, **and their next
-     save — of a canvas that never had it — DELETES it**, because their file write is authoritative
-     for the whole project. (Same in reverse: their edge dies on your save.) A peer's node delete
-     also leaves a **dangling edge** on your canvas until the next save/load drops it. Edge sync is
-     the obvious next slice of this stage; until then, draw links when you are alone on the canvas.
+   - ~~**Edges are NOT in the mutation vocabulary**~~ — **closed; see
+     [Edge sync](#edge-sync-bridges--ropes) below.** This was the worst of the gaps and not a
+     cosmetic one: edges rode the whole-file `workspace.save` without being in the vocabulary, so an
+     edge you drew never reached your peer **and their next save — of a canvas that never had it —
+     DELETED it**.
    - **A peer's node removal unmounts the node and disposes its terminal co-state**
      (`disposeTerminalOnUnmount` — the module-level xterm/park/co-attach state), but it does **not**
      run the rest of the local delete path (`useAgentStatus.remove`, chat-driver dispose). The
@@ -636,18 +812,20 @@ here so the delta is legible.
      would kill the owner's live session for real.
    - **Project lifecycle** (create / rename / close / delete / folder change) is **not** synced.
    - **Viewport, selection and undo** are not synced. Undo is local per user, by design.
-   - **No conflict resolution beyond per-node last-write-wins.** See
+   - **No conflict resolution beyond per-item last-write-wins** (per node, edge or board item). See
      [Concurrent-edit resolution](#concurrent-edit-resolution-what-converges-and-what-does-not).
      No CRDT.
 
 ## Concurrent-edit resolution: what converges, and what does not
 
-**Converges — guaranteed, on any interleaving.** Every client ends with the same **node set** and
-the same **value** for every node, because every mutation is ordered by the reflector's `seq` and the
-highest `seq` per node wins everywhere (`src/shared/canvas-order.ts`). This is the property
-persistence depends on: whichever client's whole-file `workspace.save` runs, it writes a canvas the
-others agree with. Proven end-to-end against an **asynchronous** bus (queued casts + FIFO deliveries,
-edits genuinely in flight) in `src/core/canvas-sync.convergence.test.ts`.
+**Converges, on any interleaving, among the clients that saw the whole exchange.** Every such client
+ends with the same **set** and the same **value** for every node and edge, and shows the same board,
+because every mutation is ordered by the reflector's `seq` and the highest `seq` per item wins
+everywhere (`src/shared/canvas-order.ts`). A client that loaded after a delete did not see it all; it
+is the first entry in the list below, and the board's exceptions are listed there too. This is the
+property persistence depends on: whichever client's whole-file `workspace.save` runs, it writes a
+canvas the others agree with. Proven end-to-end against an **asynchronous** bus (queued casts + FIFO
+deliveries, edits genuinely in flight) in `src/core/canvas-sync.convergence.test.ts`.
 
 That guarantee does **not** rest on any timeout. The pending TTL is a bound on how long we *suppress*
 peers, never on correctness: an ack that arrives after it **repairs** the node (rule 3 above), and a
@@ -658,26 +836,83 @@ concurrently with a peer's delete.
 
 **Does NOT converge — named, not hidden:**
 
-- **Array order after a resurrection.** If a delete *loses* the order race, the client that issued it
-  removed the node and then re-appended it, so it can sit in a different **slot** in the array than
-  on a client that never removed it. Node set, positions, sizes and data all agree; only the array
-  order (which drives the sidebar listing) can differ, and the next load normalizes it.
+- **A stale frame reaching a client that holds no tombstone.** Rule 4 (below) judges an upsert only
+  against the removes a client has itself applied. A client that loaded the canvas after a delete, or
+  reset its order on a reconnect (`reset()` clears the tombstones), has none for that node, so a stale
+  frame for it arriving later (from a peer whose socket was stalled) is applied there and dropped by
+  every other client. That client holds a node the others do not until its next load, and its next
+  whole-file save can write it back. (A canvas authority that heard the delete drops the frame too,
+  and overlays that save.)
+- **Array order after a resurrection.** If a node is deleted and then legitimately re-created, the
+  client that issued the delete removed it and re-appended it, so it can sit in a different **slot**
+  in the array than on a client that never removed it. Node set, positions, sizes and data all agree;
+  only the array order (which drives the sidebar listing) can differ, and the next load normalizes it.
 - **Intent, on a contended node.** Two people dragging the same node fight: the node lands wherever
   the last-ordered frame put it. Two people typing a title get one title. That is last-write-wins,
   not a merge — by design (no CRDT).
-- **A delete that loses to a concurrent edit — and the node comes back with a DEAD TERMINAL.** If A
-  deletes a node while B is mid-drag, and B's next frame is ordered after A's remove, the node
-  **survives on both canvases** — the last write wins, and it happened to be an upsert. But A's
-  `transport.destroy` had already run `tmux kill-session`, and nothing resurrects a killed session:
-  the node that comes back is a **shell around a dead terminal**. Its scrollback and its running
-  process are gone; the next time it is opened, `pty.create` starts a **fresh** session under the same
-  `nt-<nodeId>` (a cold start: scrollback replay finds nothing, an agent node re-launches its CLI).
-  The canvas is *consistent* everywhere (no split-brain save, which was the whole point) — the node
-  content is not. Deleting a node someone else is actively dragging is a race between two humans;
-  nodeterm resolves the canvas, it cannot un-kill a process. A "delete always wins" tiebreak would
-  trade this for the opposite hazard (a stale drag frame from a disconnected peer erasing a node that
-  was legitimately re-created), so v1 leaves the total order in charge and names the wart here.
-- **Anything outside the node vocabulary** — edges, project lifecycle (see item 5 above).
+- **Edge array ORDER**, for the same reason and with even less consequence: two clients that draw
+  an edge at the same time each append the peer's to their own, so the two arrays hold the same
+  edges in different slots. Nothing lists edges in order; they are rendered as a set.
+- **Board column and label order, for ids two clients added in the same window**, until the next
+  order op (see [Board sync](#board-sync-kanban)).
+- **A card's stored placement when its column is deleted as it is filed there.** Depending on the
+  order, one client can keep a placement naming the deleted column while another has none. Both show
+  the card in Ungrouped, which holds every card with no placement or one naming no column
+  (convergence case 5 in `src/core/canvas-sync.convergence.test.ts`).
+- **Anything outside the node/edge/board vocabulary** — project lifecycle (see item 5 above).
+
+### A delete beats a concurrent edit — CAUSALLY, not by a tiebreak (rule 4)
+
+This used to be in the list above, as a named wart: A deletes a node while B is mid-drag, B's next
+frame is ordered after A's remove, so the node **survived on every canvas** — but A's
+`transport.destroy` had already run `tmux kill-session`, so what came back was a **shell around a
+dead terminal**. Consistent, and nobody had asked for that node back.
+
+The fix is not the "delete always wins" tiebreak this document previously rejected — that one buys
+the opposite hazard, a stale drag frame from a disconnected peer erasing a node that was
+legitimately re-created. The missing fact was **causality**, so every mutation now carries `seen`:
+the highest `seq` its sender had applied when it cast. The rule is exact, with no timer:
+
+> an upsert for a removed node is dropped **iff** `seen < the seq the remove was ordered at`.
+
+B's drag frame was produced in ignorance of the delete and dies everywhere; a re-creation (⌘Z on
+the delete, the node added again) necessarily carries `seen` at or past it and lands. Its mirror on
+the receiving side: **a `remove` is never held off by rule 2's suppression** — rule 2 rests on "our
+unacked mutation wins everywhere", which under rule 4 it no longer does, so suppressing the remove
+would be the one way to disagree with our peers.
+
+**A re-creation waits for our OWN remove's echo** (`CanvasOrder.hasPendingRemove`). Our remove enters
+our `seen` only when its echo comes back, so a re-creation of the same id cast before that — a link
+deleted and redrawn, a node deleted and ⌘Z'd, inside one round trip — carried a `seen` below the
+remove: every peer dropped it as a stale frame while we kept showing it, and the next whole-file save
+became last-writer-wins on disk. Canvas's send callback now refuses any non-remove op for a key with a
+remove of ours in flight (counted per key, not TTL-bound — a late ack is exactly when it matters). A
+LOST ack does not come with a reconnect: the ui sink drops a single message and keeps the connection
+(`SINK_FAILURE_LIMIT`). Our echoes come back in the order we cast (FIFO), so the echo of a LATER cast
+of ours proves an earlier one was lost, and releases that remove's gate too; Canvas compares the total
+count of pending removes across each `accept` to see it. A reset still clears everything. The record
+of our casts that FIFO match reads is capped (`LOCAL_CASTS_MAX`, 4096), which only matters while the
+core answers nothing at all: a remove the cap forgets is released as it goes (the pre-gate degrade,
+not a gate stuck until a reset), and a forgotten cast's own late echo releases nothing (matched to a
+later cast of its key, it would release removes whose echoes are still in flight). The
+refusal keeps the op owed in the
+publisher, and an adopt in that window keeps an owed EDGE owed as well as an owed node (a teammate's
+op is usually what arrives during that round trip). Nothing else would ever cast it — our echo is an
+ack and changes no React state — so the echo that clears the gate re-publishes, after the handler and
+only when the publisher `hasOwed()`.
+
+`seen` is client-supplied. The reflector tidies it (`stampMutation`): a value at or past the order the
+mutation is being given is clamped to just below it, and a non-integer or negative one is dropped.
+**The clamp is hygiene, not a guard: it changes no verdict.** A remove ordered before this mutation
+has a `seq` at most `seq - 1`, so a clamped `seen` still counts as having seen it, and a remove ordered
+after it supersedes it by `seq` alone. A forged `seen` therefore resurrects a deleted node, clamp or no
+clamp. What bounds that is who may cast at all: on a hosted team `canvas:mut` is Editor-only, and an
+Editor has a shell on the host anyway. A mutation with **no** `seen` (an older peer, the relay mirror)
+is judged exactly as before rule 4 existed — degrade, never break.
+
+What this does **not** do: un-kill the process. If the delete wins, the terminal is gone, which is
+what the human asked for. If the node is deliberately re-created later, it is still a fresh session
+under the same `nt-<nodeId>` (a cold start).
 
 ## Non-goals (v1)
 
@@ -735,11 +970,20 @@ read-only guests, per-user settings.
   client whose **inbox is stalled past the TTL** (a backed-up socket) is repaired by its own late ack
   instead of being left on the losing value; and an **oversized** node the reflector would refuse
   neither deafens that node to a peer's concurrent delete nor is silently lost (it is retried, and
-  syncs once trimmed). → `src/core/canvas-sync.convergence.test.ts` (18 tests)
+  syncs once trimmed). → `src/core/canvas-sync.convergence.test.ts`
 - **Applying a peer's mutation** (delivered): patches the live React Flow array — keeps your
   selection, keeps relay-remote nodes, keeps local-only node data, keeps every untouched node's
   object identity, drops the stale `measured` size so a peer's resize is not fought back, and keeps
   group parents before their children. → `src/renderer/state/workspace.mutation.test.ts` (10 tests)
+- **Board sync** (delivered): the reducer and sanitizers per op; two different cards moved at once
+  both land; one card moved twice ends on the later op; two first-ever board edits make three
+  columns, not six; a card whose node has not arrived survives a peer that prunes it; a column
+  deleted while a card moves into it leaves the card in Ungrouped; concurrent column and label adds
+  converge. → `src/shared/kanban-ops.test.ts`, `src/shared/kanban-ops.convergence.test.ts`,
+  `src/shared/canvas-content.test.ts`, `src/renderer/canvas/kanban-sync.test.ts`, and the board cases
+  in `src/core/canvas-sync.convergence.test.ts`. The Server Edition's canvas authority has its own
+  suite (`src/core/canvas-authority.test.ts`) and an end-to-end run with no browser attached
+  (`src/server/hosted-e2e.test.ts`).
 
 ### Manual smoke test (Stage 1)
 
@@ -916,18 +1160,19 @@ logged in, named, and on the **same project**.
 - **Weak identity** — anyone can claim any name.
 - **Concurrent typing garbles input** — accepted; the badge is the warning.
 - **Cross-user undo** — last-write-wins, no CRDT.
-- **Per-node last-write-wins is a resolution, not an arbitration.** Clients always converge, but a
-  delete can lose to a concurrent drag frame (the node survives everywhere, with a dead session), and
-  two people dragging one node fight over it. Named in full under
-  [Concurrent-edit resolution](#concurrent-edit-resolution-what-converges-and-what-does-not).
-- **A peer's edge (context link / note link) is deleted by your next save.** Edges are not synced but
-  they *are* persisted, in the same whole-file write. See item 5 of
-  [What Stage 3 changed](#what-stage-3-changed-relative-to-this-spec).
+- **Per-item last-write-wins is a resolution, not an arbitration.** Clients that saw the whole
+  exchange converge (a client that loaded after a delete may not: see the does-not-converge list), but
+  two people dragging one node fight over it and the last-ordered frame decides. (A delete no longer
+  loses that race — see rule 4 under
+  [Concurrent-edit resolution](#concurrent-edit-resolution-what-converges-and-what-does-not).)
+- ~~**A peer's edge (context link / note link) is deleted by your next save.**~~ Closed — edges are
+  in the vocabulary now ([Edge sync](#edge-sync-bridges--ropes)).
 - **The publisher's solo gate reads the presence peer table.** If a client's presence handshake never
   completes, that client sees no peers and therefore publishes nothing (it still *applies* what it
   receives, and the first mutation from a peer flips the gate on for good). Presence and canvas sync
   ride the same transport, so a client that cannot say hello generally cannot cast either — but the
-  coupling is real and is the price of a solo user paying zero.
+  coupling is real and is the price of a solo user paying zero. A project a canvas authority governs
+  does not depend on it: its clients publish whether or not they see a peer.
 - **Cursor traffic** is 20 Hz × peers: comfortable for a 5–10 person team, not for a public room.
 - **Plain-shell (no tmux) co-attach shows a joiner a blank-but-live terminal** until the next output
   arrives (pressing Enter paints it). A joiner gets `fresh:false`, so it skips the cold-restore
@@ -951,6 +1196,8 @@ logged in, named, and on the **same project**.
   - **The tombstone remains in-memory**, so it dies with the core process; across a core restart both
     of the above degrade to "the node comes back". Bounded and honestly named, not a promise. See
     [What Stage 3 changed](#what-stage-3-changed-relative-to-this-spec) (item 4).
-- **A peer's node delete can leave a dangling edge.** Edges are not in the mutation vocabulary — only
-  nodes are — so a context-link / note-link edge whose endpoint a peer deleted stays drawn on your
-  canvas until the next save/load drops it. Drawing an edge is likewise not synced.
+- **A peer's node delete can still leave a dangling edge for a moment.** The delete and the edge
+  removal are two mutations, and the peer that owns the edge prunes it on its next node change, so
+  an edge whose endpoint a peer deleted can be drawn against nothing for a tick. It is dropped by
+  the same prune that has always handled a locally-deleted endpoint — the durable half (your save
+  erasing their edge) is what closed.

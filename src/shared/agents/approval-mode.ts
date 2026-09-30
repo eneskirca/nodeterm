@@ -47,6 +47,11 @@ export interface ApprovalCaps {
    *  from its own `--help` — see `core/codex-cli.ts`. `null`/absent = not probed, not probeable
    *  (a remote host, a relay tab), or the probe failed. */
   codexApprovalValues?: readonly string[] | null
+  /** Does the `codex` that will RUN this session accept `--no-daemon`? Read by
+   *  `withCodexNoDaemon` (`./codex-daemon`), not by anything in this file: the caps bag is simply
+   *  what every launch site already threads to the two command assemblers. Anything but a literal
+   *  `true` (a remote host, a relay tab, an unprobed or older CLI) emits nothing. */
+  codexNoDaemon?: boolean | null
 }
 
 /**

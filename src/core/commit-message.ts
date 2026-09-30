@@ -6,6 +6,7 @@ import { promisify } from 'util'
 import type { GitResult, Settings } from '../shared/types'
 import { directExecutableInvocation, findInPathString, shellPathNow } from './exec-path'
 import { resolveGitRemote, runRemoteGit } from './remote-ssh/remote-git'
+import { AUTH_ENV_STRIP } from './claude-accounts-core'
 
 const run = promisify(execFile)
 
@@ -176,7 +177,8 @@ function spawnAgent(
   bin: string,
   args: string[],
   cwd: string,
-  stdin: string | null
+  stdin: string | null,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const invocation = directExecutableInvocation(bin, args)
@@ -188,7 +190,7 @@ function spawnAgent(
     const child = spawn(invocation.executable, invocation.args, {
       ...invocation.options,
       cwd,
-      env: process.env,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     })
@@ -286,15 +288,46 @@ export function localAgentCwd(cwd: string, isRemote: boolean, home: string): str
   return !cwd || isRemote ? home : cwd
 }
 
+/**
+ * The env for running an agent under a managed Claude account: `CLAUDE_CONFIG_DIR` points at the
+ * account's dir and the auth vars that would shadow its OAuth login are stripped — the same two
+ * moves `PtyManager` makes for the node's own session, so a one-shot request goes out as the same
+ * identity the node runs as.
+ */
+export function claudeAccountEnv(base: NodeJS.ProcessEnv, configDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, CLAUDE_CONFIG_DIR: configDir }
+  for (const k of AUTH_ENV_STRIP) delete env[k]
+  return env
+}
+
+/**
+ * A CLI error printed where the answer should be. `claude -p` writes "Failed to authenticate: …" /
+ * "Invalid API key …" / "API Error: …" to STDOUT, so the exit code alone is not enough evidence —
+ * and treating that line as the answer is how a node ended up titled "Failed to authenticate: OAuth s…".
+ */
+const CLI_ERROR_OUTPUT =
+  /^(failed to authenticate|invalid api key|api error|error:|oauth token|authentication_error|please run \/login|credit balance is too low)/i
+
+export function isCliErrorOutput(message: string): boolean {
+  return CLI_ERROR_OUTPUT.test(message.trim())
+}
+
 /** Plan + spawn the configured agent on a prompt and return its cleaned output. */
-export async function runAgent(prompt: string, cwd: string, settings: Settings): Promise<GitResult> {
+export async function runAgent(
+  prompt: string,
+  cwd: string,
+  settings: Settings,
+  env?: NodeJS.ProcessEnv
+): Promise<GitResult> {
   const plan = planAgent(settings, prompt)
   if ('error' in plan) return { ok: false, message: plan.error }
 
   const spawnCwd = localAgentCwd(cwd, !!resolveGitRemote(cwd), os.homedir())
-  const res = await spawnAgent(plan.bin, plan.args, spawnCwd, plan.stdin)
+  const res = await spawnAgent(plan.bin, plan.args, spawnCwd, plan.stdin, env)
   const message = cleanMessage(res.stdout)
-  if (res.code !== 0 && !message) {
+  // A nonzero exit is a failure even when stdout has text: that text is the CLI's error message,
+  // never an answer. Same for a known error line on a zero exit.
+  if (res.code !== 0 || isCliErrorOutput(message)) {
     return { ok: false, message: extractError(res.stderr || res.stdout) }
   }
   if (!message) return { ok: false, message: 'Agent produced no output.' }
@@ -305,7 +338,8 @@ export async function runAgent(prompt: string, cwd: string, settings: Settings):
 export async function generateTerminalName(
   content: string,
   cwd: string,
-  settings: Settings
+  settings: Settings,
+  env?: NodeJS.ProcessEnv
 ): Promise<GitResult> {
   const trimmed = content.trim()
   if (!trimmed) return { ok: false, message: 'No terminal output to read yet.' }
@@ -316,7 +350,7 @@ Terminal output:
 \`\`\`
 ${clip}
 \`\`\``
-  const r = await runAgent(prompt, cwd, settings)
+  const r = await runAgent(prompt, cwd, settings, env)
   if (!r.ok) return r
   const name = r.message
     .split('\n')[0]

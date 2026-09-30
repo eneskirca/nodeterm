@@ -1,3 +1,4 @@
+import type { Project } from '../../shared/types'
 import type {
   CreateIssueInput,
   CreateMappedLabelsResult,
@@ -89,6 +90,30 @@ export interface GitHubIssueProjectContext {
    *  the board reads but never writes: the mapping decides what a write DOES, and it arrives
    *  through the git-shared project file. */
   mappingApproved: boolean
+  /** The project this context was resolved from (in-process only). The read-only control verbs use
+   *  it so a call loads the workspace once, not a second time for the nodes and board. */
+  project?: Project
+}
+
+/** What `controlSnapshot` answers: the cached board state of one project, no request made. */
+export interface GitHubControlSnapshot {
+  repository: string
+  /** The project the snapshot was resolved for (nodes, board columns, pull-link tombstones). */
+  project?: Project
+  completionColumnId?: string
+  mappingApproved: boolean
+  /** Issues AND pull requests of the harvest, each with the column its labels map it to. */
+  items: GitHubIssueCardView[]
+  /** A complete harvest exists (from this run or the on-disk cache). */
+  hasSnapshot: boolean
+  /** Only a partial harvest exists (the repository is over the issue/byte bounds). */
+  partial: boolean
+  incomplete: boolean
+  pullsTruncated: boolean
+  /** Epoch ms of the last complete refresh — how old the list is. */
+  lastSuccessfulRefreshAt?: number
+  pullBoard: GitHubPullBoard
+  throttle?: GitHubThrottle
 }
 
 export interface GitHubIssueServiceContext extends GitHubIssueProjectContext {
@@ -541,13 +566,17 @@ export class GitHubIssueService {
       if (!this.repositoryWriteAllowed(captured.repository, operationId, repositoryGeneration)) {
         return { status: 'refresh-pending', issue: updated }
       }
+      // The write folds ONE issue into the snapshot and leaves `lastSuccessfulRefreshAt` alone: that
+      // is the incremental scan's `since` cursor, and only a completed scan has looked at everything
+      // up to it. Advancing it here skipped any third party's change that landed between the last
+      // scan and this write until the next daily full reconciliation.
       const snapshot = state.snapshot ?? {
-        issues: [], etags: {}, lastSuccessfulRefreshAt: this.now(), lastFullReconciliationAt: 0
+        issues: [], etags: {}, lastSuccessfulRefreshAt: 0, lastFullReconciliationAt: 0
       }
       const issues = snapshot.issues.some((item) => item.number === updated.number)
         ? snapshot.issues.map((item) => item.number === updated.number ? updated : item)
         : [...snapshot.issues, updated]
-      state.snapshot = { ...snapshot, issues, lastSuccessfulRefreshAt: this.now() }
+      state.snapshot = { ...snapshot, issues }
       state.partialIssues = undefined
       try {
         await this.options.cache.saveComplete(captured.userId, captured.repository, state.snapshot)
@@ -712,6 +741,35 @@ export class GitHubIssueService {
   }
 
   /**
+   * Everything the read-only control verbs (`issues` / `prs`, core/github/control-read.ts) show, from
+   * what this process ALREADY holds: the issue cache and the pull tracker's memory. It sends no
+   * request, resolves no credential and starts no poll — an agent's read must never spend the
+   * account's GitHub budget or wake a repository nobody has subscribed to. Throws the host's coded
+   * errors (`not-approved`, `invalid-configuration`, …) exactly like `query`, so a caller can say
+   * WHY there is nothing to show rather than "0 issues".
+   */
+  async controlSnapshot(projectId: string): Promise<GitHubControlSnapshot> {
+    const context = await this.cacheContext(projectId)
+    const { key, state, userId } = await this.cachedState(context)
+    const source = state.snapshot?.issues ?? state.partialIssues ?? []
+    const throttle = userId ? this.options.coordinator.throttle(userId) : undefined
+    return {
+      repository: context.repository,
+      ...(context.project ? { project: context.project } : {}),
+      completionColumnId: context.config.completionColumnId,
+      mappingApproved: context.mappingApproved,
+      items: source.map((issue): GitHubIssueCardView => ({ ...issue, ...mapping(issue, context.config) })),
+      hasSnapshot: !!state.snapshot,
+      partial: !state.snapshot && !!state.partialIssues,
+      incomplete: state.incomplete,
+      pullsTruncated: !!state.snapshot?.pullsTruncated,
+      ...(state.snapshot ? { lastSuccessfulRefreshAt: state.snapshot.lastSuccessfulRefreshAt } : {}),
+      pullBoard: this.pulls.board(key),
+      ...(throttle ? { throttle } : {})
+    }
+  }
+
+  /**
    * A VISIBLE board asks this while some PR is undecided. It answers false at the cost of a map
    * lookup unless a chase read is due, so a board may ask as often as it likes: the schedule and the
    * cap of 12 live here, and only a due read resolves a context (which runs the credential chain).
@@ -734,8 +792,8 @@ export class GitHubIssueService {
   /**
    * The one-time permission for the board to move `cardId` because every PR in `pulls` merged. The
    * first ask wins across every window (two Server Edition tabs cannot both move it), and it is
-   * remembered, so a card the user dragged back is not moved again for the same merges. It sends no
-   * request and resolves no credential.
+   * remembered per PR, so a card the user dragged back is not moved again for the same merges — even
+   * after one of them ages off the pull board. It sends no request and resolves no credential.
    */
   async claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean> {
     const key = this.validPullCardRequest(request)

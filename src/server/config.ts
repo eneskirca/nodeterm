@@ -1,6 +1,7 @@
 import os from 'os'
 import path from 'path'
 import { parseTrustedNets, DEFAULT_TRUSTED_NETS_SPEC, type TrustProxyConfig } from './proxy-trust'
+import type { RelayTransport } from '../core/relay/relay-socket'
 
 /**
  * Fully-resolved server configuration. Produced by {@link resolveConfig} from the
@@ -55,6 +56,19 @@ export type ServerConfig = {
    * Absent = feature off (default). See src/server/proxy-trust.ts and docs/SERVER.md.
    */
   trustProxy?: TrustProxyConfig
+  /**
+   * TEST ONLY: an in-process relay transport for each hosted-team listener, in place of the real
+   * WebSocket to the relay. Passed straight to `createHostedService`'s `transport`.
+   * `resolveConfig` NEVER sets it — no env var or flag reaches it (pinned in config.test.ts) — so a
+   * production boot always dials the real relay. See src/server/hosted-e2e.test.ts.
+   */
+  relayTestTransport?: () => RelayTransport
+  /**
+   * TEST ONLY: the fetch the hosted-team host-token mint uses in place of the global one. Passed
+   * straight to `createHostedService`'s `fetch`. `resolveConfig` NEVER sets it (pinned in
+   * config.test.ts).
+   */
+  relayTestFetch?: typeof fetch
 }
 
 /**
@@ -88,6 +102,20 @@ function isLoopback(host: string): boolean {
 }
 
 /**
+ * The server's data directory, exactly as `resolveConfig` resolves it (argv > env > default). Split
+ * out for the `team` admin CLI, which needs the data dir — where the admin socket lives — but none of
+ * the serving config, and must not trip `resolveConfig`'s serving-only refusals (a non-loopback
+ * NODETERM_HOST in the operator's shell, a trust-proxy half-configuration).
+ */
+export function resolveDataDir(env: NodeJS.ProcessEnv, argv: string[]): string {
+  const arg = parseArgv(argv)['data-dir']
+  if (typeof arg === 'string') return arg
+  const ev = env.NODETERM_DATA_DIR
+  if (ev !== undefined && ev !== '') return ev
+  return path.join(os.homedir(), '.nodeterm-server')
+}
+
+/**
  * Resolve the server config from `env` + `argv`. Precedence is argv > env > default.
  * Binding a non-loopback host without `--insecure-http` throws: plain HTTP on a
  * public interface would leak the session cookie, so the server insists on being
@@ -105,7 +133,7 @@ export function resolveConfig(env: NodeJS.ProcessEnv, argv: string[]): ServerCon
 
   const port = Number(pick('port', 'NODETERM_PORT', '8443'))
   const host = pick('host', 'NODETERM_HOST', '127.0.0.1')
-  const dataDir = pick('data-dir', 'NODETERM_DATA_DIR', path.join(os.homedir(), '.nodeterm-server'))
+  const dataDir = resolveDataDir(env, argv)
   const rendererDir = pick('renderer-dir', 'NODETERM_RENDERER_DIR', path.resolve('out/renderer'))
   const insecureHttp = args['insecure-http'] === true
   const passwordSeed = env.NODETERM_SERVER_PASSWORD || undefined

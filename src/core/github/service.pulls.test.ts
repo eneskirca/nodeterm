@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { GitHubIssueCache } from './cache'
+import { testTmpDir } from '../test-tmp'
 import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesClientLike } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { PullStatusRead } from './graphql-pulls'
@@ -10,9 +10,15 @@ import type { GitHubIssue, IssueHeartbeatResult, NormalisedProjectKanbanGitHub }
 import type { GitHubPullChecksResult, PullStatusFacts } from '../../shared/github-pull-status'
 
 let userDataDir: string
-beforeEach(async () => { userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-github-pulls-')) })
-// A claim persists the pull memory asynchronously, so a save can still be landing as a test ends.
-afterEach(async () => { await fs.rm(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }) })
+beforeEach(() => { userDataDir = testTmpDir('nt-github-pulls-') })
+// A claim persists the pull memory asynchronously, so a save can still be landing as a test ends —
+// and one that lands AFTER the rm recreates the directory (`writePrivate` mkdirs), which is how this
+// file stranded a `nt-github-pulls-*` dir per run. Settle first, then remove; `testTmpDir` removes it
+// again when the file ends, for a save slower than the settle.
+afterEach(async () => {
+  await flush()
+  await fs.rm(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
+})
 
 const HEAD = 'a'.repeat(40)
 const config: NormalisedProjectKanbanGitHub = {
@@ -241,5 +247,47 @@ describe('GitHubIssueService pull status', () => {
       expect(await h.service.claimPullAutoMove(bad as never)).toBe(false)
       expect(await h.service.notePullWaits(bad as never)).toBe(0)
     }
+  })
+})
+
+describe('GitHubIssueService.controlSnapshot — the read behind the `issues` / `prs` control verbs', () => {
+  function readOnlyHarness() {
+    const client = new PullClient()
+    let contexts = 0
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator({ now: () => 1_000_000 }),
+      // The credential chain: every resolve is counted. The cache read must never take it.
+      contextForProject: async () => { contexts += 1; return context(client) },
+      projectContextForCache: async () => {
+        const { client: _c, credentialGeneration: _g, userId: _u, ...cacheContext } = context(client)
+        return cacheContext
+      },
+      now: () => 1_000_000,
+      setInterval: () => 1,
+      clearInterval: () => undefined
+    })
+    return { client, service, contexts: () => contexts }
+  }
+
+  it('before any fetch: no snapshot, and not one request or credential resolve', async () => {
+    const h = readOnlyHarness()
+    const snapshot = await h.service.controlSnapshot('project-1')
+    expect(snapshot).toMatchObject({ repository: 'o/r', hasSnapshot: false, partial: false, items: [] })
+    await flush()
+    expect([h.client.heartbeats, h.client.statusReads, h.client.checkReads, h.contexts()]).toEqual([0, 0, 0, 0])
+  })
+
+  it('after the board fetched: the cached items and pull status, with no further request', async () => {
+    const h = readOnlyHarness()
+    await h.service.subscribe(7, { projectId: 'project-1' })
+    await vi.waitFor(() => expect(h.client.statusReads).toBe(1))
+    await flush()
+    const before = [h.client.heartbeats, h.client.statusReads, h.client.checkReads, h.contexts()]
+    const snapshot = await h.service.controlSnapshot('project-1')
+    expect(snapshot.hasSnapshot).toBe(true)
+    expect(snapshot.pullBoard.pulls[0]).toMatchObject({ number: 1, ci: 'passed' })
+    await flush()
+    expect([h.client.heartbeats, h.client.statusReads, h.client.checkReads, h.contexts()]).toEqual(before)
   })
 })

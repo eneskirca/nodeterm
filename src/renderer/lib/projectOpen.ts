@@ -83,9 +83,15 @@ export function clearAttachConsentForTests(): void {
  * is red-capable (review #363 I-2) — the dispatch only relays the answer; an empty-string value
  * counts as "not passed" (the shim always sends a value for a bare flag).
  */
-export function projectTargetFlagRefusal(args: { group?: string; after?: string }): string | null {
-  if (args.group || args.after) {
-    return 'project-target-flag-unsupported: --group/--after cannot be combined with --project'
+export function projectTargetFlagRefusal(args: {
+  group?: string
+  after?: string
+  'after-success'?: string
+}): string | null {
+  // `--after-success` names station ids exactly as `--after` does, so it is excluded for the same
+  // reason (and it is folded into `after` before this runs, so either field refuses it).
+  if (args.group || args.after || args['after-success']) {
+    return 'project-target-flag-unsupported: --group/--after/--after-success cannot be combined with --project'
   }
   return null
 }

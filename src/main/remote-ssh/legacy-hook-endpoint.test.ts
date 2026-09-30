@@ -26,6 +26,19 @@ describe.skipIf(process.platform === 'win32')('legacy SSH endpoint migration (re
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(path.dirname(file))).toEqual(['legacy.env'])
   })
+  it.each([['no body at all', ''], ['a cut-short body', fresh.slice(0, 20)]])(
+    'keeps the old endpoint when the channel ends early (%s)',
+    (_label, delivered) => {
+      // `cat` exits 0 on EOF; only the byte count tells a cut-short stage from the real body.
+      const file = fixture()
+      fs.writeFileSync(file, old)
+      const migration = legacyEndpointMigration(file, old, fresh, ['old-secret'])!
+      const result = spawnSync('/bin/sh', ['-c', migration.command], { input: delivered })
+      expect(result.status).not.toBe(0)
+      expect(fs.readFileSync(file, 'utf8')).toBe(old)
+      expect(fs.readdirSync(path.dirname(file))).toEqual(['legacy.env'])
+    }
+  )
   it('refuses an unknown owner and malformed credentials', () => {
     expect(legacyEndpointMigration(fixture(), old, fresh, ['other'])).toBeNull()
     expect(legacyEndpointMigration(fixture(), 'partial', fresh, [''])).toBeNull()

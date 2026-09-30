@@ -150,6 +150,14 @@ describe('chat.status', () => {
     const { call } = make()
     expect(await call('chat.status', { nodeId: 'n1' })).toEqual({ id: 'r1', ok: true, body: { status: STATUS } })
   })
+  it('passes the phone\'s catalog opt-in through — and only a literal true', async () => {
+    const status = vi.fn(async (_nodeId: string, _opts?: { catalog?: boolean }) => STATUS)
+    const { call } = make({ status })
+    await call('chat.status', { nodeId: 'n1', catalog: true })
+    await call('chat.status', { nodeId: 'n1', catalog: 'yes' })
+    await call('chat.status', { nodeId: 'n1' })
+    expect(status.mock.calls.map((c) => c[1])).toEqual([{ catalog: true }, undefined, undefined])
+  })
   it('unknown node ⇒ "Unknown node."', async () => {
     const { call } = make({ status: vi.fn(async () => null) })
     expect(await call('chat.status', { nodeId: 'n1' })).toEqual({ id: 'r1', ok: false, body: { message: 'Unknown node.' } })

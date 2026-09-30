@@ -1,0 +1,38 @@
+{
+  "popSecret": "test-pop-secret-0123456789abcdef0123456789",
+  "hostSecretKeyB64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+  "hostPublicKeyB64": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=",
+  "hostId": "qqj_9wO1CyKX9PbhNQj3JC",
+  "nonce": "oKGio6SlpqeoqaqrrK2urw",
+  "cases": [
+    {
+      "purpose": "host-token",
+      "subject": "device-123",
+      "exp": 1790000000,
+      "challenge": "eyJ2IjoxLCJob3N0SWQiOiJxcWpfOXdPMUN5S1g5UGJoTlFqM0pDIiwicHVycG9zZSI6Imhvc3QtdG9rZW4iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3OTAwMDAwMDB9.kdNHxQO-4E_okTEnGGBxvAJV0oZvzBRp5VWp19j1YQE",
+      "serverPublicKeyB64": "QLXQx6cW4EyIiSe3r+GlJd5CgIY4lvJnxnImo5WjKV4=",
+      "proof": "-bMvfUCdybg9xJEh5u5uVehucQgOkOxDf2kz6YAeeco"
+    },
+    {
+      "purpose": "host-token",
+      "subject": "",
+      "exp": 1790000000,
+      "challenge": "eyJ2IjoxLCJob3N0SWQiOiJxcWpfOXdPMUN5S1g5UGJoTlFqM0pDIiwicHVycG9zZSI6Imhvc3QtdG9rZW4iLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3OTAwMDAwMDB9.kdNHxQO-4E_okTEnGGBxvAJV0oZvzBRp5VWp19j1YQE",
+      "serverPublicKeyB64": "QLXQx6cW4EyIiSe3r+GlJd5CgIY4lvJnxnImo5WjKV4=",
+      "proof": "EgIK3YPJ2TcS6elaFqJiTQ-Dbsz-QNAqDRh6yDBo0UA"
+    },
+    {
+      "purpose": "push",
+      "subject": "desk-1",
+      "exp": 1790000000,
+      "challenge": "eyJ2IjoxLCJob3N0SWQiOiJxcWpfOXdPMUN5S1g5UGJoTlFqM0pDIiwicHVycG9zZSI6InB1c2giLCJub25jZSI6Im9LR2lvNlNscHFlb3FhcXJySzJ1cnciLCJleHAiOjE3OTAwMDAwMDB9.eqUI3oXLoyLAgPSkL4Jbo5OniyqIeE6dNnZylp5tUvE",
+      "serverPublicKeyB64": "QLXQx6cW4EyIiSe3r+GlJd5CgIY4lvJnxnImo5WjKV4=",
+      "proof": "TAQpPbO8V_4T4TRsFcjDAy_aSGSlmXCoP2dhN42BjQw"
+    }
+  ],
+  "hostAuth": {
+    "hostDeviceId": "desk-1",
+    "exp": 1790000900,
+    "token": "eyJ2IjoxLCJ0eXAiOiJob3N0LWF1dGgiLCJob3N0SWQiOiJxcWpfOXdPMUN5S1g5UGJoTlFqM0pDIiwiaG9zdERldmljZUlkIjoiZGVzay0xIiwiZXhwIjoxNzkwMDAwOTAwfQ.AIpU0Dmoo6FWcw7PiV9NTuICq0KzC0FZgl-xtjJQDY4"
+  }
+}

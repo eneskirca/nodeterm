@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useEntitlement } from '../../../state/entitlement'
 import { useProjects } from '../../../state/projects'
-import { hostShareOptions } from '../../../lib/relayHostShare'
+import { hostShareOptions, relayShareGrantCopy } from '../../../lib/relayHostShare'
 import { thisMachine } from '../../../lib/machineName'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
@@ -93,9 +93,13 @@ export function RemoteSection({
             hostOffer ? (
               <div className="space-y-2">
                 <p className="text-sm text-muted">
-                  Sharing <strong className="text-text">{sharedName || 'this project'}</strong> —
-                  the joiner will see this project and can run commands on {thisMachine()}. Share
-                  this pairing code with the other device (single use):
+                  {sharedName ? (
+                    <>
+                      Sharing <strong className="text-text">{sharedName}</strong>.{' '}
+                    </>
+                  ) : null}
+                  {relayShareGrantCopy(sharedName || null, thisMachine())} Share this pairing code
+                  with the other device (single use):
                 </p>
                 <FieldRow
                   label="Pairing code"
@@ -132,12 +136,15 @@ export function RemoteSection({
                       </Select>
                     }
                   />
-                ) : (
-                  <p className="text-sm text-muted">
-                    Sharing <strong className="text-text">{sharedName || 'this project'}</strong> —
-                    the joiner sees this project and can run commands on {thisMachine()}.
-                  </p>
-                )}
+                ) : null}
+                <p className="text-sm text-muted">
+                  {sharedName && shareOptions.length <= 1 ? (
+                    <>
+                      Sharing <strong className="text-text">{sharedName}</strong>.{' '}
+                    </>
+                  ) : null}
+                  {relayShareGrantCopy(sharedName || null, thisMachine())}
+                </p>
                 <Button disabled={hostBusy} onClick={() => void startHosting()}>
                   {hostBusy ? 'Starting…' : 'Allow remote access'}
                 </Button>

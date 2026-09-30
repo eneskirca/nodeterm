@@ -9,6 +9,7 @@ import {
   probeSaysAbsent,
   remoteCapturePaneArgs,
   remotePaneCommandArgs,
+  remotePaneCwdArgs,
   remotePaneProcessArgs,
   remoteTerminateForegroundArgs,
   remoteListSessionsArgs,
@@ -263,6 +264,15 @@ describe('remotePaneCommandArgs', () => {
     const args = remotePaneCommandArgs(conn, '/s.sock', 'nt-x')
     expect(args[args.length - 1]).toBe(
       `${TP}tmux -L ${RMT_TMUX_SOCKET} display-message -p -t nt-x '#{pane_current_command}'`
+    )
+  })
+})
+
+describe('remotePaneCwdArgs', () => {
+  it('asks the remote tmux for the pane_current_path of the session', () => {
+    const args = remotePaneCwdArgs(conn, '/s.sock', 'nt-x')
+    expect(args[args.length - 1]).toBe(
+      `${TP}tmux -L ${RMT_TMUX_SOCKET} display-message -p -t nt-x '#{pane_current_path}'`
     )
   })
 })

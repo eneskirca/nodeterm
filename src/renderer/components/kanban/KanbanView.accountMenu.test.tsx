@@ -56,7 +56,7 @@ function render(accountMenuItems?: (id: string) => MenuItem[]): void {
   act(() =>
     root.render(
       <KanbanView
-        board={defaultKanban()}
+        board={defaultKanban('p')}
         sessions={[session]}
         onChange={noop}
         onOpenNode={noop}

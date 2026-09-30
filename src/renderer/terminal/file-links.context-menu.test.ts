@@ -66,7 +66,11 @@ describe('linkAtCell', () => {
   })
 
   it('finds a path and resolves it against cwd', () => {
-    expect(linkAtCell(term, 1, 8, deps())).toEqual({ kind: 'path', abs: '/home/me/proj/out/report.csv' })
+    expect(linkAtCell(term, 1, 8, deps())).toEqual({
+      kind: 'path',
+      token: 'out/report.csv',
+      abs: '/home/me/proj/out/report.csv'
+    })
   })
 
   it('is null off a link, and for paths while file links are disabled', () => {
@@ -118,7 +122,7 @@ describe('installLinkContextMenu', () => {
     const up = fire(screen, 'mouseup', 0, 8)
     const menu = fire(screen, 'contextmenu', 0, 8)
     expect(opened).toEqual([
-      { hit: { kind: 'path', abs: '/home/me/proj/out/report.csv' }, x: 82, y: 2 }
+      { hit: { kind: 'path', token: 'out/report.csv', abs: '/home/me/proj/out/report.csv' }, x: 82, y: 2 }
     ])
     expect(reached).toEqual({ mousedown: 0, mouseup: 0, contextmenu: 0 })
     expect(down.defaultPrevented && up.defaultPrevented && menu.defaultPrevented).toBe(true)

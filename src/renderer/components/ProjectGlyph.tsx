@@ -48,9 +48,10 @@ import {
  * so the bundler tree-shakes the rest of lucide's ~1k glyphs out; keyed by the same kebab ids as
  * `LUCIDE_ICON_IDS` (@shared/project-icon), which is the closed allowlist `sanitizeProjectIcon`
  * enforces AND the picker grid. An `icon.name` that isn't a key here degrades to the fallback
- * (belt-and-braces — a sanitized icon's name is always a key).
+ * (belt-and-braces — a sanitized icon's name is always a key). Also what `NodeIconView` draws a
+ * node glyph from (`NODE_GLYPHS` is a subset of these ids) — one lucide table, not two.
  */
-const LUCIDE_ICONS: Record<string, LucideIcon> = {
+export const LUCIDE_ICONS: Record<string, LucideIcon> = {
   folder: Folder,
   'folder-git': FolderGit,
   code: Code,
@@ -91,6 +92,16 @@ const LUCIDE_ICONS: Record<string, LucideIcon> = {
   users: Users,
   bot: Bot,
   sparkles: Sparkles
+}
+
+/**
+ * The lucide component for an allowlisted id, or undefined. OWN entries only: `LUCIDE_ICONS` is a
+ * plain object, so `LUCIDE_ICONS['__proto__']` / `['constructor']` / `['toString']` answer with an
+ * inherited value — truthy, not a component — and React throws rendering it. The name comes from a
+ * persisted file, so the lookup itself has to be safe, not just the validator in front of it.
+ */
+export function lucideIcon(name: string): LucideIcon | undefined {
+  return Object.prototype.hasOwnProperty.call(LUCIDE_ICONS, name) ? LUCIDE_ICONS[name] : undefined
 }
 
 export interface ProjectGlyphProps {
@@ -153,7 +164,7 @@ export function ProjectGlyph({
   }
 
   if (icon?.type === 'lucide') {
-    const Icon = LUCIDE_ICONS[icon.name]
+    const Icon = lucideIcon(icon.name)
     if (Icon) {
       return (
         <span

@@ -43,6 +43,14 @@ export interface CorePlatform {
    *  Electron: the main window, or none while it is closed). Lets a service address "everyone
    *  EXCEPT the sender", which broadcast() cannot express — see src/core/canvas-sync.ts. */
   clientIds(): number[]
+  /**
+   * Is this attached UI the machine's OWNER — this app's own window (Electron), or a browser tab the
+   * Server Edition authenticated with its session cookie — as opposed to a relay peer (a teammate, a
+   * hosted-team guest)? The canvas reflector lets a node's machine-local held launch
+   * (`pendingLaunch`) travel only owner→owner (@shared/node-exec). Absent, or `false` for an id it
+   * does not know, is the safe answer: the launch is stripped.
+   */
+  isOwnerClient?(uiId: number): boolean
   /** Open a URL in the user's default browser. */
   openExternal(url: string): Promise<void>
 }

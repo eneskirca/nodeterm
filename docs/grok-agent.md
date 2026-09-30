@@ -404,6 +404,17 @@ ai-name / comments).
 
 **Verified corrections to the original assumptions:**
 
+0. **The answer to a permission dialog is in `events.jsonl`, not in a hook** (measured 2026-09-30 on
+   1.0.13 against a local fake model; fixture `src/shared/agents/__fixtures__/grok/permission-events.json`).
+   Approve: no hook until the approved tool finishes. Dismiss (Ctrl+C): no hook at all — the badge
+   stayed NEEDS YOU until the next prompt. Reject: `permission_denied`, then the turn is cancelled
+   with no Stop. `<session dir>/events.jsonl` records `permission_requested`, `permission_resolved`
+   (`decision`: `allow`/`deny`/`cancelled`) and `turn_ended` (`outcome: cancelled`), so the hook
+   server's grok permission gate (`core/agents/grok-permission-gate.ts`) publishes from it. A
+   subagent's prompt carries the PARENT's `sessionId` while its request is in the CHILD's file — see
+   the gate's header. Remote (SSH) nodes: not read yet (the file is on the host); they behave as
+   before.
+
 1. **The `Notification` vocabulary is published and closed** — it was previously written up here as
    UNVERIFIED and able to fail in BOTH directions: silence (NEEDS YOU never lighting, since grok
    documents no counterpart to claude's `PermissionRequest`) or over-firing (orca reports a

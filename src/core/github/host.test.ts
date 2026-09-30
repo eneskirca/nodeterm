@@ -207,6 +207,9 @@ describe('GitHubHostController', () => {
     })
     const context = await controller.projectContextForCache('project-1')
     expect(context.mappingApproved).toBe(false)
+    // The resolved project rides the cache context, so the `issues` / `prs` control verbs load the
+    // workspace once per call (core/github/control-read.ts).
+    expect(context.project?.id).toBe('project-1')
     expect((await controller.status('project-1')).project).toMatchObject({ approved: true, mappingApproved: false })
   })
 

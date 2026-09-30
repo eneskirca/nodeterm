@@ -423,7 +423,11 @@ describe('context-link shim keeps credentials off curl\'s command line', () => {
   it('names no credential header in the generated source at all', () => {
     expect(CONTEXT_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Hook-Token')
     expect(CONTEXT_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Node-Token')
-    expect((CONTEXT_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(2)
+    // Every curl call site reads its headers from stdin: the POST over each transport, and the
+    // fallback liveness probe over each transport (hook-endpoint-failover-sh.ts).
+    const calls = CONTEXT_SHIM_SCRIPT.match(/\bcurl -s/g) ?? []
+    expect(calls).toHaveLength(4)
+    expect((CONTEXT_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(calls.length)
   })
 
   it('over TCP: neither token is in argv, both arrive on stdin and reach the server', async () => {

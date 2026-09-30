@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
+import { testTmpDir } from './test-tmp'
 import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS } from '../shared/types'
 import { MODEL_GATEWAY_SECRET_REF } from '../shared/agents/model-gateway'
@@ -173,7 +173,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     liveTmuxSessions.clear()
     paneProcessReply = ''
     processGroupReply = ''
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-solo-'))
+    userDataDir = testTmpDir('nt-solo-')
     fake = fakePlatform({ userDataDir })
     initPlatform(fake)
     vi.useFakeTimers()
@@ -191,7 +191,8 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     // the last retry. The catch is what actually fixes it, and it is safe precisely because this
     // line is HOUSEKEEPING: the directory is per-test (`mkdtemp`) and lives in the OS temp dir, so
     // failing to remove it cannot indicate a defect in anything under test. A cleanup that can fail
-    // the suite is worse than a leftover directory.
+    // the suite is worse than a leftover directory. It does not stay left over: the dir comes from
+    // `testTmpDir`, which removes it again when the file ends, after the late write has landed.
     try {
       fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
     } catch {
@@ -243,7 +244,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
   // ── The spawn itself: same tmux args, same cwd, same env ──────────────────────────────────
   it('spawns ONE tmux client with the unchanged attach flags, cwd and session name', async () => {
     const m = await tmuxManager()
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-cwd-'))
+    const cwd = testTmpDir('nt-cwd-')
     await create(80, 24, 'solo-1', { cwd })
 
     expect(spawned).toHaveLength(1)
@@ -270,7 +271,6 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(env.TMUX).toBeUndefined()
     expect(env.TMUX_PANE).toBeUndefined()
     expect(env.PATH).toBe('/usr/bin:/bin')
-    fs.rmSync(cwd, { recursive: true, force: true })
   })
 
   it('injects the shared gateway into both the PTY and its tmux session environment', async () => {

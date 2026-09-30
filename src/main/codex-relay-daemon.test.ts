@@ -38,6 +38,7 @@ import {
   type RelayThreadRequest
 } from './codex-relay-daemon'
 import { posixQuote } from '../shared/ssh'
+import { testTmpDir } from '../core/test-tmp'
 
 async function fakeCodexServer(
   socketPath: string,
@@ -555,7 +556,7 @@ describe('Codex shared relay thread observation', () => {
   })
 
   it('reclaims a dead lock but never steals one owned by a live process', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'nodeterm-relay-lock-'))
+    const dir = testTmpDir('nodeterm-relay-lock-')
     const lock = path.join(dir, 'relay.lock')
     writeFileSync(lock, '99999999\n')
     expect(acquireProcessLock(lock)).toBe(true)
@@ -564,7 +565,7 @@ describe('Codex shared relay thread observation', () => {
   })
 
   it('never steals a freshly created directory lock before its owner pid is written', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'nodeterm-relay-lock-race-'))
+    const dir = testTmpDir('nodeterm-relay-lock-race-')
     const lock = path.join(dir, 'relay.lock')
     mkdirSync(lock)
     expect(acquireProcessLock(lock)).toBe(false)

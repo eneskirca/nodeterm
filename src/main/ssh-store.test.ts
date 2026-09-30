@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { promises as fs } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { SshStore } from './ssh-store'
+import { testTmpDir } from '../core/test-tmp'
 
 async function tmpFile(): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ssh-store-'))
+  const dir = testTmpDir('ssh-store-')
   return path.join(dir, 'ssh-servers.json')
 }
 

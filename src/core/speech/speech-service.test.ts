@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { describeWhisperLoadError, isGgmlModelHeader, SpeechService, type WhisperEngineHandle } from './speech-service'
 import { WhisperModelStore } from './whisper-models'
+import { testTmpDir } from '../test-tmp'
 
 describe('SpeechService', () => {
   let dir: string
@@ -23,7 +22,7 @@ describe('SpeechService', () => {
   const pcm = new Float32Array(16000)
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'svc-'))
+    dir = testTmpDir('svc-')
     models = new WhisperModelStore({ dir })
     loads.length = 0
     freed.length = 0
@@ -99,7 +98,7 @@ describe('SpeechService.shutdown', () => {
   }
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'svc-'))
+    dir = testTmpDir('svc-')
     models = new WhisperModelStore({ dir })
     freed.length = 0
     writeFileSync(models.modelPath('tiny'), 'x')

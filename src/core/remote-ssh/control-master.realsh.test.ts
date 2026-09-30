@@ -13,11 +13,11 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { remoteHookEnvArgs, remoteTmuxPtyArgs } from './control-master'
 import { accountTmuxEnvArgs, remoteAccountConfigDirAbs } from '../claude-accounts-core'
 import { isSafeNodeId, isSafeRemoteHome } from '../remote-safety'
+import { testTmpDir } from '../test-tmp'
 
 const conn = { host: 'h.example.com', user: 'deploy', port: 2222, identityFile: '/k/id' }
 
@@ -25,7 +25,7 @@ let binDir: string
 let markerDir: string
 
 beforeAll(() => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ntsh-'))
+  const root = testTmpDir('ntsh-')
   binDir = path.join(root, 'bin')
   markerDir = path.join(root, 'markers')
   fs.mkdirSync(binDir)
@@ -212,10 +212,10 @@ describe('REAL sh: remote tmux PATH resolution + graceful degrade (issue #449)',
   // PATH must hold NO tmux at all for these — the dev/CI box's own /usr/bin/tmux would win the
   // `command -v` and run for real ("open terminal failed"). An empty dir is the only safe PATH;
   // everything the guard needs (command, printf, cd, exec) is an sh builtin.
-  const emptyPath = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'ntsh-nopath-'))
+  const emptyPath = (): string => testTmpDir('ntsh-nopath-')
 
   it('finds a tmux that lives only in an appended dir ($HOME/.local/bin)', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ntsh-home-'))
+    const home = testTmpDir('ntsh-home-')
     const local = path.join(home, '.local', 'bin')
     fs.mkdirSync(local, { recursive: true })
     fs.copyFileSync(path.join(binDir, 'tmux'), path.join(local, 'tmux'))
@@ -229,7 +229,7 @@ describe('REAL sh: remote tmux PATH resolution + graceful degrade (issue #449)',
   })
 
   it('a host with NO tmux prints the explanation and execs a plain login shell', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ntsh-home-'))
+    const home = testTmpDir('ntsh-home-')
     const shell = path.join(home, 'shell-stub')
     fs.writeFileSync(shell, `#!/bin/sh\nprintf 'SHELL_STUB %s\\n' "$@"\n`, { mode: 0o755 })
     const cmd = remoteTmuxPtyArgs(conn, '/s.sock', 'nt-n1', '/home/u').slice(-1)[0]

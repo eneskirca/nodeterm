@@ -16,6 +16,7 @@ import {
   answerTooLong,
   planReviseAnswer,
   questionAnswerFrom,
+  quoteCustomItem,
   toggleLabel
 } from './chatAnswer'
 
@@ -116,6 +117,31 @@ describe('questionAnswerFrom — UI selection → the structured answer core val
       freeText: ['Which surfaces?']
     })
   })
+  it('quotes a typed "Other" containing a comma, so the model can tell it from the labels', () => {
+    const sel = emptySelection([MULTI])
+    sel[0].labels = ['Desktop', 'Phone']
+    sel[0].other = true
+    sel[0].otherText = 'teal, sort of'
+
+    expect(questionAnswerFrom([MULTI], sel)?.answers['Which surfaces?']).toBe('Desktop, Phone, "teal, sort of"')
+  })
+
+  it('quotes a lone typed "Other" on a multi choice by the same rule', () => {
+    const sel = emptySelection([MULTI])
+    sel[0].other = true
+    sel[0].otherText = 'a, b'
+
+    expect(questionAnswerFrom([MULTI], sel)?.answers['Which surfaces?']).toBe('"a, b"')
+  })
+
+  it('never quotes a single choice\'s "Other": it is the whole answer', () => {
+    const sel = emptySelection([SINGLE])
+    sel[0].other = true
+    sel[0].otherText = 'neither, really'
+
+    expect(questionAnswerFrom([SINGLE], sel)?.answers['Pick one?']).toBe('neither, really')
+  })
+
   it('a question with no options is answered by its text field alone', () => {
     const sel = emptySelection([FREE])
     sel[0].otherText = 'Ada'
@@ -269,5 +295,13 @@ describe('rebindRetryDelay', () => {
       CHAT_ANSWER_REBIND_RETRY_MAX_MS,
       CHAT_ANSWER_REBIND_RETRY_MAX_MS
     ])
+  })
+})
+
+describe('quoteCustomItem — Claude Code\'s own multi-select quoting (measured, 2.1.283)', () => {
+  it('matches the native picker on every measured answer', () => {
+    expect(quoteCustomItem('teal, sort of')).toBe('"teal, sort of"')
+    expect(quoteCustomItem('say "hi"')).toBe('"say \\"hi\\""')
+    expect(quoteCustomItem('teal')).toBe('teal')
   })
 })

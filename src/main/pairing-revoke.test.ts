@@ -265,3 +265,46 @@ describe('createPairingService().revokeDevice', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+describe('createPairingService().revokeDevice — relay trust (pinned box key + live sessions)', () => {
+  beforeEach(() => {
+    seed('phone-relay-1')
+  })
+
+  it('revokes the relay trust BEFORE the SSH key and the registry entry are removed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 204 })))
+    const order: string[] = []
+    const revokePhoneRelayTrust = vi.fn(async () => {
+      // At this instant the device must still be listed and its key still installed.
+      order.push(`relay:${deviceIds().join(',')}:${authKeys().includes('dev-a') ? 'key' : 'nokey'}`)
+      return { persisted: true, killed: true }
+    })
+    const service = createPairingService(relayDeps('TOKEN'), { revokePhoneRelayTrust })
+
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'ok' })
+    expect(revokePhoneRelayTrust).toHaveBeenCalledOnce()
+    expect(order).toEqual(['relay:dev-a:key'])
+    expect(deviceIds()).toEqual([])
+  })
+
+  it('a relay trust revoke that did not stick reports local:false and keeps the device listed to retry', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 204 })))
+    for (const relay of [{ persisted: false, killed: true }, { persisted: true, killed: false }]) {
+      seed('phone-relay-1')
+      const service = createPairingService(relayDeps('TOKEN'), {
+        revokePhoneRelayTrust: async () => relay
+      })
+      const result = await service.revokeDevice('dev-a')
+      expect(result.local).toBe(false)
+      expect(deviceIds()).toEqual(['dev-a'])
+      expect(authKeys()).toContain('dev-a')
+    }
+  })
+
+  it('never touches relay trust for an id that is not in the registry', async () => {
+    const revokePhoneRelayTrust = vi.fn(async () => ({ persisted: true, killed: true }))
+    const service = createPairingService(relayDeps('TOKEN'), { revokePhoneRelayTrust })
+    await service.revokeDevice('never-paired')
+    expect(revokePhoneRelayTrust).not.toHaveBeenCalled()
+  })
+})

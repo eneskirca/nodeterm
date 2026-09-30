@@ -1,3 +1,5 @@
+import { nativeMux, useNativeSsh } from '../../core/remote-ssh/native/native-runtime'
+import { spawnSshArgvStream } from '../../core/remote-ssh/native/native-invoke'
 import { spawn } from 'node:child_process'
 import { childArgs } from '../../core/remote-ssh/control-master'
 import { findExecutableSync } from '../../core/exec-path'
@@ -181,11 +183,16 @@ export function makeSshSetupRunner(
       const remote = buildSetupRemoteCommand(cwd, env, script)
       let child: ReturnType<typeof spawn>
       try {
-        child = spawn(sshPath(), childArgs(ref.conn, ref.controlPath, remote), {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-          env: { ...process.env, ...agentEnv() }
-        })
+        const argv = childArgs(ref.conn, ref.controlPath, remote)
+        // Native transport (Windows): a channel on the project's one connection, shaped like the
+        // child this code already drives (pipes, close, error, kill).
+        child = useNativeSsh()
+          ? (spawnSshArgvStream(nativeMux(), argv) as unknown as ReturnType<typeof spawn>)
+          : spawn(sshPath(), argv, {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+              env: { ...process.env, ...agentEnv() }
+            })
       } catch (e) {
         // `spawn` throws SYNCHRONOUSLY for a malformed invocation (a NUL byte in an argument, a bad
         // option object) — only ENOENT & co. arrive as an `error` event. Same reported shape either way.

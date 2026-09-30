@@ -15,9 +15,12 @@ export function legacyEndpointMigration(
   // A digest is public comparison data, never the old or new bearer. Both credentials stay
   // off argv. Refuse symlinks, concurrent changes and overlapping migration writers.
   const cleanup = posixQuote(`rm -f -- ${stage}; rmdir ${q}.migration-lock`)
+  // The byte count: `cat` exits 0 on a channel that ended before the body did, and the digest
+  // below vouches for the OLD file only — without it a short stage was published as the endpoint.
+  const bytes = Buffer.byteLength(contents, 'utf8')
   const command = `umask 077; mkdir ${q}.migration-lock 2>/dev/null || exit 1; ` +
     `trap ${cleanup} EXIT; ` +
-    `cat > ${stage} && chmod 600 ${stage} && test ! -L ${q} && test -f ${q} && ` +
+    `cat > ${stage} && [ "$(wc -c < ${stage})" -eq ${bytes} ] && chmod 600 ${stage} && test ! -L ${q} && test -f ${q} && ` +
     `test "$( (sha256sum < ${q} 2>/dev/null || shasum -a 256 < ${q}) | cut -d ' ' -f 1)" = '${digest}' && mv -f -- ${stage} ${q}`
   return { command, stdin: contents }
 }

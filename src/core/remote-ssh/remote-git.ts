@@ -6,6 +6,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { childArgs } from './control-master'
+import { nativeExecFileAsync, useNativeSsh } from './native/native-runtime'
 import { findExecutableSync, shellPathNow } from '../exec-path'
 import { posixQuote, quoteRemotePath, type SshConnection } from '../../shared/ssh'
 
@@ -53,7 +54,11 @@ export async function runRemoteGit(
     const env = process.env.NODETERM_APP_AGENT_SOCK
       ? { ...process.env, SSH_AUTH_SOCK: process.env.NODETERM_APP_AGENT_SOCK }
       : process.env
-    const { stdout } = await run(ssh, remoteGitArgs(ref.conn, ref.controlPath, cwd, args), { maxBuffer, env })
+    const argv = remoteGitArgs(ref.conn, ref.controlPath, cwd, args)
+    // Native transport (Windows): the project's one connection, not an ssh that cannot multiplex.
+    const { stdout } = useNativeSsh()
+      ? await nativeExecFileAsync(argv, { timeout: 60_000 })
+      : await run(ssh, argv, { maxBuffer, env })
     return { ok: true, out: stdout.replace(/\n$/, ''), err: '' }
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; message?: string }

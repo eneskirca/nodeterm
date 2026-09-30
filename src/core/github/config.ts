@@ -4,8 +4,11 @@ import type {
   GitHubConfigResult,
   NormalisedProjectKanbanGitHub
 } from '../../shared/github-issues'
+import { GITHUB_OWNER_PATTERN } from '../../shared/github-issue-ref'
 
-const OWNER = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?'
+// The shared login grammar, so a slug the board accepts is exactly one an issue reference accepts
+// (`github-issue-ref.config-agreement.test.ts`).
+const OWNER = GITHUB_OWNER_PATTERN
 const REPOSITORY = '[A-Za-z0-9_.-]+'
 const REPOSITORY_PATH = new RegExp(`^(${OWNER})/(${REPOSITORY})$`)
 

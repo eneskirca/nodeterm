@@ -1,10 +1,16 @@
-import { persistenceDescription, usePersistenceStatus } from '../../usePersistenceStatus'
+import {
+  persistenceDescription,
+  sessionBackendNote,
+  usePersistenceStatus
+} from '../../usePersistenceStatus'
 import { useSettings } from '../../../state/settings'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Switch } from '@renderer/ui/Switch'
 import { NumberField } from '@renderer/ui/NumberField'
+import { Select } from '@renderer/ui/Select'
+import { normalizeSessionBackend, ZELLIJ_BACKEND_GAPS } from '@shared/session-backend'
 import {
   LEAD_PANE_WIDTH_DEFAULT,
   LEAD_PANE_WIDTH_MAX,
@@ -21,6 +27,10 @@ const ROWS = {
   enabled: {
     title: 'Persistent sessions',
     keywords: ['tmux', 'persistent', 'session', 'continuity', 'protection', 'host']
+  },
+  backend: {
+    title: 'Session backend',
+    keywords: ['tmux', 'zellij', 'backend', 'multiplexer', 'session', 'persistent']
   },
   scrollback: { title: 'Scrollback lines', keywords: ['tmux', 'scrollback', 'history', 'lines'] },
   leadPane: {
@@ -67,6 +77,29 @@ export function TmuxSection({ isActive }: { isActive: boolean }): React.JSX.Elem
           }
         />
       </SearchableRow>
+      {status?.zellij ? (
+        <SearchableRow {...ROWS.backend}>
+          <FieldRow
+            label="Session backend"
+            description={sessionBackendNote(status.zellij)}
+            note={
+              normalizeSessionBackend(settings.sessionBackend) === 'zellij'
+                ? `Not available with Zellij: ${ZELLIJ_BACKEND_GAPS.join(' ')}`
+                : undefined
+            }
+            control={
+              <Select
+                aria-label="Session backend"
+                value={normalizeSessionBackend(settings.sessionBackend)}
+                onChange={(e) => update({ sessionBackend: normalizeSessionBackend(e.target.value) })}
+              >
+                <option value="tmux">tmux</option>
+                <option value="zellij">Zellij</option>
+              </Select>
+            }
+          />
+        </SearchableRow>
+      ) : null}
       <SearchableRow {...ROWS.scrollback}>
         <FieldRow
           label="Scrollback lines"

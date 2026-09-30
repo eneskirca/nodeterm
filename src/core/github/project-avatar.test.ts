@@ -92,6 +92,17 @@ describe('resolveProjectAvatarDataUrl', () => {
     expect(dataUrl).toBe('data:image/png;base64,AQ==')
   })
 
+  it('refuses an owner GitHub could not have issued, before any request', async () => {
+    let fetched = false
+    for (const owner of ['-acme', 'x'.repeat(40), '../x', 'a/b', 'a?b']) {
+      expect(await resolveProjectAvatarDataUrl({
+        owner,
+        fetchImpl: async () => { fetched = true; return userJson(AVATAR) }
+      })).toBeNull()
+    }
+    expect(fetched).toBe(false)
+  })
+
   it('returns null when avatar_url is missing', async () => {
     const dataUrl = await resolveProjectAvatarDataUrl({
       owner: 'acme',

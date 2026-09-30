@@ -78,6 +78,30 @@ describe('ranksBetween', () => {
   })
 })
 
+describe('the bottom of the key space', () => {
+  // The smallest integer part is reserved (nothing may sort before it, so nothing may BE it); the
+  // smallest integer a key may carry is one above it.
+  const reserved = 'A' + '0'.repeat(26)
+  const lowestInteger = 'A' + '0'.repeat(25) + '1'
+
+  it('the reserved integer itself is never a key', () => {
+    expect(isValidRank(reserved)).toBe(false)
+  })
+
+  it('there is always a valid key before the lowest integer, and before that one', () => {
+    expect(isValidRank(lowestInteger)).toBe(true)
+    let k = lowestInteger
+    for (let i = 0; i < 50; i++) {
+      const below = rankBetween(null, k)
+      expect(isValidRank(below), below).toBe(true)
+      expect(below < k).toBe(true)
+      k = below
+    }
+    expect(ranksBetween(null, lowestInteger, 5).every((key) => isValidRank(key) && key < lowestInteger))
+      .toBe(true)
+  })
+})
+
 describe('isValidRank', () => {
   it('accepts what rankBetween mints', () => {
     expect(isValidRank(rankBetween(null, null))).toBe(true)

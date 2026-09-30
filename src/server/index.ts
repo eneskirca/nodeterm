@@ -20,6 +20,7 @@ import { registerAgentEnvIpc } from '../core/agent-env-ipc'
 import { PtyManager } from '../core/pty-manager'
 import { registerCoreHandlers } from './handlers'
 import { registerGitHubIntegration } from '../core/github/integration'
+import { registerBoardDispatchReportIpc } from '../core/board-dispatch-report'
 import { runGitHubCliCommand } from '../core/github/credentials'
 import {
   registerServerGitHubControl,
@@ -51,6 +52,9 @@ import os from 'os'
 import { hookServer } from '../core/agents/hook-server'
 import { serverEditionControlHandler } from './control-unsupported'
 import { initServerCanvasControl, type ServerCanvasControl } from './canvas-control'
+import { registerStationNoticeIpc } from '../core/agents/station-notice'
+import { registerStationOutcomeIpc } from '../core/station-outcome-store'
+import { registerStationHandoverIpc } from '../core/station-handover'
 import { refreshNodeTokens } from '../core/agents/node-token-service'
 import { armServerNodeIdentity } from './node-identity-arm'
 import { wireServerCodexSharedIdentity } from './codex-shared-identity'
@@ -96,21 +100,30 @@ import { codexCliCaps } from '../core/codex-cli'
 import type { CodexCliCaps } from '../shared/types'
 import { claudeConfigDirFor, registerClaudeAccountsSource } from '../core/claude-config-dir'
 import { presenceHub } from '../core/presence/hub'
-import { initCanvasSync } from '../core/canvas-sync'
+import { initCanvasSync, publishCanvasMutation, setReflectedListener } from '../core/canvas-sync'
+import { createCanvasAuthority, type CanvasAuthority } from '../core/canvas-authority'
 import { wireAgentStatus } from './agent-status'
 import { initServerContextLink } from './context-link'
-import { createServerWorkspaceWatcher } from './workspace-external-watch'
+import { createServerWorkspaceWatcher, outsideEditPublisher } from './workspace-external-watch'
 import { registerTranscriptIpc } from '../core/transcript-ipc'
+import { registerChatCatalogIpc } from '../core/chat-catalog'
+import { registerRecentConversationsIpc } from '../core/recent-conversations'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { IPC } from '@shared/ipc'
 import { WhisperModelStore } from '../core/speech/whisper-models'
 import { SpeechService } from '../core/speech/speech-service'
 import { registerSpeechIpc } from '../core/speech/register-ipc'
 import { isPremium, getStoredEntitlement } from '../core/license'
+import { getDeviceId } from '../core/device-id'
+import { createHostedService } from '../core/relay/hosted-service'
+import { startTeamAdmin } from '../core/relay/team-admin'
 
 // Same env-override + default as src/core/check.ts / license.ts / src/main/telemetry.ts — each
 // shell derives it locally rather than sharing an import (src/server must not import src/main).
 const API_BASE = process.env.NODETERM_API_BASE || 'https://api.nodeterm.dev'
+// The hosted team relay's wss endpoint. Same env override + default as the desktop's RELAY_URL
+// (src/main/remote/host-service.ts), derived locally for the same reason as API_BASE.
+const RELAY_URL = process.env.NODETERM_RELAY_URL || 'wss://relay.nodeterm.dev'
 
 /**
  * App version fed to ServerPlatform (surfaced to the renderer as the desktop app's
@@ -269,6 +282,13 @@ export async function startServer(
   // Canvas sync: reflect each browser tab's node mutations to the other attached tabs, so every
   // client converges on the same node set (and no tab writes back a node another tab deleted).
   initCanvasSync()
+  // The canvas authority (docs/hosted-team-relay.md): the one writer of the content of every project
+  // shared with a hosted team. Created further down, and only where this process owns the team (not
+  // when another server holds this data dir); read late by everything below that needs it. Until
+  // then — and forever on a server that does not own the team — nothing is governed.
+  let canvasAuthority: CanvasAuthority | null = null
+  // A client asks which projects are governed, to publish its ops for them even when it is alone.
+  platform.handle(IPC.canvasAuthority, () => canvasAuthority?.governedIds() ?? [])
   // Team presence (hello / cursor / focus / chat). The hub itself is joined per WebSocket in
   // ws.ts; this only registers the RPC surface. Presence is transient — nothing is persisted.
   presenceHub.registerIpc()
@@ -372,6 +392,8 @@ export async function startServer(
     run: runGitHubCliCommand
   })
   registerServerGitHubControl(platform, github.controller)
+  // A browser tab's board dispatch reports its queue here, for the `issues` control verb (display only).
+  const boardDispatchReports = registerBoardDispatchReportIpc(platform)
 
   // Board-log: same CorePlatform registrar as desktop, but the Server Edition has no SSH projects
   // (terminals are local), so the router only ever resolves a local folder cwd or unsupported —
@@ -465,6 +487,9 @@ export async function startServer(
       ...(localCodexCaps?.approvalValues
         ? { codexApprovalValues: localCodexCaps.approvalValues }
         : {}), // unprobed ⇒ absent ⇒ the reader uses the baseline vocabulary
+      // Only a SEEN `true`: a phone-launched plain Codex TUI must carry `--no-daemon` too, or it
+      // joins the auto-started shared app-server and runs as another node (shared/agents/codex-daemon).
+      ...(localCodexCaps?.noDaemon === true ? { codexNoDaemon: true } : {}),
       claudeAccounts: (s.claudeAccounts ?? [])
         .filter((a) => !a.host && !a.pending)
         .map((a) => ({ id: a.id, dir: claudeConfigDirFor(a.id) })),
@@ -482,6 +507,14 @@ export async function startServer(
   // Set after the initial workspace load when the opt-in flag is on. The status listener is wired
   // now so the runtime, once present, consumes the exact same normalized stream as the UI/mirror.
   let canvasControl: ServerCanvasControl | null = null
+  // Station-failure notices: registered whether or not canvas control comes up, so a browser tab's
+  // `list` answers "none" rather than an unknown channel. Only the canvas-control runtime has a
+  // creator ledger, so only it has stations to report.
+  registerStationNoticeIpc(platform, () => canvasControl?.stationNotices ?? null)
+  // Station task outcomes: registered for the same reason — a browser tab's `list` gets "none"
+  // rather than an unknown channel when canvas control is off.
+  registerStationOutcomeIpc(platform, () => canvasControl?.stationOutcomes ?? null)
+  registerStationHandoverIpc(platform, () => canvasControl?.stationHandovers ?? null)
   const { contextTail, geminiContextTail, codexContextTail } = wireAgentStatus(platform, {
     onEvent: (event) => canvasControl?.onAgentEvent(event)
   })
@@ -494,6 +527,13 @@ export async function startServer(
     // Codex's ⌘M reader takes ITS tail's hook path (claude's `pathFor` must never answer a codex id).
     codexPathFor: (sessionId) => codexContextTail.pathFor(sessionId)
   })
+  // The ⌘M composer's `/` catalog. No remote leg, for the reason above: this process runs on the
+  // host whose command and skill folders a node's agent reads. An SSH-project node in this store is
+  // still someone ELSE's machine: named remote here, it answers built-ins + `partial`, never this
+  // server's own ~/.claude.
+  registerChatCatalogIpc({ isRemoteNode: (nodeId) => !!workspaceStore.sshProjectIdForNode(nodeId) })
+  // "Open recent": the SERVER host's agent histories — the machine the browser's sessions run on.
+  registerRecentConversationsIpc()
   // The context meter's mount-time rehydration, registered beside the read channels and for the
   // same reason: the tails it feeds are the ones created just above. Until this landed the Server
   // Edition had NO handler for `context:ensure` at all — the browser cast it and nothing received
@@ -685,7 +725,16 @@ export async function startServer(
     canvases: () => workspaceStore.persistedCanvases(),
     installAgentIntegrations: config.installHooks !== false
   })
-  const workspaceWatcher = createServerWorkspaceWatcher(workspaceStore)
+  // A governed project's outside edit goes to the canvas authority, which publishes the difference
+  // as canvas ops and then the persisted project on `workspace:server-change` (its non-content
+  // fields); every other project keeps the whole-project `workspace:external-change`.
+  const workspaceWatcher = createServerWorkspaceWatcher(workspaceStore, {
+    publish: outsideEditPublisher(
+      () => canvasAuthority,
+      (project) => platform.broadcast(IPC.workspaceExternalChange, project),
+      (project) => platform.broadcast(IPC.workspaceServerChange, project)
+    )
+  })
   // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
   // bridge edge reaches us as the workspace save it triggers. It also refreshes the local-ref
   // watcher set, so projects added or removed while the server runs get the same hand-edit path.
@@ -713,7 +762,14 @@ export async function startServer(
         // answer the issue lane gets from the GitHub host controller.
         issueRepository: (projectId) =>
           github.controller.status(projectId).then((view) => view.project?.repository ?? null),
-        installAgentIntegrations: config.installHooks !== false
+        // `issues` / `prs`: the board's GitHub lane from the service's cache (no GitHub request).
+        githubRead: {
+          snapshot: (projectId) => github.service.controlSnapshot(projectId),
+          dispatch: (projectId) => boardDispatchReports.forProject(projectId)
+        },
+        installAgentIntegrations: config.installHooks !== false,
+        // The durable orchestration facts follow hook-endpoint ownership, like the request ledger.
+        ownsDurableState: hookStartupWarning === null
       })
       hookServer.setControlHandler(canvasControl.handler)
     } catch (error) {
@@ -820,10 +876,141 @@ export async function startServer(
   // complete before the server serves — not that it precedes this line.
   startSessionMemoryService({
     tmuxBin: () => ptyManager.getTmuxBin(),
+    // Zellij-backed sessions are not in the tmux sweep; the panel says how many it did not measure.
+    unmeasuredSessions: () => ptyManager.zellijSessionCount(),
     remote: {
       isRemoteProject: sshScopePredicate({ sshProjectIds: () => workspaceStore.sshProjectIds() })
     }
   })
+
+  // Hosted team relay (docs/hosted-team-relay.md): this server as the relay host of a team. OFF
+  // unless `team init` created <dataDir>/relay/team.json — with no team, start() answers 'no-team':
+  // no relay listener is opened, and no host key, team.json or device id is written. What EVERY boot
+  // does create is <dataDir>/relay/ (0700) and the listening admin socket in it, relay/admin.sock
+  // (0600, removed again on close), which is how `team init` reaches a server that has no team yet
+  // (hosted-boot.test.ts pins exactly that). Booted HERE: after every handler above is registered (a relay
+  // peer's requests dispatch through them) and after the workspace index is loaded (the access
+  // policy reads it to place a node in a project), and BEFORE the headless return, because a
+  // headless host is exactly where a team is hosted.
+  //
+  // The per-client drops a disconnected client is owed, shared with ws.ts's closed-tab path below so
+  // the two lists cannot drift: its pty subscriptions (a leaked one can strand a session it paused)
+  // and its GitHub issue subscriptions.
+  const dropUiClient = (uiId: number): void => {
+    ptyManager.dropClient(uiId)
+    github.service.dropClient(uiId)
+  }
+  // The ONE teardown for a relay peer, in the order ws.ts uses for a browser: leave presence, hand
+  // back the per-client state, then detach the sink. Idempotent, like ws.ts's.
+  const teardownClient = (uiId: number): void => {
+    presenceHub.leave(uiId)
+    dropUiClient(uiId)
+    platform.detach(uiId)
+  }
+  // A relay peer whose sink proves dead (consecutive throwing sends) is torn down the same way. In
+  // serving mode ws.ts replaces this with its own, equivalent teardown; in headless mode nothing else
+  // would ever set it, and a dead peer would stay in presence and keep its pty subscriptions.
+  platform.setSinkGoneHandler(teardownClient)
+  let hostedDeviceId: string | undefined
+  const hosted = createHostedService({
+    dataDir: config.dataDir,
+    apiBase: API_BASE,
+    relayUrl: RELAY_URL,
+    // Read on first use (a mint, `team info`), never at boot: getDeviceId CREATES <dataDir>/device-id
+    // when absent, and a server with no team must not change on disk.
+    get deviceId(): string {
+      return (hostedDeviceId ??= getDeviceId())
+    },
+    hostLabel: os.hostname(),
+    attach: {
+      attach(sink) {
+        const id = platform.attach(sink)
+        // Join AFTER registering the sink, so the hub's `presence:sync` lands on a live sink (the
+        // order ws.ts uses). A relay peer is a 'desktop' peer, as on the desktop's own relay host.
+        presenceHub.join(id, 'desktop')
+        return id
+      },
+      detach: teardownClient,
+      dispatch: (id, req) => platform.dispatch(id, req),
+      cast: (id, method, args) => platform.cast(id, method, args)
+    },
+    // Memoized in the store: asked once per access decision for every viewer, and a
+    // persistedCanvases() scan re-parses every local project's file (measured 4.5 ms per call at
+    // 20 projects x 100 nodes).
+    projectsOfNode: (nodeId) => workspaceStore.projectIdsForNode(nodeId),
+    // A viewer's terminal frames are judged by the session's node, per frame (`team unshare` must
+    // stop a stream the viewer already joined). One map lookup.
+    nodeOfSession: (sessionId) => ptyManager.nodeOfSession(sessionId),
+    projectCwd: (projectId) => workspaceStore.localCwdForProject(projectId),
+    // A share or unshare: the authority adopts what joined and writes + releases what left, then every
+    // client hears the new governed set (a client alone on a newly shared canvas must start publishing).
+    // RESIDUAL, the share-time window (docs/hosted-team-relay.md): an edit a client made just before
+    // the share — not yet published (it was alone) or published but not yet saved — is not in what the
+    // authority adopts from disk here, and that client's next save is overlaid with the authority's
+    // content, so the edit can be lost from disk (it stays on that client's screen until a reload).
+    // The save debounce is 800 ms and `team share` is an admin action; the client-side mount window
+    // is closed separately (collab-sync `followGoverned`, Canvas.tsx `governedRef`).
+    onSharedChange: () => {
+      canvasAuthority?.sharedChanged()
+      platform.broadcast(IPC.canvasAuthorityChanged, canvasAuthority?.governedIds() ?? [])
+    },
+    // TEST ONLY seams (see ServerConfig): never set by resolveConfig, so production dials the relay
+    // and mints against API_BASE with the global fetch.
+    ...(config.relayTestTransport ? { transport: config.relayTestTransport } : {}),
+    ...(config.relayTestFetch ? { fetch: config.relayTestFetch } : {})
+  })
+  // The local admin channel for the `team` CLI, opened BEFORE hosting starts: it is also how this
+  // server learns that another one already runs on this data dir (someone answers on its socket).
+  // Two servers hosting one team would register relay listeners for the same host key and both write
+  // team.json, so a busy socket skips hosting here. Otherwise never fatal: a data dir too long for a
+  // unix socket, or Windows, disables administration — it must not take the rest of the Server
+  // Edition down with it.
+  let otherServerHere = false
+  const teamAdmin = await startTeamAdmin(config.dataDir, hosted).catch((err: unknown) => {
+    if ((err as { code?: unknown } | null)?.code === 'E_ADMIN_SOCKET_BUSY') otherServerHere = true
+    console.error(`[hosted-team] team admin socket disabled: ${err instanceof Error ? err.message : String(err)}`)
+    return { close: async (): Promise<void> => {} }
+  })
+  if (otherServerHere) {
+    console.error(
+      'Hosted team relay: NOT started — another nodeterm server is already running on this data ' +
+        `directory (${config.dataDir}). Stop it, or give this server its own --data-dir.`
+    )
+  } else {
+    // This process owns the team, so it owns the shared projects' content. Wired BEFORE hosting
+    // starts, so no relay peer's op can reach the reflector before the authority listens to it.
+    // `sharedProjectIds` is read on every call (the team store is the one source).
+    const authority = createCanvasAuthority({
+      sharedProjectIds: () => hosted.sharedProjectIds(),
+      readContent: (id) => workspaceStore.readProjectContent(id),
+      writeContent: (id, content) => workspaceStore.writeProjectContent(id, content),
+      // UNTRUSTED: the authority's state holds no launch, so its outside-edit diff must not speak
+      // for one. Vouched, an owner tab would read each upsert's missing `pendingLaunch` as "the core
+      // cleared it" and a git pull would cancel every queued `--after` it touched.
+      publish: (id, m) => {
+        publishCanvasMutation(id, m, { trusted: false })
+      },
+      log: (message) => console.warn(`[canvas-authority] ${message}`)
+    })
+    canvasAuthority = authority
+    workspaceStore.setContentAuthority(authority)
+    // Synchronous and in seq order (canvas-sync.ts): the authority's own published diff echoes back
+    // through here while it is still publishing.
+    setReflectedListener((id, m) => authority.onReflected(id, m))
+    const hostedStart = await hosted.start().catch((err: unknown) => {
+      console.error('[hosted-team] start failed:', err)
+      return null
+    })
+    if (hostedStart === 'started') console.log('Hosted team relay: ON (see `team status`).')
+    else if (hostedStart === 'host-key-unreadable') {
+      console.error('Hosted team relay: OFF — the host key could not be read (see above; `team status`).')
+    }
+    // Adopt every shared project NOW, once: `start()` has loaded the team file (the shared set is not
+    // known before it), and the index load above has run. An outside edit adopted lazily would read
+    // the edited file as its own baseline and publish no difference at all, so every shared project
+    // needs its baseline before the watcher can hand one over.
+    authority.sharedChanged()
+  }
 
   // Headless notification host: every core service above (incl. the loopback hook server, which
   // is its own listener and MUST run) is booted, but we bind NO public HTTP/WS listener — no
@@ -837,6 +1024,10 @@ export async function startServer(
         // Kill any in-flight setup/archive run: it is a detached process group, so nothing else in
         // this teardown reaches it. Same call, same reason, in the serving branch's close() below.
         projectSetupService.disposeAll()
+        // Stop taking admin commands, then end hosting: every relay peer is torn down (presence,
+        // pty subscriptions) while the pty layer is still up. Same two lines in the serving close().
+        await teamAdmin.close()
+        hosted.stop()
         // Detach PTY clients — tmux sessions keep running (Phase 1 contract).
         sessionReaper.stop()
         pressure.stop()
@@ -844,6 +1035,12 @@ export async function startServer(
         canvasControl?.stop()
         workspaceWatcher.dispose()
         await contextLink.stop()
+        // Every save already queued lands while the authority still governs (see the serving close).
+        await workspaceStore.idle()
+        // Write what the canvas authority still owes, then detach it from the reflector and the store.
+        await canvasAuthority?.stop()
+        setReflectedListener(null)
+        workspaceStore.setContentAuthority(null)
         await ptyManager.killAll()
         // Same native hazard as the desktop app: a whisper transcribe still running when the
         // node env is torn down aborts the process. See SpeechService.shutdown.
@@ -870,10 +1067,7 @@ export async function startServer(
   const wsServer = attachWsServer(server, {
     platform,
     auth,
-    onClientGone: (uiId) => {
-      ptyManager.dropClient(uiId)
-      github.service.dropClient(uiId)
-    },
+    onClientGone: dropUiClient,
     trustProxy: config.trustProxy
   })
 
@@ -894,6 +1088,17 @@ export async function startServer(
       // Kill any in-flight setup/archive run first: it is a detached process group (setsid), so
       // neither the WS teardown nor ptyManager.killAll() below would ever reach it.
       projectSetupService.disposeAll()
+      // Stop taking admin commands, then end hosting while the pty layer is still up (see the
+      // headless close() above).
+      await teamAdmin.close()
+      hosted.stop()
+      // End the browser WebSockets next, BEFORE the canvas authority stops (N3). Once it has stopped
+      // and been detached, a save from a still-attached tab is written un-overlaid, over its final
+      // flush. Ending the sockets stops new saves; the `idle()` below lets the ones already queued
+      // land while it still governs. (Upgraded WebSockets are not ordinary HTTP connections:
+      // server.close() waits for them but does not end them, so this is also what keeps a client
+      // close racing shutdown from hanging the Server Edition, or its tests.)
+      for (const client of wsServer.clients) client.terminate()
       // Detach PTY clients — tmux sessions keep running (Phase 1 contract; never kill the server).
       sessionReaper.stop()
       pressure.stop()
@@ -901,16 +1106,19 @@ export async function startServer(
       canvasControl?.stop()
       workspaceWatcher.dispose()
       await contextLink.stop()
+      // Every save already queued lands while the authority still governs, then it writes what it owes.
+      await workspaceStore.idle()
+      // Write what the canvas authority still owes (see the headless close() above).
+      await canvasAuthority?.stop()
+      setReflectedListener(null)
+      workspaceStore.setContentAuthority(null)
       await ptyManager.killAll()
       // Same native hazard as the desktop app: a whisper transcribe still running when the node
       // env is torn down aborts the process. See SpeechService.shutdown.
       await speechService.shutdown()
       // Close the loopback hook-server listener (it would otherwise die with the process anyway).
       hookServer.stop()
-      // Upgraded WebSockets are not ordinary HTTP connections: server.close() waits for them but
-      // does not end them. Own the WS lifecycle explicitly so a client close racing shutdown
-      // cannot hang the Server Edition (or its tests) forever.
-      for (const client of wsServer.clients) client.terminate()
+      // The WebSockets were ended at the top; close the WS server itself, then the HTTP server.
       await new Promise<void>((resolve) => wsServer.close(() => resolve()))
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()))

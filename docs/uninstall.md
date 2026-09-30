@@ -21,12 +21,23 @@ to apply. Interactive runs (downloaded script, no pipe) confirm before touching 
 
 | Location | What it holds | Written by |
 | --- | --- | --- |
-| `~/Library/Application Support/nodeterm` (macOS) / `~/.config/nodeterm` (Linux) | The Electron user-data dir: `workspace.json`, `settings.json`, generated `tmux.conf`, `terminal-scrollback/`, `hook-endpoint.env`, `context-links/`, `canvas-control/`, `claude-accounts/<id>/` (managed-account config dirs), `speech-models/`, media caches, secret stores, `device-id`, browser storage | everything behind `CorePlatform.userDataDir` |
+| `~/Library/Application Support/node-terminal` (macOS) / `~/.config/node-terminal` (Linux) | The Electron user-data dir: `workspace.json`, `settings.json`, generated `tmux.conf`, `terminal-scrollback/`, `hook-endpoint.env`, `context-links/`, `canvas-control/`, `claude-accounts/<id>/` (managed-account config dirs), `speech-models/`, media caches, secret stores, `device-id`, browser storage | everything behind `CorePlatform.userDataDir` |
 | `~/.nodeterm` | Machine-stable state shared by every instance: `agent-hooks/*.sh` (the managed hook scripts), `ssh-cm/*.sock` (SSH ControlMaster sockets), `acks/`, `pending/`, `push-grants/`, `cx/`, `codex-thread-names/`, the app-private ssh-agent | `install-helper.ts`, `control-master.ts`, `pairing-service.ts`, … |
-| `~/Library/Caches/nodeterm*`, `~/Library/Caches/com.nodeterm.app*`, `~/Library/Application Support/Caches/nodeterm-updater`, `~/Library/Preferences/com.nodeterm.app.plist`, `~/Library/Saved Application State/…`, `~/Library/HTTPStorages/com.nodeterm.app`, `~/Library/Logs/nodeterm` | Chromium/electron-updater caches, macOS window state | Electron / macOS |
-| Keychain entry `nodeterm Safe Storage` (macOS) | The key Electron `safeStorage` encrypts local secrets with | Electron |
+| `~/Library/Caches/node-terminal`, `~/Library/Caches/node-terminal-updater`, `~/Library/Caches/com.nodeterm.app*`, `~/Library/Preferences/com.nodeterm.app.plist`, `~/Library/Saved Application State/…`, `~/Library/HTTPStorages/com.nodeterm.app`, `~/Library/Logs/node-terminal` (macOS) / `~/.cache/node-terminal`, `~/.cache/node-terminal-updater` (Linux) | Chromium/electron-updater caches, macOS window state | Electron / macOS |
+| Keychain entry `node-terminal Safe Storage` (macOS) | The key Electron `safeStorage` encrypts local secrets with | Electron |
 | `/Applications/nodeterm.app` (or the Homebrew cask) | The app itself | `install.sh` / brew |
 | `~/.nodeterm-server-app`, `~/.nodeterm-server`, systemd units `nodeterm-server.service` + `nodeterm-server-update.{service,timer}` (system or `--user`) | Server Edition checkout, private Node runtime, data dir, service + daily auto-update timer | `install-server.sh` |
+
+**Why `node-terminal` and not `nodeterm`.** Everything Electron keys by the app's *name* — the
+user-data dir, the `Safe Storage` Keychain entry, electron-updater's `<name>-updater` cache —
+uses `app.name`, which Electron reads from the top-level `name` in package.json
+(`node-terminal`). `productName` (`nodeterm`) lives only under `build`, which electron-builder
+strips from the packaged package.json, so it names the bundle and the installer and never
+reaches the running app. Every desktop build, dev or installed, therefore writes to
+`…/node-terminal`. What is keyed by the bundle id (`com.nodeterm.app`: prefs, saved state,
+HTTPStorages, ShipIt) or by the bundle itself (`/Applications/nodeterm.app`) does carry the
+`nodeterm` spelling. `scripts/uninstall.test.ts` ties the script's `APP_NAME` to package.json
+`name`.
 
 ### 2. Integration merged into OTHER tools' config — reverted surgically
 
@@ -110,5 +121,5 @@ So the honest design is:
   (inert in sessions nodeterm didn't spawn) and marker-reversible.
 
 Windows note: the desktop build ships as an NSIS installer with its own uninstaller
-(Add/Remove Programs); after running it, delete `%APPDATA%\nodeterm` and
+(Add/Remove Programs); after running it, delete `%APPDATA%\node-terminal` and
 `%USERPROFILE%\.nodeterm`. The POSIX script does not run there.

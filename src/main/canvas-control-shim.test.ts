@@ -235,6 +235,8 @@ describe('canvas-control shim over a unix socket', () => {
     expect(lastSeen()?.token).toBe('tok-remote')
     expect(parseControlBody(lastSeen()?.body ?? '', 'application/x-www-form-urlencoded')).toEqual({
       nodeId: 'node-1',
+      // The per-run id the server's request ledger keys the shim's own re-posts by.
+      requestId: expect.stringMatching(/^cli-[0-9a-f]{24}$/),
       args: { count: '2' }
     })
   })
@@ -249,6 +251,8 @@ describe('canvas-control shim over a unix socket', () => {
     expect(lastSeen()?.path).toBe('/control/link')
     expect(parseControlBody(lastSeen()?.body ?? '', 'application/x-www-form-urlencoded')).toEqual({
       nodeId: 'node-1',
+      // The per-run id the server's request ledger keys the shim's own re-posts by.
+      requestId: expect.stringMatching(/^cli-[0-9a-f]{24}$/),
       args: { to: 'n2,n3', from: 'n1' }
     })
   })
@@ -512,7 +516,11 @@ describe('canvas-control shim keeps credentials off curl\'s command line', () =>
   it('names no credential header in the generated source at all', () => {
     expect(CONTROL_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Hook-Token')
     expect(CONTROL_SHIM_SCRIPT).not.toContain('-H "X-Nodeterm-Node-Token')
-    expect((CONTROL_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(2)
+    // Every curl call site reads its headers from stdin: the POST over each transport, and the
+    // fallback liveness probe over each transport (hook-endpoint-failover-sh.ts).
+    const calls = CONTROL_SHIM_SCRIPT.match(/\bcurl -s/g) ?? []
+    expect(calls).toHaveLength(4)
+    expect((CONTROL_SHIM_SCRIPT.match(/--config -/g) ?? []).length).toBe(calls.length)
   })
 
   it('over TCP: neither token is in argv, both arrive on stdin and reach the server', async () => {

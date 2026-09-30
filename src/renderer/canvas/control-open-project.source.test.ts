@@ -100,13 +100,13 @@ describe('the --project targeted-opens block (source pins)', () => {
 
   it('the gate order is refusal-before-write: every refusal precedes every store/canvas write', () => {
     // A refused target must write NOTHING. The flag refusal and the source/target belt both
-    // return before the first applyNodeMutation or setNodes — moving a write above either is the
+    // return before the first applyOwnNodeMutation or setNodes — moving a write above either is the
     // gate-before-write mutation. Both are decided by pure helpers whose logic (and every refusal
     // sentence) is red-capable in projectOpen.test.ts; what only the source can show is that the
     // dispatch relays their answer before it writes.
     const body = targetedOpensBody()
     const firstWrite = Math.min(
-      ...['applyNodeMutation', 'setNodes'].map((s) => {
+      ...['applyOwnNodeMutation', 'setNodes'].map((s) => {
         const i = body.indexOf(s)
         return i === -1 ? body.length : i
       })
@@ -159,7 +159,9 @@ describe('the --project targeted-opens block (source pins)', () => {
     // command into pendingLaunch is the silent-never-starts mutation (Task 2.0's pins prove the
     // round-trip; this pins that the store path actually uses the mover).
     const body = targetedOpensBody()
-    expect(body).toMatch(/flowToNodeStates\(\[armForColdOpen\(node\)\]\)\[0\]/)
+    // `withLaunchBrief` records the prompt file and `withPrHold` the `--after-pr` wait, both on the
+    // launch armForColdOpen already moved.
+    expect(body).toMatch(/flowToNodeStates\(\[withPrHold\(withLaunchBrief\(armForColdOpen\(node\), openPrompt\.promptFile\), prHoldPre\)\]\)\[0\]/)
   })
 
   it('the store path persists (writeDisk) and states the cold-open contract in the reply', () => {

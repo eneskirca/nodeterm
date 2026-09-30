@@ -160,7 +160,10 @@ export function capCodePoints(text: string, max: number): string {
  * CJK and emoji are untouched.
  */
 // eslint-disable-next-line no-control-regex
-const UNSAFE_NAME_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+export const UNSAFE_DISPLAY_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+/** The name this file has always used for it. ONE set: the board's display text strips the same
+ *  characters (@shared/kanban-ops `displayText`). Global, so use it with `replace`, never `test`. */
+const UNSAFE_NAME_CHARS = UNSAFE_DISPLAY_CHARS
 
 /** Cap a name at NAME_MAX_LEN code points, after stripping the characters that could spoof or
  *  break the rendering of another peer's name (UNSAFE_NAME_CHARS). Trim runs again AFTER the cut,

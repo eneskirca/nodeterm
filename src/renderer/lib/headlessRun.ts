@@ -33,7 +33,11 @@ export function planRunVerb(input: {
   if (input.projectActive) {
     if (input.hasWriter) return 'mounted'
     // `after` is required by the type, but the launch comes out of hand-editable project JSON.
-    const waitsOnDeps = (input.pending.after?.length ?? 0) > 0
+    // A pull request wait (`--after-pr`) is a dependency too: the mount does not fire it. So is a
+    // success wait (`--after-success`), whose stations are normally in `after` as well — checked on
+    // its own because a hand-edited file need not keep the two in step.
+    const waitsOnDeps =
+      (input.pending.after?.length ?? 0) > 0 || !!input.pending.afterPr || !!input.pending.afterSuccess
     return input.pending.manualOnly || waitsOnDeps ? 'refuse-not-mounted' : 'wait-for-mount'
   }
   return 'headless'

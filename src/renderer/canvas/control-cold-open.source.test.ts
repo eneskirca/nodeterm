@@ -86,9 +86,9 @@ describe('the cold-open dispatch block (source pins)', () => {
     expect(body).not.toContain('addAndConnect')
   })
 
-  it('writes through the store: applyNodeMutation for nodes, appendCanvasLinks for edges', () => {
+  it('writes through the store: applyOwnNodeMutation for nodes, appendCanvasLinks for edges', () => {
     const body = coldOpenBody()
-    expect(body).toContain('applyNodeMutation(owner.id, {')
+    expect(body).toContain('applyOwnNodeMutation(owner.id, {')
     expect(body).toContain('appendCanvasLinks(owner.id,')
     expect(body).toContain('writeDisk()')
   })
@@ -97,7 +97,7 @@ describe('the cold-open dispatch block (source pins)', () => {
     // `flowToNodeStates` drops `initialCommand` by design, so a node upserted without moving its
     // command into `pendingLaunch` is the silent-never-starts mutation.
     const body = coldOpenBody()
-    expect(body).toMatch(/const armed = armForColdOpen\(built\)/)
+    expect(body).toMatch(/const armed = withLaunchBrief\(armForColdOpen\(built\), openPrompt\.promptFile\)/)
     expect(body).toMatch(/flowToNodeStates\(\[node\]\)\[0\]/)
     // `--after` rides that same held launch rather than a second mechanism.
     expect(body).toMatch(/pendingLaunch: \{ \.\.\.held, after: coldAfterIds \}/)
@@ -106,7 +106,7 @@ describe('the cold-open dispatch block (source pins)', () => {
   it('refusal-before-write: every refusal precedes the first store write', () => {
     const body = coldOpenBody()
     const firstWrite = Math.min(
-      ...['applyNodeMutation', 'appendCanvasLinks'].map((s) => {
+      ...['applyOwnNodeMutation', 'appendCanvasLinks'].map((s) => {
         const i = body.indexOf(s)
         return i === -1 ? body.length : i
       })

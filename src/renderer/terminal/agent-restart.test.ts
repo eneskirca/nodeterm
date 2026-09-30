@@ -21,6 +21,7 @@ import {
   registerAgentRestart,
   restartEligibility,
   restartSessionId,
+  settleRecycledNode,
   settleRestart,
   summarizeBulkRestart,
   summarizeOutcomes,
@@ -1486,5 +1487,65 @@ describe('the write verb shares the restart lock', () => {
     expect(body).toContain("outcome === 'not-eligible'")
     // No un-guarded sendText left beside it.
     expect(body.match(/api\.pty\.sendText\(/g) ?? []).toHaveLength(1)
+  })
+})
+
+describe('settleRecycledNode — the recycle outlives its canvas', () => {
+  const deps = (onCanvas: boolean) => {
+    const calls: string[] = []
+    const live: unknown[] = []
+    const stored: unknown[] = []
+    return {
+      calls,
+      live,
+      stored,
+      d: {
+        onCanvas,
+        agentId: 'claude',
+        updateLive: (p: unknown) => {
+          calls.push('live')
+          live.push(p)
+        },
+        updateStored: (p: unknown) => {
+          calls.push('stored')
+          stored.push(p)
+        },
+        dropPark: () => calls.push('dropPark'),
+        markDirty: () => calls.push('dirty')
+      }
+    }
+  }
+
+  it('on the active canvas: one live update carrying the rebind, nothing else', () => {
+    const t = deps(true)
+    settleRecycledNode({ ...t.d, patch: { accountId: 'b' } })
+    expect(t.calls).toEqual(['live'])
+    expect(t.live).toEqual([{ accountId: 'b', agentId: 'claude' }])
+  })
+
+  // The bug: a project switch mid-move unmounted the node, React Flow's `updateNodeData` found no
+  // node and dropped the rebind, and the returning mount re-adopted the park holding the session
+  // the recycle had just killed — "interrupted halfway", on the OLD account.
+  it('off the canvas: drops the dead park and writes the rebind into the stored project', () => {
+    const t = deps(false)
+    settleRecycledNode({ ...t.d, patch: { accountId: 'b' } })
+    expect(t.calls).toEqual(['dropPark', 'stored', 'dirty'])
+    expect(t.live).toEqual([])
+    expect(t.stored).toEqual([{ agentId: 'claude', accountId: 'b' }])
+  })
+
+  it('off the canvas: a move to the SYSTEM account still writes the key (undefined = system)', () => {
+    const t = deps(false)
+    settleRecycledNode({ ...t.d, patch: { accountId: undefined } })
+    expect(t.stored).toHaveLength(1)
+    expect(Object.prototype.hasOwnProperty.call(t.stored[0], 'accountId')).toBe(true)
+    expect((t.stored[0] as { accountId?: string }).accountId).toBeUndefined()
+  })
+
+  it('off the canvas with no rebind (copy failed / plain restart): the account is left alone', () => {
+    const t = deps(false)
+    settleRecycledNode({ ...t.d, patch: undefined })
+    expect(t.stored).toEqual([{ agentId: 'claude' }])
+    expect(t.calls).toContain('dropPark')
   })
 })

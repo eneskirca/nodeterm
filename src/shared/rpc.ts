@@ -139,3 +139,13 @@ export function decodePtyData(buf: Uint8Array): { sessionId: string; data: strin
     data: dec.decode(buf.subarray(3 + sidLen))
   }
 }
+
+/** The session a pty data frame belongs to, without decoding its payload (a per-frame check on a
+ *  hot path: the hosted relay's viewer sink). Null when the buffer is not a pty data frame. Same
+ *  header rules as `decodePtyData`. */
+export function decodePtyDataSessionId(buf: Uint8Array): string | null {
+  if (buf.length < 3 || buf[0] !== PTY_DATA_FRAME) return null
+  const sidLen = (buf[1] << 8) | buf[2]
+  if (3 + sidLen > buf.length) return null
+  return dec.decode(buf.subarray(3, 3 + sidLen))
+}

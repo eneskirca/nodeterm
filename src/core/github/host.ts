@@ -295,6 +295,7 @@ export class GitHubHostController {
       config: project.config,
       controlRevision,
       mappingApproved,
+      project: project.project,
       columnColors: Object.fromEntries(
         (project.project.kanban?.columns ?? []).map((column) => [column.id, column.color])
       )

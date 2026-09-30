@@ -155,7 +155,9 @@ export function shouldDeferReleaseForEco(i: {
   /**
    * Has ANY hook event been seen for this node in this app run (`lastEventAt` is set)? Without
    * one, `planHibernation` refuses the node outright — unknown idle is not idle — so there is
-   * nothing to wait for. See the header.
+   * nothing to wait for. See the header. The PERSISTED `agentStatus.lastSeen` clock deliberately
+   * does not count here (the caller reads `lastEventAt` only): it cannot make a node hibernatable,
+   * so it must not make its viewer wait for a hibernation either.
    */
   idleKnown: boolean
   /** How long this node has been continuously out of view. */

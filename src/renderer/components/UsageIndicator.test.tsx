@@ -87,7 +87,7 @@ describe('Claude usage failure readout', () => {
   it('still attributes the Claude failure when another provider has data', async () => {
     await open(snapshot('error'), undefined, [{ provider: 'codex', account: null, status: 'ok', limits: [limit], updatedAt: 0 }])
     expect(host.querySelector('.usage-popover__empty')?.textContent).toBe('Could not read usage.')
-    expect(host.querySelector('.usage-popover__body > .usage-account__label')?.textContent).toBe('Claude')
+    expect(host.querySelector('.usage-claude > .usage-account__label')?.textContent).toBe('Claude')
     expect(host.querySelectorAll('.usage-row')).toHaveLength(1)
   })
 

@@ -25,11 +25,17 @@ const board = (): ProjectKanban => ({
 
 describe('defaultKanban', () => {
   it('makes To Do / In Progress / Done with unique ids and no assignments', () => {
-    const k = defaultKanban()
+    const k = defaultKanban('p')
     expect(k.columns.map((c) => c.title)).toEqual(['To Do', 'In Progress', 'Done'])
     expect(k.columns.map((c) => c.category)).toEqual(['unstarted', 'started', 'done'])
     expect(new Set(k.columns.map((c) => c.id)).size).toBe(3)
     expect(k.assignments).toEqual([])
+  })
+  // Every client renders this board until the first edit; two clients' concurrent first edits must
+  // land on the same three columns (spec §11 amendment 5).
+  it('is the same board, ids included, for one project — and a different one for another', () => {
+    expect(defaultKanban('p1')).toEqual(defaultKanban('p1'))
+    expect(defaultKanban('p1').columns.map((c) => c.id)).not.toEqual(defaultKanban('p2').columns.map((c) => c.id))
   })
 })
 
@@ -254,6 +260,15 @@ describe('board labels', () => {
     expect(boardLabels(k)[1]).toMatchObject({ id: idB, name: 'B', color: 'green' })
   })
 
+  // D7: a hand-edited file can carry a non-list `labels`; the toggle reads it as none instead of
+  // throwing (`.includes` of a string or an object) out of a click handler.
+  it('toggleCardLabel treats a non-list labels field as no labels', () => {
+    const k = { columns: [], assignments: [], meta: [{ nodeId: 'n1', labels: 'bug' as never, priority: 'high' as const }] }
+    expect(toggleCardLabel(k, 'n1', 'l1').meta).toEqual([{ nodeId: 'n1', priority: 'high', labels: ['l1'] }])
+    const obj = { columns: [], assignments: [], meta: [{ nodeId: 'n1', labels: { 0: 'x' } as never }] }
+    expect(toggleCardLabel(obj, 'n1', 'l1').meta).toEqual([{ nodeId: 'n1', labels: ['l1'] }])
+  })
+
   it('toggleCardLabel adds then removes; labelsForCard resolves in palette order and drops dangling', () => {
     let k = createLabel(board(), 'A', 'blue').k
     const a = boardLabels(k)[0].id
@@ -394,8 +409,10 @@ describe('tag → label migration', () => {
     // no kanban → a default board (3 columns) is seeded so the board is never column-less
     const m = migrateProjectTags(proj([{ id: 'n1', tags: ['x'] }]))
     expect(m.kanban!.columns).toHaveLength(3)
+    // …and it is THIS project's lazy default, so the ids match what every other client shows
+    expect(m.kanban!.columns.map((c) => c.id)).toEqual(defaultKanban('p').columns.map((c) => c.id))
     // an existing label of the same name is reused, not duplicated
-    const existing = createLabel(defaultKanban(), 'x', 'red').k
+    const existing = createLabel(defaultKanban('p'), 'x', 'red').k
     const m2 = migrateProjectTags(proj([{ id: 'n1', tags: ['x'] }], existing))
     expect(boardLabels(m2.kanban!)).toHaveLength(1)
     expect(labelsForCard(m2.kanban!, 'n1')[0]).toMatchObject({ name: 'x', color: 'red' })

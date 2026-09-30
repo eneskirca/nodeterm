@@ -550,8 +550,46 @@ export type AgentRestartFn = (
   // The node-data patch it returns is merged into the SAME update as the respawn bump — a separate
   // Canvas `setNodes` in the same tick races React Flow's `updateNodeData` queue, which rebuilds the
   // node from the store's copy and can silently drop the rebind.
-  beforeRecycle?: () => Promise<Record<string, unknown> | void>
+  beforeRecycle?: () => Promise<RecyclePatch | void>
 ) => Promise<RestartOutcome>
+
+/** What a `beforeRecycle` step may rebind on the node: its account (the account switch). A key
+ *  that is PRESENT is applied even as `undefined` — that is a move to the system account. Narrow
+ *  on purpose: the same patch must also be expressible in a project's SERIALIZED node when the
+ *  restart outlives its canvas (see `settleRecycledNode`). */
+export type RecyclePatch = { accountId?: string }
+
+/**
+ * The last step of a recycling restart ("Restart agent and shell", and the account switch built on
+ * it): bind the node to what the respawn must launch as.
+ *
+ * On the active canvas this is ONE React Flow update — the rebind rides the respawn bump, see
+ * `beforeRecycle`. But the exit it waited on takes seconds, and the user may switch projects
+ * meanwhile (a bulk account move is several of them at once). Then React Flow no longer holds the
+ * node, `updateNodeData` silently does nothing, and two things went wrong together: the rebind was
+ * lost (the node came back on its OLD account), and the returning mount re-adopted the PARK —
+ * whose tmux session this very recycle had just killed — so the node showed a dead pane instead of
+ * resuming. Off the canvas, therefore: drop the park (the next mount creates fresh, and its cold
+ * restore resumes the conversation), write the rebind into the stored project, and schedule a save.
+ */
+export function settleRecycledNode(d: {
+  onCanvas: boolean
+  agentId: AgentId
+  patch: RecyclePatch | undefined
+  updateLive: (patch: RecyclePatch & { agentId: AgentId }) => void
+  updateStored: (patch: RecyclePatch & { agentId: AgentId }) => void
+  dropPark: () => void
+  markDirty: () => void
+}): void {
+  const patch = { ...(d.patch ?? {}), agentId: d.agentId }
+  if (d.onCanvas) {
+    d.updateLive(patch)
+    return
+  }
+  d.dropPark()
+  d.updateStored(patch)
+  d.markDirty()
+}
 
 const restartFns = new Map<string, AgentRestartFn>()
 

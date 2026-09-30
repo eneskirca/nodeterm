@@ -81,3 +81,30 @@ describe('sessions-sidebar row: the name outranks the chips', () => {
     expect(ROW).toMatch(/className="ss-chip" title=\{row\.session\}/)
   })
 })
+
+/**
+ * A project name is free text and can be anything a user pastes into a rename field — a 2,798-
+ * character prompt copied out of a terminal, in the case that prompted this. MEASURED in Electron
+ * against these rules with such a name: the sidebar's project header grew to 1,190px tall, and a
+ * "Recently closed" row on the welcome screen held a 16,162px-wide name in its 480px width, pushing
+ * the folder path and the delete button out of view. Both now cut the name to one line, the way
+ * `.ss-subgroup__name` and `.tab__name` already do.
+ */
+describe('project names stay on one line', () => {
+  it.each(['.ss-group__name', '.welcome__recent-name'])('%s ellipsizes instead of wrapping or overflowing', (sel) => {
+    const r = sel === '.ss-group__name' ? rule(sel) : blockRule(sel)
+    expect(r).toContain('white-space: nowrap')
+    expect(r).toContain('overflow: hidden')
+    expect(r).toContain('text-overflow: ellipsis')
+    // A flex item's automatic minimum is its content, so without these it cannot shrink at all.
+    expect(r).toContain('min-width: 0')
+    expect(r).toMatch(/flex: 0 1 auto/)
+  })
+})
+
+/** The body of a multi-line rule (`.sel {` on its own line), as the welcome screen's rules are written. */
+function blockRule(sel: string): string {
+  const i = CSS.indexOf(`\n${sel} {\n`)
+  expect(i, `no rule for ${sel}`).toBeGreaterThan(-1)
+  return CSS.slice(i, CSS.indexOf('}', i))
+}

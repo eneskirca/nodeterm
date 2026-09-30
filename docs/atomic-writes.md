@@ -100,10 +100,22 @@ bounded name avoids lengthening an already maximum-length filename. Ordinary dow
 reserve the final candidate with an exclusive lock, so two app processes cannot both observe
 `report.pdf` as absent and overwrite each other after transferring. Candidate checks use `lstat`:
 a dangling symlink is an occupied directory entry, not evidence that the name is free. Atomic
-remote stdin sites use
-the same helper for filesystem writes, tmux.conf, the credential-bearing hook endpoint and node
-tokens, agent status, and pending answers. Generated hook scripts/config merges still have direct
-writes and are not covered by this atomicity claim.
+remote stdin sites all use the same helper: filesystem writes, tmux.conf, the credential-bearing
+hook endpoint and node tokens, agent status, pending answers, session env files, the Codex relay and
+launcher, agent hook scripts, the canvas-control and context-link shims and skills, and our own
+grok/copilot hook configs. The user's own files (settings.json, codex hooks.json/config.toml, the
+AGENTS.md-style instruction files) go through the guarded text transaction in
+`core/agents/hooks/remote-settings-file.ts`, which adds a lock, symlink resolution, mode
+preservation and a compare-before-publish.
+
+A remote rename is atomic but not, by itself, complete. `cat` exits 0 when the ssh channel ends
+before the body does — the master killed or rebuilt on a reconnect, the runner's timeout, a dropped
+link — so a temp can hold nothing, or half the body, and still be renamed into place. Measured
+against OpenSSH 9.6 (2026-09-29): with the master SIGKILLed before the body arrived, both the old
+`cat > f` writer and the old temp + `mv` writer left the target at 0 bytes. Every remote write
+therefore checks the temp's byte count against the body's UTF-8 length before it renames, and
+exits 65 (`REMOTE_WRITE_SHORT_BODY`) with the target untouched when they differ. That check is also
+why `remoteAtomicWrite` takes the body: a command built for one body refuses any other stdin.
 
 "Only one instance exists" and "the write queue serializes this" are true within one process and
 silent about a second — and a second is not hypothetical: the Server Edition takes a `--data-dir`,

@@ -4,6 +4,7 @@ import type { ProjectKanban } from '@shared/types'
 import {
   HANDOFF_FOLD_MS,
   handoffsFor,
+  installHandoffFocusReset,
   noteHandoff,
   resetHandoffsForTests,
   suppressDoneAfterHandoff
@@ -96,6 +97,24 @@ describe('folding the turn-end notification into a handoff ping', () => {
     expect(suppressDoneAfterHandoff('n', 2000)).toBe(true)
     expect(suppressDoneAfterHandoff('n', 3000)).toBe(false)
   })
+
+  it('a refocus in between drops the fold: the user is back, the next turn end chimes', () => {
+    const target = new EventTarget()
+    const stop = installHandoffFocusReset(target)
+    noteHandoff('n', 1000)
+    noteHandoff('m', 1000)
+    target.dispatchEvent(new Event('focus'))
+    expect(suppressDoneAfterHandoff('n', 2000)).toBe(false)
+    expect(suppressDoneAfterHandoff('m', 2000)).toBe(false)
+    // A ping armed AFTER the refocus still folds its own Stop.
+    noteHandoff('n', 3000)
+    expect(suppressDoneAfterHandoff('n', 4000)).toBe(true)
+    // …and once uninstalled, a focus no longer touches the folds.
+    stop()
+    noteHandoff('n', 5000)
+    target.dispatchEvent(new Event('focus'))
+    expect(suppressDoneAfterHandoff('n', 6000)).toBe(true)
+  })
 })
 
 // Canvas is too large to mount here; these pin that the two halves are actually wired — a pure
@@ -114,6 +133,10 @@ describe('Canvas wiring (source pins)', () => {
 
   it('the turn-end alert folds into a handoff ping just sent (and only the done sound)', () => {
     expect(source()).toContain("if (sound === 'done' && suppressDoneAfterHandoff(e.nodeId, Date.now())) return")
+  })
+
+  it('the window focus reset is installed for the canvas lifetime', () => {
+    expect(source()).toMatch(/useEffect\(\(\) => installHandoffFocusReset\(window\), \[\]\)/)
   })
 })
 

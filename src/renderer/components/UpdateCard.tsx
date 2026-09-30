@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { IconClose } from './icons'
 import { noSelfInstallCopy } from '@shared/update-platform'
 import type { UpdateProgress } from '@shared/types'
+import { RELEASES_URL, usePendingUpdate } from '../state/pendingUpdate'
 
 // The full updater lifecycle as one status union, driving a fixed bottom-right card.
 // `checking` is only ever shown for a user-initiated manual check; automatic checks stay
@@ -20,8 +21,6 @@ type Status =
   | { kind: 'upToDate' }
   | { kind: 'required'; minSupported: string | null }
   | { kind: 'error'; message: string }
-
-const RELEASES_URL = 'https://nodeterm.dev/releases'
 
 export function UpdateCard(): JSX.Element | null {
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
@@ -114,6 +113,17 @@ export function UpdateCard(): JSX.Element | null {
       delete (window as unknown as { __simulateUpdate?: unknown }).__simulateUpdate
     }
   }, [])
+
+  // Mirror an owed update into the title-bar button. Deliberately never cleared from here: the
+  // card's ✕ sets `idle`, and dismissing the card must not take the install path away with it.
+  const setPending = usePendingUpdate((s) => s.setPending)
+  useEffect(() => {
+    if (status.kind === 'downloaded' || status.kind === 'manual') {
+      setPending({ kind: status.kind, version: status.version })
+    } else if (status.kind === 'required') {
+      setPending({ kind: 'required', minSupported: status.minSupported })
+    }
+  }, [status, setPending])
 
   if (status.kind === 'idle') return null
 

@@ -56,12 +56,7 @@ const SWEEP_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
  *    /proc reads over a link we do not control, and its output is what we already parse.
  */
 export function remoteSessionMemoryCommand(): string {
-  const listPanes = (socket: string): string =>
-    [
-      `echo '${SOCK} ${socket}'`,
-      `tmux -L ${socket} list-panes -a -F '${PANE_FMT}' 2>&1`,
-      `echo "${SOCKRC} $?"`
-    ].join('\n')
+  const listPanes = (socket: string): string => fencedListPanesCommand(socket)
   return [
     // tmux may live off the exec channel's PATH (Homebrew on macOS — issue #449, same append as
     // remoteTmuxPathPrologue). Without this every socket answers 127 and the sweep reports
@@ -107,7 +102,26 @@ function parseMem(lines: string[]): MemInfo | null {
  * happens to start with the marker text.
  */
 function parsePanesSection(lines: readonly string[]): { answered: number; panes: PaneRef[] } {
-  const headers = new Map(SWEEP_SOCKETS.map((s) => [`${SOCK} ${s}`, s]))
+  return parseFencedPanes(lines, SWEEP_SOCKETS)
+}
+
+/** One socket's fenced `list-panes` block for a generated script. Shared with the dev-ports probe
+ *  (core/dev-ports.ts), so the two remote sweeps fence a socket — and classify its failure — the
+ *  same way. */
+export function fencedListPanesCommand(socket: string, tmux = 'tmux'): string {
+  return [
+    `echo '${SOCK} ${socket}'`,
+    `${tmux} -L ${socket} list-panes -a -F '${PANE_FMT}' 2>&1`,
+    `echo "${SOCKRC} $?"`
+  ].join('\n')
+}
+
+/** `parsePanesSection` over an explicit socket list — see that function for the rules. */
+export function parseFencedPanes(
+  lines: readonly string[],
+  sockets: readonly string[]
+): { answered: number; panes: PaneRef[] } {
+  const headers = new Map(sockets.map((s) => [`${SOCK} ${s}`, s]))
   let answered = 0
   const panes: PaneRef[] = []
   let buf: string[] | null = null

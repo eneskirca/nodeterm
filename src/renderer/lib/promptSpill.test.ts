@@ -3,6 +3,7 @@ import {
   LAUNCH_PROMPT_BUDGET_BYTES,
   encodeUtf8Base64,
   flattenPrompt,
+  launchPromptFor,
   promptExceedsLineBudget,
   shouldSpillPrompt,
   spillPromptToFile
@@ -10,6 +11,8 @@ import {
 import { MAX_LAUNCH_LINE_BYTES, fitsLaunchLine, lineBytes } from '@shared/canonical-line'
 import { DEFAULT_LENSES, verifyLensPrompt, verifySynthesisPrompt } from './verifyPanel'
 import { assembleLaunchCommand } from '@shared/agents/launch'
+import { issueLaunchPrompt } from '@shared/github-issue-ref'
+import { LAUNCH_PROMPT_FILE_PREFIX } from '@shared/launch-prompt'
 
 const io = (saveUpload: (n: string, d: string) => Promise<string | null>) => ({
   saveUpload,
@@ -79,6 +82,15 @@ describe('spillPromptToFile', () => {
     ).toBeNull()
   })
 
+  it('names the file with the launch-prompt prefix, which keeps it out of the 7-day uploads sweep', async () => {
+    let named = ''
+    await spillPromptToFile('x', io(async (n) => {
+      named = n
+      return '/tmp/x'
+    }))
+    expect(named.startsWith(LAUNCH_PROMPT_FILE_PREFIX)).toBe(true)
+  })
+
   it('never reuses a name — two spills in the same millisecond are separate files', async () => {
     const names: string[] = []
     const sink = io(async (n) => {
@@ -87,6 +99,57 @@ describe('spillPromptToFile', () => {
     })
     await Promise.all([spillPromptToFile('a', sink), spillPromptToFile('b', sink)])
     expect(new Set(names).size).toBe(2)
+  })
+})
+
+describe('launchPromptFor — the one decision every open path makes', () => {
+  const long = 'x'.repeat(LAUNCH_PROMPT_BUDGET_BYTES + 1)
+
+  it('a short prompt stays inline and writes nothing', async () => {
+    const save = vi.fn(async () => '/tmp/p.txt' as string | null)
+    expect(await launchPromptFor({ prompt: 'hello', localFs: true }, io(save))).toEqual({ prompt: 'hello' })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('an over-budget prompt on a local project becomes a prompt FILE', async () => {
+    const save = vi.fn(async () => '/tmp/spill.txt' as string | null)
+    expect(await launchPromptFor({ prompt: long, localFs: true }, io(save))).toEqual({
+      promptFile: '/tmp/spill.txt'
+    })
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it('an over-budget prompt on an SSH project stays inline — the delivery refusal is its backstop', async () => {
+    const save = vi.fn(async () => '/tmp/spill.txt' as string | null)
+    expect(await launchPromptFor({ prompt: long, localFs: false }, io(save))).toEqual({ prompt: long })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it("an explicit --prompt-file passes through untouched, whatever the project", async () => {
+    const save = vi.fn(async () => '/tmp/spill.txt' as string | null)
+    expect(
+      await launchPromptFor({ promptFile: '/home/u/brief.md', localFs: true }, io(save))
+    ).toEqual({ promptFile: '/home/u/brief.md' })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('fails OPEN: a spill that cannot be written keeps the prompt inline', async () => {
+    expect(await launchPromptFor({ prompt: long, localFs: true }, io(async () => null))).toEqual({
+      prompt: long
+    })
+  })
+
+  it('no prompt at all is no prompt at all', async () => {
+    const save = vi.fn(async () => '/tmp/spill.txt' as string | null)
+    expect(await launchPromptFor({ localFs: true }, io(save))).toEqual({ prompt: undefined })
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('an issue-bound prompt plus a modest brief is over the budget — the case #1000 made common', () => {
+    // The issue reference lines are ~490 bytes around a caller's brief; a 400-character brief crosses the
+    // typed-line budget. Before the fix, the `--project` and cold-open paths typed that inline.
+    const prompt = issueLaunchPrompt({ owner: 'eneskirca', repo: 'nodeterm', number: 1000 }, 'y'.repeat(400))
+    expect(shouldSpillPrompt(prompt, true)).toBe(true)
   })
 })
 

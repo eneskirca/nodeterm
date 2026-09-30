@@ -16,6 +16,8 @@ import {
   relayOnlyExplanation
 } from '@shared/pairing-gate'
 import { thisMachine } from '../../../lib/machineName'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
+import { PushWebhookPanel } from './PushWebhookPanel'
 
 const ROWS = {
   remote: {
@@ -29,9 +31,17 @@ const ROWS = {
   devices: {
     title: 'Paired devices',
     keywords: ['phone', 'device', 'devices', 'paired', 'revoke', 'ios', 'iphone', 'remove']
+  },
+  webhook: {
+    title: 'Push webhook',
+    keywords: ['webhook', 'push', 'notification', 'notify', 'ci', 'build', 'script', 'curl', 'token']
   }
 }
 const ENTRIES = Object.values(ROWS)
+// The webhook needs this machine's relay host key, which a browser tab on the Server Edition does
+// not have (its bridge answers E_UNSUPPORTED) — so the row and its search entry are desktop-only.
+// Asked at render, not at import: the boot switch marks the browser runtime after modules load.
+const BROWSER_ENTRIES = ENTRIES.filter((r) => r !== ROWS.webhook)
 
 /** Format an epoch-ms pairing time as a short local date. */
 function formatPairedAt(ms: number): string {
@@ -55,6 +65,7 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
   // in the warning colour would read as a failure.
   const [revokeNote, setRevokeNote] = useState<{ text: string; warn: boolean } | null>(null)
 
+  const showWebhook = !isBrowserRuntime()
   const phoneAccessEnabled = useSettings((s) => s.settings.phoneAccessEnabled)
   const updateSettings = useSettings((s) => s.update)
 
@@ -171,7 +182,7 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
       title="Phone"
       description="Pair the nodeterm iOS app so it can connect to this machine over your local network — no terminal commands needed."
       isActive={isActive}
-      searchEntries={ENTRIES}
+      searchEntries={showWebhook ? ENTRIES : BROWSER_ENTRIES}
     >
       <SearchableRow {...ROWS.remote}>
         <div className="space-y-3">
@@ -389,6 +400,12 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
           ) : null}
         </div>
       </SearchableRow>
+
+      {showWebhook ? (
+        <SearchableRow {...ROWS.webhook}>
+          <PushWebhookPanel />
+        </SearchableRow>
+      ) : null}
 
       {pendingRevoke ? (
         <ConfirmDialog

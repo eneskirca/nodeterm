@@ -22,7 +22,7 @@ function launchEffect(): string {
   const start = src.indexOf('const ready = launchesToFire(')
   expect(start).toBeGreaterThan(-1)
   const rest = src.slice(start)
-  const end = rest.indexOf('armedSetupSig, launchNudge])')
+  const end = rest.indexOf('armedSetupSig, armedPrSig, armedSuccessSig, launchNudge])')
   expect(end).toBeGreaterThan(-1)
   return rest.slice(0, end)
 }

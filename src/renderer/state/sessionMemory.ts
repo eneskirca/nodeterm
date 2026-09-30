@@ -19,6 +19,8 @@ export const HOST_POLL_MS = 30_000
 interface SessionMemoryState {
   ok: boolean
   rows: SessionMemoryRow[]
+  /** Live sessions the sweep could not measure (Zellij); 0 = none, null = could not tell. */
+  unmeasured: number | null
   mem: MemInfo | null
   loading: boolean
   /** Scope key the current rows belong to; null before the first successful load. */
@@ -59,6 +61,7 @@ const api = (projectId?: string): SessionMemoryApi =>
 export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
   ok: true,
   rows: [],
+  unmeasured: 0,
   mem: null,
   loading: false,
   loadedScope: null,
@@ -83,12 +86,12 @@ export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
       if (scopeKey !== activeScope) return
       // `ok:false` is carried through untouched: the panel renders "could not measure", never an
       // empty session list.
-      set({ ok: r.ok, rows: r.rows, mem: r.mem, loadedScope: scopeKey })
+      set({ ok: r.ok, rows: r.rows, mem: r.mem, unmeasured: r.unmeasured ?? 0, loadedScope: scopeKey })
     } catch {
       // A rejected call (dead WS bridge, no session yet) is the same fact as `ok:false` — the sweep
       // could not run. It is emphatically not "there are no sessions".
       if (scopeKey !== activeScope) return
-      set({ ok: false, rows: [] })
+      set({ ok: false, rows: [], unmeasured: 0 })
     } finally {
       // A response for a scope we have left owns nothing here — `enterScope` already cleared the
       // spinner when it switched.
@@ -130,5 +133,5 @@ function enterScope(scopeKey: string, set: SetState): void {
   activeScope = scopeKey
   // `loading:false` too: whatever was in flight now belongs to a scope we have left, so its
   // `finally` will (correctly) not clear the spinner it set.
-  set({ ok: true, rows: [], mem: null, loading: false, loadedScope: null })
+  set({ ok: true, rows: [], unmeasured: 0, mem: null, loading: false, loadedScope: null })
 }

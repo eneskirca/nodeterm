@@ -495,3 +495,86 @@ it('passes observed session capacity through the Server Edition transcript jail'
   fh.fireRaw('claude', 'capacity-node', { session_id: 'capacity', transcript_path: '/outside-jail/secret' }, true, 64000)
   expect(ctx.calls).toHaveLength(before)
 })
+
+// Claude's native SubagentStart/SubagentStop (core/claude-subagent-lifecycle.ts), replayed from the
+// REAL 2.1.284 capture (src/shared/agents/__fixtures__/claude/subagent-hook-payloads.json) through
+// this shell exactly as the hook server drives it: raw listener first, then the normalized one.
+describe('wireAgentStatus — Claude native subagent hooks', () => {
+  const fixture = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, '../shared/agents/__fixtures__/claude/subagent-hook-payloads.json'),
+      'utf8'
+    )
+  ) as { scenarios: Record<string, { events: Record<string, unknown>[] }> }
+  // The capture's paths, re-rooted under THIS machine's ~/.claude so the transcript jail admits them.
+  const home = path.join(os.homedir(), '.claude')
+  const rehome = (p: Record<string, unknown>): Record<string, unknown> =>
+    JSON.parse(JSON.stringify(p).split('/home/user/.claude').join(home))
+  const replay = (name: string) => {
+    const fh = fakeHooks()
+    const sub = recTail()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, subagentTail: sub.tail as never, contextTail: recTail().tail as never })
+    const payloads = fixture.scenarios[name].events.map(rehome)
+    for (const payload of payloads) {
+      fh.fireRaw('claude', 'n1', payload)
+      const e = normalizeClaude({ nodeId: 'n1', agentId: 'claude', payload })
+      if (e) fh.fireNormalized(e)
+    }
+    const statuses = sent
+      .filter((m) => (m as { channel?: string }).channel === IPC.agentStatus)
+      .map((m) => (m as { args: Record<string, unknown>[] }).args[0])
+    return { payloads, sub, statuses }
+  }
+
+  it('broadcasts one labelled card per child, keyed by agent_id, and replaces the first tool-drawn card', () => {
+    const { payloads, statuses } = replay('print_parallel_foreground')
+    const ids = [...new Set(payloads.filter((p) => p.hook_event_name === 'SubagentStart').map((p) => p.agent_id))]
+    const starts = statuses.filter((s) => s.kind === 'subagent-start')
+    expect(starts.filter((s) => s.subagentSignal === 'tool')).toHaveLength(1)
+    const native = starts.filter((s) => s.subagentSignal === 'native')
+    expect(native.map((s) => s.toolUseId)).toEqual(ids)
+    expect(native.map((s) => s.taskLabel)).toEqual(['Read a.txt', 'Read b.txt'])
+    expect(native[0].supersedes).toBe(starts[0].toolUseId)
+    const ended = new Set(statuses.filter((s) => s.kind === 'subagent-end').map((s) => s.toolUseId))
+    for (const id of ids) expect(ended.has(id)).toBe(true)
+  })
+
+  it("tails each child's own transcript from SubagentStart, and stops the replaced tool tail", () => {
+    const { payloads, sub } = replay('print_parallel_foreground')
+    const starts = payloads.filter((p) => p.hook_event_name === 'SubagentStart')
+    const stops = new Map(
+      payloads.filter((p) => p.hook_event_name === 'SubagentStop').map((p) => [p.agent_id, p.agent_transcript_path])
+    )
+    for (const s of starts) {
+      const tf = sub.calls.find((c) => c.m === 'trackFile' && c.args[0] === s.agent_id)
+      expect(tf?.args[1]).toBe(stops.get(s.agent_id)) // the derived path IS the file the stop names
+      expect(sub.calls.some((c) => c.m === 'finish' && c.args[0] === s.agent_id)).toBe(true)
+    }
+    // Only the first tool call (before the session proved native hooks) got a tool-path tail…
+    const toolTracks = sub.calls.filter((c) => c.m === 'track')
+    expect(toolTracks).toHaveLength(1)
+    // …and it was stopped when its native card replaced it.
+    expect(sub.calls.some((c) => c.m === 'finish' && c.args[0] === toolTracks[0].args[0])).toBe(true)
+  })
+
+  it('a side-agent stop (no start, empty type) reaches no browser', () => {
+    const { payloads, statuses } = replay('interactive_parallel')
+    const phantoms = payloads.filter((p) => p.hook_event_name === 'SubagentStop' && p.agent_type === '')
+    expect(phantoms.length).toBeGreaterThan(0)
+    for (const p of phantoms) expect(statuses.some((s) => s.toolUseId === p.agent_id)).toBe(false)
+  })
+
+  it('a SubagentStart whose parent transcript is outside the jail tails nothing', () => {
+    const fh = fakeHooks()
+    const sub = recTail()
+    wireAgentStatus(platform, { hooks: fh.hooks as never, subagentTail: sub.tail as never })
+    fh.fireRaw('claude', 'n1', {
+      hook_event_name: 'SubagentStart',
+      session_id: 's1',
+      agent_id: 'a0123456789abcdef',
+      agent_type: 'general-purpose',
+      transcript_path: path.join(os.homedir(), '.ssh', 'x.jsonl')
+    })
+    expect(sub.calls.filter((c) => c.m === 'trackFile' && c.args[1] !== undefined)).toEqual([])
+  })
+})

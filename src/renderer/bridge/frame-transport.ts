@@ -9,6 +9,7 @@
 // the RpcClient routes a string through `parseRpcMessage` and a `Uint8Array` through `decodePtyData`.
 
 import type { RelayClientApi } from '../../shared/types'
+import { onLocalRelayClose } from './relay-local-close'
 
 export interface FrameTransport {
   /** Send one outbound frame (always a JSON string — pty-data is inbound only). */
@@ -94,7 +95,19 @@ export class RelayFrameTransport implements FrameTransport {
   }
 
   onClose(cb: () => void): void {
-    this.relay.onClosed(this.connectionId, () => cb())
+    // Main's close (the socket dropped) or this renderer's own (relay-local-close.ts: main never
+    // reports a close it was asked for). Only hosted paths announce a local close, so a Team Access
+    // connection hears exactly what it always did. Once, whichever comes first.
+    let fired = false
+    let unLocal: () => void = () => {}
+    const fire = (): void => {
+      if (fired) return
+      fired = true
+      unLocal()
+      cb()
+    }
+    unLocal = onLocalRelayClose(this.connectionId, fire)
+    this.relay.onClosed(this.connectionId, () => fire())
   }
 
   ready(): Promise<void> {

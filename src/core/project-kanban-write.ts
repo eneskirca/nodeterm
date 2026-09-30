@@ -217,8 +217,8 @@ export function parseCardLabelEdit(raw: unknown): CardLabelEdit | null {
  * meta round-trip untouched (the same raw-object discipline as the rest of this file).
  *
  * A project with no board gets the default one seeded first, exactly as the desktop's first
- * "+ Label" does (`NodeLabels` edits `kanban ?? defaultKanban()`) — but only when the edit actually
- * changes something, so a no-op never writes a board nobody asked for.
+ * "+ Label" does (`NodeLabels` edits `kanban ?? defaultKanban(projectId)`) — but only when the
+ * edit actually changes something, so a no-op never writes a board nobody asked for.
  *
  * Returns null (nothing written) for a file of the wrong shape, an unusable `kanban` block, an
  * `add` naming a label this palette does not have (the phone's copy is stale — applying a dangling

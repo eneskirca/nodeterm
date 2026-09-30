@@ -124,7 +124,7 @@ describe('the off-canvas dispatch block (source pins)', () => {
     const body = addAndConnectBody()
     const off = code(body.slice(body.indexOf('if (offCanvas) {'), body.indexOf('setNodes((ns) =>')))
     expect(off.length).toBeGreaterThan(0)
-    expect(off).toContain('applyNodeMutation(offCanvas.project.id, {')
+    expect(off).toContain('applyOwnNodeMutation(offCanvas.project.id, {')
     expect(off).toContain('appendCanvasLinks(offCanvas.project.id, {')
     expect(off).toContain('writeDisk()')
     expect(off).not.toContain('setNodes(')

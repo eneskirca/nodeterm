@@ -21,9 +21,11 @@ import { LabelPicker } from './LabelPicker'
 export function NodeLabels({ nodeId, trailing }: { nodeId: string; trailing?: ReactNode }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const kanban = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.kanban)
+  const activeProjectId = useProjects((s) => s.activeProjectId)
   // Adding the first label seeds the default board (To Do / In Progress / Done), exactly like the
   // board's own lazy default — so a node-side label add never leaves an empty column-less board.
-  const board = useMemo(() => kanban ?? defaultKanban(), [kanban])
+  // The SAME board, ids included: the lazy default is deterministic per project.
+  const board = useMemo(() => kanban ?? defaultKanban(activeProjectId ?? ''), [kanban, activeProjectId])
   const labels = labelsForCard(board, nodeId)
 
   const commit = (next: ProjectKanban): void => {

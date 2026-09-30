@@ -28,6 +28,9 @@ export class ServerPlatform implements CorePlatform {
    *  desktop shell registers under webContents ids), so this shell owns the counter. */
   private registry = new UiSinkRegistry()
   private nextUiId = 1
+  /** Connections attached as the OWNER (the cookie-authenticated browser WebSocket, ws.ts). A relay
+   *  peer attaches through the same `attach` without the flag. */
+  private owners = new Set<number>()
 
   constructor(opts: { userDataDir: string; appVersion: string }) {
     this.userDataDir = opts.userDataDir
@@ -96,14 +99,22 @@ export class ServerPlatform implements CorePlatform {
     return Promise.reject(new Error('openExternal is not available on a headless server'))
   }
 
-  attach(sink: UiSink): number {
+  /** `owner` only from ws.ts, whose upgrade gate authenticated the socket as THE server's user. A
+   *  relay-hosted peer (index.ts's hosted attach) is never an owner. */
+  attach(sink: UiSink, opts: { owner?: boolean } = {}): number {
     const id = this.nextUiId++
     this.registry.register(id, sink)
+    if (opts.owner === true) this.owners.add(id)
     return id
   }
 
   detach(uiId: number): void {
+    this.owners.delete(uiId)
     this.registry.unregister(uiId)
+  }
+
+  isOwnerClient(uiId: number): boolean {
+    return this.owners.has(uiId)
   }
 
   async dispatch(uiId: number, req: RpcRequest): Promise<RpcOk | RpcErr> {

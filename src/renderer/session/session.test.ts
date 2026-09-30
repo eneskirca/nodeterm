@@ -16,6 +16,7 @@ import {
   takeSessionOffline,
   activeSessionPresence,
   presenceForProject,
+  projectIdsBoundToApi,
 } from './session'
 import { defaultPresence } from '../state/presence'
 import type { NodeTerminalApi } from '@shared/types'
@@ -323,5 +324,24 @@ describe('setMeAll (obligation 2 — a rename re-helloes EVERY live session)', (
     // …and each session's store reflects the new identity.
     expect(getSessionStores(s1.id).presence.store.getState().me).toEqual(me)
     expect(getSessionStores(s2.id).presence.store.getState().me).toEqual(me)
+  })
+})
+
+describe('projectIdsBoundToApi (a relay connection -> the tabs it serves)', () => {
+  it('names exactly the projects bound to a live session holding THIS api', () => {
+    const local = createSession('local', fakeApi, 'This Mac')
+    setActiveSession(local.id)
+    const apiA = { marker: 'a' } as unknown as NodeTerminalApi
+    const apiB = { marker: 'b' } as unknown as NodeTerminalApi
+    const a = createSession('relay', apiA, 'A')
+    const b = createSession('relay', apiB, 'B')
+    bindProjectToSession('pa', a.id)
+    bindProjectToSession('pb', b.id)
+    expect(projectIdsBoundToApi(apiA)).toEqual(['pa'])
+    expect(projectIdsBoundToApi(apiB)).toEqual(['pb'])
+    // The local api binds nothing: an unbound project merely FALLS BACK to local.
+    expect(projectIdsBoundToApi(fakeApi)).toEqual([])
+    disposeSession(a.id)
+    expect(projectIdsBoundToApi(apiA)).toEqual([])
   })
 })

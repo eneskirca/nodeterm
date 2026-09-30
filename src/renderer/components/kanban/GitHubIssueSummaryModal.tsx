@@ -12,9 +12,11 @@ import { useSession } from '../../session/session'
 import { Button } from '@renderer/ui/Button'
 import { Select } from '@renderer/ui/Select'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
+import { openDialogCount } from '../dialog-stack'
 import { NO_ISSUE_RUNS, type IssueRun } from '../../lib/issueRuns'
 import { IssueRunChips } from './IssueRunChips'
 import { BoardLogPanel } from './BoardLogPanel'
+import { ISSUE_WORKTREE_BUTTON_LABEL, type IssueWorktreeMenuAnswer } from '../../lib/issueWorktree'
 
 export function GitHubIssueSummaryModal({
   issue,
@@ -31,6 +33,7 @@ export function GitHubIssueSummaryModal({
   pullFreshness = 'fresh',
   pullObservedAt,
   startMenu,
+  worktreeMenu,
   runs = NO_ISSUE_RUNS,
   onOpenRun,
   showRunHistory = false
@@ -56,6 +59,9 @@ export function GitHubIssueSummaryModal({
   /** The "Start with agent ▸" rows (the canvas's own agent + account picker, pointed at this
    *  issue). Absent = no button — a pull request, or a board with no canvas behind it. */
   startMenu?: () => MenuItem[]
+  /** "Start with agent in a new worktree": the same picker pointed at a fresh worktree frame, or
+   *  the reason it cannot run here (the button is then DISABLED and says why). Absent = no button. */
+  worktreeMenu?: () => IssueWorktreeMenuAnswer
   /** Sessions already working on this issue — the same live chips the card shows. */
   runs?: readonly IssueRun[]
   onOpenRun?: (nodeId: string) => void
@@ -65,6 +71,13 @@ export function GitHubIssueSummaryModal({
   const isPull = kind === 'pull'
   const { api } = useSession()
   const [startAt, setStartAt] = useState<{ x: number; y: number } | null>(null)
+  // The worktree picker's rows are built at the click that opens them, like the canvas menus: they
+  // describe the canvas as it is then.
+  const [worktreeAt, setWorktreeAt] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  // Read at render: whether the project can take a worktree does not change while the modal is up
+  // without a re-render (a project switch unmounts the board).
+  const worktreeAnswer = !isPull && worktreeMenu ? worktreeMenu() : undefined
+  const worktreeRefusal = worktreeAnswer && 'refusal' in worktreeAnswer ? worktreeAnswer.refusal : undefined
   // The run history is filed under the issue card's synthetic board-log id. No id (a card whose
   // URL did not parse) = no history panel, rather than a panel keyed on something made up.
   const logId = !isPull && showRunHistory
@@ -82,7 +95,9 @@ export function GitHubIssueSummaryModal({
   }, [])
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      // A dialog stacked over this modal (the close/reopen confirm, the worktree reuse-or-new
+      // choice) owns its own Escape: closing the modal underneath it too took two answers for one key.
+      if (event.key === 'Escape' && openDialogCount() === 0) onClose()
       if (event.key === 'Tab' && dialog.current) {
         const focusable = [...dialog.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
@@ -147,6 +162,21 @@ export function GitHubIssueSummaryModal({
               Start with agent ▾
             </Button>
           )}
+          {worktreeAnswer && (
+            <Button
+              aria-haspopup="menu"
+              disabled={!!worktreeRefusal}
+              title={worktreeRefusal}
+              onClick={(event) => {
+                const answer = worktreeMenu?.()
+                if (!answer || 'refusal' in answer) return
+                const r = (event.currentTarget as HTMLElement).getBoundingClientRect()
+                setWorktreeAt({ x: r.left, y: r.bottom + 4, items: answer.items })
+              }}
+            >
+              {ISSUE_WORKTREE_BUTTON_LABEL} ▾
+            </Button>
+          )}
           <Button onClick={() => void api.shell.openExternal(issue.htmlUrl)}>Open on GitHub</Button>
         </div>
         {!isPull && onOpenRun && runs.length > 0 && (
@@ -198,6 +228,15 @@ export function GitHubIssueSummaryModal({
             zIndex={60}
             items={startMenu()}
             onClose={() => setStartAt(null)}
+          />
+        )}
+        {worktreeAt && (
+          <ContextMenu
+            x={worktreeAt.x}
+            y={worktreeAt.y}
+            zIndex={60}
+            items={worktreeAt.items}
+            onClose={() => setWorktreeAt(null)}
           />
         )}
       </section>

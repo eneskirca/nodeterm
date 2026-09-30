@@ -193,10 +193,10 @@ export function reorderLabels(k: ProjectKanban, id: string, beforeId: string | n
 /** Toggle a label on a card (add if absent, remove if present). Preserves the card's other meta. */
 export function toggleCardLabel(k: ProjectKanban, nodeId: string, labelId: string): ProjectKanban {
   const cur = cardMeta(k, nodeId)
-  const has = (cur?.labels ?? []).includes(labelId)
-  const labels = has
-    ? (cur?.labels ?? []).filter((x) => x !== labelId)
-    : [...(cur?.labels ?? []), labelId]
+  // A hand-edited file can hold a non-list here: read it as no labels, never `.includes` of a string
+  // or an object thrown out of a click handler.
+  const held = Array.isArray(cur?.labels) ? cur.labels.filter((x): x is string => typeof x === 'string') : []
+  const labels = held.includes(labelId) ? held.filter((x) => x !== labelId) : [...held, labelId]
   return withCardMeta(k, nodeId, {
     assignees: cur?.assignees,
     dueAt: cur?.dueAt,

@@ -26,10 +26,22 @@
  *    error, no record. And no hook fires while it runs, so a node whose only activity is a long
  *    background job looks EXACTLY like the target profile (`done`, offscreen, idle for hours): the
  *    stamp the launch left behind (`agentStatus.backgroundTaskAt`, cleared at the next turn start)
- *    is the only signal there is.
+ *    is the only signal there is. Claude's `Stop` also stamps it while its `background_tasks`
+ *    inventory lists running work — which is what covers a background SUBAGENT that is only paused
+ *    (its native SubagentStop marked its card done; core/claude-subagent-lifecycle.ts).
  *  - **Unknown idle is NOT idle.** A candidate with no `lastEventAt` (no hook event has ever been
  *    seen for it in this run) is never eligible — the same rule as pendingLaunch's "an unknown
  *    dependency state is not satisfied". Guessing here costs the user a live session.
+ *  - **A restored clock is not an idle proof.** `agentStatus.lastSeen` (the last hook event before
+ *    an app restart) is persisted so the sidebar can order and age rows; it deliberately never
+ *    reaches `lastEventAt` or this plan, so Eco stays inert for a session with no hook event in
+ *    the current run. Two reasons, either sufficient: (1) the hook server was down with the app,
+ *    so a turn that started or ended in between left no trace and the restored `done` may describe
+ *    a pane that has been working for an hour; (2) even a PROVEN-idle prompt after boot is not
+ *    enough, because the two other guards this plan needs — `backgroundTaskAt` (a background shell
+ *    inside the CLI) and the subagent cards (async children still running) — are transient and
+ *    cannot be rebuilt after a restart, and `/exit` kills both silently. A session becomes a
+ *    candidate again with its next live `done`, from which the idle window is counted.
  *  - **Never a pane the agent does not OWN.** Eco's contract is "quit the CLI in this pane and
  *    resume it in this pane", and `#{pane_current_command}` cannot tell whether that is what the
  *    pane holds: an npm-installed CLI reports as `node`, and a CLI reached over an interactive

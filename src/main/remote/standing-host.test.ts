@@ -7,11 +7,23 @@
 // own bookkeeping.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { initPlatform, resetPlatformForTests } from '../../core/platform'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import nacl from 'tweetnacl'
+import { initPlatform, platform, resetPlatformForTests } from '../../core/platform'
 import { fakePlatform } from '../../core/platform-fake'
 import { presenceHub } from '../../core/presence/hub'
 import type { ApprovedDevices } from './approved-devices-core'
 import type { HostSession, HostSessionOptions } from './host-service'
+import { createTestPopServer } from '../../core/relay/relay-pop.test-server'
+import { POP_REFUSED_MESSAGE_DESKTOP } from '../../core/relay/relay-pop'
+
+// The host's key pair: a REAL X25519 pair, so the standing host can compute a key proof that the
+// test pop server (a mirror of the backend's verify) accepts or refuses on the real bytes.
+const hostKeys = nacl.box.keyPair()
+const hostPubB64 = Buffer.from(hostKeys.publicKey).toString('base64')
+// Swappable: null = the free tier (mint by deviceId), a string = a stored Pro entitlement.
+let storedEntitlement: string | null = 'entitlement'
 
 const ipc: Record<string, (e: unknown, msg: unknown) => any> = {}
 const errorBoxes: Array<{ title: string; body: string }> = []
@@ -30,7 +42,7 @@ vi.mock('electron', () => ({
 vi.mock('../../core/pty-manager', () => ({ PtyManager: class {} }))
 vi.mock('../../core/license', () => ({
   isPremium: () => true,
-  getStoredEntitlement: () => 'entitlement'
+  getStoredEntitlement: () => storedEntitlement
 }))
 vi.mock('./host-canvas-hub', () => ({
   initHostCanvasHub: () => {},
@@ -39,13 +51,42 @@ vi.mock('./host-canvas-hub', () => ({
 }))
 let disk: ApprovedDevices = { pubkeys: [] }
 const persist = vi.fn(async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) })
-vi.mock('./relay-advertise', () => ({ writeRelayAdvertisement: async () => {}, removeRelayAdvertisement: async () => {} }))
-vi.mock('./approved-devices', () => ({
-  updateApprovedDevices: (update: (s: ApprovedDevices) => ApprovedDevices) => persist(update),
-  loadApprovedDevices: async () => disk,
-  saveApprovedDevices: async () => {}
+// Counted: stop() withdraws the advertisement, which is how a refused host stops inviting phones.
+let advertisementsRemoved = 0
+vi.mock('./relay-advertise', () => ({
+  writeRelayAdvertisement: async () => {},
+  removeRelayAdvertisement: async () => {
+    advertisementsRemoved += 1
+  }
 }))
-vi.mock('./e2ee', () => ({ publicKeyToB64: () => 'host-pub' }))
+// Per-role pin stores (approved-devices.ts), in memory. The 'phone' store — the one this module
+// must write — is `disk`; every other role lives in `otherPins`, so a pin landing in the WRONG
+// store is visible to the assertions instead of indistinguishable from the right one.
+const otherPins: Record<string, ApprovedDevices> = {}
+vi.mock('./approved-devices', () => {
+  const mem = (role: string) => {
+    const get = (): ApprovedDevices => (role === 'phone' ? disk : (otherPins[role] ??= { pubkeys: [] }))
+    const set = (s: ApprovedDevices): void => {
+      if (role === 'phone') disk = s
+      else otherPins[role] = s
+    }
+    return {
+      load: async () => get(),
+      save: async (s: ApprovedDevices) => set(s),
+      update: role === 'phone' ? (u: (s: ApprovedDevices) => ApprovedDevices) => persist(u) : async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get()))
+    }
+  }
+  const stores: Record<string, ReturnType<typeof mem>> = { phone: mem('phone'), guest: mem('guest'), joinedHost: mem('joinedHost') }
+  return {
+    PIN_ROLES: ['phone', 'guest', 'joinedHost'],
+    phonePins: stores.phone,
+    guestPins: stores.guest,
+    joinedHostPins: stores.joinedHost,
+    pinStore: (r: string) => stores[r],
+    retireLegacyPinFile: async () => 0
+  }
+})
+vi.mock('./e2ee', () => ({ publicKeyToB64: (k: Uint8Array) => Buffer.from(k).toString('base64') }))
 
 const sessions: Array<{ opts: HostSessionOptions; session: HostSession; closed: number }> = []
 
@@ -59,7 +100,7 @@ vi.mock('./host-service', () => ({
   relayAllowed: () => true,
   loadOrCreateKeyPair: async () => {
     if (keyError) throw keyError
-    return { publicKey: new Uint8Array(), secretKey: new Uint8Array() }
+    return hostKeys
   },
   connectHostSession: (opts: HostSessionOptions): HostSession => {
     const entry = { opts, closed: 0, session: null as unknown as HostSession }
@@ -79,12 +120,59 @@ vi.mock('./host-service', () => ({
 }))
 
 import { initStandingHost, tokenTtlMs } from './standing-host'
+import { revokeAllPhones, revokePeerKey } from './peer-revoke'
 import { IPC } from '../../shared/ipc'
 
-/** Let the async connectOne() chain (token mint, keypair) settle. */
+/** Let the async connectOne() chain (keypair, key-proof challenge, token mint) settle. */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 12; i++) await Promise.resolve()
+  for (let i = 0; i < 40; i++) await Promise.resolve()
 }
+
+// ── fetch, routed by URL ──────────────────────────────────────────────────────────────────────
+// A mint is now TWO requests: `/v1/relay/challenge` (the key-proof challenge), then
+// `/v1/relay/host-token`. Every "how many mints" assertion counts host-token calls only.
+interface FakeRes {
+  ok: boolean
+  status: number
+  headers?: Headers
+  json: () => Promise<unknown>
+}
+type Route = (init: RequestInit) => FakeRes | Promise<FakeRes>
+const res = (status: number, body: unknown = {}, headers?: Headers): FakeRes => ({
+  ok: status >= 200 && status < 300,
+  status,
+  ...(headers ? { headers } : {}),
+  json: async () => body
+})
+/** A backend that predates the key proof: no challenge route. */
+const challengeUnsupported: Route = () => res(404)
+const hostTokenOk: Route = () => res(200, { pairingToken: 'tok', hostId: 'host', exp: 0 })
+/** A challenge route answered by the backend's own issue() (mirrored in relay-pop.test-server). */
+const challengeFrom =
+  (pop: ReturnType<typeof createTestPopServer>): Route =>
+  (init) => {
+    const b = JSON.parse(String(init.body)) as { hostPublicKeyB64: string; purpose: 'host-token' | 'push' }
+    return res(200, pop.issue(b.hostPublicKeyB64, b.purpose))
+  }
+
+let fetchMock: ReturnType<typeof vi.fn<(url: string, init: RequestInit) => Promise<FakeRes>>>
+function routeFetch(r: { challenge?: Route; hostToken?: Route } = {}): void {
+  const challenge = r.challenge ?? challengeUnsupported
+  const hostToken = r.hostToken ?? hostTokenOk
+  fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+    if (url.endsWith('/v1/relay/challenge')) return challenge(init)
+    if (url.endsWith('/v1/relay/host-token')) return hostToken(init)
+    throw new Error(`unexpected fetch ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+}
+const callsTo = (suffix: string): Array<[string, RequestInit]> =>
+  fetchMock.mock.calls.filter(([url]) => url.endsWith(suffix))
+/** Host-token mints only — the challenge request is not a mint. */
+const mintCalls = (): Array<[string, RequestInit]> => callsTo('/v1/relay/host-token')
+const challengeCalls = (): Array<[string, RequestInit]> => callsTo('/v1/relay/challenge')
+const mintBody = (i = -1): Record<string, unknown> =>
+  JSON.parse(String(mintCalls().at(i)![1].body)) as Record<string, unknown>
 
 function phones(): number {
   return presenceHub.peers().filter((p) => p.kind === 'phone').length
@@ -117,16 +205,13 @@ beforeEach(() => {
   errorBoxes.length = 0
   persist.mockReset()
   disk = { pubkeys: [] }
+  for (const k of Object.keys(otherPins)) delete otherPins[k]
   persist.mockImplementation(async (update) => { disk = update(disk) })
   keyError = null
+  storedEntitlement = 'entitlement'
+  advertisementsRemoved = 0
   for (const key of Object.keys(ipc)) delete ipc[key]
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ pairingToken: 'tok', hostId: 'host', exp: 0 })
-    }))
-  )
+  routeFetch()
 })
 
 afterEach(() => {
@@ -293,6 +378,72 @@ describe('standing phone approval lifecycle (#819)', () => {
   })
 })
 
+describe('standing host: revocation and pin-store roles', () => {
+  const pendingCount = (): number => sentToWin.filter((x) => x.channel === IPC.remoteHostPeerPending).length
+
+  it('a removed phone\'s live session is closed, and its reconnect is NOT auto-approved', async () => {
+    disk = { pubkeys: ['phone-pub'] }
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+    sessions[0].opts.onPeerReady(sessions[0].session)
+    await settle()
+    expect(sessions[0].session.approve).toHaveBeenCalledOnce() // pinned → silent auto-approve
+    expect(phones()).toBe(1)
+
+    // Phone "Remove" (pairing-service → revokeAllPhones): unpin AND cut.
+    expect(await revokeAllPhones()).toEqual({ persisted: true, killed: true })
+    expect(disk.pubkeys).toEqual([])
+    expect(sessions[0].closed).toBe(1)
+    expect(phones()).toBe(0)
+
+    // The same phone reconnects on a fresh listener: it must face the SAS prompt again.
+    const before = pendingCount()
+    await settle()
+    const next = sessions.at(-1)!
+    expect(next).not.toBe(sessions[0])
+    next.opts.onPeerReady(next.session)
+    await settle()
+    expect(next.session.approve).not.toHaveBeenCalled()
+    expect(pendingCount()).toBe(before + 1)
+    host.stop()
+  })
+
+  it('a key pinned as a joined host or a hosted guest is never auto-admitted as a phone', async () => {
+    otherPins.joinedHost = { pubkeys: ['phone-pub'] }
+    otherPins.guest = { pubkeys: ['phone-pub'] }
+    try {
+      const host = makeHost()
+      host.setEnabled(true)
+      await settle()
+      sessions[0].opts.onPeerReady(sessions[0].session)
+      await settle()
+      expect(sessions[0].session.approve).not.toHaveBeenCalled()
+      expect(pendingCount()).toBe(1) // the human is asked, exactly like any unknown phone
+      host.stop()
+    } finally {
+      delete otherPins.joinedHost
+      delete otherPins.guest
+    }
+  })
+
+  it('a revoke drops a pending consent even after its socket closed, so the dialog cannot re-pin it', async () => {
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+    sessions[0].opts.onPeerReady(sessions[0].session)
+    await settle()
+    const msg = { id: pendingApprovalId(), pub: 'phone-pub' }
+    sessions[0].opts.onClose() // #819: consent outlives the socket…
+    await revokePeerKey('phone-pub', ['phone'])
+    // …but not a revoke.
+    expect(await ipc[IPC.remotePhoneApprove]({ sender }, msg)).toEqual({ status: 'stale' })
+    expect(persist).not.toHaveBeenCalledWith(expect.anything(), expect.anything())
+    expect(disk.pubkeys).toEqual([])
+    host.stop()
+  })
+})
+
 describe('standing host: a refused token mint backs off', () => {
   afterEach(() => {
     vi.useRealTimers()
@@ -304,16 +455,15 @@ describe('standing host: a refused token mint backs off', () => {
     // pool back up on a microtask even after a FAILED mint, so the backoff scheduleReconnect()
     // had just armed never got a chance to run.
     vi.useFakeTimers()
-    const fetchMock = vi.fn(async () => ({ ok: false, status: 429, json: async () => ({}) }))
-    vi.stubGlobal('fetch', fetchMock)
+    routeFetch({ hostToken: () => res(429) })
     const host = makeHost()
     host.syncFromSettings()
     for (let i = 0; i < 20; i++) await settle()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mintCalls()).toHaveLength(1)
     // The backoff then retries — refusal is not a permanent stop.
     await vi.advanceTimersByTimeAsync(1000)
     for (let i = 0; i < 5; i++) await settle()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(mintCalls()).toHaveLength(2)
     host.stop()
   })
 })
@@ -328,15 +478,11 @@ describe('standing host: a listener the relay drops backs off (relay unreachable
     // 2½ minutes. Every mint succeeded (resetting the backoff), every socket died at once, and
     // onClose re-minted immediately — ~30 mints in 3 s until the API's per-IP limit answered 429.
     vi.useFakeTimers()
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ pairingToken: 'tok', hostId: 'host', exp: 0 })
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    routeFetch()
     const host = makeHost()
     host.syncFromSettings()
     for (let i = 0; i < 10; i++) await settle()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mintCalls()).toHaveLength(1)
 
     const dropNewest = async (): Promise<void> => {
       sessions.at(-1)!.opts.onClose() // the relay drops the idle listener on its own
@@ -344,25 +490,21 @@ describe('standing host: a listener the relay drops backs off (relay unreachable
     }
     // Drop #1: nothing immediate, one re-mint after 1 s.
     await dropNewest()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mintCalls()).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(1000)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(mintCalls()).toHaveLength(2)
     // Drop #2 right after that SUCCESSFUL mint: the delay grew to 2 s — the mint did not reset it.
     await dropNewest()
     await vi.advanceTimersByTimeAsync(1999)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(mintCalls()).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(1)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(mintCalls()).toHaveLength(3)
     host.stop()
   })
 
   it('a listener that lives to its refresh resets the backoff', async () => {
     vi.useFakeTimers()
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ pairingToken: 'tok', hostId: 'host', exp: 0 })
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    routeFetch()
     const host = makeHost()
     host.syncFromSettings()
     for (let i = 0; i < 10; i++) await settle()
@@ -371,14 +513,14 @@ describe('standing host: a listener the relay drops backs off (relay unreachable
     await vi.advanceTimersByTimeAsync(1000)
     sessions.at(-1)!.opts.onClose()
     await vi.advanceTimersByTimeAsync(2000)
-    const before = fetchMock.mock.calls.length
+    const before = mintCalls().length
     // …then the listener holds for a full token lifetime (refresh at 120 − 30 = 90 s).
     await vi.advanceTimersByTimeAsync(90_000)
-    expect(fetchMock.mock.calls.length).toBe(before + 1) // the refresh re-mint
+    expect(mintCalls().length).toBe(before + 1) // the refresh re-mint
     // A drop now waits 1 s again, not 4 s.
     sessions.at(-1)!.opts.onClose()
     await vi.advanceTimersByTimeAsync(1000)
-    expect(fetchMock.mock.calls.length).toBe(before + 2)
+    expect(mintCalls().length).toBe(before + 2)
     host.stop()
   })
 })
@@ -403,20 +545,497 @@ describe('standing host: token refresh is immune to this machine\'s clock error'
     vi.useFakeTimers()
     const serverNow = Date.parse('Sun, 27 Sep 2026 08:00:00 GMT')
     vi.setSystemTime(serverNow + 75_000)
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      headers: new Headers({ date: new Date(serverNow).toUTCString() }),
-      json: async () => ({ pairingToken: 'tok', hostId: 'host', exp: serverNow / 1000 + 120 })
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    routeFetch({
+      hostToken: () =>
+        res(
+          200,
+          { pairingToken: 'tok', hostId: 'host', exp: serverNow / 1000 + 120 },
+          new Headers({ date: new Date(serverNow).toUTCString() })
+        )
+    })
     const host = makeHost()
     host.syncFromSettings()
     for (let i = 0; i < 10; i++) await settle()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mintCalls()).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(fetchMock).toHaveBeenCalledTimes(1) // the old code had re-minted 4 times by now
+    expect(mintCalls()).toHaveLength(1) // the old code had re-minted 4 times by now
     await vi.advanceTimersByTimeAsync(30_000)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(mintCalls()).toHaveLength(2)
+    host.stop()
+  })
+})
+
+describe('standing host: host key proof-of-possession on the host-token mint', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** A pre-seeded device id, so the free tier's subject is a known value. */
+  function seedDeviceId(id: string): void {
+    writeFileSync(join(platform().userDataDir, 'device-id'), id, 'utf-8')
+  }
+
+  it('Pro: the mint carries popChallenge + popProof beside the entitlement, proved with subject ""', async () => {
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop) })
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+
+    expect(challengeCalls()).toHaveLength(1)
+    const chBody = JSON.parse(String(challengeCalls()[0][1].body)) as Record<string, unknown>
+    expect(chBody).toEqual({ hostPublicKeyB64: hostPubB64, purpose: 'host-token' })
+
+    expect(mintCalls()).toHaveLength(1)
+    const body = mintBody()
+    expect(body.entitlement).toBe('entitlement')
+    expect(body.hostPublicKeyB64).toBe(hostPubB64)
+    expect(body).not.toHaveProperty('deviceId')
+    expect(typeof body.popChallenge).toBe('string')
+    expect(typeof body.popProof).toBe('string')
+    // The backend's own verify (mirrored in the test server) accepts it for the Pro subject ''.
+    expect(
+      pop.verify({
+        hostPublicKeyB64: hostPubB64,
+        purpose: 'host-token',
+        subject: '',
+        popChallenge: body.popChallenge,
+        popProof: body.popProof
+      })
+    ).toBe(true)
+    // ONE abort signal covers the challenge and the mint.
+    expect(challengeCalls()[0][1].signal).toBeInstanceOf(AbortSignal)
+    expect(mintCalls()[0][1].signal).toBe(challengeCalls()[0][1].signal)
+    expect(sessions).toHaveLength(1)
+    host.stop()
+  })
+
+  it('free tier: the proof subject is getDeviceId(), the same id the body sends', async () => {
+    storedEntitlement = null
+    seedDeviceId('device-fixed')
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop) })
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+
+    expect(mintCalls()).toHaveLength(1)
+    const body = mintBody()
+    expect(body.deviceId).toBe('device-fixed')
+    expect(body).not.toHaveProperty('entitlement')
+    const proof = {
+      hostPublicKeyB64: hostPubB64,
+      purpose: 'host-token' as const,
+      popChallenge: body.popChallenge,
+      popProof: body.popProof
+    }
+    // A proof for the Pro subject would not pass for a free mint (checked first: a mismatch does
+    // not consume the single-use nonce).
+    expect(pop.verify({ ...proof, subject: '' })).toBe(false)
+    expect(pop.verify({ ...proof, subject: 'device-fixed' })).toBe(true)
+    host.stop()
+  })
+
+  it('free tier on first launch: the proof subject and the body deviceId are ONE read', async () => {
+    // No device-id file yet: getDeviceId() mints a fresh uuid and writes it ASYNC, so a second
+    // call before that write lands mints ANOTHER uuid. Reading it twice sends a body deviceId the
+    // proof was not computed over, which the backend refuses as pop_invalid — a terminal stop.
+    storedEntitlement = null
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop) })
+    const host = makeHost()
+    host.setEnabled(true)
+    await settle()
+
+    expect(mintCalls()).toHaveLength(1)
+    const body = mintBody()
+    expect(typeof body.deviceId).toBe('string')
+    expect(
+      pop.verify({
+        hostPublicKeyB64: hostPubB64,
+        purpose: 'host-token',
+        subject: body.deviceId as string,
+        popChallenge: body.popChallenge,
+        popProof: body.popProof
+      })
+    ).toBe(true)
+    host.stop()
+  })
+
+  it('an old backend (challenge 404/405) gets the legacy mint: no popChallenge, no popProof', async () => {
+    for (const status of [404, 405]) {
+      routeFetch({ challenge: () => res(status) })
+      const host = makeHost()
+      host.setEnabled(true)
+      await settle()
+      expect(mintCalls()).toHaveLength(1)
+      expect(mintBody()).toEqual({ entitlement: 'entitlement', hostPublicKeyB64: hostPubB64 })
+      expect(sessions.length).toBeGreaterThan(0)
+      host.stop()
+      sessions.length = 0
+    }
+  })
+
+  /** A host-token route answering the listed replies in order, then the last one forever. */
+  const hostTokenSeq =
+    (...replies: Array<number | string>): Route =>
+    (init) => {
+      const next = replies.length > 1 ? replies.shift()! : replies[0]
+      return next === 200 ? hostTokenOk(init) : res(403, { error: next })
+    }
+
+  it.each(['pop_required', 'pop_invalid'])(
+    'two %s refusals of PROVEN mints in a row stop hosting, say so once, and never re-mint',
+    async (error) => {
+      vi.useFakeTimers()
+      const pop = createTestPopServer()
+      routeFetch({ challenge: challengeFrom(pop), hostToken: () => res(403, { error }) })
+      const host = makeHost()
+      host.setEnabled(true)
+      for (let i = 0; i < 5; i++) await settle()
+
+      // The first refusal is transient (a POP_SECRET rotation mid challenge→mint looks exactly like
+      // this): no dialog, and the backoff asks for a FRESH challenge.
+      expect(mintCalls()).toHaveLength(1)
+      expect(mintBody()).toHaveProperty('popProof')
+      expect(errorBoxes).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(challengeCalls()).toHaveLength(2)
+      expect(mintCalls()).toHaveLength(2)
+
+      // The second in a row is terminal.
+      expect(sessions).toHaveLength(0)
+      expect(errorBoxes).toHaveLength(1)
+      expect(errorBoxes[0].body).toContain(POP_REFUSED_MESSAGE_DESKTOP)
+      // The follow-up line has its own antecedent now that the message ends with "contact support".
+      expect(errorBoxes[0].body).toContain('Phone access is off. Turn it back on in Settings → Phone after updating.')
+      expect(errorBoxes[0].body).not.toContain('until then')
+      // `team rotate-key` exists only in the Server Edition: the desktop must not advise it.
+      expect(errorBoxes[0].body).not.toContain('rotate-key')
+      // Terminal: no reconnect timer is left armed.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(mintCalls()).toHaveLength(2)
+      expect(challengeCalls()).toHaveLength(2)
+      expect(errorBoxes).toHaveLength(1)
+      host.stop()
+    }
+  )
+
+  it('one refusal then a successful mint: no dialog, the host keeps running', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop), hostToken: hostTokenSeq('pop_invalid', 200) })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(sessions).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mintCalls()).toHaveLength(2)
+    expect(sessions).toHaveLength(1) // a listener is registered: hosting runs
+    expect(errorBoxes).toHaveLength(0)
+    expect(advertisementsRemoved).toBe(0)
+    host.stop()
+  })
+
+  it('a successful mint resets the count: refusal, success, refusal is still transient', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({
+      challenge: challengeFrom(pop),
+      hostToken: hostTokenSeq('pop_invalid', 200, 'pop_invalid', 'pop_invalid')
+    })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    await vi.advanceTimersByTimeAsync(1000) // retry → success
+    expect(sessions).toHaveLength(1)
+
+    sessions[0].opts.onPeerReady(sessions[0].session) // bridged → the pool mints a replacement
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintCalls()).toHaveLength(3) // refused: the FIRST since the success, so transient
+    expect(errorBoxes).toHaveLength(0)
+    expect(sessions[0].closed).toBe(0) // the phone keeps its session
+
+    await vi.advanceTimersByTimeAsync(2000) // the backoff's next step
+    expect(mintCalls()).toHaveLength(4) // the second in a row: terminal
+    expect(errorBoxes).toHaveLength(1)
+    expect(sessions[0].closed).toBe(1)
+    host.stop()
+  })
+
+  it('start() resets the count: a refusal before a restart does not make the next one terminal', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop), hostToken: () => res(403, { error: 'pop_invalid' }) })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintCalls()).toHaveLength(1)
+    host.setEnabled(false)
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintCalls()).toHaveLength(2)
+    expect(errorBoxes).toHaveLength(0) // the first refusal of THIS run
+    host.stop()
+  })
+
+  it.each<[string, 'challenge' | 'host-token', Route]>([
+    ['the challenge answering 503', 'challenge', () => res(503)],
+    ['a challenge network error', 'challenge', () => Promise.reject(new TypeError('fetch failed'))],
+    ['the mint answering 503', 'host-token', () => res(503)]
+  ])(
+    'a transient failure between two refusals does not reset the count: refusal, %s, refusal stops',
+    async (_label, where, transient) => {
+      // Only a successful mint (or start()) proves the key is accepted. Resetting on a transient
+      // failure would let a backend that refuses every proof, behind a flaky challenge, loop forever.
+      vi.useFakeTimers()
+      const pop = createTestPopServer()
+      let challenges = 0
+      let mints = 0
+      routeFetch({
+        challenge: (init) =>
+          where === 'challenge' && ++challenges === 2 ? transient(init) : challengeFrom(pop)(init),
+        hostToken: (init) =>
+          where === 'host-token' && ++mints === 2 ? transient(init) : res(403, { error: 'pop_invalid' })
+      })
+      const host = makeHost()
+      host.setEnabled(true)
+      for (let i = 0; i < 5; i++) await settle()
+      expect(errorBoxes).toHaveLength(0) // refusal 1: transient
+      await vi.advanceTimersByTimeAsync(1000) // the backoff → the transient failure
+      expect(challengeCalls()).toHaveLength(2)
+      expect(errorBoxes).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(2000) // the next backoff step → refusal 2, the second in a row
+      expect(challengeCalls()).toHaveLength(3)
+      expect(errorBoxes).toHaveLength(1)
+      expect(errorBoxes[0].body).toContain(POP_REFUSED_MESSAGE_DESKTOP)
+      await vi.advanceTimersByTimeAsync(60_000) // stopped: nothing re-mints, no second dialog
+      expect(challengeCalls()).toHaveLength(3)
+      expect(errorBoxes).toHaveLength(1)
+      host.stop()
+    }
+  )
+
+  it('turning access off while a mint is in flight: a refusal that lands afterwards raises nothing', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    let answer: ((r: FakeRes) => void) | null = null
+    let n = 0
+    routeFetch({
+      challenge: challengeFrom(pop),
+      hostToken: () =>
+        ++n === 1
+          ? res(403, { error: 'pop_invalid' })
+          : new Promise<FakeRes>((resolve) => {
+              answer = resolve
+            })
+    })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    await vi.advanceTimersByTimeAsync(1000) // the retry: the SECOND mint is now in flight
+    expect(mintCalls()).toHaveLength(2)
+    expect(answer).not.toBeNull()
+
+    host.setEnabled(false) // the human turns phone access off
+    answer!(res(403, { error: 'pop_invalid' })) // …and the refusal lands afterwards
+    for (let i = 0; i < 5; i++) await settle()
+    expect(errorBoxes).toEqual([])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mintCalls()).toHaveLength(2)
+  })
+
+  it('the refusal kind is logged; the dialog text stays fixed', async () => {
+    vi.useFakeTimers()
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const pop = createTestPopServer()
+      routeFetch({ challenge: challengeFrom(pop), hostToken: () => res(403, { error: 'pop_invalid' }) })
+      const host = makeHost()
+      host.setEnabled(true)
+      for (let i = 0; i < 5; i++) await settle()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(errorBoxes).toHaveLength(1)
+      expect(errorBoxes[0].body).not.toContain('pop_invalid')
+      expect(logged.mock.calls.flat().join(' ')).toContain('pop_invalid')
+      host.stop()
+    } finally {
+      logged.mockRestore()
+    }
+  })
+
+  it('refusals on the replacement mint while a phone is bridged: the first is transient, the second tears hosting down (stop)', async () => {
+    // The realistic moment for a refusal: a phone bridges, the pool mints a replacement listener,
+    // and THAT mint is refused. The first refusal leaves the phone's session alone; the second in a
+    // row must cut it, withdraw the advertisement and leave nothing that re-mints — a late socket
+    // close must not raise a second dialog.
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop), hostToken: hostTokenSeq(200, 'pop_invalid') })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(sessions).toHaveLength(1)
+
+    sessions[0].opts.onPeerReady(sessions[0].session) // bridged → the pool mints a replacement
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintCalls()).toHaveLength(2)
+    expect(errorBoxes).toHaveLength(0)
+    expect(sessions[0].closed).toBe(0)
+    expect(phones()).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(1000) // the backoff re-challenges and is refused again
+    expect(mintCalls()).toHaveLength(3)
+    expect(errorBoxes).toHaveLength(1)
+    expect(errorBoxes[0].body).toContain(POP_REFUSED_MESSAGE_DESKTOP)
+    expect(sessions[0].closed).toBe(1) // the bridged phone session is cut
+    expect(phones()).toBe(0)
+    expect(advertisementsRemoved).toBe(1) // phones stop minting against a host that is gone
+
+    sessions[0].opts.onClose() // a late transport close of the cut session
+    for (let i = 0; i < 5; i++) await settle()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mintCalls()).toHaveLength(3)
+    expect(errorBoxes).toHaveLength(1)
+    host.stop()
+  })
+
+  it('pop_invalid is terminal even for unproven (legacy) mints — on the second in a row', async () => {
+    vi.useFakeTimers()
+    routeFetch({ hostToken: () => res(403, { error: 'pop_invalid' }) })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintBody()).not.toHaveProperty('popProof')
+    expect(errorBoxes).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mintCalls()).toHaveLength(2)
+    expect(errorBoxes).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mintCalls()).toHaveLength(2)
+    host.stop()
+  })
+
+  it('pop_required on an UNPROVEN mint (challenge 404, backend mid-redeploy) is transient: backoff, fresh challenge', async () => {
+    // A reverse proxy answers 404 for /challenge while the backend redeploys; the unproven mint
+    // that follows can land on the fresh backend, which requires a proof from a host it has seen
+    // prove before. Stopping would end hosting for good over a redeploy.
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    let redeploying = true
+    routeFetch({
+      challenge: (init) => (redeploying ? res(404) : challengeFrom(pop)(init)),
+      hostToken: (init) => {
+        const b = JSON.parse(String(init.body)) as Record<string, unknown>
+        return b.popProof ? hostTokenOk(init) : res(403, { error: 'pop_required' })
+      }
+    })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+
+    expect(mintCalls()).toHaveLength(1)
+    expect(mintBody()).not.toHaveProperty('popProof')
+    expect(errorBoxes).toHaveLength(0) // not a refusal
+    expect(sessions).toHaveLength(0)
+
+    redeploying = false
+    await vi.advanceTimersByTimeAsync(1000) // the first backoff step
+    expect(challengeCalls()).toHaveLength(2) // the retry asks for a FRESH challenge
+    expect(mintCalls()).toHaveLength(2)
+    expect(mintBody()).toHaveProperty('popProof')
+    expect(sessions).toHaveLength(1)
+    expect(errorBoxes).toHaveLength(0)
+    host.stop()
+  })
+
+  it('a 403 that is not a key-proof refusal stays an ordinary failure (backoff, no dialog)', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({ challenge: challengeFrom(pop), hostToken: () => res(403, { error: 'forbidden' }) })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(mintCalls()).toHaveLength(1)
+    expect(errorBoxes).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mintCalls()).toHaveLength(2)
+    host.stop()
+  })
+
+  it.each<[string, Route]>([
+    ['503', () => res(503)],
+    ['500', () => res(500)],
+    ['429', () => res(429)],
+    ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+    ['a malformed 200', () => res(200, { nope: true })],
+    // A server key the proof cannot use: the all-zero key gives a degenerate shared secret.
+    ['a 200 with an unusable server key', () => res(200, { challenge: 'c.x', serverPublicKeyB64: 'A'.repeat(43) + '=' })]
+  ])('the challenge answering %s makes NO mint and backs off', async (_label, challenge) => {
+    // Never an unproven mint after a transient challenge failure: to a host the backend has seen
+    // prove before, that mint is a 403 — a terminal stop — over a blip.
+    vi.useFakeTimers()
+    routeFetch({ challenge })
+    const host = makeHost()
+    host.setEnabled(true)
+    for (let i = 0; i < 5; i++) await settle()
+    expect(challengeCalls()).toHaveLength(1)
+    expect(mintCalls()).toHaveLength(0)
+    expect(errorBoxes).toHaveLength(0)
+    // The existing backoff: one retry after 1 s.
+    await vi.advanceTimersByTimeAsync(999)
+    expect(challengeCalls()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(challengeCalls()).toHaveLength(2)
+    expect(mintCalls()).toHaveLength(0)
+    host.stop()
+  })
+
+  it('a challenge that never answers is aborted by the 8 s mint timeout (no mint, backoff)', async () => {
+    vi.useFakeTimers()
+    routeFetch({
+      challenge: (init) =>
+        new Promise<FakeRes>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+    })
+    const host = makeHost()
+    host.setEnabled(true)
+    await vi.advanceTimersByTimeAsync(7999)
+    expect(challengeCalls()).toHaveLength(1)
+    expect(challengeCalls()[0][1].signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(challengeCalls()[0][1].signal?.aborted).toBe(true)
+    expect(mintCalls()).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1000) // then the backoff retries
+    expect(challengeCalls()).toHaveLength(2)
+    host.stop()
+  })
+
+  it('ONE 8 s timer covers the challenge AND the mint (a slow challenge leaves the mint the rest)', async () => {
+    vi.useFakeTimers()
+    const pop = createTestPopServer()
+    routeFetch({
+      challenge: (init) =>
+        new Promise<FakeRes>((resolve) => {
+          setTimeout(() => resolve(challengeFrom(pop)(init) as FakeRes), 5000)
+        }),
+      hostToken: (init) =>
+        new Promise<FakeRes>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+    })
+    const host = makeHost()
+    host.setEnabled(true)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(challengeCalls()).toHaveLength(1)
+    expect(mintCalls()).toHaveLength(1) // the challenge answered at 5 s, the mint is in flight
+    const signal = mintCalls()[0][1].signal!
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1) // 8 s after the challenge STARTED, not 8 s after the mint
+    expect(signal.aborted).toBe(true)
+    expect(sessions).toHaveLength(0)
     host.stop()
   })
 })

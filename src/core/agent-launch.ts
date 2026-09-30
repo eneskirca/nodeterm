@@ -13,6 +13,7 @@ import {
   type PromptInjectionMode,
 } from "../shared/agents/config";
 import { approvalFlags } from "../shared/agents/approval-mode";
+import { CODEX_NO_DAEMON_FLAG } from "../shared/agents/codex-daemon";
 import { SAFE_SESSION_ID } from "../shared/session-id";
 
 /** The parser that owns a live local Windows-profile terminal. */
@@ -66,6 +67,12 @@ export interface AgentLaunchTrustedContext {
    * not know, so emitting it blind is a dead session, not a degraded one.
    */
   codexApprovalValues?: readonly string[] | null;
+  /**
+   * Does the host's `codex` accept `--no-daemon`? Same probe, same provenance. Only a literal
+   * `true` adds the flag — see `withCodexNoDaemon` (shared/agents/codex-daemon.ts) for why every
+   * plain Codex TUI nodeterm starts needs it from codex-cli 0.157.0 on.
+   */
+  codexNoDaemon?: boolean | null;
 }
 
 /** Core-private launch material. It must never cross the renderer/preload/relay boundary. */
@@ -352,11 +359,22 @@ function logicalLaunch(
 
   if (intent.permissionMode !== undefined && !hasPermissionMode(config.id))
     fail("invalid-intent");
-  const modeFlags = intent.permissionMode
+  const approval = intent.permissionMode
     ? approvalFlags(config.id, intent.permissionMode, {
         codexApprovalValues: context.codexApprovalValues,
       })
     : [];
+  // Same rule as `withCodexNoDaemon`, applied to argv instead of a typed line.
+  const noDaemon =
+    config.id === "codex" &&
+    context.codexNoDaemon === true &&
+    !baseArgs.some(
+      (a) =>
+        a === CODEX_NO_DAEMON_FLAG || a === "--remote" || a.startsWith("--remote="),
+    )
+      ? [CODEX_NO_DAEMON_FLAG]
+      : [];
+  const modeFlags = [...approval, ...noDaemon];
 
   if (intent.action === "resume") {
     if (!config.builtin || !canResume(config.id)) fail("agent-unavailable");

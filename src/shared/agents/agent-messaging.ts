@@ -27,6 +27,27 @@ export interface AgentMessageDeliverRequest {
 }
 
 /**
+ * The app's OWN delivery verb: a station-failure notice (`src/core/agents/station-notice.ts`). It is
+ * deliberately NOT in `AGENT_MESSAGE_VERBS` — that set is what the IPC guard and the control shim
+ * accept, and a notice must never be something a renderer or an agent can ask for with a body of
+ * its choosing. Core composes the body (`stationNoticeBody`, @shared/station-notice) and hands it
+ * to the same gate chain every message runs through.
+ */
+export const STATION_NOTICE_VERB = 'station-notice' as const
+
+/** Every verb the delivery service runs — the control verbs plus the app's own notice. */
+export type DeliveryVerb = AgentMessageVerb | typeof STATION_NOTICE_VERB
+
+/** A delivery as the SERVICE sees it: the IPC request, or an app-composed notice. */
+export interface AgentMessageDeliveryInput extends Omit<AgentMessageDeliverRequest, 'verb'> {
+  verb: DeliveryVerb
+}
+
+/** The `from:` line of a notice's envelope. The station is named in the body; the frame says who
+ *  wrote it, which is the app, never the station. */
+export const STATION_NOTICE_FROM = 'nodeterm station notice'
+
+/**
  * `notify`'s entire body — fixed, app-owned, and substituted in MAIN whatever the request
  * carries. Folded in from PR #98, whose design line survives verbatim: "The app owns the entire
  * prompt so the source cannot inject instructions through command arguments." #98's "check your

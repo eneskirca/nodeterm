@@ -355,11 +355,13 @@ describe('main wiring (structural) — the wrapper records, consumes and clears 
     // through that function exactly once, with main's own verdict, and a 'cap' answer replaces
     // the success reply with the named refusal (review M1 — no ok without a recorded right).
     expect(src.match(/recordOpenProjectGrant\(/g)?.length).toBe(1)
+    // It sits in `finishAnswer`, the step main runs on every renderer answer — on time or late
+    // (src/main/control-forward.ts) — so the reply it guards is `answer`, not the awaited result.
     expect(src).toMatch(
-      /if \(recordOpenProjectGrant\(nodeId, result, verified\) === 'cap'\) \{/
+      /if \(recordOpenProjectGrant\(nodeId, answer, verified\) === 'cap'\) \{/
     )
-    const at = src.indexOf("recordOpenProjectGrant(nodeId, result, verified) === 'cap'")
-    const block = src.slice(at, src.indexOf('return result', at))
+    const at = src.indexOf("recordOpenProjectGrant(nodeId, answer, verified) === 'cap'")
+    const block = src.slice(at, src.indexOf('return answer', at))
     expect(block).toContain('error: OPEN_PROJECT_GRANT_CAP')
     // No raw grant() call sneaks around the pure decision anywhere in main's entry.
     expect(src).not.toMatch(/\bgrantProjectTo\(|[^A-Za-z]grant\(nodeId/)

@@ -59,6 +59,13 @@ describe('planRunVerb', () => {
     )
     // Armed with --after: the canvas fires it when its deps report done, not on mount.
     expect(planRunVerb({ ...onScreen, pending: { ...pending, after: ['dep-1'] } })).toBe('refuse-not-mounted')
+    // Armed with --after-pr: it fires when the pull request is ready, not on mount.
+    const afterPr = { repository: 'o/r', waits: [{ number: 7, until: 'merged' as const }], deadlineAt: 1, armedAt: 0 }
+    expect(planRunVerb({ ...onScreen, pending: { ...pending, afterPr } })).toBe('refuse-not-mounted')
+    // Armed with --after-success: it fires when its stations report success — and a hand-edited
+    // file whose `after` lost them must not turn that into "starts when mounted".
+    const afterSuccess = { deps: ['dep-1'], deadlineAt: 1 }
+    expect(planRunVerb({ ...onScreen, pending: { ...pending, afterSuccess } })).toBe('refuse-not-mounted')
     // The plain, never-attempted, dependency-free launch does start on mount.
     expect(planRunVerb({ ...onScreen, pending })).toBe('wait-for-mount')
   })

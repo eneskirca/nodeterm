@@ -171,11 +171,16 @@ export function attachWsServer(server: http.Server, opts: WsServerOpts): WebSock
     // involved, so it works even while the tab is frozen or the app is wedged).
     ws.on('pong', () => alive.add(ws))
 
-    const uiId = platform.attach({
-      sendText: (json) => ws.send(json),
-      sendBinary: (buf) => ws.send(buf, { binary: true }),
-      bufferedAmount: () => ws.bufferedAmount
-    })
+    // `owner`: this socket passed `upgradeAllowed` (session cookie or trusted proxy auth), so it is
+    // the server's one user. Relay-hosted peers attach elsewhere (index.ts) and never get it.
+    const uiId = platform.attach(
+      {
+        sendText: (json) => ws.send(json),
+        sendBinary: (buf) => ws.send(buf, { binary: true }),
+        bufferedAmount: () => ws.bufferedAmount
+      },
+      { owner: true }
+    )
     // Team presence: each authenticated socket is one peer. Joining AFTER attach means the hub's
     // `presence:sync` sendTo lands on a live sink; the browser bridge buffers it until the app
     // subscribes. The peer stays nameless ("Someone") until it sends `presence:hello`.

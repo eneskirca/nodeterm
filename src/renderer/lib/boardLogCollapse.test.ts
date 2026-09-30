@@ -56,10 +56,11 @@ describe('collapseFeed (render-time only — the log itself is never rewritten)'
     expect(shape(collapseFeed([comment(3), comment(2), comment(1)]))).toEqual([1, 1, 1])
   })
 
-  // run-started / run-ended are an issue's run history: each row names a DIFFERENT session, so a
-  // "×3" would hide exactly which sessions ran — the thing that panel exists to show.
+  // run-started / run-ended are an issue's run history, and station-failed names a station: each
+  // row names a DIFFERENT session, so a "×3" would hide exactly which sessions ran (or stopped) —
+  // the thing that panel exists to show.
   it('never folds the audit types or the run history, however alike the rows are', () => {
-    expect([...NEVER_COLLAPSE].sort()).toEqual(['agent-message', 'agent-read-cookies', 'run-ended', 'run-started'])
+    expect([...NEVER_COLLAPSE].sort()).toEqual(['agent-message', 'agent-read-cookies', 'run-ended', 'run-started', 'station-failed', 'station-reported'])
     for (const type of NEVER_COLLAPSE) {
       const feed = [ev(3, type, AGENT), ev(2, type, AGENT), ev(1, type, AGENT)]
       expect(shape(collapseFeed(feed))).toEqual([1, 1, 1])

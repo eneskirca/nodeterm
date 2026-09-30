@@ -19,17 +19,39 @@ import { TRUST_CONFIRM, createTrustGate, type TrustGate } from './relay-trust'
 // ./approved-devices — mocking the module (rather than injecting fakes) means these tests exercise
 // the production default path, not a test-only branch.
 let disk: ApprovedDevices = emptyApprovedDevices()
-vi.mock('./approved-devices', () => ({
-  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
-  loadApprovedDevices: async () => disk,
-  saveApprovedDevices: async (s: ApprovedDevices) => {
-    disk = s
+// Per-role pin stores (approved-devices.ts), in memory. The 'guest' store — the one this module
+// must write — is `disk`; every other role lives in `otherPins`, so a pin landing in the WRONG
+// store is visible to the assertions instead of indistinguishable from the right one.
+const otherPins: Record<string, ApprovedDevices> = {}
+vi.mock('./approved-devices', () => {
+  const mem = (role: string) => {
+    const get = (): ApprovedDevices => (role === 'guest' ? disk : (otherPins[role] ??= { pubkeys: [] }))
+    const set = (s: ApprovedDevices): void => {
+      if (role === 'guest') disk = s
+      else otherPins[role] = s
+    }
+    return {
+      load: async () => get(),
+      save: async (s: ApprovedDevices) => set(s),
+      update: role === 'guest' ? async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get())) : async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get()))
+    }
   }
-}))
-import { loadApprovedDevices } from './approved-devices'
+  const stores: Record<string, ReturnType<typeof mem>> = { phone: mem('phone'), guest: mem('guest'), joinedHost: mem('joinedHost') }
+  return {
+    PIN_ROLES: ['phone', 'guest', 'joinedHost'],
+    phonePins: stores.phone,
+    guestPins: stores.guest,
+    joinedHostPins: stores.joinedHost,
+    pinStore: (r: string) => stores[r],
+    retireLegacyPinFile: async () => 0
+  }
+})
+import { guestPins } from './approved-devices'
+const loadApprovedDevices = (): Promise<ApprovedDevices> => guestPins.load()
 
 beforeEach(() => {
   disk = emptyApprovedDevices()
+  for (const k of Object.keys(otherPins)) delete otherPins[k]
 })
 
 // A pair of in-process transports wired host<->client, PLUS the relay's own injection ports: the
@@ -128,6 +150,7 @@ function bridgedPair(isolate = false): {
   }
   const gateFor = (socket: RelaySocket, tag: 'host' | 'peer'): TrustGate =>
     createTrustGate({
+      role: 'guest',
       peerKeyB64: socket.peerPublicKeyB64()!,
       sessionId: `session-${tag}`,
       sas: () => socket.sas(),
@@ -260,6 +283,7 @@ describe('obligation (a): only the encrypted tunnel can confirm the peer', () =>
     })
 
     hostGate = createTrustGate({
+      role: 'guest',
       peerKeyB64: hostSocket.peerPublicKeyB64()!,
       sessionId: 'session-host',
       sas: () => hostSocket.sas(),
@@ -319,6 +343,7 @@ describe('obligation (b): exactly one MutualApproval per pairing attempt', () =>
     const sent: string[] = []
     const opened: string[] = []
     const gate = createTrustGate({
+      role: 'guest',
       peerKeyB64: 'PEER',
       sessionId: 's1',
       sas: () => '111 222',
@@ -339,6 +364,7 @@ describe('obligation (b): exactly one MutualApproval per pairing attempt', () =>
 
   it('ignores tunnel frames that are not a trust confirm (they stay available to the RPC dispatcher)', () => {
     const gate = createTrustGate({
+      role: 'guest',
       peerKeyB64: 'PEER',
       sessionId: 's1',
       sas: () => null,

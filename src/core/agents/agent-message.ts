@@ -3,6 +3,7 @@ import type { AgentState } from '../../shared/agents/normalize'
 import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
 import { agentPidIn, isAgentPane } from '../../shared/agents/pane-owner-predicate'
 import { buildEnvelope, newFrameNonce } from './agent-message-envelope'
+import { BOARD_COMMENT_REPLY_TO } from '../../shared/board-comment'
 import { PANE_PROBE_TIMEOUT_MS, probeWithin } from './pane-probe'
 import {
   decideDelivery,
@@ -92,6 +93,13 @@ export interface DeliveryRequest {
    * `targetNotAgentPane` with `observed: 'unknown'`; only a node with no session is `targetGone`.
    */
   targetLive?: boolean
+  /**
+   * Who the message is FROM, when it is not an agent node. `'board-comment'`: a person's comment on
+   * the kanban board (`deliverBoardCommentFromUi`). It changes only the envelope's header lines —
+   * `from:` names the person with no node id, and `reply-to:` says there is no node to reply to —
+   * never a gate: every check below runs the same for both origins.
+   */
+  origin?: 'board-comment'
 }
 
 /**
@@ -327,7 +335,8 @@ export async function deliverAgentMessage(
    */
   const trace = async (
     outcome: AgentMessageOutcome['kind'],
-    receipt?: ReceiptSignal
+    receipt?: ReceiptSignal,
+    reason?: string
   ): Promise<{ traceId: string; traced: TraceKind }> =>
     deps.trace({
       sourceNodeId: req.sourceNodeId,
@@ -335,10 +344,11 @@ export async function deliverAgentMessage(
       targetNodeId: req.targetNodeId,
       outcome,
       ...(receipt ? { receipt } : {}),
+      ...(reason ? { reason } : {}),
       bodyChars
     })
   const refuse = async (o: AgentMessageOutcome): Promise<AgentMessageOutcome> => {
-    await trace(o.kind)
+    await trace(o.kind, undefined, o.kind === 'notPermitted' ? o.reason : undefined)
     return o
   }
 
@@ -435,11 +445,14 @@ export async function deliverAgentMessage(
     // herdr :116 — framing an unaware app made OpenCode read `A != B` as shell mode; `-p` frames
     // only when the pane's app really requested bracketed paste, so that failure mode is tmux's
     // to prevent now, not ours.
+    const fromBoard = req.origin === 'board-comment'
     const payload = buildEnvelope({
       nonce: (deps.nonce ?? newFrameNonce)(),
-      sourceId: req.sourceNodeId,
+      // A board comment's source id is its TRACE identity (`board-comment:<id>`), not a node: it is
+      // never printed as one, and `reply-to` says plainly that there is nothing to reply to.
+      sourceId: fromBoard ? undefined : req.sourceNodeId,
       sourceTitle: req.sourceTitle,
-      replyTo: req.sourceNodeId,
+      replyTo: fromBoard ? BOARD_COMMENT_REPLY_TO : req.sourceNodeId,
       body: req.body
     })
     // The receipt watch opens BEFORE the bytes go out. A fast target can submit its next turn while

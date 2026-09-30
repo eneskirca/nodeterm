@@ -222,3 +222,20 @@ describe('buildClaudeAccountsApi', () => {
     await expect(s.codexAccounts.remove('a1')).rejects.toMatchObject({ code: E_UNSUPPORTED })
   })
 })
+
+/**
+ * The hosted team verbs belong to a RELAY tab joined by a hosted team's code, never to a Server
+ * Edition browser tab: a browser never joins a relay host (its `relayHosted` stub answers no
+ * bookmarks), and the server it is served from does not answer `relay:hosted:*` to its own browser
+ * (hosted-service intercepts them for relay peers only). So installWsBridge must not spread
+ * `buildHostedApi` — its api has no `hosted` key, and every `api.hosted` check in the renderer takes
+ * its old path there. installWsBridge needs a socket + DOM to run, so this is pinned by source text.
+ */
+describe('buildHostedApi and the Server Edition', () => {
+  it('is never spread into the browser\'s window.nodeTerminal', () => {
+    const src = readFileSync(join(__dirname, 'ws-bridge.ts'), 'utf8')
+    const install = src.slice(src.indexOf('export async function installWsBridge'))
+    expect(install).not.toContain('buildHostedApi')
+    expect(install).not.toMatch(/\bhosted\s*:/)
+  })
+})

@@ -274,6 +274,8 @@ export function createHudModel(): HudModel {
       return
     }
     if (ev.kind === 'subagent-start' && ev.toolUseId) {
+      // A native card replacing the row its tool call drew (core/claude-subagent-lifecycle.ts).
+      if (ev.supersedes) a.subagents.delete(ev.supersedes)
       a.subagents.set(ev.toolUseId, {
         id: ev.toolUseId,
         label: ev.taskLabel || ev.subagentType || undefined,

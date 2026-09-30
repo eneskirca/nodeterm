@@ -4,7 +4,7 @@ import type {
 import { columnCategory } from '@shared/kanban-category'
 import { columnOrder, placeAssignment, type CardAnchor } from '@shared/kanban-order'
 import { SYSTEM_NODE_COLORS } from '../state/workspace'
-import { defaultBoardColumns } from '@shared/kanban-default-board'
+import { defaultKanbanFor } from '@shared/kanban-default-board'
 import { autoLabelColor, boardLabels, cardMeta, createLabel, metaList, setCardLabels } from '@shared/kanban-labels'
 import { prunePullLinks } from '@shared/kanban-pull-links'
 
@@ -23,12 +23,14 @@ const kid = (prefix: string): string => `${prefix}-${Math.random().toString(36).
 /** Default board for a project whose file has no `kanban` yet. NOT written to disk
  *  until the first user edit (the spec's lazy-default rule) — EXCEPT when the phone asks for one
  *  outright (relay `projects.ensureBoard`), which seeds the same three columns from the same
- *  shared definition so a board born on either surface is the same board. */
-export function defaultKanban(): ProjectKanban {
-  return {
-    columns: defaultBoardColumns(),
-    assignments: []
-  }
+ *  shared definition so a board born on either surface is the same board.
+ *
+ *  Its column ids are DETERMINISTIC per project (`defaultKanbanFor`): every client renders this
+ *  board until someone edits it, and with boards syncing live two clients' first edits must land on
+ *  the same three columns, not six. So it takes the project it is the default OF — never pass the
+ *  active project's default for another project's board. */
+export function defaultKanban(projectId: string): ProjectKanban {
+  return defaultKanbanFor(projectId)
 }
 
 /** Color for the next added column — cycles the node palette. */
@@ -262,7 +264,7 @@ export function migrateProjectTags(project: Project): Project {
   const nodeTags = tagged
     .map((n) => ({ nodeId: n.id, tags: (n.tags as string[]).filter((t) => t !== 'claude') }))
     .filter((x) => x.tags.length > 0)
-  const kanban = migrateTagsToLabels(project.kanban ?? defaultKanban(), nodeTags)
+  const kanban = migrateTagsToLabels(project.kanban ?? defaultKanban(project.id), nodeTags)
   const nodes: CanvasNodeState[] = project.nodes.map((n) => {
     if (!Array.isArray(n.tags) || !n.tags.length) return n
     const hadClaude = n.tags.includes('claude')

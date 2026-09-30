@@ -21,6 +21,15 @@ describe('eventBody — the activity sentence', () => {
     )
   })
 
+  it('a board comment\'s delivery line (shown alone only off its comment\'s card) says what happened', () => {
+    expect(
+      eventBody({ type: 'agent-message', from: 'board-comment:c-1', to: 'b1', title: 'notPermitted', reason: 'switch-off' })
+    ).toBe('routed a board comment here: not delivered — agent messaging is off for this project (Settings → Agents)')
+    expect(eventBody({ type: 'agent-message', from: 'board-comment:c-1', to: 'b1', title: 'delivered' })).toBe(
+      'routed a board comment here: delivered'
+    )
+  })
+
   it('an unknown future type falls back neutrally', () => {
     expect(eventBody({ type: 'something-new' as BoardLogEvent['type'] })).toBe('updated this card')
   })
@@ -36,5 +45,30 @@ describe('eventBody — the activity sentence', () => {
 
   it('a run line survives a malformed run record from a hand-edited log', () => {
     expect(eventBody({ type: 'run-ended', run: { nodeId: 42 } as never })).toBe('closed a session')
+  })
+
+  it('renders a station notice from the closed reason table, never from the station', () => {
+    expect(
+      eventBody({ type: 'station-failed', from: 'st1', to: 'turn-errored', title: 'Worker' })
+    ).toBe(
+      'told this agent that station "Worker" (st1) stopped: its last turn ended on an API/model error and produced nothing'
+    )
+    // An unknown reason code (a newer peer, a hand edit) reads as a plain "stopped".
+    expect(eventBody({ type: 'station-failed', from: 'st1', to: 'rm -rf ~' })).toBe(
+      'told this agent that station st1 stopped: it stopped'
+    )
+  })
+
+  it('renders a station outcome report from the outcome code, the note as text only', () => {
+    expect(eventBody({ type: 'station-reported', from: 'st1', to: 'succeeded', title: 'tests pass' })).toBe(
+      'recorded this session\'s report: its task succeeded — "tests pass"'
+    )
+    expect(eventBody({ type: 'station-reported', from: 'st1', to: 'failed' })).toBe(
+      'recorded this session\'s report: its task failed'
+    )
+    // An outcome code this build does not know (a newer peer, a hand edit) reads as a plain report.
+    expect(eventBody({ type: 'station-reported', from: 'st1', to: 'rm -rf ~' })).toBe(
+      'recorded this session\'s report: an outcome'
+    )
   })
 })

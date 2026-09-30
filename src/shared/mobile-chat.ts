@@ -27,6 +27,8 @@ export type ChatHostRefusal = 'working' | 'dialog'
  *  The phone's composer is unlocked ONLY when `version` is one it knows, `hostRefuses` is false,
  *  `held` is null and `state` is `done` or `null`. Any `state` value it does not recognize (a newer
  *  desktop) ⇒ locked. The desktop re-checks every send regardless. */
+import type { ChatCatalog } from './chat-catalog'
+
 export interface ChatStatus {
   /** Shape version; a phone that does not know it treats the composer as locked. */
   version: 1
@@ -48,10 +50,18 @@ export interface ChatStatus {
   hostRefuses: boolean
   /** Why, when `hostRefuses`. */
   refusal?: ChatHostRefusal
+  /**
+   * The composer's `/` catalog for this node (built-ins, custom commands, skills — the same one the
+   * desktop's ⌘M composer offers). Present ONLY when the request asked for it (`catalog: true` in
+   * the `chat.status` params) and the host could build it; an older phone never asks and never sees
+   * it. Names and descriptions are re-checked by `sanitizeChatCatalog` on the host before sending;
+   * a client must treat them as data (one line each), never as markup.
+   */
+  catalog?: ChatCatalog
 }
 
 /** What the renderer contributes to `ChatStatus`; main adds the rest (ticket ledger, host mirror). */
-export type RendererChatStatus = Omit<ChatStatus, 'structuredAnswers' | 'version' | 'hostRefuses' | 'refusal'>
+export type RendererChatStatus = Omit<ChatStatus, 'structuredAnswers' | 'version' | 'hostRefuses' | 'refusal' | 'catalog'>
 
 /** `refused` = never started (nothing was typed: no window, the gate refused, or it arrived too
  *  late to start). `unconfirmed` = the send WAS dispatched to the desktop but no result came back in

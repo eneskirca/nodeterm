@@ -20,6 +20,7 @@ import {
   UNKNOWN_CODEX_IDENTITY_CAPS,
   UNKNOWN_CODEX_CLI_CAPS,
   type ClaudeUsage,
+  type ClipboardWriteOptions,
   type NodeTerminalApi,
   type NotifyPayload,
   type UpdatePolicy
@@ -63,7 +64,7 @@ const pnoop = (): Promise<void> => Promise.resolve()
  *  focused and `position:fixed` — i.e. it would swallow every subsequent keystroke. `select()` also
  *  steals focus from xterm's helper textarea, so the previously-focused element is restored too
  *  (the terminal's *selection* survives on its own — xterm paints it, it is not a DOM Selection). */
-function copyViaExecCommand(text: string): boolean {
+function copyViaExecCommand(text: string, quiet = false): boolean {
   const prev = document.activeElement as HTMLElement | null
   let ta: HTMLTextAreaElement | undefined
   try {
@@ -77,6 +78,10 @@ function copyViaExecCommand(text: string): boolean {
     if (!document.execCommand('copy')) throw new Error('execCommand returned false')
     return true
   } catch {
+    // A QUIET write (copy-on-select, issue #759) ends here: it fires on every drag, and a banner
+    // per drag would be unusable. The explicit copy chord still toasts, so a user on plain http
+    // learns the clipboard is blocked the first time they copy deliberately.
+    if (quiet) return false
     // Surfacing beats silence: the user needs to know why nothing landed in their clipboard. The
     // diagnosis differs — plain http has no Clipboard API at all, while in a secure context we got
     // here because the API rejected (permission denied / document not focused) AND the fallback
@@ -174,12 +179,13 @@ export function buildStubApi(): Omit<
       // context (https or localhost); over plain http on a LAN it is undefined, and the old
       // optional-chained call copied nothing and told nobody. execCommand('copy') is deprecated but
       // is the only thing that works there.
-      writeText: (text: string): void => {
+      writeText: (text: string, opts?: ClipboardWriteOptions): void => {
+        const quiet = opts?.quiet === true
         if (typeof navigator !== 'undefined' && navigator.clipboard) {
-          void navigator.clipboard.writeText(text).catch(() => copyViaExecCommand(text))
+          void navigator.clipboard.writeText(text).catch(() => copyViaExecCommand(text, quiet))
           return
         }
-        copyViaExecCommand(text)
+        copyViaExecCommand(text, quiet)
       },
       // A browser cannot place host-local file references on the viewer's OS clipboard.
       writeFiles: async (): Promise<boolean> => false
@@ -275,6 +281,22 @@ export function buildStubApi(): Omit<
       setProviderCookie: U('usage.setProviderCookie'),
       cookieProviders: () => Promise.resolve({}),
       onUpdate: noopUnsub
+    },
+    devPorts: {
+      // Deliberately NOT superseded by a WS namespace: the Server Edition does not serve dev ports
+      // (its browser tab has no <webview> browser node, and a page the viewer opened would load on
+      // the viewer's machine, where the server's port is not). A relay tab shares this surface for
+      // the other reason — its sessions live on the host. `unsupported` is the honest answer on
+      // both, and the chip is not drawn.
+      scan: () => Promise.resolve({ ok: false, reason: 'unsupported', nodes: {} }),
+      forward: () =>
+        Promise.resolve({ ok: false, reason: 'unsupported', message: 'Port forwarding is not available here.' }),
+      unforward: () => Promise.resolve(false)
+    },
+    // Real in the browser (ws-bridge `buildRecentConversationsApi`). Where this stub stays in force
+    // — nowhere today — `unsupported` is the honest answer: "could not look", never "no history".
+    recentConversations: {
+      list: () => Promise.resolve({ ok: false as const, reason: 'unsupported' as const })
     },
     sessionMemory: {
       // Superseded by the real WS-backed namespace in ws-bridge (the core session-memory service
@@ -385,7 +407,10 @@ export function buildStubApi(): Omit<
       // restore awaits this on the boot path, and its whole contract is that anything it cannot
       // judge is `unknown` ⇒ resume exactly as before. A rejection here would be a second way of
       // saying the same thing that every caller would have to remember to catch.
-      transcriptExists: () => Promise.resolve('unknown' as const)
+      transcriptExists: () => Promise.resolve('unknown' as const),
+      // Rejects: a surface with no catalog reader (relay tabs) falls back to the shared built-in
+      // table in the composer, which is the honest subset — never another machine's files.
+      catalog: U('chat.catalog')
     },
     claudeAccounts: {
       add: U('claudeAccounts.add'),
@@ -451,6 +476,12 @@ export function buildStubApi(): Omit<
       onClosed: noopUnsub,
       disconnect: noop
     },
+    // A browser cannot join a relay host (only the desktop's main process holds a relay client),
+    // so it has joined no hosted team: an empty list is the true answer, not a degrade.
+    relayHosted: {
+      bookmarks: async () => [],
+      removeBookmark: async () => {}
+    },
     handoff: {
       build: U('handoff.build')
     },
@@ -461,7 +492,13 @@ export function buildStubApi(): Omit<
       probeSsh: U('pairing.probeSsh'),
       openRemoteLoginSettings: U('pairing.openRemoteLoginSettings'),
       listDevices: U('pairing.listDevices'),
-      revokeDevice: U('pairing.revokeDevice')
+      revokeDevice: U('pairing.revokeDevice'),
+      // The Server Edition has no relay host key and no paired-phone registry, so it cannot own a
+      // push webhook (same degrade as push-notify). The Settings row is hidden in the browser.
+      webhookStatus: U('pairing.webhookStatus'),
+      webhookMint: U('pairing.webhookMint'),
+      webhookRevoke: U('pairing.webhookRevoke'),
+      webhookEndpoint: U('pairing.webhookEndpoint')
     },
     shortcuts: {
       // Deliberate no-op (not a gap): the recording bit exists to stand the DESKTOP's
@@ -567,7 +604,42 @@ export function buildStubApi(): Omit<
       deliver: async () => ({
         ok: false as const,
         error: 'Agent messaging is only available in the desktop app. Do not retry.'
+      }),
+      // A board comment typed here — in a browser tab, or in a relay tab onto another machine — is
+      // display-only on purpose: it never types into a pane. The typed outcome lets the comment row
+      // say so instead of showing nothing.
+      deliverBoardComment: async () => ({
+        ok: false as const,
+        error: 'Board comments reach agents only in the desktop app.',
+        result: { kind: 'notPermitted', reason: 'unsupported-edition' }
       })
+    },
+    // Board-dispatch report: the Server Edition's `buildStationNoticeApi` carries the real one, and a
+    // relay tab keeps this no-op (its board is the host's).
+    boardDispatch: { report: noop },
+    // Inert by default: the Server Edition overrides it with the real bridge
+    // (`buildStationNoticeApi`), and a relay tab keeps this — its stations belong to the host's core.
+    stationNotice: {
+      list: async () => [],
+      onChanged: noopUnsub,
+      reportDropped: noop
+    },
+    // Same split: the Server Edition overrides it (`buildStationOutcomeApi`); a relay tab keeps this.
+    stationOutcome: {
+      list: async () => [],
+      onChanged: noopUnsub
+    },
+    // Same split again: the Server Edition overrides it (`buildStationHandoverApi`).
+    stationHandover: {
+      list: async () => [],
+      onChanged: noopUnsub
+    },
+    // Governs nothing by default. The Server Edition overrides it with the real bridge
+    // (`buildCanvasAuthorityApi`); a relay tab answers from its own connection (relay-api.ts).
+    canvasAuthority: {
+      assumeAllUntilAnswered: false,
+      governed: async () => [],
+      onChanged: noopUnsub
     }
   } satisfies Omit<
     NodeTerminalApi,

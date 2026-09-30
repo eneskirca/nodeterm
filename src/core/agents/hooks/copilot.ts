@@ -9,7 +9,8 @@ import path from 'path'
 import { COPILOT_HOOK_EVENTS } from '@shared/agents/hook-events'
 import {
   buildManagedHookCommand,
-  installManagedHookScript
+  installManagedHookScript,
+  writeManagedHookFileAtomic
 } from './install-helper'
 
 const SCRIPT_FILE_NAME = 'copilot.sh'
@@ -86,10 +87,10 @@ export function installCopilotHooks(): void {
   const configPath = copilotHookConfigPath()
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    fs.writeFileSync(
+    // Our own file, published by rename so copilot never reads it half written.
+    writeManagedHookFileAtomic(
       configPath,
-      `${JSON.stringify(buildCopilotHookConfig(buildManagedHookCommand(script)), null, 2)}\n`,
-      'utf8'
+      `${JSON.stringify(buildCopilotHookConfig(buildManagedHookCommand(script)), null, 2)}\n`
     )
   } catch (e) {
     console.warn('[agent-hooks] copilot install failed', e)
@@ -99,11 +100,7 @@ export function installCopilotHooks(): void {
 export function removeCopilotHooks(): void {
   const configPath = copilotHookConfigPath()
   try {
-    fs.writeFileSync(
-      configPath,
-      `${JSON.stringify({ version: 1, hooks: {} }, null, 2)}\n`,
-      'utf8'
-    )
+    writeManagedHookFileAtomic(configPath, `${JSON.stringify({ version: 1, hooks: {} }, null, 2)}\n`)
   } catch {
     /* fail open */
   }

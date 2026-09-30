@@ -101,11 +101,17 @@ describe('ownership is never read out of Project.ropes — structural', () => {
     expect(disp).toContain('open-browser: ') // guard: the slice actually captured the dispatch
     out.push({ name: 'Canvas open-browser dispatch', code: disp })
 
-    // 3. The main-side claim wiring in index.ts (the setControlHandler open-browser claim block).
+    // 3. The main-side claim wiring in index.ts: the step that finishes every renderer answer, on
+    //    time or late (the claim rule itself is in browser-open-claim.ts, covered by 1.).
     const index = fs.readFileSync(path.join(root, 'src', 'main', 'index.ts'), 'utf8')
-    const start = index.indexOf("if (verb === 'open-browser' && verified")
-    expect(start).toBeGreaterThan(-1) // guard: the claim block is where the test expects
-    out.push({ name: 'main open-browser claim', code: index.slice(start, start + 900) })
+    const start = index.indexOf('const finishAnswer = ')
+    const end = index.indexOf('return answer', start)
+    expect(start).toBeGreaterThan(-1) // guard: the finishing step is where the test expects
+    expect(end).toBeGreaterThan(start)
+    const finish = index.slice(start, end)
+    expect(finish).toContain('claimOpenedBrowser(') // guard: it is the step that records ownership
+    out.push({ name: 'main open-browser claim', code: finish })
+    expect(out.map((o) => o.name)).toContain('src/main/browser-open-claim.ts')
 
     return out
   }
@@ -114,5 +120,22 @@ describe('ownership is never read out of Project.ropes — structural', () => {
     for (const { name, code } of browserSurfaceSources()) {
       expect(/\bropes\b/.test(stripComments(code)), `${name} must not read ropes`).toBe(false)
     }
+  })
+})
+
+/**
+ * The late path (review follow-up to #1027). The claim rule is proven by behaviour in
+ * browser-open-claim.test.ts, and the forwarder's `finish` on both answers in control-forward.test.ts;
+ * what neither can see is index.ts handing THIS finishing step to the forwarder. Drop it and a late
+ * open-browser answer is replayed as a success nobody owns — and the on-time claim goes with it.
+ */
+describe('main hands its finishing step to the control forwarder', () => {
+  it('the forward call passes the late-answer path AND finishAnswer', () => {
+    const index = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
+    const at = index.indexOf('await controlForwarder.forward(')
+    expect(at).toBeGreaterThan(-1)
+    const call = index.slice(at, index.indexOf('\n    )', at))
+    expect(call).toContain('onLate: onLateAnswer')
+    expect(call).toContain('finish: finishAnswer')
   })
 })

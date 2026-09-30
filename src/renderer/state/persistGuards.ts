@@ -40,6 +40,28 @@ export function canCreateOnCanvas(nodesProjectId: string | null, activeProjectId
 }
 
 /**
+ * Does React Flow hold `projectId`'s canvas, so a peer's `canvas:mut` for it is applied LIVE? Else it
+ * goes to the project's serialized copy in the store.
+ *
+ * Same epoch pairing, third direction (Task 2 review, risk E). The receive path used to ask only
+ * "is `projectId` the active project?" — but during a switch the store already says B while React
+ * Flow still holds A (or nothing, after a bail-out), and B's op was then applied to A's array: the
+ * canvas ended on A's nodes plus the op, tagged B, and the next commit wrote them into B's file.
+ * Live only when BOTH hold: the tag says React Flow has `projectId`'s nodes, and `projectId` is the
+ * active one (a project we just switched away from was committed before the switch, and the load
+ * that follows replaces its nodes — the store is the copy that survives). The tag must be the
+ * LATEST installed epoch (`nodesProjectIdRef`, see useNodesEpoch): a tag that rewound to the
+ * previous project in a render would send the op to the store AFTER the load had already read it.
+ */
+export function liveCanvasHolds(
+  nodesProjectId: string | null,
+  activeProjectId: string | null,
+  projectId: string
+): boolean {
+  return projectId === activeProjectId && canCommitCanvas(nodesProjectId, projectId)
+}
+
+/**
  * May `dirty` be cleared now that a save has finished?
  *
  * Field bug 2026-08-10: `writeDisk` awaited the save and then cleared dirty unconditionally. A save

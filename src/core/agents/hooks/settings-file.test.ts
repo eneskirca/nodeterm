@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync, lstatSync, chmodSync, statSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, symlinkSync, lstatSync, chmodSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { spawn, spawnSync } from 'child_process'
-import { updateSettingsFile } from './settings-file'
-import { updateRemoteSettingsFile, type SettingsRunner } from './remote-settings-file'
+import { mergeInstructionFile, updateSettingsFile, updateTextFile } from './settings-file'
+import { updateRemoteSettingsFile, updateRemoteTextFile, type SettingsRunner } from './remote-settings-file'
 import { mergeManagedHook } from './install-helper'
 
 let dir: string
@@ -225,4 +225,81 @@ it.skipIf(process.platform === 'win32')('an active shell writer excludes an alia
   expect(JSON.parse(readFileSync(target, 'utf8')).model).toBeUndefined()
   // Successful owner cleanup permits the later retry.
   expect(await updateRemoteSettingsFile(target, shell, (config) => ({ ...config, model: 'retry' }))).toBe(true)
+})
+
+// The same transaction for text files that belong to the user (a codex config.toml, an AGENTS.md):
+// before this, those were written with a bare `cat >` remotely and `writeFileSync` locally.
+for (const remote of [false, true]) {
+  describe.skipIf(remote && process.platform === 'win32')(remote ? 'remote text transaction' : 'local text transaction', () => {
+    const text = (update: (before: string | null) => string | null, createMode?: number) => remote
+      ? updateRemoteTextFile(file, shell, update, { createMode: createMode === 0o644 ? '644' : undefined })
+      : Promise.resolve(updateTextFile(file, update, { createMode }))
+
+    it('creates a missing file with the requested mode and reports each outcome', async () => {
+      expect(await text((before) => (before === null ? 'block\n' : null), 0o644)).toBe('written')
+      expect(readFileSync(file, 'utf8')).toBe('block\n')
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o644)
+      expect(await text(() => null)).toBe('unchanged')
+    })
+
+    it('keeps an existing file\'s mode and refuses an empty result', async () => {
+      writeFileSync(file, 'model = "o3"\n')
+      chmodSync(file, 0o600)
+      expect(await text((before) => `${before}# trust\n`)).toBe('written')
+      expect(readFileSync(file, 'utf8')).toBe('model = "o3"\n# trust\n')
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(await text(() => '')).toBe('failed')
+      expect(readFileSync(file, 'utf8')).toBe('model = "o3"\n# trust\n')
+    })
+
+    it.skipIf(process.platform === 'win32')('merges an instruction block through a dotfile link, keeping the link', async () => {
+      const target = path.join(dir, 'dotfiles-AGENTS.md')
+      writeFileSync(target, '# mine\n')
+      symlinkSync(target, file)
+      const merge = (existing: string) => `${existing}<!-- block -->\n`
+      const result = remote
+        ? await updateRemoteTextFile(file, shell, (before) => merge(before ?? ''), { createMode: '644' })
+        : mergeInstructionFile(file, merge)
+      expect(result).toBe('written')
+      expect(lstatSync(file).isSymbolicLink()).toBe(true)
+      expect(readFileSync(target, 'utf8')).toBe('# mine\n<!-- block -->\n')
+    })
+
+    it('never reads an unreadable file as empty', async () => {
+      mkdirSync(file)
+      const update = vi.fn(() => 'our block alone\n')
+      expect(await text(update)).toBe('failed')
+      expect(update).not.toHaveBeenCalled()
+      expect(lstatSync(file).isDirectory()).toBe(true)
+    })
+  })
+}
+
+it.skipIf(process.platform === 'win32')('remote text: a body cut short on the wire publishes nothing', async () => {
+  writeFileSync(file, 'model = "o3"\n')
+  // The failure that left 0-byte files behind: the channel ends before the body does.
+  const run: SettingsRunner = (cmd, input) => shell(cmd, input === undefined ? undefined : input.slice(0, 5))
+  expect(await updateRemoteTextFile(file, run, (before) => `${before}# trust\n`)).toBe('failed')
+  expect(readFileSync(file, 'utf8')).toBe('model = "o3"\n')
+})
+
+it.skipIf(process.platform === 'win32')('remote text: a shell-expanded path binds its untrusted part in the prelude', async () => {
+  // The opencode target: `$NT_H` holds a host-reported $HOME, and must stay inert inside the
+  // double-quoted expression while `${XDG_CONFIG_HOME:-…}` still expands on the host.
+  const hostile = path.join(dir, 'h$(touch pwned)')
+  mkdirSync(hostile)
+  const target = {
+    prelude: `NT_H='${hostile.replace(/'/g, "'\\''")}'; `,
+    pathExpr: '"${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md"',
+    label: 'opencode AGENTS.md'
+  }
+  const clean: SettingsRunner = async (command, stdin) => {
+    const result = spawnSync('/bin/sh', ['-c', command], {
+      input: stdin, encoding: 'utf8', cwd: dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }
+    })
+    return { code: result.status ?? 1, stdout: result.stdout }
+  }
+  expect(await updateRemoteTextFile(target, clean, () => 'block\n', { createMode: '644' })).toBe('written')
+  expect(readFileSync(path.join(hostile, '.config', 'opencode', 'AGENTS.md'), 'utf8')).toBe('block\n')
+  expect(readdirSync(dir)).not.toContain('pwned')
 })

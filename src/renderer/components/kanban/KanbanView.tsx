@@ -1,3 +1,4 @@
+import { KanbanScopeSwitch } from './KanbanScopeSwitch'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KanbanColumnCategory, KanbanLabel, KanbanSavedView, KanbanViewQuery, ProjectKanban } from '@shared/types'
 import { deleteView, renameView, sameViewQuery, saveView, updateView, viewQuery } from '@shared/kanban-views'
@@ -34,7 +35,8 @@ import { GitHubPullCard } from './GitHubPullCard'
 import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
 import type { ModalSpawn } from './ModalTerminal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
-import { IconAgent, IconExternal, IconNote, IconSwitch, IconTerminal, IconTrash, IconWeb } from '../icons'
+import { IconAgent, IconBranch, IconExternal, IconNote, IconSwitch, IconTerminal, IconTrash, IconWeb } from '../icons'
+import { issueWorktreeMenuRow, type IssueWorktreeMenuAnswer } from '../../lib/issueWorktree'
 import type { GitHubCloseReason, GitHubIssueCardView } from '@shared/github-issues'
 import { issueKey, issueRefFromHtmlUrl, issueUrl, type IssueRef } from '@shared/github-issue-ref'
 import { NO_ISSUE_RUNS, boundRunsByIssue, type IssueRun } from '../../lib/issueRuns'
@@ -53,6 +55,8 @@ import { GITHUB_MAPPING_NOT_APPROVED, githubThrottleSentence } from '../../lib/g
 import { pullStatusFreshness, type GitHubPullStatus } from '@shared/github-pull-status'
 import { pullsClosingIssue, pullsForCard, pullStatusByNumber } from '../../lib/pullLinks'
 import { usePullAutoMove, usePullChase } from './usePullAutoMove'
+import { mentionCandidatesFrom } from '../../lib/boardMentions'
+import { NO_STATIONS, type TeamStation } from '../../lib/teamProgress'
 
 /** One session node shown as a board card — derived LIVE from the canvas nodes; the board
  *  itself stores only column assignments. */
@@ -142,6 +146,25 @@ export interface KanbanViewProps {
    * same reason as `accountMenuItems`: a board with no canvas behind it offers none.
    */
   issueAgentMenu?: (issue: GitHubIssueCardView) => MenuItem[]
+  /**
+   * "Start with agent in a new worktree ▸" for a GitHub issue card: the same picker, pointed at a
+   * fresh `issue-<N>-<slug>` worktree frame — or the reason it cannot run on this project (an SSH
+   * project, a shared tab, a project with no folder or no repository), which the card menu and the
+   * summary modal show DISABLED rather than hide. Optional like `issueAgentMenu`.
+   */
+  issueWorktreeMenu?: (issue: GitHubIssueCardView) => IssueWorktreeMenuAnswer
+  /**
+   * The stations each session opened (lib/teamProgress `stationsByOpener`, keyed by the opener's
+   * node id), for the team-progress ring on its card and card modal. Optional: without it no card
+   * shows one.
+   */
+  teams?: ReadonlyMap<string, readonly TeamStation[]>
+  /**
+   * A GitHub issue card this PERSON moved (drag, the card's Move control, the summary modal), with
+   * GitHub's answer. Board dispatch's one trigger (lib/boardDispatch): nothing a refresh or a pull
+   * delivers ever reaches it. Optional: a board with no canvas behind it dispatches nothing.
+   */
+  onIssueMoved?: (projectId: string, issue: GitHubIssueCardView, toColumnId: string | null, status: string) => void
 }
 
 type Drag =
@@ -211,7 +234,8 @@ function useCanvasCovered(): void {
 
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav, onSetIcon, accountMenuItems, onAutoMoveFromPulls, issueAgentMenu
+  onModalNodeChange, onBrowserNav, onSetIcon, accountMenuItems, onAutoMoveFromPulls, issueAgentMenu,
+  issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
@@ -289,6 +313,19 @@ export const KanbanView = memo(function KanbanView({
   }, [pullBoard])
   const connectGitHub = useGitHubIssues((state) => state.connect)
   const moveGitHubState = useGitHubIssues((state) => state.move)
+  // Every person-initiated GitHub move goes through here, so the dispatch hook sees each one with
+  // GitHub's answer — the issue as GitHub now reports it when the move landed (a reopen into the
+  // dispatch column is open afterwards, whatever the card said before).
+  const moveIssueByUser = useCallback(
+    async (issue: GitHubIssueCardView, columnId: string | null, closeReason?: GitHubCloseReason) => {
+      const result = await moveGitHubState(
+        api.githubIssues, projectId, issue.number, columnId, issue.updatedAt, closeReason
+      )
+      const after = 'issue' in result && result.issue ? { ...issue, ...result.issue } : issue
+      onIssueMoved?.(projectId, after, columnId, result.status)
+    },
+    [api.githubIssues, moveGitHubState, onIssueMoved, projectId]
+  )
   const loadMoreGitHub = useGitHubIssues((state) => state.loadMore)
   // Drop ids no longer in the palette so a deleted label can't keep the board filtered to nothing.
   const paletteLabels = useMemo(() => boardLabels(board), [board])
@@ -441,6 +478,9 @@ export const KanbanView = memo(function KanbanView({
     [customAgents, disabledAgents]
   )
   const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions])
+  // Who a comment in the card modal may @mention — built exactly as the canvas node's flyout
+  // builds it (lib/boardMentions), so the two views of a node offer the same sessions.
+  const mentionables = useMemo(() => mentionCandidatesFrom(sessions), [sessions])
   // Sessions bound to each GitHub issue, keyed case-insensitively. The previous map is handed back
   // in so an unchanged group keeps its array — `sessions` is re-derived on every canvas change, and
   // a fresh array per render would re-render every bound issue card.
@@ -542,9 +582,9 @@ export const KanbanView = memo(function KanbanView({
         setPendingGitHubMove({ issue, columnId, confirmation, closeReason: confirmation.defaultCloseReason })
         return
       }
-      void moveGitHubState(api.githubIssues, projectId, issue.number, columnId, issue.updatedAt)
+      void moveIssueByUser(issue, columnId)
     },
-    [api.githubIssues, board.github?.completionColumnId, githubReadOnly, moveGitHubState, projectId]
+    [board.github?.completionColumnId, githubReadOnly, moveIssueByUser]
   )
 
   // columnId null = the virtual Ungrouped column.
@@ -850,6 +890,7 @@ export const KanbanView = memo(function KanbanView({
         ? columnCards.ungrouped
         : columnCards.byColumn.get(columnId) ?? NO_CARDS
       const onDropAt = dropAtCardFor(columnId)
+      const category = columnId === null ? undefined : columnCategory(board.columns.find((c) => c.id === columnId))
       lanes.push({
         sourceId: 'sessions',
         count: cards.length,
@@ -867,6 +908,9 @@ export const KanbanView = memo(function KanbanView({
             onDropAt={onDropAt}
             pulls={pullsByCard.get(s.id) ?? NO_PULLS}
             pullFreshness={pullFreshness}
+            team={teams?.get(s.id) ?? NO_STATIONS}
+            onTravel={onOpenNode}
+            columnCategory={category}
           />
         ))
       })
@@ -971,6 +1015,7 @@ export const KanbanView = memo(function KanbanView({
       <div className="kanban-header">
         <span className="kanban-header__dot" style={{ background: projectColor }} />
         <span className="kanban-header__name">{projectName}</span>
+        <KanbanScopeSwitch scope="project" />
         {progress && (
           <span
             className="kanban-progress"
@@ -1177,6 +1222,7 @@ export const KanbanView = memo(function KanbanView({
                   children: issueAgentMenu(issueMenu.issue)
                 }] as MenuItem[])
               : []),
+            ...(issueWorktreeMenu ? [issueWorktreeMenuRow(issueWorktreeMenu(issueMenu.issue), <IconBranch />)] : []),
             {
               label: 'Open summary',
               icon: <IconExternal />,
@@ -1194,10 +1240,12 @@ export const KanbanView = memo(function KanbanView({
       {modalNodeId && byId.has(modalNodeId) && (
         <CardModal
           session={byId.get(modalNodeId)!}
+          mentionables={mentionables}
           columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
           board={board}
           onChangeBoard={commit}
           onClose={() => setModalNodeId(null)}
+          portsProjectId={projectId}
           onOpenCanvas={() => {
             setModalNodeId(null)
             onOpenNode(modalNodeId)
@@ -1211,6 +1259,11 @@ export const KanbanView = memo(function KanbanView({
             // request the session card's `#N` makes — summary if the lane has it, else GitHub).
             setModalNodeId(null)
             handleOpenIssueRef(ref)
+          }}
+          team={teams?.get(modalNodeId) ?? NO_STATIONS}
+          onTravel={(nodeId) => {
+            setModalNodeId(null)
+            onOpenNode(nodeId)
           }}
         />
       )}
@@ -1231,6 +1284,9 @@ export const KanbanView = memo(function KanbanView({
           pullObservedAt={pullBoard?.observedAt}
           startMenu={modalIssue.kind === 'issue' && issueAgentMenu
             ? () => issueAgentMenu(modalIssue.item)
+            : undefined}
+          worktreeMenu={modalIssue.kind === 'issue' && issueWorktreeMenu
+            ? () => issueWorktreeMenu(modalIssue.item)
             : undefined}
           runs={modalIssue.kind === 'issue' ? runsFor(modalIssue.item) : NO_ISSUE_RUNS}
           onOpenRun={(nodeId) => {
@@ -1296,9 +1352,7 @@ export const KanbanView = memo(function KanbanView({
           onConfirm={() => {
             const { issue, columnId, closeReason } = pendingGitHubMove
             setPendingGitHubMove(null)
-            void moveGitHubState(
-              api.githubIssues, projectId, issue.number, columnId, issue.updatedAt, closeReason
-            )
+            void moveIssueByUser(issue, columnId, closeReason)
           }}
         />
       )}

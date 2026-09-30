@@ -49,7 +49,15 @@ export const CLAUDE_HOOK_EVENTS = [
   { event: 'PermissionRequest', timeout: PERMISSION_REQUEST_HOOK_TIMEOUT_SECS },
   'SessionEnd',
   'PreToolUse',
-  'PostToolUse'
+  'PostToolUse',
+  // Claude's own subagent lifecycle (since 2.0.43), keyed by the child's agent_id — the authority
+  // for subagent cards whenever a session sends it (core/claude-subagent-lifecycle.ts). The
+  // PreToolUse/PostToolUse pair above stays: it is the fallback for a CLI or hook snapshot without
+  // these, and the source of the task label. Both are no-ops for the CLI: the managed script prints
+  // nothing (SubagentStart stdout would be added to the child's context) and exits 0 (a
+  // SubagentStop decision could block the child from stopping).
+  'SubagentStart',
+  'SubagentStop'
 ] as const satisfies readonly ManagedHookEvent[]
 
 /**

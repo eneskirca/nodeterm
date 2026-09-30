@@ -20,20 +20,24 @@
 //
 // ── Two gotchas that make or break the tab ───────────────────────────────────────────────────────
 // 1. `pty.onData` is the ONE core-bound member that does NOT go through the RpcClient. Relay pty
-//    output is decoded in the main process and re-emitted on the LOCAL per-session `pty:data`
-//    channel (`src/main/index.ts` `onPtyData` → `IPC.ptyData(sessionId)` → preload), NOT over the
+//    output is decoded in the main process and re-emitted on a NAMESPACED local `pty:data` channel
+//    (`src/main/index.ts` `onPtyData` → `IPC.ptyData(relayPtyDataKey(connectionId, sessionId))` →
+//    preload — never the bare host id, which a local pty shares), NOT over the
 //    RpcClient frame stream (`RelayFrameTransport.onMessage` only carries JSON frames). So it
-//    delegates to the LOCAL preload's `pty.onData` — the exact same channel a local pty uses. Wire
+//    delegates to the LOCAL preload's `pty.onData` — the same preload member a local pty uses, on the namespaced key. Wire
 //    it to the RpcClient instead and the remote terminal is blank.
 // 2. `RelayFrameTransport.ready()` resolves on `onApproved`, which fires exactly ONCE. The transport
 //    must be constructed (registering that listener) BEFORE the humans confirm the SAS — i.e. Task 6
 //    calls `buildRelayApi` while the approval dialog is still open, THEN awaits `ready()`. Building
 //    it after approval already fired leaves `ready()` pending forever and the api never comes up.
 
-import type { NodeTerminalApi } from '../../shared/types'
+import type { HostedRole, NodeTerminalApi } from '../../shared/types'
 import { type FrameTransport, RelayFrameTransport } from './frame-transport'
+import { RoleGatedRpcClient } from './hosted-gate'
+import { emitLocalRelayClose } from './relay-local-close'
 import {
   RpcClient,
+  buildHostedApi,
   buildRealApi,
   buildFilesApi,
   buildAgentApi,
@@ -43,7 +47,9 @@ import {
   buildGitHubApi
 } from './ws-bridge'
 import { buildStubApi } from './stubs'
+import { relayPtyDataKey } from '../../shared/relay-pty-channel'
 import { mountPickerRoot, openDirectoryPicker } from './dialog-picker'
+import { projectIdsBoundToApi } from '../session/session'
 
 /** What Task 6 consumes: the bridged api for `createSession`, an approval gate to await, and a
  *  teardown hook to run on disconnect/revoke. */
@@ -55,6 +61,16 @@ export interface RelayApiHandle {
   ready(): Promise<void>
   /** Tear the connection down: close the relay socket for this connectionId. */
   close(): void
+  /** HOSTED tabs only: tell the role gate which role the host gave this device (the tab asks
+   *  `hosted.self()` before anything mounts). Absent on every other relay tab. */
+  setHostedRole?(role: HostedRole): void
+}
+
+/** How to build a relay tab's api. */
+export interface RelayApiOptions {
+  /** A relay tab joined by a hosted team's `nodeterm://join` code: it gets `api.hosted` and a role
+   *  gate on everything it sends. Absent/false = a Team Access relay tab, built exactly as before. */
+  hosted?: boolean
 }
 
 /**
@@ -62,11 +78,19 @@ export interface RelayApiHandle {
  * nothing and a `RelayFrameTransport(connectionId)` is constructed here (which is what registers the
  * one-shot `onApproved` listener; see gotcha 2).
  */
-export function buildRelayApi(connectionId: string, transport?: FrameTransport): RelayApiHandle {
+export function buildRelayApi(
+  connectionId: string,
+  transport?: FrameTransport,
+  opts?: RelayApiOptions
+): RelayApiHandle {
   // The LOCAL preload — this is a desktop-only path (relay hosting/joining is Electron), so
   // `window.nodeTerminal` is the full real preload, not the browser stub surface.
   const local = (window as unknown as { nodeTerminal: NodeTerminalApi }).nodeTerminal
-  const client = new RpcClient(transport ?? new RelayFrameTransport(connectionId))
+  const carrier = transport ?? new RelayFrameTransport(connectionId)
+  // A hosted tab's role, once the host has said it. Unknown = the lowest role (hosted-gate.ts).
+  let hostedRole: HostedRole | null = null
+  const hosted = opts?.hosted === true
+  const client = hosted ? new RoleGatedRpcClient(carrier, () => hostedRole) : new RpcClient(carrier)
 
   const real = buildRealApi(client) // { pty, workspace, settings, userDataDir }
   const files = buildFilesApi(client) // { fs, git, files, context }
@@ -101,7 +125,9 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
     // channel, so subscribe on the local preload, same shape as a local pty.
     pty: {
       ...real.pty,
-      onData: (sessionId, listener) => local.pty.onData(sessionId, listener)
+      // On the NAMESPACED key main delivers relay output on — never the bare host id, which is a
+      // LOCAL terminal's channel too (shared/relay-pty-channel.ts).
+      onData: (sessionId, listener) => local.pty.onData(relayPtyDataKey(connectionId, sessionId), listener)
     },
 
     // boardLog is CORE-BOUND: a relay guest reads and writes the HOST project's board comments/activity
@@ -143,7 +169,9 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
 
     // ── Deferred over the relay in v1 — documented degrades (a clean refusal, not a wrong-machine
     //    silent no-op): ──
-    // `chat` is now just readTranscript + transcriptExists (the SDK chat node was removed). It has
+    // `chat` is readTranscript + transcriptExists + catalog (the SDK chat node was removed). `catalog`
+    // rejects like `readTranscript` (the stub's E_UNSUPPORTED): the composer then offers the shared
+    // built-in table alone, never this machine's command folders under the peer's node. It has
     // no relay builder: reading a transcript over the relay would read THIS machine's transcript,
     // not the host's, so `readTranscript` refuses with E_UNSUPPORTED instead. `transcriptExists`
     // takes the stub's `'unknown'` for the same reason and the opposite shape — its consumer acts
@@ -152,6 +180,9 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
     // `...local` (a v1 degrade: they read/write on this machine, not the host). boardLog is now
     // bridged to the host (see above) — it no longer rides `...local`.
     chat: stub.chat,
+    // `recentConversations` stays on `...local` ON PURPOSE: "Open recent" lists THIS machine's agent
+    // histories and resumes them into this machine's local projects only. The host's list is
+    // host-only (`HOST_ONLY_CHANNELS`) — a peer never reads the host's conversation titles.
     // Agent canvas-control (`agent:control`) is not wired over the relay (matches the Server
     // Edition); inert no-ops rather than a local subscription that never carries the host's events.
     onAgentControl: stub.onAgentControl,
@@ -165,16 +196,49 @@ export function buildRelayApi(connectionId: string, transport?: FrameTransport):
     // Messaging rides the same decision: the browser client is never a sender (constraint 5 of
     // the messaging plan — the phone drives canvas control over relay→IPC, not /control/*).
     agentMessage: stub.agentMessage,
+    // Station-failure notices are about THIS machine's stations and its own orchestrators; a relay
+    // tab's nodes live in the host's core, whose notices are the host's renderer's to draw.
+    stationNotice: stub.stationNotice,
+    boardDispatch: stub.boardDispatch,
+    stationOutcome: stub.stationOutcome,
+    stationHandover: stub.stationHandover,
     // The mirror identity seed is a deliberate no-op here: a relay tab's nodes belong to the HOST's
     // core, whose mirror is seeded by the host's own renderer from its own localStorage. This
     // machine's localStorage holds no identity for them, and `...local` would plant this machine's
     // ids into this machine's mirror under the peer's node ids.
-    seedAgentIdentity: () => undefined
+    seedAgentIdentity: () => undefined,
+
+    // Which of this tab's projects publish their canvas ops even when nobody else is attached. A
+    // HOSTED tab's host runs the canvas authority (docs/hosted-team-relay.md), which governs every
+    // project it shares, and a hosted tab holds shared projects only: so every project bound to THIS
+    // connection is governed. Answered here, from the session registry, never over the wire (a
+    // viewer could not ask anyway, and the host's answer names the host's projects, which is what the
+    // binding already holds). A Team Access tab's host is a desktop, which governs nothing: `local`.
+    canvasAuthority: hosted
+      ? {
+          // Answered at once from the bindings, so nothing needs to be assumed before it.
+          assumeAllUntilAnswered: false,
+          governed: async () => projectIdsBoundToApi(api),
+          // The set changes only when a tab binds or unbinds, and Canvas re-reads it on every bind.
+          onChanged: () => () => {}
+        }
+      : local.canvasAuthority,
+
+    // The hosted team verbs — ONLY on a tab joined by a hosted team's code. A Team Access relay
+    // tab's host answers none of them, so there the key is absent altogether (never `undefined`),
+    // and every `api.hosted` check in the renderer takes its old path.
+    ...(hosted ? buildHostedApi(client) : {})
   } satisfies NodeTerminalApi
 
   return {
     api,
     ready: () => client.ready(),
-    close: () => local.relayClient.disconnect(connectionId)
+    close: () => {
+      local.relayClient.disconnect(connectionId)
+      // A hosted connection's own close is announced locally: main never reports it (see
+      // relay-local-close.ts), and this tab's team is held until its connection ends.
+      if (hosted) emitLocalRelayClose(connectionId)
+    },
+    ...(hosted ? { setHostedRole: (role: HostedRole) => { hostedRole = role } } : {})
   }
 }

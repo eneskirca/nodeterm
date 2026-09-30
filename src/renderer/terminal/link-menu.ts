@@ -15,15 +15,19 @@ import type { MenuItem } from '../components/ContextMenu'
 import type { DownloadRoute } from '../lib/download'
 import { downloadMenuEntries } from '../lib/filesNode'
 import { tidySeparators } from '../lib/tidySeparators'
-import type { LinkHit } from './file-links'
+import { findExistingForHit, type LinkHit, type PathResolution } from './file-links'
 
 /** What a right-click resolved to, once a path's existence is known. */
 export type LinkMenuTarget =
   | { kind: 'url'; url: string }
   | { kind: 'file'; abs: string; dir: boolean }
-  /** Path-shaped text with nothing behind it (or a filesystem we could not reach). The right-click
-   *  was already swallowed, so it still gets a menu — a click that shows nothing reads as broken. */
+  /** Path-shaped text with nothing behind it — a VERIFIED absence. The right-click was already
+   *  swallowed, so it still gets a menu — a click that shows nothing reads as broken. */
   | { kind: 'missing'; abs: string }
+  /** Path-shaped text whose existence could not be checked (a dead ControlMaster, a refused IPC, a
+   *  timeout). Distinct from `missing` so the menu never tells the user a file is gone when all we
+   *  know is that we could not look. */
+  | { kind: 'unverified'; abs: string; reason: string }
 
 export interface LinkMenuContext {
   /** `downloadRoute` for the filesystem the path lives on. */
@@ -68,18 +72,23 @@ export function relativeInside(root: string | undefined, abs: string): string | 
   return path.startsWith(base + '/') && path.length > base.length + 1 ? path.slice(base.length + 1) : null
 }
 
-/** A hit-test result → a menu target. A lookup that throws (a dead ControlMaster) is `missing`:
- *  the menu still opens, and the one thing it can honestly offer is the text. */
+/** A hit-test result → a menu target. A lookup that throws, or a resolution with an unchecked
+ *  candidate, is `unverified` (never `missing`): the menu still opens, says it could not check, and
+ *  offers the one thing it honestly can — the text. */
 export async function resolveLinkTarget(
   hit: LinkHit,
-  lookup: (abs: string) => Promise<{ exists: boolean; dir: boolean }>
+  find: (token: string) => Promise<PathResolution>
 ): Promise<LinkMenuTarget> {
   if (hit.kind === 'url') return { kind: 'url', url: hit.url }
+  const missing: LinkMenuTarget = { kind: 'missing', abs: hit.abs ?? hit.token }
   try {
-    const f = await lookup(hit.abs)
-    return f.exists ? { kind: 'file', abs: hit.abs, dir: f.dir } : { kind: 'missing', abs: hit.abs }
-  } catch {
-    return { kind: 'missing', abs: hit.abs }
+    const r = await findExistingForHit([hit.token, ...(hit.alternatives ?? [])], find)
+    if (r.found) return { kind: 'file', abs: r.abs, dir: r.dir }
+    const u = r.unverified?.[0]
+    return u ? { kind: 'unverified', abs: u.abs, reason: u.reason } : missing
+  } catch (err) {
+    const reason = (err instanceof Error ? err.message : String(err ?? '')).trim() || 'the lookup failed'
+    return { kind: 'unverified', abs: hit.abs ?? hit.token, reason }
   }
 }
 
@@ -101,9 +110,12 @@ export function linkMenuItems(
   if (target.kind === 'url') return urlLinkMenuItems(target.url, act)
 
   const { abs } = target
-  if (target.kind === 'missing') {
+  if (target.kind === 'missing' || target.kind === 'unverified') {
     return [
-      { type: 'label', label: 'Not found' },
+      {
+        type: 'label',
+        label: target.kind === 'missing' ? 'Not found' : `Couldn't check: ${target.reason}`
+      },
       { label: 'Copy path', onClick: () => act.copy(abs) }
     ]
   }

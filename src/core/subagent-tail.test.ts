@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import {
   createSubagentTail,
@@ -8,6 +7,7 @@ import {
   splitCompleteLines,
   SUBAGENT_READ_CAP
 } from './subagent-tail'
+import { testTmpDir } from './test-tmp'
 
 const assistant = (text: string): string =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
@@ -63,7 +63,7 @@ describe('splitCompleteLines', () => {
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 function setup(): { transcriptPath: string; subDir: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtail-'))
+  const dir = testTmpDir('subtail-')
   const transcriptPath = path.join(dir, 'sess.jsonl')
   const subDir = path.join(dir, 'sess', 'subagents')
   fs.mkdirSync(subDir, { recursive: true })
@@ -121,7 +121,7 @@ describe('createSubagentTail', () => {
 
 describe('trackFile (codex leg: pre-resolved file + per-entry formatter)', () => {
   it('tails the given file directly with the injected stateful formatter', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtail-file-'))
+    const dir = testTmpDir('subtail-file-')
     const file = path.join(dir, 'rollout-child.jsonl')
     // A stateful formatter (mirrors the codex fork-replay gate): suppress until 'GATE'.
     const newFormatter = () => {
@@ -155,7 +155,7 @@ describe('trackFile (codex leg: pre-resolved file + per-entry formatter)', () =>
   })
 
   it('two trackFile entries do not share formatter state', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtail-file2-'))
+    const dir = testTmpDir('subtail-file2-')
     const a = path.join(dir, 'a.jsonl')
     const b = path.join(dir, 'b.jsonl')
     const newFormatter = () => {
@@ -221,5 +221,66 @@ describe('subagent-tail read cap', () => {
 
     tail.finish('tu1')
     fs.rmSync(path.dirname(transcriptPath), { recursive: true, force: true })
+  })
+})
+
+// A Claude background subagent that ends its turn while its own work still runs fires
+// SubagentStop, and is RESUMED later under the same agent_id (measured, 2.1.284). The shells stop
+// its tail at every stop and start it again at every start; the second start must continue.
+describe('a resumed subagent (same id tracked again)', () => {
+  it('continues from where the finished tail stopped instead of re-streaming the file', async () => {
+    const dir = testTmpDir('subtail-resume-')
+    const file = path.join(dir, 'agent-a1.jsonl')
+    fs.writeFileSync(file, assistant('first turn') + '\n')
+    const send = vi.fn()
+    const tail = createSubagentTail(send)
+    tail.trackFile('a1', file)
+    await wait(600)
+    tail.finish('a1')
+    await wait(1700) // past the finish grace: the entry is gone
+    fs.appendFileSync(file, assistant('second turn') + '\n')
+    tail.trackFile('a1', file)
+    await wait(600)
+    const out = streamed(send)
+    expect(out.match(/first turn/g)).toHaveLength(1)
+    expect(out).toContain('second turn')
+    tail.finish('a1')
+  })
+
+  it('a resume inside the finish grace window keeps the tail alive', async () => {
+    const dir = testTmpDir('subtail-revive-')
+    const file = path.join(dir, 'agent-a1.jsonl')
+    fs.writeFileSync(file, assistant('before') + '\n')
+    const send = vi.fn()
+    const tail = createSubagentTail(send)
+    tail.trackFile('a1', file)
+    await wait(600)
+    tail.finish('a1')
+    tail.trackFile('a1', file) // resumed at once
+    await wait(1700)
+    fs.appendFileSync(file, assistant('after the grace') + '\n')
+    await wait(600)
+    const out = streamed(send)
+    expect(out).toContain('after the grace')
+    expect(out.match(/before/g)).toHaveLength(1)
+    tail.finish('a1')
+  })
+
+  it('a different file under the same id starts from its beginning', async () => {
+    const dir = testTmpDir('subtail-other-')
+    const a = path.join(dir, 'a.jsonl')
+    const b = path.join(dir, 'b.jsonl')
+    fs.writeFileSync(a, assistant('in a') + '\n')
+    fs.writeFileSync(b, assistant('in b') + '\n')
+    const send = vi.fn()
+    const tail = createSubagentTail(send)
+    tail.trackFile('x', a)
+    await wait(600)
+    tail.finish('x')
+    await wait(1700)
+    tail.trackFile('x', b)
+    await wait(600)
+    expect(streamed(send)).toContain('in b')
+    tail.finish('x')
   })
 })

@@ -13,7 +13,10 @@
  * Done does so INSIDE its turn, and the turn's Stop hook follows seconds later — two notifications
  * for one event. So a handoff ping arms a one-shot fold for its node: the next "finished"
  * notification for that node within `HANDOFF_FOLD_MS` is not sent (the unread dot still is — only
- * the interrupt is folded). A later turn end notifies as always.
+ * the interrupt is folded). A later turn end notifies as always, and so does the next one after the
+ * window comes back to the foreground (`installHandoffFocusReset`): the fold stands for "the user is
+ * away and was just told", and a refocus ends that — otherwise the next chime, maybe for a turn that
+ * had nothing to do with the handoff, was silently swallowed while the user sat watching.
  *
  * Consent and delivery are the existing path's: `notifyOnClaudeDone` + the one-time consent prompt,
  * an OS notification only while the window is in the background, the per-node cooldown.
@@ -62,6 +65,14 @@ export function suppressDoneAfterHandoff(nodeId: string, now: number): boolean {
   if (at === undefined) return false
   pinged.delete(nodeId)
   return now - at <= HANDOFF_FOLD_MS
+}
+
+/** Drops every armed fold when the window gains focus; returns the teardown. The ping is only
+ *  sent while the window is in the background, so a focus after it means the user is back. */
+export function installHandoffFocusReset(target: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>): () => void {
+  const drop = (): void => pinged.clear()
+  target.addEventListener('focus', drop)
+  return () => target.removeEventListener('focus', drop)
 }
 
 /** Tests only. */

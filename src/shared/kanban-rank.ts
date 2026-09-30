@@ -25,7 +25,9 @@
 const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 const ZERO = DIGITS[0]
 const LAST = DIGITS[DIGITS.length - 1]
-/** The smallest integer part. Reserved: nothing may sort before it, so nothing may be it. */
+/** The smallest integer part. Reserved: nothing may sort before it, so nothing may BE it — but a
+ *  key may carry it with a fraction (`A00…0V`), which sorts after it: that is the room below the
+ *  lowest plain integer, and without it `rankBetween(null, 'A00…01')` had no valid answer. */
 const SMALLEST_INTEGER = `A${ZERO.repeat(26)}`
 /** Longer than any key a board will ever mint; beyond it a "rank" is garbage, not a position. */
 export const RANK_MAX_LENGTH = 256
@@ -51,7 +53,7 @@ export function isValidRank(x: unknown): x is string {
   for (const c of x) if (digitValue(c) === -1) return false
   const n = integerDigits(x[0])
   if (n < 0 || x.length < n + 1) return false
-  if (x.slice(0, n + 1) === SMALLEST_INTEGER) return false
+  if (x === SMALLEST_INTEGER) return false
   return !x.slice(n + 1).endsWith(ZERO)
 }
 
@@ -118,7 +120,8 @@ export function rankBetween(a: string | null, b: string | null): string {
     if (ib < b) return ib
     const down = stepInteger(ib, -1)
     if (down === null) throw new Error('rank space exhausted below')
-    return down
+    // Stepping down onto the reserved integer: the key goes just under `b` with a fraction.
+    return down === SMALLEST_INTEGER ? down + midpoint('', null) : down
   }
   if (b === null) {
     const ia = integerPart(a)

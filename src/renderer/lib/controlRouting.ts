@@ -15,7 +15,24 @@
 
 import { canControlCanvas, type AgentId } from '@shared/agents/config'
 import { formatIssueRef } from '@shared/github-issue-ref'
-import { controlLaunchState, type LaunchDelivery, type StatusById } from './pendingLaunch'
+import { formatPrWaits, normalizePrWaitHold } from '@shared/pr-wait'
+import {
+  normalizeSuccessWaitHold,
+  outcomeOf,
+  successWaitStatus,
+  successWaitSummary,
+  type StationOutcomeRecord
+} from '@shared/station-outcome'
+import { prHoldExpired } from './prWait'
+import {
+  controlLaunchState,
+  handedOverDeps,
+  holdReason,
+  successDepFacts,
+  type HandoverById,
+  type LaunchDelivery,
+  type StatusById
+} from './pendingLaunch'
 import { projectTravel } from './presenceTravel'
 import {
   projectCapabilityGrantedFor,
@@ -175,20 +192,85 @@ export function answerBrowserResolve(
 export function storedNodeListing(
   nodes: readonly StoredNode[],
   statuses: StatusById & Record<string, { dropped?: boolean } | undefined> = {},
-  deliveries: Record<string, LaunchDelivery | undefined> = {}
+  deliveries: Record<string, LaunchDelivery | undefined> = {},
+  now: number = Date.now(),
+  /** Every station's latest task report (`report-outcome`, core's store mirrored). */
+  outcomes: Readonly<Record<string, StationOutcomeRecord>> = {},
+  /** Stations with unfinished handed-over work (core/station-handover.ts, mirrored). */
+  handovers: HandoverById = {}
 ) {
+  const live = new Set(nodes.map((n) => n.id))
+  const titleOf = (id: string): string => {
+    const t = nodes.find((n) => n.id === id)?.title
+    return t ? `${id} "${t}"` : id
+  }
   return nodes.map((n) => {
     const status = statuses[n.id]
-    const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status) ??
+    // `--after-pr`: the row names what the node waits on (the pull request STATUS is the canvas's
+    // to judge; `list` states the wait and whether its deadline has passed, which needs no board).
+    const prHold = normalizePrWaitHold((n.pendingLaunch as { afterPr?: unknown } | undefined)?.afterPr)
+    const prExpired = !!prHold && prHoldExpired(prHold, now)
+    // `--after-success`: judged here in full — every fact it needs (the stations' reports, their
+    // turn state, whether they still exist) is already in hand, so the row can say WAITING FOR
+    // SUCCESS, BLOCKED BY FAILURE or EXPIRED and name the station and its note.
+    const successHold = normalizeSuccessWaitHold(
+      (n.pendingLaunch as { afterSuccess?: unknown } | undefined)?.afterSuccess
+    )
+    const successFacts = (d: string) =>
+      successDepFacts(d, statuses, live, outcomes, handovers)
+    const successState = successHold ? successWaitStatus(successHold, successFacts, now) : undefined
+    const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status, prExpired, successState) ??
       (n.agentId && !status?.state ? 'unconfirmed' as const : undefined)
     // A session started on an issue is told so on its OWN row, so `list` is enough for an agent to
     // learn it is bound (and which card to move). Only a reference `formatIssueRef` vouches for.
     const issue = formatIssueRef(n.issueRef)
+    // What this node said about its OWN task, if anything — so an orchestrator reads every
+    // station's verdict in the one call it already makes.
+    const reported = outcomeOf(outcomes, n.id)
+    const successWait =
+      successHold && !successHold.invalid && successState !== 'met'
+        ? successWaitSummary(successHold, successFacts, titleOf)
+        : undefined
+    // Plain `--after` deps whose `done` is from BEFORE the work just handed to them: named, so an
+    // orchestrator reading QUEUED next to a station that reads idle knows what it is waiting for.
+    // (`pendingLaunch` is unvalidated here: only a list of strings is read.)
+    const rawAfter = (n.pendingLaunch as { after?: unknown } | undefined)?.after
+    const handedOver = Array.isArray(rawAfter)
+      ? handedOverDeps(
+          {
+            id: n.id,
+            data: {
+              pendingLaunch: {
+                after: rawAfter.filter((d): d is string => typeof d === 'string'),
+                command: ''
+              }
+            }
+          },
+          live,
+          handovers
+        )
+      : []
     return {
       id: n.id, kind: n.kind ?? 'terminal', title: n.title ?? '',
       ...(issue ? { issue } : {}),
       ...(status?.lastTurnError ? { lastTurnErrored: true } : {}),
-      ...(launchState ? { launchState } : {})
+      ...(status?.lastTurnInterrupted && !status.lastTurnError ? { lastTurnInterrupted: true } : {}),
+      ...(launchState ? { launchState } : {}),
+      ...(launchState === 'queued' && prHold && !prHold.invalid ? { prWait: formatPrWaits(prHold) } : {}),
+      ...(successWait ? { successWait } : {}),
+      ...(handedOver.some((d) => holdReason(handovers[d]) === 'work')
+        ? { handoverWait: handedOver.filter((d) => holdReason(handovers[d]) === 'work').map(titleOf).join(', ') }
+        : {}),
+      ...(handedOver.some((d) => holdReason(handovers[d]) === 'background')
+        ? { backgroundWait: handedOver.filter((d) => holdReason(handovers[d]) === 'background').map(titleOf).join(', ') }
+        : {}),
+      ...(reported
+        ? {
+            outcome: reported.outcome,
+            ...(reported.note ? { outcomeNote: reported.note } : {}),
+            ...(reported.workPending ? { outcomeSuperseded: true } : {})
+          }
+        : {})
     }
   })
 }
@@ -198,15 +280,27 @@ const launchLabels = {
   failed: 'LAUNCH FAILED',
   stalled: 'QUEUED (terminal not ready)',
   starting: 'STARTING',
+  'brief-missing': 'HELD (its prompt file no longer exists; run it with `run` to start without it)',
   dropped: 'DROPPED',
   working: 'WORKING',
-  unconfirmed: 'AGENT STATUS UNCONFIRMED'
+  unconfirmed: 'AGENT STATUS UNCONFIRMED',
+  expired: 'EXPIRED (PR wait deadline passed; run it with `run`)',
+  'success-expired': 'EXPIRED (success wait deadline passed; run it with `run`)',
+  'waiting-success': 'WAITING FOR SUCCESS',
+  'blocked-failure': 'BLOCKED BY FAILURE (will not start on its own; run it with `run`)'
 } as const
 
 export function controlListingText(rows: ReturnType<typeof storedNodeListing>): string {
   return rows.map((n) => `${n.id} [${n.kind}] ${n.title}` +
     (n.issue ? ` — issue ${n.issue}` : '') +
     (n.launchState ? ` — ${launchLabels[n.launchState]}` : '') +
-    (n.lastTurnErrored ? ' — LAST TURN ERRORED' : '')
+    (n.prWait ? ` — waits on ${n.prWait}` : '') +
+    (n.successWait ? ` — needs success from: ${n.successWait}` : '') +
+    (n.handoverWait ? ` — waiting for ${n.handoverWait} to finish the work handed to it` : '') +
+    (n.backgroundWait ? ` — waiting for ${n.backgroundWait} to finish the tasks still running in its background` : '') +
+    (n.outcome ? ` — REPORTED ${n.outcome === 'succeeded' ? 'SUCCESS' : 'FAILURE'}${n.outcomeNote ? ` ("${n.outcomeNote}")` : ''}` : '') +
+    (n.outcomeSuperseded ? ' (before new work queued for it; not counted until it reports again)' : '') +
+    (n.lastTurnErrored ? ' — LAST TURN ERRORED' : '') +
+    (n.lastTurnInterrupted ? ' — LAST TURN INTERRUPTED' : '')
   ).join('\n')
 }

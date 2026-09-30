@@ -66,6 +66,12 @@ describe('searchEntries', () => {
   it('respects the limit', () => {
     expect(searchEntries(entries, 'tmux', 1)).toHaveLength(1)
   })
+
+  it('names the account whose root holds a hit, so its resume runs under that login', () => {
+    const hits = searchEntries(entries, 'tmux', 20, (p) => (p === '/p/s1.jsonl' ? 'work' : undefined))
+    expect(hits.find((h) => h.sessionId === 's1')?.accountId).toBe('work')
+    expect('accountId' in hits.find((h) => h.sessionId === 's2')!).toBe(false)
+  })
 })
 
 describe('planRefresh', () => {

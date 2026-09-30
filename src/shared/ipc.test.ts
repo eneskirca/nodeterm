@@ -48,4 +48,9 @@ describe('IPC channels', () => {
     expect(IPC.relayClientFrame('abc')).toBe('relay:client:frame:abc')
     expect(IPC.relayClientClosed('abc')).toBe('relay:client:closed:abc')
   })
+
+  it('exposes the desktop-local hosted-team bookmark channels', () => {
+    expect(IPC.relayHostedBookmarks).toBe('relay:hosted:bookmarks')
+    expect(IPC.relayHostedBookmarkRemove).toBe('relay:hosted:bookmark-remove')
+  })
 })

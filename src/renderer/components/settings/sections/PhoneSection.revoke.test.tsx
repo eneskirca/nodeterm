@@ -51,7 +51,10 @@ function stubBridge(result: DeviceRevokeResult | Error): void {
       probeSsh: vi.fn(async () => true),
       openRemoteLoginSettings: vi.fn(),
       listDevices: vi.fn(async () => devices),
-      revokeDevice
+      revokeDevice,
+      // The push webhook row mounts in this section too; no token is live here.
+      webhookStatus: vi.fn(async () => ({ ok: true, value: null })),
+      webhookEndpoint: vi.fn(async () => 'https://api.test')
     },
     remoteHost: { setPhoneAccess: vi.fn() },
     shell: { openExternal: vi.fn() }

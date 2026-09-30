@@ -1,13 +1,14 @@
 import type { Project } from '../../shared/types'
 import { fetchAvatarDataUrl } from './avatar-fetcher'
 import { parseGitHubRepository } from './config'
+import { GITHUB_OWNER_PATTERN } from '../../shared/github-issue-ref'
 
 const API_ORIGIN = 'https://api.github.com'
 const API_VERSION = '2022-11-28'
 const MAX_USER_JSON_BYTES = 64 * 1024
-// A GitHub login: same shape as config's OWNER. Validated before it ever reaches the URL path so a
+// A GitHub login: the one shared grammar. Validated before it ever reaches the URL path so a
 // hostile project.json owner cannot escape `/users/{owner}` into another api.github.com route.
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
+const OWNER = new RegExp(`^${GITHUB_OWNER_PATTERN}$`)
 
 async function boundedJson(response: Response): Promise<Record<string, unknown> | null> {
   const length = Number(response.headers.get('content-length'))

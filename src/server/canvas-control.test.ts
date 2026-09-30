@@ -142,7 +142,10 @@ describe('initServerCanvasControl', () => {
     }
     const store = {
       load: vi.fn(async () => workspace),
-      save: vi.fn(async () => undefined),
+      // A store keeps what it is handed: the factory edits a private copy of what it loaded.
+      save: vi.fn(async (next: Workspace) => {
+        Object.assign(workspace, structuredClone(next))
+      }),
       persistedCanvases: () => [{ id: 'p1', nodes: workspace.projects[0].nodes }],
       // No strict true flag and no machine-local `kept` ack: capability is off by default.
       capabilityProjectFor: () => ({})
@@ -176,6 +179,9 @@ describe('initServerCanvasControl', () => {
         sessionIdFlag: false
       }),
       codexSharedIdentity: async () => true,
+      // Pinned, never this machine's codex: the line depends on what the CLI advertises. `true`
+      // also proves the Server Edition's opens carry `--no-daemon` (shared/agents/codex-daemon.ts).
+      codexCaps: async () => ({ approvalValues: null, noDaemon: true }),
       installAgentIntegrations: false
     })
 
@@ -201,7 +207,7 @@ describe('initServerCanvasControl', () => {
     const openedId = (opened.result as { id: string }).id
     // The launch is typed into the shell and submitted, never pasted blind (#925).
     expect(shell.submitted).toEqual([
-      "nodeterm-codex 'identity proof' --ask-for-approval on-request"
+      "nodeterm-codex 'identity proof' --ask-for-approval on-request --no-daemon"
     ])
     expect(sendText).not.toHaveBeenCalled()
 
@@ -271,7 +277,10 @@ describe('initServerCanvasControl', () => {
     }
     const store = {
       load: vi.fn(async () => workspace),
-      save: vi.fn(async () => undefined),
+      // A store keeps what it is handed: the factory edits a private copy of what it loaded.
+      save: vi.fn(async (next: Workspace) => {
+        Object.assign(workspace, structuredClone(next))
+      }),
       persistedCanvases: () => [{ id: 'p1', nodes: workspace.projects[0].nodes }],
       capabilityProjectFor: () => ({
         agentMessaging: true,
@@ -389,7 +398,10 @@ describe('initServerCanvasControl', () => {
     }
     const store = {
       load: vi.fn(async () => workspace),
-      save: vi.fn(async () => undefined),
+      // A store keeps what it is handed: the factory edits a private copy of what it loaded.
+      save: vi.fn(async (next: Workspace) => {
+        Object.assign(workspace, structuredClone(next))
+      }),
       persistedCanvases: () => [{ id: 'p1', nodes: workspace.projects[0].nodes }],
       capabilityProjectFor: () => ({ agentMessaging: false, capabilityAck: {} })
     } as unknown as WorkspaceStore

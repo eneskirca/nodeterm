@@ -4,7 +4,19 @@
 // dependency edges to draw meanwhile. Kept free of React/store imports so the satisfaction
 // matrix is unit-testable — Canvas.tsx only wraps these in an effect and a setState.
 import type { AgentState } from '@shared/agents/normalize'
+import type { GitHubPullBoard } from '@shared/github-pull-status'
+import type { PrWaitHold } from '@shared/pr-wait'
+import {
+  normalizeSuccessWaitHold,
+  outcomeOf,
+  successWaitSatisfied,
+  type StationOutcomeRecord,
+  type SuccessDepFacts,
+  type SuccessWaitHold
+} from '@shared/station-outcome'
 import type { PendingLaunch } from '@shared/types'
+import type { StationHandoverRecord } from '@shared/station-handover'
+import { prHoldSatisfied } from './prWait'
 
 /** The subset of a canvas node this module reads. */
 export interface ArmedNode {
@@ -15,12 +27,88 @@ export interface ArmedNode {
 /** The subset of the agentStatus store this module reads. */
 export type StatusById = Record<
   string,
-  { state?: AgentState; lastTurnError?: { at: number } } | undefined
+  { state?: AgentState; lastTurnError?: { at: number }; lastTurnInterrupted?: { at: number } } | undefined
 >
 
 export interface LaunchToFire {
   id: string
   command: string
+  /** The file `command` reads its prompt from, which the loop checks before typing. */
+  briefFile?: string
+}
+
+/**
+ * Record the file a held launch reads its prompt from (`--prompt-file`, or a spilled `--prompt`).
+ * Applied by every control open path after arming, so the delivery loop can check the file is still
+ * there when the node finally launches — possibly weeks later, for a cold open.
+ */
+export function withLaunchBrief<T extends { data: { pendingLaunch?: PendingLaunch } }>(
+  node: T,
+  promptFile: string | undefined
+): T {
+  const p = node.data.pendingLaunch
+  if (!promptFile || !p) return node
+  return { ...node, data: { ...node.data, pendingLaunch: { ...p, promptFile } } }
+}
+
+/** What `launchesToFire` needs to judge a `--after-pr` wait: the ACTIVE project's pull request
+ *  status (#1008's board, absent until the watch has read it) and the clock deadlines are on. */
+export interface PrGateContext {
+  board?: GitHubPullBoard
+  now: number
+}
+
+/**
+ * Stations with unfinished HANDED-OVER work (core/station-handover.ts, mirrored): a station here is
+ * never a satisfied `--after` dep, whatever its state reads — its `done` is from before the work it
+ * was just handed. Absent = nothing handed over.
+ */
+export type HandoverById = Readonly<Record<string, StationHandoverRecord | undefined>>
+
+function handedOver(handovers: HandoverById | undefined, depId: string): boolean {
+  return !!handovers && Object.prototype.hasOwnProperty.call(handovers, depId) && !!handovers[depId]
+}
+
+/** What `launchesToFire` needs to judge a `--after-success` wait: every station's latest task
+ *  report (core's durable store, mirrored) and the clock deadlines are on. */
+export interface SuccessGateContext {
+  outcomes: Readonly<Record<string, StationOutcomeRecord>>
+  now: number
+}
+
+/**
+ * What the success wait knows about one station, from the same sources the `--after` gate reads:
+ * whether it is still on the canvas, whether its turn is over without an error (`depSatisfied`'s
+ * rule, so a success wait can never release where plain `--after` would still hold), and its report.
+ */
+export function successDepFacts(
+  depId: string,
+  status: StatusById,
+  live: ReadonlySet<string>,
+  outcomes: Readonly<Record<string, StationOutcomeRecord>>,
+  handovers?: HandoverById
+): SuccessDepFacts {
+  const exists = live.has(depId)
+  const reported = outcomeOf(outcomes, depId)
+  return {
+    exists,
+    turnDone: exists && depSatisfied(depId, status, live, handovers),
+    ...(reported ? { outcome: reported } : {})
+  }
+}
+
+/**
+ * Attach a `--after-success` wait to a node whose launch is already held — the sibling of
+ * `withPrHold`, applied by every open path that applies that one, so no path can arm a node that
+ * forgets a wait it was asked for.
+ */
+export function withSuccessHold<T extends { data: { pendingLaunch?: PendingLaunch } }>(
+  node: T,
+  hold: SuccessWaitHold | undefined
+): T {
+  const p = node.data.pendingLaunch
+  if (!hold || !p) return node
+  return { ...node, data: { ...node.data, pendingLaunch: { ...p, afterSuccess: hold } } }
 }
 
 /** Control opens reply before the PTY exists. Keep their command durable until delivery lands,
@@ -42,13 +130,71 @@ export function queueControlLaunch<T extends { data: { initialCommand?: string; 
   }
 }
 
+/**
+ * Attach a `--after-pr` wait to a node whose launch is already held (by `queueControlLaunch`,
+ * `armForColdOpen`, or `--after`). ONE helper for every open path — live, cold and `--project` —
+ * so no path can arm a node that forgets the wait it was asked for. A node with nothing held has
+ * nothing to wait with (the flag gate already refused `open-terminal` without `--cmd`).
+ */
+export function withPrHold<T extends { data: { pendingLaunch?: PendingLaunch } }>(
+  node: T,
+  hold: PrWaitHold | undefined
+): T {
+  const p = node.data.pendingLaunch
+  if (!hold || !p) return node
+  return { ...node, data: { ...node.data, pendingLaunch: { ...p, afterPr: hold } } }
+}
+
+/**
+ * Is the file a held launch reads its prompt from still there, right before the launch is typed?
+ * Only a definite "not there" answers false. No file to check, a check that fails (sync or async),
+ * and any project not on this machine's disk answer true: an SSH project never gets a spilled file,
+ * and there `exists === false` cannot tell a gone file from a dropped ControlMaster; a relay tab's
+ * launches are refused elsewhere. The open-time check fails open the same way.
+ */
+export async function launchBriefPresent(
+  path: string | undefined,
+  project: { id: string; ssh?: unknown; remote?: boolean } | undefined,
+  exists: (path: string) => Promise<boolean>
+): Promise<boolean> {
+  if (!path || !project || project.ssh || project.remote) return true
+  try {
+    return (await exists(path)) !== false
+  } catch {
+    return true
+  }
+}
+
 /** A list row states only observed facts; absence of a launch error is not proof of a live CLI. */
 export function controlLaunchState(
   pending: boolean,
   delivery: LaunchDelivery | undefined,
-  status?: { dropped?: boolean; state?: AgentState }
-): 'queued' | 'stalled' | 'failed' | 'starting' | 'dropped' | 'working' | undefined {
-  if (pending) return delivery?.kind ?? 'queued'
+  status?: { dropped?: boolean; state?: AgentState },
+  /** The node's `--after-pr` wait has passed its deadline: it will not start on its own. */
+  prExpired = false,
+  /** Where the node's `--after-success` wait stands, when it has one. */
+  success?: 'met' | 'waiting' | 'blocked' | 'expired'
+):
+  | 'queued'
+  | 'stalled'
+  | 'failed'
+  | 'starting'
+  | 'brief-missing'
+  | 'dropped'
+  | 'working'
+  | 'expired'
+  | 'success-expired'
+  | 'waiting-success'
+  | 'blocked-failure'
+  | undefined {
+  if (pending) {
+    if (delivery) return delivery.kind
+    if (prExpired) return 'expired'
+    if (success === 'expired') return 'success-expired'
+    if (success === 'blocked') return 'blocked-failure'
+    if (success === 'waiting') return 'waiting-success'
+    return 'queued'
+  }
   if (status?.dropped) return 'dropped'
   if (status?.state === 'working') return 'working'
   return undefined
@@ -79,11 +225,45 @@ export function controlLaunchState(
  *
  * The refusal ends by itself: `lastTurnError` is cleared by the upstream's next genuine new turn,
  * so a station that is nudged and answers successfully satisfies its dependents on that turn.
+ *
+ * A dep whose last turn the user INTERRUPTED (Esc / Ctrl+C — `lastTurnInterrupted`) is refused
+ * for the same reason: an interrupted station is idle too, and its turn did not produce what the
+ * dependent was waiting for. Claude sends no hook for an interrupt; the `done` comes from the
+ * transcript marker (`recordTurnInterrupt`). Same escape (▶), same self-healing (next turn).
+ *
+ * A dep that has been HANDED NEW WORK it has not finished (`handovers`, core/station-handover.ts)
+ * is refused too. A station is reused: an orchestrator hands it its next task and then arms a
+ * dependent on it, and until the station starts that task its state is still the PREVIOUS task's
+ * `done` — the dependent would start at once, on the old output. Core decides when the hand-over
+ * is answered (a turn that started after it has ended); here it is only a membership test, so the
+ * renderer and the Server Edition's factory cannot disagree.
  */
-function depSatisfied(depId: string, status: StatusById, live: ReadonlySet<string>): boolean {
+function depSatisfied(
+  depId: string,
+  status: StatusById,
+  live: ReadonlySet<string>,
+  handovers?: HandoverById
+): boolean {
   if (!live.has(depId)) return true
+  if (handedOver(handovers, depId)) return false
   const st = status[depId]
-  return st?.state === 'done' && !st.lastTurnError
+  return st?.state === 'done' && !st.lastTurnError && !st.lastTurnInterrupted
+}
+
+/** Why a dep is held (see `handedOverDeps`): new work handed to it, or ONLY tasks its last turn left
+ *  running in the background. Named differently in the tooltip and in `list`. */
+export function holdReason(record: StationHandoverRecord | undefined): 'work' | 'background' {
+  return record?.background && !record.queued && record.since === undefined ? 'background' : 'work'
+}
+
+/** Of the deps this node is still waiting on, which are held because they were handed new work
+ *  they have not finished — what the QUEUED tooltip and `list` name. */
+export function handedOverDeps(
+  node: ArmedNode,
+  live: ReadonlySet<string>,
+  handovers: HandoverById | undefined
+): string[] {
+  return (node.data.pendingLaunch?.after ?? []).filter((d) => live.has(d) && handedOver(handovers, d))
 }
 
 /** Of the deps this node is still waiting on, which are held because they ERRORED rather than
@@ -95,6 +275,23 @@ export function erroredDeps(
 ): string[] {
   return (node.data.pendingLaunch?.after ?? []).filter(
     (d) => live.has(d) && status[d]?.state === 'done' && !!status[d]?.lastTurnError
+  )
+}
+
+/** Of the deps this node is still waiting on, which are held because the user INTERRUPTED their
+ *  last turn? Named by the QUEUED tooltip, like `erroredDeps`. An errored dep is left to
+ *  `erroredDeps` — that is the stronger fact, and one reason is enough. */
+export function interruptedDeps(
+  node: ArmedNode,
+  status: StatusById,
+  live: ReadonlySet<string>
+): string[] {
+  return (node.data.pendingLaunch?.after ?? []).filter(
+    (d) =>
+      live.has(d) &&
+      status[d]?.state === 'done' &&
+      !status[d]?.lastTurnError &&
+      !!status[d]?.lastTurnInterrupted
   )
 }
 
@@ -119,7 +316,11 @@ export function launchesToFire(
   status: StatusById,
   live: ReadonlySet<string>,
   setupDone?: (groupId: string) => boolean,
-  deliveries?: Record<string, LaunchDelivery | undefined>
+  deliveries?: Record<string, LaunchDelivery | undefined>,
+  pr?: PrGateContext,
+  success?: SuccessGateContext,
+  /** Stations with unfinished handed-over work — never a satisfied dep (see `depSatisfied`). */
+  handovers?: HandoverById
 ): LaunchToFire[] {
   const out: LaunchToFire[] = []
   for (const n of nodes) {
@@ -131,7 +332,30 @@ export function launchesToFire(
     // caught up with the claim yet while the store already says so.
     if (deliveries?.[n.id]?.kind === 'starting') continue
     if (p.awaitSetupGroup && !(setupDone?.(p.awaitSetupGroup) ?? true)) continue
-    if (p.after.every((d) => depSatisfied(d, status, live))) out.push({ id: n.id, command: p.command })
+    // The THIRD gate (`--after-pr`). Unlike the setup gate, an absent context is CLOSED: a caller
+    // that did not say what the pull requests look like has told us nothing, and "no news" is
+    // exactly what must never release a launch (the same rule as an unknown agent state).
+    if (p.afterPr && !(pr && prHoldSatisfied(p.afterPr, pr.board, pr.now))) continue
+    // The FOURTH gate (`--after-success`): every named station reported SUCCESS and its turn is over.
+    // Closed without a context, for the same reason as the PR gate: no news is never a success.
+    // Re-read through the shape rule: live node data can arrive by a path that did not cross a
+    // serializer seam (a peer's canvas mutation), and a malformed hold must hold, never throw.
+    const successHold = normalizeSuccessWaitHold(p.afterSuccess)
+    if (
+      successHold &&
+      !(
+        success &&
+        successWaitSatisfied(
+          successHold,
+          (d) => successDepFacts(d, status, live, success.outcomes, handovers),
+          success.now
+        )
+      )
+    )
+      continue
+    if (p.after.every((d) => depSatisfied(d, status, live, handovers))) {
+      out.push({ id: n.id, command: p.command, ...(p.promptFile ? { briefFile: p.promptFile } : {}) })
+    }
   }
   return out
 }
@@ -140,11 +364,12 @@ export function launchesToFire(
 export function unmetDeps(
   node: ArmedNode,
   status: StatusById,
-  live: ReadonlySet<string>
+  live: ReadonlySet<string>,
+  handovers?: HandoverById
 ): string[] {
   const p = node.data.pendingLaunch
   if (!p) return []
-  return p.after.filter((d) => !depSatisfied(d, status, live))
+  return p.after.filter((d) => !depSatisfied(d, status, live, handovers))
 }
 
 /**
@@ -166,6 +391,8 @@ export type LaunchDelivery =
   | { kind: 'failed'; attempts: number; at: number }
   /** A headless start (#925) is in flight: core owns the pane, so ▶ must not type into it. */
   | { kind: 'starting'; since: number }
+  /** The file the launch reads its prompt from was gone at delivery: held for ▶, never typed. */
+  | { kind: 'brief-missing'; path: string; at: number }
 
 /**
  * Which delivery records the Canvas sweep retires: every record whose node is no longer an armed
@@ -201,11 +428,30 @@ export function launchTooltip(
   waitingOn: string,
   command: string,
   erroredOn?: string,
-  relay = false
+  relay = false,
+  /** The node's `--after-pr` wait: what is still unmet (`prHoldSummary`), whether it has passed
+   *  its deadline, and that deadline as the caller formats it (a locale string is not pure). */
+  pr?: { expired: boolean; summary: string; deadline: string },
+  /** The node's `--after-success` wait: where it stands (`successWaitStatus`), the unmet stations
+   *  (`successWaitSummary`), and its deadline as the caller formats it. */
+  success?: { status: 'met' | 'waiting' | 'blocked' | 'expired'; summary: string; deadline: string },
+  /** The deps held because the user interrupted their last turn (`interruptedDeps`). */
+  interruptedOn?: string,
+  /** The deps that were handed new work they have not finished (core/station-handover.ts), named. */
+  handedOverOn?: string
 ): string {
   if (delivery?.kind === 'starting') return 'Starting in the background — an agent asked for this session to run now.'
   const runs = `Runs:\n${command}`
   if (relay) return `Launch delivery from a relay tab is unavailable. Open the host to run this command.\n${runs}`
+  // Checked right before typing: the file the prompt is read from went away (a spill outlived its
+  // TTL while a cold-opened node waited, or a `--prompt-file` was deleted). Typing the command would
+  // start the agent with an empty prompt, so it is held, and ▶ is the human's call.
+  if (delivery?.kind === 'brief-missing')
+    return (
+      `The file this launch reads its prompt from no longer exists:\n${delivery.path}\n` +
+      'It was not started, because the agent would get no brief. Open the node again with its ' +
+      `prompt, or press \u25b6 to run it anyway.\n${runs}`
+    )
   if (delivery?.kind === 'failed')
     return (
       'Launch delivery is unconfirmed; automatic retry is stopped.\n' +
@@ -220,12 +466,60 @@ export function launchTooltip(
       'what it did not produce.\n' +
       `Retry or nudge it — a successful turn releases this — or press ▶ to run it now.\n${runs}`
     )
+  // Same shape: an interrupted upstream is idle, and nothing will release this on its own.
+  if (interruptedOn)
+    return (
+      `${interruptedOn} was interrupted before its turn finished, so this is held rather than ` +
+      'started on unfinished work.\n' +
+      `Give it its next prompt — a turn that finishes releases this — or press ▶ to run it now.\n${runs}`
+    )
+  // A wait that passed its deadline will not end on its own either — the one other case where
+  // "waiting for" would be a promise nobody keeps.
+  if (pr?.expired)
+    return (
+      `The wait on pull requests passed its deadline (${pr.deadline}), so this will not start on ` +
+      'its own.\n' +
+      `Press \u25b6 to run it now.\n${runs}`
+    )
+  if (success?.status === 'expired')
+    return (
+      `The wait for stations to report success passed its deadline (${success.deadline}), so this ` +
+      'will not start on its own.\n' +
+      `Press \u25b6 to run it now.\n${runs}`
+    )
+  // A reported failure is the other wait that will not end on its own: named, with both ways out.
+  if (success?.status === 'blocked')
+    return (
+      `Held on ${success.summary}.\n` +
+      'It does not start on a task that did not succeed. Retry that station — this starts when it ' +
+      `reports success — or press \u25b6 to run it now.\n${runs}`
+    )
   if (delivery?.kind === 'stalled')
     return (
       'Ready to run, but this terminal has not started yet — the launch is still held and ' +
       'fires as soon as it does.\n' +
       `Press \u25b6 to try it now.\n${runs}`
     )
+  // A station that just got new work still reads `done` from its previous task; saying "waiting for
+  // X to finish" alone would read as a wait that should already be over.
+  if (handedOverOn)
+    return (
+      `Waiting for ${handedOverOn} to finish — a turn that ended before that work was done does not ` +
+      `count${waitingOn ? ` (all waits: ${waitingOn})` : ''}, then runs:\n${command}`
+    )
+  if (success?.status === 'waiting') {
+    // `waitingOn` here is the caller's list of the OTHER stations (plain `--after`), if any.
+    const stations = waitingOn ? `${waitingOn} to finish and for ` : ''
+    const prs = pr?.summary ? `, and for ${pr.summary}` : ''
+    return (
+      `Waiting for ${stations}a reported success from ${success.summary}${prs}, until ` +
+      `${success.deadline}, then runs:\n${command}`
+    )
+  }
+  if (pr?.summary) {
+    const stations = waitingOn ? `${waitingOn} to finish and for ` : ''
+    return `Waiting for ${stations}${pr.summary}, until ${pr.deadline}, then runs:\n${command}`
+  }
   return waitingOn
     ? `Waiting for ${waitingOn} to finish, then runs:\n${command}`
     : `Queued; waiting for launch delivery.\n${runs}`

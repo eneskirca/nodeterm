@@ -1,0 +1,155 @@
+{
+ "_provenance": "A REAL transcript excerpt from this development host (Claude Code 2.1.282, 2026-09-25): the user queued a message while Claude worked, then pressed Esc. The interrupt marker carries the QUEUED prompt`s promptId, and the queued prompt record is written ~36 ms AFTER it. Text, tool input/output and paths removed; record types, order, promptIds, uuids and timestamps unchanged. The queued prompt`s UserPromptSubmit hook was not captured; the test reconstructs it from the 2.1.285 capture`s shape (interrupt-capture.json).",
+ "interruptedTurn": "66372fea-a1c9-47d2-a02a-bd7dded7eeb4",
+ "records": [
+  {
+   "type": "user",
+   "isSidechain": false,
+   "promptId": "66372fea-a1c9-47d2-a02a-bd7dded7eeb4",
+   "timestamp": "2026-09-25T21:46:08.008Z",
+   "uuid": "5cb4bbb4-8d37-488a-82d2-0245c8da2cab",
+   "parentUuid": "d4b4c7d9-d836-4d3c-9e79-cbf56b6e1994",
+   "message": {
+    "role": "user",
+    "content": "[prompt text removed]"
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "assistant",
+   "isSidechain": false,
+   "timestamp": "2026-09-25T21:46:10.945Z",
+   "uuid": "f6f7c7af-9282-46ad-ad76-5834d26eb67d",
+   "parentUuid": "363d7fb7-e6c7-49ee-a03b-6ef2b02fe3fd",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "thinking"
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "assistant",
+   "isSidechain": false,
+   "timestamp": "2026-09-25T21:46:12.403Z",
+   "uuid": "52f15ed1-e9df-4db3-b9bf-668ec54c7045",
+   "parentUuid": "f6f7c7af-9282-46ad-ad76-5834d26eb67d",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_01BnKLDpyoNQsR22TpFp2UTo",
+      "name": "Bash",
+      "input": {}
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "user",
+   "isSidechain": false,
+   "promptId": "66372fea-a1c9-47d2-a02a-bd7dded7eeb4",
+   "timestamp": "2026-09-25T21:46:14.093Z",
+   "uuid": "59aab56f-c5f1-4054-adbf-54c265230223",
+   "parentUuid": "52f15ed1-e9df-4db3-b9bf-668ec54c7045",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_01BnKLDpyoNQsR22TpFp2UTo",
+      "content": "[output removed]"
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "assistant",
+   "isSidechain": false,
+   "timestamp": "2026-09-25T21:46:16.091Z",
+   "uuid": "cc95c208-c98c-4fc9-951f-e5234daaa6e6",
+   "parentUuid": "ec50578c-2321-42ec-82ce-b4e9a1498a43",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_01VNW49kWz28t2uu9nj9Egjs",
+      "name": "Bash",
+      "input": {}
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "user",
+   "isSidechain": false,
+   "promptId": "66372fea-a1c9-47d2-a02a-bd7dded7eeb4",
+   "timestamp": "2026-09-25T21:46:17.468Z",
+   "uuid": "ab0bedb7-0e09-4f30-8601-7196d7c2a3e7",
+   "parentUuid": "cc95c208-c98c-4fc9-951f-e5234daaa6e6",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_01VNW49kWz28t2uu9nj9Egjs",
+      "content": "[output removed]"
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "queue-operation",
+   "operation": "enqueue",
+   "timestamp": "2026-09-25T21:46:43.527Z",
+   "content": "[queued prompt text removed]"
+  },
+  {
+   "type": "queue-operation",
+   "operation": "dequeue",
+   "timestamp": "2026-09-25T21:46:46.388Z"
+  },
+  {
+   "type": "user",
+   "isSidechain": false,
+   "promptId": "dbf7c1fb-cfef-4424-b1b1-9bb2c9907302",
+   "interruptedMessageId": "msg_011CfQteD2ychoR1eMFRSQnp",
+   "timestamp": "2026-09-25T21:46:46.377Z",
+   "uuid": "30f802fe-7c28-48d2-9e41-09b33a68c5e4",
+   "parentUuid": "0dd26d34-c141-4a4f-a030-1d560c56ad21",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "[Request interrupted by user]"
+     }
+    ]
+   },
+   "version": "2.1.282"
+  },
+  {
+   "type": "user",
+   "isSidechain": false,
+   "promptId": "dbf7c1fb-cfef-4424-b1b1-9bb2c9907302",
+   "timestamp": "2026-09-25T21:46:46.413Z",
+   "uuid": "ae5b107c-927f-41b7-811c-bc5e93721358",
+   "parentUuid": "30f802fe-7c28-48d2-9e41-09b33a68c5e4",
+   "message": {
+    "role": "user",
+    "content": "[prompt text removed]"
+   },
+   "version": "2.1.282"
+  }
+ ],
+ "queuedTurn": "dbf7c1fb-cfef-4424-b1b1-9bb2c9907302"
+}

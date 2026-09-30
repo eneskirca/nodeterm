@@ -45,3 +45,17 @@ describe('subagent reload memory', () => {
     expect(subagentReplay.snapshot()).toEqual([])
   })
 })
+describe('Claude native subagents (core/claude-subagent-lifecycle.ts)', () => {
+  it('a start that supersedes a tool-drawn card replaces it: one running card, under the new key', () => {
+    const replay = new SubagentReplay()
+    replay.record({ ...start, toolUseId: 'toolu_1' }, 100)
+    replay.record({ ...start, toolUseId: 'a1', supersedes: 'toolu_1' }, 150)
+    expect(replay.snapshot(200).map((e) => [e.toolUseId, e.subagentStartedAt])).toEqual([['a1', 100]])
+  })
+  it('a repeated start of a running card corrects its label and keeps its start time', () => {
+    const replay = new SubagentReplay()
+    replay.record({ ...start, toolUseId: 'a1', taskLabel: 'guess' }, 100)
+    replay.record({ ...start, toolUseId: 'a1', taskLabel: 'exact' }, 150)
+    expect(replay.snapshot(200)).toEqual([expect.objectContaining({ toolUseId: 'a1', taskLabel: 'exact', subagentStartedAt: 100 })])
+  })
+})

@@ -83,6 +83,7 @@ describe('Server Edition open-agent --issue', () => {
   let log: Array<{ projectId: string; entry: BoardLogEntry }>
   let factory: HeadlessNodeFactory
   let boardRepository: string | null
+  let lookups: string[]
 
   const settings = (): Settings => ({ ...DEFAULT_SETTINGS, claudePermissionMode: 'manual' })
 
@@ -125,6 +126,7 @@ describe('Server Edition open-agent --issue', () => {
     pty = new FakePty()
     log = []
     boardRepository = 'eneskirca/nodeterm'
+    lookups = []
     factory = new HeadlessNodeFactory({
       workspaceStore: store,
       ptyManager: pty,
@@ -135,7 +137,10 @@ describe('Server Edition open-agent --issue', () => {
       codexSharedIdentity: async () => false,
       stateOf: () => undefined,
       launchTiming: { quietMs: 0, capMs: 0 },
-      issueRepository: async () => boardRepository,
+      issueRepository: async (projectId) => {
+        lookups.push(projectId)
+        return boardRepository
+      },
       appendBoardLog: async (projectId, entry) => {
         log.push({ projectId, entry })
         return true
@@ -192,6 +197,27 @@ describe('Server Edition open-agent --issue', () => {
     expect(pty.sends[0].text).toMatch(
       /^claude 'You are working on GitHub issue o\/r#7\. Read it first by running gh issue view 7 --repo o\/r --comments and .* Your task: Only touch the parser\. Never close the issue\. .*'$/
     )
+  })
+
+  it('asks for the board repository only after the identity, source and target gates', async () => {
+    await seed(true)
+    // An unverified caller, a caller naming a project that is not its own, and a source that is
+    // not in the workspace: each is refused by its gate, and none of them makes the host look up a
+    // board (the answer would tell the caller whether that project has one).
+    for (const [nodeId, args, verified] of [
+      ['term-source', { agent: 'claude', issue: '#42' }, false],
+      ['term-source', { agent: 'claude', issue: '#42', project: 'project-elsewhere' }, true],
+      ['ghost', { agent: 'claude', issue: '#42' }, true]
+    ] as const) {
+      const reply = await factory.openAgent(nodeId, { ...args }, verified)
+      expect(reply.ok).toBe(false)
+      expect(reply.error).not.toMatch(/issue|repository/i)
+    }
+    expect(lookups).toEqual([])
+    expect(pty.creates).toEqual([])
+    // The same call from an accepted caller does ask, against the project the node opens in.
+    expect((await factory.openAgent('term-source', { agent: 'claude', issue: '#42' }, true)).ok).toBe(true)
+    expect(lookups).toEqual(['project-1'])
   })
 
   it('refuses #N when the board syncs with no repository, and opens nothing', async () => {

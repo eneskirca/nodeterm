@@ -7,9 +7,9 @@
  * codex would downgrade codex sessions on a machine whose *claude* is old or missing, and reading
  * codex's vocabulary off claude's probe would be the same mistake with the arrow reversed.
  *
- * Today it answers exactly one question — which values does this `codex` accept for
- * `--ask-for-approval`? — but it is shaped as a caps bag so the next codex fact lands here instead
- * of growing a third probe.
+ * It answers two questions read off the same `--help` page — which values does this `codex` accept
+ * for `--ask-for-approval`, and does it take `--no-daemon` (see `codexNoDaemonFrom`)? — shaped as a
+ * caps bag so the next codex fact lands here instead of growing another probe.
  *
  * WHY THE VALUES AND NOT A VERSION NUMBER. The vocabulary is not stable across releases: measured
  * on real binaries, 0.146.0–0.148.0 advertise `untrusted, on-request, never` and 0.149.0 onwards
@@ -30,6 +30,7 @@ import { UNKNOWN_CODEX_CLI_CAPS, type CodexCliCaps } from '../shared/types'
 import { findInLoginPath } from './pty-manager'
 import { directExecutableInvocation } from './exec-path'
 import { platform } from './platform'
+import { CODEX_NO_DAEMON_HELP_RE } from '../shared/agents/codex-daemon'
 
 const execFileP = promisify(execFile)
 const PROBE_TIMEOUT_MS = 5000
@@ -108,6 +109,30 @@ export function codexApprovalValuesFrom(helpOutput: string | null | undefined): 
   return clean.length ? Array.from(new Set(clean)) : null
 }
 
+/**
+ * Pure: `codex --help` output → does this CLI accept `--no-daemon`? `null` when there is no page to
+ * read (no codex, a timeout) — the caller then emits nothing, i.e. today's command line.
+ *
+ * WHY THIS FLAG MATTERS. From 0.157.0 the `daemon_auto_start` feature is `stable, true` (0.156.1:
+ * `experimental, false`): a plain `codex` TUI no longer runs in-process but starts — or JOINS — ONE
+ * background `app-server` per `CODEX_HOME`, and that daemon keeps the environment of the pane that
+ * started it. MEASURED on 0.159.2 (private CODEX_HOME, private tmux socket): pane A started with
+ * `NODETERM_NODE_ID=node-A`, pane B with `node-B`; in pane B both the tool shell (`echo
+ * $NODETERM_NODE_ID` printed `node-A`) and every hook process (`node-A` in the hook log) ran as
+ * pane A. Every nodeterm hook POST, canvas-control verb and context-link read from pane B was
+ * attributed to another node. `--no-daemon` ("Run without the shared background server, even if it
+ * is already running") put pane C's tool shell and hooks back on `node-C`;
+ * `-c features.daemon_auto_start=false` did NOT — it still joined the running daemon. There is no
+ * environment-variable switch.
+ *
+ * Anchored on an option HEADER line, never on prose: a description mentioning the flag inside
+ * another option must not read as the option itself.
+ */
+export function codexNoDaemonFrom(helpOutput: string | null | undefined): boolean | null {
+  if (!helpOutput) return null
+  return helpOutput.split(/\r?\n/).some((l) => CODEX_NO_DAEMON_HELP_RE.test(l))
+}
+
 let helpCached: Promise<string | null> | null = null
 
 /**
@@ -163,7 +188,10 @@ let cached: Promise<CodexCliCaps> | null = null
 export function codexCliCaps(): Promise<CodexCliCaps> {
   if (!cached) {
     cached = codexHelpText()
-      .then((help) => ({ approvalValues: codexApprovalValuesFrom(help) }))
+      .then((help) => ({
+        approvalValues: codexApprovalValuesFrom(help),
+        noDaemon: codexNoDaemonFrom(help)
+      }))
       .catch(() => UNKNOWN_CODEX_CLI_CAPS)
   }
   return cached

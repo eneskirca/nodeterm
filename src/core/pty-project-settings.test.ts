@@ -149,6 +149,34 @@ describe('project settings at the spawn — LOCAL leg', () => {
     expect(seen).toEqual([PROJECT])
   })
 
+  it('a burst of spawns for one project shares ONE in-flight read, and each gets its own copy', async () => {
+    // A project switch mounts every node at once; on an SSH project each read is an ssh round trip,
+    // and 41 of them spread the terminals over ~1.3 s (measured). Joining the in-flight read fixes it.
+    let calls = 0
+    let release!: (v: ProjectSpawnOverrides | null) => void
+    await manager(() => {
+      calls++
+      return new Promise((r) => (release = r))
+    })
+    const burst = ['n-a', 'n-b', 'n-c'].map((k) => create({ persistKey: k, ownerProjectId: PROJECT }))
+    await new Promise((r) => setTimeout(r, 0))
+    release({ env: { PROJECT_TOKEN: 'abc' } })
+    await Promise.all(burst)
+    expect(calls).toBe(1)
+    expect(spawns.map((s) => s.env.PROJECT_TOKEN)).toEqual(['abc', 'abc', 'abc'])
+  })
+
+  it('is not a cache: a spawn after the read settled reads again', async () => {
+    let calls = 0
+    await manager(async () => {
+      calls++
+      return null
+    })
+    await create({ persistKey: 'n-a', ownerProjectId: PROJECT })
+    await create({ persistKey: 'n-b', ownerProjectId: PROJECT })
+    expect(calls).toBe(2)
+  })
+
   it('never asks — and changes nothing — when the pane has no proven owner', async () => {
     const read = vi.fn(async () => ({ env: { PROJECT_TOKEN: 'abc' } }))
     await manager(read)

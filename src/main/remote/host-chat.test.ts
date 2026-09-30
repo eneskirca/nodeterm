@@ -194,6 +194,32 @@ describe('host-chat status', () => {
     const d = deps({ isStructuredTicket: vi.fn(() => true) })
     expect((await createHostChat(d).status('n1'))?.structuredAnswers).toBe(false)
   })
+  it('the `/` catalog rides ONLY when asked, re-checked, and its failure drops the field, not the status', async () => {
+    const catalog = vi.fn(async () => ({
+      version: 1 as const,
+      entries: [
+        { name: 'ok', description: 'a\u001bb', kind: 'command' as const, scope: 'project' as const },
+        { name: 'bad name', description: '', kind: 'command' as const, scope: 'project' as const }
+      ]
+    }))
+    const d = deps({ catalog })
+    // An older phone never asks: the old shape, and no catalog read at all.
+    expect(await createHostChat(d).status('n1')).not.toHaveProperty('catalog')
+    expect(catalog).not.toHaveBeenCalled()
+    const s = await createHostChat(d).status('n1', { catalog: true })
+    expect(catalog).toHaveBeenCalledWith({ nodeId: 'n1', agentId: 'claude', accountId: 'acc', cwd: '/srv/app' })
+    expect(s?.catalog).toEqual({ version: 1, entries: [{ name: 'ok', description: 'a b', kind: 'command', scope: 'project' }] })
+    const failing = deps({ catalog: vi.fn(async () => { throw new Error('host down') }) })
+    const s2 = await createHostChat(failing).status('n1', { catalog: true })
+    expect(s2).toMatchObject({ version: 1, state: 'done' })
+    expect(s2).not.toHaveProperty('catalog')
+  })
+  it('a catalog that does not answer in time is DROPPED — the status never waits on a half-dead master', async () => {
+    const d = deps({ catalog: vi.fn(() => new Promise<never>(() => {})), catalogTimeoutMs: 20 })
+    const s = await createHostChat(d).status('n1', { catalog: true })
+    expect(s).toMatchObject({ version: 1, state: 'done' })
+    expect(s).not.toHaveProperty('catalog')
+  })
   it('unknown node ⇒ null, renderer never asked', async () => {
     const d = deps()
     expect(await createHostChat(d).status('nope')).toBeNull()

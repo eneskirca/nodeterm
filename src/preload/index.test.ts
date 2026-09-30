@@ -136,3 +136,16 @@ describe('preload sshProject passphrase wiring', () => {
     expect(h.removeListener).toHaveBeenCalledWith(IPC.sshPassphraseDismiss, handler)
   })
 })
+
+describe('preload canvasAuthority (the desktop governs nothing)', () => {
+  it('answers no project, never assumes any, and never asks main', async () => {
+    h.invoke.mockClear()
+    h.on.mockClear()
+    expect(api.canvasAuthority.assumeAllUntilAnswered).toBe(false)
+    expect(await api.canvasAuthority.governed()).toEqual([])
+    const off = api.canvasAuthority.onChanged(() => {})
+    expect(() => off()).not.toThrow()
+    expect(h.invoke).not.toHaveBeenCalled()
+    expect(h.on).not.toHaveBeenCalled()
+  })
+})

@@ -27,6 +27,9 @@ import type { LaunchDelivery } from '../lib/pendingLaunch'
  *    click would splice a second copy of the command into the one core is typing. Its orchestrator
  *    owns it end to end — `clear` on a start (or a refusal before any spawn), `markFailed` on any
  *    other failure — which is why the Canvas sweep never retires it (`deliveriesToRetire`).
+ *  - `brief-missing` — the gate opened and the session is up, but the file the launch reads its
+ *    prompt from is gone. Typing the command would start the agent with no brief, so it is held
+ *    (the node is persisted `manualOnly`) and the tooltip names the path; ▶ runs it anyway.
  *
  * No state is ever inferred from silence. `stalled` is raised by a timer that starts when the gate
  * opens, `failed` only after a delivery was actually attempted and refused, `starting` only by the
@@ -42,6 +45,8 @@ interface LaunchDeliveryStore {
   markFailed: (nodeId: string, attempts: number) => void
   /** A headless start (#925) is about to type this node's launch: ▶ must stand aside until it settles. */
   markStarting: (nodeId: string) => void
+  /** The launch's prompt file was gone at delivery: held for ▶, with the path, never typed. */
+  markBriefMissing: (nodeId: string, path: string) => void
   /** Delivered, disarmed, or the node is gone — nothing left to report. */
   clear: (nodeId: string) => void
 }
@@ -59,6 +64,8 @@ export const useLaunchDelivery = create<LaunchDeliveryStore>((set) => ({
     // Unconditional: a start replaces whatever an earlier attempt left behind, `failed` included —
     // that record described the attempt this one is retrying.
     set((s) => ({ byId: { ...s.byId, [nodeId]: { kind: 'starting', since: Date.now() } } })),
+  markBriefMissing: (nodeId, path) =>
+    set((s) => ({ byId: { ...s.byId, [nodeId]: { kind: 'brief-missing', path, at: Date.now() } } })),
   markFailed: (nodeId, attempts) =>
     set((s) => {
       // Never let a later, smaller count shrink the record: the manual ▶ reports its own single

@@ -222,7 +222,7 @@ describe('armForColdOpen — the launch moves (never copies) into pendingLaunch 
 
 describe('projectTargetFlagRefusal — the v1 flag exclusion fires (review I-2)', () => {
   const REFUSAL =
-    'project-target-flag-unsupported: --group/--after cannot be combined with --project'
+    'project-target-flag-unsupported: --group/--after/--after-success cannot be combined with --project'
 
   it('refuses --group, --after, and both — with the exact named reply', () => {
     expect(projectTargetFlagRefusal({ group: 'g1' })).toBe(REFUSAL)

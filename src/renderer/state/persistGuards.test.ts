@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { canCommitCanvas, canClearDirty, canCreateOnCanvas } from './persistGuards'
+import { canCommitCanvas, canClearDirty, canCreateOnCanvas, liveCanvasHolds } from './persistGuards'
 
 describe('canCommitCanvas', () => {
   it('commits while the nodes in hand belong to the active project', () => {
@@ -67,5 +67,27 @@ describe('canClearDirty', () => {
 
   it('keeps dirty set for a burst of edits during one save', () => {
     expect(canClearDirty(0, 12)).toBe(false)
+  })
+})
+
+describe('liveCanvasHolds', () => {
+  it('a peer op for the project React Flow holds, which is also the active one, goes live', () => {
+    expect(liveCanvasHolds('b', 'b', 'b')).toBe(true)
+  })
+
+  // Task 2 review, risk E: the store already says B while React Flow still holds A (or nothing).
+  // Applying B's op to that array mixed it into A's nodes; the next commit wrote the mix into B.
+  it('never while React Flow holds another project, or none', () => {
+    expect(liveCanvasHolds('a', 'b', 'b')).toBe(false)
+    expect(liveCanvasHolds(null, 'b', 'b')).toBe(false) // a bail-out left the old nodes mounted
+  })
+
+  // …and never for a project that is no longer active, even if its nodes are still in hand: the
+  // switch has committed them, and the load that follows replaces them — the store is the copy
+  // that survives.
+  it('never for a project that is not the active one', () => {
+    expect(liveCanvasHolds('a', 'b', 'a')).toBe(false)
+    expect(liveCanvasHolds('a', null, 'a')).toBe(false)
+    expect(liveCanvasHolds('', '', '')).toBe(false)
   })
 })

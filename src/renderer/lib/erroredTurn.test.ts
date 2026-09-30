@@ -38,7 +38,9 @@ describe('the hook says it (normalize)', () => {
   })
 
   it('an INTERRUPTED turn is not an errored one', () => {
-    // The user pressed Esc. Nothing failed, and the station should still release its dependents.
+    // The user pressed Esc. Nothing failed, so it is not `errored` (no TURN FAILED chip, no
+    // station-failure notice). It still holds `--after` dependents, through its OWN annotation —
+    // `lastTurnInterrupted`, see turnInterrupt.test.ts.
     const e = normalizeClaude(env({ hook_event_name: 'Stop', is_interrupt: true }))
     expect(e).toMatchObject({ state: 'done', interrupted: true })
     expect(e?.errored).toBeFalsy()

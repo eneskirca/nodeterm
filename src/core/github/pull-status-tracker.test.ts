@@ -65,6 +65,29 @@ describe('GitHubPullStatusTracker', () => {
     expect(board.repository).toBe('o/r')
   })
 
+  it('says when the read behind the board STARTED, on the host clock (an --after-pr wait needs a read taken after it was armed)', async () => {
+    const { subject, advance } = tracker(1_000)
+    expect(subject.board(KEY).readStartedAt).toBeUndefined()
+    await subject.read(KEY, 'user-1', 'heartbeat', async () => {
+      advance(700) // the read takes time: the start is what counts, not the finish
+      return read([facts(1)])
+    })
+    expect(subject.board(KEY).readStartedAt).toBe(1_000)
+    expect(subject.board(KEY).observedAt).toBe(1_700)
+  })
+
+  it('a FOREGROUND read tells the boards even when nothing changed; a background one does not', async () => {
+    // Someone asked for a fresh answer (the board's refresh, or a PR wait that needs a read taken
+    // after it was armed): an unchanged answer is still an answer they are waiting for.
+    const { subject, changes } = tracker()
+    await subject.read(KEY, 'user-1', 'heartbeat', async () => read([facts(1)]))
+    const before = changes.length
+    await subject.read(KEY, 'user-1', 'heartbeat', async () => read([facts(1)]))
+    expect(changes.length).toBe(before)
+    await subject.read(KEY, 'user-1', 'foreground', async () => read([facts(1)]))
+    expect(changes.length).toBe(before + 1)
+  })
+
   it('a failed read keeps the last snapshot and marks it stale instead of going blank', async () => {
     const { subject, changes } = tracker()
     await subject.read(KEY, 'user-1', 'heartbeat', async () => read([facts(1)]))
@@ -221,6 +244,18 @@ describe('GitHubPullStatusTracker', () => {
       const restarted = tracker(0, store)
       expect(await restarted.subject.claimMove(KEY, 'p', 'n', [1])).toBe(false)
       expect(await restarted.subject.claimMove(KEY, 'p', 'n', [2])).toBe(true)
+      // Both merges have moved it now; the set shrinking back to one of them is not a new merge.
+      expect(await restarted.subject.claimMove(KEY, 'p', 'n', [2])).toBe(false)
+      expect(await restarted.subject.claimMove(KEY, 'p', 'n', [1, 2])).toBe(false)
+    })
+
+    it('a dragged-back card stays put when one of its merged PRs ages off the pull board', async () => {
+      const { subject } = tracker()
+      await subject.read(KEY, 'user-1', 'heartbeat', async () => read([facts(1), facts(2)]))
+      expect(await subject.noteWaits(KEY, 'p', 'n', [1, 2])).toBe(2)
+      expect(await subject.claimMove(KEY, 'p', 'n', [1, 2])).toBe(true)
+      // The user drags the card back; #2 later leaves the board, so the planner now asks for {1}.
+      expect(await subject.claimMove(KEY, 'p', 'n', [1])).toBe(false)
     })
 
     it('a card that first appears after the merge never wins a claim', async () => {

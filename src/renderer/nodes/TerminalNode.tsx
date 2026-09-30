@@ -1,3 +1,4 @@
+import { elementOnScreen } from '../terminal/on-screen'
 import { useContextEnsure } from '../terminal/useContextEnsure'
 import { canPlainApprove, sendHeaderAnswer } from '../lib/approveGate'
 import { FIND_DECORATIONS } from '../lib/palette'
@@ -37,9 +38,11 @@ import { LocalTransport } from '../terminal/local-transport'
 import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../terminal/file-drop'
 import type { TerminalTransport } from '../terminal/transport'
 import { guardMiddleClickPaste } from '../terminal/middle-click'
+import { attachCopyOnSelect } from '../terminal/copy-on-select'
 import { patchTerminalScale } from '../terminal/scale-fix'
 import { focusedNodeId, subscribeFocusedNode, focusSurfaceEl } from '../state/focusNode'
 import { parseOsc52 } from '../terminal/osc52'
+import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../terminal/osc52-policy'
 import { activateUnicode11 } from '../terminal/unicode-width'
 import {
   createFileLinkProvider,
@@ -47,12 +50,24 @@ import {
   createUrlLinkProvider,
   installLinkClickFallback,
   installLinkContextMenu,
-  makeDirListingLookup
+  cachedCwd,
+  findExistingPath,
+  fileMissMessage,
+  makeDirListingLookup,
+  type LinkHoverSink,
+  type UnverifiedPath
 } from '../terminal/file-links'
 import { linkMenuItems, resolveLinkTarget, type LinkMenuTarget } from '../terminal/link-menu'
 import { ContextMenu } from '../components/ContextMenu'
 import { DownloadStrip } from '../components/DownloadStrip'
-import { canUseLocalShell, downloadRoute } from '../lib/download'
+import { canUseLocalShell, downloadRoute, type DownloadContext } from '../lib/download'
+import {
+  createLinkHintTooltip,
+  fileLinkHint,
+  hideLinkHints,
+  systemOpenRefusal,
+  urlLinkHint
+} from '../terminal/link-hover'
 import { useDownloads } from '../lib/useDownloads'
 import { fileLinkDialect } from '../terminal/file-link-dialect'
 import { hostPlatformFor } from '../terminal/host-platform'
@@ -175,8 +190,10 @@ import {
   restartSessionId,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
+  settleRecycledNode,
   type ExitPhaseOutcome,
   type PauseOutcome,
+  type RecyclePatch,
   type ResumePhaseOutcome
 } from '../terminal/agent-restart'
 import { coldResumeDecision, shouldProbeTranscript } from '../terminal/cold-resume-session'
@@ -206,6 +223,8 @@ import { mdViewHint } from '../lib/mdViewHint'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
+import { pasteWithImageReceipt } from '../terminal/image-paste-confirm'
+import { usePasteReceipt } from '../terminal/usePasteReceipt'
 import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { isHidden } from '../lib/ui-visibility'
@@ -216,26 +235,37 @@ import { liveProjectJumpTarget } from '../lib/projectJump'
 import { pushSessionRename } from '../lib/sessionRename'
 import { useSettings } from '../state/settings'
 import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../state/codexIdentity'
-import { codexApprovalCaps } from '../state/codexCli'
+import { ensureCodexLaunchCaps } from '../state/codexCli'
 import { useAgentStatus, agentStatusForApi, inferInterruptAfterSettle } from '../state/agentStatus'
 import { useLaunchDelivery } from '../state/launchDelivery'
-import { erroredDeps, launchTooltip } from '../lib/pendingLaunch'
+import { erroredDeps, handedOverDeps, holdReason, interruptedDeps, launchTooltip } from '../lib/pendingLaunch'
+import { useStationHandovers } from '../state/stationHandovers'
+import { useSuccessWait } from '../lib/useSuccessWait'
+import { StationFailedChip } from '../components/StationFailedChip'
+import { prHoldExpired, prHoldSummary } from '../lib/prWait'
+import { pullBoardFor, useGitHubIssues } from '../state/githubIssues'
 import type { AgentState } from '@shared/agents/normalize'
 import type { ClientId } from '@shared/presence'
 import { PresenceChips } from '../components/PresenceChips'
 import { useAgentNodes } from '../state/agentNodes'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useProjects } from '../state/projects'
+import { markWorkspaceDirty } from '../state/workspaceDirty'
 import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, openIssueOnBoard, useViewMode, viewFor } from '../state/viewMode'
 import { useSshConn } from '../state/sshConn'
 import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { useSession, useActiveSessionPresence } from '../session/session'
+import { isHostedReadOnly, useHostedReadOnly } from '../state/hostedTeams'
 import { isBrowserRuntime } from '../bridge/runtime'
 import { agentLaunchOverride, COLLAPSED_HEIGHT, type CanvasNode } from '../state/workspace'
 import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { AccountChip, useAccountChip } from '../components/AccountChip'
 import { IssueRefChip } from '../components/IssueRefChip'
+import { TeamProgressChip } from '../components/TeamProgressChip'
+import { PortsChip } from '../components/PortsChip'
+import { useTeamStations } from '../state/teamStations'
+import { sessionNameRepeatsTitle } from '../lib/cardRedundancy'
 import { effectiveAccountId } from '../lib/accountChip'
 import {
   hasHooks,
@@ -275,18 +305,25 @@ import {
 import { matchesShortcut } from '@shared/shortcut'
 import { hintLabel, isWindowsPlatform, isMacPlatform } from '@shared/platform-utils'
 import { ColumnPill } from '../components/kanban/ColumnPill'
-import { BoardLogPanel } from '../components/kanban/BoardLogPanel'
+import { NodeCommentsPanel } from '../components/kanban/NodeCommentsPanel'
 import { AgentMascot } from './AgentMascot'
 import { MaximizeButton } from './MaximizeButton'
 import { NodeIconView } from '../components/NodeIcon'
 import { nodeIconDialog } from '../components/NodeIconPicker'
 import { applyIconChoice } from '../lib/nodeIconChoice'
-import type { NodeIcon } from '@shared/node-icon'
+import { normalizeNodeIcon } from '@shared/node-icon'
 import { connectHostAttachment } from '../lib/sshAttachments'
+import { projectMayDialSsh } from '../session/relay-ssh'
 import { waitForSshRemote } from '../lib/sshRemoteWait'
 
 /** Which physical modifier the registry's abstract `Cmd` resolves to for the find-bar chord. */
 const isMac = isMacPlatform()
+
+/** A station was picked from the header's team ring: frame it — Canvas's `focusNodeById`, the same
+ *  path the Omni board's "Open on canvas" takes (it also handles a node in another project). */
+function travelToStation(nodeId: string): void {
+  window.dispatchEvent(new CustomEvent('nodeterm:focus-node', { detail: { nodeId } }))
+}
 
 /** How long a remote terminal waits for its project's ControlMaster before giving up and showing
  *  the offline overlay. Sized for the SLOW-but-fine case (a cold app load whose connect is still
@@ -415,6 +452,10 @@ export async function resolveSshRemote(
   | undefined
 > {
   const activeProjectId = useProjects.getState().activeProjectId
+  // A relay tab's node belongs to another machine: never dial or wait for a master for it here
+  // (session/relay-ssh.ts). The caller treats undefined as "no master"; the relay spawn path does
+  // not call this at all — this is the second half.
+  if (!projectMayDialSsh(useProjects.getState().getProject(activeProjectId))) return undefined
   const projectId = sshConnectionScope(conn)
   // A HOST ATTACHMENT dials for itself, HERE, because nothing else will. Canvas's active-project
   // effect pre-warms the attachments it can SEE in the stored canvas, but a node created at
@@ -1230,6 +1271,9 @@ export function TerminalNode({
   // namespaces (pty, fs) go through it; app-global ones (clipboard, shell) stay on the global.
   const session = useSession()
   const { api } = session
+  // A hosted team tab whose role is below Editor (false everywhere else): no "Restart in folder" —
+  // it recycles the session, which the host refuses for them.
+  const hostedReadOnly = useHostedReadOnly(session.id)
   // The path dialect belongs to the core that owns this tab's filesystem, not necessarily this
   // browser/window. Server Edition and relay tabs can be viewed from a different OS, so their
   // core reports `process.platform` through the already-core-bound tmux status call. Keep it in a
@@ -1454,6 +1498,7 @@ export function TerminalNode({
   // Overlay while dropped files upload to an SSH host (scp is seconds-long with zero feedback);
   // doubles as a brief "Upload failed" flash when nothing made it.
   const [uploadNote, setUploadNote] = useState<{ text: string; failed?: boolean } | null>(null)
+  const pasteReceipt = usePasteReceipt()
   const uploadNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => {
     if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
@@ -1730,6 +1775,7 @@ export function TerminalNode({
   // node (`isRemoteSessionNode` — an SSH-project terminal carries `data.ssh`/`data.sshRemoteTmux`).
   // The affordance is absent, not merely refused on click.
   const sshProject = useProjects((s) => !!s.projects.find((p) => p.id === s.activeProjectId)?.ssh)
+  const portsProjectId = useProjects((s) => s.activeProjectId)
   // The project's SSH endpoint, as two primitives: the project object is rebuilt on every node
   // serialization, so selecting `ssh.server` itself would re-render this node on each canvas edit.
   const projectSshHost = useProjects((s) => s.getProject(s.activeProjectId)?.ssh?.server.host)
@@ -1797,6 +1843,9 @@ export function TerminalNode({
    */
   const observedAccount = status?.account
   const accountChip = useAccountChip(data.accountId, observedAccount)
+  // This node's team (the stations it opened), published by Canvas from the live ropes. The store
+  // keeps each unchanged team's array identity, so this re-renders only when THIS team changes.
+  const team = useTeamStations((s) => s.byNode.get(id))
   const accountForReads = effectiveAccountId(data.accountId, observedAccount, claudeAccounts)
   /** Mirror for the session-name poll, whose effect must not restart when a late hook event
    *  finally reveals the account (see its comment). */
@@ -2021,9 +2070,23 @@ export function TerminalNode({
     !!data.initialCommand &&
     !observedLaunchDelivery &&
     !(pendingLaunch?.after?.length) &&
-    !pendingLaunch?.awaitSetupGroup
+    !pendingLaunch?.awaitSetupGroup &&
+    !pendingLaunch?.afterPr &&
+    !pendingLaunch?.afterSuccess
+  // `--after-success`: where the wait stands (lib/useSuccessWait — the hold through the shape rule,
+  // its stations, and the tooltip, which flips to EXPIRED on its own deadline tick).
+  const successWait = useSuccessWait(
+    pendingLaunch?.afterSuccess,
+    (depId) => {
+      const n = getNode(depId) as CanvasNode | undefined
+      return n ? ((n.data.title as string) || '') : undefined
+    }
+  )
+  // The stations a `--after-success` wait names are ALSO in `after`; the tooltip speaks of them in
+  // the success sentence, so the plain list leaves them out rather than naming them twice.
+  const successDepIds = successWait.depIds
   const pendingWaitingOn = [
-    ...(pendingLaunch?.after ?? []).map(
+    ...(pendingLaunch?.after ?? []).filter((depId) => !successDepIds.includes(depId)).map(
       (depId) => ((getNode(depId) as CanvasNode | undefined)?.data.title as string) || depId
     ),
     // The other thing a launch can be held on: this worktree's project setup script. Named, or the
@@ -2042,8 +2105,68 @@ export function TerminalNode({
     const live = new Set(after.filter((d) => !!getNode(d)))
     return erroredDeps({ id, data: { pendingLaunch } }, s.byId, live).join(',')
   })
+  // Same selector shape for deps held because the user interrupted their last turn (Esc/Ctrl+C).
+  const interruptedDepIds = useAgentStatus((s) => {
+    const after = pendingLaunch?.after ?? []
+    if (!after.length) return ''
+    const live = new Set(after.filter((d) => !!getNode(d)))
+    return interruptedDeps({ id, data: { pendingLaunch } }, s.byId, live).join(',')
+  })
+  // `--after-pr`: what the pull requests this node waits on look like, from the same status the
+  // launch loop judges (the canvas's watch keeps it coming). Selected only for a node that has a
+  // PR wait, so no other node re-renders on a GitHub update.
+  const prHold = pendingLaunch?.afterPr
+  const prProjectId = useProjects((s) => (prHold ? s.activeProjectId : null))
+  const prBoard = useGitHubIssues((s) => (prHold && prProjectId ? pullBoardFor(s, prProjectId) : undefined))
+  // Nothing in any store changes when a deadline passes, so the badge sets its own timer to turn
+  // EXPIRED on time (one per armed node, cleared with it).
+  const [, setPrClock] = useState(0)
+  useEffect(() => {
+    if (!prHold || prHoldExpired(prHold, Date.now())) return
+    const t = setTimeout(() => setPrClock((v) => v + 1), Math.min(prHold.deadlineAt - Date.now() + 50, 2 ** 31 - 1))
+    return () => clearTimeout(t)
+  }, [prHold])
+  const prExpired = !!prHold && prHoldExpired(prHold, Date.now())
+  const prTooltip = prHold
+    ? {
+        expired: prExpired,
+        summary: prHold.invalid ? 'a pull request wait that could not be read' : prHoldSummary(prHold, prBoard),
+        deadline: prHold.invalid ? 'the project file holds an unreadable one' : new Date(prHold.deadlineAt).toLocaleString()
+      }
+    : undefined
+  const successTooltip = successWait.tooltip
+  const successExpired = successTooltip?.status === 'expired'
+  const successBlocked = successTooltip?.status === 'blocked'
+  // Which deps were handed new work they have not finished (core/station-handover.ts): their `done`
+  // is from before it, so the tooltip says what the wait is really for. A primitive, like above.
+  const handedOverDepIds = useStationHandovers((s) => {
+    const after = pendingLaunch?.after ?? []
+    if (!after.length) return ''
+    const live = new Set(after.filter((d) => !!getNode(d)))
+    return handedOverDeps({ id, data: { pendingLaunch } }, live, s.byId)
+      .map((d) => `${d}:${holdReason(s.byId[d])}`)
+      .join(',')
+  })
+  const pendingHandedOverOn = handedOverDepIds
+    ? handedOverDepIds
+        .split(',')
+        .map((entry) => {
+          const [depId, reason] = entry.split(':')
+          const title = ((getNode(depId) as CanvasNode | undefined)?.data.title as string) || depId
+          return reason === 'background'
+            ? `${title} (tasks still running in its background)`
+            : `${title} (the work just handed to it)`
+        })
+        .join(', ')
+    : undefined
   const pendingErroredOn = erroredDepIds
     ? erroredDepIds
+        .split(',')
+        .map((depId) => ((getNode(depId) as CanvasNode | undefined)?.data.title as string) || depId)
+        .join(', ')
+    : ''
+  const pendingInterruptedOn = interruptedDepIds
+    ? interruptedDepIds
         .split(',')
         .map((depId) => ((getNode(depId) as CanvasNode | undefined)?.data.title as string) || depId)
         .join(', ')
@@ -2268,6 +2391,10 @@ export function TerminalNode({
     // Appearance comes from ONE place, shared with the kanban card modal's viewer of this same
     // session (`ModalTerminal`) — see `xtermOptionsFromSettings`.
     const term = parked?.term ?? new Terminal(xtermOptionsFromSettings(s, isLiquidGlass(s.appTheme)))
+    // A hosted team's Viewer/Commenter watches and never types: keystrokes and pastes are not taken
+    // at all (the host refuses pty:write for them anyway). Set only for such a tab — every other
+    // session never touches the option. The role is known before the session exists (relay-tab).
+    if (isHostedReadOnly(session.id)) term.options.disableStdin = true
     // Only on a FRESH instance: a parked terminal already carries the table, and the buffer it kept
     // alive was measured with it — re-registering under a live buffer buys nothing.
     if (!parked) activateUnicode11(term)
@@ -3008,6 +3135,8 @@ export function TerminalNode({
       // Reattach the parked xterm's DOM element: the PTY never detached, so the screen is
       // already current — no spawn, no tmux redraw, no terminal-mode re-negotiation.
       if (term.element) container.appendChild(term.element)
+      // A link tooltip showing when the terminal parked would otherwise reappear where it was.
+      if (term.element) hideLinkHints(term.element)
       applyFit()
     } else {
       term.loadAddon(fit)
@@ -3030,12 +3159,19 @@ export function TerminalNode({
       // The emulator's own Cmd+C / Ctrl+Shift+C chords (below) stay for a selection xterm owns.
       // WRITE-ONLY — `parseOsc52` returns null for a `?` read query so a remote program can never
       // read the local clipboard. Returning true swallows the sequence (also the read query).
+      // A RELAY tab's stream is another person's core: its writes are refused (osc52-policy.ts —
+      // paste-jacking). Local and SSH-project terminals (source 'local') are untouched.
+      const osc52Notice = createOsc52Notice()
       term.parser.registerOscHandler(52, (data) => {
         const text = parseOsc52(data)
         if (text !== null) {
-          window.nodeTerminal.clipboard.writeText(text)
-          // Through the registry, never a captured setState: this handler outlives a park.
-          copySubs.get(termKey)?.(text)
+          handleOsc52Write(text, session.source, {
+            write: (t) => window.nodeTerminal.clipboard.writeText(t),
+            // Through the registry, never a captured setState: this handler outlives a park.
+            notifyCopied: (t) => copySubs.get(termKey)?.(t),
+            shouldNotify: osc52Notice,
+            toast: dispatchOsc52Toast
+          })
         }
         return true
       })
@@ -3044,13 +3180,43 @@ export function TerminalNode({
       // agent TUI paints, so a long OAuth URL matched only its first row's fragment); file
       // paths → editor node / Explorer reveal via the file provider. Both are modifier-gated
       // inside their activate handlers, so plain clicks stay selections.
+      // Hovering a link names what a click will open — the RESOLVED path (the launch cwd or the
+      // pane's live cwd, whichever held it) and the gestures (link-hover.ts). One tooltip per xterm
+      // instance, inside its element, so it parks and dies with the terminal.
+      const linkHint = term.element ? createLinkHintTooltip(term.element) : null
+      // Read at hover/click time, never captured: the active project can change under a parked
+      // terminal. `projectFs` is declared below and only called after this block has run.
+      const shellCtx = (): DownloadContext => ({
+        browser: isBrowserRuntime(),
+        ssh: projectFs().ssh,
+        source: session.source
+      })
+      const hoverSink: LinkHoverSink | undefined = linkHint
+        ? {
+            hover: (target, ev) =>
+              linkHint.show(
+                target.kind === 'url'
+                  ? urlLinkHint(target.url, isMac)
+                  : fileLinkHint({
+                      abs: target.abs,
+                      dir: target.dir,
+                      mac: isMac,
+                      systemOpen: systemOpenRefusal(shellCtx(), target.abs) === null
+                    }),
+                ev.clientX,
+                ev.clientY
+              ),
+            leave: () => linkHint.hide()
+          }
+        : undefined
       term.registerLinkProvider(
-        createUrlLinkProvider(term, (uri) => window.nodeTerminal.shell.openExternal(uri))
+        createUrlLinkProvider(term, (uri) => window.nodeTerminal.shell.openExternal(uri), hoverSink)
       )
       // Not in xtermOptionsFromSettings: the handler closes over the shell bridge, which the
       // pure options builder must not know.
-      term.options.linkHandler = createOsc8LinkHandler((uri) =>
-        window.nodeTerminal.shell.openExternal(uri)
+      term.options.linkHandler = createOsc8LinkHandler(
+        (uri) => window.nodeTerminal.shell.openExternal(uri),
+        hoverSink
       )
       const projectFs = (): { fs: FsApi; ssh: boolean } => {
         const st = useProjects.getState()
@@ -3078,6 +3244,20 @@ export function TerminalNode({
         pathConvention
       )
       const getCwd = (): string | undefined => (data.cwd as string | undefined) || undefined
+      // The pane's CURRENT directory — the second anchor for a relative path (see CwdSources).
+      const getLiveCwd = cachedCwd(() => api.pty.paneCwd(id))
+      // "Couldn't check" when any candidate could not be checked, "File not found" only for a
+      // verified absence (`fileMissMessage`).
+      const onMissingFile = (
+        token: string,
+        miss: { tried: string[]; unverified?: UnverifiedPath[] }
+      ): void => {
+        window.dispatchEvent(
+          new CustomEvent('nodeterm:toast', {
+            detail: { kind: 'error', message: fileMissMessage(token, miss) }
+          })
+        )
+      }
       const openFile = (abs: string, isDir: boolean): void => {
         if (isDir) window.dispatchEvent(new CustomEvent('nodeterm:reveal-file', { detail: { path: abs } }))
         else
@@ -3085,11 +3265,26 @@ export function TerminalNode({
             new CustomEvent('nodeterm:open-file', { detail: { path: abs, ssh: projectFs().ssh } })
           )
       }
+      // Shift+Cmd/Ctrl+click → the OS default app (a directory → the OS file manager). The same
+      // `shell.openPath` the files node and ⌘K quick-open use, behind the same `canUseLocalShell`
+      // gate as the link menu's Reveal in Finder; anywhere it cannot act (SSH project, browser tab,
+      // relay) the click says why instead of doing nothing — see `systemOpenRefusal`.
+      const openWithSystem = (abs: string): void => {
+        const why = systemOpenRefusal(shellCtx(), abs)
+        if (why) {
+          window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: why } }))
+          return
+        }
+        window.nodeTerminal.shell.openPath(abs)
+      }
       term.registerLinkProvider(
         createFileLinkProvider(term, {
           getCwd,
+          getLiveCwd,
           lookup,
           activate: openFile,
+          openWithSystem,
+          hoverSink,
           convention: pathConvention
         })
       )
@@ -3100,8 +3295,11 @@ export function TerminalNode({
       if (term.element) {
         installLinkClickFallback(term, term.element, {
           getCwd,
+          getLiveCwd,
           lookup,
           activateFile: openFile,
+          openFileWithSystem: openWithSystem,
+          onMissing: onMissingFile,
           openUrl: (uri) => window.nodeTerminal.shell.openExternal(uri),
           fileEnabled: () => pathConvention() !== null,
           convention: pathConvention
@@ -3110,10 +3308,13 @@ export function TerminalNode({
         // same routed lookup; the menu itself is state on whichever instance is mounted now.
         installLinkContextMenu(term, term.element, {
           getCwd,
+          getLiveCwd,
           fileEnabled: () => pathConvention() !== null,
           convention: pathConvention,
           openMenu: (hit, x, y) =>
-            void resolveLinkTarget(hit, lookup).then((target) =>
+            void resolveLinkTarget(hit, (token) =>
+              findExistingPath(token, pathConvention() ?? {}, { getCwd, getLiveCwd, lookup })
+            ).then((target) =>
               linkMenuSubs.get(termKey)?.(target, x, y)
             )
         })
@@ -3188,6 +3389,26 @@ export function TerminalNode({
     // `!parked` so nothing is wired twice.
     const cleanups: Array<() => void> = parked ? parked.cleanups : []
 
+    // Copy-on-select (issue #759). REGISTERED ONCE, at construction, and disposed WITH THE TERMINAL
+    // — the OSC 52 handler's lifecycle, not a per-mount one: its only persistent listener lives on
+    // `term.element`, which travels with the xterm across a park/adopt, so re-attaching on adopt
+    // would stack a second copy per remount. `cleanups` is exactly the right owner — carried over
+    // by a park, run only on the final teardown (both `disposeParked` and the real-teardown branch
+    // below). Both deps are read at EVENT time, never captured: the setting via the store (a
+    // toggle applies to every open terminal on its next drag, parked ones included), and the
+    // clipboard via the QUIET path (a failure toast per drag would be unusable). No `Copied` pill:
+    // that pill exists because tmux copy-mode CLEARS the highlight as it copies; an xterm
+    // selection stays highlighted, so there is no "did it copy?" doubt to answer, and on the
+    // quiet path the pill would claim success for a write that may have failed.
+    if (!parked) {
+      cleanups.push(
+        attachCopyOnSelect(term, {
+          enabled: () => useSettings.getState().settings.copyOnSelect,
+          write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
+        })
+      )
+    }
+
     // Agent state (busy/idle/attention) comes from the agent's own hooks via the
     // agent:status IPC (handled centrally in Canvas) — not from parsing the output here.
     // We only surface the conversation topic from the terminal title, when the agent sets one.
@@ -3209,6 +3430,10 @@ export function TerminalNode({
     // `ssh` as a LOCAL pty program. Only the latter sets shell:'ssh' + buildSshArgs.
     const sshRemoteTmux = !!data.sshRemoteTmux
     const localSsh = !!ssh && !sshRemoteTmux
+    // A RELAY tab's SSH-project node lives on the HOST's side: this machine never dials for it
+    // (session/relay-ssh.ts). Its create goes to the host's core with `requireRemote`, which joins
+    // the session when the host holds it live and refuses otherwise — never a local spawn.
+    const dialsSsh = sshRemoteTmux && session.source !== 'relay'
     // Connection SCOPE of a remote terminal, captured at spawn time for the exit-255 drop report
     // below. Same choice `resolveSshRemote` makes: the owning project for an SSH project's own
     // node, the host attachment for a node attached to another endpoint — so the reconnect
@@ -3242,14 +3467,14 @@ export function TerminalNode({
       // or an unreachable host, and a terminal that is silently blank for that long reads as
       // broken. Only when there is nothing to wait FOR is nothing printed (the common case: the
       // master is already up and this resolves in a microtask).
-      if (sshRemoteTmux && ssh && !currentControlPath(ssh)) {
+      if (dialsSsh && ssh && !currentControlPath(ssh)) {
         // Drop the overlay for the duration of the attempt (this respawn IS the retry the user or
         // the coordinator asked for) so the line below is visible; it comes back if we fail.
         setCo(termKey, { offline: false })
         term.write(`\x1b[90m[connecting to ${ssh.user}@${ssh.host}…]\x1b[0m\r\n`)
       }
       const sshRemote =
-        sshRemoteTmux && ssh
+        dialsSsh && ssh
           ? await resolveSshRemote(ssh, data.cwd as string | undefined, { nodeId: id, pty: api.pty })
           : undefined
       if (disposed) return
@@ -3259,7 +3484,7 @@ export function TerminalNode({
       // scrollback snapshot, and (agent nodes) running the cold-restore `--resume` on the wrong
       // machine. `requireRemote` below refuses the same thing core-side; this is the near half,
       // which also saves the round-trip. Report the node so the reconnect coordinator retries.
-      if (sshRemoteTmux && !sshRemote) {
+      if (dialsSsh && !sshRemote) {
         setCo(termKey, { offline: true })
         term.write(
           `\r\n\x1b[90m[not connected — this session lives on ${ssh ? `${ssh.user}@${ssh.host}` : 'the remote host'}; nothing was started locally]\x1b[0m\r\n`
@@ -3298,6 +3523,9 @@ export function TerminalNode({
           // on a genuine fresh spawn, so a second project opening another's live node id cannot
           // claim it. Machine-local id, never the git-shared project.json id.
           ownerProjectId: sshProjectId ?? useProjects.getState().activeProjectId,
+          // Only orders the remote spawn queue: on-screen terminals attach before offscreen ones
+          // on a project switch (terminal/on-screen.ts, core/remote-ssh/pty-spawn-gate.ts).
+          onScreen: elementOnScreen(container),
           agentId: data.agentId,
           agentModel: data.agentModel,
           // "Restart on subscription": ride the spawn's env-strip path. Cleared below once the
@@ -3333,6 +3561,29 @@ export function TerminalNode({
         // the near-side guard above produces, retry included.
         if (unavailable) {
           const refusal = ptyRefusal(unavailable)
+          // A hosted-relay VIEWER opened a terminal it could not find running. Nothing failed and
+          // nothing is offline, so neither overlay applies — "Try again" would only respawn into the
+          // same refusal. What CAN still be on screen is state from an earlier run of this effect
+          // (a refresh re-enters here): a spawn-error overlay (only its own "Try again" clears it),
+          // the stale-cwd and lost-session banners (the success path resets them on every create
+          // result, and this path returns before it; "Restart in folder" would recycle a session
+          // this view does not hold), a refused-launch banner about a launch into a session that
+          // is not attached, and a letterbox sized to a pty that is not attached. Clear them the
+          // way the neighbouring refusals set theirs, say why the pane is empty, and stop;
+          // "Refresh terminal" re-asks on demand.
+          if (unavailable === 'join-only') {
+            setCo(termKey, {
+              offline: false,
+              spawnError: null,
+              staleCwd: false,
+              lostSession: false,
+              launchTooLongBytes: null,
+              letterbox: false,
+              geminiRetired: false
+            })
+            if (!disposed) term.write(`\r\n\x1b[90m[${refusal.message}]\x1b[0m\r\n`)
+            return
+          }
           setCo(
             termKey,
             refusal.connectionLost
@@ -3340,7 +3591,7 @@ export function TerminalNode({
               : { offline: false, spawnError: refusal.message }
           )
           if (!disposed) term.write(`\r\n\x1b[90m[${refusal.message}]\x1b[0m\r\n`)
-          if (refusal.connectionLost && sshProjectId) reportSshDrop(sshProjectId, id)
+          if (refusal.connectionLost && sshProjectId && dialsSsh) reportSshDrop(sshProjectId, id)
           return
         }
         // REFUSED: core's tombstone says another client deleted this node while we weren't
@@ -3609,7 +3860,7 @@ export function TerminalNode({
             // ssh exiting 255 on an SSH-project terminal is a CONNECTION drop (sleep/wake,
             // network change, NAT idle) — the remote tmux session survives. Report it so the
             // reconnect coordinator can re-establish the master and respawn this node.
-            if (code === 255 && sshProjectId) sshDropHandler?.(sshProjectId, id)
+            if (code === 255 && sshProjectId && dialsSsh) sshDropHandler?.(sshProjectId, id)
           })
         )
         cleanups.push(
@@ -3867,7 +4118,10 @@ export function TerminalNode({
               // Which `--ask-for-approval` values the codex that will run this node actually has.
               // Same remoteness question `shared` just answered: an SSH node runs the HOST's codex,
               // which this machine's probe never saw.
-              approvalCaps: codexApprovalCaps(data.ssh || data.sshRemoteTmux),
+              approvalCaps: await ensureCodexLaunchCaps(
+                capabilityAgentId(agentId),
+                data.ssh || data.sshRemoteTmux || session.source === 'relay'
+              ),
               // The launch-command override rides the relaunch too, so a wrapper user's node comes
               // back through its wrapper after a reboot — the moment env/account setup matters.
               // Scoped to the OWNING project (`warmOwningProjectId`) so a project-level wrapper does
@@ -3932,7 +4186,10 @@ export function TerminalNode({
                     permissionMode: mode,
                     model: data.agentModel,
                     sharedIdentity: shared,
-                    approvalCaps: codexApprovalCaps(data.ssh || data.sshRemoteTmux),
+                    approvalCaps: await ensureCodexLaunchCaps(
+                capabilityAgentId(agentId),
+                data.ssh || data.sshRemoteTmux || session.source === 'relay'
+              ),
                     launchCmdOverride: agentLaunchOverride(agentId, ownerProjectId)
                   },
                   agentEnvSnapshot()
@@ -4028,7 +4285,7 @@ export function TerminalNode({
     }
     const unregisterRestart = registerAgentRestart(
       id,
-      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean, beforeRecycle?: () => Promise<Record<string, unknown> | void>) => {
+      guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean, beforeRecycle?: () => Promise<RecyclePatch | void>) => {
         const st = useAgentStatus.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
@@ -4126,6 +4383,9 @@ export function TerminalNode({
         // to another core/settings store, and recycling here would respawn against this Mac's env.
         if (restartShell) {
           if (session.source === 'relay') return 'not-eligible'
+          // Read NOW, before the first await: this node is on the active canvas at call time, and
+          // the project may be switched while the CLI quits (see `settleRecycledNode`).
+          const ownerProjectId = owningProjectId()
           const exited = await performExitPhase({
             agentId: target,
             sessionId: agentSessionId,
@@ -4141,11 +4401,19 @@ export function TerminalNode({
           // still brings the conversation back (on whatever account the node is bound to).
           const patch = beforeRecycle ? await beforeRecycle().catch(() => undefined) : undefined
           transport.recycle(id)
-          updateNodeData(id, (node) => ({
-            ...(patch ?? {}),
+          settleRecycledNode({
+            onCanvas: !!getNode(id),
             agentId: target,
-            respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
-          }))
+            patch: patch ?? undefined,
+            updateLive: (rebind) =>
+              updateNodeData(id, (node) => ({
+                ...rebind,
+                respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
+              })),
+            updateStored: (rebind) => useProjects.getState().rebindNode(ownerProjectId, id, rebind),
+            dropPark: () => disposeParkedTerminal(termKey),
+            markDirty: markWorkspaceDirty
+          })
           return 'restarted'
         }
         // Built HERE, not inside the choreography: the shared assembly builder is the single funnel
@@ -4173,7 +4441,10 @@ export function TerminalNode({
             customAgent: customTarget,
             sessionId: agentSessionId,
             permissionMode: await ensureActivePermissionMode(target),
-            approvalCaps: codexApprovalCaps(data.ssh || data.sshRemoteTmux),
+            approvalCaps: await ensureCodexLaunchCaps(
+                capabilityAgentId(target),
+                data.ssh || data.sshRemoteTmux || session.source === 'relay'
+              ),
             model: selectedModel ?? undefined,
             // The launch-command override rides the restart too (the global layer is undefined for
             // a custom target, which already owns its launchCmd) — it is a property of how the
@@ -4325,7 +4596,10 @@ export function TerminalNode({
             customAgent,
             sessionId: agentSessionId,
             permissionMode: await ensureActivePermissionMode(agentId),
-            approvalCaps: codexApprovalCaps(data.ssh || data.sshRemoteTmux),
+            approvalCaps: await ensureCodexLaunchCaps(
+                capabilityAgentId(agentId),
+                data.ssh || data.sshRemoteTmux || session.source === 'relay'
+              ),
             sharedIdentity: false,
             // The launch-command override lives on the user's own PATH (or is an absolute path),
             // not in a generated launcher dir, so it rides the wake too — project layer included.
@@ -5329,7 +5603,17 @@ export function TerminalNode({
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     term.focus()
     useTerminalFocus.getState().remember(id)
-    term.paste(paths.join(' ') + ' ')
+    // A pasted image is only reported as attached once the agent's own pane shows it (claude's
+    // `[Image #N]`); otherwise the receipt says the path went in, unconfirmed.
+    const st = agentStatusStore.getState().byId[id]
+    const paneAgent = agentId ?? st?.agentId
+    pasteWithImageReceipt(
+      term,
+      paths.join(' ') + ' ',
+      paths,
+      agentProcessInPane(paneAgent, st) ? paneAgent : undefined,
+      pasteReceipt.report
+    )
     useAgentStatus.getState().setActive(id, true)
     presence.reportFocus(id)
   }
@@ -5394,7 +5678,11 @@ export function TerminalNode({
   // return the same name back, and clicking "Name with AI" repeatedly must not spam /rename.
   const nameWithAi = async () => {
     setNaming(true)
-    const r = await api.pty.generateName(id, (data.cwd as string) ?? '')
+    const r = await api.pty.generateName(
+      id,
+      (data.cwd as string) ?? '',
+      data.accountId as string | undefined
+    )
     setNaming(false)
     if (r.ok) {
       const current = titleRef.current ?? (data.title as string) ?? ''
@@ -5517,6 +5805,10 @@ export function TerminalNode({
   // The experimental shared glyph renderer paints text on a canvas BELOW the nodes, so a glass
   // tint would sit on top of every glyph: glass stands down while a grid is mounted.
   const glassOn = glassVars !== null && !glyphMounted
+  // The header's icon button is conditional, so it is gated on the NORMALIZED icon — the same
+  // answer NodeIconView gives. Gated on the raw value, an invalid stored icon left an empty button
+  // (and a flex gap) between the color swatch and the title.
+  const headerIcon = normalizeNodeIcon(data.icon)
   return (
     <>
     {/* Sibling of the root: .term-node is overflow:hidden and would clip the half-pill. */}
@@ -5605,7 +5897,7 @@ export function TerminalNode({
             }}
           />
         )}
-        {data.icon ? (
+        {headerIcon ? (
           <button
             className="term-node__icon nodrag"
             title="Change icon"
@@ -5614,13 +5906,13 @@ export function TerminalNode({
               void nodeIconDialog({
                 nodeId: id,
                 title: (data.title as string) ?? '',
-                icon: data.icon as NodeIcon
+                icon: headerIcon
               }).then((choice) =>
                 applyIconChoice(choice, (icon) => updateNodeData(id, { icon }))
               )
             }}
           >
-            <NodeIconView icon={data.icon as NodeIcon} size={15} />
+            <NodeIconView icon={headerIcon} size={15} />
           </button>
         ) : null}
         {editingTitle ? (
@@ -5663,7 +5955,7 @@ export function TerminalNode({
             {data.title || 'Untitled'}
           </span>
         )}
-        {status?.session && status.session !== data.title && (
+        {status?.session && !sessionNameRepeatsTitle(status.session, data.title) && (
           <span className="term-node__session" title={status.session}>
             {status.session}
           </span>
@@ -5682,6 +5974,21 @@ export function TerminalNode({
             )
           }}
         />
+        {/* Dev servers this session listens on (CLAUDE.md → Dev-server ports). On an SSH project a
+            row forwards the SAME port over the project's master before opening it. The card modal
+            draws the same component. */}
+        <PortsChip
+          nodeId={id}
+          projectId={portsProjectId}
+          remote={sshProject}
+          onOpenUrl={(url) =>
+            window.dispatchEvent(new CustomEvent('nodeterm:open-url-node', { detail: { url, sourceNodeId: id } }))
+          }
+          menuZIndex={60}
+        />
+        {/* The stations this session opened, and how far along they are — the same ring its board
+            card and card modal draw (lib/teamProgress). A row travels to that station. */}
+        {team && <TeamProgressChip stations={team} onTravel={travelToStation} menuZIndex={60} />}
         {/* The fallback, made visible. A Codex node that could not get a managed shared identity
             runs a perfectly good plain `codex` — but the user has to be able to SEE that it did,
             without reading a log, so the chip states it and its tooltip says why. Absent (and the
@@ -5806,12 +6113,22 @@ export function TerminalNode({
         {pendingLaunch && !firstOpenInFlight && (
           <span
             className={`term-node__status term-node__status--queued nodrag${
-              launchDelivery && !startingNow ? ' term-node__status--queued-warn' : ''
+              (launchDelivery || prExpired || successExpired || successBlocked) && !startingNow
+                ? ' term-node__status--queued-warn'
+                : ''
             }`}
-            title={launchTooltip(launchDelivery, pendingWaitingOn, pendingLaunch.command, pendingErroredOn, session.source === 'relay')}
+            title={launchTooltip(launchDelivery, pendingWaitingOn, pendingLaunch.command, pendingErroredOn, session.source === 'relay', prTooltip, successTooltip, pendingInterruptedOn, pendingHandedOverOn)}
           >
             <span className="term-node__status-dot" />
-            {startingNow ? 'STARTING' : `${launchDelivery ? '⚠ ' : ''}QUEUED`}
+            {startingNow
+              ? 'STARTING'
+              : launchDelivery
+                ? '⚠ QUEUED'
+                : prExpired || successExpired
+                  ? '⚠ EXPIRED'
+                  : successBlocked
+                    ? '⚠ BLOCKED'
+                    : 'QUEUED'}
             <button
               className="term-node__queued-run"
               disabled={session.source === 'relay' || startingNow}
@@ -5841,6 +6158,14 @@ export function TerminalNode({
             thing on any surface that tells an errored station apart from one that finished. It
             clears itself on the next genuine turn. Shown beside a `done`/unknown state only: a
             live RUNNING/NEEDS YOU is about the CURRENT turn and speaks for itself. */}
+        {/* STATION FAILED: a station THIS agent opened has stopped, and this agent was told
+            (src/core/agents/station-notice.ts). Shown on the orchestrator, not the station — the
+            station already wears its own TURN FAILED / DROPPED / NEEDS YOU. */}
+        <StationFailedChip
+          nodeId={id}
+          className="term-node__status term-node__status--station-failed nodrag"
+          dot
+        />
         {status?.lastTurnError && status?.state !== 'working' && (
           <span
             className="term-node__status term-node__status--errored"
@@ -6097,6 +6422,11 @@ export function TerminalNode({
             {copy.feedback.label}
           </div>
         )}
+        {pasteReceipt.receipt && (
+          <div className={`term-paste-pill${pasteReceipt.receipt.ok ? '' : ' term-paste-pill--warn'}`}>
+            {pasteReceipt.receipt.text}
+          </div>
+        )}
         {/* Downloads started from a link's right-click menu, reported on the terminal they were
             clicked in (the same corner as the copy receipt) — not in a drawer that may be shut. */}
         <DownloadStrip
@@ -6172,13 +6502,15 @@ export function TerminalNode({
               This terminal&apos;s folder was deleted (or replaced) — the shell&apos;s working
               directory no longer exists.
             </span>
-            <button
-              className="term-node__stalecwd-restart"
-              onClick={restartInFolder}
-              title={`End this shell and start a fresh one in ${(data.cwd as string) || 'the project folder'}. Anything still running in this terminal will end.`}
-            >
-              Restart in folder
-            </button>
+            {!hostedReadOnly && (
+              <button
+                className="term-node__stalecwd-restart"
+                onClick={restartInFolder}
+                title={`End this shell and start a fresh one in ${(data.cwd as string) || 'the project folder'}. Anything still running in this terminal will end.`}
+              >
+                Restart in folder
+              </button>
+            )}
             <button
               className="term-node__stalecwd-dismiss"
               onClick={dismissStaleCwd}
@@ -6305,6 +6637,9 @@ export function TerminalNode({
                     projectId: data.sshRemoteTmux ? dropProjectId() : ''
                   })
                 }
+                // `@` lists this node's files where they live: the host's for an SSH node, over the
+                // same project scope the attach above uploads through.
+                sshProjectId={data.sshRemoteTmux ? dropProjectId() : undefined}
                 onShowTerminal={() => {
                   // An explicit "go to the terminal": the picker just opened there needs the keyboard.
                   requestTerminalFocusOnExit(id)
@@ -6325,7 +6660,7 @@ export function TerminalNode({
         expanding to the node's right. Same feed/composer as the card modal's panel. */}
     {commentsOpen && !collapsed && (
       <div className="term-node__comments nodrag nowheel" onMouseDown={(e) => e.stopPropagation()}>
-        <BoardLogPanel card={{ id }} />
+        <NodeCommentsPanel id={id} />
       </div>
     )}
     </>

@@ -1,5 +1,7 @@
+import type { LUCIDE_ICON_IDS } from './project-icon'
+
 /**
- * A canvas node's user-chosen icon: one emoji/character, or a small image file.
+ * A canvas node's user-chosen icon: one emoji/character, a curated glyph, or a small image file.
  *
  * The value is persisted in `.nodeterm/project.json`, which is git-shared, hand-editable and —
  * for an SSH project — a file on the remote host. So nothing here trusts its input: every value
@@ -67,10 +69,44 @@ export const NODE_ICON_MIME: Record<string, string> = {
   avif: 'image/avif'
 }
 
-/** A node's icon: one emoji/character, or an image file beside the project. */
+/** A node's icon: one emoji/character, a curated glyph, or an image file beside the project. */
 export type NodeIcon =
   | { type: 'emoji'; value: string }
+  | { type: 'lucide'; name: string }
   | { type: 'image'; path: string }
+
+/**
+ * The curated glyphs a node icon may be (issue #291): what a terminal IS — a shell, a git repo, a
+ * database session — rather than an emoji mood. Stored as `{ type: 'lucide', name }`, the shape a
+ * project icon's glyph already has, so one vocabulary covers both.
+ *
+ * A closed allowlist and a SUBSET of the project icon's `LUCIDE_ICON_IDS` — the type below makes
+ * the compiler refuse an id outside it — so the renderer draws a node glyph from the same map a
+ * project glyph uses and no second lucide table exists. Order is the picker's grid order. The
+ * label is the button's accessible name and tooltip; it is never stored.
+ */
+export const NODE_GLYPHS: readonly { readonly id: (typeof LUCIDE_ICON_IDS)[number]; readonly label: string }[] = [
+  { id: 'terminal', label: 'Shell' },
+  { id: 'folder-git', label: 'Git repo' },
+  { id: 'database', label: 'Database' },
+  { id: 'server', label: 'Server' },
+  { id: 'cloud', label: 'Cloud' },
+  { id: 'globe', label: 'Web' },
+  { id: 'code', label: 'Code' },
+  { id: 'braces', label: 'Config' },
+  { id: 'file-text', label: 'Docs' },
+  { id: 'book', label: 'Notes' },
+  { id: 'package', label: 'Build' },
+  { id: 'rocket', label: 'Deploy' },
+  { id: 'beaker', label: 'Tests' },
+  { id: 'bug', label: 'Debug' },
+  { id: 'wrench', label: 'Tools' },
+  { id: 'cpu', label: 'System' },
+  { id: 'shield', label: 'Security' },
+  { id: 'key', label: 'Secrets' }
+]
+
+const NODE_GLYPH_IDS: ReadonlySet<string> = new Set(NODE_GLYPHS.map((g) => g.id))
 
 /**
  * Hard ceiling on an emoji's UTF-16 length, applied when `Intl.Segmenter` is unavailable so the
@@ -203,6 +239,12 @@ export function normalizeNodeIcon(raw: unknown): NodeIcon | undefined {
     if (typeof v.value !== 'string') return undefined
     const value = firstGrapheme(v.value)
     return value ? { type: 'emoji', value } : undefined
+  }
+  if (v.type === 'lucide') {
+    // Exact match only — no trimming or case-folding. The value is written by the picker, so a
+    // near miss is a hand edit or a newer build's glyph, and an unrecognized icon is no icon.
+    const name = (raw as { name?: unknown }).name
+    return typeof name === 'string' && NODE_GLYPH_IDS.has(name) ? { type: 'lucide', name } : undefined
   }
   if (v.type === 'image') {
     if (typeof v.path !== 'string') return undefined

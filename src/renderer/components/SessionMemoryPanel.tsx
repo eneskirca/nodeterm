@@ -19,6 +19,7 @@ import { useSessionMemory } from '../state/sessionMemory'
 import { resolveSessionRows, totalMb } from '../lib/sessionMemoryRows'
 import { usageScopeKey } from '../lib/usageScope'
 import type { SessionPauseOffer } from '../lib/sessionPause'
+import { unmeasuredNote } from '../lib/sessionMemoryNote'
 
 export interface SessionMemoryPanelProps {
   /** Travel to the node behind a row. Canvas passes `travelToNode`, so a CLOSED project's tab is
@@ -77,6 +78,7 @@ export function SessionMemoryPanel({
   const [pausing, setPausing] = useState<string | null>(null)
   const ok = useSessionMemory((s) => s.ok)
   const rows = useSessionMemory((s) => s.rows)
+  const unmeasured = useSessionMemory((s) => s.unmeasured)
   const loading = useSessionMemory((s) => s.loading)
   const loadedScope = useSessionMemory((s) => s.loadedScope)
   const refreshFull = useSessionMemory((s) => s.refreshFull)
@@ -141,6 +143,10 @@ export function SessionMemoryPanel({
     body = <div className="sessmem-panel__note">Could not measure sessions on this machine.</div>
   } else if (!measured) {
     body = <div className="sessmem-panel__note">Measuring…</div>
+  } else if (views.length === 0 && unmeasured !== 0) {
+    // The sweep reads tmux; Zellij-backed sessions are alive and simply not in it. "No sessions"
+    // here would be the ok:true-with-no-rows lie this panel exists to avoid.
+    body = <div className="sessmem-panel__note">{unmeasuredNote(unmeasured)}</div>
   } else if (views.length === 0) {
     // We looked, and there really is nothing — a different sentence from the two above.
     body = <div className="sessmem-panel__note">No sessions are running here.</div>
@@ -227,6 +233,13 @@ export function SessionMemoryPanel({
         ))}
       </ul>
     )
+    if (unmeasured !== 0)
+      body = (
+        <>
+          {body}
+          <div className="sessmem-panel__note">{unmeasuredNote(unmeasured)}</div>
+        </>
+      )
   }
 
   return (

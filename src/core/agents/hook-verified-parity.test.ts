@@ -183,6 +183,64 @@ describe('both shells register a 4-arg raw listener', () => {
     }
   })
 
+  // Same rule, Claude's native SubagentStart/SubagentStop (core/claude-subagent-lifecycle.ts). Five
+  // things must be in BOTH shells, and each one missing is silent: (a) every normalized event goes
+  // through the lifecycle before any consumer (else the tool card and the native card are drawn
+  // twice); (b) the <task-notification> end does too (else it ends nothing in a native session);
+  // (c) SubagentStart starts the child's tail at the DERIVED path; (d) that branch sits BEFORE the
+  // child-event gate, which ignores every agent_id-tagged payload and would swallow it; (e) the
+  // tool-keyed tail is skipped once the session is native, and (f) the lifecycle's release stops
+  // tails.
+  it('both shells route Claude subagent events through the ONE lifecycle, and tail natively', () => {
+    for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
+      const src = code(rel)
+      expect(src, `${rel}: (a) normalized events bypass the lifecycle`).toMatch(/claudeSubagents\.apply\(e\)/)
+      expect(src, `${rel}: (b) the task-notification end bypasses the lifecycle`).toMatch(
+        /claudeSubagents\.apply\(taskDoneEvent\)/
+      )
+      expect(src, `${rel}: (b) the task-notification end is not labelled`).toMatch(/subagentSignal: 'transcript'/)
+      expect(src, `${rel}: (c) no native tail at the derived path`).toMatch(
+        /subagentTail\.trackFile\(\s*agentChild|subagentTail\.trackFile\(\s*native\.agent_id/
+      )
+      expect(src, `${rel}: (c) the derived path helper is not used`).toMatch(/claudeSubagentTranscriptPath\(/)
+      const nativeAt = src.indexOf("native.hook_event_name === 'SubagentStart' || native.hook_event_name === 'SubagentStop'")
+      const gateAt = src.indexOf('if (ignoreQuestionHook(nodeId, payload)) return')
+      expect(nativeAt, `${rel}: (d) no native branch`).toBeGreaterThan(-1)
+      expect(nativeAt, `${rel}: (d) the native branch sits after the child-event gate`).toBeLessThan(gateAt)
+      expect(src, `${rel}: (e) the tool tail is not skipped for a native session`).toMatch(
+        /claudeSubagents\.isNative\(nodeId, p\.session_id\)/
+      )
+      expect(src, `${rel}: (f) released cards keep their tail`).toMatch(
+        /new ClaudeSubagentLifecycle\(\{\s*onRelease:[\s\S]{0,40}subagentTail\.finish\(key\)/
+      )
+      expect(src, `${rel}: node teardown forgets the lifecycle`).toMatch(/claudeSubagents\.forgetNode\(nodeId\)/)
+    }
+  })
+
+  // Same rule, Claude's interrupt marker: no hook fires for an Esc/Ctrl+C, so the transcript marker is
+  // the only end signal. A shell whose claude tail is not handed `onTurnInterrupted` (or whose handler
+  // does not go through the mirror's `recordTurnInterrupt`) leaves that shell's nodes on RUNNING
+  // after every interrupt, and nothing else would notice.
+  it('both shells end an interrupted Claude turn from the transcript marker, through the mirror', () => {
+    for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
+      const src = code(rel)
+      expect(src, `${rel}: the claude context tail is not given onTurnInterrupted`).toMatch(
+        /createContextTail\(pushContextUpdate, \{ onTaskNotification, onToolResult, onTurnInterrupted \}\)/
+      )
+      // The event must go through the shell's ONE hook-event path (mirror + every tap), not be
+      // broadcast on the side.
+      expect(src, `${rel}: the handler does not ask the mirror`).toMatch(
+        /const ev = turnInterruptEvent\(nodeId, sessionId, turnId\)/
+      )
+      expect(src, `${rel}: the interrupt bypasses the shell's hook-event path`).toMatch(
+        rel.includes('main') ? /if \(ev\) emitAgentStatus\(ev\)/ : /if \(ev\) emit\(ev\)/
+      )
+    }
+    expect(code('src/main/index.ts'), 'the desktop remote (SSH) tail is not given onTurnInterrupted').toMatch(
+      /createRemoteContextTail\(win, remoteFile, \{ onTaskNotification, onToolResult, onTurnInterrupted \}\)/
+    )
+  })
+
   it('both raw listeners carry the codex subagent branch (trackFile + agent_id gate)', () => {
     for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
       const src = code(rel)
@@ -201,7 +259,11 @@ describe('both shells register a 4-arg raw listener', () => {
     // gate reading a field nothing writes — silently, and identically on both shells, which is
     // exactly the failure the parity assertion above cannot see.
     const hs = readFileSync(join(root, 'src/core/agents/hook-server.ts'), 'utf8')
-    expect(hs).toMatch(/this\.listener\(\{\s*\.\.\.normalized,\s*verified/)
+    expect(hs).toMatch(/const labelled = normalized\s*\?\s*\{\s*\.\.\.normalized,\s*verified/)
+    // Grok events reach the same listener through the permission gate, which receives the
+    // LABELLED event — so `verified` rides a gated grok event exactly as it rides every other.
+    expect(hs).toMatch(/this\.grokGate\(\)\.handle\(nodeId, payload, labelled\)/)
+    expect(hs).toMatch(/this\.listener\(labelled\)/)
   })
 
   it('the src/core mirror is the consumer, on both shells', () => {

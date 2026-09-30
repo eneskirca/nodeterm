@@ -9,6 +9,9 @@ import {
   setWebglEnabled,
   setWebglGesture,
   setWebglZoom,
+  setWebglDevicePixelRatio,
+  WEBGL_LOW_DPI_CRISP_ABOVE_ZOOM,
+  WEBGL_LOW_DPI_GPU_RESUME_BELOW_ZOOM,
   WEBGL_ACQUIRE_DEBOUNCE_MS,
   WEBGL_CRISP_ABOVE_ZOOM,
   WEBGL_GPU_RESUME_BELOW_ZOOM,
@@ -19,6 +22,7 @@ import {
   WEBGL_REACQUIRE_AFTER_LOSS_MS,
   type WebglClientHandle
 } from './webgl-budget'
+import { FIT_NODE_OPTIONS } from '../lib/nodeFocus'
 
 /** A fake client that records acquire/release calls and reports a configurable acquire result. */
 function fakeClient(id: string, opts: { acquireOk?: boolean } = {}) {
@@ -363,7 +367,7 @@ describe('webgl-budget coordinator', () => {
       vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
     }
 
-    it('crossing above the threshold gives every context back — including VISIBLE holders', () => {
+    it('crossing above the threshold gives every on-screen context back — VISIBLE holders too', () => {
       const a = fakeClient('a')
       const b = fakeClient('b')
       grant(a)
@@ -435,6 +439,195 @@ describe('webgl-budget coordinator', () => {
       const a = fakeClient('a')
       grant(a)
       zoomTo(Number.NaN)
+      expect(a.rec.held).toBe(true)
+    })
+
+    it('a hidden holder keeps its warm context through the gate, and the way back re-grants nothing for it', () => {
+      const a = fakeClient('a')
+      const h = fakeClient('h')
+      grant(a)
+      grant(h)
+      h.handle.setVisible(false)
+      zoomTo(WEBGL_CRISP_ABOVE_ZOOM + 0.01)
+      expect(a.rec.held).toBe(false) // on screen: goes crisp
+      expect(h.rec.releases).toBe(0) // off screen: the blur shows nowhere
+      zoomTo(WEBGL_GPU_RESUME_BELOW_ZOOM - 0.01)
+      h.handle.setVisible(true)
+      vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS + WEBGL_DRAIN_MS * 5)
+      expect(h.rec.held).toBe(true)
+      expect(h.rec.acquires).toBe(1) // never let go, so never re-granted
+      expect(a.rec.acquires).toBe(2)
+    })
+
+    it('a warm holder panned into view while zoomed in goes crisp — at rest, not mid-gesture', () => {
+      const h = fakeClient('h')
+      grant(h)
+      h.handle.setVisible(false)
+      zoomTo(WEBGL_CRISP_ABOVE_ZOOM + 0.01)
+      setWebglGesture(true)
+      h.handle.setVisible(true)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 5)
+      expect(h.rec.held).toBe(true)
+      setWebglGesture(false)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 5)
+      expect(h.rec.held).toBe(false)
+    })
+
+    it('a zoomed-in pan that only crosses a warm holder leaves it warm', () => {
+      const h = fakeClient('h')
+      grant(h)
+      h.handle.setVisible(false)
+      zoomTo(WEBGL_CRISP_ABOVE_ZOOM + 0.01)
+      setWebglGesture(true)
+      h.handle.setVisible(true)
+      h.handle.setVisible(false)
+      setWebglGesture(false)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 5)
+      expect(h.rec.releases).toBe(0)
+      expect(h.rec.held).toBe(true)
+    })
+
+    it('zooming back out does not cancel a pressure release a hidden holder still owes', () => {
+      const a = fakeClient('a')
+      const h = fakeClient('h')
+      grant(a)
+      grant(h)
+      h.handle.setVisible(false)
+      setWebglGesture(true)
+      setWebglZoom(WEBGL_CRISP_ABOVE_ZOOM + 0.01)
+      releaseAllHiddenGrants()
+      setWebglZoom(WEBGL_GPU_RESUME_BELOW_ZOOM - 0.01)
+      setWebglGesture(false)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 5)
+      expect(h.rec.held).toBe(false) // the pressure sweep's release stands
+      expect(a.rec.releases).toBe(0) // the brief overshoot is still forgiven
+    })
+  })
+
+  describe('crisp gate on a low-DPI display (issue #986)', () => {
+    // At devicePixelRatio 1 there is no spare resolution: ANY non-integer magnification of the GPU
+    // bitmap smears glyph edges. Measured at DPR 1 (mid-ramp share of ink, higher = blurrier):
+    // webgl 35.6% at 100% but ~62% from 110% up to 175%, while dom stays at or under ~40%.
+    const zoomTo = (zoom: number): void => {
+      setWebglZoom(zoom)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
+    }
+
+    it('at DPR 1 a zoom just past 100% already goes crisp, and 100% itself stays on the GPU', () => {
+      setWebglDevicePixelRatio(1)
+      const a = fakeClient('a')
+      zoomTo(1)
+      grant(a)
+      expect(a.rec.held).toBe(true)
+      zoomTo(1.1)
+      expect(a.rec.held).toBe(false)
+      zoomTo(1)
+      expect(a.rec.held).toBe(true)
+    })
+
+    it('keeps its own hysteresis band just above 100%', () => {
+      setWebglDevicePixelRatio(1)
+      const a = fakeClient('a')
+      grant(a)
+      zoomTo(WEBGL_LOW_DPI_CRISP_ABOVE_ZOOM + 0.001)
+      expect(a.rec.releases).toBe(1)
+      zoomTo(WEBGL_LOW_DPI_GPU_RESUME_BELOW_ZOOM + 0.001) // in the band: still crisp
+      expect(a.rec.acquires).toBe(1)
+      zoomTo(WEBGL_LOW_DPI_GPU_RESUME_BELOW_ZOOM - 0.001)
+      expect(a.rec.acquires).toBe(2)
+    })
+
+    it('a high-DPI display keeps the original 175% threshold', () => {
+      setWebglDevicePixelRatio(2)
+      const a = fakeClient('a')
+      grant(a)
+      zoomTo(1.5)
+      expect(a.rec.held).toBe(true)
+      zoomTo(WEBGL_CRISP_ABOVE_ZOOM + 0.01)
+      expect(a.rec.held).toBe(false)
+    })
+
+    it('moving the window between displays re-evaluates the current zoom', () => {
+      const a = fakeClient('a')
+      setWebglDevicePixelRatio(2)
+      grant(a)
+      zoomTo(1.25)
+      expect(a.rec.held).toBe(true)
+      setWebglDevicePixelRatio(1) // dragged onto the low-DPI monitor
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
+      expect(a.rec.held).toBe(false)
+      setWebglDevicePixelRatio(2) // and back onto the retina display
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
+      expect(a.rec.held).toBe(true)
+    })
+
+    it('a display change decides on the entry threshold of the NEW display, not the hysteresis band', () => {
+      // Crisp at 170% on the 1x display; 170% is inside the retina band (160–175%) but never
+      // crossed the retina entry line, so on the retina display it must go back to the GPU.
+      setWebglDevicePixelRatio(1)
+      const a = fakeClient('a')
+      grant(a)
+      zoomTo(1.7)
+      expect(a.rec.held).toBe(false)
+      setWebglDevicePixelRatio(2)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
+      expect(a.rec.held).toBe(true)
+    })
+
+    it('a ratio change that keeps the same thresholds keeps the hysteresis band', () => {
+      // 2 → 3 (a move between two retina-class displays, or browser zoom) does not change the
+      // thresholds, so a terminal crisp at 170% (inside the 160–175% band) must stay crisp.
+      setWebglDevicePixelRatio(2)
+      const a = fakeClient('a')
+      grant(a)
+      zoomTo(1.8)
+      zoomTo(1.7)
+      expect(a.rec.held).toBe(false)
+      setWebglDevicePixelRatio(3)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
+      expect(a.rec.held).toBe(false)
+    })
+
+    it('a node focus round trip swaps only what is on screen (goToNode frames past this line)', () => {
+      // On a 1x display every focus crosses the low-DPI line: goToNode frames at up to
+      // FIT_NODE_OPTIONS.maxZoom. Releasing the whole pool there put the focused node behind every
+      // off-screen release and re-granted all of them on the way back out.
+      expect(FIT_NODE_OPTIONS.maxZoom).toBeGreaterThan(WEBGL_LOW_DPI_CRISP_ABOVE_ZOOM)
+      setWebglDevicePixelRatio(1)
+      setWebglBudget(24)
+      const cs = Array.from({ length: 24 }, (_, i) => fakeClient(`c${i}`))
+      cs.forEach(grant)
+      expect(cs.every((c) => c.rec.held)).toBe(true)
+      const focused = cs[23] // registered last: the worst place in the drain's queue
+      const others = cs.slice(0, 23)
+
+      setWebglGesture(true)
+      others.forEach((c) => c.handle.setVisible(false))
+      setWebglZoom(FIT_NODE_OPTIONS.maxZoom)
+      setWebglGesture(false) // at rest: the drain's FIRST batch
+      expect(focused.rec.held).toBe(false)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 20)
+      expect(others.every((c) => c.rec.held)).toBe(true)
+
+      // Back out to the overview: everything on screen again (reported while the gate is still
+      // closed — the order an IntersectionObserver can deliver it in).
+      setWebglGesture(true)
+      cs.forEach((c) => c.handle.setVisible(true))
+      setWebglZoom(0.6)
+      setWebglGesture(false)
+      vi.advanceTimersByTime(WEBGL_ACQUIRE_DEBOUNCE_MS + WEBGL_DRAIN_MS * 20)
+      expect(cs.every((c) => c.rec.held)).toBe(true)
+      expect(others.every((c) => c.rec.acquires === 1 && c.rec.releases === 0)).toBe(true)
+      expect(focused.rec.acquires).toBe(2)
+    })
+
+    it('ignores a non-finite or non-positive ratio', () => {
+      const a = fakeClient('a')
+      grant(a)
+      zoomTo(1.25)
+      setWebglDevicePixelRatio(Number.NaN)
+      setWebglDevicePixelRatio(0)
+      vi.advanceTimersByTime(WEBGL_DRAIN_MS * 10)
       expect(a.rec.held).toBe(true)
     })
   })

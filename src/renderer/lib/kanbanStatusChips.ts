@@ -47,12 +47,15 @@ export interface StatusChipCard {
   kind: string
 }
 
-/** One entry per card with at least one chip fact: `id:` + `r|.` `n|.` `u|.` + `|`. */
+/** One `[id, flags]` entry per card with at least one chip fact (`r|.` `n|.` `u|.`), written with
+ *  `JSON.stringify` — node ids come from a git-shared, hand-editable project file, and an id joined
+ *  raw with a separator (`x|victim`) used to split into a forged entry for another card. `''` when
+ *  no card has a fact. */
 export function statusChipSig(
   byId: Readonly<Record<string, AgentNodeStatus | undefined>>,
   cards: readonly StatusChipCard[]
 ): string {
-  let sig = ''
+  const entries: Array<[string, string]> = []
   for (const card of cards) {
     const status = byId[card.id]
     if (!status) continue
@@ -61,9 +64,9 @@ export function statusChipSig(
     const n = badge === 'needs'
     const u = !!status.unread
     if (!r && !n && !u) continue
-    sig += `${card.id}:${r ? 'r' : '.'}${n ? 'n' : '.'}${u ? 'u' : '.'}|`
+    entries.push([card.id, `${r ? 'r' : '.'}${n ? 'n' : '.'}${u ? 'u' : '.'}`])
   }
-  return sig
+  return entries.length ? JSON.stringify(entries) : ''
 }
 
 export interface StatusChipFacts {
@@ -74,11 +77,17 @@ export interface StatusChipFacts {
 
 export function parseStatusChipSig(sig: string): StatusChipFacts {
   const facts: StatusChipFacts = { running: new Set(), needs: new Set(), unread: new Set() }
-  for (const entry of sig.split('|')) {
-    const colon = entry.lastIndexOf(':')
-    if (colon <= 0) continue
-    const id = entry.slice(0, colon)
-    const flags = entry.slice(colon + 1)
+  if (!sig) return facts
+  let entries: unknown
+  try {
+    entries = JSON.parse(sig)
+  } catch {
+    return facts
+  }
+  if (!Array.isArray(entries)) return facts
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || typeof entry[0] !== 'string' || typeof entry[1] !== 'string') continue
+    const [id, flags] = entry as [string, string]
     if (flags[0] === 'r') facts.running.add(id)
     if (flags[1] === 'n') facts.needs.add(id)
     if (flags[2] === 'u') facts.unread.add(id)

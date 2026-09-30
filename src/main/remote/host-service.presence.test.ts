@@ -65,7 +65,22 @@ vi.mock('./relay-socket', () => ({
   }
 }))
 
+// In-memory pin stores: the revoke primitive (peer-revoke.ts) must not touch the real userData.
+vi.mock('./approved-devices', () => {
+  const mem = () => {
+    let d: { pubkeys: string[] } = { pubkeys: [] }
+    return {
+      load: async () => d,
+      save: async (s: { pubkeys: string[] }) => { d = s },
+      update: async (u: (s: { pubkeys: string[] }) => { pubkeys: string[] }) => { d = u(d) }
+    }
+  }
+  const stores: Record<string, ReturnType<typeof mem>> = { phone: mem(), guest: mem(), joinedHost: mem() }
+  return { PIN_ROLES: ['phone', 'guest', 'joinedHost'], phonePins: stores.phone, pinStore: (r: string) => stores[r] }
+})
+
 import { initRemoteHost } from './host-service'
+import { revokeAllPhones, revokePeerKey } from './peer-revoke'
 import { IPC } from '../../shared/ipc'
 
 const sentToWin: Array<{ channel: string; args: unknown[] }> = []
@@ -204,4 +219,38 @@ it('a standing phone rejection cannot reject an interactive offer with the same 
   expect(relays[0].closed).toBe(0)
   ipc[IPC.remoteHostReject](null, { id: pendingApprovalId(), pub: 'phone-pub' })
   expect(relays[0].closed).toBe(1)
+})
+
+describe('interactive host: revocation cuts the session (it is never pinned, so unpinning alone cannot)', () => {
+  it('revoking the phone\'s key closes the approved session and its presence', async () => {
+    makeHost()
+    await start()
+    relays[0].opts.onReady()
+    ipc[IPC.remoteHostApprove](null, { id: pendingApprovalId(), pub: 'phone-pub' })
+    expect(phones()).toBe(1)
+
+    expect(await revokePeerKey('phone-pub', ['phone'])).toEqual({ persisted: true, killed: true })
+    expect(relays[0].closed).toBe(1)
+    expect(phones()).toBe(0)
+  })
+
+  it('a phone "Remove" (revokeAllPhones) also closes a session still awaiting SAS', async () => {
+    makeHost()
+    await start()
+    relays[0].opts.onReady()
+    const id = pendingApprovalId()
+    await revokeAllPhones()
+    expect(relays[0].closed).toBe(1)
+    // The dialog's late Approve is inert: the session is gone.
+    ipc[IPC.remoteHostApprove](null, { id, pub: 'phone-pub' })
+    expect(phones()).toBe(0)
+  })
+
+  it('a different key leaves the session alone', async () => {
+    makeHost()
+    await start()
+    relays[0].opts.onReady()
+    await revokePeerKey('someone-else', ['phone'])
+    expect(relays[0].closed).toBe(0)
+  })
 })

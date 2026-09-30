@@ -1,0 +1,1281 @@
+{
+ "_provenance": "captured live from Claude Code 2.1.285 (linux-x64) on 2026-09-30, logged-in account, interactive TUI inside a private tmux server (tmux -L nt-esc-probe) with every NODETERM_* variable unset, capture hooks passed via `claude --settings <tmp>` (the real settings untouched). Keys sent with tmux send-keys. Session ids, paths and scratch dirs redacted; prompt ids, tool_use ids, message ids, KEYS AND SHAPES UNCHANGED; long free text trimmed; thinking signatures and usage detail removed.",
+ "claudeVersion": "2.1.285",
+ "scenarios": {
+  "esc_streaming": {
+   "description": "Esc while the model streams a long text answer (no tools)",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000001",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000001.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46a618b4-a12e-4819-a8c4-955811bd8842",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Write a 1500-word essay about the history of the ocean. Do not use any tools."
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": null,
+     "isSidechain": false,
+     "promptId": "46a618b4-a12e-4819-a8c4-955811bd8842",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Write a 1500-word essay about the history of the ocean. Do not use any tools."
+     },
+     "uuid": "d6d8172c-7ffc-42da-bfa2-8330ae175140",
+     "timestamp": "2026-09-29T23:37:14.615Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 1,
+      "turnIndex": 1
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000001",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "f9f7df64-81e8-4b80-a21a-e95e5251abb0",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcLcEu8FhWPUjruyXjV",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "[redacted]"
+       }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 3
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYcLaU17LxAuW1t4gaTk",
+     "type": "assistant",
+     "uuid": "4a7655f3-6b6b-4fc6-ba81-3e662e033941",
+     "timestamp": "2026-09-29T23:37:18.916Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000001",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000001",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "4a7655f3-6b6b-4fc6-ba81-3e662e033941",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcLcEu8FhWPUjruyXjV",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "# The Long Life of the Ocean\n\nSeen from space, Earth is mostly blue. Its oceans cover abou…"
+       }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 3
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "apiBlockIndex": 1,
+     "requestId": "req_011CfYcLaU17LxAuW1t4gaTk",
+     "type": "assistant",
+     "uuid": "6a418bb0-ebda-4930-ba7b-63c17e8ca880",
+     "timestamp": "2026-09-29T23:37:23.662Z",
+     "isAbortedMidStream": true,
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000001",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000001",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "6a418bb0-ebda-4930-ba7b-63c17e8ca880",
+     "isSidechain": false,
+     "promptId": "46a618b4-a12e-4819-a8c4-955811bd8842",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "[Request interrupted by user]"
+       }
+      ]
+     },
+     "uuid": "2cdb299d-3ce3-48a5-add8-7fa953338ac1",
+     "timestamp": "2026-09-29T23:37:23.665Z",
+     "interruptedMessageId": "msg_011CfYcLcEu8FhWPUjruyXjV",
+     "session_id": "00000000-0000-4000-8000-000000000001",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000001",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "esc_tool_call": {
+   "description": "Esc while an allowed foreground Bash call (ping -c 60) runs",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "f8c0e8b2-180e-4aae-9afc-12e5e750e72d",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Run exactly this bash command in the foreground and nothing else: ping -c 60 127.0.0.1"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "f8c0e8b2-180e-4aae-9afc-12e5e750e72d",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PreToolUse",
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "ping -c 60 127.0.0.1",
+      "timeout": 120000,
+      "description": "Ping localhost 60 times"
+     },
+     "tool_use_id": "toolu_01RvvyPRJrDxq5EzXhfVXSXX"
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": null,
+     "isSidechain": false,
+     "promptId": "f8c0e8b2-180e-4aae-9afc-12e5e750e72d",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Run exactly this bash command in the foreground and nothing else: ping -c 60 127.0.0.1"
+     },
+     "uuid": "8d313138-0e36-4e6f-aa6d-febd74bf9fe6",
+     "timestamp": "2026-09-29T23:42:30.258Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 1,
+      "turnIndex": 1
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "23618318-da74-4700-b20b-ad3260983bfe",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcjs3HH5UKmhfJLaJtY",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_01RvvyPRJrDxq5EzXhfVXSXX",
+        "name": "Bash",
+        "input": {
+         "command": "ping -c 60 127.0.0.1",
+         "description": "Ping localhost 60 times",
+         "timeout": 120000
+        },
+        "caller": {
+         "type": "direct"
+        }
+       }
+      ],
+      "container": null,
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 114
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "wireToolInputs": {
+      "toolu_01RvvyPRJrDxq5EzXhfVXSXX": {
+       "command": "ping -c 60 127.0.0.1",
+       "description": "Ping localhost 60 times",
+       "timeout": 120000
+      }
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYcjrKPMi3ZUU56YHuTU",
+     "type": "assistant",
+     "uuid": "992327d8-7bb9-4bf6-92ad-ff7f8fb7804b",
+     "timestamp": "2026-09-29T23:42:35.428Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "992327d8-7bb9-4bf6-92ad-ff7f8fb7804b",
+     "isSidechain": false,
+     "promptId": "f8c0e8b2-180e-4aae-9afc-12e5e750e72d",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to…",
+        "is_error": true,
+        "tool_use_id": "toolu_01RvvyPRJrDxq5EzXhfVXSXX"
+       }
+      ]
+     },
+     "uuid": "ad1b2ac9-a04b-4652-bb13-c2756fdc1e67",
+     "timestamp": "2026-09-29T23:42:45.226Z",
+     "toolUseResult": "User rejected tool use",
+     "toolDenialKind": "user-rejected",
+     "sourceToolAssistantUUID": "992327d8-7bb9-4bf6-92ad-ff7f8fb7804b",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "311a08c2-0f80-490c-9987-3b8415aa1bf9",
+     "isSidechain": false,
+     "promptId": "f8c0e8b2-180e-4aae-9afc-12e5e750e72d",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "[Request interrupted by user for tool use]"
+       }
+      ]
+     },
+     "uuid": "91c7f723-144c-4580-ae1e-cf49f8ac5aac",
+     "timestamp": "2026-09-29T23:42:45.231Z",
+     "interruptedMessageId": "msg_011CfYcjs3HH5UKmhfJLaJtY",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "esc_permission_prompt": {
+   "description": "Esc while the Bash permission dialog is showing (manual mode)",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Run exactly this bash command and nothing else: touch probe-file.txt"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PreToolUse",
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "touch probe-file.txt",
+      "description": "Create empty probe file"
+     },
+     "tool_use_id": "toolu_016aJzwUGEbZyuGw2CU6iPPC"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PermissionRequest",
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "touch probe-file.txt",
+      "description": "Create empty probe file"
+     },
+     "permission_suggestions": [
+      {
+       "type": "addDirectories",
+       "directories": [
+        "/work/project"
+       ],
+       "destination": "session"
+      },
+      {
+       "type": "setMode",
+       "mode": "acceptEdits",
+       "destination": "session"
+      }
+     ]
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": "91c7f723-144c-4580-ae1e-cf49f8ac5aac",
+     "isSidechain": false,
+     "promptId": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Run exactly this bash command and nothing else: touch probe-file.txt"
+     },
+     "uuid": "91eccf2a-ba9e-48b2-aaec-4b12b6ed09f3",
+     "timestamp": "2026-09-29T23:43:24.000Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 2,
+      "turnIndex": 2
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "5b870ca2-66df-4fcd-b04e-a02e9653916e",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcooybkJxaEdG5EoZMA",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_016aJzwUGEbZyuGw2CU6iPPC",
+        "name": "Bash",
+        "input": {
+         "command": "touch probe-file.txt",
+         "description": "Create empty probe file"
+        },
+        "caller": {
+         "type": "direct"
+        }
+       }
+      ],
+      "container": null,
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 82
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "wireToolInputs": {
+      "toolu_016aJzwUGEbZyuGw2CU6iPPC": {
+       "command": "touch probe-file.txt",
+       "description": "Create empty probe file"
+      }
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYcooY4K8aHDCaiYXMiK",
+     "type": "assistant",
+     "uuid": "94196c3b-885b-4274-9086-db298ea073e3",
+     "timestamp": "2026-09-29T23:43:26.150Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "94196c3b-885b-4274-9086-db298ea073e3",
+     "isSidechain": false,
+     "promptId": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to…",
+        "is_error": true,
+        "tool_use_id": "toolu_016aJzwUGEbZyuGw2CU6iPPC"
+       }
+      ]
+     },
+     "uuid": "df07688c-1196-4d9b-9ad5-d8bda2915efa",
+     "timestamp": "2026-09-29T23:43:30.051Z",
+     "toolUseResult": "User rejected tool use",
+     "toolDenialKind": "user-rejected",
+     "sourceToolAssistantUUID": "94196c3b-885b-4274-9086-db298ea073e3",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "df07688c-1196-4d9b-9ad5-d8bda2915efa",
+     "isSidechain": false,
+     "promptId": "61a27b8f-c8b5-4878-a3b7-1f9fc38992c6",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "[Request interrupted by user for tool use]"
+       }
+      ]
+     },
+     "uuid": "49f07b53-a780-45aa-9809-03350c68c048",
+     "timestamp": "2026-09-29T23:43:30.052Z",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "49f07b53-a780-45aa-9809-03350c68c048",
+     "isSidechain": false,
+     "type": "system",
+     "subtype": "turn_duration",
+     "durationMs": 2204,
+     "messageCount": 24,
+     "timestamp": "2026-09-29T23:43:30.056Z",
+     "uuid": "c951c1e0-d35d-40a7-ace4-dc66763723a9",
+     "isMeta": false,
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "ctrl_c_streaming": {
+   "description": "Ctrl+C once while the model streams text",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "f061b72e-674c-4de6-978b-f67c5f0b6dd5",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Write a 2000-word essay about the history of rivers. Do not use any tools."
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": "a3fdd567-b2f0-4488-a4a1-1dc2cbf386cd",
+     "isSidechain": false,
+     "promptId": "f061b72e-674c-4de6-978b-f67c5f0b6dd5",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Write a 2000-word essay about the history of rivers. Do not use any tools."
+     },
+     "uuid": "cd8783c8-dc90-4d63-a214-1dbe902e7edd",
+     "timestamp": "2026-09-29T23:45:33.713Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 4,
+      "turnIndex": 4
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "78e3def5-a2e1-4d69-8cf2-a1b7cbec2007",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcyNQzWM7puXfmdfKod",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "[redacted]"
+       }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 2
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYcyMzveLXN2xufy6U98",
+     "type": "assistant",
+     "uuid": "d9cc6585-144f-4835-a94b-b683b507bb36",
+     "timestamp": "2026-09-29T23:45:35.272Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "d9cc6585-144f-4835-a94b-b683b507bb36",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYcyNQzWM7puXfmdfKod",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "# The Moving Road: A History of Rivers\n\nA river is never the same thing twice. He"
+       }
+      ],
+      "container": null,
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 2
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "apiBlockIndex": 1,
+     "requestId": "req_011CfYcyMzveLXN2xufy6U98",
+     "type": "assistant",
+     "uuid": "63181361-7f96-4113-b031-d90464bdf31a",
+     "timestamp": "2026-09-29T23:45:35.707Z",
+     "isAbortedMidStream": true,
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "63181361-7f96-4113-b031-d90464bdf31a",
+     "isSidechain": false,
+     "promptId": "f061b72e-674c-4de6-978b-f67c5f0b6dd5",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "[Request interrupted by user]"
+       }
+      ]
+     },
+     "uuid": "e092327f-6a22-4645-b5c1-3e45fca8e314",
+     "timestamp": "2026-09-29T23:45:35.710Z",
+     "interruptedMessageId": "msg_011CfYcyNQzWM7puXfmdfKod",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "ctrl_c_before_first_token": {
+   "description": "Ctrl+C once BEFORE any assistant output: the CLI restores the prompt into the input box",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "2f6532a7-5173-40fd-8c54-ad348287d10d",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Write a 1500-word essay about the history of mountains. Do not use any tools."
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": "c951c1e0-d35d-40a7-ace4-dc66763723a9",
+     "isSidechain": false,
+     "promptId": "2f6532a7-5173-40fd-8c54-ad348287d10d",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Write a 1500-word essay about the history of mountains. Do not use any tools."
+     },
+     "uuid": "cdfa9221-4239-4c94-a538-39bcb0356551",
+     "timestamp": "2026-09-29T23:43:57.348Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 3,
+      "turnIndex": 3
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "esc_before_first_token": {
+   "description": "Esc ~1 s after Enter, before any assistant output: same rewind",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "c570871d-3d0d-4914-96be-db4ad803b912",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Write a 2000-word essay about the history of deserts. Do not use any tools."
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": "e092327f-6a22-4645-b5c1-3e45fca8e314",
+     "isSidechain": false,
+     "promptId": "c570871d-3d0d-4914-96be-db4ad803b912",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Write a 2000-word essay about the history of deserts. Do not use any tools."
+     },
+     "uuid": "48926bea-8f59-447e-a6ea-530b49d244b3",
+     "timestamp": "2026-09-29T23:45:50.928Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 5,
+      "turnIndex": 5
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "esc_after_background_subagent": {
+   "description": "Agent tool asked for a foreground subagent; 2.1.285 launched it async anyway, the parent turn ENDED (Stop), then Esc at the prompt while the child ran. The child was NOT stopped and its SubagentStop arrived normally later.",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Use the Agent tool (subagent_type general-purpose, run in the foreground, NOT in background) with this task: 'Write a 1500-word essay about volcanoes and return it. Do not use tools.' Do nothing else."
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PreToolUse",
+     "tool_name": "Agent",
+     "tool_input": {
+      "description": "Write volcano essay",
+      "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools.",
+      "subagent_type": "general-purpose"
+     },
+     "tool_use_id": "toolu_01SSfpMeBLj4YwHJHq9Hatp6"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "agent_id": "a9cce211e7110825e",
+     "agent_type": "general-purpose",
+     "hook_event_name": "SubagentStart"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PostToolUse",
+     "tool_name": "Agent",
+     "tool_input": {
+      "description": "Write volcano essay",
+      "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools.",
+      "subagent_type": "general-purpose"
+     },
+     "tool_response": {
+      "isAsync": true,
+      "status": "async_launched",
+      "agentId": "a9cce211e7110825e",
+      "description": "Write volcano essay",
+      "resolvedModel": "claude-opus-5-5",
+      "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools.",
+      "outputFile": "/tmp/scratch/00000000-0000-4000-8000-000000000002/tasks/a9cce211e7110825e.output",
+      "canReadOutputFile": true
+     },
+     "tool_use_id": "toolu_01SSfpMeBLj4YwHJHq9Hatp6",
+     "duration_ms": 28
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "Stop",
+     "stop_hook_active": false,
+     "last_assistant_message": "You asked for the volcano-essay agent to run in the foreground, but it launched in the bac…",
+     "background_tasks": [
+      {
+       "id": "a9cce211e7110825e",
+       "type": "subagent",
+       "status": "running",
+       "description": "Write volcano essay",
+       "agent_type": "general-purpose"
+      }
+     ],
+     "session_crons": []
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "agent_id": "acf7f57bf3824a75f",
+     "agent_type": "",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "SubagentStop",
+     "stop_hook_active": false,
+     "agent_transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002/subagents/agent-acf7f57bf3824a75f.jsonl",
+     "background_tasks": [
+      {
+       "id": "a9cce211e7110825e",
+       "type": "subagent",
+       "status": "running",
+       "description": "Write volcano essay",
+       "agent_type": "general-purpose"
+      }
+     ],
+     "session_crons": []
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "permission_mode": "default",
+     "agent_id": "a9cce211e7110825e",
+     "agent_type": "general-purpose",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "SubagentStop",
+     "stop_hook_active": false,
+     "agent_transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002/subagents/agent-a9cce211e7110825e.jsonl",
+     "last_assistant_message": "# Volcanoes: The Earth's Restless Architects\n\nFew natural phenomena capture the human imag…",
+     "background_tasks": [
+      {
+       "id": "a9cce211e7110825e",
+       "type": "subagent",
+       "status": "running",
+       "description": "Write volcano essay",
+       "agent_type": "general-purpose"
+      }
+     ],
+     "session_crons": []
+    }
+   ],
+   "hooksAfterKey": "none from the Esc; the child SubagentStop and the <task-notification> turn came when the child finished",
+   "transcript": [
+    {
+     "parentUuid": "e092327f-6a22-4645-b5c1-3e45fca8e314",
+     "isSidechain": false,
+     "promptId": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Use the Agent tool (subagent_type general-purpose, run in the foreground, NOT in background) with this task: 'Write a 1500-word essay about volcanoes and return it. Do not use tools.' Do nothing else."
+     },
+     "uuid": "5541fbc0-226b-48d9-9bb8-448ba10f975e",
+     "timestamp": "2026-09-29T23:46:43.819Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 5,
+      "turnIndex": 5
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "01ccb460-85ca-4594-be4f-e1a37c70c308",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYd4Yd35vmJtWsXhX5nx",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_01SSfpMeBLj4YwHJHq9Hatp6",
+        "name": "Agent",
+        "input": {
+         "description": "Write volcano essay",
+         "subagent_type": "general-purpose",
+         "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools."
+        },
+        "caller": {
+         "type": "direct"
+        }
+       }
+      ],
+      "container": null,
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 131
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "wireToolInputs": {
+      "toolu_01SSfpMeBLj4YwHJHq9Hatp6": {
+       "description": "Write volcano essay",
+       "subagent_type": "general-purpose",
+       "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools."
+      }
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYd4YC162tQoEznhUXYr",
+     "type": "assistant",
+     "uuid": "bd9d54e3-ffac-4d8f-a1c8-5f0c581f7c71",
+     "timestamp": "2026-09-29T23:46:46.224Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "bd9d54e3-ffac-4d8f-a1c8-5f0c581f7c71",
+     "isSidechain": false,
+     "promptId": "46696376-e7b6-499d-a8af-b0c66b5a11fa",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "tool_use_id": "toolu_01SSfpMeBLj4YwHJHq9Hatp6",
+        "type": "tool_result",
+        "content": [
+         {
+          "type": "text",
+          "text": "Async agent launched successfully. (This tool result is internal metadata — never quote or…"
+         }
+        ]
+       }
+      ]
+     },
+     "uuid": "664232c7-c4e4-4d2c-83ef-3fe708111f7b",
+     "timestamp": "2026-09-29T23:46:46.450Z",
+     "toolUseResult": {
+      "isAsync": true,
+      "status": "async_launched",
+      "agentId": "a9cce211e7110825e",
+      "description": "Write volcano essay",
+      "resolvedModel": "claude-opus-5-5",
+      "prompt": "Write a 1500-word essay about volcanoes and return it. Do not use tools.",
+      "outputFile": "/tmp/scratch/00000000-0000-4000-8000-000000000002/tasks/a9cce211e7110825e.output",
+      "canReadOutputFile": true
+     },
+     "sourceToolAssistantUUID": "bd9d54e3-ffac-4d8f-a1c8-5f0c581f7c71",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  },
+  "esc_tool_call_then_80s_idle": {
+   "description": "Esc during a foreground Bash call, then 80 s idle: no hook at all, not even idle_prompt",
+   "hooks": [
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "3c1778ac-d5aa-4d2f-b4e1-fbd5816a46e2",
+     "permission_mode": "default",
+     "hook_event_name": "UserPromptSubmit",
+     "prompt": "Run exactly this bash command in the foreground and nothing else: ping -c 60 127.0.0.1"
+    },
+    {
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+     "cwd": "/work/project",
+     "scratchpad_dir": "/tmp/scratch",
+     "prompt_id": "3c1778ac-d5aa-4d2f-b4e1-fbd5816a46e2",
+     "permission_mode": "default",
+     "effort": {
+      "level": "medium"
+     },
+     "hook_event_name": "PreToolUse",
+     "tool_name": "Bash",
+     "tool_input": {
+      "command": "ping -c 60 127.0.0.1",
+      "timeout": 120000,
+      "description": "Ping localhost 60 times"
+     },
+     "tool_use_id": "toolu_01L5Bw193WJt3dU3n6gVaFtX"
+    }
+   ],
+   "hooksAfterKey": "none (every hook listed above fired BEFORE the key was pressed)",
+   "transcript": [
+    {
+     "parentUuid": "116627d2-635e-4023-a6a6-770a7adada91",
+     "isSidechain": false,
+     "promptId": "3c1778ac-d5aa-4d2f-b4e1-fbd5816a46e2",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": "Run exactly this bash command in the foreground and nothing else: ping -c 60 127.0.0.1"
+     },
+     "uuid": "b4e65bc2-73cd-44a9-bbde-62ceeb704f8e",
+     "timestamp": "2026-09-29T23:51:01.286Z",
+     "permissionMode": "default",
+     "origin": {
+      "kind": "human"
+     },
+     "promptSource": "typed",
+     "turnOrigin": "human",
+     "turnPosition": {
+      "promptIndex": 7,
+      "turnIndex": 9
+     },
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "59c07b93-823b-4551-9a77-24d401012e34",
+     "isSidechain": false,
+     "message": {
+      "model": "claude-opus-5-5",
+      "id": "msg_011CfYdPXHwoG2EwKbdukDea",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_01L5Bw193WJt3dU3n6gVaFtX",
+        "name": "Bash",
+        "input": {
+         "command": "ping -c 60 127.0.0.1",
+         "description": "Ping localhost 60 times",
+         "timeout": 120000
+        },
+        "caller": {
+         "type": "direct"
+        }
+       }
+      ],
+      "container": null,
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+       "input_tokens": 2,
+       "output_tokens": 114
+      },
+      "input_transformations": [],
+      "diagnostics": null,
+      "context_management": null
+     },
+     "wireToolInputs": {
+      "toolu_01L5Bw193WJt3dU3n6gVaFtX": {
+       "command": "ping -c 60 127.0.0.1",
+       "description": "Ping localhost 60 times",
+       "timeout": 120000
+      }
+     },
+     "apiBlockIndex": 0,
+     "requestId": "req_011CfYdPWtdg4o8MMTqoHcVh",
+     "type": "assistant",
+     "uuid": "b0ba07b0-772a-4f40-8d29-29d37ea97f5e",
+     "timestamp": "2026-09-29T23:51:03.565Z",
+     "advisorModel": "claude-opus-5-5",
+     "effort": "medium",
+     "perTurnEffort": "medium",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "b0ba07b0-772a-4f40-8d29-29d37ea97f5e",
+     "isSidechain": false,
+     "promptId": "3c1778ac-d5aa-4d2f-b4e1-fbd5816a46e2",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to…",
+        "is_error": true,
+        "tool_use_id": "toolu_01L5Bw193WJt3dU3n6gVaFtX"
+       }
+      ]
+     },
+     "uuid": "cc592793-0cbe-4847-94fc-71c604935be5",
+     "timestamp": "2026-09-29T23:51:08.379Z",
+     "toolUseResult": "User rejected tool use",
+     "toolDenialKind": "user-rejected",
+     "sourceToolAssistantUUID": "b0ba07b0-772a-4f40-8d29-29d37ea97f5e",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    },
+    {
+     "parentUuid": "cc592793-0cbe-4847-94fc-71c604935be5",
+     "isSidechain": false,
+     "promptId": "3c1778ac-d5aa-4d2f-b4e1-fbd5816a46e2",
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "[Request interrupted by user for tool use]"
+       }
+      ]
+     },
+     "uuid": "83a18827-6797-4805-94f1-2adc37ad481b",
+     "timestamp": "2026-09-29T23:51:08.381Z",
+     "interruptedMessageId": "msg_011CfYdPXHwoG2EwKbdukDea",
+     "session_id": "00000000-0000-4000-8000-000000000002",
+     "userType": "external",
+     "entrypoint": "cli",
+     "cwd": "/work/project",
+     "sessionId": "00000000-0000-4000-8000-000000000002",
+     "version": "2.1.285",
+     "gitBranch": "main"
+    }
+   ]
+  }
+ },
+ "idlePrompt": {
+  "fired": [
+   {
+    "session_id": "00000000-0000-4000-8000-000000000002",
+    "transcript_path": "/home/user/.claude/projects/-work-project/00000000-0000-4000-8000-000000000002.jsonl",
+    "cwd": "/work/project",
+    "scratchpad_dir": "/tmp/scratch",
+    "prompt_id": "5607c785-57b6-40ce-bc4d-bad8ca08f82a",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+   }
+  ],
+  "note": "idle_prompt fired 60 s after a NORMAL Stop. It did NOT fire in 75 s (esc_streaming) or 80 s (esc_tool_call_then_80s_idle) after an interrupted turn."
+ }
+}

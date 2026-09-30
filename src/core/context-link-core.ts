@@ -5,7 +5,14 @@ import type { ContextLinkInfo } from '../shared/types'
 import { sessionName } from './tmux-naming'
 import { HOOK_CURL_HEADERS_SH } from './agents/hook-curl-config-sh'
 import { CODEX_SANDBOX_BLOCKED_LINE, CODEX_SANDBOX_HINT_SH } from './agents/hook-sandbox-hint-sh'
-import { HOOK_ENDPOINT_FALLBACK_SH, STALE_ENDPOINT_HINT } from './agents/hook-endpoint-failover-sh'
+import {
+  HOOK_ENDPOINT_FALLBACK_SH,
+  OWNED_ENDPOINT_FALLBACK_SH,
+  FOREIGN_ENDPOINT_HINT,
+  STALE_ENDPOINT_HINT,
+  TUNNEL_DOWN_HINT,
+  ownerUnreachableGuidanceLines
+} from './agents/hook-endpoint-failover-sh'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
 
@@ -63,12 +70,22 @@ export async function resolveLinkTranscript(
 const INSTR_START = '<!-- nodeterm:get-linked-context:start -->'
 const INSTR_END = '<!-- nodeterm:get-linked-context:end -->'
 
+/** The two markers, for the SSH freshness probe (see `CANVAS_CONTROL_MARKERS`). */
+export const LINKED_CONTEXT_MARKERS = { start: INSTR_START, end: INSTR_END } as const
+
+/** The exact bytes the merge below writes from the start marker through the end marker — the one
+ *  definition the SSH freshness probe compares a host's copy against. */
+export function frameInstructionsBlock(block: string): string {
+  return `${INSTR_START}\n${block.trim()}\n${INSTR_END}`
+}
+
 /** Idempotently merge our marker-delimited block into a global instructions file
- *  (~/.codex/AGENTS.md, ~/.gemini/GEMINI.md). Everything outside the markers is preserved. */
+ *  (~/.codex/AGENTS.md, ~/.gemini/GEMINI.md). Everything outside the markers is preserved.
+ *  The end marker is searched AFTER the start marker (see `mergeCanvasControlBlock`). */
 export function mergeInstructionsBlock(existing: string, block: string): string {
-  const full = `${INSTR_START}\n${block.trim()}\n${INSTR_END}`
+  const full = frameInstructionsBlock(block)
   const start = existing.indexOf(INSTR_START)
-  const end = existing.indexOf(INSTR_END)
+  const end = existing.indexOf(INSTR_END, start)
   if (start >= 0 && end > start) {
     return existing.slice(0, start) + full + existing.slice(end + INSTR_END.length)
   }
@@ -94,6 +111,8 @@ export function buildLinkedContextInstructions(shimPath: string): string {
     '',
     'Only meaningful inside nodeterm (NODETERM_NODE_ID set) with a linked edge. If the CLI',
     'says "Not a nodeterm session" or "No linked nodes", there is nothing to read — do not retry.',
+    '',
+    ...ownerUnreachableGuidanceLines(),
     '',
     ...codexSandboxGuidanceLines(CONTEXT_UNREACHABLE_MSG)
   ].join('\n')
@@ -219,6 +238,7 @@ while [ "$nt_i" -lt "$nt_count" ]; do
 done
 
 ${HOOK_ENDPOINT_FALLBACK_SH}
+${OWNED_ENDPOINT_FALLBACK_SH}
 
 nt_out=$(mktemp 2>/dev/null || echo "/tmp/nodeterm-context.$$")
 
@@ -265,12 +285,10 @@ if ! nt_reached && { [ "$nt_code" = "421" ] || [ -z "$CODEX_SANDBOX_NETWORK_DISA
     # (and nt_code) survive it. "$@" still holds the translated curl args.
     while IFS= read -r nt_ep; do
       [ -n "$nt_ep" ] || continue
+      [ "$nt_n" -lt "$nt_fallback_max" ] || break
+      nt_adopt_for_node "$nt_ep" || continue
       nt_n=$((nt_n + 1))
-      [ "$nt_n" -le "$nt_fallback_max" ] || break
-      nt_adopt "$nt_ep" || continue
-      # Re-read the token FROM THE ADOPTED ENDPOINT's dir (node-token-sh.ts): the capability must
-      # come from the instance we are about to call, never the one we are walking away from.
-      nt_read_node_token "$nt_ep"
+      nt_probe_endpoint || continue
       nt_ctx_post "$@"
       nt_reached && break
     done <<NT_CANDIDATES
@@ -283,6 +301,9 @@ if [ "$nt_code" = "200" ]; then
   cat "$nt_out" 2>/dev/null
   rm -f "$nt_out"
   exit 0
+fi
+if [ -n "$nt_skipped_foreign_endpoint" ] && ! nt_reached; then
+  echo "${FOREIGN_ENDPOINT_HINT}" >&2
 fi
 cat "$nt_out" >&2 2>/dev/null
 rm -f "$nt_out"
@@ -298,8 +319,15 @@ fi
 echo "${CONTEXT_UNREACHABLE_MSG}" >&2
 # A transport WAS advertised and nothing answered, primary or fallback: name the stale endpoint so
 # the agent stops relinking a healthy canvas (the link is fine; the app behind it is not there).
-if [ -z "$nt_code" ] || [ "$nt_code" = "000" ]; then
-  echo "${STALE_ENDPOINT_HINT}" >&2
+# One piece of advice per failure: when the walk skipped a foreign endpoint, the owner-unreachable
+# sentence above already says what happened and when to retry.
+# An SSH tunnel primary gets the tunnel advice (reconnect), anything else the stale one (restart).
+if { [ -z "$nt_code" ] || [ "$nt_code" = "000" ]; } && [ -z "$nt_skipped_foreign_endpoint" ]; then
+  if [ -n "$nt_primary_tunnel" ]; then
+    echo "${TUNNEL_DOWN_HINT}" >&2
+  else
+    echo "${STALE_ENDPOINT_HINT}" >&2
+  fi
 fi
 exit 1
 `
@@ -353,6 +381,8 @@ since it was first linked).
 \`--node\` is optional when you are linked to exactly one node; otherwise pass the id or title
 from \`list\`. If the CLI says "Not a nodeterm session" or "No linked nodes", there is nothing
 to read — do not retry.
+
+${ownerUnreachableGuidanceLines().join('\n')}
 
 ${codexSandboxGuidanceLines(CONTEXT_UNREACHABLE_MSG).join('\n')}
 `

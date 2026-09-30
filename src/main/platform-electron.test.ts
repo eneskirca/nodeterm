@@ -108,6 +108,41 @@ describe('electronPlatform', () => {
 })
 
 /**
+ * Who is the OWNER. The canvas reflector (core/canvas-sync.ts) lets a node's machine-local held
+ * launch (`pendingLaunch`) travel only owner→owner, so the app's own window must be the owner and a
+ * relay peer never may be — whatever else is true of its id.
+ */
+describe('electronPlatform.isOwnerClient', () => {
+  it('is true for the live main window, false for a relay peer and for an unknown id', () => {
+    const p = electronPlatform()
+    h.clientIds = [1]
+    registerPeerSink(PEER, peerSink().sink)
+    expect(p.isOwnerClient?.(1)).toBe(true)
+    expect(p.isOwnerClient?.(PEER)).toBe(false)
+    expect(p.isOwnerClient?.(2)).toBe(false)
+  })
+
+  it('is false while there is no window (macOS: the window closed, the app still running)', () => {
+    const p = electronPlatform()
+    h.clientIds = []
+    expect(p.isOwnerClient?.(1)).toBe(false)
+  })
+
+  it('a registered peer is never the owner, even if its id were also reported as a window', () => {
+    // Peer ids come from allocateRelayClientId() (≥ 1_000_000) precisely so they cannot collide with
+    // a webContents id; this pins the second guard, which holds even if that allocation ever broke.
+    const p = electronPlatform()
+    h.clientIds = [PEER]
+    registerPeerSink(PEER, peerSink().sink)
+    expect(p.isOwnerClient?.(PEER)).toBe(false)
+  })
+
+  it('a minted relay peer id never equals a small webContents id', () => {
+    expect(allocateRelayClientId()).toBeGreaterThanOrEqual(1_000_000)
+  })
+})
+
+/**
  * The seam that makes a relay peer a FIRST-CLASS client of this desktop's core: a peer has no
  * webContents, so before this every sendTo/broadcast aimed at one silently no-op'd (the host saw the
  * phone, the phone saw nothing). All three members are now peer-aware — and, with no peer

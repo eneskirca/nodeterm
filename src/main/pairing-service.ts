@@ -245,7 +245,8 @@ export interface PairingService {
   /** All paired devices (token stripped) from ~/.nodeterm/agent.json. */
   listDevices(): Promise<PublicDevice[]>
   /**
-   * Revoke a device: drop its agent.json entry, delete its authorized_keys line, AND take its Pro
+   * Revoke a device: revoke its relay trust (unpin + cut live relay sessions), drop its agent.json
+   * entry, delete its authorized_keys line, AND take its Pro
    * entitlement back on the relay backend. The two legs are reported separately — see
    * `DeviceRevokeResult`; this never throws, because a failure the caller cannot see is exactly
    * how the server leg went missing in the first place.
@@ -426,6 +427,13 @@ export interface PairingServiceOptions {
   defaultRouteAddress?: () => Promise<string | null>
   /** Defaults to PAIR_TIMEOUT_MS. */
   timeoutMs?: number
+  /**
+   * Revoke the phone's RELAY trust on Remove: unpin its box key from the phone store and close its
+   * live relay sessions (peer-revoke.ts `revokeAllPhones`). Without it a removed phone keeps its
+   * relay shell until the socket drops and is silently re-admitted on reconnect. Absent ⇒ no relay
+   * leg (tests, and any shell without a standing host).
+   */
+  revokePhoneRelayTrust?: () => Promise<{ persisted: boolean; killed: boolean }>
 }
 
 export function createPairingService(
@@ -875,7 +883,8 @@ export function createPairingService(
 
   // One unit: agent.json and authorized_keys must not be revoked half-way by an interleaving writer.
   //
-  // authorized_keys goes FIRST, and the order is load-bearing on partial failure. That file is full
+  // Relay trust goes first (see inside), then authorized_keys, and the order is load-bearing on
+  // partial failure. authorized_keys is full
   // shell access; agent.json holds the host-agent bearer token and the device the UI lists. If the
   // second step fails, revoking the SSH key first leaves the BIGGER capability already gone and the
   // device still listed — visible to its owner, with the Revoke button still there to finish the
@@ -891,6 +900,16 @@ export function createPairingService(
       const relayId = entry?.relayDeviceId
       const found = !!entry
       try {
+        // Relay trust FIRST, for the same reason as the order below: it is shell access (a pinned
+        // box key is auto-admitted by the standing host with the full phone vocabulary), so it goes
+        // before the device leaves the list. If it fails, the device stays listed and the owner can
+        // retry. It runs only for a device we actually know, so a stale id cannot unpin anything.
+        if (found && options.revokePhoneRelayTrust) {
+          const relay = await options.revokePhoneRelayTrust()
+          if (!relay.persisted || !relay.killed) {
+            throw new Error(`relay trust revoke incomplete (persisted=${relay.persisted}, killed=${relay.killed})`)
+          }
+        }
         await removeAuthorizedKeysForDevice(id)
         await removeAdministratorsKeysForDevice(id)
         const obj = await readAgentJson()

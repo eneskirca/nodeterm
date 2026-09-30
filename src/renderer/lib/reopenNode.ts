@@ -16,6 +16,7 @@ import {
   isAccountLoginNode
 } from '@renderer/state/workspace'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
+import { normalizeNodeIcon } from '@shared/node-icon'
 
 export type RestorableNodeKind = Exclude<NodeKind, 'group' | 'subagent' | 'loop'>
 
@@ -108,6 +109,11 @@ function withCosmetics(node: CanvasNode, data: NodeData): CanvasNode {
     const value = data[key]
     if (value !== undefined) (cosmetics as Record<string, unknown>)[key] = value
   }
+  // The icon is a cosmetic too, but not a plain copy: a persisted snapshot comes from
+  // workspace.json, which is hand-editable, so it crosses the same validator hydration uses.
+  // Without this a reopened session came back without the icon it was closed with.
+  const icon = normalizeNodeIcon(data.icon)
+  if (icon) cosmetics.icon = icon
   return { ...node, data: { ...node.data, ...cosmetics } }
 }
 

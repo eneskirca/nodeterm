@@ -3,7 +3,7 @@ import type { AgentMessageOutcome } from './agent-message-decide'
 /**
  * FLOW CONTROL — the first throttle the control surface has ever had.
  *
- * What exists today is timeouts (`SLOWLORIS_MS` → `CONTROL_CEILING_MS`, the 120 s `pendingControl`
+ * What exists today is timeouts (`SLOWLORIS_MS` → `CONTROL_CEILING_MS`, the 120 s control-forward
  * bound) and a one-at-a-time confirmation serializer (`confirmBusy()`). A timeout is not a throttle
  * and a modal is not a budget — and messaging skips the modal entirely once the per-project switch
  * is on, so even the accidental brake is gone. These two limits are the replacement.
@@ -291,10 +291,16 @@ export interface FlowReservation {
  */
 export type FlowReserve = { ok: false; limit: FlowLimit; outcome: RateLimited } | FlowReservation
 
-export function reserveFlow(src: string, dst: string, now: number): FlowReserve {
+/**
+ * `fanOutKey` names whose PER-TURN budget this delivery spends; it defaults to the sender, which is
+ * every agent. A board comment passes its own key (`board:<project>:<comment>`), because a person's
+ * turn is one comment: its pair window stays the board's (`src`), but one comment's in-flight holds
+ * and later sends must not spend the next comment's budget.
+ */
+export function reserveFlow(src: string, dst: string, now: number, fanOutKey: string = src): FlowReserve {
   sweep(now)
-  const sent = senderTurns.get(src)?.sent ?? 0
-  const pending = pendingBySender.get(src) ?? 0
+  const sent = senderTurns.get(fanOutKey)?.sent ?? 0
+  const pending = pendingBySender.get(fanOutKey) ?? 0
   if (sent + pending >= FANOUT_PER_TURN) {
     return {
       ok: false,
@@ -319,7 +325,7 @@ export function reserveFlow(src: string, dst: string, now: number): FlowReserve 
     }
   }
   pendingPairs.add(key)
-  pendingBySender.set(src, pending + 1)
+  pendingBySender.set(fanOutKey, pending + 1)
   let released = false
   return {
     ok: true,
@@ -327,9 +333,9 @@ export function reserveFlow(src: string, dst: string, now: number): FlowReserve 
       if (released) return
       released = true
       pendingPairs.delete(key)
-      const n = (pendingBySender.get(src) ?? 1) - 1
-      if (n <= 0) pendingBySender.delete(src)
-      else pendingBySender.set(src, n)
+      const n = (pendingBySender.get(fanOutKey) ?? 1) - 1
+      if (n <= 0) pendingBySender.delete(fanOutKey)
+      else pendingBySender.set(fanOutKey, n)
     }
   }
 }
@@ -344,15 +350,15 @@ export function reserveFlow(src: string, dst: string, now: number): FlowReserve 
  * come back from — would find itself silent for the rest of its turn, blocked by the retries the
  * feature asked it to make.
  */
-export function noteSent(src: string, dst: string, now: number): void {
+export function noteSent(src: string, dst: string, now: number, fanOutKey: string = src): void {
   sweep(now)
   pairLastSentAt.set(pairKey(src, dst), now)
-  const budget = senderTurns.get(src)
+  const budget = senderTurns.get(fanOutKey)
   if (budget) {
     budget.sent += 1
     budget.lastSentAt = now
   } else {
-    senderTurns.set(src, { sent: 1, lastSentAt: now })
+    senderTurns.set(fanOutKey, { sent: 1, lastSentAt: now })
   }
 }
 

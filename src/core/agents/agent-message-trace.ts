@@ -71,6 +71,9 @@ export interface DeliveryTraceInput {
   outcome: AgentMessageOutcomeKind
   receipt?: ReceiptSignal
   bodyChars: number
+  /** The `notPermitted` reason, when that is the outcome. Written to the board-log line so a reader
+   *  of the durable history (a board comment's row after a reload) can say WHY, not only THAT. */
+  reason?: string
 }
 
 const ring: DeliveryTraceEntry[] = []
@@ -104,7 +107,8 @@ export async function recordDelivery(
         type: 'agent-message',
         from: input.sourceNodeId,
         to: input.targetNodeId,
-        title: input.outcome
+        title: input.outcome,
+        ...(input.reason ? { reason: input.reason } : {})
       }
     })
     if (ok) traced = 'board-log'

@@ -97,6 +97,16 @@ describe('applyMutationToFlow', () => {
 
   // React Flow REQUIRES a parent to appear before its children. A peer grouping nodes sends the new
   // group frame plus the (already present) children, so the frame arrives as an append.
+  // Edges live in their own state; an edge op must come back as the SAME array, so the peer path's
+  // `flow === nodesRef.current` short-circuit fires instead of a setNodes + adopt + markDirty.
+  it('is a no-op (same array) for an edge mutation', () => {
+    const nodes = [flowNode('a', 0)]
+    expect(applyMutationToFlow(nodes, { op: 'edge-remove', kind: 'bridge', id: 'x' })).toBe(nodes)
+    expect(
+      applyMutationToFlow(nodes, { op: 'edge-upsert', kind: 'rope', edge: { id: 'x', source: 'a', target: 'a' } })
+    ).toBe(nodes)
+  })
+
   it('keeps parents before children when a peer creates a group around existing nodes', () => {
     const nodes = [flowNode('a', 0), flowNode('b', 0)]
     const withGroup = applyMutationToFlow(

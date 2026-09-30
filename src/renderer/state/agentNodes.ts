@@ -85,7 +85,24 @@ interface AgentNodesState {
   toggleExpanded(id: string): void
   /** Drop a card's dragged position + resized size, returning it to its laid-out spot. */
   resetPlacement(id: string): void
-  start(toolUseId: string, viz: Omit<SubagentViz, 'state' | 'startedAt'> & { startedAt?: number }): void
+  /**
+   * Draw (or re-open) a card. `supersedes` names a card this one REPLACES — Claude's first subagent
+   * of a session is drawn from its tool call, then its native `SubagentStart` arrives under the
+   * child's own id (core/claude-subagent-lifecycle.ts). The old card's start time, place, size,
+   * expansion and selection move to the new key, so the user sees one card that never moved. Its
+   * streamed activity is DROPPED, not moved: the native tail reads the same transcript file from
+   * its first byte, and moving it would print everything twice.
+   */
+  start(
+    toolUseId: string,
+    viz: Omit<SubagentViz, 'state' | 'startedAt'> & { startedAt?: number },
+    supersedes?: string
+  ): void
+  /**
+   * End a card. Idempotent on a card already done — except that a late end carrying STATS (tokens
+   * / tool uses) fills them in: Claude's native stop ends a sync child ~40 ms before the tool
+   * path's end brings the numbers the card shows, and dropping those would be a regression.
+   */
   finish(toolUseId: string, result: SubagentResult): void
   /** Append a chunk of the subagent's live transcript. */
   appendActivity(toolUseId: string, chunk: string): void
@@ -256,15 +273,40 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
       return { positions, sizes }
     }),
 
-  start: (toolUseId, viz) =>
-    set((s) => ({
-      byId: { ...s.byId, [toolUseId]: { ...viz, state: 'working', startedAt: viz.startedAt ?? s.byId[toolUseId]?.startedAt ?? Date.now() } }
-    })),
+  start: (toolUseId, viz, supersedes) =>
+    set((s) => {
+      const old = supersedes && supersedes !== toolUseId ? s.byId[supersedes] : undefined
+      const startedAt = viz.startedAt ?? s.byId[toolUseId]?.startedAt ?? old?.startedAt ?? Date.now()
+      const card: SubagentViz = { ...viz, state: 'working', startedAt }
+      if (!old || !supersedes) return { byId: { ...s.byId, [toolUseId]: card } }
+      const next = dropCards(s, [supersedes]) as AgentNodesState
+      // Move what the user did to the old card, unless the new key already carries its own.
+      const inherit = !(toolUseId in s.byId)
+      const carry = <T>(m: Record<string, T>, from: Record<string, T>): Record<string, T> =>
+        inherit && supersedes in from ? { ...m, [toolUseId]: from[supersedes] } : m
+      return {
+        ...next,
+        byId: { ...next.byId, [toolUseId]: card },
+        positions: carry(next.positions, s.positions),
+        sizes: carry(next.sizes, s.sizes),
+        expanded: carry(next.expanded, s.expanded),
+        selectedId: s.selectedId === supersedes ? toolUseId : next.selectedId
+      }
+    }),
 
   finish: (toolUseId, result) =>
     set((s) => {
       const prev = s.byId[toolUseId]
-      if (!prev || prev.state === 'done') return s
+      if (!prev) return s
+      if (prev.state === 'done') {
+        if (result.tokens === undefined && result.toolUses === undefined) return s
+        const stats = {
+          ...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+          ...(result.tokens !== undefined ? { tokens: result.tokens } : {}),
+          ...(result.toolUses !== undefined ? { toolUses: result.toolUses } : {})
+        }
+        return { byId: { ...s.byId, [toolUseId]: { ...prev, ...stats } } }
+      }
       if (s.autoHideFinished) return dropCards(s, [toolUseId])
       // Async subagents end via a <task-notification> that carries no timing stats — fall
       // back to the card's own elapsed time so the duration doesn't vanish on completion.

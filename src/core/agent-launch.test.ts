@@ -877,3 +877,23 @@ describe.runIf(!WINDOWS)("real POSIX shell argv behavior", () => {
     },
   );
 });
+
+describe("--no-daemon (codex >= 0.157 auto-starts a shared app-server that keeps the first pane's env)", () => {
+  it("rides a codex argv only when the host's codex was seen to accept it", async () => {
+    await expect(
+      prepareAgentLaunch(
+        resume("codex", "thread-1", { permissionMode: "auto" }),
+        "posix",
+        builtinContext("codex", { codexNoDaemon: true }),
+      ),
+    ).resolves.toEqual({
+      command: "'codex' 'resume' 'thread-1' '--ask-for-approval' 'on-request' '--no-daemon'",
+    });
+    await expect(
+      prepareAgentLaunch(start("codex"), "posix", builtinContext("codex", { codexNoDaemon: null })),
+    ).resolves.toEqual({ command: "'codex'" });
+    await expect(
+      prepareAgentLaunch(start("claude"), "posix", builtinContext("claude", { codexNoDaemon: true })),
+    ).resolves.toEqual({ command: "'claude'" });
+  });
+});

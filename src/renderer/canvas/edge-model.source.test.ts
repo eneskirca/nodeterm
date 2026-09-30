@@ -31,9 +31,10 @@ describe('canvas edge model (source pins)', () => {
   })
 
   it('--after writes a rope from each dep to each opened node, beside the hidden bridge', () => {
-    // One helper, three verbs: the rope id shape is what hiddenLinkIds / delete key on.
+    // One helper, three verbs. The id is the marked WAIT id (`waitRopeId`, still `ctrl-`-routed):
+    // an opener rope and a wait rope must be told apart once the canvas prunes the opener's.
     expect(src).toMatch(/const ropeDeps = \(ids: string\[\], after: string\[\] \| undefined\)/)
-    expect(src).toContain('ropeEdge(`ctrl-${dep}-${nid}`, dep, nid)')
+    expect(src).toContain('ropeEdge(waitRopeId(dep, nid), dep, nid)')
     expect((src.match(/ropeDeps\(ids, after\)/g) ?? []).length).toBe(2)
   })
 

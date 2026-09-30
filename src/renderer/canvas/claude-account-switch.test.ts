@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ClaudeAccount } from '@shared/types'
-import { claudeSwitchTargets, planClaudeAccountSwitch } from './claude-account-switch'
+import { claudeSwitchTargets, planClaudeAccountSwitch, startBulkSwitch } from './claude-account-switch'
 
 const acct = (id: string, extra: Partial<ClaudeAccount> = {}): ClaudeAccount => ({
   id,
@@ -128,5 +128,30 @@ describe('bulk move', () => {
     expect(switchOutcomeNotice({ kind: 'refused', reason: 'no-connection' }, 'X')?.text).toMatch(
       /not connected/
     )
+  })
+})
+
+describe('startBulkSwitch', () => {
+  // The bulk move used to await each switch before starting the next: N sessions took N exits in a
+  // row, and a project switch mid-run unmounted every node that had not started yet, so they were
+  // silently skipped. Every switch must be under way before the first one settles.
+  it('starts every switch before any of them settles, and returns every outcome', async () => {
+    const started: string[] = []
+    const release: Array<() => void> = []
+    const run = (id: string): Promise<string> => {
+      started.push(id)
+      return new Promise((r) => release.push(() => r(`done-${id}`)))
+    }
+    const all = startBulkSwitch(['a', 'b', 'c'], run)
+    expect(started).toEqual(['a', 'b', 'c'])
+    release.forEach((f) => f())
+    expect(await all).toEqual(['done-a', 'done-b', 'done-c'])
+  })
+
+  it('one switch that rejects does not swallow the others', async () => {
+    const out = await startBulkSwitch(['a', 'b'], (id) =>
+      id === 'a' ? Promise.reject(new Error('boom')) : Promise.resolve('ok')
+    )
+    expect(out).toEqual([undefined, 'ok'])
   })
 })

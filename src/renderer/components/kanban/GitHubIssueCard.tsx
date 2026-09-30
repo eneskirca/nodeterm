@@ -6,6 +6,7 @@ import { updatedRelative } from '../../lib/relativeTime'
 import { PullRefChip } from './PullStatusBadges'
 import { NO_ISSUE_RUNS, type IssueRun } from '../../lib/issueRuns'
 import { IssueRunChips } from './IssueRunChips'
+import { DispatchChip } from './DispatchChip'
 
 export const GitHubIssueCard = memo(function GitHubIssueCard({
   issue,
@@ -100,6 +101,7 @@ export const GitHubIssueCard = memo(function GitHubIssueCard({
         </div>
       )}
       {onOpenRun && <IssueRunChips runs={runs} onOpen={onOpenRun} />}
+      <DispatchChip htmlUrl={issue.htmlUrl} number={issue.number} />
       <div className="github-issue-card__footer">
         <span>{moving ? 'Syncing…' : updatedRelative(issue.updatedAt)}</span>
         {issue.conflict && <span className="github-issue-conflict">Needs a column</span>}

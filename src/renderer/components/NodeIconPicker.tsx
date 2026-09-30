@@ -1,6 +1,6 @@
 /**
- * Choosing a node's icon: an emoji from a small palette, any character typed by hand, or an image
- * file from disk.
+ * Choosing a node's icon: a curated glyph (shell, git, database, … — issue #291), an emoji from a
+ * small palette, any character typed by hand, or an image file from disk.
  *
  * Driven by the promise-based singleton `nodeIconDialog()` — the same shape as `promptDialog()` —
  * so every surface that can set an icon (the node context menu, the node header, the kanban card
@@ -27,6 +27,7 @@ import { create } from 'zustand'
 import {
   iconFileName,
   localIconCwd,
+  NODE_GLYPHS,
   type NodeIcon,
   nodeIconMime,
   normalizeNodeIcon,
@@ -37,6 +38,7 @@ import { browserThumbnailDeps, downscaleIconImage } from '../lib/nodeIconThumbna
 import { useProjects } from '../state/projects'
 import { sessionForProject } from '../session/session'
 import { useDialogStack } from './dialog-stack'
+import { NodeIconView } from './NodeIcon'
 
 /**
  * A small, deliberately opinionated palette rather than a full emoji keyboard. Grouped by what
@@ -223,6 +225,29 @@ function NodeIconPicker({
     <div className="confirm-overlay" onClick={() => onDone(undefined)}>
       <div className="confirm node-icon-dialog" onClick={(e) => e.stopPropagation()}>
         <p className="confirm__msg">Icon for {title || 'this node'}</p>
+        {/* What the node IS, first: a glyph names the kind of session (issue #291), where the
+            emoji below names a mood. Drawn by the same NodeIconView the header and sidebar use,
+            so the button shows exactly what the node will wear. */}
+        <div className="node-icon-dialog__grid">
+          {NODE_GLYPHS.map((glyph) => {
+            const current = icon?.type === 'lucide' && icon.name === glyph.id
+            return (
+              <button
+                key={glyph.id}
+                type="button"
+                className={`node-icon-dialog__swatch node-icon-dialog__swatch--glyph${
+                  current ? ' is-current' : ''
+                }`}
+                title={glyph.label}
+                aria-label={glyph.label}
+                aria-pressed={current}
+                onClick={() => onDone({ type: 'lucide', name: glyph.id })}
+              >
+                <NodeIconView icon={{ type: 'lucide', name: glyph.id }} size={18} />
+              </button>
+            )
+          })}
+        </div>
         <div className="node-icon-dialog__grid">
           {PALETTE.map((e) => (
             <button

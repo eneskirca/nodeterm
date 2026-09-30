@@ -167,6 +167,20 @@ describe('subagent grouping', () => {
   })
 })
 
+describe('subagent grouping — Claude native cards', () => {
+  const evt = (p: Partial<NormalizedAgentEvent> & { nodeId: string; kind: NormalizedAgentEvent['kind'] }): NormalizedAgentEvent =>
+    ({ agentId: 'claude', ...p } as NormalizedAgentEvent)
+
+  it('a start that supersedes a tool-drawn row replaces it instead of adding a second row', () => {
+    const m = createHudModel()
+    m.applyStateChange(stateChange({ nodeId: 'a', state: 'working', agentId: 'claude' }))
+    m.applyAgentEvent(evt({ nodeId: 'a', kind: 'subagent-start', toolUseId: 'toolu_1', taskLabel: 'do-x' }))
+    m.applyAgentEvent(evt({ nodeId: 'a', kind: 'subagent-start', toolUseId: 'a1', taskLabel: 'do-x', supersedes: 'toolu_1' }))
+    const row = rowFor(m.buildRows(T0, titleOf), 'a')!
+    expect(row.subagents.map((s) => s.id)).toEqual(['a1'])
+  })
+})
+
 describe('prompt / model / context join', () => {
   it('keeps copied SSH thread ids isolated from each other and legacy local observations', () => {
     const m = createHudModel()

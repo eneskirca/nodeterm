@@ -21,6 +21,17 @@ import { requestComposerDictation, subscribeComposerDictation } from '../lib/cha
 import { clipboardImages, pasteHasText, pastedFiles } from '../terminal/file-drop'
 import { IconMic, IconPlus } from '../components/icons'
 import { Spinner } from '../components/Spinner'
+import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
+import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
+import {
+  CATALOG_REUSE_MS,
+  applyCompletion,
+  catalogEntryTag,
+  completionItems,
+  completionTriggerAt,
+  type CompletionItem,
+  type CompletionTrigger
+} from '../lib/chatComposerComplete'
 
 export interface ChatComposerProps {
   nodeId: string
@@ -56,6 +67,14 @@ export interface ChatComposerProps {
   pathsForFiles?: (files: File[]) => Promise<string[]>
   /** See ChatPanelProps. */
   onShowTerminal?: () => void
+  /** The node's working directory — the root `@` completes under (never above it), and the project
+   *  whose custom commands and skills the `/` menu lists. Absent = no `@` list. */
+  cwd?: string
+  /** The account the session runs as: whose config dir holds its commands and skills. */
+  accountId?: string
+  /** An SSH node's project scope (the one its attach uploads to): `@` lists the HOST's files over
+   *  that project's master. Absent = the session's own `files.quickOpen` (local, or a relay peer's). */
+  sshProjectId?: string
 }
 
 /**
@@ -78,7 +97,10 @@ export function ChatComposer({
   onWriteRefused,
   sendUnconfirmed = false,
   pathsForFiles,
-  onShowTerminal
+  onShowTerminal,
+  cwd,
+  accountId,
+  sshProjectId
 }: ChatComposerProps) {
   const { api } = useSession()
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -103,6 +125,101 @@ export function ChatComposer({
   sendUnconfirmedRef.current = sendUnconfirmed
   const [pickerBusy, setPickerBusy] = useState(false)
   const labels = composerLabels({ agentId, model: usage?.model, effort: usage?.effort, width: composerWidth })
+
+  // ── Completion (`/` and `@`) ─────────────────────────────────────────────────────────────────
+  // The trigger is DERIVED at render from the draft and the caret — and the caret is only known for
+  // the exact draft it was read with (`caretSnap.value`). Any change to the draft that did not come
+  // through this textarea (the send clearing it after its async pane check, dictation, an attach,
+  // an accept) leaves the snapshot describing another text, so the menu is closed until the user
+  // types or moves the caret again; an accept can therefore never replace a range of a draft it did
+  // not see. A disabled composer derives nothing. The lists are fetched on the first `/` or `@` of
+  // this mount and reused for CATALOG_REUSE_MS (nothing is fetched while nobody types a trigger).
+  // Until the core catalog answers — and for good on a surface that has none (a relay tab) — the `/`
+  // menu shows the shared built-in table for this agent.
+  const listboxId = useId()
+  const [caretSnap, setCaretSnap] = useState<{ value: string; start: number; end: number } | null>(null)
+  const trigger: CompletionTrigger | null =
+    !disabled && caretSnap && caretSnap.value === value ? completionTriggerAt(value, caretSnap.start, caretSnap.end) : null
+  const lastTokenRef = useRef<string | null>(null)
+  const closeMenu = useCallback(() => setCaretSnap(null), [])
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null)
+  const [catalog, setCatalog] = useState<ChatCatalogEntry[]>(() => builtinSlashCommands(agentId))
+  const [fileIndex, setFileIndex] = useState<QuickOpenIndexedFile[] | null>(null)
+  const catalogAtRef = useRef(0)
+  const scopeKeyRef = useRef('')
+  const filesAtRef = useRef(0)
+  const scopeKey = `${agentId}\u0000${accountId ?? ''}\u0000${cwd ?? ''}\u0000${sshProjectId ?? ''}`
+  scopeKeyRef.current = scopeKey
+  useEffect(() => {
+    // A different node scope (the card modal reuses a mount across sessions only via `key`, but be
+    // exact): forget what was fetched for the old one.
+    catalogAtRef.current = 0
+    filesAtRef.current = 0
+    setCatalog(builtinSlashCommands(agentId))
+    setFileIndex(null)
+  }, [scopeKey, agentId])
+
+  const ensureLists = useCallback(
+    (kind: CompletionTrigger['kind']) => {
+      const now = Date.now()
+      if (kind === 'slash' && now - catalogAtRef.current > CATALOG_REUSE_MS) {
+        catalogAtRef.current = now
+        const key = scopeKey
+        Promise.resolve()
+          .then(() => api.chat.catalog(nodeId, agentId, accountId, cwd))
+          .then((c) => sanitizeChatCatalog(c).entries)
+          .catch(() => builtinSlashCommands(agentId))
+          .then((entries) => {
+            if (key === scopeKeyRef.current) setCatalog(entries)
+          })
+      }
+      if (kind === 'file' && cwd && now - filesAtRef.current > CATALOG_REUSE_MS) {
+        filesAtRef.current = now
+        const key = scopeKey
+        Promise.resolve()
+          .then(() => (sshProjectId ? window.nodeTerminal.sshFs.quickOpen(sshProjectId, cwd) : api.files.quickOpen(cwd)))
+          .catch(() => [] as string[])
+          .then((files) => {
+            if (key === scopeKeyRef.current) setFileIndex(prepareQuickOpenFiles(Array.isArray(files) ? files : []))
+          })
+      }
+    },
+    [api, nodeId, agentId, accountId, cwd, sshProjectId, scopeKey]
+  )
+  const syncTrigger = useCallback(
+    (text: string, caret: number, selEnd: number) => {
+      setCaretSnap({ value: text, start: caret, end: selEnd })
+      const t = disabled ? null : completionTriggerAt(text, caret, selEnd)
+      // A new token starts at the top of its list; typing within the same token keeps the place.
+      const token = t ? `${t.kind}:${t.start}` : null
+      if (token !== lastTokenRef.current) setActiveIdx(0)
+      lastTokenRef.current = token
+      if (t) ensureLists(t.kind)
+    },
+    [disabled, ensureLists]
+  )
+  // A composer that cannot flip to the terminal (no `onShowTerminal`) does not offer a built-in that
+  // opens a dialog there: the dialog would be invisible and the next Enter would answer it.
+  const offered = onShowTerminal ? catalog : catalog.filter((e) => !e.interactive)
+  const items: CompletionItem[] =
+    trigger && dismissedAt !== trigger.start ? completionItems(trigger, offered, fileIndex) : []
+  const menuOpen = items.length > 0
+  const active = Math.min(activeIdx, Math.max(0, items.length - 1))
+
+  const accept = (item: CompletionItem) => {
+    if (!trigger || disabled) return
+    const next = applyCompletion(value, trigger, item.value)
+    onChange(next.text)
+    closeMenu()
+    // After React commits the new value, put the caret right after the inserted token.
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(next.caret, next.caret)
+    })
+  }
 
   // The labels drop by the composer's OWN width (a narrow node, a split card modal), not the
   // window's. Guarded like the thread's observer: jsdom and old engines have none, and then every
@@ -245,11 +362,41 @@ export function ChatComposer({
   )
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229
+    // The completion menu owns the navigation keys while it is open. Enter / Tab ACCEPT (insert the
+    // text) and never send; Escape closes the menu only — the draft, the ⌘M view and a card modal
+    // around it all stay (CardModal's capture-phase Esc already stands aside inside the composer).
+    if (menuOpen && !composing) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const d = e.key === 'ArrowDown' ? 1 : -1
+        setActiveIdx((i) => (Math.min(i, items.length - 1) + d + items.length) % items.length)
+        return
+      }
+      // Enter accepts only when accepting CHANGES the draft: a fully typed `/model` (the highlighted
+      // item is exactly what is already there) is a message, and Enter sends it as before.
+      // A bare `@` (no query yet) is not a choice either: "hello @" + Enter sends. Tab still accepts.
+      const typedExactly =
+        !!trigger && value.slice(trigger.start, trigger.end) === (trigger.kind === 'slash' ? '/' : '@') + items[active].value
+      const bareAt = trigger?.kind === 'file' && !trigger.query
+      if ((e.key === 'Enter' && !e.shiftKey && !typedExactly && !bareAt) || e.key === 'Tab') {
+        e.preventDefault()
+        accept(items[active])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        if (trigger) setDismissedAt(trigger.start)
+        return
+      }
+    }
+    if (menuOpen && e.key === 'Enter') closeMenu()
     // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.
     const action = chatKeyAction({
       key: e.key,
       shiftKey: e.shiftKey,
-      isComposing: e.nativeEvent.isComposing || e.keyCode === 229
+      isComposing: composing
     })
     if (action !== 'send') return
     e.preventDefault()
@@ -262,6 +409,43 @@ export function ChatComposer({
 
   return (
     <div className="term-chat__compose">
+      {menuOpen && (
+        <div
+          className="term-chat__complete"
+          id={listboxId}
+          role="listbox"
+          aria-label={trigger?.kind === 'file' ? 'Files' : 'Commands and skills'}
+          // Keep the textarea's focus (its blur would close the menu before the click lands).
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {items.map((item, i) => (
+            <div
+              key={`${item.kind}:${item.value}`}
+              id={`${listboxId}-${i}`}
+              role="option"
+              aria-selected={i === active}
+              className={`term-chat__complete-item${i === active ? ' is-active' : ''}`}
+              onMouseEnter={() => setActiveIdx(i)}
+              onClick={() => accept(item)}
+            >
+              {item.kind === 'slash' ? (
+                <>
+                  {/* Plain text nodes only: a name or description from a repository file is data. */}
+                  <span className="term-chat__complete-name">/{item.value}</span>
+                  {item.entry.description && (
+                    <span className="term-chat__complete-desc">{item.entry.description}</span>
+                  )}
+                  {catalogEntryTag(item.entry) && (
+                    <span className="term-chat__complete-tag">{catalogEntryTag(item.entry)}</span>
+                  )}
+                </>
+              ) : (
+                <span className="term-chat__complete-name">@{item.value}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <div
         ref={composerRef}
         className={`term-chat__composer${dropping ? ' term-chat__composer--drop' : ''}${
@@ -279,7 +463,30 @@ export function ChatComposer({
           ref={inputRef}
           className="term-chat__composer-input"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value)
+            const caret = e.target.selectionStart ?? e.target.value.length
+            // A new token (or none) forgets an Esc on the previous one.
+            if (dismissedAt !== null && completionTriggerAt(e.target.value, caret)?.start !== dismissedAt) setDismissedAt(null)
+            syncTrigger(e.target.value, caret, e.target.selectionEnd ?? caret)
+          }}
+          onKeyUp={(e) => {
+            // Caret moves (arrows, Home/End) — keys that edit already went through onChange. The menu's
+            // own navigation keys are not caret moves while it is open.
+            if (e.nativeEvent.isComposing || (menuOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp'))) return
+            const el = e.currentTarget
+            syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
+          }}
+          onClick={(e) => {
+            const el = e.currentTarget
+            syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
+          }}
+          onBlur={closeMenu}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={menuOpen}
+          aria-controls={menuOpen ? listboxId : undefined}
+          aria-activedescendant={menuOpen ? `${listboxId}-${active}` : undefined}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder={placeholder}

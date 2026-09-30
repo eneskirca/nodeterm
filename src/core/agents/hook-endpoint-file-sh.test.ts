@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { hookServer } from './hook-server'
 import { nodeTokenDir } from './node-token-files'
 import { initPlatform, resetPlatformForTests } from '../platform'
 import { fakePlatform } from '../platform-fake'
+import { testTmpDir } from '../test-tmp'
 
 // Issue #351: on macOS the userDataDir lives under "Application Support" — a directory name WITH A
 // SPACE. The managed hook script SOURCES the endpoint file (`. "$file"`) under /bin/sh, so an
@@ -17,7 +17,7 @@ import { fakePlatform } from '../platform-fake'
 // a real reader.
 let spaced = ''
 beforeAll(async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nodeterm-ep-sh-'))
+  const root = testTmpDir('nodeterm-ep-sh-')
   // A subdir with a space in its name — the "Application Support" shape.
   spaced = path.join(root, 'App Support', 'node-terminal')
   fs.mkdirSync(spaced, { recursive: true })

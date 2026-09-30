@@ -19,10 +19,11 @@
 // rendered. Same discipline as `SAFE_SESSION_ID` and `permissionModeFlag`: re-check at the
 // interpolation site, never trust the type.
 //
-// The grammar is GitHub's own, not a loosened one: an owner is 1–39 alphanumerics or single inner
-// hyphens (no leading/trailing hyphen), a repository name is 1–100 of `[A-Za-z0-9_.-]` that is not
-// `.`/`..` and does not start with `-`, and an issue number is a positive 32-bit integer written
-// without a sign, exponent or leading zero. Nothing in that alphabet is a shell metacharacter,
+// The grammar is what GitHub has actually issued, not a loosened one: an owner is 1–39
+// alphanumerics and hyphens that does not start with a hyphen (see GITHUB_OWNER_PATTERN for why
+// consecutive and trailing hyphens are accepted), a repository name is 1–100 of `[A-Za-z0-9_.-]`
+// that is not `.`/`..` and does not start with `-`, and an issue number is a positive 32-bit
+// integer written without a sign, exponent or leading zero. Nothing in that alphabet is a shell metacharacter,
 // quote, whitespace or control byte. `core/github/config.ts` parses a repository slug with the same
 // owner/name patterns (`github-issue-ref.config-agreement.test.ts` pins that the two agree).
 
@@ -32,7 +33,20 @@ export interface IssueRef {
   number: number
 }
 
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
+/**
+ * A GitHub login (user or organization): 1–39 alphanumerics and hyphens, never STARTING with a
+ * hyphen (it would read as a flag, and GitHub has never issued one). Consecutive and trailing
+ * hyphens are accepted on purpose: GitHub's current sign-up rule forbids them, but it issued them
+ * before — `hello--world` (user, 2014), `foo--bar` (organization), `john-` (user, 2012) and `Test-`
+ * (organization) all exist (checked read-only against api.github.com, 2026-09-29). A grammar that
+ * refuses a real account stops that board syncing and DROPS every stored issue binding naming it
+ * at load, and the next save writes them out of project.json. Nothing here is a shell
+ * metacharacter either way. Unanchored so it embeds in a slug pattern; the ONE definition — the
+ * board's repository parser, the avatar fetch in `core/github` and a stored `--after-pr` hold
+ * (`parseRepository`, below) read it too.
+ */
+export const GITHUB_OWNER_PATTERN = '[A-Za-z0-9][A-Za-z0-9-]{0,38}'
+const OWNER = new RegExp(`^${GITHUB_OWNER_PATTERN}$`)
 const REPO = /^[A-Za-z0-9_.-]{1,100}$/
 const NUMBER = /^[1-9][0-9]{0,9}$/
 const MAX_ISSUE_NUMBER = 2 ** 31 - 1
@@ -77,7 +91,9 @@ export function normalizeIssueRef(value: unknown): IssueRef | undefined {
 }
 
 /** `owner/repo` split into its halves, validated. Used for a project's configured repository. */
-function parseRepository(repository: unknown): { owner: string; repo: string } | undefined {
+/** `owner/repo`, validated with the grammar above. Exported so a stored `owner/repo` elsewhere
+ *  (a `--after-pr` hold, `@shared/pr-wait`) is read with the same rule, never a copy of it. */
+export function parseRepository(repository: unknown): { owner: string; repo: string } | undefined {
   if (typeof repository !== 'string') return undefined
   const slash = repository.indexOf('/')
   if (slash < 0 || repository.indexOf('/', slash + 1) >= 0) return undefined

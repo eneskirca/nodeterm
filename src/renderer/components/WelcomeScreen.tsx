@@ -3,6 +3,8 @@ import { IconClose } from './icons'
 import type { ProjectIcon } from '@shared/project-icon'
 import { filterClosedProjects } from '../lib/closedHistory'
 import { ProjectGlyph } from './ProjectGlyph'
+import type { RecentConversation } from '@shared/recent-conversations'
+import { RecentConversations } from './RecentConversations'
 
 /**
  * Rows before the "Recently closed" filter box appears (issue #506). `.welcome__recent-list` is
@@ -40,6 +42,11 @@ interface WelcomeScreenProps {
    * nothing appeared. No effect on the canvas, where the welcome screen already sits on top.
    */
   overBoard?: boolean
+  /** "Open recent": past agent conversations from this machine's CLI histories. Absent = not read
+   *  (or the read failed) — the section is simply not drawn, never "no conversations". */
+  recentConversations?: readonly RecentConversation[]
+  recentActionFor?: (conv: RecentConversation) => { label: string; disabled?: string }
+  onResumeRecent?: (conv: RecentConversation) => void
 }
 
 /** Start screen with quick actions — shown when there are no projects, or on demand via "+". */
@@ -53,7 +60,10 @@ export function WelcomeScreen({
   onReopen,
   onDeleteClosed,
   onClose,
-  overBoard
+  overBoard,
+  recentConversations,
+  recentActionFor,
+  onResumeRecent
 }: WelcomeScreenProps) {
   const [query, setQuery] = useState('')
   const visibleClosed = useMemo(
@@ -158,6 +168,14 @@ export function WelcomeScreen({
         </button>
       </div>
 
+      {recentConversations && recentActionFor && onResumeRecent && (
+        <RecentConversations
+          items={recentConversations}
+          actionFor={recentActionFor}
+          onResume={onResumeRecent}
+        />
+      )}
+
       {closedProjects.length > 0 && (
         <div className="welcome__recent">
           <div className="welcome__recent-title">Recently closed</div>
@@ -203,7 +221,7 @@ export function WelcomeScreen({
                   size={15}
                   className="welcome__recent-mark"
                 />
-                <span className="welcome__recent-name">{p.name}</span>
+                <span className="welcome__recent-name" title={p.name}>{p.name}</span>
                 {p.cwd && <span className="welcome__recent-path">{p.cwd}</span>}
                 {(sessionCounts?.[p.id] ?? 0) > 0 && (
                   <span

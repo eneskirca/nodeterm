@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolveIssueFlagFor } from './issueFlag'
+import { resolveIssueFlagFor, resolveIssueFlagForCall } from './issueFlag'
 
 const withBoard = (repository?: string) => ({
   id: 'p1',
@@ -83,4 +83,89 @@ describe('resolveIssueFlagFor (open-agent --issue on the desktop)', () => {
     })
     expect(r.ok).toBe(false)
   })
+})
+
+describe('resolveIssueFlagForCall (the gates run before anybody is asked)', () => {
+  // Two projects, both with a GitHub board: a lookup against either would run the host controller
+  // (`git remote`, `gh auth`) and the answer would tell the caller whether that project has one.
+  const board = { github: { repository: 'o/r' } }
+  const projects = [
+    {
+      id: 'mine',
+      nodes: [
+        { id: 'agent', agentId: 'claude' },
+        { id: 'shell' }
+      ],
+      kanban: board
+    },
+    { id: 'theirs', nodes: [{ id: 'other', agentId: 'claude' }], kanban: board },
+    { id: 'remote', ssh: { host: 'h' }, nodes: [], kanban: board },
+    { id: 'parked', closed: true, nodes: [{ id: 'parked-agent', agentId: 'codex' }], kanban: board }
+  ]
+  const live = (ids: Array<[string, string | undefined]>) =>
+    ids.map(([id, agentId]) => ({ id, data: agentId ? { agentId } : {} }))
+  const call = (over: Partial<Parameters<typeof resolveIssueFlagForCall>[0]>) => ({
+    raw: '#9',
+    verb: 'open-agent',
+    targetId: undefined,
+    sourceNodeId: 'agent',
+    liveNodes: live([['agent', 'claude'], ['shell', undefined]]),
+    projects,
+    activeProjectId: 'mine',
+    ...over
+  })
+
+  it('resolves against the caller own project, then asks', async () => {
+    const ask = vi.fn(async () => 'o/r')
+    expect(await resolveIssueFlagForCall(call({}), ask)).toMatchObject({ ok: true, ref: { number: 9 } })
+    expect(ask).toHaveBeenCalledWith('mine')
+  })
+
+  it('resolves against an authorized --project target', async () => {
+    const ask = vi.fn(async () => 'o/r')
+    expect(await resolveIssueFlagForCall(call({ targetId: 'theirs' }), ask)).toMatchObject({ ok: true })
+    expect(ask).toHaveBeenCalledWith('theirs')
+  })
+
+  it('resolves against the stored project owning a source that is not on screen', async () => {
+    const ask = vi.fn(async () => 'o/r')
+    expect(await resolveIssueFlagForCall(call({ sourceNodeId: 'parked-agent' }), ask)).toMatchObject({ ok: true })
+    expect(ask).toHaveBeenCalledWith('parked')
+  })
+
+  it.each([
+    ['a plain terminal, own project', { sourceNodeId: 'shell' }, 'source node is not a control-capable agent'],
+    ['a plain terminal naming another project', { sourceNodeId: 'shell', targetId: 'theirs' },
+      'source node is not a control-capable agent'],
+    ['an unknown source', { sourceNodeId: 'ghost' }, 'source node is not on an open canvas'],
+    ['an unknown source naming a project', { sourceNodeId: 'ghost', targetId: 'theirs' },
+      'source node is not in any open project'],
+    ['an SSH target', { targetId: 'remote' },
+      'project-target-ssh-unsupported: opening sessions into an SSH project is not supported — do not retry'],
+    ['a target this renderer does not know', { targetId: 'nowhere' },
+      'project-target-refused: the target project is not available here — try again']
+  ])('refuses %s with the path refusal and asks nobody', async (_label, over, error) => {
+    const ask = vi.fn(async () => 'o/r')
+    expect(await resolveIssueFlagForCall(call(over), ask)).toEqual({ ok: false, error })
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('never refuses a source on the ACTIVE project that is not on the live canvas yet', async () => {
+    // The boot load is still in flight: the path waits for the live node, whose agent id the load
+    // may still have to MIGRATE (a legacy `tags:['claude']` node has no stored agentId). The gate
+    // must not be stricter than that path, so it resolves against the active project and leaves
+    // the capability verdict to it.
+    const ask = vi.fn(async () => 'o/r')
+    const legacy = [{ id: 'mine', nodes: [{ id: 'booting' }], kanban: board }]
+    expect(await resolveIssueFlagForCall(call({ sourceNodeId: 'booting', liveNodes: [], projects: legacy }), ask))
+      .toMatchObject({ ok: true })
+    expect(ask).toHaveBeenCalledWith('mine')
+  })
+
+  it('leaves an open without --issue to the paths (no gate, nobody asked)', async () => {
+    const ask = vi.fn(async () => 'o/r')
+    expect(await resolveIssueFlagForCall(call({ raw: undefined, sourceNodeId: 'ghost' }), ask)).toEqual({ ok: true })
+    expect(ask).not.toHaveBeenCalled()
+  })
+
 })

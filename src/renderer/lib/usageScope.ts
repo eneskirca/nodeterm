@@ -64,6 +64,14 @@ export interface ScopeInput {
   providers: readonly ProviderUsage[]
   /** Every remote row the service answered with. */
   remote: readonly RemoteAccountUsage[]
+  /**
+   * The project's "Use for new sessions" account, ALREADY validated against the accounts this
+   * project can launch (undefined = the system identity). The collapsed pill describes this
+   * identity: it is the one the next session will spend.
+   */
+  defaultAccountId?: string
+  /** LOCAL scope only: the snapshot of `defaultAccountId` (null while its fetch is in flight). */
+  defaultUsage?: ClaudeUsage | null
 }
 
 export interface ScopedUsage {
@@ -79,10 +87,16 @@ export interface ScopedUsage {
    * pill while its popover was full.
    *
    * Managed accounts (local OR remote) never get their own pill segment: the pill has one line
-   * beside the canvas, and the popover is where per-account detail belongs. This is the rule the
-   * local side has always followed; the SSH side now matches it.
+   * beside the canvas, and the popover is where per-account detail belongs. The ONE account the
+   * pill spells out is the project's "Use for new sessions" default when it has data — that is the
+   * identity new work is spent on, so it is the number worth watching while the popover is closed.
+   * Until the default answers (or when it has nothing to say) the pill falls back to the rule
+   * above, and `pillAccountId` says which one it is showing.
    */
   pillLimits: ClaudeUsage['limits']
+  /** Whose limits `pillLimits` are: a managed account id, or null for the machine's system
+   *  identity. The pill names a managed account so its numbers are never read as the system's. */
+  pillAccountId: string | null
 }
 
 /**
@@ -113,24 +127,30 @@ export function accountRowAction(
 }
 
 export function scopeUsage(input: ScopeInput): ScopedUsage {
-  const { scope, claude, accounts, providers, remote } = input
+  const { scope, claude, accounts, providers, remote, defaultAccountId, defaultUsage } = input
   if (scope.kind === 'local') {
+    const useDefault = !!defaultAccountId && (defaultUsage?.limits.length ?? 0) > 0
     return {
       claude,
       accounts: [...accounts],
       providers: [...providers],
       // Remote hosts are another machine's story — not this project's.
       remote: [],
-      pillLimits: claude?.limits ?? []
+      pillLimits: useDefault ? defaultUsage!.limits : (claude?.limits ?? []),
+      pillAccountId: useDefault ? defaultAccountId! : null
     }
   }
   const rows = remote.filter((r) => r.hostKey === scope.hostKey)
   const claudeRows = rows.filter(r => r.provider !== 'codex')
   const system = claudeRows.find((r) => r.accountId === null)
+  const preferred = defaultAccountId
+    ? claudeRows.find((r) => r.accountId === defaultAccountId && r.usage.limits.length > 0)
+    : undefined
   const leading =
-    system && system.usage.limits.length > 0
+    preferred ??
+    (system && system.usage.limits.length > 0
       ? system
-      : (claudeRows.find((r) => r.usage.limits.length > 0) ?? system)
+      : (claudeRows.find((r) => r.usage.limits.length > 0) ?? system))
   return {
     // The local machine's Claude, its managed accounts and the local billing providers are all
     // credentials you are NOT spending while you work on the host.
@@ -138,7 +158,8 @@ export function scopeUsage(input: ScopeInput): ScopedUsage {
     accounts: [],
     providers: [],
     remote: rows,
-    pillLimits: leading?.usage.limits ?? []
+    pillLimits: leading?.usage.limits ?? [],
+    pillAccountId: leading?.accountId ?? null
   }
 }
 

@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto'
 import { sanitizePasteText } from '../paste-injection'
+import { BOARD_COMMENT_FROM_PREFIX } from '../../shared/board-comment'
 
 /**
  * THE ENVELOPE — an app-owned frame around one agent-to-agent message.
@@ -54,7 +55,10 @@ const FRAME_WORD = 'NODETERM MESSAGE'
 export interface EnvelopeParts {
   /** Per-delivery, app-generated. Never supplied by, and never shown to, the sender. */
   nonce: string
-  sourceId: string
+  /** The sending NODE's id, shown in parens after its title. Absent when the sender is not a node —
+   *  a board comment's author is a person, and inventing an id for them would give an agent a
+   *  `reply --node` target that does not exist. */
+  sourceId?: string
   sourceTitle: string
   replyTo: string
   body: string
@@ -104,6 +108,17 @@ export function frameLineRe(nonce: string): RegExp {
   return new RegExp(`^--- (?:END )?${FRAME_WORD} ${escapeRe(oneLine(nonce))} ---$`)
 }
 
+/**
+ * A NODE's title as the `from:` line shows it. A person's board comment reads
+ * `from: board comment by <name>` with no node id; an agent that renames its own node to that must
+ * not produce the same header, so such a title is labelled as the node title it is. Nothing else
+ * about a title changes.
+ */
+function nodeTitle(title: string): string {
+  const t = oneLine(title)
+  return t.toLowerCase().startsWith(BOARD_COMMENT_FROM_PREFIX) ? `node titled "${t}"` : t
+}
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -125,7 +140,9 @@ export function buildEnvelope(p: EnvelopeParts): string {
   const nonce = oneLine(p.nonce)
   return [
     `--- ${FRAME_WORD} ${nonce} ---`,
-    `from: ${oneLine(p.sourceTitle)} (${oneLine(p.sourceId)})`,
+    p.sourceId === undefined
+      ? `from: ${oneLine(p.sourceTitle)}`
+      : `from: ${nodeTitle(p.sourceTitle)} (${oneLine(p.sourceId)})`,
     `reply-to: ${oneLine(p.replyTo)}`,
     sanitizePasteText(p.body),
     `--- END ${FRAME_WORD} ${nonce} ---`

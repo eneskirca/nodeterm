@@ -29,8 +29,20 @@ export default defineConfig({
     // Issue #629: every run gets a private `TMUX_TMPDIR`, so no test can reach the tmux servers
     // this machine runs nodeterm on. `globalSetup` creates and removes it, the setup file re-asserts
     // it inside each worker (and refuses if it is missing). See test/setup/tmux-sandbox.ts.
-    globalSetup: ['test/setup/tmux-sandbox.ts'],
-    setupFiles: ['test/setup/tmux-worker-env.ts'],
+    // `fake-platform-root.ts` gives the run one parent directory for every `fakePlatform()`
+    // userDataDir and removes it at the end — before it, each call leaked a directory in /tmp.
+    // Listed FIRST: teardowns run in reverse, so it tears down after the tmux sandbox — and it is
+    // created before the temp sandbox exists, so its root is never counted as a leak there.
+    //
+    // The temp sandbox does the same for `os.tmpdir()`: the whole run writes its scratch dirs into
+    // one private directory, and teardown FAILS the run naming any test dir left in it (then removes
+    // it). The suite used to strand ~1,500 dirs in /tmp per run. See src/core/test-tmp.ts.
+    globalSetup: [
+      'test/setup/fake-platform-root.ts',
+      'test/setup/tmux-sandbox.ts',
+      'test/setup/tmp-sandbox.ts'
+    ],
+    setupFiles: ['test/setup/tmux-worker-env.ts', 'test/setup/tmp-worker-env.ts', 'test/setup/jsdom-storage.ts'],
     // Issue #160: with the default (one worker per core), a 10-core Mac runs ~10 fs-heavy suites
     // at once and transient fd exhaustion (EMFILE) turns into silent test flakiness — probes like
     // `fs.existsSync` swallow the error and answer false, so whole files fail in ways that never

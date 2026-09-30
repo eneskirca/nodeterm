@@ -1,7 +1,7 @@
 // The slowloris guard is a RECEIVE-phase guard, and this pins that it stays one.
 //
 // A destructive /control/ verb (write, close) parks in the renderer for as long as the user takes
-// to answer the confirmation dialog — by design, up to the desktop's 120s `pendingControl` bound.
+// to answer the confirmation dialog — by design, up to the desktop's 120s control-forward bound.
 // The 2s guard used to apply to the whole request lifetime, so it destroyed that socket mid-dialog:
 // the sh shim reported "control endpoint unreachable" (curl exit 52 at ~2019ms) while a late
 // confirm STILL delivered the text — the agent was told nothing happened when it had, and may

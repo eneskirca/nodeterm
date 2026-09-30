@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { createContextTail, parseLatestUsage, parseTaskNotifications, hasToolResult } from './context-tail'
+import { testTmpDir } from './test-tmp'
 
 describe('parseLatestUsage', () => {
   it('returns the LAST assistant usage in the text (sum of input + cache tokens)', () => {
@@ -83,7 +83,7 @@ describe('parseTaskNotifications', () => {
 
 describe('createContextTail — task notifications', () => {
   it('fires onTaskNotification even when the line lands torn across two reads', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-'))
+    const dir = testTmpDir('ctxtail-')
     const file = path.join(dir, 'sess.jsonl')
     const line = notificationLine('tu-torn')
     fs.writeFileSync(file, line.slice(0, 40)) // first half, no newline
@@ -108,7 +108,7 @@ describe('createContextTail — the `parse` dep (gemini/codex)', () => {
     contents: string,
     parse: NonNullable<Parameters<typeof createContextTail>[1]>['parse']
   ): Promise<unknown[]> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-parse-'))
+    const dir = testTmpDir('ctxtail-parse-')
     const file = path.join(dir, 'sess.jsonl')
     fs.writeFileSync(file, contents)
     const send = vi.fn()
@@ -150,7 +150,7 @@ describe('createContextTail — the `parse` dep (gemini/codex)', () => {
   it('keeps the last window/model when a later chunk carries usage only', async () => {
     // codex writes `turn_context` (the model) and `token_count` (the usage) on separate lines, so a
     // chunk can hold one without the other. The sticky fields are what stop the meter flickering.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-sticky-'))
+    const dir = testTmpDir('ctxtail-sticky-')
     const file = path.join(dir, 'sess.jsonl')
     fs.writeFileSync(file, 'first\n')
     const send = vi.fn()
@@ -177,7 +177,7 @@ describe('createContextTail — the `parse` dep (gemini/codex)', () => {
   it('claude keeps its model-family window when NO parser is injected', async () => {
     // The regression guard for the byte-identical claim: same file, no `parse`, and the denominator
     // is still cachedWindowFor's 1M for an opus id.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-claude-'))
+    const dir = testTmpDir('ctxtail-claude-')
     const file = path.join(dir, 'sess.jsonl')
     fs.writeFileSync(
       file,
@@ -252,7 +252,7 @@ describe('createContextTail — `wholeFile` (grok: a document rewritten, not app
   }
 
   async function pushesAfterRewrite(opts: { wholeFile?: boolean }): Promise<unknown[]> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-whole-'))
+    const dir = testTmpDir('ctxtail-whole-')
     const file = path.join(dir, 'signals.json')
     // First document, then a LONGER one — longer matters: a shorter file trips the existing
     // truncation reset and would re-read from zero by accident, hiding the bug.
@@ -279,7 +279,7 @@ describe('createContextTail — `wholeFile` (grok: a document rewritten, not app
 })
 
 it('delivers each tool result ID across a torn local transcript read', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-question-tail-'))
+  const dir = testTmpDir('nt-question-tail-')
   const file = path.join(dir, 'session.jsonl')
   const onToolResult = vi.fn()
   const tail = createContextTail(() => {}, { onToolResult })
@@ -304,7 +304,7 @@ it('delivers each tool result ID across a torn local transcript read', async () 
 }, 8000)
 describe('session-scoped context configuration (#818)', () => {
   it('overrides even a sonnet guess, isolates equal model ids, and invalidates changed/removed env', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'context-env-'))
+    const dir = testTmpDir('context-env-')
     const file = path.join(dir, 'session.jsonl')
     fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { model: 'vendor-sonnet', usage: { input_tokens: 16000 } } }) + '\n')
     const send = vi.fn()
@@ -336,7 +336,7 @@ describe('session-scoped context configuration (#818)', () => {
 
 describe('createContextTail — effort (the ⌘M composer label)', () => {
   it('pushes the recorded effort, and pushes again when ONLY the effort changed (a `/effort` pick)', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-effort-'))
+    const dir = testTmpDir('ctxtail-effort-')
     const file = path.join(dir, 'sess.jsonl')
     const rec = (effort: string) =>
       JSON.stringify({ type: 'assistant', effort, message: { model: 'claude-opus-5', usage: { input_tokens: 100 } } }) + '\n'
@@ -354,7 +354,7 @@ describe('createContextTail — effort (the ⌘M composer label)', () => {
   }, 6000)
 
   it('omits the field when the transcript records none (older CLI / other agent)', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxtail-noeffort-'))
+    const dir = testTmpDir('ctxtail-noeffort-')
     const file = path.join(dir, 'sess.jsonl')
     fs.writeFileSync(file, JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5', usage: { input_tokens: 100 } } }) + '\n')
     const send = vi.fn()

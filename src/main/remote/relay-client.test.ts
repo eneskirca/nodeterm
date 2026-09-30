@@ -50,13 +50,33 @@ vi.mock('../main-window', () => ({
 // OTHER end's key here.
 import { emptyApprovedDevices, type ApprovedDevices } from './approved-devices-core'
 let disk: ApprovedDevices = emptyApprovedDevices()
-vi.mock('./approved-devices', () => ({
-  updateApprovedDevices: async (update: (s: ApprovedDevices) => ApprovedDevices) => { disk = update(disk) },
-  loadApprovedDevices: async () => disk,
-  saveApprovedDevices: async (s: ApprovedDevices) => {
-    disk = s
+// Per-role pin stores (approved-devices.ts), in memory. The 'joinedHost' store — the one this module
+// must write — is `disk`; every other role lives in `otherPins`, so a pin landing in the WRONG
+// store is visible to the assertions instead of indistinguishable from the right one.
+const otherPins: Record<string, ApprovedDevices> = {}
+vi.mock('./approved-devices', () => {
+  const mem = (role: string) => {
+    const get = (): ApprovedDevices => (role === 'joinedHost' ? disk : (otherPins[role] ??= { pubkeys: [] }))
+    const set = (s: ApprovedDevices): void => {
+      if (role === 'joinedHost') disk = s
+      else otherPins[role] = s
+    }
+    return {
+      load: async () => get(),
+      save: async (s: ApprovedDevices) => set(s),
+      update: role === 'joinedHost' ? async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get())) : async (u: (s: ApprovedDevices) => ApprovedDevices) => set(u(get()))
+    }
   }
-}))
+  const stores: Record<string, ReturnType<typeof mem>> = { phone: mem('phone'), guest: mem('guest'), joinedHost: mem('joinedHost') }
+  return {
+    PIN_ROLES: ['phone', 'guest', 'joinedHost'],
+    phonePins: stores.phone,
+    guestPins: stores.guest,
+    joinedHostPins: stores.joinedHost,
+    pinStore: (r: string) => stores[r],
+    retireLegacyPinFile: async () => 0
+  }
+})
 
 import { connectRelayHost, type RelayHostSession } from './relay-host'
 import { connectRelayClient, type RelayClientSession } from './relay-client'
@@ -177,6 +197,7 @@ beforeEach(() => {
   h.sent = []
   h.clientIds = [1]
   disk = emptyApprovedDevices()
+  for (const k of Object.keys(otherPins)) delete otherPins[k]
   gone = []
   platform = electronPlatform()
   initPlatform(platform)
@@ -212,6 +233,20 @@ describe('relay client — SAS + mutual approval', () => {
     expect(p.client.isOpen()).toBe(true)
     expect(p.approved).toEqual([p.client]) // onApproved fired exactly once, with the session
     expect(p.host.clientId()).not.toBeNull()
+  })
+
+  it('each end pins the other in ITS role store — never in the phone store the standing host auto-admits from', async () => {
+    const p = pairHostAndClient()
+    await p.openMutually()
+    const hostKey = p.client.peerKeyB64()
+    // The client (us, joining) pinned the HOST's key as a joined host; the host (the other desktop)
+    // pinned OUR key as a guest. Two distinct keys, each in its own role store.
+    await vi.waitFor(() => expect(disk.pubkeys).toHaveLength(1))
+    await vi.waitFor(() => expect(otherPins.guest?.pubkeys).toEqual([p.host.peerKeyB64()]))
+    expect(disk.pubkeys).not.toContain(p.host.peerKeyB64())
+    expect(disk.pubkeys).toEqual([hostKey])
+    // …and neither role ever reaches the phone store.
+    expect(otherPins.phone?.pubkeys ?? []).toEqual([])
   })
 
   it('ONE side confirming is not enough — the client stays closed', async () => {
@@ -278,9 +313,22 @@ describe('relay client — the frame pipe (tunnel ↔ renderer)', () => {
     )
   })
 
+  /** Open a session through the host the way a relay tab does: a `pty:create` req whose answer
+   *  names the host session id. Only such ids are delivered to onPtyData. */
+  const createOnHost = async (p: ReturnType<typeof pairHostAndClient>, reqId: number, sessionId: string) => {
+    p.client.send(JSON.stringify({ t: 'req', id: reqId, method: 'pty:create', args: [{ cols: 80, rows: 24 }] }))
+    await vi.waitFor(() =>
+      expect(p.frames.map((j) => JSON.parse(j))).toContainEqual(
+        expect.objectContaining({ t: 'res', id: reqId, ok: true, result: expect.objectContaining({ sessionId }) })
+      )
+    )
+  }
+
   it('forwards a host pty:data BINARY frame to onPtyData (decoded), not to onFrame', async () => {
+    platform.handle('pty:create', async () => ({ sessionId: 's1', fresh: false }))
     const p = pairHostAndClient()
     await p.openMutually()
+    await createOnHost(p, 1, 's1')
     const id = p.host.clientId()!
 
     // The host streams pty output to this client; the peer sink turns it into a BINARY tunnel frame.
@@ -289,6 +337,35 @@ describe('relay client — the frame pipe (tunnel ↔ renderer)', () => {
     await vi.waitFor(() => expect(p.ptyData).toEqual([{ sessionId: 's1', data: 'hello world' }]))
     // pty:data must not leak onto the JSON frame pipe.
     expect(p.frames.some((j) => j.includes('hello world'))).toBe(false)
+  })
+
+  it('DROPS host pty output for a session this connection never created (a local-shaped pty-1)', async () => {
+    platform.handle('pty:create', async () => ({ sessionId: 'pty-7', fresh: false }))
+    const p = pairHostAndClient()
+    await p.openMutually()
+    const id = p.host.clientId()!
+
+    // Before any create: nothing is delivered, whatever id the host names.
+    platform.sendTo(id, 'pty:data:pty-1', 'FAKE PROMPT $ ')
+    await createOnHost(p, 3, 'pty-7')
+    platform.sendTo(id, 'pty:data:pty-1', '\x1b]52;c;ZXZpbA==\x07')
+    platform.sendTo(id, 'pty:data:pty-2', 'nope')
+    platform.sendTo(id, 'pty:data:pty-7', 'real output')
+
+    await vi.waitFor(() => expect(p.ptyData).toEqual([{ sessionId: 'pty-7', data: 'real output' }]))
+  })
+
+  it('a FAILED pty:create allows nothing', async () => {
+    platform.handle('pty:create', async () => {
+      throw new Error('no')
+    })
+    const p = pairHostAndClient()
+    await p.openMutually()
+    p.client.send(JSON.stringify({ t: 'req', id: 4, method: 'pty:create', args: [{}] }))
+    await vi.waitFor(() => expect(p.frames.some((j) => JSON.parse(j).id === 4)).toBe(true))
+    platform.sendTo(p.host.clientId()!, 'pty:data:pty-1', 'x')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(p.ptyData).toEqual([])
   })
 })
 

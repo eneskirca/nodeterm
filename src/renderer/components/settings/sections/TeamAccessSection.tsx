@@ -117,8 +117,9 @@ export function TeamAccessSection({
             <div className="space-y-3">
               <h4 className="text-[13px] font-medium text-text">Invite a teammate</h4>
               <p className="text-sm text-muted">
-                A teammate on a seat can run commands on {thisMachine()} — the same as giving
-                them SSH access. Only invite people you trust.
+                A teammate on a seat gets full access to {thisMachine()} as you — every project,
+                and commands in any folder — the same as giving them SSH access. Only invite people
+                you trust.
               </p>
               <FieldRow
                 label="Teammate email"
@@ -191,8 +192,8 @@ export function TeamAccessSection({
               end-to-end encrypted relay.
             </p>
             <p className="text-sm text-muted">
-              A seat grants shell access: a teammate on a seat can run commands on{' '}
-              {thisMachine()} — the same as giving them SSH access. Every connection is still
+              A seat grants full access: a teammate on a seat can run commands on{' '}
+              {thisMachine()} as you, in every project — the same as giving them SSH access. Every connection is still
               verified with a one-time pairing code you compare together.
             </p>
             <Button variant="primary" onClick={() => void ent.upgrade()}>

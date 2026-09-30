@@ -401,6 +401,44 @@ describe('GitHubIssueService', () => {
     expect(saved.lastComplete?.lastSuccessfulRefreshAt).toBe(1_000)
   })
 
+  it('does not let one of our own writes advance the incremental watermark', async () => {
+    // Only a completed scan has looked at everything up to its start. Our write looked at ONE
+    // issue, so a third party's change landing between the last scan and our write must still be
+    // inside the next incremental `since` window, not deferred to the daily full pass.
+    const client = new FixtureClient([issue(1), issue(2)])
+    const sinces: Array<string | undefined> = []
+    client.listIssues = async (_repository, options: ListIssueOptions) => {
+      sinces.push(options.since)
+      return { items: [...client.issues.values()]
+        .filter((item) => !options.since || item.updatedAt >= options.since) }
+    }
+    let clock = Date.parse('2026-08-09T10:05:00Z')
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir),
+      coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client),
+      now: () => clock
+    })
+    await service.refresh({ projectId: 'project-1', full: true })
+
+    // Someone else edits issue 2 after our scan...
+    client.issues.set(2, issue(2, { title: 'Renamed elsewhere', updatedAt: '2026-08-09T10:06:00Z' }))
+    // ...and only then do we move issue 1.
+    clock = Date.parse('2026-08-09T10:10:00Z')
+    expect((await service.moveIssue({
+      projectId: 'project-1', issueNumber: 1, toColumnId: 'doing',
+      expectedUpdatedAt: issue(1).updatedAt
+    })).status).toBe('confirmed')
+
+    clock = Date.parse('2026-08-09T12:00:00Z')
+    await service.refresh({ projectId: 'project-1' })
+    expect(sinces.at(-1)).toBe(new Date(Date.parse('2026-08-09T10:05:00Z') - 2_000).toISOString())
+    const shown = await service.query({ projectId: 'project-1', columnId: null, pageSize: 50 })
+    expect(shown.items.find((item) => item.number === 2)?.title).toBe('Renamed elsewhere')
+    // The page's "last refreshed" is the scan's, not the write's: nothing was re-read then.
+    expect(shown.lastSuccessfulRefreshAt).toBe(Date.parse('2026-08-09T12:00:00Z'))
+  })
+
   it('refreshes and maps open, closed, unmatched, and conflicting issues', async () => {
     const client = new FixtureClient([
       issue(1, { labels: [{ id: 1, name: 'status:todo', color: '0a84ff' }] }),

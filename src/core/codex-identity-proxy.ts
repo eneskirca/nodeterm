@@ -48,6 +48,7 @@ import {
   writeFileSync
 } from 'fs'
 import path from 'path'
+import { CODEX_NO_DAEMON_HELP_ERE } from '../shared/agents/codex-daemon'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { renameAtomicSync } from './fs-atomic'
 import { platform } from './platform'
@@ -666,8 +667,8 @@ export function codexLauncherPath(): string {
 /**
  * The generated launcher.
  *
- * Every identity-setup failure path here ends in `exec codex "$@"` — the caller's arguments
- * untouched. That is the owner's decision and it follows the repo's own precedent
+ * Every identity-setup failure path here ends in plain codex (`nt_exec_plain`) — the caller's
+ * arguments untouched, plus `--no-daemon` when that codex advertises it (see the function). That is the owner's decision and it follows the repo's own precedent
  * (`gatePermissionMode`: an unknown or failed probe degrades to the bare command, never to a
  * blocked launch). The upstream version of this script exited 69 "identity unavailable", which
  * turns a missing app-server, an older `codex`, a stale tmux session or a locked-down `$HOME` into
@@ -786,6 +787,9 @@ nt_run_shared() {
   # spell the flag itself (\`withPermissionMode\` then suppresses ours and lets theirs through).
   # Rebuilt by rotating the positional list, which is the only way sh can edit "$@" without an array.
   nt_drop_next=0
+  # The manual-resume hints below name the flag when the launch line carried it: a human resuming
+  # by hand after the shared daemon failed must not start or join ANOTHER one with this pane's env.
+  nt_hint_nd=''
   nt_left=$#
   while [ "$nt_left" -gt 0 ]; do
     nt_arg=$1
@@ -798,6 +802,10 @@ nt_run_shared() {
     case "$nt_arg" in
       --ask-for-approval|-a) nt_drop_next=1; continue ;;
       --ask-for-approval=*|-a=*) continue ;;
+      # Measured on 0.159.2: "ERROR: --no-daemon cannot be used with --remote." The launch line
+      # carries it for the plain-codex exits below (nt_exec_plain); the managed thread IS a remote
+      # client of the scrubbed shared daemon, so it must not.
+      --no-daemon) nt_hint_nd=' --no-daemon'; continue ;;
     esac
     set -- "$@" "$nt_arg"
   done
@@ -841,8 +849,8 @@ nt_run_shared() {
     fi
     nt_rapid_resets=$((nt_rapid_resets + 1))
     if [ "$nt_rapid_resets" -gt 3 ]; then
-      printf '\\nNodeTerm: Codex daemon kept resetting; automatic resume stopped. Run: codex resume %s\\n' \
-        "$nt_shared_thread" >&2
+      printf '\\nNodeTerm: Codex daemon kept resetting; automatic resume stopped. Run: codex%s resume %s\\n' \
+        "$nt_hint_nd" "$nt_shared_thread" >&2
       return "$nt_status"
     fi
 
@@ -853,14 +861,32 @@ nt_run_shared() {
       nt_app_server_ready && break
       nt_start_try=$((nt_start_try + 1))
       if [ "$nt_start_try" -ge 3 ]; then
-        printf 'NodeTerm: shared Codex daemon did not recover. Run: codex resume %s\\n' \
-          "$nt_shared_thread" >&2
+        printf 'NodeTerm: shared Codex daemon did not recover. Run: codex%s resume %s\\n' \
+          "$nt_hint_nd" "$nt_shared_thread" >&2
         return "$nt_status"
       fi
       sleep "$nt_start_try"
     done
     nt_first_launch=0
   done
+}
+
+# Every plain-codex exit of this script goes through here. From codex-cli 0.157.0 a plain TUI
+# starts — or joins — ONE auto-started app-server per CODEX_HOME, and that daemon keeps the
+# environment of the pane that started it: every hook process and tool shell of a LATER node then
+# runs with the first node's NODETERM_NODE_ID (measured on 0.159.2), and a daemon started from
+# here would also be the one our managed threads connect to. '--no-daemon' keeps the TUI
+# in-process. The launch line normally carries it already (the desktop probed its own codex); on a
+# host nobody probed (an SSH launcher) this asks the binary about to run, and a codex that does not
+# advertise the flag gets the caller's arguments untouched — clap exits on an unknown option.
+nt_exec_plain() {
+  for nt_plain_arg in "$@"; do
+    case "$nt_plain_arg" in --no-daemon|--remote|--remote=*) exec codex "$@" ;; esac
+  done
+  if codex --help 2>/dev/null | grep -q -E '${CODEX_NO_DAEMON_HELP_ERE}'; then
+    exec codex --no-daemon "$@"
+  fi
+  exec codex "$@"
 }
 
 nt_hook_curl() { curl "$@"; }
@@ -970,7 +996,7 @@ nt_report_fallback() {
 [ -n "$nt_reason" ] || nt_preflight "$@" || :
 if [ -n "$nt_reason" ]; then
   nt_report_fallback "$nt_reason"
-  exec codex "$@"
+  nt_exec_plain "$@"
 fi
 
 # $1 is the client budget in seconds; the rest is curl's. Start gets a budget LARGER than the
@@ -997,7 +1023,7 @@ if [ "\${1-}" = resume ]; then
     exit $?
   fi
   nt_report_fallback thread-bind-refused
-  exec codex "$@"
+  nt_exec_plain "$@"
 fi
 
 # THIS PANE'S OWN LABEL travels with both calls, and the pane is the only durable holder of it:
@@ -1013,7 +1039,7 @@ nt_thread=$(printf %s "$nt_thread" | tr -d '\\r\\n')
 case "$nt_thread" in
   ''|*[!A-Za-z0-9._-]*)
     nt_report_fallback thread-start-failed
-    exec codex "$@"
+    nt_exec_plain "$@"
     ;;
 esac
 nt_run_shared "$nt_thread" "$@"

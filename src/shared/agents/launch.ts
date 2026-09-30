@@ -28,6 +28,7 @@ import {
 import { withPermissionMode, type ApprovalCaps } from './approval-mode'
 import { resolveAgentConfig } from './custom-agent'
 import { withAgentModel } from './model-gateway'
+import { withCodexNoDaemon } from './codex-daemon'
 
 export interface LaunchInputs {
   agentId: AgentId
@@ -236,7 +237,9 @@ export function assembleLaunchCommand(
     return withAgentModel(withMode, capId, inputs.model)
   }
 
-  const command = usesSep ? `${flagged(baseCmd)} ${sep} ${promptArg}` : flagged(withPrompt)
+  const composed = usesSep ? `${flagged(baseCmd)} ${sep} ${promptArg}` : flagged(withPrompt)
+  // Codex has no prompt separator, so the flag lands last like its approval flag. See codex-daemon.
+  const command = withCodexNoDaemon(composed, capId, inputs.approvalCaps ?? {})
   return { command, missingEnv: [...m1, ...m2] }
 }
 
@@ -271,6 +274,10 @@ export function assembleResumeCommand(
   const withMode = inputs.permissionMode
     ? withPermissionMode(base, capId, inputs.permissionMode, inputs.approvalCaps ?? {})
     : base
-  const command = withAgentModel(withMode, capId, inputs.model)
+  const command = withCodexNoDaemon(
+    withAgentModel(withMode, capId, inputs.model),
+    capId,
+    inputs.approvalCaps ?? {}
+  )
   return { command, missingEnv: [...m1, ...m2] }
 }

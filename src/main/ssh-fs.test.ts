@@ -18,8 +18,8 @@ describe('ssh-fs arg builders', () => {
   // ControlMaster killed at quit) mid-write left a HALF/EMPTY file behind — for .nodeterm/project.json
   // that read as "my project reset itself". Write a unique sibling temp, then mv into place.
   it('write mkdirs, cats to one per-call temp, then moves and cleans that temp (content via stdin)', () => {
-    const first = sshWriteArgs(conn, '/s.sock', '/d/e/f.txt').join(' ')
-    const second = sshWriteArgs(conn, '/s.sock', '/d/e/f.txt').join(' ')
+    const first = sshWriteArgs(conn, '/s.sock', '/d/e/f.txt', 'hello').join(' ')
+    const second = sshWriteArgs(conn, '/s.sock', '/d/e/f.txt', 'hello').join(' ')
     const temp = first.match(/cat > '([^']+\.tmp)'/)?.[1]
     expect(temp).toMatch(/^\/d\/e\/\.nodeterm-[0-9a-f-]{36}\.tmp$/)
     expect(second).not.toContain(`cat > '${temp}'`)
@@ -28,6 +28,12 @@ describe('ssh-fs arg builders', () => {
     expect(j).toContain(`cat > '${temp}'`)
     expect(j).toContain(`mv -f -- '${temp}' '/d/e/f.txt'`)
     expect(j).toContain(`rm -f -- '${temp}'`)
+    // `cat` exits 0 on a channel that ended early; only the byte count keeps a short temp from
+    // being renamed over the file (it was: an empty project.json after a dropped connection).
+    expect(j).toContain(`[ "$(wc -c < '${temp}')" -eq 5 ]`)
+  })
+  it('write allows an empty file (an editor may save one) and still checks its size', () => {
+    expect(sshWriteArgs(conn, '/s', '/d/empty.txt', '').join(' ')).toContain('-eq 0 ]')
   })
   // CRITICAL: SSH projects default to a home-relative remoteCwd (`~`). quoteRemotePath must leave a
   // leading `~/` UNQUOTED so the remote shell tilde-expands it; the remainder stays single-quoted.
@@ -35,7 +41,7 @@ describe('ssh-fs arg builders', () => {
     expect(sshListArgs(conn, '/s', '~/projects').join(' ')).toContain(`ls -Ap1 ~/'projects'`)
   })
   it('write keeps ~/ unquoted for the mkdir dirname, the unique temp and the mv', () => {
-    const j = sshWriteArgs(conn, '/s', '~/projects/file.txt').join(' ')
+    const j = sshWriteArgs(conn, '/s', '~/projects/file.txt', 'x').join(' ')
     expect(j).toContain(`mkdir -p -- ~/'projects'`)
     const temp = j.match(/cat > ~\/'([^']+\.tmp)'/)?.[1]
     expect(temp).toMatch(/^projects\/\.nodeterm-[0-9a-f-]{36}\.tmp$/)

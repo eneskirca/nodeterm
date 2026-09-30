@@ -47,7 +47,8 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
     // `customAgents` (it defines what command a custom agent runs), `agentMessagingDefault` — the
     // obvious `agent` term would also forbid `agentMessaging`, the key this verb exists to set —
     // and `agentIssueReporting`, where none of `report`, `issue` or `github` is a forbidden name
-    // class and adding one would be guessing at words rather than at capabilities.
+    // class and adding one would be guessing at words rather than at capabilities. `boardDispatch`
+    // (an agent switching on the dispatcher would grant itself more agents) escapes it too.
     // For those two the set is the only fence, so the only change that could make them settable —
     // allowlist the key AND drop it from the set, in one edit — must redden a test. This one.
     expect([...SETTINGS_VERB_FORBIDDEN].sort()).toEqual([
@@ -55,6 +56,7 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
       'agentIssueReporting',
       'agentLaunchCommands',
       'agentMessagingDefault',
+      'boardDispatch',
       'capabilityAck',
       'claudeAccounts',
       'claudePermissionMode',
@@ -83,7 +85,7 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
     // adding it here is the correct response — it records that the set is that key's only fence.
     expect(
       [...SETTINGS_VERB_FORBIDDEN].filter((k) => !SETTINGS_VERB_FORBIDDEN_PATTERN.test(k)).sort()
-    ).toEqual(['agentIssueReporting', 'agentMessagingDefault', 'customAgents'])
+    ).toEqual(['agentIssueReporting', 'agentMessagingDefault', 'boardDispatch', 'customAgents'])
     for (const key of SETTINGS_VERB_KEY_LIST) expect(SETTINGS_VERB_FORBIDDEN_PATTERN.test(key), key).toBe(false)
   })
 

@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sshAttachmentId, type SshConnection } from '@shared/ssh'
 import { useSshConn } from '../state/sshConn'
+import { useProjects } from '../state/projects'
+import type { Project } from '@shared/types'
 import {
   connectHostAttachment,
   hostAttachmentsFor,
+  planActiveProjectDials,
   resetHostAttachmentDials,
   type AttachableNode
 } from './sshAttachments'
@@ -189,5 +192,49 @@ describe('connectHostAttachment', () => {
     ])
 
     expect(connect).toHaveBeenCalledTimes(2)
+  })
+})
+
+// SECURITY: a relay tab's project belongs to ANOTHER machine. Even if one somehow carries `ssh`
+// (the adopt boundary strips it — session/relay-ssh.ts), THIS machine must never dial it.
+describe('relay tabs never dial guest-side SSH', () => {
+  beforeEach(() => {
+    resetHostAttachmentDials()
+    useSshConn.setState({ byProject: {}, attachments: {} } as never)
+  })
+
+  it('planActiveProjectDials opens the own master and attachments of a normal project', () => {
+    const plan = planActiveProjectDials({
+      id: 'ssh-1',
+      ssh: { server: DEVBOX, remoteCwd: '/srv' },
+      nodes: [remote('n1', OTHER)]
+    })
+    expect(plan.own?.server).toBe(DEVBOX)
+    expect(plan.attachments).toHaveLength(1)
+  })
+
+  it('planActiveProjectDials opens NOTHING for a relay project, whatever it carries', () => {
+    const plan = planActiveProjectDials({
+      id: 'relay-1',
+      remote: true,
+      ssh: { server: DEVBOX, remoteCwd: '/srv' },
+      nodes: [remote('n1', OTHER)]
+    })
+    expect(plan).toEqual({ own: null, attachments: [] })
+  })
+
+  it('connectHostAttachment refuses an attachment owned by a relay tab (no dial, no registration)', async () => {
+    const relay = { id: 'relay-1', name: 'R', color: '#fff', viewport: { x: 0, y: 0, zoom: 1 }, nodes: [], remote: true } as Project
+    useProjects.setState({ projects: [relay] })
+    const connect = vi.fn()
+    const scope = sshAttachmentId('relay-1', OTHER)
+    const ok = await connectHostAttachment(
+      scope,
+      { conn: OTHER, hostKey: 'corvin@other', ownerProjectId: 'relay-1' },
+      connect
+    )
+    expect(ok).toBe(false)
+    expect(connect).not.toHaveBeenCalled()
+    expect(useSshConn.getState().getAttachment(scope)).toBeUndefined()
   })
 })

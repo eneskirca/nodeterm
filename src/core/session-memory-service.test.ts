@@ -62,6 +62,26 @@ describe('startSessionMemoryService', () => {
     expect(r.ok).toBe(false)
   })
 
+  it('a LOCAL answer carries the count of sessions the tmux sweep could not measure (Zellij)', async () => {
+    startSessionMemoryService({ tmuxBin: () => null, unmeasuredSessions: async () => 2 })
+    expect((await read({ projectId: 'p1' })).unmeasured).toBe(2)
+  })
+
+  it('none unmeasured leaves the report exactly as the sweep made it; a failed count is null', async () => {
+    startSessionMemoryService({ tmuxBin: () => null, unmeasuredSessions: async () => 0 })
+    expect(await read({ projectId: 'p1' })).not.toHaveProperty('unmeasured')
+    resetPlatformForTests()
+    platform = fakePlatform()
+    initPlatform(platform)
+    startSessionMemoryService({
+      tmuxBin: () => null,
+      unmeasuredSessions: async () => {
+        throw new Error('boom')
+      }
+    })
+    expect((await read({ projectId: 'p1' })).unmeasured).toBeNull()
+  })
+
   it('routes an SSH project to the remote runner', async () => {
     const run = vi.fn(async () => OK_REPLY)
     startSessionMemoryService({

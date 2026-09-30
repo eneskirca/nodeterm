@@ -86,6 +86,15 @@ describe('ws endpoint', () => {
     ).rejects.toThrow()
   })
 
+  it('an authenticated browser socket is attached as the OWNER (the only way a held launch reaches it)', async () => {
+    // core/canvas-sync.ts forwards a node's machine-local held launch only owner→owner. A browser
+    // that got past the cookie check is the server's one user, and must be the owner.
+    await connect({ cookie, origin: `http://127.0.0.1:${port}` })
+    await until(() => platform.clientIds().length === 1, 'the socket attached')
+    const [uiId] = platform.clientIds()
+    expect(platform.isOwnerClient(uiId)).toBe(true)
+  })
+
   it('accepts a valid cookie (same-host Origin ok), dispatches req and cast, pushes events', async () => {
     platform.handle('echo:x', (v: string) => `got:${v}`)
     const casts: unknown[] = []

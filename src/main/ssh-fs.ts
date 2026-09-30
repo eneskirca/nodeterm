@@ -36,12 +36,15 @@ export function sshReadArgs(conn: SshConnection, cp: string, path: string): stri
 export function sshReadBinaryArgs(conn: SshConnection, cp: string, path: string): string[] {
   return childArgs(conn, cp, `base64 ${quoteRemotePath(path)}`)
 }
-export function sshWriteArgs(conn: SshConnection, cp: string, path: string): string[] {
+export function sshWriteArgs(conn: SshConnection, cp: string, path: string, content: string): string[] {
   // Atomic: `cat > file` truncates on open, so a connection dropped (or the ControlMaster killed
   // at app quit) mid-write leaves a half/empty file — fatal for .nodeterm/project.json. Stream to
-  // a unique sibling temp and mv into place; a write that dies leaves the target untouched.
+  // a unique sibling temp and mv into place; a write that dies leaves the target untouched. The
+  // byte count is what makes that true: `cat` exits 0 on a channel that ended early, and the
+  // rename alone published the short temp. `content` MUST be what the caller sends on stdin.
   // Per-call uniqueness is load-bearing: two app instances can write this remote path at once.
-  return childArgs(conn, cp, remoteAtomicWrite(path).command)
+  // An editor may legitimately save an empty file, so this generic write allows one.
+  return childArgs(conn, cp, remoteAtomicWrite(path, content, { allowEmpty: true }).command)
 }
 export function sshMkdirArgs(conn: SshConnection, cp: string, path: string): string[] {
   return childArgs(conn, cp, `mkdir -p ${quoteRemotePath(path)}`)
@@ -187,7 +190,7 @@ export class SshFs {
 
   async writeText(ref: SshFsRef, path: string, content: string): Promise<boolean> {
     try {
-      const { code } = await this.run(sshWriteArgs(ref.conn, ref.controlPath, path), content)
+      const { code } = await this.run(sshWriteArgs(ref.conn, ref.controlPath, path, content), content)
       return code === 0
     } catch {
       return false

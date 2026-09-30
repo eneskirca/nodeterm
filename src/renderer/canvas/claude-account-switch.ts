@@ -186,6 +186,25 @@ export function bulkSwitchCandidates(
   return { ready: on.filter((n) => !n.busy), busy: on.filter((n) => n.busy) }
 }
 
+/**
+ * Run a bulk move's switches ALL AT ONCE, and come back with every outcome (a rejection reads as
+ * `undefined`, which the caller counts as skipped — it never swallows the others).
+ *
+ * Each switch waits seconds for its CLI to quit, so awaiting them one after another made N sessions
+ * cost N exits in a row — visibly one pane at a time. Worse, a switch reads its node off the live
+ * canvas when it STARTS: a project switch mid-run unmounted every node still waiting its turn, and
+ * each was then refused as "not attached" — the move stopped halfway. Starting them together means
+ * every node is read while it is on the canvas; `settleRecycledNode` covers the one that finishes
+ * after the user has left. Load on an SSH host is paced in core, not here: every exec child rides
+ * the ControlMaster's `SshChildGate`, and the respawns ride the pty spawn gate.
+ */
+export function startBulkSwitch<T>(
+  ids: readonly string[],
+  run: (id: string) => Promise<T>
+): Promise<(T | undefined)[]> {
+  return Promise.all(ids.map((id) => run(id).catch((): undefined => undefined)))
+}
+
 /** One line for a bulk move: what moved, what came back on its old account, what was skipped. */
 export function summarizeBulkSwitch(
   outcomes: readonly ClaudeSwitchOutcome[],

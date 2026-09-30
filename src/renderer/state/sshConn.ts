@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { SshConnection } from '@shared/ssh'
+import type { RemoteCodexNoDaemon } from '@shared/types'
 
 /** Live connection coordinates for one connection scope, returned by `sshProject.connect`.
  *  A scope is an SSH PROJECT's id, or a host ATTACHMENT id — see `sshConnectionIdForProject`. */
@@ -24,6 +25,8 @@ export interface SshConnInfo {
   /** The probed remote `claude --version` output (`null` = probe ran, claude not found). Feeds
    *  the tab menu's Auto hint; only present on a reused (already probed) connection. */
   remoteClaudeVersion?: string | null
+  /** The host's `--no-daemon` answer, when the connection had already probed it (reused conns). */
+  remoteCodexNoDaemon?: RemoteCodexNoDaemon
   /** Absolute remote path of the uploaded `nodeterm-codex` launcher (`chmod 700`). Present only
    *  when `installRemoteCodexRuntime` found node+codex+curl and staged the runtime. Absent ⇒ this
    *  host cannot host managed Codex accounts (the renderer keeps Codex nodes on the system login). */
@@ -99,6 +102,14 @@ interface SshConnState {
   /** project id → the probed remote `claude --version` output (`null` = claude not found). Kept
    *  beside `autoPermByProject` (same lifecycle) so the tab-menu hint can name the version. */
   remoteClaudeVersionByProject: Record<string, string | null>
+  /** `user@host` → that host's `codex` accepts `--no-daemon`. Keyed by HOST, not scope: it is a
+   *  fact about the binary on that machine, shared by every project and attachment pointed at it,
+   *  and a repointed project changes its key rather than inheriting a stale answer. */
+  codexNoDaemonByHost: Record<string, boolean>
+  /** Record a host's `--no-daemon` answer (a `connected` status event, or a reused connect). */
+  setRemoteCodexNoDaemon(answer: RemoteCodexNoDaemon): void
+  /** True ONLY when that host's codex was probed and advertised `--no-daemon`. */
+  remoteCodexNoDaemon(hostKey: string): boolean
   setConn(projectId: string, info: SshConnInfo): void
   /** Record the early (pre-setup) ControlMaster path for a scope. Ignored once the full info for
    *  that scope has landed — the full entry is strictly better and must not be walked back. */
@@ -170,7 +181,19 @@ export const useSshConn = create<SshConnState>((set, get) => ({
   attachments: {},
   autoPermByProject: {},
   remoteClaudeVersionByProject: {},
+  codexNoDaemonByHost: {},
+  setRemoteCodexNoDaemon({ hostKey, supported }) {
+    set((s) =>
+      s.codexNoDaemonByHost[hostKey] === supported
+        ? s
+        : { codexNoDaemonByHost: { ...s.codexNoDaemonByHost, [hostKey]: supported } }
+    )
+  },
+  remoteCodexNoDaemon(hostKey) {
+    return get().codexNoDaemonByHost[hostKey] === true
+  },
   setConn(projectId, info) {
+    if (info.remoteCodexNoDaemon) get().setRemoteCodexNoDaemon(info.remoteCodexNoDaemon)
     set((s) => ({
       byProject: { ...s.byProject, [projectId]: info },
       // The full info supersedes the early path — keeping both would leave a stale socket string

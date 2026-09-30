@@ -8,6 +8,7 @@ import { hookServer } from '../hook-server'
 import { nodeAuthToken } from '../node-auth-token'
 import { initPlatform, resetPlatformForTests } from '../../platform'
 import { fakePlatform } from '../../platform-fake'
+import { testTmpDir } from '../../test-tmp'
 
 describe('buildManagedScript', () => {
   const s = buildManagedScript('claude')
@@ -193,7 +194,7 @@ describe('buildManagedScript', () => {
      *  which branch of the gate is taken. `uname` rather than an env var on purpose: that is what
      *  the script reads, and it is what keeps working when a caller replaces the environment. */
     const run = (unameS: string, cygpath: string | null): CurlCall[] => {
-      const dir = mkdtempSync(join(tmpdir(), 'nt-payload-'))
+      const dir = testTmpDir('nt-payload-')
       const bin = join(dir, 'bin')
       const home = join(dir, 'home')
       mkdirSync(bin, { recursive: true })

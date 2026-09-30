@@ -202,3 +202,25 @@ describe.skipIf(process.platform !== 'win32')('runAgent — Windows npm shim', (
     })
   })
 })
+
+describe('AI naming account + error output', () => {
+  it('treats a CLI auth error printed to stdout as a failure, not an answer', async () => {
+    const { isCliErrorOutput } = await import('./commit-message')
+    expect(isCliErrorOutput('Failed to authenticate: OAuth session expired')).toBe(true)
+    expect(isCliErrorOutput('Invalid API key · Please run /login')).toBe(true)
+    expect(isCliErrorOutput('API Error: 401 {"type":"error"}')).toBe(true)
+    expect(isCliErrorOutput('Refactor Auth Flow')).toBe(false)
+  })
+
+  it('runs under the account config dir with shadowing auth vars stripped', async () => {
+    const { claudeAccountEnv } = await import('./commit-message')
+    const env = claudeAccountEnv(
+      { PATH: '/bin', ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't' },
+      '/data/claude-accounts/a1'
+    )
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/data/claude-accounts/a1')
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+    expect(env.PATH).toBe('/bin')
+  })
+})

@@ -26,6 +26,12 @@
 //
 // LOCAL terminals are not gated at all: there is no connection to overrun, and node-pty spawns
 // cost nothing a queue would save.
+//
+// ON-SCREEN FIRST. The queue has two classes: a spawn the renderer reports as on screen goes ahead
+// of every queued background one, FIFO within each class. MEASURED (41-terminal SSH project, 12 on
+// screen, cold attach, dev build): with a plain FIFO the 12 visible terminals were the LAST to paint
+// (first at 2.6 s, last at 3.2 s — 26 offscreen ones ahead of them in node order). The permits
+// already granted are not revoked, so at most `limit` background spawns can precede a visible one.
 
 /** Remote pty spawns allowed in flight per ControlMaster. Deliberately small: each one is an ssh
  *  channel that will be held for the terminal's whole life, so the burst is the only thing worth
@@ -43,7 +49,7 @@ export type SpawnSlot = () => void
 
 export class PtySpawnGate {
   private active = new Map<string, number>()
-  private waiting = new Map<string, (() => void)[]>()
+  private waiting = new Map<string, { resolve: () => void; background: boolean }[]>()
 
   constructor(
     private limit: number = REMOTE_PTY_SPAWN_CONCURRENCY,
@@ -59,8 +65,8 @@ export class PtySpawnGate {
   /** Wait for a slot on this control path. The returned release is idempotent and is ALSO armed
    *  on the settle deadline, so a caller that forgets (or a pty that never starts) cannot wedge
    *  the queue. */
-  async acquire(controlPath: string): Promise<SpawnSlot> {
-    await this.take(controlPath)
+  async acquire(controlPath: string, opts?: { background?: boolean }): Promise<SpawnSlot> {
+    await this.take(controlPath, opts?.background === true)
     let released = false
     const deadline = this.schedule(() => release(), this.settleMs)
     const release: SpawnSlot = () => {
@@ -82,7 +88,7 @@ export class PtySpawnGate {
     return this.waiting.get(controlPath)?.length ?? 0
   }
 
-  private take(key: string): Promise<void> {
+  private take(key: string, background: boolean): Promise<void> {
     const n = this.active.get(key) ?? 0
     if (n < this.limit) {
       this.active.set(key, n + 1)
@@ -90,19 +96,22 @@ export class PtySpawnGate {
     }
     return new Promise<void>((resolve) => {
       const q = this.waiting.get(key)
-      if (q) q.push(resolve)
-      else this.waiting.set(key, [resolve])
+      const entry = { resolve, background }
+      if (q) q.push(entry)
+      else this.waiting.set(key, [entry])
     })
   }
 
   private give(key: string): void {
     const q = this.waiting.get(key)
-    const next = q?.shift()
-    if (next) {
-      if (q && q.length === 0) this.waiting.delete(key)
+    if (q && q.length > 0) {
+      // On-screen first, FIFO within each class.
+      const i = q.findIndex((w) => !w.background)
+      const [next] = q.splice(i === -1 ? 0 : i, 1)
+      if (q.length === 0) this.waiting.delete(key)
       // Hand the permit straight to the waiter — `active` never dips, so a burst cannot slip past
       // the limit in the gap between one spawn finishing and the next starting.
-      next()
+      next.resolve()
       return
     }
     const n = (this.active.get(key) ?? 1) - 1

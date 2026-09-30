@@ -193,6 +193,17 @@ export function sessionForProject(projectId: string): WorkspaceSession {
   return localOrActiveSession()
 }
 
+/** The projects bound to a live session whose api IS `api`, i.e. the tabs one relay connection
+ *  serves. An unbound project merely falls back to the local session, so the local api binds none. */
+export function projectIdsBoundToApi(api: NodeTerminalApi): string[] {
+  const out: string[] = []
+  for (const [projectId, sessionId] of PROJECT_BINDINGS) {
+    const e = SESSIONS.get(sessionId)
+    if (e && !e.disposed && e.session.api === api) out.push(projectId)
+  }
+  return out
+}
+
 /** Re-broadcast the local human's identity on EVERY live session (obligation 2). Renaming yourself
  *  must re-hello every connected core, not just the one the rename UI happened to read — otherwise a
  *  remote peer keeps drawing your old name until reload. `setMe` saves + says hello per session. */

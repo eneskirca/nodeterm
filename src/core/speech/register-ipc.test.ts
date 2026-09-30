@@ -1,16 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { registerSpeechIpc } from './register-ipc'
 import { SpeechService, type WhisperEngineHandle } from './speech-service'
 import { WhisperModelStore } from './whisper-models'
 import { DEFAULT_SETTINGS } from '../../shared/types'
+import { testTmpDir } from '../test-tmp'
 
 function setup(engine: 'whisper' | 'cloud' = 'whisper', language = 'auto', cloudOk = false) {
   const handlers = new Map<string, (payload: any) => Promise<any>>()
   const sent: string[] = []
-  const dir = mkdtempSync(join(tmpdir(), 'ipc-'))
+  const dir = testTmpDir('ipc-')
   const models = new WhisperModelStore({ dir })
   writeFileSync(models.modelPath('tiny'), 'x')
   const factory = async (): Promise<WhisperEngineHandle> => ({

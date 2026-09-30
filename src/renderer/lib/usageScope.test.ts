@@ -248,3 +248,44 @@ describe('providerRowKey / dedupeProviderRows (U8 — per-account Codex rows)', 
     expect(out.map(providerRowKey)).toEqual(['codex:system', 'gemini:system'])
   })
 })
+
+describe('scopeUsage — the pill follows the "Use for new sessions" default', () => {
+  const sys = usage([limit({ usedPercent: 10 })])
+  const work = usage([limit({ usedPercent: 80 })])
+
+  it('local: spells out the managed default once it has data', () => {
+    const out = scopeUsage({
+      scope: LOCAL, claude: sys, accounts: ACCOUNTS, providers: [], remote: [],
+      defaultAccountId: 'a1', defaultUsage: work
+    })
+    expect(out.pillLimits).toBe(work.limits)
+    expect(out.pillAccountId).toBe('a1')
+  })
+
+  it('local: falls back to the system account while the default has not answered', () => {
+    for (const defaultUsage of [null, usage([])]) {
+      const out = scopeUsage({
+        scope: LOCAL, claude: sys, accounts: ACCOUNTS, providers: [], remote: [],
+        defaultAccountId: 'a1', defaultUsage
+      })
+      expect(out.pillLimits).toBe(sys.limits)
+      expect(out.pillAccountId).toBeNull()
+    }
+  })
+
+  it('local: no default = the system account, as before', () => {
+    const out = scopeUsage({ scope: LOCAL, claude: sys, accounts: ACCOUNTS, providers: [], remote: [] })
+    expect(out.pillLimits).toBe(sys.limits)
+    expect(out.pillAccountId).toBeNull()
+  })
+
+  it('ssh: prefers the host row of the default account over the system row', () => {
+    const scope: UsageScope = { kind: 'ssh', hostKey: 'root@h' }
+    const rows = [remoteRow('root@h', null, [limit()]), remoteRow('root@h', 'r1', [limit({ usedPercent: 70 })])]
+    const out = scopeUsage({ scope, claude: null, accounts: [], providers: [], remote: rows, defaultAccountId: 'r1' })
+    expect(out.pillLimits).toBe(rows[1].usage.limits)
+    expect(out.pillAccountId).toBe('r1')
+    const plain = scopeUsage({ scope, claude: null, accounts: [], providers: [], remote: rows })
+    expect(plain.pillAccountId).toBeNull()
+  })
+})

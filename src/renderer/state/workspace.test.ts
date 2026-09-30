@@ -665,6 +665,20 @@ describe('node icon serialization', () => {
     expect(nodeStatesToFlow(states)[0].data.icon).toEqual(icon)
   })
 
+  it('round-trips a glyph icon (#291)', () => {
+    const icon = { type: 'lucide', name: 'folder-git' }
+    const states = flowToNodeStates([withIcon(icon)])
+    expect(states[0].icon).toEqual(icon)
+    expect(nodeStatesToFlow(states)[0].data.icon).toEqual(icon)
+  })
+
+  it('drops a glyph outside the allowlist on the way in AND out (#291)', () => {
+    const junk = { type: 'lucide', name: 'not-a-glyph' }
+    expect(flowToNodeStates([withIcon(junk)])[0].icon).toBeUndefined()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(nodeStatesToFlow([stateWithIcon(junk) as any])[0].data.icon).toBeUndefined()
+  })
+
   it('leaves a node without one undefined, so an untouched canvas serializes as it always did', () => {
     expect(flowToNodeStates([withIcon(undefined)])[0].icon).toBeUndefined()
   })
@@ -718,6 +732,17 @@ describe('issueRef serialization (GitHub issue binding)', () => {
     const states = flowToNodeStates([withIssue(ref)])
     expect(states[0].issueRef).toEqual(ref)
     expect(nodeStatesToFlow(states)[0].data.issueRef).toEqual(ref)
+  })
+
+  it('keeps a binding whose owner GitHub issued with consecutive or trailing hyphens', () => {
+    // `hello--world` and `john-` are real accounts. A grammar that refused them dropped the
+    // binding on load, and the next save wrote it out of project.json for good.
+    for (const owner of ['hello--world', 'john-']) {
+      const kept = { owner, repo: 'a', number: 1 }
+      const loaded = nodeStatesToFlow([stateWithIssue(kept) as never])
+      expect(loaded[0].data.issueRef).toEqual(kept)
+      expect(flowToNodeStates(loaded)[0].issueRef).toEqual(kept)
+    }
   })
 
   it('tolerates its absence: a node saved before the feature hydrates with no binding', () => {
@@ -1163,5 +1188,72 @@ describe('createAgentNode prompt injection', () => {
   it('keeps argv injection byte-identical for codex and gemini', () => {
     expect(createAgentNode('codex', 0, undefined, undefined, 'do X').data.initialCommand).toBe("codex 'do X'")
     expect(createAgentNode('gemini', 0, undefined, undefined, 'do X').data.initialCommand).toBe("gemini 'do X'")
+  })
+})
+
+describe('pendingLaunch at the serializer seams (a held launch is hostile input too)', () => {
+  const state = (pendingLaunch: unknown) =>
+    ({
+      id: 'a1',
+      kind: 'terminal' as const,
+      position: { x: 0, y: 0 },
+      size: { width: 320, height: 240 },
+      title: 'A',
+      color: '#888',
+      group: null,
+      agentId: 'claude',
+      pendingLaunch
+    }) as never
+  const live = (pendingLaunch: unknown): CanvasNode =>
+    ({
+      id: 'a1',
+      type: 'terminal',
+      position: { x: 0, y: 0 },
+      width: 320,
+      height: 240,
+      data: { title: 'A', color: '#888', group: null, agentId: 'claude', pendingLaunch }
+    }) as unknown as CanvasNode
+
+  it('round-trips a PR-held launch', () => {
+    const hold = {
+      after: ['b1'],
+      command: 'claude',
+      attempted: false,
+      afterPr: { repository: 'o/r', waits: [{ number: 7, until: 'checks' }], deadlineAt: 5, armedAt: 1 }
+    }
+    const flow = nodeStatesToFlow([state(hold)])
+    expect(flow[0].data.pendingLaunch).toEqual(hold)
+    expect(flowToNodeStates(flow)[0].pendingLaunch).toEqual(hold)
+  })
+
+  it('an `after` that is not a list loads as a MANUAL hold — the launch loop would throw on it', () => {
+    const flow = nodeStatesToFlow([state({ after: 'b1', command: 'claude' })])
+    expect(flow[0].data.pendingLaunch).toMatchObject({ after: [], manualOnly: true })
+  })
+
+  it('round-trips a success-held launch (--after-success)', () => {
+    const hold = {
+      after: ['b1'],
+      command: 'claude',
+      attempted: false,
+      afterSuccess: { deps: ['b1'], deadlineAt: 5 }
+    }
+    const flow = nodeStatesToFlow([state(hold)])
+    expect(flow[0].data.pendingLaunch).toEqual(hold)
+    expect(flowToNodeStates(flow)[0].pendingLaunch).toEqual(hold)
+  })
+
+  it('a malformed success wait loads as the invalid hold, on the way in and on the way out', () => {
+    const flow = nodeStatesToFlow([state({ after: ['b1'], command: 'c', afterSuccess: { deps: 'b1' } })])
+    expect((flow[0].data.pendingLaunch as { afterSuccess?: { invalid?: true } }).afterSuccess?.invalid).toBe(true)
+    const out = flowToNodeStates([live({ after: [], command: 'c', afterSuccess: ['b1'] })])
+    expect(out[0].pendingLaunch?.afterSuccess?.invalid).toBe(true)
+  })
+
+  it('a malformed PR wait loads as the invalid hold, on the way in and on the way out', () => {
+    const flow = nodeStatesToFlow([state({ after: [], command: 'c', afterPr: { waits: 'all' } })])
+    expect((flow[0].data.pendingLaunch as { afterPr?: { invalid?: true } }).afterPr?.invalid).toBe(true)
+    const out = flowToNodeStates([live({ after: [], command: 'c', afterPr: 'soon' })])
+    expect(out[0].pendingLaunch?.afterPr?.invalid).toBe(true)
   })
 })

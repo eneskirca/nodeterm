@@ -31,6 +31,11 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.autoHideFinishedSubagentCards).toBe(false)
   })
 
+  it('ships copy-on-select OFF, so an update never starts rewriting the clipboard', () => {
+    // Issue #759: opt-in on purpose — silently changing what is on the clipboard is a surprise.
+    expect(DEFAULT_SETTINGS.copyOnSelect).toBe(false)
+  })
+
   it('keeps common identifier and path characters inside terminal word selections', () => {
     expect(DEFAULT_SETTINGS.terminalWordSeparator).not.toMatch(/[-_/.]/)
   })

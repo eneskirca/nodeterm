@@ -20,7 +20,7 @@
  *   2. `findKeybindingConflicts` over the candidate map — a same-bucket collision.
  *   3. `findMainInterceptShadowing` — a CROSS-bucket hit the conflict check cannot see.
  *   4. REVERSE shadowing — the same collision seen from the non-intercepted side.
- *   5. The two DICTATION overlap gates — the one overlap `conflictBucket` deliberately does not
+ *   5. The two DICTATION overlap gates — the one overlap `conflictBuckets` deliberately does not
  *      report, refused here in both directions, but only for `app`/`canvas`-scope commands: the
  *      keyed gesture has a focus gate, so a terminal- or scm-scope command never competes with it
  *      (see the block itself for why).
@@ -226,7 +226,7 @@ export function commitCandidate(
   }
 
   // DICTATION OVERLAP, both directions. `speech.dictation` is its own conflict bucket (see
-  // `conflictBucket` in @shared/keybindings), so gate (2) above is silent about it BY DESIGN —
+  // `conflictBuckets` in @shared/keybindings), so gate (2) above is silent about it BY DESIGN —
   // dictation never competes at dispatch, it PRE-EMPTS: the resolver skips it and its own keyed
   // listener claims the chord first while the canvas has focus. That is precedence, not ambiguity,
   // which is why the LOAD path permits an overlap (legacy files contain them, and dropping a user's

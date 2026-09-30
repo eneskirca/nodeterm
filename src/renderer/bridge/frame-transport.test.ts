@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { encodePtyData, E_DISCONNECTED } from '../../shared/rpc'
-import type { FrameTransport } from './frame-transport'
+import type { RelayClientApi } from '../../shared/types'
+import { RelayFrameTransport, type FrameTransport } from './frame-transport'
+import { emitLocalRelayClose } from './relay-local-close'
 import { RpcClient } from './ws-bridge'
 
 /**
@@ -83,5 +85,61 @@ describe('RpcClient over a FrameTransport', () => {
     client.onClose(() => closed++)
     t.drop()
     expect(closed).toBe(1)
+  })
+})
+
+// ── R41: a relay connection this renderer closed itself ────────────────────────────────────────────
+
+describe('RelayFrameTransport: a close is a close, whoever made it', () => {
+  function relay() {
+    const mainClose = new Map<string, () => void>()
+    const api = {
+      onApproved: vi.fn(() => () => {}),
+      onClosed: vi.fn((id: string, cb: () => void) => {
+        mainClose.set(id, cb)
+        return () => {}
+      }),
+      send: vi.fn(),
+      onFrame: vi.fn(() => () => {})
+    } as unknown as RelayClientApi
+    return { api, mainClose }
+  }
+
+  it('fires on main\'s close, and on a close this renderer announced locally (main never reports that one)', () => {
+    const r = relay()
+    const onMain = vi.fn()
+    new RelayFrameTransport('conn-main', r.api).onClose(onMain)
+    r.mainClose.get('conn-main')!()
+    expect(onMain).toHaveBeenCalledTimes(1)
+    const onLocal = vi.fn()
+    new RelayFrameTransport('conn-local', r.api).onClose(onLocal)
+    emitLocalRelayClose('conn-local')
+    expect(onLocal).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires once, however many closes arrive (a drop, then the offline teardown\'s own close)', () => {
+    const r = relay()
+    const cb = vi.fn()
+    new RelayFrameTransport('conn-both', r.api).onClose(cb)
+    r.mainClose.get('conn-both')!()
+    emitLocalRelayClose('conn-both')
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires once in the other order too (our own close, then main noticing the socket is gone)', () => {
+    const r = relay()
+    const cb = vi.fn()
+    new RelayFrameTransport('conn-rev', r.api).onClose(cb)
+    emitLocalRelayClose('conn-rev')
+    r.mainClose.get('conn-rev')!()
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
+  it('an RpcClient over it fails its in-flight requests on a local close', async () => {
+    const r = relay()
+    const client = new RpcClient(new RelayFrameTransport('conn-rpc', r.api))
+    const pending = client.request('workspace:load')
+    emitLocalRelayClose('conn-rpc')
+    await expect(pending).rejects.toMatchObject({ code: E_DISCONNECTED })
   })
 })
