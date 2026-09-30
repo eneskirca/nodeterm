@@ -148,7 +148,7 @@ import {
   generateGroupName,
   generateTerminalName
 } from '../core/commit-message'
-import { initUpdater } from './updater'
+import { initUpdater, setAutoInstallUpdates } from './updater'
 import { fetchCheck } from '../core/check'
 import {
   hookServer,
@@ -2169,10 +2169,15 @@ app.whenReady().then(async () => {
   // quitAndInstall closes all windows then calls app.quit(), which our hide-on-close would block.
   // Also skip the confirm dialog — this is a restart-to-update the user already asked for via the
   // "Restart to update" card, not an exit, and a modal here would just block the install.
-  initUpdater(() => {
-    quitting = true
-    skipQuitConfirmation = true
-  })
+  initUpdater(
+    () => {
+      quitting = true
+      skipQuitConfirmation = true
+    },
+    { autoInstallUpdates: settingsStore.get().autoInstallUpdates }
+  )
+  // Settings → Updates takes effect without a restart (issue #898).
+  settingsStore.onChange((s) => setAutoInstallUpdates(s.autoInstallUpdates))
   // Mirror live agent status to <userData>/agent-status.json for the external mobile host agent.
   initAgentStatusMirror()
   // The orchestration facts an earlier run left on disk, in THIS order: station reports first
