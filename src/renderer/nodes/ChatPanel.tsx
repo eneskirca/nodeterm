@@ -1,4 +1,4 @@
-import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
+import { CHAT_PROMPT_BUSY, TEXT_NOT_SUBMITTED, isChatPromptBlocked, isChatPromptBusy } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { renderMarkdown } from '../lib/markdown'
@@ -805,6 +805,12 @@ export function ChatPanel({
       if (isChatPromptBlocked(ok)) {
         // Nothing reached the pane: the draft stays for a resend once the dialog is answered.
         setScreenBlock({ kind: ok.dialog === null ? 'no-prompt' : 'dialog', text: ok.dialog, live: pollScreen })
+        return
+      }
+      if (isChatPromptBusy(ok)) {
+        // Another view of this node is typing into the pane right now. Nothing was typed from here:
+        // keep the draft and stay writable (`false` would read as "this session cannot be written to").
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: CHAT_PROMPT_BUSY } }))
         return
       }
       if (ok === 'pasted-not-submitted') {

@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ChatPromptResult } from '@shared/text-delivery'
+import { CHAT_PROMPT_BUSY, type ChatPromptResult } from '@shared/text-delivery'
 import { useAgentStatus } from '../state/agentStatus'
 import { CHAT_SCREEN_POLL_MS } from '../lib/chatLive'
 
@@ -138,6 +138,25 @@ describe('ChatPanel — the agent\'s own dialog on screen', () => {
 
     expect(notice()).toBeNull()
     expect(host.querySelector('.term-chat__msg--user')?.textContent).toContain('first try')
+  })
+
+  it('a send refused because another view is typing keeps the draft and the composer writable', async () => {
+    const toasts: string[] = []
+    const onToast = (e: Event): void => {
+      toasts.push((e as CustomEvent<{ message: string }>).detail.message)
+    }
+    window.addEventListener('nodeterm:toast', onToast)
+    sendChatPrompt.mockResolvedValueOnce({ blocked: 'busy' })
+    await mount({ remote: true })
+
+    await typeAndEnter('in a moment')
+    window.removeEventListener('nodeterm:toast', onToast)
+
+    expect(textarea()).not.toBeNull()
+    expect(textarea().disabled).toBe(false)
+    expect(textarea().value).toBe('in a moment')
+    expect(host.querySelector('.term-chat__msg--user')).toBeNull()
+    expect(toasts).toEqual([CHAT_PROMPT_BUSY])
   })
 
   it('asks core to check the screen for THIS agent', async () => {

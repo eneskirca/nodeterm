@@ -116,7 +116,8 @@ export const TYPED_NEEDLE_CHARS = 24
  * not count; twice, so the composer has finished taking the burst in.
  *
  * `pasted-not-submitted` whenever the text may be in the composer unsent — a failed or partial
- * type, an unconfirmed settle, a failed Enter. Callers surface it and never resend.
+ * type, an unconfirmed settle, a failed Enter. Callers surface it and never resend. `null` when the
+ * pane could not be read before typing: nothing was typed, and the caller may deliver another way.
  */
 export async function typeThenSubmitWhenSettled(
   text: string,
@@ -128,16 +129,19 @@ export async function typeThenSubmitWhenSettled(
      *  answer is `pasted-not-submitted` (the text sits unsent in the agent's input box). */
     gate?: (screen: string) => ChatPromptBlocked | null
   } = {}
-): Promise<ChatPromptResult> {
+): Promise<ChatPromptResult | null> {
   const lines = typedLines(text)
   const joined = visible(lines.join(''))
   if (joined === '') return false
   const needle = joined.slice(-TYPED_NEEDLE_CHARS)
   const before = await surface.capture()
-  const refused = before !== null && options.gate ? options.gate(before) : null
+  // An unreadable pane gives no baseline to confirm the text against (and no screen for the gate),
+  // so typing would end, at best, as text stranded unsubmitted in the input box. Type nothing and
+  // answer `null`: the caller delivers another way (the paste, which submits in its own step).
+  if (before === null) return null
+  const refused = options.gate ? options.gate(before) : null
   if (refused) return refused
   if (!(await surface.type(typedStdin(lines)))) return 'pasted-not-submitted'
-  if (before === null) return 'pasted-not-submitted'
   const baseline = occurrences(visible(before), needle)
 
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))

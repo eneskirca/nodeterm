@@ -103,6 +103,9 @@ describe('scoped guest — terminals', () => {
     expect(allowed(IPC.ptyCapture, 'b1')).toBe(false)
     expect(allowed(IPC.ptyDestroy, 'b1')).toBe(false)
     expect(allowed(IPC.ptySendText, 'b1', 'x')).toBe(false)
+    // The ⌘M composer's typed send is a write into the node's pane: same scope rule as sendText.
+    expect(allowed(IPC.ptySendChatPrompt, 'a1', 'x', 'claude')).toBe(true)
+    expect(allowed(IPC.ptySendChatPrompt, 'b1', 'x', 'claude')).toBe(false)
     expect(allowed(IPC.contextEnsure, 's', root, undefined, 'b1', 'claude')).toBe(false)
     expect(allowed(IPC.contextEnsure, 's', root, undefined, 'a1', 'claude')).toBe(true)
   })

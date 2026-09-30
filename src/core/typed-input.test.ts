@@ -96,12 +96,13 @@ describe('typeThenSubmitWhenSettled', () => {
     expect(surface.submit).not.toHaveBeenCalled()
   })
 
-  it('leaves the text unsubmitted when the pane cannot be read', async () => {
+  it('types NOTHING when the pane cannot be read, and answers null so the caller delivers another way', async () => {
     const surface = fakeSurface({ captureNull: true })
 
     const result = await typeThenSubmitWhenSettled('hello', surface, noWait)
 
-    expect(result).toBe('pasted-not-submitted')
+    expect(result).toBeNull()
+    expect(surface.typed).toEqual([])
     expect(surface.submit).not.toHaveBeenCalled()
   })
 

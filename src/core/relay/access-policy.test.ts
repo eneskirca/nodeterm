@@ -32,7 +32,7 @@ describe('access policy', () => {
     expect(decideAccess('req', IPC.ptyCreate, [{ persistKey: 'n2' }], ctx('owner'))).toEqual({ allow: true })
   })
   it('a viewer may not write, destroy, send text or mutate the canvas', () => {
-    for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.gitCommit, IPC.settingsLoad]) {
+    for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.ptySendChatPrompt, IPC.gitCommit, IPC.settingsLoad]) {
       expect(decideAccess('req', m, [], ctx('viewer')).allow).toBe(false)
     }
     expect(decideAccess('cast', IPC.ptyWrite, ['s', 'ls\r'], ctx('viewer')).allow).toBe(false)

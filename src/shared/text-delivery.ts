@@ -11,7 +11,19 @@ export interface ChatPromptBlocked {
   blocked: 'screen'
   dialog: string | null
 }
+/**
+ * Another typed delivery into the same pane is still in flight (a second view of the node — the
+ * canvas panel and the kanban card modal, or a relay peer — sent at the same moment). Nothing was
+ * typed; the draft stays for a resend. Distinct from `false` so the view does not read a moment's
+ * contention as "this session cannot be written to" and go read-only.
+ */
+export interface ChatPromptBusy {
+  blocked: 'busy'
+}
+export const CHAT_PROMPT_BUSY = 'Another message is still being typed into this session. Send again in a moment.'
 /** What a chat-view send answers: a text delivery, or a refusal before typing. */
-export type ChatPromptResult = TextDeliveryResult | ChatPromptBlocked
+export type ChatPromptResult = TextDeliveryResult | ChatPromptBlocked | ChatPromptBusy
 export const isChatPromptBlocked = (r: ChatPromptResult): r is ChatPromptBlocked =>
   typeof r === 'object' && r !== null && r.blocked === 'screen'
+export const isChatPromptBusy = (r: ChatPromptResult): r is ChatPromptBusy =>
+  typeof r === 'object' && r !== null && r.blocked === 'busy'

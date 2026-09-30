@@ -5009,8 +5009,9 @@ export class PtyManager {
 
   /**
    * The typed half of `sendText` — `null` when this session's backend has no typed path (the
-   * Windows session host, no tmux), so the caller falls back to the paste. A delivery already in
-   * flight for the same pane answers `false` rather than typing into the middle of it.
+   * Windows session host, no tmux) or the pane could not be read, so the caller falls back to the
+   * paste. A delivery already in flight for the same pane answers `busy` rather than typing into the
+   * middle of it (never `false`, which the chat view reads as "this session cannot be written to").
    */
   private async sendTyped(
     persistKey: string,
@@ -5035,7 +5036,7 @@ export class PtyManager {
       type = (stdin) => runWithStdin('/bin/sh', localTypedArgs(tmuxPath, TMUX_SOCKET, target, pasteBufferName()), stdin)
       submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target))
     }
-    if (this.typedInFlight.has(target)) return false
+    if (this.typedInFlight.has(target)) return { blocked: 'busy' }
     this.typedInFlight.add(target)
     const ok = async (run: () => Promise<unknown>): Promise<boolean> => {
       try {

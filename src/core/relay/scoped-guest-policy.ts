@@ -310,6 +310,7 @@ export const SCOPED: Readonly<Record<string, Check>> = Object.freeze({
   [IPC.ptySessionAge]: nodeArg0,
   [IPC.ptyReadScrollback]: nodeArg0,
   [IPC.ptySendText]: nodeArg0,
+  [IPC.ptySendChatPrompt]: nodeArg0,
   [IPC.ptyTmuxStatus]: pass,
   [IPC.ptyPaneCommand]: nodeArg0,
   [IPC.ptyPaneCwd]: nodeArg0,
