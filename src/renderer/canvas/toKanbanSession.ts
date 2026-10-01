@@ -51,6 +51,10 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
     // Re-validated, like everything read off node data for display: the issue card groups sessions
     // by this, and a malformed value must bind to nothing rather than to a wrong card.
     issueRef: normalizeIssueRef(n.data.issueRef),
+    // The launch record, so both kanban ContextMeter surfaces show the model and denominator the
+    // session was launched with (the transcript trails a switch — see lib/contextMeterModel.ts).
+    agentModel: n.data.agentLaunchModel as string | undefined,
+    agentLaunchContextWindow: n.data.agentLaunchContextWindow as number | undefined,
     // What the card modal's co-attach terminal needs to join THIS node's session the same way the
     // canvas TerminalNode does.
     spawn: {

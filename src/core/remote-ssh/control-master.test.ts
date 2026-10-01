@@ -13,6 +13,7 @@ import {
   remoteWindowSizeArgs,
   remotePaneCommandArgs,
   remotePaneCwdArgs,
+  remoteShowEnvironmentArgs,
   remotePaneProcessArgs,
   remoteTerminateForegroundArgs,
   remoteListSessionsArgs,
@@ -327,6 +328,15 @@ describe('remotePaneCwdArgs', () => {
   })
 })
 
+describe('remoteShowEnvironmentArgs', () => {
+  it('asks remote tmux for strict shell-formatted session environment records', () => {
+    const args = remoteShowEnvironmentArgs(conn, '/s.sock', 'nt-x')
+    expect(args[args.length - 1]).toBe(
+      `${TP}tmux -L ${RMT_TMUX_SOCKET} show-environment -s -t nt-x`
+    )
+  })
+})
+
 describe('remote foreground process termination', () => {
   it('reads pane pid + command through the existing ControlMaster', () => {
     const args = remotePaneProcessArgs(conn, '/s.sock', 'nt-x')
@@ -336,15 +346,20 @@ describe('remote foreground process termination', () => {
   })
 
   it('revalidates the foreground group and never targets the pane shell group', () => {
-    const args = remoteTerminateForegroundArgs(conn, '/s.sock', 33293)
+    const args = remoteTerminateForegroundArgs(conn, '/s.sock', 33293, 44102)
     const command = args[args.length - 1]
     expect(command).toContain('ps -o tpgid= -p 33293')
     expect(command).toContain('[ "$tpgid" -ne 33293 ]')
+    expect(command).toContain('ps -o tpgid= -p 44102')
+    expect(command).toContain('[ "$agent_tpgid" = "$tpgid" ]')
     expect(command).toContain('kill -TERM -- "-$tpgid"')
   })
 
   it('refuses an invalid pane pid before building a remote shell command', () => {
     expect(() => remoteTerminateForegroundArgs(conn, '/s.sock', -1)).toThrow('invalid-pane-pid')
+    expect(() => remoteTerminateForegroundArgs(conn, '/s.sock', 33293, -1)).toThrow(
+      'invalid-agent-pid'
+    )
   })
 })
 

@@ -20,6 +20,7 @@ export const HOSTED_VIEW_METHODS: readonly string[] = Object.freeze([
   IPC.ptyCapture,
   IPC.ptyReadScrollback,
   IPC.ptyPaneCommand,
+  IPC.ptyEnvInfo,
   IPC.ptyTmuxStatus,
   IPC.fsList,
   IPC.fsRead,

@@ -43,9 +43,13 @@ export const IPC = {
    *  over an interactive `ssh` reports as `ssh` — so the hibernation exit asks this instead before
    *  it types `/exit` into a pane. null when the pane cannot be read. */
   ptyPaneOwner: 'pty:pane-owner',
+  /** Read a session's spawn environment with secrets masked in core. */
+  ptyEnvInfo: 'pty:env-info',
   /** Renderer → core: SIGTERM the non-shell foreground process group in this node's pane.
    *  Model switching uses this instead of typing an exit slash-command into an agent composer. */
   ptyTerminateForeground: 'pty:terminate-foreground',
+  /** Read-only post-respawn proof: does the expected agent own the foreground process group? */
+  ptyAgentProcess: 'pty:agent-process',
   ptyReadSessionName: 'pty:read-session-name',
   /** Shell → renderer: this MACHINE's pty-device pressure band changed (core/pty-pressure.ts).
    *  Payload: `PtyPressure` — `{ level, usage, ceiling }`. Sent on band CHANGES only, and re-sent

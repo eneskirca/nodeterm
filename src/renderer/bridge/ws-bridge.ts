@@ -24,6 +24,7 @@ import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issu
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   UNKNOWN_GROK_CLI_CAPS,
+  type AgentProcessProof,
   type BoardLogApi,
   type LogApi,
   type LogRecord,
@@ -54,6 +55,7 @@ import {
   type PresenceApi,
   type PtyApi,
   type PtyCreateOptions,
+  type PtyEnvInfo,
   type SettingsApi,
   type ClaudeUsage,
   type ProviderUsage,
@@ -64,6 +66,7 @@ import {
   type Settings,
   type SpeechApi,
   type SpeechModelInfo,
+  type TerminateForegroundOutcome,
   type TmuxStatus,
   type TranscriptLine,
   type Workspace,
@@ -260,7 +263,7 @@ export function buildRealApi(
     // The trailing flag rides as a plain boolean; the core handler re-checks `=== true`.
     destroy: (persistKey, opts) =>
       client.cast(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
-    recycle: (persistKey) => client.cast(IPC.ptyRecycle, persistKey),
+    recycle: (persistKey) => client.request(IPC.ptyRecycle, persistKey) as Promise<void>,
     // No server handler — degrade gracefully (never reject the boot path).
     generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
     generateGroupName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
@@ -301,8 +304,43 @@ export function buildRealApi(
     // have silently switched Eco off for the whole Server Edition rather than degrade it.
     paneOwner: (persistKey) =>
       client.request(IPC.ptyPaneOwner, persistKey).catch(() => null) as Promise<PaneOwner | null>,
+    envInfo: (persistKey) =>
+      client
+        .request(IPC.ptyEnvInfo, persistKey)
+        .catch(() => ({ source: 'unavailable', vars: [] }) as PtyEnvInfo) as Promise<PtyEnvInfo>,
     terminateForeground: (persistKey, expectedAgentId) =>
-      client.request(IPC.ptyTerminateForeground, persistKey, expectedAgentId).catch(() => false) as Promise<boolean>,
+      client
+        .request(IPC.ptyTerminateForeground, persistKey, expectedAgentId)
+        .then((value) =>
+          value === 'terminated' || value === 'already-exited' || value === 'refused'
+            ? value
+            : value === true
+              ? 'terminated'
+              : 'refused'
+        )
+        .catch(() => 'refused') as Promise<TerminateForegroundOutcome>,
+    agentProcess: (persistKey, expectedAgentId) =>
+      client
+        .request(IPC.ptyAgentProcess, persistKey, expectedAgentId)
+        .then((value): AgentProcessProof => {
+          if (!value || typeof value !== 'object') return { verdict: 'unknown' as const }
+          const candidate = value as Record<string, unknown>
+          const verdict = candidate.verdict
+          if (verdict !== 'agent' && verdict !== 'not-agent' && verdict !== 'unknown')
+            return { verdict: 'unknown' as const }
+          const shellPid = candidate.shellPid ?? candidate.panePid
+          const agentPid = candidate.agentPid
+          return {
+            verdict,
+            ...(typeof shellPid === 'number' && Number.isSafeInteger(shellPid) && shellPid > 0
+              ? { shellPid }
+              : {}),
+            ...(typeof agentPid === 'number' && Number.isSafeInteger(agentPid) && agentPid > 0
+              ? { agentPid }
+              : {})
+          }
+        })
+        .catch(() => ({ verdict: 'unknown' as const })),
     // No server handler — the session-name poll degrades to no adopted name. A PRE-EXISTING gap,
     // and not any one agent's: `IPC.ptyReadSessionName` has never been registered server-side, so
     // claude's, grok's and gemini's read legs are equally stubbed here (the write leg works on both

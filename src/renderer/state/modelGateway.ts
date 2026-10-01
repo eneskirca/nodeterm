@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import type { GatewayModel, ModelGatewaySettings } from '@shared/agents/model-gateway'
+import {
+  modelGatewayRoutes,
+  type GatewayModel,
+  type ModelGatewaySettings
+} from '@shared/agents/model-gateway'
 
 export type ModelDiscoveryStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -7,6 +11,8 @@ interface ModelGatewayState {
   models: GatewayModel[]
   status: ModelDiscoveryStatus
   error: string
+  /** Monotonic completion marker for the current, non-superseded discovery request. */
+  discoveryAt?: number
   discover(settings: ModelGatewaySettings): Promise<void>
   clear(): void
 }
@@ -14,6 +20,16 @@ interface ModelGatewayState {
 // A later request supersedes an earlier one. Editing the gateway URL/key can otherwise let a slow
 // response from the OLD endpoint land after the new catalogue and silently replace it.
 let requestSeq = 0
+
+/** Renderer-visible equality for catalogue provenance; resolved credentials stay in core. */
+export function sameModelGatewayDiscoveryConfig(
+  left: ModelGatewaySettings,
+  right: ModelGatewaySettings
+): boolean {
+  const leftRoute = modelGatewayRoutes(left.baseUrl, left.discoveryPath)?.discovery ?? null
+  const rightRoute = modelGatewayRoutes(right.baseUrl, right.discoveryPath)?.discovery ?? null
+  return leftRoute === rightRoute && left.apiKey.trim() === right.apiKey.trim()
+}
 
 export const useModelGateway = create<ModelGatewayState>((set) => ({
   models: [],
@@ -33,12 +49,13 @@ export const useModelGateway = create<ModelGatewayState>((set) => ({
     set({
       models: result.models,
       status: result.error ? 'error' : 'ready',
-      error: result.error ?? ''
+      error: result.error ?? '',
+      discoveryAt: seq
     })
   },
 
   clear() {
     requestSeq++
-    set({ models: [], status: 'idle', error: '' })
+    set({ models: [], status: 'idle', error: '', discoveryAt: undefined })
   }
 }))
