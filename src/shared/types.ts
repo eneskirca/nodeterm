@@ -35,6 +35,7 @@ import type {
   ModelGatewayCredentialStatus,
   ModelGatewaySettings
 } from './agents/model-gateway'
+import type { AgentPaneVerdict } from './agents/pane-owner-predicate'
 
 /**
  * The default provider behavior for a FRESH agent spawn — the three-way successor to the old
@@ -506,6 +507,10 @@ export interface CanvasNodeState {
   agentId?: AgentId
   /** Model selected for this agent node through the shared model gateway. */
   agentModel?: string
+  /** Exact model id emitted by the launch assembler; may include an internal `[1m]` marker. */
+  agentLaunchModel?: string
+  /** Context window baked into this session's launch environment, when discovery knew it. */
+  agentLaunchContextWindow?: number
   /**
    * Agent nodes started on a GitHub issue ("Start with agent" on an issue card, or
    * `open-agent --issue`): WHICH issue this session works on. It drives the binding chips (the
@@ -1216,6 +1221,17 @@ export type PtyLimitFixResult =
    *  renderer: nothing failed, so neither may raise an error toast. */
   | { ok: false; error: string; canceled?: boolean; busy?: boolean }
 
+/** Result of the exact-PID foreground stop used by agent restarts. */
+export type TerminateForegroundOutcome = 'terminated' | 'already-exited' | 'refused'
+
+/** A fresh kernel-backed process identity sample for a node's expected agent. */
+export interface AgentProcessProof {
+  verdict: AgentPaneVerdict
+  /** The tmux pane's root/login-shell PID, distinct from the agent process. */
+  shellPid?: number
+  agentPid?: number
+}
+
 export interface PtyApi {
   /** Starts a new PTY session; returns its sessionId and whether the session was freshly
    *  created (cold start) vs reattached to a still-running tmux session (warm). */
@@ -1249,7 +1265,7 @@ export interface PtyApi {
   /** Ends a node's persistent session so the SAME node id respawns in a new cwd ("move into
    *  worktree"). Same tmux kill as `destroy`, opposite intent: the node stays on the canvas, so
    *  co-viewers get `onRecycled` (restart + re-attach), never the permanent closed state. */
-  recycle(persistKey: string): void
+  recycle(persistKey: string): Promise<void>
   /** Suggest a terminal title from its recent output via the configured AI agent. `accountId` is
    *  the node's managed Claude account (trailing + optional: absent = system `~/.claude`), so the
    *  naming request runs under the same login the node itself does. */
@@ -1317,11 +1333,13 @@ export interface PtyApi {
    *  it. `null` is "could not read", never evidence that the pane is free (see `isAgentPane`'s
    *  three-valued verdict, which is what consumers should decide on). */
   paneOwner(persistKey: string): Promise<PaneOwner | null>
-  /** Terminate the foreground process group in a node's pane. Returns false when the pane/process
-   *  cannot be safely identified; it never kills the pane's login shell. When `expectedAgentId` is
-   *  given, the kill happens only if that harness actually owns the foreground group (argv-verified)
-   *  — so a stale menu can never SIGTERM vim or a build the user started in the pane. */
-  terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean>
+  /** Terminate the exact argv-verified agent process group without killing the pane shell. */
+  terminateForeground(
+    persistKey: string,
+    expectedAgentId?: string
+  ): Promise<TerminateForegroundOutcome>
+  /** Read-only proof that the expected agent owns the foreground process group. */
+  agentProcess(persistKey: string, expectedAgentId: string): Promise<AgentProcessProof>
   /** The agent session's display name (`/rename` name, else auto name) read from the agent's own
    *  session store, resolved strictly by sessionId; null if unknown. Keeps a node title in sync with
    *  the `/resume` name (e.g. after resume) without cross-contaminating same-folder sessions.

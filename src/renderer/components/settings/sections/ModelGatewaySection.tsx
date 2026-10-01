@@ -163,6 +163,9 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
         replacingStoredKey &&
         modelGatewayRoutes(current.baseUrl, current.discoveryPath)
       ) {
+        // The public secret sentinel did not change, but the resolved credential did. Drop both
+        // the visible catalogue and any older in-flight response before querying with the new key.
+        clearModels()
         void discover({ ...current, apiKey: MODEL_GATEWAY_SECRET_REF })
       }
       setCredentialNotice('API key saved securely.')
@@ -482,10 +485,28 @@ export function ModelGatewaySection({ isActive }: { isActive: boolean }): React.
           </Button>
         </div>
         {models.length ? (
-          <div className="mt-3 max-h-40 overflow-y-auto rounded-lg bg-black/15 px-3 py-2 font-mono text-[11px] text-muted">
-            {models.map((model) => (
-              <div key={model.id}>{model.id}</div>
-            ))}
+          <div className="mt-3 space-y-2">
+            <div className="max-h-40 overflow-y-auto rounded-lg bg-black/15 px-3 py-2 font-mono text-[11px] text-muted">
+              {models.map((model) => (
+                <div key={model.id}>
+                  {model.id}
+                  {model.contextWindow ? ` (${model.contextWindow.toLocaleString()} ctx)` : ''}
+                </div>
+              ))}
+            </div>
+            {models.every((model) => !model.contextWindow) ? (
+              // "We looked and there is nothing" is its own sentence (the same rule the
+              // session-memory panel honours): a list of bare ids must not silently read as
+              // "the numbers are coming later". The window is a per-model fact only the gateway
+              // can supply — nodeterm never guesses it, so nothing downstream (the [1m] marker,
+              // the autocompact env, the meter) can act on these models.
+              <p className="text-[12px] text-muted">
+                None of these models reported a context length, so the Claude autocompact window
+                and the [1m] marker cannot be applied. If your gateway tracks context sizes,
+                check that the selected discovery endpoint serves them
+                {routes ? <> ({routes.discovery})</> : null}.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </SearchableRow>

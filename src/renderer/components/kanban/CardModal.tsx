@@ -482,8 +482,10 @@ export function CardModal({ session, projectId, columnTitle, board, onChangeBoar
           {isTerminal && (
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}
-              <ContextMeter sessionId={agentSessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} />
-              <button
+              <ContextMeter sessionId={agentSessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId}
+                nodeModel={session.agentModel}
+                nodeContextWindow={session.agentLaunchContextWindow}
+              />              <button
                 className="kanban-modal__action"
                 title={commandTooltip(mdOpen ? 'Back to the live terminal' : 'Markdown / chat view', 'node.toggleMarkdown')}
                 aria-label="Markdown view"

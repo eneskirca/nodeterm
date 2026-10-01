@@ -96,7 +96,7 @@ const api: NodeTerminalApi = {
     kill: (sessionId, viewerId) => ipcRenderer.send(IPC.ptyKill, sessionId, viewerId),
     destroy: (persistKey, opts) =>
       ipcRenderer.send(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
-    recycle: (persistKey) => ipcRenderer.send(IPC.ptyRecycle, persistKey),
+    recycle: (persistKey) => ipcRenderer.invoke(IPC.ptyRecycle, persistKey),
     generateName: (persistKey, cwd, accountId) =>
       ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd, accountId),
     generateGroupName: (memberKeys, cwd) =>
@@ -115,6 +115,8 @@ const api: NodeTerminalApi = {
     paneOwner: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneOwner, persistKey),
     terminateForeground: (persistKey, expectedAgentId) =>
       ipcRenderer.invoke(IPC.ptyTerminateForeground, persistKey, expectedAgentId),
+    agentProcess: (persistKey, expectedAgentId) =>
+      ipcRenderer.invoke(IPC.ptyAgentProcess, persistKey, expectedAgentId),
     readSessionName: (sessionId, accountId, agentId) =>
       ipcRenderer.invoke(IPC.ptyReadSessionName, sessionId, accountId, agentId),
     onData: (sessionId, listener) => {

@@ -230,7 +230,10 @@ export const SessionCard = memo(function SessionCard({
             <span className="kanban-card__stickytext">{stickyPreview}</span>
           ) : (
             <>
-              <ContextMeter sessionId={status?.sessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
+              <ContextMeter sessionId={status?.sessionId ?? null} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId}
+                nodeModel={session.agentModel}
+                nodeContextWindow={session.agentLaunchContextWindow}
+              />
               <AccountChip chip={accountChip} />
               <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-card__live" />
               {sessionName && (

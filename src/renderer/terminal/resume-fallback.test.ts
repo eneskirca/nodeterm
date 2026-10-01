@@ -79,14 +79,14 @@ const src = readFileSync(join(__dirname, '..', 'nodes', 'TerminalNode.tsx'), 'ut
 
 describe('how the fallback is wired (source pins)', () => {
   it('is armed only when we actually asked to resume something we can recognise', () => {
-    expect(src).toContain('if (cmd && priorId && detectsResumeMiss(agentId)) {')
+    expect(src).toContain('if (cmd && resume.sessionId && detectsResumeMiss(agentId)) {')
   })
 
   it('re-reads the pane and requires a SHELL before it writes anything', () => {
     // The CLI exits after printing, so a shell is what SHOULD own the pane. Anything else means
     // we misread the situation, and `null` ("could not see the pane") is not evidence either.
     expect(src).toMatch(
-      /resumeSessionMissing\(agentId, deadId, seen\)[\s\S]{0,900}?if \(!isShellCommand\(pane\)\) return/
+      /resumeSessionMissing\(agentId, deadId, seen\)[\s\S]{0,900}?if \(!isShellCommand\(pane\)\) \{[\s\S]{0,200}?return/
     )
   })
 
@@ -106,7 +106,7 @@ describe('how the fallback is wired (source pins)', () => {
 
   it('stops on unmount and after the window, and fires at most once', () => {
     expect(src).toMatch(/const timer = setTimeout\(\(\) => stop\(\), RESUME_MISS_WINDOW_MS\)/)
-    expect(src).toMatch(/if \(fired\) return[\s\S]{0,600}?fired = true/)
+    expect(src).toMatch(/if \(fired \|\| life\.dead\) return[\s\S]{0,600}?fired = true/)
     expect(src).toMatch(/cleanups\.push\(stop\)/)
   })
 })

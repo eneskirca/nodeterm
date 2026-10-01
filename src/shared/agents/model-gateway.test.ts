@@ -9,11 +9,20 @@ import {
   modelGatewayEnv,
   modelGatewayCredentialKind,
   modelGatewayRoutes,
+  modelContextWindow,
   modelsForAgent,
   parseGatewayModels,
   parseModelGatewayEnvReference,
   resolveModelGatewayApiKey,
-  withAgentModel
+  withAgentModel,
+  claudeAutocompactFor,
+  claudeEffortFor,
+  claudeSubagentEnvFor,
+  claudeSubagentModelFor,
+  CLAUDE_SUBAGENT_EFFORT_FALLBACK,
+  AUTOCOMPACT_THRESHOLD,
+  AUTOCOMPACT_PCT_OVERRIDE,
+  tmuxUpdateEnvironmentLine
 } from './model-gateway'
 import {
   setCustomAgentBaseResolver,
@@ -365,5 +374,264 @@ describe('grok takes its model as a FLAG, and needs no gateway environment', () 
     expect(withAgentModel('grok', 'grok', 'grok-4.6 && rm -rf /')).toBe(
       "grok --model 'grok-4.6 && rm -rf /'"
     )
+  })
+})
+
+describe('claudeAutocompactFor', () => {
+  // A model above the threshold, one at exactly the threshold, and one below — sourced from
+  // discovery the way the spawn site resolves them.
+  const models = parseGatewayModels({
+    data: [
+      { id: 'anthropic/claude-opus-5', context_length: 1_000_000 },
+      { id: 'anthropic/claude-sonnet-5', context_length: 200_000 },
+      { id: 'anthropic/claude-haiku-5', context_length: 100_000 }
+    ]
+  })
+
+  it('appends [1m] + sets the autocompact env for a claude model whose window is above the threshold', () => {
+    const r = claudeAutocompactFor('claude', 'anthropic/claude-opus-5', models)
+    expect(r.modelId).toBe('anthropic/claude-opus-5[1m]')
+    expect(r.env).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    })
+  })
+
+  it('a window BETWEEN the threshold and 1M gets the env AND the suffix', () => {
+    // The env var does NOT drive the CLI's own meter (measured: Misc Bugs, 5.3 plain, env
+    // 400000, status line still 200k) — the [1m] suffix is the only lever Claude Code honors
+    // for the meter, so every above-threshold window carries it, mid-band included.
+    const mid = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.3-Flash-NVFP4', context_length: 400_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.3-Flash-NVFP4', mid)
+    expect(r.modelId).toBe('vllm/GLM-5.3-Flash-NVFP4[1m]')
+    expect(r.env).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000',
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    })
+  })
+
+  it('a suffixed mid-band record stays suffixed — the suffix is not re-stripped on re-launch', () => {
+    const mid = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.2-NVFP4-MTP', context_length: 400_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.2-NVFP4-MTP[1m]', mid)
+    expect(r.modelId).toBe('vllm/GLM-5.2-NVFP4-MTP[1m]')
+    expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('400000')
+  })
+
+  it('does not double-append [1m] when the id already carries it', () => {
+    const withSuffix = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.2-NVFP4-MTP[1m]', context_length: 1_000_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.2-NVFP4-MTP[1m]', withSuffix)
+    expect(r.modelId).toBe('vllm/GLM-5.2-NVFP4-MTP[1m]')
+    expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000')
+  })
+
+  it('sets neither env nor suffix at or below the threshold — never guesses a large window', () => {
+    // Exactly the threshold: not above it, so no autocompact.
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5', models).modelId).toBe(
+      'anthropic/claude-sonnet-5'
+    )
+    // Below the threshold.
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-haiku-5', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-haiku-5', models).modelId).toBe(
+      'anthropic/claude-haiku-5'
+    )
+  })
+
+  it('strips a stale [1m] suffix when the discovered window is no longer large', () => {
+    expect(
+      claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5[1m]', models)
+    ).toEqual({ modelId: 'anthropic/claude-sonnet-5', env: {} })
+  })
+
+  it('fails open for an unknown model or one with no reported window — no guess, no suffix', () => {
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-future', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-future', models).modelId).toBe(
+      'anthropic/claude-future'
+    )
+    // A discovered model that reported no context_length.
+    const noWindow = parseGatewayModels({ data: [{ id: 'anthropic/claude-x' }] })
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-x', noWindow).env).toEqual({})
+  })
+
+  it('PAIRING INVARIANT: every suffixed branch emits the env with it; the env never rides alone', () => {
+    // The two halves of the autocompact mechanism are ONE mechanism: the [1m] suffix lifts the
+    // CLI's own window ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW pulls the compaction point back
+    // to the discovered size. A suffix without the env grows the context past the headroom the
+    // gateway can serve (the Misc Bugs report); an env without the suffix meters 200k while
+    // compaction fires at the bigger window. One call emits both — this pins that no branch can
+    // emit one without the other.
+    const above = parseGatewayModels({
+      data: [
+        { id: 'a', context_length: 400_000 },
+        { id: 'b', context_length: 1_000_000 }
+      ]
+    })
+    for (const m of above) {
+      const r = claudeAutocompactFor('claude', m.id, above)
+      expect(r.modelId?.endsWith('[1m]')).toBe(true)
+      expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeTruthy()
+    }
+    // Inverse: the env implies the suffix — every branch emitting env is a suffixed branch.
+    for (const m of above) {
+      const r = claudeAutocompactFor('claude', m.id, above)
+      expect(!!r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW && r.modelId?.endsWith('[1m]')).toBe(true)
+    }
+    // At and below the threshold: NEITHER half — never one alone.
+    const at = parseGatewayModels({ data: [{ id: 'c', context_length: 200_000 }] })
+    expect(claudeAutocompactFor('claude', 'c', at)).toEqual({ modelId: 'c', env: {} })
+  })
+
+  it('is a no-op for a non-claude agent — the env vars and [1m] convention are Claude Code own', () => {
+    for (const id of ['codex', 'copilot', 'gemini', 'grok', 'opencode'] as const) {
+      const r = claudeAutocompactFor(id, 'anthropic/claude-opus-5', models)
+      expect(r.env).toEqual({})
+      expect(r.modelId).toBe('anthropic/claude-opus-5')
+    }
+  })
+
+  it('returns the unchanged id (no --model) when there is no model at all', () => {
+    expect(claudeAutocompactFor('claude', undefined, models)).toEqual({ modelId: undefined, env: {} })
+  })
+
+  it('threshold is above the 200k default so an ordinary 200k model does NOT trigger it', () => {
+    expect(AUTOCOMPACT_THRESHOLD).toBe(200_000)
+  })
+})
+
+describe('autocompact env keys lockstep', () => {
+  it('the autocompact keys are in the tmux update-environment line so a re-attached client inherits them', () => {
+    const line = tmuxUpdateEnvironmentLine()
+    expect(line).toContain('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+    expect(line).toContain('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')
+    // And a large-context claude model actually emits those keys through the helper.
+    const models = parseGatewayModels({ data: [{ id: 'anthropic/claude-opus-5', context_length: 1_000_000 }] })
+    for (const k of Object.keys(claudeAutocompactFor('claude', 'anthropic/claude-opus-5', models).env)) {
+      expect(line).toContain(k)
+    }
+  })
+})
+
+describe('Claude gateway subagent routing', () => {
+  const models = [
+    { id: 'vllm/zeta', contextWindow: 200_000 },
+    { id: 'anthropic/alpha' }
+  ]
+
+  it('prefers the configured default when the gateway lists it', () => {
+    expect(claudeSubagentModelFor(models, 'vllm/zeta')).toBe('vllm/zeta')
+  })
+
+  it('prefers the reasoning alias when no default is configured', () => {
+    const catalog = [...models, { id: 'reasoning' }]
+    expect(claudeSubagentModelFor(catalog)).toBe('reasoning')
+    // The configured default still beats the alias; a catalogue without it stays deterministic.
+    expect(claudeSubagentModelFor(catalog, 'vllm/zeta')).toBe('vllm/zeta')
+    expect(claudeSubagentModelFor(models)).toBe('anthropic/alpha')
+  })
+
+  it('falls back deterministically when the default is absent or unlisted', () => {
+    expect(claudeSubagentModelFor(models, 'missing')).toBe('anthropic/alpha')
+    expect(claudeSubagentModelFor([...models].reverse())).toBe('anthropic/alpha')
+  })
+
+  it('routes independently of context metadata and only for a Claude-base agent', () => {
+    expect(claudeSubagentEnvFor('claude', models)).toEqual({
+      CLAUDE_CODE_SUBAGENT_MODEL: 'anthropic/alpha',
+      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+      CLAUDE_CODE_EFFORT_LEVEL: CLAUDE_SUBAGENT_EFFORT_FALLBACK
+    })
+    for (const id of ['codex', 'copilot', 'custom:plain'] as const) {
+      expect(claudeSubagentEnvFor(id, models)).toEqual({})
+    }
+    expect(claudeSubagentModelFor([], 'vllm/zeta')).toBeUndefined()
+    expect(claudeSubagentEnvFor('claude', [], 'vllm/zeta')).toEqual({})
+  })
+
+  it('forces the served route for custom Claude agents too', () => {
+    setCustomAgentBaseResolver((id) => id === 'custom:proxy' ? 'claude' : undefined)
+    try {
+      expect(claudeSubagentEnvFor('custom:proxy', models, 'vllm/zeta')).toEqual({
+        CLAUDE_CODE_SUBAGENT_MODEL: 'vllm/zeta',
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+        CLAUDE_CODE_EFFORT_LEVEL: CLAUDE_SUBAGENT_EFFORT_FALLBACK
+      })
+    } finally {
+      setCustomAgentBaseResolver(null)
+    }
+  })
+
+  it('delivers every subagent control through the local and remote tmux environment', () => {
+    const keys = Object.keys(claudeSubagentEnvFor('claude', models))
+    const updateNames = tmuxUpdateEnvironmentLine().split('"')[1].split(' ')
+    for (const key of keys) expect(updateNames).toContain(key)
+  })
+})
+
+describe('gateway reasoning metadata', () => {
+  const parsed = parseGatewayModels({
+    data: [
+      { id: 'vllm/Qwen3.8-27B-FP8', reasoning: { supported_efforts: ['low', 'medium', 'xhigh'], default_effort: 'xhigh' } },
+      { id: 'vllm/chat-fast', reasoning: { supported_efforts: ['low', 'medium', 'xhigh'] } },
+      { id: 'vllm/GLM-5.3-Flash-FP8' },
+      { id: 'vllm/broken', reasoning: { supported_efforts: ['no spaces allowed', 42, null], default_effort: '' } },
+      { id: 'vllm/empty-efforts', reasoning: { supported_efforts: [] } },
+      { id: 'vllm/wrong-shape', reasoning: 'xhigh' }
+    ]
+  })
+  const byId = (id: string) => parsed.find((m) => m.id === id)
+
+  it('parses the Bifrost reasoning block into supported/default efforts', () => {
+    expect(byId('vllm/Qwen3.8-27B-FP8')?.reasoning).toEqual({
+      supportedEfforts: ['low', 'medium', 'xhigh'],
+      defaultEffort: 'xhigh'
+    })
+    expect(byId('vllm/chat-fast')?.reasoning).toEqual({ supportedEfforts: ['low', 'medium', 'xhigh'] })
+  })
+
+  it('keeps models without usable reasoning metadata plain', () => {
+    for (const id of ['vllm/GLM-5.3-Flash-FP8', 'vllm/broken', 'vllm/empty-efforts', 'vllm/wrong-shape']) {
+      expect(byId(id)?.reasoning).toBeUndefined()
+    }
+  })
+
+  it('derives the effort from the selected model, preferring its own default', () => {
+    expect(claudeEffortFor(parsed, 'vllm/Qwen3.8-27B-FP8')).toBe('xhigh')
+    // No default reported ⇒ the highest supported level.
+    expect(claudeEffortFor(parsed, 'vllm/chat-fast')).toBe('xhigh')
+  })
+
+  it('falls back to the static default when the model is unknown or carries no metadata', () => {
+    for (const id of ['vllm/GLM-5.3-Flash-FP8', 'vllm/broken', 'vllm/empty-efforts', 'vllm/wrong-shape', 'vllm/missing']) {
+      expect(claudeEffortFor(parsed, id)).toBe(CLAUDE_SUBAGENT_EFFORT_FALLBACK)
+    }
+    expect(claudeEffortFor(parsed, undefined)).toBe(CLAUDE_SUBAGENT_EFFORT_FALLBACK)
+  })
+
+  it('matches the autocompact `[1m]` spelling', () => {
+    const with1m = parseGatewayModels({
+      data: [{ id: 'vllm/long', reasoning: { supported_efforts: ['low'], default_effort: 'low' } }]
+    })
+    expect(claudeEffortFor(with1m, 'vllm/long[1m]')).toBe('low')
+  })
+})
+
+describe('modelContextWindow', () => {
+  const models = [{ id: 'vllm/GLM-5.3', contextWindow: 400_000 }]
+
+  it('matches either plain or [1m]-suffixed spelling', () => {
+    expect(modelContextWindow('vllm/GLM-5.3', models)).toBe(400_000)
+    expect(modelContextWindow('vllm/GLM-5.3[1m]', models)).toBe(400_000)
+  })
+
+  it('returns undefined for an absent model or invalid window', () => {
+    expect(modelContextWindow(undefined, models)).toBeUndefined()
+    expect(modelContextWindow('other', models)).toBeUndefined()
+    expect(modelContextWindow('bad', [{ id: 'bad', contextWindow: Number.NaN }])).toBeUndefined()
   })
 })
