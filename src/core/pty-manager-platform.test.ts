@@ -27,7 +27,8 @@ describe('PtyManager platform registration', () => {
       // exit fails CLOSED on a pane it cannot read, so a channel that reached only the desktop
       // would have switched Eco off for the whole Server Edition — silently, and looking exactly
       // like "Eco just never fires here". See wake-identity.ts / issue #823.
-      IPC.ptyPaneOwner
+      IPC.ptyPaneOwner,
+      IPC.ptyAgentProcess
     ]) {
       // ptyKill is sender-aware (co-attach: unsubscribe ONE client) → senderListeners.
       expect(fake.handlers[ch] ?? fake.listeners[ch] ?? fake.senderListeners[ch], ch).toBeDefined()
