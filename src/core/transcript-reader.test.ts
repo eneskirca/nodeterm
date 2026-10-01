@@ -4,7 +4,8 @@ import {
   parseTranscriptLines,
   pickSessionName,
   readSessionName,
-  setRemoteTranscriptReader
+  setRemoteTranscriptReader,
+  TASK_NOTIFIED_RESULT
 } from './transcript-reader'
 import type { TranscriptLine } from '../shared/types'
 
@@ -108,7 +109,7 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { parseChatMessages, parseChatWindow, readChatWindow, unwrapPastedContent } from './transcript-reader'
+import { parseChatMessages, parseChatWindow, readChatWindow } from './transcript-reader'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -774,24 +775,382 @@ describe('isMeta records that start a turn stay visible', () => {
   const onlyPromptSource = userStr('prompt source only', { isMeta: true, promptSource: 'system' })
   const nulls = userStr('all null', { isMeta: true, promptSource: null, origin: null, turnOrigin: null })
 
-  it('keeps peer / scheduled / auto-continuation prompts as user messages; still skips the caveat', () => {
+  it('keeps them visible; peer / auto-continuation render as system chips, the rest as user messages', () => {
     const msgs = parseChatMessages(
       (userStr(CAVEAT, { isMeta: true }) + peer + scheduled + autoCont + onlyTurnOrigin + onlyOrigin + onlyPromptSource + nulls).split('\n')
     )
-    expect(msgs.map((m) => [m.role, textOfMsg(m)])).toEqual([
-      ['user', 'Peer says: the build is green.'],
-      ['user', 'Scheduled check: run the demo report.'],
-      ['user', 'Continue from where you left off.'],
-      ['user', 'turn origin only'],
-      ['user', 'origin only'],
-      ['user', 'prompt source only']
+    expect(msgs.map((m) => [m.role, m.parts[0]])).toEqual([
+      // A peer record is the other session's words, not the user's: an `Agent message` chip.
+      ['assistant', { kind: 'tool', name: 'Agent message', arg: 'Peer says: the build is green.', result: 'Peer says: the build is green.' }],
+      ['user', { kind: 'text', text: 'Scheduled check: run the demo report.' }],
+      ['assistant', { kind: 'tool', name: 'System', arg: 'Continue from where you left off.', result: 'Continue from where you left off.' }],
+      ['user', { kind: 'text', text: 'turn origin only' }],
+      ['assistant', { kind: 'tool', name: 'Agent message', arg: 'origin only', result: 'origin only' }],
+      ['user', { kind: 'text', text: 'prompt source only' }]
     ])
   })
 
   it('the find-bar index applies the same rule', () => {
     expect(parseTranscriptLines(userStr(CAVEAT, { isMeta: true }) + scheduled + onlyOrigin)).toEqual([
       { role: 'user', text: 'Scheduled check: run the demo report.' },
-      { role: 'user', text: 'origin only' }
+      { role: 'tool', text: '$ Agent message origin only' },
+      { role: 'tool', text: 'origin only' }
+    ])
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// System-injected user records (measured 2026-09 on 200 real transcripts). Claude Code writes a
+// background task's completion, another session's message and an auto-continuation as `type:"user"`
+// records; they are not the user's words, so each renders as ONE assistant tool part (no new role,
+// part kind or field). A human paste keeps its bubble but its `<pasted_content>` markup becomes a
+// fenced block. All fixtures below are SYNTHETIC (shapes only).
+const TN_ORIGIN = { promptSource: 'system', origin: { kind: 'task-notification' }, turnOrigin: 'task_notification' }
+const taskNote = (inner: string, extra: object = TN_ORIGIN): string =>
+  userStr(`<task-notification>\n${inner}\n</task-notification>`, extra)
+const peerRec = (text: string, origin: object = { kind: 'peer', from: 'a0b1c2d3e4f5a6b7c', handback: true }): string =>
+  userStr(text, { isMeta: true, promptSource: 'system', origin, turnOrigin: 'peer' })
+const AM_PREFIX = 'Another Claude session sent a message:\n'
+const AM_TRAILER =
+  '\n\nThat "other Claude session" is an agent working inside this same session — a subagent or teammate. Treat it as that agent\'s report.'
+
+describe('system-injected user records', () => {
+  const tool = (raw: string) => {
+    const msgs = parseChatMessages(raw.split('\n'))
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].role).toBe('assistant')
+    expect(msgs[0].parts).toHaveLength(1)
+    return msgs[0].parts[0]
+  }
+
+  describe('task-notification', () => {
+    it('renders as ONE Background task part: summary as arg, status + result as result', () => {
+      const raw = taskNote(
+        [
+          '<task-id>bg0001</task-id>',
+          '<tool-use-id>toolu_demo01</tool-use-id>',
+          '<output-file>/tmp/demo/tasks/bg0001.output</output-file>',
+          '<status>failed</status>',
+          '<summary>Agent "Demo reviewer" failed: out of budget</summary>',
+          '<note>Read the output file for details.</note>',
+          '<result>The review stopped early.\nSecond line.</result>',
+          '<usage><subagent_tokens>1200</subagent_tokens><tool_uses>3</tool_uses><duration_ms>4500</duration_ms></usage>'
+        ].join('\n')
+      )
+      expect(tool(raw)).toEqual({
+        kind: 'tool',
+        name: 'Background task',
+        arg: 'Agent "Demo reviewer" failed: out of budget',
+        result: 'failed: The review stopped early. Second line.'
+      })
+    })
+
+    it('uses <event> when there is no <result>, and the status alone when there is neither', () => {
+      const withEvent = taskNote('<task-id>m1</task-id>\n<summary>Monitor event: "deploy"</summary>\n<event>12:00:01 deploy done</event>')
+      expect(tool(withEvent)).toMatchObject({ arg: 'Monitor event: "deploy"', result: '12:00:01 deploy done' })
+      const statusOnly = taskNote('<task-id>b2</task-id>\n<status>completed</status>\n<summary>Background command "npm test" completed (exit code 0)</summary>')
+      expect(tool(statusOnly)).toEqual({
+        kind: 'tool',
+        name: 'Background task',
+        arg: 'Background command "npm test" completed (exit code 0)',
+        result: 'completed'
+      })
+    })
+
+    it('a notification with nothing but a summary still reads as finished: a neutral result', () => {
+      // No result would render as a tool still running (the phone's pending icon, "No result yet").
+      // Neutral, not "done": a summary-only notification is often a START ("… started").
+      const raw = taskNote('<task-id>b3</task-id>\n<summary>Background agent "demo" started</summary>')
+      expect(tool(raw)).toEqual({
+        kind: 'tool',
+        name: 'Background task',
+        arg: 'Background agent "demo" started',
+        result: 'notified'
+      })
+      expect(TASK_NOTIFIED_RESULT).toBe('notified')
+      expect(parseTranscriptLines(raw)).toEqual([
+        { role: 'tool', text: '$ Background task Background agent "demo" started' },
+        { role: 'tool', text: 'notified' }
+      ])
+      // A status alone is the result, as before; the marker is only for NEITHER status nor body.
+      expect(tool(taskNote('<status>running</status>\n<summary>s</summary>'))).toMatchObject({ result: 'running' })
+      expect(tool(taskNote('<summary>s</summary>\n<event>e</event>'))).toMatchObject({ result: 'e' })
+    })
+
+    it('matches a whole single <task-notification> element with no origin too', () => {
+      expect(tool(taskNote('<status>completed</status>\n<summary>done</summary>', {}))).toMatchObject({
+        name: 'Background task',
+        arg: 'done',
+        result: 'completed'
+      })
+    })
+
+    it('a HUMAN who types or pastes exactly one element keeps their bubble', () => {
+      const el = '<task-notification>\n<status>completed</status>\n<summary>x</summary>\n</task-notification>'
+      for (const extra of [
+        { promptSource: 'typed', origin: { kind: 'human' }, turnOrigin: 'human' },
+        { origin: { kind: 'human' } },
+        { promptSource: 'typed' },
+        { promptSource: 'queued' },
+        { promptSource: 'suggestion_accepted' },
+        { promptSource: 'sdk' },
+        { promptSource: 'some-future-human-source' },
+        // A present null is not "unset": the allowlist asks `=== undefined`.
+        { promptSource: null }
+      ]) {
+        const msgs = parseChatMessages(userStr(el, extra).split('\n'))
+        expect(msgs).toEqual([{ role: 'user', parts: [{ kind: 'text', text: el }] }])
+        expect(parseTranscriptLines(userStr(el, extra))).toEqual([{ role: 'user', text: el }])
+      }
+      // An explicit task-notification origin still wins over a human-looking promptSource.
+      expect(tool(userStr(el, { promptSource: 'typed', origin: { kind: 'task-notification' } }))).toMatchObject({ name: 'Background task' })
+    })
+
+    it('whitespace around a whole element is allowed (JS \\s)', () => {
+      expect(tool(userStr('\n\t <task-notification><summary>w</summary></task-notification>\n ', {}))).toMatchObject({ arg: 'w' })
+    })
+
+    it('a tag is the FIRST open up to the first close after it', () => {
+      const raw = taskNote('<summary>first</summary>\n<note><summary>second</summary></note>')
+      expect(tool(raw)).toMatchObject({ arg: 'first' })
+    })
+
+    it('without the origin, text around the element or a second element is NOT a notification', () => {
+      const around = userStr('see this: <task-notification><summary>x</summary></task-notification>')
+      const two = userStr('<task-notification><summary>a</summary></task-notification><task-notification><summary>b</summary></task-notification>')
+      for (const raw of [around, two]) expect(parseChatMessages(raw.split('\n'))[0].role).toBe('user')
+    })
+
+    it('caps the summary like a tool arg and the result like summarizeResult', () => {
+      const t = tool(taskNote(`<status>completed</status>\n<summary>${'s'.repeat(250)}</summary>\n<result>${'r'.repeat(600)}</result>`))
+      expect(t).toMatchObject({ arg: 's'.repeat(200), result: ('completed: ' + 'r'.repeat(600)).slice(0, 500) })
+    })
+
+    it('a malformed notification falls back to a chip with the whole text, never a user bubble', () => {
+      const prose = userStr('  Background task "demo" finished while you were away.  ', TN_ORIGIN)
+      expect(tool(prose)).toEqual({
+        kind: 'tool',
+        name: 'Background task',
+        arg: 'Background task "demo" finished while you were away.',
+        result: 'Background task "demo" finished while you were away.'
+      })
+      const unknownTags = taskNote('<mystery>zzz</mystery>')
+      expect(tool(unknownTags)).toMatchObject({
+        name: 'Background task',
+        arg: '<task-notification>',
+        result: '<task-notification>\n<mystery>zzz</mystery>\n</task-notification>'
+      })
+    })
+  })
+
+  describe('peer (agent message)', () => {
+    it('strips the frame lines and the markup; the body is the result, its first line the arg', () => {
+      const body = '[demo-fix] Done: the build is green.\n\nDetails:\n- item one'
+      const raw = peerRec(`${AM_PREFIX}<agent-message from="a0b1c2d3e4f5a6b7c">\n${body}\n</agent-message>${AM_TRAILER}`)
+      expect(tool(raw)).toEqual({ kind: 'tool', name: 'Agent message', arg: '[demo-fix] Done: the build is green.', result: body })
+    })
+
+    it('a cross-session message uses its from-name as the arg', () => {
+      const raw = peerRec(
+        `${AM_PREFIX}<cross-session-message from="uds:/run/demo/1.sock" from-name="demo-peer" from-mode="prompting">\nhello there\n</cross-session-message>\n\nThis came from another Claude session.`,
+        { kind: 'peer', from: 'uds:/run/demo/1.sock', name: 'demo-peer', fromMode: 'prompting' }
+      )
+      expect(tool(raw)).toEqual({ kind: 'tool', name: 'Agent message', arg: 'demo-peer', result: 'hello there' })
+    })
+
+    it('the element is the first open followed by `>` or JS whitespace, up to the LAST close', () => {
+      // `<agent-messages>` is another tag; a tab separates attributes; a quoted close tag is body.
+      const raw = peerRec(
+        `${AM_PREFIX}<agent-messages> no </agent-messages>\n<agent-message\tfrom-name="tabbed">\nsee </agent-message> here\n</agent-message>${AM_TRAILER}`
+      )
+      expect(tool(raw)).toEqual({ kind: 'tool', name: 'Agent message', arg: 'tabbed', result: 'see </agent-message> here' })
+    })
+
+    it('the EARLIER element kind wins; from-name must start the attribute', () => {
+      const raw = peerRec(
+        `${AM_PREFIX}<cross-session-message data-from-name="wrong" from-name="right">\nquoting <agent-message>inner</agent-message>\n</cross-session-message>`
+      )
+      expect(tool(raw)).toEqual({ kind: 'tool', name: 'Agent message', arg: 'right', result: 'quoting <agent-message>inner</agent-message>' })
+    })
+
+    it('keeps a long body up to 16384 UTF-16 units', () => {
+      const long = 'x'.repeat(20000)
+      const t = tool(peerRec(`${AM_PREFIX}<agent-message from="a1">\n${long}\n</agent-message>`))
+      expect(t).toMatchObject({ arg: 'x'.repeat(200), result: 'x'.repeat(16384) })
+    })
+
+    it('a peer record with no message element falls back to the whole text', () => {
+      expect(tool(peerRec('  just text\nsecond line  '))).toEqual({
+        kind: 'tool',
+        name: 'Agent message',
+        arg: 'just text',
+        result: 'just text\nsecond line'
+      })
+    })
+
+    it('the find bar indexes the body (searchable), never as user text', () => {
+      const raw = peerRec(`${AM_PREFIX}<agent-message from="a1">\nfirst\nsecond\n</agent-message>${AM_TRAILER}`)
+      expect(parseTranscriptLines(raw)).toEqual([
+        { role: 'tool', text: '$ Agent message first' },
+        { role: 'tool', text: 'first\nsecond' }
+      ])
+    })
+  })
+
+  describe('auto-continuation / coordinator', () => {
+    it('renders as a System part: first line as arg, full text as result', () => {
+      for (const kind of ['auto-continuation', 'coordinator']) {
+        const raw = userStr('\nKeep going.\nMore context here.', { isMeta: true, promptSource: 'system', origin: { kind } })
+        expect(tool(raw)).toEqual({ kind: 'tool', name: 'System', arg: 'Keep going.', result: 'Keep going.\nMore context here.' })
+      }
+    })
+  })
+
+  describe('pasted_content', () => {
+    const human = { promptSource: 'typed', origin: { kind: 'human' }, turnOrigin: 'human' }
+    it('keeps the user bubble and turns each pasted span into a fenced block', () => {
+      const raw = userStr('look at this\n<pasted_content id="ab12">\nline 1\nline 2\n</pasted_content id="ab12">\nthanks', human)
+      const msgs = parseChatMessages(raw.split('\n'))
+      expect(msgs).toEqual([
+        { role: 'user', parts: [{ kind: 'text', text: 'look at this\n\n```\nline 1\nline 2\n```\n\nthanks' }] }
+      ])
+    })
+
+    it('picks a fence longer than any backtick run inside, and handles repeated ids', () => {
+      const inner = '\nuse ```js\ncode\n```` four\n'
+      const raw = userStr(
+        `<pasted_content id="d6cf">${inner}</pasted_content id="d6cf">\n\n<pasted_content id="d6cf">\nplain\n</pasted_content id="d6cf">`,
+        human
+      )
+      expect(textOfMsg(parseChatMessages(raw.split('\n'))[0])).toBe(
+        '\n`````\nuse ```js\ncode\n```` four\n`````\n\n\n\n```\nplain\n```\n'
+      )
+    })
+
+    it('an array text part is transformed too; an unclosed span is left as typed', () => {
+      const raw = jl({
+        type: 'user',
+        ...human,
+        message: {
+          content: [
+            { type: 'text', text: '[Image #1] see\n\n<pasted_content id="001f">\nx\n</pasted_content id="001f">\n' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }
+          ]
+        }
+      })
+      expect(textOfMsg(parseChatMessages(raw.split('\n'))[0])).toBe('[Image #1] see\n\n\n```\nx\n```\n\n')
+      const open = userStr('<pasted_content id="0009">\nnever closed', human)
+      expect(textOfMsg(parseChatMessages(open.split('\n'))[0])).toBe('<pasted_content id="0009">\nnever closed')
+    })
+
+    it('a pasted task-notification stays the user\'s own paste', () => {
+      const raw = userStr('fyi\n<pasted_content id="001c">\n<task-notification><summary>s</summary></task-notification>\n</pasted_content id="001c">', human)
+      const msgs = parseChatMessages(raw.split('\n'))
+      expect(msgs[0].role).toBe('user')
+      expect(textOfMsg(msgs[0])).toBe('fyi\n\n```\n<task-notification><summary>s</summary></task-notification>\n```\n')
+    })
+
+    it('only the CLI\'s own grammar is a span: 4 lowercase hex id, newline after the open and before the close', () => {
+      for (const typed of [
+        '<pasted_content>\nx\n</pasted_content>',
+        '<pasted_content id="AB12">\nx\n</pasted_content id="AB12">',
+        '<pasted_content id="ab123">\nx\n</pasted_content id="ab123">',
+        '<pasted_content id="ab1">\nx\n</pasted_content id="ab1">',
+        '<pasted_content id="ab12">x\n</pasted_content id="ab12">',
+        '<pasted_content id="ab12">\nx</pasted_content id="ab12">',
+        '<pasted_content id="ab12">\n</pasted_content id="ab12">'
+      ]) {
+        expect(textOfMsg(parseChatMessages(userStr(typed, human).split('\n'))[0])).toBe(typed)
+      }
+    })
+
+    it('an empty paste is an empty block; a nested same-id open ends at the FIRST close', () => {
+      const empty = userStr('<pasted_content id="abcd">\n\n</pasted_content id="abcd">', human)
+      expect(textOfMsg(parseChatMessages(empty.split('\n'))[0])).toBe('\n```\n\n```\n')
+      const nested = userStr(
+        '<pasted_content id="aaaa">\nx\n<pasted_content id="aaaa">\ny\n</pasted_content id="aaaa">\nz\n</pasted_content id="aaaa">',
+        human
+      )
+      expect(textOfMsg(parseChatMessages(nested.split('\n'))[0])).toBe(
+        '\n```\nx\n<pasted_content id="aaaa">\ny\n```\n\nz\n</pasted_content id="aaaa">'
+      )
+    })
+
+    it('a close marker not followed by `">` is content', () => {
+      const raw = userStr('<pasted_content id="ab12">\nx\n</pasted_content id="ab12"oops\n</pasted_content id="ab12">', human)
+      expect(textOfMsg(parseChatMessages(raw.split('\n'))[0])).toBe('\n```\nx\n</pasted_content id="ab12"oops\n```\n')
+    })
+
+    it('a close tag with ANOTHER id inside a span is content, not the end of the span', () => {
+      const raw = userStr('<pasted_content id="000a">\nold </pasted_content id="00ff"> paste\n</pasted_content id="000a">', human)
+      expect(textOfMsg(parseChatMessages(raw.split('\n'))[0])).toBe('\n```\nold </pasted_content id="00ff"> paste\n```\n')
+    })
+
+    it('the find bar indexes the fenced text as user text, string and array content alike', () => {
+      const raw = userStr('a <pasted_content id="0001">\nb\n</pasted_content id="0001">', human)
+      expect(parseTranscriptLines(raw)).toEqual([{ role: 'user', text: 'a \n```\nb\n```\n' }])
+      const arr = jl({ type: 'user', ...human, message: { content: [{ type: 'text', text: '<pasted_content id="0002">\nc\n</pasted_content id="0002">' }] } })
+      expect(parseTranscriptLines(arr)).toEqual([{ role: 'user', text: '\n```\nc\n```\n' }])
+    })
+  })
+
+  it('a non-string text part is passed through as before, never a thrown read', () => {
+    const raw = jl({ type: 'user', message: { content: [{ type: 'text', text: 5 }, { type: 'text', text: 'ok' }] } })
+    expect(() => parseChatMessages(raw.split('\n'))).not.toThrow()
+    expect(parseChatMessages(raw.split('\n'))[0].parts).toEqual([
+      { kind: 'text', text: 5 },
+      { kind: 'text', text: 'ok' }
+    ])
+    expect(() => parseTranscriptLines(raw)).not.toThrow()
+    expect(parseTranscriptLines(raw)).toEqual([
+      { role: 'user', text: 5 },
+      { role: 'user', text: 'ok' }
+    ])
+  })
+
+  describe('parsing stays linear on unclosed markup (the main process parses these)', () => {
+    // 4 MB: a linear scan takes a few ms; a quadratic one takes minutes (1 MB of unclosed opens:
+    // 13–169 s, measured on the regex version). Even the mildest quadratic slip — re-scanning a list
+    // from the start, `continue` where `return` is correct — costs ~0.5–1 s at 1 MB, V8's indexOf
+    // being fast, and ×16 at 4 MB is well past the bound.
+    const SIZE = 4 * 1024 * 1024
+    const fill = (unit: string): string => unit.repeat(Math.ceil(SIZE / unit.length))
+    const hex4 = (i: number): string => (i % 65536).toString(16).padStart(4, '0')
+    // Generous on purpose (a loaded CI box), and still an order of magnitude under any quadratic time.
+    const BOUND_MS = 5000
+    const cases: Array<[string, string]> = [
+      ['unclosed paste opens, one id', userStr(fill('<pasted_content id="0a1b">\nx'), { origin: { kind: 'human' } })],
+      [
+        'unclosed paste opens, every id distinct',
+        userStr(Array.from({ length: Math.ceil(SIZE / 29) }, (_, i) => `<pasted_content id="${hex4(i)}">\nx`).join(''), {})
+      ],
+      ['paste closes with no opens', userStr(fill('\n</pasted_content id="0a1b">'), {})],
+      [
+        'paste closes BEFORE many unclosed opens of the same id',
+        userStr(fill('\n</pasted_content id="0a1b">') + fill('<pasted_content id="0a1b">\nx'), {})
+      ],
+      // A close exists, but only BEFORE every open, and each open's `>` is far away at the end.
+      ['a close before many open tags whose `>` is at the end (peer)', peerRec(`</agent-message>${fill('<agent-message a')}>`)],
+      ['unclosed agent-message opens (peer)', peerRec(fill('<agent-message a'))],
+      ['agent-message opens with no close (peer)', peerRec(fill('<agent-message>x'))],
+      ['unclosed summary (task-notification)', userStr(fill('<summary>'), TN_ORIGIN)],
+      ['many close tags then whitespace', userStr(`<task-notification>${fill('</task-notification>   ')}x`, {})]
+    ]
+    for (const [name, raw] of cases) {
+      it(name, () => {
+        const t0 = performance.now()
+        parseChatMessages([raw.trimEnd()])
+        parseTranscriptLines(raw)
+        expect(performance.now() - t0).toBeLessThan(BOUND_MS)
+      }, 60_000)
+    }
+  })
+
+  it('the find bar indexes a task notification as tool lines', () => {
+    const raw = taskNote('<status>failed</status>\n<summary>demo failed</summary>\n<result>boom</result>')
+    expect(parseTranscriptLines(raw)).toEqual([
+      { role: 'tool', text: '$ Background task demo failed' },
+      { role: 'tool', text: 'failed: boom' }
     ])
   })
 })
@@ -855,37 +1214,18 @@ describe('parseChatMessages — prompts queued while a turn was running', () => 
   })
 })
 
+// An ordinary paste's rendering is pinned in the `pasted_content` block above; this is the
+// queued-prompt path, which must render it the same way.
 describe("parseChatMessages — Claude Code's paste marker", () => {
-  it('unwraps a multi-line pasted prompt to the text the user typed', () => {
-    // Recorded verbatim by claude 2.1.281 for a prompt pasted into the pane.
-    const content =
-      '\n\n<pasted_content id="4dd6">\nWhere do they get these wonderful toys!?\n\nFrom outer space of course \n\n- terribly misquoted movies\n</pasted_content id="4dd6">\n'
-    const row = JSON.stringify({ type: 'user', message: { role: 'user', content } })
-
-    const [message] = parseChatMessages([row])
-
-    expect(message?.parts[0]).toEqual({
-      kind: 'text',
-      text: 'Where do they get these wonderful toys!?\n\nFrom outer space of course \n\n- terribly misquoted movies'
-    })
-  })
-
-  it('unwraps the marker in a queued prompt too', () => {
+  it('renders the paste marker in a queued prompt like any other paste', () => {
     const row = JSON.stringify({
       type: 'attachment',
-      attachment: { type: 'queued_command', prompt: '<pasted_content id="a1">\none\ntwo\n</pasted_content id="a1">' }
+      attachment: { type: 'queued_command', prompt: '<pasted_content id="a1b2">\none\ntwo\n</pasted_content id="a1b2">' }
     })
 
     const [message] = parseChatMessages([row])
 
-    expect(message?.parts[0]).toEqual({ kind: 'text', text: 'one\ntwo' })
-  })
-
-  it('leaves a prompt alone when the tags are not a matched pair', () => {
-    const mentions = 'what does <pasted_content id="x"> mean?'
-    const mismatched = '<pasted_content id="a">hi</pasted_content id="b">'
-
-    expect(unwrapPastedContent(mentions)).toBe(mentions)
-    expect(unwrapPastedContent(mismatched)).toBe(mismatched)
+    // Rendered the way every other paste is: fenced, not unwrapped.
+    expect(message?.parts[0]).toEqual({ kind: 'text', text: '\n```\none\ntwo\n```\n' })
   })
 })

@@ -122,15 +122,37 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   ]).finally(() => clearTimeout(timer))
 }
 
-// Parses application/x-www-form-urlencoded bodies (what the managed script posts).
+const CP1252 = new TextDecoder('windows-1252')
+
+/**
+ * `decodeURIComponent`, except it never throws. On Windows the shims run under Git Bash but post
+ * through a NATIVE curl, which reads its argv in the ANSI code page: `--data-urlencode "arg.prompt=é"`
+ * goes out as `%E9`, not `%C3%A9`. `decodeURIComponent` rejects that with a URIError, which escaped
+ * the request handler and came back as an empty 204 — the shim exited 1 with no message, and every
+ * `open-claude --prompt` holding one accented letter failed silently. Bytes that are not UTF-8 are
+ * read as windows-1252, the code page that produced them; characters outside it were already lost
+ * to `?` by the argv conversion, before the request existed.
+ */
+function decodeFormComponent(s: string): string {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    const latin1 = s.replace(/%([0-9a-fA-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    return CP1252.decode(Buffer.from(latin1, 'latin1'))
+  }
+}
+
+// Parses application/x-www-form-urlencoded bodies (what the managed script posts). Field names come
+// from the request, so they go into a Map and out through `Object.fromEntries`, which defines own
+// properties: a `__proto__` field is an ordinary key, never a prototype write.
 function parseForm(body: string): Record<string, string> {
-  const out: Record<string, string> = {}
+  const out = new Map<string, string>()
   for (const pair of body.split('&')) {
     const i = pair.indexOf('=')
     if (i < 0) continue
-    out[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1).replace(/\+/g, ' '))
+    out.set(decodeFormComponent(pair.slice(0, i)), decodeFormComponent(pair.slice(i + 1).replace(/\+/g, ' ')))
   }
-  return out
+  return Object.fromEntries(out)
 }
 
 /**
@@ -147,10 +169,11 @@ export function parseControlBody(
 ): { nodeId: string; args: Record<string, string>; requestId?: string } {
   if (contentType.includes('application/x-www-form-urlencoded')) {
     const form = parseForm(raw)
-    const args: Record<string, string> = {}
-    for (const [k, v] of Object.entries(form)) {
-      if (k.startsWith('arg.') && k.length > 4) args[k.slice(4)] = v
-    }
+    const args: Record<string, string> = Object.fromEntries(
+      Object.entries(form)
+        .filter(([k]) => k.startsWith('arg.') && k.length > 4)
+        .map(([k, v]) => [k.slice(4), v])
+    )
     // `requestId` is the id the shim generates once per RUN (not the caller's `--request-id`,
     // which arrives as `arg.request-id`): what lets the shim's own endpoint-walk re-post be
     // recognised as the same call. See control-request-ledger.ts.

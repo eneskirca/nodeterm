@@ -11,6 +11,7 @@ import {
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
+import { projectSessionSource } from '../LiveLinkChip'
 import { toKanbanSessionState } from '../../canvas/toKanbanSessionState'
 import { createAgentNode, createBrowserNode, createStickyNode, createTerminalNode, flowToNodeStates, resolveNewNodeAccount } from '../../state/workspace'
 import { markCanvasCovered } from '../../lib/canvasCovered'
@@ -78,10 +79,13 @@ interface SwimlaneProps {
    *  lane only; other lanes derive it from their persisted ropes. */
   liveTeams?: ReadonlyMap<string, readonly TeamStation[]>
   highlight?: boolean
+  /** Canvas's "Share live link…" row builder, asked for THIS lane's project (R49): creating a link
+   *  does not need the node on screen, so a card of another project can share too. */
+  liveLinkMenuItems?: (nodeId: string, projectId: string) => MenuItem[]
 }
 
 const Swimlane = memo(function Swimlane({
-  projectId, projectName, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, onModalChange, liveTeams, highlight
+  projectId, projectName, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, onModalChange, liveTeams, highlight, liveLinkMenuItems
 }: SwimlaneProps) {
   const dragRef = useRef<{ kind: 'column'; id: string } | { kind: 'card'; id: string } | null>(null)
   const setModalNodeId = useCallback((nodeId: string | null) => onModalChange(projectId, nodeId), [onModalChange, projectId])
@@ -111,6 +115,8 @@ const Swimlane = memo(function Swimlane({
     return teamsRef.current
   }, [liveTeams, ropes, nodes])
   const travel = useCallback((nodeId: string) => onOpenNode(nodeId, projectId), [onOpenNode, projectId])
+  // Which machine this lane's nodes run on: only a local lane shows this machine's LIVE chips (R57).
+  const liveLinkSource = projectSessionSource(projectId)
   const sessionIds = useMemo(() => sessions.map(s => s.id), [sessions])
 
   const paletteLabels = useMemo(() => boardLabels(board), [board])
@@ -216,6 +222,7 @@ const Swimlane = memo(function Swimlane({
           team={teams.get(s.id) ?? NO_STATIONS}
           onTravel={travel}
           columnCategory={category}
+          liveLinkSource={liveLinkSource}
         />
       ))
     }]
@@ -231,6 +238,7 @@ const Swimlane = memo(function Swimlane({
       { label: 'Open card', icon: <IconExternal />, onClick: () => setModalNodeId(nodeId) },
       { label: 'Open on canvas', icon: <IconExternal />, onClick: () => onOpenNode(nodeId, projectId) },
       ...(moveTargets.length ? [{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets } as MenuItem] : []),
+      ...(liveLinkMenuItems?.(nodeId, projectId) ?? []),
       { type: 'separator' },
       { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(projectId, nodeId) }
     ]
@@ -301,6 +309,7 @@ const Swimlane = memo(function Swimlane({
       {modalNodeId && byId.has(modalNodeId) && (
         <CardModal
           session={byId.get(modalNodeId)!}
+          projectId={projectId}
           columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
           board={board}
           onChangeBoard={commit}
@@ -334,13 +343,16 @@ export interface GlobalKanbanLive {
 
 export interface GlobalKanbanViewProps {
   live?: GlobalKanbanLive | null
+  /** Canvas's "Share live link…" row builder (the node menu's), for every lane's card menu.
+   *  Optional: an overview with no canvas behind it offers none. */
+  liveLinkMenuItems?: (nodeId: string, projectId: string) => MenuItem[]
   /** Canvas's `setKanbanModalNode` — the same hook the per-project board reports to. It is what
    *  makes an open card "watched" (Eco must not hibernate it), wakes a hibernated agent on open,
    *  and points the dictation shortcut at the card instead of the selected canvas node. */
   onModalNodeChange?: (nodeId: string | null) => void
 }
 
-export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange }: GlobalKanbanViewProps) {
+export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, liveLinkMenuItems }: GlobalKanbanViewProps) {
   // Same rule as the per-project board: the canvas is covered but mounted underneath.
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
@@ -489,6 +501,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               onModalChange={onModalChange}
               liveTeams={isLive ? live.teams : undefined}
               highlight={highlightId === p.id}
+              liveLinkMenuItems={liveLinkMenuItems}
             />
           )
         })}

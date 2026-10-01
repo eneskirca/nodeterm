@@ -504,6 +504,16 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   credentials, license or pairing belongs in `src/shared/host-control.ts` instead — refused to every
   relay peer.
 
+- **Live links: a new broadcast channel needs nothing, a new per-session pty channel needs a
+  decision.** Live-link viewers are quiet clients, so no broadcast ever reaches them. A per-session pty
+  event reaches a viewer only once it is added to `watcherEventAllowed`
+  (`src/core/watch-link/watcher-policy.ts`) on purpose — and only if its payload is the visible screen,
+  never history (why `pty:resync` is refused). Never add link state to a node, a board or a canvas op:
+  canvas sync and the canvas authority would publish it. `src/shared/watch-link/` is copied byte for
+  byte into the viewer page's repo: import only siblings and `tweetnacl`, write type imports as
+  `import type` (`isomorphism.guard.test.ts` fails otherwise), and expect a change there to need a
+  re-vendor. `docs/live-links.md`.
+
 - **A change to canvas content that does not travel as a `canvas:mut` op is lost on a hosted core —
   route new content edits through the op vocabulary (`src/shared/canvas-content.ts`).** On a Server
   Edition hosting a team, the canvas authority writes a shared project's nodes, edges and board
@@ -1087,6 +1097,23 @@ node of an SSH project, is refused in the renderer before the claim (`remote-uns
 the primary fence. As a belt
 behind it, an SSH-project node's request carries `requireRemote`, which `desktopHeadlessRequest`
 keeps, so core's `spawnNew` refuses rather than spawning it locally. Keep both fences.
+
+## Performance
+
+Measure before you optimize, and put the before/after in the commit. The CLAUDE.md section
+**Performance: measure it, then fix what the measurement names** has the method (CDP against
+`npx electron-vite dev --remoteDebuggingPort 9333`) and the rules it produced. The ones that
+bite most often:
+- An infinite CSS animation keeps the whole window repainting at display rate. Bound it.
+- Never put `will-change` on the React Flow viewport.
+- `handleNodesChange` must not call `onNodesChange` with an empty batch (it re-renders the canvas
+  every frame through React Flow's ResizeObserver).
+- Work done per terminal on a project switch must be coalesced and on-screen-first.
+
+**SSH projects on Windows** run over an in-process transport (`src/core/remote-ssh/native/`),
+not the ssh binary. If you add an ssh call site, route it through `useNativeSsh()` like the
+others, and if you add an ssh option to `control-master.ts`, teach `ssh-argv.ts` about it (the
+parser refuses unknown options on purpose). Test from macOS/Linux with `NODETERM_NATIVE_SSH=1`.
 
 ## Testing
 

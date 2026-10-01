@@ -1,6 +1,6 @@
 import type { CorePlatform } from '../core/platform'
 import type { FlowOwner } from '../core/pty-manager'
-import { UiSinkRegistry, type UiSink } from '../core/ui-sink-registry'
+import { UiSinkRegistry, type SinkOptions, type UiSink } from '../core/ui-sink-registry'
 import { E_NO_HANDLER, type RpcErr, type RpcOk, type RpcRequest } from '../shared/rpc'
 
 // The sink interface + all of the per-(client, session) WS backpressure (pause/resume watermarks,
@@ -87,12 +87,19 @@ export class ServerPlatform implements CorePlatform {
 
   broadcast(channel: string, ...args: any[]): void {
     if (this.registry.size === 0) return // no connection: no ids() array, no loop
-    for (const uiId of this.registry.ids()) this.registry.sendTo(uiId, channel, ...args)
+    // A quiet connection (a live link's viewer) is never broadcast to: addressed sends only.
+    for (const uiId of this.registry.broadcastIds()) this.registry.sendTo(uiId, channel, ...args)
   }
 
-  /** Every attached connection, in attach order (detach removes). */
+  /** Every attached connection but the quiet ones, in attach order (detach removes). */
   clientIds(): number[] {
-    return this.registry.ids()
+    return this.registry.broadcastIds()
+  }
+
+  /** The quiet connections (a live link's viewer): no broadcast, not in `clientIds()`, but they
+   *  still watch the sessions they subscribe to — the pty reaper reads this. */
+  quietClientIds(): number[] {
+    return this.registry.quietIds()
   }
 
   openExternal(_url: string): Promise<void> {
@@ -100,10 +107,11 @@ export class ServerPlatform implements CorePlatform {
   }
 
   /** `owner` only from ws.ts, whose upgrade gate authenticated the socket as THE server's user. A
-   *  relay-hosted peer (index.ts's hosted attach) is never an owner. */
-  attach(sink: UiSink, opts: { owner?: boolean } = {}): number {
+   *  relay-hosted peer (index.ts's hosted attach) is never an owner. `quiet` / `selfPaced` are for
+   *  a live link's viewer (see `SinkOptions`); every other attach passes neither. */
+  attach(sink: UiSink, opts: { owner?: boolean } & SinkOptions = {}): number {
     const id = this.nextUiId++
-    this.registry.register(id, sink)
+    this.registry.register(id, sink, { quiet: opts.quiet, selfPaced: opts.selfPaced })
     if (opts.owner === true) this.owners.add(id)
     return id
   }

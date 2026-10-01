@@ -7,6 +7,7 @@
 import type { CanvasNodeState, PendingLaunch, Project, PtyCreateOptions } from '@shared/types'
 import type { HeadlessLaunchFailure, HeadlessLaunchResult } from '@shared/headless-launch'
 import { HEADLESS_COLS, HEADLESS_ROWS, localNodePtyOptions } from '@shared/node-pty-options'
+import { COLD_OPEN_RUN_HINT } from './coldOpen'
 
 export type RunVerbPlan =
   | 'nothing-queued'
@@ -199,7 +200,7 @@ export async function savePendingAnywhere(
   return env.writeDisk()
 }
 
-const STARTS_ON_VIEW = / — queued; starts when that project is next viewed/
+const STARTS_ON_VIEW = ' — queued; starts when that project is next viewed' + COLD_OPEN_RUN_HINT
 const CLOSED_HINT = / \(that project is closed — reopen it from the welcome screen\)/
 
 /** Failures after which the node's launch is exactly what the cold open left: never claimed

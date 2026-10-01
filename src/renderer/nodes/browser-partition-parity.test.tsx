@@ -70,7 +70,7 @@ function partitionFromModal(sessionPartition: string | undefined): string | null
   }
   act(() =>
     root.render(
-      <CardModal
+      <CardModal projectId="p1"
         session={session}
         columnTitle={null}
         board={{ columns: [], assignments: {} } as never}

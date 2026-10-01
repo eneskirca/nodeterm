@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { REAP_IDLE_MS, shouldReap, type ReapCandidate } from './pty-reap'
+import { REAP_IDLE_MS, liveClientIds, shouldReap, type ReapCandidate } from './pty-reap'
 
 /**
  * The reap decision, in one place, so the three things it must never do can be pinned without a
@@ -46,5 +46,12 @@ describe('shouldReap', () => {
     // user-configurable window (default 10 min, up to "until quit" — issue #886). No timing margin
     // can cover that range, so the guarantee is the subscriber test: a parked client is `watched`.
     expect(shouldReap(candidate({ watched: true, unwatchedSince: 0 }), 365 * 86_400_000)).toBe(false)
+  })
+})
+
+describe('liveClientIds', () => {
+  it('counts quiet clients as watchers', () => {
+    expect(liveClientIds({ clientIds: () => [1], quietClientIds: () => [9] })).toEqual(new Set([1, 9]))
+    expect(liveClientIds({ clientIds: () => [1] })).toEqual(new Set([1]))
   })
 })

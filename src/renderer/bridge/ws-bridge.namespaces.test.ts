@@ -5,7 +5,8 @@ import {
   buildClaudeAccountsApi,
   buildFilesApi,
   buildRealApi,
-  buildSessionMemoryApi
+  buildSessionMemoryApi,
+  buildWatchLinkApi
 } from './ws-bridge'
 import { buildStubApi } from './stubs'
 import { E_UNSUPPORTED } from '../../shared/rpc'
@@ -237,5 +238,61 @@ describe('buildHostedApi and the Server Edition', () => {
     const install = src.slice(src.indexOf('export async function installWsBridge'))
     expect(install).not.toContain('buildHostedApi')
     expect(install).not.toMatch(/\bhosted\s*:/)
+  })
+})
+
+// Live links in the Server Edition: a REAL bridge over the owner-only `watchLink:*` channels (the
+// service answers create `unsupported` there until that edition has a license layer — R43).
+describe('buildWatchLinkApi', () => {
+  it('every member rides its own watchLink channel, with its arguments', async () => {
+    const c = fakeClient()
+    const api = buildWatchLinkApi(c as never).watchLink
+    const req = { nodeId: 'n1', role: 'viewer' as const, ttlSeconds: 3600 as const, label: 'Ada', title: 't' }
+    await api.create(req)
+    await api.list()
+    await api.revoke('L1')
+    await api.revokeAll()
+    await api.kick('L1', 'v-1')
+    await api.sendChat('L1', 'hi')
+    await api.chatHistory('L1')
+    api.onState(() => {})
+    api.onChat(() => {})
+    api.onNotice(() => {})
+    expect(c.calls).toEqual([
+      { kind: 'request', method: IPC.watchLinkCreate, args: [req] },
+      { kind: 'request', method: IPC.watchLinkList, args: [] },
+      { kind: 'request', method: IPC.watchLinkRevoke, args: ['L1'] },
+      { kind: 'request', method: IPC.watchLinkRevokeAll, args: [] },
+      { kind: 'request', method: IPC.watchLinkKick, args: ['L1', 'v-1'] },
+      { kind: 'request', method: IPC.watchLinkChatSend, args: ['L1', 'hi'] },
+      { kind: 'request', method: IPC.watchLinkChatHistory, args: ['L1'] },
+      { kind: 'subscribe', method: IPC.watchLinkState, args: [] },
+      { kind: 'subscribe', method: IPC.watchLinkChat, args: [] },
+      { kind: 'subscribe', method: IPC.watchLinkNotice, args: [] }
+    ])
+  })
+
+  it('a dropped socket: create answers network and the reads answer empty, never an unhandled rejection', async () => {
+    const down = { request: () => Promise.reject(new Error('E_DISCONNECTED')), subscribe: () => () => {} }
+    const api = buildWatchLinkApi(down as never).watchLink
+    await expect(api.create({ nodeId: 'n1', role: 'viewer', ttlSeconds: 3600, label: 'A', title: 't' })).resolves.toEqual({
+      ok: false,
+      error: 'network'
+    })
+    await expect(api.list()).resolves.toEqual([])
+    await expect(api.kick('L', 'v')).resolves.toBe(false)
+    await expect(api.sendChat('L', 'x')).resolves.toBeNull()
+    await expect(api.chatHistory('L')).resolves.toEqual([])
+    // A stop that did not reach the server must be visible to the UI.
+    await expect(api.revoke('L')).rejects.toThrow()
+    await expect(api.revokeAll()).rejects.toThrow()
+  })
+
+  it('is spread into the Server Edition api, and into no builder a relay tab shares', () => {
+    const src = readFileSync(join(__dirname, 'ws-bridge.ts'), 'utf8').replace(/\r\n/g, '\n')
+    const install = src.slice(src.indexOf('export async function installWsBridge'))
+    expect(install).toContain('...buildWatchLinkApi(client)')
+    const relay = readFileSync(join(__dirname, 'relay-api.ts'), 'utf8').replace(/\r\n/g, '\n')
+    expect(relay).not.toContain('buildWatchLinkApi')
   })
 })

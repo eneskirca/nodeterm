@@ -225,7 +225,7 @@ function reducedRequest(req: QueuedDeliveryRequest): QueuedDeliveryRequest {
 /** At most this many entries on disk. `DELIVERY_QUEUE_CAPACITY` per target bounds it in practice. */
 export const QUEUE_PERSIST_MAX = 1024
 /** The longest TTL a restored entry may claim — a hand-edited `ttlMs` must not keep one forever. */
-const QUEUE_PERSIST_TTL_MAX = 24 * 60 * 60 * 1000
+export const QUEUE_PERSIST_TTL_MAX = 24 * 60 * 60 * 1000
 
 /** The verbs a restored entry may still deliver. See the header: a board comment and a station
  *  notice are expired at restore instead. */
@@ -362,7 +362,7 @@ export class DeliveryQueue {
    */
   async enqueue(
     req: QueuedDeliveryRequest,
-    opts: { hibernated?: boolean } = {}
+    opts: { hibernated?: boolean; ttlMs?: number } = {}
   ): Promise<
     Extract<AgentMessageOutcome, { kind: 'queued' } | { kind: 'queueFull' }>
   > {
@@ -380,12 +380,15 @@ export class DeliveryQueue {
       bodyChars: req.body.length
     }, req)
     const binding = this.deps.bindingOf?.(req.targetNodeId)
+    // A caller may ask for a longer wait than the queue's default (a target that has not STARTED
+    // yet waits for a person to open its project), bounded by what a restored entry may claim.
+    const ttlMs = Math.min(opts.ttlMs ?? this.ttlMs, QUEUE_PERSIST_TTL_MAX)
     const entry: QueueEntry = {
       req,
       enqueuedAt: now,
-      ttlMs: this.ttlMs,
+      ttlMs,
       queuedTraceId: t.traceId,
-      cancelTimer: this.schedule(this.ttlMs, () => void this.expire(req.targetNodeId, entry)),
+      cancelTimer: this.schedule(ttlMs, () => void this.expire(req.targetNodeId, entry)),
       ...(binding ? { binding: { ...binding } } : {})
     }
     list.push(entry)
@@ -396,7 +399,7 @@ export class DeliveryQueue {
     // event, not on the wake. A busy (non-hibernated) target needs nothing — it will go idle on its
     // own turn end.
     if (opts.hibernated) this.deps.wake?.(req.targetNodeId)
-    return { kind: 'queued', traceId: t.traceId, position: list.length, ttlMs: this.ttlMs }
+    return { kind: 'queued', traceId: t.traceId, position: list.length, ttlMs }
   }
 
   /**

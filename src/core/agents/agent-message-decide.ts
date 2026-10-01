@@ -76,6 +76,7 @@ export type AgentMessageOutcome =
   | { kind: 'targetNotAgentPane'; observed: string }
   | { kind: 'targetNotPasteAware' }
   | { kind: 'targetGone' }
+  | { kind: 'targetNotStarted' } // launch held, never spawned yet — queued when a queue is wired. Retryable.
   | { kind: 'notPermitted'; reason: NotPermittedReason }
 
 export type AgentMessageOutcomeKind = AgentMessageOutcome['kind']
@@ -109,6 +110,7 @@ export const RETRYABLE: Record<AgentMessageOutcomeKind, boolean> = {
   targetNotAgentPane: false,
   targetNotPasteAware: false,
   targetGone: false,
+  targetNotStarted: true,
   notPermitted: false
 }
 

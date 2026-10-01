@@ -10,6 +10,8 @@ function fakeSink() {
   return { sink, texts, bins }
 }
 
+const makePlatform = () => new ServerPlatform({ userDataDir: '/tmp/x', appVersion: '1.0.0' })
+
 describe('ServerPlatform', () => {
   it('dispatches req to handle and handleWithSender (sender = uiId)', async () => {
     const p = new ServerPlatform({ userDataDir: '/tmp/x', appVersion: '1.0.0' })
@@ -171,6 +173,27 @@ describe('ServerPlatform', () => {
 
     p.detach(a)
     expect(p.clientIds()).toEqual([2])
+  })
+
+  it('a quiet attach gets addressed sends only, and counts as a quiet client', () => {
+    const p = makePlatform()
+    const got: string[] = []
+    const loud = p.attach({ sendText: (j) => got.push('loud ' + j), sendBinary: () => {} }, { owner: true })
+    const quiet = p.attach({ sendText: (j) => got.push('quiet ' + j), sendBinary: () => {} }, { quiet: true, selfPaced: true })
+    p.broadcast('presence:sync', [])
+    expect(got.filter((g) => g.startsWith('quiet'))).toEqual([])
+    expect(p.clientIds()).toEqual([loud])
+    expect(p.quietClientIds()).toEqual([quiet])
+    p.sendTo(quiet, 'watch:meta', {})
+    expect(got.some((g) => g.startsWith('quiet'))).toBe(true)
+  })
+
+  it('a quiet attach is never the owner, and detach forgets it', () => {
+    const p = makePlatform()
+    const quiet = p.attach({ sendText: () => {}, sendBinary: () => {} }, { quiet: true })
+    expect(p.isOwnerClient(quiet)).toBe(false)
+    p.detach(quiet)
+    expect(p.quietClientIds()).toEqual([])
   })
 
   it('exposes userDataDir/appVersion/isPackaged; openExternal rejects', async () => {

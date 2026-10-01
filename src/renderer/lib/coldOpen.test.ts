@@ -181,7 +181,8 @@ describe('group grid geometry (shared with the live addGrouped path)', () => {
 describe('coldOpenMessage — ONE sentence for both cold-open sites', () => {
   it('names the count, the agent, the project and the ids, and says when it starts', () => {
     expect(coldOpenMessage(2, 'claude', 'Backend', ['t1', 't2'])).toBe(
-      'opened 2 claude session(s) in "Backend" (t1, t2) — queued; starts when that project is next viewed'
+      'opened 2 claude session(s) in "Backend" (t1, t2) — queued; starts when that project is next viewed' +
+        ', or at once with the `run` verb (or pass --run-now when opening)'
     )
   })
 

@@ -203,6 +203,17 @@ describe('hostile titles', () => {
     expect(row).toMatchObject({ title: 'rm -rf / ; echo pwned', titleSource: 'name' })
   })
 
+  it('a first prompt that STARTS with a paste is skipped for the title, as before (no fences)', async () => {
+    const recs = [
+      { type: 'user', message: { role: 'user', content: '<pasted_content id="ab12">\nTypeError: boom\n</pasted_content id="ab12">\nwhy?' }, sessionId: CLAUDE_ID, cwd: '/srv/demo' },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Because.' }] }, sessionId: CLAUDE_ID, cwd: '/srv/demo' },
+      { type: 'user', message: { role: 'user', content: 'Fix the null check' }, sessionId: CLAUDE_ID, cwd: '/srv/demo' }
+    ]
+    write(path.join(roots.claude[0].root, '-srv-demo', `${CLAUDE_ID}.jsonl`), jl(...recs), 1_000)
+    const items = await listRecentConversations(roots)
+    expect(items.find((i) => i.agentId === 'claude')).toMatchObject({ title: 'Fix the null check', titleSource: 'prompt' })
+  })
+
   it('a harness wrapper is not a prompt', () => {
     expect(firstPrompt([{ role: 'user', parts: [{ kind: 'text', text: '<command-name>/clear</command-name>' }] }, { role: 'user', parts: [{ kind: 'text', text: 'real' }] }])).toBe('real')
   })

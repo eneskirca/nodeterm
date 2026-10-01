@@ -107,12 +107,21 @@ describe('Liquid Glass stylesheet', () => {
     expect(rules.find((r) => r.selector === `${ctxHost}::before`)?.body).toMatch(/var\(--glass-chrome-bg\)[\s\S]*var\(--glass-text-blur\)/)
     // Popovers inside a glass node or the card modal (their backdrop root) cannot blur: glass is
     // opt-in, so nothing hands them a translucent glass fill and they keep their opaque colour.
-    for (const nested of ['.dock-menu', '.dock-menu__sub', '.ctx-popover', '.color-popover', '.label-picker', '.kanban-meta__picker']) {
+    for (const nested of ['.dock-menu', '.dock-menu__sub', '.ctx-popover', '.color-popover', '.label-picker', '.kanban-meta__picker', '.live-pop']) {
       const fills = gated(nested).filter(
         (r) => !r.selector.includes('::before') && /background:[^;]*var\(--glass-(chrome|control)-bg\)/.test(r.body)
       )
       expect(fills.map((r) => r.selector), nested).toEqual([])
     }
+  })
+
+  it('the opaque floating surfaces share one look and keep their own placeholder (N4-M1/M2)', () => {
+    // The live-link popover is one of them: opaque over a glass node header or the card modal.
+    const OPAQUE = ['.ctx-popover', '.color-popover', '.label-picker', '.kanban-meta__picker', '.live-pop']
+    const look = rules.find((r) => r.selector === `${GATE} :is(${OPAQUE.join(', ')})`)
+    expect(look?.body).toMatch(/background:\s*var\(--panel\)[\s\S]*border:\s*1px solid var\(--glass-edge\)/)
+    const placeholder = rules.find((r) => r.selector.startsWith(`${GATE} :not(`) && r.selector.endsWith('::placeholder'))
+    expect(placeholder?.selector).toContain(`:is(${OPAQUE.join(', ')}) *`)
   })
 
   it('OK-range meters match the literal green the fills are drawn in (M1)', () => {

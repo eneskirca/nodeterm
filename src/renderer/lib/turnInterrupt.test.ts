@@ -110,8 +110,8 @@ describe('--after holds on an interrupted upstream', () => {
       }
     )
     const text = controlListingText(rows)
-    expect(text).toContain('i [terminal]  — LAST TURN INTERRUPTED')
-    expect(text).toContain('e [terminal]  — LAST TURN ERRORED')
+    expect(text).toContain('i [terminal]  — IDLE — LAST TURN INTERRUPTED')
+    expect(text).toContain('e [terminal]  — IDLE — LAST TURN ERRORED')
     expect(text).not.toMatch(/e \[terminal\].*INTERRUPTED/)
   })
 })

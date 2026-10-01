@@ -167,7 +167,9 @@ describe('focusXtermUnlessCovered', () => {
     // keystrokes into the hidden pane again with every unit test still green.
     const src = readFileSync(resolve(__dirname, '../nodes/TerminalNode.tsx'), 'utf8').replace(/\r\n/g, '\n')
     expect(src).not.toMatch(/termRef\.current\?\.focus\(\)/)
-    expect(src.match(/focusXtermUnlessCovered\(termRef\.current, mdModeRef\.current\)/g)?.length).toBe(2)
+    // Three paths: the hover dwell, `enterNow`, and the click-to-focus reclaim after a press on the
+    // node's own chrome (#757) — each one asks about the cover.
+    expect(src.match(/focusXtermUnlessCovered\(termRef\.current, mdModeRef\.current\)/g)?.length).toBe(3)
   })
 
   it('the kanban card modal viewer uses the same hand-off (blur when covered, no attach-time focus)', () => {

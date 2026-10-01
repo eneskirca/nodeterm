@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatPart, ChatTranscriptResult } from '@shared/types'
 import { BASH_COMMAND_TOOL, sentCommand } from '@shared/chat-command'
+import { fencePasted } from '@shared/chat-system-records'
 
 /**
  * Pure paging state for the ⌘M chat panel (`nodes/ChatPanel.tsx`). The panel reads a SMALL tail
@@ -172,7 +173,9 @@ function commandPart(m: ChatMessage): { name: string; arg: string } | null {
  * Carried: the thread's TRAILING unkeyed `user` messages (in a paged thread only sends are
  * unkeyed; grok's thread is unkeyed throughout, but its whole-file read contains every prompt it
  * rendered, so each one is matched and dropped). Each one is dropped when the new read contains a
- * user message with the same text (whitespace-insensitive — `matchText`), ONE-FOR-ONE, and only
+ * user message with the same text (whitespace-insensitive — `matchText`; or with that text as the
+ * reader renders a send the CLI recorded as ONE `<pasted_content>` span: `fencePasted(text)`),
+ * ONE-FOR-ONE, and only
  * among messages NEWER than anything the thread had keyed — an older identical "yes" already on
  * screen must not confirm a new "yes". A sent slash command / `!` line is confirmed the same way by
  * a command tool part (`sentCommand`): same name, and the same trimmed arg when both sides have one.
@@ -197,7 +200,11 @@ function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage
   // tool part — never as the typed text — so a send of one is confirmed by that part instead.
   const commands = fresh.map(commandPart).filter((c): c is { name: string; arg: string } => c !== null)
   return trailing.filter((m) => {
-    const i = available.indexOf(matchText(m))
+    let i = available.indexOf(matchText(m))
+    // The CLI may record a send delivered as a bracketed paste as ONE `<pasted_content>` span, which
+    // the reader renders fenced — the same send, in the form the reader gives it.
+    const sentText = userText(m)
+    if (i < 0 && sentText) i = available.indexOf(fencePasted(sentText).trim().replace(/\s+/g, ' '))
     if (i >= 0) {
       available.splice(i, 1)
       return false

@@ -12,7 +12,7 @@
 /** What the header pill is showing. */
 export type CopyFeedback = { kind: 'copied' | 'hint'; label: string } | null
 
-/** A click is not a drag. Same intent as `GUARD_CLICK_SLOP` in TerminalNode: a few pixels of
+/** A click is not a drag. Same intent as `GUARD_CLICK_SLOP` in nodes/HoverGuard.tsx: a few pixels of
  *  travel between press and release is a hand, not an intent — and a plain click inside a
  *  mouse-capturing pane is the single most common interaction there, so it must stay silent. */
 export const DRAG_MIN_PX = 8

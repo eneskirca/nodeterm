@@ -10,7 +10,8 @@ const CORE = [
 ]
 const PRO = [
   'nodeterm mobile Pro included',
-  '3 team seats included (extra seats $5/seat/mo)'
+  '3 team seats included (extra seats $5/seat/mo)',
+  'Live read-only links to a terminal — viewers need nothing installed'
 ]
 
 /** Core vs Pro comparison. */

@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isTopDialog, nextDialogId, popDialog, pushDialog } from '../dialog-stack'
 import {
+  IconBroadcast,
   IconChat,
   IconClose,
   IconExternal,
@@ -19,6 +20,10 @@ import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { AccountChip, useAccountChip } from '../AccountChip'
+import { LiveLinkChip, projectSessionSource } from '../LiveLinkChip'
+import { useWatchLinks } from '../../state/watchLinks'
+import { liveLinkUnavailable } from '../../lib/liveLinkEntry'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { IssueRefChip } from '../IssueRefChip'
 import { TeamProgressChip } from '../TeamProgressChip'
 import { PortsChip } from '../PortsChip'
@@ -69,6 +74,11 @@ const ChatPanel = lazy(() => import('../../nodes/ChatPanel').then((m) => ({ defa
 
 interface CardModalProps {
   session: KanbanSession
+  /** The project whose board this card is on — the active one on the per-project board, the lane's
+   *  on the Omni board. The modal sits OUTSIDE that project's `SessionProvider` (`useSession()`
+   *  here is the app's local session), so anything that depends on which machine the node runs
+   *  on resolves through this id: the LIVE chip (R57) and the "Share live link" action (H4). */
+  projectId: string
   /** Column title shown as a chip; null = Ungrouped. */
   columnTitle: string | null
   /** The live board + its pruned commit — the Members/Due strip edits through them. */
@@ -105,11 +115,22 @@ interface CardModalProps {
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
-export function CardModal({ session, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel }: CardModalProps) {
+export function CardModal({ session, projectId, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel }: CardModalProps) {
   const { api } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
   const sessionIcon = normalizeNodeIcon(session.icon)
+  // Which machine this node runs on, for the live-link chip and action (R57, H4).
+  const liveLinkSource = projectSessionSource(projectId)
+  const activeLiveLinks = useWatchLinks((s) => s.links.length)
+  // The ONE availability rule every opener checks before the Pro gate. The modal paints ABOVE the
+  // canvas's notice strip, so the reason goes on the button (disabled + title) rather than into a
+  // notice nobody could see.
+  const liveLinkWhy = liveLinkUnavailable({
+    serverEdition: isBrowserRuntime(),
+    source: liveLinkSource,
+    activeLinks: activeLiveLinks
+  })
   const idRef = useRef<string>()
   if (!idRef.current) idRef.current = nextDialogId()
   const id = idRef.current
@@ -401,6 +422,7 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
             </span>
           )}
           {isTerminal && <AccountChip chip={accountChip} />}
+          {isTerminal && <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-modal__live" />}
           {/* The driving chip, so a user watching a browser card THROUGH the modal is not
               driving-blind. The lease is keyed by node id (not by webview object), so this shows
               when the node is being driven even though the drive lands on the CANVAS webview, not
@@ -496,6 +518,26 @@ export function CardModal({ session, columnTitle, board, onChangeBoard, onClose,
                 onClick={nameWithAi}
               >
                 {naming ? '…' : '✦'}
+              </button>
+              {/* Share a live link to this terminal — the canvas node menu's row, as a header action.
+                  The canvas opens the dialog (`nodeterm:live-link`) after re-checking availability
+                  and the Pro gate; the event names the card's PROJECT so a node of an Omni lane is
+                  judged by its own session, not the active tab's. */}
+              <button
+                className="kanban-modal__action"
+                data-action="live-link"
+                title={liveLinkWhy ?? 'Share live link'}
+                aria-label="Share live link"
+                disabled={!!liveLinkWhy}
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent('nodeterm:live-link', {
+                      detail: { nodeId: session.id, title: session.title, projectId }
+                    })
+                  )
+                }
+              >
+                <IconBroadcast />
               </button>
             </>
           )}

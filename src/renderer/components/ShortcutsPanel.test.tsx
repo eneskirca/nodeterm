@@ -21,7 +21,8 @@ const BASE: Omit<ShortcutSectionsOptions, 'bindingsFor'> = {
   panHoverDelay: DEFAULT_SETTINGS.panHoverDelay,
   dragMode: 'select',
   doubleClickFocus: true,
-  wheelZoom: false
+  wheelZoom: false,
+  focusFollowsPointer: true
 }
 
 const build = (
@@ -188,6 +189,16 @@ describe('buildShortcutSections — platform and non-command rows', () => {
       .toEqual(['Hover 0.3s'])
     expect(rowFor(build(() => [], { panHoverDelay: 600 }), 'Enter the terminal (type / select)'))
       .toEqual(['Hover 0.6s'])
+  })
+
+  it('says "click" instead of a hover dwell when focus does not follow the pointer (#757)', () => {
+    // Click-to-focus: no dwell ever hands over the keyboard, so printing "Hover 0.6s" would
+    // advertise a gesture that does nothing.
+    const click = build(() => [], { focusFollowsPointer: false, panHoverDelay: 600 })
+    expect(rowFor(click, 'Enter the terminal (type / select)')).toEqual(['Click'])
+    expect(rowFor(click, 'Move the terminal (before it focuses)')).toEqual(['Drag'])
+    const hover = build(() => [], { focusFollowsPointer: true, panHoverDelay: 600 })
+    expect(rowFor(hover, 'Move the terminal (before it focuses)')).toEqual(['Quick drag'])
   })
 
   it('names the force-select modifier per platform (Option on mac, Shift elsewhere)', () => {

@@ -11,6 +11,12 @@ import { platform } from './platform'
 import { toolBody } from './chat-tool-body'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX } from '../shared/chat-command'
+import {
+  AGENT_MESSAGE_TOOL,
+  BACKGROUND_TASK_TOOL,
+  SYSTEM_TOOL,
+  expandPastedContent
+} from '../shared/chat-system-records'
 
 // Transcript root for a managed account (its `projects` dir) or the system default
 // (`~/.claude/projects` when accountId is undefined — bit-for-bit the old behavior). Impure
@@ -149,8 +155,193 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
 /** The name an output record's tool part gets when there is no command to attach it to. */
 export const COMMAND_OUTPUT_TOOL = 'command output'
 
+// ── System-injected user records ─────────────────────────────────────────────────────────────────
+// Claude Code writes several things that are NOT the user's words as `type:"user"` records. Measured
+// on 200 real transcripts (2026-09), user records without a tool_result, by `origin.kind`:
+//   task-notification  (promptSource "system")  `<task-notification>…</task-notification>` string —
+//                      a background task / agent / monitor finished. Child tags seen: task-id (0..n),
+//                      tool-use-id, output-file, status, summary, note, result, event, task-type,
+//                      usage (nested), worktree; each optional.
+//   peer               (isMeta, "system")  "Another Claude session sent a message:\n" + ONE
+//                      `<agent-message from="…">` (a subagent hand-back) or `<cross-session-message
+//                      from="…" from-name="…" from-mode="…">` element + a fixed instruction trailer.
+//   auto-continuation / coordinator  (isMeta)  plain text.
+// Each renders as ONE assistant tool part — the #991 local-command pattern: no new role, part kind
+// or field, so a v1 decoder (the phone) reads it as an ordinary tool chip. A human paste
+// (`<pasted_content id="…">…</pasted_content id="…">` inside typed text) stays the user's bubble.
+// Only STRING content is classified: none of these kinds was ever measured with array content.
+//
+// Every scan below is `indexOf`-based, never a backtracking regex: the records are parsed on the
+// main process, and a regex over many unclosed tags is quadratic (1 MB ≈ 20 s, measured).
+export { BACKGROUND_TASK_TOOL, AGENT_MESSAGE_TOOL, SYSTEM_TOOL, expandPastedContent }
+/** Cap on a system record's full-text `result` (an agent report is long and useful), UTF-16 units. */
+export const SYSTEM_RESULT_MAX = 16384
+/**
+ * The `result` of a task-notification with a summary but neither a status nor a body. Without one the
+ * part has no `result` and renders as a tool still running (the phone shows a pending icon and "No
+ * result yet"). Neutral on purpose, not "done": such a notification is often a START
+ * ("Background agent … started").
+ */
+export const TASK_NOTIFIED_RESULT = 'notified'
+
+export interface SystemRecord {
+  name: string
+  arg: string
+  /** '' = no result (the part carries no `result` key). */
+  result: string
+}
+
+const originKind = (origin: unknown): string | undefined => {
+  if (!origin || typeof origin !== 'object') return undefined
+  const k = (origin as { kind?: unknown }).kind
+  return typeof k === 'string' ? k : undefined
+}
+
+/** The only `promptSource` values a content-only (origin-less) task-notification may carry: none, or
+ *  `system`. An ALLOWLIST, not a list of human sources — a human source added later (`sdk` already
+ *  exists, 132 records measured) must never turn a human's pasted element into a chip. Every real
+ *  notification measured (1,693, CLI 2.1.209–2.1.286) carries `origin.kind` AND `promptSource:"system"`. */
+const systemOrUnsetSource = (source: unknown): boolean => source === undefined || source === 'system'
+
+/** The first line of the trimmed text, trimmed, capped like a tool arg. */
+const firstLine = (text: string): string => capArg(text.trim().split('\n')[0])
+const capResult = (text: string): string => text.trim().slice(0, SYSTEM_RESULT_MAX)
+const fallback = (name: string, content: string): SystemRecord => ({
+  name,
+  arg: firstLine(content),
+  result: capResult(content)
+})
+
+const TN_OPEN = '<task-notification>'
+const TN_CLOSE = '</task-notification>'
+/** The whole string is exactly ONE `<task-notification>` element (JS whitespace around it only). */
+export function isWholeTaskNotification(content: string): boolean {
+  // `trim` strips exactly JS `\s`, so this is `^\s*<task-notification>(…)</task-notification>\s*$`.
+  const t = content.trim()
+  if (t.length < TN_OPEN.length + TN_CLOSE.length || !t.startsWith(TN_OPEN) || !t.endsWith(TN_CLOSE)) return false
+  const inner = t.slice(TN_OPEN.length, t.length - TN_CLOSE.length)
+  return !inner.includes(TN_OPEN) && !inner.includes(TN_CLOSE)
+}
+
+/** The first `<name>…</name>` in `text` (the first close after the first open), trimmed; '' when
+ *  absent. If the first open has no close after it, no later open can have one either. */
+function tagText(text: string, name: string): string {
+  const open = `<${name}>`
+  const o = text.indexOf(open)
+  if (o < 0) return ''
+  const c = text.indexOf(`</${name}>`, o + open.length)
+  return c < 0 ? '' : text.slice(o + open.length, c).trim()
+}
+
+function taskNotification(content: string): SystemRecord {
+  const summary = tagText(content, 'summary')
+  const status = tagText(content, 'status')
+  const body = tagText(content, 'result') || tagText(content, 'event')
+  if (!summary && !status && !body) return fallback(BACKGROUND_TASK_TOOL, content)
+  // Neither a status nor a body: the neutral marker, so the chip reads as finished, not running.
+  const text = status && body ? `${status}: ${body}` : status || body || TASK_NOTIFIED_RESULT
+  return { name: BACKGROUND_TASK_TOOL, arg: summary.slice(0, CHAT_TOOL_ARG_MAX), result: summarizeResult(text) }
+}
+
+const isJsSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch)
+
+interface PeerElement {
+  start: number
+  /** Everything between the name and the first `>` (leading whitespace included); '' when none. */
+  attrs: string
+  body: string
+}
+
+/**
+ * The regex `<name(\s[^>]*)?>([\s\S]*)</name>` for one name, in linear time: the first open that is
+ * followed by `>` or JS whitespace, its first `>`, and the LAST `</name>` after that `>`. Only the
+ * first such open can match — a later one's `>` is no earlier, so the last close cannot follow it
+ * if it did not follow the first.
+ */
+function findElement(content: string, name: string): PeerElement | null {
+  const open = `<${name}`
+  const last = content.lastIndexOf(`</${name}>`)
+  if (last < 0) return null
+  for (let o = content.indexOf(open); o >= 0; o = content.indexOf(open, o + 1)) {
+    const after = o + open.length
+    if (content[after] !== '>' && !isJsSpace(content[after])) continue
+    const gt = content.indexOf('>', after)
+    if (gt < 0 || last < gt + 1) return null
+    return { start: o, attrs: content.slice(after, gt), body: content.slice(gt + 1, last) }
+  }
+  return null
+}
+
+/** `(?:^|\s)from-name="([^"]*)"` over the attributes, in linear time; '' when absent. */
+function fromNameAttr(attrs: string): string {
+  const key = 'from-name="'
+  for (let i = attrs.indexOf(key); i >= 0; i = attrs.indexOf(key, i + 1)) {
+    if (i > 0 && !isJsSpace(attrs[i - 1])) continue
+    const end = attrs.indexOf('"', i + key.length)
+    return end < 0 ? '' : attrs.slice(i + key.length, end)
+  }
+  return ''
+}
+
+function peerMessage(content: string): SystemRecord {
+  // The earliest of the two element kinds (they cannot start at the same offset).
+  const a = findElement(content, 'agent-message')
+  const x = findElement(content, 'cross-session-message')
+  const m = a && x ? (a.start < x.start ? a : x) : a ?? x
+  if (!m) return fallback(AGENT_MESSAGE_TOOL, content)
+  const body = m.body.trim()
+  const fromName = fromNameAttr(m.attrs).trim()
+  return { name: AGENT_MESSAGE_TOOL, arg: fromName ? capArg(fromName) : firstLine(body), result: capResult(body) }
+}
+
+/**
+ * A system-injected user record (see above) as the tool part it renders as, or null for anything
+ * else (which keeps its current treatment). `content` is the record's string content.
+ *
+ * The content-only match (no `origin.kind` at all) never applies to a record a human sent: a user
+ * who types or pastes one `<task-notification>` element is recorded exactly like that (measured on
+ * CLI 2.1.285: an unwrapped bracketed paste, `origin.kind:"human"`, `promptSource:"typed"`).
+ */
+export function classifySystemRecord(
+  rec: { origin?: unknown; promptSource?: unknown },
+  content: string
+): SystemRecord | null {
+  const kind = originKind(rec.origin)
+  if (
+    kind === 'task-notification' ||
+    (kind === undefined && systemOrUnsetSource(rec.promptSource) && isWholeTaskNotification(content))
+  ) {
+    return taskNotification(content)
+  }
+  if (kind === 'peer') return peerMessage(content)
+  if (kind === 'auto-continuation' || kind === 'coordinator') return fallback(SYSTEM_TOOL, content)
+  return null
+}
+
+/** A system record's tool part (`result` only when non-empty). */
+function systemPart(r: SystemRecord): Extract<ChatPart, { kind: 'tool' }> {
+  const part: Extract<ChatPart, { kind: 'tool' }> = { kind: 'tool', name: r.name, arg: r.arg }
+  if (r.result) part.result = r.result
+  return part
+}
+
+/** How user text is shown. `expandPastes:false` keeps `<pasted_content>` markup as recorded — for
+ *  a TITLE (recent conversations, the transcript index), where a code fence has no place. */
+export interface ChatParseOptions {
+  expandPastes?: boolean
+}
+const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
+  opts?.expandPastes === false ? text : expandPastedContent(text)
+
+/** A tool part as find-bar lines: `$ name arg`, then its result when it has one. */
+function toolLines(name: string, arg: string, result: string): TranscriptLine[] {
+  const out: TranscriptLine[] = [{ role: 'tool', text: `$ ${name}${arg ? ` ${arg}` : ''}` }]
+  if (result) out.push({ role: 'tool', text: result })
+  return out
+}
+
 // Extract 0..n searchable lines from one raw transcript JSONL line.
-function linesFrom(raw: string): TranscriptLine[] {
+function linesFrom(raw: string, opts?: ChatParseOptions): TranscriptLine[] {
   let o: Parameters<typeof isHiddenMetaRecord>[0] & { message?: { content?: unknown } }
   try {
     o = JSON.parse(raw)
@@ -179,19 +370,24 @@ function linesFrom(raw: string): TranscriptLine[] {
   } else if (o.type === 'user' && Array.isArray(content)) {
     for (const c of content as Array<{ type?: string; text?: string; content?: unknown }>) {
       if (!c || typeof c !== 'object') continue
-      if (c.type === 'text' && c.text) out.push({ role: 'user', text: c.text })
+      // A non-string `text` is passed through as before; only a string is a paste to expand.
+      if (c.type === 'text' && c.text) out.push({ role: 'user', text: typeof c.text === 'string' ? userTextOf(c.text, opts) : c.text })
       else if (c.type === 'tool_result') {
         const s = summarizeResult(c.content)
         if (s) out.push({ role: 'tool', text: s })
       }
     }
   } else if (o.type === 'user' && typeof content === 'string') {
+    // A system-injected record indexes as the tool part the chat view shows (its body stays
+    // searchable — an agent's report is worth finding), never as the user's own text.
+    const sys = content.trim() ? classifySystemRecord(o, content) : null
+    if (sys) return toolLines(sys.name, sys.arg, sys.result)
     const cmd = classifyLocalCommand(content)
     if (cmd?.kind === 'command') out.push({ role: 'tool', text: `$ ${cmd.name}${cmd.arg ? ` ${cmd.arg}` : ''}` })
     else if (cmd?.kind === 'output') {
       const s = summarizeResult(cmd.text)
       if (s) out.push({ role: 'tool', text: s })
-    } else out.push({ role: 'user', text: content })
+    } else out.push({ role: 'user', text: userTextOf(content, opts) })
   }
   return out
 }
@@ -229,10 +425,10 @@ export async function readCappedTail(filePath: string, cap: number = READ_CAP_BY
 
 // Parse transcript text into flat searchable lines. Pure — splits on newlines and maps each
 // non-blank line via linesFrom. Reused by the remote reader (which fetches the text over SSH).
-export function parseTranscriptLines(text: string): TranscriptLine[] {
+export function parseTranscriptLines(text: string, opts?: ChatParseOptions): TranscriptLine[] {
   const lines: TranscriptLine[] = []
   for (const raw of text.split('\n')) {
-    if (raw.trim()) lines.push(...linesFrom(raw))
+    if (raw.trim()) lines.push(...linesFrom(raw, opts))
   }
   return lines
 }
@@ -243,29 +439,14 @@ export async function readTranscriptLines(filePath: string): Promise<TranscriptL
   return parseTranscriptLines(buf)
 }
 
-/**
- * Claude Code records a multi-line PASTE wrapped in its own marker —
- * `<pasted_content id="4dd6">\n…\n</pasted_content id="4dd6">` (measured, 2.1.281). Rendered as
- * markdown, the sanitizer drops the opening tag but the closing one (an attribute on an end tag is
- * not HTML) showed as literal text. Only a matched pair with the same id is unwrapped, so a prompt
- * that merely mentions the tag is left alone.
- */
-export function unwrapPastedContent(text: string): string {
-  const unwrapped = text.replace(
-    /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g,
-    (_m, _id: string, inner: string) => inner
-  )
-  return unwrapped === text ? text : unwrapped.trim()
-}
-
 /** A queued prompt is a string, or content blocks (a prompt with a pasted image) — keep the text. */
-function queuedPromptText(prompt: unknown): string {
-  if (typeof prompt === 'string') return unwrapPastedContent(prompt)
+function queuedPromptText(prompt: unknown, opts: ChatParseOptions | undefined): string {
+  if (typeof prompt === 'string') return userTextOf(prompt, opts)
   if (!Array.isArray(prompt)) return ''
   return prompt
     .map((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' && typeof b.text === 'string' ? b.text : ''))
     .filter((t) => t !== '')
-    .map(unwrapPastedContent)
+    .map((t) => userTextOf(t, opts))
     .join('\n')
 }
 
@@ -304,7 +485,8 @@ export function lineTime(v: unknown): number | undefined {
 
 function parseChatRecords(
   records: Iterable<{ raw: string; offset: number }>,
-  paged: boolean
+  paged: boolean,
+  opts?: ChatParseOptions
 ): ChatRecordsOut {
   const messages: ChatMessage[] = []
   const unmatched = new Map<string, string>()
@@ -389,7 +571,8 @@ function parseChatRecords(
         content?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
-        if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: unwrapPastedContent(c.text) })
+        // A non-string `text` is passed through as before; only a string is a paste to expand.
+        if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: typeof c.text === 'string' ? userTextOf(c.text, opts) : c.text })
         else if (c.type === 'tool_result') {
           const tool = c.tool_use_id ? toolById.get(c.tool_use_id) : undefined
           const s = summarizeResult(c.content)
@@ -404,6 +587,13 @@ function parseChatRecords(
       }
       if (parts.length) push({ role: 'user', parts }, offset)
     } else if (o.type === 'user' && typeof content === 'string' && content.trim()) {
+      // Not the user's words (a background task's completion, another session's message, an
+      // auto-continuation): one assistant tool part, like a local command.
+      const sys = classifySystemRecord(o, content)
+      if (sys) {
+        push({ role: 'assistant', parts: [systemPart(sys)] }, offset)
+        continue
+      }
       const cmd = classifyLocalCommand(content)
       if (cmd?.kind === 'command') {
         // The user running a command reads like a tool call — no new role or part kind on the wire.
@@ -420,13 +610,13 @@ function parseChatRecords(
           push({ role: 'assistant', parts: [{ kind: 'tool', name: COMMAND_OUTPUT_TOOL, arg: '', result: s }] }, offset)
         }
       } else {
-        push({ role: 'user', parts: [{ kind: 'text', text: unwrapPastedContent(content) }] }, offset)
+        push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(content, opts) }] }, offset)
       }
     } else if (o.type === 'attachment' && o.attachment?.type === 'queued_command') {
       // A prompt submitted while a turn was running. Claude Code never records it as a `user`
       // entry: it delivers it at the next tool boundary of the SAME turn as this attachment
       // (measured, 2.1.281). Without this branch the prompt vanished from the chat history.
-      const text = queuedPromptText(o.attachment.prompt)
+      const text = queuedPromptText(o.attachment.prompt, opts)
       if (text.trim()) push({ role: 'user', parts: [{ kind: 'text', text }] }, offset)
     }
   }
@@ -438,10 +628,11 @@ function parseChatRecords(
   return out
 }
 
-export function parseChatMessages(rawLines: string[]): ChatMessage[] {
+export function parseChatMessages(rawLines: string[], opts?: ChatParseOptions): ChatMessage[] {
   return parseChatRecords(
     rawLines.map((raw) => ({ raw, offset: 0 })),
-    false
+    false,
+    opts
   ).messages
 }
 

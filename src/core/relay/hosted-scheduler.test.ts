@@ -18,6 +18,7 @@ function harness(mints: Array<MintResult | (() => Promise<MintResult>)>, opts: {
   open?: (tok: string, ev: { onBridged(): void; onClose(): void }) => Opened
   onStatus?: (s: SchedulerStatus) => void
   firstTimerId?: number
+  maxBridged?: number
 } = {}) {
   let t = 0
   const timers: Array<{ at: number; fn: () => void; id: number; ms: number }> = []
@@ -40,7 +41,10 @@ function harness(mints: Array<MintResult | (() => Promise<MintResult>)>, opts: {
     },
     setTimeout: (fn, ms) => { const id = ++seq; timers.push({ at: t + ms, fn, id, ms }); delays.push(ms); return id },
     clearTimeout: (id) => { const i = timers.findIndex((x) => x.id === id); if (i >= 0) timers.splice(i, 1) },
-    onStatus: opts.onStatus
+    onStatus: opts.onStatus,
+    // Passed only when the test names it, so every older test builds exactly the deps it always did
+    // (and an explicit `maxBridged: undefined` reaches the scheduler as such).
+    ...('maxBridged' in opts ? { maxBridged: opts.maxBridged } : {})
   }, () => t)
   const advance = async (ms: number) => {
     const target = t + ms
@@ -596,5 +600,173 @@ describe('hosted scheduler', () => {
     expect(challenges).toBe(1)
     await h.advance(1)
     expect(challenges).toBe(2)
+  })
+})
+
+// A live link's viewer cap: at maxBridged bridged sessions no idle listener is opened, so the broker
+// turns further clients away ("no host waiting"); a session ending reopens one through the usual top().
+describe('hosted scheduler maxBridged', () => {
+  it('opens no idle listener while maxBridged sessions are bridged, and reopens when one ends', async () => {
+    const opened: { ev: { onBridged(): void; onClose(): void }; closed: boolean }[] = []
+    const s = createHostedScheduler(
+      {
+        mint: async () => ({ ok: true, pairingToken: 't', hostId: 'h', ttlMs: 120_000 }),
+        open: (_t, ev) => {
+          const l = { ev, closed: false }
+          opened.push(l)
+          return { bridged: false, close: () => { l.closed = true } }
+        },
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+        maxBridged: 2
+      },
+      () => Date.now()
+    )
+    s.start()
+    await vi.waitFor(() => expect(opened).toHaveLength(1))
+    opened[0].ev.onBridged()
+    await vi.waitFor(() => expect(opened).toHaveLength(2))
+    opened[1].ev.onBridged()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(opened).toHaveLength(2)
+    opened[0].ev.onClose()
+    await vi.waitFor(() => expect(opened).toHaveLength(3))
+    s.stop()
+  })
+
+  it('absent maxBridged (or an explicit undefined) keeps the old behaviour: every bridge gets a replacement', async () => {
+    for (const opts of [{}, { maxBridged: undefined }]) {
+      const h = harness(okMany(20), opts)
+      h.s.start(); await flush()
+      for (let i = 0; i < 12; i++) {
+        h.opened[h.opened.length - 1].ev.onBridged(); await flush()
+      }
+      expect(h.opened).toHaveLength(13)
+      expect(h.mintCalls()).toBe(13)
+      expect(h.s.status()).toMatchObject({ state: 'running', idle: 1, bridged: 12 })
+    }
+  })
+
+  // Task 8 review: a cap that is not a whole number of peers is a wiring slip — 0 or a negative would
+  // be hosting that never listens, NaN a cap that never applies. Refused at construction, loudly.
+  it('refuses a maxBridged that is not an integer >= 1', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => harness([], { maxBridged: bad }), String(bad)).toThrow(RangeError)
+    }
+    expect(() => harness([], { maxBridged: 1 })).not.toThrow()
+    expect(() => harness([], { maxBridged: undefined })).not.toThrow()
+  })
+
+  it('maxBridged: 1 serves one peer at a time: no listener while it is connected, one again when it leaves', async () => {
+    const h = harness(okMany(10), { maxBridged: 1 })
+    h.s.start(); await flush()
+    expect(h.opened).toHaveLength(1)
+    h.opened[0].ev.onBridged(); await flush()
+    expect(h.opened).toHaveLength(1)
+    expect(h.s.status()).toMatchObject({ state: 'running', idle: 0, bridged: 1 })
+    await h.advance(HOUR)
+    expect(h.mintCalls()).toBe(1)
+    h.opened[0].ev.onClose(); await flush()
+    expect(h.opened).toHaveLength(2)
+    expect(h.s.status()).toMatchObject({ idle: 1, bridged: 0 })
+    h.opened[1].ev.onBridged(); await flush()
+    expect(h.opened).toHaveLength(2)
+    expect(h.mintCalls()).toBe(2)
+  })
+
+  it('at the cap nothing is minted, no timer is armed, no status churns and nothing is written into the backoff', async () => {
+    const statuses: SchedulerStatus[] = []
+    const h = harness(okMany(10), { maxBridged: 2, onStatus: (st) => statuses.push(st) })
+    h.s.start(); await flush()
+    h.opened[0].ev.onBridged(); await flush()
+    h.opened[1].ev.onBridged(); await flush()
+    expect(h.opened).toHaveLength(2)
+    expect(h.s.status()).toMatchObject({ state: 'running', idle: 0, bridged: 2, lastError: null })
+    // Bridged listeners hold no refresh and the cap arms no retry: there is nothing to wake up and spin.
+    expect(h.timers).toHaveLength(0)
+    const delaysAtCap = h.delays.length
+    const emitsAtCap = statuses.length
+    await h.advance(HOUR)
+    expect(h.mintCalls()).toBe(2)
+    expect(h.delays).toHaveLength(delaysAtCap)
+    expect(statuses).toHaveLength(emitsAtCap)
+    expect(h.s.status()).toMatchObject({ state: 'running', idle: 0, bridged: 2, lastError: null })
+    // Leaving the cap is not a relay failure: the replacement is minted at once, and a relay that then
+    // drops it starts the backoff at its FIRST step — the time spent full advanced nothing.
+    h.opened[0].ev.onClose(); await flush()
+    expect(h.opened).toHaveLength(3)
+    expect(h.timers.map((x) => x.ms)).toEqual([90_000]) // only the new idle listener's refresh
+    h.opened[2].ev.onClose(); await flush()
+    expect(h.timers.map((x) => x.ms)).toEqual([1000])
+  })
+
+  it('sessions ending together reopen ONE idle listener, not one per ended session', async () => {
+    const h = harness(okMany(10), { maxBridged: 3 })
+    h.s.start(); await flush()
+    for (let i = 0; i < 3; i++) {
+      h.opened[i].ev.onBridged(); await flush()
+    }
+    expect(h.opened).toHaveLength(3)
+    expect(h.s.status()).toMatchObject({ idle: 0, bridged: 3 })
+    // All three peers leave in the same tick (the relay dropping them together).
+    h.opened[0].ev.onClose(); h.opened[1].ev.onClose(); h.opened[2].ev.onClose()
+    await flush()
+    expect(h.mintCalls()).toBe(4)
+    expect(h.opened).toHaveLength(4)
+    expect(h.s.status()).toMatchObject({ idle: 1, bridged: 0 })
+    await h.advance(60_000) // and nothing more arrives later
+    expect(h.mintCalls()).toBe(4)
+  })
+
+  it('sessions ending one after another from the cap still leave exactly one idle listener', async () => {
+    const h = harness(okMany(10), { maxBridged: 2 })
+    h.s.start(); await flush()
+    h.opened[0].ev.onBridged(); await flush()
+    h.opened[1].ev.onBridged(); await flush()
+    h.opened[0].ev.onClose(); await flush()
+    expect(h.opened).toHaveLength(3)
+    h.opened[1].ev.onClose(); await flush() // the idle replacement already exists
+    expect(h.opened).toHaveLength(3)
+    expect(h.mintCalls()).toBe(3)
+    expect(h.s.status()).toMatchObject({ idle: 1, bridged: 0 })
+  })
+
+  it('a link that fills just as the mint budget runs out arms nothing; the budget owns the wait only once a session ends', async () => {
+    const h = harness(okMany(300), { maxBridged: 1 })
+    h.s.start(); await flush()
+    // A peer joins and leaves 199 times inside the hour: every leave is one mint, 200 in all.
+    for (let i = 0; i < 199; i++) {
+      const l = h.opened[h.opened.length - 1]
+      l.ev.onBridged(); await flush()
+      l.ev.onClose(); await flush()
+    }
+    expect(h.s.status()).toMatchObject({ mintsLastHour: 200, idle: 1, bridged: 0 })
+    h.opened[h.opened.length - 1].ev.onBridged(); await flush() // full, with the budget spent
+    expect(h.timers).toHaveLength(0)
+    expect(h.s.status()).toMatchObject({ idle: 0, bridged: 1, lastError: null })
+    h.opened[h.opened.length - 1].ev.onClose(); await flush() // below the cap: now the budget speaks
+    expect(h.s.status().lastError).toBe('mint budget')
+    expect(h.mintCalls()).toBe(200)
+    await h.advance(HOUR) // the window still holds the mints made at t=0
+    expect(h.mintCalls()).toBe(200)
+    await h.advance(1)
+    expect(h.mintCalls()).toBe(201)
+    expect(h.s.status()).toMatchObject({ state: 'running', idle: 1, bridged: 0 })
+  })
+
+  it('a reopen from the cap answered 429 still waits the full 60 s, even when another session ends meanwhile', async () => {
+    const h = harness([ok(), ok(), { ok: false, kind: 'rate-limited', status: 429 }, ok(), ok()], { maxBridged: 2 })
+    h.s.start(); await flush()
+    h.opened[0].ev.onBridged(); await flush()
+    h.opened[1].ev.onBridged(); await flush()
+    h.opened[0].ev.onClose(); await flush() // the reopen mint is answered 429
+    expect(h.mintCalls()).toBe(3)
+    h.opened[1].ev.onClose(); await flush() // below the cap now, but the 429 wait owns the next mint
+    await h.advance(59_999)
+    expect(h.mintCalls()).toBe(3)
+    await h.advance(1)
+    expect(h.mintCalls()).toBe(4)
+    expect(h.opened).toHaveLength(3)
+    expect(h.s.status()).toMatchObject({ idle: 1, bridged: 0 })
   })
 })

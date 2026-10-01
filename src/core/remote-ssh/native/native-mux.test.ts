@@ -230,6 +230,92 @@ describe('NativeMux over a real SSH protocol peer', () => {
     }
   })
 
+  it('offers a freshly unlocked key to the agent AFTER it authenticated — once, fail-open', async () => {
+    fs.rmSync(path.join(dir, 'known_hosts'), { force: true })
+    fs.writeFileSync(path.join(dir, 'id'), lockedKey.private)
+    try {
+      const asked: { agentPath: string; identityFile: string }[] = []
+      const added: { agentPath: string; type: string; comment: string; lifetimeSec?: number }[] = []
+      // IdentitiesOnly with no id.pub: the agent step is skipped (nothing to filter to), so the
+      // key file is what authenticates — the case the add exists for.
+      const m = track(
+        mux({
+          defaultAgent: () => '/fake/agent.sock',
+          askPassphrase: async () => 'open sesame',
+          agentAdd: (req) => {
+            asked.push({ agentPath: req.agentPath, identityFile: req.identityFile })
+            return { lifetimeSec: 600 }
+          },
+          addKeyToAgent: async (agentPath, key, comment, opts) => {
+            added.push({ agentPath, type: key.type, comment, lifetimeSec: opts?.lifetimeSec })
+            return 'added'
+          }
+        })
+      )
+      expect((await m.exec(exec('echo one'))).code).toBe(0)
+      expect((await m.exec(exec('echo two'))).code).toBe(0)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(asked).toEqual([{ agentPath: '/fake/agent.sock', identityFile: path.join(dir, 'id') }])
+      expect(added).toEqual([{ agentPath: '/fake/agent.sock', type: 'ssh-ed25519', comment: path.join(dir, 'id'), lifetimeSec: 600 }])
+
+      // A policy that says no adds nothing; an agent that throws costs the connection nothing.
+      const noAdd = track(
+        mux({
+          defaultAgent: () => '/fake/agent.sock',
+          askPassphrase: async () => 'open sesame',
+          agentAdd: () => null,
+          addKeyToAgent: async () => {
+            throw new Error('must not be called')
+          }
+        })
+      )
+      expect((await noAdd.exec(exec('echo three'))).code).toBe(0)
+      const logs: string[] = []
+      const broken = track(
+        mux({
+          defaultAgent: () => '/fake/agent.sock',
+          askPassphrase: async () => 'open sesame',
+          log: (l) => logs.push(l),
+          agentAdd: () => {
+            throw new Error('policy exploded')
+          }
+        })
+      )
+      expect((await broken.exec(exec('echo four'))).code).toBe(0)
+      const failing = track(
+        mux({
+          defaultAgent: () => '/fake/agent.sock',
+          askPassphrase: async () => 'open sesame',
+          log: (l) => logs.push(l),
+          agentAdd: () => ({}),
+          addKeyToAgent: async () => {
+            throw new Error('agent exploded')
+          }
+        })
+      )
+      expect((await failing.exec(exec('echo five'))).code).toBe(0)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(logs.some((l) => /could not add .* to the ssh agent \(error\)/.test(l))).toBe(true)
+    } finally {
+      fs.writeFileSync(path.join(dir, 'id'), clientKey.private)
+    }
+  })
+
+  it('never offers a key that needed no passphrase', async () => {
+    let consulted = 0
+    const m = track(
+      mux({
+        defaultAgent: () => '/fake/agent.sock',
+        agentAdd: () => {
+          consulted++
+          return {}
+        }
+      })
+    )
+    expect((await m.exec(exec('echo plain'))).code).toBe(0)
+    expect(consulted).toBe(0)
+  })
+
   it('forward on a path with no connection fails the way ssh does', async () => {
     const m = track(mux())
     await expect(

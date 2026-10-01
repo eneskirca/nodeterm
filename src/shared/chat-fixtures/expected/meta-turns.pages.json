@@ -18,11 +18,13 @@
           "key": 0
         },
         {
-          "role": "user",
+          "role": "assistant",
           "parts": [
             {
-              "kind": "text",
-              "text": "Hand-back from demo-peer: the demo build is green."
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "Hand-back from demo-peer: the demo build is green.",
+              "result": "Hand-back from demo-peer: the demo build is green."
             }
           ],
           "at": 1790362802000,
@@ -62,11 +64,13 @@
           "key": 2052
         },
         {
-          "role": "user",
+          "role": "assistant",
           "parts": [
             {
-              "kind": "text",
-              "text": "Continue from where you left off."
+              "kind": "tool",
+              "name": "System",
+              "arg": "Continue from where you left off.",
+              "result": "Continue from where you left off."
             }
           ],
           "at": 1790362806000,
@@ -106,11 +110,13 @@
           "key": 3512
         },
         {
-          "role": "user",
+          "role": "assistant",
           "parts": [
             {
-              "kind": "text",
-              "text": "Hand-back with origin only."
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "Hand-back with origin only.",
+              "result": "Hand-back with origin only."
             }
           ],
           "at": 1790362810000,

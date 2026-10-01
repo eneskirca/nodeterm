@@ -129,3 +129,27 @@ describe('a socket path Zellij would refuse falls back to tmux', () => {
     expect(m.tmuxStatus().zellij).toMatchObject({ selected: true, socketTooLong: true })
   })
 })
+
+describe('a live link watcher never spawns into a Zellij session', () => {
+  it('a live Zellij node with no held session: the watcher is refused before any tmux probe', async () => {
+    // A watcher's own client is a read-only TMUX client; for a Zellij node the only honest answer
+    // is "not now" — never a Zellij attach, which would be a full, typing client.
+    const file = path.join(dir, 'zellij-live')
+    fs.writeFileSync(
+      file,
+      `#!/bin/sh\necho "$@" >> '${log}'\n` +
+        'case "$1" in list-sessions) echo "nt-w1 [Created 1s ago]"; exit 0;; esac\n' +
+        'case "$*" in *list-panes*) echo \'[{"id":0,"is_plugin":false,"is_focused":true}]\'; exit 0;; esac\n' +
+        'exit 0\n',
+      { mode: 0o755 }
+    )
+    const m = await manager(file, { sessionBackend: 'zellij' })
+    vi.spyOn(m as unknown as { strictTmuxVerdict: () => Promise<string> }, 'strictTmuxVerdict').mockResolvedValue('absent')
+    const readWindowSize = vi.spyOn(m, 'readWindowSize')
+    const r = await m.joinAsWatcher(1 as never, { persistKey: 'w1', viewerId: 'v1', cols: 80, rows: 24 })
+    expect(r).toMatchObject({ sessionId: '', unavailable: 'join-only' })
+    expect(readWindowSize).not.toHaveBeenCalled()
+    expect(h.spawns).toHaveLength(0)
+    expect(calls()).not.toMatch(/attach/)
+  })
+})

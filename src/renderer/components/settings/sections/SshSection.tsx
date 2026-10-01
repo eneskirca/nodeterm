@@ -7,6 +7,10 @@ import { FieldRow } from '../FieldRow'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
 import { uuid } from '@renderer/lib/uuid'
+import { Switch } from '@renderer/ui/Switch'
+import { useSettings } from '../../../state/settings'
+import { isWindowsPlatform } from '@shared/platform-utils'
+import { isBrowserRuntime } from '../../../bridge/runtime'
 
 const ROWS = {
   servers: {
@@ -15,12 +19,23 @@ const ROWS = {
       'ssh', 'remote', 'server', 'host', 'connect', 'identity', 'key',
       'test', 'folder', 'directory', 'cwd', 'working directory'
     ]
+  },
+  windowsAgent: {
+    title: 'Keep unlocked keys in the Windows ssh-agent',
+    keywords: ['ssh-agent', 'agent', 'passphrase', 'key', 'windows', 'AddKeysToAgent', 'ssh-add', 'prompt']
   }
 }
-const ENTRIES = Object.values(ROWS)
+/** The native SSH transport (and with it this switch) is the Windows desktop's; a browser tab's
+ *  SSH is the server's business, whatever OS the viewer runs. */
+function showsWindowsAgentRow(): boolean {
+  return typeof navigator !== 'undefined' && !isBrowserRuntime() && isWindowsPlatform()
+}
+const ENTRIES = showsWindowsAgentRow() ? Object.values(ROWS) : [ROWS.servers]
 
 export function SshSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const sshServers = useSshServers((s) => s.servers)
+  const agentAddKeys = useSettings((s) => s.settings.windowsSshAgentAddKeys)
+  const updateSettings = useSettings((s) => s.update)
   const [sshDraft, setSshDraft] = useState<SshServer | null>(null)
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<string | null>(null)
@@ -291,6 +306,22 @@ export function SshSection({ isActive }: { isActive: boolean }): React.JSX.Eleme
           )}
         </div>
       </SearchableRow>
+
+      {showsWindowsAgentRow() ? (
+        <SearchableRow {...ROWS.windowsAgent}>
+          <FieldRow
+            label="Keep unlocked keys in the Windows ssh-agent"
+            description="Off by default. On, a key you unlock with its passphrase for an SSH project is also added to the Windows OpenSSH Authentication Agent service (when it is running), so later connections — and your own ssh — stop asking. Windows stores the key, encrypted for your account, until you remove it (ssh-add -d, or ssh-add -D for all); it stays after nodeterm quits and after a restart. Hosts whose ~/.ssh/config says AddKeysToAgent yes get this without the switch."
+            control={
+              <Switch
+                checked={agentAddKeys === true}
+                onChange={(v) => void updateSettings({ windowsSshAgentAddKeys: v })}
+                ariaLabel="Keep unlocked keys in the Windows ssh-agent"
+              />
+            }
+          />
+        </SearchableRow>
+      ) : null}
     </SettingsSection>
   )
 }

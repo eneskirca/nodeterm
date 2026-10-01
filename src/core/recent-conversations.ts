@@ -278,7 +278,9 @@ async function parseClaude(c: Candidate): Promise<Parsed> {
     cwd = safeCwd(o.cwd)
     if (cwd) break
   }
-  const prompt = firstPrompt(parseChatMessages(lines))
+  // Pastes stay as recorded: a prompt that STARTS with one begins with `<` and is skipped below,
+  // and a title never carries a code fence.
+  const prompt = firstPrompt(parseChatMessages(lines, { expandPastes: false }))
   const name = pickSessionName(await tailText(c, TITLE_TAIL_BYTES))
   const t = titled(name, prompt)
   // No prompt and no name: a transcript holding only bookkeeping (a `/clear` stub, a session that

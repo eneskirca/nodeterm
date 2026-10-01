@@ -103,6 +103,7 @@ foreground-process question and would be the model for that leg.
 - The session-memory panel counts Zellij sessions but does not measure them; the idle-session reaper does not see them.
 - Pasted text reaches Zellij as a command-line argument (readable by other local users while the call runs); pastes over 120 KB are refused.
 - The stale-folder banner and the live pane folder for file links are unavailable.
+- A live link to a Zellij node gets no screen snapshot (viewers start from the live stream), and can be watched only while its terminal is attached in this app.
 - SSH projects and Windows keep tmux / the session host.
 - nodeterm mobile’s direct SSH attach only finds tmux sessions.
 

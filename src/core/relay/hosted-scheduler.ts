@@ -21,7 +21,10 @@
 //    only a successful mint or start() resets the count — a transient failure in between does not,
 //    or a backend refusing every proof behind a flaky challenge would retry forever. Both refusals
 //    are logged with their kind (warn, then error), so an operator can tell the two apart;
-//  - while a backoff timer is armed it owns the next mint: nothing else may mint early.
+//  - while a backoff timer is armed it owns the next mint: nothing else may mint early;
+//  - a live link caps its bridged sessions (`maxBridged`): while full, no idle listener is kept (the
+//    broker turns further clients away), nothing is minted and no timer is armed; a session ending
+//    reopens ONE through the usual top().
 // Everything the injected deps can throw is caught: a scheduler that swallowed an exception would sit
 // in 'running' with no listener and no timer, i.e. hosting silently dead until a restart.
 import type { MintResult } from './host-token'
@@ -67,6 +70,11 @@ export interface SchedulerDeps {
   setTimeout(fn: () => void, ms: number): unknown
   clearTimeout(h: unknown): void
   onStatus?(s: SchedulerStatus): void
+  /** Open no idle listener while this many sessions are bridged (a live link's viewer cap). The
+   *  broker closes a client that finds no idle host listener, so the cap needs no other code.
+   *  Undefined = no cap; anything else must be an integer >= 1 (`createHostedScheduler` throws):
+   *  0 or a negative would be hosting that silently never listens, NaN a cap that never applies. */
+  maxBridged?: number
 }
 
 interface Entry {
@@ -80,6 +88,9 @@ const clampDelay = (ms: number): number => Math.min(MAX_DELAY_MS, ms)
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 export function createHostedScheduler(deps: SchedulerDeps, now: () => number) {
+  if (deps.maxBridged !== undefined && !(Number.isInteger(deps.maxBridged) && deps.maxBridged >= 1)) {
+    throw new RangeError(`maxBridged must be an integer >= 1 or undefined, not ${String(deps.maxBridged)}`)
+  }
   let state: SchedulerStatus['state'] = 'stopped'
   let lastError: string | null = null
   let opening = false
@@ -168,10 +179,18 @@ export function createHostedScheduler(deps: SchedulerDeps, now: () => number) {
     for (const e of live) if (!e.bridged) n++
     return n
   }
+  const bridgedCount = (): number => {
+    let n = 0
+    for (const e of live) if (e.bridged) n++
+    return n
+  }
 
   // Keep one idle listener registered. Never two mints at once, and never ahead of an armed backoff.
   async function top(): Promise<void> {
     if (state !== 'running' || opening || retry !== null || idleCount() >= 1) return
+    // Full: mint nothing, arm nothing, leave the backoff and lastError as they are. Being full is
+    // neither proof nor failure of the relay leg, and a bridged session's onClose calls top() again.
+    if (deps.maxBridged !== undefined && bridgedCount() >= deps.maxBridged) return
     if (status().mintsLastHour >= MINT_BUDGET_PER_HOUR) {
       // Out of budget: wait until the oldest mint in the window ages out (+1 ms, because the window
       // keeps a mint exactly an hour old). The retry slot makes every other path defer to this.

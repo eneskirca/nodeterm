@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "keys": [
+    {
+      "secretHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "linkId": "AAAAAAAAAAAAAAAAAAAAAA",
+      "hostPublicHex": "248c49740f0280865e9ca638c9cc1f32b015020a6ad0695b0b5c2d7d70ad9e61",
+      "viewerPublicHex": "074dd1d6df9be25839ef8d69e5d9ed41b69523d9255dcc050ca3b409cf6d8961",
+      "joinKeyHex": "257ba29f11037668071cafc88d291c8d63a088cbb2825db768f0b83c74dda201",
+      "joinKeyHashHex": "719d067205a29f7687a7f4c44c49370530eacf2f908f4c8e724b9f88c036d12e",
+      "url": "https://nodeterm.dev/s/AAAAAAAAAAAAAAAAAAAAAA#1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "linkId": "AbCdEfGhIjKlMnOpQrStUv",
+      "hostPublicHex": "38d7d938cec47e82954388abcaf4c5f5bcf56a8d34f8c23b356db98539f6d408",
+      "viewerPublicHex": "beda76d249bcd037d1511ea2438833aa0cdc57fdbe258c2976baefb049fbbc69",
+      "joinKeyHex": "580abda58a4fda2821d7791d4d6abaaaa2946b7b56c6b09c40bff22d596e91fe",
+      "joinKeyHashHex": "0e46259ff2ae7ae4fa121f053ad89ab71dd8eccd3e68763138c3eb5ddb3951ab",
+      "url": "https://nodeterm.dev/s/AbCdEfGhIjKlMnOpQrStUv#1.AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "secretHex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "linkId": "-_-_-_-_-_-_-_-_-_-_-_",
+      "hostPublicHex": "e7d5c5757e8b6956555f854561fc3858b1856fb9bbf6daf8ef61884bff81742b",
+      "viewerPublicHex": "45df4e450d431b11c6be7dd91dbadfc680a24b10f4e392835d200950fa5a5129",
+      "joinKeyHex": "06774dd6c06178807a798c85add0bdaeb60a03efefe6d48916b7d97cb188799c",
+      "joinKeyHashHex": "7eb31e2557fbe97b6cdb072994bd032bcf9544f2df6251b9de282a657a1b25a4",
+      "url": "https://nodeterm.dev/s/-_-_-_-_-_-_-_-_-_-_-_#1.__________________________________________8"
+    }
+  ],
+  "ptyFrames": [
+    {
+      "sessionId": "s1",
+      "data": "hello",
+      "hex": "010002733168656c6c6f"
+    },
+    {
+      "sessionId": "sess-é",
+      "data": "a\u001b[31mb",
+      "hex": "010007736573732dc3a9611b5b33316d62"
+    }
+  ],
+  "sessionKeys": [
+    {
+      "baseKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "hostNonceHex": "202122232425262728292a2b2c2d2e2f",
+      "clientNonceHex": "303132333435363738393a3b3c3d3e3f",
+      "info": "nodeterm-relay-session-v2",
+      "sessionKeyHex": "84cad65c51ad66339182b498586645dbe43473d759450a1eabcc883463f076e2"
+    },
+    {
+      "baseKeyHex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "hostNonceHex": "ffffffffffffffffffffffffffffffff",
+      "clientNonceHex": "00000000000000000000000000000000",
+      "info": "nodeterm-relay-session-v2",
+      "sessionKeyHex": "b981020481a96beea9f8d84ad0821080833f37f1b8dd46bbbad8eb9350ac2543"
+    }
+  ]
+}

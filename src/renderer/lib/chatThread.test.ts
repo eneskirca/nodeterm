@@ -66,6 +66,36 @@ describe('assistantTurnEnds (one action row per assistant turn)', () => {
     expect(ends.get(0)).toEqual({ copyText: '', at: undefined })
   })
 
+  it('a system chip (Background task / Agent message / System) stands alone and splits the turns around it', () => {
+    const chip = (name: string, at?: number): ChatMessage => ({
+      role: 'assistant',
+      parts: [{ kind: 'tool', name, arg: 'x', result: 'y' }],
+      ...(at === undefined ? {} : { at })
+    })
+    for (const name of ['Background task', 'Agent message', 'System']) {
+      const msgs = [say('user', 'q'), say('assistant', 'first answer', 10), chip(name, 20), say('assistant', 'reply', 30)]
+      const ends = assistantTurnEnds(msgs)
+      expect([...ends.keys()]).toEqual([1, 3])
+      expect(ends.get(1)).toEqual({ copyText: 'first answer', at: 10 })
+      expect(ends.get(3)).toEqual({ copyText: 'reply', at: 30 })
+      // A chip that ends the thread (or precedes a user message) gets no row of its own.
+      expect([...assistantTurnEnds([say('assistant', 'a', 1), chip(name, 2)]).keys()]).toEqual([0])
+      expect([...assistantTurnEnds([chip(name, 2), say('user', 'q')]).keys()]).toEqual([])
+    }
+  })
+
+  it('a local-command chip (#991) and a two-part message stay inside the turn', () => {
+    const cmd: ChatMessage = { role: 'assistant', parts: [{ kind: 'tool', name: '/model', arg: '' }] }
+    const twoParts: ChatMessage = {
+      role: 'assistant',
+      parts: [
+        { kind: 'tool', name: 'System', arg: '' },
+        { kind: 'text', text: 'b' }
+      ]
+    }
+    expect([...assistantTurnEnds([say('assistant', 'a'), cmd, twoParts]).keys()]).toEqual([2])
+  })
+
   it('a user message is never a turn end', () => {
     expect(assistantTurnEnds([say('user', 'q', 1)]).size).toBe(0)
   })

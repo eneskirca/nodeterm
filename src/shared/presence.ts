@@ -151,16 +151,30 @@ export function capCodePoints(text: string, max: number): string {
 }
 
 /**
+ * The directional formatting characters, as a character-class BODY (escapes only — a bidi character
+ * written literally makes the pattern unreadable, and a file carrying one is flagged as bidi text):
+ * ALM (U+061C), LRM/RLM (U+200E/F), the embeddings and overrides (U+202A–E) and the isolates
+ * (U+2066–9). ONE definition: `UNSAFE_DISPLAY_CHARS` below and the live-link owner side
+ * (@shared/watch-link-types `stripBidiControls`) are built from it.
+ */
+const BIDI_CONTROL_CLASS = '\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069'
+/** Only the directional formatting characters (see BIDI_CONTROL_CLASS) — for text where the other
+ *  zero-width characters must survive (a ZWJ joins an emoji sequence). Global: use with `replace`. */
+export const BIDI_CONTROL_CHARS = new RegExp(`[${BIDI_CONTROL_CLASS}]`, 'g')
+
+/**
  * Characters a display name may never contain. Names are UNVERIFIED by design (anyone may claim
  * any name), but they must not be able to MISRENDER: a bidi override (U+202E) reverses everything
  * after it, so a name stored as "Ada" + U+202E + "gnihsihp" DISPLAYS as "Adaphishing" — one peer
  * visually impersonating another with a string that inspects as something else. The marks/isolates
- * (U+200B-200F, U+2066-2069, U+FEFF) do the same job more quietly, and C0/C1 controls (newlines,
+ * (U+061C, U+200B-200F, U+2066-2069, U+FEFF) do the same job more quietly, and C0/C1 controls (newlines,
  * NUL, escapes) break a name out of its one-line chip. Strip them all; ordinary spaces, accents,
  * CJK and emoji are untouched.
  */
-// eslint-disable-next-line no-control-regex
-export const UNSAFE_DISPLAY_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g
+export const UNSAFE_DISPLAY_CHARS = new RegExp(
+  `[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\ufeff${BIDI_CONTROL_CLASS}]`,
+  'g'
+)
 /** The name this file has always used for it. ONE set: the board's display text strips the same
  *  characters (@shared/kanban-ops `displayText`). Global, so use it with `replace`, never `test`. */
 const UNSAFE_NAME_CHARS = UNSAFE_DISPLAY_CHARS

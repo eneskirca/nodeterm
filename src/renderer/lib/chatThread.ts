@@ -2,6 +2,7 @@
 // action row goes, what its Copy copies, and how its time reads. No React — see ChatPanel.tsx for
 // the glue and chatThread.test.ts for the pins.
 import type { ChatMessage } from '@shared/types'
+import { isSystemRecordMessage } from '@shared/chat-system-records'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -41,13 +42,18 @@ export interface TurnEnd {
  * one message per line — a row under every one of them would be a row per tool call. A turn is a
  * maximal run of consecutive assistant messages. Copy takes only its TEXT parts (the answer as
  * markdown source), never thinking or tool plumbing.
+ *
+ * A system-record chip (a background task's completion, another agent's message, an
+ * auto-continuation — `isSystemRecordMessage`) is assistant-role only because the wire has no other
+ * role for it; it is not the agent talking, so it is a boundary like a user message: no row of its
+ * own, and the answers before and after it stay two turns. A local-command chip is not a boundary.
  */
 export function assistantTurnEnds(messages: readonly ChatMessage[]): Map<number, TurnEnd> {
   const ends = new Map<number, TurnEnd>()
   let texts: string[] = []
   let at: number | undefined
   messages.forEach((m, i) => {
-    if (m.role !== 'assistant') {
+    if (m.role !== 'assistant' || isSystemRecordMessage(m)) {
       texts = []
       at = undefined
       return
@@ -55,7 +61,7 @@ export function assistantTurnEnds(messages: readonly ChatMessage[]): Map<number,
     for (const p of m.parts) if (p.kind === 'text' && p.text) texts.push(p.text)
     if (typeof m.at === 'number') at = m.at
     const next = messages[i + 1]
-    if (!next || next.role !== 'assistant') {
+    if (!next || next.role !== 'assistant' || isSystemRecordMessage(next)) {
       ends.set(i, { copyText: texts.join('\n\n'), at })
       texts = []
       at = undefined

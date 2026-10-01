@@ -237,6 +237,24 @@ describe('electronPlatform + relay peers', () => {
     warn.mockRestore()
   })
 
+  it('a QUIET peer gets no broadcast and is not a client, but is reachable and counts as watching', () => {
+    const p = electronPlatform()
+    h.clientIds = [1]
+    const loud = peerSink()
+    const quiet = peerSink()
+    registerPeerSink(PEER, loud.sink)
+    registerPeerSink(PEER + 1, quiet.sink, { quiet: true, selfPaced: true })
+
+    p.broadcast('presence:peer', { op: 'join' })
+    expect(loud.text).toHaveLength(1)
+    expect(quiet.text).toEqual([])
+    expect(p.clientIds()).toEqual([1, PEER])
+    expect(p.quietClientIds?.()).toEqual([PEER + 1])
+
+    p.sendTo(PEER + 1, 'watch:meta', {})
+    expect(JSON.parse(quiet.text[0]!).channel).toBe('watch:meta')
+  })
+
   it('is BIT-IDENTICAL to the webContents-only path with no peer registered (merge gate)', () => {
     const p = electronPlatform()
     h.clientIds = [5]

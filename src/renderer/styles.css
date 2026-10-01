@@ -11531,6 +11531,287 @@ button.pull-checks__name {
   background: var(--state-warning);
   border-color: transparent;
 }
+/* Live link chip — "this terminal is being broadcast" (components/LiveLinkChip.tsx), one component on
+   the node header, the kanban card, the card modal and the sessions sidebar row. The dot reads the
+   ERROR role on purpose (task-14-17 H28): the spec asks for a red broadcast dot, and a role of its own
+   would have to pass styles.palette.test's one-colour-per-meaning pins. The label stays ink (muted
+   when refused, as the spec asks). Never animated: a chip that pulsed for as long as a link lives
+   would hold the compositor's frame loop open (CLAUDE.md, Idle energy). */
+.live-chip {
+  --live-tone: var(--state-error);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--live-tone) 45%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--live-tone) 12%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.live-chip:hover {
+  background: color-mix(in srgb, var(--live-tone) 20%, transparent);
+}
+.live-chip__dot,
+.live-chip__unread {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live-tone);
+}
+/* Reconnecting: the relay leg is down; it comes back on its own. */
+.live-chip--offline {
+  --live-tone: var(--state-warning);
+}
+/* Viewers are waiting for a session they may join (R63): the owner has to open the terminal. */
+.live-chip--waiting {
+  --live-tone: var(--state-warning);
+}
+/* Refused: nodeterm's service will not host the link — muted, the owner opens it to see why. */
+.live-chip--refused {
+  --live-tone: var(--muted);
+  color: var(--muted);
+}
+.live-chip__unread {
+  background: var(--state-unread);
+}
+.kanban-card__live,
+.kanban-modal__live {
+  margin-left: 0;
+}
+.ss-live {
+  flex: 0 0 auto;
+  height: 16px;
+  margin-left: 0;
+  padding: 0 5px;
+  font-size: 10px;
+}
+/* Its popover: a body portal above the card modal's scrim (55) and the dictation overlay (60). A
+   solid --panel: under Liquid Glass it is not in either glass list, so it stays opaque. */
+.live-pop__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 61;
+}
+.live-pop {
+  position: fixed;
+  z-index: 62;
+  box-sizing: border-box;
+  width: 340px;
+  max-width: calc(100vw - 12px);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: default;
+}
+.live-pop:focus {
+  outline: none;
+}
+.live-pop p {
+  margin: 0;
+}
+.live-pop__link + .live-pop__link {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.live-pop__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.live-pop__role,
+.live-pop__who {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.live-pop__time,
+.live-pop__muted {
+  color: var(--muted);
+}
+.live-pop p.live-pop__label {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.live-pop p.live-pop__status {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+}
+.live-pop p.live-pop__status--refused {
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.live-pop__actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+.live-pop .confirm__btn.live-pop__btn {
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.live-pop p.live-pop__error {
+  margin: 4px 0;
+  color: var(--danger);
+}
+.live-pop__viewers ul,
+.live-pop__thread {
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+.live-pop__viewers li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.live-pop .live-pop__kick {
+  margin-left: auto;
+}
+.live-pop p.live-pop__note {
+  margin-top: 4px;
+  font-size: 11px;
+}
+.live-pop__chat {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.live-pop__thread {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.live-pop__msg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  margin: 4px 0;
+}
+.live-pop__text {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.live-pop__copy {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.live-pop__copy:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.live-pop__reply {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.live-pop .confirm__input.live-pop__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+/* The create dialog (LiveLinkDialog): the `.confirm` shell, a little wider for the URL. */
+.confirm.live-dialog {
+  width: 460px;
+}
+.live-dialog .live-dialog__title {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.live-dialog__group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  font-size: 12px;
+}
+.live-dialog__group legend {
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.live-dialog__group label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.live-dialog__label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.live-dialog__label .confirm__input {
+  margin: 4px 0 10px;
+}
+/* The exposure warning: always visible, never a checkbox. A hue wash with ink text (the status-chip
+   recipe), so it reads the same on the default look and under Liquid Glass. */
+.live-dialog__warning {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.live-dialog__error {
+  margin: 0 0 10px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.live-dialog__url {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.live-dialog__url .confirm__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.live-dialog__note {
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
 /* The session name in the card modal header: sized to its text, not a flex-filling detail line. */
 .kanban-modal__session {
   flex: 0 1 auto;
@@ -15559,8 +15840,10 @@ body.focus-mode .dock:hover {
    (#323232 with no shadow, #242424, #1e1e1e, #1a1a1a, a near-black 0.98 slab) beside the glass
    menus. Under glass each is the menu surface's own colour made solid (`--panel`, the colour the
    glass fill is `--panel` at an alpha of), with the glass hairline and one shadow. Every modal
-   dialog is glass (the text list above); these four are the only opaque floating surfaces. */
-:root[data-nt-glass='on'] :is(.ctx-popover, .color-popover, .label-picker, .kanban-meta__picker) {
+   dialog is glass (the text list above); these five are the only opaque floating surfaces — the
+   fifth, the live-link popover (LiveLinkPopover), opens over the card modal as well as a glass node
+   header, and stays solid for the same reason. */
+:root[data-nt-glass='on'] :is(.ctx-popover, .color-popover, .label-picker, .kanban-meta__picker, .live-pop) {
   background: var(--panel);
   border: 1px solid var(--glass-edge);
   box-shadow: 0 12px 36px rgba(0, 0, 0, calc(0.45 * var(--shadow-k)));
@@ -15856,7 +16139,7 @@ body.focus-mode .dock:hover {
    floating surfaces (the popovers inside glass nodes, below): the glass placeholder is sized for the
    translucent fill, and on a solid popover it read brighter than the popover's own body text, as if
    the field were already filled (visual QA round 4, N4-M2). */
-:root[data-nt-glass='on'] :not(.sticky-node__body, :is(.ctx-popover, .color-popover, .label-picker, .kanban-meta__picker) *)::placeholder {
+:root[data-nt-glass='on'] :not(.sticky-node__body, :is(.ctx-popover, .color-popover, .label-picker, .kanban-meta__picker, .live-pop) *)::placeholder {
   color: var(--glass-placeholder);
 }
 /* An empty field must look empty (visual QA round 3, NM1): the placeholder's 4.5:1 floor sits at

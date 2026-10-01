@@ -2347,4 +2347,61 @@ describe('knownNodeIds — every node id in every project, or undefined when it 
     await fresh.load()
     expect(fresh.knownNodeIds()).toBeUndefined()
   })
+  // R44: a lost workspace.json is rebuilt from nothing — the renderer's boot save writes an EMPTY
+  // index while every project.json still holds its nodes. Read as complete, it said every node was
+  // gone (a live link revoked a second after launch). The STRICT accessor (live links) answers unknown
+  // for the rest of such a run…
+  it('the strict accessor stays undefined for the rest of a run whose index was lost or corrupt, whatever is saved after', async () => {
+    await new WorkspaceStore().save(ws([project({ id: 'p-local', cwd: projRoot })]))
+    for (const lose of ['corrupt', 'deleted'] as const) {
+      const index = path.join(userData, 'workspace.json')
+      if (lose === 'corrupt') await fs.writeFile(index, '{nope')
+      else await fs.rm(index, { force: true })
+      const store = new WorkspaceStore()
+      await store.load()
+      await store.save(ws([]))
+      expect(store.knownNodeIdsStrict()).toBeUndefined()
+      await store.save(ws([project({ id: 'p-local', cwd: projRoot })]))
+      expect(store.knownNodeIdsStrict()).toBeUndefined()
+      // The next run reads a readable index again, and answers.
+      const next = new WorkspaceStore()
+      await next.load()
+      expect([...(next.knownNodeIdsStrict() ?? [])]).toEqual(['term-1'])
+    }
+  })
+  // …while the agent-status MIRROR's accessor keeps its behaviour from before live links (R64/M2):
+  // pruning an identity against a rebuilt index costs one hook event, and the flag lasts the whole
+  // process — a Server Edition started on a fresh data dir runs for weeks.
+  it("the mirror's accessor answers in such a run, exactly as before (it never reads the rebuild flag)", async () => {
+    await new WorkspaceStore().save(ws([project({ id: 'p-local', cwd: projRoot })]))
+    for (const lose of ['corrupt', 'deleted'] as const) {
+      const index = path.join(userData, 'workspace.json')
+      if (lose === 'corrupt') await fs.writeFile(index, '{nope')
+      else await fs.rm(index, { force: true })
+      const store = new WorkspaceStore()
+      await store.load()
+      // Before any save there is no index in memory: unknown, as it always was.
+      expect(store.knownNodeIds()).toBeUndefined()
+      await store.save(ws([]))
+      expect(store.knownNodeIds()).toEqual(new Set())
+      await store.save(ws([project({ id: 'p-local', cwd: projRoot })]))
+      expect([...(store.knownNodeIds() ?? [])]).toEqual(['term-1'])
+    }
+  })
+  // Re-review NEW-1: an index of the right version that cannot be BUILT (loadV3 throws: a `cwd` that
+  // is not a string) keeps rejecting as before, and marks the run like any other unreadable index.
+  it('a v3 index whose build throws still rejects the load, and marks the run (strict only)', async () => {
+    await fs.writeFile(path.join(userData, 'workspace.json'), JSON.stringify({ version: 3, entries: [{ id: 'p1', name: 'x', color: '#fff', cwd: 5 }] }))
+    const store = new WorkspaceStore()
+    await expect(store.load()).rejects.toThrow()
+    await store.save(ws([]))
+    expect(store.knownNodeIdsStrict()).toBeUndefined()
+    expect(store.knownNodeIds()).toEqual(new Set())
+  })
+  it('a readable index: the two accessors agree', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'p-local', cwd: projRoot })]))
+    expect(store.knownNodeIdsStrict()).toEqual(store.knownNodeIds())
+    expect(new WorkspaceStore().knownNodeIdsStrict()).toBeUndefined() // not loaded: unknown to both
+  })
 })

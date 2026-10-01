@@ -235,6 +235,23 @@ describe('ProjectIconPicker', () => {
     })
   })
 
+  // lucide-react 1.x dropped its brand icons, so a `Github` import resolves to undefined at runtime
+  // and the whole picker throws on render. The glyph is our own now; pin that both uses paint it.
+  it('draws the GitHub glyph on the Avatar tab and the "Use GitHub avatar" button', async () => {
+    useAvatar(vi.fn(async () => ({ dataUrl: 'data:image/png;base64,AV==' })))
+    await mount()
+    await flush()
+    const avatarTab = tab('Avatar')
+    expect(avatarTab.querySelector('svg')?.getAttribute('class')).toBe('size-3.5')
+    await click(avatarTab)
+    const useBtn = [...host.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Use GitHub avatar'
+    )!
+    const svg = useBtn.querySelector('svg')!
+    expect(svg.getAttribute('class')).toBe('size-4')
+    expect(svg.querySelectorAll('path').length).toBe(2)
+  })
+
   it('keeps an already-set github icon when the resolve returns null (anti-clobber)', async () => {
     const projectAvatar = vi.fn(async () => null)
     useAvatar(projectAvatar)

@@ -35,6 +35,10 @@ const ROWS = {
     keywords: ['snap', 'grid', 'align', 'arrange', 'auto', 'mode']
   },
   panHover: { title: 'Pan-hover delay (ms)', keywords: ['pan', 'hover', 'delay', 'focus', 'guard'] },
+  focusFollowsPointer: {
+    title: 'Terminal focus follows pointer',
+    keywords: ['focus', 'hover', 'pointer', 'click', 'follows', 'x11', 'mouse', 'keyboard', 'terminal', 'mac']
+  },
   doubleClick: { title: 'Double-click to focus', keywords: ['double', 'click', 'focus'] },
   focusZoom: {
     title: 'Zoom when going to a node',
@@ -198,9 +202,31 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           }
         />
       </SearchableRow>
+      <SearchableRow {...ROWS.focusFollowsPointer}>
+        <FieldRow
+          label="Terminal focus follows pointer"
+          description={
+            settings.terminalFocusFollowsPointer
+              ? 'On: hovering a terminal for the pan-hover delay gives it the keyboard, and moving the pointer off it takes the keyboard away. Turn off for click to focus.'
+              : 'Off (click to focus): click a terminal to type in it. It keeps the keyboard until you click another node, the empty canvas or a field — moving the pointer away changes nothing.'
+          }
+          control={
+            <Switch
+              checked={settings.terminalFocusFollowsPointer}
+              onChange={(v) => update({ terminalFocusFollowsPointer: v })}
+              ariaLabel="Terminal focus follows pointer"
+            />
+          }
+        />
+      </SearchableRow>
       <SearchableRow {...ROWS.panHover}>
         <FieldRow
           label="Pan-hover delay (ms)"
+          description={
+            settings.terminalFocusFollowsPointer
+              ? undefined
+              : 'Not used in click-to-focus mode (Terminal focus follows pointer is off): hovering never takes the keyboard.'
+          }
           control={
             <NumberField
               value={settings.panHoverDelay}

@@ -1,0 +1,204 @@
+[
+  {
+    "before": null,
+    "maxBytes": 262144,
+    "grownMaxBytes": 262144,
+    "start": 0,
+    "parse": {
+      "messages": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "look at this log\n\n```\nline 1\nline 2\n```\n\nwhat failed?"
+            }
+          ],
+          "at": 1790362800000,
+          "key": 0
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Line 2 failed."
+            }
+          ],
+          "at": 1790362801000,
+          "key": 426
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "\n`````\nuse ```js\ncode\n```` four\n`````\n\n\n\n```\nplain\n```\n\n"
+            }
+          ],
+          "at": 1790362802000,
+          "key": 823
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Two snippets."
+            }
+          ],
+          "at": 1790362803000,
+          "key": 1301
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "[Image #1] compare\n\n\n```\nx = 1\n```\n\n"
+            }
+          ],
+          "at": 1790362804000,
+          "key": 1697
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Compared."
+            }
+          ],
+          "at": 1790362805000,
+          "key": 2222
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "fyi\n\n```\n<task-notification><summary>s</summary></task-notification>\n```\n"
+            }
+          ],
+          "at": 1790362806000,
+          "key": 2614
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "\n```\nold </pasted_content id=\"00ff\"> paste\n```\n"
+            }
+          ],
+          "at": 1790362807000,
+          "key": 3058
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "\n```\n\n```\n"
+            }
+          ],
+          "at": 1790362808000,
+          "key": 3477
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "\n```\nx\n<pasted_content id=\"aaaa\">\ny\n```\n\nz\n</pasted_content id=\"aaaa\">"
+            }
+          ],
+          "at": 1790362809000,
+          "key": 3857
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content>\nno id\n</pasted_content>"
+            }
+          ],
+          "at": 1790362810000,
+          "key": 4305
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content id=\"AB12\">\nupper case\n</pasted_content id=\"AB12\">"
+            }
+          ],
+          "at": 1790362811000,
+          "key": 4666
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content id=\"ab123\">\nfive digits\n</pasted_content id=\"ab123\">"
+            }
+          ],
+          "at": 1790362812000,
+          "key": 5056
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content id=\"ab12\">no newline after the open\n</pasted_content id=\"ab12\">"
+            }
+          ],
+          "at": 1790362813000,
+          "key": 5449
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content id=\"ab12\">\nno newline before the close</pasted_content id=\"ab12\">"
+            }
+          ],
+          "at": 1790362814000,
+          "key": 5852
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<pasted_content id=\"0009\">\nnever closed"
+            }
+          ],
+          "at": 1790362815000,
+          "key": 6257
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Noted."
+            }
+          ],
+          "at": 1790362816000,
+          "key": 6618
+        }
+      ],
+      "olderCursor": null,
+      "unmatchedResults": [],
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "noCompleteLine": false
+    }
+  }
+]

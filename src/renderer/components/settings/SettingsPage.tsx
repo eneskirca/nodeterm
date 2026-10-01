@@ -27,6 +27,7 @@ import { LicenseSection } from './sections/LicenseSection'
 import { PresenceIdentitySection } from './sections/PresenceIdentitySection'
 import { RemoteSection } from './sections/RemoteSection'
 import { TeamAccessSection } from './sections/TeamAccessSection'
+import { LiveLinksSection } from './sections/LiveLinksSection'
 import { SshSection } from './sections/SshSection'
 import { UpdatesSection } from './sections/UpdatesSection'
 import { PrivacySection } from './sections/PrivacySection'
@@ -126,6 +127,7 @@ export function SettingsPage({
             <PresenceIdentitySection isActive={active === 'presence'} />
             <RemoteSection isActive={active === 'remote'} onClose={onClose} />
             <TeamAccessSection isActive={active === 'team-access'} onClose={onClose} />
+            <LiveLinksSection isActive={active === 'live-links'} />
             <SshSection isActive={active === 'ssh'} />
             <UpdatesSection isActive={active === 'updates'} />
             <PrivacySection isActive={active === 'privacy'} />

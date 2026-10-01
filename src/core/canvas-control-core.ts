@@ -873,6 +873,11 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  and do not report the session as started. `--cwd`/`--count`/`--group`/`--after`/`--prompt`',
     '  all still apply. If your project is CLOSED the node is still saved into it and the reply',
     '  says the project is closed; the tab is not reopened for you.',
+    '  A cold-opened node has NO session yet, so a `send` to it cannot land: it is queued for up to',
+    '  24 hours and flushed after the node starts and finishes its first turn (`targetNotStarted` when',
+    '  it cannot be queued; a message queued before the node started does not survive an app restart).',
+    '  To coordinate with a station now, open it with `--run-now` or start it with `run --node <id> [--project <id>]`.',
+    '  A station started a moment ago that has not reported its status yet is queued the same way.',
     '  Add `--run-now` to start a cold-opened session immediately instead. Put it LAST on the line,',
     '  in either form (`--run-now` or `--run-now=1`): an older shim can still sit on an SSH host (it',
     '  is rewritten only on connect), and it takes the token after any flag as that flag\'s value,',
@@ -900,6 +905,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  `queued: false` is not proof the agent is running. `deliveredIds` confirms command delivery only.',
     '  `list` names QUEUED, STARTING, LAUNCH FAILED, EXPIRED, DROPPED and AGENT STATUS UNCONFIRMED',
     '  where observed. STARTING means a background start is in flight: do not `run` that node again.',
+    '  Every other agent row names its state: WORKING, IDLE (its turn ended; it waits for input) or',
+    '  NEEDS YOU (a question or approval waits for a person, not for you). A plain terminal row carries no state.',
     '  `--prompt` arrives on ONE LINE: every run of whitespace in it, newlines included, is',
     '  collapsed to a single space before the session starts (the prompt rides the launch command',
     '  line typed into the pane). For a structured or multi-line brief use `--prompt-file <abs',
@@ -1462,6 +1469,8 @@ Verbs:
   \`queued: false\` does not prove the agent is running. \`deliveredIds\` confirms command delivery only.
   \`list\` names QUEUED, STARTING, LAUNCH FAILED, EXPIRED, DROPPED and AGENT STATUS UNCONFIRMED
   where observed. STARTING means a background start is in flight: do not \`run\` that node again.
+  Every other agent row names its state: WORKING, IDLE (its turn ended; it waits for input) or
+  NEEDS YOU (a question or approval waits for a person, not for you). A plain terminal row carries no state.
   \`--prompt\` arrives on ONE LINE. Every run of whitespace in it — newlines included — is
   collapsed to a single space before the session starts, because the prompt is passed as an
   argument on the agent CLI's launch command line and that line is typed into the pane. Two

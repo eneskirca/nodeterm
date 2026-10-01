@@ -33,6 +33,11 @@ describe('extractEntryFields', () => {
     expect(f.text.length).toBeLessThanOrEqual(INDEX_TEXT_CAP_BYTES)
   })
 
+  it('a paste in the first prompt adds no code fences to the title', () => {
+    const r = JSON.stringify({ type: 'user', cwd: '/c', message: { content: 'see <pasted_content id="ab12">\nboom\n</pasted_content id="ab12">' } })
+    expect(extractEntryFields(r).title).not.toContain('```')
+  })
+
   it('returns empty fields for unparseable input', () => {
     expect(extractEntryFields('garbage\n{bad json')).toEqual({ cwd: '', title: '', text: '' })
   })

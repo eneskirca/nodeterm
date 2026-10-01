@@ -60,6 +60,23 @@ describe('isHostOnlyChannel', () => {
     expect(isHostOnlyChannel('notgithubControl:approve')).toBe(false)
   })
 
+  it('every owner live-link channel is host-only, and the viewer protocol is not in that namespace', () => {
+    // A live link publishes a host terminal to anyone with its URL, paid for with the host's Pro, and
+    // the list answer carries every link's secret. A hosted editor passes every access check, so this
+    // prefix is the only thing between a teammate and a link.
+    const owner = (Object.values(IPC) as unknown[]).filter(
+      (v): v is string => typeof v === 'string' && v.startsWith('watchLink:')
+    )
+    expect(owner).toHaveLength(10)
+    for (const ch of owner) expect(isHostOnlyChannel(ch), ch).toBe(true)
+    // A namespace, not a list: a verb added later is refused the day it is added.
+    expect(isHostOnlyChannel('watchLink:something-new')).toBe(true)
+    // The viewer's own tunnel messages are `watch:*` — never refused as host-only, or a Commenter
+    // could not chat (relay-host refuses host-only methods before any policy runs).
+    expect(isHostOnlyChannel('watch:chat')).toBe(false)
+    expect(isHostOnlyChannel('watch:meta')).toBe(false)
+  })
+
   it('carries the refusal wording the peer sees, so both shells answer identically', () => {
     expect(HOST_ONLY_REFUSAL).toBe('host-control method is not available to relay peers')
   })

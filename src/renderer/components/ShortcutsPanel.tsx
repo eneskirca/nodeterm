@@ -20,7 +20,8 @@
  * the two zoom chords (`lib/zoomShortcut.ts`), the ⌘1-9 project jump (`lib/projectJump.ts`) and
  * the terminal's own behaviors. They are literal because the registry does not know them — but
  * they are still DERIVED from settings wherever the behavior is: the hover dwell prints
- * `settings.panHoverDelay`, and the drag rows follow `settings.canvasDragMode`, because the panel
+ * `settings.panHoverDelay` (or "Click" when `settings.terminalFocusFollowsPointer` is off, #757),
+ * and the drag rows follow `settings.canvasDragMode`, because the panel
  * used to claim a fixed 0.6 s and a right-drag pan that React Flow (`panOnDrag={[1]}` — middle
  * button only) has never done.
  *
@@ -44,6 +45,7 @@ import { isMacPlatform, keyLabel } from '@shared/platform-utils'
 import { isBrowserRuntime } from '../bridge/runtime'
 import { effectiveBindings } from '../lib/keybindingOverrides'
 import { useSettings } from '../state/settings'
+import { resolveFocusFollowsPointer } from '../lib/terminalFocusMode'
 import { IconClose } from './icons'
 
 export interface ShortcutsPanelProps {
@@ -81,6 +83,9 @@ export interface ShortcutSectionsOptions {
   doubleClickFocus: boolean
   /** `settings.wheelZoom` — a plain wheel zooms too. */
   wheelZoom: boolean
+  /** `settings.terminalFocusFollowsPointer` (issue #757). Off = click to focus: no hover dwell
+   *  ever takes the keyboard, so the dwell row would advertise a gesture that does nothing. */
+  focusFollowsPointer: boolean
   /** Canonical effective binding strings for a command; `[]` when unbound or disabled. */
   bindingsFor: (id: CommandId) => readonly string[]
 }
@@ -147,14 +152,19 @@ function extraRows(group: CommandGroup, o: ShortcutSectionsOptions): ShortcutRow
 }
 
 /** Terminal facts the registry knows nothing about: tmux owns the mouse, xterm owns two remaps,
- *  and the hover guard owns the first ~half second. Each verified against the code that
+ *  and the hover guard owns the first ~half second (or, in click-to-focus mode, everything until
+ *  the first click). Each verified against the code that
  *  implements it (see CLAUDE.md "tmux owns the mouse" and terminal/terminal-config.ts). */
 function behaviorRows(o: ShortcutSectionsOptions): ShortcutRow[] {
   const seconds = Math.round(o.panHoverDelay / 100) / 10
   const forceSelect = o.isMac ? '⌥' : 'Shift'
+  // Click to focus (#757): the terminal takes the keyboard on a click and keeps it until you click
+  // elsewhere, so ANY drag over an unfocused terminal moves it — there is no "quick" window.
+  const enter = o.focusFollowsPointer ? [`Hover ${seconds}s`] : ['Click']
+  const move = o.focusFollowsPointer ? ['Quick drag'] : ['Drag']
   return [
-    row([`Hover ${seconds}s`], 'Enter the terminal (type / select)'),
-    row(['Quick drag'], 'Move the terminal (before it focuses)'),
+    row(enter, 'Enter the terminal (type / select)'),
+    row(move, 'Move the terminal (before it focuses)'),
     row(['Wheel'], "Scroll tmux's own history"),
     row(['Drag'], 'Select — copies to the system clipboard'),
     row([forceSelect, 'drag'], 'Select in the emulator (apps that grab the mouse)'),
@@ -213,6 +223,9 @@ export function ShortcutsPanel({ onClose, onCustomize }: ShortcutsPanelProps) {
   const dragMode = useSettings((s) => s.settings.canvasDragMode)
   const doubleClickFocus = useSettings((s) => s.settings.doubleClickFocus)
   const wheelZoom = useSettings((s) => s.settings.wheelZoom)
+  const focusFollowsPointer = resolveFocusFollowsPointer(
+    useSettings((s) => s.settings.terminalFocusFollowsPointer)
+  )
   const isMac = isMacPlatform()
   const sections = buildShortcutSections({
     isMac,
@@ -221,6 +234,7 @@ export function ShortcutsPanel({ onClose, onCustomize }: ShortcutsPanelProps) {
     dragMode: dragMode === 'pan' ? 'pan' : 'select',
     doubleClickFocus,
     wheelZoom,
+    focusFollowsPointer,
     bindingsFor: effectiveBindings
   })
 

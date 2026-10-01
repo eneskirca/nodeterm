@@ -212,12 +212,24 @@ export function answersOffCanvas(verb: string): boolean {
  *     to read `activeProjectId`, which off canvas was a second bug hiding behind the first: after
  *     the travel the two projects were the same, so the wrong read was never wrong in practice.
  *
+ *   - `group` / `ungroup` / `move` / `arrange` / `align` lay out from persisted sizes (below).
+ *
  * Deliberately NOT here — and these REFUSE rather than travel, see `offScreenDisposition`: the
- * structural verbs. A refusal an agent can act on is strictly better than hijacking the human's
+ * verbs that arm a graph, park a live terminal, read the worktree store or drive a webview. A refusal an agent can act on is strictly better than hijacking the human's
  * screen, and every one of these would have to guess at something the serialized copy does not
  * carry.
  */
 const STORED_NODE_VERBS: ReadonlySet<string> = new Set([
+  // The five structural verbs run their pure transforms over the stored nodes, laid out from the
+  // PERSISTED sizes (nothing off screen was measured — but a node is born at a persisted default
+  // size and keeps it until the user resizes it, which is persisted too), and write back only the
+  // geometry that changed (renderer/lib/storedGeometry.ts). They were refused here once; a team an
+  // orchestrator could open off screen but never frame was the worse outcome.
+  'group',
+  'ungroup',
+  'move',
+  'arrange',
+  'align',
   'write',
   'close',
   'run',
@@ -242,16 +254,6 @@ export function answersFromStoredNodes(verb: string): boolean {
  * verb unable to act, it says so.
  */
 const OFF_SCREEN_REFUSALS: Readonly<Record<string, string>> = {
-  // The five structural verbs rewrite the WHOLE node array through React Flow's parent/extent
-  // model and re-fit frames from MEASURED sizes (`nodeW`/`nodeH` prefer `measured` over the
-  // persisted `size`), which the serialized copy does not carry — nothing rendered it. Laying a
-  // canvas out to geometry the user would not get on screen, and round-tripping every node
-  // through the serializers to persist it, is drift no reply could report.
-  group: 'grouping re-fits frames from measured node sizes, which only a rendered canvas has',
-  ungroup: 'ungrouping re-fits frames from measured node sizes, which only a rendered canvas has',
-  move: 'reparenting re-fits both frames from measured node sizes, which only a rendered canvas has',
-  arrange: 'arranging lays nodes out from measured node sizes, which only a rendered canvas has',
-  align: 'aligning lays nodes out from measured node sizes, which only a rendered canvas has',
   // Both compose `--after` arming and context bridges over nodes created in the SAME tick, and
   // check each dep against the live canvas before arming it. A cold open defers ONE node's launch;
   // these defer a graph, and an armed station is fired by the live canvas effect.

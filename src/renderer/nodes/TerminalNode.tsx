@@ -227,6 +227,14 @@ import { pasteWithImageReceipt } from '../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../terminal/usePasteReceipt'
 import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
+import { HoverGuard } from './HoverGuard'
+import {
+  hoverTakesKeyboard,
+  pointerLeaveReleases,
+  resolveFocusFollowsPointer
+} from '../lib/terminalFocusMode'
+import { useClickToFocus } from './useClickToFocus'
+import { reparentKeepingFocus } from './reparentKeepingFocus'
 import { isHidden } from '../lib/ui-visibility'
 import { useTerminalGlass } from '../lib/useTerminalGlass'
 import { isLiquidGlass } from '../lib/appTheme'
@@ -247,6 +255,7 @@ import { pullBoardFor, useGitHubIssues } from '../state/githubIssues'
 import type { AgentState } from '@shared/agents/normalize'
 import type { ClientId } from '@shared/presence'
 import { PresenceChips } from '../components/PresenceChips'
+import { LiveLinkChip } from '../components/LiveLinkChip'
 import { useAgentNodes } from '../state/agentNodes'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useProjects } from '../state/projects'
@@ -918,16 +927,8 @@ const CELL_SIZE_EPS = 0.01
  * can only make that respawn fresh, not impossible — it would resurrect a terminal its owner
  * deliberately killed. Cleared only on permanent deletion (disposeTerminalOnUnmount).
  */
-/**
- * How far the pointer may travel between press and release and still count as a CLICK on the hover
- * guard, in screen px. Above it the gesture moved the node and the terminal keeps waiting; below
- * it, the click focuses immediately (issue #87).
- *
- * Generous rather than tight: a few pixels of travel is a hand, not an intent, and the cost of
- * being wrong is asymmetric — a missed focus makes the user click again (and, before this, made
- * that click count against them), while an over-eager focus costs one Escape.
- */
-const GUARD_CLICK_SLOP = 4
+// GUARD_CLICK_SLOP (the click-vs-drag threshold on the hover guard) lives with the guard itself,
+// in `HoverGuard.tsx`, beside the pointer-event handling that makes the click reachable at all.
 
 interface CoState {
   /** The pty runs at a SMALLER subscriber's grid than we could fit → center + letterbox. */
@@ -1346,6 +1347,12 @@ export function TerminalNode({
   // Scoped selectors (not the whole settings object) so this node only re-renders when a
   // field it actually uses changes — not on every unrelated settings edit.
   const panHoverDelay = useSettings((s) => s.settings.panHoverDelay)
+  // Issue #757: does the keyboard follow the pointer (hover dwell in, mouseleave out — the default)
+  // or a click (Mac-style: the clicked terminal keeps it until focus really moves elsewhere)? Read
+  // live, so toggling it in Settings applies to every mounted node without a remount.
+  const focusFollowsPointer = resolveFocusFollowsPointer(
+    useSettings((s) => s.settings.terminalFocusFollowsPointer)
+  )
   // One shallow-compared subscription for the whole appearance slice — see useXtermVisualSettings.
   // Scoped to the OWNING project so its `terminal.theme` / `terminal.fontFamily` layer over the
   // global settings for this node, and for no other project's nodes.
@@ -1368,8 +1375,6 @@ export function TerminalNode({
   // button are absent from `isHidden`'s inventory and stay put whatever the list says.
   const hiddenHeaderButtons = useSettings((s) => s.settings.hiddenHeaderButtons)
   const bodyRef = useRef<HTMLDivElement>(null)
-  /** Where a press on the hover guard started, for the click-vs-drag test in `onGuardUp`. */
-  const guardDownAt = useRef<{ x: number; y: number } | null>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
   // this app never built and the user could not switch off (issue #84). Its own effect, keyed on
@@ -1553,6 +1558,8 @@ export function TerminalNode({
   const [, bumpFocused] = useState(0)
   const focused = focusedNodeId() === id
   const focusedRef = useRef(focused)
+  /** True only while focus mode's reparent is moving the root (see reparentKeepingFocus). */
+  const reparentingRef = useRef(false)
   focusedRef.current = focused
   useEffect(() => {
     const read = (): void => {
@@ -1584,10 +1591,15 @@ export function TerminalNode({
     // effect then re-runs with the same answer and no-ops. (Review finding on #267.)
     glyphSyncRef.current?.(false)
     const home = root.parentElement
-    surface.appendChild(root)
+    // The move blurs a focused xterm (MEASURED) — give it back, and tell click-to-focus the blur
+    // is ours, not the user leaving (reparentKeepingFocus).
+    const setMoving = (moving: boolean): void => {
+      reparentingRef.current = moving
+    }
+    reparentKeepingFocus(root, surface, setMoving)
     return () => {
       try {
-        home?.appendChild(root)
+        if (home) reparentKeepingFocus(root, home, setMoving)
       } catch {
         /* home unmounted with the project — React already gave up on this subtree */
       }
@@ -5429,7 +5441,7 @@ export function TerminalNode({
   /**
    * Take the keyboard: focus xterm, leave the guard, and report the node active.
    *
-   * Split out of `onBodyEnter` so a deliberate CLICK can run it with no delay — see `onGuardUp`.
+   * Split out of `onBodyEnter` so a deliberate CLICK can run it with no delay — see `onGuardClick`.
    *
    * `ack` (default true) says a human AIMED at this node, and two things follow from it. It marks
    * the node's finish read, which reaches past this machine (`clearUnread` → `ackDone` → the notch
@@ -5472,9 +5484,23 @@ export function TerminalNode({
     // enterNow closes over live refs/setters; re-running on its identity would fire spuriously.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusReq])
+  const focusFollowsPointerRef = useRef(focusFollowsPointer)
+  focusFollowsPointerRef.current = focusFollowsPointer
+  // Switching to click to focus cancels a dwell that was already counting down.
+  useEffect(() => {
+    if (focusFollowsPointer) return
+    if (dwellRef.current) clearTimeout(dwellRef.current)
+    dwellRef.current = null
+  }, [focusFollowsPointer])
   const onBodyEnter = () => {
     if (dwellRef.current) clearTimeout(dwellRef.current)
+    // Click to focus (#757): hovering never takes the keyboard. A click still does, at once, through
+    // the guard (`onGuardClick` → `enterNow`); a drag that started on the guard comes back here and,
+    // correctly, arms nothing.
+    if (!hoverTakesKeyboard(focusFollowsPointer)) return
     const enter = () => {
+      // The setting can flip while this dwell is pending; the closure's value would be stale.
+      if (!hoverTakesKeyboard(focusFollowsPointerRef.current)) return
       // While Cmd/Ctrl is held the user is zooming the canvas — don't grab focus / enter the
       // terminal; just keep checking until the modifier is released.
       if (isZoomModifierHeld()) {
@@ -5495,16 +5521,39 @@ export function TerminalNode({
   }
   const onBodyLeave = () => {
     if (dwellRef.current) clearTimeout(dwellRef.current)
+    // Click to focus (#757): the pointer wandering off — to another card, the sidebar, a second
+    // display — leaves the terminal exactly as it is. It keeps the keyboard, the guard stays down
+    // and the node stays active; all of that is released by the focus-loss listener below, which
+    // follows where the KEYBOARD goes rather than where the mouse goes.
+    if (!pointerLeaveReleases(focusFollowsPointer)) return
     setArmed(true)
     termRef.current?.blur()
     useAgentStatus.getState().setActive(id, false)
     presence.releaseFocus(id)
   }
-  // While armed, a mousedown might start a node drag — pause the dwell timer so the
-  // terminal doesn't grab focus mid-drag; the release decides what happens next (`onGuardUp`).
-  const onGuardDown = (e: React.MouseEvent) => {
+  // Click to focus (#757): who holds the keyboard follows DOM focus and deliberate presses, not the
+  // pointer — the whole mechanism, its measurements and its refusals live in `useClickToFocus`.
+  // Every callback is read live from this render; the listeners are bound once per mode switch, to
+  // the node root, which is the one element that survives focus mode's reparent.
+  useClickToFocus(!focusFollowsPointer, {
+    id,
+    root: () => rootRef.current,
+    xtermTextarea: () => termRef.current?.textarea,
+    mdMode: () => mdModeRef.current,
+    reparenting: () => reparentingRef.current,
+    acknowledge: () => enterNow(),
+    focusXterm: () => focusXtermUnlessCovered(termRef.current, mdModeRef.current),
+    setArmed,
+    remember: () => useTerminalFocus.getState().remember(id),
+    isActive: () => useAgentStatus.getState().activeId === id,
+    setActive: (active) => useAgentStatus.getState().setActive(id, active),
+    reportFocus: () => presence.reportFocus(id),
+    releaseFocus: () => presence.releaseFocus(id)
+  })
+  // While armed, a press might start a node drag — pause the dwell timer so the terminal doesn't
+  // grab focus mid-drag; the release decides what happens next (`onGuardClick` / `onBodyEnter`).
+  const onGuardPress = () => {
     if (dwellRef.current) clearTimeout(dwellRef.current)
-    guardDownAt.current = { x: e.clientX, y: e.clientY }
   }
   /**
    * A release on the guard: focus NOW if it was a click, restart the dwell if it was a drag.
@@ -5519,16 +5568,19 @@ export function TerminalNode({
    * start on one), which is why hovering has to wait. A click that did not move the node is not
    * ambiguous at all, so it does not wait.
    *
-   * The threshold is what separates the two, and it is generous on purpose: a few pixels of travel
-   * between press and release is a hand, not an intent to drag. Past it the node HAS moved, and
-   * focusing a terminal the user just repositioned would be the old bug in the other direction.
+   * The threshold is what separates the two (`GUARD_CLICK_SLOP`, applied by `HoverGuard`), and it
+   * is generous on purpose: a few pixels of travel between press and release is a hand, not an
+   * intent to drag. Past it the node HAS moved, and focusing a terminal the user just repositioned
+   * would be the old bug in the other direction — a drag lands in `onBodyEnter` instead.
+   *
+   * For years this never ran for a left click at all: the guard listened to mouse events, which
+   * React Flow's d3-drag swallows before React sees them, so only the dwell ever focused. With
+   * click to focus (#757) there is no dwell, which is how it surfaced. `HoverGuard` explains the
+   * event path.
    */
-  const onGuardUp = (e: React.MouseEvent) => {
-    const from = guardDownAt.current
-    guardDownAt.current = null
-    const moved = from ? Math.hypot(e.clientX - from.x, e.clientY - from.y) : Infinity
-    if (from && moved <= GUARD_CLICK_SLOP && !isZoomModifierHeld()) enterNow()
-    else onBodyEnter()
+  const onGuardClick = () => {
+    if (isZoomModifierHeld()) onBodyEnter()
+    else enterNow()
   }
 
   // ---- file drop: paste dropped file paths into the terminal (native-terminal behavior) ----
@@ -6026,6 +6078,9 @@ export function TerminalNode({
         {showUsage && <ContextMeter sessionId={status?.sessionId ?? null} nodeId={id} remote={!!remoteSession} agentId={agentId} />}
         {/* Who else is in this node. Subscribes to presence itself — see PresenceChips. */}
         <PresenceChips nodeId={id} />
+        {/* This terminal is broadcast by a live link — never hideable (live-link.guard.test.ts).
+            Only through the LOCAL session: a relay tab's node with the same id is not ours (R57). */}
+        <LiveLinkChip nodeId={id} source={session.source} />
         {status?.state === 'working' && (
           <span className="term-node__status term-node__status--busy" title={`${agentLabel} is working`}>
             <AgentMascot agentId={agentId} />
@@ -6609,12 +6664,7 @@ export function TerminalNode({
             </div>
           )}
         {armed && !mdMode && (
-          <div
-            className="term-hover-guard"
-            onMouseDown={onGuardDown}
-            onMouseUp={onGuardUp}
-            title="Click to type · drag to move · scroll to pan"
-          />
+          <HoverGuard onPress={onGuardPress} onClick={onGuardClick} onDragEnd={onBodyEnter} />
         )}
         {mdMode &&
           (useChat ? (

@@ -175,6 +175,11 @@ export function coldGroupChildCount(nodes: readonly ColdNode[], groupId: string)
  * "next viewed", it just has to be reopened first, and an agent that is told nothing would report a
  * session as started that has no process behind it.
  */
+/** Where a held node's other way to start is named, so an orchestrator that must coordinate with
+ *  it now (a `send` waits for the session to exist) is not left waiting for a human to look. Part of
+ *  the "queued" clause: `mergeRunNow` drops them together. */
+export const COLD_OPEN_RUN_HINT = ', or at once with the `run` verb (or pass --run-now when opening)'
+
 export function coldOpenMessage(
   count: number,
   what: string,
@@ -184,7 +189,7 @@ export function coldOpenMessage(
 ): string {
   return (
     `opened ${count} ${what} session(s) in "${projectName}" (${ids.join(', ')}) — ` +
-    'queued; starts when that project is next viewed' +
+    `queued; starts when that project is next viewed${COLD_OPEN_RUN_HINT}` +
     (opts.closed ? ' (that project is closed — reopen it from the welcome screen)' : '')
   )
 }

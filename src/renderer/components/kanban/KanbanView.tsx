@@ -30,6 +30,7 @@ import { labelSwatch } from '../../lib/kanbanLabelColors'
 import { CardModal } from './CardModal'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
+import { projectSessionSource } from '../LiveLinkChip'
 import { GitHubIssueCard } from './GitHubIssueCard'
 import { GitHubPullCard } from './GitHubPullCard'
 import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
@@ -135,6 +136,13 @@ export interface KanbanViewProps {
    * with no canvas behind it (a test, a future read-only view) simply shows no rows.
    */
   accountMenuItems?: (nodeId: string) => MenuItem[]
+  /**
+   * The node's "Share live link…" row — the SAME builder the canvas node menu and the sessions
+   * sidebar use (`liveLinkMenuItems` in Canvas), so a card offers what its node does, disabled with
+   * the same reason. Optional for the same reason as `accountMenuItems`: a board with no canvas
+   * behind it offers none.
+   */
+  liveLinkMenuItems?: (nodeId: string) => MenuItem[]
   /** The board moving a session card itself because its linked pull requests merged (Canvas owns
    *  the compare-and-set + board-log line). Optional: without it nothing ever auto-moves. */
   onAutoMoveFromPulls?: (
@@ -235,7 +243,7 @@ function useCanvasCovered(): void {
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
   onModalNodeChange, onBrowserNav, onSetIcon, accountMenuItems, onAutoMoveFromPulls, issueAgentMenu,
-  issueWorktreeMenu, teams, onIssueMoved
+  issueWorktreeMenu, teams, onIssueMoved, liveLinkMenuItems
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
@@ -277,6 +285,9 @@ export const KanbanView = memo(function KanbanView({
   const projectId = useProjects((s) => s.activeProjectId)
   const projectName = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.name)
   const projectColor = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.color)
+  // Which machine this board's nodes run on — only a local board shows this machine's LIVE chips
+  // (R57). A primitive, so the memoized cards are not re-rendered by it.
+  const liveLinkSource = projectSessionSource(projectId)
   // Per-user display: whether `closed` columns are on screen (localStorage, never the board).
   const showClosed = useKanbanDisplay((s) => s.byProject[projectId]?.showClosed === true)
   const setShowClosed = useKanbanDisplay((s) => s.setShowClosed)
@@ -911,6 +922,7 @@ export const KanbanView = memo(function KanbanView({
             team={teams?.get(s.id) ?? NO_STATIONS}
             onTravel={onOpenNode}
             columnCategory={category}
+            liveLinkSource={liveLinkSource}
           />
         ))
       })
@@ -1003,6 +1015,7 @@ export const KanbanView = memo(function KanbanView({
         ? ([{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets }] as MenuItem[])
         : []),
       ...(accountMenuItems?.(nodeId) ?? []),
+      ...(liveLinkMenuItems?.(nodeId) ?? []),
       { type: 'separator' },
       { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => onDeleteNode(nodeId) }
     ]
@@ -1240,6 +1253,7 @@ export const KanbanView = memo(function KanbanView({
       {modalNodeId && byId.has(modalNodeId) && (
         <CardModal
           session={byId.get(modalNodeId)!}
+          projectId={projectId}
           mentionables={mentionables}
           columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
           board={board}

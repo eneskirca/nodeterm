@@ -128,6 +128,7 @@ describe('CardModal', () => {
       act(() =>
         root.render(
           <CardModal
+            projectId="p1"
             session={{ id: 'n1', title: 'db', color: '#fff', kind: 'sticky', text: '', spawn: {}, icon: value as never }}
             columnTitle="To Do"
             board={board}
@@ -175,7 +176,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -256,7 +257,7 @@ describe('CardModal', () => {
     const root = createRoot(host)
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -298,7 +299,7 @@ describe('CardModal', () => {
     const onClose = vi.fn()
     act(() =>
       root.render(
-        <CardModal session={session} columnTitle="To Do" board={board} onChangeBoard={vi.fn()}
+        <CardModal projectId="p1" session={session} columnTitle="To Do" board={board} onChangeBoard={vi.fn()}
           onClose={onClose} onOpenCanvas={vi.fn()} onRename={vi.fn()} onEditSticky={vi.fn()}
           onSetIcon={vi.fn()} onBrowserNav={vi.fn()} onOpenIssue={onOpenIssue} />
       )
@@ -318,7 +319,7 @@ describe('CardModal', () => {
       const root = createRoot(host)
       act(() =>
         root.render(
-          <CardModal session={{ id: 'n', title: 'T', color: '#fff', kind: 'terminal', issueRef, spawn: {} } as KanbanSession}
+          <CardModal projectId="p1" session={{ id: 'n', title: 'T', color: '#fff', kind: 'terminal', issueRef, spawn: {} } as KanbanSession}
             columnTitle={null} board={board} onChangeBoard={vi.fn()} onClose={vi.fn()}
             onOpenCanvas={vi.fn()} onRename={vi.fn()} onEditSticky={vi.fn()} onSetIcon={vi.fn()}
             onBrowserNav={vi.fn()} onOpenIssue={vi.fn()} />
@@ -344,7 +345,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -420,7 +421,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -474,7 +475,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -514,7 +515,7 @@ describe('CardModal', () => {
     const onClose = vi.fn()
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -565,7 +566,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -619,7 +620,7 @@ describe('CardModal', () => {
 
     act(() =>
       root.render(
-        <CardModal
+        <CardModal projectId="p1"
           session={session}
           columnTitle="To Do"
           board={board}
@@ -668,7 +669,7 @@ describe('CardModal', () => {
     const render = (root: ReturnType<typeof createRoot>, session: KanbanSession) =>
       act(() =>
         root.render(
-          <CardModal
+          <CardModal projectId="p1"
             session={session}
             columnTitle="To Do"
             board={board}

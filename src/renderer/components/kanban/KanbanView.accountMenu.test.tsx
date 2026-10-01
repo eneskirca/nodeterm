@@ -48,7 +48,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function render(accountMenuItems?: (id: string) => MenuItem[]): void {
+function render(accountMenuItems?: (id: string) => MenuItem[], liveLinkMenuItems?: (id: string) => MenuItem[]): void {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -68,6 +68,7 @@ function render(accountMenuItems?: (id: string) => MenuItem[]): void {
         onBrowserNav={noop}
         onSetIcon={noop}
         accountMenuItems={accountMenuItems}
+        liveLinkMenuItems={liveLinkMenuItems}
       />
     )
   )
@@ -96,5 +97,23 @@ describe('KanbanView — card menu account switch', () => {
     openCardMenu()
     expect(document.body.textContent).toContain('Open card')
     expect(document.body.textContent).not.toContain('Switch Claude account')
+  })
+})
+
+describe('KanbanView — card menu Share live link (Task 17)', () => {
+  it('shows the node’s "Share live link…" row from the canvas builder, after the account rows', () => {
+    const live = vi.fn((id: string): MenuItem[] => [{ label: `Share live link… (${id})`, onClick: () => {} }])
+    render(() => [{ label: 'Switch Claude account', onClick: () => {} }], live)
+    openCardMenu()
+    expect(live).toHaveBeenCalledWith('n1')
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('Share live link… (n1)')
+    expect(text.indexOf('Share live link… (n1)')).toBeGreaterThan(text.indexOf('Switch Claude account'))
+  })
+
+  it('shows none without a builder', () => {
+    render()
+    openCardMenu()
+    expect(document.body.textContent).not.toContain('Share live link')
   })
 })

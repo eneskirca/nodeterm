@@ -338,7 +338,7 @@ describe('RETRYABLE', () => {
   it('answers for every outcome kind the union declares', () => {
     // Runtime half. The compile-time half is below and is enforced by `npm run typecheck`.
     const kinds = Object.keys(RETRYABLE) as AgentMessageOutcomeKind[]
-    expect(kinds.length).toBe(17)
+    expect(kinds.length).toBe(18)
     for (const k of kinds) expect(typeof RETRYABLE[k]).toBe('boolean')
   })
 

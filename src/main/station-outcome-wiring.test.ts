@@ -72,8 +72,12 @@ describe('desktop main', () => {
     expect(withdraw).toBeGreaterThan(-1)
     expect(withdraw).toBeLessThan(main.indexOf('sendToMain(IPC.agentStatus, enriched)'))
     expect(main).toContain('flushAllDurableFactsSync()')
-    // The restore waits for the workspace index, or a restore-time expiry reaches no sender.
-    expect(main.slice(queue, queue + 200)).toContain('ready: workspaceStore.load({ sideline: false })')
+    // The restore waits for the workspace index, or a restore-time expiry reaches no sender. The boot
+    // read is shared with the live links' init (which must not judge a node gone before it either).
+    expect(main.slice(queue, queue + 200)).toContain('ready: bootWorkspaceLoad')
+    const bootLoad = main.indexOf('const bootWorkspaceLoad = workspaceStore.load({ sideline: false })')
+    expect(bootLoad).toBeGreaterThan(holds)
+    expect(bootLoad).toBeLessThan(queue)
     // A second instance that lost the hook endpoint stands every durable file down.
     const gate = main.indexOf('const hookStartupWarning = await hookServer.startForApp()')
     expect(gate).toBeGreaterThan(-1)

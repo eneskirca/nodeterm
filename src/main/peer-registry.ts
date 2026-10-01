@@ -15,7 +15,7 @@
 //
 // Cost to a solo desktop user: zero. With no peer registered the registry holds an empty Map, arms
 // no timer, and every lookup is a miss — the webContents path is bit-identical to before.
-import { UiSinkRegistry, type UiSink } from '../core/ui-sink-registry'
+import { UiSinkRegistry, type SinkOptions, type UiSink } from '../core/ui-sink-registry'
 import { presenceHub } from '../core/presence/hub'
 import type { FlowOwner } from '../core/pty-manager'
 
@@ -38,9 +38,10 @@ export function peerRegistry(): UiSinkRegistry {
 }
 
 /** A relay peer connected. `id` must come from `allocateRelayClientId()`. The caller joins the
- *  presence hub itself (as ws.ts does), so it can pick the peer `kind`. */
-export function registerPeerSink(id: number, sink: UiSink): void {
-  registry.register(id, sink)
+ *  presence hub itself (as ws.ts does), so it can pick the peer `kind`. `opts` (quiet, self-paced)
+ *  is for a live link's viewer; every other peer passes none (see `SinkOptions`). */
+export function registerPeerSink(id: number, sink: UiSink, opts?: SinkOptions): void {
+  registry.register(id, sink, opts)
 }
 
 /**

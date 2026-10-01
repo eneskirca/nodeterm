@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { Github, Image as ImageIcon, RotateCcw, Shapes, Smile } from 'lucide-react'
+import { useEffect, useRef, useState, type ComponentType } from 'react'
+import { Image as ImageIcon, RotateCcw, Shapes, Smile } from 'lucide-react'
 import {
   LUCIDE_ICON_IDS,
   sanitizeProjectIcon,
   type ProjectIcon
 } from '@shared/project-icon'
 import { cn } from '@renderer/ui/cn'
+import { IconGithub } from '../icons'
 import { ProjectGlyph } from '../ProjectGlyph'
 import EmojiPickerLazy from './EmojiPickerLazy'
 
@@ -148,8 +149,13 @@ export function ProjectIconPicker({
   // (so a transient resolve failure never strands the user without the tab).
   const showAvatar = avatarAvailable || hasGithubIcon
 
-  const TABS: { id: Tab; label: string; icon: typeof Github; disabled?: boolean }[] = [
-    { id: 'avatar', label: 'Avatar', icon: Github, disabled: !showAvatar },
+  const TABS: {
+    id: Tab
+    label: string
+    icon: ComponentType<{ className?: string }>
+    disabled?: boolean
+  }[] = [
+    { id: 'avatar', label: 'Avatar', icon: IconGithub, disabled: !showAvatar },
     { id: 'emoji', label: 'Emoji', icon: Smile },
     { id: 'lucide', label: 'Lucide', icon: Shapes },
     { id: 'upload', label: 'Upload', icon: ImageIcon }
@@ -262,7 +268,7 @@ export function ProjectIconPicker({
                 className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[color:var(--accent)] px-3 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
                 onClick={() => void onUseGithubAvatar()}
               >
-                <Github className="size-4" />
+                <IconGithub className="size-4" />
                 Use GitHub avatar
               </button>
               <p className="text-[12px] leading-relaxed text-muted">

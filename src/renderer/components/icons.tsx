@@ -219,6 +219,16 @@ export const IconEye = () => (
   </svg>
 )
 
+/** "Share live link" — a dot inside two pairs of arcs (the Settings → Live links glyph, at this
+ *  set's 24-unit scale). Deliberately NOT `IconEye`: that already means "Hide cards & connections"
+ *  in the same node header, and one glyph must not mean two things. */
+export const IconBroadcast = () => (
+  <svg {...S}>
+    <circle cx="12" cy="12" r="2.4" />
+    <path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.95 4.95a9.9 9.9 0 0 0 0 14.1M19.05 4.95a9.9 9.9 0 0 1 0 14.1" />
+  </svg>
+)
+
 export const IconEyeOff = () => (
   <svg {...S}>
     <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.53 13.53 0 0 0 1 11s4 7 11 7a9.26 9.26 0 0 0 5.39-1.61M14.12 14.12a3 3 0 1 1-4.24-4.24" />
@@ -507,5 +517,25 @@ export const IconRestoreSize = () => (
     <path d="M20 4l-6 6" />
     <path d="M4 14h6v6" />
     <path d="M4 20l6-6" />
+  </svg>
+)
+
+/** GitHub mark, drawn in the same 24px/2px stroke grid as the lucide glyphs it sits beside (the
+ *  project-icon picker's Avatar tab). Ours because lucide-react 1.x removed its brand icons. */
+export const IconGithub = ({ className }: { className?: string }) => (
+  <svg
+    width={24}
+    height={24}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+    <path d="M9 18c-4.51 2-5-2-7-2" />
   </svg>
 )

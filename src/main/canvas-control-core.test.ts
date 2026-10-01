@@ -1218,7 +1218,7 @@ describe('the --project clause tells the truth about travel (review #363 I-1 + M
       }
       // Every refused verb is named AND carries its own reason — a bare list would tell an agent
       // that `branch` and `arrange` fail for the same cause, and they do not.
-      for (const v of ['group', 'ungroup', 'move', 'arrange', 'align', 'verify', 'spawn-team', 'branch', 'open-worktree', 'close-worktree', 'browser']) {
+      for (const v of ['verify', 'spawn-team', 'branch', 'open-worktree', 'close-worktree', 'browser']) {
         const d = offScreenDisposition(v)
         expect(d.kind, v).toBe('refuse')
         if (d.kind !== 'refuse') continue
@@ -1435,6 +1435,7 @@ describe('--after-pr: open a node that waits on a pull request', () => {
     expect(flat).toContain('default 24h, at most 14d')
     expect(flat).toContain('`list` marks it EXPIRED')
     expect(flat).toContain('`list` names QUEUED, STARTING, LAUNCH FAILED, EXPIRED, DROPPED and AGENT STATUS UNCONFIRMED')
+    expect(flat).toContain('Every other agent row names its state: WORKING, IDLE (its turn ended; it waits for input) or NEEDS YOU')
     expect(flat).toContain('you start it with the `run` verb')
     // What is refused.
     expect(flat).toContain('the pull request must exist in the repository this project\'s kanban board syncs with')

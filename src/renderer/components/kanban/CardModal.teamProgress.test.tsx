@@ -59,7 +59,7 @@ function mount(onTravel = vi.fn()): () => void {
   const root = createRoot(host)
   act(() =>
     root.render(
-      <CardModal session={session} columnTitle="Done" board={board} onChangeBoard={vi.fn()} onClose={vi.fn()}
+      <CardModal projectId="p1" session={session} columnTitle="Done" board={board} onChangeBoard={vi.fn()} onClose={vi.fn()}
         onOpenCanvas={vi.fn()} onRename={vi.fn()} onEditSticky={vi.fn()} onSetIcon={vi.fn()}
         onBrowserNav={vi.fn()} team={team} onTravel={onTravel} />
     )

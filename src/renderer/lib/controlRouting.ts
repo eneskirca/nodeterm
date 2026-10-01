@@ -219,8 +219,10 @@ export function storedNodeListing(
     const successFacts = (d: string) =>
       successDepFacts(d, statuses, live, outcomes, handovers)
     const successState = successHold ? successWaitStatus(successHold, successFacts, now) : undefined
+    // Every agent row names its state: an unlabelled row used to mean idle, waiting on a person, or
+    // not an agent at all, so an orchestrator read a station stuck on a permission prompt as finished.
     const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status, prExpired, successState) ??
-      (n.agentId && !status?.state ? 'unconfirmed' as const : undefined)
+      (n.agentId ? agentRowState(status?.state) : undefined)
     // A session started on an issue is told so on its OWN row, so `list` is enough for an agent to
     // learn it is bound (and which card to move). Only a reference `formatIssueRef` vouches for.
     const issue = formatIssueRef(n.issueRef)
@@ -275,7 +277,16 @@ export function storedNodeListing(
   })
 }
 
+/** An agent row with no launch or drop to report: its live state, in the canvas badge's words. */
+function agentRowState(state: string | undefined): 'idle' | 'needs-you' | 'unconfirmed' {
+  if (state === 'done') return 'idle'
+  if (state === 'waiting' || state === 'blocked') return 'needs-you'
+  return 'unconfirmed'
+}
+
 const launchLabels = {
+  idle: 'IDLE',
+  'needs-you': 'NEEDS YOU',
   queued: 'QUEUED',
   failed: 'LAUNCH FAILED',
   stalled: 'QUEUED (terminal not ready)',

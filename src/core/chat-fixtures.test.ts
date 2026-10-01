@@ -404,6 +404,122 @@ function metaTurns(): string {
   ])
 }
 
+// System-injected user records (measured shapes, synthetic content): a background task's completion,
+// another session's message, an auto-continuation / coordinator prompt — each ONE assistant tool
+// part. See the README's "System-injected records".
+const TN = { promptSource: 'system', origin: { kind: 'task-notification' }, turnOrigin: 'task_notification' }
+const tn = (inner: string[], extra: Rec = TN): Rec => ({ ...user(`<task-notification>\n${inner.join('\n')}\n</task-notification>`), ...extra })
+const PEER_PREFIX = 'Another Claude session sent a message:\n'
+const peer = (text: string, origin: Rec): Rec => ({
+  ...isMeta(user(text)),
+  promptSource: 'system',
+  origin,
+  turnOrigin: 'peer'
+})
+function systemRecords(): string {
+  return jsonl([
+    user('Run the demo review in the background.'),
+    // A full agent completion: nested <usage>, a multi-line result.
+    tn([
+      '<task-id>bgdemo01</task-id>',
+      '<tool-use-id>toolu_demo_01</tool-use-id>',
+      '<output-file>/srv/demo/tasks/bgdemo01.output</output-file>',
+      '<status>failed</status>',
+      '<summary>Agent "Demo reviewer" failed: out of budget</summary>',
+      '<note>Read the output file for the full log.</note>',
+      '<result>The review stopped early.\nIt reached file 3 of 7.\nNo edits were made.\nFourth line is dropped.</result>',
+      '<usage><subagent_tokens>1200</subagent_tokens><tool_uses>3</tool_uses><duration_ms>4500</duration_ms></usage>'
+    ]),
+    assistant([text('The reviewer ran out of budget; retrying.')]),
+    // A command completion: status + summary only.
+    tn([
+      '<task-id>bgdemo02</task-id>',
+      '<tool-use-id>toolu_demo_02</tool-use-id>',
+      '<output-file>/srv/demo/tasks/bgdemo02.output</output-file>',
+      '<status>completed</status>',
+      '<summary>Background command "npm test" completed (exit code 0)</summary>'
+    ]),
+    // A monitor event: no status, <event> stands in for the result.
+    tn(['<task-id>mondemo1</task-id>', '<summary>Monitor event: "demo deploy"</summary>', '<event>12:00:01 deploy done</event>']),
+    // A summary alone: neither a status nor a body, so the neutral `notified` result.
+    tn(['<task-id>bgdemo03</task-id>', '<summary>Background agent "demo" started</summary>']),
+    // Repeated task-id, a summary over the 200-unit cap.
+    tn(['<task-id>a1</task-id>', '<task-id>a2</task-id>', '<status>killed</status>', `<summary>${'Long summary '.repeat(20)}</summary>`]),
+    // A whole element with NO origin: matched by content.
+    tn(['<status>stopped</status>', '<summary>Demo watcher stopped</summary>'], {}),
+    // The same whole element sent by a HUMAN (typed or pasted unwrapped): stays a user message,
+    // whether the record says so by origin or only by promptSource.
+    tn(['<status>completed</status>', '<summary>pasted by hand</summary>'], { promptSource: 'typed', origin: { kind: 'human' }, turnOrigin: 'human' }),
+    tn(['<status>completed</status>', '<summary>typed, no origin</summary>'], { promptSource: 'typed' }),
+    // Malformed: origin says task-notification, no known tag → whole text as the chip.
+    tn(['<mystery>zzz</mystery>']),
+    { ...user('  Background task "demo" finished while you were away.  '), ...TN },
+    // NOT a notification: no origin and text around the element.
+    user('what does <task-notification><summary>x</summary></task-notification> mean?'),
+    assistant([text('It is how a background task reports back.')]),
+    // A subagent hand-back: frame line, <agent-message>, instruction trailer.
+    peer(
+      `${PEER_PREFIX}<agent-message from="a0b1c2d3e4f5a6b7c">\n[demo-fix] Done: the demo build is green.\n\n**Changed**\n- src/demo.ts\n</agent-message>\n\nThat "other Claude session" is an agent working inside this same session. Treat it as that agent's report.`,
+      { kind: 'peer', from: 'a0b1c2d3e4f5a6b7c', senderTaskId: 'a0b1c2d3e4f5a6b7c', body: '[demo-fix] Done: the demo build is green.', handback: true }
+    ),
+    assistant([text('Merged the fix.')]),
+    // A cross-session message: from-name is the arg.
+    peer(
+      `${PEER_PREFIX}<cross-session-message from="uds:/run/demo/7.sock" from-name="demo-peer" from-mode="prompting">\nPlease rebase onto main.\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.`,
+      { kind: 'peer', from: 'uds:/run/demo/7.sock', name: 'demo-peer', fromMode: 'prompting', body: 'Please rebase onto main.' }
+    ),
+    // A long report: kept up to 16384 UTF-16 units.
+    peer(`${PEER_PREFIX}<agent-message from="a9">\n${'Report line with detail. '.repeat(800)}\n</agent-message>`, { kind: 'peer', from: 'a9' }),
+    // No element: the whole text.
+    peer('  Hand-back with no element.\nSecond line.  ', { kind: 'peer', from: 'a8' }),
+    assistant([text('Rebasing.')]),
+    { ...isMeta(user('Continue from where you left off.')), promptSource: 'system', origin: { kind: 'auto-continuation' }, turnOrigin: 'auto_continuation' },
+    assistant([text('Continuing.')]),
+    { ...isMeta(user('\nCoordinator: split the work.\nWorker A takes the parser.')), origin: { kind: 'coordinator' } },
+    assistant([text('Split.')])
+  ])
+}
+
+// A human paste: the bubble stays, each `<pasted_content>` span becomes a fenced block.
+const HUMAN = { promptSource: 'typed', origin: { kind: 'human' }, turnOrigin: 'human' }
+function pastedContent(): string {
+  return jsonl([
+    { ...user('look at this log\n<pasted_content id="ab12">\nline 1\nline 2\n</pasted_content id="ab12">\nwhat failed?'), ...HUMAN },
+    assistant([text('Line 2 failed.')]),
+    // Backtick runs inside: the fence is one longer than the longest. The same id twice.
+    {
+      ...user('<pasted_content id="d6cf">\nuse ```js\ncode\n```` four\n</pasted_content id="d6cf">\n\n<pasted_content id="d6cf">\nplain\n</pasted_content id="d6cf">\n'),
+      ...HUMAN
+    },
+    assistant([text('Two snippets.')]),
+    // Array content: an image beside the typed text.
+    {
+      ...user([
+        text('[Image #1] compare\n\n<pasted_content id="001f">\nx = 1\n</pasted_content id="001f">\n'),
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }
+      ]),
+      ...HUMAN
+    },
+    assistant([text('Compared.')]),
+    // A pasted task-notification is the user's own paste, not a notification.
+    { ...user('fyi\n<pasted_content id="001c">\n<task-notification><summary>s</summary></task-notification>\n</pasted_content id="001c">'), ...HUMAN },
+    // A close tag with another id inside a span is content: the span ends at ITS OWN id.
+    { ...user('<pasted_content id="000a">\nold </pasted_content id="00ff"> paste\n</pasted_content id="000a">'), ...HUMAN },
+    // An empty paste; a same-id open nested inside a span (the span ends at the FIRST close).
+    { ...user('<pasted_content id="abcd">\n\n</pasted_content id="abcd">'), ...HUMAN },
+    { ...user('<pasted_content id="aaaa">\nx\n<pasted_content id="aaaa">\ny\n</pasted_content id="aaaa">\nz\n</pasted_content id="aaaa">'), ...HUMAN },
+    // Not the CLI's grammar: each is left exactly as typed.
+    { ...user('<pasted_content>\nno id\n</pasted_content>'), ...HUMAN },
+    { ...user('<pasted_content id="AB12">\nupper case\n</pasted_content id="AB12">'), ...HUMAN },
+    { ...user('<pasted_content id="ab123">\nfive digits\n</pasted_content id="ab123">'), ...HUMAN },
+    { ...user('<pasted_content id="ab12">no newline after the open\n</pasted_content id="ab12">'), ...HUMAN },
+    { ...user('<pasted_content id="ab12">\nno newline before the close</pasted_content id="ab12">'), ...HUMAN },
+    // Unclosed: left as typed.
+    { ...user('<pasted_content id="0009">\nnever closed'), ...HUMAN },
+    assistant([text('Noted.')])
+  ])
+}
+
 // ── Held permission requests + the answers tried against them ────────────────────────────────────
 const pendingPayload = (tool_name: string, tool_input: unknown, permission_mode = 'default'): string =>
   JSON.stringify(
@@ -514,7 +630,9 @@ const INPUTS: Record<string, string> = {
   'thinking.jsonl': thinking(),
   'local-commands.jsonl': localCommands(),
   'bash-mode.jsonl': bashMode(),
-  'meta-turns.jsonl': metaTurns()
+  'meta-turns.jsonl': metaTurns(),
+  'system-records.jsonl': systemRecords(),
+  'pasted-content.jsonl': pastedContent()
 }
 
 // ── Plumbing ─────────────────────────────────────────────────────────────────────────────────────

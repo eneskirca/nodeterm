@@ -26,6 +26,15 @@ describe('shouldReleasePaneFocus', () => {
     expect(shouldReleasePaneFocus(monacoInput)).toBe(true)
   })
 
+  it("releases a focused terminal's xterm textarea, which click to focus relies on (#757)", () => {
+    // With focus-follows-pointer off, a terminal keeps the keyboard until the user clicks
+    // elsewhere; a click on the empty canvas is one of those "elsewhere"s, and xterm's input is a
+    // hidden <textarea class="xterm-helper-textarea">. If this ever stopped answering true for it,
+    // the canvas could no longer take the keyboard back from a terminal in that mode.
+    const xtermInput = { tagName: 'TEXTAREA', isContentEditable: false, className: 'xterm-helper-textarea' }
+    expect(shouldReleasePaneFocus(xtermInput as unknown as Element)).toBe(true)
+  })
+
   it('leaves anything else alone', () => {
     // Blurring a focused button or node div would fight the browser's own focus handling for no
     // gain: neither of them eats a keystroke.

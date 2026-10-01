@@ -254,6 +254,26 @@ describe('relay host — host-only channels refused to every peer', () => {
     await vi.waitFor(() => expect(t.dispatched.map((r) => r.method)).toEqual([IPC.workspaceLoad]))
     expect(t.casts).toEqual([])
   })
+  // Live links: an editor (or an unscoped Team Access seat) passes every access check, so the host-only
+  // prefix is the one thing between a peer and publishing a host terminal with the host's Pro — and the
+  // list answer carries every link's secret. Refused BEFORE any policy runs, whatever the hooks say.
+  for (const [label, hooks] of [['no policy hooks (full access)', undefined], ['policy hooks', 'scoped']] as const) {
+    it(`refuses every watchLink channel, request and cast, with ${label}`, async () => {
+      const t = openHost(hooks === 'scoped' ? scopedGuestHooks('alpha', deps()) : undefined)
+      await vi.waitFor(() => expect(t.opened.length).toBe(2))
+      const methods = (Object.values(IPC) as unknown[]).filter(
+        (v): v is string => typeof v === 'string' && v.startsWith('watchLink:')
+      )
+      expect(methods).toHaveLength(10)
+      methods.forEach((method, i) =>
+        t.client.send(JSON.stringify({ t: 'req', id: 200 + i, method, args: [{ nodeId: 'a1', role: 'viewer', ttlSeconds: 3600, label: 'x' }] }))
+      )
+      for (const method of methods) t.client.send(JSON.stringify({ t: 'cast', method, args: [] }))
+      await vi.waitFor(() => expect(t.frames.filter((f) => f.includes('E_FORBIDDEN')).length).toBe(methods.length))
+      expect(t.dispatched).toEqual([])
+      expect(t.casts).toEqual([])
+    })
+  }
   it('still lets a hosted team\'s own verbs through to their interceptor', async () => {
     const t = openHost()
     await vi.waitFor(() => expect(t.opened.length).toBe(2))

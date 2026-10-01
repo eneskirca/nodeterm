@@ -28,6 +28,9 @@ export const HIDEABLE_MENU_ITEMS: readonly HideableRow[] = [
   { id: 'collapse', label: 'Collapse / Expand' },
   { id: 'markdown-view', label: 'Markdown view' },
   { id: 'refresh-terminal', label: 'Refresh terminal' },
+  // The ROW that opens the create dialog. The LIVE chip that says a terminal IS being broadcast is
+  // deliberately in neither inventory (lib/live-link.guard.test.ts).
+  { id: 'live-link', label: 'Share live link' },
   { id: 'vanilla-restart', label: 'Restart on subscription' }
 ]
 

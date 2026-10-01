@@ -43,6 +43,10 @@ export interface CorePlatform {
    *  Electron: the main window, or none while it is closed). Lets a service address "everyone
    *  EXCEPT the sender", which broadcast() cannot express — see src/core/canvas-sync.ts. */
   clientIds(): number[]
+  /** Clients that receive NO broadcast and are absent from `clientIds()` (a live link's viewer),
+   *  but still count as watching a session they subscribe to. Only the pty reaper reads it
+   *  (pty-reap.ts `liveClientIds`). Absent = there are none. */
+  quietClientIds?(): number[]
   /**
    * Is this attached UI the machine's OWNER — this app's own window (Electron), or a browser tab the
    * Server Edition authenticated with its session cookie — as opposed to a relay peer (a teammate, a

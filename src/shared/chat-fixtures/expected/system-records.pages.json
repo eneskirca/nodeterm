@@ -1,0 +1,309 @@
+[
+  {
+    "before": null,
+    "maxBytes": 262144,
+    "grownMaxBytes": 262144,
+    "start": 0,
+    "parse": {
+      "messages": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Run the demo review in the background."
+            }
+          ],
+          "at": 1790362800000,
+          "key": 0
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Agent \"Demo reviewer\" failed: out of budget",
+              "result": "failed: The review stopped early. It reached file 3 of 7. No edits were made."
+            }
+          ],
+          "at": 1790362801000,
+          "key": 287
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "The reviewer ran out of budget; retrying."
+            }
+          ],
+          "at": 1790362802000,
+          "key": 1173
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Background command \"npm test\" completed (exit code 0)",
+              "result": "completed"
+            }
+          ],
+          "at": 1790362803000,
+          "key": 1597
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Monitor event: \"demo deploy\"",
+              "result": "12:00:01 deploy done"
+            }
+          ],
+          "at": 1790362804000,
+          "key": 2217
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Background agent \"demo\" started",
+              "result": "notified"
+            }
+          ],
+          "at": 1790362805000,
+          "key": 2719
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long summary Long ",
+              "result": "killed"
+            }
+          ],
+          "at": 1790362806000,
+          "key": 3187
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Demo watcher stopped",
+              "result": "stopped"
+            }
+          ],
+          "at": 1790362807000,
+          "key": 3924
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<task-notification>\n<status>completed</status>\n<summary>pasted by hand</summary>\n</task-notification>"
+            }
+          ],
+          "at": 1790362808000,
+          "key": 4281
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "<task-notification>\n<status>completed</status>\n<summary>typed, no origin</summary>\n</task-notification>"
+            }
+          ],
+          "at": 1790362809000,
+          "key": 4704
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "<task-notification>",
+              "result": "<task-notification>\n<mystery>zzz</mystery>\n</task-notification>"
+            }
+          ],
+          "at": 1790362810000,
+          "key": 5082
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Background task",
+              "arg": "Background task \"demo\" finished while you were away.",
+              "result": "Background task \"demo\" finished while you were away."
+            }
+          ],
+          "at": 1790362811000,
+          "key": 5491
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "what does <task-notification><summary>x</summary></task-notification> mean?"
+            }
+          ],
+          "at": 1790362812000,
+          "key": 5893
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "It is how a background task reports back."
+            }
+          ],
+          "at": 1790362813000,
+          "key": 6217
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "[demo-fix] Done: the demo build is green.",
+              "result": "[demo-fix] Done: the demo build is green.\n\n**Changed**\n- src/demo.ts"
+            }
+          ],
+          "at": 1790362814000,
+          "key": 6641
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Merged the fix."
+            }
+          ],
+          "at": 1790362815000,
+          "key": 7387
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "demo-peer",
+              "result": "Please rebase onto main."
+            }
+          ],
+          "at": 1790362816000,
+          "key": 7785
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. ",
+              "result": "Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report line with detail. Report li"
+            }
+          ],
+          "at": 1790362817000,
+          "key": 8485
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Agent message",
+              "arg": "Hand-back with no element.",
+              "result": "Hand-back with no element.\nSecond line."
+            }
+          ],
+          "at": 1790362818000,
+          "key": 28916
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Rebasing."
+            }
+          ],
+          "at": 1790362819000,
+          "key": 29304
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "System",
+              "arg": "Continue from where you left off.",
+              "result": "Continue from where you left off."
+            }
+          ],
+          "at": 1790362820000,
+          "key": 29696
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Continuing."
+            }
+          ],
+          "at": 1790362821000,
+          "key": 30087
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "System",
+              "arg": "Coordinator: split the work.",
+              "result": "Coordinator: split the work.\nWorker A takes the parser."
+            }
+          ],
+          "at": 1790362822000,
+          "key": 30481
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Split."
+            }
+          ],
+          "at": 1790362823000,
+          "key": 30834
+        }
+      ],
+      "olderCursor": null,
+      "unmatchedResults": [],
+      "model": "claude-opus-5-5",
+      "effort": "high",
+      "noCompleteLine": false
+    }
+  }
+]

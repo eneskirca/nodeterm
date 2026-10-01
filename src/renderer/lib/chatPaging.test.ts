@@ -134,6 +134,21 @@ describe('applyTail — unconfirmed optimistic sends (live reads)', () => {
     expect(texts(out)).toEqual(['q', 'a b\n\nc '])
   })
 
+  it('a send the CLI recorded as a <pasted_content> paste (rendered fenced) confirms it', () => {
+    const sent = 'please look at `this` log\nline two of it'
+    const t = base([say(0, 'q'), say(undefined, sent, 'user')], 0)
+    // What the reader renders for `<pasted_content id="ab12">\n<sent>\n</pasted_content id="ab12">`.
+    const recorded = '\n```\n' + sent + '\n```\n'
+    const out = applyTail(t, ID, page([say(0, 'q'), say(300, recorded, 'user'), say(400, 'ok')], 0), { carryUnconfirmed: true })
+    expect(texts(out)).toEqual(['q', recorded, 'ok'])
+    expect(out.messages.every((m) => m.key !== undefined)).toBe(true)
+    // A send with a backtick run is fenced one longer, and still matches.
+    const ticks = 'a ```b``` c and more text'
+    const t2 = base([say(0, 'q'), say(undefined, ticks, 'user')], 0)
+    const rec2 = '\n````\n' + ticks + '\n````\n'
+    expect(texts(applyTail(t2, ID, page([say(0, 'q'), say(300, rec2, 'user')], 0), { carryUnconfirmed: true }))).toEqual(['q', rec2])
+  })
+
   it('matches one-for-one, and never against a user line the thread already had', () => {
     // An OLD "yes" (key 100, already rendered) must not confirm the NEW unconfirmed "yes".
     const t = base([say(100, 'yes', 'user'), say(undefined, 'yes', 'user'), say(undefined, 'yes', 'user')], 100)

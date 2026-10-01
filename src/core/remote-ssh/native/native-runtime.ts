@@ -10,9 +10,9 @@ import fs from 'fs'
 import path from 'path'
 import { findExecutableSync } from '../../exec-path'
 import { NativeMux, WINDOWS_OPENSSH_AGENT_PIPE, type ExecResult } from './native-mux'
-import { parseSshG, sshGArgs } from './ssh-config'
-import type { SshTarget } from './ssh-argv'
+import { parseSshG, sshGArgs, type HostQuery } from './ssh-config'
 import { runSshArgv, useNativeSsh } from './native-invoke'
+import { decideAgentAdd } from './agent-add'
 
 export { useNativeSsh }
 
@@ -25,6 +25,13 @@ export function setNativePassphrasePrompt(fn: PassphrasePrompt | null): void {
   passphrasePrompt = fn
 }
 
+let windowsAgentOptIn: () => boolean = () => false
+
+/** Main installs the `settings.windowsSshAgentAddKeys` reader here (read at each unlock). */
+export function setNativeWindowsAgentOptIn(fn: () => boolean): void {
+  windowsAgentOptIn = fn
+}
+
 /** The ssh binary, used only for `ssh -G` (config evaluation), never as a transport here. */
 function sshForConfig(): string {
   return (
@@ -35,11 +42,17 @@ function sshForConfig(): string {
   )
 }
 
-function resolveHost(t: SshTarget) {
+function resolveHost(t: HostQuery) {
   return new Promise<ReturnType<typeof parseSshG>>((resolve, reject) => {
-    execFile(sshForConfig(), sshGArgs(t), { timeout: 5_000, windowsHide: true }, (err, stdout) => {
+    let args: string[]
+    try {
+      args = sshGArgs(t)
+    } catch (e) {
+      return reject(e)
+    }
+    execFile(sshForConfig(), args, { timeout: 5_000, windowsHide: true }, (err, stdout) => {
       if (err && !stdout) {
-        return reject(new Error(`ssh -G failed for ${t.user}@${t.host}: ${err.message}`))
+        return reject(new Error(`ssh -G failed for ${t.user ? `${t.user}@` : ''}${t.host}: ${err.message}`))
       }
       try {
         resolve(parseSshG(stdout))
@@ -68,6 +81,15 @@ export function nativeMux(): NativeMux {
       resolveHost,
       defaultAgent,
       askPassphrase: (f, req) => (passphrasePrompt ? passphrasePrompt(f, req) : Promise.resolve(null)),
+      agentAdd: ({ agentPath, host }) => {
+        let optIn = false
+        try {
+          optIn = windowsAgentOptIn() === true
+        } catch {
+          optIn = false
+        }
+        return decideAgentAdd({ agentPath, addKeysToAgent: host.addKeysToAgent, windowsAgentOptIn: optIn })
+      },
       log: (line) => console.warn(line)
     })
   }

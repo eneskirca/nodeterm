@@ -48,7 +48,7 @@ describe('CardModal Escape vs the comment @ picker', () => {
     const root = createRoot(host)
     await act(async () => {
       root.render(
-        <CardModal session={session} columnTitle={null} board={board} onChangeBoard={vi.fn()} onClose={onClose}
+        <CardModal projectId="p1" session={session} columnTitle={null} board={board} onChangeBoard={vi.fn()} onClose={onClose}
           onOpenCanvas={vi.fn()} onRename={vi.fn()} onEditSticky={vi.fn()} onBrowserNav={vi.fn()} onSetIcon={vi.fn()} />
       )
     })

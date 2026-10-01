@@ -634,6 +634,21 @@ export function buildStubApi(): Omit<
       list: async () => [],
       onChanged: noopUnsub
     },
+    // Live links are created on the machine that runs the terminal. The Server Edition overrides this
+    // with the real bridge (`buildWatchLinkApi`); a relay tab keeps it — the peer's terminals are not
+    // this machine's to publish (and every `watchLink:` channel is host-only on the peer anyway).
+    watchLink: {
+      create: async () => ({ ok: false, error: 'unsupported' }),
+      list: async () => [],
+      revoke: async () => {},
+      revokeAll: async () => 'unsupported' as const,
+      kick: async () => false,
+      sendChat: async () => null,
+      chatHistory: async () => [],
+      onState: noopUnsub,
+      onChat: noopUnsub,
+      onNotice: noopUnsub
+    },
     // Governs nothing by default. The Server Edition overrides it with the real bridge
     // (`buildCanvasAuthorityApi`); a relay tab answers from its own connection (relay-api.ts).
     canvasAuthority: {

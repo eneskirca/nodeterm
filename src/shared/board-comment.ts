@@ -241,6 +241,7 @@ const OUTCOME_TEXT: Record<string, BoardCommentOutcomeView> = {
     text: 'not delivered — the session cannot take a multi-line message'
   },
   targetGone: { tone: 'error', text: 'not delivered — the session is not running' },
+  targetNotStarted: { tone: 'error', text: 'not delivered — the session has not started yet' },
   notPermitted: { tone: 'error', text: 'not delivered — not permitted' }
 }
 

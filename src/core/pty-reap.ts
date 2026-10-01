@@ -1,3 +1,5 @@
+import type { CorePlatform } from './platform'
+
 /**
  * IDLE REAP: give pty devices back to the OS without killing anybody's work.
  *
@@ -55,6 +57,17 @@ export interface ReapCandidate {
   watched: boolean
   /** When the sweep first saw it with no watcher; `null` = never (it has always had one). */
   unwatchedSince: number | null
+}
+
+/**
+ * Every client that counts as watching: the ordinary ones and the QUIET ones (a live link's
+ * viewer). A quiet client is absent from `clientIds()` by design — it receives no broadcast — so
+ * without it here a session only a viewer holds would be released after the idle window, and
+ * `releaseClient` sends that viewer no event at all: the link goes dead with nothing on either
+ * screen saying so.
+ */
+export function liveClientIds(p: Pick<CorePlatform, 'clientIds' | 'quietClientIds'>): Set<number> {
+  return new Set([...p.clientIds(), ...(p.quietClientIds?.() ?? [])])
 }
 
 /** Pure: may this session's client pty be released now? */

@@ -34,7 +34,8 @@ function firstCwd(rawText: string): string {
 }
 
 export function extractEntryFields(rawText: string): { cwd: string; title: string; text: string } {
-  const lines = parseTranscriptLines(rawText)
+  // Pastes stay as recorded (no code fences in a title), as before the ⌘M view fenced them.
+  const lines = parseTranscriptLines(rawText, { expandPastes: false })
   const firstUser = lines.find((l) => l.role === 'user')
   const title = (firstUser?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
   let text = lines.map((l) => l.text).join('\n')

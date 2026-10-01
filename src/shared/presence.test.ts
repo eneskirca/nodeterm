@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  BIDI_CONTROL_CHARS,
   PRESENCE_COLORS,
   capCodePoints,
   defaultNameFor,
@@ -141,6 +142,12 @@ describe('sanitizeIdentity', () => {
     // Legitimate names (spaces, accents, CJK, emoji) are untouched.
     const real = 'Enes Kırca 库 🐙'
     expect(sanitizeIdentity({ name: real, color: PRESENCE_COLORS[0] }, fallback).name).toBe(real)
+  })
+
+  it('strips the Arabic letter mark too (U+061C, a bidi control), and only bidi from BIDI_CONTROL_CHARS', () => {
+    expect(sanitizeIdentity({ name: 'Ada\u061cLove', color: PRESENCE_COLORS[0] }, fallback).name).toBe('AdaLove')
+    const text = 'a\u061cb\u200ec\u202ed\u2069e \u{1F468}\u200d\u{1F469}\u200b'
+    expect(text.replace(BIDI_CONTROL_CHARS, '')).toBe('abcde \u{1F468}\u200d\u{1F469}\u200b')
   })
 
   it('trims after truncating, so a cap landing on a space leaves no trailing space', () => {

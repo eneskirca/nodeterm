@@ -294,6 +294,7 @@ export async function initServerCanvasControl(
       () => deps.settings()
     ),
     paneOwnerProject,
+    heldLaunch: (projectId, nodeId) => deps.workspaceStore.heldLaunch(projectId, nodeId),
     callerOwnsTarget: (sourceNodeId, targetNodeId) =>
       factory.ownsSpawn(sourceNodeId, targetNodeId),
     customAgents: () => deps.settings().customAgents,

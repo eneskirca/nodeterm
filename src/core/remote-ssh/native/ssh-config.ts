@@ -39,6 +39,12 @@ export interface ResolvedHost {
   strictHostKeyChecking: string
   /** Seconds, or undefined for none. */
   connectTimeout?: number
+  /**
+   * The config's `AddKeysToAgent`, as `ssh -G` prints it: `false` / `true` / `ask` / `confirm`, a
+   * lifetime in seconds, or `confirm <seconds>`. Parsed by `parseAddKeysToAgent` (agent-add.ts);
+   * kept raw here so an unknown spelling reads as "not asked for", never as yes.
+   */
+  addKeysToAgent?: string
 }
 
 /** `~` / `%d` expansion for path-valued options. `ssh -G` leaves `~` unexpanded. */
@@ -95,14 +101,90 @@ export function parseSshG(out: string, home: string = os.homedir()): ResolvedHos
     userKnownHostsFiles: words('userknownhostsfile'),
     globalKnownHostsFiles: words('globalknownhostsfile'),
     strictHostKeyChecking: single.get('stricthostkeychecking') ?? 'ask',
-    connectTimeout: Number.isFinite(timeout) && timeout > 0 ? timeout : undefined
+    connectTimeout: Number.isFinite(timeout) && timeout > 0 ? timeout : undefined,
+    addKeysToAgent: single.get('addkeystoagent')
   }
 }
 
+/**
+ * A destination to evaluate: a project's target (every field the argv gave), or one ProxyJump hop,
+ * which names only what its spec wrote — an absent user or port is the hop's OWN config's answer,
+ * exactly as OpenSSH's jump ssh (`ssh [-l user] [-p port] -W … hop`) resolves it.
+ */
+export interface HostQuery {
+  user?: string
+  host: string
+  port?: number
+  identityFile?: string
+  identityAgent?: string
+}
+
 /** `ssh -G` argv for a destination with the same command-line overrides the transport applies. */
-export function sshGArgs(t: { user: string; host: string; port?: number; identityFile?: string }): string[] {
-  const args = ['-G', '-p', String(t.port ?? 22)]
+export function sshGArgs(t: HostQuery): string[] {
+  // A destination beginning with `-` would be read as an option by ssh.
+  if (t.host.startsWith('-') || t.user?.startsWith('-')) throw new Error(`ssh: invalid destination ${t.host}`)
+  const args = ['-G']
+  if (t.port !== undefined) args.push('-p', String(t.port))
   if (t.identityFile) args.push('-o', 'IdentitiesOnly=yes', '-i', t.identityFile)
-  args.push(`${t.user}@${t.host}`)
+  if (t.user) args.push('-l', t.user)
+  args.push(t.host)
   return args
+}
+
+/** One ProxyJump hop as written: `[user@]host[:port]` or `ssh://[user@]host[:port]`. */
+export interface JumpSpec {
+  user?: string
+  host: string
+  port?: number
+}
+
+/**
+ * Parse a ProxyJump value (a comma-separated chain, first hop first) the way OpenSSH's
+ * parse_jump does. `ssh -G` prints the last hop normalized (`user@[host]:port`, numeric hosts in
+ * brackets) and the earlier ones as written, so both forms are accepted. Throws on anything else —
+ * a hop we cannot read must not be guessed at.
+ */
+export function parseProxyJump(value: string): JumpSpec[] {
+  const hops = value.split(',').map((h) => h.trim())
+  if (!hops.length || hops.some((h) => !h)) throw new Error(`ssh: invalid ProxyJump "${value}"`)
+  return hops.map((raw) => {
+    const bad = (): Error => new Error(`ssh: invalid ProxyJump hop "${raw}"`)
+    let rest = raw
+    if (/^ssh:\/\//i.test(rest)) {
+      rest = rest.slice(6)
+      if (rest.endsWith('/')) rest = rest.slice(0, -1)
+      if (rest.includes('/')) throw bad()
+    }
+    let user: string | undefined
+    const at = rest.lastIndexOf('@')
+    if (at !== -1) {
+      user = rest.slice(0, at)
+      rest = rest.slice(at + 1)
+      if (!user) throw bad()
+    }
+    let host: string
+    let portText: string | undefined
+    if (rest.startsWith('[')) {
+      const close = rest.indexOf(']')
+      if (close === -1) throw bad()
+      host = rest.slice(1, close)
+      const after = rest.slice(close + 1)
+      if (after) {
+        if (!after.startsWith(':')) throw bad()
+        portText = after.slice(1)
+      }
+    } else {
+      const colon = rest.indexOf(':')
+      if (colon !== -1 && rest.indexOf(':', colon + 1) !== -1) throw bad() // bare IPv6: needs [ ]
+      host = colon === -1 ? rest : rest.slice(0, colon)
+      portText = colon === -1 ? undefined : rest.slice(colon + 1)
+    }
+    if (!host || host.startsWith('-') || /[\s,]/.test(host) || user?.startsWith('-')) throw bad()
+    let port: number | undefined
+    if (portText !== undefined) {
+      port = Number(portText)
+      if (!/^\d+$/.test(portText) || port <= 0 || port > 65535) throw bad()
+    }
+    return { user, host, port }
+  })
 }

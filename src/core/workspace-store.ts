@@ -325,6 +325,24 @@ export class WorkspaceStore {
   private index: WorkspaceIndexV3 | null = null
   /** Optional hook fired after every load()/save() — the watcher re-syncs its watch set (Task 5). */
   onPersist?: () => void
+  /**
+   * Some load in THIS run found no readable workspace.json — missing (deleted, a first run, a crash
+   * between the corrupt-file set-aside and the next write), unreadable, unparsable, or parsable but no
+   * index this build recognises (`{}`, a v3 without entries, a newer build's version) — so whatever
+   * index this run holds afterwards may have been rebuilt from NOTHING: the renderer's unconditional
+   * boot save writes an EMPTY index over the set-aside file while every project's own
+   * `.nodeterm/project.json` still holds its nodes. `knownNodeIdsStrict` then answers undefined for
+   * the rest of the run (controller ruling R44): a live link would otherwise read every node as gone
+   * and be revoked server-side a second after launch — irreversibly. The cost: a live link's node-gone
+   * waits for the next launch with a readable index (links still end at their expiry).
+   *
+   * Live links ONLY (R64/M2): `knownNodeIds`, which the agent-status mirror prunes identities with,
+   * does not read this flag. A mirror entry pruned against an index rebuilt from nothing costs one
+   * hook event to restore; the flag lasts for the whole PROCESS, and a Server Edition started on a
+   * fresh data dir runs for weeks — R54's first version switched the mirror's pruning off for all of
+   * them, so the phone kept listing deleted sessions for up to the 30-day identity TTL.
+   */
+  private indexRebuiltThisRun = false
   /** The content authority, when this process runs one (Server Edition hosting a team). */
   private contentAuthority: ContentAuthorityHooks | null = null
 
@@ -390,6 +408,7 @@ export class WorkspaceStore {
     try {
       raw = await fs.readFile(this.indexPath, 'utf-8')
     } catch {
+      this.indexRebuiltThisRun = true // R44: see the field
       // No index. Usually a first run — but it is also what a crash BETWEEN the sideline rename
       // below and the next index write leaves behind, and that case owes the user the note. Only
       // this branch pays for the readdir, and only for a load that may touch disk anyway.
@@ -400,6 +419,7 @@ export class WorkspaceStore {
     try {
       parsed = JSON.parse(raw)
     } catch {
+      this.indexRebuiltThisRun = true // R44: see the field
       // Same rule as a corrupt project.json: sideline the only copy so the boot flow's
       // unconditional save cannot replace it with an empty index. Read-only callers must not
       // mutate the disk (sideline: false).
@@ -413,10 +433,23 @@ export class WorkspaceStore {
       }
       return EMPTY_WORKSPACE
     }
-    const anyParsed = parsed as { version?: number }
-    if (anyParsed?.version === 3) return this.loadV3(parsed as WorkspaceIndexV3, sideline)
+    const anyParsed = parsed as { version?: number; entries?: unknown }
+    // Only a v3 index with an entry list of objects is one: `{"version":3}` alone used to reach loadV3
+    // and throw (`index.entries is not iterable`); now it falls through, like any unrecognised shape.
+    if (anyParsed?.version === 3 && Array.isArray(anyParsed.entries) && anyParsed.entries.every(isObjectEntry)) {
+      try {
+        return await this.loadV3(parsed as WorkspaceIndexV3, sideline)
+      } catch (e) {
+        this.indexRebuiltThisRun = true // R44: an index we could not build is not a read of it
+        throw e
+      }
+    }
     // v1/v2: assemble in memory now; the first save() performs the actual migration.
     const legacy = migrateLegacy(parsed)
+    // PARSED, but no index this build recognises (`{}`, `null`, `[]`, a v2 without its projects list,
+    // a v3 without entries, a newer build's version): the run's index is rebuilt from nothing exactly
+    // as for an unparsable file (R44 / re-review NEW-1). A readable EMPTY v2/v3 index is not this.
+    if (legacy === EMPTY_WORKSPACE) this.indexRebuiltThisRun = true
     if (legacy.projects.length) this.pendingV2Backup = raw
     return legacy
   }
@@ -1891,6 +1924,9 @@ export class WorkspaceStore {
    * the entry by its identity TTL alone. Same three-entry-kind scan as `findNode`.
    * Consequence: ONE permanently unavailable local ref or one never-cached SSH project turns
    * existence pruning off for EVERY project, leaving only the 30-day identity TTL.
+   * It does NOT read `indexRebuiltThisRun` (R64/M2): for the mirror an index rebuilt from nothing is
+   * an answer, because a wrongly pruned identity costs one hook event to restore. Live links, whose
+   * "gone" is an irreversible revoke, ask `knownNodeIdsStrict`.
    * Parses through `parsedLastWritten`, so a mirror flush re-parses no unchanged project.json.
    */
   knownNodeIds(): Set<string> | undefined {
@@ -1911,6 +1947,17 @@ export class WorkspaceStore {
       for (const n of nodes) if (n && typeof n.id === 'string') ids.add(n.id)
     }
     return ids
+  }
+
+  /**
+   * `knownNodeIds`, for a caller whose "not in any project" is IRREVERSIBLE — a live link, which a node
+   * gone ends and revokes server-side (R40). Also undefined for the rest of a run whose index was
+   * rebuilt from nothing (`indexRebuiltThisRun`, R44): an empty index written over a lost
+   * workspace.json is not a read of the projects it lost.
+   */
+  knownNodeIdsStrict(): Set<string> | undefined {
+    if (this.indexRebuiltThisRun) return undefined
+    return this.knownNodeIds()
   }
 
   /**
@@ -1975,6 +2022,22 @@ export class WorkspaceStore {
       }
     }
     return out
+  }
+
+  /**
+   * Does THIS machine hold an undelivered launch (`pendingLaunch`) for `nodeId` in `projectId`?
+   * Read from the entry's machine-local exec overlay (`localExec`, where every ref kind keeps it),
+   * with the entry's own node copy as a fallback. Same id semantics as `persistedCanvases`. Agent
+   * messaging asks it to tell a node that has not STARTED yet from one whose pane is unproven.
+   */
+  heldLaunch(projectId: string, nodeId: string): boolean {
+    for (const e of this.index?.entries ?? []) {
+      if ((e.project ? e.project.id : e.id) !== projectId) continue
+      if (e.localExec?.[nodeId]?.pendingLaunch) return true
+      const nodes = e.project?.nodes ?? e.cache?.nodes ?? []
+      return nodes.some((n) => n.id === nodeId && !!n.pendingLaunch)
+    }
+    return false
   }
 
   /**
@@ -2713,7 +2776,11 @@ function unavailableProject(e: { id: string; name: string; color: string; closed
   }
 }
 
-/** Normalize legacy on-disk shapes (v1 single canvas, v2 projects) into a v2-shaped workspace. */
+const isObjectEntry = (e: unknown): boolean => typeof e === 'object' && e !== null && !Array.isArray(e)
+
+/** Normalize legacy on-disk shapes (v1 single canvas, v2 projects) into a v2-shaped workspace.
+ *  Anything else answers `EMPTY_WORKSPACE` itself (by identity: `loadInner` reads that as "no index
+ *  this build recognises"). */
 function migrateLegacy(parsed: unknown): Workspace {
   const ws = parsed as Partial<Workspace> & Partial<WorkspaceV1>
   if (ws?.version === 2 && Array.isArray(ws.projects)) {

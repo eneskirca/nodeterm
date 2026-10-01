@@ -21,6 +21,8 @@ import { sanitizePasteText } from '../paste-injection'
 import { typedInputScript } from '../typed-input'
 import { canControlCanvas } from '../../shared/agents/config'
 import { COMBINED_PANE_MARKER, PANE_OWNER_FMT, PS_FOREGROUND_FLAGS } from '../agents/pane-owner'
+import { VISIBLE_CAPTURE_FORMAT, exactPaneTarget } from '../watch-link/capture-route'
+import { WATCHER_CLIENT_FLAGS, WINDOW_SIZE_FORMAT } from '../watch-link/watcher-client'
 // Dependency-free (no node-pty): safe to import from these pure builders.
 
 /** Dedicated remote tmux socket so an SSH project never collides with the user's own tmux. */
@@ -535,6 +537,61 @@ export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, 
     conn,
     controlPath,
     tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${sessionId} -S ${full ? '-' : '-200'}`)
+  )
+}
+/**
+ * The VISIBLE screen of a remote session, with SGR, and nothing above it — a live link's keyframe
+ * must never carry history, and `remoteCapturePaneArgs` always adds `-S`. The cursor line rides the
+ * SAME tmux invocation (see `watch-link/capture-route.ts` for why, and for the measured exact-target
+ * spelling). Every piece that the REMOTE shell would otherwise read is single-quoted: tmux's `;`
+ * separator (bare, it would end the tmux command and run `display-message` as a shell command), the
+ * `=name:` target and the `#{…}` format. Proven under a real /bin/sh in capture-visible.realsh.test.ts.
+ */
+export function remoteCaptureVisibleArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  const target = posixQuote(exactPaneTarget(sessionId))
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(
+      `tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${target} ';' ` +
+        `display-message -p -t ${target} ${posixQuote(VISIBLE_CAPTURE_FORMAT)}`
+    )
+  )
+}
+/**
+ * A live link watcher's OWN client on the host, for a node no Session is held for: a tty-allocating
+ * ssh child (`-t`, like `remoteTmuxPtyArgs`) running `attach-session -E -f ignore-size,read-only` on
+ * the exact target — never creating, never touching the session env, and out of the window's sizing
+ * while an unflagged client is attached anywhere on the server (tmux honours `ignore-size` only then;
+ * the caller spawns it at the window's current size and keeps it synced — `watch-link/watcher-client.ts`). Deliberately NOT wrapped like the owner's
+ * interactive command: a host without tmux gets a failed command, never a plain login shell — a
+ * watcher must not get a shell. An old remote tmux (< 3.2) rejects `-f` with a usage error: the
+ * command fails and nothing attaches. Proven under a real /bin/sh in watcher-attach.realsh.test.ts
+ * and on a real tty in watcher-client.realtty.test.ts.
+ */
+export function remoteTmuxWatcherArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return [
+    '-t',
+    ...childArgs(
+      conn,
+      controlPath,
+      tmuxCmd(
+        `tmux -L ${RMT_TMUX_SOCKET} attach-session -E -f ${posixQuote(WATCHER_CLIENT_FLAGS)} ` +
+          `-t ${posixQuote(exactPaneTarget(sessionId))}`
+      )
+    )
+  ]
+}
+
+/** The REMOTE window size of exactly this session, so a watcher's client is spawned at it. */
+export function remoteWindowSizeArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(
+      `tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} ` +
+        posixQuote(WINDOW_SIZE_FORMAT)
+    )
   )
 }
 /**

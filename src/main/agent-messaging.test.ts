@@ -283,6 +283,7 @@ describe('renderMessageOutcome', () => {
       { kind: 'targetNotAgentPane', observed: 'bash' },
       { kind: 'targetNotPasteAware' },
       { kind: 'targetGone' },
+      { kind: 'targetNotStarted' },
       { kind: 'notPermitted', reason: 'switch-off' }
     ]
     for (const o of samples) {
@@ -508,5 +509,70 @@ describe('deliver-on-idle wiring (PR 7)', () => {
     )
     expect(expiredLine, 'no expired board-log line reached the sender').toBeTruthy()
     expect(expiredLine?.projectId).toBe('p1')
+  })
+})
+
+describe('a target that has not started yet (launch held off screen)', () => {
+  // The field report: `open-agent` into a project not on screen, no `--run-now`, then `send` at
+  // once. The node exists only as a held launch, so no spawn has recorded its owner — and it used
+  // to be refused `unproven-target-owner` with advice to restart a session that did not exist.
+  const unstarted = (over: Partial<AgentMessagingDeps> = {}) => {
+    let started = false
+    const deps = fakeDeps({
+      heldLaunch: (projectId, id) => !started && projectId === 'p1' && id === 'b1',
+      hasLiveSession: () => started,
+      paneOwnerProject: (id) => (started && id === 'b1' ? 'p1' : undefined),
+      ...over
+    })
+    return { deps, start: () => (started = true) }
+  }
+
+  it('is answered targetNotStarted (retryable) when no queue is wired', async () => {
+    const { deps } = unstarted()
+    const { outcome, reply } = await deliverFromControl(req(), deps)
+    expect(outcome.kind).toBe('targetNotStarted')
+    expect(RETRYABLE.targetNotStarted).toBe(true)
+    expect(reply.ok).toBe(false)
+    expect(reply.error).toMatch(/run --node/)
+    expect(deps.rec.sent).toHaveLength(0)
+  })
+
+  it('is queued, then delivered once the spawn proves ownership', async () => {
+    const { deps, start } = unstarted()
+    const waits: number[] = []
+    const queue = createDeliveryQueue(deps, {
+      schedule: (ms) => {
+        waits.push(ms)
+        return () => {}
+      }
+    })
+    deps.queue = queue
+    const { outcome } = await deliverFromControl(req(), deps)
+    expect(outcome.kind).toBe('queued')
+    // The start waits for a person to open the project: 5 minutes lost the message in the field.
+    expect(outcome.kind === 'queued' && outcome.ttlMs).toBe(24 * 60 * 60 * 1000)
+    expect(waits).toEqual([24 * 60 * 60 * 1000])
+    expect(deps.rec.sent).toHaveLength(0)
+    start()
+    await queue.onTargetIdle('b1')
+    expect(deps.rec.sent).toHaveLength(1)
+  })
+
+  it('still honours the per-project switch', async () => {
+    const { deps } = unstarted({ messagingEnabled: () => false })
+    const { outcome } = await deliverFromControl(req(), deps)
+    expect(outcome).toEqual({ kind: 'notPermitted', reason: 'switch-off' })
+  })
+
+  it('a LIVE pane with no proven owner stays refused, held launch or not', async () => {
+    const { deps } = unstarted({ hasLiveSession: () => true })
+    const { outcome } = await deliverFromControl(req(), deps)
+    expect(outcome).toEqual({ kind: 'notPermitted', reason: 'unproven-target-owner' })
+  })
+
+  it('a node with no held launch and no session stays unproven', async () => {
+    const { deps } = unstarted({ heldLaunch: () => false })
+    const { outcome } = await deliverFromControl(req(), deps)
+    expect(outcome).toEqual({ kind: 'notPermitted', reason: 'unproven-target-owner' })
   })
 })

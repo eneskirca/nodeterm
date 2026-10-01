@@ -202,6 +202,10 @@ export function buildRelayApi(
     boardDispatch: stub.boardDispatch,
     stationOutcome: stub.stationOutcome,
     stationHandover: stub.stationHandover,
+    // Live links publish THIS machine's terminals; a relay tab shows another machine's, so it takes
+    // the inert stub (create answers `unsupported`). Never the local preload's real member, which
+    // `...local` would otherwise hand it: that would offer to publish a node id this core does not run.
+    watchLink: stub.watchLink,
     // The mirror identity seed is a deliberate no-op here: a relay tab's nodes belong to the HOST's
     // core, whose mirror is seeded by the host's own renderer from its own localStorage. This
     // machine's localStorage holds no identity for them, and `...local` would plant this machine's
