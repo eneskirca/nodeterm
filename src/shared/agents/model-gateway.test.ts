@@ -13,7 +13,11 @@ import {
   parseGatewayModels,
   parseModelGatewayEnvReference,
   resolveModelGatewayApiKey,
-  withAgentModel
+  withAgentModel,
+  claudeAutocompactFor,
+  AUTOCOMPACT_THRESHOLD,
+  AUTOCOMPACT_PCT_OVERRIDE,
+  tmuxUpdateEnvironmentLine
 } from './model-gateway'
 import {
   setCustomAgentBaseResolver,
@@ -365,5 +369,145 @@ describe('grok takes its model as a FLAG, and needs no gateway environment', () 
     expect(withAgentModel('grok', 'grok', 'grok-4.6 && rm -rf /')).toBe(
       "grok --model 'grok-4.6 && rm -rf /'"
     )
+  })
+})
+
+describe('claudeAutocompactFor', () => {
+  // A model above the threshold, one at exactly the threshold, and one below — sourced from
+  // discovery the way the spawn site resolves them.
+  const models = parseGatewayModels({
+    data: [
+      { id: 'anthropic/claude-opus-5', context_length: 1_000_000 },
+      { id: 'anthropic/claude-sonnet-5', context_length: 200_000 },
+      { id: 'anthropic/claude-haiku-5', context_length: 100_000 }
+    ]
+  })
+
+  it('appends [1m] + sets the autocompact env for a claude model whose window is above the threshold', () => {
+    const r = claudeAutocompactFor('claude', 'anthropic/claude-opus-5', models)
+    expect(r.modelId).toBe('anthropic/claude-opus-5[1m]')
+    expect(r.env).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000',
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    })
+  })
+
+  it('a window BETWEEN the threshold and 1M gets the env AND the suffix', () => {
+    // The env var does NOT drive the CLI's own meter (measured: Misc Bugs, 5.3 plain, env
+    // 400000, status line still 200k) — the [1m] suffix is the only lever Claude Code honors
+    // for the meter, so every above-threshold window carries it, mid-band included.
+    const mid = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.3-Flash-NVFP4', context_length: 400_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.3-Flash-NVFP4', mid)
+    expect(r.modelId).toBe('vllm/GLM-5.3-Flash-NVFP4[1m]')
+    expect(r.env).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000',
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: AUTOCOMPACT_PCT_OVERRIDE
+    })
+  })
+
+  it('a suffixed mid-band record stays suffixed — the suffix is not re-stripped on re-launch', () => {
+    const mid = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.2-NVFP4-MTP', context_length: 400_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.2-NVFP4-MTP[1m]', mid)
+    expect(r.modelId).toBe('vllm/GLM-5.2-NVFP4-MTP[1m]')
+    expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('400000')
+  })
+
+  it('does not double-append [1m] when the id already carries it', () => {
+    const withSuffix = parseGatewayModels({
+      data: [{ id: 'vllm/GLM-5.2-NVFP4-MTP[1m]', context_length: 1_000_000 }]
+    })
+    const r = claudeAutocompactFor('claude', 'vllm/GLM-5.2-NVFP4-MTP[1m]', withSuffix)
+    expect(r.modelId).toBe('vllm/GLM-5.2-NVFP4-MTP[1m]')
+    expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000')
+  })
+
+  it('sets neither env nor suffix at or below the threshold — never guesses a large window', () => {
+    // Exactly the threshold: not above it, so no autocompact.
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5', models).modelId).toBe(
+      'anthropic/claude-sonnet-5'
+    )
+    // Below the threshold.
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-haiku-5', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-haiku-5', models).modelId).toBe(
+      'anthropic/claude-haiku-5'
+    )
+  })
+
+  it('strips a stale [1m] suffix when the discovered window is no longer large', () => {
+    expect(
+      claudeAutocompactFor('claude', 'anthropic/claude-sonnet-5[1m]', models)
+    ).toEqual({ modelId: 'anthropic/claude-sonnet-5', env: {} })
+  })
+
+  it('fails open for an unknown model or one with no reported window — no guess, no suffix', () => {
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-future', models).env).toEqual({})
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-future', models).modelId).toBe(
+      'anthropic/claude-future'
+    )
+    // A discovered model that reported no context_length.
+    const noWindow = parseGatewayModels({ data: [{ id: 'anthropic/claude-x' }] })
+    expect(claudeAutocompactFor('claude', 'anthropic/claude-x', noWindow).env).toEqual({})
+  })
+
+  it('PAIRING INVARIANT: every suffixed branch emits the env with it; the env never rides alone', () => {
+    // The two halves of the autocompact mechanism are ONE mechanism: the [1m] suffix lifts the
+    // CLI's own window ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW pulls the compaction point back
+    // to the discovered size. A suffix without the env grows the context past the headroom the
+    // gateway can serve (the Misc Bugs report); an env without the suffix meters 200k while
+    // compaction fires at the bigger window. One call emits both — this pins that no branch can
+    // emit one without the other.
+    const above = parseGatewayModels({
+      data: [
+        { id: 'a', context_length: 400_000 },
+        { id: 'b', context_length: 1_000_000 }
+      ]
+    })
+    for (const m of above) {
+      const r = claudeAutocompactFor('claude', m.id, above)
+      expect(r.modelId?.endsWith('[1m]')).toBe(true)
+      expect(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeTruthy()
+    }
+    // Inverse: the env implies the suffix — every branch emitting env is a suffixed branch.
+    for (const m of above) {
+      const r = claudeAutocompactFor('claude', m.id, above)
+      expect(!!r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW && r.modelId?.endsWith('[1m]')).toBe(true)
+    }
+    // At and below the threshold: NEITHER half — never one alone.
+    const at = parseGatewayModels({ data: [{ id: 'c', context_length: 200_000 }] })
+    expect(claudeAutocompactFor('claude', 'c', at)).toEqual({ modelId: 'c', env: {} })
+  })
+
+  it('is a no-op for a non-claude agent — the env vars and [1m] convention are Claude Code own', () => {
+    for (const id of ['codex', 'copilot', 'gemini', 'grok', 'opencode'] as const) {
+      const r = claudeAutocompactFor(id, 'anthropic/claude-opus-5', models)
+      expect(r.env).toEqual({})
+      expect(r.modelId).toBe('anthropic/claude-opus-5')
+    }
+  })
+
+  it('returns the unchanged id (no --model) when there is no model at all', () => {
+    expect(claudeAutocompactFor('claude', undefined, models)).toEqual({ modelId: undefined, env: {} })
+  })
+
+  it('threshold is above the 200k default so an ordinary 200k model does NOT trigger it', () => {
+    expect(AUTOCOMPACT_THRESHOLD).toBe(200_000)
+  })
+})
+
+describe('autocompact env keys lockstep', () => {
+  it('the autocompact keys are in the tmux update-environment line so a re-attached client inherits them', () => {
+    const line = tmuxUpdateEnvironmentLine()
+    expect(line).toContain('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+    expect(line).toContain('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')
+    // And a large-context claude model actually emits those keys through the helper.
+    const models = parseGatewayModels({ data: [{ id: 'anthropic/claude-opus-5', context_length: 1_000_000 }] })
+    for (const k of Object.keys(claudeAutocompactFor('claude', 'anthropic/claude-opus-5', models).env)) {
+      expect(line).toContain(k)
+    }
   })
 })

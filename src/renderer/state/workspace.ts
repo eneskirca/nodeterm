@@ -37,6 +37,7 @@ import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
 import { normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { useSettings } from './settings'
+import { useModelGateway } from './modelGateway'
 
 // Re-exported so Canvas (and anything else in the renderer) keeps importing it from here, while the
 // single implementation lives in src/shared and is shared with the relay host + the canvas-sync
@@ -108,6 +109,8 @@ export interface NodeData {
    * deliberately absent from flowToNodeStates, like initialCommand/expandedHeight.
    */
   respawnNonce?: number
+  /** Generation of a provider-change recycle awaiting acknowledgement from the next lifecycle. */
+  agentRespawnGeneration?: number
   shell?: string
   cwd?: string
   text?: string
@@ -710,6 +713,7 @@ export function createAgentNode(
   const customAgent = agentConfig(agentId)
     ? undefined
     : useSettings.getState().settings.customAgents.find((c) => c.id === agentId)
+  const gatewayModels = useModelGateway.getState().models
   const resumeInputs = {
     agentId,
     customAgent,
@@ -718,7 +722,8 @@ export function createAgentNode(
     permissionMode,
     model,
     sharedIdentity: codexSharedIdentity(ssh),
-    approvalCaps: codexApprovalCaps(ssh)
+    approvalCaps: codexApprovalCaps(ssh, projectId),
+    models: gatewayModels
   }
   if (resumeSessionId !== undefined && !canResumeWith(capabilityAgentId(agentId), resumeSessionId)) {
     throw new Error(`createAgentNode: refusing to resume ${agentId} session ${JSON.stringify(resumeSessionId)}`)
@@ -750,7 +755,8 @@ export function createAgentNode(
       // A model picked at creation (e.g. Transfer-to-agent-with-model). `withAgentModel` appends
       // `--model <value>` for a switch-capable agent and no-ops otherwise, so the line stays
       // byte-identical when no model is chosen.
-      model
+      model,
+      models: gatewayModels
     },
     // The boot-time snapshot of the desktop env (empty on browser/relay by design, where the
     // missing-env warning below is the honest outcome — the same markers the preview shows).
