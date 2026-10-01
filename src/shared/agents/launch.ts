@@ -21,13 +21,14 @@ import {
   capabilityAgentId,
   mintsSessionId,
   resumeCommandWith,
+  vanillaEnvStripPattern,
   withSessionId,
   type AgentId,
   type AgentPermissionMode
 } from './config'
 import { withPermissionMode, type ApprovalCaps } from './approval-mode'
 import { resolveAgentConfig } from './custom-agent'
-import { withAgentModel } from './model-gateway'
+import { withAgentModel, claudeAutocompactFor, type GatewayModel } from './model-gateway'
 import { withCodexNoDaemon } from './codex-daemon'
 
 export interface LaunchInputs {
@@ -70,6 +71,11 @@ export interface LaunchInputs {
    *  emitted (codex dropped `untrusted` in 0.149.0 and clap EXITS on an unknown value). Omitted =
    *  the baseline vocabulary, which is the pre-probe command line — see `ApprovalCaps`. */
   approvalCaps?: ApprovalCaps
+  /** The discovered gateway models, so a claude-base agent whose model reports a context window
+   *  above the threshold launches with the `[1m]` suffix on its `--model` id (the id half of the
+   *  autocompact story; the env half is injected spawn-side). Absent ⇒ the id is used unchanged
+   *  (fail open). */
+  models?: readonly GatewayModel[]
 }
 
 export interface ResumeInputs {
@@ -83,6 +89,9 @@ export interface ResumeInputs {
   permissionMode?: AgentPermissionMode
   /** Per-node model override, applied through the effective base harness. */
   model?: string
+  /** Resume on the agent's own provider/default model after stripping gateway env. Codex also
+   * needs an explicit provider override: omitting --model restores the thread's saved model. */
+  clearEnv?: boolean
   /** Should a SHARED_IDENTITY_CAPABLE agent (codex) name its managed launcher on resume? Same
    *  semantics as `LaunchInputs.sharedIdentity`. */
   sharedIdentity?: boolean
@@ -90,6 +99,9 @@ export interface ResumeInputs {
    *  emitted (codex dropped `untrusted` in 0.149.0 and clap EXITS on an unknown value). Omitted =
    *  the baseline vocabulary, which is the pre-probe command line — see `ApprovalCaps`. */
   approvalCaps?: ApprovalCaps
+  /** The discovered gateway models, so a cold-restore resume uses the same `[1m]` `--model` id the
+   *  fresh launch used. Absent ⇒ the id is used unchanged (fail open). */
+  models?: readonly GatewayModel[]
 }
 
 export interface AssembledCommand {
@@ -175,6 +187,11 @@ export function assembleLaunchCommand(
 ): AssembledCommand {
   const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent)
   const capId = capabilityAgentId(inputs.agentId)
+  // The `[1m]` suffix for a claude-base model whose discovered context window is above the
+  // threshold — applied here so fresh launch, cold-restore resume and the Settings preview all
+  // agree on the id. Non-claude / unknown / below-threshold ⇒ the id unchanged (fail open). The
+  // matching autocompact env is injected spawn-side (pty-manager).
+  const modelId = claudeAutocompactFor(capId, inputs.model, inputs.models ?? []).modelId
 
   // A per-builtin launch-command override replaces the resolved program (a wrapper the user runs
   // the CLI through). It is expanded + quoted like any launchCmd, and — like a custom agent's own
@@ -232,9 +249,9 @@ export function assembleLaunchCommand(
     // Session-id minting: claude-base + CLI supports the flag. On resume this branch is never
     // taken (assembleResumeCommand does not pass sessionId).
     if (inputs.sessionId && mintsSessionId(capId) && inputs.sessionIdFlagSupported) {
-      return withAgentModel(withSessionId(withMode, capId, inputs.sessionId), capId, inputs.model)
+      return withAgentModel(withSessionId(withMode, capId, inputs.sessionId), capId, modelId)
     }
-    return withAgentModel(withMode, capId, inputs.model)
+    return withAgentModel(withMode, capId, modelId)
   }
 
   const composed = usesSep ? `${flagged(baseCmd)} ${sep} ${promptArg}` : flagged(withPrompt)
@@ -256,6 +273,10 @@ export function assembleResumeCommand(
 ): AssembledCommand {
   const eff = resolveAgentConfig(inputs.agentId, inputs.customAgent)
   const capId = capabilityAgentId(inputs.agentId)
+  // Same `[1m]` suffix resolution as the fresh-launch path, so a cold-restore resume uses the id
+  // the session launched with. (The vanilla/subscription strip is the SPAWN env's job since #380 —
+  // the resume command itself is model-shaped only.)
+  const modelId = claudeAutocompactFor(capId, inputs.model, inputs.models ?? []).modelId
 
   // A per-builtin launch-command override wins over the program and the launcher (same rule as the
   // fresh-launch path), so a cold-restore / restart resumes through the same wrapper.
@@ -275,7 +296,7 @@ export function assembleResumeCommand(
     ? withPermissionMode(base, capId, inputs.permissionMode, inputs.approvalCaps ?? {})
     : base
   const command = withCodexNoDaemon(
-    withAgentModel(withMode, capId, inputs.model),
+    withAgentModel(withMode, capId, modelId),
     capId,
     inputs.approvalCaps ?? {}
   )

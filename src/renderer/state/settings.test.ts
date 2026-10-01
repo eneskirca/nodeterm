@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { useSettings } from './settings'
+import { useModelGateway } from './modelGateway'
 
 describe('coalesced settings save', () => {
   const g = globalThis as { window?: unknown }
@@ -51,5 +52,51 @@ describe('agent launch mode settings mirror', () => {
 
     useSettings.getState().update({ agentLaunchMode: 'gateway-model' })
     expect(useSettings.getState().settings.vanillaLaunchDefault).toBe(false)
+  })
+})
+
+describe('gateway discovery invalidation', () => {
+  beforeEach(() => {
+    ;(globalThis as unknown as { window: unknown }).window = {
+      nodeTerminal: { settings: { load: vi.fn(), save: vi.fn() } }
+    }
+  })
+
+  it('invalidates discovery synchronously when gateway configuration changes', () => {
+    useSettings.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        modelGateway: { baseUrl: 'https://gateway.test', apiKey: '${env:OLD}' }
+      },
+      hydrated: true
+    })
+
+    useSettings.getState().update({
+      modelGateway: {
+        baseUrl: 'https://gateway.test',
+        apiKey: '${env:OLD}',
+        discoveryPath: '/openai/v1/models'
+      }
+    })
+
+    expect(useModelGateway.getState()).toMatchObject({ models: [], status: 'idle' })
+  })
+
+  it('invalidates discovery when hydrate loads a different gateway configuration', async () => {
+    useSettings.setState({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        modelGateway: { baseUrl: 'https://old.test', apiKey: 'old' }
+      },
+      hydrated: false
+    })
+    vi.mocked((globalThis as { window: { nodeTerminal: { settings: { load: () => Promise<unknown> } } } }).window.nodeTerminal.settings.load).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      modelGateway: { baseUrl: 'https://new.test', apiKey: 'new' }
+    })
+
+    await useSettings.getState().hydrate()
+
+    expect(useModelGateway.getState()).toMatchObject({ models: [], status: 'idle' })
   })
 })
