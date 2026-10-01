@@ -1283,7 +1283,9 @@ function groupBox(
   }
 }
 
-export type ArrangeLayout = 'grid' | 'row' | 'column'
+import type { ArrangeLayout, GroupArrangeLayout } from '@shared/arrange-verb'
+export type { ArrangeLayout, GroupArrangeLayout }
+export { GROUP_ARRANGE_LAYOUTS } from '@shared/arrange-verb'
 
 /**
  * The single container the given ids all live in: `null` (all top-level), a group id (all
@@ -1307,14 +1309,19 @@ export function commonParentId(nodes: CanvasNode[], ids: string[]): string | nul
  * member. The ids must share ONE container — all top-level, or all children of the same group
  * (the layout then runs in that group's coordinate space); a mixed set is a no-op. Unknown ids
  * are skipped; returns the input array unchanged when nothing resolves. Pure and deterministic.
+ *
+ * **Slots are filled in the order of `ids`, not in array order.** Every caller that sorts its ids
+ * is stating the order it wants — `Tidy canvas` by reading order, a lineage band by the slot of
+ * each node's opener — and the array order is persistence order (frames first, then creation),
+ * which is nobody's intent. Placing by array order silently discarded both sorts.
  */
 export function arrangeNodes(
   nodes: CanvasNode[],
   ids: string[],
   opts?: { layout?: ArrangeLayout; cols?: number; gap?: number; origin?: { x: number; y: number } }
 ): CanvasNode[] {
-  const set = new Set(ids)
-  const members = nodes.filter((nd) => set.has(nd.id))
+  const byId = new Map(nodes.map((nd) => [nd.id, nd]))
+  const members = [...new Set(ids)].flatMap((id) => byId.get(id) ?? [])
   // Only meaningful within one coordinate space (see commonParentId) — mixed containers → no-op.
   if (members.length === 0 || new Set(members.map((m) => m.parentId ?? null)).size > 1) return nodes
   const layout = opts?.layout ?? 'grid'
@@ -1341,6 +1348,270 @@ export function arrangeNodes(
     rowH = Math.max(rowH, nodeH(m))
   })
   return nodes.map((nd) => (pos.has(nd.id) ? { ...nd, position: pos.get(nd.id)! } : nd))
+}
+
+/** One lineage rope, as the canvas persists it (`project.ropes`): "opened by" / "--after". */
+export interface LineageEdge {
+  source: string
+  target: string
+}
+
+/**
+ * For every node INSIDE `containerId` (`null` = the top level), the direct member of that
+ * container it belongs to, by id. A rope points at the NODE an agent opened, which is routinely a
+ * node inside a frame — and a frame moves as one rigid unit, so a layer layout has to ask which
+ * member of the container being arranged that rope really reaches. A node outside the container,
+ * a parentId naming no live node and a cycle (project.json is hand-editable) are simply absent
+ * from the map, so a rope touching one is dropped rather than throwing.
+ */
+function containerAncestors(nodes: CanvasNode[], containerId: string | null): Map<string, string> {
+  const byId = new Map(nodes.map((nd) => [nd.id, nd]))
+  const out = new Map<string, string>()
+  for (const nd of nodes) {
+    let cur: CanvasNode | undefined = nd
+    const seen = new Set<string>([nd.id])
+    while (cur && (cur.parentId ?? null) !== containerId) {
+      const parent: CanvasNode | undefined = cur.parentId ? byId.get(cur.parentId) : undefined
+      cur = parent && !seen.has(parent.id) ? parent : undefined
+      if (cur) seen.add(cur.id)
+    }
+    if (cur) out.set(nd.id, cur.id)
+  }
+  return out
+}
+
+/**
+ * Splits the members of ONE container into lineage layers: layer 0 is every node nothing opened,
+ * layer k is a node whose deepest opener sits in layer k-1, and `loose` holds the nodes no rope
+ * touches at all. The container is the top level by default (`containerId` null) or a group frame,
+ * whose DIRECT children are then the members — the same rules one level down, which is what lets
+ * a frame's own contents be arranged by lineage.
+ *
+ * Three rules, each of which the naive version gets wrong:
+ *
+ * - **Ropes are LIFTED to the member that holds them.** The coordinator opens a team INSIDE a
+ *   frame, so the rope ends on a child; the frame is what gets placed. An edge whose two ends lift
+ *   to the same object is dropped — it is internal to that frame and would otherwise make it its
+ *   own opener. An edge with an end OUTSIDE the container is dropped too: the opener of a frame's
+ *   whole team usually sits outside the frame, and it says nothing about the order inside.
+ * - **A node's layer is its LONGEST path from a root**, not its first: with `max` every rope points
+ *   strictly downward, which is the whole reason the layout reads as a flow. Taking the shortest
+ *   path would let a rope run backwards up the canvas.
+ * - **A cycle never hangs and never throws.** Ropes are "opened by" and `--after`, so a cycle is
+ *   not supposed to exist, but `--after` can be hand-built into one and project.json is editable.
+ *   The edge that closes a cycle contributes nothing (`0`), so the result stays deterministic for
+ *   a given edge order instead of recursing forever.
+ *
+ * `loose` is deliberately NOT layer 0: a node with no lineage is not a root of anything, and
+ * mixing the two would put every sticky note beside the coordinator.
+ */
+export function lineageLayers(
+  nodes: CanvasNode[],
+  edges: readonly LineageEdge[],
+  containerId: string | null = null
+): { layers: string[][]; loose: string[] } {
+  const tops = containerAncestors(nodes, containerId)
+  // Named for the default container; with `containerId` set these are that frame's children.
+  const topLevel = nodes.filter((nd) => (nd.parentId ?? null) === containerId)
+  const live = new Set(topLevel.map((nd) => nd.id))
+
+  const preds = new Map<string, string[]>()
+  const touched = new Set<string>()
+  for (const e of edges) {
+    const from = tops.get(e.source)
+    const to = tops.get(e.target)
+    if (!from || !to || from === to || !live.has(from) || !live.has(to)) continue
+    const list = preds.get(to)
+    if (list) {
+      if (!list.includes(from)) list.push(from)
+    } else {
+      preds.set(to, [from])
+    }
+    touched.add(from)
+    touched.add(to)
+  }
+
+  const memo = new Map<string, number>()
+  const onStack = new Set<string>()
+  const levelOf = (id: string): number => {
+    const cached = memo.get(id)
+    if (cached !== undefined) return cached
+    if (onStack.has(id)) return 0
+    onStack.add(id)
+    let level = 0
+    for (const from of preds.get(id) ?? []) level = Math.max(level, levelOf(from) + 1)
+    onStack.delete(id)
+    memo.set(id, level)
+    return level
+  }
+
+  // Reading order of the canvas as it stands, used as the tie-break everywhere below so the
+  // result is stable and roughly preserves what the user already built.
+  const order = new Map<string, number>()
+  ;[...topLevel]
+    .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x || (a.id < b.id ? -1 : 1))
+    .forEach((nd, i) => order.set(nd.id, i))
+  const byReadingOrder = (a: string, b: string): number => (order.get(a) ?? 0) - (order.get(b) ?? 0)
+
+  const layers: string[][] = []
+  const loose: string[] = []
+  for (const nd of topLevel) {
+    if (!touched.has(nd.id)) {
+      loose.push(nd.id)
+      continue
+    }
+    const level = levelOf(nd.id)
+    while (layers.length <= level) layers.push([])
+    layers[level].push(nd.id)
+  }
+
+  // Inside a layer, siblings sit together: a node follows its earliest opener's slot in the layer
+  // above, so the ropes fan out instead of crossing. Layer 0 and `loose` have no opener to follow
+  // and keep the canvas's own reading order.
+  layers.forEach((layer, level) => {
+    if (level === 0) {
+      layer.sort(byReadingOrder)
+      return
+    }
+    const above = new Map(layers[level - 1].map((id, i) => [id, i]))
+    const slotOf = (id: string): number => {
+      let best = Number.MAX_SAFE_INTEGER
+      for (const from of preds.get(id) ?? []) {
+        const slot = above.get(from)
+        if (slot !== undefined && slot < best) best = slot
+      }
+      return best
+    }
+    layer.sort((a, b) => slotOf(a) - slotOf(b) || byReadingOrder(a, b))
+  })
+  loose.sort(byReadingOrder)
+  return { layers, loose }
+}
+
+/**
+ * Lays the members of one container (the top level, or `opts.containerId`'s direct children) out
+ * as lineage bands: one row per layer, growing downward, with the nodes no rope touches in a final
+ * band of their own. Returns the input unchanged when there is nothing to arrange (under two
+ * members, or no usable rope) — an unchanged array is the caller's signal to skip the undo entry
+ * and the project.json write.
+ *
+ * Built ON `arrangeNodes` rather than beside it: each band is one `row` placement from a shared
+ * left origin, so the packing, the gap and the mixed-container refusal all stay in ONE place.
+ */
+export function arrangeByLineage(
+  nodes: CanvasNode[],
+  edges: readonly LineageEdge[],
+  opts?: { gap?: number; origin?: { x: number; y: number }; containerId?: string | null }
+): CanvasNode[] {
+  const containerId = opts?.containerId ?? null
+  const topLevel = nodes.filter((nd) => (nd.parentId ?? null) === containerId)
+  if (topLevel.length < 2) return nodes
+  const { layers, loose } = lineageLayers(nodes, edges, containerId)
+  // No rope reached two different members: every node would land in the single `loose` band,
+  // which is a worse `Tidy canvas`, not a lineage view.
+  if (layers.length === 0) return nodes
+
+  const gap = opts?.gap ?? 40
+  const origin = opts?.origin ?? {
+    x: Math.min(...topLevel.map((nd) => nd.position.x)),
+    y: Math.min(...topLevel.map((nd) => nd.position.y))
+  }
+  const bands = loose.length > 0 ? [...layers, loose] : layers
+
+  let out = nodes
+  let y = origin.y
+  for (const band of bands) {
+    if (band.length === 0) continue
+    out = arrangeNodes(out, band, { layout: 'row', gap, origin: { x: origin.x, y } })
+    const tallest = Math.max(...band.map((id) => nodeH(out.find((nd) => nd.id === id)!)))
+    y += tallest + gap
+  }
+  return out
+}
+
+/**
+ * Why `arrangeGroupChildren` has nothing to do for this frame, as a sentence a menu row can show
+ * and a control reply can carry — or `null` when it can run. ONE definition for both, so the row's
+ * disabled reason and the CLI's refusal cannot drift apart.
+ */
+export function groupArrangeRefusal(
+  nodes: CanvasNode[],
+  groupId: string,
+  layout: GroupArrangeLayout,
+  edges: readonly LineageEdge[] = []
+): string | null {
+  const group = nodes.find((nd) => nd.id === groupId)
+  if (!group || group.type !== 'group') return `no group frame has the id ${groupId}`
+  if (!nodes.some((nd) => nd.parentId === groupId)) return 'this group is empty'
+  if (layout === 'lineage' && lineageLayers(nodes, edges, groupId).layers.length === 0) {
+    return 'nothing in this group was opened by another node in it'
+  }
+  return null
+}
+
+/**
+ * Organizes a group frame's own contents, then sizes the frame — and every ancestor frame — to
+ * hold them. The members are the frame's DIRECT children: a nested frame moves as one rigid unit
+ * with its own children untouched, exactly as `Tidy canvas` treats a top-level frame.
+ *
+ * - `grid` / `row` / `column` pack the children in their current reading order (y, then x), so the
+ *   result roughly keeps what the user built; `lineage` lays them out as `arrangeByLineage` bands
+ *   over the ropes that connect two of them.
+ * - **The frame's own top-left stays where it is.** The layout starts at the offset a fitted frame
+ *   keeps its content at (`GROUP_PAD`, plus the label header), so the fit that follows re-derives
+ *   the same origin and the frame only grows or shrinks to the right and downward. Starting from
+ *   the children's current bounding box instead would move the frame to wherever the top-left
+ *   child happened to sit. (With snapping on, a frame that was OFF the grid still moves onto it —
+ *   by under one cell.)
+ * - **The fit walks UP the parent chain, innermost first** (`fitAncestorChain`). Fitting only the
+ *   frame leaves a parent smaller than the child it holds, and `extent:'parent'` then makes React
+ *   Flow clamp that child into an inverted range — the snap `groupSelectedNodes` documents.
+ *
+ * Returns the SAME array when there is nothing to do — a missing or empty frame, a lineage layout
+ * with no usable rope, or a frame whose contents already sit exactly where the layout puts them —
+ * which is the caller's signal to skip the undo entry and the project.json write. Pure.
+ */
+export function arrangeGroupChildren(
+  nodes: CanvasNode[],
+  groupId: string,
+  opts?: {
+    layout?: GroupArrangeLayout
+    cols?: number
+    gap?: number
+    edges?: readonly LineageEdge[]
+    grid?: number
+  }
+): CanvasNode[] {
+  const layout = opts?.layout ?? 'grid'
+  const edges = opts?.edges ?? []
+  if (groupArrangeRefusal(nodes, groupId, layout, edges)) return nodes
+  const grid = opts?.grid ?? 0
+  const pad = grid > 0 ? Math.max(GROUP_PAD, grid) : GROUP_PAD
+  const origin = { x: pad, y: pad + GROUP_HEADER }
+  const gap = opts?.gap
+  let next: CanvasNode[]
+  if (layout === 'lineage') {
+    next = arrangeByLineage(nodes, edges, { containerId: groupId, origin, gap })
+  } else {
+    const ids = nodes
+      .filter((nd) => nd.parentId === groupId)
+      .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
+      .map((nd) => nd.id)
+    next = arrangeNodes(nodes, ids, { layout, cols: opts?.cols, gap, origin })
+  }
+  next = fitAncestorChain(next, groupId, grid)
+  // Every transform above maps the array in place, so index i is the same node before and after.
+  const unchanged = next.every((nd, i) => {
+    const was = nodes[i]
+    return (
+      was === nd ||
+      (was.position.x === nd.position.x &&
+        was.position.y === nd.position.y &&
+        was.width === nd.width &&
+        was.height === nd.height)
+    )
+  })
+  return unchanged ? nodes : next
 }
 
 export type AlignEdge = 'left' | 'right' | 'top' | 'bottom' | 'hcenter' | 'vcenter'
@@ -1462,11 +1733,11 @@ export function selectedRootIds(nodes: CanvasNode[], ids: string[]): string[] {
 }
 
 /**
- * Grows every ancestor frame of `groupId` to hug its children again, innermost first. A frame
- * that gained a child bigger than itself must be re-fitted BEFORE its own parent is, or the
- * parent is fitted around a size that is about to change.
+ * Re-fits `groupId` and then every ancestor frame above it to hug its children again, innermost
+ * first. A frame that gained a child bigger than itself must be re-fitted BEFORE its own parent
+ * is, or the parent is fitted around a size that is about to change.
  */
-function fitAncestorChain(
+export function fitAncestorChain(
   nodes: CanvasNode[],
   groupId: string | undefined,
   grid = 0

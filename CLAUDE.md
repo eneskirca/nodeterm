@@ -4081,10 +4081,30 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   frames, which `group` won't do; a cycle (a frame into itself or its own descendant) is refused.
   `arrange`/`align` now run in ONE coordinate space: all top-level, OR all children of one frame
   (`commonParentId` decides; a mixed set is refused, not silently subset-arranged — the old
-  behavior). When the ids are a frame's children, the frame is shrunk to hug the tidied layout
-  (`fitGroupToChildren`) — the fix for "grouping keeps scattered positions so the frame is too
-  wide". `move` also re-fits the source + destination frames. All pure + tested in
-  `state/workspace.test.ts` + `workspace.layout.test.ts`.
+  behavior). When the ids are a frame's children, that frame AND every ancestor frame are re-fitted
+  to hug the tidied layout (`fitAncestorChain` — fitting only the one frame left a nested frame
+  wider than its parent) — the fix for "grouping keeps scattered positions so the frame is too
+  wide". `arrange` fills its slots in the order the ids are LISTED (`arrangeNodes` used to place in
+  array order, which discarded every caller's sort). `move` also re-fits the source + destination
+  frames. All pure + tested in `state/workspace.test.ts` + `workspace.layout.test.ts`.
+  **`arrange --group <frameId> [--layout grid|row|column|lineage] [--cols N]`** names the FRAME
+  instead of listing its children: the frame's direct children are laid out and the frame chain is
+  re-fitted — `arrangeGroupChildren`, the SAME transform the frame's menu rows run (see
+  **Arrange inside a group** under Canvas interaction). The flag gate is the pure
+  `arrangeArgsRefusal` (`@shared/arrange-verb`, called from `parseControlRequest`): `--nodes` and
+  `--group` together are refused rather than resolved silently, an unknown `--layout` on the
+  `--group` form is refused by name, and `--layout lineage` on the `--nodes` form is refused
+  instead of being delivered as a grid (any OTHER unknown word there still falls back to `grid`,
+  as it always has). What only the canvas knows — no such frame, an empty frame, no lineage among
+  the children — is `groupArrangeRefusal`, replied as `arrange: <reason>`; a frame already in
+  place answers `ok` with `changed: false` and writes nothing. The agent-facing text for the form
+  is `arrangeGroupGuidanceLines`, rendered into BOTH generated bodies from the same layout list the
+  gate checks. **Server Edition: refused by name** — `arrange` is not in `SERVER_V1_VERBS` in either
+  form (headless control keeps no measured node sizes), so `--group` gets the same permanent
+  `control-unsupported-on-this-edition` reply and is never dropped on the way to an `ok`
+  (`control-unsupported.test.ts` pins it). Off screen it is refused like the `--nodes` form
+  (`OFF_SCREEN_REFUSALS`); the dispatch branch is deliberately thin so moving `arrange` off-screen
+  touches only where the node array comes from.
   **Fan-in (`link`, 2026-07):** a spawned fan-out was previously write-only — nodes an agent
   opened were joined to it by a **rope** (`project.ropes`, explicitly *"Display-only — never
   context links"*), so an orchestrator could not read back what its own team produced and the
@@ -6450,6 +6470,63 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   ids it knows — so Delete, restart-agent, branch/transfer, terminal Search and Close can never
   be hidden, whatever settings.json says. The group-frame menu's colors strip answers to the same
   `colors` id; builders run through `tidySeparators` so a hidden row leaves no dangling rule.
+- **Arrange by lineage** (`arrangeByLineage` / `lineageLayers` in `state/workspace.ts`; pane menu
+  beside Tidy canvas, ⌘K, and the registry command `canvas.tidyLineage`, which ships UNBOUND —
+  ⌘⇧A is already the first tidy) — the second tidy: one row per LAYER of the lineage ropes
+  (`project.ropes`, i.e. "opened by" and `--after`), growing downward, so a coordinator sits above
+  the team it opened and that team above what IT opened. Four rules, each of which the naive
+  version gets wrong: **(1)** a rope is LIFTED to its top-level ancestor before it counts — an
+  agent opens a team INSIDE a frame, and the frame is the rigid unit that moves; a rope whose two
+  ends lift to the SAME object is internal to that frame and dropped, or the frame would be its own
+  opener. **(2)** a node's layer is its LONGEST path from a root, never its first — with `max`
+  every rope points strictly downward, which is the whole reason the result reads as a flow; a
+  reducer that keeps the LAST opener happens to be right in one edge order and wrong in the other,
+  so the test asserts BOTH. **(3)** nodes no rope touches are NOT layer 0 — they are a final
+  `loose` band, because a node with no lineage is not a root of anything and mixing the two puts
+  every sticky note beside the coordinator. **(4)** a cycle never hangs and never throws (the edge
+  that closes it contributes `0`): a rope cycle is not supposed to exist, but `--after` can be
+  hand-built into one and `project.json` is editable. The refusal is the transform returning the
+  SAME array — no usable rope, or under two top-level nodes — which is also what keeps a no-op out
+  of the undo stack and out of `project.json`; **that verdict is taken from `nodesRef` BEFORE the
+  write, never from a flag set inside the `setNodes` updater**, which runs when the state is
+  processed and is therefore still false on the next line (it would cost every run its `markDirty`
+  + `fitAll`). The pane row is then DISABLED with its reason while the palette OMITS it (no
+  disabled state there). Built ON `arrangeNodes` — one `row` placement per band from a shared left
+  origin — so packing, gap and the mixed-container refusal stay in ONE place. **That only holds
+  because `arrangeNodes` fills its slots in the order of the ids it is handed**: it used to place
+  in ARRAY order, which threw away the slot order `lineageLayers` computes (siblings under their
+  opener) AND the reading-order sort `arrangeAllNodes` documents, with every existing test green
+  because each asserted the layer LIST and never the positions. The interleaved case is now
+  asserted on positions. Desktop + Server Edition identical (pure renderer, no new IPC); kanban
+  N/A (a board shows cards, and geometry is exactly what a column layout discards); Mobile N/A
+  (no canvas).
+- **Arrange inside a group** (`arrangeGroupChildren` / `groupArrangeRefusal` in
+  `state/workspace.ts`; the group-frame menu's **Tidy group** and **Arrange group by lineage**,
+  ⌘K for the ONE selected frame, and the `arrange --group` control verb — one transform behind all
+  three, pinned by `canvas/arrange-group.source.test.ts`) — the two canvas tidies one level down:
+  organize a frame's own items, then size the frame to hold them. Four rules: **(1)** the members
+  are the frame's DIRECT children, so a nested frame moves as one rigid unit with its own children
+  untouched, exactly as Tidy canvas treats a top-level frame; `lineageLayers` /
+  `arrangeByLineage` take a `containerId` for this, a rope is lifted to the MEMBER that holds its
+  end, and a rope with an end outside the frame is dropped — the opener of a frame's whole team
+  usually sits outside it and says nothing about the order inside. **(2)** the layout starts at
+  the offset a fitted frame keeps its content at (`GROUP_PAD`, plus `GROUP_HEADER`), NOT at the
+  children's bounding box: `fitGroupToChildren` re-anchors a frame to hug its children, so
+  starting from the bounding box moves the frame to wherever its top-left child happened to sit,
+  while starting from the content origin makes the fit re-derive the SAME origin and the frame
+  only grows or shrinks to the right and downward (a frame that was off the grid still moves onto
+  it, by under one cell, when snapping is on). That is also why the action calls no `fitAll` — the
+  thing the user right-clicked must not slide out from under the cursor. **(3)** the fit walks UP
+  the parent chain, innermost first (`fitAncestorChain`): fitting only the frame leaves a parent
+  smaller than the child it holds, and `extent:'parent'` then clamps that child into an inverted
+  range. **(4)** the refusal is the SAME array — a missing or empty frame, a lineage layout with no
+  rope joining two of the children, or a frame whose contents already sit where the layout puts
+  them (compared by geometry, so a second click writes no undo entry and no `project.json`); as
+  with the canvas tidies the verdict is read off `nodesRef` BEFORE the write. The menu rows are
+  DISABLED with the reason `groupArrangeRefusal` gives, the palette OMITS a refused entry, and the
+  CLI replies that reason by name — one sentence, three surfaces. Desktop + Server Edition
+  identical for the menu and palette (pure renderer, no new IPC); the control verb is desktop-only
+  (see Grouping verbs); kanban N/A; Mobile N/A (no canvas).
 - **Add menu** = bottom dock (`Dock.tsx`) `+`, mirrored by the pane menu and command palette.
   `lib/addMenuSpec` is the one source for WHICH kinds are addable, and since 2026-09 also for how
   the two `ContextMenu` surfaces GROUP them: `New terminal` · `New remote…` · the account-capable

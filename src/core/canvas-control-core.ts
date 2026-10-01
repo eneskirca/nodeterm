@@ -21,6 +21,7 @@ import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
 import { BROWSER_KEYS, BROWSER_TIMEOUT_DEFAULT_MS, BROWSER_TIMEOUT_MAX_MS } from './browser-verb'
 import { nodeColorChoices } from '@shared/node-colors'
 import { offScreenGuidanceLines } from '@shared/control-off-screen'
+import { arrangeArgsRefusal, arrangeGroupGuidanceLines } from '@shared/arrange-verb'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
 import { ISSUE_SESSION_COLUMNS, issueLaunchPrompt, parseIssueArg } from '../shared/github-issue-ref'
 import { BOARD_COMMENT_FROM_PREFIX, BOARD_COMMENT_REPLY_TO } from '../shared/board-comment'
@@ -725,7 +726,12 @@ export function parseControlRequest(
   if (v === 'report-outcome' && !args.outcome) {
     return { error: 'report-outcome requires --outcome succeeded|failed' }
   }
-  if ((v === 'group' || v === 'arrange') && !args.nodes) return { error: `${v} requires --nodes <id,id>` }
+  if (v === 'group' && !args.nodes) return { error: 'group requires --nodes <id,id>' }
+  // `arrange` has two forms (`--nodes` or `--group`); the gate is shared with the generated docs.
+  if (v === 'arrange') {
+    const arrangeRefusal = arrangeArgsRefusal(args)
+    if (arrangeRefusal) return { error: arrangeRefusal }
+  }
   if (v === 'ungroup' && !args.group) return { error: 'ungroup requires --group <id>' }
   if (v === 'move' && !args.nodes) return { error: 'move requires --nodes <id,id>' }
   if (v === 'align' && !args.nodes) return { error: 'align requires --nodes <id,id>' }
@@ -949,7 +955,9 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '- `arrange --nodes <id,id> [--layout grid|row|column] [--cols N]` /',
     '  `align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter` — tidy a layout. Works on',
     '  top-level nodes OR on the children of ONE frame (all ids must share a container — you cannot',
-    '  arrange across frames in one call); arranging a frame\'s children also shrinks the frame to fit.',
+    '  arrange across frames in one call). `arrange` places the nodes in the order you list them, and',
+    '  arranging a frame\'s children also re-fits that frame and every frame around it.',
+    ...arrangeGroupGuidanceLines(),
     '- `link --to <id,id> [--from <id>]` — context-link nodes so each can READ the other\'s transcript',
     '  on demand (nodeterm linked-context CLI). `--from` defaults to you; nothing is pushed into the',
     '  linked sessions. Agent sessions you open, and the stations you name in `--after`, are already',
@@ -1537,9 +1545,12 @@ ${reportOutcomeDocLines().join('\n')}
   Invalid cycles are rejected.
 - \`arrange --nodes <id,id> [--layout grid|row|column] [--cols N]\` — tidy layout, no overlap. Works
   on top-level nodes OR on the children of ONE frame — every id must share a container (you cannot
-  arrange nodes from two different frames, or mix framed + loose, in one call). When the ids are a
-  frame's children, the frame is also shrunk to hug the tidied layout. Since grouping preserves each
-  node's scattered position, a fresh frame is usually too wide: \`arrange\` its children to fix that.
+  arrange nodes from two different frames, or mix framed + loose, in one call). The nodes are placed
+  in the order you list them. When the ids are a frame's children, that frame and every frame around
+  it are also re-fitted to hug the tidied layout.
+${arrangeGroupGuidanceLines().join('\n')}
+  Since grouping preserves each node's scattered position, a fresh frame is usually the wrong size:
+  \`arrange --group\` it to fix that.
 - \`align --nodes <id,id> --edge left|right|top|bottom|hcenter|vcenter\` — align edges/centers. Same
   one-container rule as \`arrange\`.
 - \`link --to <id,id> [--from <id>]\` — context-link nodes, so each can READ the other's
@@ -1696,7 +1707,7 @@ Typical requests this skill covers:
   group), or \`open-claude\`/\`open-agent\` per node followed by \`group --nodes ... --label\`
   per subject and \`arrange\` inside each.
 - "Open a Codex/Gemini/Copilot session" → \`open-agent --agent codex|gemini|copilot\`.
-- "Tidy up / group my terminals" → \`list\`, then \`group --nodes …\`, then \`arrange --nodes <those same ids>\`
+- "Tidy up / group my terminals" → \`list\`, then \`group --nodes …\`, then \`arrange --group <the new frame's id>\`
   to tidy the new frame's contents (grouping keeps each node's scattered spot, so arrange after grouping).
 - "Move this node into that group" → \`move --nodes <id> --group <targetGroupId>\` (not \`group\`, which only
   wraps loose nodes). "Break up this group" → \`ungroup --group <id>\`.

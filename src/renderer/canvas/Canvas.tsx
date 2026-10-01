@@ -123,6 +123,7 @@ import {
   IconFit,
   IconGear,
   IconGrid,
+  IconLineage,
   IconGroup,
   IconJump,
   IconKanban,
@@ -763,7 +764,14 @@ import {
   claudeLaunchCommand,
   COLLAPSED_HEIGHT,
   alignNodes,
+  arrangeByLineage,
+  arrangeGroupChildren,
   arrangeNodes,
+  fitAncestorChain,
+  groupArrangeRefusal,
+  GROUP_ARRANGE_LAYOUTS,
+  type GroupArrangeLayout,
+  lineageLayers,
   commonParentId,
   fitGroupToChildren,
   createAccountLoginNode,
@@ -8458,6 +8466,62 @@ export function Canvas() {
     fitAll()
   }, [setNodes, markDirty, fitAll])
 
+  // The lineage ropes as the layout reads them: `controlEdges` is the live copy of what the
+  // project persists as `ropes` ("opened by" and `--after`), which is exactly the relation the
+  // user means by "who opened whom".
+  const lineageEdges = useCallback(
+    () => controlEdgesRef.current.map((e) => ({ source: e.source, target: e.target })),
+    []
+  )
+  // Whether the lineage tidy has anything to say. Asked when the menu OPENS so the row can be
+  // disabled with its reason instead of silently doing nothing on click: on a canvas nobody
+  // spawned anything into, every node is loose and the result would just be a worse Tidy canvas.
+  const hasLineageLayers = useCallback(
+    () => lineageLayers(nodesRef.current, lineageEdges()).layers.length > 0,
+    [lineageEdges]
+  )
+  // Lineage bands: one row per layer, growing downward, with the nodes no rope touches last.
+  // Mirrors arrangeAllNodes exactly — same kanban guard, same markDirty + fitAll — except that
+  // the refusal is `arrangeByLineage` returning the SAME array, which is also what keeps a
+  // no-op out of the undo stack and out of project.json.
+  const arrangeByLineageAction = useCallback(() => {
+    if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+    const edges = lineageEdges()
+    // Decided against nodesRef BEFORE the write, never from inside the updater: a React updater
+    // runs when the state is processed, so a flag set in there is still false on the next line
+    // and markDirty/fitAll would never fire. The transform is pure, so asking it twice is free.
+    if (arrangeByLineage(nodesRef.current, edges) === nodesRef.current) return
+    setNodes((ns) => arrangeByLineage(ns, edges))
+    markDirty()
+    fitAll()
+  }, [setNodes, markDirty, fitAll, lineageEdges])
+
+  // Why a group frame's contents cannot be organized, as the sentence its menu row shows — or
+  // null. The pure half is `groupArrangeRefusal`, which the `arrange --group` verb reads too, so
+  // the row's disabled reason and the CLI's refusal are one definition.
+  const groupArrangeHint = useCallback(
+    (groupId: string, layout: GroupArrangeLayout): string | null => {
+      const why = groupArrangeRefusal(nodesRef.current as CanvasNode[], groupId, layout, lineageEdges())
+      return why ? `${why[0].toUpperCase()}${why.slice(1)}.` : null
+    },
+    [lineageEdges]
+  )
+  // Organize ONE frame's own items and size the frame (and every ancestor frame) to hold them.
+  // Same refusal discipline as the two canvas tidies: decided against nodesRef BEFORE the write,
+  // and `arrangeGroupChildren` returning the SAME array is what keeps a no-op out of the undo
+  // stack and out of project.json. No `fitAll`: the frame's top-left stays where it was, so the
+  // thing the user just right-clicked must not slide out from under the cursor.
+  const arrangeGroupAction = useCallback(
+    (groupId: string, layout: GroupArrangeLayout) => {
+      if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) return
+      const opts = { layout, edges: lineageEdges(), grid: snapGridNow() }
+      if (arrangeGroupChildren(nodesRef.current as CanvasNode[], groupId, opts) === nodesRef.current) return
+      setNodes((ns) => arrangeGroupChildren(ns as CanvasNode[], groupId, opts))
+      markDirty()
+    },
+    [setNodes, markDirty, lineageEdges]
+  )
+
   /** Report a refusal the user cannot act on any other way. One dismiss button, no default. */
   const alertLayout = useCallback(
     (message: string) => {
@@ -9362,6 +9426,7 @@ export function Canvas() {
       'canvas.goForward': () => { goForward(); return true },
       'canvas.fitAll': () => { fitAll(); return true },
       'canvas.tidy': () => { arrangeAllNodes(); return true },
+      'canvas.tidyLineage': () => { arrangeByLineageAction(); return true },
       // The kanban board's keys — the mounted board decides (and declines when the focused control
       // owns the key, or when no per-project board is up: Omni registers none). lib/boardKeys.
       'board.openCard': () => runBoardKey('open'),
@@ -10241,6 +10306,8 @@ export function Canvas() {
         addSelectionToGroup(nodesRef.current as CanvasNode[], selectedIds, groupId) !==
           nodesRef.current
       const groupHidden = isHidden('group', useSettings.getState().settings.hiddenNodeMenuItems)
+      const tidyRefusal = groupArrangeHint(groupId, 'grid')
+      const lineageRefusal = groupArrangeHint(groupId, 'lineage')
       // The group frame has its own colors strip; it answers to the same "Colors" toggle as the
       // node menu, so hiding it in Settings hides it everywhere a right-click can reach it.
       return tidySeparators([
@@ -10278,6 +10345,24 @@ export function Canvas() {
         // `cwdForNewNodeIn` is what makes a frame per branch also mean a file tree per branch.
         { label: 'New file manager', icon: <IconExplorer />, onClick: () => addFiles(at, groupId) },
         { type: 'separator' },
+        // The two canvas tidies, one level down: organize THIS frame's own items and size the
+        // frame (and its ancestors) to hold them. Disabled WITH the reason rather than hidden —
+        // the pane menu's rule: a row that is off for an invisible reason teaches nothing.
+        {
+          label: 'Tidy group',
+          icon: <IconGrid />,
+          disabled: !!tidyRefusal,
+          hint: tidyRefusal ?? 'Pack the items in a grid and resize the group to fit.',
+          onClick: () => arrangeGroupAction(groupId, 'grid')
+        },
+        {
+          label: 'Arrange group by lineage',
+          icon: <IconLineage />,
+          disabled: !!lineageRefusal,
+          hint: lineageRefusal ?? 'One row per level: who opened whom, top to bottom.',
+          onClick: () => arrangeGroupAction(groupId, 'lineage')
+        },
+        { type: 'separator' },
         ...(isHidden('colors', useSettings.getState().settings.hiddenNodeMenuItems)
           ? []
           : ([{ type: 'colors', onPick: (c) => setNodesColor([groupId], c) }] as MenuItem[])),
@@ -10314,7 +10399,9 @@ export function Canvas() {
       agentCreationEntries,
       addSticky,
       addToExistingGroup,
-      groupSelection
+      groupSelection,
+      groupArrangeHint,
+      arrangeGroupAction
     ]
   )
 
@@ -10432,6 +10519,21 @@ export function Canvas() {
           ...(hasArrangeableNodes()
             ? [{ label: 'Tidy canvas', icon: <IconGrid />, onClick: arrangeAllNodes } as MenuItem]
             : []),
+          // Same visibility gate as Tidy canvas, then disabled WITH the reason when this canvas
+          // has no lineage to lay out — a row that is off for an invisible reason teaches nothing.
+          ...(hasArrangeableNodes()
+            ? [
+                {
+                  label: 'Arrange by lineage',
+                  icon: <IconLineage />,
+                  disabled: !hasLineageLayers(),
+                  hint: hasLineageLayers()
+                    ? 'One row per level: who opened whom, top to bottom.'
+                    : 'Nothing on this canvas was opened by another node yet.',
+                  onClick: arrangeByLineageAction
+                } as MenuItem
+              ]
+            : []),
           // Project-wide: restart every idle agent CLI in place (new model pickup). Hidden on a
           // canvas with no restartable agent node — there it could only ever report "0 restarted".
           ...(hasRestartableAgents()
@@ -10455,7 +10557,9 @@ export function Canvas() {
       selectAll,
       fitAll,
       arrangeAllNodes,
+      arrangeByLineageAction,
       hasArrangeableNodes,
+      hasLineageLayers,
       hasRestartableAgents,
       restartIdleAgents
     ]
@@ -13930,8 +14034,47 @@ export function Canvas() {
           }
           case 'arrange':
           case 'align': {
-            const ids = (args.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean)
             const live = nodesRef.current as CanvasNode[]
+            // `arrange --group <frameId>`: name the FRAME instead of listing its children. The
+            // whole rule set is `arrangeGroupChildren` — the same transform the frame's menu rows
+            // and the palette run — so this branch only parses, refuses by name and replies.
+            if (verb === 'arrange' && args.group) {
+              const gid = args.group.trim()
+              const groupLayout = GROUP_ARRANGE_LAYOUTS.find((l) => l === args.layout) ?? 'grid'
+              const edges = controlEdgesRef.current.map((e) => ({ source: e.source, target: e.target }))
+              const refusal = groupArrangeRefusal(live, gid, groupLayout, edges)
+              if (refusal) {
+                reply({ ok: false, error: `arrange: ${refusal}` })
+                return
+              }
+              const cols = args.cols ? parseInt(args.cols, 10) || undefined : undefined
+              const next = arrangeGroupChildren(live, gid, { layout: groupLayout, cols, edges, grid: snapGridNow() })
+              const count = live.filter((nd) => nd.parentId === gid).length
+              // The SAME array means every item already sat where the layout puts it: an answer,
+              // not a failure — and nothing to write.
+              if (next !== live) {
+                setNodes(next)
+                markDirty()
+              }
+              const frame = next.find((nd) => nd.id === gid)
+              reply({
+                ok: true,
+                message:
+                  next === live
+                    ? `group ${gid} is already arranged as ${groupLayout} — nothing moved`
+                    : `arranged ${count} item(s) in group ${gid} as ${groupLayout} and resized the frame to fit`,
+                result: {
+                  count,
+                  group: gid,
+                  layout: groupLayout,
+                  changed: next !== live,
+                  width: frame?.width,
+                  height: frame?.height
+                }
+              })
+              return
+            }
+            const ids = (args.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean)
             const edge = (['left', 'right', 'top', 'bottom', 'hcenter', 'vcenter'] as const).find((e2) => e2 === args.edge)
             if (verb === 'align' && !edge) {
               reply({ ok: false, error: 'align requires --edge left|right|top|bottom|hcenter|vcenter' })
@@ -13956,9 +14099,11 @@ export function Canvas() {
             let next = verb === 'arrange'
               ? arrangeNodes(live, ids, { layout, cols })
               : alignNodes(live, ids, edge!)
-            // Tidying a frame's children usually leaves the frame oversized (it was sized to their
-            // old scattered spots) — shrink it to hug the new layout. Top-level sets have no frame.
-            if (container) next = fitGroupToChildren(next, container, snapGridNow())
+            // Tidying a frame's children usually leaves the frame the wrong size (it was sized to
+            // their old scattered spots) — hug the new layout, and re-fit every ANCESTOR frame too:
+            // a nested frame that grew past its parent would be clamped by `extent:'parent'` into
+            // an inverted range. Top-level sets have no frame.
+            if (container) next = fitAncestorChain(next, container, snapGridNow())
             setNodes(next)
             markDirty()
             const how = verb === 'arrange' ? `as ${layout}` : `to ${edge}`
@@ -17265,6 +17410,51 @@ export function Canvas() {
             } as Command
           ]
         : []),
+      // Omitted rather than disabled when there is no lineage: the palette has no disabled
+      // state, so an entry that does nothing would surface as a search hit that goes nowhere.
+      ...(hasArrangeableNodes() && hasLineageLayers()
+        ? [
+            {
+              id: 'arrange-lineage',
+              label: 'Arrange by lineage',
+              hint: 'layers levels who opened whom tree hierarchy organize',
+              icon: <IconLineage />,
+              run: arrangeByLineageAction
+            } as Command
+          ]
+        : []),
+      // The group tidies need a frame to act on, and the palette has no right-click target: they
+      // are offered for the ONE selected group frame, and each is omitted (never disabled — see
+      // above) when `groupArrangeRefusal` says it has nothing to do there.
+      ...(() => {
+        const selectedGroups = nodesRef.current.filter((n) => n.selected && n.type === 'group')
+        if (selectedGroups.length !== 1) return []
+        const groupId = selectedGroups[0].id
+        return [
+          ...(groupArrangeHint(groupId, 'grid')
+            ? []
+            : [
+                {
+                  id: 'arrange-group',
+                  label: 'Tidy selected group',
+                  hint: 'arrange grid layout organize frame resize fit clean up',
+                  icon: <IconGrid />,
+                  run: () => arrangeGroupAction(groupId, 'grid')
+                } as Command
+              ]),
+          ...(groupArrangeHint(groupId, 'lineage')
+            ? []
+            : [
+                {
+                  id: 'arrange-group-lineage',
+                  label: 'Arrange selected group by lineage',
+                  hint: 'layers levels who opened whom tree hierarchy organize frame resize',
+                  icon: <IconLineage />,
+                  run: () => arrangeGroupAction(groupId, 'lineage')
+                } as Command
+              ])
+        ]
+      })(),
       { id: 'zoom-100', label: 'Zoom to 100%', icon: <IconFit />, run: zoomTo100 },
       // Layouts mirror the Dock's menu, and both are withheld on a relay tab for the same reason:
       // it is a live connection to another machine, never a workspace on this disk. The Dock says

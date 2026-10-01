@@ -103,6 +103,49 @@ describe('parseControlRequest', () => {
     })
   })
 
+  it('arrange --group names a frame; its flag refusals are decided before any canvas is asked', () => {
+    expect(parseControlRequest('arrange', { group: 'g1', layout: 'lineage', cols: '3' })).toEqual({
+      verb: 'arrange',
+      args: { group: 'g1', layout: 'lineage', cols: '3' }
+    })
+    // Both forms at once has two answers to "which nodes" — refused, never silently resolved.
+    const both = parseControlRequest('arrange', { nodes: 'a,b', group: 'g1' })
+    expect('error' in both && both.error).toMatch(/--nodes <id,id> or --group <frameId>, not both/)
+    // An unknown layout on the new form is refused by name, listing what is accepted.
+    expect(parseControlRequest('arrange', { group: 'g1', layout: 'spiral' })).toEqual({
+      error: 'arrange --group: --layout must be grid|row|column|lineage'
+    })
+    // `lineage` is a question about a container: on an id list it would be delivered as a grid.
+    const lineageOnNodes = parseControlRequest('arrange', { nodes: 'a,b', layout: 'lineage' })
+    expect('error' in lineageOnNodes && lineageOnNodes.error).toMatch(/--layout lineage needs --group <frameId>/)
+  })
+
+  it('both bodies document arrange --group: the layouts, the resize up the chain and the stable origin', () => {
+    for (const [name, body] of [
+      ['skill', buildCanvasSkillBody('/x/shim.sh')],
+      ['instructions', buildCanvasControlInstructions('/x/shim.sh')]
+    ] as const) {
+      expect(body, name).toContain('- `arrange --group <frameId> [--layout grid|row|column|lineage] [--cols N]`')
+      // The `--nodes` form is still there, and still says what it accepts.
+      expect(body, name).toContain('`arrange --nodes <id,id> [--layout grid|row|column] [--cols N]`')
+      expect(body, name).toMatch(/frame's direct children \(a frame nested\s+inside moves as one unit\)/)
+      expect(body, name).toMatch(/resizes the frame — and every frame around it — to hold them/)
+      expect(body, name).toMatch(/top-left stays where it is/)
+      expect(body, name).toMatch(/Pass `--nodes` or `--group`, never both/)
+      expect(body, name).toMatch(/it is refused, with the reason, when no opened-by\s+or `--after` connection joins two of them/)
+      // The `--nodes` form's two facts that changed with it: listed order, and the ancestor re-fit.
+      expect(body, name).toMatch(/in the order you list them/)
+      // The stale claim this replaced — a frame was only ever "shrunk", and only the one frame.
+      expect(body, name).not.toMatch(/shrinks the frame to fit|also shrunk to hug/)
+    }
+  })
+
+  it('the skill playbook reaches for arrange --group after grouping, not a re-listed id set', () => {
+    const body = buildCanvasSkillBody('/x/shim.sh')
+    expect(body).toContain("then `arrange --group <the new frame's id>`")
+    expect(body).not.toContain('arrange --nodes <those same ids>')
+  })
+
   it('run requires --node (#925)', () => {
     expect(parseControlRequest('run', {})).toEqual({ error: 'run requires --node <id>' })
     expect(parseControlRequest('run', { node: 'n1' })).toEqual({ verb: 'run', args: { node: 'n1' } })
@@ -230,10 +273,16 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('show-image')).toBe(false)
   })
 
-  it('group/arrange require --nodes; align also requires --edge', () => {
+  it('group requires --nodes; arrange takes --nodes or --group; align also requires --edge', () => {
     expect(parseControlRequest('group', {})).toEqual({ error: 'group requires --nodes <id,id>' })
     expect(parseControlRequest('group', { nodes: 'a,b' })).toEqual({ verb: 'group', args: { nodes: 'a,b' } })
-    expect(parseControlRequest('arrange', {})).toEqual({ error: 'arrange requires --nodes <id,id>' })
+    expect(parseControlRequest('arrange', {})).toEqual({
+      error: 'arrange requires --nodes <id,id> or --group <frameId>'
+    })
+    expect(parseControlRequest('arrange', { nodes: 'a,b', layout: 'row' })).toEqual({
+      verb: 'arrange',
+      args: { nodes: 'a,b', layout: 'row' }
+    })
     expect(parseControlRequest('align', { nodes: 'a' })).toEqual({ error: 'align requires --edge' })
     expect(parseControlRequest('align', { nodes: 'a', edge: 'left' })).toEqual({
       verb: 'align',

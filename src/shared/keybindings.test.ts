@@ -106,6 +106,8 @@ describe('registry invariants', () => {
         darwin: [], other: [] },
       { id: 'canvas.tidy', title: 'Tidy canvas', group: 'Canvas', scope: 'canvas',
         darwin: ['Cmd+Shift+A'], other: ['Cmd+Shift+A'] },
+      { id: 'canvas.tidyLineage', title: 'Arrange by lineage', group: 'Canvas', scope: 'canvas',
+        darwin: [], other: [] },
       { id: 'canvas.groupSelection', title: 'Group selection', group: 'Canvas', scope: 'canvas',
         darwin: [], other: [] },
       { id: 'node.newTerminal', title: 'New terminal node', group: 'Nodes', scope: 'canvas',
