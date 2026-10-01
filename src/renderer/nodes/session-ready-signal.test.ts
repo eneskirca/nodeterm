@@ -35,6 +35,16 @@ describe('where readiness is published (source pins)', () => {
     expect(src).toContain('setSessionReady(id, !!parked)')
   })
 
+  it('a fresh session is published through the SAME shell settle the initialCommand writer uses', () => {
+    // Both write an agent CLI command line into the pane. A line delivered across zsh's rc-file
+    // tty flush comes out mangled, which is exactly what `whenShellSettled` exists to avoid — so
+    // the armed launch must not be released on a bare create-resolve.
+    // Upstream's launchWriter now owns the delivery; the publish rides the same settle.
+    expect(src).toMatch(/whenShellSettled\(\(\) => \{[\s\S]{0,200}?setSessionReady\(id, true\)/)
+    expect(src).toContain(
+      'const writeWhenShellReady = (cmd: string, onSettled?: (outcome: DeliveryOutcome) => void): void => {'
+    )
+  })
   it('only a REAL teardown clears it — a park keeps the session typeable by name', () => {
     // The park branch returns before this line; a parked tmux session is still addressable by
     // `sendText`, so clearing there would strand a launch that could have been delivered.

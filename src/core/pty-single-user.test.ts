@@ -764,7 +764,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
 
     // No expectedAgentId here — the legacy shell-only guard path (an SSH/codex node's own
     // model switch passes its id; this asserts the base kill mechanism stays intact).
-    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe(true)
+    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe('terminated')
 
     expect(signal).toHaveBeenCalledWith(-33319, 'SIGTERM')
     expect(tmuxCalls('send-keys')).toEqual([])
@@ -778,7 +778,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     processGroupReply = '33293\n'
     const signal = vi.spyOn(process, 'kill').mockImplementation(() => true)
 
-    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe(false)
+    await expect(fake.handlers[IPC.ptyTerminateForeground]('solo-1')).resolves.toBe('refused')
 
     expect(signal).not.toHaveBeenCalled()
   })

@@ -293,6 +293,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.ptySessionAge,
   IPC.ptySendText,
   IPC.ptyPaneOwner,
+  IPC.ptyAgentProcess,
   // A host filesystem path, not a view of the terminal — a viewer's file links keep the node cwd.
   IPC.ptyPaneCwd,
   IPC.ptyTerminateForeground,

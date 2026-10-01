@@ -96,9 +96,17 @@ const api: NodeTerminalApi = {
     kill: (sessionId, viewerId) => ipcRenderer.send(IPC.ptyKill, sessionId, viewerId),
     destroy: (persistKey, opts) =>
       ipcRenderer.send(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
+<<<<<<< New base: Merge pull request #1086 from FabricioCasali/fix/list-agent-state
     recycle: (persistKey) => ipcRenderer.send(IPC.ptyRecycle, persistKey),
     generateName: (persistKey, cwd, accountId) =>
       ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd, accountId),
+||||||| Common ancestor
+    recycle: (persistKey) => ipcRenderer.send(IPC.ptyRecycle, persistKey),
+    generateName: (persistKey, cwd) => ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd),
+=======
+    recycle: (persistKey) => ipcRenderer.invoke(IPC.ptyRecycle, persistKey),
+    generateName: (persistKey, cwd) => ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd),
+>>>>>>> Current commit: fix(terminal): make agent restarts verifiable
     generateGroupName: (memberKeys, cwd) =>
       ipcRenderer.invoke(IPC.ptyGenerateGroupName, memberKeys, cwd),
     capture: (persistKey, full) => ipcRenderer.invoke(IPC.ptyCapture, persistKey, full),
@@ -115,6 +123,8 @@ const api: NodeTerminalApi = {
     paneOwner: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneOwner, persistKey),
     terminateForeground: (persistKey, expectedAgentId) =>
       ipcRenderer.invoke(IPC.ptyTerminateForeground, persistKey, expectedAgentId),
+    agentProcess: (persistKey, expectedAgentId) =>
+      ipcRenderer.invoke(IPC.ptyAgentProcess, persistKey, expectedAgentId),
     readSessionName: (sessionId, accountId, agentId) =>
       ipcRenderer.invoke(IPC.ptyReadSessionName, sessionId, accountId, agentId),
     onData: (sessionId, listener) => {
