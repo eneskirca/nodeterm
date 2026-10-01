@@ -11,6 +11,7 @@ import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSettings } from '../state/settings'
 import { contextFillColor, contextPillText, percentText } from '../lib/usageFormat'
+import { contextMeterUsage } from '../lib/contextMeterModel'
 
 export interface SessionRowProps {
   row: SessionRowVM
@@ -56,6 +57,9 @@ export function SessionRow({
   // The sidebar is one more view of the same nodes, so it gets the canvas header's account chip
   // under the same visibility rule — two rows on two Claude logins are otherwise indistinguishable.
   const accountChip = useAccountChip(row.accountId, row.account)
+  const effectiveUsage = usage
+    ? contextMeterUsage(usage.usedTokens, usage.windowTokens, row.agentLaunchContextWindow)
+    : null
 
   const commit = (): void => {
     const t = draft.trim()
@@ -169,14 +173,17 @@ export function SessionRow({
               {row.loop.kind} · {row.loop.count}
             </span>
           )}
-          {row.usesContext && usage && (
+          {row.usesContext && usage && effectiveUsage && (
             <span
               className="ss-ctx"
-              title={`${usage.windowSource === 'estimate' ? 'Estimated context window' : 'Context window'} — ${percentText(usage.usedPercent, percentMode)}`}
-              style={{ background: contextFillColor(usage.usedPercent) }}
-            >
-              {usage.windowSource === 'estimate' ? '~' : ''}{contextPillText(usage.usedTokens, usage.windowTokens, usage.usedPercent, percentMode)}
-            </span>
+              title={`${usage.windowSource === 'estimate' ? 'Estimated context window' : 'Context window'} — ${percentText(effectiveUsage.usedPercent, percentMode)}`}
+              style={{ background: contextFillColor(effectiveUsage.usedPercent) }}            >
+                {usage.windowSource === 'estimate' ? '~' : ''}{contextPillText(
+                  usage.usedTokens,
+                  effectiveUsage.windowTokens,
+                  effectiveUsage.usedPercent,
+                  percentMode
+                )}            </span>
           )}
           {/* Both buttons are invisible until the row is hovered, yet they used to hold 46px of a
               253px line — a quarter of it — away from the NAME. The cluster is taken out of flow

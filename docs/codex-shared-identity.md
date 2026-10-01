@@ -149,6 +149,28 @@ and `codex-launcher-sh.test.ts` pins it with a start handler that sleeps.
 
 ## 3. The fallback
 
+### Subscription restarts
+
+"Restart on subscription" strips gateway environment variables and clears the node's selected
+model. Codex also saves the model with the conversation: a bare `codex resume <id>` restores that
+saved model, including a gateway-only name such as `vllm/reasoning`.
+
+Subscription resumes therefore use `codex resume <id> -c 'model_provider="openai"'`. Codex takes
+the model from its current configuration or built-in default, keeping the same conversation and
+account. This invocation uses a plain client because a shared daemon can ignore resume overrides
+for an already-loaded thread. Ordinary gateway launches continue to use the shared launcher.
+Custom launch programs still receive the provider override; a wrapper that explicitly forces its
+own remote server remains responsible for applying those settings there.
+
+Measured with Codex 0.154.0 against an isolated conversation and a local test endpoint. The
+[resume override selector](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/tui/src/app/config_persistence.rs)
+selects current settings when a provider override is present. No model name is hard-coded and no
+user configuration or authentication file is rewritten. Desktop, Server Edition, and SSH nodes
+share this command builder; the mobile companion needs the same behavior if it offers an
+independent subscription restart action.
+
+### Launcher failures
+
 **Every failure path ends in `exec codex "$@"`, arguments intact.** Upstream exited 69 "identity
 unavailable", which turns a missing app-server, an older `codex`, a stale tmux session or a
 locked-down data dir into a **dead node**. The repo's own precedent is `gatePermissionMode`: an

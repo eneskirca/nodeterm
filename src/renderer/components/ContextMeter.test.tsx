@@ -14,9 +14,9 @@ it('qualifies model-name guesses but not observed session configuration', async 
   try {
     useContextWindow.getState().set({ ...usage, windowSource: 'estimate' })
     await act(async () => root.render(<ContextMeter sessionId="s" />))
-    expect(el.querySelector('button')?.title).toContain('Estimated context window')
+    expect(el.querySelector('.ctx-pill__num')?.textContent).toContain('~')
     await act(async () => { useContextWindow.getState().set({ ...usage, windowSource: 'session-env' }) })
-    expect(el.querySelector('button')?.title).toMatch(/^Context window/)
+    expect(el.querySelector('.ctx-pill__num')?.textContent).not.toContain('~')
   } finally { await act(async () => root.unmount()) }
 })
 
@@ -27,7 +27,7 @@ it('shows only the requested SSH node even when local and remote rollouts share 
   const usage = { sessionId: 'copied', usedTokens: 10, windowTokens: 100, usedPercent: 10, model: 'gpt', updatedAt: Date.now(), windowSource: 'transcript' as const }
   useContextWindow.setState({ bySessionId: {}, byNodeId: {} })
   useContextWindow.getState().set(usage)
-  useContextWindow.getState().set({ ...usage, nodeId: 'a', usedPercent: 70 })
+  useContextWindow.getState().set({ ...usage, nodeId: 'a', usedTokens: 70, usedPercent: 70 })
   try {
     await act(async () => root.render(<ContextMeter sessionId="copied" nodeId="b" remote agentId="codex" />))
     expect(el.querySelector('button')).toBeNull()
