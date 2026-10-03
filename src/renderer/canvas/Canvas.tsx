@@ -103,6 +103,7 @@ import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
 import BrowserNode from '../nodes/BrowserNode'
 import { FilesNode } from '../nodes/FilesNode'
+import type { RunNodeConfig } from '@shared/run-config'
 import { normalizeAddress } from '../nodes/browserUrl'
 import VideoNode from '../nodes/VideoNode'
 import WebNode from '../nodes/WebNode'
@@ -134,6 +135,7 @@ import {
   IconMinus,
   IconNote,
   IconPhone,
+  IconPlay,
   IconPlus,
   IconPower,
   IconProject,
@@ -823,6 +825,7 @@ import {
   createDinoNode,
   createTriggerNode,
   createFilesNode,
+  createRunNode,
   createDiffNode,
   createEditorNode,
   createGroupNode,
@@ -6005,6 +6008,53 @@ export function Canvas() {
     [setNodes, markDirty, activeProjectId, emptyNodePos, cwdForNewNodeIn, parentInto]
   )
 
+  /**
+   * A run node (see @shared/run-config and nodes/RunBar): a `.vscode/launch.json` configuration run
+   * in a terminal. Rooted in the frame's worktree or the project folder; the node's own folder
+   * picker can point it at any other checkout, so one project (say, the backend) can hold runs of
+   * several frontend checkouts. A cwd-less canvas asks for the folder up front. Local projects
+   * only — an SSH project's terminals run on the host, while the launcher, processes and
+   * simulators are this machine's.
+   */
+  const addRun = useCallback(
+    async (center?: { x: number; y: number }, groupId?: string) => {
+      const project = useProjects.getState().getProject(activeProjectId)
+      if (project?.ssh) {
+        setCopyError('Run configurations run on this machine — not in SSH projects yet.')
+        return
+      }
+      const dir = cwdForNewNodeIn(groupId) ?? project?.cwd ?? (await window.nodeTerminal.dialog.selectFolder())
+      if (!dir) return
+      setNodes((ns) => {
+        const node = createRunNode(ns.length, { projectDir: dir, reloadOnSave: true }, center ?? emptyNodePos())
+        return [...ns, groupId ? parentInto(node, groupId) : node]
+      })
+      markDirty()
+    },
+    [setNodes, markDirty, activeProjectId, emptyNodePos, cwdForNewNodeIn, parentInto]
+  )
+
+  // A compound's other members (RunBar's Run on a compound): one run node each, placed to the
+  // right of the node that ran it, in its frame, starting immediately — VS Code starts a compound's
+  // configurations together.
+  useEffect(() => {
+    const onOpenRun = (e: Event): void => {
+      const d = (e as CustomEvent<{ sourceNodeId?: string; configs?: RunNodeConfig[] }>).detail
+      const src = nodesRef.current.find((n) => n.id === d?.sourceNodeId)
+      if (!src || !Array.isArray(d?.configs) || d.configs.length === 0) return
+      const w = src.measured?.width ?? (src.width as number) ?? 640
+      const added = d.configs.slice(0, 8).map((cfg, i) => {
+        const node = createRunNode(nodesRef.current.length + i, cfg, undefined, { autoStart: true })
+        node.position = { x: src.position.x + (w + 40) * (i + 1), y: src.position.y }
+        return src.parentId ? { ...node, parentId: src.parentId, extent: 'parent' as const } : node
+      })
+      setNodes((ns) => [...ns, ...added])
+      markDirty()
+    }
+    window.addEventListener('nodeterm:open-run-config', onOpenRun)
+    return () => window.removeEventListener('nodeterm:open-run-config', onOpenRun)
+  }, [setNodes, markDirty])
+
   const addSticky = useCallback(
     (center?: { x: number; y: number }, groupId?: string) => {
       setNodes((ns) => {
@@ -10971,6 +11021,7 @@ export function Canvas() {
       web: (at) => void addWebView(at),
       sticky: (at) => addSticky(at),
       files: (at) => addFiles(at),
+      run: (at) => void addRun(at),
       dino: (at) => addDino(at),
       trigger: (at) => addTrigger(at),
       openFile: (at) => void openFileDialog(at),
@@ -10983,6 +11034,7 @@ export function Canvas() {
       openRemotePicker,
       addBrowser,
       addFiles,
+      addRun,
       addWebView,
       addSticky,
       addDino,
@@ -17962,6 +18014,9 @@ export function Canvas() {
             }
           ]
         : []),
+      ...(isSshProject
+        ? []
+        : [{ id: 'new-run', label: 'New run configuration', icon: <IconPlay />, run: () => void addRun() }]),
       { id: 'new-dino', label: 'New dino game', icon: <IconDino />, run: () => addDino() },
       { id: 'open-file', label: 'Open file…', icon: <IconEditor />, run: () => void openFileDialog() },
       // "New file…" needs a project folder to create into — hidden when the project has no cwd.
@@ -18218,6 +18273,7 @@ export function Canvas() {
     addTerminal,
     addAgentNode,
     addSticky,
+    addRun,
     addDino,
     addWebView,
     addBrowser,
@@ -19516,6 +19572,7 @@ export function Canvas() {
         onAddDino={addDino}
         onAddTrigger={addTrigger}
         onAddFiles={() => addFiles()}
+        onAddRun={() => void addRun()}
         onAddAgent={(aid, accountId) => addAgentNode(aid, undefined, undefined, accountId)}
         onOpenFile={() => void openFileDialog()}
         onAddRemote={() => openRemotePicker({ x: window.innerWidth / 2, y: window.innerHeight / 2 })}

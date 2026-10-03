@@ -9,6 +9,7 @@ import {
   contentAddItemsToMenuItems,
   contentAddItemsToDockRows,
   FILES_NO_CWD_HINT,
+  RUN_SSH_HINT,
   NEW_FILE_NO_CWD_HINT,
   WORKTREE_NO_CWD_HINT,
   WORKTREE_SSH_HINT,
@@ -28,6 +29,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   web: noop,
   sticky: noop,
   files: noop,
+  run: noop,
   dino: noop,
   trigger: noop,
   openFile: noop,
@@ -40,6 +42,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
 const allKinds: AddItem['kind'][] = [
   'terminal',
   'remote',
+  'run',
   'browser',
   'web',
   'sticky',
@@ -51,6 +54,21 @@ const allKinds: AddItem['kind'][] = [
   'spawn-team',
   'worktree'
 ]
+
+describe('Run configuration row', () => {
+  it('is disabled with its reason in an SSH project, on the menu and the Dock alike', () => {
+    const ctx = { hasCwd: true, isSshProject: true }
+    const [row] = contentAddItemsToMenuItems([{ kind: 'run' }], handlers(), ctx)
+    expect(row).toMatchObject({ label: 'New run configuration', disabled: true, hint: RUN_SSH_HINT })
+    const [dock] = contentAddItemsToDockRows([{ kind: 'run' }], handlers(), ctx)
+    expect(dock).toMatchObject({ kind: 'run', disabled: true, hint: RUN_SSH_HINT })
+  })
+  it('is enabled in a local project, even with no folder yet (it asks for one)', () => {
+    const [row] = contentAddItemsToMenuItems([{ kind: 'run' }], handlers(), { hasCwd: false, isSshProject: false })
+    expect(row).toMatchObject({ label: 'New run configuration' })
+    expect((row as { disabled?: boolean }).disabled).toBeFalsy()
+  })
+})
 
 describe('CONTENT_ADD_ITEMS', () => {
   it('lists every content kind in the canonical order', () => {
@@ -69,6 +87,7 @@ describe('contentAddItemsToMenuItems', () => {
     expect(labels).toEqual([
       'New terminal',
       'New remote…',
+      'New run configuration',
       'New browser',
       'New web view…',
       'New sticky note',
@@ -171,6 +190,7 @@ describe('contentAddItemsToDockRows', () => {
     // NO 'terminal' and NO 'remote': the Dock draws its own Terminal button and its own
     // "New Remote Connection" flow. Emitting a terminal row here duplicated the Terminal entry.
     expect(rows.map((r) => r.kind)).toEqual([
+      'run',
       'browser',
       'web',
       'sticky',
@@ -298,6 +318,7 @@ describe('buildGroupedAddMenu', () => {
         : []
     }
     expect(children(ADD_GROUP_LABEL.view)).toEqual([
+      'New run configuration',
       'New browser',
       'New web view…',
       'New sticky note',

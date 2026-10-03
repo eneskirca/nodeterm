@@ -4,6 +4,13 @@ import { subscribeAgentReplay } from '../../shared/agent-replay-subscription'
 import type { DesktopWallpaper, WallpaperStill } from '../../shared/wallpaper'
 import type { AlertSoundSaveResult } from '../../shared/alert-sound'
 import type { RecentConversationsRequest, RecentConversationsResult } from '../../shared/recent-conversations'
+import type {
+  RunConfigApi,
+  RunDevicesResult,
+  RunEntriesResult,
+  RunStartResult,
+  RunStatus
+} from '../../shared/run-config'
 // WebSocket bridge that reconstructs `window.nodeTerminal` in the browser (Server Edition).
 //
 // Under Electron the preload already defines `window.nodeTerminal`; this module only runs when
@@ -1073,6 +1080,24 @@ export function buildWallpaperApi(client: RpcClient): Pick<NodeTerminalApi, 'wal
   }
 }
 
+/** The run node's host side. Real on the Server Edition (`registerRunConfigIpc` runs in the
+ *  server shell): the run happens on the server, so its launch.json, devices and processes are the
+ *  server's — which is the machine the node's terminal runs on. */
+export function buildRunConfigApi(client: RpcClient): Pick<NodeTerminalApi, 'runConfig'> {
+  const r: RunConfigApi = {
+    entries: (dir) => client.request(IPC.runEntries, dir) as Promise<RunEntriesResult>,
+    devices: (refresh) => client.request(IPC.runDevices, refresh) as Promise<RunDevicesResult>,
+    bootDevice: (udid) => client.request(IPC.runBootDevice, udid) as Promise<boolean>,
+    discoverProjects: (dir) => client.request(IPC.runDiscover, dir) as Promise<string[]>,
+    start: (nodeId, config) => client.request(IPC.runStart, nodeId, config) as Promise<RunStartResult>,
+    status: (nodeId) => client.request(IPC.runStatus, nodeId) as Promise<RunStatus>,
+    stop: (nodeId, force) => client.request(IPC.runStop, nodeId, force) as Promise<boolean>,
+    signal: (nodeId, kind) => client.request(IPC.runSignal, nodeId, kind) as Promise<boolean>,
+    watch: (nodeId, dir) => client.request(IPC.runWatch, nodeId, dir) as Promise<void>
+  }
+  return { runConfig: r }
+}
+
 /**
  * Build the `claude` namespace over an RpcClient. `cliCaps` is a REAL handler on the server
  * (`registerClaudeCliIpc` runs in the server shell too), so the browser resolves the very same
@@ -1368,6 +1393,7 @@ export async function installWsBridge(): Promise<boolean> {
     ...buildWatchLinkApi(client),
     ...buildRecentConversationsApi(client),
     ...buildWallpaperApi(client),
+    ...buildRunConfigApi(client),
     ...buildTriggersApi(client),
     ...buildGitHubApi(client),
     ...buildClaudeAccountsApi(client),

@@ -339,6 +339,21 @@ export function buildStubApi(): Omit<
       load: () => Promise.resolve(null),
       importImage: U('wallpaper.importImage')
     },
+    runConfig: {
+      // Superseded by the real WS-backed namespace in ws-bridge (registerRunConfigIpc runs in the
+      // server shell). A RELAY tab keeps this: its terminals run on the PEER, so this machine's
+      // folders, devices and processes would describe the wrong computer — the run node is not
+      // offered there, and these answer "nothing" rather than guess.
+      entries: () => Promise.resolve({ found: false, entries: [], isFlutterProject: false }),
+      devices: () => Promise.resolve({ devices: [], error: 'Runs are managed on the host' }),
+      bootDevice: () => Promise.resolve(false),
+      discoverProjects: () => Promise.resolve([]),
+      start: () => Promise.resolve({ ok: false as const, error: 'Runs are managed on the host' }),
+      status: () => Promise.resolve({ running: false, exitCode: null }),
+      stop: () => Promise.resolve(false),
+      signal: () => Promise.resolve(false),
+      watch: () => Promise.resolve()
+    },
     triggers: {
       // Superseded by the real WS-backed namespace in ws-bridge (startTriggerService registers the
       // handlers in the server shell). On the RELAY tab this stub stays in force and REFUSES: the

@@ -351,6 +351,7 @@ import { registerGrokCliIpc } from '../core/grok-cli'
 import { refreshCodexIdentityCaps, registerCodexIdentityIpc } from '../core/codex-identity-caps'
 import { codexCliCaps, registerCodexCliIpc } from '../core/codex-cli'
 import { registerWallpaperIpc } from '../core/wallpaper'
+import { registerRunConfigIpc, stopAllRunWatches } from '../core/run-service'
 import {
   bindCodexThreadIdentity,
   setCodexThreadIdentityAuthSecret,
@@ -1491,6 +1492,7 @@ app.whenReady().then(async () => {
   // so registering it costs nothing until the first Codex launch line asks.
   registerCodexCliIpc()
   registerWallpaperIpc(settingsStore)
+  registerRunConfigIpc()
   // Warm the `claude --version` probe now (it spawns a login shell + node, ~sub-second) so the
   // renderer's first `claude.cliCaps()` — awaited on the launch path of a cold-restored agent
   // node — resolves from cache instead of racing the probe into a conservative "no auto".
@@ -3952,6 +3954,8 @@ app.whenReady().then(async () => {
   // window is going away. LIFECYCLE, so no tombstone (the in-memory ledger is gone on quit anyway).
   app.on('before-quit', () => {
     revokeAllBrowser(browserRevocation, { userStopped: false })
+    // Reload-on-save watchers die with the app; the runs themselves live on in tmux.
+    stopAllRunWatches()
   })
   ipcMain.on(
     IPC.agentControlResult,

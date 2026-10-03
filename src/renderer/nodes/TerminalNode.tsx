@@ -273,6 +273,7 @@ import { isGlobalKanbanOpen, isKanbanOpen, isOmniKanbanEnabled, openIssueOnBoard
 import { useSshConn } from '../state/sshConn'
 import { useWorktrees } from '../state/worktrees'
 import { isRemoteSessionNode } from '@shared/worktree'
+import { RunBar } from './RunBar'
 import { useSession, useActiveSessionPresence } from '../session/session'
 import { isHostedReadOnly, useHostedReadOnly } from '../state/hostedTeams'
 import { isBrowserRuntime } from '../bridge/runtime'
@@ -6552,6 +6553,13 @@ export function TerminalNode({
             )
           }
         />
+      )}
+
+      {/* Run node: launch.json run controls over this terminal (see RunBar). Local
+          sessions only — a relay tab's or an SSH node's terminal runs on another machine, whose
+          checkouts and devices this one cannot see. */}
+      {data.runConfig && session.source === 'local' && !data.ssh && !data.sshRemoteTmux && (
+        <RunBar nodeId={id} config={data.runConfig} autoStart={!!data.runAutoStart} />
       )}
 
       {/* Body always mounted (keeps xterm alive); hidden via CSS when collapsed. */}

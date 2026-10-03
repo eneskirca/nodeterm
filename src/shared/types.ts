@@ -559,6 +559,12 @@ export interface CanvasNodeState {
   sshRemoteTmux?: boolean
   /** editor-only: when true (SSH-project editors), reads/writes go to the project's remote fs via `sshFs`. */
   sshFs?: boolean
+  /**
+   * Run nodes only (a terminal node that runs a `.vscode/launch.json` configuration): folder,
+   * configuration, device, reload-on-save. Git-shared and hand-editable — read through
+   * `normalizeRunConfig` (@shared/run-config) on every load AND save.
+   */
+  runConfig?: import('./run-config').RunNodeConfig
   // sticky-only
   text?: string
   /**
@@ -4220,6 +4226,8 @@ export interface NodeTerminalApi {
   /** "Open recent" — the newest agent conversations in this machine's CLI histories. */
   recentConversations: import('./recent-conversations').RecentConversationsApi
   wallpaper: import('./wallpaper').WallpaperApi
+  /** Run node host side (launch.json, devices, launcher, status, stop, signals, reload on save). */
+  runConfig: import('./run-config').RunConfigApi
   triggers: TriggersApi
   context: ContextApi
   canvas: CanvasApi

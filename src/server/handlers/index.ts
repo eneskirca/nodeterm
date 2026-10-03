@@ -11,6 +11,7 @@ import { registerGrokCliIpc } from '../../core/grok-cli'
 import { registerCodexIdentityIpc } from '../../core/codex-identity-caps'
 import { registerCodexCliIpc } from '../../core/codex-cli'
 import { registerWallpaperIpc } from '../../core/wallpaper'
+import { registerRunConfigIpc } from '../../core/run-service'
 import { startUsageService } from '../../core/usage/usage-service'
 import { registerClaudeAccountsIpc } from '../../core/claude-accounts-service'
 import { codexUsageAccounts } from '../../core/codex-accounts-core'
@@ -90,6 +91,8 @@ export function registerCoreHandlers(
     get: deps.getSettings,
     onChange: (cb) => deps.onSettingsChange?.(cb)
   })
+  // The run node's host side: core, so the browser's run nodes run on this server.
+  registerRunConfigIpc()
   void claudeCliCaps()
 
   // The answer is populated after server node identity is armed. Early browser callers wait for

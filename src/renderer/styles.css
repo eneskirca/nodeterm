@@ -3914,8 +3914,176 @@ body,
 }
 
 .term-node.collapsed .term-node__body,
-.term-node.collapsed .node-tags {
+.term-node.collapsed .node-tags,
+.term-node.collapsed .run-bar {
   display: none;
+}
+
+/* ── Run node toolbar (nodes/RunBar.tsx) ─────────────────────────────────────────────
+   A flex-none strip between the header and the terminal body; the body (flex: 1) shrinks under
+   it and the xterm refits through its ResizeObserver. No fill of its own, so it reads as part of
+   the node in every appearance (and paints nothing translucent under Liquid Glass). */
+.run-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text);
+}
+/* Terminal hidden (the default): the node is just the control rows. Same `display: none` path a
+   collapsed node takes, so xterm and the tmux client stay alive underneath. */
+.term-node:has(.run-bar--compact) .term-node__body {
+  display: none;
+}
+.run-bar--compact {
+  border-bottom: none;
+}
+.run-bar__row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.run-bar__select {
+  max-width: 190px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  text-overflow: ellipsis;
+}
+.run-bar__select--folder {
+  font-weight: 600;
+}
+.run-bar__select--warn {
+  border-color: var(--warn);
+}
+.run-bar__pinned {
+  padding: 0 6px;
+  height: 22px;
+  line-height: 20px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+}
+.run-bar__sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 2px;
+}
+.run-bar__spacer {
+  flex: 1;
+}
+.run-bar__btn,
+.run-bar__icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.run-bar__icon {
+  padding: 0 6px;
+}
+.run-bar__btn svg {
+  width: 12px;
+  height: 12px;
+}
+.run-bar__btn:hover:not(:disabled),
+.run-bar__icon:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.run-bar__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.run-bar__btn--run {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+.run-bar__btn--run:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+.run-bar__btn--stop {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+.run-bar__stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.run-bar__btn--accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.run-bar__icon--on {
+  color: var(--accent);
+}
+.run-bar__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.run-bar__status {
+  min-width: 52px;
+  text-align: right;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.run-bar__status--running {
+  color: var(--success);
+}
+.run-bar__status--busy {
+  color: var(--accent);
+}
+.run-bar__status--failed {
+  color: var(--danger);
+}
+.run-bar__select--config {
+  max-width: 240px;
+}
+.run-bar__args {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.run-bar__note {
+  font-size: 11px;
+}
+.run-bar__note--error {
+  color: var(--danger);
+}
+.run-bar__note--info {
+  color: var(--muted);
 }
 
 

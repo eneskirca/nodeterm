@@ -556,6 +556,18 @@ const api: NodeTerminalApi = {
     load: (w) => ipcRenderer.invoke(IPC.wallpaperLoad, w),
     importImage: (p) => ipcRenderer.invoke(IPC.wallpaperImport, p)
   },
+  runConfig: {
+    entries: (dir) => ipcRenderer.invoke(IPC.runEntries, dir),
+    devices: (refresh) => ipcRenderer.invoke(IPC.runDevices, refresh),
+    bootDevice: (udid) => ipcRenderer.invoke(IPC.runBootDevice, udid),
+    discoverProjects: (dir) => ipcRenderer.invoke(IPC.runDiscover, dir),
+    start: (nodeId, config) => ipcRenderer.invoke(IPC.runStart, nodeId, config),
+    status: (nodeId) => ipcRenderer.invoke(IPC.runStatus, nodeId),
+    stop: (nodeId, force) => ipcRenderer.invoke(IPC.runStop, nodeId, force),
+    signal: (nodeId, kind) => ipcRenderer.invoke(IPC.runSignal, nodeId, kind),
+    watch: (nodeId, dir) => ipcRenderer.invoke(IPC.runWatch, nodeId, dir)
+  },
+
   triggers: {
     arm: (projectId, nodeId, spec) => ipcRenderer.invoke(IPC.triggersArm, { projectId, nodeId, spec }),
     disarm: (projectId, nodeId) => ipcRenderer.invoke(IPC.triggersDisarm, { projectId, nodeId }),

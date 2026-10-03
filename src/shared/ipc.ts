@@ -373,6 +373,16 @@ export const IPC = {
   wallpaperListStills: 'wallpaper:list-stills',
   wallpaperLoad: 'wallpaper:load',
   wallpaperImport: 'wallpaper:import',
+  // Run node (core/run-service.ts): launch.json entries, devices, launcher, status, stop, signals.
+  runEntries: 'run:entries',
+  runDevices: 'run:devices',
+  runBootDevice: 'run:boot-device',
+  runDiscover: 'run:discover',
+  runStart: 'run:start',
+  runStatus: 'run:status',
+  runStop: 'run:stop',
+  runSignal: 'run:signal',
+  runWatch: 'run:watch',
   // Trigger nodes (issue #493): machine-local arm/disarm + the card's status/run-now.
   triggersArm: 'triggers:arm',
   triggersDisarm: 'triggers:disarm',

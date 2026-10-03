@@ -1877,6 +1877,38 @@ session.
     one file. Guard on both dialects, construct in one.
   - **Mobile**: N/A — *nodeterm mobile* attaches to tmux sessions over the transport protocol and
     has no canvas or file-browsing concept; adding one means extending that protocol.
+- **Run node** (a `terminal` node carrying `data.runConfig`, NOT a new NodeKind;
+  `@shared/run-config`, `core/run-service.ts`, `nodes/RunBar.tsx`) — VS Code's "Run Without
+  Debugging" for any `.vscode/launch.json` configuration. The toolbar picks a folder (defaults to
+  the project's; sibling and `*.worktrees/*` folders with a launch.json or a Flutter pubspec are
+  offered), a configuration or compound (stored by NAME, re-read at every run) and, for Flutter, a
+  device. **launch.json runs nothing by itself** — each `type` belongs to an extension — so
+  `planLaunch` is the table of what each extension would run: dart (flutter run / flutter test /
+  dart run / dart test), node/pwa-node/node-terminal, python/debugpy, go, php, coreclr,
+  lldb/cppdbg, and chrome/msedge (a browser node). Everything else is REFUSED with a sentence,
+  never guessed: debugging itself, `"request": "attach"`, unknown types, PHP "listen for Xdebug",
+  and variables that need an editor or extension (`${file}`, `${input:}`, `${command:}` except the
+  Python interpreter one, `${config:}`). `preLaunchTask` (+ `dependsOn`, `${defaultBuildTask}`)
+  runs shell/process/npm/dart/flutter/typescript/cargo tasks first; a background (watch) task is
+  refused. Compounds run their first member in the node and open the rest beside it, started.
+  Rules a refactor must keep: (1) **nothing from a repo is ever typed into a shell** — the host
+  writes a POSIX launcher (`buildLauncher`, every token single-quoted, owner-only via
+  `writeFileAtomic`) and only `sh '<launcher>'` is typed; env and `envFile` values live in that
+  file, never in shell history; tested against injection and run for real under `/bin/sh`;
+  (2) the launcher records its pid and exit status, and traps INT/TERM with a HANDLER (`trap ':'`,
+  never `''`, which children would inherit as "ignore"); **Stop is SIGINT to the launcher's process
+  group** (Ctrl+C), SIGTERM if it will not go, and only the launcher + its children when it is not
+  a group leader — never a group that could hold the user's shell; (3) a pid is signalled only
+  while `ps` says it is still ours (the launcher's path, or flutter for hot reload/restart, which
+  are SIGUSR1/SIGUSR2 to `flutter run --pid-file`); (4) Flutter reload on save is a core
+  `fs.watch` of `<dir>/lib` that deliberately OUTLIVES the node's view; (5) the terminal is hidden
+  by default (`runConfig.showTerminal`, toggled by ⋯ with the extra-args field): collapse's
+  `display: none` path via `.term-node:has(.run-bar--compact)` and a node height fitted to the
+  rows; a run that ends without our Stop says where to look. No "bring simulator forward":
+  Simulator.app can only be activated as a whole (same-named simulators are told apart by id in
+  the dropdown). Add menus: **New view ▸ New run configuration**. Local projects only (disabled
+  with `RUN_SSH_HINT` in SSH projects; relay stub answers "managed on the host"); POSIX only
+  (refused on Windows). Server Edition: real. Kanban card modal: not yet. Mobile: N/A.
 - **dino** (`DinoNode.tsx`) — a small self-contained T-Rex-style runner on a canvas (no PTY);
   high score persists via `data.highScore`.
 - **trigger** (`TriggerNode.tsx`) — a canvas-owned schedule (cron / interval / once) that

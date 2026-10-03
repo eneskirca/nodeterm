@@ -37,6 +37,7 @@ import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
 import { normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { normalizeTerminalFontSize } from '../terminal/terminal-font-zoom'
+import { normalizeRunConfig, runNodeTitle, type RunNodeConfig } from '@shared/run-config'
 import { useSettings } from './settings'
 
 // Re-exported so Canvas (and anything else in the renderer) keeps importing it from here, while the
@@ -197,6 +198,10 @@ export interface NodeData {
    * the machine-local arm store's question, never this field's. See @shared/trigger.
    */
   trigger?: import('@shared/trigger').TriggerSpec
+  /** Run nodes only: which launch.json configuration runs, where. See @shared/run-config. Persisted. */
+  runConfig?: import('@shared/run-config').RunNodeConfig
+  /** Run nodes only, transient: start the run on mount (a compound's sibling). Never persisted. */
+  runAutoStart?: boolean
   [key: string]: unknown
 }
 
@@ -336,6 +341,37 @@ export function createTerminalNode(
       cwd: ssh ? ssh.remoteCwd : cwd,
       initialCommand,
       ...(ssh ? { ssh: ssh.server, sshRemoteTmux: true } : {})
+    }
+  }
+}
+
+/** The macOS system blue swatch, so the color stays inside the node palette. */
+const RUN_NODE_COLOR = '#0a84ff'
+
+/**
+ * A run node: a terminal node carrying `data.runConfig` (see @shared/run-config) — VS Code's "Run
+ * Without Debugging" for a `.vscode/launch.json` configuration. Nothing runs on open unless
+ * `autoStart` (a compound's sibling): the toolbar's Run is the user's call, as F5 is.
+ */
+export function createRunNode(
+  index: number,
+  config: RunNodeConfig,
+  center?: { x: number; y: number },
+  opts: { autoStart?: boolean } = {}
+): CanvasNode {
+  const size = terminalNodeSize()
+  return {
+    id: nextId('run'),
+    type: 'terminal',
+    ...placeNode('terminal', center, index, size.width, size.height),
+    data: {
+      title: runNodeTitle(config.projectDir, config.launchConfig),
+      color: RUN_NODE_COLOR,
+      group: null,
+      tags: [],
+      cwd: config.projectDir,
+      runConfig: normalizeRunConfig(config),
+      ...(opts.autoStart ? { runAutoStart: true } : {})
     }
   }
 }
@@ -2028,7 +2064,9 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
         worktree: n.worktree,
-        trigger: n.trigger
+        trigger: n.trigger,
+        // Hostile-input seam (git-shared file → live data), like `icon` above.
+        runConfig: normalizeRunConfig(n.runConfig)
       }
     }
   })
@@ -2118,6 +2156,8 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         sshFs: n.data.sshFs,
         worktree: n.data.worktree,
         trigger: n.data.trigger,
+        // Re-validated on the way OUT too — the shared file is only as good as its last writer.
+        runConfig: normalizeRunConfig(n.data.runConfig),
         premaxRect: n.data.premaxRect
       }
     })

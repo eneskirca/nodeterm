@@ -13,8 +13,10 @@ import {
   createStickyNode,
   createDinoNode,
   createFilesNode,
+  createRunNode,
   isAccountLoginNode
 } from '@renderer/state/workspace'
+import { normalizeRunConfig } from '@shared/run-config'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
 
@@ -164,6 +166,10 @@ function buildBase(snapshot: ReopenNodeSnapshot, ctx: RecreateContext): CanvasNo
           ctx.permissionModeFor(d.agentId)
         )
       }
+      // A run node reopens as a run node (same folder/configuration/device); its run is NOT
+      // restarted — the toolbar's Run is the user's call, as on first open.
+      const runConfig = normalizeRunConfig(d.runConfig)
+      if (runConfig) return createRunNode(0, runConfig)
       return createTerminalNode(0, d.cwd, undefined, undefined, ctx.project?.ssh)
     }
     case 'sticky': {
