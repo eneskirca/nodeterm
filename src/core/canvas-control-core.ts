@@ -816,6 +816,9 @@ export function mergeCanvasControlBlock(existing: string, block: string): string
 }
 
 /** The instructions body telling codex/gemini how to control the nodeterm canvas.
+ *  NOT INSTALLED since #744: every agent now gets the manage-nodeterm-canvas SKILL in its own
+ *  skills dir (core/agent-integrations.ts); older builds' copies of this block are stripped. Kept
+ *  only until its parity tests move to the skill body (follow-up).
  *  Keep the verb list in sync with the skill template in canvas-control.ts. */
 export function buildCanvasControlInstructions(shimPath: string): string {
   const agentChoices = `${BUILTIN_AGENT_IDS.join('|')}|<custom-id>`
@@ -1162,7 +1165,7 @@ if [ "$nt_verb" = "help" ] || [ "$nt_verb" = "--help" ] || [ "$nt_verb" = "-h" ]
   # word of the verb list is \`list\` — which sh then tried to RUN.
   echo 'Run with no verb to list the current nodes (same as \`list\`).'
   echo "Flags take a value: --flag value, or --flag=value when the value starts with '--'."
-  echo "Per-verb flags are documented in the manage-nodeterm-canvas skill / instructions block."
+  echo "Per-verb flags are documented in the manage-nodeterm-canvas skill."
   exit 0
 fi
 

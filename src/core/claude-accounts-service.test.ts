@@ -7,8 +7,8 @@
  * (canvas control is not wired there) and no SSH manager, so a ctx carrying a projectId must still
  * take the local path.
  *
- * MUTATION: drop the `installSkill` call, or let `remoteFor` treat a projectId alone as remote →
- * the skill case and the local-fallback case redden.
+ * MUTATION: drop the consent lifecycle's `installIntoClaudeAccount` call, or let `remoteFor` treat
+ * a projectId alone as remote → the install case and the local-fallback case redden.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs'
@@ -17,7 +17,8 @@ import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
 import { IPC } from '../shared/ipc'
-import { registerClaudeAccountsIpc, installHooksIntoLocalAccounts } from './claude-accounts-service'
+import { registerClaudeAccountsIpc } from './claude-accounts-service'
+import { registerIntegrationLifecycle, type IntegrationLifecycle } from './agent-integrations'
 import { accountConfigDir } from './claude-accounts-core'
 import {
   registerClaudeAccountsSource,
@@ -29,7 +30,8 @@ import type { ClaudeAccount } from '../shared/types'
 // and a real write would touch the account dir this file then asserts about.
 const installed: string[] = []
 const tui: string[] = []
-vi.mock('./agents/hooks/claude', () => ({
+vi.mock('./agents/hooks/claude', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agents/hooks/claude')>()),
   installClaudeHooksInto: (dir: string) => {
     installed.push(dir)
   },
@@ -87,23 +89,27 @@ describe('registerClaudeAccountsIpc — the seven channels', () => {
     )
   })
 
-  it('add() creates the config dir under userData, installs the hook and returns the id', async () => {
-    const skilled: string[] = []
-    registerClaudeAccountsIpc({ installSkill: (d) => skilled.push(d) })
-    const res = await call(IPC.claudeAccountsAdd)
-    expect(res.id).toMatch(/^[A-Za-z0-9-]+$/)
-    expect(res.configDir).toBe(accountConfigDir(userDataDir, res.id))
-    expect(existsSync(res.configDir)).toBe(true)
-    expect(installed).toEqual([res.configDir])
-    expect(skilled).toEqual([res.configDir])
-    expect(tui).toEqual([res.configDir])
+  it('add() creates the config dir under userData, asks the consent lifecycle to install, and returns the id', async () => {
+    const asked: string[] = []
+    registerIntegrationLifecycle({ installIntoClaudeAccount: (d: string) => asked.push(d) } as unknown as IntegrationLifecycle)
+    try {
+      registerClaudeAccountsIpc()
+      const res = await call(IPC.claudeAccountsAdd)
+      expect(res.id).toMatch(/^[A-Za-z0-9-]+$/)
+      expect(res.configDir).toBe(accountConfigDir(userDataDir, res.id))
+      expect(existsSync(res.configDir)).toBe(true)
+      expect(asked).toEqual([res.configDir])
+    } finally {
+      registerIntegrationLifecycle(null)
+    }
   })
 
-  it('add() without an installSkill dep (the Server Edition) writes no skill', async () => {
+  it('add() with no consent lifecycle registered writes NO hook, skill or TUI setting (fail-closed, #744)', async () => {
     registerClaudeAccountsIpc()
     const res = await call(IPC.claudeAccountsAdd)
     expect(existsSync(res.configDir)).toBe(true)
-    expect(installed).toEqual([res.configDir])
+    expect(installed).toEqual([])
+    expect(tui).toEqual([])
   })
 
   it('waitLogin resolves once .claude.json carries an oauthAccount email', async () => {
@@ -179,45 +185,6 @@ describe('the remote leg is resolved lazily, and its absence falls back to LOCAL
   })
 })
 
-describe('installHooksIntoLocalAccounts', () => {
-  it('installs into every LOCAL account dir and skips host-scoped ones', () => {
-    const extra: string[] = []
-    installHooksIntoLocalAccounts(
-      [{ id: 'aaa' }, { id: 'bbb', host: 'user@example' }, { id: 'ccc' }],
-      (d) => extra.push(d)
-    )
-    const dirs = ['aaa', 'ccc'].map((id) => accountConfigDir(userDataDir, id))
-    expect(installed).toEqual(dirs)
-    expect(extra).toEqual(dirs)
-    expect(tui).toEqual(dirs)
-  })
-
-  it('one failing account never stops the rest (boot must not be blocked)', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    mkdirSync(path.join(userDataDir, 'claude-accounts'), { recursive: true })
-    installHooksIntoLocalAccounts([{ id: 'aaa' }, { id: '../evil' }, { id: 'ccc' }])
-    expect(installed).toEqual(
-      ['aaa', 'ccc'].map((id) => accountConfigDir(userDataDir, id))
-    )
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
-  })
-
-  // Issue #643. The launch sweep re-links (a skill added to ~/.claude/skills since the last run)
-  // and NEVER removes: ownership is inferred from a link's shape, so an OFF pass here could delete
-  // an identical link the user made by hand in their own linked-account dir. Removal happens only
-  // where the user asked for it, in `setSkillSharing`.
-  it('re-links shared skills for local accounts that opted in, and touches no other account', () => {
-    installHooksIntoLocalAccounts([
-      { id: 'aaa', shareSystemSkills: true },
-      { id: 'bbb', host: 'user@example', shareSystemSkills: true },
-      { id: 'ccc' },
-      { id: 'ddd', shareSystemSkills: false }
-    ])
-    expect(shared).toEqual([{ dir: accountConfigDir(userDataDir, 'aaa'), enabled: true }])
-  })
-})
-
 describe('claudeAccounts.setSkillSharing', () => {
   it('reconciles the account dir and reports what happened', async () => {
     registerClaudeAccountsIpc()
@@ -259,18 +226,23 @@ describe('claudeAccounts.link', () => {
   })
   afterEach(() => rmSync(linkDir, { recursive: true, force: true }))
 
-  it('links an existing dir: id + normalized path + email, hook and TUI installed into it', async () => {
+  it('links an existing dir: id + normalized path + email, and asks the consent lifecycle to install into it', async () => {
     writeFileSync(
       path.join(linkDir, '.claude.json'),
       JSON.stringify({ oauthAccount: { emailAddress: 'second@example.com' } })
     )
-    const res = await call(IPC.claudeAccountsLink, `${linkDir}/`)
-    expect(res.id).toMatch(/^[A-Za-z0-9-]+$/)
-    expect(res.configDir).toBe(linkDir) // trailing slash normalized away
-    expect(res.email).toBe('second@example.com')
-    // The same two writes an ADDED account gets — or the linked identity reports no agent status.
-    expect(installed).toEqual([linkDir])
-    expect(tui).toEqual([linkDir])
+    const asked: string[] = []
+    registerIntegrationLifecycle({ installIntoClaudeAccount: (d: string) => asked.push(d) } as unknown as IntegrationLifecycle)
+    try {
+      const res = await call(IPC.claudeAccountsLink, `${linkDir}/`)
+      expect(res.id).toMatch(/^[A-Za-z0-9-]+$/)
+      expect(res.configDir).toBe(linkDir) // trailing slash normalized away
+      expect(res.email).toBe('second@example.com')
+      // The same install an ADDED account gets — or the linked identity reports no agent status.
+      expect(asked).toEqual([linkDir])
+    } finally {
+      registerIntegrationLifecycle(null)
+    }
   })
 
   it('is email: null — not a failure — when the dir is not signed in yet', async () => {
@@ -373,16 +345,6 @@ describe('removing a LINKED account never deletes the directory', () => {
     registerClaudeAccountsSource(() => [{ id, label: 'm', createdAt: 0 } as ClaudeAccount])
     await call(IPC.claudeAccountsRemove, id)
     expect(existsSync(configDir)).toBe(false)
-  })
-})
-
-describe('installHooksIntoLocalAccounts covers linked accounts', () => {
-  it('installs into the linked dir, not into a managed dir that does not exist', () => {
-    registerClaudeAccountsSource(() => [
-      { id: 'linked', label: 'l', configDir: '/home/u/.claude-2', createdAt: 0 } as ClaudeAccount
-    ])
-    installHooksIntoLocalAccounts([{ id: 'linked' }, { id: 'managed' }])
-    expect(installed).toEqual(['/home/u/.claude-2', accountConfigDir(userDataDir, 'managed')])
   })
 })
 

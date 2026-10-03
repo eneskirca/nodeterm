@@ -65,7 +65,10 @@ export const HOST_ONLY_CHANNEL_PREFIXES: readonly string[] = [
   // Live links: publishing a host terminal to anyone with a URL, with the host's Pro. No relay peer
   // may create, list (every link's URL carries its secret), stop, kick or chat as the owner. The
   // viewer's own protocol is `watch:*`, which this prefix deliberately does not match.
-  'watchLink:'
+  'watchLink:',
+  // Agent-integration consent status: paths in the host's home it kept or wrote. The consent itself
+  // is in settings (already host-only).
+  'integrations:'
 ]
 
 export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([

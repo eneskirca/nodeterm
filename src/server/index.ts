@@ -51,7 +51,7 @@ import { registerLogHandlers } from '../core/log-handlers'
 import os from 'os'
 import { hookServer } from '../core/agents/hook-server'
 import { serverEditionControlHandler } from './control-unsupported'
-import { initServerCanvasControl, type ServerCanvasControl } from './canvas-control'
+import { initServerCanvasControl, serverCanvasShimPath, type ServerCanvasControl } from './canvas-control'
 import { registerStationNoticeIpc } from '../core/agents/station-notice'
 import { registerStationOutcomeIpc } from '../core/station-outcome-store'
 import { registerStationHandoverIpc } from '../core/station-handover'
@@ -66,8 +66,14 @@ import {
 } from '../core/agents/pending-approvals'
 import { answerHeldPermission } from '../core/agents/permission-decision'
 import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
-import { installManagedAgentHooks } from '../core/agents/hooks'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
+import {
+  createIntegrationLifecycle,
+  detectExistingIntegrations,
+  registerIntegrationLifecycle,
+  resolveIntegrationConsentAtBoot
+} from '../core/agent-integrations'
+import { registerIntegrationIpc } from '../core/agent-integrations-ipc'
+import { contextLinkShimPath } from '../core/context-link'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -267,6 +273,19 @@ export async function startServer(
     }
   } catch (error) {
     console.warn('[model-gateway] could not migrate the legacy API key to secret storage', error)
+  }
+  // Agent-integration consent (issue #744): grandfather an install from before this feature (our own
+  // hook scripts / shims are on disk) as enabled, before any browser can load settings.
+  if (config.installHooks !== false) {
+    try {
+      const grandfathered = resolveIntegrationConsentAtBoot(
+        settingsStore.get(),
+        detectExistingIntegrations(config.dataDir)
+      )
+      if (grandfathered) await settingsStore.save(grandfathered)
+    } catch (error) {
+      console.warn('[integrations] could not record the grandfathered consent', error)
+    }
   }
   settingsStore.registerIpc()
   // Gateway discovery/credential IPC. NO env snapshot on the server: every registered handler
@@ -685,21 +704,23 @@ export async function startServer(
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobileLiveActivities: () => settingsStore.get().mobileLiveActivities !== false
   })
-  // `installHooks: false` (tests) skips the merge into the user's real ~/.claude et al —
-  // the hook it would write points into `dataDir`, which a test then deletes.
-  if (config.installHooks !== false) {
-    try {
-      // Fail-open: installManagedAgentHooks is itself best-effort, but a throw must never block boot.
-      installManagedAgentHooks()
-    } catch (e) {
-      console.warn('[nodeterm-server] managed hook install failed', e)
-    }
-    // Managed Claude accounts each carry their OWN settings.json (Claude Code resolves it relative
-    // to CLAUDE_CONFIG_DIR), so the hook has to be re-installed there as well or a managed account
-    // reports no agent status at all. Canvas-control adds its skill in its own opt-in initializer;
-    // this baseline hook pass stays unchanged when the feature flag is off.
-    installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [])
-  }
+  // Agent-integration consent (issue #744) — the same lifecycle the desktop boots: hooks + skills
+  // only for the agents the user enabled, a declined one cleaned up, nothing for an undecided one.
+  // `installHooks: false` (tests) is a hard veto that outranks every choice: the hook it would write
+  // points into `dataDir`, which a test then deletes.
+  const integrations = createIntegrationLifecycle({
+    settings: () => settingsStore.get(),
+    userDataDir: () => config.dataDir,
+    shims: () => ({
+      canvas: config.canvasControl === true ? serverCanvasShimPath() : undefined,
+      context: contextLinkShimPath()
+    }),
+    veto: config.installHooks === false
+  })
+  registerIntegrationLifecycle(integrations)
+  integrations.reconcile()
+  settingsStore.onChange((s) => integrations.onSettingsChanged(s))
+  registerIntegrationIpc(integrations)
   const hookStartupWarning = await hookServer.startForApp()
   if (hookStartupWarning) console.error('[nodeterm-server]', hookStartupWarning)
   // Safe default and rollback path. The opt-in runtime replaces this handler only after its
@@ -744,8 +765,7 @@ export async function startServer(
   // src/server/context-link.ts.
   const contextLink = initServerContextLink({
     ptyManager,
-    canvases: () => workspaceStore.persistedCanvases(),
-    installAgentIntegrations: config.installHooks !== false
+    canvases: () => workspaceStore.persistedCanvases()
   })
   // A governed project's outside edit goes to the canvas authority, which publishes the difference
   // as canvas ops and then the persisted project on `workspace:server-change` (its non-content
@@ -794,7 +814,6 @@ export async function startServer(
           snapshot: (projectId) => github.service.controlSnapshot(projectId),
           dispatch: (projectId) => boardDispatchReports.forProject(projectId)
         },
-        installAgentIntegrations: config.installHooks !== false,
         // The durable orchestration facts follow hook-endpoint ownership, like the request ledger.
         ownsDurableState: hookStartupWarning === null
       })

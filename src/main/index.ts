@@ -260,7 +260,6 @@ import { PUSH_WEBHOOK_DEFAULT_API_BASE } from '../shared/push-webhook'
 import { initRemoteStatusPush } from './remote-ssh/remote-status-push'
 import { initCanvasSync } from '../core/canvas-sync'
 import { retainUntilDismissed } from './notifications'
-import { installManagedAgentHooks } from '../core/agents/hooks'
 import { createSubagentTail } from '../core/subagent-tail'
 import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
@@ -319,9 +318,9 @@ import { planSshPrewarm, runSshPrewarm } from '../core/remote-ssh/ssh-prewarm'
 import { sessionName } from '../core/tmux-naming'
 import { posixQuote, sshHostKey, type SshConnection } from '../shared/ssh'
 import { buildHandoff, type HandoffRemote } from './handoff'
-import { initContextLink, setNodeTranscript } from '../core/context-link'
+import { contextLinkShimPath, initContextLink, setNodeTranscript } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
-import { initCanvasControl, installCanvasSkillInto } from './canvas-control'
+import { initCanvasControl, canvasControlShimPath } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
 import { issueFlagRefusal } from '../core/canvas-control-core'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
@@ -371,7 +370,14 @@ import {
   isSafeRemoteTranscriptPath,
   remoteAccountConfigDirAbs
 } from '../core/claude-accounts-core'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
+import {
+  createIntegrationLifecycle,
+  detectExistingIntegrations,
+  registerIntegrationLifecycle,
+  resolveIntegrationConsentAtBoot
+} from '../core/agent-integrations'
+import { registerIntegrationIpc } from '../core/agent-integrations-ipc'
+import { remoteIntegrationPlan } from '../shared/agent-integrations'
 import { createPairingService } from './pairing-service'
 import {
   initRemoteHost,
@@ -1442,6 +1448,18 @@ app.whenReady().then(async () => {
     // Preserve the legacy literal in settings when the keyring/file write fails; migration can
     // retry next launch, and the user never loses their only copy of the credential.
     console.warn('[model-gateway] could not migrate the legacy API key to secret storage', error)
+  }
+  // Agent-integration consent (issue #744): an install from before this feature (our own hook
+  // scripts / shims are on disk) is grandfathered as enabled, so nobody's badges or canvas control
+  // silently stop on upgrade. Decided BEFORE the renderer can load settings and before any install.
+  try {
+    const grandfathered = resolveIntegrationConsentAtBoot(
+      settingsStore.get(),
+      detectExistingIntegrations(app.getPath('userData'))
+    )
+    if (grandfathered) await settingsStore.save(grandfathered)
+  } catch (error) {
+    console.warn('[integrations] could not record the grandfathered consent', error)
   }
   settingsStore.registerIpc()
   sshStore.registerIpc()
@@ -3081,13 +3099,19 @@ app.whenReady().then(async () => {
     ) => buildHandoff({ sessionId, agentId, sourceNodeId, cwd, accountId, remote: handoffRemote })
   )
 
-  installManagedAgentHooks()
-  // Managed accounts each carry their own settings.json AND skills/ (Claude Code resolves both
-  // relative to CLAUDE_CONFIG_DIR) — re-install the hook + canvas skill there too (idempotent),
-  // so an app update's new versions reach every account dir. The loop is shared with the Server
-  // Edition's boot (src/core/claude-accounts-service.ts); each shell supplies its own canvas-skill
-  // installer when that control surface is enabled.
-  installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [], installCanvasSkillInto)
+  // Agent-integration consent (issue #744): the ONE writer of user-owned agent config on this
+  // machine — status hooks and skills, per consented agent, system dirs and every local managed /
+  // linked account dir. Nothing is written for an agent the user has not enabled; a declined one
+  // is cleaned up. Re-runs whenever the consent or the local account list changes.
+  const integrations = createIntegrationLifecycle({
+    settings: () => settingsStore.get(),
+    userDataDir: () => app.getPath('userData'),
+    shims: () => ({ canvas: canvasControlShimPath(), context: contextLinkShimPath() })
+  })
+  registerIntegrationLifecycle(integrations)
+  integrations.reconcile()
+  settingsStore.onChange((s) => integrations.onSettingsChanged(s))
+  registerIntegrationIpc(integrations)
   // Fan a normalized agent event to BOTH consumers: the renderer's agentStatus store (canvas badge)
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.
@@ -4327,11 +4351,6 @@ app.whenReady().then(async () => {
         return null
       }
     }
-  }, {
-    // The desktop app is the surface Context Link's discovery was designed for, so it installs
-    // the skill + instruction blocks. Stated rather than defaulted: the flag is required so no
-    // caller can reach the write by omission (see initContextLink, issue #490).
-    installAgentIntegrations: true
   })
   initCanvasControl()
   // Usage service + the mobile `usage` mirror block (mobile-usage-inbox): poll all local managed
@@ -4856,8 +4875,18 @@ app.whenReady().then(async () => {
     // check, so an account added mid-run is included. A pending account has no finished login and
     // is skipped; the refresh re-validates every id before it becomes a path.
     (hostKey) =>
-      (settingsStore.get().claudeAccounts ?? []).filter((a) => a.host === hostKey && !a.pending).map((a) => a.id)
+      (settingsStore.get().claudeAccounts ?? []).filter((a) => a.host === hostKey && !a.pending).map((a) => a.id),
+    // Agent-integration consent per SSH host (issue #744): nothing is installed on a host the user
+    // has not answered for, and a declined one is cleaned up.
+    {
+      integrationsForHost: (hostKey) => {
+        const plan = remoteIntegrationPlan(settingsStore.get(), hostKey)
+        return { install: new Set(plan.install), remove: new Set(plan.remove), decided: plan.decided }
+      },
+      integrationReceipts: integrations.receipts
+    }
   )
+  settingsStore.onChange(() => sshProjectManager?.onIntegrationConsentChanged())
   // Pre-warm the ControlMasters of OPEN SSH projects, in the background, one host at a time.
   //
   // Without this the master for a project is dialed only when the user first switches to it, so the

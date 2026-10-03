@@ -140,6 +140,22 @@ function removeManagedFromDefinitions(defs: HookDefinition[]): HookDefinition[] 
   })
 }
 
+/** Pure: hooks.json without our managed handlers, or null when there was nothing of ours. */
+export function stripCodexManagedHooks(config: HooksConfig): HooksConfig | null {
+  if (!config || typeof config !== 'object' || !config.hooks || typeof config.hooks !== 'object') return null
+  const next: Record<string, HookDefinition[]> = { ...config.hooks }
+  let removed = false
+  for (const [ev, defs] of Object.entries(next)) {
+    if (!Array.isArray(defs)) continue
+    const cleaned = removeManagedFromDefinitions(defs)
+    if (cleaned.length === defs.length && cleaned.every((d, i) => d === defs[i])) continue
+    removed = true
+    if (cleaned.length === 0) delete next[ev]
+    else next[ev] = cleaned
+  }
+  return removed ? { ...config, hooks: next } : null
+}
+
 /**
  * `%SystemRoot%\System32\cmd.exe`, or bare `cmd` when that cannot be spelled unquoted.
  *

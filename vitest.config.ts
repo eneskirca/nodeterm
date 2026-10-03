@@ -42,7 +42,7 @@ export default defineConfig({
       'test/setup/tmux-sandbox.ts',
       'test/setup/tmp-sandbox.ts'
     ],
-    setupFiles: ['test/setup/tmux-worker-env.ts', 'test/setup/tmp-worker-env.ts', 'test/setup/jsdom-storage.ts'],
+    setupFiles: ['test/setup/tmux-worker-env.ts', 'test/setup/agent-env.ts', 'test/setup/tmp-worker-env.ts', 'test/setup/jsdom-storage.ts'],
     // Issue #160: with the default (one worker per core), a 10-core Mac runs ~10 fs-heavy suites
     // at once and transient fd exhaustion (EMFILE) turns into silent test flakiness — probes like
     // `fs.existsSync` swallow the error and answer false, so whole files fail in ways that never

@@ -44,7 +44,7 @@ function start(deps: ContextLinkDeps = {}): void {
   // own ~/.claude and merged nodeterm's marker block into their ~/.codex/AGENTS.md,
   // ~/.gemini/GEMINI.md and opencode AGENTS.md. Nothing under test needs those writes — the read
   // handler and the dataDir shim are registered regardless.
-  initContextLink(fakePty(), deps, { installAgentIntegrations: false })
+  initContextLink(fakePty(), deps)
 }
 
 beforeEach(() => start())

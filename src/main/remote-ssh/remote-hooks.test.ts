@@ -1,7 +1,8 @@
+import { allRemote, ALL_REMOTE_INTEGRATION } from './remote-hooks.test-plan'
 import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { describe, expect, it, vi } from 'vitest'
-import { RemoteHooks, openCodeInstructionsTarget } from './remote-hooks'
+import { RemoteHooks, type RemoteIntegrationPlan, openCodeInstructionsTarget } from './remote-hooks'
 import { isSafeRemoteHome } from '../../core/remote-safety'
 import { hookServer } from '../../core/agents/hook-server'
 
@@ -20,6 +21,8 @@ function harness(
     failOn?: string
     /** Command substring whose runner result is non-zero (the runner itself still resolves). */
     failCodeOn?: string
+    /** The host's consent plan (issue #744). Default: every agent enabled. */
+    plan?: RemoteIntegrationPlan
   } = {}
 ) {
   // One record per ssh child command. `args` is what the runner was handed; `cmd` is the joined
@@ -44,7 +47,7 @@ function harness(
     if (joined.includes('%{http_code}')) return { code: 0, stdout: verifyAnswers.shift() ?? '204' }
     return { code: 0, stdout: '' }
   })
-  return { rh: new RemoteHooks({ run }), calls, runs: calls, run, conn }
+  return { rh: new RemoteHooks({ run }, () => opts.plan ?? ALL_REMOTE_INTEGRATION), calls, runs: calls, run, conn }
 }
 
 /** A remote command that PUBLISHES `p`: every write now ends in a rename onto the quoted path —
@@ -196,7 +199,7 @@ describe('RemoteHooks.setup', () => {
       }
       return { code: 0, stdout: '' }
     })
-    await new RemoteHooks({ run }).setup('p1', conn, '/s.sock', { port: 1, token: 't', version: '1' })
+    await new RemoteHooks({ run }, allRemote).setup('p1', conn, '/s.sock', { port: 1, token: 't', version: '1' })
     const joined = calls.map((c) => c.args.join(' '))
     // the script is still (idempotently) written, but neither hooks.json nor config.toml is rewritten.
     expect(joined.some((j) => writesTo(j, '/home/u/.nodeterm/agent-hooks/codex.sh'))).toBe(true)
@@ -268,7 +271,7 @@ describe('RemoteHooks.setup', () => {
       if (joined.includes("cat '/home/u/.claude/settings.json'")) return { code: 0, stdout: '{}' }
       return { code: 0, stdout: '' }
     })
-    const rh = new RemoteHooks({ run })
+    const rh = new RemoteHooks({ run }, allRemote)
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     expect(res?.endpointPath).toBe(`/home/u/.nodeterm/hook-endpoint-p1-${owner}.env`)
     expect(forwards).toBe(2)
@@ -365,26 +368,19 @@ describe('RemoteHooks — the opencode XDG path expression', () => {
     expect(probe('/home/u')).toBe('ARGC=1|/home/u/.config/opencode/AGENTS.md')
   })
 
-  for (const [what, install] of [
-    ['canvas control', (rh: RemoteHooks, c: typeof conn) => rh.installCanvasControl(c, '/s.sock', HOSTILE)],
-    ['context link', (rh: RemoteHooks, c: typeof conn) => rh.installContextLink(c, '/s.sock', HOSTILE)]
-  ] as const) {
-    it(`${what} routes the opencode target through that safe form`, async () => {
-      const { rh, conn: c, runs } = harness()
-      await install(rh, c)
-      const lines = runs
-        .map((r) => r.args[r.args.length - 1])
-        .filter((l) => l.includes('opencode/AGENTS.md'))
-      expect(lines.length).toBeGreaterThan(0)
-      for (const line of lines) {
-        // The untrusted half is bound to a single-quoted shell variable; it never appears raw
-        // inside the double-quoted expansion, where `$`/backticks would still be live.
-        expect(line).toContain(`NT_H='${HOSTILE}'`)
-        expect(line).toContain('"${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md"')
-        expect(line).not.toContain(`{XDG_CONFIG_HOME:-${HOSTILE}`)
-      }
-    })
-  }
+  it('the legacy-block clean-up routes the opencode target through that safe form', async () => {
+    const { rh, conn: c, runs } = harness()
+    await rh['stripLegacyInstructionBlocks'](c, '/s.sock', HOSTILE)
+    const lines = runs.map((r) => r.args[r.args.length - 1]).filter((l) => l.includes('opencode/AGENTS.md'))
+    expect(lines.length).toBeGreaterThan(0)
+    for (const line of lines) {
+      // The untrusted half is bound to a single-quoted shell variable; it never appears raw
+      // inside the double-quoted expansion, where `$`/backticks would still be live.
+      expect(line).toContain(`NT_H='${HOSTILE}'`)
+      expect(line).toContain('"${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md"')
+      expect(line).not.toContain(`{XDG_CONFIG_HOME:-${HOSTILE}`)
+    }
+  })
 })
 
 describe('RemoteHooks.ensureFullscreenTui — the fourth $(dirname …) site', () => {
@@ -559,7 +555,7 @@ describe('RemoteHooks.ensureFullscreenTui', () => {
       if (isReadOf(args, target)) return { code: 0, stdout: `${target}\n` + JSON.stringify({ hooks: { Stop: [] } }) }
       return { code: 0, stdout: '' }
     })
-    const rh = new RemoteHooks({ run })
+    const rh = new RemoteHooks({ run }, allRemote)
     await rh.ensureFullscreenTui(conn, '/s.sock', '/home/u')
     const write = calls.find((c) => isWriteTo(c.args, target))
     expect(write).toBeTruthy()
@@ -574,7 +570,7 @@ describe('RemoteHooks.ensureFullscreenTui', () => {
       if (isReadOf(args, target)) return { code: 0, stdout: `${target}\n` + JSON.stringify({ tui: 'default' }) }
       return { code: 0, stdout: '' }
     })
-    const rh = new RemoteHooks({ run })
+    const rh = new RemoteHooks({ run }, allRemote)
     await rh.ensureFullscreenTui(conn, '/s.sock', '/home/u')
     expect(calls.some((c) => isWriteTo(c.args, target))).toBe(false)
   })
@@ -586,7 +582,7 @@ describe('RemoteHooks.ensureFullscreenTui', () => {
       calls.push({ args, stdin })
       return { code: 0, stdout: `${target}\n{}` } // resolved target header + empty settings
     })
-    const rh = new RemoteHooks({ run })
+    const rh = new RemoteHooks({ run }, allRemote)
     await rh.ensureFullscreenTuiInAccountDir(conn, '/s.sock', '/home/u', 'acc-1')
     expect(calls.some((c) => isWriteTo(c.args, target))).toBe(true)
     expect(calls.some((c) => (c.stdin ?? '').includes('"tui": "fullscreen"'))).toBe(true)
@@ -611,63 +607,43 @@ describe('RemoteHooks.teardown', () => {
 describe('RemoteHooks.installCanvasControl', () => {
   const isWriteTo = (args: string[], p: string) => writesTo(args.join(' '), p)
 
-  it('writes an executable shim + the skill, and merges every instruction-file block', async () => {
+  it('writes an executable shim + the skill in claude\'s dir and ~/.agents/skills — and NO instruction-file block (#744)', async () => {
     const { rh, calls } = harness()
     await rh.installCanvasControl(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
-    // The shim must land executable: the skill tells the agent to run it via `sh <path>`, but the
-    // instruction blocks and a user's own habits may exec it directly.
+    // The shim must land executable: the skill tells the agent to run it via `sh <path>`, but a
+    // user's own habits may exec it directly.
     const shimWrite = joined.find((j) => writesTo(j, '/home/u/.nodeterm/nodeterm.sh')) ?? ''
     expect(shimWrite).toContain(`chmod 755 ${tempFor(shimWrite, '/home/u/.nodeterm/nodeterm.sh')}`)
-    // It is the POSIX shim, NOT the retired Electron-as-Node one — nothing may reference a local
-    // interpreter path, which is exactly what made the old CLI unusable off the desktop.
+    // It is the POSIX shim, NOT the retired Electron-as-Node one.
     const shim = calls.find((c) => isWriteTo(c.args, '/home/u/.nodeterm/nodeterm.sh'))?.stdin ?? ''
     expect(shim).toContain('#!/bin/sh')
     expect(shim).toContain('--unix-socket')
     expect(shim).not.toContain('ELECTRON_RUN_AS_NODE')
-    // The skill points at the REMOTE shim path (a desktop path would resolve to nothing here).
-    const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/manage-nodeterm-canvas/SKILL.md'))?.stdin ?? ''
-    expect(skill).toContain('name: manage-nodeterm-canvas')
-    expect(skill).toContain('sh "/home/u/.nodeterm/nodeterm.sh"')
-    // codex/gemini get the marker block; opencode's path is expanded by the REMOTE shell, since
-    // the desktop's XDG_CONFIG_HOME says nothing about the host's.
-    expect(joined.some((j) => j.includes('/home/u/.codex/AGENTS.md'))).toBe(true)
-    expect(joined.some((j) => j.includes('/home/u/.gemini/GEMINI.md'))).toBe(true)
-    // …with the remote $HOME bound to a shell variable first, so it is never live inside the
-    // double-quoted expansion (see "the opencode XDG path expression" below).
-    expect(joined.some((j) => j.includes(`NT_H='/home/u'`))).toBe(true)
-    expect(joined.some((j) => j.includes('${XDG_CONFIG_HOME:-$NT_H/.config}/opencode/AGENTS.md'))).toBe(true)
-    expect(joined.some((j) => j.includes('/home/u/.copilot/copilot-instructions.md'))).toBe(true)
-    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:manage-canvas:start'))).toBe(true)
+    // The skill points at the REMOTE shim path (a desktop path would resolve to nothing here), in
+    // claude's dir AND in ~/.agents/skills, which codex/gemini/copilot/opencode/grok all read.
+    for (const dir of ['/home/u/.claude/skills', '/home/u/.agents/skills']) {
+      const skill = calls.find((c) => isWriteTo(c.args, `${dir}/manage-nodeterm-canvas/SKILL.md`))?.stdin ?? ''
+      expect(skill, dir).toContain('name: manage-nodeterm-canvas')
+      expect(skill, dir).toContain('sh "/home/u/.nodeterm/nodeterm.sh"')
+    }
+    // Nothing touches a global instruction file any more (they crowded codex's 32 KiB budget).
+    expect(joined.some((j) => /AGENTS\.md|GEMINI\.md|copilot-instructions\.md/.test(j))).toBe(false)
+    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:manage-canvas:start'))).toBe(false)
     // no unexpanded tilde survives in any remote path.
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
   })
 
-  it('preserves existing instruction-file content and rewrites its own block only', async () => {
-    const existing = '# my notes\n\n<!-- nodeterm:manage-canvas:start -->\nSTALE\n<!-- nodeterm:manage-canvas:end -->\n'
-    const { rh, calls } = harness({ responses: { '.codex/AGENTS.md': existing } })
-    await rh.installCanvasControl(conn, '/s.sock', '/home/u')
-    const write = calls.find((c) => isWriteTo(c.args, '/home/u/.codex/AGENTS.md'))
-    // The transaction's stdin is the snapshot it read, then the merged file.
-    expect(write?.stdin?.startsWith(existing)).toBe(true)
-    const merged = write!.stdin!.slice(existing.length)
-    expect(merged).toContain('# my notes')
-    expect(merged).not.toContain('STALE')
-    expect(merged).toContain('nodeterm canvas')
-  })
+  it('writes only the dirs of agents this host consented to — nothing at all for an unanswered host', async () => {
+    const onlyCodex = harness({ plan: { install: new Set(['codex']), remove: new Set(), decided: true } })
+    await onlyCodex.rh.installCanvasControl(conn, '/s.sock', '/home/u')
+    const a = onlyCodex.calls.map((c) => c.args.join(' '))
+    expect(a.some((j) => writesTo(j, '/home/u/.agents/skills/manage-nodeterm-canvas/SKILL.md'))).toBe(true)
+    expect(a.some((j) => j.includes('/home/u/.claude/'))).toBe(false)
 
-  it('skips the write when the block is already current (idempotent reconnects)', async () => {
-    // A connect happens on every app start and every reconnect; rewriting an unchanged file each
-    // time would churn the user's instruction files (and their mtimes) for nothing.
-    const first = harness()
-    await first.rh.installCanvasControl(conn, '/s.sock', '/home/u')
-    // A missing file: the snapshot part of stdin is empty, so stdin IS the merged file.
-    const merged = first.calls.find((c) => isWriteTo(c.args, '/home/u/.gemini/GEMINI.md'))?.stdin ?? ''
-    expect(merged).toBeTruthy()
-
-    const { rh, calls } = harness({ responses: { '.gemini/GEMINI.md': merged } })
-    await rh.installCanvasControl(conn, '/s.sock', '/home/u')
-    expect(calls.some((c) => isWriteTo(c.args, '/home/u/.gemini/GEMINI.md'))).toBe(false)
+    const none = harness({ plan: { install: new Set(), remove: new Set(), decided: false } })
+    await none.rh.installCanvasControl(conn, '/s.sock', '/home/u')
+    expect(none.calls).toHaveLength(0)
   })
 
   it('installs the skill into a remote managed-account config dir', async () => {
@@ -685,14 +661,14 @@ describe('RemoteHooks.installCanvasControl', () => {
     const run = vi.fn(async () => {
       throw new Error('ssh died')
     })
-    await expect(new RemoteHooks({ run }).installCanvasControl(conn, '/s.sock', '/home/u')).resolves.toBeUndefined()
+    await expect(new RemoteHooks({ run }, allRemote).installCanvasControl(conn, '/s.sock', '/home/u')).resolves.toBeUndefined()
   })
 })
 
 describe('RemoteHooks.installContextLink', () => {
   const isWriteTo = (args: string[], p: string) => writesTo(args.join(' '), p)
 
-  it('writes an executable shim + the skill, and merges the instruction blocks', async () => {
+  it('writes an executable shim + the skill in claude\'s dir and ~/.agents/skills, no block', async () => {
     const { rh, calls } = harness()
     await rh.installContextLink(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
@@ -705,24 +681,13 @@ describe('RemoteHooks.installContextLink', () => {
     expect(shim).toContain('/context-link/')
     expect(shim).toContain('--unix-socket')
     expect(shim).not.toContain('ELECTRON_RUN_AS_NODE')
-    const skill = calls.find((c) => isWriteTo(c.args, '/home/u/.claude/skills/get-linked-context/SKILL.md'))?.stdin ?? ''
-    expect(skill).toContain('name: get-linked-context')
-    expect(skill).toContain('sh "/home/u/.nodeterm/context.sh"')
-    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:get-linked-context:start'))).toBe(true)
+    for (const dir of ['/home/u/.claude/skills', '/home/u/.agents/skills']) {
+      const skill = calls.find((c) => isWriteTo(c.args, `${dir}/get-linked-context/SKILL.md`))?.stdin ?? ''
+      expect(skill, dir).toContain('name: get-linked-context')
+      expect(skill, dir).toContain('sh "/home/u/.nodeterm/context.sh"')
+    }
+    expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:get-linked-context:start'))).toBe(false)
     expect(joined.some((j) => j.includes('~/'))).toBe(false)
-  })
-
-  it('leaves the canvas-control block in the same file alone', async () => {
-    // Both features merge into ~/.codex/AGENTS.md under DIFFERENT markers. Installing one must
-    // not evict the other, or every connect would leave the host with exactly one of the two.
-    const existing =
-      '<!-- nodeterm:manage-canvas:start -->\nCANVAS BLOCK\n<!-- nodeterm:manage-canvas:end -->\n'
-    const { rh, calls } = harness({ responses: { '.codex/AGENTS.md': existing } })
-    await rh.installContextLink(conn, '/s.sock', '/home/u')
-    const write = calls.find((c) => isWriteTo(c.args, '/home/u/.codex/AGENTS.md'))
-    const merged = write!.stdin!.slice(existing.length)
-    expect(merged).toContain('CANVAS BLOCK')
-    expect(merged).toContain('nodeterm:get-linked-context:start')
   })
 
   it('installs the skill into a remote managed-account config dir', async () => {
@@ -737,7 +702,7 @@ describe('RemoteHooks.installContextLink', () => {
     const run = vi.fn(async () => {
       throw new Error('ssh died')
     })
-    await expect(new RemoteHooks({ run }).installContextLink(conn, '/s.sock', '/home/u')).resolves.toBeUndefined()
+    await expect(new RemoteHooks({ run }, allRemote).installContextLink(conn, '/s.sock', '/home/u')).resolves.toBeUndefined()
   })
 })
 
@@ -758,7 +723,7 @@ describe('RemoteHooks.writeNodeTokens', () => {
       if (opts.throws) throw new Error('ssh died')
       return { code: opts.code ?? 0, stdout: '' }
     })
-    return { rh: new RemoteHooks({ run }), calls, run }
+    return { rh: new RemoteHooks({ run }, allRemote), calls, run }
   }
 
   it('writes every token through STDIN — a credential never rides an ssh command line', async () => {
@@ -841,7 +806,7 @@ describe('RemoteHooks.writeNodeTokens', () => {
       if (cmd.includes('node-1')) throw new Error('EACCES')
       return { code: 0, stdout: '' }
     })
-    await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1', 'node-2'], mint)
+    await new RemoteHooks({ run }, allRemote).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1', 'node-2'], mint)
     expect(calls.some((c) => c.includes("node-tokens/node-2'"))).toBe(true)
   })
 
@@ -890,7 +855,7 @@ describe('RemoteHooks.writeNodeTokens', () => {
         code: args.join(' ').includes('cat >') ? 1 : 0,
         stdout: ''
       }))
-      await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+      await new RemoteHooks({ run }, allRemote).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
       expect(forget).toHaveBeenCalledWith('node-1')
       forget.mockRestore()
     })
@@ -901,7 +866,7 @@ describe('RemoteHooks.writeNodeTokens', () => {
         if (args.join(' ').includes('cat >')) throw new Error('EACCES')
         return { code: 0, stdout: '' }
       })
-      await new RemoteHooks({ run }).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
+      await new RemoteHooks({ run }, allRemote).writeNodeTokens(conn, '/s.sock', '/home/u', ['node-1'], mint)
       expect(forget).toHaveBeenCalledWith('node-1')
       forget.mockRestore()
     })
@@ -976,7 +941,7 @@ describe('RemoteHooks.setup — install concurrency', () => {
       return { code: 0, stdout: '' }
     })
     return {
-      rh: new RemoteHooks({ run }),
+      rh: new RemoteHooks({ run }, allRemote),
       calls,
       releaseAll: () => {
         for (const g of gates.splice(0)) g()

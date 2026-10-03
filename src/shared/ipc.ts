@@ -523,6 +523,9 @@ export const IPC = {
   filesSaveAlertSound: 'files:save-alert-sound',
   filesReadAlertSound: 'files:read-alert-sound',
   filesClearAlertSound: 'files:clear-alert-sound',
+  /** Agent-integration consent (issue #744): the last reconcile's report (what is enabled,
+   *  declined, and which user-edited files were kept). Host-only. */
+  integrationsStatus: 'integrations:status',
   settingsLoad: 'settings:load',
   settingsSave: 'settings:save',
   sshList: 'ssh:list',

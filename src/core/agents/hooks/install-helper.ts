@@ -331,6 +331,29 @@ export interface RemoveHooksOptions {
   atomicConfig?: boolean
 }
 
+/** Pure: the config without OUR handler for `scriptFileName` on any of `events` (same normalized
+ *  match as the installer; a user's own hooks survive). Returns the input when nothing changes. */
+export function stripManagedHook(
+  config: HookSettings,
+  scriptFileName: string,
+  events: readonly ManagedHookEvent[]
+): HookSettings {
+  if (!config.hooks) return config
+  const isOurs = managedCommandMatcher(`agent-hooks/${scriptFileName}`, false)
+  let changed = false
+  const hooks = { ...config.hooks }
+  for (const e of events) {
+    const ev = eventNameOf(e)
+    if (!Array.isArray(hooks[ev])) continue
+    const kept = stripManaged(hooks[ev], isOurs)
+    if (kept.length === hooks[ev].length && kept.every((d, i) => d === hooks[ev][i])) continue
+    changed = true
+    if (kept.length === 0) delete hooks[ev]
+    else hooks[ev] = kept
+  }
+  return changed ? { ...config, hooks } : config
+}
+
 export function removeHooksFrom(opts: RemoveHooksOptions): void {
   const { configPath, events, scriptFileName, atomicConfig = false } = opts
   // Same normalized comparison as the installer — a raw `includes` left every entry behind on

@@ -687,6 +687,11 @@ import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSshServers } from '../state/sshServers'
 import { useSshConn } from '../state/sshConn'
+import {
+  HostIntegrationBanner,
+  IntegrationGrandfatherNotice,
+  IntegrationPromptBanner
+} from '../components/settings/IntegrationConsent'
 import { scopeFromKey, usageScopeKey } from '../lib/usageScope'
 import { useSystemAccount } from '../state/systemAccount'
 import { useEntitlement } from '../state/entitlement'
@@ -2039,6 +2044,12 @@ export function Canvas() {
   /** The active project runs on a remote host → every worktree affordance is off (see
    *  WORKTREE_SSH_HINT). Reactive, so the menus rebuild when the user switches projects. */
   const isSshProject = !!activeSshServer
+  /** The active SSH project's host, once it is CONNECTED — the host the consent banner asks about
+   *  (nothing is installed there until it is answered). */
+  const activeSshHostKey = useSshConn((c) => {
+    const id = useProjects.getState().activeProjectId
+    return activeSshServer && id && c.byProject[id] ? sshHostKey(activeSshServer) : null
+  })
   /**
    * ONE confirm dialog at a time — mirrored into a ref so the []-dep agent-control effect sees the
    * CURRENT dialogs (it closes over a stale `confirm`).
@@ -18308,6 +18319,21 @@ export function Canvas() {
 
       <div className="top-banners">
         <AnnouncementBanner />
+        {/* Agent-integration consent (issue #744): the first-run question, the grandfathered
+            install's one-time notice, and the active SSH host's own question. */}
+        <IntegrationPromptBanner
+          onChoose={() => {
+            setSettingsSection('agents')
+            setSettingsOpen(true)
+          }}
+        />
+        <IntegrationGrandfatherNotice
+          onOpenSettings={() => {
+            setSettingsSection('agents')
+            setSettingsOpen(true)
+          }}
+        />
+        <HostIntegrationBanner hostKey={activeSshHostKey} />
         {/* Discovery belongs to the local core; never run its installer on an SSH/relay host. */}
         <TmuxBanner
           onInstall={!isSshProject && session.id === localSession.id ? runInTerminal : undefined}

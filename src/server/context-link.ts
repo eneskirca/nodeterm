@@ -41,22 +41,6 @@ export interface ServerContextLinkDeps {
   /** nodeId → hook-fed transcript path; part of the change signature, not of the map. */
   transcriptOf?: (nodeId: string) => string
   sweepMs?: number
-  /**
-   * Whether to write the context-link discovery surface into the machine's REAL agent
-   * configuration directories: `~/.claude/skills/get-linked-context/SKILL.md` and the marker
-   * block in `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` and opencode's `AGENTS.md`. `true` =
-   * the server's `installHooks` gate said yes; `false` = leave them alone (the read handler and
-   * the shim under `dataDir` are registered either way, so the feature still works for sessions
-   * that already know about it).
-   *
-   * REQUIRED, and deliberately not defaulted — same reason as
-   * `ServerCanvasControlDeps.installAgentIntegrations`: a service process writing into a user's
-   * `$HOME` is a documented hazard (issue #490), those instruction files are read by every agent
-   * session on the machine rather than only ours, and an OPTIONAL flag read as `!== false` made
-   * the write the thing you got by saying nothing. Omission must be a compile error, not a
-   * silent install.
-   */
-  installAgentIntegrations: boolean
 }
 
 /**
@@ -82,8 +66,8 @@ export function deriveLinkMap(deps: {
 }
 
 /**
- * Boot context-link server-side: register the read handler + write the shim/skill/instructions
- * (core), then keep the link map in step with the canvases on disk.
+ * Boot context-link server-side: register the read handler + write the shim (core; the skill is the
+ * consent lifecycle's, `core/agent-integrations.ts`), then keep the link map in step with the canvases on disk.
  *
  * Returns `refresh` (also the onPersist hook the caller wires to the workspace store) and a
  * `stop` that settles the sweep — awaitable, because a refresh is a write into `dataDir` and a
@@ -98,9 +82,7 @@ export function initServerContextLink(deps: ServerContextLinkDeps): {
 
   // No remote deps: the Server Edition runs ON the host whose transcripts and tmux it reads, so
   // the local-only behavior is the complete answer (SSH projects are a desktop-only concept here).
-  initContextLink(deps.ptyManager, {}, {
-    installAgentIntegrations: deps.installAgentIntegrations
-  })
+  initContextLink(deps.ptyManager, {})
 
   // Skip a rewrite when nothing a link document depends on has changed. The map alone is not the
   // whole input — a link's transcript path is resolved at write time from the hook-fed table, and

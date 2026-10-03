@@ -314,6 +314,8 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.projectSetupUnsubscribe,
   IPC.worktreeMaterializeShared,
   // Host settings, credentials and paths.
+  // Agent-integration consent status (#744): host-only, never a viewer's.
+  IPC.integrationsStatus,
   IPC.settingsLoad,
   IPC.settingsSave,
   IPC.agentDiscoverModels,

@@ -1,6 +1,7 @@
 // `RemoteHooks.refreshAgentTools`, run for real under /bin/sh against a fake host tree: the one
 // check that keeps an SSH host's canvas/context shims, skills and instruction blocks equal to what
 // THIS build would write — rewriting only what differs, and never what it cannot read.
+import { allRemote } from './remote-hooks.test-plan'
 import { spawnSync } from 'child_process'
 import {
   existsSync,
@@ -17,12 +18,7 @@ import {
 import { tmpdir } from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  CONTROL_SHIM_SCRIPT,
-  buildCanvasControlInstructions,
-  buildCanvasSkillBody,
-  mergeCanvasControlBlock
-} from '../../core/canvas-control-core'
+import { CONTROL_SHIM_SCRIPT, buildCanvasSkillBody } from '../../core/canvas-control-core'
 import { CONTEXT_SHIM_SCRIPT, buildContextLinkSkillBody } from '../../core/context-link-core'
 import { RemoteHooks, type RemoteRunner } from './remote-hooks'
 
@@ -47,6 +43,9 @@ const SHIM = () => `${home}/.nodeterm/nodeterm.sh`
 const CTX = () => `${home}/.nodeterm/context.sh`
 const SKILL = () => `${home}/.claude/skills/manage-nodeterm-canvas/SKILL.md`
 const CTX_SKILL = () => `${home}/.claude/skills/get-linked-context/SKILL.md`
+/** The env-independent dir codex/gemini/copilot/opencode/grok all read (#744). */
+const AGENTS_SKILL = () => `${home}/.agents/skills/manage-nodeterm-canvas/SKILL.md`
+const AGENTS_CTX_SKILL = () => `${home}/.agents/skills/get-linked-context/SKILL.md`
 const accountDir = (id: string) => `${home}/.nodeterm/claude-accounts/${id}`
 
 interface HostRunner extends RemoteRunner {
@@ -90,29 +89,37 @@ function put(p: string, content: string): void {
 /** A host exactly as this build leaves it. */
 async function freshHost(accounts: string[] = []): Promise<void> {
   for (const id of accounts) mkdirSync(accountDir(id), { recursive: true })
-  await new RemoteHooks(hostRunner()).refreshAgentTools(conn, '/fixture.sock', home, accounts, 'connect')
+  await new RemoteHooks(hostRunner(), allRemote).refreshAgentTools(conn, '/fixture.sock', home, accounts, 'connect')
 }
 
 describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (real /bin/sh)', () => {
   it('a fresh host gets every file this build writes', async () => {
-    const outcome = await new RemoteHooks(hostRunner()).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
+    const outcome = await new RemoteHooks(hostRunner(), allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(outcome).toBe('refreshed')
     expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
     expect(read(CTX())).toBe(CONTEXT_SHIM_SCRIPT)
     expect(read(SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
-    for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', '.config/opencode/AGENTS.md']) {
-      const text = read(path.join(home, f))
-      expect(text).toContain('nodeterm:manage-canvas:start')
-      expect(text).toContain('nodeterm:get-linked-context:start')
+    expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
+    expect(read(AGENTS_CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
+    // Skills replaced the instruction blocks (#744): no global instruction file is created.
+    for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', '.config/opencode/AGENTS.md', '.copilot/copilot-instructions.md']) {
+      expect(existsSync(path.join(home, f)), f).toBe(false)
     }
-    expect(read(path.join(home, '.copilot/copilot-instructions.md'))).toContain('nodeterm:manage-canvas:start')
+  })
+
+  it('an unanswered host gets nothing at all — not even a probe (#744)', async () => {
+    const runner = hostRunner()
+    const undecided = () => ({ install: new Set<string>(), remove: new Set<string>(), decided: false })
+    expect(await new RemoteHooks(runner, undecided).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')).toBe('skipped')
+    expect(runner.calls).toHaveLength(0)
+    expect(existsSync(path.join(home, '.nodeterm'))).toBe(false)
   })
 
   it('a current host costs ONE read and not a single write', async () => {
     await freshHost(['acc-1'])
     const runner = hostRunner()
-    const outcome = await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
+    const outcome = await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
     expect(outcome).toBe('current')
     // Exactly the probe: a block that only LOOKED stale would cost a merge read here, and a file
     // that only looked stale a write.
@@ -120,68 +127,21 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     expect(probes(runner)).toHaveLength(1)
   })
 
-  it('rewrites exactly the stale files, keeping the user text around a stale block', async () => {
+  it('rewrites exactly the stale files', async () => {
     await freshHost()
     put(SHIM(), '#!/bin/sh\necho "an older build"\n')
     put(SKILL(), '---\nname: manage-nodeterm-canvas\n---\nold verbs\n')
-    const gemini = path.join(home, '.gemini/GEMINI.md')
-    const current = read(gemini)
-    const withOldCanvas = mergeCanvasControlBlock(current, 'OLD canvas instructions')
-    put(gemini, `# mine\n${withOldCanvas}`)
+    put(AGENTS_SKILL(), '---\nname: manage-nodeterm-canvas\n---\nold verbs\n')
     const runner = hostRunner()
-    const outcome = await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
+    const outcome = await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(outcome).toBe('refreshed')
     expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
     expect(read(SKILL())).toBe(buildCanvasSkillBody(SHIM()))
-    const merged = read(gemini)
-    expect(merged.startsWith('# mine\n')).toBe(true)
-    expect(merged).not.toContain('OLD canvas instructions')
-    expect(merged).toContain(buildCanvasControlInstructions(SHIM()).trim())
-    expect(merged).toContain('nodeterm:get-linked-context:start')
+    expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(publishes(runner)).toHaveLength(3)
     expect(publishedTo(runner, SHIM())).toBe(true)
     expect(publishedTo(runner, SKILL())).toBe(true)
-    expect(publishedTo(runner, gemini)).toBe(true)
-  })
-
-  // Measured before the fix: 41,693 → 81,279 → 120,865 → 160,451 bytes over a connect and three
-  // hourly re-checks — the merge took the stray end marker for "no block" and appended each time.
-  // Two hosts, because two halves had the bug: on a normal host the PROBE must find the block (else
-  // it reads stale every check); on a host whose awk fails every block is merged on every check,
-  // so the MERGE itself must find it.
-  it.each([
-    ['a normal host', false],
-    ['a host whose awk fails (every block merged every check)', true]
-  ])('a stray end marker left by a hand-deleted block costs ONE append, not one per check — %s', async (_n, badAwk) => {
-    await freshHost()
-    const bin = mkdtempSync(path.join(tmpdir(), 'nt-bad-awk-'))
-    try {
-      writeFileSync(path.join(bin, 'awk'), '#!/bin/sh\nexit 2\n', { mode: 0o755 })
-      const opts = badAwk ? { path: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` } : {}
-      const codex = path.join(home, '.codex/AGENTS.md')
-      // Both of our blocks gone from the file, each leaving its end line behind.
-      let text = read(codex)
-      for (const m of ['manage-canvas', 'get-linked-context']) {
-        const start = text.indexOf(`<!-- nodeterm:${m}:start -->`)
-        const end = text.indexOf(`<!-- nodeterm:${m}:end -->`)
-        text = text.slice(0, start) + text.slice(end)
-      }
-      put(codex, `# mine\n${text}`)
-      await new RemoteHooks(hostRunner(opts)).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
-      const size = read(codex).length
-      expect(read(codex).match(/manage-canvas:start/g)).toHaveLength(1)
-      expect(read(codex).match(/get-linked-context:start/g)).toHaveLength(1)
-      for (let i = 0; i < 2; i++) {
-        const runner = hostRunner(opts)
-        expect(await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('current')
-        expect(read(codex).length).toBe(size)
-        expect(publishes(runner)).toHaveLength(0)
-        // On a normal host the probe agrees with the merge outright: no merge read at all.
-        if (!badAwk) expect(runner.calls).toHaveLength(1)
-      }
-    } finally {
-      rmSync(bin, { recursive: true, force: true })
-    }
+    expect(publishedTo(runner, AGENTS_SKILL())).toBe(true)
   })
 
   it('writes what is missing and nothing else', async () => {
@@ -189,7 +149,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     rmSync(CTX())
     rmSync(path.dirname(CTX_SKILL()), { recursive: true })
     const runner = hostRunner()
-    await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
+    await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(read(CTX())).toBe(CONTEXT_SHIM_SCRIPT)
     expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
     expect(publishes(runner)).toHaveLength(2)
@@ -199,12 +159,12 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     await freshHost()
     rmSync(SKILL())
     mkdirSync(SKILL()) // a directory where our file should be
-    const codex = path.join(home, '.codex/AGENTS.md')
+    const codex = AGENTS_SKILL()
     rmSync(codex)
-    symlinkSync(path.join(home, 'no-such-dotfile'), codex) // a dangling dotfile link
+    symlinkSync(path.join(home, 'no-such-dotfile'), codex) // a dangling link where our file should be
     put(SHIM(), 'stale\n')
     const runner = hostRunner()
-    const rh = new RemoteHooks(runner)
+    const rh = new RemoteHooks(runner, allRemote)
     expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
     expect(lstatSync(SKILL()).isDirectory()).toBe(true)
     expect(readdirSync(SKILL())).toEqual([])
@@ -224,7 +184,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     await freshHost(['acc-1'])
     put(`${accountDir('acc-1')}/skills/manage-nodeterm-canvas/SKILL.md`, 'written when the account was added\n')
     const runner = hostRunner()
-    await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1', 'gone', '../escape'], 'connect')
+    await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1', 'gone', '../escape'], 'connect')
     expect(read(`${accountDir('acc-1')}/skills/manage-nodeterm-canvas/SKILL.md`)).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(`${accountDir('acc-1')}/skills/get-linked-context/SKILL.md`)).toBe(buildContextLinkSkillBody(CTX()))
     expect(existsSync(accountDir('gone'))).toBe(false)
@@ -233,53 +193,11 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     expect(publishes(runner)).toHaveLength(1)
   })
 
-  it('writes the copilot block where the installer would: a safe COPILOT_HOME, else ~/.copilot', async () => {
-    const elsewhere = path.join(home, 'copilot-home')
-    await new RemoteHooks(hostRunner({ env: { COPILOT_HOME: elsewhere } })).refreshAgentTools(
-      conn,
-      '/fixture.sock',
-      home,
-      [],
-      'connect'
-    )
-    expect(read(path.join(elsewhere, 'copilot-instructions.md'))).toContain('nodeterm:manage-canvas:start')
-    expect(existsSync(path.join(home, '.copilot'))).toBe(false)
-
-    // A relative COPILOT_HOME is refused by the installer's validator, which falls back to
-    // ~/.copilot; the refresh must land in the same place, never under the refused value. The file
-    // the probe reads there (relative to the session's cwd) even holds a CURRENT block — a probe
-    // taken at its word would call copilot done and ~/.copilot would never get one.
-    const current = read(path.join(elsewhere, 'copilot-instructions.md'))
-    put(path.join(home, 'relative-dir/copilot-instructions.md'), current)
-    const runner = hostRunner({ env: { COPILOT_HOME: 'relative-dir' } })
-    await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
-    expect(read(path.join(home, '.copilot/copilot-instructions.md'))).toContain('nodeterm:manage-canvas:start')
-    expect(read(path.join(home, 'relative-dir/copilot-instructions.md'))).toBe(current)
-
-    // The probe can never vouch for ~/.copilot under that env, so every check re-merges it — and a
-    // merge that changes nothing is NOT a rewrite: no write, no "rewrote" line, outcome current.
-    info.mockClear()
-    const again = hostRunner({ env: { COPILOT_HOME: 'relative-dir' } })
-    expect(await new RemoteHooks(again).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('current')
-    expect(publishes(again)).toHaveLength(0)
-    expect(claimedRewrite()).toBe(false)
-  })
-
-  it('a host whose awk fails has its blocks MERGED instead (which write only on a change) — never a false rewrite', async () => {
-    await freshHost()
-    const bin = mkdtempSync(path.join(tmpdir(), 'nt-bad-awk-'))
-    try {
-      writeFileSync(path.join(bin, 'awk'), '#!/bin/sh\nexit 2\n', { mode: 0o755 })
-      info.mockClear()
-      const runner = hostRunner({ path: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` })
-      expect(await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('current')
-      expect(publishes(runner)).toHaveLength(0)
-      expect(claimedRewrite()).toBe(false)
-      // …and said once, so a host that never confirms by checksum is visible in the log.
-      expect(warn.mock.calls.flat().join('\n')).toMatch(/could not checksum 7 instruction block/)
-    } finally {
-      rmSync(bin, { recursive: true, force: true })
-    }
+  it("puts the shared skills in ~/.agents/skills whatever the host's COPILOT_HOME / GROK_HOME / XDG say", async () => {
+    const env = { COPILOT_HOME: path.join(home, 'cp'), GROK_HOME: path.join(home, 'gk'), XDG_CONFIG_HOME: path.join(home, 'xdg') }
+    await new RemoteHooks(hostRunner({ env }), allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
+    expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
+    for (const d of ['cp', 'gk', 'xdg']) expect(existsSync(path.join(home, d)), d).toBe(false)
   })
 
   it('an account dir removed between the probe and the write is not brought back', async () => {
@@ -294,7 +212,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
         return r
       }
     }
-    await new RemoteHooks(racing).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
+    await new RemoteHooks(racing, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
     expect(existsSync(accountDir('acc-1'))).toBe(false)
     // The system files still landed: a vanished account costs only its own skills.
     expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
@@ -303,14 +221,14 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
   it('a probe that could not run changes nothing', async () => {
     put(SHIM(), 'stale\n')
     const runner = hostRunner({ failProbe: true })
-    expect(await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
+    expect(await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
     expect(read(SHIM())).toBe('stale\n')
     expect(runner.calls).toHaveLength(1)
   })
 
   it('the reuse branch costs nothing once the host is confirmed, and concurrent callers share one probe', async () => {
     const runner = hostRunner()
-    const rh = new RemoteHooks(runner)
+    const rh = new RemoteHooks(runner, allRemote)
     // Two projects on one host connecting at once: ONE probe, one set of writes.
     const [a, b] = await Promise.all([
       rh.refreshAgentTools(conn, '/a.sock', home, [], 'connect'),
@@ -354,7 +272,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
       mkdirSync(SKILL(), { recursive: true }) // a directory where our file should be
       mkdirSync(accountDir('acc-1'), { recursive: true })
       const runner = hostRunner({ path: bin })
-      expect(await new RemoteHooks(runner).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1', 'gone'], 'connect')).toBe(
+      expect(await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1', 'gone'], 'connect')).toBe(
         'failed'
       )
       expect(readdirSync(SKILL())).toEqual([])
@@ -366,7 +284,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     it('writes what it can read without comparison, as every connect did before the check existed', async () => {
       put(SHIM(), 'stale\n')
       const runner = hostRunner({ path: bin })
-      const rh = new RemoteHooks(runner)
+      const rh = new RemoteHooks(runner, allRemote)
       expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('refreshed')
       expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
       expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))

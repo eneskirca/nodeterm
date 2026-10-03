@@ -15,6 +15,7 @@ import { GROK_HOOK_FILE, REMOTE_GROK_HOME_PROBE, resolveReportedGrokHome } from 
 import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
 import { hookServer } from '../../core/agents/hook-server'
 import {
+  stripRemoteSettingsFile,
   updateRemoteSettingsFile,
   updateRemoteSettingsFileResult,
   updateRemoteTextFile,
@@ -44,30 +45,19 @@ import {
  * hosts is a later slice; when it lands, this becomes the REMOTE host's root, not null.
  */
 const REMOTE_IDENTITY_ROOT = null
-import { buildManagedHookCommand, mergeManagedHook, type HookSettings } from '../../core/agents/hooks/install-helper'
+import { buildManagedHookCommand, mergeManagedHook, stripManagedHook, type HookSettings } from '../../core/agents/hooks/install-helper'
 import {
+  stripCodexManagedHooks,
   buildCodexHooksAndTrust,
   buildManagedCommand as buildCodexManagedCommand,
   type HooksConfig as CodexHooksConfig
 } from '../../core/agents/hooks/codex'
 import { upsertHookTrustEntriesInContent, type CodexTrustEntry } from '../../core/agents/hooks/codex-trust'
 import { ensureFullscreenTui } from '../../core/agents/hooks/claude-tui'
-import {
-  CANVAS_CONTROL_MARKERS,
-  CONTROL_SHIM_SCRIPT,
-  buildCanvasControlInstructions,
-  buildCanvasSkillBody,
-  frameCanvasControlBlock,
-  mergeCanvasControlBlock
-} from '../../core/canvas-control-core'
-import {
-  CONTEXT_SHIM_SCRIPT,
-  LINKED_CONTEXT_MARKERS,
-  buildContextLinkSkillBody,
-  buildLinkedContextInstructions,
-  frameInstructionsBlock,
-  mergeInstructionsBlock
-} from '../../core/context-link-core'
+import { CANVAS_CONTROL_MARKERS, CONTROL_SHIM_SCRIPT, buildCanvasSkillBody } from '../../core/canvas-control-core'
+import { CONTEXT_SHIM_SCRIPT, LINKED_CONTEXT_MARKERS, buildContextLinkSkillBody } from '../../core/context-link-core'
+import { canContextLink, canControlCanvas } from '../../shared/agents/config'
+import { stripMarkerBlock } from '../../core/integration-files'
 import { isSafeAccountId } from '../../core/claude-accounts-core'
 import { formatCksum, posixCksum } from '../../core/remote-ssh/posix-cksum'
 import { posixQuote, type SshConnection } from '../../shared/ssh'
@@ -118,6 +108,15 @@ export function openCodeInstructionsTarget(remoteHome: string): { prelude: strin
   }
 }
 
+/** What nodeterm may install on one SSH host, and what it must remove there (issue #744). */
+export interface RemoteIntegrationPlan {
+  install: ReadonlySet<string>
+  remove: ReadonlySet<string>
+  /** The host has an answer (enabled or declined). Undecided ⇒ install nothing, remove nothing. */
+  decided: boolean
+}
+export const NO_REMOTE_INTEGRATION: RemoteIntegrationPlan = { install: new Set(), remove: new Set(), decided: false }
+
 export interface RemoteRunner {
   /** Run one ssh child command (over the master); optional stdin written to the child. */
   run: (args: string[], stdin?: string) => Promise<{ code: number; stdout: string }>
@@ -141,8 +140,9 @@ const AGENT_TARGETS: { agentId: string; config: string; events: readonly Managed
 
 /** Where the host's instruction files live — one marker block per feature in each. */
 type InstructionTarget = 'codex' | 'gemini' | 'copilot' | 'opencode'
-const CANVAS_TARGETS: readonly InstructionTarget[] = ['codex', 'gemini', 'copilot', 'opencode']
-const CONTEXT_TARGETS: readonly InstructionTarget[] = ['codex', 'gemini', 'opencode']
+/** Every instruction file an older build merged a discovery block into; stripped once per host
+ *  per run when the host has an answer (`stripLegacyInstructionBlocks`). */
+const LEGACY_INSTRUCTION_TARGETS: readonly InstructionTarget[] = ['codex', 'gemini', 'copilot', 'opencode']
 
 /**
  * One thing the agent tools put on a host, as DATA. The installers write these and the freshness
@@ -173,40 +173,56 @@ const contextShimPath = (home: string) => `${home}/.nodeterm/context.sh`
 const skillFilePath = (configDir: string, name: string) => `${configDir}/skills/${name}/SKILL.md`
 const accountConfigDir = (home: string, accountId: string) => `${home}/.nodeterm/claude-accounts/${accountId}`
 
-function canvasControlArtifacts(home: string): AgentToolArtifact[] {
+/**
+ * Where the skills go on a HOST, per agent (issue #744 — skills replaced the ~17 KB instruction
+ * blocks that crowded codex's AGENTS.md budget). Claude reads `<config dir>/skills`; every other
+ * agent here reads `~/.agents/skills` WHATEVER its relocation env var says (measured 2026-10-03:
+ * codex 0.156.1 `debug prompt-input`, gemini 0.62.0 `skills list`, opencode 1.18.33 `debug skill`,
+ * grok 1.0.44 `inspect --json`; copilot 1.0.89 documents it in `copilot skill --help`). One
+ * env-independent dir is what a host we cannot introspect cheaply needs: `$COPILOT_HOME`,
+ * `$GROK_HOME` and `$XDG_CONFIG_HOME` on the host say nothing about it.
+ */
+const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok']
+const claudeSkillsRoot = (home: string) => `${home}/.claude`
+const agentsSkillsRoot = (home: string) => `${home}/.agents`
+
+/** The config roots (each gets `skills/<name>/SKILL.md`) one feature's skill goes into, for the
+ *  agents this host may integrate with and that have the feature. */
+function skillRoots(home: string, agents: ReadonlySet<string>, capable: (id: string) => boolean): string[] {
+  const roots: string[] = []
+  if (agents.has('claude') && capable('claude')) roots.push(claudeSkillsRoot(home))
+  if (AGENTS_SKILLS_AGENTS.some((a) => agents.has(a) && capable(a))) roots.push(agentsSkillsRoot(home))
+  return roots
+}
+
+function canvasControlArtifacts(home: string, agents: ReadonlySet<string>): AgentToolArtifact[] {
+  const roots = skillRoots(home, agents, canControlCanvas)
+  if (!roots.length) return []
   const shim = canvasShimPath(home)
-  const block = buildCanvasControlInstructions(shim)
   const g = { group: 'canvas', label: 'canvas control' }
   return [
     { ...g, kind: 'file', path: shim, body: CONTROL_SHIM_SCRIPT, mode: '755' },
-    { ...g, kind: 'file', path: skillFilePath(`${home}/.claude`, 'manage-nodeterm-canvas'), body: buildCanvasSkillBody(shim) },
-    ...CANVAS_TARGETS.map((target): AgentToolArtifact => ({
+    ...roots.map((r): AgentToolArtifact => ({
       ...g,
-      kind: 'block',
-      target,
-      block,
-      framed: frameCanvasControlBlock(block),
-      markers: CANVAS_CONTROL_MARKERS,
-      merge: mergeCanvasControlBlock
+      kind: 'file',
+      path: skillFilePath(r, 'manage-nodeterm-canvas'),
+      body: buildCanvasSkillBody(shim)
     }))
   ]
 }
 
-function contextLinkArtifacts(home: string): AgentToolArtifact[] {
+function contextLinkArtifacts(home: string, agents: ReadonlySet<string>): AgentToolArtifact[] {
+  const roots = skillRoots(home, agents, canContextLink)
+  if (!roots.length) return []
   const shim = contextShimPath(home)
-  const block = buildLinkedContextInstructions(shim)
   const g = { group: 'context', label: 'context link' }
   return [
     { ...g, kind: 'file', path: shim, body: CONTEXT_SHIM_SCRIPT, mode: '755' },
-    { ...g, kind: 'file', path: skillFilePath(`${home}/.claude`, 'get-linked-context'), body: buildContextLinkSkillBody(shim) },
-    ...CONTEXT_TARGETS.map((target): AgentToolArtifact => ({
+    ...roots.map((r): AgentToolArtifact => ({
       ...g,
-      kind: 'block',
-      target,
-      block,
-      framed: frameInstructionsBlock(block),
-      markers: LINKED_CONTEXT_MARKERS,
-      merge: mergeInstructionsBlock
+      kind: 'file',
+      path: skillFilePath(r, 'get-linked-context'),
+      body: buildContextLinkSkillBody(shim)
     }))
   ]
 }
@@ -249,7 +265,30 @@ export class RemoteHooks {
    *  every 45 s per project — do not rebuild ~150 KB of skill text and its checksums each time. */
   private agentToolsPlans = new Map<string, { plan: AgentToolArtifact[]; expected: string[]; setId: string }>()
 
-  constructor(private r: RemoteRunner) {}
+  /** Hosts whose legacy instruction blocks this run already stripped (once per host per run). */
+  private legacyStripped = new Set<string>()
+
+  /**
+   * `integrations` answers, per connection, what nodeterm may install on that HOST and what it must
+   * remove there (issue #744, `remoteIntegrationPlan`). REQUIRED: a RemoteHooks built without an
+   * answer would install by omission. `NO_REMOTE_INTEGRATION` is the fail-closed answer.
+   */
+  constructor(
+    private r: RemoteRunner,
+    private integrations: (conn: SshConnection) => RemoteIntegrationPlan,
+    /** Where we record the bytes of each skill we wrote on a host, so a later decline can remove a
+     *  file an OLDER build wrote (not just this build's exact bytes). Optional. */
+    private receipts?: { get(key: string): string | undefined; set(key: string, v: string | null): void }
+  ) {}
+
+  /** The plan for one connection; a provider that throws installs and removes nothing. */
+  planFor(conn: SshConnection): RemoteIntegrationPlan {
+    try {
+      return this.integrations(conn)
+    } catch {
+      return NO_REMOTE_INTEGRATION
+    }
+  }
 
   /**
    * Is THIS project's reverse hook tunnel still answering? (issue #735)
@@ -413,23 +452,183 @@ export class RemoteHooks {
       // the time we get here, so ONE agent's installer failing must not discard a working setup for
       // every other agent. Each installer already catches its own errors, so today nothing rejects —
       // this is the guard for the next one that forgets to.
-      const installs = await Promise.allSettled([
-        ...AGENT_TARGETS.map((t) => this.installJsonAgentRemote(conn, controlPath, home, remoteDir, t)),
-        // codex: hooks.json merge + config.toml trust (its own shape — not a JSON-settings agent).
-        this.installCodexRemote(conn, controlPath, home, remoteDir),
-        // grok: our own file in its hooks DIRECTORY, under the HOST's $GROK_HOME.
-        this.installGrokRemote(conn, controlPath, home, remoteDir),
-        // copilot: its own file/grammar under the HOST's $COPILOT_HOME hooks directory.
-        this.installCopilotRemote(conn, controlPath, home, remoteDir)
-      ])
-      for (const r of installs) {
-        if (r.status === 'rejected') {
-          console.warn('[remote-hooks] one agent hook install failed; the others are installed', r.reason)
-        }
-      }
+      await this.installAgentHooks(conn, controlPath, home)
       return { endpointPath: endpoint }
     } catch {
       return null // fail-open: agent runs without hooks
+    }
+  }
+
+  /**
+   * Install the managed status hook for every agent this host may integrate with (the consent plan
+   * — nothing for an agent the user has not enabled for this host). CONCURRENT, because the
+   * installers are independent of each other.
+   *
+   * Each one writes its own script under `<remoteDir>/agent-hooks/` and merges its own agent's
+   * config file; no two touch the same remote path, and the only shared statement is an idempotent
+   * `mkdir -p` of that one directory. Run serially they were ~16 remote round trips in a row —
+   * MEASURED at 3.54 s on a 50 ms-RTT link, which is wall-clock every terminal of a switched-to
+   * project used to wait through. The `SshChildGate` (cap 6 per ControlMaster) is what makes the
+   * fan-out safe against a stock host's `MaxSessions`.
+   *
+   * ORDER IS STILL LOAD-BEARING in `setup()`: the tunnel must be verified and the endpoint file
+   * written first, because that file is what every one of these hooks POSTs through.
+   *
+   * `allSettled`, not `all`: ONE agent's installer failing must not discard the others.
+   */
+  async installAgentHooks(conn: SshConnection, controlPath: string, home: string): Promise<void> {
+    const plan = this.planFor(conn)
+    if (!plan.install.size) return
+    const remoteDir = `${home}/.nodeterm`
+    const installs = await Promise.allSettled([
+      ...AGENT_TARGETS.filter((t) => plan.install.has(t.agentId)).map((t) =>
+        this.installJsonAgentRemote(conn, controlPath, home, remoteDir, t)
+      ),
+      // codex: hooks.json merge + config.toml trust (its own shape — not a JSON-settings agent).
+      ...(plan.install.has('codex') ? [this.installCodexRemote(conn, controlPath, home, remoteDir)] : []),
+      // grok: our own file in its hooks DIRECTORY, under the HOST's $GROK_HOME.
+      ...(plan.install.has('grok') ? [this.installGrokRemote(conn, controlPath, home, remoteDir)] : []),
+      // copilot: its own file/grammar under the HOST's $COPILOT_HOME hooks directory.
+      ...(plan.install.has('copilot') ? [this.installCopilotRemote(conn, controlPath, home, remoteDir)] : [])
+    ])
+    for (const r of installs) {
+      if (r.status === 'rejected') {
+        console.warn('[remote-hooks] one agent hook install failed; the others are installed', r.reason)
+      }
+    }
+  }
+
+  /**
+   * Bring a host to its consent answer on the REMOVAL side: strip the legacy instruction blocks
+   * older builds merged (once per host per run, for any answered host), and remove what we wrote
+   * for every agent the plan removes — our hook entries (exact command match; the user's own hooks
+   * survive), our owned hook files, our hook scripts, and our skills (only a file whose bytes are
+   * what this build writes or what we recorded writing; anything else is the user's and is kept and
+   * reported). An unanswered host is left exactly as it is. Never throws.
+   */
+  async applyIntegrationRemovals(
+    conn: SshConnection,
+    controlPath: string,
+    home: string,
+    accountIds: readonly string[],
+    receiptsArg?: { get(key: string): string | undefined; set(key: string, v: string | null): void }
+  ): Promise<{ retained: string[] }> {
+    const receipts = receiptsArg ?? this.receipts
+    const retained: string[] = []
+    const plan = this.planFor(conn)
+    if (!plan.decided || !isSafeRemoteHome(home)) return { retained }
+    try {
+      const hostKey = `${conn.user}@${conn.host}:${conn.port ?? 22}\0${home}`
+      if (!this.legacyStripped.has(hostKey)) {
+        this.legacyStripped.add(hostKey)
+        await this.stripLegacyInstructionBlocks(conn, controlPath, home)
+      }
+      if (!plan.remove.size) return { retained }
+      const run = (cmd: string, stdin?: string) => this.r.run(childArgs(conn, controlPath, cmd), stdin)
+      const remoteDir = `${home}/.nodeterm`
+      const accounts = [...new Set(accountIds.filter(isSafeAccountId))]
+      // Hooks in the JSON-settings agents (claude system + managed account dirs, gemini).
+      for (const t of AGENT_TARGETS) {
+        if (!plan.remove.has(t.agentId)) continue
+        const files = [`${home}/${t.config}`]
+        if (t.agentId === 'claude') for (const id of accounts) files.push(`${accountConfigDir(home, id)}/settings.json`)
+        for (const f of files) {
+          await stripRemoteSettingsFile(f, run, (cfg) => stripManagedHook(cfg as HookSettings, `${t.agentId}.sh`, t.events) as Record<string, unknown>)
+        }
+      }
+      if (plan.remove.has('codex')) {
+        await stripRemoteSettingsFile(`${home}/.codex/hooks.json`, run, (cfg) => (stripCodexManagedHooks(cfg as CodexHooksConfig) ?? cfg) as Record<string, unknown>)
+      }
+      // Files we own outright: grok's and copilot's hook configs, and our hook scripts.
+      const owned: string[] = []
+      if (plan.remove.has('grok')) {
+        const { stdout } = await run(REMOTE_GROK_HOME_PROBE)
+        const grokHome = resolveReportedGrokHome(stdout) ?? `${home}/.grok`
+        owned.push(`${grokHome.replace(/\/$/, '')}/hooks/${GROK_HOOK_FILE}`)
+      }
+      if (plan.remove.has('copilot')) {
+        const copilotHome = await this.resolveCopilotHome(conn, controlPath, home)
+        owned.push(`${copilotHome.replace(/\/$/, '')}/hooks/${COPILOT_HOOK_FILE}`)
+      }
+      for (const a of plan.remove) owned.push(`${remoteDir}/agent-hooks/${a}.sh`)
+      if (owned.length) await run(`rm -f -- ${owned.map(posixQuote).join(' ')}`)
+      // Skills, by exact content.
+      const keep = new Set(plan.install)
+      const removeRoots: string[] = []
+      if (!keep.has('claude')) {
+        removeRoots.push(claudeSkillsRoot(home))
+        for (const id of accounts) removeRoots.push(accountConfigDir(home, id))
+      }
+      if (!AGENTS_SKILLS_AGENTS.some((a) => keep.has(a))) removeRoots.push(agentsSkillsRoot(home))
+      for (const root of removeRoots) {
+        for (const [name, body] of [
+          ['manage-nodeterm-canvas', buildCanvasSkillBody(canvasShimPath(home))],
+          ['get-linked-context', buildContextLinkSkillBody(contextShimPath(home))]
+        ] as const) {
+          const file = skillFilePath(root, name)
+          const receiptKey = `ssh:${conn.user}@${conn.host}:${file}`
+          const sums = [formatCksum(posixCksum(Buffer.from(body, 'utf8')))]
+          const rec = receipts?.get(receiptKey)
+          if (rec) sums.push(rec)
+          const verdict = await this.removeRemoteFileIfOurs(run, file, sums)
+          if (verdict === 'retained') retained.push(file)
+          if (verdict !== 'retained') receipts?.set(receiptKey, null)
+        }
+      }
+      if (retained.length) {
+        console.warn(`[remote-hooks] kept ${retained.length} file(s) on ${conn.user}@${conn.host} that were changed since nodeterm wrote them: ${retained.join(', ')}`)
+      }
+    } catch (e) {
+      warnNotInstalled('the integration clean-up', e)
+    }
+    return { retained }
+  }
+
+  /** `rm` one regular file only when its POSIX cksum is one of `sums`; then drop its now-empty
+   *  directory. A link, a directory, or different bytes are left alone (`retained`). */
+  private async removeRemoteFileIfOurs(
+    run: (cmd: string, stdin?: string) => Promise<{ code: number; stdout: string }>,
+    file: string,
+    sums: readonly string[]
+  ): Promise<'removed' | 'absent' | 'retained'> {
+    const f = posixQuote(file)
+    const cases = sums.map((x) => posixQuote(x)).join('|')
+    const cmd =
+      `if [ ! -e ${f} ] && [ ! -L ${f} ]; then echo ABSENT; ` +
+      `elif [ -L ${f} ] || [ ! -f ${f} ]; then echo RETAINED; ` +
+      `else s=$(cksum < ${f} | awk '{print $1" "$2}'); case "$s" in ${cases}) rm -f -- ${f} && rmdir -- "$(dirname -- ${f})" 2>/dev/null; echo REMOVED;; *) echo RETAINED;; esac; fi`
+    const { stdout } = await run(cmd)
+    const out = stdout.trim()
+    return out.endsWith('REMOVED') ? 'removed' : out === 'ABSENT' ? 'absent' : 'retained'
+  }
+
+  /** Strip both legacy discovery blocks from every instruction file older builds merged them into
+   *  (~17 KB in codex's AGENTS.md, crowding its 32 KiB project-doc budget — #744). Writes only
+   *  when a block was there; an unreadable file is left alone. */
+  private async stripLegacyInstructionBlocks(conn: SshConnection, controlPath: string, home: string): Promise<void> {
+    const strip = (existing: string): string =>
+      stripMarkerBlock(stripMarkerBlock(existing, CANVAS_CONTROL_MARKERS), LINKED_CONTEXT_MARKERS)
+    for (const target of LEGACY_INSTRUCTION_TARGETS) {
+      try {
+        const t =
+          target === 'copilot'
+            ? { pathExpr: posixQuote(`${await this.resolveCopilotHome(conn, controlPath, home)}/copilot-instructions.md`) }
+            : this.instructionTarget(home, target)
+        await updateRemoteTextFile(
+          { pathExpr: t.pathExpr, prelude: t.prelude ?? '', label: t.pathExpr },
+          (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+          (before) => {
+            if (before === null) return null
+            const next = strip(before)
+            // The transaction never publishes an empty file; a file that held only our blocks keeps
+            // one newline (it may be a dotfile link the user owns).
+            return next === before ? null : next.trim() === '' ? '\n' : next
+          },
+          { createMode: '644' }
+        )
+      } catch (e) {
+        warnNotInstalled(`the legacy ${target} instructions clean-up`, e)
+      }
     }
   }
 
@@ -756,6 +955,7 @@ export class RemoteHooks {
     remoteHome: string,
     accountId: string
   ): Promise<void> {
+    if (!this.planFor(conn).install.has('claude')) return
     try {
       const remoteDir = `${remoteHome}/.nodeterm`
       const script = `${remoteDir}/agent-hooks/claude.sh`
@@ -805,10 +1005,9 @@ export class RemoteHooks {
    * instead of telling the user canvas control is unavailable. Fail-open per step otherwise.
    */
   async installCanvasControl(conn: SshConnection, controlPath: string, remoteHome: string): Promise<void> {
-    // codex / gemini / copilot / opencode have no skill system — they get the same marker-delimited
-    // instruction block the desktop merges into their global instruction files. The copilot home is
-    // the HOST's, resolved only when that block is reached.
-    await this.applyAgentTools(conn, controlPath, remoteHome, canvasControlArtifacts(remoteHome), () =>
+    // Skills in each consented agent's skills dir on the host (claude's own, `~/.agents/skills` for
+    // the rest) — nothing for an agent the user has not enabled for this host.
+    await this.applyAgentTools(conn, controlPath, remoteHome, canvasControlArtifacts(remoteHome, this.planFor(conn).install), () =>
       this.resolveCopilotHome(conn, controlPath, remoteHome)
     )
   }
@@ -824,6 +1023,7 @@ export class RemoteHooks {
     remoteHome: string,
     accountId: string
   ): Promise<void> {
+    if (!this.planFor(conn).install.has('claude')) return
     try {
       const shim = `${remoteHome}/.nodeterm/nodeterm.sh`
       // Idempotently (re)write the shim: installCanvasControl may not have run (fail-open) yet.
@@ -851,7 +1051,7 @@ export class RemoteHooks {
    * verified tunnel; fail-open per step.
    */
   async installContextLink(conn: SshConnection, controlPath: string, remoteHome: string): Promise<void> {
-    await this.applyAgentTools(conn, controlPath, remoteHome, contextLinkArtifacts(remoteHome), () =>
+    await this.applyAgentTools(conn, controlPath, remoteHome, contextLinkArtifacts(remoteHome, this.planFor(conn).install), () =>
       this.resolveCopilotHome(conn, controlPath, remoteHome)
     )
   }
@@ -863,6 +1063,7 @@ export class RemoteHooks {
     remoteHome: string,
     accountId: string
   ): Promise<void> {
+    if (!this.planFor(conn).install.has('claude')) return
     try {
       const shim = `${remoteHome}/.nodeterm/context.sh`
       await this.writeRemoteShim(conn, controlPath, shim, CONTEXT_SHIM_SCRIPT)
@@ -936,6 +1137,9 @@ export class RemoteHooks {
                 ...(a.gateDir ? { requireDir: a.gateDir } : {})
               })
               written.push(a)
+              if (a.path.endsWith('/SKILL.md')) {
+                this.receipts?.set(`ssh:${conn.user}@${conn.host}:${a.path}`, formatCksum(posixCksum(Buffer.from(a.body, 'utf8'))))
+              }
             } catch (e) {
               // The account was removed between the probe and this write: nothing to keep current.
               if (!(a.gateDir && e instanceof RemoteWriteError && e.code === REMOTE_WRITE_NO_DIR)) throw e
@@ -997,7 +1201,11 @@ export class RemoteHooks {
       const key = `${conn.user}@${conn.host}:${conn.port ?? 22}\0${remoteHome}`
       const inFlight = this.agentToolsInFlight.get(key)
       if (inFlight) return await inFlight
-      const planned = this.agentToolsPlan(remoteHome, accounts)
+      const install = this.planFor(conn).install
+      // A managed account's skills follow the claude consent for this host.
+      const planned = this.agentToolsPlan(remoteHome, install.has('claude') ? accounts : [], install)
+      // Nothing consented for this host ⇒ nothing to keep current (and nothing to probe).
+      if (!planned.plan.length) return 'skipped'
       if (!agentToolsCheckDue(this.agentToolsState.get(key), planned.setId, now, trigger)) return 'skipped'
       const attempt = this.checkAgentTools(conn, controlPath, remoteHome, planned, trigger, key, now)
       this.agentToolsInFlight.set(key, attempt)
@@ -1014,14 +1222,15 @@ export class RemoteHooks {
 
   private agentToolsPlan(
     remoteHome: string,
-    accounts: readonly string[]
+    accounts: readonly string[],
+    install: ReadonlySet<string>
   ): { plan: AgentToolArtifact[]; expected: string[]; setId: string } {
-    const cacheKey = [remoteHome, ...accounts].join('\0')
+    const cacheKey = [remoteHome, [...install].sort().join(','), ...accounts].join('\0')
     const cached = this.agentToolsPlans.get(cacheKey)
     if (cached) return cached
     const plan = [
-      ...canvasControlArtifacts(remoteHome),
-      ...contextLinkArtifacts(remoteHome),
+      ...canvasControlArtifacts(remoteHome, install),
+      ...contextLinkArtifacts(remoteHome, install),
       ...accounts.flatMap((id) => accountSkillArtifacts(remoteHome, id))
     ]
     const expected = plan.map((a) => formatCksum(posixCksum(Buffer.from(a.kind === 'file' ? a.body : a.framed, 'utf8'))))
@@ -1196,6 +1405,7 @@ export class RemoteHooks {
    * so the path is absolute (a literal `~` would not expand). Fail-open.
    */
   async ensureFullscreenTui(conn: SshConnection, controlPath: string, remoteHome: string): Promise<void> {
+    if (!this.planFor(conn).install.has('claude')) return
     await this.ensureFullscreenTuiAt(conn, controlPath, `${remoteHome}/.claude/settings.json`)
   }
 
@@ -1206,6 +1416,7 @@ export class RemoteHooks {
     remoteHome: string,
     accountId: string
   ): Promise<void> {
+    if (!this.planFor(conn).install.has('claude')) return
     const config = `${remoteHome}/.nodeterm/claude-accounts/${accountId}/settings.json`
     await this.ensureFullscreenTuiAt(conn, controlPath, config)
   }

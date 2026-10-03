@@ -1,9 +1,8 @@
 // Desktop wiring for the managed-Claude-account lifecycle. The lifecycle itself lives in
 // src/core/claude-accounts-service.ts so the Server Edition serves the same four channels
-// (issue #313); this file supplies only the two things core cannot reach — the canvas-control
-// skill installer (which imports electron's `app`) and the SSH project manager.
+// (issue #313); this file supplies only what core cannot reach — the SSH project manager. The
+// account's hook + skills come from the consent lifecycle (core/agent-integrations.ts).
 import { registerClaudeAccountsIpc } from '../core/claude-accounts-service'
-import { installCanvasSkillInto } from './canvas-control'
 import type { SshProjectManager } from './remote-ssh/ssh-project'
 
 // Re-exported for this module's other consumers (claude-usage.ts) so their import path is
@@ -16,7 +15,6 @@ export { claudeConfigDirFor } from '../core/claude-config-dir'
  */
 export function initClaudeAccounts(getSshManager?: () => SshProjectManager | undefined): void {
   registerClaudeAccountsIpc({
-    installSkill: installCanvasSkillInto,
     remote: () => {
       const mgr = getSshManager?.()
       if (!mgr) return undefined

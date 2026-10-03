@@ -247,6 +247,7 @@ export function buildRealApi(
   | 'projectSetup'
   | 'worktree'
   | 'settings'
+  | 'integrations'
   | 'agent'
   | 'userDataDir'
 > {
@@ -425,6 +426,11 @@ export function buildRealApi(
     save: (s: Settings) => client.request(IPC.settingsSave, s) as Promise<void>
   }
 
+  // REAL: both shells boot the consent lifecycle (core/agent-integrations.ts) and register it.
+  const integrations: NodeTerminalApi['integrations'] = {
+    status: () => client.request(IPC.integrationsStatus) as ReturnType<NodeTerminalApi['integrations']['status']>
+  }
+
   const agent: NodeTerminalApi['agent'] = {
     // Deliberately NOT a request: the server registers no env-snapshot handler (a full host-env
     // dump answerable by any authenticated WS client is the PR #195 leak class at the RPC layer).
@@ -454,7 +460,7 @@ export function buildRealApi(
   // `/worktrees/…` at the filesystem root (the server usually runs as root, and git would create it).
   const userDataDir = (): Promise<string> => client.request(IPC.appUserDataDir) as Promise<string>
 
-  return { pty, workspace, projectSettings, projectSetup, worktree, settings, agent, userDataDir }
+  return { pty, workspace, projectSettings, projectSetup, worktree, settings, integrations, agent, userDataDir }
 }
 
 export function buildGitHubApi(

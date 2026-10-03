@@ -13,6 +13,7 @@
 //
 // The `cut` runner below is that failure: every command that carries a body gets NO body — the
 // host sees stdin at EOF, exactly as when the channel dies first. Read commands run untouched.
+import { allRemote } from './remote-hooks.test-plan'
 import { execFileSync, spawn, spawnSync } from 'child_process'
 import {
   chmodSync,
@@ -122,7 +123,7 @@ const warned = (needle: string) =>
 
 describe.skipIf(process.platform === 'win32')('remote writes never leave a truncated file (real /bin/sh)', () => {
   it('a normal connect lands both shims whole, executable, with no temp left behind', async () => {
-    const rh = new RemoteHooks(hostRunner('deliver'))
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     await rh.installCanvasControl(conn, '/fixture.sock', home)
     await rh.installContextLink(conn, '/fixture.sock', home)
 
@@ -131,10 +132,10 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     expect(modeOf('.nodeterm/nodeterm.sh')).toBe(0o755)
     expect(modeOf('.nodeterm/context.sh')).toBe(0o755)
     expect(read('.claude/skills/manage-nodeterm-canvas/SKILL.md')).toContain('name: manage-nodeterm-canvas')
-    expect(read('.codex/AGENTS.md')).toContain('nodeterm:manage-canvas:start')
-    expect(read('.codex/AGENTS.md')).toContain('nodeterm:get-linked-context:start')
-    // opencode's path is expanded by the host shell ($XDG_CONFIG_HOME unset → $HOME/.config).
-    expect(read('.config/opencode/AGENTS.md')).toContain('nodeterm:manage-canvas:start')
+    expect(read('.agents/skills/manage-nodeterm-canvas/SKILL.md')).toContain('name: manage-nodeterm-canvas')
+    expect(read('.agents/skills/get-linked-context/SKILL.md')).toContain('name: get-linked-context')
+    // No global instruction file is created any more (#744).
+    expect(existsSync(path.join(home, '.codex/AGENTS.md'))).toBe(false)
     expect(leftovers()).toEqual([])
   })
 
@@ -143,7 +144,7 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     seed('.nodeterm/context.sh', '#!/bin/sh\necho previous-good-context\n', 0o755)
     seed('.claude/skills/manage-nodeterm-canvas/SKILL.md', 'previous skill\n')
 
-    const rh = new RemoteHooks(hostRunner('cut'))
+    const rh = new RemoteHooks(hostRunner('cut'), allRemote)
     await rh.installCanvasControl(conn, '/fixture.sock', home)
     await rh.installContextLink(conn, '/fixture.sock', home)
 
@@ -160,7 +161,7 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
   it('a channel that dies before the body leaves every agent hook script intact', async () => {
     const agents = ['claude', 'gemini', 'codex', 'grok', 'copilot']
     for (const a of agents) seed(`.nodeterm/agent-hooks/${a}.sh`, `#!/bin/sh\n# previous ${a}\n`, 0o755)
-    const rh = new RemoteHooks(hostRunner('cut'))
+    const rh = new RemoteHooks(hostRunner('cut'), allRemote)
     const remoteDir = `${home}/.nodeterm`
     await rh['installJsonAgentRemote'](conn, '/fixture.sock', home, remoteDir, {
       agentId: 'claude', config: '.claude/settings.json', events: ['Stop']
@@ -184,25 +185,28 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     const agents = '# my own agent notes\n'
     seed('.codex/config.toml', toml, 0o600)
     seed('.codex/hooks.json', hooks)
-    seed('.codex/AGENTS.md', agents)
-    seed('.gemini/GEMINI.md', agents)
+    // An older build's block, which the clean-up strips — a write into the USER's file.
+    const withBlock = `${agents}\n<!-- nodeterm:manage-canvas:start -->\nOLD\n<!-- nodeterm:manage-canvas:end -->\n`
+    seed('.codex/AGENTS.md', withBlock)
+    seed('.gemini/GEMINI.md', withBlock)
     seed('.claude/settings.json', '{"model":"opus"}')
 
     // Only the bodies bound for the user's files are lost; our own scripts and shims land, so the
     // installers really do reach — and publish nothing into — the user's files.
     const usersFile = /(config\.toml|hooks\.json|AGENTS\.md|GEMINI\.md|settings\.json)/
-    const rh = new RemoteHooks(hostRunner((command) => usersFile.test(command)))
+    const rh = new RemoteHooks(hostRunner((command) => usersFile.test(command)), allRemote)
     await rh['installCodexRemote'](conn, '/fixture.sock', home, `${home}/.nodeterm`)
     await rh['installJsonAgentRemote'](conn, '/fixture.sock', home, `${home}/.nodeterm`, {
       agentId: 'claude', config: '.claude/settings.json', events: ['Stop']
     })
     await rh.installCanvasControl(conn, '/fixture.sock', home)
     await rh.installContextLink(conn, '/fixture.sock', home)
+    await rh['stripLegacyInstructionBlocks'](conn, '/fixture.sock', home)
 
     expect(read('.codex/config.toml')).toBe(toml)
     expect(read('.codex/hooks.json')).toBe(hooks)
-    expect(read('.codex/AGENTS.md')).toBe(agents)
-    expect(read('.gemini/GEMINI.md')).toBe(agents)
+    expect(read('.codex/AGENTS.md')).toBe(withBlock)
+    expect(read('.gemini/GEMINI.md')).toBe(withBlock)
     expect(read('.claude/settings.json')).toBe('{"model":"opus"}')
     expect(modeOf('.codex/config.toml')).toBe(0o600)
     expect(leftovers()).toEqual([])
@@ -223,12 +227,15 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     seed('.codex/config.toml', toml, 0o600)
     seed('.codex/hooks.json', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"my-own-hook"}]}]}}')
     // A dotfile-managed AGENTS.md: the link must still be a link afterwards.
-    const real = seed('dotfiles/AGENTS.md', '# my own agent notes\n')
+    const real = seed(
+      'dotfiles/AGENTS.md',
+      '# my own agent notes\n\n<!-- nodeterm:get-linked-context:start -->\nOLD\n<!-- nodeterm:get-linked-context:end -->\n'
+    )
     symlinkSync(real, path.join(home, '.codex', 'AGENTS.md'))
 
-    const rh = new RemoteHooks(hostRunner('deliver'))
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     await rh['installCodexRemote'](conn, '/fixture.sock', home, `${home}/.nodeterm`)
-    await rh.installCanvasControl(conn, '/fixture.sock', home)
+    await rh['stripLegacyInstructionBlocks'](conn, '/fixture.sock', home)
 
     const nextToml = read('.codex/config.toml')
     expect(nextToml.startsWith(toml)).toBe(true)
@@ -240,23 +247,23 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     expect(read('.nodeterm/agent-hooks/codex.sh')).toContain('#!/bin/sh')
     expect(modeOf('.nodeterm/agent-hooks/codex.sh')).toBe(0o755)
     expect(lstatSync(path.join(home, '.codex', 'AGENTS.md')).isSymbolicLink()).toBe(true)
-    expect(readFileSync(real, 'utf8')).toMatch(/^# my own agent notes\n[\s\S]*nodeterm:manage-canvas:start/)
+    // The legacy block is stripped through the link; the user's text is all that is left.
+    expect(readFileSync(real, 'utf8')).toBe('# my own agent notes\n')
     expect(leftovers()).toEqual([])
   })
 
-  it('an unreadable instruction file is left alone, not read as empty and replaced by our block', async () => {
-    // The old `cat file 2>/dev/null || true` turned a read failure into '' and then wrote our block
-    // alone over the user's file. A directory in the file's place is the portable read failure.
+  it('an unreadable instruction file is left alone by the legacy clean-up', async () => {
+    // A directory in the file's place is the portable read failure; it must not be read as empty.
     mkdirSync(path.join(home, '.gemini', 'GEMINI.md'), { recursive: true })
-    const rh = new RemoteHooks(hostRunner('deliver'))
-    await rh.installCanvasControl(conn, '/fixture.sock', home)
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
+    await rh['stripLegacyInstructionBlocks'](conn, '/fixture.sock', home)
     expect(lstatSync(path.join(home, '.gemini', 'GEMINI.md')).isDirectory()).toBe(true)
     expect(warned('Remote file unchanged')).toBe(true)
   })
 
   it('an empty body is refused before any ssh', async () => {
     const runner = hostRunner('deliver')
-    const rh = new RemoteHooks(runner)
+    const rh = new RemoteHooks(runner, allRemote)
     await expect(
       rh['writeOwnedFile'](conn, '/fixture.sock', `${home}/.nodeterm/nodeterm.sh`, '', { mode: '755' })
     ).rejects.toThrow(/empty body/)
@@ -267,7 +274,7 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
 
 describe.skipIf(process.platform === 'win32')('every mode-bearing caller publishes on a macOS host (non-permuting chmod)', () => {
   it('setup(): the hook endpoint lands 0600, every agent hook script 0755', async () => {
-    const rh = new RemoteHooks(hostRunner('deliver'))
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     const res = await rh.setup('p1', conn, '/fixture.sock', { port: 51234, token: 'tok', version: '1' })
     // On a host whose chmod does not permute, `chmod 600 -- <temp>` failed the endpoint write, so
     // setup returned null and the host got no status hooks, canvas control or context link at all.
@@ -282,7 +289,7 @@ describe.skipIf(process.platform === 'win32')('every mode-bearing caller publish
   })
 
   it('node tokens land 0600', async () => {
-    const rh = new RemoteHooks(hostRunner('deliver'))
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     await rh.writeNodeTokens(conn, '/fixture.sock', home, ['n-1', 'n-2'], (id) => `token-${id}`)
     for (const id of ['n-1', 'n-2']) {
       expect(read(`.nodeterm/node-tokens/${id}`)).toBe(`token-${id}\n`)
@@ -291,7 +298,7 @@ describe.skipIf(process.platform === 'win32')('every mode-bearing caller publish
   })
 
   it('the canvas/context shims and a managed-account hook script land 0755', async () => {
-    const rh = new RemoteHooks(hostRunner('deliver'))
+    const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     await rh.installAgentTools(conn, '/fixture.sock', home)
     await rh.installIntoAccountDir(conn, '/fixture.sock', home, 'acc')
     expect(modeOf('.nodeterm/nodeterm.sh')).toBe(0o755)
@@ -379,17 +386,16 @@ describe.skipIf(process.platform === 'win32')('canvas control and context link s
   }
 
   // ~25 real shell processes per host; the budget is for a loaded CI runner, not the work.
-  it('a fresh connect leaves BOTH blocks in every shared file (8 fresh hosts)', { timeout: 60_000 }, async () => {
-    const shared = ['.codex/AGENTS.md', '.gemini/GEMINI.md', '.config/opencode/AGENTS.md']
+  it('a fresh connect leaves BOTH skills in both dirs (8 fresh hosts)', { timeout: 60_000 }, async () => {
+    const shared = ['.claude/skills', '.agents/skills']
     const missing: string[] = []
     for (let i = 0; i < 8; i++) {
       const h = mkdtempSync(path.join(tmpdir(), 'nt-rw-fresh-'))
       try {
-        await new RemoteHooks(asyncHostRunner(h)).installAgentTools(conn, '/fixture.sock', h)
+        await new RemoteHooks(asyncHostRunner(h), allRemote).installAgentTools(conn, '/fixture.sock', h)
         for (const f of shared) {
-          const text = readFileSync(path.join(h, f), 'utf8')
-          if (!text.includes('nodeterm:manage-canvas:start')) missing.push(`${i}:${f}:canvas`)
-          if (!text.includes('nodeterm:get-linked-context:start')) missing.push(`${i}:${f}:context`)
+          if (!existsSync(path.join(h, f, 'manage-nodeterm-canvas/SKILL.md'))) missing.push(`${i}:${f}:canvas`)
+          if (!existsSync(path.join(h, f, 'get-linked-context/SKILL.md'))) missing.push(`${i}:${f}:context`)
         }
       } finally {
         rmSync(h, { recursive: true, force: true })
@@ -400,17 +406,16 @@ describe.skipIf(process.platform === 'win32')('canvas control and context link s
 
   // The connect path now goes through the freshness check, which writes the same artifacts through
   // the same applier, group by group — the same property, for the chain that actually runs.
-  it('the freshness check leaves BOTH blocks in every shared file (8 fresh hosts)', { timeout: 60_000 }, async () => {
-    const shared = ['.codex/AGENTS.md', '.gemini/GEMINI.md', '.config/opencode/AGENTS.md']
+  it('the freshness check leaves BOTH skills in both dirs (8 fresh hosts)', { timeout: 60_000 }, async () => {
+    const shared = ['.claude/skills', '.agents/skills']
     const missing: string[] = []
     for (let i = 0; i < 8; i++) {
       const h = mkdtempSync(path.join(tmpdir(), 'nt-rw-fresh-'))
       try {
-        await new RemoteHooks(asyncHostRunner(h)).refreshAgentTools(conn, '/fixture.sock', h, [], 'connect')
+        await new RemoteHooks(asyncHostRunner(h), allRemote).refreshAgentTools(conn, '/fixture.sock', h, [], 'connect')
         for (const f of shared) {
-          const text = readFileSync(path.join(h, f), 'utf8')
-          if (!text.includes('nodeterm:manage-canvas:start')) missing.push(`${i}:${f}:canvas`)
-          if (!text.includes('nodeterm:get-linked-context:start')) missing.push(`${i}:${f}:context`)
+          if (!existsSync(path.join(h, f, 'manage-nodeterm-canvas/SKILL.md'))) missing.push(`${i}:${f}:canvas`)
+          if (!existsSync(path.join(h, f, 'get-linked-context/SKILL.md'))) missing.push(`${i}:${f}:context`)
         }
       } finally {
         rmSync(h, { recursive: true, force: true })

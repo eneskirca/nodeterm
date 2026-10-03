@@ -143,3 +143,25 @@ export async function updateRemoteSettingsFile(
 ): Promise<boolean> {
   return (await updateRemoteSettingsFileResult(file, run, update)) === 'written'
 }
+
+/** Like `updateRemoteSettingsFileResult` for a REMOVAL: a missing file stays missing (never
+ *  created as `{}`), an unparseable one is left alone, and nothing is written when the update
+ *  changes nothing. */
+export function stripRemoteSettingsFile(
+  file: string,
+  run: SettingsRunner,
+  update: (config: Record<string, unknown>) => Record<string, unknown>
+): Promise<RemoteTextResult> {
+  return updateRemoteTextFile(file, run, (before) => {
+    if (before === null || before.trim() === '') return null
+    let config: Record<string, unknown>
+    try {
+      config = parseSettings(before)
+    } catch {
+      return null
+    }
+    const original = JSON.stringify(config)
+    const updated = update(config)
+    return JSON.stringify(updated) === original ? null : JSON.stringify(updated, null, 2)
+  })
+}

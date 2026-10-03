@@ -93,7 +93,10 @@ export function mergeInstructionsBlock(existing: string, block: string): string 
   return existing + sep + full + '\n'
 }
 
-/** The instructions body telling codex/gemini how to read linked-node context. */
+/** The instructions body telling codex/gemini how to read linked-node context.
+ *  NOT INSTALLED since #744: every agent now gets the get-linked-context SKILL in its own skills
+ *  dir (core/agent-integrations.ts); older builds' copies of this block are stripped. Kept only
+ *  until its parity tests move to the skill body (follow-up). */
 export function buildLinkedContextInstructions(shimPath: string): string {
   return [
     '# Reading linked nodeterm nodes (get-linked-context)',
@@ -358,7 +361,7 @@ description: Read the conversation/transcript, a recent summary, or the terminal
 
 # Get linked context
 
-On the nodeterm canvas, this Claude session may be connected to other agent nodes (Claude, Codex or Gemini) by a
+On the nodeterm canvas, this session may be connected to other agent nodes (Claude, Codex, Gemini, opencode or Grok) by a
 context-link edge. When you are linked, you can READ the other node's context on demand by
 running the local CLI shim below. Nothing is pushed to you automatically — pull what you need.
 

@@ -233,6 +233,9 @@ const api: NodeTerminalApi = {
     load: () => ipcRenderer.invoke(IPC.settingsLoad),
     save: (settings) => ipcRenderer.invoke(IPC.settingsSave, settings)
   },
+  integrations: {
+    status: () => ipcRenderer.invoke(IPC.integrationsStatus)
+  },
   githubIssues: {
     subscribe: (projectId) => ipcRenderer.invoke(IPC.githubIssuesSubscribe, { projectId }),
     unsubscribe: async (projectId) => {

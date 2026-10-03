@@ -181,8 +181,7 @@ describe('initServerCanvasControl', () => {
       codexSharedIdentity: async () => true,
       // Pinned, never this machine's codex: the line depends on what the CLI advertises. `true`
       // also proves the Server Edition's opens carry `--no-daemon` (shared/agents/codex-daemon.ts).
-      codexCaps: async () => ({ approvalValues: null, noDaemon: true }),
-      installAgentIntegrations: false
+      codexCaps: async () => ({ approvalValues: null, noDaemon: true })
     })
 
     const shim = path.join(dataDir, 'canvas-control', 'nodeterm.sh')
@@ -191,11 +190,6 @@ describe('initServerCanvasControl', () => {
     expect(shimBody).toContain('CODEX_THREAD_ID')
     expect(shimBody).toContain(path.join(dataDir, 'codex-thread-nodes'))
     expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
-    const accountDir = path.join(dataDir, 'test-account')
-    runtime.installSkillInto(accountDir)
-    expect(
-      fs.readFileSync(path.join(accountDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md'), 'utf8')
-    ).toContain(shim)
 
     const opened = await runtime.handler({
       verb: 'open-agent',
@@ -328,8 +322,7 @@ describe('initServerCanvasControl', () => {
       workspaceStore: store,
       ptyManager: pty,
       settings: () => ({ ...DEFAULT_SETTINGS }),
-      boardLog: { append: async () => false },
-      installAgentIntegrations: false
+      boardLog: { append: async () => false }
     })
 
     const opened = await runtime.handler({
@@ -421,8 +414,7 @@ describe('initServerCanvasControl', () => {
       workspaceStore: store,
       ptyManager: pty,
       settings: () => ({ ...DEFAULT_SETTINGS }),
-      boardLog: { append: async () => false },
-      installAgentIntegrations: false
+      boardLog: { append: async () => false }
     })
     fake.sent.length = 0
 

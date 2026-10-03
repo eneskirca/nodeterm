@@ -1,3 +1,4 @@
+import { allRemote } from './remote-hooks.test-plan'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { spawnSync } from 'child_process'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
@@ -22,7 +23,7 @@ for (const account of [false, true]) {
         const result = spawnSync('/bin/sh', ['-c', command], { input: stdin, encoding: 'utf8' })
         if (result.error) throw result.error
         return { code: result.status ?? 1, stdout: result.stdout }
-      } })
+      } }, allRemote)
       if (account) await rh.installIntoAccountDir(conn, '/fixture.sock', home, 'acc')
       else await rh['installJsonAgentRemote'](conn, '/fixture.sock', home, `${home}/.nodeterm`, {
         agentId: 'claude', config: '.claude/settings.json', events: ['Stop']

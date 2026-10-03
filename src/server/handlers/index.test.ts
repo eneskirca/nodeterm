@@ -5,6 +5,7 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { ServerPlatform } from '../platform-server'
 import { registerCoreHandlers } from './index'
+import { createIntegrationLifecycle, registerIntegrationLifecycle } from '../../core/agent-integrations'
 import { IPC } from '../../shared/ipc'
 import { DEFAULT_SETTINGS, type GitStatus } from '../../shared/types'
 import { initPlatform, resetPlatformForTests } from '../../core/platform'
@@ -15,7 +16,8 @@ import { projectImagesDir } from '../../core/canvas-images'
 // them here instead of running them: the real installer writes into the USER's `~/.nodeterm`, and
 // a unit test has no business touching the machine it runs on.
 const hookInstalls: string[] = []
-vi.mock('../../core/agents/hooks/claude', () => ({
+vi.mock('../../core/agents/hooks/claude', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../core/agents/hooks/claude')>()),
   installClaudeHooksInto: (dir: string) => {
     hookInstalls.push(dir)
   },
@@ -163,7 +165,16 @@ describe('registerCoreHandlers (download tickets)', () => {
 describe('registerCoreHandlers (managed Claude accounts, #313)', () => {
   beforeEach(() => {
     hookInstalls.length = 0
+    // The account's hook comes from the consent lifecycle (#744) — claude enabled here.
+    registerIntegrationLifecycle(
+      createIntegrationLifecycle({
+        settings: () => ({ ...DEFAULT_SETTINGS, agentIntegrations: { agents: { claude: 'enabled' }, origin: 'asked' } }),
+        userDataDir: () => repo,
+        shims: () => ({ context: path.join(repo, 'context-links', 'context.sh') })
+      })
+    )
   })
+  afterEach(() => registerIntegrationLifecycle(null))
 
   it('add() creates the config dir under this host userData and remove() deletes it', async () => {
     const added = (await call(IPC.claudeAccountsAdd)) as { id: string; configDir: string }

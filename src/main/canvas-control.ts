@@ -1,38 +1,27 @@
-// Installs the outbound canvas-control CLI + per-agent discovery docs. Mirrors
-// context-link.ts: a self-contained POSIX-sh CLI (nodeterm.sh) POSTs to the hook server's
-// /control/* routes; a Claude skill / codex-gemini instruction blocks tell the agent how +
-// when to call it. The CLI no-ops unless NODETERM_CANVAS_CONTROL is set.
+// Installs the outbound canvas-control CLI (nodeterm.sh) under userData. A self-contained POSIX-sh
+// CLI POSTs to the hook server's /control/* routes; it no-ops unless NODETERM_CANVAS_CONTROL is set.
 //
-// The SSH counterpart is RemoteHooks.installCanvasControl. Both use the same machine-neutral
-// body, but the LOCAL installer prepends the shared-Codex thread resolver with this machine's
-// ownership-record path; a desktop path must never be baked into the remote copy.
+// Discovery (the manage-nodeterm-canvas skill in each agent's skills dir) is NOT written here: it is
+// the consent lifecycle's (`core/agent-integrations.ts`, issue #744), the one place that decides what
+// nodeterm may write into user-owned agent configuration.
+//
+// The SSH counterpart is RemoteHooks.installCanvasControl. Both use the same machine-neutral body,
+// but the LOCAL shim prepends the shared-Codex thread resolver with this machine's ownership-record
+// path; a desktop path must never be baked into the remote copy.
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import { app } from 'electron'
-import {
-  buildControlShimScript,
-  buildCanvasControlInstructions,
-  buildCanvasSkillBody,
-  mergeCanvasControlBlock
-} from '../core/canvas-control-core'
+import { buildControlShimScript } from '../core/canvas-control-core'
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
 import { writeManagedHookFileAtomic } from '../core/agents/hooks/install-helper'
-import { mergeInstructionFile } from '../core/agents/hooks/settings-file'
-import { opencodeConfigDir } from '../core/agents/hooks/opencode'
-import { copilotHomeDir } from '../core/agents/hooks/copilot'
 
 function dir(): string {
   return path.join(app.getPath('userData'), 'canvas-control')
 }
-function shimPath(): string {
+
+/** The shim the canvas skill points at. */
+export function canvasControlShimPath(): string {
   return path.join(dir(), 'nodeterm.sh')
-}
-function skillPathIn(configDir: string): string {
-  return path.join(configDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md')
-}
-function skillBody(): string {
-  return buildCanvasSkillBody(shimPath())
 }
 
 function writeCliFiles(): void {
@@ -40,7 +29,7 @@ function writeCliFiles(): void {
   fs.mkdirSync(d, { recursive: true })
   // Temp + rename, never a truncating write: agents execute this file, and a shim caught half
   // written is a canvas call that exits 0 having done nothing.
-  writeManagedHookFileAtomic(shimPath(), buildControlShimScript(codexThreadIdentityRoot()), undefined, 0o755)
+  writeManagedHookFileAtomic(canvasControlShimPath(), buildControlShimScript(codexThreadIdentityRoot()), undefined, 0o755)
   // Sweep the retired Electron-as-Node CLI off upgraders' disks — the shim no longer execs it,
   // so it would sit there forever pointing at a binary path that moves with every app update.
   try {
@@ -50,48 +39,9 @@ function writeCliFiles(): void {
   }
 }
 
-/**
- * Install (or refresh) the canvas-control skill into a Claude config dir's `skills/`.
- * Claude Code resolves user skills relative to CLAUDE_CONFIG_DIR, so managed accounts
- * (config dir = {userData}/claude-accounts/<id>) need their own copy — mirroring how the
- * managed status hook is merged into each account dir's settings.json. Best-effort.
- */
-export function installCanvasSkillInto(configDir: string): void {
-  const p = skillPathIn(configDir)
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    writeManagedHookFileAtomic(p, skillBody())
-  } catch (e) {
-    console.warn('[canvas-control] skill install failed', p, e)
-  }
-}
-
-// Codex/Gemini/Copilot/opencode use global instruction files here — merge the canvas-control block
-// instruction files (marker-delimited, idempotent, other content preserved). Same pattern
-// as context-link's get-linked-context block. The CLI env-gate keeps the block inert in
-// the user's normal (non-nodeterm) codex/gemini/opencode sessions.
-function installAgentInstructions(): void {
-  const block = buildCanvasControlInstructions(shimPath())
-  const targets = [
-    path.join(os.homedir(), '.codex', 'AGENTS.md'),
-    path.join(os.homedir(), '.gemini', 'GEMINI.md'),
-    path.join(copilotHomeDir(), 'copilot-instructions.md'),
-    path.join(opencodeConfigDir(), 'AGENTS.md')
-  ]
-  for (const p of targets) {
-    // The user's file: merged through the guarded transaction (link and mode kept, never read an
-    // unreadable file as empty and replace it with our block).
-    if (mergeInstructionFile(p, (existing) => mergeCanvasControlBlock(existing, block)) === 'failed') {
-      console.warn('[canvas-control] instructions install failed', p)
-    }
-  }
-}
-
 export function initCanvasControl(): void {
   try {
     writeCliFiles()
-    installCanvasSkillInto(path.join(os.homedir(), '.claude'))
-    installAgentInstructions()
   } catch (e) {
     console.error('[canvas-control] setup failed', e)
   }

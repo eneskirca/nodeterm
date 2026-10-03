@@ -58,8 +58,13 @@ import { NumberField } from '@renderer/ui/NumberField'
 import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
+import { IntegrationSettings } from '../IntegrationConsent'
 
 const ROWS = {
+  integrations: {
+    title: 'Agent integrations',
+    keywords: ['integration', 'consent', 'hook', 'hooks', 'skill', 'skills', 'install', 'opt out', 'decline', 'clean up', 'ssh', 'host', 'agents.md', 'gemini.md']
+  },
   agents: {
     title: 'Agents',
     keywords: ['agent', 'claude', 'codex', 'gemini', 'enable', 'disable', 'default']
@@ -455,6 +460,10 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
       isActive={isActive}
       searchEntries={ENTRIES}
     >
+      <SearchableRow {...ROWS.integrations}>
+        <FieldRow label="Agent integrations" description="What nodeterm may write into each agent CLI’s own configuration, on this machine and on each SSH host." control={null} />
+        <IntegrationSettings />
+      </SearchableRow>
       <SearchableRow {...ROWS.agents}>
         <div className="space-y-2">
           {rows.map((row) => {
