@@ -660,6 +660,7 @@ import {
   recentlyClosedProjects,
   stateToReopenSnapshot
 } from '../lib/closedHistory'
+import { projectSwitchHint } from '../lib/projectSwitchHint'
 import { uuid } from '../lib/uuid'
 import { CANVAS_LAYOUTS_CAP, findLayoutByName, type CanvasLayout } from '@shared/canvas-layout'
 import { applyLayout, captureLayout } from '../lib/canvasLayout'
@@ -18148,19 +18149,23 @@ export function Canvas() {
     store.projects
       // Skip unavailable projects: activating one lets edits commit to the store but they're
       // dropped on save (the ref emits header-only), so switching there silently loses work.
-      // The TabBar already guards its own click; this covers the palette (⌘K) path.
-      .filter((p) => p.id !== store.activeProjectId && !p.unavailable)
-      .forEach((p) =>
+      // The TabBar already guards its own click; this covers the palette (⌘K) path. A closed team
+      // tab is skipped too (its reopen is refused), and the hint tells a team tab apart from the
+      // SSH project it was shared from, which carries the same name.
+      .filter((p) => p.id !== store.activeProjectId)
+      .forEach((p) => {
+        const hint = projectSwitchHint(p)
+        if (hint === null) return
         cmds.push({
           id: `proj-${p.id}`,
           label: `Switch to ${p.name}`,
-          hint: 'project',
+          hint,
           icon: <IconSwitch />,
           // A closed project is REOPENED (tab restored), never activated behind a hidden tab — and
           // the reopen is the guarded one, which asks first for a project handed to a hosted team.
           run: () => (p.closed ? void reopenProject(p.id) : switchProject(p.id))
         })
-      )
+      })
     const cs = useAgentStatus.getState()
     // Labels replaced free-text tags — search matches label NAMES now (unified system).
     const searchKanban = useProjects.getState().getProject(useProjects.getState().activeProjectId)?.kanban
