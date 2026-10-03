@@ -17,16 +17,19 @@ import {
   planBulkRestart,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
+  BULK_RESTART_CONCURRENCY,
   registerAgentHibernate,
   registerAgentRestart,
   restartEligibility,
   restartSessionId,
+  runBoundedBulkRestart,
   settleRecycledNode,
   settleRestart,
   summarizeBulkRestart,
   summarizeOutcomes,
   type AgentHibernateFns,
   type BulkRestartCandidate,
+  type BulkRestartTask,
   type ExitPhaseOutcome,
   type RestartOutcome
 } from './agent-restart'
@@ -1539,6 +1542,134 @@ describe('summarizeBulkRestart', () => {
     expect(summarizeBulkRestart(outcomes, { working: 0, noSession: 0 })).toBe(
       summarizeOutcomes(outcomes, { working: 0, noSession: 0 })
     )
+  })
+})
+
+describe('runBoundedBulkRestart (issue #849)', () => {
+  it('handles an empty task list immediately', async () => {
+    const progress: [number, number][] = []
+    const outcomes = await runBoundedBulkRestart([], {
+      onProgress: (done, total) => progress.push([done, total])
+    })
+    expect(outcomes).toEqual([])
+    expect(progress).toEqual([])
+  })
+
+  it('preserves outcome order and streams monotonic progress updates', async () => {
+    const progress: [number, number][] = []
+    const tasks: BulkRestartTask[] = [
+      {
+        id: 'n1',
+        run: async () => {
+          await new Promise((r) => setTimeout(r, 20))
+          return 'restarted'
+        }
+      },
+      {
+        id: 'n2',
+        run: async () => {
+          await new Promise((r) => setTimeout(r, 5))
+          return 'exit-timeout'
+        }
+      },
+      {
+        id: 'n3',
+        run: async () => {
+          await new Promise((r) => setTimeout(r, 10))
+          return 'not-eligible'
+        }
+      }
+    ]
+
+    const outcomes = await runBoundedBulkRestart(tasks, {
+      concurrency: 2,
+      onProgress: (done, total) => progress.push([done, total])
+    })
+
+    expect(outcomes).toEqual(['restarted', 'exit-timeout', 'not-eligible'])
+    expect(progress).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 3]
+    ])
+  })
+
+  it('enforces concurrency bounds per host / ControlMaster lane', async () => {
+    let currentLocalInFlight = 0
+    let maxLocalInFlight = 0
+    let currentSshInFlight = 0
+    let maxSshInFlight = 0
+
+    const tasks: BulkRestartTask[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `local-${i}`,
+        hostKey: undefined,
+        run: async () => {
+          currentLocalInFlight++
+          maxLocalInFlight = Math.max(maxLocalInFlight, currentLocalInFlight)
+          await new Promise((r) => setTimeout(r, 10))
+          currentLocalInFlight--
+          return 'restarted' as RestartOutcome
+        }
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `ssh-${i}`,
+        hostKey: 'user@box.example.com',
+        run: async () => {
+          currentSshInFlight++
+          maxSshInFlight = Math.max(maxSshInFlight, currentSshInFlight)
+          await new Promise((r) => setTimeout(r, 10))
+          currentSshInFlight--
+          return 'restarted' as RestartOutcome
+        }
+      }))
+    ]
+
+    const outcomes = await runBoundedBulkRestart(tasks, { concurrency: BULK_RESTART_CONCURRENCY })
+
+    expect(outcomes).toHaveLength(20)
+    expect(outcomes.every((o) => o === 'restarted')).toBe(true)
+    expect(maxLocalInFlight).toBeLessThanOrEqual(BULK_RESTART_CONCURRENCY)
+    expect(maxLocalInFlight).toBeGreaterThan(1)
+    expect(maxSshInFlight).toBeLessThanOrEqual(BULK_RESTART_CONCURRENCY)
+    expect(maxSshInFlight).toBeGreaterThan(1)
+  })
+
+  it('catches thrown errors and maps them to exit-timeout without failing other tasks', async () => {
+    const tasks: BulkRestartTask[] = [
+      {
+        id: 'n1',
+        run: async () => 'restarted'
+      },
+      {
+        id: 'n2',
+        run: async () => {
+          throw new Error('connection dropped')
+        }
+      },
+      {
+        id: 'n3',
+        run: async () => 'restarted'
+      }
+    ]
+
+    const outcomes = await runBoundedBulkRestart(tasks)
+    expect(outcomes).toEqual(['restarted', 'exit-timeout', 'restarted'])
+  })
+
+  it('is resilient to throwing onProgress callbacks', async () => {
+    const tasks: BulkRestartTask[] = [
+      { id: 'n1', run: async () => 'restarted' },
+      { id: 'n2', run: async () => 'restarted' }
+    ]
+
+    const outcomes = await runBoundedBulkRestart(tasks, {
+      onProgress: () => {
+        throw new Error('render error in notice subscriber')
+      }
+    })
+
+    expect(outcomes).toEqual(['restarted', 'restarted'])
   })
 })
 

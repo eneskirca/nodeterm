@@ -410,9 +410,11 @@ import {
   clearEnvEligibility,
   restartEligibility,
   restartSessionId,
+  runBoundedBulkRestart,
   settleRestart,
   summarizeBulkRestart,
   type BulkRestartPlan,
+  type BulkRestartTask,
   type RestartOutcome
 } from '../terminal/agent-restart'
 import {
@@ -8608,19 +8610,33 @@ export function Canvas() {
       onConfirm: () => {
         setConfirm(null)
         void (async () => {
-          const outcomes: RestartOutcome[] = []
-          // Sequential on purpose (spec): each restart types into its own pane and then verifies
-          // the echo of the resume line, and the whole canvas shares one PTY transport. The user
-          // gets ONE notice at the end rather than a progress UI — the run is a handful of nodes
-          // and each is visibly restarting in its own pane meanwhile.
-          for (const id of plan.runnable) {
-            const fn = agentRestartFn(id)
-            // Unmounted since the plan was made: 'not-eligible' is folded into the no-session
-            // skips by summarizeBulkRestart, so it is still counted. `settleRestart` turns a
-            // REJECTED restart into a counted failure — an escaping rejection here would abandon
-            // every node after it and swallow the summary the user confirmed this run for.
-            outcomes.push(fn ? await settleRestart(fn) : 'not-eligible')
-          }
+          const total = plan.runnable.length
+          setNotice({ kind: 'info', text: `Restarting 0/${total}…`, sticky: true })
+
+          const activeProject = useProjects.getState().getProject(useProjects.getState().activeProjectId)
+          const projectHostKey = activeProject?.ssh ? sshHostKey(activeProject.ssh.server) : undefined
+
+          const tasks: BulkRestartTask[] = plan.runnable.map((id) => {
+            const n = nodesRef.current.find((node) => node.id === id)
+            const nodeHostKey = n?.data.ssh ? sshHostKey(n.data.ssh as SshServer) : projectHostKey
+            return {
+              id,
+              hostKey: nodeHostKey,
+              run: async () => {
+                const fn = agentRestartFn(id)
+                return fn ? await settleRestart(fn) : 'not-eligible'
+              }
+            }
+          })
+
+          const outcomes = await runBoundedBulkRestart(tasks, {
+            onProgress: (completed, totalCount) => {
+              if (completed < totalCount) {
+                setNotice({ kind: 'info', text: `Restarting ${completed}/${totalCount}…`, sticky: true })
+              }
+            }
+          })
+
           // A line reporting failures must not fade itself out from under the user; a clean run
           // may. Same rule as the per-node notices above.
           setNotice({

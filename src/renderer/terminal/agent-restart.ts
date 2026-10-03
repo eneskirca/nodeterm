@@ -857,3 +857,84 @@ export function summarizeOutcomes(
   if (skipped.noSession) parts.push(`${skipped.noSession} skipped (no session)`)
   return parts.join(' · ')
 }
+
+/** Maximum concurrent agent restarts permitted per host / ControlMaster lane. */
+export const BULK_RESTART_CONCURRENCY = 4
+
+export interface BulkRestartTask {
+  id: string
+  /** Host / ControlMaster identity; defaults to 'local' when unspecified. */
+  hostKey?: string
+  run: () => Promise<RestartOutcome>
+}
+
+export interface BulkRestartRunnerOptions {
+  /** Concurrency ceiling per hostKey lane. Defaults to BULK_RESTART_CONCURRENCY (4). */
+  concurrency?: number
+  /** Progress callback invoked each time a task settles. */
+  onProgress?: (completed: number, total: number) => void
+}
+
+/**
+ * Execute bulk restarts with bounded concurrency per host / ControlMaster lane (issue #849).
+ *
+ * Why: restarting a large canvas sequentially takes minutes with zero progress feedback.
+ * Running every restart unbounded bursts SSH ControlMaster connections, which causes
+ * socket timeouts and dropped sessions (incident #778).
+ *
+ * This runner:
+ *  - Groups runnable tasks into lanes by hostKey (local vs SSH host);
+ *  - Runs up to `concurrency` (default 4) tasks per lane in parallel;
+ *  - Invokes `onProgress(completed, total)` after each node settles;
+ *  - Preserves outcome ordering matching the input task array.
+ */
+export async function runBoundedBulkRestart(
+  tasks: BulkRestartTask[],
+  options?: BulkRestartRunnerOptions
+): Promise<RestartOutcome[]> {
+  const total = tasks.length
+  if (total === 0) return []
+
+  const concurrency = Math.max(1, options?.concurrency ?? BULK_RESTART_CONCURRENCY)
+  const onProgress = options?.onProgress
+  const outcomes: RestartOutcome[] = new Array(total)
+
+  const lanes = new Map<string, { task: BulkRestartTask; index: number }[]>()
+  for (let i = 0; i < total; i++) {
+    const task = tasks[i]
+    const laneKey = task.hostKey ?? 'local'
+    let lane = lanes.get(laneKey)
+    if (!lane) {
+      lane = []
+      lanes.set(laneKey, lane)
+    }
+    lane.push({ task, index: i })
+  }
+
+  let completed = 0
+
+  const lanePromises = Array.from(lanes.values()).map(async (laneTasks) => {
+    let nextIndex = 0
+
+    async function worker(): Promise<void> {
+      while (nextIndex < laneTasks.length) {
+        const current = laneTasks[nextIndex++]
+        const outcome = await settleRestart(current.task.run)
+        outcomes[current.index] = outcome
+        completed++
+        try {
+          onProgress?.(completed, total)
+        } catch {
+          // Progress reporting should never interrupt execution.
+        }
+      }
+    }
+
+    const workerCount = Math.min(concurrency, laneTasks.length)
+    const workers = Array.from({ length: workerCount }, () => worker())
+    await Promise.all(workers)
+  })
+
+  await Promise.all(lanePromises)
+  return outcomes
+}
