@@ -142,4 +142,63 @@ describe('ChatPanel send gate', () => {
     })
     expect(sendChatPrompt).not.toHaveBeenCalled()
   })
+
+  it('keeps the draft editable while Claude works, and Enter queues it as a "Queued" bubble', async () => {
+    setAgentState('working')
+    const ta = await mount()
+    expect(ta.disabled).toBe(false)
+    expect(ta.placeholder).toBe('Claude Code is working — Enter queues your message')
+    await act(async () => type(ta, 'and then this'))
+
+    await act(async () => enter(ta))
+
+    expect(sendChatPrompt).toHaveBeenCalledWith(NODE, 'and then this', 'claude')
+    const queued = host.querySelector('.term-chat__msg--queued')
+    expect(queued?.textContent).toContain('and then this')
+    expect(queued?.querySelector('.term-chat__queued-label')?.textContent).toBe('Queued')
+  })
+
+  it('a prompt sent while idle is not marked queued', async () => {
+    setAgentState('done')
+    const ta = await mount()
+    await act(async () => type(ta, 'hello'))
+
+    await act(async () => enter(ta))
+
+    expect(host.querySelector('.term-chat__msg--queued')).toBeNull()
+  })
+
+  it('does not queue a command mid-turn: the draft stays and a toast says to wait', async () => {
+    const toasts: string[] = []
+    const onToast = (e: Event): void => {
+      toasts.push((e as CustomEvent<{ message: string }>).detail.message)
+    }
+    window.addEventListener('nodeterm:toast', onToast)
+    setAgentState('working')
+    const ta = await mount()
+    await act(async () => type(ta, '/model'))
+
+    await act(async () => enter(ta))
+
+    window.removeEventListener('nodeterm:toast', onToast)
+    expect(sendChatPrompt).not.toHaveBeenCalled()
+    expect(ta.value).toBe('/model')
+    expect(toasts).toEqual(['Claude Code is working — send commands once the reply finishes.'])
+  })
+
+  it('keeps the draft editable while an agent with unmeasured mid-turn input works, but sends nothing', async () => {
+    setAgentState('working')
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="grok" />)
+    })
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.disabled).toBe(false)
+    await act(async () => type(ta, 'later'))
+
+    await act(async () => enter(ta))
+
+    expect(sendChatPrompt).not.toHaveBeenCalled()
+    expect(ta.value).toBe('later')
+    expect(ta.placeholder).toMatch(/send once the reply finishes/)
+  })
 })

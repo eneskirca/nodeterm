@@ -1,4 +1,6 @@
 import type { AgentState } from '@shared/agents/normalize'
+import { queuesInputWhileWorking } from '@shared/agents/config'
+import { sentCommand } from '@shared/chat-command'
 import { agentProcessInPane } from '../terminal/live-work'
 
 /** The slice of a node's agent status the composer gate reads (`AgentNodeStatus` fits it). */
@@ -56,6 +58,43 @@ export function canSendFromChat(agentId: string, s: ChatGateStatus): boolean {
 }
 
 /**
+ * What Enter in the composer does right now: `send` a new prompt, `queue` it behind the running
+ * turn, or nothing (`null`).
+ *
+ * `queue` is the one refusal that is lifted: the agent is `working` and its CLI is known to QUEUE a
+ * prompt submitted mid-turn instead of reading it as input to whatever is on screen
+ * (`INPUT_QUEUE_CAPABLE` — measured for claude: the prompt waits in Claude Code's own queue and is
+ * delivered at the next tool boundary as a `queued_command`). Every other refusal still refuses.
+ */
+export type ChatSendMode = 'send' | 'queue' | null
+
+export function chatSendMode(agentId: string, s: ChatGateStatus): ChatSendMode {
+  const refusal = chatSendRefusal(agentId, s)
+  if (refusal === null) return 'send'
+  if (refusal === 'working' && queuesInputWhileWorking(agentId)) return 'queue'
+  return null
+}
+
+/**
+ * May this text be queued mid-turn? Only a plain prompt was measured to queue. A slash command or a
+ * `!` line typed while the agent works was not — and an interactive one (`/model`, `/rewind`) would
+ * open its picker in the middle of the turn — so those still wait for the reply.
+ */
+export function canQueue(text: string): boolean {
+  return sentCommand(text) === null
+}
+
+/**
+ * Does the whole composer stand down (textarea included)? Not while the agent merely works: a
+ * disabled textarea drops focus, so the user could not even type their next message while a reply
+ * was being written. Only SENDING is gated then (`chatSendMode`). A dialog or a shell-owned pane
+ * still stands it down — there the placeholder is the explanation, and it must be visible.
+ */
+export function composerStandsDown(refusal: ChatSendRefusal): boolean {
+  return refusal !== null && refusal !== 'working'
+}
+
+/**
  * The composer's placeholder — the one place the user learns WHY it is disabled, naming the
  * node's own agent (the panel serves grok and base-claude custom agents too, not only Claude).
  *
@@ -77,7 +116,8 @@ export function chatComposerPlaceholder({
   agentLabel,
   chip,
   answerOnCard = false,
-  screen = null
+  screen = null,
+  sendMode
 }: {
   readonly: boolean
   refusal: ChatSendRefusal
@@ -86,11 +126,16 @@ export function chatComposerPlaceholder({
   answerOnCard?: boolean
   /** The pane's SCREEN says the agent's own UI owns the keyboard (`screenBlockedSentence`). */
   screen?: ScreenBlock | null
+  /** The COMPOSER's placeholder passes it (the draft is editable mid-turn, so it says what Enter
+   *  will do); the thread's status row does not, and keeps the plain "is working…". */
+  sendMode?: ChatSendMode
 }): string {
   if (readonly) return "Can't write to this session"
   if (screen !== null) return screenBlockedSentence(screen, agentLabel, chip)
   switch (refusal) {
     case 'working':
+      if (sendMode === 'queue') return `${agentLabel} is working — Enter queues your message`
+      if (sendMode === null) return `${agentLabel} is working — you can type; send once the reply finishes`
       return `${agentLabel} is working…`
     case 'dialog':
       if (answerOnCard) {

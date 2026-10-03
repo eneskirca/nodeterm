@@ -5,7 +5,16 @@ import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
-import { chatComposerPlaceholder, chatSendRefusal, screenBlockedSentence, type ScreenBlock } from '../lib/chatSendGate'
+import {
+  canQueue,
+  chatComposerPlaceholder,
+  chatSendMode,
+  chatSendRefusal,
+  composerStandsDown,
+  screenBlockedSentence,
+  type ScreenBlock
+} from '../lib/chatSendGate'
+import type { ChatMessage } from '@shared/types'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
 import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
@@ -231,6 +240,8 @@ export function ChatPanel({
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
   const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
+  // What Enter does now — `queue` lifts the `working` refusal for a CLI that queues mid-turn input.
+  const sendMode = chatSendMode(agentId, { state, hibernated, paused, dropped, sessionEnded })
   // The agent's OWN dialog on the pane's screen (folder trust, /model, setup questions): no hook
   // reports those, so the state gate above cannot see them. Found by the poll (local panes, `live`
   // — the poll also clears it) or by a send core refused before writing (`live: false` — it then
@@ -753,11 +764,22 @@ export function ChatPanel({
     maybeLoadOlder()
   }
 
+  // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
+  // has them. Object identity is enough: `applyTail` carries an unconfirmed send as the same object.
+  const queuedRef = useRef(new WeakSet<ChatMessage>())
+
   const send = useCallback(async () => {
     const text = input.trim()
+    if (!text) return
     // Read the store at SEND time, not the render-time values: a PermissionRequest (or an Eco
     // hibernation) that landed between the last render and this keypress must still block.
-    if (!text || chatSendRefusal(agentId, useAgentStatus.getState().byId[nodeId] ?? {}) !== null) return
+    const mode = chatSendMode(agentId, useAgentStatus.getState().byId[nodeId] ?? {})
+    if (mode === null) return
+    if (mode === 'queue' && !canQueue(text)) {
+      const message = `${chatAgentLabel(agentId, useSettings.getState().settings.customAgents)} is working — send commands once the reply finishes.`
+      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      return
+    }
     // The kernel's say (chatPaneGate.ts): an agent that announces no quit (codex) may have left a
     // SHELL in the pane while the store still reads `done` — typed there, the message would run.
     const pane = await chatPaneRefusal(agentId, nodeId, {
@@ -790,7 +812,9 @@ export function ChatPanel({
     // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
     setScreenBlock(null)
     justSentRef.current = true
-    setThread((t) => ({ ...t, messages: [...t.messages, { role: 'user', parts: [{ kind: 'text', text }] }] }))
+    const sent: ChatMessage = { role: 'user', parts: [{ kind: 'text', text }] }
+    if (mode === 'queue') queuedRef.current.add(sent)
+    setThread((t) => ({ ...t, messages: [...t.messages, sent] }))
     setOptimistic(true)
     setInput('')
     // A built-in that opens a dialog in the TUI (`/rewind`, `/resume`, `/model`, …) is now on screen
@@ -934,7 +958,9 @@ export function ChatPanel({
           // bubble) fall back to their position.
           <div
             key={m.key !== undefined ? `k${m.key}` : `i${i}`}
-            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}`}
+            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+              queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
+            }`}
           >
             {m.parts.map((p, j) =>
               p.kind === 'text' ? (
@@ -986,6 +1012,7 @@ export function ChatPanel({
                 </details>
               )
             )}
+            {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
             {turnEnds.has(i) && (
               <ChatTurnActions
                 copyText={turnEnds.get(i)!.copyText}
@@ -1035,11 +1062,13 @@ export function ChatPanel({
             agentLabel,
             chip: mdChip,
             answerOnCard: answerCard !== null,
+            sendMode,
             screen: screenBlock?.live === true ? screenBlock.kind : null
           })}
           // A dialog the POLL found is also cleared by it; one a refused send found is not (a remote
           // pane is never polled), so that one leaves the draft editable for the resend.
-          disabled={readonly || refusal !== null || screenBlock?.live === true}
+          disabled={readonly || composerStandsDown(refusal) || screenBlock?.live === true}
+          agentBusy={refusal === 'working'}
           onWriteRefused={onWriteRefused}
           sendUnconfirmed={optimistic}
           pathsForFiles={pathsForFiles}

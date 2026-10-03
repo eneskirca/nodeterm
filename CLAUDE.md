@@ -3399,7 +3399,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   clips, so it can never add a line to the row (a height flip would refit xterm and SIGWINCH
   tmux). It is not on the kanban card modal: that header already carries the ⌘M toggle.
   **The composer sends only in `done` or an unknown state** (`canSendFromChat`,
-  `renderer/lib/chatSendGate.ts`) — never in `waiting`/`blocked`, not just never in `working`:
+  `renderer/lib/chatSendGate.ts`), with ONE exception: `working` for an agent in
+  `INPUT_QUEUE_CAPABLE` (claude — measured: a prompt submitted mid-turn waits in Claude Code's own
+  queue and reaches the model at the next tool boundary), where Enter QUEUES (`chatSendMode`) and
+  the bubble reads "Queued" until the transcript has it. Only a plain prompt queues (`canQueue`):
+  a slash command or `!` line mid-turn is unmeasured and waits. While the agent works the textarea
+  stays editable for every agent (`composerStandsDown`) — only sending is gated. Never in
+  `waiting`/`blocked`:
   PermissionRequest and AskUserQuestion both normalize to `waiting`, the pane then holds a TUI
   select dialog this view does not show, and `sendText`'s Enter would ANSWER it ("Yes" is the
   default highlight). It also refuses any node whose CLI has left the pane — hibernated, paused,

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { agentProcessInPane } from '../terminal/live-work'
-import { canSendFromChat, chatComposerPlaceholder, chatSendRefusal, screenBlockedSentence } from './chatSendGate'
+import {
+  canQueue,
+  canSendFromChat,
+  chatComposerPlaceholder,
+  chatSendMode,
+  chatSendRefusal,
+  composerStandsDown,
+  screenBlockedSentence
+} from './chatSendGate'
 
 describe('chatSendRefusal / canSendFromChat', () => {
   it('allows a finished turn and an unknown state (no hook knowledge keeps the historical behavior)', () => {
@@ -57,6 +65,16 @@ describe('chatSendRefusal / canSendFromChat', () => {
 
 describe('chatComposerPlaceholder', () => {
   const base = { readonly: false, agentLabel: 'Grok', chip: '⌘M' }
+
+  it('says what Enter will do mid-turn when the COMPOSER asks (it passes its send mode)', () => {
+    expect(chatComposerPlaceholder({ ...base, agentLabel: 'Claude Code', refusal: 'working', sendMode: 'queue' })).toBe(
+      'Claude Code is working — Enter queues your message'
+    )
+    expect(chatComposerPlaceholder({ ...base, refusal: 'working', sendMode: null })).toBe(
+      'Grok is working — you can type; send once the reply finishes'
+    )
+    expect(chatComposerPlaceholder({ ...base, refusal: 'working' })).toBe('Grok is working…')
+  })
 
   it('names the node agent in the sendable copy', () => {
     expect(chatComposerPlaceholder({ ...base, refusal: null })).toBe(
@@ -134,5 +152,44 @@ describe('screenBlockedSentence — the agent\'s own dialog is on screen', () =>
 
     expect(chatComposerPlaceholder(base)).toBe(screenBlockedSentence('dialog', 'Claude Code', '⌘M'))
     expect(chatComposerPlaceholder({ ...base, readonly: true })).toBe("Can't write to this session")
+  })
+})
+
+describe('chatSendMode — what Enter does', () => {
+  it('sends when idle, for any agent', () => {
+    expect(chatSendMode('claude', { state: 'done' })).toBe('send')
+    expect(chatSendMode('grok', { state: 'done' })).toBe('send')
+  })
+
+  it('queues mid-turn only for a CLI measured to queue input', () => {
+    expect(chatSendMode('claude', { state: 'working' })).toBe('queue')
+    expect(chatSendMode('grok', { state: 'working' })).toBeNull()
+  })
+
+  it('never lifts any other refusal: a dialog would be ANSWERED, a shell would EXECUTE the text', () => {
+    expect(chatSendMode('claude', { state: 'waiting' })).toBeNull()
+    expect(chatSendMode('claude', { state: 'blocked' })).toBeNull()
+    expect(chatSendMode('claude', { state: 'working', hibernated: true })).toBeNull()
+    expect(chatSendMode('claude', { state: undefined, sessionEnded: true })).toBeNull()
+  })
+})
+
+describe('canQueue — only a plain prompt was measured to queue', () => {
+  it('queues prose, not a slash command or a `!` line', () => {
+    expect(canQueue('and then run the tests')).toBe(true)
+    expect(canQueue('/model')).toBe(false)
+    expect(canQueue('  /compact keep notes')).toBe(false)
+    expect(canQueue('!ls')).toBe(false)
+  })
+})
+
+describe('composerStandsDown — is the whole composer disabled?', () => {
+  it('not while the agent merely works: the draft stays editable', () => {
+    expect(composerStandsDown('working')).toBe(false)
+    expect(composerStandsDown(null)).toBe(false)
+  })
+
+  it('for a dialog or a shell-owned pane', () => {
+    for (const r of ['dialog', 'asleep', 'paused', 'dropped', 'exited'] as const) expect(composerStandsDown(r)).toBe(true)
   })
 })

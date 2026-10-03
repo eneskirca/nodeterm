@@ -45,8 +45,15 @@ export interface ChatComposerProps {
   /** Enter (not Shift+Enter, not an IME commit). ChatPanel's send re-checks the gate itself. */
   onSend: () => void
   placeholder: string
-  /** Read-only session or a send-gate refusal: the whole composer stands down with the textarea. */
+  /** Read-only session or a send-gate refusal: the whole composer stands down with the textarea.
+   *  Not while the agent merely works — see `agentBusy`. */
   disabled: boolean
+  /**
+   * The agent is mid-turn. The draft stays editable (a disabled textarea drops focus, and the user
+   * could not type their next message while a reply was being written) and Enter is ChatPanel's to
+   * gate (it may queue). The picker labels stand down: a `/model` typed now would land in the turn.
+   */
+  agentBusy?: boolean
   /** A picker command the pane refused outright (`sendText` → false): the session is not writable. */
   onWriteRefused: () => void
   /**
@@ -86,6 +93,7 @@ export function ChatComposer({
   onSend,
   placeholder,
   disabled,
+  agentBusy = false,
   onWriteRefused,
   sendUnconfirmed = false,
   pathsForFiles,
@@ -397,7 +405,7 @@ export function ChatComposer({
     onSend()
   }
 
-  const labelDisabled = disabled || pickerBusy || sendUnconfirmed
+  const labelDisabled = disabled || agentBusy || pickerBusy || sendUnconfirmed
 
   return (
     <div className="term-chat__compose">

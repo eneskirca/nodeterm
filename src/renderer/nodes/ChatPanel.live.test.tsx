@@ -482,8 +482,10 @@ describe('ChatPanel — a sent local command', () => {
     }
     expect(pending.length).toBeGreaterThan(1)
     expect(activity()?.textContent).toBe('Claude Code is working…')
-    // The composer still refuses while the turn runs.
-    expect((host.querySelector('textarea') as HTMLTextAreaElement).disabled).toBe(true)
+    // The draft stays editable while the turn runs; for claude, Enter queues (chatSendMode).
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(ta.disabled).toBe(false)
+    expect(ta.placeholder).toBe('Claude Code is working — Enter queues your message')
   })
 
   it('a tail read already in flight defers the command read instead of cancelling it', async () => {

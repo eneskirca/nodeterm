@@ -3329,6 +3329,18 @@ body,
   background: rgba(var(--tint-rgb), 0.09);
   color: var(--text-strong);
 }
+/* Sent while the agent was working: it sits in the CLI's own queue until the transcript shows it
+   (ChatPanel's queuedRef). A dashed outline on the same bubble, dimmed, with a "Queued" caption. */
+.term-chat__msg--queued {
+  background: none;
+  border: 1px dashed rgba(var(--tint-rgb), 0.35);
+  color: var(--muted);
+}
+.term-chat__queued-label {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
 .term-chat__msg--assistant {
   align-self: stretch;
   max-width: none;
