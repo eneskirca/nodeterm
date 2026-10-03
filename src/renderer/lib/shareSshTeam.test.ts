@@ -443,7 +443,14 @@ describe('runShare', () => {
     const failedInstall = setup()
     failedInstall.deps.api.install = async () => ({ ok: true, exitCode: 1 })
     failedInstall.deps.api.probe = async () => (failedInstall.log.push('probe'), { ...READY, plan: { kind: 'install', reason: 'missing' } }) as never
-    expect(await runShare(failedInstall.deps, INPUT)).toMatchObject({ kind: 'failed', step: 'checking-install' })
+    // A non-zero exit is the install FAILING; saying it "finished" read as a success followed by a
+    // readiness problem (device run, 2026-10-03).
+    expect(await runShare(failedInstall.deps, INPUT)).toEqual({
+      kind: 'failed',
+      step: 'checking-install',
+      error: 'The install failed (exit 1).',
+      reopened: false
+    })
     expect(failedInstall.log.filter((l) => l === 'probe')).toHaveLength(2)
     let n = 0
     const refusing = setup()

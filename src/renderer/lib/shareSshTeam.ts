@@ -279,9 +279,13 @@ export async function runShare(deps: ShareDeps, input: ShareInput): Promise<Shar
       again = await call(() => api.probe(projectId, ids))
     }
     if (!again.ok || again.plan.kind !== 'ready') {
-      const base = installed.ok
-        ? `The install finished (exit ${installed.exitCode}) but nodeterm-server is not ready on the host.`
-        : installed.error
+      // A non-zero exit is the install failing; "finished … but not ready" read as a success with
+      // a readiness problem. The dialog shows the install's output under this line.
+      const base = !installed.ok
+        ? installed.error
+        : installed.exitCode === 0
+          ? `The install finished (exit 0) but nodeterm-server is not ready on the host.`
+          : `The install failed (exit ${installed.exitCode}).`
       const why = !again.ok ? again.error : again.plan.kind === 'refuse' ? again.plan.reason : ''
       // A dead connection fails the install and the re-probe with the same message: say it once.
       return failed('checking-install', why && why !== base ? `${base} ${why}` : base, false)

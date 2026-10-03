@@ -36,10 +36,18 @@ NODE_LTS_VERSION="${NODETERM_NODE_VERSION:-v22.14.0}"
 NODE_DIST_BASE="${NODETERM_NODE_DIST_BASE:-https://nodejs.org/dist}"
 
 # ---- pretty output ---------------------------------------------------------------------------
-info() { printf '\033[36m→\033[0m %s\n' "$1"; }
-ok()   { printf '\033[32m✓\033[0m %s\n' "$1"; }
-warn() { printf '\033[33m⚠\033[0m %s\n' "$1" >&2; }
-fail() { printf '\033[31m✗\033[0m %s\n' "$1" >&2; exit 1; }
+# Colour only on a terminal (and not under NO_COLOR): this output is also captured — the desktop's
+# "Share with team" dialog streams it over an ssh exec channel with no pty, and the nightly update
+# writes it to the journal — where escape codes arrive as literal text.
+color_out=''; color_err=''
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then color_out=1; fi
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then color_err=1; fi
+# mark <enabled> <colour> <glyph>
+mark() { if [ -n "$1" ]; then printf '\033[%sm%s\033[0m' "$2" "$3"; else printf '%s' "$3"; fi; }
+info() { printf '%s %s\n' "$(mark "$color_out" 36 →)" "$1"; }
+ok()   { printf '%s %s\n' "$(mark "$color_out" 32 ✓)" "$1"; }
+warn() { printf '%s %s\n' "$(mark "$color_err" 33 ⚠)" "$1" >&2; }
+fail() { printf '%s %s\n' "$(mark "$color_err" 31 ✗)" "$1" >&2; exit 1; }
 
 # ---- preflight: OS + required tools ----------------------------------------------------------
 [ "$(uname -s)" = "Linux" ] || fail "The headless host targets Linux (systemd). For macOS run the desktop app; for containers use the Dockerfile (see docs/SERVER.md)."
