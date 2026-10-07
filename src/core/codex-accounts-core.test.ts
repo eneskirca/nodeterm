@@ -12,7 +12,7 @@ import {
 } from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ACCOUNT_ID_RE,
   assertCodexAccountId,
@@ -124,8 +124,15 @@ describe('managed Codex account paths', () => {
 
   it('keeps the managed daemon socket below macOS SUN_LEN', () => {
     const userData = '/Users/example/Library/Application Support/node-terminal'
+    // The short root hangs off the HOME, so the claim is about a real macOS home — not the test
+    // run's sandboxed one (test/setup/home-sandbox.ts), which sits much deeper in the temp dir.
+    const home = vi.spyOn(os, 'homedir').mockReturnValue('/Users/example')
     const accountId = 'be28d3d4-c18c-430c-a257-ae550d3dd7ed'
-    expect(Buffer.byteLength(codexSocketForAccount(userData, accountId))).toBeLessThan(104)
+    try {
+      expect(Buffer.byteLength(codexSocketForAccount(userData, accountId))).toBeLessThan(104)
+    } finally {
+      home.mockRestore()
+    }
   })
 })
 

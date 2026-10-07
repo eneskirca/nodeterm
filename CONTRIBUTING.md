@@ -1234,6 +1234,14 @@ tmux without carrying `TMUX_TMPDIR` into it, which is the one way left to escape
 `src/core/tmux-socket-isolation.guard.test.ts` holds the short allowlist of suites that name a
 production socket on purpose; adding a third is a review conversation, not a checkbox.
 
+**A test never touches the real home.** The hook installers write `~/.codex/config.toml` (Codex's
+trust in nodeterm's hooks), `~/.claude/settings.json` and friends, and they use
+`import { homedir } from 'os'`, which `vi.spyOn(os, 'homedir')` does not reach — one test doing that
+rewrote a developer's real Codex config and Codex stopped running nodeterm's hooks. Every run points
+HOME/USERPROFILE at a private sandbox (`test/setup/home-sandbox.ts`) and clears `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR` and the other relocation variables. If a test needs its own home, mock the
+module (`vi.mock('os', …)`, see `install-helper.fs.test.ts`), never spy on it.
+
 **Session code has two local backends on POSIX: tmux and Zellij.** `settings.sessionBackend` picks
 where a NEW local terminal's session is created (default tmux); an existing session is always
 reattached in the backend that holds it. If you add a `PtyManager` method that talks to tmux about a

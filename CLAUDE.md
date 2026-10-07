@@ -2845,7 +2845,28 @@ else, and its context links must keep classifying across restarts).
   put a `.cmd` command on a Linux host); and `isManagedCommand` matches **both** leaves
   (`codex.sh` AND `codex-hook.cmd`) on every platform — matching only the local one would leave a
   pre-fix entry unrecognized, so the fresh one is appended beside it, which is #558 on a second
-  file. Matching both is what REPAIRS an existing Windows install at the next launch. **Both
+  file. Matching both is what REPAIRS an existing Windows install at the next launch.
+  **Codex hook trust is re-checked at every LOCAL Codex spawn, not only at boot, in the HOME that
+  session runs under** (`ensureCodexHooksCurrent(home)` in `core/agents/hooks/codex.ts`, called
+  from `PtyManager.spawnSession` inside the local codex-scope block with the same
+  `codexScope.CODEX_HOME` it puts in the pane's env — a managed account's private home or the
+  system one). Codex reads hooks.json and the config.toml `trusted_hash` blocks from its
+  CODEX_HOME at SESSION START and silently skips an untrusted hook; boot was the only install, so a
+  config.toml rewritten while the app ran (codex's own /hooks flow, another tool, a test run on the
+  real home) left every Codex session started afterwards dark — measured on a Windows desktop:
+  every message to those nodes queued as `targetStatusStale` and expired. `codexHookDrift(home)`
+  is read-only (script + Windows wrapper bytes, our hooks.json entries via the same
+  `buildCodexHooksAndTrust`, and each trust key's hash); only drift re-runs
+  `installCodexHooks(home)`, with a warning naming the home and what was repaired, so a current
+  install never rewrites config.toml (codex writes it too). It never throws into the spawn, never
+  creates a missing home, and an `accountId` that is not a known Codex account gets no repair
+  (never a fallback to `~/.codex`). **Managed account homes symlink hooks.json + config.toml to
+  `~/.codex`** (`initializeAccountHome`), so every write goes through the link (`writeTarget`,
+  realpath) — a temp+rename onto the link would replace it with a private copy no later system
+  install reaches. A home whose links were never made or were replaced by real files is repaired in
+  place; boot now covers those homes too (`ensureCodexHooksForAccounts`, both shells), where before
+  it installed only `~/.codex` and relied on the links. Not covered: SSH hosts (RemoteHooks owns
+  those files) and an in-pane restart/resume that types `codex` without a new spawn. **Both
   sides of the managed-entry match go through `normalizeHookCommand`** — the marker used to be
   folded to `/` while the stored command was compared raw, so on Windows nodeterm never recognized
   its OWN entry and appended a fresh set every launch (#558: nine copies of nine events, nine
@@ -9446,6 +9467,32 @@ For every OTHER test dir, two layers, both needed:
   `hook-endpoint.env` into the first core's already-removed directory. `initContextLink` and
   `hookServer.stop()` now drop the memo. Found with `strace -f -e trace=mkdir,rename` — an EMPTY
   leftover dir is the signature of a late writer, not of a missing `rm`.
+
+## The test suite never touches the real home
+
+The hook installers write the user's real agent config — `~/.codex/hooks.json` plus the
+`[hooks.state."…"]` trust blocks in `~/.codex/config.toml`, `~/.claude/settings.json`,
+`~/.gemini/settings.json`, grok's and copilot's hook files — and they resolve home through
+`import { homedir } from 'os'`. **A `vi.spyOn(os, 'homedir')` does not reach that binding**:
+measured on a Windows dev box, running `src/core/agents/hooks/index.test.ts` alone (which
+"isolated" home with exactly that spy) rewrote the developer's real `~/.codex/config.toml` and
+`hooks.json`. Runs from several worktrees then raced each other, and the user's own Codex, on those
+files; a Codex session started inside that window had no trust entries for nodeterm's hooks, so its
+hooks never fired and every agent message to it expired as `targetStatusStale`.
+
+- **Every run gets a private home** (`test/setup/home-sandbox.ts` + `home-worker-env.ts`,
+  `src/core/test-home.ts`): HOME and USERPROFILE point at one directory created and removed by
+  `globalSetup`, re-asserted per worker (refusing to run without it), and the agents' relocation
+  variables (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `COPILOT_HOME`, `GEMINI_CLI_HOME`,
+  `KIMI_CODE_HOME`, `XDG_*`) are cleared. On Windows APPDATA/LOCALAPPDATA move inside it too.
+  `os.homedir()` reads the variable on every call, so every installer and every child process lands
+  in the sandbox whatever its import style. Registered BEFORE the temp sandbox (it lives in the real
+  temp dir and is never counted as a leak there).
+- A test that needs its own home uses a MODULE mock (`vi.mock('os', …)` returning `homedir`, as
+  `install-helper.fs.test.ts` and `codex.ensure.test.ts` do), never the spy.
+- `src/core/test-home.guard.test.ts` runs the real `installCodexHooks()` and proves it wrote the
+  sandbox while the real `~/.codex` (read from `os.userInfo().homedir`, which ignores HOME) kept its
+  size and mtime.
 
 ## Conventions
 

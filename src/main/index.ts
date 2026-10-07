@@ -373,6 +373,7 @@ import {
   remoteAccountConfigDirAbs
 } from '../core/claude-accounts-core'
 import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
+import { ensureCodexHooksForAccounts } from '../core/agents/hooks/codex'
 import { createPairingService } from './pairing-service'
 import {
   initRemoteHost,
@@ -3101,6 +3102,10 @@ app.whenReady().then(async () => {
   // Edition's boot (src/core/claude-accounts-service.ts); each shell supplies its own canvas-skill
   // installer when that control surface is enabled.
   installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [], installCanvasSkillInto)
+  // Managed CODEX accounts read hooks.json + config.toml trust from their own CODEX_HOME. Those
+  // normally symlink to ~/.codex, but a broken or replaced link leaves the account's sessions with
+  // no trusted hooks — check each home (drift-gated, never throws). See codex.ts.
+  ensureCodexHooksForAccounts(platform().userDataDir, settingsStore.get().codexAccounts ?? [])
   // Fan a normalized agent event to BOTH consumers: the renderer's agentStatus store (canvas badge)
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.

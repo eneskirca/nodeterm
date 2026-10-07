@@ -25,11 +25,18 @@ vi.mock('../../exec-path', async (orig) => ({
   resolveShellEnvVar: async () => shellAnswer
 }))
 
-let home: string
+// A MODULE mock, not `vi.spyOn(os, 'homedir')`: the installers this reaches (codex.ts, grok, …)
+// `import { homedir } from 'os'`, a binding the spy never touches. With the spy, this file rewrote
+// the developer's real ~/.codex/config.toml and hooks.json — and every other agent's hook file —
+// on every run. The run-wide HOME sandbox (src/core/test-home.ts) is the floor under this.
+let home = ''
+vi.mock('os', async (orig) => {
+  const actual = await orig<typeof import('os')>()
+  return { ...actual, default: { ...actual, homedir: () => home }, homedir: () => home }
+})
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-probe-'))
-  vi.spyOn(os, 'homedir').mockReturnValue(home)
   initPlatform(fakePlatform({ userDataDir: home }))
   _resetGrokHomeProbeForTests()
 })

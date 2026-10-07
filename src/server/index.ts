@@ -68,6 +68,7 @@ import { answerHeldPermission } from '../core/agents/permission-decision'
 import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
 import { installManagedAgentHooks } from '../core/agents/hooks'
 import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
+import { ensureCodexHooksForAccounts } from '../core/agents/hooks/codex'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -699,6 +700,8 @@ export async function startServer(
     // reports no agent status at all. Canvas-control adds its skill in its own opt-in initializer;
     // this baseline hook pass stays unchanged when the feature flag is off.
     installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [])
+    // Same for managed Codex account homes (their own CODEX_HOME); see codex.ts.
+    ensureCodexHooksForAccounts(config.dataDir, settingsStore.get().codexAccounts ?? [])
   }
   const hookStartupWarning = await hookServer.startForApp()
   if (hookStartupWarning) console.error('[nodeterm-server]', hookStartupWarning)

@@ -22,6 +22,7 @@ import {
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
+import { ensureCodexHooksCurrent } from './agents/hooks/codex'
 import {
   probeSaysAbsent,
   remoteHookEnvArgs,
@@ -3834,6 +3835,20 @@ export class PtyManager {
       env.CODEX_HOME = codexScope.CODEX_HOME
       env.NODETERM_CODEX_ACCOUNT_ID = codexScope.NODETERM_CODEX_ACCOUNT_ID
       for (const k of CODEX_AUTH_ENV_STRIP) delete env[k]
+      // Codex reads its hooks and their config.toml trust at SESSION START, from THIS session's
+      // CODEX_HOME (a managed account's private home, or the system one). Boot was the only place
+      // we installed them, so a config.toml rewritten while the app ran left every Codex session
+      // started afterwards with no status hooks (badge dark, messages expiring targetStatusStale).
+      // Re-check that home before the pane spawns; repairs only on drift and never throws. An id
+      // that is not a known Codex account gets no repair (and never a fallback to ~/.codex). SSH
+      // sessions run the host's codex, whose files RemoteHooks owns.
+      if (
+        options.agentId &&
+        capabilityAgentId(options.agentId as AgentId) === 'codex' &&
+        (!options.accountId || this.isCodexAccount(options.accountId))
+      ) {
+        ensureCodexHooksCurrent(codexScope.CODEX_HOME)
+      }
     }
 
     // Shared model gateway: resolve through the node's BASE harness in one shared mapping, then

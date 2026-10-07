@@ -19,6 +19,8 @@ import path from 'path'
 import {
   existsSync,
   readFileSync,
+  realpathSync,
+  statSync,
   writeFileSync,
   mkdirSync,
   chmodSync,
@@ -26,11 +28,14 @@ import {
 } from 'fs'
 import { randomUUID } from 'crypto'
 import { renameAtomicSync } from '../../fs-atomic'
+import { codexAccountHome } from '../../codex-accounts-core'
+import { isSafeAccountId } from '../../../shared/codex-account'
 import { buildManagedScript } from './managed-script'
 import { normalizeHookCommand } from './install-helper'
 import { buildCodexWindowsWrapper, CODEX_WINDOWS_WRAPPER_FILE } from './codex-windows-wrapper'
 import {
   computeTrustedHash,
+  computeTrustKey,
   getCodexCanonicalTrustPath,
   parseTrustKey,
   readHookTrustEntries,
@@ -79,17 +84,32 @@ type HookCommandConfig = { type: 'command'; command: string; [k: string]: unknow
 type HookDefinition = { hooks?: HookCommandConfig[]; [k: string]: unknown }
 export type HooksConfig = { hooks?: Record<string, HookDefinition[]>; [k: string]: unknown }
 
-function codexHome(): string {
+function defaultCodexHome(): string {
   // Default CODEX_HOME. We intentionally write into the user's REAL ~/.codex.
   return path.join(homedir(), '.codex')
 }
 
-function hooksJsonPath(): string {
-  return path.join(codexHome(), 'hooks.json')
+// Every function below takes the CODEX_HOME it acts on: the system one (default) or a managed
+// account's private home, which codex reads instead of ~/.codex for that account's sessions.
+function hooksJsonPath(home: string): string {
+  return path.join(home, 'hooks.json')
 }
 
-function configTomlPath(): string {
-  return path.join(codexHome(), 'config.toml')
+function configTomlPath(home: string): string {
+  return path.join(home, 'config.toml')
+}
+
+/**
+ * Where a write to `file` must land. A managed account home SYMLINKS its hooks.json and
+ * config.toml to the system ones (`initializeAccountHome`); a temp+rename onto the link itself
+ * would replace it with a private copy that no later system install reaches. Write through it.
+ */
+function writeTarget(file: string): string {
+  try {
+    return realpathSync(file)
+  } catch {
+    return file
+  }
 }
 
 /** Stable, machine-wide — the same rule as install-helper's `scriptPathFor` (see its note). */
@@ -312,7 +332,8 @@ function readHooksJson(file: string): HooksConfig | null {
 }
 
 // Why: temp+rename so a crash mid-write leaves the original hooks.json intact.
-function writeHooksJson(file: string, config: HooksConfig): void {
+function writeHooksJson(link: string, config: HooksConfig): void {
+  const file = writeTarget(link)
   const dir = path.dirname(file)
   mkdirSync(dir, { recursive: true })
   const tmp = path.join(dir, `.${Date.now()}-${randomUUID()}.tmp`)
@@ -382,7 +403,7 @@ function writeWindowsWrapper(script: string): void {
   }
 }
 
-export function installCodexHooks(): void {
+export function installCodexHooks(home: string = defaultCodexHome()): void {
   const script = scriptPath()
   try {
     writeManagedScript(script)
@@ -395,7 +416,7 @@ export function installCodexHooks(): void {
   }
 
   const command = buildManagedCommand(script)
-  const hooksFile = hooksJsonPath()
+  const hooksFile = hooksJsonPath(home)
   const config = readHooksJson(hooksFile)
   if (!config) {
     console.warn('[agent-hooks] codex install: could not parse hooks.json; skipping')
@@ -416,14 +437,98 @@ export function installCodexHooks(): void {
     // Why: write trust LAST so a half-write can't leave a hash pointing at a
     // hook that doesn't exist. upsert does a line-level merge that preserves
     // all other config.toml content.
-    upsertHookTrustEntries(configTomlPath(), built.trustEntries)
+    upsertHookTrustEntries(writeTarget(configTomlPath(home)), built.trustEntries)
   } catch (e) {
     console.warn('[agent-hooks] codex install failed', e)
   }
 }
 
+/**
+ * What is missing from this machine's codex hook install, read-only. Empty = current.
+ *
+ * Codex runs a hook only when config.toml holds a `trusted_hash` for it, and reads both files at
+ * SESSION START. Boot used to be the only repair, so anything that rewrote config.toml while the
+ * app ran (codex's own /hooks flow racing us, another tool, a test run on the real home) left every
+ * Codex session started afterwards with no status hooks at all — measured on a Windows desktop:
+ * every agent message to those nodes queued as `targetStatusStale` and expired.
+ */
+export function codexHookDrift(home: string = defaultCodexHome()): string[] {
+  const drift: string[] = []
+  const script = scriptPath()
+  try {
+    if (readFileSync(script, 'utf8') !== buildManagedScript('codex')) drift.push('hook script')
+  } catch {
+    drift.push('hook script')
+  }
+  if (process.platform === 'win32') {
+    try {
+      const wrapper = path.join(path.dirname(script), CODEX_WINDOWS_WRAPPER_FILE)
+      if (readFileSync(wrapper, 'utf8') !== buildCodexWindowsWrapper()) drift.push('windows wrapper')
+    } catch {
+      drift.push('windows wrapper')
+    }
+  }
+  const hooksFile = hooksJsonPath(home)
+  const config = readHooksJson(hooksFile)
+  // Unparseable hooks.json: the installer would leave it alone too, so it is not drift we can fix.
+  const built = config ? buildCodexHooksAndTrust(config, buildManagedCommand(script), hooksFile) : null
+  if (!built) return drift
+  if (!existsSync(hooksFile) || JSON.stringify(built.config) !== JSON.stringify(config)) {
+    drift.push('hooks.json entries')
+  }
+  const trust = readHookTrustEntries(configTomlPath(home))
+  const missing = built.trustEntries.filter(
+    (e) => trust.get(computeTrustKey(e))?.trustedHash !== computeTrustedHash(e)
+  )
+  if (missing.length) drift.push(`config.toml trust (${missing.length}/${built.trustEntries.length})`)
+  return drift
+}
+
+/**
+ * Called right before a LOCAL Codex session spawns, with the CODEX_HOME that session will run
+ * under: re-install only when something drifted, so a current install costs a few small reads and
+ * config.toml (which codex also writes) is never rewritten for nothing. A home that does not exist
+ * is left alone (a managed account's home is created by its own login flow, never by this). Never
+ * throws — a launch must not depend on it.
+ */
+export function ensureCodexHooksCurrent(home: string = defaultCodexHome()): void {
+  try {
+    if (home !== defaultCodexHome() && !statSync(home).isDirectory()) return
+    const drift = codexHookDrift(home)
+    if (!drift.length) return
+    console.warn(`[agent-hooks] codex hook install in ${home} drifted (${drift.join(', ')}); repairing`)
+    installCodexHooks(home)
+  } catch (e) {
+    console.warn(`[agent-hooks] codex hook check failed for ${home}`, e)
+  }
+}
+
+/**
+ * Boot install for every LOCAL managed Codex account home. Those homes symlink hooks.json and
+ * config.toml to ~/.codex, so the system install usually covers them — but only while the links
+ * survive: a link never made (the system file was absent when the account was created) or replaced
+ * by a real file leaves the account's sessions without trusted hooks. Drift-gated like the launch
+ * check, so a linked home costs reads only. An unsafe id or a missing home is skipped.
+ */
+export function ensureCodexHooksForAccounts(
+  userDataDir: string,
+  accounts: ReadonlyArray<{ id: string }>
+): void {
+  for (const { id } of accounts) {
+    if (!isSafeAccountId(id)) continue
+    let home: string
+    try {
+      home = codexAccountHome(userDataDir, id)
+      if (!statSync(home).isDirectory()) continue
+    } catch {
+      continue
+    }
+    ensureCodexHooksCurrent(home)
+  }
+}
+
 export function removeCodexHooks(): void {
-  const hooksFile = hooksJsonPath()
+  const hooksFile = hooksJsonPath(defaultCodexHome())
   const command = buildManagedCommand(scriptPath())
 
   try {
@@ -459,7 +564,7 @@ export function removeCodexHooks(): void {
   // command — a sourcePath-only filter would wipe the user's manually-approved
   // entries that happen to share the path. Best-effort.
   try {
-    const tomlPath = configTomlPath()
+    const tomlPath = writeTarget(configTomlPath(defaultCodexHome()))
     const existing = readHookTrustEntries(tomlPath)
     const canonicalSource = getCodexCanonicalTrustPath(hooksFile)
     const managedEventLabels = new Set<CodexEventLabel>(
