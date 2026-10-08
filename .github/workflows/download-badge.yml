@@ -1,0 +1,61 @@
+name: Download badge
+
+# Keeps the README's downloads badge live. Counts INSTALLER downloads only (.dmg + .AppImage + .deb + .rpm + .exe
+# across every release): shields' own github/downloads/…/total reads ~14× higher, because
+# electron-updater's traffic (latest-*.yml polls, mac .zip deltas, blockmaps) counts as downloads.
+#
+# The result is a shields "endpoint" JSON on the orphan `badges` branch, force-pushed as a single
+# commit, so the history never grows. It lives off main on purpose: main is protected by required
+# checks, which a bot commit every few hours could never pass.
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: download-badge
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Count installer downloads
+        id: count
+        run: |
+          set -euo pipefail
+          total=$(gh api --paginate "repos/$REPO/releases" --jq \
+            '[.[].assets[] | select(.name|test("\\.(dmg|AppImage|deb|rpm|exe)$")) | .download_count] | add // 0' \
+            | awk '{ s += $1 } END { print s + 0 }')
+          # A failed or empty read must never publish "0" over a real number.
+          if [ "$total" -le 0 ]; then echo "count came back $total; refusing to publish" >&2; exit 1; fi
+          label=$(awk -v n="$total" 'BEGIN {
+            if (n >= 1000000) printf "%.1fM", n / 1000000
+            else if (n >= 1000) printf "%.1fk", n / 1000
+            else printf "%d", n }' | sed 's/\.0\([kM]\)$/\1/')
+          echo "total=$total label=$label"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to the badges branch
+        env:
+          LABEL: ${{ steps.count.outputs.label }}
+        run: |
+          set -euo pipefail
+          json=$(jq -cn --arg m "$LABEL" '{schemaVersion: 1, label: "downloads", message: $m, color: "brightgreen"}')
+          current=$(gh api "repos/$REPO/contents/downloads.json?ref=badges" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)
+          if [ "$current" = "$json" ]; then echo "unchanged ($LABEL)"; exit 0; fi
+          mkdir badges && cd badges
+          git init -q -b badges
+          printf '%s\n' "$json" > downloads.json
+          git add downloads.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "downloads: $LABEL"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" badges
