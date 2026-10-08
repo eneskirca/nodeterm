@@ -7,7 +7,9 @@ import { resolve } from 'node:path'
 import {
   focusXtermUnlessCovered,
   mayRestoreFocus,
+  mayFocusComposer,
   requestTerminalFocusOnExit,
+  takeComposerFocusRequest,
   terminalOwnsFileInput,
   useMdModeFocus,
   type FocusableTerm
@@ -235,6 +237,142 @@ describe('requestTerminalFocusOnExit (the ⌘M composer model / effort label)', 
     expect(modal).toMatch(/requestTerminalFocusOnExit\(session\.id\)\s*\n\s*setMdFor\(null\)/)
     const viewer = read('../components/kanban/ModalTerminal.tsx')
     expect(viewer).toMatch(/useMdModeFocus\(covered, [^\n]*, nodeId\)/)
+  })
+})
+
+/** A mounted ChatComposer as the hook sees it: the box carrying the id, its textarea inside. */
+function composerIn(parent: Element): HTMLTextAreaElement {
+  const box = document.createElement('div')
+  box.setAttribute('data-chat-composer-id', ':r1:')
+  const ta = document.createElement('textarea')
+  box.appendChild(ta)
+  parent.appendChild(box)
+  return ta
+}
+
+describe('useMdModeFocus — the chat composer takes the keyboard on entry', () => {
+  it('focuses a composer that is already mounted when the view opens', () => {
+    render(false, 'n1')
+    term!.focus()
+    const ta = composerIn(nodeRoot)
+
+    render(true, 'n1')
+
+    expect(document.activeElement).toBe(ta)
+  })
+
+  it('leaves a request that the composer takes when it mounts later (lazy chunk)', () => {
+    render(false, 'n1')
+    term!.focus()
+    render(true, 'n1')
+    const ta = composerIn(nodeRoot)
+
+    takeComposerFocusRequest('n1', ta)
+
+    expect(document.activeElement).toBe(ta)
+  })
+
+  it('takes a request only once', () => {
+    render(false, 'n1')
+    render(true, 'n1')
+    const ta = composerIn(nodeRoot)
+    takeComposerFocusRequest('n1', ta)
+    ta.blur()
+
+    takeComposerFocusRequest('n1', ta)
+
+    expect(document.activeElement).not.toBe(ta)
+  })
+
+  it('drops the request on exit, so a composer that appears later does not grab the keyboard', () => {
+    render(false, 'n1')
+    render(true, 'n1')
+    render(false, 'n1')
+    const ta = composerIn(nodeRoot)
+
+    takeComposerFocusRequest('n1', ta)
+
+    expect(document.activeElement).not.toBe(ta)
+  })
+
+  it('ignores a composer of the same session mounted outside this view (card modal vs node)', () => {
+    render(false, 'n1')
+    render(true, 'n1')
+    const elsewhere = document.createElement('div')
+    document.body.appendChild(elsewhere)
+    const other = composerIn(elsewhere)
+
+    takeComposerFocusRequest('n1', other)
+    const ta = composerIn(nodeRoot)
+    takeComposerFocusRequest('n1', ta)
+
+    expect(document.activeElement).toBe(ta)
+  })
+
+  it('leaves a text field elsewhere alone', () => {
+    render(false, 'n1')
+    const field = document.createElement('input')
+    document.body.appendChild(field)
+    field.focus()
+    const ta = composerIn(nodeRoot)
+
+    render(true, 'n1')
+
+    expect(document.activeElement).toBe(field)
+    takeComposerFocusRequest('n1', ta)
+    expect(document.activeElement).toBe(field)
+  })
+
+  it('does not focus a composer when the view is already open at mount (restored node, no entry)', () => {
+    const ta = composerIn(nodeRoot)
+
+    render(true, 'n1')
+
+    expect(document.activeElement).not.toBe(ta)
+  })
+
+  it('does not focus a disabled composer, but keeps the request for when it is enabled', () => {
+    render(false, 'n1')
+    render(true, 'n1')
+    const ta = composerIn(nodeRoot)
+    ta.disabled = true
+    takeComposerFocusRequest('n1', ta)
+    expect(document.activeElement).not.toBe(ta)
+    ta.disabled = false
+
+    takeComposerFocusRequest('n1', ta)
+
+    expect(document.activeElement).toBe(ta)
+  })
+
+  it('still gives the terminal back on exit after the composer had the keyboard', () => {
+    render(false, 'n1')
+    term!.focus()
+    const ta = composerIn(nodeRoot)
+    render(true, 'n1')
+    expect(document.activeElement).toBe(ta)
+    ta.parentElement!.remove() // the panel unmounts with the view
+    term!.calls.length = 0
+
+    render(false, 'n1')
+
+    expect(term!.calls).toEqual(['focus'])
+  })
+
+  it('treats another terminal as a pane, not a field the user is typing into', () => {
+    const other = document.createElement('textarea')
+    other.className = 'xterm-helper-textarea'
+
+    expect(mayFocusComposer(other, nodeRoot, document.body)).toBe(true)
+    expect(mayFocusComposer(document.createElement('input'), nodeRoot, document.body)).toBe(false)
+  })
+
+  it('the composer asks for the request on mount (source pin: ChatComposer cannot mount here)', () => {
+    const src = readFileSync(resolve(__dirname, '../nodes/ChatComposer.tsx'), 'utf8').replace(/\r\n/g, '\n')
+
+    expect(src).toMatch(
+      /useEffect\(\(\) => \{\s*if \(!disabled\) takeComposerFocusRequest\(nodeId, inputRef\.current\)\s*\}, \[nodeId, disabled\]\)/
+    )
   })
 })
 
