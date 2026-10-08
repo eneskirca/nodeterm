@@ -3219,14 +3219,41 @@ body,
   max-width: 100%;
 }
 
-.term-md__content table {
+/* Tables in rendered Markdown — the ⌘M output view, the editor preview and the ⌘M chat view (its
+   messages and plan/question cards all render through `.term-chat__text`). Gridlines strong enough
+   to read (`--border` is a 10% separator, which made cells blur together), a tinted header row,
+   and a horizontal scroll inside the table for one wider than the view, so the thread never
+   scrolls sideways. A column's `:---:` alignment arrives as an `align` attribute, which an author
+   `text-align` would override — so only a header WITHOUT one is set (to the start edge, matching
+   its cells, instead of the browser's centred default). */
+.term-md__content table,
+.term-chat__text table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
+  margin: 0 0 10px;
 }
 
 .term-md__content th,
-.term-md__content td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
+.term-md__content td,
+.term-chat__text th,
+.term-chat__text td {
+  border: 1px solid rgba(var(--tint-rgb), 0.22);
+  padding: 4px 10px;
+  vertical-align: top;
+}
+
+.term-md__content th,
+.term-chat__text th {
+  background: rgba(var(--tint-rgb), 0.06);
+  font-weight: 600;
+}
+
+.term-md__content th:not([align]),
+.term-chat__text th:not([align]) {
+  text-align: start;
 }
 
 /* Chat panel — replaces the markdown overlay on chat-capable agent nodes (Cmd+M). */
