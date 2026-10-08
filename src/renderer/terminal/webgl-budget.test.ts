@@ -806,6 +806,29 @@ describe('loseWebglContexts', () => {
     expect(lose).toHaveBeenCalledTimes(1)
   })
 
+  it('loses the original context through a retained canvas after addon detachment', () => {
+    const lose = vi.fn()
+    let attached = true
+    const originalContext = { getExtension: () => ({ loseContext: lose }) }
+    const canvas = {
+      get isConnected() { return attached },
+      getContext(type: string) { return type === 'webgl2' ? originalContext : null }
+    }
+    // An addon detach changes DOM membership, not the context held by the captured element.
+    attached = false
+    expect(canvas.isConnected).toBe(false)
+    expect(loseWebglContexts([canvas] as never)).toBe(1)
+    expect(lose).toHaveBeenCalledTimes(1)
+  })
+
+  it('continues retiring captured contexts when an earlier canvas throws', () => {
+    const lose = vi.fn()
+    const broken = fakeCanvas(null, { throws: true })
+    const live = fakeCanvas({ getExtension: () => ({ loseContext: lose }) })
+    expect(loseWebglContexts([broken, live] as never)).toBe(1)
+    expect(lose).toHaveBeenCalledTimes(1)
+  })
+
   it('fails open on a throwing canvas and a missing extension', () => {
     const bad = fakeCanvas(null, { throws: true })
     const noExt = fakeCanvas({ getExtension: () => null })

@@ -10,6 +10,7 @@ import {
   IOS_APP_KEY_COMMENT,
   keyCommentOf,
   filterAuthorizedKeys,
+  holdsPairedRelayKey,
   isValidEd25519PublicKey,
   normalizeAuthorizedKeysLine,
   normalizeDeviceName,
@@ -384,6 +385,33 @@ describe('device registry helpers', () => {
   })
 })
 
+describe('holdsPairedRelayKey (audit A07-late)', () => {
+  // What the standing host asks before pinning a phone it has not pinned: did a pairing that is
+  // still listed record this key from its sealed body?
+  const dev = (id: string, relayBoxKey?: string): DeviceEntry => ({
+    id,
+    name: id,
+    token: `tok-${id}`,
+    pairedAt: 1,
+    lastSeenAt: 0,
+    ...(relayBoxKey ? { relayBoxKey } : {})
+  })
+
+  it('matches only a key a listed pairing recorded, exactly', () => {
+    const devices = [dev('a', 'KEY-A'), dev('b'), dev('c', 'KEY-C')]
+    expect(holdsPairedRelayKey(devices, 'KEY-A')).toBe(true)
+    expect(holdsPairedRelayKey(devices, 'KEY-C')).toBe(true)
+    expect(holdsPairedRelayKey(devices, 'KEY-B')).toBe(false)
+    expect(holdsPairedRelayKey(devices, 'key-a')).toBe(false)
+    expect(holdsPairedRelayKey(removeDevice(devices, 'a'), 'KEY-A')).toBe(false)
+  })
+
+  it('an empty key never matches, not even a pairing that recorded none', () => {
+    expect(holdsPairedRelayKey([dev('a'), { ...dev('b'), relayBoxKey: '' }], '')).toBe(false)
+    expect(holdsPairedRelayKey([], 'KEY-A')).toBe(false)
+  })
+})
+
 describe('DeviceEntry.relayDeviceId', () => {
   // The desktop mints its OWN device id (it stamps the authorized_keys comment) and the phone
   // sends its own — and only the phone's is what the server keys `relay_devices` on. Keeping
@@ -452,6 +480,19 @@ describe('pickLanIPv4', () => {
       ]
     })
     expect(picked).toBe('192.168.1.42')
+  })
+
+  it('shares automatic physical-adapter preference and strict address rejection with QR/LAN refresh', () => {
+    expect(pickLanIPv4({
+      docker0: [{ address: '172.17.0.1', family: 4, internal: false }],
+      wg0: [{ address: '10.7.0.2', family: 4, internal: false }],
+      wlan0: [{ address: '192.168.1.42', family: 4, internal: false }],
+    })).toBe('192.168.1.42')
+    expect(pickLanIPv4({ en0: [
+      { address: '999.1.2.3', family: 4, internal: false },
+      { address: '127.0.0.2', family: 4, internal: false },
+      { address: '224.1.2.3', family: 4, internal: false },
+    ] })).toBeNull()
   })
 
   it('accepts the numeric family form (family: 4)', () => {
@@ -527,7 +568,13 @@ describe('pickPairingIPv4', () => {
     expect(pickPairingIPv4(ifaces, '10.9.9.9')).toBe('192.168.1.42')
     expect(pickPairingIPv4(ifaces, null)).toBe('192.168.1.42')
   })
-  it('falls back to the old pick when only virtual adapters exist', () => {
+  it('accepts a current secondary adapter address as a hint, but rejects malformed/non-unicast hints', () => {
+    const current = { docker0: [nic('172.17.0.1'), nic('172.17.0.2')], wlan0: [nic('192.168.1.42')] }
+    expect(pickPairingIPv4(current, '172.17.0.2')).toBe('172.17.0.2')
+    expect(pickPairingIPv4({ bad: [nic('999.1.2.3')], wlan0: [nic('192.168.1.42')] }, '999.1.2.3')).toBe('192.168.1.42')
+  })
+
+  it('keeps a valid fallback when only virtual adapters exist', () => {
     expect(pickPairingIPv4({ 'vEthernet (WSL)': [nic('172.20.48.1')] }, null)).toBe('172.20.48.1')
   })
 })

@@ -9,10 +9,12 @@
 // pendingId or an fs error resolves false / logs, never throws.
 
 import fs from 'fs'
+import { randomUUID } from 'crypto'
 import os from 'os'
 import path from 'path'
-import { writeFileAtomic } from '../fs-atomic'
+import { renameAtomic, writeFileAtomic } from '../fs-atomic'
 import { normalizeClaude, type NormalizedAgentEvent } from '../../shared/agents/normalize'
+import { buildHookReply, HOOK_REQUEST_MAX_BYTES, type HookAnswer } from '../../shared/hook-answers'
 import { isBoundedAnswerContent, PENDING_REQUEST_MAX_BYTES, type HeldPermissionIo } from './permission-decision'
 
 /** pendingId shape the script generates (`<node>-<ms>-<pid>`) and the ONLY thing we interpolate
@@ -35,10 +37,87 @@ export function pendingDir(homeDir: string = os.homedir()): string {
 }
 
 /**
- * Write the answer file for a held permission hook, atomically (tmp + rename, mode 0600).
- * Resolves true on success, false on an invalid pendingId, content the hook script would not
- * print (`isBoundedAnswerContent` — the legacy words, or a core-built JSON decision), or any fs
- * error (fail-open — the hook simply times out to the interactive prompt).
+ * What writing an answer did. `gone` is the hook's hold having ENDED — it deletes
+ * `<pendingId>.json` when it times out (managed-script.ts) or when another surface answered — so no
+ * answer can reach it any more and the interactive prompt is (or was) on screen instead. `failed` is
+ * a write that could not happen. The two are different facts for a caller: one says "go to the
+ * session", the other "try again" (audit A06/A35).
+ */
+export type PendingAnswerResult = 'sent' | 'gone' | 'failed'
+
+/** The script appends its timestamp and PID to THIS node, not an arbitrary valid filename. */
+export function pendingBelongsToNode(nodeId: string, pendingId: string): boolean {
+  return /^[A-Za-z0-9_-]{1,200}$/.test(nodeId) && isValidPendingId(pendingId) &&
+    pendingId.startsWith(`${nodeId}-`) && /^\d+-\d+$/.test(pendingId.slice(nodeId.length + 1))
+}
+
+/** Structured v2 answers are derived from the live request; clients never send hook output. */
+export async function answerPendingHookLocal(
+  nodeId: string, pendingId: string, answer: HookAnswer, homeDir: string = os.homedir()
+): Promise<PendingAnswerResult> {
+  if (!pendingBelongsToNode(nodeId, pendingId)) return 'failed'
+  const dir = pendingDir(homeDir)
+  const request = path.join(dir, `${pendingId}.json`)
+  let temporary: string | undefined
+  try {
+    const before = await fs.promises.lstat(request)
+    if (!before.isFile() || before.isSymbolicLink() || before.size > HOOK_REQUEST_MAX_BYTES) return 'failed'
+    const bytes = await fs.promises.readFile(request)
+    if (bytes.length > HOOK_REQUEST_MAX_BYTES) return 'failed'
+    const reply = buildHookReply(JSON.parse(bytes.toString('utf8')), answer)
+    if (!reply) return 'failed'
+    temporary = path.join(dir, `.reply-${randomUUID()}.tmp`)
+    await fs.promises.writeFile(temporary, reply, { mode: 0o600, flag: 'wx' })
+    // Check AFTER the complete reply is written: a timeout during that write must not publish.
+    const after = await fs.promises.lstat(request)
+    if (!after.isFile() || after.isSymbolicLink() || before.ino !== after.ino || before.dev !== after.dev ||
+        before.mtimeMs !== after.mtimeMs || before.size !== after.size) return 'failed'
+    await renameAtomic(temporary, path.join(dir, `${pendingId}.answer`))
+    return 'sent'
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'gone' : 'failed'
+  } finally {
+    if (temporary) await fs.promises.unlink(temporary).catch(() => {})
+  }
+}
+
+/**
+ * Answer a held permission hook: check its request file still exists, then write the one-line answer
+ * file atomically (tmp + rename, mode 0600). The `decision` is written verbatim as the hook script
+ * compares it against the literals `allow` / `deny`. Never throws.
+ *
+ * The existence check is what stops a late answer (the phone's usual case: the hold is 45 s) from
+ * being reported — and optimistically broadcast — as delivered. A hook that times out between the
+ * check and the write leaves an orphan `.answer`, which the sweep removes; closing that window fully
+ * would need the hook to announce its timeout.
+ */
+export async function answerPendingLocal(
+  pendingId: string,
+  decision: 'allow' | 'deny',
+  homeDir: string = os.homedir()
+): Promise<PendingAnswerResult> {
+  if (!isValidPendingId(pendingId)) return 'failed'
+  if (decision !== 'allow' && decision !== 'deny') return 'failed'
+  const dir = pendingDir(homeDir)
+  try {
+    await fs.promises.access(path.join(dir, `${pendingId}.json`))
+  } catch (e) {
+    // Only a definite ENOENT is evidence the hold ended; anything else is a failed read.
+    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'gone' : 'failed'
+  }
+  const file = path.join(dir, `${pendingId}.answer`)
+  try {
+    // writeFileAtomic: unique tmp + retrying rename (core/fs-atomic.ts); removes its temp on failure.
+    await writeFileAtomic(file, decision, { mode: 0o600 })
+    return 'sent'
+  } catch {
+    return 'failed'
+  }
+}
+
+/**
+ * Write legacy words or an upstream structured decision for a hold that still exists.
+ * Content must satisfy the managed script's bound; an expired hold is never reported as sent.
  */
 export async function writePendingAnswerLocal(
   pendingId: string,
@@ -50,7 +129,7 @@ export async function writePendingAnswerLocal(
   const dir = pendingDir(homeDir)
   const file = path.join(dir, `${pendingId}.answer`)
   try {
-    await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
+    await fs.promises.access(path.join(dir, `${pendingId}.json`))
     // writeFileAtomic: unique tmp + retrying rename (core/fs-atomic.ts); removes its temp on failure.
     await writeFileAtomic(file, content, { mode: 0o600 })
     return true

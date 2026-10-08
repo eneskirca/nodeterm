@@ -4,6 +4,7 @@ import { FIND_DECORATIONS } from '../../lib/palette'
 import { ptyRefusal } from '@shared/pty-refusal'
 
 import { patchImeModeSwitch } from '../../terminal/ime-mode-switch'
+import { bindXtermInput } from '../../terminal/xterm-input'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -14,6 +15,7 @@ import type { AgentId } from '@shared/agents/config'
 import { effectiveAccountId } from '../../lib/accountChip'
 import { readsClaudeTranscript } from '../../lib/transcriptGates'
 import { liveProjectJumpTarget } from '../../lib/projectJump'
+import { isBrowserRuntime } from '../../bridge/runtime'
 import { terminalChordBubbles, terminalShortcutPolicy } from '../../lib/keybindingOverrides'
 import { focusXtermUnlessCovered, useMdModeFocus } from '../../terminal/useMdModeFocus'
 import { FindBar } from '../FindBar'
@@ -45,7 +47,6 @@ import {
   makeDirListingLookup,
   type UnverifiedPath
 } from '../../terminal/file-links'
-import { isBrowserRuntime } from '../../bridge/runtime'
 import { fileLinkDialect } from '../../terminal/file-link-dialect'
 import { hostPlatformFor } from '../../terminal/host-platform'
 import { sshFs } from '../../terminal/ssh-fs'
@@ -84,6 +85,7 @@ import {
   sshConnectionScope
 } from '../../nodes/TerminalNode'
 import { buildSshArgs, type SshConnection } from '@shared/ssh'
+import { subscribeSshReattach } from '../../lib/sshReconnect'
 
 /** The subset of a node's `data` a SECOND client needs to attach to its session the same way the
  *  canvas TerminalNode does. Canvas fills it from the node's data; sticky/chat cards pass `{}`. */
@@ -119,6 +121,7 @@ export interface ModalSpawn {
  */
 interface ModalTerminalProps {
   nodeId: string
+  ownerProjectId?: string
   spawn: ModalSpawn
   /** The modal header's 🔍 toggle — the FindBar renders inside this pane. */
   searchOpen: boolean
@@ -142,6 +145,7 @@ interface ModalTerminalProps {
 
 export function ModalTerminal({
   nodeId,
+  ownerProjectId: explicitOwnerProjectId,
   spawn,
   searchOpen,
   onCloseSearch,
@@ -151,6 +155,11 @@ export function ModalTerminal({
 }: ModalTerminalProps) {
   const session = useSession()
   const { api } = session
+  const ownerProjectId = explicitOwnerProjectId ?? projectId ?? owningProjectId()
+  const [attachRevision, setAttachRevision] = useState(0)
+  const sshScopeId = spawn.sshRemoteTmux && spawn.ssh
+    ? sshConnectionScope(spawn.ssh, ownerProjectId)
+    : null
   // Read at click time from the lifecycle effect, which runs once per mount.
   const projectIdRef = useRef(projectId)
   projectIdRef.current = projectId
@@ -205,12 +214,12 @@ export function ModalTerminal({
   useContextEnsure(api.context, nodeId, spawn.agentId ?? observedAgentId, transcript.sessionId, transcript.cwd,
     effectiveAccountId(spawn.accountId, observedAccount, claudeAccounts))
   // One shallow-compared subscription for the whole appearance slice — see useXtermVisualSettings.
-  // MIRROR TerminalNode: scoped to the OWNING project (`owningProjectId`, the active one — a modal
-  // only ever opens over it), deliberately NOT this card's connection scope. `sshConnectionScope`
+  // Scoped to the card's OWNING project, including an inactive global-board lane,
+  // deliberately NOT this card's connection scope. `sshConnectionScope`
   // answers a project×host attachment id for a session on a foreign host, which names no project at
   // all — the per-project appearance would silently vanish for exactly those cards.
   // …and the NODE's own font size (issue #915), so this second view matches the canvas one.
-  const visual = useXtermVisualSettings(owningProjectId(), spawn.terminalFontSize)
+  const visual = useXtermVisualSettings(ownerProjectId, spawn.terminalFontSize)
   // MIRROR TerminalNode: the xterm is BUILT from the effective appearance, not the bare globals.
   const visualRef = useRef(visual)
   visualRef.current = visual
@@ -306,7 +315,21 @@ export function ModalTerminal({
 
     let sessionId: string | null = null
     let dead = false
+    let connectionLost = false
     const cleanups: Array<() => void> = []
+    if (sshScopeId) {
+      cleanups.push(subscribeSshReattach(sshScopeId, nodeId, () => {
+        if (dead || !connectionLost) return
+        // Clear synchronously: two notifications before React commits still rebuild only once.
+        connectionLost = false
+        setAttachRevision((revision) => revision + 1)
+      }))
+    }
+    const reportConnectionLost = () => {
+      if (dead || !sshScopeId) return
+      connectionLost = true
+      reportSshDrop(sshScopeId, nodeId)
+    }
 
     // MIRROR TerminalNode's link wiring. The URL provider handles Cmd/Ctrl+click on URL text when
     // mouse-reporting is off (plain-shell sessions); the capture-phase fallback is what works under
@@ -472,11 +495,18 @@ export function ModalTerminal({
       // focus etc. mean nothing here), so those chords keep reaching the pty; app-scope
       // allowInTerminal commands still bubble, matching what the dispatcher would claim.
       const registryOwns = terminalChordBubbles(e, true)
-      const action = terminalKeyAction(e, term.hasSelection(), ownsProjectJump, registryOwns)
+      const action = terminalKeyAction(
+        e,
+        term.hasSelection(),
+        ownsProjectJump,
+        registryOwns,
+        undefined,
+        { isDesktop: !isBrowserRuntime(), isMac: isMacPlatform() }
+      )
       if (action === 'pass') return true
       // 'bubble': hand the chord to the window dispatcher — no preventDefault (it bails on
       // defaultPrevented), no xterm processing. 'native' leaves the event uncancelled for the
-      // PLATFORM's own paste (Windows Ctrl+V). See TerminalNode's twin comment.
+      // Desktop Quit role or PLATFORM paste (Windows Ctrl+V). See TerminalNode's twin comment.
       if (action === 'bubble' || action === 'native') return false
       e.preventDefault()
       if (action === 'copy') window.nodeTerminal.clipboard.writeText(term.getSelection())
@@ -485,18 +515,12 @@ export function ModalTerminal({
     })
 
     void (async () => {
-      // Read here, not at click time: a modal only ever opens over the ACTIVE project, and the
-      // reconnect coordinator is keyed by CONNECTION SCOPE (same choice resolveSshRemote makes) —
-      // the project's own id, or the host attachment when this card's session is on a machine the
-      // project isn't.
-      const projectId =
-        spawn.sshRemoteTmux && spawn.ssh
-          ? sshConnectionScope(spawn.ssh)
-          : useProjects.getState().activeProjectId
+      // Resolve against the card's captured owner, including an inactive global-board lane.
+      // Drops and reattachment notifications use that owner's exact connection scope.
       // SSH-project node: resolve the live ControlMaster (may not be up yet on a cold load).
       const sshRemote =
         spawn.sshRemoteTmux && spawn.ssh
-          ? await resolveSshRemote(spawn.ssh, spawn.cwd, { nodeId, pty: api.pty })
+          ? await resolveSshRemote(spawn.ssh, spawn.cwd, { nodeId, pty: api.pty }, ownerProjectId)
           : undefined
       if (dead) return
       // The host is unreachable: spawn NOTHING. A create with no `sshRemote` falls through to
@@ -507,7 +531,7 @@ export function ModalTerminal({
         term.write(
           `\r\n\x1b[90m[not connected — this session lives on ${spawn.ssh ? `${spawn.ssh.user}@${spawn.ssh.host}` : 'the remote host'}; nothing was started locally]\x1b[0m\r\n`
         )
-        if (projectId) reportSshDrop(projectId, nodeId)
+        reportConnectionLost()
         return
       }
       // A local `ssh <host>` node runs ssh as its own pty program (shell:'ssh' + buildSshArgs); an
@@ -525,17 +549,23 @@ export function ModalTerminal({
         // project is not the active canvas), the pane must still record its true owner. Use the
         // CARD's project resolved above, NOT the active canvas id — the modal may be for a
         // non-active project. Recorded main-side only on a genuine fresh spawn.
-        ownerProjectId: projectId,
+        ownerProjectId,
         agentId: spawn.agentId,
         accountId: spawn.accountId,
         sshRemote,
         requireRemote: spawn.sshRemoteTmux
       })
+      // A superseded generation must not paint or queue a drop, even for a refused create.
+      // Successful late creates still owe their exact viewer a detach.
+      if (dead) {
+        if (!res.unavailable && !res.closed) transport.kill(res.sessionId)
+        return
+      }
       // Refused core-side (the master died inside our round-trip, or `ssh` is missing).
       if (res.unavailable) {
         const refusal = ptyRefusal(res.unavailable)
         term.write(`\r\n\x1b[90m[${refusal.message}]\x1b[0m\r\n`)
-        if (refusal.connectionLost && projectId) reportSshDrop(projectId, nodeId)
+        if (refusal.connectionLost) reportConnectionLost()
         return
       }
       // Another client permanently deleted this node's session — never resurrect it (no live session
@@ -544,19 +574,26 @@ export function ModalTerminal({
         term.write('\r\n\x1b[90m[session closed by another user]\x1b[0m\r\n')
         return
       }
-      // Unmounted while the create was in flight: detach the viewer we just registered so it doesn't
-      // linger as a phantom subscriber constraining the shared pty's size.
-      if (dead) {
-        transport.kill(res.sessionId)
-        return
-      }
       sessionId = res.sessionId
       sessionIdRef.current = res.sessionId
+      // Acquire before output/seed parsing can produce terminal replies. Release only this view;
+      // a surviving co-viewer immediately becomes the response owner for this session generation.
+      const disposeInput = bindXtermInput(term, api.pty, res.sessionId, (d) => {
+        if (!dead) transport.write(res.sessionId, d)
+      })
+      cleanups.push(disposeInput)
+      // Core removes subscribers before killing a destroyed/recycled generation, so its exit
+      // event need not arrive. Retire the input lease without changing the card's UI/launch path.
+      cleanups.push(transport.onClosed(res.sessionId, disposeInput))
+      cleanups.push(transport.onRecycled(res.sessionId, disposeInput))
       cleanups.push(transport.onData(res.sessionId, (d) => term.write(d)))
       cleanups.push(
-        transport.onExit(res.sessionId, () =>
+        transport.onExit(res.sessionId, (code) => {
+          if (dead) return
+          disposeInput()
           term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n')
-        )
+          if (code === 255) reportConnectionLost()
+        })
       )
       // The pty runs at the SMALLEST subscriber's grid; render exactly what it tells us and letterbox
       // the rest (the canvas node votes independently — the modal's smaller pane may shrink it).
@@ -564,7 +601,6 @@ export function ModalTerminal({
         cleanups.push(
           transport.onSize(res.sessionId, (size) => term.resize(size.cols, size.rows))
         )
-      term.onData((d) => sessionId && transport.write(sessionId, d))
       // DELIBERATELY omitted vs. TerminalNode: no flow-control pause (transport.setFlow) and no
       // onResync handler. The pty's pacing/backpressure comes from the canvas node's client — the
       // modal is a transient, always-on-top second view and never drives the shared session's flow.
@@ -628,7 +664,7 @@ export function ModalTerminal({
       transportRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId])
+  }, [nodeId, ownerProjectId, sshScopeId, attachRevision])
 
   // Live-apply the appearance settings, mirroring the canvas node's effect (see TerminalNode) —
   // without this the modal kept whatever it was built with, so changing the font or the theme with
@@ -669,7 +705,7 @@ export function ModalTerminal({
     let paths: string[]
     if (spawn.sshRemoteTmux) {
       // Uploads go over the master this card's PTY runs on — its scope, not the project's.
-      const projectId = nodeUploadScope(spawn.ssh)
+      const projectId = nodeUploadScope(spawn.ssh, ownerProjectId)
       setUploading(true)
       try {
         paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })

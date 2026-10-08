@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Switch } from '@renderer/ui/Switch'
 import { useSettings } from '@renderer/state/settings'
 import { usePhonePairing } from './settings/usePhonePairing'
-import { mobileStoreLinks } from '@renderer/lib/links'
+import { ANDROID_APP_LABEL, ANDROID_APP_URL, ANDROID_APP_PUBLISHED, mobileStoreLinks } from '@renderer/lib/links'
 import { hostOsFromNavigator, sshServerCopy } from '@shared/ssh-server'
 import {
   pairingEndedMessage,
@@ -197,6 +197,14 @@ export function PhonePairPopover({
             {store.label} ↗
           </button>
         ))}
+        {!ANDROID_APP_PUBLISHED && (
+          <button
+            className="phone-pair__link phone-pair__footer"
+            onClick={() => window.nodeTerminal.shell.openExternal(ANDROID_APP_URL)}
+          >
+            {ANDROID_APP_LABEL} ↗
+          </button>
+        )}
         <button className="phone-pair__link phone-pair__footer" onClick={onOpenSettings}>
           All phone settings…
         </button>

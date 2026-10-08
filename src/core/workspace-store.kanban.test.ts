@@ -30,8 +30,8 @@ const SSH = { server: { host: 'h', user: 'u' }, remoteCwd: '~/x' } as unknown as
 const projectFile = (): string => path.join(projRoot, '.nodeterm/project.json')
 const readFile = async (): Promise<Record<string, any>> =>
   JSON.parse(await fs.readFile(projectFile(), 'utf-8'))
-const externalChanges = (): Record<string, any>[] =>
-  fake.sent.filter((s) => s.channel === 'workspace:external-change').map((s) => s.args[0])
+const serverChanges = (): Record<string, any>[] =>
+  fake.sent.filter((s) => s.channel === 'workspace:server-change').map((s) => s.args[0])
 
 /** An ssh IO whose "server" is one in-memory string, so a mirror write is observable. */
 function fakeRemote(initial: string | null = null): RemoteWorkspaceIO & { content: string | null; writes: number } {
@@ -83,8 +83,8 @@ describe('ensureRemoteBoard (the phone creating a board that never existed)', ()
     expect(file.rev).toBe(2)
     // Ours, and announced by us — the renderer must adopt it or the next autosave reverts it.
     expect(store.isSelfWrite(projectFile(), await fs.readFile(projectFile(), 'utf-8'))).toBe(true)
-    expect(externalChanges()).toHaveLength(1)
-    expect(externalChanges()[0].kanban.columns).toHaveLength(3)
+    expect(serverChanges()).toHaveLength(1)
+    expect(serverChanges()[0].kanban.columns).toHaveLength(3)
   })
 
   it('is idempotent: an existing board comes back untouched, with no second write', async () => {
@@ -129,8 +129,8 @@ describe('setRemoteCardColumn (the phone moving a card)', () => {
 
     expect(await store.setRemoteCardColumn('p1', 'term-1', 'kcol-b')).toBe(true)
     expect((await readFile()).kanban.assignments).toEqual([{ nodeId: 'term-1', columnId: 'kcol-b', rank: expect.any(String) }])
-    expect(externalChanges()).toHaveLength(1)
-    expect(externalChanges()[0].kanban.assignments).toEqual([{ nodeId: 'term-1', columnId: 'kcol-b', rank: expect.any(String) }])
+    expect(serverChanges()).toHaveLength(1)
+    expect(serverChanges()[0].kanban.assignments).toEqual([{ nodeId: 'term-1', columnId: 'kcol-b', rank: expect.any(String) }])
   })
 
   it('null moves the card to Ungrouped', async () => {
@@ -199,8 +199,8 @@ describe('an SSH project (the case the phone can never write itself)', () => {
     expect(io.writes).toBeGreaterThan(mirrorsBefore)
     expect(JSON.parse(io.content!).kanban.columns).toHaveLength(3)
     // Announced, so the live canvas adopts it instead of the next autosave writing the old board back.
-    expect(externalChanges()[0]).toMatchObject({ id: 'ssh1' })
-    expect(externalChanges()[0].kanban.columns).toHaveLength(3)
+    expect(serverChanges()[0]).toMatchObject({ id: 'ssh1' })
+    expect(serverChanges()[0].kanban.columns).toHaveLength(3)
   })
 
   it('moves a card and mirrors it, and the reloaded workspace carries the move', async () => {
@@ -248,7 +248,7 @@ describe('an SSH project (the case the phone can never write itself)', () => {
     expect(io.content).toBeNull() // nothing reached the server yet
 
     allowWrite = true
-    const adopted = externalChanges()[0] as Project
+    const adopted = serverChanges()[0] as Project
     await store.save(ws([adopted]))
     expect(JSON.parse(io.content!).kanban.columns).toHaveLength(3)
   })
@@ -288,7 +288,8 @@ describe('an SSH project (the case the phone can never write itself)', () => {
 
     expect(reads).toBe(0)
     expect(io.writes).toBe(0)
-    expect(externalChanges()).toEqual([])
+    expect(serverChanges()).toEqual([])
+    expect(fake.sent.filter((s) => s.channel === 'workspace:external-change')).toEqual([])
     expect(await fs.readFile(path.join(userData, 'workspace.json'), 'utf-8')).toBe(indexBefore)
   })
 })
@@ -321,8 +322,8 @@ describe('editRemoteCardLabels (the phone labelling a session)', () => {
       cardLabelIds: ['klbl-bug']
     })
     expect((await readFile()).kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
-    expect(externalChanges()).toHaveLength(1)
-    expect(externalChanges()[0].kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
+    expect(serverChanges()).toHaveLength(1)
+    expect(serverChanges()[0].kanban.meta).toEqual([{ nodeId: 'term-1', labels: ['klbl-bug'] }])
   })
 
   it('the first label on a board-less project seeds the default board', async () => {

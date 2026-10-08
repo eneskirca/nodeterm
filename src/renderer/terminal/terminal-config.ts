@@ -7,6 +7,7 @@ import type {
   TerminalCursorStyle
 } from '@shared/types'
 import { isWindowsPlatform } from '@shared/platform-utils'
+import { matchesShortcut } from '@shared/shortcut'
 import { isKnownTerminalThemeId, resolveTerminalTheme } from './themes'
 
 /**
@@ -859,6 +860,12 @@ export const SHIFT_ENTER_SEQ = '\x1b\r'
 
 export type TerminalKeyAction = CopyKeyAction | 'shift-enter' | 'bubble' | 'native'
 
+/** Only the native Desktop shell owns Quit; a Server browser keeps its terminal keymap. */
+export interface TerminalNativeShell {
+  isDesktop: boolean
+  isMac: boolean
+}
+
 /**
  * Superset of `copyKeyAction` used by the terminal's custom key handler.
  *
@@ -881,8 +888,19 @@ export function terminalKeyAction(
   hasSelection: boolean,
   ownsProjectJump = false,
   registryOwns = false,
-  isWindows: boolean = isWindowsPlatform()
+  isWindows: boolean = isWindowsPlatform(),
+  nativeShell?: TerminalNativeShell
 ): TerminalKeyAction {
+  // Quit is an always-live native role, including terminal-first and shortcut recording.
+  // xterm otherwise sends Ctrl+Q as XON and cancels the keydown before the menu can see it.
+  // Skip both xterm key phases WITHOUT preventing default; only the exact platform chord is
+  // native. Server terminals have no app Quit role and retain their normal Ctrl+Q bytes.
+  if (
+    nativeShell?.isDesktop &&
+    (e.type === 'keydown' || e.type === 'keyup') &&
+    matchesShortcut(e, 'Cmd+Q', nativeShell.isMac)
+  )
+    return 'native'
   if (
     e.type === 'keydown' &&
     e.key === 'Enter' &&

@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'crypto'
 import { spawn, execFile, execFileSync } from 'child_process'
 import { app, ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc'
+import type { PtyCreateOptions } from '../../shared/types'
 import { getMainWindow, sendToMain } from '../main-window'
 import {
   parseLsDirs,
@@ -38,6 +39,7 @@ import { allowMediaPath } from '../media-protocol'
 import { remoteAccountConfigDir, isSupportedClaudeVersion } from '../../core/claude-accounts-core'
 import type { PushGrant } from '../../core/push-grants'
 import { REMOTE_GRANT_SCAN_CMD, parseRemoteGrants } from '../../core/remote-push-grants'
+import { REMOTE_ACK_SWEEP_CMD, remoteAckSweepInput } from '../../core/ack-sweep'
 import { supportsAutoPermissionMode, supportsFullscreenTui } from '../../shared/agents/config'
 import {
   controlPathFor,
@@ -80,6 +82,12 @@ import { appSshAgent } from './ssh-agent'
 import { probeAgentSockToPin } from '../../core/remote-ssh/agent-probe'
 import { sessionName } from '../../core/tmux-naming'
 import { remoteAtomicWrite, runRemoteAtomicWrite } from '../remote-atomic-write'
+import { pendingBelongsToNode, type PendingAnswerResult } from '../../core/agents/pending-approvals'
+import { buildHookReply, HOOK_REQUEST_MAX_BYTES, type HookAnswer } from '../../shared/hook-answers'
+
+/** The remote answer command's exit status for "the hook's hold already ended" (no request file).
+ *  ssh itself uses 255 and tmux/sh 1/2/126/127, so 3 cannot be mistaken for a transport failure. */
+const PENDING_GONE_EXIT = 3
 import { isBoundedAnswerContent, PENDING_REQUEST_MAX_BYTES } from '../../core/agents/permission-decision'
 import { buildCodexLauncherScript } from '../../core/codex-identity-proxy'
 import {
@@ -1625,6 +1633,26 @@ export class SshProjectManager {
   }
 
   /**
+   * The full `sshRemote` a pty needs to run a node of this project on its host — the same fields
+   * the renderer assembles from a `connected` status. `undefined` while no master exists or while
+   * the connect's setup chain is still running (a session created before the hook tunnel and the
+   * remote tmux.conf are in place would have neither — see `connectOnce`). Used by the relay host so
+   * a phone's attach of an SSH-project node runs on the host, never locally (audit A09).
+   */
+  sshRemoteFor(projectId: string, fallbackRemoteCwd?: string): NonNullable<PtyCreateOptions['sshRemote']> | undefined {
+    const c = this.conns.get(projectId)
+    if (!c || this.inFlight.has(projectId)) return undefined
+    return {
+      controlPath: c.controlPath,
+      conn: c.conn,
+      remoteCwd: c.remoteCwd ?? fallbackRemoteCwd ?? '~',
+      ...(c.hookEndpointPath ? { hookEndpointPath: c.hookEndpointPath } : {}),
+      ...(c.tmuxConfPath ? { tmuxConfPath: c.tmuxConfPath } : {}),
+      ...(c.remoteHome ? { remoteHome: c.remoteHome } : {})
+    }
+  }
+
+  /**
    * Everything a remote SPAWN needs from this connection, for spawns the renderer did not build —
    * today the relay host's `pty.attach` (core `prepareRelayAttach`). The same facts the renderer
    * reads off the `connected` event (`resolveSshRemote`), read here from the entry itself.
@@ -1968,32 +1996,37 @@ export class SshProjectManager {
    * `~/.nodeterm/acks/<nodeId>.seen` on the host it can reach; for a Mac→SSH node that host is the
    * REMOTE one, so the desktop must consume them over the ControlMaster, the local-fs sweep never
    * sees them. One command per connected HOST (deduped by host key, since projects sharing a host
-   * share `$HOME/.nodeterm/acks`) atomically lists + deletes each `.seen` and prints its nodeId; the
+   * share `$HOME/.nodeterm/acks`) receives the union of owned node ids on stdin, consumes only those
+   * files and prints their nodeIds. Files belonging to another desktop stay unread and intact; the
    * returned ids are fed the SAME `ackDone` + unread-clear path a local ack takes. Best-effort, a
    * disconnected/failed project simply contributes nothing. The command is fully literal (no
-   * interpolation), and the returned nodeIds are used only as in-memory map keys (never a path), so
-   * a compromised host can at worst clear an unread badge / resolve a done card it can guess.
+   * interpolation), and returned ids must belong to the allowlist sent to that host.
    */
   async sweepRemoteAcks(): Promise<string[]> {
-    // List then delete each `~/.nodeterm/acks/*.seen`, printing the basename (nodeId). The `break` on
-    // a non-existent first match handles the no-glob case (the pattern stays literal when nothing
-    // matches). Absent dir ⇒ exit 0 (nothing swept).
-    const cmd =
-      'd="$HOME/.nodeterm/acks"; [ -d "$d" ] || exit 0; ' +
-      'for f in "$d"/*.seen; do [ -e "$f" ] || break; ' +
-      'printf "%s\\n" "$(basename "$f" .seen)"; rm -f "$f"; done'
-    const seenHosts = new Set<string>()
-    const out: string[] = []
-    for (const c of this.conns.values()) {
+    // Projects sharing one HOME need one UNION of their owned nodes before host deduplication.
+    const hosts = new Map<string, { conn: Conn; nodeIds: Set<string> }>()
+    for (const [projectId, c] of this.conns) {
       const hk = sshHostKey(c.conn)
-      if (seenHosts.has(hk)) continue
-      seenHosts.add(hk)
+      const host = hosts.get(hk) ?? { conn: c, nodeIds: new Set<string>() }
+      hosts.set(hk, host)
       try {
-        const { code, stdout } = await this.r.run(childArgs(c.conn, c.controlPath, cmd))
+        for (const id of this.r.nodeIdsForProject?.(projectId) ?? []) host.nodeIds.add(id)
+      } catch {
+        // Unknown ownership leaves this project's acks for a later pass.
+      }
+    }
+    const out: string[] = []
+    for (const { conn: c, nodeIds } of hosts.values()) {
+      const input = remoteAckSweepInput(nodeIds)
+      if (!input) continue
+      const owned = new Set(input.trimEnd().split('\n'))
+      try {
+        const { code, stdout } = await this.r.run(
+          childArgs(c.conn, c.controlPath, REMOTE_ACK_SWEEP_CMD), input
+        )
         if (code === 0 && stdout) {
           for (const line of stdout.split('\n')) {
-            const id = line.trim()
-            if (id) out.push(id)
+            if (owned.has(line) && !out.includes(line)) out.push(line)
           }
         }
       } catch {
@@ -2037,16 +2070,66 @@ export class SshProjectManager {
   }
 
   /**
-   * Deterministic hook-reply approvals (docs/hook-reply-approvals.md): write the answer file for a
-   * held REMOTE permission hook, on the project's host over its ControlMaster (atomic tmp+mv, 0600
-   * via umask). The hook is polling `~/.nodeterm/pending/<pendingId>.answer` on that host.
-   * `content` is a legacy word or a core-built JSON decision; it travels on STDIN, never in the
-   * remote command line (argv on both ends — a structured answer carries user text), and anything
-   * the hook script would not print is refused here too (`isBoundedAnswerContent`). `pendingId` is
-   * validated by the caller (main) before it reaches here; this method also refuses anything but the
-   * safe charset as defense-in-depth, since it interpolates into a remote shell command. No-ops
-   * (false) when the project isn't connected or the write fails.
+   * Deterministic hook-reply approvals (docs/hook-reply-approvals.md): write the one-line answer
+   * file for a held REMOTE permission hook, on the project's host over its ControlMaster (atomic
+   * tmp+mv, 0600 via umask). The hook is polling `~/.nodeterm/pending/<pendingId>.answer` on that
+   * host. `pendingId` is validated by the caller (main) before it reaches here; this method also
+   * refuses anything but the safe charset as defense-in-depth, since it interpolates into a remote
+   * shell command.
+   *
+   * The request file `<pendingId>.json` is checked IN THE SAME remote command (`exit 3` when it is
+   * missing): the hook deletes it when its hold ends, and an answer written after that is read by
+   * nobody — reporting it as delivered is what cleared NEEDS YOU for a prompt still waiting on the
+   * host (audit A06). `gone` is that case; `failed` is a disconnected project or a failed write.
    */
+  async answerPending(
+    projectId: string,
+    pendingId: string,
+    decision: 'allow' | 'deny'
+  ): Promise<PendingAnswerResult> {
+    const c = this.conns.get(projectId)
+    if (!c) return 'failed'
+    if (!/^[A-Za-z0-9_-]+$/.test(pendingId)) return 'failed'
+    if (decision !== 'allow' && decision !== 'deny') return 'failed'
+    const dir = c.remoteHome ? `${c.remoteHome}/.nodeterm/pending` : '~/.nodeterm/pending'
+    const file = `${dir}/${pendingId}.answer`
+    const request = quoteRemotePath(`${dir}/${pendingId}.json`)
+    const write = remoteAtomicWrite(file, decision, { restrictPermissions: true, mode: '600', makeParent: false })
+    const { code } = await this.r
+      .run(childArgs(c.conn, c.controlPath, `[ -f ${request} ] || exit ${PENDING_GONE_EXIT}; ${write.command}`), write.stdin)
+      .catch(() => ({ code: 1, stdout: '' }))
+    if (code === 0) return 'sent'
+    return code === PENDING_GONE_EXIT ? 'gone' : 'failed'
+  }
+
+  /** Structured reply: read the exact remote hold, derive its decision, and recheck before write. */
+  async answerPendingHook(projectId: string, nodeId: string, pendingId: string, answer: HookAnswer): Promise<PendingAnswerResult> {
+    const c = this.conns.get(projectId)
+    if (!c || !pendingBelongsToNode(nodeId, pendingId)) return 'failed'
+    const dir = c.remoteHome ? `${c.remoteHome}/.nodeterm/pending` : '~/.nodeterm/pending'
+    const request = quoteRemotePath(`${dir}/${pendingId}.json`)
+    try {
+      const read = await this.r.run(childArgs(c.conn, c.controlPath,
+        `[ -f ${request} ] || exit ${PENDING_GONE_EXIT}; [ ! -L ${request} ] || exit 2; ` +
+        `[ "$(head -c ${HOOK_REQUEST_MAX_BYTES + 1} ${request} | wc -c)" -le ${HOOK_REQUEST_MAX_BYTES} ] || exit 2; nt_c=$(cksum < ${request}) || exit 2; [ "${'${nt_c#* }'}" -le ${HOOK_REQUEST_MAX_BYTES} ] || exit 2; nt_body=$(head -c ${HOOK_REQUEST_MAX_BYTES + 1} ${request}) || exit 2; ` +
+        `[ "$nt_c" = "$(cksum < ${request})" ] || exit 2; printf '%s\\n%s' "$nt_c" "$nt_body"`))
+      if (read.code !== 0) return read.code === PENDING_GONE_EXIT ? 'gone' : 'failed'
+      const newline = read.stdout.indexOf('\n')
+      const checksum = read.stdout.slice(0, newline)
+      const raw = read.stdout.slice(newline + 1)
+      if (newline < 0 || !/^\d+ \d+$/.test(checksum) || Buffer.byteLength(raw) > HOOK_REQUEST_MAX_BYTES) return 'failed'
+      const reply = buildHookReply(JSON.parse(raw), answer)
+      if (!reply || this.conns.get(projectId) !== c) return 'failed'
+      const stillHeld = `[ -f ${request} ] || exit ${PENDING_GONE_EXIT}; [ ! -L ${request} ] || exit 2; ` +
+        `[ "$(cksum < ${request})" = ${posixQuote(checksum)} ] || exit 2`
+      const write = remoteAtomicWrite(`${dir}/${pendingId}.answer`, reply, { restrictPermissions: true, mode: '600', makeParent: false, beforePublish: stillHeld })
+      const result = await this.r.run(childArgs(c.conn, c.controlPath,
+        `[ -f ${request} ] || exit ${PENDING_GONE_EXIT}; [ ! -L ${request} ] || exit 2; ` +
+        `[ "$(cksum < ${request})" = ${posixQuote(checksum)} ] || exit 2; ${write.command}`), write.stdin)
+      return result.code === 0 ? 'sent' : result.code === PENDING_GONE_EXIT ? 'gone' : 'failed'
+    } catch { return 'failed' }
+  }
+
   async writePendingAnswer(
     projectId: string,
     pendingId: string,
@@ -2059,8 +2142,12 @@ export class SshProjectManager {
     const file = `${this.pendingDirFor(c)}/${pendingId}.answer`
     try {
       // The hook polls for this file, so it must never see a truncated answer under its name.
-      const write = remoteAtomicWrite(file, content, { restrictPermissions: true })
-      const { code } = await this.r.run(childArgs(c.conn, c.controlPath, write.command), write.stdin)
+      const request = quoteRemotePath(`${this.pendingDirFor(c)}/${pendingId}.json`)
+      const held = `[ -f ${request} ] || exit ${PENDING_GONE_EXIT}`
+      const write = remoteAtomicWrite(file, content, {
+        restrictPermissions: true, mode: '600', makeParent: false, beforePublish: held
+      })
+      const { code } = await this.r.run(childArgs(c.conn, c.controlPath, `${held}; ${write.command}`), write.stdin)
       return code === 0
     } catch {
       return false

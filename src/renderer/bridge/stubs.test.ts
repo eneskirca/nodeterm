@@ -3,6 +3,9 @@ import { buildStubApi, unsupported } from './stubs'
 import { E_UNSUPPORTED } from '../../shared/rpc'
 
 describe('bridge stubs', () => {
+  it('keeps computer pairing-network selection unsupported in the browser Server shell', async () => {
+    await expect(buildStubApi().pairing.listNetworks()).rejects.toMatchObject({ code: E_UNSUPPORTED })
+  })
   it('unsupported rejects with a coded error', async () => {
     await expect(unsupported('x.y')).rejects.toMatchObject({ code: E_UNSUPPORTED })
   })

@@ -210,7 +210,9 @@ describe('SessionHostClient geometry (issue #914)', () => {
     const client = new SessionHostClient({ userDataDir })
     await view(client, userDataDir, 80, 24)
     const hello = host.requests.find((request) => request.cmd === 'hello')
-    expect((hello as { features?: string[] }).features).toContain('geometry')
+    expect((hello as { features?: string[] }).features).toEqual(
+      expect.arrayContaining(['geometry', 'composed-input-v1', 'scroll-view-v1', 'shutdown'])
+    )
   })
 
   it('gives the session to a view that types, but not to one that only answers a query', async () => {

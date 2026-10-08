@@ -84,6 +84,8 @@ const ChatPanel = lazy(() => import('../../nodes/ChatPanel').then((m) => ({ defa
 
 interface CardModalProps {
   session: KanbanSession
+  /** The card's canvas owner, including an inactive global-board swimlane. */
+  ownerProjectId?: string
   /** The project whose board this card is on — the active one on the per-project board, the lane's
    *  on the Omni board. The modal sits OUTSIDE that project's `SessionProvider` (`useSession()`
    *  here is the app's local session), so anything that depends on which machine the node runs
@@ -140,7 +142,7 @@ interface CardModalProps {
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
-export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName }: CardModalProps) {
+export function CardModal({ session, ownerProjectId, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName }: CardModalProps) {
   const { api } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
@@ -755,6 +757,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
                     <ModalTerminal
                       key={session.id}
                       nodeId={session.id}
+                      ownerProjectId={ownerProjectId ?? projectId}
                       spawn={session.spawn}
                       searchOpen={searchOpen}
                       onCloseSearch={() => setSearchOpen(false)}
@@ -781,10 +784,10 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
                             pathsForFiles={(files) =>
                               droppedPaths(files, {
                                 sshRemoteTmux: !!session.spawn.sshRemoteTmux,
-                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : ''
+                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh, ownerProjectId ?? projectId) : ''
                               })
                             }
-                            sshProjectId={session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : undefined}
+                            sshProjectId={session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh, ownerProjectId ?? projectId) : undefined}
                             onShowTerminal={() => {
                               // The picker just opened in the live viewer needs the keyboard.
                               requestTerminalFocusOnExit(session.id)

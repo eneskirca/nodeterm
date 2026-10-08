@@ -10,6 +10,9 @@
 // Windows is relay-only: no key is installed (see `directSsh` in createPairingService), the QR
 // says `"ssh":false`, and a pairing whose relay mint fails pairs nothing.
 //
+// A sealed answer also carries this computer's SSH host key fingerprints (`ssh-host-keys.ts`), so the
+// phone checks its first SSH connect against them instead of trusting whichever key answers there.
+//
 // Pure bits (payload build, key validation, LAN-IPv4 pick) live in `pairing-core.ts` so they're
 // unit-tested without spinning up a server.
 
@@ -22,14 +25,15 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import os from 'os'
 import path from 'path'
+import { pairingNetworkChoices, pairingNetworkIPv4, type PairingInterfaces, type PairingNetworkChoice } from '../shared/pairing-network'
 import {
   buildPairingPayload,
   filterAuthorizedKeys,
+  holdsPairedRelayKey,
+  isValidBoxPublicKeyB64,
   isValidEd25519PublicKey,
   normalizeAuthorizedKeysLine,
   normalizeDeviceName,
-  pickLanIPv4,
-  pickPairingIPv4,
   readDevices,
   removeDevice,
   rewriteKeyComment,
@@ -40,11 +44,16 @@ import {
   type RelayPairingBlock
 } from './pairing-core'
 import type { DeviceRevokeResult, DeviceRevokeServerOutcome, Settings } from '../shared/types'
-import { renameAtomic, tempNameFor } from '../core/fs-atomic'
+import { renameAtomic, renameAtomicSync, tempNameFor } from '../core/fs-atomic'
+import { legacyPairingEntryVersion, readLegacyPairingKey, readOwnedRegularFile } from './pairing-legacy-key'
+import type { LegacyRelayPairings, LegacyRelayPairingTarget, LegacyRelayPairingInspection } from './remote/relay-pairing-proof'
+import { RELAY_PAIRING_KEY, RELAY_PAIRING_UUID, type RelayPairingProofResult } from '../shared/relay-pairing-proof'
 import { publicKeyToB64, deriveSharedKey, encrypt, decrypt, type KeyPair } from './remote/e2ee'
 import { hostIdFromPublicKeyB64 } from './remote/relay-id'
+import type { RevokeResult } from './remote/revocation'
 import { getDeviceId } from '../core/device-id'
 import { administratorsKeysPath, detectWindowsKeyFile, type WindowsKeyFile } from './windows-ssh-keys'
+import { readSshHostKeyFingerprints, SSH_HOST_KEY_DIRS } from './ssh-host-keys'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,6 +74,29 @@ export interface PairingRelayDeps {
   apiBase: string
   /** Dev gate: never hit the prod relay/API from an unpackaged build (mirrors host-service). */
   relayAllowed(): boolean
+  /**
+   * Pin a phone's relay (box) public key on the standing host, as its SAS approval would (audit
+   * A07). Optional: absent ⇒ the phone approves on its first relay connect, as before.
+   */
+  pinRelayKey?(boxPublicKeyB64: string): Promise<void>
+  /**
+   * Undo [pinRelayKey] when the device is revoked AND cut every relay session that key has open at
+   * that moment: an unpin alone refuses only the NEXT handshake, so a phone connected while it is
+   * forgotten would keep its terminals (audit A07-revoke). index.ts wires the revoker
+   * `remote:revoke-peer` uses (peer-revoker.ts), which reports both steps rather than throwing.
+   */
+  revokeRelayKey?(boxPublicKeyB64: string): Promise<RevokeResult>
+  /**
+   * Pin `boxPublicKeyB64` on the standing host IF `stillPaired()` answers true at the moment the pin
+   * is written, and say whether it is pinned (A07-late). index.ts runs `stillPaired` INSIDE the
+   * approved-devices queue (`pinApprovedDeviceIf`), which is what keeps a revoke's unpin from being
+   * overtaken: a revoke removes the agent.json entry before it queues its unpin, so a check that runs
+   * after the unpin can no longer find the entry (a revoke lists it again only when that unpin could
+   * not be written, while the key is still pinned). Optional: absent ⇒ a phone whose key was recorded
+   * without being pinned approves on its first relay connect, as before, and the `/pair` answer does
+   * not promise otherwise.
+   */
+  pinRelayKeyIfPaired?(boxPublicKeyB64: string, stillPaired: () => Promise<boolean>): Promise<boolean>
 }
 
 interface RelayDeviceResponse {
@@ -238,6 +270,10 @@ export type PairingDone = {
 }
 
 export interface PairingService {
+  /** Exact retained SSH proof repairs a legacy association; never grants approval or changes pins. */
+  readonly legacyRelayPairings: LegacyRelayPairings
+  /** Read this computer's current IPv4 adapters, without guessing phone reachability. */
+  listNetworks(): PairingNetworkChoice[]
   /** Begin pairing; resolves once the listener is up. `onDone` fires exactly once later. */
   start(onDone: (result: PairingDone) => void): Promise<PairingStartResult>
   /** Cancel an in-flight pairing (idempotent). Does NOT fire onDone. */
@@ -245,15 +281,34 @@ export interface PairingService {
   /** All paired devices (token stripped) from ~/.nodeterm/agent.json. */
   listDevices(): Promise<PublicDevice[]>
   /**
-   * Revoke a device: revoke its relay trust (unpin + cut live relay sessions), drop its agent.json
-   * entry, delete its authorized_keys line, AND take its Pro
-   * entitlement back on the relay backend. The two legs are reported separately — see
-   * `DeviceRevokeResult`; this never throws, because a failure the caller cannot see is exactly
-   * how the server leg went missing in the first place.
+   * Revoke a device: drop its agent.json entry, delete its authorized_keys line, unpin its relay key
+   * and close the relay sessions it has open (A07-revoke), AND take its Pro entitlement back on the
+   * relay backend. The legs are reported separately — see `DeviceRevokeResult`; this never throws,
+   * because a failure the caller cannot see is exactly how the server leg went missing in the first
+   * place. A legacy pairing with no relay-key association reports that remote revocation remains
+   * unconfirmed; another pairing that still authorizes the key reports retained access.
    */
   revokeDevice(id: string): Promise<DeviceRevokeResult>
   /** Live re-probe of sshd (127.0.0.1:22), for the Remote Login warning's auto-clear. */
   probeSsh(): Promise<boolean>
+  /**
+   * The standing host met a relay key it has not pinned (A07-late). Pin it when a pairing still
+   * listed in agent.json recorded that key from its sealed `/pair` body, and answer whether it did:
+   * `true` ⇒ approve the handshake silently, `false` ⇒ raise the SAS dialog as before. Never throws.
+   *
+   * Why the record is enough: the key arrived sealed to this desktop's host key, behind the one-time
+   * token shown on its screen — the same authority that installed the phone's SSH key with full shell
+   * access. Pairing pins it at once only when it minted a relay leg; a phone paired while remote
+   * access was off adopts the relay later over SSH (relay-advertise.ts), and its first relay connect
+   * used to raise the dialog, typically with nobody at the desk. Pinning here rather than at the scan
+   * keeps "pinned" meaning "a phone that uses the relay", which host-mode push keys on.
+   *
+   * So the pairing is what authorizes the key: forgetting a phone means revoking its device
+   * (`revokeDevice` drops the entry, then unpins). Unpinning the key alone (the `remote:revoke-peer`
+   * channel, which no screen calls today) lasts only until its next handshake while that pairing is
+   * still listed.
+   */
+  approvePairedRelayKey(boxPublicKeyB64: string): Promise<boolean>
 }
 
 /** ~/.nodeterm holds the host-agent config (agent.json). Created 0700 if missing. */
@@ -419,6 +474,10 @@ function readBody(req: IncomingMessage): Promise<string> {
 export interface PairingServiceOptions {
   /** Defaults to `process.platform`. */
   platform?: NodeJS.Platform
+  /** Defaults to the OS interface list, re-read for every start/list. */
+  interfaces?: () => PairingInterfaces
+  /** The saved adapter NAME, read at use. Empty or absent means automatic. */
+  getPairingInterface?: () => string
   /** Windows key-file detection (explanation only). Defaults to the real probe. */
   detectKeyFile?: () => Promise<WindowsKeyFile>
   /** Windows' machine-wide administrators key file, swept on revoke. */
@@ -427,6 +486,9 @@ export interface PairingServiceOptions {
   defaultRouteAddress?: () => Promise<string | null>
   /** Defaults to PAIR_TIMEOUT_MS. */
   timeoutMs?: number
+  /** Where sshd's host keys (and `sshd_config`) are read from for the sealed answer's
+   *  `sshHostKeyFingerprints` (audit A49-anchor). Defaults to `SSH_HOST_KEY_DIRS`. */
+  sshHostKeyDirs?: readonly string[]
   /**
    * Revoke the phone's RELAY trust on Remove: unpin its box key from the phone store and close its
    * live relay sessions (peer-revoke.ts `revokeAllPhones`). Without it a removed phone keeps its
@@ -441,6 +503,7 @@ export function createPairingService(
   options: PairingServiceOptions = {}
 ): PairingService {
   const platform = options.platform ?? process.platform
+  const interfaces = options.interfaces ?? os.networkInterfaces
   // Windows: no SSH key, relay only. Everything the phone sends over SSH is POSIX sh + tmux
   // (nodeterm-ios HostCommands / TmuxBinary / TerminalTransport), Windows OpenSSH hands out
   // cmd.exe, and sessions live in the session host — so a key sshd accepts only pins the phone to
@@ -496,6 +559,59 @@ export function createPairingService(
       throw e
     }
     await fs.chmod(AGENT_JSON_PATH, 0o600).catch(() => {})
+  }
+
+  /** Only migration uses this staged publication: the final admission and rename are synchronous.
+   * The queue fences this service's pair/revoke writers, not another process or manual file edits. */
+  async function writeLegacyAssociation(obj: Record<string, unknown>, admitted: () => boolean): Promise<boolean> {
+    const tmp = tempNameFor(AGENT_JSON_PATH)
+    try {
+      await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 })
+      await fs.chmod(tmp, 0o600)
+      if (!admitted()) return false
+      // No await between the current approved-session fence and publication.
+      renameAtomicSync(tmp, AGENT_JSON_PATH)
+      return true
+    } finally { await fs.rm(tmp, { force: true }).catch(() => {}) }
+  }
+
+  const inspectLegacy = (obj: Record<string, unknown>, pairingId: string, peerKey: string): LegacyRelayPairingInspection => {
+    if (!RELAY_PAIRING_UUID.test(pairingId) || !RELAY_PAIRING_KEY.test(peerKey)) return { status: 'unprovable' }
+    const matches = readDevices(obj).filter(entry => entry?.id === pairingId)
+    if (!matches.length) return { status: 'gone' }
+    if (matches.length !== 1) return { status: 'unprovable' }
+    const entry = matches[0]
+    if (entry.relayBoxKey) return { status: entry.relayBoxKey === peerKey ? 'associated' : 'conflict' }
+    if (entry.ssh === false || typeof entry.token !== 'string' || !entry.token || !Number.isFinite(entry.pairedAt)) return { status: 'unprovable' }
+    const sshPublicKeyB64 = readLegacyPairingKey(AUTH_KEYS_PATH, pairingId)
+    return sshPublicKeyB64 ? { status: 'eligible', target: { pairingId, sshPublicKeyB64,
+      entryVersion: legacyPairingEntryVersion(entry) } } : { status: 'unprovable' }
+  }
+  const legacyRelayPairings: LegacyRelayPairings = {
+    inspect: (pairingId, peerKey) => serialize(async () => inspectLegacy(await readAgentJson(), pairingId, peerKey)),
+    associate: (target: LegacyRelayPairingTarget, peerKey, current) => serialize(async (): Promise<RelayPairingProofResult> => {
+      if (!current()) return { status: 'expired' }
+      const obj = await readAgentJson()
+      if (!current()) return { status: 'expired' }
+      const found = inspectLegacy(obj, target.pairingId, peerKey)
+      if (found.status !== 'eligible') return found
+      if (found.target.entryVersion !== target.entryVersion || found.target.sshPublicKeyB64 !== target.sshPublicKeyB64) return { status: 'unprovable' }
+      let refused: RelayPairingProofResult = { status: 'expired' }
+      const published = await writeLegacyAssociation({ ...obj, devices: readDevices(obj).map(entry =>
+        entry.id === target.pairingId ? { ...entry, relayBoxKey: peerKey } : entry) }, () => {
+        // Re-attest captured entry/key after staging. Refuse replacement/manual edits instead of
+        // publishing a stale whole-file snapshot. This final bounded read never escapes the host.
+        const snapshot = readOwnedRegularFile(AGENT_JSON_PATH, 4 * 1024 * 1024)
+        if (!snapshot) { refused = { status: 'unprovable' }; return false }
+        const fresh = JSON.parse(snapshot.toString('utf8')) as Record<string, unknown>
+        const next = inspectLegacy(fresh, target.pairingId, peerKey)
+        if (next.status !== 'eligible') { refused = next; return false }
+        if (next.target.entryVersion !== target.entryVersion || next.target.sshPublicKeyB64 !== target.sshPublicKeyB64 ||
+            JSON.stringify(fresh) !== JSON.stringify(obj)) { refused = { status: 'unprovable' }; return false }
+        return current()
+      })
+      return published ? { status: 'associated' } : refused
+    })
   }
 
   /** Persist a device into agent.json, preserving all other fields the host agent wrote. */
@@ -592,15 +708,18 @@ export function createPairingService(
     cleanup()
     onDoneCb = onDone
 
-    const host = directSsh
-      ? pickLanIPv4(os.networkInterfaces())
-      : pickPairingIPv4(
-          os.networkInterfaces(),
-          await (options.defaultRouteAddress ?? defaultRouteIPv4)().catch(() => null)
-        )
+    // Only Windows uses its existing OS route hint. An explicit adapter always wins, and is
+    // re-read after the asynchronous hint so a settings/DHCP change is not cached into the QR.
+    const routeAddress = !directSsh && !options.getPairingInterface?.()
+      ? await (options.defaultRouteAddress ?? defaultRouteIPv4)().catch(() => null)
+      : null
+    const preferred = options.getPairingInterface?.() ?? ''
+    const host = pairingNetworkIPv4(interfaces(), preferred, routeAddress)
     if (!host) {
       onDoneCb = null
-      throw new Error("Couldn't detect a LAN IP address — connect to Wi-Fi and try again.")
+      throw new Error(preferred
+        ? `The selected pairing network “${preferred}” has no usable IPv4 address. Reconnect it or choose another network in Settings → Phone.`
+        : "Couldn't detect a LAN IPv4 address — connect to a network and try again.")
     }
     const token = randomBytes(24).toString('base64url')
     const user = os.userInfo().username
@@ -702,6 +821,7 @@ export function createPairingService(
           deviceName?: unknown
           deviceId?: unknown
           priorDeviceToken?: unknown
+          boxPublicKey?: unknown
         }
         let sealed: Uint8Array | null = null // the shared key, set only on the encrypted path
         if (typeof outer.epk === 'string') {
@@ -736,6 +856,7 @@ export function createPairingService(
             deviceName?: unknown
             deviceId?: unknown
             priorDeviceToken?: unknown
+            boxPublicKey?: unknown
           }
         }
         if (body.token !== token) {
@@ -758,6 +879,23 @@ export function createPairingService(
         // unchanged, and the mint still reads this same value.
         const phoneDeviceId =
           typeof body.deviceId === 'string' && body.deviceId.trim() ? body.deviceId.trim() : deviceId
+        // The phone's relay identity (audit A07). Taken ONLY from the sealed body: that body is
+        // sealed to the QR's host key and authorized by the one-time token on this screen — the same
+        // authority that installs an SSH key with full shell access — so pinning it here is the
+        // human's approval, given by scanning. A plaintext body could be rewritten on the LAN.
+        const relayBoxKey = sealed && isValidBoxPublicKeyB64(body.boxPublicKey) ? body.boxPublicKey : undefined
+        let relayPinned = false
+        const pinRelay = async (): Promise<void> => {
+          if (!relayBoxKey || !relayFields.relayDeviceToken || !relayDeps?.pinRelayKey) return
+          try {
+            await relayDeps.pinRelayKey(relayBoxKey)
+            relayPinned = true
+          } catch (err) {
+            // Not fatal: the key is recorded on the device entry, so the standing host pins it on the
+            // phone's first relay handshake instead (`approvePairedRelayKey`, A07-late).
+            console.warn('[pairing] could not pin the phone relay key:', err)
+          }
+        }
         let relayFields: { relay?: RelayPairingBlock; relayDeviceToken?: string } = {}
         const mint = async (): Promise<void> => {
           if (!relayCtx) return
@@ -788,12 +926,14 @@ export function createPairingService(
               token: agentToken,
               pairedAt: Date.now(),
               lastSeenAt: 0,
-              relayDeviceId: phoneDeviceId
+              relayDeviceId: phoneDeviceId,
+              ...(relayBoxKey ? { relayBoxKey } : {})
             })
           })
           // Provision relay access for the phone when enabled. Any failure ⇒ LAN-only: we never
           // fail the pairing over a relay hiccup (the phone still got its SSH key installed).
           await mint()
+          await pinRelay()
         } else {
           // Relay-only (Windows). The relay IS the connection, so there is nothing to fall back
           // to: no relay leg ⇒ nothing is paired, and both ends are told so. Minted BEFORE the
@@ -826,13 +966,41 @@ export function createPairingService(
               pairedAt: Date.now(),
               lastSeenAt: 0,
               relayDeviceId: phoneDeviceId,
+              ...(relayBoxKey ? { relayBoxKey } : {}),
               ssh: false
             })
           )
+          await pinRelay()
         }
         // Build the response exactly as before; wrap it in the box only when the request was
         // encrypted (same shared key), so the relay device token never crosses the LAN in cleartext.
-        const responseObj = { ok: true, deviceId, agentToken, ...relayFields }
+        // `relayPinned` (additive, A07): the key was pinned just now.
+        // `relayApproved` (additive, A07-late): this desktop serves the phone's relay key without the
+        // SAS dialog, so the phone may treat the relay as approved. True when the key was pinned just
+        // now, and also when it was only recorded (no relay leg yet, or the pin failed): the standing
+        // host pins a recorded key on the phone's first relay handshake (`approvePairedRelayKey`), as
+        // after a late adoption. Not pinned at the scan without a relay leg, so a LAN-only pairing
+        // does not count as a relay phone (host-mode push keys on the pin store).
+        const relayApproved = relayPinned || (!!relayBoxKey && !!relayDeps?.pinRelayKeyIfPaired)
+        // `sshHostKeyFingerprints` (additive, A49-anchor): this computer's SSH host key fingerprints,
+        // so the phone's first SSH connect must present one of them instead of pinning whichever key
+        // answers at the paired address. In the SEALED answer only, which is bound to the host key on
+        // this screen; a plaintext answer could be rewritten on the LAN, and the QR stays as it is.
+        // Not on Windows, where the phone has no SSH leg. Unreadable keys ⇒ the field is left out and
+        // the phone keeps its pin-after-authentication, as with an older desktop.
+        const sshHostKeyFingerprints =
+          sealed && directSsh
+            ? await readSshHostKeyFingerprints(options.sshHostKeyDirs ?? SSH_HOST_KEY_DIRS).catch(() => [])
+            : []
+        const responseObj = {
+          ok: true,
+          deviceId,
+          agentToken,
+          ...relayFields,
+          ...(relayPinned ? { relayPinned: true } : {}),
+          ...(relayApproved ? { relayApproved: true } : {}),
+          ...(sshHostKeyFingerprints.length ? { sshHostKeyFingerprints } : {})
+        }
         if (sealed) {
           const respBox = encrypt(
             Uint8Array.from(Buffer.from(JSON.stringify(responseObj), 'utf8')),
@@ -883,8 +1051,8 @@ export function createPairingService(
 
   // One unit: agent.json and authorized_keys must not be revoked half-way by an interleaving writer.
   //
-  // Relay trust goes first (see inside), then authorized_keys, and the order is load-bearing on
-  // partial failure. authorized_keys is full
+  // Legacy unassociated relay trust goes first; a recorded key is revoked after removing its
+  // pairing below, so a late paired pin cannot resurrect it. authorized_keys is full
   // shell access; agent.json holds the host-agent bearer token and the device the UI lists. If the
   // second step fails, revoking the SSH key first leaves the BIGGER capability already gone and the
   // device still listed — visible to its owner, with the Revoke button still there to finish the
@@ -894,34 +1062,88 @@ export function createPairingService(
   // The relay device id is read BEFORE either write and kept even when the local leg fails: the
   // entitlement is what authorizes the server leg, not the local write's success, and a phone the
   // user asked to remove should stop being minted Pro either way.
+  //
+  // The relay leg runs LAST, inside the same unit, and only after agent.json no longer lists the
+  // device: the standing host's late pin (`approvePairedRelayKey`, A07-late) pins a key a listed
+  // pairing recorded, so an unpin queued while the entry is still there could be undone by it. If
+  // the unpin cannot be written, the pin may survive, and the phone's next relay connect would be
+  // approved with no dialog (revocation.ts: the caller MUST retry and MUST NOT show "Removed"). So
+  // the entry is put back where it was and `local` is false: the device stays listed, which is the
+  // same partial state as an agent.json write that failed, and Revoke retries the whole thing. The
+  // key is still pinned in that case, so listing the device again gives the late pin nothing new.
   const revokeDevice = async (id: string): Promise<DeviceRevokeResult> => {
-    const { local, relayId, found } = await serialize(async () => {
-      const entry = readDevices(await readAgentJson()).find((d) => d.id === id)
+    const { local, relayId, found, relay } = await serialize(async () => {
+      const before = readDevices(await readAgentJson())
+      const entry = before.find((d) => d.id === id)
       const relayId = entry?.relayDeviceId
+      const boxKey = entry?.relayBoxKey
       const found = !!entry
+      let devices: DeviceEntry[]
+      let legacyRelayRevoked = false
       try {
-        // Relay trust FIRST, for the same reason as the order below: it is shell access (a pinned
-        // box key is auto-admitted by the standing host with the full phone vocabulary), so it goes
-        // before the device leaves the list. If it fails, the device stays listed and the owner can
-        // retry. It runs only for a device we actually know, so a stale id cannot unpin anything.
-        if (found && options.revokePhoneRelayTrust) {
+        // A legacy entry has no recorded relay key to revoke precisely: use the phone-only
+        // fallback before removing it. A recorded key follows the exact-key path below, leaving
+        // other paired phones and another pairing of this same key authorized. A stale id does
+        // not invoke either revoker.
+        if (found && !boxKey && options.revokePhoneRelayTrust) {
           const relay = await options.revokePhoneRelayTrust()
           if (!relay.persisted || !relay.killed) {
             throw new Error(`relay trust revoke incomplete (persisted=${relay.persisted}, killed=${relay.killed})`)
           }
+          legacyRelayRevoked = true
         }
         await removeAuthorizedKeysForDevice(id)
         await removeAdministratorsKeysForDevice(id)
         const obj = await readAgentJson()
-        const devices = removeDevice(readDevices(obj), id)
+        devices = removeDevice(readDevices(obj), id)
         await writeAgentJson({ ...obj, devices })
-        return { local: true, relayId, found }
       } catch (err) {
         // Reported, not thrown: `local:false` is what the UI turns into "try again", and the
         // server leg below is still worth running. The detail belongs in the log.
         console.warn('[pairing] local revoke failed:', err)
-        return { local: false, relayId, found }
+        return { local: false, relayId, found, relay: undefined }
       }
+      // The relay pin made at pairing goes with the device, and so do the relay sessions that key
+      // has open — unless another pairing of the same phone (a re-pair keeps its box key) is still
+      // listed: that pairing still authorizes the phone, its pin and its session.
+      if (!entry) {
+        return { local: true, relayId, found, relay: undefined }
+      }
+      // Older pairings did not record a relay identity. Without the phone-only fallback, do not
+      // guess from the approved-key store
+      // or call a different peer's revoker: local removal cannot confirm remote access is gone.
+      if (!boxKey) return { local: true, relayId, found, relay: legacyRelayRevoked ? 'ok' as const : 'unconfirmed' as const }
+      if (devices.some((d) => d.relayBoxKey === boxKey)) {
+        return { local: true, relayId, found, relay: 'retained' as const }
+      }
+      if (!relayDeps?.revokeRelayKey) {
+        return { local: true, relayId, found, relay: 'unconfirmed' as const }
+      }
+      // Unpins the key, then closes the relay sessions it has open right now (peer-revoker.ts).
+      // A revoker that throws said nothing about the pin, so it counts as an unpin that failed.
+      const outcome = await relayDeps.revokeRelayKey(boxKey).catch((err) => {
+        console.warn('[pairing] could not revoke the phone relay key:', err)
+        return null
+      })
+      if (outcome?.persisted) {
+        if (outcome.killed) return { local: true, relayId, found, relay: 'ok' as const }
+        // The pin is gone, so the phone cannot come back; a session whose close threw may still be
+        // half open, and the UI says so rather than "Removed".
+        console.warn('[pairing] could not close the phone relay session')
+        return { local: true, relayId, found, relay: 'cut-unconfirmed' as const }
+      }
+      console.warn('[pairing] could not unpin the phone relay key; keeping the device listed so Revoke can be retried')
+      try {
+        const obj = await readAgentJson()
+        const now = readDevices(obj).filter((d) => d.id !== id)
+        const at = Math.min(Math.max(before.findIndex((d) => d.id === id), 0), now.length)
+        await writeAgentJson({ ...obj, devices: [...now.slice(0, at), entry, ...now.slice(at)] })
+      } catch (err) {
+        // Both writes failed: the device is gone and its pin may not be. Still `local:false`, so
+        // the UI does not report a clean removal.
+        console.warn('[pairing] could not keep the device listed after the failed unpin:', err)
+      }
+      return { local: false, relayId, found, relay: 'unpin-failed' as const }
     })
     // A device paired before `relayDeviceId` was recorded still falls back to OUR id — which is
     // not a guess. `id` is the per-pairing `randomUUID()` above, and when the phone sent no id of
@@ -951,8 +1173,29 @@ export function createPairingService(
           relayDeps?.getEntitlement() ?? null
         )
       : 'skipped'
-    return { local, server }
+    return relay ? { local, server, relay } : { local, server }
   }
 
-  return { start, stop, listDevices, revokeDevice, probeSsh }
+  const approvePairedRelayKey = async (boxPublicKeyB64: string): Promise<boolean> => {
+    if (!isValidBoxPublicKeyB64(boxPublicKeyB64) || !relayDeps?.pinRelayKeyIfPaired) return false
+    // Read fresh each time, not through `serialize`: agent.json is published by atomic rename, so
+    // this sees the file either before or after a revoke's write, and the ordering argument on
+    // `pinRelayKeyIfPaired` covers both. A missing or malformed file lists no device ⇒ no pin.
+    const stillPaired = async (): Promise<boolean> =>
+      holdsPairedRelayKey(readDevices(await readAgentJson()), boxPublicKeyB64)
+    // Asked once BEFORE the pin store's queue, so the commonest unpinned handshake (a key no
+    // pairing recorded: an iOS phone, a pairing older than A07, a stranger) is answered with one
+    // file read and never waits behind, or writes, the pin store (review of A07-late). A "no"
+    // pins nothing, so it cannot undo a revoke; only a "yes" has to be asked again in the queue.
+    try {
+      if (!(await stillPaired())) return false
+      return await relayDeps.pinRelayKeyIfPaired(boxPublicKeyB64, stillPaired)
+    } catch (err) {
+      // The SAS dialog is the fallback, exactly as before this existed.
+      console.warn('[pairing] could not pin a paired phone relay key:', err)
+      return false
+    }
+  }
+
+  return { start, stop, listNetworks: () => pairingNetworkChoices(interfaces()), listDevices, revokeDevice, probeSsh, approvePairedRelayKey, legacyRelayPairings }
 }

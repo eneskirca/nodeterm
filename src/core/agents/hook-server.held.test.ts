@@ -69,7 +69,7 @@ describe('hook server: held ticket gated on the posting script revision', () => 
     expect(isStructuredTicket('held-node-1-1')).toBe(true)
   })
   it('an older or unstamped script loses `held` but keeps its approve/deny pendingId', async () => {
-    for (const rev of [4, undefined]) {
+    for (const rev of [4, 5, undefined]) {
       events.length = 0
       expect(await post('held-node-2-2', rev)).toBe(204)
       const e = events.at(-1)!

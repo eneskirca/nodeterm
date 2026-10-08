@@ -84,6 +84,7 @@
  * The prelude is prepended for EVERY agent, not just codex. It is inert without `CODEX_THREAD_ID`,
  * which no other agent's tool shell sets, and one builder beats a codex-only fork of it.
  */
+import { HOOK_REQUEST_MAX_BYTES, HOOK_REPLY_MARKER } from '../../../shared/hook-answers'
 import { codexThreadIdentityResolverSh } from '../../codex-thread-identity-sh'
 import { codexThreadIdentityRoot } from '../../codex-identity-proxy'
 import { HOOK_CURL_HEADERS_SH } from '../hook-curl-config-sh'
@@ -120,7 +121,7 @@ import {
  *     and any session the PHONE spawns on that host, which runs the host's installed script — stay
  *     `legacy` until the project reconnects.
  */
-export const MANAGED_SCRIPT_REVISION = 5
+export const MANAGED_SCRIPT_REVISION = 6
 /** The first revision that reads NODETERM_NODE_TOKEN_DIR and sends the node token (PR #195). */
 export const MIN_TOKEN_AWARE_REVISION = 3
 /* rev 4 (issue #384): the token read moved to the shared resolver in `node-token-sh.ts`, which
@@ -130,7 +131,10 @@ export const MIN_TOKEN_AWARE_REVISION = 3
  * rev 5: the answer file may carry a core-built JSON decision (plans/questions), a plain allow on
  * ExitPlanMode maps to `updatedInput:{}`, and those two tools hold 540 s. The server gates
  * structured answers on it (`MIN_STRUCTURED_ANSWER_REVISION`, permission-decision.ts) — an older
- * script would silently ignore them while the write reported success. */
+ * script would silently ignore them while the write reported success.
+ * rev 6: the merged script accepts both Android's marker-framed v2 replies and unmarked
+ * PermissionRequest decisions. Both parent branches used rev 5 for different formats, so rev 5
+ * alone cannot prove support for the unmarked structured decision contract. */
 
 /**
  * Which tool the held PermissionRequest is about, and how long to hold it (claude only; spliced
@@ -376,7 +380,7 @@ export function buildManagedScript(
     '    fi',
     '    ;;',
     'esac',
-    '# Deterministic-approval request: only for a PermissionRequest hook while the wait is armed.',
+    '# Hold a Claude PermissionRequest or parent AskUserQuestion only while the wait is armed.',
     '# `nt_pending` stays empty otherwise, so the POST tag and the poll loop below are both inert.',
     'nt_pending=""',
     'nt_pending_file=""',
@@ -395,8 +399,16 @@ export function buildManagedScript(
     ...(agentId === 'claude'
       ? [
           'if [ -n "$NODETERM_PERM_WAIT_SECS" ] && [ "$NODETERM_PERM_WAIT_SECS" -gt 0 ] 2>/dev/null; then',
+          '  nt_pending_kind=',
           '  case "$payload" in',
           '    *\'"hook_event_name":"PermissionRequest"\'*|*\'"hook_event_name": "PermissionRequest"\'*)',
+          '      nt_pending_kind=permission ;;',
+          '    *\'"hook_event_name":"PreToolUse"\'*|*\'"hook_event_name": "PreToolUse"\'*)',
+          '      case "$payload" in *\'"tool_name":"AskUserQuestion"\'*|*\'"tool_name": "AskUserQuestion"\'*) nt_pending_kind=question ;; esac ;;',
+          '  esac',
+          '  # Child question events are ignored by the parent status reducer; never hold one without a card.',
+          '  if [ "$nt_pending_kind" = question ] && printf %s "$payload" | grep -Eq \'"agent_id"[[:space:]]*:[[:space:]]*"[^"[:space:]][^"]*"\'; then nt_pending_kind=; fi',
+          '  if [ -n "$nt_pending_kind" ]; then',
           '      nt_node=$(printf %s "$NODETERM_NODE_ID" | tr -c \'A-Za-z0-9_-\' \'_\')',
           '      nt_ms=$(date +%s%3N 2>/dev/null)',
           '      case "$nt_ms" in \'\'|*[!0-9]*) nt_ms=$(date +%s) ;; esac',
@@ -406,8 +418,10 @@ export function buildManagedScript(
           '      nt_pending_file="$nt_dir/$nt_pending.json"',
           '      (umask 077; printf %s "$payload" > "$nt_pending_file") 2>/dev/null || :',
           ...HELD_TOOL_SH,
-          '      ;;',
-          '  esac',
+          // The v2 PreToolUse question has its own armed hold; the upstream long wait belongs
+          // to PermissionRequest's plan/question dialog, which is a separate hook contract.
+          '      if [ "$nt_pending_kind" = question ]; then nt_wait="$NODETERM_PERM_WAIT_SECS"; fi',
+          '  fi',
           'fi'
         ]
       : [
@@ -435,6 +449,7 @@ export function buildManagedScript(
     '      --data-urlencode "version=${NODETERM_HOOK_VERSION}" \\',
     '      --data-urlencode "nodeterm_context_window=${nt_context_window}" \\',
     '      --data-urlencode "nodeterm_pending_id=${nt_pending}" \\',
+    '      --data-urlencode "nodeterm_hook_reply=2" \\',
     ...eventField,
     '      --data-urlencode "payload@${nt_payload_arg}" 2>/dev/null) || return 1',
     '  elif [ -n "$NODETERM_HOOK_PORT" ]; then',
@@ -446,6 +461,7 @@ export function buildManagedScript(
     '      --data-urlencode "version=${NODETERM_HOOK_VERSION}" \\',
     '      --data-urlencode "nodeterm_context_window=${nt_context_window}" \\',
     '      --data-urlencode "nodeterm_pending_id=${nt_pending}" \\',
+    '      --data-urlencode "nodeterm_hook_reply=2" \\',
     ...eventField,
     '      --data-urlencode "payload@${nt_payload_arg}" 2>/dev/null) || return 1',
     '  else',
@@ -522,8 +538,21 @@ export function buildManagedScript(
     // Take the file's BYTE size, then read at most one byte past the cap: a hostile multi-megabyte
     // file is never slurped into the shell, and the size check below rejects anything over it.
     '      nt_size=$(wc -c < "$nt_answer" 2>/dev/null)',
-    `      nt_decision=$(head -c ${PERMISSION_DECISION_MAX_BYTES + 1} "$nt_answer" 2>/dev/null)`,
+    `      nt_decision=$(head -c ${HOOK_REQUEST_MAX_BYTES + HOOK_REPLY_MARKER.length + 2} "$nt_answer" 2>/dev/null)`,
     ...ANSWER_DECODE_SH,
+    '      if [ "$(printf %s "$nt_decision" | sed -n \'1p\')" = nodeterm-hook-reply-v2 ]; then',
+    '        nt_out=$(printf %s "$nt_decision" | sed \'1d\')',
+    '        nt_verb=""',
+    '        case "$nt_pending_kind:$nt_out" in',
+    '          permission:\'{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":\'*|question:\'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":\'*) nt_verb=allow ;;',
+    '          *) nt_out="" ;;',
+    '        esac',
+    `        if ! [ "$nt_size" -le ${HOOK_REQUEST_MAX_BYTES + HOOK_REPLY_MARKER.length + 1} ] 2>/dev/null; then nt_out=""; nt_verb=""; fi`,
+    "        if [ -n \"$nt_out\" ] && [ \"$(printf '%s' \"$nt_out\" | tr -d '\\000-\\037')\" != \"$nt_out\" ]; then nt_out=\"\"; nt_verb=\"\"; fi",
+    '      elif [ "$nt_pending_kind" = question ]; then',
+    '        # PermissionRequest decisions cannot answer the separately held PreToolUse question.',
+    '        nt_out=""; nt_verb=hold',
+    '      fi',
     '      if [ "$nt_verb" = hold ]; then',
     '        # A plain allow on a question: consume it and KEEP HOLDING (see ANSWER_DECODE_SH).',
     '        rm -f "$nt_answer" 2>/dev/null || :',

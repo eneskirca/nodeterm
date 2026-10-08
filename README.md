@@ -46,8 +46,8 @@ turns that into a **map**: every shell is a node you can place, group, label, an
 into. Sessions are spatial and persistent, so your mental model stays intact across
 restarts. And because the app is built around a clean service seam, the same canvas runs
 three ways — as the **desktop app for macOS, Linux and Windows (beta)**, as a **self-hosted browser app**
-you reach from anywhere (Server Edition), and an **iOS companion** that attaches to the
-same live sessions.
+you reach from anywhere (Server Edition), and **phone companions for iOS and Android** that
+attach to the same live sessions.
 
 📚 **Full documentation lives at [nodeterm.dev/docs](https://nodeterm.dev/docs)** — get
 started, concepts, agents, remote access, troubleshooting.
@@ -100,7 +100,7 @@ assign teammates. Toggle with `⌘⇧B`.
 
 ### Your sessions, anywhere
 
-**Pair your phone** with one QR — *scan with the nodeterm iOS app* — and the **same
+**Pair your phone** with one QR — *scan with the nodeterm app on iPhone or Android* — and the **same
 live session continues in your pocket**, E2E encrypted **over the relay, not just your
 LAN**. The same canvas also runs self-hosted in any browser (Server Edition).
 
@@ -148,9 +148,9 @@ Gemini / GitHub Copilot / opencode / Grok / custom) · 📝 **Sticky note** (lin
   [setup and security details](./docs/github-issues-kanban.md).
 - **AI commit messages & terminal names** — bring-your-own local agent CLI run read-only
   on the staged diff or captured output.
-- **Your sessions, in your pocket** — **nodeterm mobile** (iOS) attaches to the same live
-  tmux sessions: watch an agent work, answer a "needs you", or type into any terminal
-  from your phone — plus push notifications and a mobile board view.
+- **Your sessions, in your pocket** — **nodeterm mobile** (iOS, and the Android app in
+  [`android/`](./android)) attaches to the same live tmux sessions: watch an agent work, answer a
+  "needs you", or type into any terminal from your phone — plus notifications and a mobile board view.
 - **Power & sleep** — while an agent is working, nodeterm keeps the machine from
   idle-sleeping, and lets go the moment it finishes (on by default; toggle in the setup
   tour or Settings → Behavior). No app can hold a machine awake through a closed lid —
@@ -223,6 +223,12 @@ detects your platform. Everything is also listed at
   [report what breaks](https://github.com/eneskirca/nodeterm/issues).
 - **iOS** — **nodeterm mobile** on the
   [App Store](https://apps.apple.com/app/nodeterm/id6790581233).
+- **Android** — build it from [`android/`](./android) (`./gradlew :app:assembleDebug`); CI also
+  attaches a debug APK to every run of the Android workflow. Debug builds share a public signing
+  key so a newer APK installs over an older one; install them only from this repository's CI or
+  your own build. They are also debuggable, so anyone with adb access to the unlocked phone can pull
+  its pairing credentials ([`android/README.md`](./android/README.md#security)); there is no signed
+  release build yet. Not in a store yet, and not yet tested on a device.
 
 **Trying it out?** Removal is one script — it stops every process nodeterm started, reverts
 the status-hook/skill entries it merged into your agent CLIs' config (your own hooks and
@@ -354,7 +360,8 @@ on macOS** and applies to both canvas and kanban terminals.
 - **React Flow is the single source of truth** for live nodes; projects persist serialized
   nodes to disk, and tmux keeps sessions alive across restarts.
 - **Three surfaces** — the desktop app, the browser **Server Edition**, and the
-  **mobile companion** (a separate SwiftUI repo) all ride the same core + transport seams.
+  **mobile companions** (iOS in a separate SwiftUI repo, Android in [`android/`](./android)) all
+  ride the same core + transport seams.
 
 See [`docs/SERVER.md`](./docs/SERVER.md) for the Server Edition, and the design docs
 under [`docs/`](./docs) for deeper notes.

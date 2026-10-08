@@ -7,7 +7,7 @@ import { Button } from '@renderer/ui/Button'
 import { Switch } from '@renderer/ui/Switch'
 import { useSettings } from '@renderer/state/settings'
 import { usePhonePairing } from '../usePhonePairing'
-import { mobileStoreLinks } from '@renderer/lib/links'
+import { ANDROID_APP_LABEL, ANDROID_APP_URL, ANDROID_APP_PUBLISHED, mobileStoreLinks } from '@renderer/lib/links'
 import { hostOsFromNavigator, sshServerCopy } from '@shared/ssh-server'
 import {
   pairingEndedMessage,
@@ -16,6 +16,7 @@ import {
   relayOnlyExplanation
 } from '@shared/pairing-gate'
 import { thisMachine } from '../../../lib/machineName'
+import { PairingNetworkRow } from './PairingNetworkRow'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { PushWebhookPanel } from './PushWebhookPanel'
 
@@ -26,7 +27,7 @@ const ROWS = {
   },
   pair: {
     title: 'Pair phone',
-    keywords: ['phone', 'pair', 'qr', 'ios', 'android', 'mobile', 'ssh', 'scan', 'nodeterm']
+    keywords: ['phone', 'pair', 'qr', 'ios', 'android', 'mobile', 'ssh', 'scan', 'nodeterm', 'network', 'adapter', 'vpn', 'lan', 'wireguard']
   },
   devices: {
     title: 'Paired devices',
@@ -143,8 +144,32 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
       // Additive, not exclusive: both legs can fail at once (an unwritable ~/.ssh while offline),
       // and being told only half of that leaves the other half to be discovered by accident.
       const notes: string[] = []
-      if (!result.local) {
+      if (result.relay === 'unpin-failed') {
+        // The phone's relay key may still be pinned, which would let it back in with no approval
+        // code, so main kept the device listed (`local` is false) for this retry (A07-revoke).
+        notes.push(
+          `Couldn’t take “${device.name}”’s remote access away on this machine, so it is still listed — try again.`
+        )
+      } else if (!result.local) {
         notes.push(`Couldn’t remove “${device.name}” from this machine — try again.`)
+      }
+      if (result.relay === 'cut-unconfirmed') {
+        // Unpinned, so it cannot come back; a session whose close failed may still be half open.
+        // Quitting nodeterm closes every relay connection it has.
+        notes.push(
+          `A remote session “${device.name}” had open could not be confirmed closed — quit and reopen nodeterm to be sure it has ended.`
+        )
+      }
+      if (result.local && (result.relay === 'unconfirmed' || result.relay === undefined)) {
+        // An older main process also omits this leg. Missing proof must not become a receipt.
+        notes.push(
+          `Removed “${device.name}”’s pairing and any SSH key it installed, but its remote access could not be confirmed revoked. It may still connect remotely.`
+        )
+      }
+      if (result.local && result.relay === 'retained') {
+        notes.push(
+          `Removed this pairing for “${device.name}”, but another pairing still allows its remote access and existing remote sessions.`
+        )
       }
       if (result.server === 'failed') {
         // Deliberately not "pair it and remove it again": that used to be the whole advice, and it
@@ -159,12 +184,19 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
         )
       }
       if (notes.length) {
+        // A relay note beside a removal that did go through must not swallow the Pro receipt below.
+        if (result.local && result.server === 'ok') {
+          notes.push('Its Pro ends when the pass it already holds expires — within 7 days.')
+        }
         setRevokeNote({ text: notes.join(' '), warn: true })
-      } else if (result.server === 'ok') {
+      } else if (result.local && (result.relay === 'ok' || result.server === 'ok')) {
         // Not instant, and we say so. The phone holds a signed entitlement minted for up to seven
         // days; revoking the row stops the NEXT one, it cannot reach into the phone.
         setRevokeNote({
-          text: `Removed “${device.name}”. Its Pro ends when the pass it already holds expires — within 7 days.`,
+          text:
+            `Removed “${device.name}”.` +
+            (result.relay === 'ok' ? ' Its remote access was revoked and its open remote sessions were closed.' : '') +
+            (result.server === 'ok' ? ' Its Pro ends when the pass it already holds expires — within 7 days.' : ''),
           warn: false
         })
       }
@@ -180,7 +212,7 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
     <SettingsSection
       id="phone"
       title="Phone"
-      description="Pair the nodeterm mobile app so it can connect to this machine over your local network — no terminal commands needed."
+      description="Pair the nodeterm phone app (iPhone or Android) so it can connect to this machine over your local network — no terminal commands needed."
       isActive={isActive}
       searchEntries={showWebhook ? ENTRIES : BROWSER_ENTRIES}
     >
@@ -209,8 +241,9 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
         <div className="space-y-4">
           <h4 className="text-[13px] font-medium text-text">Pair phone</h4>
           <p className="text-sm text-muted">
-            Pair the nodeterm mobile app: scan this QR with your phone. Your phone generates its own
-            key on-device — nothing secret leaves this machine except a single-use pairing token.
+            Pair the nodeterm phone app (iPhone or Android): scan this QR from inside the app. Your
+            phone generates its own key on-device — nothing secret leaves this machine except a
+            single-use pairing token.
           </p>
           <p className="text-sm text-muted">
             Don&apos;t have the app yet?{' '}
@@ -225,7 +258,22 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
                 </button>
               </span>
             ))}
+            {!ANDROID_APP_PUBLISHED && (
+              <>
+                {' · '}
+                <button
+                  className="cursor-pointer underline hover:text-text"
+                  onClick={() => window.nodeTerminal.shell.openExternal(ANDROID_APP_URL)}
+                >
+                  {ANDROID_APP_LABEL}
+                </button>
+              </>
+            )}
           </p>
+
+          {/* This row mounts only while Pair phone is visible, including global-search results. */}
+          <PairingNetworkRow isActive pairingBusy={busy} waiting={phase === 'waiting'}
+            stopPairing={stop} restartPairing={start} />
 
           {phase === 'idle' || phase === 'timeout' ? (
             <div className="space-y-3">
@@ -293,12 +341,12 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
                     >
                       {qrForm === 'url'
                         ? 'Show the in-app code instead'
-                        : 'Scan with the iPhone Camera app instead'}
+                        : "Scan with the phone's Camera app instead"}
                     </button>
                     {qrForm === 'url' ? (
                       <p className="text-xs text-muted">
-                        Point the iPhone&apos;s own Camera at this and tap the nodeterm banner.
-                        Needs a recent version of the iOS app — if your phone doesn&apos;t
+                        Point the phone&apos;s own Camera at this and tap the nodeterm link.
+                        Needs a recent version of the nodeterm app — if your phone doesn&apos;t
                         recognise it, switch back and scan from inside nodeterm. Same code
                         either way; switching doesn&apos;t restart pairing.
                       </p>
@@ -417,7 +465,7 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
           // Both legs, and the timing of the one that is not instant. "If" rather than a flat
           // claim: a free-tier desktop has no Pro of ours on that phone to take back, and this
           // dialog cannot tell — the server leg reports that only after the fact ('skipped').
-          message={`Revoke “${pendingRevoke.name}”? Its key is removed from this machine and it will no longer be able to connect. If its Pro comes from ${thisMachine()}’s license, that is revoked too — the phone loses Pro within 7 days.`}
+          message={`Revoke “${pendingRevoke.name}”? This removes its pairing and any SSH key installed by it. Remote access may remain if another pairing allows it or this pairing’s remote identity is unknown. If its Pro comes from ${thisMachine()}’s license, that is revoked too — the phone loses Pro within 7 days.`}
           confirmLabel="Revoke"
           onConfirm={() => void revokeDevice(pendingRevoke)}
           onCancel={() => setPendingRevoke(null)}

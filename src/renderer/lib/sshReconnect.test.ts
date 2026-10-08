@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SshReconnector, RECONNECT_DELAYS_MS, RESPAWN_REFUSE_MS } from './sshReconnect'
+import { SshReconnector, RECONNECT_DELAYS_MS, RESPAWN_REFUSE_MS, subscribeSshReattach } from './sshReconnect'
 
 describe('SshReconnector', () => {
   beforeEach(() => {
@@ -170,5 +170,81 @@ describe('SshReconnector', () => {
     await vi.advanceTimersByTimeAsync(120_000)
     expect(connect).not.toHaveBeenCalled()
     expect(respawn).not.toHaveBeenCalled()
+  })
+})
+
+describe('SSH reconnect view subscriptions', () => {
+  const unsubscribes: Array<() => void> = []
+  let rec: SshReconnector
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    rec?.dispose()
+    unsubscribes.splice(0).forEach((off) => off())
+    vi.useRealTimers()
+  })
+  const watch = (scope: string, node: string) => {
+    const listener = vi.fn()
+    const off = subscribeSshReattach(scope, node, listener)
+    unsubscribes.push(off)
+    return { listener, off }
+  }
+
+  it('notifies every matching view after success, without notifying another scope or node', async () => {
+    const first = watch('owner-host', 'n1')
+    const second = watch('owner-host', 'n1')
+    const otherScope = watch('other-host', 'n1')
+    const otherNode = watch('owner-host', 'n2')
+    rec = new SshReconnector({ connect: async () => true, respawn: vi.fn() })
+    // Canvas and Modal can both report the same exit; the pending set coalesces them.
+    rec.reportDrop('owner-host', 'n1')
+    rec.reportDrop('owner-host', 'n1')
+    expect(first.listener).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(RECONNECT_DELAYS_MS[0])
+    expect(first.listener).toHaveBeenCalledTimes(1)
+    expect(second.listener).toHaveBeenCalledTimes(1)
+    expect(otherScope.listener).not.toHaveBeenCalled()
+    expect(otherNode.listener).not.toHaveBeenCalled()
+    rec.onConnected('owner-host')
+    expect(first.listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps views untouched on failure and delivers an external successful reconnect only once', async () => {
+    const view = watch('p1', 'n1')
+    rec = new SshReconnector({ connect: async () => false, respawn: vi.fn() })
+    rec.reportDrop('p1', 'n1')
+    for (const delay of RECONNECT_DELAYS_MS) await vi.advanceTimersByTimeAsync(delay)
+    expect(view.listener).not.toHaveBeenCalled()
+    rec.onConnected('p2')
+    expect(view.listener).not.toHaveBeenCalled()
+    rec.onConnected('p1')
+    rec.onConnected('p1')
+    expect(view.listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not double-deliver when the connected event wins the connect-promise race', async () => {
+    let finish!: (value: boolean) => void
+    const view = watch('p1', 'n1')
+    rec = new SshReconnector({
+      connect: () => new Promise<boolean>((resolve) => { finish = resolve }),
+      respawn: vi.fn()
+    })
+    rec.reportDrop('p1', 'n1')
+    await vi.advanceTimersByTimeAsync(RECONNECT_DELAYS_MS[0])
+    rec.onConnected('p1')
+    finish(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(view.listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('retired subscriptions cannot remove a replacement view or receive later notifications', async () => {
+    const retired = watch('p1', 'n1')
+    retired.off()
+    const replacement = watch('p1', 'n1')
+    retired.off() // a late second cleanup must not delete the new scope's listeners
+    rec = new SshReconnector({ connect: async () => true, respawn: vi.fn() })
+    rec.reportDrop('p1', 'n1')
+    await vi.advanceTimersByTimeAsync(RECONNECT_DELAYS_MS[0])
+    expect(retired.listener).not.toHaveBeenCalled()
+    expect(replacement.listener).toHaveBeenCalledTimes(1)
   })
 })

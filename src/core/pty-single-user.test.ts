@@ -96,7 +96,7 @@ let paneProcessReply = ''
 let processGroupReply = ''
 
 vi.mock('child_process', () => {
-  type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
+  type Cb = (err: Error | null, res?: string | { stdout: string; stderr: string }, stderr?: string) => void
   const execFile = (file: string, args: string[], a?: unknown, b?: unknown): unknown => {
     const cb = (typeof a === 'function' ? a : b) as Cb | undefined
     execCalls.push({ file, args })
@@ -108,8 +108,8 @@ vi.mock('child_process', () => {
       // reads as genuine absence (vs a spawn failure, which has a string/no code).
       else cb?.(Object.assign(new Error('no such session'), { code: 1 }))
     } else if (args[0] === '-ilc') {
-      // The login-shell PATH probe (`resolveShellPath`).
-      ok('__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__')
+      // The login-shell probe uses Node's direct callback stdout argument.
+      cb?.(null, '__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__', '')
     } else if (args.includes('capture-pane')) {
       ok('PANE SNAPSHOT')
     } else if (args.includes('#{pane_pid}|#{pane_current_command}')) {
@@ -242,7 +242,7 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
   })
 
   // ── The spawn itself: same tmux args, same cwd, same env ──────────────────────────────────
-  it('spawns ONE tmux client with the unchanged attach flags, cwd and session name', async () => {
+  it('spawns one tmux client without detaching other viewers, preserving cwd and session name', async () => {
     const m = await tmuxManager()
     const cwd = testTmpDir('nt-cwd-')
     await create(80, 24, 'solo-1', { cwd })
@@ -250,17 +250,17 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(spawned).toHaveLength(1)
     const { file, args, env } = spawnArgs[0]
     expect(file).toBe(m.getTmuxBin())
-    // The dedicated socket + generated conf, then attach-or-create with -D: the app has exactly
-    // ONE tmux client per session, so tmux's own multi-client size negotiation never engages.
-    expect(args.slice(0, 7)).toEqual([
+    // The dedicated socket + generated conf, then attach-or-create with -A: one app client
+    // joins the session without detaching external phone or relay viewers.
+    expect(args.slice(0, 6)).toEqual([
       '-L',
       TMUX_SOCKET,
       '-f',
       path.join(userDataDir, 'tmux.conf'),
       'new-session',
-      '-A',
-      '-D'
+      '-A'
     ])
+    expect(args).not.toContain('-D')
     expect(args.filter((a) => a === 'new-session')).toHaveLength(1)
     expect(args[args.indexOf('-c') + 1]).toBe(cwd)
     expect(args.slice(-2)).toEqual(['-s', sessionName('solo-1')])

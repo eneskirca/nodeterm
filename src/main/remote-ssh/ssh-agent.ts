@@ -73,8 +73,9 @@ interface AgentChild {
 }
 
 /** NT_MULTI sandboxes carry their identity in NT_USER_DATA; every other instance derives it from
- *  its real userData dir. The second half matters because a bare `npm run dev` (app name
- *  "node-terminal") and the installed app ("nodeterm") have different userData dirs, so the
+ *  its real userData dir. The second half matters because a bare `npm run dev` (userData
+ *  `<appData>/node-terminal`) and another instance with its own userData (an NT_MULTI sandbox, a
+ *  Server Edition data dir) have different userData dirs, so the
  *  single-instance lock does not stop them running side by side - under one fixed key the second
  *  instance's start() rmSync's the first one's LIVE socket and its quit unlinks it again, leaving
  *  that app silently agentless (a prompt per reconnect) for the rest of its run. Guarded require:

@@ -44,6 +44,17 @@ describe('bounded handshake consent', () => {
     expect(await approvals.approve({ id: stopped, pub: 'phone' })).toEqual({ status: 'stale' })
     expect(persist).not.toHaveBeenCalled()
   })
+  it('forgets every pending consent of a revoked key, and only that key', async () => {
+    const { approvals, persist, cleared } = setup()
+    const revoked = approvals.add('revoked')
+    const other = approvals.add('other')
+    approvals.forget('revoked')
+    expect(cleared).toHaveBeenCalledExactlyOnceWith(revoked)
+    expect(await approvals.approve({ id: revoked, pub: 'revoked' })).toEqual({ status: 'stale' })
+    expect(persist).not.toHaveBeenCalled()
+    expect(await approvals.approve({ id: other, pub: 'other' })).toEqual({ status: 'persisted' })
+    expect(persist).toHaveBeenCalledExactlyOnceWith('other')
+  })
   it('bounds pending records from many distinct devices', async () => {
     const { approvals, cleared } = setup()
     const first = approvals.add('first')

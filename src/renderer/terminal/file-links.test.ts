@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Terminal } from '@xterm/xterm'
+import type { ILink, Terminal } from '@xterm/xterm'
 import {
   createOsc8LinkHandler,
+  createUrlLinkProvider,
   makeDirListingLookup,
   matchFileTokens,
   matchUrlTokens,
@@ -173,6 +174,38 @@ describe('paragraphContaining', () => {
     const wall = Array.from({ length: 80 }, () => 'x'.repeat(10))
     const p = paragraphContaining(view(10, wall), 0)!
     expect(p.rows).toBeLessThanOrEqual(32)
+  })
+
+  it.each(['hard', 'soft'])('keeps every hovered row inside a capped %s-wrapped paragraph', (wrap) => {
+    const text = Array.from({ length: 80 }, (_, row) => String(row).padStart(10, '0'))
+    const v = view(10, text.map((line, row) => wrap === 'soft' && row > 0 ? `w:${line}` : line))
+    for (let row = 0; row < text.length; row++) {
+      const p = paragraphContaining(v, row)!
+      expect(p.startRow).toBeLessThanOrEqual(row)
+      expect(p.startRow + p.rows, `hovered row ${row}`).toBeGreaterThan(row)
+      expect(p.rows).toBeLessThanOrEqual(32)
+      const offset = (row - p.startRow) * v.cols
+      expect(p.text.slice(offset, offset + v.cols)).toBe(text[row])
+    }
+  })
+
+  it('offers the complete URL when hovering its tail beyond the paragraph cap', () => {
+    const v = view(10, [...Array.from({ length: 38 }, () => 'abcdefghij'), '!https://x', '.io/a'])
+    const term = {
+      cols: v.cols,
+      buffer: { active: { length: v.length, getLine: (row: number) => {
+        const line = v.line(row)
+        return line && { isWrapped: line.isWrapped, translateToString: line.text }
+      } } }
+    } as unknown as Terminal
+    const opened: string[] = []
+    let links: ILink[] | undefined
+    createUrlLinkProvider(term, (url) => opened.push(url)).provideLinks(40, (found) => { links = found })
+    expect(links).toHaveLength(1)
+    expect(links![0].text).toBe('https://x.io/a')
+    expect(links![0].range).toEqual({ start: { x: 2, y: 39 }, end: { x: 5, y: 40 } })
+    links![0].activate({ ctrlKey: true, metaKey: false } as MouseEvent, links![0].text)
+    expect(opened).toEqual(['https://x.io/a'])
   })
 })
 

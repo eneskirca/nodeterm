@@ -27,7 +27,9 @@ import { app } from 'electron'
 import { writeFileAtomic } from '../../core/fs-atomic'
 import {
   emptyApprovedDevices,
+  isPinned,
   parseApprovedDevices,
+  pinDevice,
   type ApprovedDevices
 } from './approved-devices-core'
 
@@ -64,7 +66,7 @@ export interface PinStoreIO {
    * pins, and an approval racing a revoke can resurrect the removed key from an obsolete snapshot.
    * This is an in-process queue, not a cross-process trust-store lock.
    */
-  update(change: (store: ApprovedDevices) => ApprovedDevices): Promise<void>
+  update(change: (store: ApprovedDevices) => ApprovedDevices | Promise<ApprovedDevices>): Promise<void>
 }
 
 function filePath(name: string): string {
@@ -85,11 +87,13 @@ function createPinStore(role: PinRole): PinStoreIO {
     await writeFileAtomic(file(), JSON.stringify(store), { mode: 0o600 })
   }
   let tail: Promise<void> = Promise.resolve()
-  const update = (change: (store: ApprovedDevices) => ApprovedDevices): Promise<void> => {
+  const update = (change: (store: ApprovedDevices) => ApprovedDevices | Promise<ApprovedDevices>): Promise<void> => {
     const next = tail.then(async () => {
-      await save(change(await load()))
+      const store = await load()
+      const updated = await change(store)
+      if (updated !== store) await save(updated)
     })
-    tail = next.catch(() => {}) // one failed save must not poison later attempts
+    tail = next.catch(() => {}) // hold the whole async read/modify/write; one failed save must not poison later attempts
     return next
   }
   return { load, save, update }
@@ -106,14 +110,21 @@ export function pinStore(role: PinRole): PinStoreIO {
   return role === 'phone' ? phonePins : role === 'guest' ? guestPins : joinedHostPins
 }
 
+// Compatibility names are PHONE-only and share phonePins' serialized queue, including late pins.
+export const loadApprovedDevices = (): Promise<ApprovedDevices> => phonePins.load()
+export const saveApprovedDevices = (store: ApprovedDevices): Promise<void> => phonePins.save(store)
+export const updateApprovedDevices = (
+  update: (store: ApprovedDevices) => ApprovedDevices | Promise<ApprovedDevices>
+): Promise<void> => phonePins.update(update)
+
 /**
  * Retire the pre-split `remote-approved-devices.json`. Call once at boot, BEFORE the standing host
  * starts. Returns how many keys the legacy file held (0 when it was absent), for the log line.
  *
  * NOTHING in it is carried into the phone store, and that is deliberate (fail-closed). The file
  * mixed three roles with no tag, and nothing on this machine can tell them apart: the phone's relay
- * box key is never sent at pairing (agent.json records the SSH key and the backend device id, not
- * the box key), so a legacy key cannot be matched to a paired phone. Carrying the file over as-is
+ * box key was not recorded by older pairings, and the mixed file has no role metadata even when
+ * a newer pairing records its box key. Carrying the mixed file over as-is
  * would keep exactly the hole this split closes (a joined host or a revoked guest admitted as a
  * phone). The cost of dropping it is one SAS comparison per phone, on its next relay connect.
  *
@@ -132,4 +143,29 @@ export async function retireLegacyPinFile(): Promise<number> {
   }
   await fs.rm(legacy, { force: true })
   return count
+}
+
+/**
+ * Pin `pubkeyB64` only if `allowed()` still answers true, asked INSIDE the queue, and say whether it
+ * is pinned afterwards (A07-late: the standing host pinning a paired phone's recorded relay key).
+ *
+ * The question is asked in the queue, not before it, because the answer can be withdrawn: revoking
+ * a paired phone removes its agent.json entry and only THEN queues its unpin. Asked before queueing,
+ * a "still paired" read could land just before that removal while its pin landed just after the
+ * unpin, resurrecting the key the revoke had just removed. Asked inside, it runs either before the
+ * unpin (which then removes the pin) or after the removal (which it then sees). Already pinned ⇒
+ * true without asking. A rejected `allowed()` or save rejects; the caller falls back to the dialog.
+ */
+export async function pinApprovedDeviceIf(pubkeyB64: string, allowed: () => Promise<boolean>): Promise<boolean> {
+  let pinned = false
+  await updateApprovedDevices(async (store) => {
+    if (isPinned(store, pubkeyB64)) {
+      pinned = true
+      return store
+    }
+    if (!pubkeyB64 || !(await allowed())) return store
+    pinned = true
+    return pinDevice(store, pubkeyB64)
+  })
+  return pinned
 }

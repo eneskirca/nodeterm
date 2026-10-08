@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- An answer given from a notification runs as expedited work (audit A25), which Android 11 and
+         lower run as a foreground service. WorkManager's own manifest is expected to declare this
+         too (not checked here: its AAR is on Google Maven); it is stated so that path does not
+         depend on that. Android 12 and later run expedited work as a job and never use it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- QR pairing. Not required: pasting the pairing code works without a camera. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Dictation into the terminal's input bar (audit A59), asked for on the first tap of the mic.
+         Not required: RECORD_AUDIO implies the microphone feature, which would hide the app from a
+         device without one; there the mic button stays hidden and typing works. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- Android 11+ package visibility: without this SpeechRecognizer.isRecognitionAvailable answers
+         false and the recognizer cannot bind to the phone's recognition service (audit A59). -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+    <!-- Nothing of this app's leaves the phone in a backup or a phone-to-phone transfer (audit A51).
+         allowBackup="false" stops cloud backup, and on Android 11 and lower device transfer too (so
+         no fullBackupContent is needed); on Android 12+ an app targeting 31+ is still copied by a
+         device-to-device transfer unless its data extraction rules exclude it. Every file here is tied to this phone: the secrets are
+         sealed under a Keystore key that stays behind, and the paired computers, their pins and the
+         relay deviceId belong to those secrets. A new phone starts unpaired, like a fresh install. -->
+    <application
+        android:name=".NodetermApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Nodeterm">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|smallestScreenSize|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The URL-form pairing QR (`nodeterm://pair?code=…`, @shared/pair-qr): a system camera
+                 scan hands it straight to the Pair screen. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nodeterm" android:host="pair" />
+            </intent-filter>
+        </activity>
+
+        <!-- An answer given from an Inbox notification's action (Approve, Deny, a question's option;
+             audit A25). Only this app's own explicit, immutable PendingIntents reach it. -->
+        <receiver android:name=".notify.InboxActionReceiver" android:exported="false" />
+
+    </application>
+</manifest>

@@ -7,6 +7,8 @@
 
 import type { SessionHostClient, SessionSubscriber } from './session-host-client'
 import type { SessionHostSpawnOptions, AttachResult } from '../session-host/protocol'
+import { COMPOSED_INPUT_UNCERTAIN, type ComposedInput, type ComposedInputResult } from '../shared/composed-input'
+import type { NativeScrollResult } from '../shared/history-scroll'
 
 export class SessionHostPty {
   readonly name: string
@@ -85,6 +87,27 @@ export class SessionHostPty {
 
   write(data: string): void {
     this.client.write(this.name, this.sub, data)
+  }
+
+  async submitComposed(input: ComposedInput, current: () => boolean): Promise<ComposedInputResult> {
+    const valid = (): boolean => !this.detached && !this.attachError && current()
+    const refused = (): ComposedInputResult => ({ status: 'refused', message: 'This terminal viewer is no longer attached. Reattach before sending.' })
+    if (!valid()) return refused()
+    try {
+      await this.ready
+    } catch { return refused() }
+    if (!valid()) return refused()
+    try { return await this.client.submitComposed(this.name, this.sub, input, valid) }
+    catch { return { status: 'uncertain', message: COMPOSED_INPUT_UNCERTAIN } }
+  }
+
+  async scrollForHistory(up: boolean, lines: number, capture: boolean, current: () => boolean): Promise<NativeScrollResult> {
+    const valid = (): boolean => !this.detached && !this.attachError && current()
+    const refused = (): NativeScrollResult => ({ status: 'refused', message: 'This terminal viewer is no longer attached. Reattach before scrolling.' })
+    if (!valid()) return refused()
+    try { await this.ready } catch { return refused() }
+    if (!valid()) return refused()
+    return this.client.scrollForHistory(this.name, this.sub, up, lines, capture, valid)
   }
 
   /** `bounding`: this pty's viewers cannot adapt to a grid other than their own, so the shared

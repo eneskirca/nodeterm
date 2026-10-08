@@ -18,6 +18,8 @@ import {
   type PasteDelivery
 } from '../tmux-naming'
 import { sanitizePasteText } from '../paste-injection'
+import { encodeSendKeysHex } from '../tmux-control'
+import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
 import { typedInputScript } from '../typed-input'
 import { canControlCanvas } from '../../shared/agents/config'
 import { COMBINED_PANE_MARKER, PANE_OWNER_FMT, PS_FOREGROUND_FLAGS } from '../agents/pane-owner'
@@ -403,6 +405,55 @@ export function remoteTmuxEnterArgs(
   return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${sessionId} Enter`))
 }
 
+/**
+ * Type a few KEYS into a node's REMOTE tmux pane, over the project's ControlMaster — the remote
+ * counterpart of `PtyManager.backgroundWrite`, for the relay phone's quick answers
+ * (`node.sendKeys`: a question digit, a legacy approve `1`, a deny ESC, an Enter). Keys, not a
+ * paste: a digit pasted inside a bracketed-paste frame is TEXT to a TUI's picker, not a choice, and
+ * `sanitizePasteText` would strip the ESC that a Deny is.
+ *
+ * The bytes ride `send-keys -H` (the hex encoding the local background write already uses,
+ * `encodeSendKeysHex`), so only `[0-9a-f ]` reaches the remote shell and tmux's own parser: no
+ * quoting, no leading-dash hazard (the deleted `localTmuxSendKeysArgs`), and no lone `;` read as a
+ * command separator. They are a short answer by contract (`SEND_KEYS_RE` caps it at 16 bytes), so
+ * argv is the right channel — nothing here is a payload worth stdin, and nothing is a secret.
+ *
+ * Two rules, both MEASURED on tmux 3.4 (`remote-send-keys.realtmux.test.ts`):
+ *  - **The target is exact, `'=<name>:'`.** Without `=`, tmux falls back to PREFIX matching on a
+ *    miss: `send-keys -t nt-ab` with no `nt-ab` typed into `nt-abc` and exited 0. The answer would
+ *    land in another node's agent and report success. Exact, a missing session exits 1 — which is
+ *    the caller's `sent:false`. (A PANE target needs the trailing colon; `=name` alone is refused.)
+ *  - **Copy mode is cancelled first**, exactly as `remoteTmuxPasteArgs` does: a pane in copy mode
+ *    (someone scrolled up on the desktop) hands `send-keys` to the copy-mode key table, so the key
+ *    never reaches the app — and with emacs keys (tmux's default) tmux still exits 0: a delivery
+ *    reported that never happened.
+ */
+export function remoteTmuxSendKeysArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string,
+  data: string,
+  expectedOwner?: PaneOwner
+): string[] {
+  assertPasteTarget(sessionId)
+  if (data.length === 0) throw new Error('remoteTmuxSendKeysArgs: no keys to send')
+  const selected = `=${sessionId}:`
+  let pane = selected
+  let guard = ''
+  if (expectedOwner) {
+    if (!expectedOwner.paneId || !/^%[0-9]+$/.test(expectedOwner.paneId) || !Number.isSafeInteger(expectedOwner.panePid) || expectedOwner.panePid <= 0) throw new Error('remote wake: missing pane identity')
+    pane = expectedOwner.paneId
+    const tuple = `${pane} ${expectedOwner.panePid} ${expectedOwner.command}`
+    // A window switch or replaced session must not redirect a delayed wake into another pane.
+    guard = `[ "$(tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(selected)} ${posixQuote('#{pane_id} #{pane_pid} #{pane_current_command}')})" = ${posixQuote(tuple)} ] && `
+  }
+  const cmd = guard +
+    `tmux -L ${RMT_TMUX_SOCKET} ` +
+    `if-shell -F -t '${pane}' '#{pane_in_mode}' 'send-keys -t ${pane} -X cancel' ';' ` +
+    encodeSendKeysHex(`'${pane}'`, data)
+  return childArgs(conn, controlPath, tmuxCmd(cmd))
+}
+
 /** `delete-buffer` on the REMOTE server — the sweep for a remote paste that never ran. */
 export function remoteDeleteBufferArgs(
   conn: SshConnection,
@@ -540,6 +591,20 @@ export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, 
     controlPath,
     tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${sessionId} -S ${full ? '-' : '-200'}`)
   )
+}
+/** Full plain history of an exact session's pinned pane; capture failures propagate. */
+export function remoteHistoryCaptureArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  assertPasteTarget(sessionId)
+  return childArgs(conn, controlPath, tmuxCmd(
+    `nt_history_pane=$(tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(`=${sessionId}:`)} '#{pane_id}') || exit $?; ` +
+    `case "$nt_history_pane" in %*) case "${'$'}{nt_history_pane#%}" in ''|*[!0-9]*) exit 2;; esac;; *) exit 2;; esac; ` +
+    `tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -J -t "$nt_history_pane" -S -`
+  ))
+}
+/** The VISIBLE pane of a remote session, with colours — the relay attach snapshot (no history:
+ *  the client paints it as the current screen before live output). */
+export function remoteCaptureScreenArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${sessionId}`))
 }
 /**
  * The VISIBLE screen of a remote session, with SGR, and nothing above it — a live link's keyframe

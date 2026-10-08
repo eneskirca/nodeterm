@@ -54,7 +54,9 @@ export const ANSWER_TEXT_MAX_CHARS = 8000
 export interface AnswerPermissionPayload {
   nodeId: string
   pendingId: string
-  decision?: 'allow' | 'deny'
+  decision?: 'allow' | 'deny' | 'allow-always'
+  /** Index of an exact rule advertised by this request (Android / legacy canvas). */
+  suggestionIndex?: number
   answer?: PermissionAnswer
 }
 

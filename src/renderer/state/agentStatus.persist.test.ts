@@ -76,6 +76,30 @@ describe('loop persistence (cron/schedule survive an app restart)', () => {
     }
   })
 
+  it('reports the live-state self-heal to the mirror, like every other change of the flag', async () => {
+    // The A76 review: the phone reads SLEEPING — and offers to type a wake line — off the core's
+    // mirror, which only carries what this store reports. A codex resume started outside our own
+    // wake closure (the phone's, over SSH) arrives as `working`, and an unreported clear left the
+    // phone offering `codex resume` into the running CLI.
+    vi.stubGlobal('localStorage', memStorage())
+    const reportHibernated = vi.fn()
+    vi.stubGlobal('window', { nodeTerminal: { reportHibernated } })
+    const { useAgentStatus } = await import('./agentStatus')
+    for (const state of ['working', 'blocked', 'waiting'] as const) {
+      useAgentStatus.getState().setHibernated('n13', true)
+      reportHibernated.mockClear()
+      useAgentStatus.getState().setState('n13', state, 'codex')
+      expect(reportHibernated.mock.calls, state).toEqual([['n13', false]])
+      useAgentStatus.getState().setState('n13', undefined)
+    }
+    // `done` keeps the flag, so it reports nothing either; neither does a node that was not asleep.
+    useAgentStatus.getState().setHibernated('n13', true)
+    reportHibernated.mockClear()
+    useAgentStatus.getState().setState('n13', 'done', 'codex')
+    useAgentStatus.getState().setState('n14', 'working', 'codex')
+    expect(reportHibernated).not.toHaveBeenCalled()
+  })
+
   it('keeps `hibernated` through a `done` event — a late Stop must not undo the exit', async () => {
     vi.stubGlobal('localStorage', memStorage())
     const { useAgentStatus } = await import('./agentStatus')

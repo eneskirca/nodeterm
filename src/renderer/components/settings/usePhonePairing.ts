@@ -2,11 +2,22 @@ import { useEffect, useRef, useState } from 'react'
 import { toDataURL } from 'qrcode'
 import { DEFAULT_PAIR_QR_FORM, encodePairQr, type PairQrForm } from '@shared/pair-qr'
 import type { WindowsKeyFileHint } from '@shared/pairing-gate'
+import { useSettings } from '@renderer/state/settings'
 
 export type PairingPhase = 'idle' | 'waiting' | 'paired' | 'timeout'
 
 /** How often the Remote Login warning re-probes sshd while it is showing. */
 const SSH_RECHECK_MS = 2000
+
+// Both transient views share one main-process listener. Queue its commands and remember the
+// owning view, so a late start/unmount from Settings cannot stop a newer quick-pair listener.
+let pairingCommands: Promise<void> = Promise.resolve()
+let pairingOwner: symbol | null = null
+function pairingCommand<T>(operation: () => Promise<T>): Promise<T> {
+  const run = pairingCommands.then(operation, operation)
+  pairingCommands = run.then(() => undefined, () => undefined)
+  return run
+}
 
 /**
  * The phone-pairing state machine, shared by Settings → Phone and the quick-pair popover:
@@ -62,6 +73,8 @@ export function usePhonePairing(onPaired?: () => void): {
   const [busy, setBusy] = useState(false)
   // Track whether a pairing listener is currently running so unmount can stop it.
   const runningRef = useRef(false)
+  const owner = useRef(Symbol('phone pairing'))
+  const lifecycle = useRef({ mounted: true, generation: 0 })
 
   // Live re-check while the Remote Login warning is visible: the initial probe runs once at
   // pairing start, so without this the warning could never clear — the user enables Remote Login
@@ -91,33 +104,62 @@ export function usePhonePairing(onPaired?: () => void): {
   }, [phase, sshOpen, sshKey])
 
   const start = async (): Promise<void> => {
+    if (!lifecycle.current.mounted) return
+    const generation = ++lifecycle.current.generation
+    const current = (): boolean => lifecycle.current.mounted && lifecycle.current.generation === generation
     setError('')
     setBusy(true)
-    try {
-      const {
-        payload: built,
-        sshOpen: open,
-        relayPlan: plan,
-        sshKey: key,
-        windowsKeyFile: keyFile
-      } = await window.nodeTerminal.pairing.start()
-      setRelayPlan(plan ?? null)
-      setSshKey(key !== false)
-      setWindowsKeyFile(keyFile)
-      setEnded(null)
-      // The image itself is rendered by the effect below, which also handles a later switch
-      // between the JSON and URL envelopes.
-      setPayload(built)
-      setSshOpen(open)
-      setSshHealed(false)
-      setRelayResult(null)
-      setPhase('waiting')
-      runningRef.current = true
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
+    setPayload('')
+    setQr('')
+    setPhase('idle')
+    await pairingCommand(async () => {
+      if (!current()) return
+      try {
+        if (pairingOwner) {
+          pairingOwner = null
+          runningRef.current = false
+          await window.nodeTerminal.pairing.stop()
+        }
+        await useSettings.getState().flush()
+        if (!current()) return
+        pairingOwner = owner.current
+        const {
+          payload: built,
+          sshOpen: open,
+          relayPlan: plan,
+          sshKey: key,
+          windowsKeyFile: keyFile
+        } = await window.nodeTerminal.pairing.start()
+        if (!current()) {
+          // Commands are serialized, so no replacement start can have overtaken this reply.
+          if (pairingOwner === owner.current) {
+            pairingOwner = null
+            await window.nodeTerminal.pairing.stop()
+          }
+          return
+        }
+        setRelayPlan(plan ?? null)
+        setSshKey(key !== false)
+        setWindowsKeyFile(keyFile)
+        setEnded(null)
+        // The image itself is rendered by the effect below, which also handles a later switch
+        // between the JSON and URL envelopes.
+        setPayload(built)
+        setSshOpen(open)
+        setSshHealed(false)
+        setRelayResult(null)
+        setPhase('waiting')
+        runningRef.current = true
+      } catch (err) {
+        if (pairingOwner === owner.current) {
+          pairingOwner = null
+          await window.nodeTerminal.pairing.stop().catch(() => {})
+        }
+        if (current()) setError((err as Error).message)
+      } finally {
+        if (current()) setBusy(false)
+      }
+    })
   }
 
   // Render the QR for whatever payload + envelope is current. Re-runs when the user switches
@@ -143,10 +185,14 @@ export function usePhonePairing(onPaired?: () => void): {
   }, [payload, qrForm])
 
   const stop = (): void => {
-    if (runningRef.current) {
-      runningRef.current = false
-      void window.nodeTerminal.pairing.stop()
-    }
+    lifecycle.current.generation++
+    runningRef.current = false
+    void pairingCommand(async () => {
+      if (pairingOwner !== owner.current) return
+      pairingOwner = null
+      await window.nodeTerminal.pairing.stop()
+    }).catch(() => {})
+    setBusy(false)
     setPhase('idle')
     setPayload('')
     setQr('')
@@ -158,6 +204,10 @@ export function usePhonePairing(onPaired?: () => void): {
   onPairedRef.current = onPaired
   useEffect(() => {
     return window.nodeTerminal.pairing.onDone((result) => {
+      if (!lifecycle.current.mounted || pairingOwner !== owner.current) return
+      pairingOwner = null
+      lifecycle.current.generation++
+      setBusy(false)
       runningRef.current = false
       setPayload('')
       setQr('')
@@ -170,11 +220,16 @@ export function usePhonePairing(onPaired?: () => void): {
 
   // Stop any in-flight pairing when the owning view unmounts (closed / navigated away).
   useEffect(() => {
+    lifecycle.current.mounted = true
     return () => {
-      if (runningRef.current) {
-        runningRef.current = false
-        void window.nodeTerminal.pairing.stop()
-      }
+      lifecycle.current.mounted = false
+      lifecycle.current.generation++
+      runningRef.current = false
+      void pairingCommand(async () => {
+        if (pairingOwner !== owner.current) return
+        pairingOwner = null
+        await window.nodeTerminal.pairing.stop()
+      }).catch(() => {})
     }
   }, [])
 
@@ -194,6 +249,6 @@ export function usePhonePairing(onPaired?: () => void): {
     busy,
     start,
     stop,
-    reset: () => setPhase('idle')
+    reset: stop
   }
 }

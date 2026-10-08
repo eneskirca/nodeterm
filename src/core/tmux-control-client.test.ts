@@ -55,7 +55,10 @@ class FakeControlSpawn implements ControlSpawn {
 }
 
 /** A started client plus its fake, wired with recording callbacks — the shape every test needs. */
-function makeClient(over: Partial<{ onOutput: (d: string) => void; onExit: () => void }> = {}) {
+function makeClient(
+  over: Partial<{ onOutput: (d: string) => void; onExit: () => void }> = {},
+  attachReply = true
+) {
   const spawner = new FakeControlSpawn()
   const out: string[] = []
   const exits: number[] = []
@@ -68,6 +71,7 @@ function makeClient(over: Partial<{ onOutput: (d: string) => void; onExit: () =>
     spawner
   })
   client.start()
+  if (attachReply) spawner.only.feed(reply(0))
   return { client, spawner, out, exits, child: spawner.only }
 }
 
@@ -78,6 +82,32 @@ function reply(num: number, body: string[] = [], ok = true): string {
 }
 
 describe('ControlModeClient.start', () => {
+  it('consumes the attach block before resolving a command queued immediately after start', async () => {
+    const { client, child } = makeClient({}, false)
+    let settled = false
+    const command = client.command('display-message -p pane').then((result) => {
+      settled = true
+      return result
+    })
+    child.feed(reply(0)) // attach-session succeeded; this is not the stdin command's result
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    child.feed(reply(1, ['%7 1']))
+    await expect(command).resolves.toEqual({ ok: true, body: ['%7 1'] })
+  })
+
+  it('rejects queued commands and retires the client when the attach reply fails', async () => {
+    const { client, child, exits } = makeClient({}, false)
+    const command = client.command('list-panes')
+    const rejected = expect(command).rejects.toThrow(/attach failed/)
+    child.feed(reply(0, ['no such session'], false))
+    expect(client.alive).toBe(false)
+    expect(child.killed).toBe(1)
+    expect(exits).toEqual([1])
+    await rejected
+    await expect(client.command('list-panes')).rejects.toThrow(/not running/)
+  })
+
   it('spawns tmux in control mode on the session socket', () => {
     const { spawner } = makeClient()
     expect(spawner.calls).toEqual([

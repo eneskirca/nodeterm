@@ -92,11 +92,10 @@ export function revokePeerKey(peerKeyB64: string, roles: readonly PinRole[]): Pr
  * phone relay session (standing and interactive hosts, approved or awaiting SAS). Desktop Team
  * Access sessions are not touched.
  *
- * All phones, on purpose: the phone's relay box key is never sent at pairing, so nothing on this
- * machine maps an agent.json device to the key it presents over the relay — and a phone approved on
- * the interactive host is never pinned at all. Unpinning or cutting a guess could leave the removed
- * phone connected; doing all of them costs every OTHER phone a reconnect and one SAS comparison.
- * Fail-closed wins.
+ * Legacy fallback only: older pairing records have no relay box key, so the removed phone cannot
+ * be identified precisely. A phone approved on the interactive host may not be pinned at all.
+ * Cutting a guessed key could leave the removed phone connected; this fallback costs every OTHER
+ * phone a reconnect and one SAS comparison. Pairings that recorded the key use exact-key revoke.
  */
 export async function revokeAllPhones(): Promise<RevokeResult> {
   let persisted = true

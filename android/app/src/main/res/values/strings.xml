@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">nodeterm</string>
+    <string name="channel_attention">Needs you</string>
+    <string name="channel_attention_desc">An agent needs an approval or an answer</string>
+    <string name="channel_done">Finished</string>
+    <string name="channel_done_desc">An agent finished its turn</string>
+    <string name="channel_sending">Sending answers</string>
+    <string name="channel_sending_desc">Shown on Android 11 and lower while an answer given from a notification is sent</string>
+</resources>

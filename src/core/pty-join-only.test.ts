@@ -283,11 +283,13 @@ describe('joinOnly: a viewer may watch a terminal but never start one', () => {
     expect(argv).not.toContain('-D')
   })
 
-  it('control: the owner\'s warm reattach still takes the session over (-D)', async () => {
+  it('control: the owner\'s warm reattach preserves other tmux clients', async () => {
     await tmuxManager('present')
     await create(OWNER, {})
     expect(spawned).toHaveLength(1)
-    expect(spawned[0].args).toContain('-D')
+    expect(spawned[0].args).toContain('-A')
+    expect(spawned[0].args).not.toContain('-D')
+    expect(spawned[0].args).not.toContain('-d')
   })
 
   it('an absent joinOnly still spawns (the non-viewer path is unchanged)', async () => {

@@ -65,6 +65,10 @@ function make(chat?: Partial<HostChatOps>, served = true) {
     undefined,
     undefined,
     undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
     served ? ops : undefined
   )
   const call = async (method: string, params: unknown) => {

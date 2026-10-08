@@ -16,8 +16,15 @@ describe('relay attach routing is wired in the desktop shell', () => {
   })
   it('the relay host attaches only through core’s decision, never the bare local attach', () => {
     const src = read('main/remote/host-service.ts')
-    expect(src).toMatch(/pty\.prepareRelayAttach\(nodeId, \{ cols, rows \}, \{ projectId: projectHint \}\)/)
-    expect(src).not.toMatch(/pty\.attachDetached\(/)
+    expect(src).toMatch(/pty\.prepareRelayAttach\(nodeId, \{ cols, rows \}, \{\s*projectId: str\(p\.projectId\), \.\.\.\(create \? \{ create \} : \{\}\)\s*\}\)/)
+    const start = src.indexOf('if (pty.prepareRelayAttach) {')
+    const end = src.indexOf('\n        } else {', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    expect(src.slice(start, end)).not.toMatch(/pty\.attachDetached\(/)
+    // Older manager fixtures retain their bounded compatibility branch; current core always
+    // routes through the saved local/remote placement decision above.
+    expect(src).toContain('const sessionId = await prep.attach(sinks)')
   })
   it('a Team Access guest’s create in an SSH project is forced requireRemote', () => {
     expect(read('main/index.ts')).toMatch(

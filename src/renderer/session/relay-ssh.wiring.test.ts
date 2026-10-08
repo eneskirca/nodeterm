@@ -35,6 +35,7 @@ describe('relay tabs never reach a guest-side ssh dial', () => {
     expect(node).toContain("const dialsSsh = sshRemoteTmux && session.source !== 'relay'")
     expect(node).toMatch(/dialsSsh && ssh\n\s+\? await resolveSshRemote\(/)
     expect(node).not.toMatch(/sshRemoteTmux && ssh\n\s+\? await resolveSshRemote\(/)
-    expect(node).toContain('if (!projectMayDialSsh(useProjects.getState().getProject(activeProjectId))) return undefined')
+    expect(node).toContain('if (!projectMayDialSsh(useProjects.getState().getProject(ownerProjectId))) return undefined')
+    expect(node).toContain('const projectId = sshConnectionScope(conn, ownerProjectId)')
   })
 })

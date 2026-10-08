@@ -22,6 +22,19 @@ function fixture(render = true) {
 afterEach(() => { for (const p of panes.splice(0)) p.dispose() })
 
 describe('native Windows envelope delivery', () => {
+  it('uses a fresh birth identity for one direct sleeping-shell wake', async () => {
+    const { pane, write, probe } = fixture()
+    const shell = { ...expected, command: 'pwsh', argv: ['pwsh'], pids: [10], processBirths: ['shell-birth'] }
+    probe.mockResolvedValue(shell)
+    expect(await pane.wakeSleeping('\x1bcodex resume saved\r', shell)).toBe(true)
+    expect(write.mock.calls).toEqual([['\x1bcodex resume saved\r']])
+    write.mockClear()
+    probe.mockResolvedValue({ ...shell, processBirths: ['replacement-same-pid'] })
+    expect(await pane.wakeSleeping('\x1bcodex resume saved\r', shell)).toBe(false)
+    probe.mockImplementationOnce(async () => { pane.dispose(); return shell })
+    expect(await pane.wakeSleeping('\x1bcodex resume saved\r', shell)).toBe(false)
+    expect(write).not.toHaveBeenCalled()
+  })
   it('waits for split terminal-mode output, pastes one sanitized block, then Enter once it renders', async () => {
     const { pane, write } = fixture()
     pane.recordOutput('\x1b[?20')
@@ -65,6 +78,41 @@ describe('native Windows envelope delivery', () => {
     probe.mockImplementation(async () => { pane.dispose(); return expected })
     expect(await pane.sendEnvelope('hello', expected)).toBe(false)
     expect(write).not.toHaveBeenCalled()
+  })
+})
+
+describe('native direct PTY explicit composed Send', () => {
+  it('uses the actual split mode output and keeps full paste separate from Enter', async () => {
+    const { pane, write, probe } = fixture()
+    pane.recordOutput('\x1b[?20'); pane.recordOutput('04h')
+    const times: number[] = []
+    write.mockImplementation(() => { times.push(performance.now()) })
+    expect(await pane.submitComposed({ kind: 'paste', text: 'one\ntwo Ω\x1b', enter: true }, () => true)).toEqual({ status: 'delivered' })
+    expect(write.mock.calls).toEqual([['\x1b[200~one\rtwo Ω\x1b[201~'], ['\r']])
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(150)
+    expect(probe).not.toHaveBeenCalled()
+  })
+  it('uses one raw Ctrl and never adds framing or Enter even in paste mode', async () => {
+    const { pane, write } = fixture(); pane.recordOutput('\x1b[?2004h')
+    expect(await pane.submitComposed({ kind: 'control', text: '\x03', enter: false }, () => true)).toEqual({ status: 'delivered' })
+    expect(write.mock.calls).toEqual([['\x03']])
+  })
+  it('retains uncertainty and sends no Enter after the owning viewer retires or pane is disposed', async () => {
+    for (const disposed of [false, true]) {
+      const { pane, write } = fixture(); let current = true
+      write.mockImplementationOnce(() => { if (disposed) pane.dispose(); else current = false })
+      expect((await pane.submitComposed({ kind: 'paste', text: 'one draft', enter: true }, () => current)).status).toBe('uncertain')
+      expect(write.mock.calls).toEqual([['one draft']])
+    }
+  })
+  it('refuses a stale viewer before input and rejects overlapping actions before the first Enter', async () => {
+    const { pane, write } = fixture()
+    const input = { kind: 'paste', text: 'first', enter: true } as const
+    expect((await pane.submitComposed(input, () => false)).status).toBe('refused')
+    const first = pane.submitComposed(input, () => true)
+    expect((await pane.submitComposed({ ...input, text: 'second' }, () => true)).status).toBe('refused')
+    expect((await first).status).toBe('delivered')
+    expect(write.mock.calls).toEqual([['first'], ['\r']])
   })
 })
 

@@ -1,3 +1,5 @@
+import { pairingNetworkIPv4, type PairingNetworkAddress, type PairingInterfaces } from '../shared/pairing-network'
+
 // Pure helpers for the phone-pairing service (no I/O), so they can be unit-tested with fakes.
 //
 // The QR payload + the authorized_keys line validation are the two bits of the pairing flow
@@ -172,6 +174,16 @@ export interface DeviceEntry {
    */
   relayDeviceId?: string
   /**
+   * The phone's relay (NaCl box) public key, base64, when it sent one inside the SEALED `/pair`
+   * body. Pairing pins it on the standing host when the pairing minted a relay leg (audit A07);
+   * otherwise the standing host pins it on the phone's first relay handshake while this entry is
+   * listed (A07-late: remote access turned on after the scan, the phone adopting the relay over
+   * SSH). Revoking the device unpins it again and closes the relay sessions it has open
+   * (A07-revoke). Recorded whether or not a relay leg was minted.
+   * Absent for pairings made before this field existed and for phones that do not send it.
+   */
+  relayBoxKey?: string
+  /**
    * `false` = no SSH key was installed for this device (a Windows pairing: the phone reaches this
    * host through the relay only). Absent on every pairing that did install one, including all
    * pairings made before this field existed. Revoke still sweeps the key files either way.
@@ -243,6 +255,23 @@ export function upsertDevice(devices: DeviceEntry[], entry: DeviceEntry): Device
   return [...devices.filter((d) => d.id !== entry.id), entry]
 }
 
+/** A NaCl box public key as base64: exactly 32 bytes. */
+export function isValidBoxPublicKeyB64(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 64) return false
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
+  return Buffer.from(value, 'base64').length === 32
+}
+
+/**
+ * Does a listed pairing hold `boxKeyB64` as the relay key its phone sent in the sealed `/pair` body
+ * (A07-late)? What the standing host asks before pinning a phone it has not pinned yet: the scan that
+ * recorded the key is the approval, as at pairing. Exact string match against what pairing recorded,
+ * so a hand-edited entry carrying junk matches nothing. An empty key never matches.
+ */
+export function holdsPairedRelayKey(devices: DeviceEntry[], boxKeyB64: string): boolean {
+  return boxKeyB64.length > 0 && devices.some((d) => d.relayBoxKey === boxKeyB64)
+}
+
 /** Drop the device with the given id (no-op if absent). */
 export function removeDevice(devices: DeviceEntry[], id: string): DeviceEntry[] {
   return devices.filter((d) => d.id !== id)
@@ -262,57 +291,18 @@ export function toPublicDevices(devices: DeviceEntry[]): PublicDevice[] {
   }))
 }
 
-/** Minimal shape of `os.networkInterfaces()` we need — kept structural so tests can fake it. */
-export interface NetInterfaceAddr {
-  address: string
-  family: string | number
-  internal: boolean
+/** Compatibility export for callers using the pairing core's structural OS address type. */
+export type NetInterfaceAddr = PairingNetworkAddress
+
+/** Automatic pairing uses the same current-adapter policy as QR and LAN refresh. */
+export function pickLanIPv4(interfaces: PairingInterfaces): string | null {
+  return pairingNetworkIPv4(interfaces)
 }
 
-/**
- * Pick a usable LAN IPv4 from `os.networkInterfaces()`, skipping internal (loopback) and
- * link-local (169.254.x.x) addresses. Returns null when none is present.
- */
-export function pickLanIPv4(
-  interfaces: Record<string, NetInterfaceAddr[] | undefined>
-): string | null {
-  for (const addrs of Object.values(interfaces)) {
-    if (!addrs) continue
-    for (const a of addrs) {
-      const isV4 = a.family === 'IPv4' || a.family === 4
-      if (!isV4 || a.internal) continue
-      if (a.address.startsWith('169.254.')) continue
-      return a.address
-    }
-  }
-  return null
-}
-
-/**
- * The pairing host address on Windows, where the first adapter `os.networkInterfaces()` lists is
- * routinely a virtual one the phone cannot reach (WSL / Hyper-V `vEthernet`, VirtualBox, VMware,
- * VPN clients). `routeAddress` is the source address the OS picked for a route to the internet —
- * i.e. the default-route adapter — and wins when it is a real non-internal IPv4 on this machine.
- * Otherwise the first address on an adapter whose name does not look virtual, then
- * `pickLanIPv4`'s old answer, so this never returns null where the old pick would not have.
- */
+/** Windows' current OS route hint has precedence within the shared automatic policy. */
 export function pickPairingIPv4(
-  interfaces: Record<string, NetInterfaceAddr[] | undefined>,
+  interfaces: PairingInterfaces,
   routeAddress: string | null
 ): string | null {
-  const usable = (a: NetInterfaceAddr): boolean =>
-    (a.family === 'IPv4' || a.family === 4) && !a.internal && !a.address.startsWith('169.254.')
-  if (routeAddress) {
-    for (const addrs of Object.values(interfaces)) {
-      if (addrs?.some((a) => usable(a) && a.address === routeAddress)) return routeAddress
-    }
-  }
-  for (const [name, addrs] of Object.entries(interfaces)) {
-    if (!addrs || VIRTUAL_ADAPTER.test(name)) continue
-    const hit = addrs.find(usable)
-    if (hit) return hit.address
-  }
-  return pickLanIPv4(interfaces)
+  return pairingNetworkIPv4(interfaces, '', routeAddress)
 }
-
-const VIRTUAL_ADAPTER = /vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Tailscale|ZeroTier|Npcap|TAP-|Docker/i

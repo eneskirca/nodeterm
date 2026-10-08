@@ -14,10 +14,16 @@
  *    session existed to reattach to). An attach/co-attach to a session someone else spawned never
  *    records, so a second project that merely OPENS a node id another project is running cannot
  *    claim it. `fresh` is the manager's own signal, not anything off the wire or the file.
+ *    The one other spawn path is a session the PHONE starts over the relay (`PtyManager.
+ *    attachDetached`, audit A72): recorded only when the relay host's probe of the same manager
+ *    (`sessionExists`, fail-safe toward "exists") found no session AND this process holds no live
+ *    generation of the node — the same "genuinely brought into being" fact, asked the only way a
+ *    synchronous attach can ask it.
  *  - The owner value is the machine-local project id the renderer passed at the create call
  *    (`PtyCreateOptions.ownerProjectId`) — the entry id (`IndexEntryV3.id`), never the file's
  *    git-copied `id`. A cloned repo gets a fresh entry id, so it cannot inherit another copy's
- *    ownership either.
+ *    ownership either. For a phone-started session the relay host resolves that same entry id from
+ *    its own index (`createHostNewSessions`) — the phone names a project, it never supplies an owner.
  *
  * ── COLD STATE / RESTART (stated honestly) ──────────────────────────────────────────────────────
  * This ledger is IN-MEMORY and starts empty every run. After an app restart the tmux SERVER
@@ -58,8 +64,9 @@ export function shouldRecordOwnership(
 }
 
 /**
- * Record the owner of a node whose pane was just GENUINELY spawned. Call site: `spawnNew`, guarded
- * by `fresh === true` and a present `persistKey` + `ownerProjectId`. A fresh spawn for an id that
+ * Record the owner of a node whose pane was just GENUINELY spawned. Call sites: `spawnNew`, guarded
+ * by `fresh === true` and a present `persistKey` + `ownerProjectId`, and `attachDetached` for a
+ * session the relay host creates (see the header). A fresh spawn for an id that
  * somehow already has an entry OVERWRITES it — the live pane is the one that just came into being.
  * A missing owner is a no-op (old callers / tests that pass no `ownerProjectId` simply leave the
  * pane unproven, which fails closed downstream — the correct direction).

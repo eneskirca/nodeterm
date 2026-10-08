@@ -34,6 +34,10 @@ export async function sessionHostMessageEnvelope(
   return getClient().messageEnvelope(name, envelope, expected)
 }
 
+export async function sessionHostWakeSleeping(name: string, data: string, expected: PaneOwner): Promise<boolean> {
+  return getClient().wakeSleeping(name, data, expected)
+}
+
 let client: SessionHostClient | null = null
 
 function getClient(): SessionHostClient {
@@ -129,6 +133,10 @@ export async function sessionHostPaneCommand(name: string): Promise<string | nul
  *  `history-limit`). Includes full SGR/mode restoration — see `TerminalEmulator.serialize`. */
 export async function sessionHostCapture(name: string, full: boolean): Promise<string> {
   return getClient().capture(name, full)
+}
+
+export async function sessionHostHistorySearch(name: string, query: string): Promise<import('./terminal-history').HistorySearch> {
+  return getClient().historySearch(name, query)
 }
 
 /** Execute already-rendered trusted input through the persistent generation's exactly-once

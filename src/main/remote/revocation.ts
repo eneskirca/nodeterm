@@ -42,7 +42,9 @@ export interface RevocationDeps {
  */
 export interface RevokeResult {
   /**
-   * `true` iff the unpin was loaded and written to disk. `false` means the pin may SURVIVE — the
+   * `true` iff the unpin landed: it was written to disk, or the key was not pinned in the list read
+   * from disk, so there was nothing to write (`updateApprovedDevices` skips a write that changes
+   * nothing). `false` means the pin may SURVIVE — the
    * real adapter's `saveApprovedDevices` does temp+rename, so a failed write leaves the OLD still-
    * pinned file byte-for-byte intact — so the revoked peer could reconnect and auto-approve with no
    * SAS. The caller MUST retry and MUST NOT show a "Removed" success.

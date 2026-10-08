@@ -22,6 +22,8 @@ describe('PtyManager platform registration', () => {
       IPC.ptyKill,
       IPC.ptyDestroy,
       IPC.ptySendText,
+      IPC.ptyWakeSleeping,
+      IPC.ptySendChatPrompt,
       IPC.ptyReadScrollback,
       // Registered in core, so BOTH shells serve it. That placement is the point: the hibernation
       // exit fails CLOSED on a pane it cannot read, so a channel that reached only the desktop

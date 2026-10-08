@@ -15,12 +15,12 @@ describe('phone chat verbs are wired end to end', () => {
     expect(src).toMatch(/\n\s{4}chat: createHostChat\(\{/)
     // Both phone hosts receive that one bridge.
     expect(src).toMatch(/initRemoteHost\(win, ptyManager, listProjectsOutput, hostBridge\)/)
-    expect(src).toMatch(/initStandingHost\(.*, hostBridge\)/)
+    expect(src).toMatch(/initStandingHost\(win, ptyManager, \(\) => settingsStore\.get\(\), listProjectsOutput, hostBridge, \{/)
   })
   it('both phone hosts forward bridge.chat into the session, and the session into the handlers', () => {
     expect(read('main/remote/host-service.ts')).toMatch(/chat: bridge\.chat,/)
     expect(read('main/remote/standing-host.ts')).toMatch(/chat: bridge\.chat,/)
-    expect(read('main/remote/host-service.ts')).toMatch(/opts\.kanban,\n\s*opts\.chat\n\s*\)/)
+    expect(read('main/remote/host-service.ts')).toMatch(/opts\.kanban,\n\s*opts\.inbox,\n\s*opts\.remoteNodes,\n\s*opts\.newSessions,\n\s*opts\.lanReport,\n\s*opts\.chat\n\s*\)/)
   })
   it('the remote transcript leg resolves an UNMOUNTED SSH node by its project', () => {
     const src = read('main/index.ts')

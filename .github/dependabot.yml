@@ -39,3 +39,41 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+
+  # The Android companion's Gradle build (audit A69), weekly and grouped like npm: two PRs carry the
+  # routine minor/patch bumps (the protocol's network and crypto stack, then everything else; see
+  # `groups`), a major (AGP, Kotlin, okhttp, Gradle itself) comes on its own. /android covers
+  # the whole build: the app (include(":app")), the protocol module, which is an included build
+  # (includeBuild("protocol") in android/settings.gradle.kts; Dependabot follows includeBuild, so it
+  # needs no entry of its own, and a second entry for /android/protocol would open each of its bumps
+  # twice), and the Gradle wrapper in android/gradle/wrapper. Not android/tools/typecheck: that offline
+  # type-check is not run by CI, so a PR against it would be untested, and its pins mirror the app's
+  # (Kotlin, BouncyCastle) or stand in for them (Compose Multiplatform desktop for Jetpack Compose,
+  # robolectric's android-all for compileSdk 35), so they move by hand with the app's, never to
+  # whatever is newest. GradleCiCoverageTest (android/protocol) pins this.
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # The protocol's network and crypto stack (the relay socket, the direct-SSH transport, the phone's
+      # Ed25519 identity and the BouncyCastle provider sshj needs on Android) gets a PR of its own. In the
+      # catch-all below it would only ever move together with every androidx/Compose/AGP/Kotlin bump, and
+      # that PR stays red whenever one of them needs something the build lacks: androidx releases raise
+      # the compileSdk their AAR metadata demands, which :app:checkDebugAarMetadata enforces against the
+      # app's compileSdk. Nothing of this group would land until someone fixed that by hand. Dependabot
+      # gives a dependency matching two groups to the more specific one (these patterns beat "*"), and
+      # within a run a group listed earlier handles it first, so keep this group above the catch-all.
+      # GradleCiCoverageTest (android/protocol) pins that no other dependency shares its PR.
+      protocol-net-crypto:
+        patterns:
+          - "com.squareup.okhttp3:*"
+          - "com.hierynomus:*"
+          - "net.i2p.crypto:*"
+          - "org.bouncycastle:*"
+        update-types: [minor, patch]
+      android-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

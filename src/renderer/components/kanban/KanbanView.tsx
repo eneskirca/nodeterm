@@ -111,6 +111,7 @@ export interface KanbanCreateOption {
 }
 
 export interface KanbanViewProps {
+  ownerProjectId?: string
   board: ProjectKanban
   sessions: KanbanSession[]
   onChange: (next: ProjectKanban) => void
@@ -240,7 +241,7 @@ function useCanvasCovered(): void {
 }
 
 export const KanbanView = memo(function KanbanView({
-  board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
+  ownerProjectId, board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
   onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, onAiName, onSetColor, onAutoMoveFromPulls, issueAgentMenu,
   issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
@@ -1270,6 +1271,7 @@ export const KanbanView = memo(function KanbanView({
           projectName={projectName}
           projectColor={projectColor}
           session={byId.get(modalNodeId)!}
+          ownerProjectId={ownerProjectId}
           projectId={projectId}
           mentionables={mentionables}
           columnTitle={columnForNode(board, modalNodeId)?.title ?? null}

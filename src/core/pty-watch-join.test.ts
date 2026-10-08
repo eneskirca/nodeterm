@@ -380,7 +380,9 @@ describe('joinAsWatcher', () => {
     expect(a.sessionId).not.toBe(w.sessionId)
     expect(spawned).toHaveLength(2)
     expect(spawned[1].args).toContain('new-session')
-    expect(spawned[1].args).toContain('-D')
+    expect(spawned[1].args).toContain('-A')
+    expect(spawned[1].args).not.toContain('-D')
+    expect(spawned[1].args).not.toContain('-d')
   })
 
   it("a watcher's client is not a painter: it does not retire the node's background-write clients", async () => {

@@ -8,7 +8,10 @@
 // bootstrap it already uses for agent.json, then mints its own device token against the API
 // (the free-tier TOFU mint). The file carries ONLY public material — the same block every
 // pairing QR embeds, plus this desktop's device id for that mint; relay ACCESS remains gated
-// host-side by the pin-once SAS approval, exactly as for a pairing-minted identity.
+// host-side by the pin, exactly as for a pairing-minted identity. A phone whose pairing recorded its
+// relay key from the sealed /pair body is pinned on its first handshake (standing-host.ts,
+// `pinPairedPhone`, audit A07-late); any other key still needs the SAS approval. Reading this file
+// grants nothing: the token it lets a phone mint only reaches the handshake.
 
 import { promises as fs } from 'fs'
 import os from 'os'

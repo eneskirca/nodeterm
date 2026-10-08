@@ -19,6 +19,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { isSafeNodeId } from '../shared/safe-id'
 
 /** The slice of `fs` the sweeper needs — injectable so tests drive it without touching disk. */
 export interface AckSweepFsLike {
@@ -43,6 +44,8 @@ export function defaultAckDir(): string {
 const ACK_EXT = '.seen'
 
 export interface AckSweepHandlers {
+  /** Positive ownership in this mirror. Another desktop's ack must remain unread and untouched. */
+  ownsNode(nodeId: string): boolean
   /** Resolve the node's done inbox event(s) + fire the end seam (the core mirror's `ackDone`). */
   ackDone(nodeId: string): void
   /** Drop the renderer's unread flag for the node. MUST NOT re-ack (external, non-looping clear). */
@@ -50,7 +53,7 @@ export interface AckSweepHandlers {
 }
 
 /**
- * One pass over `dir`: for each `<nodeId>.seen` file, run `ackDone` + `onUnreadClear`, then delete
+ * One pass over `dir`: for each owned `<nodeId>.seen` file, run `ackDone` + `onUnreadClear`, then delete
  * the file. Returns the node ids it consumed. Tolerant at every step: a missing dir, an
  * unreadable/unstattable file, or an odd name are skipped silently (a half-written file simply
  * isn't consumed until it is complete, and re-appears next pass). The file content (the acked event
@@ -58,7 +61,12 @@ export interface AckSweepHandlers {
  * newest unresolved done regardless (a stray/duplicate ack is an idempotent no-op in the mirror).
  * Pure apart from the injected handlers + the delete.
  */
-export function sweepAckDir(dir: string, fsi: AckSweepFsLike, handlers: AckSweepHandlers): string[] {
+export function sweepAckDir(
+  dir: string,
+  fsi: AckSweepFsLike,
+  handlers: AckSweepHandlers,
+  onRetained?: () => void
+): string[] {
   let names: string[]
   try {
     names = fsi.readdirSync(dir)
@@ -71,12 +79,23 @@ export function sweepAckDir(dir: string, fsi: AckSweepFsLike, handlers: AckSweep
     if (!name.endsWith(ACK_EXT)) continue
     const nodeId = name.slice(0, -ACK_EXT.length)
     if (!nodeId) continue
+    let owned = false
+    try {
+      owned = handlers.ownsNode(nodeId) === true
+    } catch {
+      // A failed ownership lookup is not permission to consume another mirror's ack.
+    }
+    if (!owned) {
+      onRetained?.()
+      continue
+    }
     const full = path.join(dir, name)
     // Read the content as a completeness gate: an unreadable file (transient / mid-write) is skipped
     // and retried next pass. The value itself (the event id) is informational — see the docblock.
     try {
       fsi.readFileSync(full, 'utf8')
     } catch {
+      onRetained?.()
       continue
     }
     // A handler must never break the sweep (or leave the file un-consumed): ack + clear, then delete.
@@ -93,6 +112,7 @@ export function sweepAckDir(dir: string, fsi: AckSweepFsLike, handlers: AckSweep
     try {
       fsi.rmSync(full, { force: true })
     } catch {
+      onRetained?.()
       // Couldn't delete (rare): re-processing next pass is harmless — ackDone/clearUnread are both
       // idempotent no-ops once the node has no unresolved done / no unread.
     }
@@ -114,8 +134,8 @@ export interface AckSweeperOpts {
 }
 
 export interface AckSweeper {
-  /** Sweep once, gated by a cheap dir-mtime check (skips the readdir when nothing changed since the
-   *  last sweep). Returns the node ids consumed this pass. */
+  /** Sweep once. A cheap dir-mtime check skips readdir after a fully consumed pass; retained
+   *  acks are retried so a newly learned owner can consume an existing file. Returns consumed ids. */
   sweep(): string[]
   /** Begin sweeping on the interval. Idempotent. */
   start(): void
@@ -125,8 +145,8 @@ export interface AckSweeper {
 
 /**
  * A self-scheduling ack sweeper for the mirror-owning process. `sweep()` re-reads the directory only
- * when its mtime changed since the last pass (a `.seen` added, or our own delete) — the cheap gate the
- * spec calls for, matching push-grants. Fails open: any fs error yields "nothing consumed", never a
+ * when its mtime changed since the last fully consumed pass. A retained ack disables this cache:
+ * ownership can change without a filesystem write. Any fs error yields "nothing consumed", never a
  * throw. `start()`/`stop()` drive it on a 15s interval (the desktop shell drives its own combined
  * local+remote cadence, so it uses `sweep()` directly; the server shell just calls `start()`).
  */
@@ -151,9 +171,14 @@ export function createAckSweeper(opts: AckSweeperOpts): AckSweeper {
     // (dirMtime === -1) this also skips when the dir doesn't exist yet (dm === -1), which is correct
     // — there is nothing to consume. A first `.seen` drop moves the mtime off -1 and triggers a scan.
     if (dm === dirMtime) return []
-    const consumed = sweepAckDir(dir, fsi, opts.handlers)
+    let retained = false
+    const consumed = sweepAckDir(dir, fsi, opts.handlers, () => {
+      retained = true
+    })
     // Our deletes moved the mtime again — re-capture so the next tick re-scans only on a NEW drop.
-    dirMtime = dirMtimeMs()
+    // Learning a node from a hook or restored project does not change this directory's mtime.
+    // Retry retained acks until their owner consumes them, even without another phone write.
+    dirMtime = retained ? -1 : dirMtimeMs()
     return consumed
   }
 
@@ -171,4 +196,21 @@ export function createAckSweeper(opts: AckSweeperOpts): AckSweeper {
       }
     }
   }
+}
+
+/** A remote sweep receives ONLY this desktop's owned node ids on stdin, one per line. Never glob
+ * the shared ack directory: a host may also run another nodeterm whose files must remain intact. */
+export const REMOTE_ACK_SWEEP_CMD =
+  'd="$HOME/.nodeterm/acks"; [ -d "$d" ] || exit 0; ' +
+  'while IFS= read -r id; do ' +
+  "case \"$id\" in ''|*[!a-zA-Z0-9_-]*) continue ;; esac; " +
+  '[ "${#id}" -le 128 ] || continue; ' +
+  'f="$d/$id.seen"; [ -f "$f" ] || continue; ' +
+  'cat "$f" >/dev/null 2>&1 || continue; ' +
+  'rm -f "$f" || continue; printf "%s\\n" "$id"; done'
+
+/** Data stays on stdin rather than in the shell command, including large canvases. */
+export function remoteAckSweepInput(nodeIds: Iterable<string>): string {
+  const ids = [...new Set(nodeIds)].filter(isSafeNodeId)
+  return ids.length ? ids.join('\n') + '\n' : ''
 }

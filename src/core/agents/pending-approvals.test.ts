@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -6,6 +6,9 @@ import {
   isValidPendingId,
   pendingDir,
   writePendingAnswerLocal,
+  answerPendingLocal,
+  answerPendingHookLocal,
+  pendingBelongsToNode,
   sweepPendingDir,
   syntheticAnsweredEvent,
   PENDING_MAX_AGE_MS,
@@ -26,6 +29,7 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-pending-'))
 })
 afterEach(() => {
+  vi.restoreAllMocks()
   fs.rmSync(home, { recursive: true, force: true })
 })
 
@@ -45,8 +49,15 @@ describe('isValidPendingId', () => {
   })
 })
 
+/** A hook currently holding `id` (the request file the managed script writes and deletes). */
+function hold(id: string): void {
+  fs.mkdirSync(pendingDir(home), { recursive: true })
+  fs.writeFileSync(path.join(pendingDir(home), `${id}.json`), '{}')
+}
+
 describe('writePendingAnswerLocal', () => {
   it('writes the one-line answer file for a valid id + decision', async () => {
+    hold('node-1-2')
     const ok = await writePendingAnswerLocal('node-1-2', 'allow', home)
     expect(ok).toBe(true)
     const file = path.join(pendingDir(home), 'node-1-2.answer')
@@ -54,14 +65,16 @@ describe('writePendingAnswerLocal', () => {
   })
 
   it('writes deny too', async () => {
+    hold('n')
     expect(await writePendingAnswerLocal('n', 'deny', home)).toBe(true)
     expect(fs.readFileSync(path.join(pendingDir(home), 'n.answer'), 'utf8')).toBe('deny')
   })
 
   it('leaves no .tmp behind (atomic rename)', async () => {
+    hold('n')
     await writePendingAnswerLocal('n', 'allow', home)
-    const entries = fs.readdirSync(pendingDir(home))
-    expect(entries).toEqual(['n.answer'])
+    const entries = fs.readdirSync(pendingDir(home)).sort()
+    expect(entries).toEqual(['n.answer', 'n.json'])
   })
 
   it('refuses an invalid pendingId and writes nothing', async () => {
@@ -70,13 +83,23 @@ describe('writePendingAnswerLocal', () => {
   })
 
   it('refuses content the hook script would not print (the same bound)', async () => {
+    hold('n')
     expect(await writePendingAnswerLocal('n', 'always', home)).toBe(false)
     expect(await writePendingAnswerLocal('n', '{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}', home)).toBe(false)
     expect(await writePendingAnswerLocal('n', `${PERMISSION_DECISION_PREFIX}"allow"}}}\nX`, home)).toBe(false)
     expect(fs.existsSync(path.join(pendingDir(home), 'n.answer'))).toBe(false)
   })
 
+  it('refuses a structured decision after the held request is gone', async () => {
+    hold('n')
+    fs.unlinkSync(path.join(pendingDir(home), 'n.json'))
+    const json = `${PERMISSION_DECISION_PREFIX}"allow","updatedInput":{}}}}`
+    expect(await writePendingAnswerLocal('n', json, home)).toBe(false)
+    expect(fs.readdirSync(pendingDir(home))).toEqual([])
+  })
+
   it('writes a core-built JSON decision verbatim, 0600', async () => {
+    hold('n')
     const json = `${PERMISSION_DECISION_PREFIX}"allow","updatedInput":{}}}}`
     expect(await writePendingAnswerLocal('n', json, home)).toBe(true)
     const f = path.join(pendingDir(home), 'n.answer')
@@ -129,6 +152,108 @@ describe('readPendingRequestLocal + localHeldPermissionIo', () => {
     expect(fs.readFileSync(path.join(pendingDir(home), 'n.answer'), 'utf8')).toBe(
       `${PERMISSION_DECISION_PREFIX}"allow","updatedInput":{}}}}`
     )
+  })
+
+  // A06: the hook deletes <id>.json when its 45 s hold ends. Writing the answer anyway used to
+  // report success (and clear NEEDS YOU everywhere) for an answer nothing would ever read.
+  it('reports false and writes nothing once the hold has ended', async () => {
+    fs.mkdirSync(pendingDir(home), { recursive: true })
+    expect(await writePendingAnswerLocal('late-1', 'allow', home)).toBe(false)
+    expect(fs.existsSync(path.join(pendingDir(home), 'late-1.answer'))).toBe(false)
+  })
+})
+
+describe('answerPendingLocal', () => {
+  it('says sent for a live hold', async () => {
+    hold('live-1')
+    expect(await answerPendingLocal('live-1', 'deny', home)).toBe('sent')
+  })
+
+  it('says gone — not failed — when the hold ended (A35)', async () => {
+    expect(await answerPendingLocal('late-1', 'allow', home)).toBe('gone')
+    fs.mkdirSync(pendingDir(home), { recursive: true })
+    expect(await answerPendingLocal('late-1', 'allow', home)).toBe('gone')
+  })
+
+  it('says failed when the answer cannot be written', async () => {
+    hold('ro-1')
+    // A directory where the answer file should go makes the rename fail.
+    fs.mkdirSync(path.join(pendingDir(home), 'ro-1.answer'))
+    expect(await answerPendingLocal('ro-1', 'allow', home)).toBe('failed')
+  })
+
+  it('says failed for an invalid id', async () => {
+    expect(await answerPendingLocal('../x', 'allow', home)).toBe('failed')
+  })
+})
+
+describe('structured hook replies', () => {
+  const request = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', permission_suggestions: [
+    { type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'Bash', ruleContent: 'npm test' }] }
+  ] }
+  function holdRequest(id = 'node-99-7', value: unknown = request): void {
+    hold(id)
+    fs.writeFileSync(path.join(pendingDir(home), `${id}.json`), JSON.stringify(value))
+  }
+  it('binds the ticket to its exact node and script suffix', () => {
+    expect(pendingBelongsToNode('node', 'node-99-7')).toBe(true)
+    for (const id of ['other-99-7', 'node-suffix', 'node-extra-99-7']) expect(pendingBelongsToNode('node', id)).toBe(false)
+  })
+  it('writes only a live owned concrete suggested rule, privately and atomically', async () => {
+    holdRequest()
+    expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('sent')
+    const file = path.join(pendingDir(home), 'node-99-7.answer')
+    const [marker, output] = fs.readFileSync(file, 'utf8').split('\n')
+    expect(marker).toBe('nodeterm-hook-reply-v2')
+    expect(JSON.parse(output).hookSpecificOutput.decision.updatedPermissions).toEqual(request.permission_suggestions)
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(pendingDir(home)).sort()).toEqual(['node-99-7.answer', 'node-99-7.json'])
+  })
+  it('refuses foreign tickets, ended holds, malformed or oversized requests without an answer', async () => {
+    holdRequest()
+    expect(await answerPendingHookLocal('other', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('failed')
+    expect(await answerPendingHookLocal('node', 'node-99-8', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('gone')
+    for (const bytes of ['not json', 'x'.repeat(128 * 1024 + 1)]) {
+      fs.writeFileSync(path.join(pendingDir(home), 'node-99-7.json'), bytes)
+      expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('failed')
+    }
+    expect(fs.existsSync(path.join(pendingDir(home), 'node-99-7.answer'))).toBe(false)
+  })
+  it('refuses a held file replaced during the bounded read', async () => {
+    holdRequest()
+    const read = fs.promises.readFile.bind(fs.promises)
+    vi.spyOn(fs.promises, 'readFile').mockImplementationOnce(async (...args: any[]) => {
+      const bytes = await (read as any)(...args)
+      const next = path.join(pendingDir(home), 'replacement.json')
+      fs.writeFileSync(next, JSON.stringify(request))
+      fs.renameSync(next, path.join(pendingDir(home), 'node-99-7.json'))
+      return bytes
+    })
+    expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('failed')
+    expect(fs.existsSync(path.join(pendingDir(home), 'node-99-7.answer'))).toBe(false)
+  })
+  it('does not publish if the hook times out while the complete reply is being staged', async () => {
+    holdRequest()
+    const write = fs.promises.writeFile.bind(fs.promises)
+    vi.spyOn(fs.promises, 'writeFile').mockImplementationOnce(async (...args: any[]) => {
+      await (write as any)(...args)
+      fs.unlinkSync(path.join(pendingDir(home), 'node-99-7.json'))
+    })
+    expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('gone')
+    expect(fs.readdirSync(pendingDir(home))).toEqual([])
+  })
+  it.skipIf(process.platform === 'win32')('does not follow a symlink masquerading as a held request', async () => {
+    holdRequest('other-1-1')
+    fs.symlinkSync(path.join(pendingDir(home), 'other-1-1.json'), path.join(pendingDir(home), 'node-99-7.json'))
+    expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'allow-always', suggestionIndex: 0 }, home)).toBe('failed')
+    expect(fs.existsSync(path.join(pendingDir(home), 'node-99-7.answer'))).toBe(false)
+  })
+  it('writes structured question answers without changing the requested tool input', async () => {
+    const questions = [{ question: 'Which?', header: 'Options', multiSelect: true, options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }]
+    holdRequest('node-99-7', { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions } })
+    expect(await answerPendingHookLocal('node', 'node-99-7', { kind: 'question', selections: [[0, 1]] }, home)).toBe('sent')
+    const result = JSON.parse(fs.readFileSync(path.join(pendingDir(home), 'node-99-7.answer'), 'utf8').split('\n')[1])
+    expect(result.hookSpecificOutput).toEqual({ hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { questions, answers: { 'Which?': 'A, B' } } })
   })
 })
 

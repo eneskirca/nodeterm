@@ -28,6 +28,7 @@ import type { KanbanPullAutoMove, KanbanPullLinks } from './kanban-pull-links'
 import type { BoardDispatch } from './board-dispatch'
 import type { CodexAccount } from './codex-account'
 import type { NotchAlign } from './notch-hud'
+import type { PairingNetworkChoice } from './pairing-network'
 import type { ProjectIcon, ProjectIconPickResult } from './project-icon'
 import type { AlertSoundKind, AlertSoundSaveResult, CustomAlertSounds } from './alert-sound'
 import type { CanvasLayout, LayoutViewports } from './canvas-layout'
@@ -1317,6 +1318,8 @@ export interface PtyApi {
    *  false if unavailable; `pasted-not-submitted` means input was accepted but Enter was not
    *  confirmed written. Surface it without automatically resending. True is not an app receipt. */
   sendText(persistKey: string, text: string, opts?: { enter?: boolean }): Promise<TextDeliveryResult>
+  /** Resume only an existing generation whose freshly read pane still satisfies its saved wake proof. */
+  wakeSleeping(request: import('./agents/sleeping-wake').SleepingWakeRequest): Promise<import('./agents/sleeping-wake').SleepingWakeResult>
   /** Submit a prompt from the ⌘M chat view. For an agent whose screen can be read
    *  (`readsScreenDialogs`), refused BEFORE anything is written when the agent's own dialog owns the
    *  keyboard (`ChatPromptBlocked`) — such dialogs fire no hook. Otherwise the `sendText` contract. */
@@ -1413,8 +1416,8 @@ export interface WorkspaceApi {
   onCorruptRecovered(cb: (backupFile: string) => void): () => void
   /** Fired when a project file changed on disk outside the app (git pull, sync, teammate). */
   onExternalChange(cb: (project: Project) => void): () => void
-  /** Fired when THIS core wrote the project itself (Server Edition headless canvas control: an agent
-   *  opened, renamed, moved, closed…). Not an outside edit — the renderer merges it, never asks. */
+  /** Fired when THIS core wrote the project itself (phone Board edits; Server Edition headless
+   *  canvas control). Not an outside edit — the renderer merges it, never asks. */
   onServerChange(cb: (project: Project) => void): () => void
 }
 
@@ -2181,6 +2184,9 @@ export interface Settings {
    *  (end-to-end encrypted). Default on — the host only admits SAS-approved, pinned devices, so
    *  an un-paired install just keeps an idle listener. Toggle in Settings → Phone. */
   phoneAccessEnabled: boolean
+  /** Adapter name for pairing and authenticated LAN reports. Empty = automatic; an unavailable
+   *  explicit adapter advertises no address. The current OS address follows DHCP changes. */
+  phonePairingInterface: string
   /** Send APNs push notifications to relay-paired phones when an agent needs approval, asks a
    *  question, or finishes a turn (spec: apns-push). Default on — it only fires for users who
    *  have paired a phone. Toggle in Settings → Notifications. */
@@ -2419,6 +2425,7 @@ export const DEFAULT_SETTINGS: Settings = {
   telemetryEnabled: true,
   debugLogPanel: false,
   phoneAccessEnabled: true,
+  phonePairingInterface: '',
   mobilePushEnabled: true,
   mobilePushNeedsYou: true,
   mobilePushDone: true,
@@ -4082,6 +4089,23 @@ export interface PairedDevice {
 export type DeviceRevokeServerOutcome = 'ok' | 'failed' | 'skipped'
 
 /**
+ * The relay leg of a device revoke (audit A07-revoke): the phone's relay key unpinned on the standing
+ * host and the relay sessions it had open closed (remote/revocation.ts's persisted/killed).
+ * 'ok' = both done; 'unpin-failed' = the pin could not be written away, so it may survive and the
+ * phone would be let in again without a dialog: the device is kept LISTED and `local` is false, so
+ * Revoke can be retried; 'cut-unconfirmed' = unpinned, but closing a session it had open failed.
+ * 'unconfirmed' = this pairing has no recorded relay identity, or no revoker could act on it:
+ * removing its local entry/key does NOT prove remote access was taken away. 'retained' = another
+ * listed pairing still authorizes this same relay identity, so its pin and sessions were kept.
+ */
+export type DeviceRevokeRelayOutcome =
+  | 'ok'
+  | 'unpin-failed'
+  | 'cut-unconfirmed'
+  | 'unconfirmed'
+  | 'retained'
+
+/**
  * Both legs of a device revoke, reported independently so a half-finished removal can never render
  * as a clean one (the same discipline as remote/revocation.ts's persisted/killed).
  */
@@ -4091,10 +4115,18 @@ export interface DeviceRevokeResult {
   local: boolean
   /** Whether the phone's Pro entitlement was taken back on the relay backend. */
   server: DeviceRevokeServerOutcome
+  /**
+   * Reported after a listed device was removed locally, including an unconfirmed/retained leg.
+   * Absent when no device was listed, local removal failed before the relay leg, or an older main
+   * process did not report it. Absence must never be treated as confirmed relay revocation.
+   */
+  relay?: DeviceRevokeRelayOutcome
 }
 
 /** Phone-pairing (nodeterm iOS "scan a QR" flow) bridge. */
 export interface PairingApi {
+  /** Current usable IPv4 adapters on this computer, not a phone reachability test. Desktop only. */
+  listNetworks(): Promise<PairingNetworkChoice[]>
   /** Start the one-shot LAN listener; resolves with the QR payload + an SSH-reachable hint. */
   start(): Promise<{
     payload: string
@@ -4129,8 +4161,9 @@ export interface PairingApi {
   /** List paired devices from ~/.nodeterm/agent.json (never includes the token). */
   listDevices(): Promise<PairedDevice[]>
   /**
-   * Revoke a device: remove its registry entry, delete its authorized_keys line, and take its Pro
-   * entitlement back on the relay backend. Never rejects for a leg that failed — read the result.
+   * Revoke a device: remove its registry entry, delete its authorized_keys line, unpin its relay key
+   * and close the relay sessions it has open, and take its Pro entitlement back on the relay
+   * backend. Never rejects for a leg that failed — read the result.
    */
   revokeDevice(id: string): Promise<DeviceRevokeResult>
   /** Push webhook (shared/push-webhook.ts): what token is live for this machine — never its value. */
@@ -4377,10 +4410,10 @@ export interface NodeTerminalApi {
   seedAgentIdentity(entries: IdentitySeedEntry[]): void
   /** Fires when the core asks this renderer to WAKE a hibernated node NOW (a phone viewer just
    *  attached to its session over the relay). A nudge with `wakeHibernatedNode`'s exact contract:
-   *  re-read the flag, no-op when not hibernated or not mounted. Returns unsubscribe.
+   *  re-read the flag, no-op when not hibernated; resolves saved offscreen nodes without switching projects. Returns unsubscribe.
    *  Desktop-only signal (the relay host lives in the desktop main process); the ws-bridge
    *  subscribes to nothing and returns a no-op unsubscribe. */
-  onAgentWake(listener: (nodeId: string) => void): () => void
+  onAgentWake(listener: (nodeId: string, automatic?: boolean) => void): () => void
   /** Fires with the CURRENT set of node ids that have a live relay (phone) viewer attached — the
    *  full set each change, never a delta. Feeds `isNodeWatched` so Eco cannot hibernate a session
    *  someone is watching from a phone. Desktop-only signal, like `onAgentWake`. */

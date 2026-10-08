@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No cleartext anywhere. The one plaintext exchange nodeterm has — the LAN /pair POST to a bare
+     IP — runs over a raw socket and is sealed end to end to the host key the QR carries
+     (PairingClient), so no HTTP stack ever needs a cleartext exception. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

@@ -15,6 +15,8 @@
 import fs from 'fs'
 import net from 'net'
 import { hostMessagePane } from './message-pane'
+import { searchRetainedGeneration } from './history-search'
+import { hostSleepingWake } from './sleeping-wake'
 import path from 'path'
 import crypto from 'crypto'
 import { sessionHostPaths, currentProtocolVersion, type SessionHostState } from './paths'
@@ -35,6 +37,7 @@ import {
 } from './protocol'
 import { HostSession } from './session'
 import { sendTextWhenSettled } from '../core/settled-text'
+import { ComposedPty } from '../core/composed-pty'
 import { paneCommand as readPaneCommand } from './process-tree'
 import { terminateWindowsProcessTree } from './windows-process-tree'
 import { publishSessionHostState } from './state-file'
@@ -338,6 +341,9 @@ async function main(): Promise<void> {
   /** Connections that negotiated the `geometry` feature at hello. Only these may ever receive a
    *  `geometry` push: an older client reads any non-`data` push frame as an exit (issue #914). */
   const geometrySockets = new WeakSet<net.Socket>()
+  const composedSockets = new WeakSet<net.Socket>()
+  const scrollSockets = new WeakSet<net.Socket>()
+  const composedPanes = new WeakMap<HostSession, ComposedPty>()
   /** Connections that negotiated the `shutdown` feature. Only these may ask the host to end every
    *  session and exit (issue #829): the command is destructive, so an app build that never asked
    *  for it can never trigger it by accident. */
@@ -378,6 +384,8 @@ async function main(): Promise<void> {
       ? SESSION_HOST_FEATURES.filter((feature) => requested.includes(feature))
       : []
     if (features.includes('geometry')) geometrySockets.add(socket)
+    if (features.includes('composed-input-v1')) composedSockets.add(socket)
+    if (features.includes('scroll-view-v1')) scrollSockets.add(socket)
     if (features.includes('shutdown')) shutdownSockets.add(socket)
     return features.length > 0
       ? { protocolVersion: currentProtocolVersion(), features }
@@ -978,6 +986,35 @@ async function main(): Promise<void> {
         })
         return ok !== false ? { ok: true, result: { delivery: ok } } : { ok: false, error: 'session unavailable or delivery busy' }
       }
+      case 'prepareComposedV1':
+      case 'writeComposedV1':
+      case 'cancelComposedV1': {
+        const s = sessions.get(req.name)
+        const current = (): boolean => !!s && !s.exited && !s.retiring &&
+          sessions.get(req.name) === s && s.generation === req.generation &&
+          !socket.destroyed && s.subscribers.has(socket) && composedSockets.has(socket)
+        if (!s || !current()) return { ok: true, result: { status: 'refused' } }
+        let pane = composedPanes.get(s)
+        if (!pane) {
+          pane = new ComposedPty({ bracketed: () => s.bracketedPasteRequested(), write: (data) => s.proc.write(data) })
+          composedPanes.set(s, pane)
+        }
+        if (req.cmd === 'prepareComposedV1') return { ok: true, result: pane.prepare(socket, req.input, current) }
+        if (req.cmd === 'cancelComposedV1') return { ok: true, result: pane.cancel(socket, req.ticket) }
+        if (req.phase !== 'paste' && req.phase !== 'enter') return { ok: true, result: { status: 'refused' } }
+        return { ok: true, result: await pane.write(socket, req.ticket, req.phase, current) }
+      }
+      case 'scrollViewV1': {
+        const s = sessions.get(req.name)
+        const current = (): boolean => !!s && !s.exited && !s.retiring &&
+          sessions.get(req.name) === s && s.generation === req.generation &&
+          !socket.destroyed && s.subscribers.has(socket) && scrollSockets.has(socket)
+        if (!s || !current() || typeof req.up !== 'boolean' || typeof req.capture !== 'boolean' ||
+            !Number.isInteger(req.lines) || req.lines < 1 || req.lines > 20) {
+          return { ok: true, result: { status: 'refused', message: 'This terminal viewer or scroll action is no longer current.' } }
+        }
+        return { ok: true, result: await s.scrollForHistory(req.up, req.lines, req.capture, current) }
+      }
       case 'paneCommand': {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: true, result: { command: null } satisfies PaneCommandResult }
@@ -993,6 +1030,8 @@ async function main(): Promise<void> {
           ok: true,
           result: await hostMessagePane(() => sessions.get(req.name)).send(req.envelope, req.expected)
         }
+      case 'wakeSleepingV1':
+        return { ok: true, result: await hostSleepingWake(() => sessions.get(req.name))(req.generation, req.data, req.expected) }
       case 'capture': {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: true, result: { text: '' } satisfies CaptureResult }
@@ -1002,6 +1041,8 @@ async function main(): Promise<void> {
         }
         return { ok: true, result: { text } satisfies CaptureResult }
       }
+      case 'historySearchV1':
+        return { ok: true, result: await searchRetainedGeneration(() => sessions.get(req.name), req.generation, req.query) }
       case 'executeLaunch': {
         if (clientProtocolVersion === 1) {
           return { ok: false, error: 'opaque launch requires session-host protocol v2' }
@@ -1050,6 +1091,8 @@ async function main(): Promise<void> {
         return { ok: true, result }
       }
       case 'detach': {
+        const s = sessions.get(req.name)
+        if (s) composedPanes.get(s)?.releaseOwner(socket)
         await sessions.get(req.name)?.detach(socket)
         return { ok: true }
       }
@@ -1170,6 +1213,7 @@ async function main(): Promise<void> {
       // `detach` also returns this socket's pause ticket; without that second half, a crashed
       // viewer can leave the global node-pty actuator paused forever for every healthy viewer.
       for (const session of sessions.values()) {
+        composedPanes.get(session)?.releaseOwner(socket)
         void session.detach(socket).catch((e) =>
           log(`detach cleanup failed name=${session.name}: ${String(e)}`)
         )

@@ -21,6 +21,7 @@ let fireDone: Done
 function stubBridge(start: Record<string, unknown>): void {
   ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = {
     pairing: {
+      listNetworks: vi.fn(async () => []),
       start: vi.fn(async () => ({ payload: '{"v":1}', sshOpen: false, ...start })),
       stop: vi.fn(async () => undefined),
       onDone: vi.fn((cb: Done) => {
@@ -35,6 +36,7 @@ function stubBridge(start: Record<string, unknown>): void {
       webhookStatus: vi.fn(async () => ({ ok: true, value: null })),
       webhookEndpoint: vi.fn(async () => 'https://api.test')
     },
+    settings: { save: vi.fn(async () => undefined) },
     remoteHost: { setPhoneAccess: vi.fn() },
     shell: { openExternal: vi.fn() }
   }

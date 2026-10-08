@@ -1,0 +1,14 @@
+# Gradle / Android build output
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.keystore
+!debug.keystore
+.kotlin/
+__pycache__/

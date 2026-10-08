@@ -47,13 +47,14 @@ assertTempHome()
 const KEY_A = rewriteKeyComment('ssh-ed25519 AAAAblobAAAA phone-a@ios', 'dev-a')
 const KEY_OTHER = 'ssh-rsa AAAAlaptopblob jdub@laptop'
 
-const device = (id: string, relayDeviceId?: string): DeviceEntry => ({
+const device = (id: string, relayDeviceId?: string, relayBoxKey?: string): DeviceEntry => ({
   id,
   name: `Phone ${id}`,
   token: `agent-token-${id}`,
   pairedAt: 1_700_000_000_000,
   lastSeenAt: 0,
-  relayDeviceId
+  relayDeviceId,
+  ...(relayBoxKey ? { relayBoxKey } : {})
 })
 
 /** Seed a registry holding ONE device; `relayDeviceId` is what the phone called itself. */
@@ -184,7 +185,7 @@ describe('createPairingService().revokeDevice', () => {
     vi.stubGlobal('fetch', fetchMock)
     const service = createPairingService(relayDeps('TOKEN'))
 
-    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'ok' })
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'ok', relay: 'unconfirmed' })
 
     // 'dev-a' is OUR id; the backend keys its row on the id the phone sent.
     expect(fetchBody(fetchMock)).toEqual({ deviceId: 'phone-relay-1', entitlement: 'TOKEN' })
@@ -203,7 +204,7 @@ describe('createPairingService().revokeDevice', () => {
     vi.stubGlobal('fetch', fetchMock)
     const service = createPairingService(relayDeps('TOKEN'))
 
-    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'ok' })
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'ok', relay: 'unconfirmed' })
     expect(fetchBody(fetchMock)).toEqual({ deviceId: 'dev-a', entitlement: 'TOKEN' })
     expect(deviceIds()).toEqual([])
   })
@@ -213,7 +214,7 @@ describe('createPairingService().revokeDevice', () => {
     vi.stubGlobal('fetch', fetchMock)
     const service = createPairingService(relayDeps(null))
 
-    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped' })
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'unconfirmed' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(deviceIds()).toEqual([])
   })
@@ -223,7 +224,7 @@ describe('createPairingService().revokeDevice', () => {
     vi.stubGlobal('fetch', fetchMock)
     const service = createPairingService()
 
-    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped' })
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'unconfirmed' })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -231,7 +232,7 @@ describe('createPairingService().revokeDevice', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403 })))
     const service = createPairingService(relayDeps('TOKEN'))
 
-    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'failed' })
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'failed', relay: 'unconfirmed' })
     expect(deviceIds()).toEqual([])
     expect(authKeys()).toBe(`${KEY_OTHER}\n`)
   })
@@ -263,6 +264,54 @@ describe('createPairingService().revokeDevice', () => {
 
     expect(await service.revokeDevice('never-paired')).toEqual({ local: true, server: 'skipped' })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('reports an unknown legacy relay identity without guessing a key or calling the revoker', async () => {
+    const revokeRelayKey = vi.fn(async () => ({ persisted: true, killed: true }))
+    const service = createPairingService({ ...relayDeps(null), revokeRelayKey })
+
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'unconfirmed' })
+    expect(revokeRelayKey).not.toHaveBeenCalled()
+    expect(deviceIds()).toEqual([])
+    expect(authKeys()).toBe(`${KEY_OTHER}\n`)
+  })
+
+  it('cannot confirm a known relay identity revoked when no revoker is available', async () => {
+    const box = Buffer.alloc(32, 7).toString('base64')
+    writeFileSync(AGENT_JSON, JSON.stringify({ devices: [device('dev-a', 'phone-relay-1', box)] }), { mode: 0o600 })
+    const service = createPairingService(relayDeps(null))
+
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'unconfirmed' })
+    expect(deviceIds()).toEqual([])
+    expect(authKeys()).toBe(`${KEY_OTHER}\n`)
+  })
+
+  it('reports retained relay access and does not close it while another pairing authorizes the same phone', async () => {
+    const box = Buffer.alloc(32, 7).toString('base64')
+    writeFileSync(AGENT_JSON, JSON.stringify({ devices: [
+      device('dev-a', 'phone-relay-1', box), device('dev-b', 'phone-relay-1', box)
+    ] }), { mode: 0o600 })
+    const revokeRelayKey = vi.fn(async () => ({ persisted: true, killed: true }))
+    const service = createPairingService({ ...relayDeps(null), revokeRelayKey })
+
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'retained' })
+    expect(revokeRelayKey).not.toHaveBeenCalled()
+    expect(deviceIds()).toEqual(['dev-b'])
+  })
+
+  it('reports confirmed relay revocation only after unpin and session closure for the exact last key', async () => {
+    const box = Buffer.alloc(32, 7).toString('base64')
+    writeFileSync(AGENT_JSON, JSON.stringify({ devices: [device('dev-a', 'phone-relay-1', box)] }), { mode: 0o600 })
+    const revokeRelayKey = vi.fn(async (key: string) => {
+      expect(key).toBe(box)
+      expect(deviceIds()).toEqual([])
+      expect(authKeys()).toBe(`${KEY_OTHER}\n`)
+      return { persisted: true, killed: true }
+    })
+    const service = createPairingService({ ...relayDeps(null), revokeRelayKey })
+
+    expect(await service.revokeDevice('dev-a')).toEqual({ local: true, server: 'skipped', relay: 'ok' })
+    expect(revokeRelayKey).toHaveBeenCalledExactlyOnceWith(box)
   })
 })
 

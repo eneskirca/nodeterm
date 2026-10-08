@@ -19,6 +19,36 @@ export const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000]
  *  would hot-loop connect→respawn→die forever. */
 export const RESPAWN_REFUSE_MS = 10_000
 
+// An open card can be the only mounted view of an offscreen project's terminal. Canvas's
+// respawnNonce never reaches that view, so successful reconnects also notify these exact
+// scope/node subscribers. This is renderer-only lifetime state, never persisted or replayed.
+const reattachListeners = new Map<string, Map<string, Set<() => void>>>()
+
+export function subscribeSshReattach(scopeId: string, nodeId: string, listener: () => void): () => void {
+  let nodes = reattachListeners.get(scopeId)
+  if (!nodes) reattachListeners.set(scopeId, nodes = new Map())
+  let listeners = nodes.get(nodeId)
+  if (!listeners) nodes.set(nodeId, listeners = new Set())
+  listeners.add(listener)
+  const scopeNodes = nodes
+  const nodeListeners = listeners
+  let subscribed = true
+  return () => {
+    if (!subscribed) return
+    subscribed = false
+    nodeListeners.delete(listener)
+    if (!nodeListeners.size) scopeNodes.delete(nodeId)
+    if (!scopeNodes.size) reattachListeners.delete(scopeId)
+  }
+}
+
+function notifySshReattach(scopeId: string, nodeIds: string[]): void {
+  for (const nodeId of nodeIds) {
+    const listeners = reattachListeners.get(scopeId)?.get(nodeId)
+    if (listeners) for (const listener of [...listeners]) listener()
+  }
+}
+
 interface ProjectLoop {
   /** Nodes waiting for a respawn once the master is back. */
   pending: Set<string>
@@ -138,6 +168,7 @@ export class SshReconnector {
     const nodeIds = [...loop.pending]
     const now = Date.now()
     for (const id of nodeIds) this.lastRespawn.set(id, now)
+    notifySshReattach(projectId, nodeIds)
     this.deps.respawn(projectId, nodeIds)
   }
 }

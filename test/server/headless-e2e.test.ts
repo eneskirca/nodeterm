@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import net from 'net'
 import { startServer } from '../../src/server/index'
+import { PtyManager } from '../../src/core/pty-manager'
 
 async function unusedLoopbackPort(): Promise<number> {
   const probe = net.createServer()
@@ -29,6 +30,8 @@ describe('server headless mode: boots core services, binds no public listener', 
   it('startServer with headless:true returns port 0 and closes cleanly', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-headless-'))
     const sentinelPort = await unusedLoopbackPort()
+    // Observe the actual backend decision: headless boot also serves managed New when available.
+    const supportsManaged = vi.spyOn(PtyManager.prototype, 'supportsManagedCreation')
     try {
       const srv = await startServer({
         port: sentinelPort,
@@ -43,6 +46,17 @@ describe('server headless mode: boots core services, binds no public listener', 
       })
       // Nothing bound: the sentinel port is 0.
       expect(srv.port).toBe(0)
+      // Actual boot serves Board and optionally managed New; renderer nudges remain absent.
+      const advertisementFile = path.join(dataDir, 'ssh-actions/advertisement.json')
+      const advertisement = JSON.parse(fs.readFileSync(advertisementFile, 'utf8'))
+      expect(advertisement.version).toBe(1)
+      expect(advertisement.remoteProjects).toBe(false)
+      expect(supportsManaged).toHaveBeenCalled()
+      expect(advertisement.methods).toEqual([
+        'projects.ensureBoard', 'projects.setCardColumn', 'projects.editCardLabels',
+        ...(supportsManaged.mock.results[0].value ? ['sessions.createManagedV1'] : [])
+      ])
+      expect(fs.statSync(advertisementFile).mode & 0o777).toBe(0o600)
       // And the configured ephemeral port is NOT listening — a connect attempt is refused.
       const listening = await new Promise<boolean>((resolve) => {
         const sock = net
@@ -58,7 +72,9 @@ describe('server headless mode: boots core services, binds no public listener', 
       })
       expect(listening).toBe(false)
       await srv.close()
+      expect(fs.existsSync(advertisementFile)).toBe(false)
     } finally {
+      supportsManaged.mockRestore()
       fs.rmSync(dataDir, { recursive: true, force: true })
     }
   }, 30_000)

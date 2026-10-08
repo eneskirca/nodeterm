@@ -109,6 +109,7 @@ const api: NodeTerminalApi = {
     readScrollback: (persistKey) => ipcRenderer.invoke(IPC.ptyReadScrollback, persistKey),
     sendText: (persistKey, text, opts) =>
       ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter),
+    wakeSleeping: (request) => ipcRenderer.invoke(IPC.ptyWakeSleeping, request),
     sendChatPrompt: (persistKey, text, agentId) =>
       ipcRenderer.invoke(IPC.ptySendChatPrompt, persistKey, text, agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
@@ -178,11 +179,13 @@ const api: NodeTerminalApi = {
       ipcRenderer.on(IPC.workspaceExternalChange, h)
       return () => ipcRenderer.removeListener(IPC.workspaceExternalChange, h)
     },
-    // Deliberate no-op on the desktop shell: nothing here writes the project file on an agent's
-    // behalf. `HeadlessNodeFactory` is Server Edition only — the desktop's canvas-control verbs run
-    // through the renderer's own React Flow state, and its watcher path stays on onExternalChange.
-    // A real subscription would be dead wiring for a channel this main process never broadcasts.
-    onServerChange: (_cb: (project: Project) => void) => () => {}
+    // This core's phone Board edits use the same live-adoption path as Server Edition canvas
+    // control. Unlike outside file edits, they must not wait behind a dirty-canvas conflict.
+    onServerChange: (cb: (project: Project) => void) => {
+      const h = (_e: unknown, p: Project) => cb(p)
+      ipcRenderer.on(IPC.workspaceServerChange, h)
+      return () => ipcRenderer.removeListener(IPC.workspaceServerChange, h)
+    }
   },
   projectSettings: {
     read: (projectId: string) => ipcRenderer.invoke(IPC.projectSettingsRead, projectId),
@@ -750,6 +753,7 @@ const api: NodeTerminalApi = {
       ipcRenderer.invoke(IPC.handoffBuild, sessionId, agentId, sourceNodeId, cwd, accountId)
   },
   pairing: {
+    listNetworks: () => ipcRenderer.invoke(IPC.pairingListNetworks),
     start: () => ipcRenderer.invoke(IPC.pairingStart),
     stop: () => ipcRenderer.invoke(IPC.pairingStop),
     onDone: (cb) => {
@@ -888,7 +892,7 @@ const api: NodeTerminalApi = {
   reportHibernated: (nodeId, on) => ipcRenderer.send(IPC.agentHibernated, { nodeId, on }),
   seedAgentIdentity: (entries) => ipcRenderer.send(IPC.agentSeedIdentity, entries),
   onAgentWake: (listener) => {
-    const handler = (_e: unknown, nodeId: string) => listener(nodeId)
+    const handler = (_e: unknown, nodeId: string, automatic?: unknown) => listener(nodeId, automatic === true)
     ipcRenderer.on(IPC.agentWake, handler)
     return () => ipcRenderer.removeListener(IPC.agentWake, handler)
   },

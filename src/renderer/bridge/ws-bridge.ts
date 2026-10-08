@@ -291,6 +291,7 @@ export function buildRealApi(
       client.request(IPC.ptyReadScrollback, persistKey) as Promise<string>,
     sendText: (persistKey, text, opts) =>
       client.request(IPC.ptySendText, persistKey, text, opts?.enter) as Promise<boolean>,
+    wakeSleeping: (request) => client.request(IPC.ptyWakeSleeping, request).catch(() => ({ delivered: false, verdict: 'delivery-failed' })) as Promise<import('../../shared/agents/sleeping-wake').SleepingWakeResult>,
     sendChatPrompt: (persistKey, text, agentId) =>
       client.request(IPC.ptySendChatPrompt, persistKey, text, agentId) as Promise<ChatPromptResult>,
     // A failed read is unknown, never evidence that persistence is available.
@@ -363,9 +364,8 @@ export function buildRealApi(
     // Remote-node adoption (the phone appending a session it started) rides it too: that IS
     // "another device", which is what this channel means.
     onExternalChange: (cb) => client.subscribe(IPC.workspaceExternalChange, cb as Listener),
-    // REAL: Server Edition canvas control broadcasts its own persisted bridge/rope changes here —
-    // wider than the node-only canvas:mut vocabulary, but ours, so they must not travel the
-    // outside-edit channel and end up behind the conflict bar (see server/canvas-control.ts).
+    // REAL: this core's phone Board edits and Server Edition canvas control broadcast persisted
+    // changes here. They must not travel the outside-edit channel and wait behind a conflict bar.
     onServerChange: (cb) => client.subscribe(IPC.workspaceServerChange, cb as Listener)
   }
 

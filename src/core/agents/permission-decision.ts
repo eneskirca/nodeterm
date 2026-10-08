@@ -305,17 +305,20 @@ export function isBoundedAnswerContent(content: string): boolean {
 }
 
 /**
- * The first managed-script revision that understands a JSON answer (and maps a plain `allow` on a
+ * The first unambiguous merged revision that understands an unmarked JSON answer (and maps a plain `allow` on a
  * plan). `MANAGED_SCRIPT_REVISION` must be >= this — pinned in managed-script.answer.test.ts. It
  * lives HERE rather than in managed-script.ts because that module imports this one.
  *
  * Why a revision gate at all: an SSH host gets a new script only at CONNECT, so a long-connected
  * project can hold a request with an older script. That script reads a JSON answer as neither
  * `allow` nor `deny`, deletes it and prints nothing — the TUI dialog stays — while the write itself
- * succeeded. Without this gate core would report success and the shells would flip NEEDS YOU to
- * "working" over an agent still waiting in its TUI.
+ * succeeded. Both parent branches advertised revision 5: one accepts marker-framed Android v2
+ * replies, the other accepts unmarked PermissionRequest decisions. Require revision 6 for this
+ * latter contract. Android's separately advertised v2 capabilities do not depend on this gate.
+ * Without it core would report success and the shells would flip NEEDS YOU to "working" over
+ * an agent still waiting in its TUI.
  */
-export const MIN_STRUCTURED_ANSWER_REVISION = 5
+export const MIN_STRUCTURED_ANSWER_REVISION = 6
 
 /** Tickets whose PermissionRequest was posted by a script >= MIN_STRUCTURED_ANSWER_REVISION.
  *  Process-local and bounded: the only producer is this process's hook server, so a ticket we never

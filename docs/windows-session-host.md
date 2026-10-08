@@ -165,6 +165,32 @@ long-lived connection (no positional-FIFO fragility, unlike this app's tmux cont
   shadow-client machinery exists to make cheap for tmux is simply not a problem here. See the
   `sendKeys`/`paneCommand`/`capture` rows above: none of them need an attached client.
 
+### Explicit phone Send
+
+The v2 hello can negotiate `composed-input-v1` independently of other features. It adds
+`prepareComposedV1`, `writeComposedV1` and `cancelComposedV1`; terminal protocol versions
+and the public Android `pty.submitComposed` request/result are unchanged. Preparation mints
+a one-use 10-second ticket scoped to the exact live host session generation and subscribed
+socket. One lock spans paste and its separate Enter across clients. The host reads actual
+emulator paste mode after its output barrier, then rechecks ownership before writing; Enter
+also requires at least 150 ms since paste. Detach, cancellation and expiry only retire tickets.
+
+The client captures its subscriber registration/generation and original socket and checks them
+inside the deferred send turn. A new socket cannot redeem an old ticket. Once paste may have
+been transmitted, missing receipts and RPC errors return uncertain without replay or an Enter
+on a replacement. Older live hosts refuse this extension while keeping their sessions alive.
+Busy/stale attachment refusals do not tell users to upgrade. Direct non-persistent Windows PTYs
+use the same composed writer through their captured `NativeWindowsPane` lifetime and emulator.
+This action is distinct from the process-attested, observed-screen messaging extension below.
+The minimum delay is between native write calls; ConPTY queues may still coalesce writes.
+A positive result confirms terminal API submission, not application execution or physical
+Windows delivery spacing under backpressure.
+
+The actual backend/client/emulator producer is exercised through Android's encrypted relay
+and Kotlin API with a labeled native byte recorder. A separate Linux kernel-PTY component
+proof exercises the real host/socket path. Physical Windows ConPTY and phone acceptance of
+these additional backends remain pending; see the [Android checkpoint](android.md#composed-send-backend-follow-up-2026-10-07-a128).
+
 ## The seeding trap (read this before touching `spawnNew`/`join`/`SessionHostPty`)
 
 CLAUDE.md's tmux section states the load-bearing rule for THAT backend: on a warm reattach, the

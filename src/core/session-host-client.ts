@@ -45,6 +45,37 @@ export const STAGED_RUNTIME_WAIT_MS = 45_000
 import { latestClaimSize, type SizeClaim } from './pty-size'
 import { isTerminalReport } from './terminal-reports'
 import type { PreparedAgentLaunch } from './agent-launch'
+import type { HistorySearch } from './terminal-history'
+import { retryInterruptedSessionRead } from './session-host-read-retry'
+import { waitForComposedEnter, type ComposedPrepareResult, type ComposedWriteResult } from './composed-pty'
+import { COMPOSED_INPUT_UNCERTAIN, COMPOSED_INPUT_UNSUPPORTED, parseComposedInput,
+  type ComposedInput, type ComposedInputResult } from '../shared/composed-input'
+import { HISTORY_CAPTURE_MAX_BYTES, HISTORY_CAPTURE_MAX_ROWS, type NativeScrollResult } from '../shared/history-scroll'
+
+function nativeScrollResult(value: unknown): NativeScrollResult | null {
+  if (!value || typeof value !== 'object') return null
+  const result = value as Record<string, unknown>
+  if (result.status === 'input') return { status: 'input' }
+  if ((result.status === 'refused' || result.status === 'uncertain') && typeof result.message === 'string' &&
+      result.message.length > 0 && result.message.length <= 1024) return { status: result.status, message: result.message }
+  if (result.status !== 'history') return null
+  if (result.capture === undefined) return { status: 'history' }
+  if (!result.capture || typeof result.capture !== 'object') return null
+  const capture = result.capture as Record<string, unknown>
+  if (!Number.isInteger(capture.cols) || (capture.cols as number) < 1 || (capture.cols as number) > 65535 ||
+      !Number.isInteger(capture.viewportRows) || (capture.viewportRows as number) < 1 || (capture.viewportRows as number) > 200 ||
+      typeof capture.olderTruncated !== 'boolean' || !Array.isArray(capture.rows) || capture.rows.length > HISTORY_CAPTURE_MAX_ROWS) return null
+  let bytes = 0
+  for (const value of capture.rows) {
+    if (!value || typeof value !== 'object' || typeof value.text !== 'string' || typeof value.isWrapped !== 'boolean' ||
+        (value.section !== 'normal' && value.section !== 'alternate')) return null
+    bytes += Buffer.byteLength(value.text, 'utf8')
+    if (bytes > HISTORY_CAPTURE_MAX_BYTES) return null
+  }
+  if (Buffer.byteLength(JSON.stringify(capture), 'utf8') > HISTORY_CAPTURE_MAX_BYTES) return null
+  return { status: 'history', capture: { cols: capture.cols as number, viewportRows: capture.viewportRows as number,
+    olderTruncated: capture.olderTruncated, rows: capture.rows.map((row) => ({ text: row.text, isWrapped: row.isWrapped, section: row.section })) } }
+}
 
 export interface SessionSubscriber {
   onData(data: string): void
@@ -296,6 +327,8 @@ export class SessionHostClient {
    *  size. On a host that predates it, the size this client last requested IS the pty's size as
    *  long as this is the host's only connection — the common case, and the one issue #914 is. */
   private hostGeometryEvents = false
+  private hostComposedInput = false
+  private hostScrollView = false
   /** The current connection negotiated `shutdown` (issue #829): only then may prepare-for-update
    *  ask the host to end every session and exit. An older host lacks it, and the app then falls
    *  back to the manual steps — never to killing the host itself. */
@@ -608,6 +641,8 @@ export class SessionHostClient {
       const helloId = this.nextId++
       let protocolVersion: 1 | 2 | null = null
       let geometryEvents = false
+      let composedInput = false
+      let scrollView = false
       let shutdownFeature = false
       const finish = (ok: boolean, trailing: SessionHostFrame[] = []): void => {
         if (settled) return
@@ -624,7 +659,7 @@ export class SessionHostClient {
           }
           this.hostShutdownFeature = shutdownFeature
           this.hostPid = Number.isInteger(identity.state.pid) ? identity.state.pid : null
-          this.attachSocket(socket, protocolVersion, geometryEvents)
+          this.attachSocket(socket, protocolVersion, geometryEvents, composedInput, scrollView)
           for (const frame of trailing) this.handleFrame(socket, frame)
         } else {
           try {
@@ -720,6 +755,8 @@ export class SessionHostClient {
             protocolVersion = negotiated
             const features = (frame.result as HelloResult | undefined)?.features
             geometryEvents = Array.isArray(features) && features.includes('geometry')
+            composedInput = negotiated === 2 && Array.isArray(features) && features.includes('composed-input-v1')
+            scrollView = negotiated === 2 && Array.isArray(features) && features.includes('scroll-view-v1')
             shutdownFeature = Array.isArray(features) && features.includes('shutdown')
             finish(true, frames.slice(index + 1))
           } else {
@@ -740,10 +777,12 @@ export class SessionHostClient {
     })
   }
 
-  private attachSocket(socket: net.Socket, protocolVersion: 1 | 2, geometryEvents: boolean): void {
+  private attachSocket(socket: net.Socket, protocolVersion: 1 | 2, geometryEvents: boolean, composedInput = false, scrollView = false): void {
     this.socket = socket
     this.negotiatedProtocolVersion = protocolVersion
     this.hostGeometryEvents = geometryEvents
+    this.hostComposedInput = composedInput
+    this.hostScrollView = scrollView
     this.everConnected = true
     const framer = new LineFramer()
     socket.on('data', (chunk: Buffer) => {
@@ -772,6 +811,8 @@ export class SessionHostClient {
       this.socket = null
       this.negotiatedProtocolVersion = null
       this.hostGeometryEvents = false
+      this.hostComposedInput = false
+      this.hostScrollView = false
       for (const state of this.sessions.values()) {
         // The next connection re-learns the size from its own attach replies.
         state.hostGeometry = null
@@ -945,32 +986,35 @@ export class SessionHostClient {
     request: SessionHostRequestBody,
     onSuccess?: (result: T, socket: net.Socket) => void,
     onSent?: () => void,
+    beforeSend?: () => boolean,
     timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS
   ): Promise<T> {
     // A peer-initiated close races the client's own 'close' event: a cached socket can look live
     // here while the peer already hung up, and a frame written into that gap fails (EPIPE) for
     // work the host never saw. requestOnSocket defers the actual write by one REAL event-loop
     // turn, so a raced hangup is discovered before any bytes are committed; such a frame is the
-    // one provably-undelivered case and the only one resent here on a fresh connection. A failure
-    // discovered by the write itself stays a plain rejection: by then the frame's delivery is the
-    // transport's business and other requests may already ride on it.
-    let undelivered: SessionHostRequestNotDeliveredError | undefined
+    // provably-undelivered case can be resent. A failure discovered by the write itself leaves
+    // delivery uncertain: only typed read-only operations may retry EPIPE/ECONNRESET. Sent writes,
+    // host refusals and deadlines remain plain rejections.
+    let previousFailure: Error | undefined
     for (let attempt = 0; ; attempt++) {
       try {
         await this.ensureConnected()
       } catch (connectError) {
         // A resend that cannot even reconnect reports the transport failure the caller actually
         // hit, not the follow-up connect refusal; a cold first connect keeps its own error.
-        throw undelivered?.original ?? connectError
+        throw previousFailure ?? connectError
       }
       const socket = this.socket
       if (!socket) throw new Error('session-host: not connected')
       try {
-        return await this.requestOnSocket(socket, request, onSuccess, onSent, timeoutMs)
+        return await this.requestOnSocket(socket, request, onSuccess, onSent, beforeSend, timeoutMs)
       } catch (error) {
-        if (!(error instanceof SessionHostRequestNotDeliveredError)) throw error
-        if (attempt + 1 >= SESSION_HOST_RESEND_ATTEMPTS) throw error.original
-        undelivered = error
+        const undelivered = error instanceof SessionHostRequestNotDeliveredError
+        if (!undelivered && !retryInterruptedSessionRead(request, error)) throw error
+        const original = undelivered ? error.original : asError(error)
+        if (attempt + 1 >= SESSION_HOST_RESEND_ATTEMPTS) throw original
+        previousFailure = original
       }
     }
   }
@@ -982,6 +1026,7 @@ export class SessionHostClient {
     request: SessionHostRequestBody,
     onSuccess?: (result: T, socket: net.Socket) => void,
     onSent?: () => void,
+    beforeSend?: () => boolean,
     timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS
   ): Promise<T> {
     if (this.socket !== socket || socket.destroyed) {
@@ -1025,6 +1070,16 @@ export class SessionHostClient {
       // because immediates run in scheduling order.
       realSetImmediate(() => {
         if (this.pending.get(id) !== pending) return
+        // Reconnect and the deferred send turn can both cross a viewer retirement. Reject this
+        // exact unwritten frame without dropping other subscribers or retrying a stale action.
+        try {
+          if (beforeSend && !beforeSend()) throw new SessionHostRequestRejectedError('terminal viewer changed or action unsupported')
+        } catch (error) {
+          this.pending.delete(id)
+          if (pending.timer) clearTimeout(pending.timer)
+          pending.reject(asError(error))
+          return
+        }
         if (this.socket !== socket || socket.destroyed) {
           this.dropSocket(socket, new Error('session-host connection lost'), true)
           return
@@ -1618,6 +1673,85 @@ export class SessionHostClient {
     }
   }
 
+  /** The explicit composer is bound to this subscriber registration and the generation it
+   * attached to. It never falls back to the name-only background sendKeys/write APIs. */
+  async submitComposed(name: string, sub: SessionSubscriber, value: ComposedInput, current: () => boolean): Promise<ComposedInputResult> {
+    const input = parseComposedInput(value)
+    const state = this.sessions.get(name)
+    const entry = state?.entries.get(sub)
+    const generation = state?.generation
+    const refused = (): ComposedInputResult => ({ status: 'refused', message:
+      'This terminal or Send action is no longer current, or another Send is pending. Reattach and check the terminal before sending again.' })
+    const unsupported = (): ComposedInputResult => ({ status: 'refused', message: COMPOSED_INPUT_UNSUPPORTED })
+    const uncertain = (): ComposedInputResult => ({ status: 'uncertain', message: COMPOSED_INPUT_UNCERTAIN })
+    if (!input || !state || !entry || !generation) return refused()
+    let ownerSocket: net.Socket | undefined
+    const valid = (): boolean => current() && this.sessions.get(name) === state &&
+      state.entries.get(sub) === entry && entry.phase === 'attached' && state.generation === generation &&
+      !this.killReplayBarriers.has(name) && this.hostComposedInput && !!this.socket &&
+      state.appliedSocket === this.socket && state.appliedAttached && (!ownerSocket || ownerSocket === this.socket)
+    let ticket: string | undefined
+    let pasteSent = false
+    let pasted = false
+    try {
+      const prepared = await this.request<ComposedPrepareResult>(
+        { cmd: 'prepareComposedV1', name, generation, input },
+        (_result, socket) => { ownerSocket = socket }, undefined, valid)
+      if (prepared?.status !== 'prepared' || typeof prepared.ticket !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(prepared.ticket)) return refused()
+      ticket = prepared.ticket
+      const result = await this.request<ComposedWriteResult>(
+        { cmd: 'writeComposedV1', name, generation, ticket, phase: 'paste' },
+        undefined, () => { pasteSent = true }, valid)
+      if (result?.status === 'refused') return refused()
+      if (result?.status === 'delivered') return valid() ? { status: 'delivered' } : uncertain()
+      if (result?.status !== 'awaiting-enter') return uncertain()
+      pasted = true
+      await waitForComposedEnter()
+      if (!valid()) return uncertain()
+      const entered = await this.request<ComposedWriteResult>(
+        { cmd: 'writeComposedV1', name, generation, ticket, phase: 'enter' }, undefined, undefined, valid)
+      return entered?.status === 'delivered' && valid() ? { status: 'delivered' } : uncertain()
+    } catch (error) {
+      // Only the structured phase result above proves a before-write refusal. Even an RPC error
+      // response can follow accepted input; every exception after a sent paste stays uncertain.
+      // Enter is never replayed after a possible paste.
+      return pasted || pasteSent ? uncertain() : this.socket && !this.socket.destroyed && !this.hostComposedInput ? unsupported() : refused()
+    } finally {
+      // Cancellation consumes only this one-use ticket on its original socket. It never opens a
+      // replacement transport, waits for cleanup, or writes terminal input.
+      if (ticket && ownerSocket && this.socket === ownerSocket && !ownerSocket.destroyed) {
+        void this.requestOnSocket(ownerSocket, { cmd: 'cancelComposedV1', name, generation, ticket }).catch(() => {})
+      }
+    }
+  }
+
+  /** A mixed history/input operation stays on its original attached socket, never replayed. */
+  async scrollForHistory(name: string, sub: SessionSubscriber, up: boolean, lines: number, capture: boolean,
+    current: () => boolean): Promise<NativeScrollResult> {
+    const state = this.sessions.get(name), entry = state?.entries.get(sub), generation = state?.generation
+    const socket = this.socket
+    const refused = (): NativeScrollResult => ({ status: 'refused', message: 'This terminal viewer or scroll action is no longer current. Reattach before scrolling.' })
+    const uncertain = (): NativeScrollResult => ({ status: 'uncertain', message: 'Wheel input may have reached the terminal. It was not sent again.' })
+    if (!state || !entry || !generation || !socket || socket.destroyed ||
+        typeof up !== 'boolean' || typeof capture !== 'boolean' || !Number.isInteger(lines) || lines < 1 || lines > 20) return refused()
+    const valid = (): boolean => current() && this.sessions.get(name) === state && state.entries.get(sub) === entry &&
+      entry.phase === 'attached' && state.generation === generation && !this.killReplayBarriers.has(name) &&
+      this.socket === socket && !socket.destroyed && state.appliedSocket === socket && state.appliedAttached
+    if (!valid()) return refused()
+    if (!this.hostScrollView) return { status: 'refused', message: 'Safe native history scrolling is unavailable on this host. Update nodeterm on the computer.' }
+    let sent = false
+    try {
+      const result = nativeScrollResult(await this.requestOnSocket<unknown>(socket,
+        { cmd: 'scrollViewV1', name, generation, up, lines, capture }, undefined, () => { sent = true },
+        () => valid() && this.hostScrollView))
+      if (!result) return uncertain()
+      if (result.status === 'history') return valid() ? result : refused()
+      if (result.status === 'input') return valid() ? result : uncertain()
+      return result
+    } catch { return sent ? uncertain() : refused() }
+  }
+
   async paneCommand(name: string): Promise<string | null> {
     try {
       const result = await this.request<PaneCommandResult>({ cmd: 'paneCommand', name })
@@ -1645,9 +1779,25 @@ export class SessionHostClient {
     } catch { return false }
   }
 
+  async wakeSleeping(name: string, data: string, expected: PaneOwner): Promise<boolean> {
+    const generation = this.sessions.get(name)?.generation ?? this.sessionGenerations.get(name)
+    if (!generation) return false
+    try {
+      return await this.request<boolean>({ cmd: 'wakeSleepingV1', name, generation, data, expected }) === true
+    } catch { return false } // No ordinary write, opaque launch, retry, or legacy-host replacement.
+  }
+
   async capture(name: string, full: boolean): Promise<string> {
     const result = await this.request<CaptureResult>({ cmd: 'capture', name, full })
     return result.text
+  }
+
+  /** Additive extension; an older live host refuses it and is never restarted to enable search. */
+  async historySearch(name: string, query: string): Promise<HistorySearch> {
+    await this.ensureConnected()
+    const generation = this.sessions.get(name)?.generation ?? this.sessionGenerations.get(name)
+    if (!generation) throw new Error(`No confirmed retained terminal generation for '${name}'.`)
+    return this.request<HistorySearch>({ cmd: 'historySearchV1', name, generation, query })
   }
 
   /** Execute already-rendered trusted input through the persistent generation's exactly-once
@@ -1945,6 +2095,7 @@ export class SessionHostClient {
       result = await this.requestOnSocket<ShutdownResult>(
         socket,
         { cmd: 'shutdown' },
+        undefined,
         undefined,
         undefined,
         options.timeoutMs ?? SHUTDOWN_REQUEST_TIMEOUT_MS

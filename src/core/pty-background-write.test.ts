@@ -7,6 +7,8 @@ import { fakePlatform, type FakePlatform } from './platform-fake'
 import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS } from '../shared/types'
 import { TMUX_SOCKET, sessionName, isSessionName } from './tmux-naming'
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+import type { SleepingWakeRequest } from '../shared/agents/sleeping-wake'
 import type { ControlSpawn } from './tmux-control-client'
 
 /**
@@ -31,6 +33,10 @@ interface FakePty {
 const spawned: FakePty[] = []
 /** Spawn/dispose events across BOTH child kinds, so a test can assert their relative ORDER. */
 const log: string[] = []
+
+// These delivery tests exercise tmux and plain PTYs. The Windows screen emulator has its own
+// native-adapter suites and is unrelated to the commands/bytes judged here.
+vi.mock('./native-windows-pane', () => ({ NativeWindowsPane: class {} }))
 
 vi.mock('node-pty', () => ({
   spawn: () => {
@@ -61,18 +67,47 @@ vi.mock('node-pty', () => ({
 
 /** Every tmux side-call goes through child_process; `liveTmuxSessions` answers `has-session`. */
 const liveTmuxSessions = new Set<string>()
+const tmuxCalls: string[][] = []
+let tmuxWriteFails = false
+let tmuxCopyMode = false
+let tmuxBytes = ''
+let wakeOwnerReply = '41 bash'
+let remoteOwnerOutput = ''
+const paneIds = new Map<string, string>()
+const paneId = (target: string): string => {
+  const id = paneIds.get(target) ?? `%${paneIds.size + 1}`
+  paneIds.set(target, id)
+  return id
+}
 
 vi.mock('child_process', () => {
-  type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
+  type Cb = (err: Error | null, res?: string | { stdout: string; stderr: string }, stderr?: string) => void
   const execFile = (file: string, args: string[], a?: unknown, b?: unknown): unknown => {
     const cb = (typeof a === 'function' ? a : b) as Cb | undefined
     const ok = (stdout: string): void => cb?.(null, { stdout, stderr: '' })
-    if (args.includes('has-session')) {
+    if (file.endsWith('ssh') && remoteOwnerOutput && args.some((arg) => arg.includes('##NTPANE '))) {
+      ok(remoteOwnerOutput)
+    } else if (args.includes('display-message') && args.includes('#{pane_pid} #{pane_current_command}')) {
+      tmuxCalls.push(args); ok(wakeOwnerReply + '\n')
+    } else if (args.includes('display-message') && args.includes('#{pane_id} #{pane_in_mode}')) {
+      tmuxCalls.push(args)
+      const target = args[args.indexOf('-t') + 1].replace(/^=/, '').replace(/:$/, '')
+      ok(`${paneId(target)} ${tmuxCopyMode ? '1' : '0'}\n`)
+    } else if (args.includes('send-keys')) {
+      tmuxCalls.push(args)
+      if (tmuxWriteFails) cb?.(new Error('no such pane'))
+      else {
+        if (args.includes('-X')) tmuxCopyMode = false
+        else if (!tmuxCopyMode)
+          tmuxBytes += Buffer.from(args.slice(args.indexOf('-H') + 1).join(''), 'hex').toString('utf8')
+        ok('')
+      }
+    } else if (args.includes('has-session')) {
       const target = args[args.indexOf('-t') + 1]
       if (liveTmuxSessions.has(target)) ok('')
       else cb?.(Object.assign(new Error('no such session'), { code: 1 }))
     } else if (args[0] === '-ilc') {
-      ok('__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__')
+      cb?.(null, '__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__', '')
     } else {
       ok('')
     }
@@ -99,6 +134,14 @@ class FakeControlSpawn implements ControlSpawn {
   calls: Array<{ bin: string; args: string[] }> = []
   children: FakeControlChild[] = []
   autoReply = true
+  /** A tiny tmux model: judge bytes delivered to the app, rather than the command's spelling. */
+  panes: Map<string, { copyMode: boolean; bytes: string }> | undefined
+  failCancel = false
+  modeReply: string | undefined
+  afterProbe: (() => void) | undefined
+  holdCancel = false
+  heldReplies: Array<() => void> = []
+  private identities = new Map<string, { copyMode: boolean; bytes: string }>()
   private num = 0
   spawn(bin: string, args: string[]) {
     this.calls.push({ bin, args })
@@ -112,6 +155,8 @@ class FakeControlSpawn implements ControlSpawn {
       feed: (s) => onData?.(Buffer.from(s, 'latin1'))
     }
     this.children.push(child)
+    // argv's attach-session answers too, before any command subsequently written on stdin.
+    void Promise.resolve().then(() => child.feed('%begin 1700 0 0\n%end 1700 0 0\n'))
     return {
       stdin: {
         write: (s: string) => {
@@ -119,8 +164,13 @@ class FakeControlSpawn implements ControlSpawn {
           // `detach-client` is the disposal handshake, not a command with a reply.
           if (!this.autoReply || s.startsWith('detach-client')) return
           const n = ++this.num
+          const reply = this.reply(s)
           // A real microtask (not a timer): tests run under fake timers.
-          void Promise.resolve().then(() => child.feed(`%begin 1700 ${n} 0\n%end 1700 ${n} 0\n`))
+          const respond = () => child.feed(
+            `%begin 1700 ${n} 0\n${reply.body}${reply.ok ? '%end' : '%error'} 1700 ${n} 0\n`
+          )
+          if (this.holdCancel && s.includes('-X cancel')) this.heldReplies.push(respond)
+          else void Promise.resolve().then(respond)
         }
       },
       stdout: {
@@ -140,13 +190,42 @@ class FakeControlSpawn implements ControlSpawn {
   get only(): FakeControlChild {
     return this.children[0]
   }
+  private reply(line: string): { ok: boolean; body: string } {
+    const args = line.trim().split(' ')
+    if (args[0] !== 'display-message' && args[0] !== 'send-keys') return { ok: true, body: '' }
+    const target = args[args.indexOf('-t') + 1]
+    const name = target?.replace(/^=/, '').replace(/:$/, '')
+    const resolved = this.panes && (target.startsWith('=')
+      ? name
+      : [...this.panes.keys()].find((key) => key.startsWith(name)))
+    const pane = target.startsWith('%')
+      ? this.identities.get(target)
+      : resolved ? this.panes?.get(resolved) : undefined
+    if (this.panes && !pane) return { ok: false, body: 'no such pane\n' }
+    if (args[0] === 'display-message' && line.includes('#{pane_pid} #{pane_current_command}')) return { ok: true, body: wakeOwnerReply + '\n' }
+    if (args[0] === 'display-message') {
+      const id = paneId(name)
+      if (pane) this.identities.set(id, pane)
+      const body = this.modeReply ?? `${id} ${pane?.copyMode ? '1' : '0'}\n`
+      this.afterProbe?.()
+      return { ok: true, body }
+    }
+    if (args[0] === 'send-keys' && args.includes('-X')) {
+      if (this.failCancel) return { ok: false, body: 'cancel failed\n' }
+      if (pane) pane.copyMode = false
+    } else if (args[0] === 'send-keys' && pane && !pane.copyMode) {
+      pane.bytes += Buffer.from(args.slice(args.indexOf('-H') + 1).join(''), 'hex').toString('utf8')
+    }
+    return { ok: true, body: '' }
+  }
 }
 
 const ALICE = 1
 const BOB = 2
 
 /** `ls\n` as the wire sees it: hex bytes, because a control-mode command is one text line. */
-const LS_KEYS = (target: string): string => `send-keys -t ${target} -H 6c 73 0a\n`
+const LS_KEYS = (target: string): string => `send-keys -t ${paneId(target)} -H 6c 73 0a\n`
+const MODE = (target: string): string => `display-message -p -t =${target}: '#{pane_id} #{pane_in_mode}'\n`
 
 /**
  * A machine with pty devices to spare, always.
@@ -172,6 +251,13 @@ describe('background writes into released sessions', () => {
     spawned.length = 0
     log.length = 0
     liveTmuxSessions.clear()
+    tmuxCalls.length = 0
+    tmuxWriteFails = false
+    tmuxCopyMode = false
+    tmuxBytes = ''
+    wakeOwnerReply = '41 bash'
+    remoteOwnerOutput = ''
+    paneIds.clear()
     control = new FakeControlSpawn()
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-bgwrite-'))
     fake = fakePlatform({ userDataDir })
@@ -229,6 +315,63 @@ describe('background writes into released sessions', () => {
     sessionName(key)
   ]
 
+  const sleepingOwner: PaneOwner = { panePid: 41, paneId: '%1', command: 'bash', tty: '/dev/pts/1', argv: ['bash -i'], pids: [41] }
+  const sleepingRequest: SleepingWakeRequest = { nodeId: 'node-1', agentId: 'codex', command: 'codex resume s --ask-for-approval on-request', exitedByUs: true,
+    recorded: { panePid: 41, paneId: '%1', command: 'bash' } }
+
+  it('wakes a live and a released owned pane through the actual manager without spawning a view', async () => {
+    const m = await tmuxManager()
+    vi.spyOn(m, 'paneOwner').mockResolvedValue(sleepingOwner)
+    const { sessionId } = await create(ALICE, 'node-1')
+    expect(await fake.handlers[IPC.ptyWakeSleeping](sleepingRequest)).toEqual({ delivered: true, verdict: 'resume' })
+    expect(tmuxBytes).toBe('\x15' + sleepingRequest.command + '\r')
+    kill(ALICE, sessionId)
+    tmuxBytes = ''
+    expect((await m.wakeSleeping(sleepingRequest)).delivered).toBe(true)
+    expect(control.only.writes.some((line) => line.includes('#{pane_pid} #{pane_current_command}'))).toBe(true)
+    expect(spawned).toHaveLength(1)
+  })
+
+  it('refuses an unowned or a replaced generation before sending a wake', async () => {
+    const m = await tmuxManager()
+    const probe = vi.spyOn(m, 'paneOwner').mockResolvedValue(sleepingOwner)
+    expect((await m.wakeSleeping(sleepingRequest)).delivered).toBe(false)
+    expect(probe).not.toHaveBeenCalled()
+    await create(ALICE, 'node-1')
+    probe.mockImplementationOnce(async () => {
+      await m.destroySession(ALICE, 'node-1')
+      return sleepingOwner
+    })
+    expect((await m.wakeSleeping(sleepingRequest)).verdict).toBe('context-changed')
+    expect(tmuxBytes).toBe('')
+  })
+
+  it('pins the final tmux delivery to the verified pane pid and foreground before clearing any line', async () => {
+    const m = await tmuxManager()
+    await create(ALICE, 'node-1')
+    vi.spyOn(m, 'paneOwner').mockResolvedValue(sleepingOwner)
+    for (const stale of ['42 bash', '41 node']) {
+      wakeOwnerReply = stale
+      expect((await m.wakeSleeping(sleepingRequest)).delivered).toBe(false)
+      expect(tmuxBytes).toBe('')
+    }
+  })
+
+  it('wakes a released SSH project only over its retained actual master and remote pane proof', async () => {
+    const m = await tmuxManager()
+    const remote = { conn: { host: 'h1', user: 'u' }, controlPath: '/tmp/cm-owned', remoteCwd: '/srv/app' }
+    const created = await fake.handlers[IPC.ptyCreate](ALICE, { cols: 80, rows: 24, persistKey: 'node-r', sshRemote: remote }) as { sessionId: string }
+    kill(ALICE, created.sessionId)
+    remoteOwnerOutput = '##NTPANE 41|/dev/pts/1|bash|%1\n41 41 S+ bash -i\n'
+    const writer = vi.spyOn(m, 'backgroundWriteOver').mockResolvedValue(true)
+    const localProbe = vi.spyOn(m, 'paneOwner')
+    expect((await m.wakeSleeping({ ...sleepingRequest, nodeId: 'node-r' })).delivered).toBe(true)
+    expect(writer).toHaveBeenCalledWith('node-r', '\x15' + sleepingRequest.command + '\r', remote, expect.objectContaining({ panePid: 41, paneId: '%1', command: 'bash' }))
+    expect(localProbe).not.toHaveBeenCalled()
+    expect(tmuxCalls).toEqual([])
+    expect(spawned).toHaveLength(1)
+  })
+
   it('types into a released session over a control client — no pty, exact send-keys line', async () => {
     const m = await tmuxManager()
     await release(ALICE, 'node-1')
@@ -242,24 +385,189 @@ describe('background writes into released sessions', () => {
     expect(spawned[0].killed).toBe(true)
   })
 
-  it('writes straight into the painter while the node is on screen — control clients untouched', async () => {
+  it('writes to the live tmux pane without passing quick answers through its painter', async () => {
     const m = await tmuxManager()
     await create(ALICE, 'node-1')
 
     expect(await m.backgroundWrite('node-1', 'ls\n')).toBe(true)
 
-    expect(spawned[0].writes).toEqual(['ls\n'])
+    expect(spawned[0].writes).toEqual([])
+    expect(tmuxCalls).toEqual([
+      ['-L', TMUX_SOCKET, 'display-message', '-p', '-t', '=nt-node-1:', '#{pane_id} #{pane_in_mode}'],
+      ['-L', TMUX_SOCKET, 'send-keys', '-t', '%1', '-H', '6c', '73', '0a']
+    ])
     expect(control.calls).toHaveLength(0)
   })
 
-  it('reports a failure rather than rejecting when the painter’s pty is already gone', async () => {
+  it('reports a failure rather than typing through the painter when the tmux pane is gone', async () => {
     const m = await tmuxManager()
     await create(ALICE, 'node-1')
-    spawned[0].throwOnWrite = true // node-pty throws on a write to a process that has exited
+    tmuxWriteFails = true
 
     // `write()` fires this path and forgets it, so a rejection here would surface as an UNHANDLED
-    // rejection in the main process — a crash risk, from a pty that merely died first.
+    // rejection in the main process. A pane disappearing during delivery is a normal refusal.
     await expect(m.backgroundWrite('node-1', 'ls\n')).resolves.toBe(false)
+    expect(spawned[0].writes).toEqual([])
+  })
+
+  it('cancels copy mode before delivering a quick answer to a live tmux pane', async () => {
+    const m = await tmuxManager()
+    await create(ALICE, 'node-1')
+    tmuxCopyMode = true
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(true)
+
+    expect(tmuxBytes).toBe('2')
+    expect(tmuxCopyMode).toBe(false)
+    expect(spawned[0].writes).toEqual([])
+    expect(control.calls).toHaveLength(0)
+  })
+
+  it('writes directly into a plain pty when tmux is disabled', async () => {
+    const m = await managerWith({ tmuxEnabled: false })
+    await create(ALICE, 'node-1')
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(true)
+    expect(spawned[0].writes).toEqual(['2'])
+    expect(tmuxCalls).toEqual([])
+    spawned[0].throwOnWrite = true
+    await expect(m.backgroundWrite('node-1', '2')).resolves.toBe(false)
+  })
+
+  it('answers a live SSH-project pane through its master rather than its attached client', async () => {
+    const m = await tmuxManager()
+    const remote = {
+      conn: { host: 'h1', user: 'u' }, controlPath: '/tmp/cm', remoteCwd: '/srv/app'
+    }
+    await fake.handlers[IPC.ptyCreate](ALICE, {
+      cols: 80, rows: 24, persistKey: 'node-r', sshRemote: remote
+    })
+    const writeOver = vi.spyOn(m, 'backgroundWriteOver').mockResolvedValue(true)
+
+    expect(await m.backgroundWrite('node-r', '2')).toBe(true)
+    expect(writeOver).toHaveBeenCalledExactlyOnceWith('node-r', '2', remote)
+    expect(spawned[0].writes).toEqual([])
+    expect(tmuxCalls).toEqual([])
+  })
+
+  it('a missing released pane does not prefix-match a neighbouring node and report success', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    const neighbour = { copyMode: false, bytes: '' }
+    control.panes = new Map([['nt-node-10', neighbour]])
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(false)
+    expect(neighbour.bytes).toBe('')
+  })
+
+  it('a released pane leaves copy mode before answering, with one reply per command', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    const pane = { copyMode: true, bytes: '' }
+    control.panes = new Map([['nt-node-1', pane]])
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(true)
+    expect(await m.backgroundWrite('node-1', '\u001b')).toBe(true)
+
+    expect(pane).toEqual({ copyMode: false, bytes: '2\u001b' })
+    expect(control.only.writes).toEqual([
+      MODE('nt-node-1'),
+      'send-keys -t %1 -X cancel\n',
+      'send-keys -t %1 -H 32\n',
+      MODE('nt-node-1'),
+      'send-keys -t %1 -H 1b\n'
+    ])
+  })
+
+  it('does not send an answer after copy-mode cancellation failed', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    const pane = { copyMode: true, bytes: '' }
+    control.panes = new Map([['nt-node-1', pane]])
+    control.failCancel = true
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(false)
+    expect(pane).toEqual({ copyMode: true, bytes: '' })
+    expect(control.only.writes).toHaveLength(2)
+  })
+
+  it('pins the pane found by the probe when desktop selection changes before the answer', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    const original = { copyMode: true, bytes: '' }
+    const other = { copyMode: true, bytes: '' }
+    control.panes = new Map([['nt-node-1', original]])
+    control.afterProbe = () => control.panes!.set('nt-node-1', other)
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(true)
+    expect(original).toEqual({ copyMode: false, bytes: '2' })
+    expect(other).toEqual({ copyMode: true, bytes: '' })
+  })
+
+  it('preserves chunk order while a first background answer waits for copy-mode cancellation', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    const pane = { copyMode: true, bytes: '' }
+    control.panes = new Map([['nt-node-1', pane]])
+    control.holdCancel = true
+
+    const first = m.backgroundWrite('node-1', 'A')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(control.heldReplies).toHaveLength(1)
+    const second = m.backgroundWrite('node-1', 'B')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pane.bytes).toBe('')
+    control.heldReplies.shift()!()
+
+    expect(await first).toBe(true)
+    expect(await second).toBe(true)
+    expect(pane.bytes).toBe('AB')
+  })
+
+  it('lets another node answer while one node waits for cancellation', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    await release(ALICE, 'node-2')
+    // Separate existing shadows give each node its own FIFO. Holding a reply on one client must
+    // not artificially reorder another command's reply on that same wire.
+    await m.shadowAttach('node-1')
+    await m.shadowAttach('node-2')
+    const slow = { copyMode: true, bytes: '' }
+    const other = { copyMode: false, bytes: '' }
+    control.panes = new Map([['nt-node-1', slow], ['nt-node-2', other]])
+    control.holdCancel = true
+
+    const first = m.backgroundWrite('node-1', 'A')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await m.backgroundWrite('node-2', 'B')).toBe(true)
+    expect(other.bytes).toBe('B')
+    control.heldReplies.shift()!()
+    expect(await first).toBe(true)
+    expect(slow.bytes).toBe('A')
+  })
+
+  it('retires a shared client whose probe reply cannot confirm the pane, without sending keys', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    control.modeReply = '' // e.g. the initial attach block consumed instead of the probe's reply
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(false)
+    expect(control.only.writes).toEqual([MODE('nt-node-1'), 'detach-client\n'])
+    expect(control.only.killed).toBe(1)
+    expect(control.calls).toHaveLength(1)
+  })
+
+  it('retires an unconfirmed shadow before it can be reused for another quick answer', async () => {
+    const m = await tmuxManager()
+    await release(ALICE, 'node-1')
+    await m.shadowAttach('node-1')
+    control.modeReply = ''
+
+    expect(await m.backgroundWrite('node-1', '2')).toBe(false)
+    expect(control.only.killed).toBe(1)
+    expect(control.calls).toHaveLength(1)
+    expect(control.only.writes.some((line) => line.includes('-H'))).toBe(false)
+    expect(m.shadowedTmuxSessions(TMUX_SOCKET)).toEqual([])
   })
 
   it('prefers the node’s own shadow to the shared client', async () => {
@@ -289,8 +597,11 @@ describe('background writes into released sessions', () => {
     // burst costs one process, not one per node.
     expect(control.calls).toHaveLength(1)
     expect(control.only.writes).toEqual([
+      MODE('nt-node-1'),
       LS_KEYS('nt-node-1'),
+      MODE('nt-node-2'),
       LS_KEYS('nt-node-2'),
+      MODE('nt-node-3'),
       LS_KEYS('nt-node-3')
     ])
   })
@@ -491,14 +802,15 @@ describe('background writes into released sessions', () => {
     expect(control.calls).toHaveLength(0)
   })
 
-  it('still writes into the painter with ptyShadowClients switched off — tier 1 is not a shadow', async () => {
+  it('still answers a live tmux pane with ptyShadowClients switched off', async () => {
     const m = await managerWith({ ptyShadowClients: false })
     await create(ALICE, 'node-1')
 
     // Tier 1 is the session's own pty, which exists with or without this feature. Gating it would
     // turn the kill switch into "background writes stop working", which is a different setting.
     expect(await m.backgroundWrite('node-1', 'ls\n')).toBe(true)
-    expect(spawned[0].writes).toEqual(['ls\n'])
+    expect(spawned[0].writes).toEqual([])
+    expect(tmuxCalls.at(-1)).toContain('send-keys')
     expect(control.calls).toHaveLength(0)
   })
 
@@ -527,6 +839,7 @@ describe('background writes into released sessions', () => {
     const before = vi.getTimerCount()
 
     const writing = m.backgroundWrite('node-1', 'ls\n') // arms the linger
+    await Promise.resolve() // whole deliveries enter the node's ordering queue first
     control.only.exit(1) // …and the client dies under it: its own onExit clears `shared`
 
     expect(await writing).toBe(false)

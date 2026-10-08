@@ -28,13 +28,17 @@ import path from 'path'
 import { app, ipcMain, type BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc'
 import { REF_MAX_LEN } from '../../shared/presence'
+import { validHistoryQuery, type HistorySearch } from '../../core/terminal-history'
+import { HistoryScrollView } from '../../core/history-scroll-view'
+import type { NativeScrollResult } from '../../shared/history-scroll'
+import { COMPOSED_INPUT_UNCERTAIN, COMPOSED_INPUT_UNSUPPORTED, parseComposedInput, type ComposedInput, type ComposedInputResult } from '../../shared/composed-input'
 import type { CanvasMutation, CanvasState, DirEntry, KanbanColumn, KanbanLabel, PtyCreateOptions } from '../../shared/types'
 import type { AgentId } from '../../shared/agents/config'
 import { PtyManager, type DetachedSinks, type RelayAttachPrep } from '../../core/pty-manager'
 import * as fsOps from '../../core/fs-ops'
 import { TITLE_MAX, type RemoteNodeInput } from '../../core/project-node-append'
 import { parseCardLabelEdit, type CardLabelEdit } from '../../core/project-kanban-write'
-import { isValidPendingId } from '../../core/agents/pending-approvals'
+import { isValidPendingId, type PendingAnswerResult } from '../../core/agents/pending-approvals'
 import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError, normalizeChatPage } from '../../shared/chat-page'
 import {
   CHAT_SEND_TEXT_MAX,
@@ -52,6 +56,9 @@ import { sanitizeClientMutation } from './canvas-sync'
 import { connectRelay, type RelaySocket, type RpcRequest } from './relay-socket'
 import { initHostCanvasHub, currentCanvas, subscribeCanvas } from './host-canvas-hub'
 import { createPhonePresence, type PhonePresence } from './phone-presence'
+import type { HostLanReport } from './host-lan-report'
+import { createRelayPairingProof, type LegacyRelayPairings } from './relay-pairing-proof'
+import { RELAY_PAIRING_CHALLENGE_METHOD, RELAY_PAIRING_PROOF_METHOD } from '../../shared/relay-pairing-proof'
 import { registerPeerSessionKiller } from './peer-revoke'
 
 // Default relay endpoint; `NODETERM_RELAY_URL` overrides it (mirrors license.ts's API_BASE /
@@ -72,17 +79,51 @@ const FRESH_PROBE_BUDGET_MS = 750
 
 // The slice of pty-manager the host needs. PtyManager satisfies this; tests pass a fake.
 export interface HostPtyManager {
+  /** Mode-aware movement on this exact attached viewer; absent means no safe wheel route. */
+  scrollAttached?(clientId: number | null, sessionId: string, up: boolean, lines: number,
+    capture: boolean, current: () => boolean): Promise<NativeScrollResult>
+  /** Explicit composer action on this exact attached viewer. Absent on older implementations. */
+  submitComposed?(sessionId: string, input: ComposedInput, current: () => boolean): Promise<ComposedInputResult>
+  /** Search all retained output of this attached generation. Absent on older hosts. */
+  historySearch?(sessionId: string, query: string): Promise<HistorySearch>
   createDetached(options: PtyCreateOptions, sinks: DetachedSinks): string
+  /** Attach a relay-served PTY to the EXISTING tmux session for a node id (create if absent). */
+  attachDetached(
+    persistKey: string,
+    sinks: DetachedSinks,
+    options?: Omit<PtyCreateOptions, 'persistKey'>
+  ): string
+  /** Resolve bounded project settings before the phone can deliver its cold launch line.
+   * The commit stays synchronous: no input may fall between SnapshotEnd and live attachment. */
+  prepareDetachedAttach?(
+    persistKey: string,
+    options: Omit<PtyCreateOptions, 'persistKey'>
+  ): Promise<{ readonly fresh: boolean; attach(sinks: DetachedSinks): string }>
+  /** Current visible screen of a node's tmux session, for the attach snapshot. */
+  captureSnapshot(persistKey: string): Promise<string>
+  /** Does a tmux session for this node id exist RIGHT NOW? Asked before `attachDetached`, which
+   *  CREATES one when it doesn't — so the client can tell a warm join from a cold start. */
   /** Decide where (and with what env) a relay attach for a node id runs, from this machine's own
    *  records — see `PtyManager.prepareRelayAttach`. Replaces the bare local `attachDetached`, which
    *  created a LOCAL session for a remote node. */
-  prepareRelayAttach(
+  prepareRelayAttach?(
     nodeId: string,
     size: { cols: number; rows: number },
-    hint?: { projectId?: string }
+    hint?: { projectId?: string; create?: Pick<PtyCreateOptions, 'cwd' | 'accountId' | 'agentId' | 'ownerProjectId'> }
   ): Promise<RelayAttachPrep>
   /** Does a session for this node id exist RIGHT NOW? (The destroy path's outcome check.) */
   sessionExists(persistKey: string): Promise<boolean>
+  /** `sessionExists` / `captureSnapshot` for a node on an SSH project's host (see HostRemoteNodes).
+   *  Optional: absent ⇒ remote nodes are refused rather than attached locally. */
+  sessionExistsOver?(persistKey: string, sshRemote: NonNullable<PtyCreateOptions['sshRemote']>): Promise<boolean>
+  captureSnapshotOver?(persistKey: string, sshRemote: NonNullable<PtyCreateOptions['sshRemote']>): Promise<string>
+  /** `node.sendKeys` for a node on an SSH project's host: type the keys into its REMOTE pane over
+   *  the master. Optional: absent ⇒ such a node answers `sent:false`, never a local write. */
+  backgroundWriteOver?(
+    persistKey: string,
+    data: string,
+    sshRemote: NonNullable<PtyCreateOptions['sshRemote']>
+  ): Promise<boolean>
   /** `clientId` identifies WHO typed (the bridged phone's presence peer), so the keystroke can be
    *  attributed to it — null when this session has no peer, which just means it is not badged. */
   write(clientId: number | null, sessionId: string, data: string): void
@@ -155,7 +196,22 @@ export interface HostNodeActions {
   refresh(nodeId: string): boolean
   /** Rename a node through the renderer's `renameSession` funnel (title pre-sanitized here). */
   rename(nodeId: string, title: string): boolean
+  /**
+   * Type a short quick answer (`node.sendKeys`) into the node's session without attaching a new
+   * client. Resolves whether it was delivered. Optional: absent ⇒ "not served", and the phone falls
+   * back to its old attach-and-write. LOCAL nodes only: a node `HostRemoteNodes` places on an SSH
+   * host is typed over its master (`HostPtyManager.backgroundWriteOver`) and never reaches this.
+   */
+  sendKeys?(nodeId: string, keys: string): Promise<boolean>
 }
+
+/**
+ * What `node.sendKeys` accepts: a SHORT quick answer — a digit or a few printable characters, ESC,
+ * Enter. It exists for the Inbox's question/approval shortcuts, not as a general input channel
+ * (`pty.attach` is that), so anything longer or carrying other control bytes is refused.
+ */
+// eslint-disable-next-line no-control-regex -- the allowed controls are exactly ESC and CR
+export const SEND_KEYS_RE = /^[\x1b\r\x20-\x7e]{1,16}$/
 
 /**
  * The kanban board writes the phone may ask this host to make on its behalf (`projects.ensureBoard`
@@ -186,6 +242,72 @@ export interface HostKanbanOps {
     nodeId: string,
     edit: CardLabelEdit
   ): Promise<{ edited: boolean; labels: KanbanLabel[]; cardLabelIds: string[] } | null>
+}
+
+/**
+ * The phone's Inbox actions that need the DESKTOP rather than the pane (`approvals.answer` /
+ * `inbox.ack`). A phone on direct SSH does both by writing files on the host (the hook-reply
+ * `~/.nodeterm/pending/<id>.answer`, the `~/.nodeterm/acks/<nodeId>.seen` read-ack); a phone on the
+ * relay cannot — `fs.*` is jailed to the project roots, and rightly so — so without these verbs a
+ * relay-only phone (every Windows host, and any phone off the LAN) could neither answer a held
+ * approval nor tell the desktop it read a finished session. Typing `1` instead is NOT a substitute:
+ * while the hook holds the request the prompt is not on screen yet, so the keystroke would land in
+ * the agent's composer.
+ *
+ * Both land on the SAME functions the desktop's own surfaces use (the canvas Approve/Deny button's
+ * `agent:answer-permission` handler; the ack sweeper's `ackDone` + unread-clear), so a relay answer
+ * cannot drift from a local one. Absent ⇒ the verbs answer an honest "not served".
+ */
+export interface HostInboxOps {
+  /**
+   * Answer a held permission hook. `sent` = the answer reached a hold that still exists; `gone` =
+   * the hold had already ended (the hook timed out, or another surface answered) so nothing was
+   * written; `failed` = the write could not happen. See `PendingAnswerResult`.
+   */
+  answerPermission(nodeId: string, pendingId: string, decision: 'allow' | 'deny' | 'allow-always', suggestionIndex?: number): Promise<PendingAnswerResult>
+  /** v2 held AskUserQuestion: indexes for every question, validated against the live request. */
+  answerQuestion?(nodeId: string, pendingId: string, selections: number[][]): Promise<PendingAnswerResult>
+  /** The phone READ a finished session: resolve its done event(s) and clear the desktop unread. */
+  ackRead(nodeId: string): void
+}
+
+/**
+ * Nodes of the desktop's SSH projects live on ANOTHER machine: their tmux session is on that host,
+ * reached over the project's ControlMaster. A relay `pty.attach` used to attach them to the
+ * desktop's LOCAL tmux, which created an empty phantom `nt-<id>` here and had the phone offer to
+ * resume the agent on the wrong machine (audit A09) — against the rule that a remote node is never
+ * spawned locally. With this injected, such a node is attached over its master or refused.
+ */
+export interface HostRemoteNodes {
+  /**
+   * `null` = a local node. Otherwise the node's host (`user@host`, for the refusal text) and, when
+   * the project's ControlMaster is connected and its setup finished, the `sshRemote` to attach over.
+   */
+  resolve(nodeId: string): { where: string; sshRemote?: NonNullable<PtyCreateOptions['sshRemote']> } | null
+}
+
+/**
+ * Where a session the PHONE starts is created (audit A33). `pty.attach` of a fresh node id creates
+ * its tmux session; the phone could only steer it through the launch line (`cd '<dir>' &&`,
+ * `CLAUDE_CONFIG_DIR=…`), which is POSIX shell — on a Windows host the session started in the home
+ * folder and silently dropped the account. The phone now names the project (and account/agent) on
+ * the attach, and the HOST resolves them from its own registry and settings, applied only when the
+ * attach creates the session. Everything is validated here; anything unknown is simply not applied.
+ *
+ * The agent id is what gives the created session its agent-specific hook env, and
+ * `ownerProjectId` — the index entry id, resolved by the host, never the phone's string unchecked —
+ * records the pane's owner the way a canvas-started spawn does (audit A72). Production:
+ * `createHostNewSessions` (host-new-sessions.ts).
+ */
+export interface HostNewSessions {
+  resolve(req: {
+    projectId: string
+    accountId?: string
+    agentId?: string
+  }): Pick<PtyCreateOptions, 'cwd' | 'accountId' | 'agentId' | 'ownerProjectId'> | null
+  /** Saved host facts win over create hints. Undefined means unknown; null means known but
+   * ineligible, so a caller cannot replace that node's owner with a different project hint. */
+  resolveNode?(nodeId: string): ReturnType<HostNewSessions['resolve']> | undefined
 }
 
 /**
@@ -222,6 +344,13 @@ interface Stream {
   seq: number
   /** True while the PTY is paused due to relay backpressure. */
   paused: boolean
+  history: HistoryScrollView
+  scrollTail: Promise<void>
+  pendingScroll: number
+  /** Exact-stream input held only while the remote attach commit is still in flight. */
+  pendingInput: Array<{ clientId: number | null; data: string }>
+  pendingInputBytes: number
+  pendingSize?: { cols: number; rows: number }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -298,6 +427,17 @@ export function createHostHandlers(
   // Kanban board writes on the phone's behalf (`projects.ensureBoard` / `projects.setCardColumn`).
   // Absent ⇒ the verbs answer an honest "not served".
   kanban?: HostKanbanOps,
+  // Inbox actions (`approvals.answer` / `inbox.ack`). Absent ⇒ the verbs answer "not served".
+  inbox?: HostInboxOps,
+  // Which nodes belong to an SSH project, and how to reach their host (see HostRemoteNodes).
+  // Absent ⇒ every node is attached locally, as before (the Server Edition has no SSH projects).
+  remoteNodes?: HostRemoteNodes,
+  // Where a phone-started session is created (see HostNewSessions). Absent ⇒ `{cols, rows}` only.
+  newSessions?: HostNewSessions,
+  // This computer's current LAN address and SSH host keys, sent as `lan` next to every `projects.list`
+  // answer (audit A74-refresh, host-lan-report.ts): the phone refreshes the LAN leg it dials from a
+  // relay-authenticated answer. Absent, or answering null ⇒ no `lan` field, the reply as before.
+  lanReport?: () => Promise<HostLanReport | null>,
   // The phone's Chat screen (`chat.page` / `chat.status` / `chat.send` / `agent.answer`).
   // Absent ⇒ the verbs answer an honest "not served".
   chat?: HostChatOps
@@ -313,6 +453,10 @@ export function createHostHandlers(
     // Report AFTER the delete: `detached` may consult the live viewer set via its own bookkeeping,
     // and a callback that throws must not leave the stream registered.
     if (stream) {
+      stream.history.clear()
+      stream.pendingInput = []
+      stream.pendingInputBytes = 0
+      stream.pendingSize = undefined
       try {
         remoteViewer?.detached(stream.persistKey)
       } catch {
@@ -404,12 +548,54 @@ export function createHostHandlers(
     const cols = Math.max(1, num(p.cols, 80))
     const rows = Math.max(1, num(p.rows, 24))
 
+    // A node of an SSH project: attach it over that project's ControlMaster, or refuse — never a
+    // local session (audit A09). Resolved before a stream is reserved, so a refusal leaves nothing.
+    let remote: NonNullable<PtyCreateOptions['sshRemote']> | undefined
+    let owner: ReturnType<HostRemoteNodes['resolve']> = null
+    try {
+      owner = remoteNodes?.resolve(nodeId) ?? null
+    } catch {
+      owner = null
+    }
+    if (owner) {
+      if (!owner.sshRemote || !pty.sessionExistsOver || !pty.captureSnapshotOver) {
+        socket.respond(req.id, false, {
+          message:
+            `This session runs on ${owner.where}, and your computer is not connected to it right now. ` +
+            'Open that project in nodeterm on the computer, then try again.'
+        })
+        return
+      }
+      remote = owner.sshRemote
+    }
+
+    // A phone starting a NEW session names its project (and account/agent): the host resolves the
+    // folder, account, agent and pane owner itself (A33, A72). Resolved now, applied only if this
+    // attach creates the session — `created` below, from this machine's own `sessionExists` probe,
+    // which fails toward "exists". That gate is what keeps a JOIN from claiming a pane's ownership
+    // (`agents/pane-ownership.ts`: ownership is recorded on a genuine fresh spawn only).
+    let create: Pick<PtyCreateOptions, 'cwd' | 'accountId' | 'agentId' | 'ownerProjectId'> | null = null
+    const projectId = str(p.projectId)
+    if (!remote && newSessions) {
+      try {
+        const saved = newSessions.resolveNode?.(nodeId)
+        create = saved === undefined
+          ? projectId && projectId.length <= REF_MAX_LEN
+            ? newSessions.resolve({ projectId, accountId: str(p.accountId), agentId: str(p.agentId) })
+            : null
+          : saved
+      } catch {
+        create = null
+      }
+    }
     const streamId = ++streamCounter
-    const stream: Stream = { sessionId: '', persistKey: nodeId, seq: 0, paused: false }
+    const stream: Stream = { sessionId: '', persistKey: nodeId, seq: 0, paused: false,
+      history: new HistoryScrollView(), scrollTail: Promise.resolve(), pendingScroll: 0,
+      pendingInput: [], pendingInputBytes: 0 }
     const sinks = makeSinks(streamId, stream, p.resizedFrames === true)
 
-    // Reserve the stream, then respond so the client can route Input/Resize frames; the snapshot
-    // + live attach then proceed. Capturing the screen is async (a tmux side-call).
+    // Reserve while the capture/settings preparation is async. Respond, snapshot and live attach
+    // commit together afterwards, so the client cannot send its launch into an unready session.
     streams.set(streamId, stream)
     // A phone viewer is now watching this node's session (reported at RESERVE time, balanced by
     // `dropStream`): the desktop wakes a hibernated node for it and shields it from Eco.
@@ -419,67 +605,83 @@ export function createHostHandlers(
       /* viewer bookkeeping must never break the attach */
     }
 
-    // WHERE this attach runs, and with what env, is decided by core from this machine's own
-    // records (`PtyManager.prepareRelayAttach`): a node of an SSH project runs over that project's
-    // ControlMaster or is REFUSED — never a local `nt-<id>` wearing a remote node's identity — and a
-    // local node gets the env the desktop would give it. The phone's optional `projectId` can only
-    // choose among those records or refuse; it never routes a node anywhere on its own.
-    const projectHint = str(p.projectId)
+    // Core resolves saved local/SSH records. Only the host's validated creation fallback may
+    // supply facts for an unregistered local node; saved facts and remote refusal always win.
     void (async () => {
       let prep: RelayAttachPrep
       try {
-        prep = await pty.prepareRelayAttach(nodeId, { cols, rows }, { projectId: projectHint })
+        if (pty.prepareRelayAttach) {
+          prep = await pty.prepareRelayAttach(nodeId, { cols, rows }, {
+            projectId: str(p.projectId), ...(create ? { create } : {})
+          })
+        } else {
+          // Compatibility for older managers: retain Android's bounded preparation and explicit
+          // remote-only routing, with no unchecked phone paths or launch facts.
+          const existed = await Promise.race([
+            (remote ? pty.sessionExistsOver!(nodeId, remote) : pty.sessionExists(nodeId)).catch(() => true),
+            new Promise<boolean>((r) => setTimeout(() => r(true), FRESH_PROBE_BUDGET_MS))
+          ])
+          const options = remote
+            ? { cols, rows, sshRemote: remote, requireRemote: true }
+            : { cols, rows, ...((pty.prepareDetachedAttach || !existed) && create ? create : {}) }
+          const prepared = pty.prepareDetachedAttach
+            ? await pty.prepareDetachedAttach(nodeId, options)
+            : { fresh: !existed, attach: (s: DetachedSinks) => pty.attachDetached(nodeId, s, options) }
+          prep = {
+            kind: 'ready', remote: !!remote,
+            get fresh() { return prepared.fresh },
+            sessionExists: () => remote ? pty.sessionExistsOver!(nodeId, remote) : pty.sessionExists(nodeId),
+            snapshot: () => remote ? pty.captureSnapshotOver!(nodeId, remote) : pty.captureSnapshot(nodeId),
+            attach: async (s) => prepared.attach(s)
+          }
+        }
       } catch {
         prep = { kind: 'refused', reason: 'not-connected', message: 'Could not prepare this session.' }
       }
+      if (streams.get(streamId) !== stream) return
       if (prep.kind === 'refused') {
-        // Nothing was spawned and no streamId was ever handed out: release the reservation and
-        // answer with the reason, so the phone shows a sentence instead of a bare shell.
         dropStream(streamId)
         socket.respond(req.id, false, { message: prep.message, reason: prep.reason })
         return
       }
-      // `fresh` — did this attach CREATE the session, or join a live one? It has to be asked BEFORE
-      // `attach`, whose `tmux new-session -A` creates when the session is gone; afterwards it always
-      // exists and the answer is meaningless. Without it a mirrored client could not tell "I joined
-      // your running agent" from "I just made you an empty login shell", which is what put a bare
-      // `~ %` prompt under a Claude node's title on the phone once the host's tmux server had died.
-      //
-      // Bounded, and fail-safe toward "warm": a probe that is slow or unprobeable answers `false`,
-      // so a client that cold-restores on `fresh` types nothing into a session that may be live.
-      // The bound matters because this precedes the RPC response and a probe can sit on its
-      // timeout when tmux (or, for a remote node, the master) is wedged.
       const existed = await Promise.race([
         prep.sessionExists().catch(() => true),
         new Promise<boolean>((r) => setTimeout(() => r(true), FRESH_PROBE_BUDGET_MS))
       ])
-      socket.respond(req.id, true, { streamId, fresh: !existed })
       const snapshot = await prep.snapshot().catch(() => '')
-      // The stream may have been killed/closed while the capture was in flight.
-      if (!streams.has(streamId)) return
-      // Snapshot first (current screen) — then live output begins on attach.
+      if (streams.get(streamId) !== stream) return
+      socket.respond(req.id, true, { streamId, fresh: prep.fresh ?? !existed,
+        ...(pty.scrollAttached ? { scrollV1: true } : {}) })
       sendSnapshot(streamId, stream, snapshot)
       try {
         const sessionId = await prep.attach(sinks)
-        if (!streams.has(streamId)) {
-          // Closed while the spawn was in flight (a remote spawn awaits the master's pacing gate):
-          // release the client we just made; the session itself keeps running.
+        if (streams.get(streamId) !== stream) {
+          // A closed stream cannot adopt a client whose remote spawn was still in flight.
           pty.kill(null, sessionId)
           return
         }
         stream.sessionId = sessionId
+        const size = stream.pendingSize
+        stream.pendingSize = undefined
+        if (size) pty.resize(null, sessionId, size.cols, size.rows)
+        const input = stream.pendingInput
+        stream.pendingInput = []
+        stream.pendingInputBytes = 0
+        for (const item of input) {
+          if (streams.get(streamId) !== stream) break
+          pty.write(item.clientId, sessionId, item.data)
+        }
       } catch {
-        // Attach failed (e.g. tmux unavailable, master gone) — surface as an exit so the client
-        // tears down.
-        socket.sendFrame(
-          OP.Error,
-          streamId,
-          stream.seq++,
-          textEncoder.encode(JSON.stringify({ exitCode: 1 }))
-        )
+        if (stream.sessionId) pty.kill(null, stream.sessionId)
+        socket.sendFrame(OP.Error, streamId, stream.seq++,
+          textEncoder.encode(JSON.stringify({ exitCode: 1 })))
         dropStream(streamId)
       }
-    })()
+    })().catch(() => {
+      if (streams.get(streamId) !== stream) return
+      socket.respond(req.id, false, { message: 'Could not prepare this session.' })
+      dropStream(streamId)
+    })
   }
 
   // Serve a `fs.*` RPC by calling the shared fs-ops on the host's real filesystem and responding
@@ -524,28 +726,118 @@ export function createHostHandlers(
     }
   }
 
-  /**
-   * Scroll a remote client's view of the session's tmux history.
-   *
-   * Scrolling belongs to tmux (its mouse is on and the pane lives on the alternate screen, so the
-   * client's emulator has no scrollback of its own). This stream's pty IS a tmux client, so the
-   * wheel is simply written into it as an SGR mouse event and tmux does the rest — no tmux command
-   * channel, no copy-mode bookkeeping on our side. The phone drives this because it cannot deliver
-   * the wheel itself: its own emulator would swallow the gesture.
-   *
-   * `lines` is untrusted (it arrives from a remote client) — clamp it, and address the wheel to
-   * cell 1,1 so a hostile value cannot be interpolated anywhere interesting.
-   */
+  /** One FIFO per captured viewer. A mixed scroll may write input, so it is never replayed. */
+  function queueScroll(req: RpcRequest, stream: Stream, work: () => Promise<void>): void {
+    if (stream.pendingScroll >= 32) {
+      socket.respond(req.id, true, { status: 'refused', message: 'Terminal scrolling is busy. Try again.' })
+      return
+    }
+    stream.pendingScroll++
+    const turn = stream.scrollTail.then(work)
+    stream.scrollTail = turn.catch(() => {}).then(() => { stream.pendingScroll-- })
+    void turn.catch(() => {
+      stream.history.clear()
+      socket.respond(req.id, true, {
+        status: 'uncertain', message: 'The scrolling result is unknown. It was not retried.'
+      })
+    })
+  }
+
+  // Compatibility RPC: only a positively resolved tmux viewer may receive the old SGR wheels.
+  // Native retained history needs the negotiated page response; never inject wheels when off.
   function handleScroll(req: RpcRequest): void {
     const p = asRecord(req.params)
-    const stream = streams.get(num(p.streamId, -1))
-    if (stream) {
-      const up = str(p.dir) !== 'down'
-      const notches = Math.min(20, Math.max(1, Math.floor(num(p.lines, 1))))
-      const seq = `\x1b[<${up ? 64 : 65};1;1M`
-      for (let i = 0; i < notches; i++) pty.write(getClientId(), stream.sessionId, seq)
+    const streamId = num(p.streamId, -1), stream = streams.get(streamId)
+    if (!stream) { socket.respond(req.id, true, {}); return }
+    if (!stream.sessionId || !pty.scrollAttached) {
+      socket.respond(req.id, false, { message: 'Safe scrolling is not served on this attached terminal.' }); return
     }
-    socket.respond(req.id, true, {})
+    const sessionId = stream.sessionId
+    const current = (): boolean => streams.get(streamId) === stream && stream.sessionId === sessionId
+    const up = str(p.dir) !== 'down', notches = Math.min(20, Math.max(1, Math.floor(num(p.lines, 1))))
+    queueScroll(req, stream, async () => {
+      if (!current()) { socket.respond(req.id, false, { message: 'This terminal is no longer attached.' }); return }
+      const result = await pty.scrollAttached!(getClientId(), sessionId, up, notches, false, current)
+      if (result.status === 'input') { stream.history.clear(); socket.respond(req.id, true, {}); return }
+      socket.respond(req.id, false, { message: result.status === 'history'
+        ? 'Update the phone app to browse this terminal’s retained history.' : result.message })
+    })
+  }
+
+  function handleScrollV1(req: RpcRequest): void {
+    const p = asRecord(req.params)
+    const streamId = num(p.streamId, -1), stream = streams.get(streamId)
+    const refuse = (message: string): void => socket.respond(req.id, true, { status: 'refused', message })
+    if (!Number.isInteger(streamId) || !stream?.sessionId) { refuse('This terminal is no longer attached.'); return }
+    if (!pty.scrollAttached) { refuse('Update nodeterm on the computer to browse terminal history.'); return }
+    if ((p.dir !== 'up' && p.dir !== 'down') || !Number.isInteger(p.lines) ||
+        (p.lines as number) < 1 || (p.lines as number) > 20 ||
+        (p.viewId !== undefined && (typeof p.viewId !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.viewId)))) {
+      refuse('Invalid terminal history movement.'); return
+    }
+    const up = p.dir === 'up', notches = p.lines as number, viewId = p.viewId as string | undefined
+    const sessionId = stream.sessionId
+    const current = (): boolean => streams.get(streamId) === stream && stream.sessionId === sessionId
+    queueScroll(req, stream, async () => {
+      if (!current()) { refuse('This terminal is no longer attached.'); return }
+      let capture: boolean
+      try { capture = stream.history.needsCapture(viewId) }
+      catch (error) { refuse(error instanceof Error ? error.message : 'This history view expired.'); return }
+      // Once history is open it is an inert, immutable view. Application output enabling mouse
+      // reporting underneath it must not redirect these gestures into foreground input.
+      if (!capture) {
+        try { socket.respond(req.id, true, stream.history.page(up, notches)) }
+        catch (error) {
+          stream.history.clear()
+          refuse(error instanceof Error ? error.message : 'Terminal history could not be read.')
+        }
+        return
+      }
+      const result = await pty.scrollAttached!(getClientId(), sessionId, up, notches, capture, current)
+      if (result.status === 'input') { stream.history.clear(); socket.respond(req.id, true, result); return }
+      if (result.status !== 'history') { stream.history.clear(); socket.respond(req.id, true, result); return }
+      if (!current()) { refuse('The terminal detached while its history was read.'); return }
+      try {
+        if (capture) {
+          if (!result.capture) throw new Error('The computer did not return terminal history.')
+          stream.history.install(result.capture)
+        }
+        socket.respond(req.id, true, stream.history.page(up, notches))
+      } catch (error) {
+        stream.history.clear()
+        refuse(error instanceof Error ? error.message : 'Terminal history could not be read.')
+      }
+    })
+  }
+
+  function handleHistorySearch(req: RpcRequest): void {
+    const p = asRecord(req.params)
+    const streamId = num(p.streamId, -1)
+    const stream = streams.get(streamId)
+    if (!stream?.sessionId) { socket.respond(req.id, false, { message: 'This terminal is no longer attached.' }); return }
+    if (!pty.historySearch) { socket.respond(req.id, false, { message: 'History search is not served on this host. Update nodeterm on the computer.' }); return }
+    if (!validHistoryQuery(p.query)) { socket.respond(req.id, false, { message: 'Enter a single-line search of 1–256 characters.' }); return }
+    void pty.historySearch(stream.sessionId, p.query).then((result) => {
+      if (streams.get(streamId) !== stream) throw new Error('The terminal detached while its history was searched.')
+      socket.respond(req.id, true, result)
+    }).catch((error: unknown) => socket.respond(req.id, false, { message: error instanceof Error ? error.message : 'History search failed.' }))
+  }
+
+  function handleSubmitComposed(req: RpcRequest): void {
+    const p = asRecord(req.params)
+    const streamId = num(p.streamId, -1)
+    const stream = streams.get(streamId)
+    const input = parseComposedInput(p.input)
+    if (!input) { socket.respond(req.id, false, { message: 'Invalid composed terminal input.' }); return }
+    if (!stream?.sessionId) { socket.respond(req.id, false, { message: 'This terminal is no longer attached.' }); return }
+    if (!pty.submitComposed) { socket.respond(req.id, false, { message: COMPOSED_INPUT_UNSUPPORTED }); return }
+    const current = (): boolean => streams.get(streamId) === stream
+    void pty.submitComposed(stream.sessionId, input, current).then((result) => {
+      // Once dispatched, a detached viewer can still have received input. Never turn that into a
+      // proven refusal or retry; the client also binds completion to its own presentation ticket.
+      socket.respond(req.id, true, result)
+    }).catch(() => socket.respond(req.id, true, { status: 'uncertain', message: COMPOSED_INPUT_UNCERTAIN }))
   }
 
   // Serve a typed `git.*` verb against the injected GitService slice, jailed to the shared roots
@@ -722,6 +1014,71 @@ export function createHostHandlers(
       .catch(() => socket.respond(req.id, true, { moved: false }))
   }
 
+  /**
+   * `approvals.answer {nodeId, pendingId, decision}` → `{answered}` and `inbox.ack {nodeId}` → `{}`
+   * (see `HostInboxOps`). Every field is client-sent and validated here before it reaches a path: the
+   * pendingId with the SAME rule the answer writer applies (`isValidPendingId` — it becomes a file
+   * name), the node id with the rule `node.*` applies. `answered:false` is an ANSWER, not a protocol
+   * error, and it carries WHY in `reason`: `gone` (the hook's hold already ended — its request file is
+   * gone, so the interactive prompt is on screen now or someone else answered) or `failed` (the host
+   * could not write). `reason` is additive: a phone that predates it reads only `answered`.
+   */
+  function handleInbox(req: RpcRequest): void {
+    if (!inbox) {
+      socket.respond(req.id, false, { message: `${req.method} is not served on this host.` })
+      return
+    }
+    const p = asRecord(req.params)
+    const nodeId = str(p.nodeId)
+    // eslint-disable-next-line no-control-regex -- refusing control chars is the point
+    if (!nodeId || nodeId.length > REF_MAX_LEN || /[\x00-\x1f\x7f-\x9f]/.test(nodeId)) {
+      socket.respond(req.id, false, { message: 'Invalid node id.' })
+      return
+    }
+    if (req.method === 'inbox.ack') {
+      try {
+        inbox.ackRead(nodeId)
+      } catch {
+        /* best-effort, exactly like the file-drop sweep it mirrors */
+      }
+      socket.respond(req.id, true, {})
+      return
+    }
+    const pendingId = str(p.pendingId) ?? ''
+    if (req.method === 'questions.answer') {
+      if (!isValidPendingId(pendingId) || !Array.isArray(p.selections) || p.selections.length < 1 || p.selections.length > 4 ||
+          p.selections.some(row => !Array.isArray(row) || row.length < 1 || row.length > 4 || row.some(n => !Number.isInteger(n) || n < 0 || n > 3))) {
+        socket.respond(req.id, false, { message: 'questions.answer requires a live ticket and bounded option indexes.' })
+        return
+      }
+      if (!inbox.answerQuestion) {
+        socket.respond(req.id, false, { message: 'questions.answer is not served on this host.' })
+        return
+      }
+      void inbox.answerQuestion(nodeId, pendingId, p.selections as number[][])
+        .then(result => socket.respond(req.id, true, result === 'sent' ? { answered: true } : { answered: false, reason: result }))
+        .catch(() => socket.respond(req.id, true, { answered: false, reason: 'failed' }))
+      return
+    }
+    const decision = p.decision
+    const suggestionIndex = typeof p.suggestionIndex === 'number' ? p.suggestionIndex : undefined
+    if (!isValidPendingId(pendingId) || (decision !== 'allow' && decision !== 'deny' && decision !== 'allow-always') ||
+        (decision === 'allow-always' && (!Number.isInteger(suggestionIndex) || suggestionIndex! < 0 || suggestionIndex! > 31))) {
+      socket.respond(req.id, false, {
+        message: 'approvals.answer requires a pendingId and a decision of allow or deny.'
+      })
+      return
+    }
+    const operation = decision === 'allow-always'
+      ? inbox.answerPermission(nodeId, pendingId, decision, suggestionIndex)
+      : inbox.answerPermission(nodeId, pendingId, decision)
+    void operation
+      .then((result) =>
+        socket.respond(req.id, true, result === 'sent' ? { answered: true } : { answered: false, reason: result })
+      )
+      .catch(() => socket.respond(req.id, true, { answered: false, reason: 'failed' }))
+  }
+
   function handleKill(req: RpcRequest): void {
     const streamId = num(asRecord(req.params).streamId, -1)
     const stream = streams.get(streamId)
@@ -804,6 +1161,69 @@ export function createHostHandlers(
    * "delivered to a live desktop window", never "the action happened" — that contract is in the
    * verb docs the iOS client mirrors.
    */
+  /**
+   * `node.sendKeys {nodeId, keys}` → `{sent}`. The phone's Inbox answers used to attach a throwaway
+   * 80x24 tmux client, write, and kill it at once: an Input that beat the async attach was dropped
+   * (no session yet), and one that did not could die with the client before tmux read it — a lone
+   * ESC (Deny) nearly always, inside tmux's escape-time (audit A12). This types through the node's
+   * existing session instead. `sent:false` is an ANSWER (not delivered: open the session).
+   *
+   * A node of one of the desktop's SSH projects is typed into on ITS host, over the project's
+   * ControlMaster (`pty.backgroundWriteOver`); it used to answer `sent:false` outright, which sent
+   * the phone to open the session for what is meant to be a one-tap answer. The master being down
+   * (or still running its connect setup) is still `sent:false`, and so is a node the host does not
+   * have — the remote target is exact, so a miss never lands in another node's session.
+   */
+  function handleSendKeys(req: RpcRequest): void {
+    if (!nodeActions?.sendKeys) {
+      socket.respond(req.id, false, { message: `${req.method} is not served on this host.` })
+      return
+    }
+    const p = asRecord(req.params)
+    const nodeId = str(p.nodeId)
+    // eslint-disable-next-line no-control-regex -- refusing control chars is the point
+    if (!nodeId || nodeId.length > REF_MAX_LEN || /[\x00-\x1f\x7f-\x9f]/.test(nodeId)) {
+      socket.respond(req.id, false, { message: 'Invalid node id.' })
+      return
+    }
+    const keys = str(p.keys) ?? ''
+    if (!SEND_KEYS_RE.test(keys)) {
+      socket.respond(req.id, false, { message: 'node.sendKeys takes a short answer: up to 16 printable characters, Esc or Enter.' })
+      return
+    }
+    // A writer that throws (synchronously or not) delivered nothing: `sent:false`, never a dropped reply.
+    const answer = (deliver: () => Promise<boolean>): void => {
+      void Promise.resolve()
+        .then(deliver)
+        .then((sent) => socket.respond(req.id, true, { sent: sent === true }))
+        .catch(() => socket.respond(req.id, true, { sent: false }))
+    }
+    // A node of an SSH project: its tmux is on THAT host. Type over the project's ControlMaster —
+    // the same resolver `pty.attach` uses for such a node (audit A09) — or answer `sent:false`,
+    // which the phone reads as "open the session". Never the local socket: an `nt-<id>` there is at
+    // best nothing and at worst a phantom left by an old attach. A resolver that throws has not
+    // said the node is local, so that is `sent:false` too, not a guess.
+    let owner: ReturnType<HostRemoteNodes['resolve']>
+    try {
+      owner = remoteNodes?.resolve(nodeId) ?? null
+    } catch {
+      socket.respond(req.id, true, { sent: false })
+      return
+    }
+    if (owner) {
+      if (!owner.sshRemote || !pty.backgroundWriteOver) {
+        socket.respond(req.id, true, { sent: false })
+        return
+      }
+      const { sshRemote } = owner
+      const over = pty.backgroundWriteOver.bind(pty)
+      answer(() => over(nodeId, keys, sshRemote))
+      return
+    }
+    const local = nodeActions.sendKeys.bind(nodeActions)
+    answer(() => local(nodeId, keys))
+  }
+
   function handleNodeAction(req: RpcRequest): void {
     if (!nodeActions) {
       socket.respond(req.id, false, { message: `${req.method} is not served on this host.` })
@@ -958,6 +1378,15 @@ export function createHostHandlers(
         case 'pty.scroll':
           handleScroll(req)
           break
+        case 'pty.scrollV1':
+          handleScrollV1(req)
+          break
+        case 'pty.historySearch':
+          handleHistorySearch(req)
+          break
+        case 'pty.submitComposed':
+          handleSubmitComposed(req)
+          break
         case 'fs.list':
         case 'fs.read':
         case 'fs.readBinary':
@@ -993,13 +1422,27 @@ export function createHostHandlers(
         case 'node.rename':
           handleNodeAction(req)
           break
+        case 'node.sendKeys':
+          handleSendKeys(req)
+          break
+        case 'approvals.answer':
+        case 'questions.answer':
+        case 'inbox.ack':
+          handleInbox(req)
+          break
         case 'projects.list':
           // Read-only enumeration of the host's projects/sessions/agent-status (no client params —
           // nothing to jail). Gated by the same pre-handler approval check in connectHostSession, so
           // an unapproved device never reaches here. Always respond ok; degrade to an empty blob.
-          void listProjects()
-            .then((output) => socket.respond(req.id, true, { output }))
-            .catch(() => socket.respond(req.id, true, { output: '' }))
+          // `lan` (additive, A74-refresh) rides beside the blob, never inside it: the blob is the
+          // shape a phone on direct SSH reads off the host itself, and the address and keys must
+          // reach the phone only over this authenticated channel. A failed read leaves it out.
+          void Promise.all([
+            listProjects().catch(() => ''),
+            Promise.resolve()
+              .then(() => lanReport?.() ?? null)
+              .catch(() => null)
+          ]).then(([output, lan]) => socket.respond(req.id, true, { output, ...(lan ? { lan } : {}) }))
           break
         default:
           socket.respond(req.id, false, { message: `Unknown method: ${req.method}` })
@@ -1009,7 +1452,22 @@ export function createHostHandlers(
       const stream = streams.get(frame.streamId)
       if (!stream) return
       if (frame.op === OP.Input) {
-        pty.write(getClientId(), stream.sessionId, textDecoder.decode(frame.payload))
+        const data = textDecoder.decode(frame.payload)
+        if (!stream.sessionId) {
+          // The attach reply must precede snapshot frames for the phone to register the stream.
+          // Its first input can arrive while a remote master is still pacing the async commit.
+          // Keep only this stream's bounded input; close/refusal/overflow can never replay it.
+          if (stream.pendingInput.length >= 32 || stream.pendingInputBytes + frame.payload.length > 64 * 1024) {
+            socket.sendFrame(OP.Error, frame.streamId, stream.seq++,
+              textEncoder.encode(JSON.stringify({ exitCode: 1 })))
+            dropStream(frame.streamId)
+            return
+          }
+          stream.pendingInput.push({ clientId: getClientId(), data })
+          stream.pendingInputBytes += frame.payload.length
+        } else {
+          pty.write(getClientId(), stream.sessionId, data)
+        }
         return
       }
       if (frame.op === OP.Resize) {
@@ -1022,7 +1480,9 @@ export function createHostHandlers(
           )
           // null clientId: this pty is relay-served (its sink is the only "subscriber"), so the
           // mirrored client's size is recorded against the sink rather than a UI client id.
-          pty.resize(null, stream.sessionId, view.getUint16(0, true), view.getUint16(2, true))
+          const size = { cols: view.getUint16(0, true), rows: view.getUint16(2, true) }
+          if (!stream.sessionId) stream.pendingSize = size
+          else pty.resize(null, stream.sessionId, size.cols, size.rows)
         }
       }
     },
@@ -1036,6 +1496,10 @@ export function createHostHandlers(
       }
       streams.clear()
       for (const stream of closing) {
+        stream.history.clear()
+        stream.pendingInput = []
+        stream.pendingInputBytes = 0
+        stream.pendingSize = undefined
         try {
           remoteViewer?.detached(stream.persistKey)
         } catch {
@@ -1177,6 +1641,17 @@ export function relayAllowed(): boolean {
 // --- shared host session (interactive host + standing phone host) ------------
 
 /**
+ * The longest a freshly bridged peer's requests are held while an async `onPeerReady` decides
+ * without the human (connectHostSession). The decision is a few local disk reads and at most one
+ * pin write (whose rename retries add up to about 0.3 s on Windows), so this is generous; a
+ * decision stuck past it (a hung disk) degrades to the answer every request got before holding
+ * existed, "Awaiting host approval.". Far under the phone's own request timeout (30 s on Android).
+ */
+export const PEER_DECISION_HOLD_MS = 5_000
+/** Requests beyond this many, while holding, are answered at once (a peer flooding the hold). */
+export const PEER_DECISION_HOLD_MAX = 32
+
+/**
  * A live host<->client relay session: the bridged relay socket plus its RPC/frame handlers and
  * canvas mirror, gated by an approval flag. Both the interactive remote host and the standing
  * phone host build one of these; they differ only in how a freshly-bridged peer is approved
@@ -1196,14 +1671,18 @@ export interface HostSession {
 }
 
 export interface HostSessionOptions {
+  /** Optional on the standing phone host only; approved retained-SSH association, never approval. */
+  legacyRelayPairings?: LegacyRelayPairings
   /** Relay wss URL. */
   url: string
   /** Single-use pairing token gating entry at the relay. */
   token: string
   /** The long-lived host NaCl keypair. */
   ourKeys: KeyPair
-  /** The real pty-manager whose tmux sessions the peer attaches to. */
-  pty: PtyManager
+  /** The pty-manager whose tmux sessions the peer attaches to: the real PtyManager in both hosts.
+   *  Typed as the slice the session uses (it only hands it to createHostHandlers), so the Android
+   *  interop fixture's fake is checked against exactly that, with no cast (audit A67). */
+  pty: HostPtyManager
   /** The host renderer's latest active-project canvas snapshot (source of the mirror). */
   getLatestCanvas(): CanvasState | null
   /** Subscribe to canvas updates so the mirror re-broadcasts. Returns unsubscribe. */
@@ -1237,6 +1716,16 @@ export interface HostSessionOptions {
   /** Kanban board writes for the phone's Board sheet (`projects.ensureBoard` /
    *  `projects.setCardColumn`). Optional: absent ⇒ the verbs answer an honest "not served". */
   kanban?: HostKanbanOps
+  /** Inbox actions for a relay phone (`approvals.answer` / `inbox.ack`). Optional: absent ⇒ the
+   *  verbs answer an honest "not served". */
+  inbox?: HostInboxOps
+  /** SSH-project nodes: attach over their master, never locally. Optional (see HostRemoteNodes). */
+  remoteNodes?: HostRemoteNodes
+  /** Where a phone-started session is created (see HostNewSessions). Optional. */
+  newSessions?: HostNewSessions
+  /** This computer's current LAN address and SSH host keys for the `projects.list` answer's `lan`
+   *  field (audit A74-refresh). Optional: absent ⇒ no `lan` field. */
+  lanReport?: () => Promise<HostLanReport | null>
   /** The phone's Chat screen verbs (`chat.*` / `agent.answer`). Optional: absent ⇒ "not served". */
   chat?: HostChatOps
   /** Extra fs/git jail roots beyond the shared canvas's node cwds — production passes the
@@ -1247,8 +1736,14 @@ export interface HostSessionOptions {
    * A peer completed the E2EE handshake and awaits an approval decision. The caller inspects the
    * session (sas / peerPublicKeyB64) and either approves immediately (pin-once) or prompts the
    * host human, later calling `approve()`.
+   *
+   * May return a promise for a decision it makes WITHOUT the human (the standing host reads its pin
+   * store and may pin a paired phone's key, all on disk): until it settles, or until `approve()`,
+   * the peer's requests are HELD rather than refused (see PEER_DECISION_HOLD_MS). It settles once
+   * the session is approved or handed to the human; a request held until then is answered as if it
+   * had arrived then. A plain `void` (the interactive host) holds nothing.
    */
-  onPeerReady(session: HostSession): void
+  onPeerReady(session: HostSession): void | Promise<void>
   /** The relay socket dropped (client/relay gone). */
   onClose(): void
 }
@@ -1262,6 +1757,38 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
   // Approval gate: a freshly-bridged peer serves NO pty/fs RPCs or input frames until approved,
   // so a leaked/guessed pairing cannot grant silent access. Reset on every (re)connect.
   let approved = false
+  let closed = false
+  const pairingProof = opts.legacyRelayPairings ? createRelayPairingProof({
+    hostKey: publicKeyToB64(opts.ourKeys.publicKey), peerKey: () => socket.peerPublicKeyB64(),
+    current: () => approved && !closed, pairings: opts.legacyRelayPairings
+  }) : null
+  // Requests held while an async `onPeerReady` is still making its silent decision (review of
+  // A07-late). The host fires onReady the moment it confirms the handshake, so the phone's first
+  // request can arrive one relay round trip later, while the standing host is still reading its
+  // pin store (and, for a paired phone it has not pinned yet, reading agent.json and writing the
+  // pin). Answering that request "Awaiting host approval." told the phone a human had to approve
+  // it: a background check (Android RelayConnector with requireApproved) gives up on the first such
+  // answer and forgets that this computer approved it. Held instead, the request is answered once
+  // the decision is in: served when it approved, "Awaiting host approval." when it went to the
+  // human. Never held longer than PEER_DECISION_HOLD_MS or beyond PEER_DECISION_HOLD_MAX requests:
+  // past either, the answer is the one this gave before.
+  let deciding = false
+  let held: RpcRequest[] = []
+  let holdTimer: ReturnType<typeof setTimeout> | null = null
+  function stopHolding(): RpcRequest[] {
+    if (holdTimer) {
+      clearTimeout(holdTimer)
+      holdTimer = null
+    }
+    deciding = false
+    const queue = held
+    held = []
+    return queue
+  }
+  /** The decision is in (approved, handed to the human, or out of time): answer what was held, in order. */
+  function releaseHeld(): void {
+    for (const req of stopHolding()) handleRpc(req)
+  }
   let handlers: HostHandlers | null = null
   let canvasSync: HostCanvasSync | null = null
   let unsubCanvas: (() => void) | null = null
@@ -1287,9 +1814,12 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
 
   const session: HostSession = {
     approve() {
+      if (closed) return
       approved = true
       // Flush the current canvas now that the device is trusted.
       pushCurrentCanvas()
+      // Serve what the peer asked while the decision was being made, before anything it asks next.
+      releaseHeld()
     },
     isApproved() {
       return approved
@@ -1301,11 +1831,14 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
       return socket.peerPublicKeyB64()
     },
     close() {
+      closed = true
+      pairingProof?.close()
       if (broadcastTimer) {
         clearTimeout(broadcastTimer)
         broadcastTimer = null
       }
       approved = false
+      stopHolding() // nothing held is answered on a session being torn down
       unsubCanvas?.()
       unsubCanvas = null
       handlers?.closeAll()
@@ -1321,35 +1854,72 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
     role: 'host',
     ourKeys: opts.ourKeys,
     onReady: () => {
+      if (closed) return
       // Bridge established. Require approval before serving ANYTHING — including canvas state
       // (which carries workspace metadata). Nothing is pushed until approve() flushes it.
       approved = false
-      opts.onPeerReady(session)
+      // Hold from before the call, so an approve() made synchronously inside it releases nothing
+      // that is later held again.
+      deciding = true
+      let decision: unknown
+      try {
+        decision = opts.onPeerReady(session)
+      } catch (err) {
+        releaseHeld()
+        throw err
+      }
+      if (!deciding) return // approve() already ran, inside the call
+      if (decision instanceof Promise) {
+        holdTimer = setTimeout(releaseHeld, PEER_DECISION_HOLD_MS)
+        holdTimer.unref?.()
+        decision.then(releaseHeld, releaseHeld) // a failed decision answers as one that went to the human
+      } else {
+        releaseHeld() // a synchronous decision: nothing to wait for
+      }
     },
     onRpc: (req) => {
-      // Until approved, refuse every request — pty/fs RPCs, client mutations, AND canvas
-      // snapshots (canvas:request). An unapproved device gets nothing but the approval prompt.
-      if (!approved) {
-        if (req.id) socket.respond(req.id, false, { message: 'Awaiting host approval.' })
+      if (deciding && held.length < PEER_DECISION_HOLD_MAX) {
+        held.push(req)
         return
       }
-      // A client asking for a fresh canvas snapshot → re-push the current one (read-only).
-      if (req.method === CANVAS_REQUEST_METHOD) {
-        canvasSync?.broadcastCurrent()
-        return
-      }
-      if (canvasSync?.handleRpc(req)) return
-      handlers?.onRpc(req)
+      handleRpc(req)
     },
     onFrame: (frame) => {
       if (approved) handlers?.onFrame(frame)
     },
     onClose: () => {
+      closed = true
+      pairingProof?.close()
       approved = false
+      stopHolding()
       handlers?.closeAll()
       opts.onClose()
     }
   })
+  function handleRpc(req: RpcRequest): void {
+    // Until approved, refuse every request — pty/fs RPCs, client mutations, AND canvas
+    // snapshots (canvas:request). An unapproved device gets nothing but the approval prompt.
+    if (!approved) {
+      if (req.id) socket.respond(req.id, false, { message: 'Awaiting host approval.' })
+      return
+    }
+    if (req.method === RELAY_PAIRING_CHALLENGE_METHOD || req.method === RELAY_PAIRING_PROOF_METHOD) {
+      if (!req.id) return // notifications cannot allocate/consume a proof
+      if (!pairingProof) { socket.respond(req.id, false, { message: 'Relay pairing proof is not served on this host.' }); return }
+      const result = req.method === RELAY_PAIRING_CHALLENGE_METHOD ? pairingProof.challenge(req.params) : pairingProof.proof(req.params)
+      void result.then(body => { if (!closed) socket.respond(req.id, true, body) }, () => {
+        if (!closed) socket.respond(req.id, false, { message: 'The pairing identity could not be verified. Pair again to repair it.' })
+      })
+      return
+    }
+    // A client asking for a fresh canvas snapshot → re-push the current one (read-only).
+    if (req.method === CANVAS_REQUEST_METHOD) {
+      canvasSync?.broadcastCurrent()
+      return
+    }
+    if (canvasSync?.handleRpc(req)) return
+    handlers?.onRpc(req)
+  }
   // Confine the client's fs.* access to the cwds of the host's currently-shared canvas nodes.
   handlers = createHostHandlers(
     opts.pty,
@@ -1364,6 +1934,10 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
     opts.remoteViewer,
     opts.nodeActions,
     opts.kanban,
+    opts.inbox,
+    opts.remoteNodes,
+    opts.newSessions,
+    opts.lanReport,
     opts.chat
   )
   canvasSync = createHostCanvasSync(socket, opts.applyMutation)
@@ -1395,10 +1969,19 @@ export interface HostBridgeDeps {
   nodeActions?: HostNodeActions
   /** Kanban board writes for the phone's Board sheet — see main/index.ts's WorkspaceStore wiring. */
   kanban?: HostKanbanOps
+  /** Inbox actions for a relay phone — the same answer writer / read-ack the desktop itself uses. */
+  inbox?: HostInboxOps
+  /** SSH-project nodes attach over their project's ControlMaster, or are refused (audit A09). */
+  remoteNodes?: HostRemoteNodes
+  /** A phone-started session is created in its project's folder, under its account (audit A33). */
+  newSessions?: HostNewSessions
   /** The phone's Chat screen verbs — see main/remote/host-chat.ts and main/index.ts's wiring. */
   chat?: HostChatOps
   /** Workspace-level jail roots (local project cwds) merged with the canvas node cwds. */
   workspaceRoots?: () => string[]
+  /** This computer's current LAN address and SSH host keys, beside every `projects.list` answer, so
+   *  a relay phone can refresh the LAN leg it dials (audit A74-refresh, host-lan-report.ts). */
+  lanReport?: () => Promise<HostLanReport | null>
 }
 
 export function initRemoteHost(
@@ -1478,8 +2061,12 @@ export function initRemoteHost(
       remoteViewer: bridge.remoteViewer,
       nodeActions: bridge.nodeActions,
       kanban: bridge.kanban,
+      inbox: bridge.inbox,
+      remoteNodes: bridge.remoteNodes,
+      newSessions: bridge.newSessions,
       chat: bridge.chat,
       extraRoots: bridge.workspaceRoots,
+      lanReport: bridge.lanReport,
       // Typing attribution: this session's input frames are this phone's keystrokes.
       getClientId: () => phone.id(),
       // Interactive host: surface the SAS + a fresh pending id so the human can verify + approve.

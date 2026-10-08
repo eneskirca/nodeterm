@@ -5,7 +5,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from 'crypto'
 import { readFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
 import { assertHookEndpointAvailable, clearStaleHookSocket, HookSocketOwnedError } from './hook-socket-owner'
-import { homedir } from 'os'
 import path from 'path'
 import { platform } from '../platform'
 import { writeFileAtomic } from '../fs-atomic'
@@ -19,9 +18,8 @@ import {
   type GrokPermissionGate,
   type GrokPermissionGateDeps
 } from './grok-permission-gate'
-import { classifyClaudeConfigDir, configDirFromTranscriptPath } from '../claude-accounts-core'
-import { claudeAccountsSnapshot } from '../claude-config-dir'
-import type { CodexIdentityEvent, ObservedClaudeAccount } from '../../shared/types'
+import { observedClaudeAccount } from '../claude-config-dir'
+import type { CodexIdentityEvent } from '../../shared/types'
 import type { NodeTokenVerdict } from './node-auth-token'
 import { nodeTokenDir } from './node-token-files'
 import { isForeignKidToken, isSafeNodeId, verifyNodeToken } from './node-auth-token'
@@ -204,38 +202,6 @@ function parseClientRevision(raw: string | string[] | undefined): number | undef
   if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) return undefined
   const n = Number(raw.trim())
   return Number.isSafeInteger(n) ? n : undefined
-}
-
-/**
- * The `account` LABEL for a claude hook payload: `transcript_path` →
- * `<configDir>/projects/…` → which account that dir is. Undefined for every other agent and for a
- * payload with no usable `transcript_path` — "we did not observe an account" and "the system
- * account" are different facts and must stay distinguishable (CONTRIBUTING: a failed read is never
- * evidence of absence), so an absent field is the honest answer, not a synthesized system row.
- *
- * NEVER throws: this sits on the 204 path, and a classification failure — a settings store mid-
- * write, a platform seam not yet initialized in an odd boot order — must cost the label, not the
- * event. NO filesystem access happens here: the dir is classified as a string, so a forged
- * POST naming `~/.ssh/projects/x.jsonl` gets a `known: false` label and nothing is opened.
- */
-function observedClaudeAccount(
-  agentId: string,
-  payload: Record<string, unknown>
-): ObservedClaudeAccount | undefined {
-  if (agentId !== 'claude') return undefined
-  const tp = payload.transcript_path
-  if (typeof tp !== 'string' || !tp) return undefined
-  try {
-    const dir = configDirFromTranscriptPath(tp)
-    if (!dir) return undefined
-    return classifyClaudeConfigDir(dir, {
-      homeDir: homedir(),
-      userDataDir: platform().userDataDir,
-      accounts: claudeAccountsSnapshot()
-    })
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -1072,6 +1038,7 @@ export class HookServer {
           // into the payload object so both the raw listener and the normalizers see it as if it
           // rode inside the hook JSON. See docs/hook-reply-approvals.md.
           if (form.nodeterm_pending_id) payload.nodeterm_pending_id = form.nodeterm_pending_id
+          if (form.nodeterm_hook_reply === '2') payload.nodeterm_hook_reply = 2
           // Same treatment for the "answered" signal the wait branch fires on a valid allow/deny
           // answer (a separate form field it can't fold into the agent's JSON in POSIX sh). Merged
           // so the normalizer sees it and maps it to a synthetic working transition. See

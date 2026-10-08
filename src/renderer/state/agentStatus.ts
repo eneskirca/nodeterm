@@ -1,6 +1,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { WORKING_STALE_MS } from '@shared/agents/stale'
 import type { AgentId } from '@shared/agents/config'
+import type { PermissionSuggestion } from '@shared/hook-answers'
 import type { AgentState } from '@shared/agents/normalize'
 import type { HeldPermission } from '@shared/agents/permission-answer'
 import type { NodeTerminalApi, ObservedClaudeAccount } from '@shared/types'
@@ -229,6 +230,7 @@ export interface AgentNodeStatus {
    * leaves `blocked` (so the buttons vanish once the decision lands). Absent = legacy prompt path.
    */
   pendingId?: string
+  permissionSuggestions?: PermissionSuggestion[]
   /**
    * The request the node's managed hook is HOLDING (answer-file ticket + tool name), so a surface
    * can offer controls that fit it — approve a plan with a follow-on mode, answer a question —
@@ -351,7 +353,8 @@ export interface AgentStatusStore {
     verified?: boolean,
     errored?: boolean,
     held?: HeldPermission,
-    interrupted?: boolean
+    interrupted?: boolean,
+    permissionSuggestions?: PermissionSuggestion[]
   ): void
   /**
    * Subscribe to EVERY hook event `setState` records for node `id` — same-state ones included, and
@@ -760,7 +763,7 @@ export function createAgentStatusSession(
         return s.activeId === id ? { activeId: null } : s
       }),
 
-    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted) => {
+    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted, permissionSuggestions) => {
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         const now = Date.now()
@@ -787,7 +790,8 @@ export function createAgentStatusSession(
         // path so the header buttons retarget the new answer file — otherwise treat same-state as
         // a freshness-only refresh.
         const samePendingWhileBlocked =
-          state !== 'blocked' || (pendingId ?? prev.pendingId) === prev.pendingId
+          state !== 'blocked' || ((pendingId ?? prev.pendingId) === prev.pendingId &&
+            JSON.stringify(permissionSuggestions ?? prev.permissionSuggestions) === JSON.stringify(prev.permissionSuggestions))
         // Same for a NEW held request (a held picker re-asserts `waiting`, where pendingId is absent).
         const needsYou = state === 'blocked' || state === 'waiting'
         const sameHeld = !needsYou || !held || held.pendingId === prev.held?.pendingId
@@ -838,6 +842,9 @@ export function createAgentStatusSession(
         if (agentId !== undefined) next.agentId = agentId
         // Retain the approval ticket only while blocked; any other state clears it (transient).
         next.pendingId = state === 'blocked' ? (pendingId ?? prev.pendingId) : undefined
+        next.permissionSuggestions = state === 'blocked'
+          ? permissionSuggestions ?? (pendingId && pendingId !== prev.pendingId ? undefined : prev.permissionSuggestions)
+          : undefined
         // The held request rides both needs-you states (see `held`); anything else ends the hold.
         next.held = needsYou ? (held ?? prev.held) : undefined
         // The last-turn verdict (issue #521). A genuine new turn retires it — the station is being
@@ -888,6 +895,16 @@ export function createAgentStatusSession(
         if (alive && prev.hibernated) {
           next.hibernated = undefined
           next.hibernatedContext = undefined // goes with the flag, always
+          // Reported like every other change of the flag (see `setHibernated`): the agent-status
+          // mirror only carries it, and the phone reads SLEEPING — and offers a wake line — off
+          // that mirror. Unreported, a CLI resumed by anything but our own wake closure (the
+          // phone's wake over SSH, a hand-typed resume) stayed SLEEPING there for good: a codex
+          // SessionStart arrives as `working`, never as the session start Canvas also clears on.
+          try {
+            window.nodeTerminal?.reportHibernated?.(id, false)
+          } catch {
+            /* the mirror is a side-channel; a failed report must never break the store */
+          }
         }
         // Same self-heal, same reasoning: a live hook event is proof the CLI is running, whatever
         // brought it back (our own resume, or the user typing the launch line by hand) — a standing

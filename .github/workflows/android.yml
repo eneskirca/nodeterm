@@ -1,0 +1,440 @@
+name: Android
+
+# The Android companion (android/): the pure-Kotlin protocol module, tested against this repo's own
+# desktop host code, and the Compose app built against the Android SDK the runner ships.
+#
+# The path filters below (the same list for push and pull_request) are the inputs of what this workflow
+# runs, derived from the interop fixture's esbuild metafile rather than guessed (audit A63). The first
+# filter listed only android/**, src/main/remote/** and src/main/pairing-*.ts, which missed 35 of the 49
+# desktop sources bundled into the fixture on 2026-09-26 (all 13 from src/core, all 21 from src/shared,
+# and src/main/windows-ssh-keys.ts), so a change to one ran no Android test. Each entry and why:
+#   android/**            the Kotlin modules, the fixture and its bundler, the app sources tests read
+#   src/core/**           bundled (pending-approvals, project-kanban-write, agent-status-mirror, and
+#                         since A64 projects-list-blob + workspace-store, which build the projects.list
+#                         blob, ...); also ack-sweep behind ~/.nodeterm/acks, which is not bundled
+#   src/session-host/**   imported by PtyManager in the managed-session producer fixture (A112)
+#   src/shared/**         bundled (types, agents/*, kanban-labels, ssh, ...); also pair-qr.ts (the
+#                         pairing QR envelope) and agents/pane.ts (read by ResumeOfferTest)
+#   src/main/*.ts         bundled: pairing-core, pairing-service, windows-ssh-keys, ssh-host-keys; also index.ts, which
+#                         names the projects.list blob's sources and wires the relay verbs
+#   src/main/remote/**    bundled: host-service, connectHostSession and the relay/E2EE code under it
+#   tsconfig.json         esbuild applies its compilerOptions to every bundled file (the root one; it
+#                         does not follow the references to tsconfig.node.json, so that file is absent:
+#                         the fixture's type check runs in ci.yml, which has no path filter)
+#   package.json, package-lock.json   `npm ci` installs esbuild, ws and tweetnacl from them
+#   .github/workflows/android.yml     this file
+#   .github/dependabot.yml   GradleCiCoverageTest (android/protocol) reads it: the Gradle Dependabot
+#                         entry (audit A69); the Kotlin CodeQL job it pins is in this file
+#   docs/android.md, docs/android-audit-2026-09.md   DeviceChecklistDocsTest reads them: the device
+#                         checklist and the audit ids its items name (audit A65)
+#   CONTRIBUTING.md       ContributorDocsTest reads it (with docs/android.md and the two READMEs under
+#                         android/): the JDK range and the `npm ci --ignore-scripts` warning (A61, A71)
+#   src/renderer/components/settings/sections/PhoneSection.tsx   DeviceChecklistDocsTest reads the
+#                         label of its JSON -> link QR switch, which the camera-app pairing check names
+#   src/main/remote-ssh/remote-status-push.ts, src/main/remote-ssh/ssh-project.ts, src/server/config.ts
+#                         HostBrowseTest reads them: the status slices' heartbeat and file name, and the
+#                         Server Edition's default data dir, which the direct-SSH browse relies on (A27)
+# To re-derive: `node android/protocol/src/test/interop/bundle-fixture.cjs <out.cjs>
+# android/protocol/src/test/interop/electron-stub.ts` from the repo root writes <out.cjs>.meta.json,
+# whose `inputs` are the bundled files. WorkflowPathFilterTest (android/protocol) fails when one is not
+# matched by both filters. A change that adds an input edits a file that is already one (or the bundler
+# or tsconfig.json), so it runs this workflow and that test. The same test fails on a repo file a
+# protocol test reads by a literal path (from InteropHarness.repoRoot or a val bound to it) that the
+# filters miss, and on a read by a computed path it has not been told about.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'src/core/**'
+      - 'src/session-host/**'
+      - 'src/shared/**'
+      - 'src/main/*.ts'
+      - 'src/main/remote/**'
+      - 'tsconfig.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android.yml'
+      - '.github/dependabot.yml'
+      - 'docs/android.md'
+      - 'docs/android-audit-2026-09.md'
+      - 'CONTRIBUTING.md'
+      - 'src/renderer/components/settings/sections/PhoneSection.tsx'
+      - 'src/main/remote-ssh/remote-status-push.ts'
+      - 'src/main/remote-ssh/ssh-project.ts'
+      - 'src/server/config.ts'
+      - 'src/server/platform-server.ts'
+      - 'src/server/proxy-trust.ts'
+      - 'src/server/index.ts'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/core/**'
+      - 'src/session-host/**'
+      - 'src/shared/**'
+      - 'src/main/*.ts'
+      - 'src/main/remote/**'
+      - 'tsconfig.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android.yml'
+      - '.github/dependabot.yml'
+      - 'docs/android.md'
+      - 'docs/android-audit-2026-09.md'
+      - 'CONTRIBUTING.md'
+      - 'src/renderer/components/settings/sections/PhoneSection.tsx'
+      - 'src/main/remote-ssh/remote-status-push.ts'
+      - 'src/main/remote-ssh/ssh-project.ts'
+      - 'src/server/config.ts'
+      - 'src/server/platform-server.ts'
+      - 'src/server/proxy-trust.ts'
+      - 'src/server/index.ts'
+  workflow_dispatch:
+    inputs:
+      prepare_beta:
+        description: Build versioned release inputs and run private-beta checks (sign locally)
+        type: boolean
+        default: false
+      beta_version_code:
+        description: Android version code; increase for each beta update
+        type: string
+        default: '2'
+      beta_version_name:
+        description: Beta version name (for example 0.1.0-beta.1)
+        type: string
+        default: '0.1.0-beta.1'
+
+# One group per ref for every job here, the Kotlin CodeQL job included. Only pull request runs are
+# cancelled in progress: a push run never is, so a push to main (which carries the Kotlin CodeQL
+# baseline pull requests are compared with) runs to the end. As anywhere in Actions, a run still pending
+# behind it is replaced by a newer one for the same ref, which analyses the newer commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Use workflow_dispatch with prepare_beta=true to run all five checks on a feature branch.
+# Main pushes and pull requests retain ordinary app versions. The older feature-push beta
+# defaults remain below, but main-only push admission prevents that historical route.
+# No private key enters Actions.
+env:
+  NODETERM_BETA_VERSION_CODE: '2'
+  NODETERM_BETA_VERSION_NAME: '0.1.0-beta.1'
+
+# Every job runs gradle/actions/setup-gradle before ./gradlew (audit A69). It checks the committed
+# android/gradle/wrapper/gradle-wrapper.jar against Gradle's published wrapper checksums, so a jar that
+# is not a released Gradle wrapper fails the job instead of running, and it caches ~/.gradle (the wrapper's Gradle distribution, AGP
+# and the dependencies), which every run used to download again. The cache is the MIT-licensed `basic`
+# provider (a thin wrapper over actions/cache), not the action's default `enhanced` one: that is the
+# closed-source gradle-actions-caching library under the Gradle Technologies Terms of Use, and using it
+# accepts those terms for this repository, which is the owner's call (switching is this one input).
+# The basic provider uses ONE key for every job, setup-java-<os>-<arch>-gradle-<hash of **/*.gradle*
+# and gradle-wrapper.properties>, the CodeQL (Kotlin) job below included, and the first job to save a
+# key keeps it. So exactly one job writes it: `app`, which resolves the most (AGP, the app's and
+# the protocol module's dependencies, the Gradle distribution), and only on the default branch (the
+# action's own default; a pull request never writes). The others read it with cache-read-only and
+# download what only they use. GradleCiCoverageTest (android/protocol) pins the validation step and the
+# single writer.
+jobs:
+  protocol:
+    name: Protocol (JVM + desktop interop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # The interop tests run the desktop's relay host / pairing code through esbuild + node. They
+      # need tweetnacl, ws and esbuild, not a rebuilt node-pty, hence no scripts. They do not need
+      # Electron either: InteropHarness aliases `electron` to a stub
+      # (android/protocol/src/test/interop/electron-stub.ts), because the real package's first
+      # `require` downloads the ~110 MB Electron binary when it is not there yet, as on a fresh
+      # runner, inside the harness's 20 s ready wait (audit A60).
+      - name: Install desktop dependencies (no scripts)
+        run: npm ci --ignore-scripts
+
+      - name: tmux (SSH transport tests run a real, sandboxed tmux)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tmux
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      - name: Protocol tests
+        working-directory: android
+        run: ./gradlew -p protocol test --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: protocol-test-report
+          path: android/protocol/build/reports/tests/test
+
+  app:
+    name: App (assembleDebug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The one job that writes the shared Gradle cache (see the note above `jobs:`).
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodeterm-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  # R8 runs only for the release build type. Building the release here (unsigned; no signing secrets
+  # exist or are needed) makes a missing -dontwarn in
+  # app/proguard-rules.pro fail CI instead of the first real release (audit A37): R8 reports the missing
+  # class. It reports no missing -keep, so tools/check-r8-output.sh then checks that the keeps it names
+  # matched (the WebView bridge, the worker, BouncyCastle's provider tables, one exception name). A NEW
+  # reflection target without a keep is not detected: it needs its own keep and a line in that script.
+  # A separate job so an R8 failure never withholds the debug APK. Green does not prove reflection-loaded
+  # code works on a phone.
+  app-release:
+    name: App release (R8, unsigned)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      - name: Build release APK (R8)
+        working-directory: android
+        env:
+          NODETERM_ANDROID_VERSION_CODE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.prepare_beta) || (github.event_name == 'push' && github.ref == 'refs/heads/claude/android-ios-parity-75kfem')) && (inputs.beta_version_code || env.NODETERM_BETA_VERSION_CODE) || '' }}
+          NODETERM_ANDROID_VERSION_NAME: ${{ ((github.event_name == 'workflow_dispatch' && inputs.prepare_beta) || (github.event_name == 'push' && github.ref == 'refs/heads/claude/android-ios-parity-75kfem')) && (inputs.beta_version_name || env.NODETERM_BETA_VERSION_NAME) || '' }}
+        run: |
+          python3 tools/check-beta-version.py
+          ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Check the R8 keeps matched
+        working-directory: android
+        run: sh tools/check-r8-output.sh app/build/outputs/mapping/release
+
+      # Build inputs only: an unsigned APK cannot be installed. The private key and finished APK
+      # stay on the owner's machine; Actions artifacts on a public repo are not private downloads.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodeterm-android-release-unsigned
+          path: android/app/build/outputs/apk/release/*-unsigned.apk
+          if-no-files-found: error
+
+      # On a missing-class failure R8 writes the -dontwarn lines it wanted to missing_rules.txt here.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r8-release-outputs
+          path: android/app/build/outputs/mapping/release
+          if-no-files-found: ignore
+
+  beta-checks:
+    name: Private beta checks
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.prepare_beta) || (github.event_name == 'push' && github.ref == 'refs/heads/claude/android-ios-parity-75kfem') }}
+    needs: [protocol, app-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: tmux for delivery and SSH interop tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q tmux
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Desktop type check
+        run: npm run typecheck
+
+      - name: Phone delivery and ack tests
+        run: >-
+          npx vitest run
+          src/core/composed-tmux.test.ts
+          src/core/composed-tmux.realtmux.test.ts
+          src/core/pty-composed-input.test.ts
+          src/core/composed-pty.test.ts
+          src/core/session-host-composed.test.ts
+          src/core/native-windows-pane.test.ts
+          src/session-host/composed-input-host.test.ts
+          src/main/remote/host-composed-input.test.ts
+          src/core/history-scroll-view.test.ts
+          src/core/native-history-scroll.test.ts
+          src/core/pty-history-scroll.test.ts
+          src/core/session-host-history-scroll.test.ts
+          src/session-host/terminal-scroll.test.ts
+          src/session-host/history-scroll-host.test.ts
+          src/main/remote/host-history-scroll.test.ts
+          src/main/remote/android-history-fixture.test.ts
+          src/core/pty-background-write.test.ts
+          src/core/pty-background-write-over.test.ts
+          src/core/pty-shadow.test.ts
+          src/core/tmux-control-client.test.ts
+          src/core/tmux-control.test.ts
+          src/core/remote-send-keys.realtmux.test.ts
+          src/core/remote-ssh/control-master.test.ts
+          src/core/ack-sweep.test.ts
+          src/core/agent-status-mirror.test.ts
+          src/core/agent-status-mirror.restart.test.ts
+          src/main/remote-ssh/ssh-project.test.ts
+          src/main/remote-ssh/ssh-project.acks.test.ts
+          src/main/remote/relay-host-service.test.ts
+          src/main/remote/host-service.presence.test.ts
+          src/main/remote/standing-host.test.ts
+          src/main/remote/android-interop-fixture.guard.test.ts
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Android tools for APK signing regression tests
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;36.0.0"'
+
+      - name: Verify private beta packaging with real Android tools
+        run: NODETERM_ANDROID_TEST_SDK="$ANDROID_HOME" python3 -m unittest discover -s android/tools -p 'test_*beta*.py' -v
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: nodeterm-android-release-unsigned
+          path: beta-inputs/apk
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: r8-release-outputs
+          path: beta-inputs/r8
+
+      - name: Release input provenance
+        env:
+          BETA_VERSION_CODE: ${{ inputs.beta_version_code || env.NODETERM_BETA_VERSION_CODE }}
+          BETA_VERSION_NAME: ${{ inputs.beta_version_name || env.NODETERM_BETA_VERSION_NAME }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          def sha(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+          apks = list(pathlib.Path('beta-inputs/apk').glob('*-unsigned.apk'))
+          if len(apks) != 1:
+              raise SystemExit('Expected exactly one unsigned release APK from this run')
+          r8 = pathlib.Path('beta-inputs/r8')
+          pathlib.Path('beta-build-inputs.json').write_text(json.dumps({
+              'schemaVersion': 1,
+              'sourceRevision': os.environ['GITHUB_SHA'],
+              'versionCode': int(os.environ['BETA_VERSION_CODE']),
+              'versionName': os.environ['BETA_VERSION_NAME'],
+              'unsignedApkArtifact': 'nodeterm-android-release-unsigned',
+              'r8Artifact': 'r8-release-outputs',
+              'unsignedApkSha256': sha(apks[0]),
+              'r8MappingSha256': sha(r8 / 'mapping.txt'),
+              'r8SeedsSha256': sha(r8 / 'seeds.txt'),
+              'signed': False,
+          }, indent=2) + '\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodeterm-android-beta-build-inputs
+          path: beta-build-inputs.json
+          if-no-files-found: error
+
+  # CodeQL for the Android companion's Kotlin (audit A69): the protocol module (the NaCl box, the relay
+  # client, pairing, SSH host-key pinning) and the app (the Keystore-held secrets, the terminal WebView
+  # bridge). It is here rather than in security.yml beside the JS/TS `CodeQL` job (the required check,
+  # left as it was): security.yml runs only on pull requests into main, pushes to main, the merge queue
+  # and a weekly schedule, with no workflow_dispatch, so a job there cannot run from a feature branch and
+  # its first run ever would be on somebody's pull request, where a broken job shows red on every PR into
+  # main. Here it runs on this workflow's triggers: a push to main or a pull request that changes a
+  # file the path filter above lists, and workflow_dispatch.
+  # The trade-off: it follows that path filter. The Kotlin (all of it under android/) is analysed when
+  # Android-relevant files change: on a pull request that touches them and on main when such a pull
+  # request lands. Code scanning compares a pull request with the latest
+  # analysis on main of the same category, so a pull request that touches no Android file needs none of
+  # its own; its Kotlin is main's. Lost against security.yml's triggers: the weekly re-scan (a new CodeQL
+  # query reaches unchanged Kotlin only with the next Android change on main) and a merge-queue run. It
+  # is not a required check and must not become one: a pull request this workflow skips reports nothing
+  # for it, so a required one would wait forever. Feature-branch pushes do not duplicate PR runs;
+  # each admitted run uploads for its own ref. Not verified:
+  # whether GitHub's code-scanning check on a pull request that skips it reports main's java-kotlin
+  # configuration as not found (that is a warning on that check, not a failure).
+  # build-mode none would analyse nothing: for java-kotlin it reads Java sources only, and android/ is all
+  # Kotlin. So CodeQL traces a build of it (manual). `:app:compileDebugKotlin` compiles the app and,
+  # through settings.gradle.kts' includeBuild("protocol"), the protocol module's main sources (tests are
+  # not analysed); it needs the Android SDK that ubuntu-latest ships, as the app job above does.
+  # --no-daemon keeps the build in a process CodeQL traces; the in-process strategy keeps the Kotlin
+  # compiler inside it rather than in a separate Kotlin daemon (the property reaches an included build
+  # too: checked locally on tools/typecheck, which includes the protocol build the same way; with it no
+  # KotlinCompileDaemon starts, without it one does);
+  # --no-build-cache keeps a cache hit from skipping the compile CodeQL extracts from.
+  # setup-gradle validates the wrapper jar before ./gradlew runs and reads the Gradle cache the app job
+  # writes (see the note above `jobs:`). GradleCiCoverageTest (android/protocol) pins this job.
+  codeql-kotlin:
+    name: CodeQL (Kotlin)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          queries: security-extended
+
+      - name: Build the Kotlin (app + protocol) under CodeQL
+        working-directory: android
+        run: ./gradlew --no-daemon --no-build-cache -Pkotlin.compiler.execution.strategy=in-process :app:compileDebugKotlin --stacktrace
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:java-kotlin'

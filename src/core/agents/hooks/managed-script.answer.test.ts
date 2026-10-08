@@ -278,6 +278,15 @@ describe.skipIf(!shAvailable)('managed hook answer decoding, under /bin/sh', () 
     expect(run(envelope('Bash', { command: 'ls' })).sleeps).toBe(2)
   }, 60_000)
 
+  it('keeps the v2 PreToolUse question on its armed hold instead of the PermissionRequest dialog wait', () => {
+    const payload = JSON.parse(envelope('AskUserQuestion', { questions: QUESTIONS }))
+    payload.hook_event_name = 'PreToolUse'
+    const result = run(JSON.stringify(payload))
+    expect(result.sleeps).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.pendingLeft).toEqual([])
+  })
+
   it('where fractional sleep fails, the 1 s fallback counts double: the hold stays 540 s, not 1080 s', () => {
     const plan = run(envelope('ExitPlanMode', { plan: 'p' }), {}, { noFractionalSleep: true })
     expect(plan.sleeps).toBe(PERM_WAIT_SECS_INTERACTIVE) // 540 one-second sleeps

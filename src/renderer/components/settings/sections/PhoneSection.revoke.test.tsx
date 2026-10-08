@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// Settings → Phone, the Revoke button: which of the three revoke outcomes the user is TOLD about,
-// and in which voice.
-//   'skipped' → nothing. It is a normal state: a free-tier desktop holds no entitlement to revoke
+// Settings → Phone, the Revoke button: independent Pro and remote-access receipts.
+// Pro outcomes:
+//   'skipped' → no Pro claim. It is a normal state: a free-tier desktop holds no entitlement to revoke
 //               with, or there was no device left to name. Warning there would tell a free user
 //               their phone's Pro is stuck when it never had any of ours. (A phone paired before
 //               we recorded its relay id is NOT this case — the revoke falls back to our own
@@ -10,7 +10,8 @@
 //   'ok'      → a receipt, not silence: the phone keeps the pass it already holds for up to 7
 //               days, and users who were told nothing filed that as "removal didn't work".
 //   'failed'  → a warning that does not prescribe waiting, because a 403 never clears by waiting.
-// Only a leg that actually failed may warn, and a failed one always must.
+// Relay access has its own receipt: unknown/absent association must warn, even if local removal
+// succeeds. Another pairing may retain it; only a confirmed unpin + closure is a clean receipt.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -45,6 +46,7 @@ function stubBridge(result: DeviceRevokeResult | Error): void {
   })
   ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = {
     pairing: {
+      listNetworks: vi.fn(async () => []),
       start: vi.fn(),
       stop: vi.fn(async () => undefined),
       onDone: vi.fn(() => () => undefined),
@@ -102,8 +104,8 @@ function mount(): void {
 }
 
 describe('PhoneSection revoke feedback', () => {
-  it('says nothing when the server leg was skipped — there was nothing of ours to revoke', async () => {
-    stubBridge({ local: true, server: 'skipped' })
+  it('does not claim Pro revocation on a free desktop, while confirming its successful relay removal', async () => {
+    stubBridge({ local: true, server: 'skipped', relay: 'ok' })
     mount()
     await act(async () => undefined) // the mount-time listDevices
 
@@ -115,10 +117,12 @@ describe('PhoneSection revoke feedback', () => {
     // ends in 7 days. An implementation that prints the receipt for every non-failure passes the
     // two assertions above.
     expect(text).not.toMatch(/7 days/i)
+    expect(text).toMatch(/remote access was revoked/i)
+    expect(text).toMatch(/open remote sessions were closed/i)
   })
 
   it('says WHEN the phone actually loses Pro on a clean revoke — removal is not instant', async () => {
-    stubBridge({ local: true, server: 'ok' })
+    stubBridge({ local: true, server: 'ok', relay: 'ok' })
     mount()
     await act(async () => undefined)
 
@@ -181,6 +185,93 @@ describe('PhoneSection revoke feedback', () => {
     // The device is still on this machine, so the "Removed … from this machine" clause must not
     // appear beside the failure that says it was not removed.
     expect(text).not.toMatch(/Removed “/)
+  })
+
+  // revocation.ts: a relay key that could not be unpinned may let the phone back in with no
+  // approval code, so "Removed" is exactly what must not be said. Main keeps the device listed.
+  it('says the phone’s remote access is still there when its relay key could not be unpinned', async () => {
+    stubBridge({ local: false, server: 'skipped', relay: 'unpin-failed' })
+    mount()
+    await act(async () => undefined)
+
+    const text = await revokeFlow()
+    expect(text).toMatch(/remote access away/i)
+    expect(text).toMatch(/still listed — try again/i)
+    expect(text).not.toMatch(/Removed “/)
+    expect(text).toContain('Enes’ iPhone') // the row is still there to retry from
+  })
+
+  it('warns that a relay session may still be open, and keeps the Pro receipt beside it', async () => {
+    stubBridge({ local: true, server: 'ok', relay: 'cut-unconfirmed' })
+    mount()
+    await act(async () => undefined)
+
+    const text = await revokeFlow()
+    expect(text).toMatch(/could not be confirmed closed/i)
+    expect(text).toMatch(/quit and reopen nodeterm/i)
+    expect(text).toMatch(/within 7 days/i)
+    expect(text).not.toMatch(/try again/i)
+  })
+
+  it('confirms the completed relay leg beside the independent Pro expiry receipt', async () => {
+    stubBridge({ local: true, server: 'ok', relay: 'ok' })
+    mount()
+    await act(async () => undefined)
+
+    const text = await revokeFlow()
+    expect(text).toMatch(/Removed “Enes’ iPhone”\./)
+    expect(text).toMatch(/remote access was revoked and its open remote sessions were closed/i)
+    expect(text).toMatch(/Its Pro ends.*within 7 days/)
+    expect(text).not.toMatch(/may still connect|could not be confirmed|try again/i)
+  })
+
+  it.each(['unconfirmed', undefined] as const)(
+    'warns after removing the last row when relay revocation is %s, including an older main process',
+    async (relay) => {
+      stubBridge({ local: true, server: 'skipped', ...(relay ? { relay } : {}) })
+      mount()
+      await act(async () => undefined)
+
+      const text = await revokeFlow()
+      expect(text).toContain('No devices paired yet')
+      expect(text).toMatch(/pairing and any SSH key it installed/i)
+      expect(text).toMatch(/remote access could not be confirmed revoked/i)
+      expect(text).toMatch(/may still connect remotely/i)
+      expect(text).not.toMatch(/remote access was revoked|remote sessions were closed|7 days/i)
+    }
+  )
+
+  it('keeps unknown relay access and confirmed Pro expiry separate', async () => {
+    stubBridge({ local: true, server: 'ok', relay: 'unconfirmed' })
+    mount()
+    await act(async () => undefined)
+
+    const text = await revokeFlow()
+    expect(text).toMatch(/may still connect remotely/i)
+    expect(text).toMatch(/Its Pro ends.*within 7 days/)
+    expect(text).not.toMatch(/remote access was revoked/i)
+  })
+
+  it('explains remote access retained by another pairing without calling it a failure or confirmed revoke', async () => {
+    stubBridge({ local: true, server: 'skipped', relay: 'retained' })
+    mount()
+    await act(async () => undefined)
+
+    const text = await revokeFlow()
+    expect(text).toMatch(/another pairing still allows its remote access and existing remote sessions/i)
+    expect(text).not.toMatch(/remote access was revoked|try again|7 days/i)
+  })
+
+  it('does not promise loss of every connection before an unknown legacy revoke', async () => {
+    stubBridge({ local: true, server: 'skipped', relay: 'unconfirmed' })
+    mount()
+    await act(async () => undefined)
+    await act(async () => button('Revoke').click())
+
+    const text = document.body.textContent ?? ''
+    expect(text).toMatch(/removes its pairing and any SSH key installed by it/i)
+    expect(text).toMatch(/Remote access may remain.*remote identity is unknown/i)
+    expect(text).not.toMatch(/will no longer be able to connect/i)
   })
 
   it('warns when the call itself never answered', async () => {

@@ -1,3 +1,4 @@
+import { wakeOffscreenNode } from '../terminal/offscreen-wake-runtime'
 import { PrepareUpdateDialog } from '../components/PrepareUpdateDialog'
 import type { PrepNode } from '../lib/updatePrep'
 import { reportTextDelivery } from '../lib/textDelivery'
@@ -3920,8 +3921,8 @@ export function Canvas() {
 
   // Outside edits to a project's .nodeterm file (git pull / sync / teammate / another machine /
   // the phone registering a session it started). Writes THIS core made on an agent's behalf are
-  // not in here any more: Server Edition canvas control broadcasts them on `onServerChange`
-  // (below), because they are ours and there is nothing for the user to choose between.
+  // not in here any more: phone Board edits and Server Edition canvas control broadcast them on
+  // `onServerChange` (below), because they are ours and there is nothing to choose between.
   useEffect(() => {
     return api.workspace.onExternalChange((project) => {
       const { activeProjectId: current } = useProjects.getState()
@@ -3966,8 +3967,9 @@ export function Canvas() {
     })
   }, [reloadActiveProject, adoptIncomingNodes])
 
-  // Writes this core made ITSELF: Server Edition headless canvas control (an agent ran
-  // `nodeterm open-agent`, `rename`, `close`…). Never a bar and never a reload — see
+  // Writes this core made ITSELF: phone Board moves/labels/default seeding on Desktop and Server,
+  // plus Server Edition headless canvas control (`open-agent`, `rename`, `close`…). Never a bar
+  // and never a reload — see
   // lib/serverChange.ts for why the outside-edit classifier was the wrong instrument, and
   // server/canvas-control.ts for the channel split.
   useEffect(() => {
@@ -7179,16 +7181,17 @@ export function Canvas() {
   // Eco × phone ("hibernation isn't phone-compatible"). Three wires, all nudges:
   //  - `agent:wake`: a phone viewer just attached over the relay to a node's session — ask the
   //    node to resume its hibernated CLI. Same contract as every other wake asker: the node
-  //    re-reads the flag itself, so this is a no-op for a non-hibernated node, and a no-op for an
-  //    UNMOUNTED one (inactive project) — the phone then still sees the SLEEPING chip and an
-  //    honest shell, never a resume typed into a pane nothing verified.
+  //    re-reads the flag itself; an unmounted node resolves its saved owner and spends the same
+  //    pane proof without switching projects. Automatic attach never resumes a paused node.
   //  - `agent:remote-viewers`: the full set of phone-watched node ids, fed into `isNodeWatched`
   //    so the sweep cannot `/exit` a session someone is reading on their phone.
   //  - boot replay: the hibernated flag is persisted in THIS renderer's localStorage, and main's
   //    mirror starts empty every launch — re-report the persisted set once so the phone's
   //    SLEEPING chips survive a desktop restart.
   useEffect(() => {
-    const unsubWake = window.nodeTerminal.onAgentWake?.((nodeId) => wakeHibernatedNode(nodeId))
+    const unsubWake = window.nodeTerminal.onAgentWake?.((nodeId, automatic) => {
+      if (!wakeHibernatedNode(nodeId, automatic)) void wakeOffscreenNode(nodeId, automatic)
+    })
     const unsubViewers = window.nodeTerminal.onRemoteViewers?.((ids) =>
       setRemotelyViewedNodes(ids)
     )
@@ -16362,7 +16365,8 @@ export function Canvas() {
               e.verified,
               e.errored,
               e.held,
-              recordsTurnInterrupt(e)
+              recordsTurnInterrupt(e),
+              e.permissionSuggestions
             )
           // Claude's Stop names the BACKGROUND tasks still running (async subagents, nested ones,
           // background shells). A background subagent that ends its turn while its own work runs
@@ -18546,6 +18550,7 @@ export function Canvas() {
         />
       ) : perProjectKanbanOpen && (
         <KanbanView
+          ownerProjectId={activeProjectId}
           board={projectKanban ?? seedBoard}
           sessions={kanbanSessions}
           onChange={onKanbanChange}

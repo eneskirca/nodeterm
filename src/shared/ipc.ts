@@ -28,6 +28,7 @@ export const IPC = {
   ptySessionAge: 'pty:session-age',
   ptyReadScrollback: 'pty:read-scrollback',
   ptySendText: 'pty:send-text',
+  ptyWakeSleeping: 'pty:wake-sleeping',
   ptySendChatPrompt: 'pty:send-chat-prompt',
   ptyTmuxStatus: 'pty:tmux-status',
   /** The foreground command of a node's tmux pane (`#{pane_current_command}`) — how the in-place
@@ -753,6 +754,7 @@ export const IPC = {
   pairingProbeSsh: 'pairing:probe-ssh',
   pairingOpenRemoteLoginSettings: 'pairing:open-remote-login-settings',
   pairingListDevices: 'pairing:listDevices',
+  pairingListNetworks: 'pairing:listNetworks',
   // Push webhook management (core/push-webhook.ts). Under `pairing:` so HOST_ONLY_CHANNEL_PREFIXES
   // keeps them off the relay: minting a token that pushes to the host's phones is the host's call.
   pairingWebhookStatus: 'pairing:webhook-status',

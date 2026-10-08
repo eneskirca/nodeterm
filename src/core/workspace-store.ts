@@ -1,8 +1,8 @@
 import type { SshConnection } from '../shared/ssh'
-import { promises as fs } from 'fs'
+import nodeFs, { promises as fs, constants } from 'fs'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'path'
-import { renameAtomic, writeFileAtomic } from './fs-atomic'
+import { renameAtomic, renameAtomicSync, writeFileAtomic } from './fs-atomic'
 import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import {
@@ -13,7 +13,7 @@ import {
 import { contentOf, type CanvasContent } from '../shared/canvas-content'
 import {
   PROJECT_DIR, PROJECT_FILE, fileToProject, inlineProjectFileRelPath, isInlineProjectFileId,
-  projectToFile, resolveNodes, sameProjectContent,
+  projectToFile, resolveNodes, toPortableNodes, sameProjectContent,
   sanitizeLoadedClosedSessions, sanitizeNodeTriggers, serializeProjectFile, splitWorkspace,
   sanitizeHandedOffTo,
   sanitizeKanban,
@@ -29,7 +29,7 @@ import {
 } from '../shared/project-settings'
 import { readProjectCapabilities, type ProjectCapability } from '../shared/project-capabilities'
 import type { CapabilityAckMap } from './project-capability-consent'
-import { carryLocalNodeExec, hoistLegacyNodeExec, stripSharedNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
+import { carryLocalNodeExec, applyLocalNodeExec, hoistLegacyNodeExec, localNodeExec, stripSharedNodeExec, type LocalNodeExecMap } from '../shared/node-exec'
 import { collisionSeed, derivedProjectId, freshProjectId } from '../shared/project-id'
 import {
   pruneLayoutViewports,
@@ -215,6 +215,26 @@ interface LoadedEntry {
   entry: IndexEntryV3
   project: Project
   file?: ProjectFileV1
+}
+
+/** A file-service request may wait behind desktop saves; it must still own its instance at commit. */
+export interface WorkspaceWriteFence { current(): boolean; nodeId?: string }
+const writableRequest = (raw: string, fence?: WorkspaceWriteFence): boolean => {
+  if (!fence) return true
+  if (!fence.current()) return false
+  if (!fence.nodeId) return true
+  try { return JSON.parse(raw).nodes?.filter((n: { id?: string; kind?: string }) => n.id === fence.nodeId && n.kind === 'terminal').length === 1 }
+  catch { return false }
+}
+async function writeFencedAtomic(file: string, raw: string, fence: WorkspaceWriteFence): Promise<void> {
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    const mode = (await fs.stat(file)).mode & 0o777
+    await fs.writeFile(tmp, raw, { flag: 'wx', mode })
+    await fs.chmod(tmp, mode) // this shared project file keeps its original permission policy
+    if (!fence.current()) throw new Error('SSH actions instance changed')
+    renameAtomicSync(tmp, file)
+  } finally { await fs.unlink(tmp).catch(() => {}) }
 }
 
 export async function writeAtomic(filePath: string, content: string): Promise<void> {
@@ -2469,6 +2489,161 @@ export class WorkspaceStore {
     return true
   }
 
+  /** Host-owned creation persists the resolved local facts, never a sibling's SSH/cwd donor.
+   * Both intent and completion share the normal save queue and its final publication fence. */
+  appendManagedTerminal(projectId: string, node: CanvasNodeState, fence: WorkspaceWriteFence): Promise<boolean> {
+    return this.managedTerminalWrite(projectId, fence, (file) => {
+      if (!/^term-[a-z0-9]+-[a-z0-9]{1,16}$/.test(node.id) || node.kind !== 'terminal' ||
+          typeof node.cwd !== 'string' || !node.cwd || node.ssh || node.sshRemoteTmux ||
+          file.nodes.some((n) => n.id === node.id)) return false
+      file.nodes.push(stripSharedNodeExec(toPortableNodes([JSON.parse(JSON.stringify(node)) as CanvasNodeState], node.cwd))[0])
+      return true
+    }, node, node)
+  }
+
+  finishManagedTerminal(projectId: string, expectedNode: CanvasNodeState, fence: WorkspaceWriteFence): Promise<boolean> {
+    return this.managedTerminalWrite(projectId, fence, (file) => {
+      const entry = this.index?.entries.find((e) => e.id === projectId)
+      const resolved = applyLocalNodeExec(resolveNodes(file.nodes, entry!.cwd!), entry!.localExec)
+      const matches = resolved.filter((n) => n.id === expectedNode.id && n.kind === 'terminal')
+      if (matches.length !== 1) return false
+      const node = matches[0], pending = node.pendingLaunch
+      if (pending?.command !== expectedNode.pendingLaunch?.command ||
+          ['cwd', 'shell', 'agentId', 'accountId', 'agentSessionId', 'agentModel'].some((key) => node[key as keyof CanvasNodeState] !== expectedNode[key as keyof CanvasNodeState]) ||
+          node.ssh || node.sshRemoteTmux || pending?.executor !== 'server' ||
+          pending.attempted !== true || pending.manualOnly !== true) return false
+      // The matching intent is machine-local. managedTerminalWrite clears its localExec
+      // entry under the same final owner/source fence; it never publishes command text here.
+      return true
+    }, undefined, expectedNode)
+  }
+
+  /** The final launch fence is synchronous: no saved-node edit may race an awaited pane probe. */
+  managedTerminalCurrent(projectId: string, expectedNode: CanvasNodeState, pending = false): boolean {
+    const entries = this.index?.entries.filter((entry) => entry.id === projectId) ?? []
+    const e = entries[0]
+    if (entries.length !== 1 || !e?.cwd || e.ssh || e.closed || e.cwd !== expectedNode.cwd) return false
+    let fd: number | undefined
+    try {
+      fd = nodeFs.openSync(projectFilePath(e.cwd), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      const stat = nodeFs.fstatSync(fd)
+      if (!stat.isFile() || stat.size > 16 * 1024 * 1024) return false
+      const file = JSON.parse(nodeFs.readFileSync(fd, 'utf8')) as ProjectFileV1
+      if (file.version !== 1 || !Array.isArray(file.nodes)) return false
+      const nodes = applyLocalNodeExec(resolveNodes(file.nodes, e.cwd), e.localExec)
+      const matches = nodes.filter((node) => node.id === expectedNode.id && node.kind === 'terminal')
+      const node = matches[0]
+      if (matches.length !== 1 || node.ssh || node.sshRemoteTmux ||
+          !['cwd', 'shell', 'agentId', 'accountId', 'agentSessionId', 'agentModel'].every((key) => node[key as keyof CanvasNodeState] === expectedNode[key as keyof CanvasNodeState])) return false
+      if (!pending) return !node.pendingLaunch
+      const intent = node.pendingLaunch
+      return intent?.command === expectedNode.pendingLaunch?.command && intent?.executor === 'server' &&
+        intent.attempted === true && intent.manualOnly === true && intent.after.length === 0
+    } catch { return false }
+    finally { if (fd !== undefined) nodeFs.closeSync(fd) }
+  }
+
+  /** Queue the observation behind ordinary saves; delivery additionally carries the sync fence. */
+  managedTerminalPresent(projectId: string, expectedNode: CanvasNodeState, current: () => boolean, pending = false): Promise<boolean> {
+    const run = this.saveChain.then(() => current() && this.managedTerminalCurrent(projectId, expectedNode, pending))
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
+  private managedTerminalWrite(projectId: string, fence: WorkspaceWriteFence, change: (file: ProjectFileV1) => boolean, appendNode?: CanvasNodeState, expectedNode?: CanvasNodeState): Promise<boolean> {
+    const run = this.saveChain.then(async () => {
+      if (!fence.current()) return false
+      const entries = this.index?.entries.filter((e) => e.id === projectId) ?? []
+      const e = entries[0]
+      if (entries.length !== 1 || !e?.cwd || e.ssh || e.closed) return false
+      const cwd = e.cwd
+      const file = projectFilePath(cwd)
+      let source: string | undefined
+      const freshOwner = (): IndexEntryV3 | undefined => {
+        const fresh = this.index?.entries.filter((entry) => entry.id === projectId) ?? []
+        if (!fence.current() || fresh.length !== 1 || fresh[0].cwd !== cwd || fresh[0].ssh || fresh[0].closed) return undefined
+        return fresh[0]
+      }
+      const owned = (): boolean => {
+        if (!freshOwner()) return false
+        if (source === undefined) return true
+        if (!appendNode && expectedNode && !this.managedTerminalCurrent(projectId, expectedNode, true)) return false
+        let fd: number | undefined
+        try {
+          fd = nodeFs.openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+          const stat = nodeFs.fstatSync(fd)
+          return stat.isFile() && stat.size <= 16 * 1024 * 1024 && nodeFs.readFileSync(fd, 'utf8') === source
+        } catch { return false }
+        finally { if (fd !== undefined) nodeFs.closeSync(fd) }
+      }
+      let parsed: ProjectFileV1
+      try {
+        source = await fs.readFile(file, 'utf8')
+        parsed = JSON.parse(source) as ProjectFileV1
+        if (!owned() || parsed.version !== 1 || !Number.isSafeInteger(parsed.rev) || !Array.isArray(parsed.nodes) || !change(parsed)) return false
+        if (appendNode) {
+          const exec = localNodeExec([appendNode])
+          if (exec) {
+            const index = JSON.parse(JSON.stringify(this.index)) as WorkspaceIndexV3
+            this.applySettingsToIndex(index)
+            const target = index.entries.find((entry) => entry.id === projectId)!
+            target.localExec = { ...target.localExec, ...exec }
+            await writeFencedAtomic(this.indexPath, JSON.stringify(index), { current: owned })
+            if (!owned()) return false
+            const fresh = this.index!.entries.find((entry) => entry.id === projectId)!
+            fresh.localExec = target.localExec
+          }
+        }
+        if (!appendNode && expectedNode) {
+          // Completion changes only this machine's held launch, not the shared canvas. Read
+          // the actual index too: a newer local intent staged by another writer must survive.
+          const indexSource = await fs.readFile(this.indexPath, 'utf8')
+          const index = JSON.parse(indexSource) as WorkspaceIndexV3
+          const targets = index.entries.filter((entry) => entry.id === projectId)
+          const target = targets[0]
+          const originalLocal = JSON.stringify(target?.localExec?.[expectedNode.id])
+          if (targets.length !== 1 || target.cwd !== cwd || target.ssh || target.closed ||
+              originalLocal !== JSON.stringify(freshOwner()?.localExec?.[expectedNode.id])) return false
+          const exec = { ...target.localExec, [expectedNode.id]: { ...target.localExec?.[expectedNode.id] } }
+          delete exec[expectedNode.id].pendingLaunch
+          target.localExec = exec
+          this.applySettingsToIndex(index)
+          const sameIndex = (raw: string): boolean => {
+            let fd: number | undefined
+            try {
+              fd = nodeFs.openSync(this.indexPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+              const stat = nodeFs.fstatSync(fd)
+              return stat.isFile() && stat.size <= 16 * 1024 * 1024 && nodeFs.readFileSync(fd, 'utf8') === raw
+            } catch { return false }
+            finally { if (fd !== undefined) nodeFs.closeSync(fd) }
+          }
+          const indexRaw = JSON.stringify(index)
+          await writeFencedAtomic(this.indexPath, indexRaw, { current: () => owned() && sameIndex(indexSource) })
+          const fresh = freshOwner()
+          const currentLocal = JSON.stringify(fresh?.localExec?.[expectedNode.id])
+          // Temp cleanup yields after rename. A load during that turn may have adopted a
+          // replacement intent: never overwrite it in memory or announce our old completion.
+          if (!fresh || !sameIndex(indexRaw) ||
+              (currentLocal !== originalLocal && currentLocal !== JSON.stringify(exec[expectedNode.id]))) return false
+          fresh.localExec = { ...fresh.localExec, [expectedNode.id]: exec[expectedNode.id] }
+          if (!this.managedTerminalCurrent(projectId, expectedNode, false)) return false
+          this.announceProjectFile(fresh, parsed)
+          return true
+        }
+        parsed.rev++; parsed.savedAt = new Date().toISOString()
+        const raw = JSON.stringify(parsed, null, 2)
+        await writeFencedAtomic(file, raw, { current: owned })
+        const fresh = freshOwner()
+        if (!fresh || (expectedNode && !this.managedTerminalCurrent(projectId, expectedNode, !!appendNode?.pendingLaunch))) return false
+        this.lastWritten.set(file, raw); this.revs.set(fresh.id, parsed.rev)
+        this.announceProjectFile(fresh, parsed)
+        return true
+      } catch { return false }
+    })
+    this.saveChain = run.catch(() => {})
+    return run
+  }
+
   /**
    * Takes a DESTROYED session's node off its project's canvas — the host side of the relay
    * `pty.destroy` verb ("End session" on the phone), run AFTER the tmux kill so the file only ever
@@ -2549,9 +2724,9 @@ export class WorkspaceStore {
    * IDEMPOTENT, and that is the safety property: an existing board is returned untouched and
    * nothing is written, so the phone may ask on every tap.
    */
-  ensureRemoteBoard(projectId: string, now = new Date()): Promise<KanbanColumn[] | null> {
+  ensureRemoteBoard(projectId: string, now = new Date(), fence?: WorkspaceWriteFence): Promise<KanbanColumn[] | null> {
     const run = this.saveChain.then(() =>
-      this.kanbanWriteNow(projectId, (raw) => ensureProjectBoard(raw, now))
+      this.kanbanWriteNow(projectId, (raw) => ensureProjectBoard(raw, now), fence)
     )
     this.saveChain = run.catch(() => {})
     // The board that is THERE NOW, whether this call seeded it or found it. `ensureProjectBoard`
@@ -2581,10 +2756,11 @@ export class WorkspaceStore {
     projectId: string,
     nodeId: string,
     columnId: string | null,
-    now = new Date()
+    now = new Date(),
+    fence?: WorkspaceWriteFence
   ): Promise<boolean> {
     const run = this.saveChain.then(() =>
-      this.kanbanWriteNow(projectId, (raw) => setProjectCardColumn(raw, nodeId, columnId, now))
+      this.kanbanWriteNow(projectId, (raw) => setProjectCardColumn(raw, nodeId, columnId, now), fence)
     )
     this.saveChain = run.catch(() => {})
     return run.then((res) => res?.written === true)
@@ -2609,10 +2785,11 @@ export class WorkspaceStore {
     projectId: string,
     nodeId: string,
     edit: CardLabelEdit,
-    now = new Date()
+    now = new Date(),
+    fence?: WorkspaceWriteFence
   ): Promise<{ edited: boolean; labels: KanbanLabel[]; cardLabelIds: string[] } | null> {
     const run = this.saveChain.then(() =>
-      this.kanbanWriteNow(projectId, (raw) => editProjectCardLabels(raw, nodeId, edit, now))
+      this.kanbanWriteNow(projectId, (raw) => editProjectCardLabels(raw, nodeId, edit, now), fence)
     )
     this.saveChain = run.catch(() => {})
     return run.then((res) => {
@@ -2640,7 +2817,7 @@ export class WorkspaceStore {
    *
    * - **local ref** (`cwd`): read the file, transform, write it atomically — exactly
    *   `appendRemoteNodeNow`'s shape, including recording the write in `lastWritten` and announcing
-   *   it on `workspaceExternalChange` rather than letting the watcher discover our own edit.
+   *   it on `workspaceServerChange` rather than letting the watcher discover our own edit.
    * - **ssh ref** (`ssh` + `cache`): the file is on ANOTHER machine and only this desktop writes
    *   it. So the write goes where the desktop's own board edits go — into `e.cache` — and is then
    *   pushed by the ordinary mirror (`mirrorSshCache`, which re-reads and rescues the server's own
@@ -2659,7 +2836,8 @@ export class WorkspaceStore {
    */
   private async kanbanWriteNow(
     projectId: string,
-    transform: (raw: string) => string | null
+    transform: (raw: string) => string | null,
+    fence?: WorkspaceWriteFence
   ): Promise<{ file: ProjectFileV1; written: boolean } | null> {
     const e = this.index?.entries.find((x) => x.id === projectId)
     if (!e) return null
@@ -2669,7 +2847,9 @@ export class WorkspaceStore {
       // BEFORE the transform, so the local cache never diverges and the renderer is never told
       // about a change that will not land.
       if (e.handedOffTo) return null
-      const updated = transform(serializeProjectFile(e.cache))
+      const cacheRaw = serializeProjectFile(e.cache)
+      if (!writableRequest(cacheRaw, fence)) return null
+      const updated = transform(cacheRaw)
       if (updated === null) return { file: e.cache, written: false }
       let parsed: ProjectFileV1
       try {
@@ -2707,10 +2887,12 @@ export class WorkspaceStore {
         return null // unparsable: there is no board to report and none was written
       }
     }
+    if (!writableRequest(raw, fence)) return null
     const updated = transform(raw)
     if (updated === null) return current()
     try {
-      await writeAtomic(file, updated)
+      if (fence) await writeFencedAtomic(file, updated, fence)
+      else await writeAtomic(file, updated)
     } catch {
       return current()
     }
@@ -2729,12 +2911,14 @@ export class WorkspaceStore {
     return { file: parsed, written: true }
   }
 
-  /** Tell the renderer about a project file THIS store just rewrote outside of `save()`. Shared by
-   *  the kanban verbs; the same payload `appendRemoteNode`/`removeRemoteNode` build by hand. */
+  /** Adopt this core's successful phone Board edit live, even while the canvas is dirty.
+   *  The outside-file channel asks the user to resolve overlapping shared changes, including
+   *  kanban, so it can leave a mounted Board stale behind its conflict strip. This is our own
+   *  write: the existing server-change consumer keeps live canvas edits and adopts the Board. */
   private announceProjectFile(e: IndexEntryV3, file: ProjectFileV1): void {
     try {
       platform().broadcast(
-        IPC.workspaceExternalChange,
+        IPC.workspaceServerChange,
         fileToProject(file, {
           id: e.id,
           cwd: e.cwd,

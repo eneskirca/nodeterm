@@ -112,6 +112,47 @@ describe('HostSession terminal-output ordering', () => {
     await expect(session.recordOutput('good')).resolves.toBeUndefined()
     await expect(session.serialize()).resolves.toBe('good')
   })
+
+  it('searches history only after the retained buffer has applied preceding output', async () => {
+    const applied: string[] = []
+    let release!: () => void
+    const historyText = vi.fn(() => applied.join(''))
+    const term = {
+      ...inertTerm(),
+      write: vi.fn((data: string) => new Promise<void>((resolve) => {
+        release = () => { applied.push(data); resolve() }
+      })),
+      historyText
+    } as unknown as TerminalEmulator
+    const session = new HostSession('history-order', SPAWN, 100, { proc: fakeProc().value, term })
+    const output = session.recordOutput('retained match')
+    const history = session.historyText()
+    await Promise.resolve()
+    expect(historyText).not.toHaveBeenCalled()
+    release()
+    await output
+    await expect(history).resolves.toBe('retained match')
+    expect(historyText).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['exited', 'retiring'] as const)('refuses history from a session that becomes %s while output drains', async (state) => {
+    let release!: () => void
+    const historyText = vi.fn(() => 'stale buffer')
+    const term = {
+      ...inertTerm(),
+      write: vi.fn(() => new Promise<void>((resolve) => { release = resolve })),
+      historyText
+    } as unknown as TerminalEmulator
+    const session = new HostSession('history-ended', SPAWN, 100, { proc: fakeProc().value, term })
+    const output = session.recordOutput('last output')
+    const history = session.historyText()
+    await Promise.resolve()
+    session[state] = true
+    release()
+    await output
+    await expect(history).rejects.toThrow('retained terminal has exited')
+    expect(historyText).not.toHaveBeenCalled()
+  })
 })
 
 describe('HostSession connection-scoped pause ownership', () => {

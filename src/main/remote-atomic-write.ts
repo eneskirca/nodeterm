@@ -32,6 +32,8 @@ export interface RemoteAtomicWriteOptions {
   mode?: RemoteFileMode
   /** False when the caller already created and permissioned the parent directory. */
   makeParent?: boolean
+  /** Trusted caller-owned shell check after stdin is written, immediately before publication. */
+  beforePublish?: string
   /** An editor may legitimately save an empty file. Nothing this app GENERATES is ever empty, so
    *  an empty body is refused unless the caller says otherwise. */
   allowEmpty?: boolean
@@ -113,8 +115,9 @@ export function remoteAtomicWrite(
   // with `-` could look like an option, and that one gets `./`.
   const chmodTarget = temporaryPath.startsWith('-') ? quoteRemotePath(`./${temporaryPath}`) : temporary
   const protect = options.mode ? ` && chmod ${options.mode} ${chmodTarget}` : ''
+  const check = options.beforePublish ? ` && ( ${options.beforePublish} )` : ''
   const command =
-    `${prefix}${parent}{ cat > ${temporary}${complete}${protect} && mv -f -- ${temporary} ${target}; ` +
+    `${prefix}${parent}{ cat > ${temporary}${complete}${protect}${check} && mv -f -- ${temporary} ${target}; ` +
     `nt_status=$?; ` +
     `rm -f -- ${temporary}; exit "$nt_status"; }`
   return { command, stdin: body, temporaryPath }

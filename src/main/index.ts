@@ -8,7 +8,7 @@ import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
-import { readFile, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
+import { realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
@@ -102,9 +102,13 @@ import { stationRecipient } from '../shared/station-notice'
 import type { RemoteLogExec } from '../core/board-log'
 import type { PtyCreateOptions, TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
-import { PtyManager } from '../core/pty-manager'
+import { PtyManager, resolveLocalSessionShell } from '../core/pty-manager'
 import { desktopHeadlessRequest, launchHeadless } from '../core/headless-launch'
 import { WorkspaceStore } from '../core/workspace-store'
+import { startSshActionsService, type SshActionsService } from '../core/ssh-actions'
+import { ManagedTerminals } from '../core/managed-terminals'
+import { createManagedTerminalPlanner } from '../core/managed-terminal-plan'
+import { findInLoginPath } from '../core/exec-path'
 import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
 import { SettingsStore } from '../core/settings-store'
@@ -175,10 +179,13 @@ import { projectCapabilityGrantedFor } from '../shared/project-capability-consen
 import { askpassServer, ensureAskpassScript } from './remote-ssh/ssh-askpass'
 import { appSshAgent } from './remote-ssh/ssh-agent'
 import {
+  answerPendingLocal,
+  answerPendingHookLocal,
   localHeldPermissionIo,
   startPendingSweep,
   isValidPendingId,
-  syntheticAnsweredEvent
+  syntheticAnsweredEvent,
+  type PendingAnswerResult
 } from '../core/agents/pending-approvals'
 import { answerHeldPermission, isStructuredTicket, type HeldPermissionIo } from '../core/agents/permission-decision'
 import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
@@ -215,13 +222,16 @@ import {
   onMirrorFlush,
   flush as flushAgentStatusMirror,
   recordAgentEvent,
+  hookTicketStillOpen,
   recordQuestionResult,
   turnInterruptEvent,
   ignoreQuestionHook,
   ackDone,
+  mirrorOwnsNode,
   recordRawToolEvent,
   recordContextUsage,
   setMirrorSettingsProvider,
+  mirrorClaudeAccount,
   setMirrorLiveNodesProvider,
   setMirrorUsageProvider,
   buildMirrorUsage,
@@ -240,6 +250,8 @@ import {
   mirrorEntry,
   pendingTicketsFor
 } from '../core/agent-status-mirror'
+import { buildProjectsListBlob } from '../core/projects-list-blob'
+import { createHostLanReporter } from './remote/host-lan-report'
 import { mirrorCustomAgents } from '../core/mirror-custom-agents'
 import { paneOwnerProject } from '../core/agents/pane-ownership'
 import { createPushNotify, createLiveUpdatePush } from '../core/push-notify'
@@ -347,8 +359,8 @@ import { initClaudeAccounts } from './claude-accounts'
 import { initCodexAccounts } from './codex-accounts'
 import { claudeCliCaps, registerClaudeCliIpc, type ClaudeCliCaps } from '../core/claude-cli'
 import type { CodexCliCaps } from '../shared/types'
-import { registerGrokCliIpc } from '../core/grok-cli'
-import { refreshCodexIdentityCaps, registerCodexIdentityIpc } from '../core/codex-identity-caps'
+import { grokCliCaps, registerGrokCliIpc } from '../core/grok-cli'
+import { codexIdentityCaps, refreshCodexIdentityCaps, registerCodexIdentityIpc } from '../core/codex-identity-caps'
 import { codexCliCaps, registerCodexCliIpc } from '../core/codex-cli'
 import { registerWallpaperIpc } from '../core/wallpaper'
 import { registerRunConfigIpc, stopAllRunWatches } from '../core/run-service'
@@ -388,8 +400,11 @@ import {
   API_BASE as RELAY_API_BASE,
   RELAY_URL
 } from './remote/host-service'
-import { initStandingHost } from './remote/standing-host'
+import { initStandingHost, rememberRevokedStandingPhone } from './remote/standing-host'
+import { createHostNewSessions } from './remote/host-new-sessions'
 import { initRelayHost } from './remote/relay-host-service'
+import { loadApprovedDevices, pinApprovedDeviceIf, updateApprovedDevices } from './remote/approved-devices'
+import { pinDevice } from './remote/approved-devices-core'
 import { PIN_ROLES, phonePins, retireLegacyPinFile } from './remote/approved-devices'
 import { revokeAllPhones, revokePeerKey } from './remote/peer-revoke'
 import { publicKeyToB64, type KeyPair } from './remote/e2ee'
@@ -719,34 +734,18 @@ ptyManager.setProjectSpawnOverrides(
   })
 )
 
-// Markers delimiting the `projects.list` relay blob. The iOS client splits on these exact
-// strings to recover [workspace.json | newline-joined tmux session names | agent-status.json],
-// matching the SSH browse pipeline it already uses — keep them in sync with NodetermProjects.swift.
-const NT_PROJECTS_MARK = '--NT-PROJECTS-SPLIT--'
-const NT_STATUS_MARK = '--NT-STATUS-SPLIT--'
-
 /**
- * Build the marker-delimited projects blob served over the relay's `projects.list` RPC. Reads the
- * same files the SSH browse path reads locally on the host (no SSH): `workspace.json` +
- * `agent-status.json` under userData, plus the live nodeterm tmux session names. Every read is
- * best-effort (missing files degrade to an empty section) so this never throws.
+ * The `projects.list` relay blob. Assembled by `buildProjectsListBlob` (src/core/projects-list-blob.ts),
+ * which the Android interop fixture calls too, so the markers, the section order and the read-only
+ * workspace load live in one place; this shell only names its sources: the workspace store, userData
+ * (where the agent-status mirror writes its file) and the live nodeterm tmux session names.
  */
 async function listProjectsOutput(): Promise<string> {
-  const dir = app.getPath('userData')
-  // Serve the ASSEMBLED v2-shaped workspace, never the raw workspace.json. Post-migration the file
-  // is a v3 index ({version:3, entries:[…]}) whose local-ref entries hold no node data at all — the
-  // paired iOS client decodes `{ projects: [Project] }`, so a raw v3 file lists zero projects.
-  // load() re-reads each ref's .nodeterm/project.json and returns {version:2, projects:[…]}; it is
-  // idempotent (and re-syncs the watcher via onPersist), so calling it here is safe.
-  const workspace = await workspaceStore
-    // Read-only: a phone listing projects mid git-merge must NOT sideline a conflict-marked
-    // project.json to `.corrupt-<ts>` (the probe/watcher-path fix); sideline is boot/renderer-only.
-    .load({ sideline: false })
-    .then((w) => JSON.stringify(w))
-    .catch(() => '')
-  const status = await readFile(join(dir, 'agent-status.json'), 'utf8').catch(() => '')
-  const sessions = (await ptyManager.listNodetermSessions().catch(() => [])).join('\n')
-  return `${workspace}\n${NT_PROJECTS_MARK}\n${sessions}\n${NT_STATUS_MARK}\n${status}`
+  return buildProjectsListBlob({
+    workspace: workspaceStore,
+    userDataDir: app.getPath('userData'),
+    listSessions: () => ptyManager.listNodetermSessions()
+  })
 }
 
 // Remote git routing is scoped to the ACTIVE project only (set via `git:set-active-remote`).
@@ -760,6 +759,7 @@ let activeRemote: { cwd: string; ref: GitRemoteRef } | null = null
 // macOS close→dock-reopen cycle and silently swallows every send.
 // True from the first before-quit on: lets window close-events through (see hide-on-close).
 let quitting = false
+let sshActionsService: SshActionsService | undefined
 
 // Confirm-before-quit gate. Set once the user has answered "Quit" in the dialog below, or when
 // a quit is app-initiated rather than user-initiated (auto-update restart) and should not be
@@ -1796,6 +1796,12 @@ app.whenReady().then(async () => {
   // a remote tab derives the default worktree path from it, and the worktree lives on THIS host.
   corePlatform.handle(IPC.appUserDataDir, () => app.getPath('userData'))
 
+  // Revoking a bridged PEER must CUT THE LIVE SESSION, not just unpin it (revocation.ts): unpinning
+  // refuses only the NEXT handshake, while the open relay socket keeps full shell access — "the
+  // person I just removed is still sitting in my terminal, typing". The revoker closes every live
+  // session with that key — a peer desktop's (relay-host) and a phone's (the standing host) — and
+  // each close runs that host's peer teardown (presence leave → PtyManager.dropClient / killed
+  // PTYs). Shared by `remote:revoke-peer` and the phone pairing service's device revoke.
   // Phone pairing (nodeterm iOS "scan a QR" flow): a one-shot LAN listener that installs the
   // phone's Ed25519 key into ~/.ssh/authorized_keys. The completion result is forwarded to the
   // window over `pairing:done` so the settings section can show the paired/timeout state.
@@ -1805,10 +1811,23 @@ app.whenReady().then(async () => {
     loadHostKeyPair: loadOrCreateKeyPair,
     relayEndpoint: RELAY_URL,
     apiBase: RELAY_API_BASE,
-    relayAllowed
+    relayAllowed,
+    // A phone that sends its relay key in the sealed /pair body is approved by the scan itself
+    // (audit A07): the same pin a SAS approval writes, so its first remote connect needs nobody at
+    // the desk. Revoking the device takes the pin away again AND cuts the relay session the phone
+    // has open, through the same registered-host revocation primitive as `remote:revoke-peer`.
+    pinRelayKey: (pub) => updateApprovedDevices((store) => pinDevice(store, pub)),
+    revokeRelayKey: (pub) => {
+      rememberRevokedStandingPhone(pub)
+      return revokePeerKey(pub, ['phone'])
+    },
+    // A07-late: a key the pairing recorded without pinning (no relay leg at the scan) is pinned by
+    // the standing host on the phone's first relay handshake, asked inside the pin store's queue so
+    // a racing revoke cannot be undone (see pinApprovedDeviceIf).
+    pinRelayKeyIfPaired: (pub, stillPaired) => pinApprovedDeviceIf(pub, stillPaired)
   }, {
-    // A phone "Remove" must also revoke its RELAY trust: unpin and cut its live relay sessions.
-    // Which pin is that phone's is unknowable here, so every phone pin goes (peer-revoke.ts).
+    getPairingInterface: () => settingsStore.get().phonePairingInterface,
+    // Legacy pairings without a recorded box key still require the all-phone revoke fallback.
     revokePhoneRelayTrust: revokeAllPhones
   })
   ipcMain.handle(IPC.pairingStart, () =>
@@ -1830,6 +1849,7 @@ app.whenReady().then(async () => {
     if (url) void shell.openExternal(url)
   })
   ipcMain.handle(IPC.pairingListDevices, () => pairingService.listDevices())
+  ipcMain.handle(IPC.pairingListNetworks, () => pairingService.listNetworks())
   ipcMain.handle(IPC.pairingRevokeDevice, (_e, id: string) => pairingService.revokeDevice(id))
   // Push webhook management. The proof of ownership is made HERE with the relay host secret key,
   // which never reaches the renderer; the minted token passes through to it exactly once and is
@@ -1856,9 +1876,12 @@ app.whenReady().then(async () => {
   // is the one primitive: it unpins the key from every role store and closes every live session it
   // holds on every host surface (standing phone host, interactive phone host, Team Access). Host-
   // security control plane, so it stays on raw ipcMain: a remote peer must never be able to revoke.
-  ipcMain.handle(IPC.remoteRevokePeer, (_e, peerKeyB64: string) =>
-    revokePeerKey(String(peerKeyB64), PIN_ROLES)
-  )
+  ipcMain.handle(IPC.remoteRevokePeer, (_e, peerKeyB64: string) => {
+    const pub = String(peerKeyB64)
+    // A disconnected phone has no registered live session; retain the same-run redial refusal.
+    rememberRevokedStandingPhone(pub)
+    return revokePeerKey(pub, PIN_ROLES)
+  })
 
   ipcMain.on(IPC.shellReveal, (_e, p: string) => {
     if (p) shell.showItemInFolder(p)
@@ -2399,7 +2422,7 @@ app.whenReady().then(async () => {
       ...(localCodexCaps?.noDaemon === true ? { codexNoDaemon: true } : {}),
       claudeAccounts: (s.claudeAccounts ?? [])
         .filter((a) => !a.host && !a.pending)
-        .map((a) => ({ id: a.id, dir: claudeConfigDirFor(a.id) })),
+        .map((a) => mirrorClaudeAccount(a, claudeConfigDirFor(a.id))),
       // Derived binary names only — never the launch command/env (see core/mirror-custom-agents.ts).
       customAgents: mirrorCustomAgents(s.customAgents)
     }
@@ -2627,7 +2650,7 @@ app.whenReady().then(async () => {
           ? {
               claudeAccounts: (s.claudeAccounts ?? [])
                 .filter((a) => a.host === hostKey && !a.pending)
-                .map((a) => ({ id: a.id, dir: remoteAccountConfigDirAbs(home, a.id) }))
+                .map((a) => mirrorClaudeAccount(a, remoteAccountConfigDirAbs(home, a.id)))
             }
           : {}), // unresolved home ⇒ no accounts advertised (fail-open), autoSupported still ships
         // Settings-global, and the pane on the host runs the same launch command — so the same
@@ -3161,6 +3184,48 @@ app.whenReady().then(async () => {
   // project: an SSH project's hook runs on the REMOTE host (write over its ControlMaster), a local
   // project's on THIS machine (write under os.homedir() — the hook uses $HOME, which may differ from
   // the project cwd). pendingId is validated before it is interpolated into any path/command.
+  //
+  // ONE writer for every answerer: the canvas IPC below and the relay phone's `approvals.answer`
+  // verb (host-service.ts `HostInboxOps`) both call `answerPermission`, so a phone answer can never
+  // take a different route than a desktop one.
+  //
+  // The writer checks the hold still exists (its `<pendingId>.json`) before writing: a late answer
+  // (the phone's usual case — the hold is 45 s) used to be reported, and broadcast, as delivered,
+  // clearing NEEDS YOU while the prompt still waited on screen (audit A06). `gone` vs `failed` is
+  // kept apart so the phone can say "open the session" rather than "already handled" (A35).
+  async function answerPermission(
+    nodeId: string,
+    pendingId: string,
+    decision: 'allow' | 'deny' | 'allow-always',
+    suggestionIndex?: number
+  ): Promise<PendingAnswerResult> {
+    if (!isValidPendingId(pendingId)) return 'failed'
+    if (decision !== 'allow' && decision !== 'deny' && decision !== 'allow-always') return 'failed'
+    if (decision === 'allow-always') {
+      if (!workspaceStore.getNode(nodeId) || !hookTicketStillOpen(nodeId, pendingId, 'approval')) return 'gone'
+      const answer = { kind: 'allow-always' as const, suggestionIndex: suggestionIndex ?? -1 }
+      const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
+      const result = sshProjectId ? await sshProjectManager?.answerPendingHook(sshProjectId, nodeId, pendingId, answer) ?? 'failed'
+        : await answerPendingHookLocal(nodeId, pendingId, answer, homedir())
+      // Only the hook's consumed-answer POST settles a remembered-rule card.
+      return result
+    }
+    const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
+    const result: PendingAnswerResult = sshProjectId
+      ? sshProjectManager
+        ? await sshProjectManager.answerPending(sshProjectId, pendingId, decision)
+        : 'failed'
+      : await answerPendingLocal(pendingId, decision, homedir())
+    // Optimistic flip: on a successful write, emit the same synthetic "answered" transition the
+    // held hook's second POST will produce, so the NEEDS YOU badge clears instantly instead of
+    // waiting for that POST to round-trip. The later hook POST is an idempotent duplicate (a
+    // same-state working re-assert is a no-op). See docs/hook-reply-approvals.md.
+    if (result === 'sent') {
+      const ev = syntheticAnsweredEvent(nodeId, pendingId, decision)
+      if (ev) emitAgentStatus(ev)
+    }
+    return result
+  }
   // The held request's I/O for a node — shared with the phone's `agent.answer` (hostBridge.chat) so
   // both answer paths reach the SAME host the same way.
   const heldPermissionIoFor = (nodeId: string, pendingId: string): HeldPermissionIo => {
@@ -3178,6 +3243,9 @@ app.whenReady().then(async () => {
     // The ONE answer body both shells share (core/agents/permission-decision.ts): read the held
     // request on the host the agent runs on, validate + build the decision there, write it back.
     // A structured answer is refused without a readable request; the legacy words are not.
+    if (payload.answer === undefined && payload.decision === 'allow-always') {
+      return (await answerPermission(nodeId, pendingId, payload.decision, payload.suggestionIndex)) === 'sent'
+    }
     const io = heldPermissionIoFor(nodeId, pendingId)
     const res = await answerHeldPermission(pendingId, { decision: payload.decision, answer: payload.answer }, io)
     // Optimistic flip: on a successful write, emit the same synthetic "answered" transition the
@@ -3389,7 +3457,11 @@ app.whenReady().then(async () => {
     if (e.status !== 'connected' && e.status !== 'connecting') devPorts.registry?.projectDisconnected(e.projectId)
   })
   const ackSweeper = createAckSweeper({
-    handlers: { ackDone, onUnreadClear: (id) => sendToMain(IPC.agentUnreadClear, id) }
+    handlers: {
+      ownsNode: mirrorOwnsNode,
+      ackDone,
+      onUnreadClear: (id) => sendToMain(IPC.agentUnreadClear, id)
+    }
   })
   let remoteAckSweepBusy = false
   const ackSweepTimer = setInterval(() => {
@@ -4528,18 +4600,18 @@ app.whenReady().then(async () => {
     //    invisible to every attention predicate — the kanban-modal gap, one surface further out);
     //  - `agent:wake` fires on each attach, so a hibernated node someone just opened on their
     //    phone resumes its CLI — the same nudge contract as `wakeHibernatedNode` (re-reads the
-    //    flag, no-ops when not hibernated or not mounted).
+    //    flag and verifies the saved pane even when the project is not mounted).
     remoteViewer: (() => {
       const counts = new Map<string, number>()
-      const toRenderer = (channel: string, payload: unknown): void => {
-        if (!win.isDestroyed()) win.webContents.send(channel, payload)
+      const toRenderer = (channel: string, payload: unknown, automatic?: boolean): void => {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload, automatic)
       }
       const broadcast = (): void => toRenderer(IPC.agentRemoteViewers, [...counts.keys()])
       return {
         attached(nodeId: string) {
           counts.set(nodeId, (counts.get(nodeId) ?? 0) + 1)
           broadcast()
-          toRenderer(IPC.agentWake, nodeId)
+          toRenderer(IPC.agentWake, nodeId, true)
         },
         detached(nodeId: string) {
           const n = (counts.get(nodeId) ?? 0) - 1
@@ -4566,9 +4638,58 @@ app.whenReady().then(async () => {
       return {
         wake: (nodeId: string) => deliver(IPC.agentWake, nodeId),
         refresh: (nodeId: string) => deliver(IPC.agentRefreshNode, nodeId),
-        rename: (nodeId: string, title: string) => deliver(IPC.agentRenameNode, { nodeId, title })
+        rename: (nodeId: string, title: string) => deliver(IPC.agentRenameNode, { nodeId, title }),
+        // A quick answer typed WITHOUT a throwaway tmux client (audit A12): the painter pty or a
+        // control client, via the existing background write. LOCAL nodes only: host-service sends
+        // a node of an SSH project over its master instead (`remoteNodes` below →
+        // `ptyManager.backgroundWriteOver`), so it never gets here. The refusal stays as the
+        // backstop — a local write for such a node would type into this machine's socket, where
+        // its `nt-<id>` is at best nothing — and `false` opens the session on the phone.
+        sendKeys: async (nodeId: string, keys: string) =>
+          workspaceStore.sshProjectIdForNode(nodeId) ? false : ptyManager.backgroundWrite(nodeId, keys)
       }
     })(),
+    // A phone opening a node of an SSH project reaches THAT host's tmux over the project's master,
+    // or is told why not — never a phantom local session (audit A09).
+    remoteNodes: {
+      resolve: (nodeId: string) => {
+        const projectId = workspaceStore.sshProjectIdForNode(nodeId)
+        if (!projectId) return null
+        const ssh = workspaceStore.projectTargetInfo(projectId)?.ssh
+        const where = ssh?.server ? sshHostKey(ssh.server) : 'another computer'
+        const sshRemote = sshProjectManager?.sshRemoteFor(projectId, ssh?.remoteCwd)
+        return sshRemote ? { where, sshRemote } : { where }
+      }
+    },
+    // A session the phone starts is created in its project's folder, under the account and agent it
+    // chose, owned by that project — all resolved HERE from the host's own registry and settings
+    // (audit A33: the phone's `cd`/env launch prefix is POSIX-only, so on Windows it was dropped;
+    // audit A72: without the agent the session kept a bare hook env for life, and without an owner
+    // its pane stayed unproven for agent messaging). See host-new-sessions.ts.
+    newSessions: createHostNewSessions({
+      projectTargetInfo: (projectId) => workspaceStore.projectTargetInfo(projectId),
+      claudeAccounts: () => settingsStore.get().claudeAccounts ?? [],
+      persistedCanvases: () => workspaceStore.persistedCanvases(),
+      customAgents: () => settingsStore.get().customAgents ?? []
+    }),
+    // A relay phone's Inbox actions (`approvals.answer` / `inbox.ack`): the SAME answer writer the
+    // canvas Approve/Deny button uses, and the SAME ack pair the `~/.nodeterm/acks` sweep runs for a
+    // phone on direct SSH — `ackDone` (resolve the done event, dismiss other phones' activities)
+    // plus the desktop unread clear, WITHOUT a re-ack (the external-clear channel).
+    inbox: {
+      answerPermission,
+      answerQuestion: async (nodeId: string, pendingId: string, selections: number[][]) => {
+        if (!workspaceStore.getNode(nodeId) || !hookTicketStillOpen(nodeId, pendingId, 'question')) return 'gone'
+        const answer = { kind: 'question' as const, selections }
+        const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
+        return sshProjectId ? await sshProjectManager?.answerPendingHook(sshProjectId, nodeId, pendingId, answer) ?? 'failed'
+          : answerPendingHookLocal(nodeId, pendingId, answer, homedir())
+      },
+      ackRead: (nodeId: string) => {
+        ackDone(nodeId)
+        sendToMain(IPC.agentUnreadClear, nodeId)
+      }
+    },
     // The phone's Chat screen (`chat.page` / `chat.status` / `chat.send` / `agent.answer`,
     // main/remote/host-chat.ts). Everything about the node comes from THIS machine's records: the
     // workspace store (cwd resolved as the canvas sees it, account, agent) and the status mirror
@@ -4646,7 +4767,11 @@ app.whenReady().then(async () => {
     // Jail roots beyond the active canvas: the phone browses EVERY project (projects.list), so
     // its fs/git access spans every local project root — not just the tab the desktop happens
     // to have focused (that gap read as "cwd is outside the shared project roots" on the phone).
-    workspaceRoots: () => workspaceStore.localProjectCwds()
+    workspaceRoots: () => workspaceStore.localProjectCwds(),
+    // This computer's current LAN address and SSH host keys, beside every projects.list answer, so
+    // a phone that reached it through the relay can update the LAN leg it dials (audit A74-refresh:
+    // the pairing QR's address is a DHCP lease, and a reinstall regenerates sshd's keys).
+    lanReport: createHostLanReporter({ getPairingInterface: () => settingsStore.get().phonePairingInterface })
   }
   // The renderer owns the Eco hibernation flag (persisted in ITS localStorage) and main only
   // mirrors it — same direction as `terminalFocused`. Feeds the agent-status mirror so the phone
@@ -4656,6 +4781,23 @@ app.whenReady().then(async () => {
     if (typeof msg?.nodeId !== 'string' || !msg.nodeId) return
     setNodeHibernated(msg.nodeId, msg.on === true)
   })
+  // Files are reachable only to the same OS user authenticated by SSH; never through hook bearers.
+  // Seed persisted ownership before advertising even if the renderer has not loaded a canvas yet.
+  await workspaceStore.load({ sideline: false })
+  const managedPlanner = createManagedTerminalPlanner({ store: workspaceStore,
+    userData: corePlatform.userDataDir, settings: () => settingsStore.get(), trust: projectTrustStore,
+    executable: findInLoginPath, sessionShell: resolveLocalSessionShell,
+    claudeCaps: claudeCliCaps, codexCaps: codexCliCaps, grokCaps: grokCliCaps,
+    codexIdentity: codexIdentityCaps })
+  const managedTerminals = ptyManager.supportsManagedCreation() ? new ManagedTerminals(
+    corePlatform.userDataDir, workspaceStore, {
+      supported: () => ptyManager.supportsManagedCreation(), ...managedPlanner,
+      create: (options, creationId, current) => ptyManager.createManagedHeadless(options, creationId, current),
+      verify: (receipt, current) => ptyManager.verifyManagedPane(receipt, current),
+      deliver: (receipt, command, current) => ptyManager.deliverManagedLaunch(receipt, command, current)
+    }) : undefined
+  sshActionsService = await startSshActionsService(corePlatform.userDataDir, workspaceStore,
+    hostBridge.nodeActions, true, managedTerminals)
   // Identity seed: the renderer's persisted agentStatus store reports the session ids it holds for
   // nodes the mirror has none for (an idle, terminal-made conversation after a restart), so the
   // phone's chat view can locate the transcript before the next hook fires. Add-only and
@@ -4688,8 +4830,14 @@ app.whenReady().then(async () => {
     }
   })
   // Standing (phone) relay host: keep a host connection registered so a paired phone can reach
-  // this Mac from anywhere. Honors settings.phoneAccessEnabled internally.
-  const standingHost = initStandingHost(win, ptyManager, () => settingsStore.get(), listProjectsOutput, hostBridge)
+  // this Mac from anywhere. Honors settings.phoneAccessEnabled internally. Revoking a phone reaches
+  // its open sessions through the peer-revoke registry, including pending consent dialogs.
+  const standingHost = initStandingHost(win, ptyManager, () => settingsStore.get(), listProjectsOutput, hostBridge, {
+    legacyRelayPairings: pairingService.legacyRelayPairings,
+    // A paired phone that adopted the relay after the scan is approved by its pairing record, not by
+    // a dialog at a desk it has left (A07-late).
+    pinPairedPhone: (pub) => pairingService.approvePairedRelayKey(pub)
+  })
   ipcMain.on(IPC.remoteStandingHostSet, (_e, enabled: boolean) => standingHost.setEnabled(!!enabled))
   // Reconcile from persisted settings on launch (starts hosting if enabled).
   standingHost.syncFromSettings()
@@ -5103,6 +5251,7 @@ app.on('before-quit', (e) => {
     })
     return
   }
+  void sshActionsService?.stop() // retire queued file-service writes before teardown
   quitting = true // from here on, window close-events must NOT be turned into hide
   destroyNotchHud()
   // Electron releases power assertions at exit anyway; disposing keeps the hold/release log

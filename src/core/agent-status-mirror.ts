@@ -7,6 +7,7 @@ import type { AgentId } from '@shared/agents/config'
 import type { AgentState, NormalizedAgentEvent } from '@shared/agents/normalize'
 import type { ObservedClaudeAccount } from '@shared/types'
 import { WORKING_STALE_MS, isStaleWorking } from '@shared/agents/stale'
+import { hookQuestions, type HookQuestion, type PermissionSuggestion } from '@shared/hook-answers'
 import { parseIdentitySeed } from '@shared/agent-identity-seed'
 
 /**
@@ -54,6 +55,9 @@ export const EXPIRE_MS = 6 * 60 * 60_000
 export const IDENTITY_EXPIRE_MS = 30 * 24 * 60 * 60_000
 // Coalesce bursty hook POSTs (a single turn fires many tool events) into one disk write.
 export const WRITE_DEBOUNCE_MS = 300
+/** The mirror's file name under userData. Read back by the `projects.list` blob
+ *  (core/projects-list-blob.ts) and, over SSH, by the phones themselves. */
+export const AGENT_STATUS_FILE = 'agent-status.json'
 
 export interface MirrorEntry {
   /** Tickets introduced concurrently with a picker, retained until reply or explicit reset. */
@@ -155,6 +159,12 @@ export interface MirrorEntry {
    * render SLEEPING instead of an unexplained idle shell (`setNodeHibernated`). Present = true,
    * absent = not hibernated — like `restored`/`idleInferred`, so old files keep their shape.
    *
+   * The one thing the mirror decides for itself is the renderer's own self-heal: a live state
+   * (working/blocked/waiting) or a session START recorded for the node drops the flag
+   * (`reduceEffectiveEntry`). The phone offers to type a wake line off this flag, so a stale one is
+   * not cosmetic, and the mirror hears every hook event even when no renderer does (a Server
+   * Edition with no browser tab, a reloading window). A codex SessionStart arrives as `working`.
+   *
    * A hibernated entry is EXEMPT from the expiry sweep: hibernation is precisely "idle for hours",
    * so the 6 h staleness rule would erase the one durable fact this field exists to carry. The
    * renderer re-reports its persisted set at boot, and a wake (or `clearNode`) drops the flag.
@@ -216,8 +226,9 @@ export interface MirrorSettings {
    *  on it only for claude (the desktop does exactly that — activePermissionMode in
    *  renderer/state/permissionMode.ts). */
   autoSupported?: boolean
-  /** Managed accounts usable on THIS host; dirs are absolute on that host. */
-  claudeAccounts?: { id: string; dir: string }[]
+  /** Managed accounts usable on THIS host; dirs are absolute on that host. Build every entry with
+   *  `mirrorClaudeAccount` — both shells and the SSH slice do — so the display half cannot drift. */
+  claudeAccounts?: MirrorClaudeAccount[]
   /**
    * Which values THIS host's `codex` accepts for `--ask-for-approval`, read from its own `--help`.
    * Absent = not probed / not knowable for this host, which means "use `on-request` and `never`
@@ -265,6 +276,42 @@ export interface MirrorCustomAgent {
    * a reader must then refuse, never fall back to a guess.
    */
   binaries: string[]
+}
+
+/**
+ * One managed Claude account as the mirror advertises it. `id` + `dir` are what a phone launches
+ * with (`CLAUDE_CONFIG_DIR`); `label` + `email` are what it SHOWS, so a picker or a session row
+ * never has to print the account's raw UUID. The `usage` block also carries a label per account,
+ * but it is local-only (dropped from SSH slices) and empty until the first usage poll — so the
+ * name has to ride here too.
+ *
+ * `label` and `email` are additive (absent on files written before them; old readers ignore
+ * them) and absent when blank.
+ */
+export interface MirrorClaudeAccount {
+  id: string
+  /** Absolute on the host whose mirror this is. */
+  dir: string
+  /** The account's display label from settings (Settings → Accounts; defaults to its email). */
+  label?: string
+  /** The login email captured when the account signed in. */
+  email?: string
+}
+
+/**
+ * Build one `MirrorSettings.claudeAccounts` entry. The ONE definition, used by the desktop shell,
+ * the Server Edition and the desktop's per-host SSH slice. `label`/`email` come out of a
+ * hand-editable settings.json that nothing checks field by field on load, so each is re-validated
+ * as a string here and a blank or wrong-typed value is simply left out.
+ */
+export function mirrorClaudeAccount(
+  account: { id: string; label?: unknown; email?: unknown },
+  dir: string
+): MirrorClaudeAccount {
+  const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+  const label = text(account.label)
+  const email = text(account.email)
+  return { id: account.id, dir, ...(label ? { label } : {}), ...(email ? { email } : {}) }
 }
 
 export interface MirrorFile {
@@ -464,6 +511,9 @@ export interface InboxEvent {
    *  `~/.nodeterm/pending/<pendingId>.answer` to answer it. Rides the mirror to the phone; dropped
    *  from the push-notify body (the phone re-reads the mirror before acting). Absent = legacy prompt. */
   pendingId?: string
+  permissionSuggestions?: PermissionSuggestion[]
+  questionPendingId?: string
+  questions?: HookQuestion[]
 }
 export interface InboxNodeNow {
   /** ≤80 chars — "Editing foo.ts", "Running npm test", "Reading bar.ts". */
@@ -581,6 +631,11 @@ function reduceEffectiveEntry(
     // it was. `restored` means "this state came off disk", not "we have heard something since
     // boot", and gate 2 will read it as the former.
     delete next.restored
+    // A LIVE state is the CLI reporting from inside the pane, so "its CLI was exited" (Eco's
+    // `hibernated`) no longer holds — the renderer's own self-heal (`agentStatus.setState`),
+    // applied here too. Never on `done` (a late Stop must not undo a hibernation just performed)
+    // and never on a stateless commit (the /exit's own SessionEnd lands as one).
+    if (state === 'working' || state === 'blocked' || state === 'waiting') delete next.hibernated
   }
   // Unrelated tool hooks (including untagged child hooks) are not answers. Keep both
   // the state and its original evidence/identity until a correlated result or explicit reset.
@@ -685,6 +740,9 @@ function reduceEffectiveEntry(
     // and is what makes a refusal retryable.
     commitState(undefined, false)
     next.awaitingInput = undefined
+    // A START is a CLI launching in that pane (Canvas's session-start clear, applied here too);
+    // an END is what the hibernating /exit itself fires, so it must leave the flag alone.
+    if (ev.sessionPhase === 'start') delete next.hibernated
     delete next.turnId
     // The boundary proves nothing about a state (and leaves `verifiedAt` alone), but a VERIFIED
     // start arms the idle rescue above.
@@ -1142,6 +1200,8 @@ function fireNodeNowChange(c: NodeNowChange): void {
 // time-guarded (STASH_MAX_AGE_MS) so a stash that was never consumed (e.g. a picker that
 // auto-resolved) can't be picked up by a genuinely unrelated later needs-you in the same turn.
 interface QuestionStash {
+  questionPendingId?: string
+  questions?: HookQuestion[]
   /** AskUserQuestion picker: ≤4 labels, each ≤60 chars. Its PRESENCE marks a real question. */
   options?: string[]
   /** The first question's prompt text, clipped to INBOX_TITLE_MAX. Absent if not present/parseable. */
@@ -1598,7 +1658,7 @@ function loadPersisted(file: string): void {
  * field bug).
  */
 export function initAgentStatusMirror(filePath?: string): void {
-  targetFile = filePath ?? path.join(platform().userDataDir, 'agent-status.json')
+  targetFile = filePath ?? path.join(platform().userDataDir, AGENT_STATUS_FILE)
   loadPersisted(targetFile)
   startStaleSweep()
 }
@@ -1606,7 +1666,7 @@ export function initAgentStatusMirror(filePath?: string): void {
 function resolveFile(): string | null {
   if (targetFile) return targetFile
   try {
-    targetFile = path.join(platform().userDataDir, 'agent-status.json')
+    targetFile = path.join(platform().userDataDir, AGENT_STATUS_FILE)
     return targetFile
   } catch {
     return null
@@ -1796,6 +1856,13 @@ function produceInboxFromState(
     // the picker directly. That held PermissionRequest (if any) simply times out after 45s and the
     // picker shows anyway (acceptable). See docs/hook-reply-approvals.md.
     const pendingId = kind === 'approval' ? ev.pendingId : undefined
+    const questionPendingId = kind === 'question' ? stash?.questionPendingId : undefined
+    const questions = questionPendingId ? stash?.questions : undefined
+    const permissionSuggestions = kind === 'approval' ? ev.permissionSuggestions : undefined
+    // Old phones must not type numbered keys before this held picker is painted. The full v2
+    // schema is additive; an old consumer sees Open session until the hook releases/times out.
+    const legacyOptions = questionPendingId ? undefined : options
+    const legacyMultiSelect = questionPendingId ? undefined : multiSelect
     // needsYou live-update on the EDGE into the needs-you state (a re-assert of the SAME state
     // keeps the activity live). Carries the classified kind + options (question) / pendingId
     // (approval) so the Live Activity renders straight from this same code path
@@ -1813,7 +1880,8 @@ function produceInboxFromState(
       ? inboxEvents.find(e => e.nodeId === nodeId && e.kind === 'approval' && !e.resolved && e.pendingId === ev.pendingId)
       : newestUnresolved(inboxEvents.filter(e =>
         !(e.kind === 'approval' && e.pendingId && keepApprovalIds.includes(e.pendingId))), nodeId)
-    const sameTitle = !!dup && dup.title === title
+    const sameTitle = !!dup && dup.title === title &&
+      (!questionPendingId || dup.questionPendingId === questionPendingId)
     const freshDup = sameTitle && dup ? now - dup.ts < QUESTION_DEDUP_WINDOW_MS : false
     const newAsk = !freshDup
     // The needs-you live-update fires on the edge INTO needs-you — and also whenever the ASK
@@ -1829,8 +1897,8 @@ function produceInboxFromState(
         state: 'needsYou',
         kind,
         message: headline,
-        ...(options ? { options } : {}),
-        ...(multiSelect ? { multiSelect: true } : {}),
+        ...(legacyOptions ? { options: legacyOptions } : {}),
+        ...(legacyMultiSelect ? { multiSelect: true } : {}),
         ...(pendingId ? { pendingId } : {})
       })
     }
@@ -1844,9 +1912,11 @@ function produceInboxFromState(
         kind,
         title,
         ...(detail ? { detail } : {}),
-        ...(options ? { options } : {}),
-        ...(multiSelect ? { multiSelect: true } : {}),
-        ...(pendingId ? { pendingId } : {})
+        ...(legacyOptions ? { options: legacyOptions } : {}),
+        ...(legacyMultiSelect ? { multiSelect: true } : {}),
+        ...(pendingId ? { pendingId } : {}),
+        ...(permissionSuggestions?.length ? { permissionSuggestions } : {}),
+        ...(questionPendingId ? { questionPendingId, ...(questions ? { questions } : {}) } : {})
       })
     }
     return { kind, pendingId }
@@ -1949,6 +2019,8 @@ export function recordRawToolEvent(nodeId: string, payload: Record<string, unkno
       const opts = extractQuestionOptions(toolInput)
       if (opts)
         pendingQuestions.set(nodeId, {
+          ...(payload.nodeterm_hook_reply === 2 && typeof payload.nodeterm_pending_id === 'string' && payload.nodeterm_pending_id
+            ? { questionPendingId: payload.nodeterm_pending_id, ...(hookQuestions(payload) ? { questions: hookQuestions(payload)! } : {}) } : {}),
           options: opts,
           question: extractQuestionText(toolInput),
           multiSelect: extractQuestionMultiSelect(toolInput),
@@ -2095,7 +2167,8 @@ export function setNodeSessionName(nodeId: string, name: string): boolean {
 /**
  * Record (or clear) a node's Eco hibernation flag — the `agent:hibernated` cast's only writer.
  * The renderer owns the flag; this is a mirror of it, like `terminalFocused` in main (see
- * MirrorEntry.hibernated). Unlike `setNodeSessionName`, an UNKNOWN node id creates a minimal
+ * MirrorEntry.hibernated, which also names the live-state self-heal `reduceEffectiveEntry`
+ * applies on its own). Unlike `setNodeSessionName`, an UNKNOWN node id creates a minimal
  * entry: a hibernated session is typically one the mirror has expired (hibernation is hours of
  * idleness) or one reported at boot before any hook event of this run — exactly when the flag
  * matters most. Clearing an unknown id stays a no-op.
@@ -2248,6 +2321,17 @@ export function nodeState(nodeId: string): AgentState | undefined {
  */
 export function mirrorEntry(nodeId: string): MirrorEntry | undefined {
   return state.get(nodeId)
+}
+
+/** Positive ownership for phone read-acks. Only this process's own mirror is restored here;
+ * remote project slices are written to separate files, never merged into these maps. An old done
+ * card can outlive its expired node entry, so its unresolved inbox event also proves ownership.
+ * Once consumed, resolved history alone must not claim a node that this mirror no longer owns. */
+export function mirrorOwnsNode(nodeId: string): boolean {
+  return (
+    state.has(nodeId) || inboxNodes.has(nodeId) ||
+    inboxEvents.some((event) => event.nodeId === nodeId && !event.resolved)
+  )
 }
 
 /**
@@ -2469,4 +2553,11 @@ export function _snapshot(): Record<string, MirrorEntry> {
 /** Snapshot the in-memory inbox. Test-only. */
 export function _inboxSnapshot(): MirrorInbox {
   return { events: inboxEvents.map((e) => ({ ...e })), nodes: Object.fromEntries(inboxNodes) }
+}
+
+/** Structured answers require the exact still-open card, never just the node's current badge. */
+export function hookTicketStillOpen(nodeId: string, pendingId: string, kind: 'approval' | 'question'): boolean {
+  return inboxEvents.some(e => e.nodeId === nodeId && e.kind === kind && !e.resolved &&
+    (kind === 'approval' ? e.pendingId === pendingId && !!e.permissionSuggestions?.length
+      : e.questionPendingId === pendingId && !!e.questions?.length))
 }

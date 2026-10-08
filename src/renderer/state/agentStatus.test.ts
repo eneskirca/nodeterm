@@ -305,7 +305,7 @@ describe('the verified evidence for a transition', () => {
     // argument list: nothing else in the suite would notice if the last argument disappeared.
     const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
     expect(src).toMatch(
-      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\)\s*\)/
+      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\),\s*e\.permissionSuggestions\s*\)/
     )
   })
 
@@ -348,6 +348,25 @@ describe('the verified evidence for a transition', () => {
     } finally {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     }
+  })
+})
+
+
+describe('held permission rule capabilities', () => {
+  it('updates same-state capabilities and retires them across tickets and working transitions', () => {
+    const id = nid()
+    const suggestion = [{ index: 1, label: 'Bash(npm test) — session' }]
+    const held = { pendingId: 'old', toolName: 'Bash' }
+    useAgentStatus.getState().setState(id, 'blocked', 'claude', false, 'old', true, false)
+    useAgentStatus.getState().setState(id, 'blocked', 'claude', false, 'old', true, false, held, undefined, suggestion)
+    expect(useAgentStatus.getState().byId[id].permissionSuggestions).toEqual(suggestion)
+    expect(useAgentStatus.getState().byId[id].held).toEqual(held)
+    useAgentStatus.getState().setState(id, 'blocked', 'claude', false, 'new', true, false)
+    expect(useAgentStatus.getState().byId[id].permissionSuggestions).toBeUndefined()
+    useAgentStatus.getState().setState(id, 'blocked', 'claude', false, 'new', true, false, undefined, undefined, suggestion)
+    useAgentStatus.getState().setState(id, 'working', 'claude')
+    expect(useAgentStatus.getState().byId[id].permissionSuggestions).toBeUndefined()
+    expect(useAgentStatus.getState().byId[id].held).toBeUndefined()
   })
 })
 

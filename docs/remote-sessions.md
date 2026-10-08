@@ -261,6 +261,18 @@ the hook. `persisted:false` ⇒ pin may survive, the UI must NOT show "Removed" 
 retry; `killed:false` ⇒ the cut is unconfirmed. `peerId` is the peer's stable box public
 key (base64).
 
+The shipped revoker is `createPeerRevoker` (`src/main/remote/peer-revoker.ts`): its hook
+cuts the key's sessions on BOTH relay hosts, a peer desktop's (`killRelayHostsByPeerKey`) and
+a phone's on the standing host (`killStandingHostSessionsByPeerKey`). Settings → Phone →
+Revoke reaches the same revoker through pairing-service's `revokeRelayKey`, so forgetting a
+phone also ends the relay session it has open (audit A07-revoke). That caller honours the
+contract above: on `persisted:false` it puts the device back into `agent.json` and reports
+`local:false` (relay `'unpin-failed'`), so Settings → Phone says "try again" instead of
+"Removed" and Revoke retries the whole revoke; `killed:false` is reported as relay
+`'cut-unconfirmed'`. The cut makes the phone redial at once, so the standing host remembers
+every key revoked during the run and answers such a handshake the way Deny does, without a
+dialog (`REVOKED_PHONE_DENY_MS`), unless the pin or a listed pairing lets it in first.
+
 **Key-file codec** (pure, `src/main/remote/key-file-codec.ts` — no electron; `safeStorage`
 injected as `SafeStorageLike`):
 

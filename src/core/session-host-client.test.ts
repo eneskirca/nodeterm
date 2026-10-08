@@ -196,6 +196,25 @@ afterEach(async () => {
 })
 
 describe('SessionHostClient handshake transition', () => {
+  it('binds history search to a confirmed generation and leaves an old refusing host usable', async () => {
+    const { userDataDir, paths } = createUserData('old-host-history-refusal')
+    const commands: string[] = []
+    let historyRequest: SessionHostRequest | undefined
+    await serve(paths.endpoint, (request, socket) => {
+      commands.push(request.cmd)
+      if (request.cmd === 'hello') socket.write(acceptedHello(request.id))
+      else if (request.cmd === 'hasSession') socket.write(encodeFrame({ id: request.id, ok: true, result: { exists: true, generation: 'kept-generation' } }))
+      else { historyRequest = request; socket.write(encodeFrame({ id: request.id, ok: false, error: 'unknown command' })) }
+    })
+    const client = new SessionHostClient({ userDataDir, repoRoot: userDataDir })
+    await expect(within(client.historySearch('nt-existing', 'needle'))).rejects.toThrow(/No confirmed/)
+    expect(commands).toEqual(['hello'])
+    expect(await within(client.hasSession('nt-existing'))).toBe(true)
+    await expect(within(client.historySearch('nt-existing', 'needle'))).rejects.toThrow('unknown command')
+    expect(historyRequest).toMatchObject({ cmd: 'historySearchV1', name: 'nt-existing', generation: 'kept-generation', query: 'needle' })
+    expect(await within(client.hasSession('nt-existing'))).toBe(true)
+    expect(commands).toEqual(['hello', 'hasSession', 'historySearchV1', 'hasSession'])
+  })
   it('keeps an old live host usable when it refuses the additive messaging extension', async () => {
     const { userDataDir, paths } = createUserData('old-host-message-refusal')
     const commands: string[] = []
@@ -213,8 +232,30 @@ describe('SessionHostClient handshake transition', () => {
       panePid: 42, tty: 'win32-console:42', command: 'opencode', argv: ['opencode']
     }))).toBe(false)
     expect(await within(client.hasSession('nt-existing'))).toBe(true)
-    expect(commands).toEqual(['hello', 'messageOwnerV1', 'messagePasteReadyV1', 'messageEnvelopeV1', 'hasSession'])
+    expect(await within(client.wakeSleeping('nt-existing', '\x1bcodex resume saved\r', {
+      panePid: 42, tty: 'win32-console:42', command: 'pwsh', argv: ['pwsh']
+    }))).toBe(false)
+    expect(commands).toEqual(['hello', 'messageOwnerV1', 'messagePasteReadyV1', 'messageEnvelopeV1', 'hasSession', 'wakeSleepingV1'])
     // No fallback to sendKeys/write/executeLaunch, no kill, no replacement/attach request.
+  })
+
+  it('sends the confirmed backend generation and owner without a name-only wake fallback', async () => {
+    const { userDataDir, paths } = createUserData('generation-wake')
+    const requests: SessionHostRequest[] = []
+    await serve(paths.endpoint, (request, socket) => {
+      requests.push(request)
+      if (request.cmd === 'hello') socket.write(acceptedHello(request.id))
+      else if (request.cmd === 'hasSession') socket.write(encodeFrame({ id: request.id, ok: true, result: { exists: true, generation: 'observed' } }))
+      else socket.write(encodeFrame({ id: request.id, ok: true, result: true }))
+    })
+    const client = new SessionHostClient({ userDataDir, repoRoot: userDataDir })
+    const expected = { panePid: 42, tty: 'win32-console:42', paneId: 'win32:observed:birth', command: 'pwsh', argv: ['pwsh'], pids: [42], processBirths: ['birth'] }
+    expect(await within(client.wakeSleeping('nt-existing', '\x1bcodex resume saved\r', expected))).toBe(false)
+    expect(requests).toEqual([]) // No confirmed generation: never create or adopt one to wake.
+    expect(await within(client.hasSession('nt-existing'))).toBe(true)
+    expect(await within(client.wakeSleeping('nt-existing', '\x1bcodex resume saved\r', expected))).toBe(true)
+    expect(requests.map((r) => r.cmd)).toEqual(['hello', 'hasSession', 'wakeSleepingV1'])
+    expect(requests[2]).toMatchObject({ generation: 'observed', expected, data: '\x1bcodex resume saved\r' })
   })
 
   it.each([true, false, 'pasted-not-submitted', undefined] as const)('preserves sendKeysV2 outcome %s', async (delivery) => {

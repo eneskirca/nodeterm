@@ -2,6 +2,7 @@ import type { Socket } from 'net'
 import { createHash, randomUUID } from 'crypto'
 import * as pty from 'node-pty'
 import { TerminalEmulator } from './terminal-emulator'
+import type { NativeScrollResult } from '../shared/history-scroll'
 import type {
   ExecuteLaunchResult,
   SessionHostShellDialect,
@@ -138,6 +139,7 @@ export class HostSession {
    * asynchronously, so warm attach/capture/resize/exit all cross this barrier. Rejections heal the
    * shared tail while the individual recordOutput caller still observes its own failure. */
   private outputTail: Promise<void> = Promise.resolve()
+  private historyScrollTrusted = true
   private queuedOutputBytes = 0
   /** Explicit protocol flow and named-pipe transport flow drain independently. Collapsing them by
    * socket lets a `drain` event cancel a renderer pause that is still owed. */
@@ -258,7 +260,7 @@ export class HostSession {
         this.setEmulatorPause(false)
       }
     })
-    this.outputTail = settled.catch(() => {})
+    this.outputTail = settled.catch(() => { this.historyScrollTrusted = false })
     return settled
   }
 
@@ -284,6 +286,36 @@ export class HostSession {
   async serialize(scrollback?: number): Promise<string> {
     await this.outputTail
     return this.term.serialize(scrollback)
+  }
+
+  async historyText(): Promise<string> {
+    await this.outputTail
+    if (this.exited || this.retiring) throw new Error('This retained terminal has exited.')
+    return this.term.historyText()
+  }
+
+  /** One serialized screen turn, guarded by the exact subscribed generation at each write. */
+  scrollForHistory(up: boolean, lines: number, capture: boolean, current: () => boolean): Promise<NativeScrollResult> {
+    const refused = (): NativeScrollResult => ({ status: 'refused', message: 'This terminal viewer is no longer current or its mouse state is unavailable.' })
+    const uncertain = (): NativeScrollResult => ({ status: 'uncertain', message: 'Wheel input may have reached the terminal. It was not sent again.' })
+    const valid = (): boolean => this.historyScrollTrusted && !this.exited && !this.retiring && current()
+    const scrolling = this.outputTail.then((): NativeScrollResult => {
+      if (!valid()) return refused()
+      let attempted = false
+      try {
+        const plan = this.term.scrollPlan(up, lines, capture)
+        if (!valid()) return refused()
+        if (plan.status !== 'wheel') return plan
+        for (const data of plan.data) {
+          if (!valid()) return attempted ? uncertain() : refused()
+          attempted = true
+          this.proc.write(data)
+        }
+        return valid() ? { status: 'input' } : uncertain()
+      } catch { return attempted ? uncertain() : refused() }
+    })
+    this.outputTail = scrolling.then(() => {}, () => {})
+    return scrolling
   }
 
   /**
@@ -422,6 +454,7 @@ export class HostSession {
   }
 
   dispose(): void {
+    this.retiring = true
     this.explicitPauseOwners.clear()
     this.transportPauseOwners.clear()
     this.emulatorPauseOwner = false
@@ -725,7 +758,7 @@ export class HostSession {
         if (this.pendingGeometry === pending) this.pendingGeometry = null
       }
     )
-    this.outputTail = reconciled.catch(() => {})
+    this.outputTail = reconciled.catch(() => { this.historyScrollTrusted = false })
     return reconciled
   }
 

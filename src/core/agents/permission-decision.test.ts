@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetStructuredTicketsForTest,
   answerHeldPermission,
@@ -357,7 +357,7 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
   const T = 'node-1-1720-42'
   beforeEach(() => {
     _resetStructuredTicketsForTest()
-    // A capable (rev >= 5) script posted this ticket — the hook server's labeler records it.
+    // A capable merged script posted this ticket — the hook server's labeler records it.
     labelHeldForRevision(
       { nodeId: 'n', agentId: 'claude', kind: 'state', state: 'blocked', held: { pendingId: T, toolName: 'ExitPlanMode' } },
       MIN_STRUCTURED_ANSWER_REVISION
@@ -419,6 +419,26 @@ describe('answerHeldPermission — the one orchestration both shells call', () =
 
   describe('a ticket held by an OLDER script (an SSH host keeps its script until reconnect)', () => {
     const OLD = 'node-2-1720-43'
+    it.each(['plan', 'question'] as const)('refuses a revision-5 %s answer before host I/O or optimistic success', async (kind) => {
+      const toolName = kind === 'plan' ? 'ExitPlanMode' : 'AskUserQuestion'
+      const event = labelHeldForRevision({
+        nodeId: 'node-2', agentId: 'claude', kind: 'state', state: 'blocked',
+        pendingId: OLD, held: { pendingId: OLD, toolName }
+      }, 5)
+      const x = io(kind === 'plan'
+        ? envelope(toolName, { plan: 'p' })
+        : envelope(toolName, { questions: REAL_QUESTIONS }))
+      const read = vi.spyOn(x, 'readPending')
+      const answer = kind === 'plan'
+        ? { kind: 'plan', mode: 'restore' }
+        : { kind: 'question', answers: { ...ANSWER_1, ...ANSWER_2 } }
+      expect(await answerHeldPermission(OLD, { answer }, x)).toEqual({ ok: false })
+      expect(read).not.toHaveBeenCalled()
+      expect(x.writes).toEqual([])
+      expect(event.held).toBeUndefined()
+      expect(event.pendingId).toBe(OLD)
+      expect(isStructuredTicket(OLD)).toBe(false)
+    })
     it('refuses a structured answer before touching the host — no false "answered"', async () => {
       const x = io(envelope('ExitPlanMode', { plan: 'p' }))
       expect(await answerHeldPermission(OLD, { answer: { kind: 'plan', mode: 'restore' } }, x)).toEqual({ ok: false })
@@ -461,7 +481,7 @@ describe('labelHeldForRevision (the hook server stamps each held ticket)', () =>
     expect(isStructuredTicket('a-1-1')).toBe(true)
   })
   it('drops `held` (and records nothing) for an older or unstamped script; pendingId is untouched', () => {
-    for (const rev of [undefined, 3, 4]) {
+    for (const rev of [undefined, 3, 4, 5]) {
       const out = labelHeldForRevision(blocked('b-1-1'), rev)
       expect('held' in out, String(rev)).toBe(false)
       expect(out.pendingId).toBe('b-1-1')
@@ -472,8 +492,19 @@ describe('labelHeldForRevision (the hook server stamps each held ticket)', () =>
     const ev = { nodeId: 'n', agentId: 'claude', kind: 'state' as const, state: 'working' as const }
     expect(labelHeldForRevision(ev, 5)).toBe(ev)
   })
+  it('retains separately advertised Android v2 capabilities on revision 5', () => {
+    const approval = { ...blocked('v2-1-1'), permissionSuggestions: [{ index: 0, label: 'Bash(ls): session' }] }
+    const out = labelHeldForRevision(approval, 5)
+    expect(out.held).toBeUndefined()
+    expect(out.permissionSuggestions).toEqual(approval.permissionSuggestions)
+    const question = {
+      nodeId: 'n', agentId: 'claude', kind: 'state' as const, state: 'waiting' as const,
+      questionId: 'tool-1', questionPendingId: 'v2-2-2'
+    }
+    expect(labelHeldForRevision(question, 5)).toBe(question)
+  })
   it('stays bounded', () => {
-    for (let i = 0; i < 1100; i++) labelHeldForRevision(blocked(`t-${i}`), 5)
+    for (let i = 0; i < 1100; i++) labelHeldForRevision(blocked(`t-${i}`), MIN_STRUCTURED_ANSWER_REVISION)
     expect(isStructuredTicket('t-0')).toBe(false)
     expect(isStructuredTicket('t-1099')).toBe(true)
   })

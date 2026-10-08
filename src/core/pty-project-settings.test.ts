@@ -20,7 +20,8 @@ import { MODEL_GATEWAY_ENV_KEYS } from '../shared/agents/model-gateway'
 import { setCustomAgentBaseResolver } from '../shared/agents/config'
 import { remoteCodexHome } from './codex-accounts-core'
 import { hookServer } from './agents/hook-server'
-import type { ProjectSpawnOverrides } from './project-spawn-overrides'
+import { makeProjectSpawnOverrides, type ProjectSpawnOverrides } from './project-spawn-overrides'
+import { paneOwnerProject, resetPaneOwnershipForTests } from './agents/pane-ownership'
 
 interface SpawnCall {
   file: string
@@ -113,6 +114,7 @@ const staged: Array<{ remotePath: string; content: string }> = []
 describe('project settings at the spawn — LOCAL leg', () => {
   let fake: FakePlatform
   beforeEach(() => {
+    resetPaneOwnershipForTests()
     spawns.length = 0
     staged.length = 0
     fake = fakePlatform()
@@ -128,6 +130,109 @@ describe('project settings at the spawn — LOCAL leg', () => {
 
   const create = async (options: Record<string, unknown>): Promise<unknown> =>
     fake.handlers[IPC.ptyCreate](1, { cols: 80, rows: 24, ...options })
+
+  const sinks = { onData: () => {}, onExit: () => {} }
+  const detached = { cols: 80, rows: 24, ownerProjectId: PROJECT, agentId: 'claude' as const }
+
+  it('prepares a cold detached pane without spawning, then applies project env/shell and records its owner', async () => {
+    const read = vi.fn(async () => ({ env: { PROJECT_TOKEN: 'detached', NODETERM_NODE_ID: 'forged' }, shell: '/bin/fish' }))
+    vi.spyOn(hookServer, 'buildPtyEnv').mockReturnValue({ NODETERM_NODE_ID: NODE })
+    const mgr = await manager(read)
+    const prepared = await mgr.prepareDetachedAttach(NODE, detached)
+    expect(spawns).toHaveLength(0)
+    expect(paneOwnerProject(NODE)).toBeUndefined()
+    expect(prepared.fresh).toBe(true)
+    prepared.attach(sinks)
+    expect(read).toHaveBeenCalledWith(PROJECT)
+    expect(spawns[0].file).toBe('/bin/fish')
+    expect(spawns[0].env.PROJECT_TOKEN).toBe('detached')
+    expect(spawns[0].env.NODETERM_NODE_ID).toBe(NODE)
+    expect(paneOwnerProject(NODE)).toBe(PROJECT)
+  })
+
+  it('keeps the real shared-settings trust gate on cold detached env and shell', async () => {
+    const requested: string[] = []
+    const reader = makeProjectSpawnOverrides({
+      readSettings: async () => ({ local: undefined, shared: { version: 1, rev: 1, savedAt: '',
+        agents: { env: { UNTRUSTED: 'never' } }, terminal: { shell: '/bin/fish' } } }),
+      targetInfo: () => ({ cwd: '/repo', name: 'repo' }),
+      trust: { isTrusted: async () => false },
+      requestTrust: (_, family) => requested.push(family)
+    })
+    const mgr = await manager(reader)
+    ;(await mgr.prepareDetachedAttach(NODE, detached)).attach(sinks)
+    expect(spawns[0].env.UNTRUSTED).toBeUndefined()
+    expect(spawns[0].file).not.toBe('/bin/fish')
+    expect(requested).toEqual(['agents', 'shell'])
+  })
+
+  it('joins a warm detached pane without reading settings or assigning a new owner', async () => {
+    const read = vi.fn(async () => ({ env: { PROJECT_TOKEN: 'changed' }, shell: '/bin/fish' }))
+    const mgr = await manager(read, { tmux: '/usr/bin/tmux' })
+    mgr.attachDetached(NODE, sinks, { cols: 80, rows: 24 })
+    const prepared = await mgr.prepareDetachedAttach(NODE, detached)
+    expect(prepared.fresh).toBe(false)
+    prepared.attach(sinks)
+    expect(read).not.toHaveBeenCalled()
+    expect(spawns[1].env.PROJECT_TOKEN).toBeUndefined()
+    expect(spawns[1].file).not.toBe('/bin/fish')
+    expect(paneOwnerProject(NODE)).toBeUndefined()
+  })
+
+  it('reprobes externally warm panes after the settings await and drops cold launch facts', async () => {
+    const mgr = await manager(async () => ({ env: { PROJECT_TOKEN: 'changed' }, shell: '/bin/fish' }))
+    vi.spyOn(mgr, 'sessionExists').mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const prepared = await mgr.prepareDetachedAttach(NODE, detached)
+    expect(prepared.fresh).toBe(false)
+    prepared.attach(sinks)
+    expect(spawns[0].env.PROJECT_TOKEN).toBeUndefined()
+    expect(spawns[0].file).not.toBe('/bin/fish')
+    expect(paneOwnerProject(NODE)).toBeUndefined()
+  })
+
+  it('also notices a new local live generation between preparation and commit', async () => {
+    const mgr = await manager(async () => ({ env: { PROJECT_TOKEN: 'changed' }, shell: '/bin/fish' }), { tmux: '/usr/bin/tmux' })
+    vi.spyOn(mgr, 'sessionExists').mockResolvedValue(false)
+    const prepared = await mgr.prepareDetachedAttach(NODE, detached)
+    mgr.attachDetached(NODE, sinks, { cols: 80, rows: 24, ownerProjectId: 'actual-owner' })
+    expect(prepared.fresh).toBe(false)
+    prepared.attach(sinks)
+    expect(spawns[1].env.PROJECT_TOKEN).toBeUndefined()
+    expect(paneOwnerProject(NODE)).toBe('actual-owner')
+  })
+
+  it('bounds detached settings reads and spawns without overrides if they hang or reject', async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(() => new Promise<ProjectSpawnOverrides | null>(() => {}))
+    const mgr = await manager(read)
+    const waiting = mgr.prepareDetachedAttach(NODE, detached)
+    // Backend/PATH preparation may add async turns before the settings deadline is armed.
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce())
+    await vi.advanceTimersByTimeAsync(2_000)
+    ;(await waiting).attach(sinks)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].env.PROJECT_TOKEN).toBeUndefined()
+    const rejecting = vi.fn(async () => { throw new Error('EIO') })
+    mgr.setProjectSpawnOverrides(rejecting)
+    // A still-running read is coalesced per project; use a separate project for the reject case.
+    ;(await mgr.prepareDetachedAttach('other', { ...detached, ownerProjectId: 'rejecting-project' })).attach(sinks)
+    expect(rejecting).toHaveBeenCalledOnce()
+    expect(spawns).toHaveLength(2)
+  })
+
+  it('treats an unprobeable detached backend as warm and never reads project settings', async () => {
+    vi.useFakeTimers()
+    const read = vi.fn(async () => ({ env: { PROJECT_TOKEN: 'changed' } }))
+    const mgr = await manager(read)
+    vi.spyOn(mgr, 'sessionExists').mockReturnValue(new Promise<boolean>(() => {}))
+    const waiting = mgr.prepareDetachedAttach(NODE, detached)
+    await vi.advanceTimersByTimeAsync(750)
+    const prepared = await waiting
+    expect(prepared.fresh).toBe(false)
+    expect(read).not.toHaveBeenCalled()
+    prepared.attach(sinks)
+    expect(paneOwnerProject(NODE)).toBeUndefined()
+  })
 
   it("puts the project's env into the session environment", async () => {
     await manager(async () => ({ env: { PROJECT_TOKEN: 'abc' } }))

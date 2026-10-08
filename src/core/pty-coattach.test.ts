@@ -1380,10 +1380,10 @@ describe('a tmux-backed joiner is told to enable mouse tracking', () => {
 })
 
 describe('tmuxAttachFlags', () => {
-  it("keeps -D for the app's own client: exactly ONE tmux client per session", async () => {
+  it("co-attaches external clients; the create/join ledger keeps one app painter", async () => {
     const { tmuxAttachFlags } = await import('./pty-manager')
-    // Co-attach adds subscribers to OUR session — it never adds a tmux client, so -D stays.
-    expect(tmuxAttachFlags(false)).toEqual(['-A', '-D'])
+    // Co-attach adds subscribers to OUR session; external viewers are never broadly detached.
+    expect(tmuxAttachFlags(false)).toEqual(['-A'])
     // A relay-served (detached) pty mirrors the host's own client → must NOT detach it.
     expect(tmuxAttachFlags(true)).toEqual(['-A'])
   })

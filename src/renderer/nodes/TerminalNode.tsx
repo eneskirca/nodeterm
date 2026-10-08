@@ -5,6 +5,8 @@ import { FIND_DECORATIONS } from '../lib/palette'
 import { ptyRefusal } from '@shared/pty-refusal'
 
 import { patchImeModeSwitch } from '../terminal/ime-mode-switch'
+import { bindXtermInput } from '../terminal/xterm-input'
+import { createDeferredBlur } from '../terminal/deferred-blur'
 import { installGlassCellBackgrounds, scheduleGlassCellAlpha, setGlassCellAlpha } from '../terminal/glass-cell-backgrounds'
 
 import { deliverRelayInitialLaunch } from '../terminal/relay-initial-launch'
@@ -365,11 +367,15 @@ export const SLOW_REMOTE_SPAWN_NOTICE_MS = 1500
  * the project IS that SSH endpoint, otherwise the project × endpoint host attachment — a remote
  * node living in a local canvas (or in an SSH project pointed at a different host).
  *
- * A node only ever exists in the active project's React Flow, so the active project is its owner.
+ * Canvas nodes default to the active owner. A global-board card supplies its own project id.
  */
-export function sshConnectionScope(conn: SshConnection): string {
-  const { activeProjectId, getProject } = useProjects.getState()
-  return sshConnectionIdForProject(activeProjectId, conn, getProject(activeProjectId)?.ssh?.server)
+export function sshConnectionScope(
+  conn: SshConnection,
+  ownerProjectId = useProjects.getState().activeProjectId
+): string {
+  return sshConnectionIdForProject(
+    ownerProjectId, conn, useProjects.getState().getProject(ownerProjectId)?.ssh?.server
+  )
 }
 
 /**
@@ -378,8 +384,11 @@ export function sshConnectionScope(conn: SshConnection): string {
  * the terminal drop, the card modal's live viewer and the ⌘M composer's attach, so the three can
  * never upload one file to two different machines.
  */
-export function nodeUploadScope(ssh: SshConnection | undefined): string {
-  return ssh ? sshConnectionScope(ssh) : useProjects.getState().activeProjectId
+export function nodeUploadScope(
+  ssh: SshConnection | undefined,
+  ownerProjectId = useProjects.getState().activeProjectId
+): string {
+  return ssh ? sshConnectionScope(ssh, ownerProjectId) : ownerProjectId
 }
 
 /**
@@ -461,7 +470,9 @@ export async function resolveSshRemote(
    * hosts — and the coalesced `tmux list-sessions` this shares with `create` would be two reads
    * instead of one.
    */
-  early?: { nodeId: string; pty: Pick<PtyApi, 'remoteSessionConfirmed'> }
+  early?: { nodeId: string; pty: Pick<PtyApi, 'remoteSessionConfirmed'> },
+  /** Global-board cards can belong to an inactive canvas; ordinary nodes use the active owner. */
+  ownerProjectId = useProjects.getState().activeProjectId
 ): Promise<
   | {
       controlPath: string
@@ -473,26 +484,23 @@ export async function resolveSshRemote(
     }
   | undefined
 > {
-  const activeProjectId = useProjects.getState().activeProjectId
-  // A relay tab's node belongs to another machine: never dial or wait for a master for it here
-  // (session/relay-ssh.ts). The caller treats undefined as "no master"; the relay spawn path does
-  // not call this at all — this is the second half.
-  if (!projectMayDialSsh(useProjects.getState().getProject(activeProjectId))) return undefined
-  const projectId = sshConnectionScope(conn)
+  // Relay-owned nodes must never dial a local master, including cards in inactive projects.
+  if (!projectMayDialSsh(useProjects.getState().getProject(ownerProjectId))) return undefined
+  const projectId = sshConnectionScope(conn, ownerProjectId)
   // A HOST ATTACHMENT dials for itself, HERE, because nothing else will. Canvas's active-project
   // effect pre-warms the attachments it can SEE in the stored canvas, but a node created at
   // runtime — the remote account-login retry drops one into whatever tab is active — never
   // appears in that pass, and would otherwise wait out the window under a scope no master exists
   // for and then sit offline forever. Idempotent and deduped, so the pre-warm and every node on
   // the machine collapse into one connect; the wait below is what actually blocks on it.
-  if (projectId !== activeProjectId) {
+  if (projectId !== ownerProjectId) {
     void connectHostAttachment(
       projectId,
       {
         conn,
         hostKey: sshHostKey(conn),
         remoteCwd: cwd,
-        ownerProjectId: activeProjectId
+        ownerProjectId
       },
       (scopeId, c, remoteCwd) => window.nodeTerminal.sshProject.connect(scopeId, c, remoteCwd),
       (scopeId) => window.nodeTerminal.sshProject.disconnect(scopeId)
@@ -1211,14 +1219,20 @@ export function isNodeWatched(nodeId: string): boolean {
  * modal (a second, equally real way of opening a session — the canvas visibility observer says
  * nothing about it).
  *
- * Same park-surviving reason as `restartSubs`: no entry = nobody is mounted = nothing to wake.
+ * Same park-surviving reason as `restartSubs`: no entry means Canvas must use the guarded saved-project executor.
  */
 const wakeSubs = new Map<string, () => void>()
 
 /** Ask a node to resume its hibernated CLI. No-op if it is not mounted, or not hibernated (the
  *  node re-reads the flag itself — this is a nudge, never an assertion). */
-export function wakeHibernatedNode(nodeId: string): void {
-  wakeSubs.get(nodeId)?.()
+export function wakeHibernatedNode(nodeId: string, automatic = false): boolean {
+  if (automatic) {
+    const state = useAgentStatus.getState().byId[nodeId]
+    if (!shouldAutoWake(state?.hibernated, state?.paused)) return true
+  }
+  const trigger = wakeSubs.get(nodeId)
+  trigger?.()
+  return !!trigger
 }
 
 /**
@@ -1433,6 +1447,7 @@ export function TerminalNode({
   // ResizeObserver in the lifecycle effect.
   const rootRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  const deferredBlur = useMemo(() => createDeferredBlur(() => termRef.current), [])
   // Copy feedback: the `Copied` pill (fed by the OSC 52 handler below, through `copySubs`) and the
   // one-time "hold ⌥ to select" hint for a pane whose app captured the mouse.
   // The host is `bodyRef` (`.term-node__xterm`) and NOT the node body on purpose: the hover guard
@@ -2682,6 +2697,9 @@ export function TerminalNode({
             // what actually guarantees the terminal is back on a renderer that paints.
           }
           webgl = null
+          // Restore made the original context live again. Dispose only detaches its canvas;
+          // explicitly retire that captured context before the coordinator grants another.
+          loseWebglContexts(addonCanvas ? [addonCanvas] : null)
           verifyCleanDomState('context-restored')
           fullRepaint()
           webglHandle?.contextLost()
@@ -3436,15 +3454,23 @@ export function TerminalNode({
         e,
         isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId ?? '')
       )
-      const action = terminalKeyAction(e, term.hasSelection(), ownsProjectJump, registryOwns)
+      const action = terminalKeyAction(
+        e,
+        term.hasSelection(),
+        ownsProjectJump,
+        registryOwns,
+        undefined,
+        { isDesktop: !isBrowserRuntime(), isMac }
+      )
       if (action === 'pass') return true
       // 'bubble': the window dispatcher owns this chord (an allowInTerminal registry command).
       // Return false so xterm skips its own keymap — which would consume e.g. Ctrl+Shift+Arrow
       // into a CSI write and cancel the event — and DO NOT preventDefault: the dispatcher bails
       // on defaultPrevented events, so a prevented bubble would kill the very dispatch this
       // exists to reach.
-      // 'native': same mechanics, different owner — the PLATFORM's paste (Windows Ctrl+V, issue
-      // #562). xterm would map it to \x16 and cancel the keydown, which suppresses both
+      // 'native': same mechanics, different owner — the Desktop Quit role or PLATFORM paste.
+      // Quit stays live under either policy; Ctrl+Q otherwise becomes XON and is cancelled.
+      // Windows Ctrl+V (issue #562) maps to \x16 and cancels the keydown, which suppresses both
       // Chromium's paste command and the Edit menu's Ctrl+V accelerator; leaving the event
       // untouched lets the ordinary `paste` event reach xterm's textarea, exactly as ⌘V does on
       // macOS (bracketed-paste framing included).
@@ -3711,6 +3737,25 @@ export function TerminalNode({
         let offData: (() => void) | undefined
         if (onDisposed()) return
         sessionId = sid
+        // Before any seed/queued output is parsed, bind one responder for this actual session.
+        // The shared cleanups survive Canvas park/adoption and release on exit/final disposal.
+        const disposeInput = bindXtermInput(term, api.pty, sid, (input) => {
+          if (life.dead) return
+          // Lone Esc / Ctrl-C while the agent works: Claude Code fires no interrupt hook.
+          if (showStatus && (input === '\x1b' || input === '\x03')) inferInterruptAfterSettle(id)
+          // A wake still holds input until its resume line is submitted, as before.
+          if (wakeInputBufferRef.current.offer(input).kind !== 'passthrough') return
+          transport.write(sid, input)
+        })
+        cleanups.push(disposeInput)
+        cleanups.push(
+          transport.onExit(sid, (code) => {
+            if (life.dead) return
+            disposeInput()
+            term.write(`\r\n\x1b[90m[process exited with code ${code}]\x1b[0m\r\n`)
+            if (code === 255 && sshProjectId && dialsSsh) sshDropHandler?.(sshProjectId, id)
+          })
+        )
         // `?? true`: an absent flag is an older core over the relay, not a plain shell.
         sessionPersistent = persistent ?? true
         // Published for the mount-stable observer effect, which cannot see this closure.
@@ -3746,6 +3791,7 @@ export function TerminalNode({
         if (transport.onClosed) {
           cleanups.push(
             transport.onClosed(sid, ({ by }) => {
+              disposeInput()
               setCo(termKey, { closed: { by } })
               term.write('\r\n\x1b[90m[session closed by another user]\x1b[0m\r\n')
             })
@@ -3761,6 +3807,7 @@ export function TerminalNode({
         if (transport.onRecycled) {
           cleanups.push(
             transport.onRecycled(sid, (info) => {
+              disposeInput()
               if (recycleAction(info) === 'ended') {
                 disposeParkedTerminal(termKey) // the park holds a dead pty either way
                 setCo(termKey, { ended: true })
@@ -3947,30 +3994,6 @@ export function TerminalNode({
           // Seed written — release the PTY output that arrived while it was in flight.
           if (!toreDown) gate.open()
         }
-        cleanups.push(
-          transport.onExit(sid, (code) => {
-            term.write(`\r\n\x1b[90m[process exited with code ${code}]\x1b[0m\r\n`)
-            // ssh exiting 255 on an SSH-project terminal is a CONNECTION drop (sleep/wake,
-            // network change, NAT idle) — the remote tmux session survives. Report it so the
-            // reconnect coordinator can re-establish the master and respawn this node.
-            if (code === 255 && sshProjectId && dialsSsh) sshDropHandler?.(sshProjectId, id)
-          })
-        )
-        cleanups.push(
-          term.onData((input) => {
-            // Lone Esc / Ctrl-C while the agent works: Claude Code fires NO hook on a user
-            // interrupt, so probe the cancelled turn (still-silent working → done). Exact
-            // match — arrow keys etc. arrive as multi-byte \x1b[… sequences.
-            if (showStatus && (input === '\x1b' || input === '\x03')) inferInterruptAfterSettle(id)
-            // While a wake is in flight, HOLD this input rather than write it: the resume line is
-            // sitting un-submitted in the pane and a keystroke would splice into it. The buffer is
-            // bounded — a `queueFull`/`buffered` verdict means "held, do not write". Flushed (or
-            // dropped) when the resume resolves; see `wakeInputBufferRef`. `passthrough` is the
-            // ordinary case and is byte-for-byte the old behaviour.
-            if (wakeInputBufferRef.current.offer(input).kind !== 'passthrough') return
-            transport.write(sid, input)
-          }).dispose
-        )
         // Deliver a command only after the fresh shell settles, and never blind: zsh's init
         // (rc files / ZLE setup) resets the tty with a FLUSH that can eat part of a queued
         // line — a long agent launch line then sat at the prompt mangled (unbalanced quote →
@@ -5055,6 +5078,9 @@ export function TerminalNode({
 
     return () => {
       disposed = true
+      // A park can hand the SAME Terminal to another mount. Retire this run's pending blur here,
+      // rather than in park-carried cleanups, before its ref is cleared or its element is moved.
+      deferredBlur.cancel()
       // Nothing may restart a node that is no longer mounted — park, respawn and real teardown all
       // pass through here. A remount re-registers (superseding, so a stale unregister is inert).
       unregisterRestart()
@@ -5564,6 +5590,7 @@ export function TerminalNode({
    * jump. The one caller that passes false is the window-activation restore.
    */
   const enterNow = (opts?: { ack?: boolean }) => {
+    deferredBlur.cancel()
     const aimed = opts?.ack !== false
     if (dwellRef.current) clearTimeout(dwellRef.current)
     if (aimed) setArmed(false)
@@ -5602,6 +5629,7 @@ export function TerminalNode({
     dwellRef.current = null
   }, [focusFollowsPointer])
   const onBodyEnter = () => {
+    deferredBlur.cancel()
     if (dwellRef.current) clearTimeout(dwellRef.current)
     // Click to focus (#757): hovering never takes the keyboard. A click still does, at once, through
     // the guard (`onGuardClick` → `enterNow`); a drag that started on the guard comes back here and,
@@ -5617,6 +5645,7 @@ export function TerminalNode({
         return
       }
       setArmed(false)
+      deferredBlur.cancel()
       focusXtermUnlessCovered(termRef.current, mdModeRef.current)
       useTerminalFocus.getState().remember(id)
       useAgentStatus.getState().setActive(id, true)
@@ -5636,7 +5665,9 @@ export function TerminalNode({
     // follows where the KEYBOARD goes rather than where the mouse goes.
     if (!pointerLeaveReleases(focusFollowsPointer)) return
     setArmed(true)
-    termRef.current?.blur()
+    // Let native mouseleave reach xterm before blur repaints its DOM rows. Focus/presence release
+    // still happens now; only the repaint moves to the next task and is canceled on re-entry.
+    deferredBlur.schedule()
     useAgentStatus.getState().setActive(id, false)
     presence.releaseFocus(id)
   }
@@ -5762,6 +5793,7 @@ export function TerminalNode({
     // FIRST — otherwise the drag-source keeps keyboard focus and the user types into the wrong app.
     // A paste came from THIS window, which already has it.
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
+    deferredBlur.cancel()
     term.focus()
     useTerminalFocus.getState().remember(id)
     // A pasted image is only reported as attached once the agent's own pane shows it (claude's
@@ -6360,6 +6392,16 @@ export function TerminalNode({
             >
               ✕ Deny
             </button>
+            {status.permissionSuggestions?.map(suggestion => (
+              <button key={suggestion.index} className="term-node__approve-btn term-node__approve-btn--allow"
+                style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={`Allow and remember exactly this rule: ${suggestion.label}`}
+                onClick={() => void window.nodeTerminal.answerPermission({
+                  nodeId: id, pendingId: status.pendingId!, decision: 'allow-always', suggestionIndex: suggestion.index
+                })}>
+                ✓ Remember {suggestion.label}
+              </button>
+            ))}
           </span>
         )}
         {isUnread && (

@@ -97,6 +97,10 @@ describe('the run cannot reach a live nodeterm tmux server', () => {
  */
 const REAL_SOCKET_ALLOWED = new Map<string, string>([
   [
+    'src/core/managed-pane.realtmux.test.ts',
+    'measures the canonical managed receipt and production paste bytes in its OWN private TMUX_TMPDIR; kills only its owned exact session'
+  ],
+  [
     'src/core/agents/pane-owner.test.ts',
     'the production bytes hardcode `-L nodeterm-rmt`; re-spelling it would judge different bytes'
   ],

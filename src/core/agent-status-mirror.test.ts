@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeClaude, type NormalizedAgentEvent } from '@shared/agents/normalize'
+import { normalizeClaude, normalizeCodex, type NormalizedAgentEvent } from '@shared/agents/normalize'
 import { syntheticAnsweredEvent } from './agents/pending-approvals'
+import { createAckSweeper } from './ack-sweep'
 import {
   reduceEntry,
   buildFile,
@@ -14,9 +15,11 @@ import {
   recordContextUsage,
   clearNode,
   ackDone,
+  mirrorOwnsNode,
   flush,
   initAgentStatusMirror,
   setMirrorSettingsProvider,
+  mirrorClaudeAccount,
   setNodeHibernated,
   setMirrorServerProvider,
   setMirrorUsageProvider,
@@ -309,6 +312,66 @@ describe('settings block', () => {
     setMirrorSettingsProvider(() => { throw new Error('boom') })
     await flush()
     expect('settings' in JSON.parse(fs.readFileSync(file, 'utf-8'))).toBe(false)
+  })
+})
+
+// The phone names a managed account from this entry (audit A39/A75): without `label`/`email` it had
+// only the id, and every picker row and session row printed the account's raw UUID.
+describe('settings.claudeAccounts entries (mirrorClaudeAccount)', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    _resetForTest()
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-status-'))
+  })
+
+  afterEach(() => {
+    _resetForTest()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('carries the label and email a phone shows beside the id and dir it launches with', () => {
+    expect(
+      mirrorClaudeAccount({ id: 'a1', label: 'Work', email: 'me@work.example' }, '/data/claude-accounts/a1')
+    ).toEqual({ id: 'a1', dir: '/data/claude-accounts/a1', label: 'Work', email: 'me@work.example' })
+  })
+
+  it('trims, and leaves out a blank or wrong-typed value from a hand-edited settings.json', () => {
+    expect(mirrorClaudeAccount({ id: 'a1', label: '  Work  ', email: '' }, '/d')).toEqual({
+      id: 'a1',
+      dir: '/d',
+      label: 'Work'
+    })
+    expect(mirrorClaudeAccount({ id: 'a1', label: 123, email: { x: 1 } }, '/d')).toEqual({ id: 'a1', dir: '/d' })
+    // No settings-only field (host, configDir, color, createdAt…) leaks into the mirror.
+    const acct = { id: 'a1', label: 'L', host: 'u@h', configDir: '/x', color: '#fff', createdAt: 1 }
+    expect(Object.keys(mirrorClaudeAccount(acct, '/d')).sort()).toEqual(['dir', 'id', 'label'])
+  })
+
+  it('rides the flushed file unchanged', async () => {
+    const file = path.join(tmpDir, 'status.json')
+    initAgentStatusMirror(file)
+    setMirrorSettingsProvider(() => ({
+      claudeAccounts: [mirrorClaudeAccount({ id: 'a1', label: 'Work', email: 'me@work.example' }, '/d/a1')]
+    }))
+    await flush()
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8')).settings.claudeAccounts).toEqual([
+      { id: 'a1', dir: '/d/a1', label: 'Work', email: 'me@work.example' }
+    ])
+  })
+
+  // Both shells and the desktop's per-host SSH slice publish this list. A site that went back to an
+  // inline `{ id, dir }` would type-check (the display half is optional) and pass every other test,
+  // while its phones fell back to printing ids — so every producer is pinned to the one builder.
+  it('every producer of the list builds its entries with mirrorClaudeAccount', () => {
+    const root = path.resolve(__dirname, '../..')
+    const sites: Record<string, number> = { 'src/main/index.ts': 2, 'src/server/index.ts': 1 }
+    for (const [rel, expected] of Object.entries(sites)) {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n')
+      const producers = [...src.matchAll(/claudeAccounts: \(s\.claudeAccounts \?\? \[\]\)([\s\S]*?)\.map\(\(a\) => ([^\n]*)/g)]
+      expect(producers.length, `${rel}: producer count`).toBe(expected)
+      for (const m of producers) expect(m[2], `${rel}: ${m[0]}`).toMatch(/^mirrorClaudeAccount\(a, /)
+    }
   })
 })
 
@@ -2515,6 +2578,37 @@ describe('hibernated flag (Eco × phone — SLEEPING on external readers)', () =
     expect(_snapshot().n1.state).toBeUndefined()
     expect(_snapshot().n1.hibernated).toBe(true)
   })
+
+  // The A76 review: the phone offers to type a wake line off this flag, so a flag left standing on
+  // a running CLI is a resume line typed into that CLI's composer. The renderer drops its own copy
+  // on these edges; the mirror hears the same hook events (with or without a renderer) and does too.
+  it('a live state drops the flag — including a codex SessionStart, which arrives as `working`', () => {
+    for (const state of ['working', 'blocked', 'waiting'] as const) {
+      recordAgentEvent(ev({ nodeId: 'n1', state: 'done', sessionId: 's1' }))
+      setNodeHibernated('n1', true)
+      recordAgentEvent(ev({ nodeId: 'n1', state, sessionId: 's1', newTurn: true }))
+      expect(_snapshot().n1.hibernated, state).toBeUndefined()
+    }
+    // The resume the phone types into a Sleeping codex pane, through the real normalizer: codex
+    // maps SessionStart to a state, never to the session start Canvas also clears on.
+    setNodeHibernated('cx', true)
+    const start = normalizeCodex({ nodeId: 'cx', agentId: 'codex', payload: { hook_event_name: 'SessionStart', session_id: 't1' } })
+    expect(start?.kind).toBe('state')
+    recordAgentEvent(start!)
+    expect(_snapshot().cx.hibernated).toBeUndefined()
+  })
+
+  it('a session START drops the flag; `done` and a session END leave it', () => {
+    recordAgentEvent(ev({ nodeId: 'n1', state: 'done', sessionId: 's1' }))
+    setNodeHibernated('n1', true)
+    // A late Stop after the /exit must not undo the hibernation just performed.
+    recordAgentEvent(ev({ nodeId: 'n1', state: 'done', sessionId: 's1' }))
+    recordAgentEvent(ev({ nodeId: 'n1', kind: 'session', sessionPhase: 'end', sessionId: 's1' }))
+    expect(_snapshot().n1.hibernated).toBe(true)
+    // A claude/gemini/grok resume starts its session: a CLI is in the pane again.
+    recordAgentEvent(ev({ nodeId: 'n1', kind: 'session', sessionPhase: 'start', sessionId: 's1' }))
+    expect(_snapshot().n1.hibernated).toBeUndefined()
+  })
 })
 
 // ---- The observed Claude account (which account a RUNNING session is on) ---------------------
@@ -2591,6 +2685,59 @@ describe('MirrorEntry.account (observed Claude account)', () => {
     const now = EXPIRE_MS + 100_000
     const doc = buildFile({ stale: { state: 'working', account, updatedAt: now - EXPIRE_MS - 1 } }, now)
     expect(Object.keys(doc.nodes)).toEqual([])
+  })
+})
+
+
+describe('read-ack ownership from the own persisted mirror', () => {
+  let dir: string
+  beforeEach(() => {
+    _resetForTest()
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ack-ownership-'))
+  })
+  afterEach(() => {
+    _resetForTest()
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('owns an expired node’s unresolved done card until it is consumed', () => {
+    const old = Date.now() - EXPIRE_MS - 1
+    const file = path.join(dir, 'agent-status.json')
+    fs.writeFileSync(file, JSON.stringify({
+      nodes: { own: { state: 'done', updatedAt: old } },
+      inbox: { events: [{ id: 'old-1', nodeId: 'own', kind: 'done', title: 'Finished', ts: old }], nodes: {} }
+    }))
+    // Another desktop's project slice is on the same host but is never this mirror's input.
+    fs.writeFileSync(path.join(dir, 'agent-status-foreign-project.json'), JSON.stringify({
+      nodes: { foreign: { state: 'done', updatedAt: Date.now() } }
+    }))
+    initAgentStatusMirror(file)
+    expect(_snapshot().own).toBeUndefined()
+    expect(mirrorOwnsNode('own')).toBe(true)
+    expect(mirrorOwnsNode('foreign')).toBe(false)
+    const ackDir = path.join(dir, 'acks')
+    fs.mkdirSync(ackDir)
+    fs.writeFileSync(path.join(ackDir, 'own.seen'), 'old-1')
+    fs.writeFileSync(path.join(ackDir, 'foreign.seen'), 'foreign-1')
+    const cleared: string[] = []
+    const sweeper = createAckSweeper({ dir: ackDir, handlers: {
+      ownsNode: mirrorOwnsNode, ackDone, onUnreadClear: (id) => cleared.push(id)
+    } })
+    expect(sweeper.sweep()).toEqual(['own'])
+    expect(cleared).toEqual(['own'])
+    expect(fs.existsSync(path.join(ackDir, 'own.seen'))).toBe(false)
+    expect(fs.readFileSync(path.join(ackDir, 'foreign.seen'), 'utf8')).toBe('foreign-1')
+    expect(_inboxSnapshot().events[0].resolved).toBe(true)
+    expect(mirrorOwnsNode('own')).toBe(false)
+  })
+
+  it('owns a live node and relinquishes its resolved inbox history after removal', () => {
+    recordAgentEvent(ev({ nodeId: 'own', state: 'working', newTurn: true }))
+    recordAgentEvent(ev({ nodeId: 'own', state: 'done', lastMessage: 'Finished' }))
+    expect(mirrorOwnsNode('own')).toBe(true)
+    ackDone('own')
+    clearNode('own')
+    expect(mirrorOwnsNode('own')).toBe(false)
   })
 })
 

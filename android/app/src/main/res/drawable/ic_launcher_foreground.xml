@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- nodeterm mark: two connected terminal nodes. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#0A84FF"
+        android:strokeWidth="4"
+        android:pathData="M34,38 h20 a4,4 0 0 1 4,4 v14 a4,4 0 0 1 -4,4 h-20 a4,4 0 0 1 -4,-4 v-14 a4,4 0 0 1 4,-4 z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#D97757"
+        android:strokeWidth="4"
+        android:pathData="M58,54 h16 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-16 a4,4 0 0 1 -4,-4 v-12 a4,4 0 0 1 4,-4 z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#E6E6E6"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M37,46 l4,3 l-4,3 M44,53 h6" />
+</vector>

@@ -66,10 +66,17 @@ HOME="${HOME:-$(cd ~ && pwd)}"
 # electron-builder strips `build` from the packaged package.json, so "nodeterm" only ever names
 # the bundle and the installer. Must equal package.json `name` (scripts/uninstall.test.ts).
 APP_NAME="node-terminal"
+# Electron names userData after package.json `name` ("node-terminal"): the top-level package.json
+# has no `productName` (only `build.productName`, which electron-builder does not copy into the
+# packaged package.json), so the installed app's dir is `node-terminal`, the same path the app's
+# own hook shell walks (src/core/agents/hook-endpoint-failover-sh.ts). `nodeterm` is kept as a
+# legacy location so an older layout is still cleaned up.
 if [ "$OS" = "Darwin" ]; then
   USER_DATA="$HOME/Library/Application Support/$APP_NAME"
+  LEGACY_USER_DATA="$HOME/Library/Application Support/nodeterm"
 else
   USER_DATA="${XDG_CONFIG_HOME:-$HOME/.config}/$APP_NAME"
+  LEGACY_USER_DATA="${XDG_CONFIG_HOME:-$HOME/.config}/nodeterm"
 fi
 NT_HOME="$HOME/.nodeterm"                       # agent-hooks, ssh-cm sockets, acks, push-grants…
 SERVER_APP="${NODETERM_APP_DIR:-$HOME/.nodeterm-server-app}"
@@ -362,8 +369,10 @@ DIRS_TO_REMOVE=()
 add_dir() { [ -e "$1" ] && { DIRS_TO_REMOVE+=("$1"); plan "Delete $1"; FOUND_ANY=1; }; }
 add_dir "$NT_HOME"
 add_dir "$USER_DATA"
+add_dir "$LEGACY_USER_DATA"
 if [ "$OS" = "Darwin" ]; then
   add_dir "$HOME/Library/Caches/$APP_NAME"
+  add_dir "$HOME/Library/Caches/nodeterm"
   add_dir "$HOME/Library/Caches/com.nodeterm.app"
   add_dir "$HOME/Library/Caches/com.nodeterm.app.ShipIt"
   add_dir "$HOME/Library/Caches/$APP_NAME-updater"
@@ -371,9 +380,11 @@ if [ "$OS" = "Darwin" ]; then
   add_dir "$HOME/Library/Saved Application State/com.nodeterm.app.savedState"
   add_dir "$HOME/Library/HTTPStorages/com.nodeterm.app"
   add_dir "$HOME/Library/Logs/$APP_NAME"
+  add_dir "$HOME/Library/Logs/nodeterm"
 else
   add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/$APP_NAME"
   add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/$APP_NAME-updater"
+  add_dir "${XDG_CACHE_HOME:-$HOME/.cache}/nodeterm"
 fi
 add_dir "$SERVER_APP"
 add_dir "$SERVER_DATA"
@@ -386,14 +397,16 @@ if [ "$OS" = "Darwin" ]; then
   elif [ -d "$APP_BUNDLE" ]; then
     plan "Delete $APP_BUNDLE"; FOUND_ANY=1
   fi
-  if security find-generic-password -s "$APP_NAME Safe Storage" >/dev/null 2>&1; then
-    plan "Delete the '$APP_NAME Safe Storage' Keychain entry"; FOUND_ANY=1
-  fi
+  for kc in "nodeterm Safe Storage" "$APP_NAME Safe Storage"; do
+    if security find-generic-password -s "$kc" >/dev/null 2>&1; then
+      plan "Delete the '$kc' Keychain entry"; FOUND_ANY=1
+    fi
+  done
 fi
 
 # -- per-project data: enumerate BEFORE the workspace index is deleted; never auto-deleted.
 PROJECT_DIRS=""
-for ws in "$USER_DATA/workspace.json" "$SERVER_DATA/workspace.json"; do
+for ws in "$USER_DATA/workspace.json" "$LEGACY_USER_DATA/workspace.json" "$SERVER_DATA/workspace.json"; do
   [ -f "$ws" ] || continue
   cwds="$(jsedit list-projects "$ws" 2>/dev/null || true)"
   while IFS= read -r cwd; do
@@ -513,6 +526,7 @@ if [ "$OS" = "Darwin" ]; then
     rm -rf "$APP_BUNDLE" && ok "Deleted $APP_BUNDLE" \
       || warn "Could not delete $APP_BUNDLE — drag it to the Trash"
   fi
+  security delete-generic-password -s "nodeterm Safe Storage" >/dev/null 2>&1 || true
   security delete-generic-password -s "$APP_NAME Safe Storage" >/dev/null 2>&1 || true
   defaults delete com.nodeterm.app >/dev/null 2>&1 || true
 fi

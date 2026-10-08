@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ (the manifest's android:dataExtractionRules). Excludes EVERYTHING the app keeps,
+     from cloud backup and from device-to-device transfer alike (audit A51): an app targeting 31+ is
+     copied by a transfer even with allowBackup="false". path="." is a whole domain, and each domain
+     is backed up as its own tree, so each one is excluded. The sharedpref exclusion covers
+     nodeterm.hosts.xml (the paired computers, their SSH pins, the relay deviceId) and
+     nodeterm.secure.xml (secrets sealed under a Keystore key that never leaves the phone).
+     BackupRulesTest pins both sections and that every preferences file the app opens is covered. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

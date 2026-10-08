@@ -673,6 +673,61 @@ describe('terminalKeyAction', () => {
   })
 })
 
+describe('Desktop native Quit from a focused terminal', () => {
+  const desktop = (isMac: boolean) => ({ isDesktop: true, isMac })
+  const quit = (isMac: boolean, patch: Partial<CopyShortcutEvent> = {}) =>
+    ev({ key: 'q', code: 'KeyQ', metaKey: isMac, ctrlKey: !isMac, ...patch })
+  const action = (event: CopyShortcutEvent, isMac: boolean, registryOwns = false) =>
+    terminalKeyAction(event, true, false, registryOwns, false, desktop(isMac))
+
+  it('leaves exact Ctrl+Q keydown and keyup to the Linux/Windows native menu', () => {
+    for (const type of ['keydown', 'keyup']) {
+      for (const key of ['q', 'Q']) {
+        expect(action(quit(false, { type, key }), false)).toBe('native')
+      }
+    }
+  })
+
+  it('uses Cmd+Q on macOS and preserves the opposite modifier as a terminal chord', () => {
+    for (const type of ['keydown', 'keyup']) {
+      expect(action(quit(true, { type }), true)).toBe('native')
+      expect(action(quit(false, { type }), true)).toBe('pass')
+      expect(action(quit(true, { type }), false)).toBe('pass')
+    }
+  })
+
+  it('does not claim extra modifiers, other printed keys or non-key phases', () => {
+    for (const isMac of [false, true]) {
+      for (const patch of [
+        { altKey: true },
+        { shiftKey: true },
+        { ctrlKey: true, metaKey: true },
+        { ctrlKey: false, metaKey: false },
+        { key: 'x', code: 'KeyQ' },
+        { key: 'Control', code: 'ControlLeft' },
+        { type: 'keypress' },
+        { type: 'blur' }
+      ]) {
+        expect(action(quit(isMac, patch), isMac)).toBe('pass')
+      }
+    }
+  })
+
+  it('keeps native Quit ahead of registry or project flags while Server keeps XON', () => {
+    for (const isMac of [false, true]) {
+      const event = quit(isMac)
+      // Registry/policy stand-down and the recorder cannot gate the native role.
+      expect(action(event, isMac, false)).toBe('native')
+      expect(action(event, isMac, true)).toBe('native')
+      expect(terminalKeyAction(event, false, true, true, false, desktop(isMac))).toBe('native')
+      expect(
+        terminalKeyAction(event, false, false, false, false, { isDesktop: false, isMac })
+      ).toBe('pass')
+      expect(terminalKeyAction(event, false, false, false, false)).toBe('pass')
+    }
+  })
+})
+
 describe('seedPaint', () => {
   it('paints the snapshot on a cold restore, and nothing when there is none', () => {
     expect(seedPaint({ replay: 'cold-snapshot', superseded: false, snapshot: 'old' })).toBe(

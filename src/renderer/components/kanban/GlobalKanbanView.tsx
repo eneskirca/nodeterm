@@ -341,6 +341,7 @@ const Swimlane = memo(function Swimlane({
           projectName={projectName}
           projectColor={projectColor}
           session={byId.get(modalNodeId)!}
+          ownerProjectId={projectId}
           projectId={projectId}
           columnTitle={columnForNode(board, modalNodeId)?.title ?? null}
           board={board}

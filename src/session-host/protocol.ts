@@ -94,11 +94,17 @@ export type SessionHostRequest =
   | { id: number; cmd: 'pause'; name: string }
   | { id: number; cmd: 'resume'; name: string }
   | { id: number; cmd: 'sendKeys' | 'sendKeysV2'; name: string; text: string; enter: boolean }
+  | { id: number; cmd: 'prepareComposedV1'; name: string; generation: string; input: import('../shared/composed-input').ComposedInput }
+  | { id: number; cmd: 'writeComposedV1'; name: string; generation: string; ticket: string; phase: 'paste' | 'enter' }
+  | { id: number; cmd: 'cancelComposedV1'; name: string; generation: string; ticket: string }
+  | { id: number; cmd: 'scrollViewV1'; name: string; generation: string; up: boolean; lines: number; capture: boolean }
   | { id: number; cmd: 'paneCommand'; name: string }
   | { id: number; cmd: 'messageOwnerV1'; name: string }
   | { id: number; cmd: 'messagePasteReadyV1'; name: string }
   | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
+  | { id: number; cmd: 'wakeSleepingV1'; name: string; generation: string; data: string; expected: PaneOwner }
   | { id: number; cmd: 'capture'; name: string; full: boolean }
+  | { id: number; cmd: 'historySearchV1'; name: string; generation: string; query: string }
   | {
       id: number
       cmd: 'executeLaunch'
@@ -205,8 +211,8 @@ export interface AttachResult {
   geometry?: { cols: number; rows: number }
 }
 /** Additive, independently negotiated capabilities (see the `hello` request). */
-export type SessionHostFeature = 'geometry' | 'shutdown'
-export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry', 'shutdown']
+export type SessionHostFeature = 'geometry' | 'composed-input-v1' | 'scroll-view-v1' | 'shutdown'
+export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry', 'composed-input-v1', 'scroll-view-v1', 'shutdown']
 
 /** `result` of a successful `shutdown`: the session names whose process trees were ended. The
  *  host exits right after this reply is flushed. A shutdown that could not confirm every kill

@@ -22,6 +22,11 @@
     "src/shared/**/*",
     "src/core/**/*",
     "src/server/**/*",
-    "src/session-host/**/*"
+    "src/session-host/**/*",
+    // The Android interop fixture runs the desktop's real host code and implements its interfaces
+    // (HostPtyManager, the kanban/inbox/nodeActions bridge). esbuild only strips its types, and the
+    // Android workflow runs no tsc, so `npm run typecheck` (every CI run) is what catches a desktop
+    // change that breaks it (audit A67).
+    "android/protocol/src/test/interop/**/*.ts"
   ]
 }

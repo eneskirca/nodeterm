@@ -6,6 +6,7 @@ import {
   childArgs,
   remoteTmuxPasteArgs,
   remoteTmuxEnterArgs,
+  remoteTmuxSendKeysArgs,
   probeSaysAbsent,
   remoteCapturePaneArgs,
   remoteCaptureVisibleArgs,
@@ -249,6 +250,51 @@ describe('remoteTmuxEnterArgs', () => {
       'deploy@h.example.com',
       `${TP}tmux -L ${RMT_TMUX_SOCKET} send-keys -t nt-x Enter`
     ])
+  })
+})
+
+// The relay phone's quick answers (`node.sendKeys`) for a node of an SSH project. The bytes are
+// run against a real tmux in `remote-send-keys.realtmux.test.ts`; this pins the line's shape.
+describe('remoteTmuxSendKeysArgs', () => {
+  const line = (session: string, data: string): string =>
+    remoteTmuxSendKeysArgs(conn, '/s.sock', session, data).slice(-1)[0]
+
+  it('is ONE remote tmux invocation over the master: gated copy-mode cancel, then the keys as hex', () => {
+    expect(remoteTmuxSendKeysArgs(conn, '/s.sock', 'nt-x', '1')).toEqual([
+      ...childPrefix,
+      'deploy@h.example.com',
+      `${TP}tmux -L ${RMT_TMUX_SOCKET} ` +
+        `if-shell -F -t '=nt-x:' '#{pane_in_mode}' 'send-keys -t =nt-x: -X cancel' ';' ` +
+        `send-keys -t '=nt-x:' -H 31`
+    ])
+  })
+
+  it('sends ESC and Enter as the raw bytes a key press is — the same hex the local write uses', () => {
+    expect(line('nt-x', '\u001b')).toMatch(/ -H 1b$/)
+    expect(line('nt-x', '\r')).toMatch(/ -H 0d$/)
+    expect(line('nt-x', '2\r')).toMatch(/ -H 32 0d$/)
+  })
+
+  // Only hex reaches the remote shell and tmux's parser: a quote, a `;` (tmux's separator) or a
+  // leading dash in the answer cannot change the command.
+  it('carries no answer text on the line — only hex digits', () => {
+    const l = line('nt-x', `-R';$(id)`)
+    expect(l).toMatch(/ -H 2d 52 27 3b 24 28 69 64 29$/)
+    expect(l).not.toContain('$(id)')
+  })
+
+  // Without `=`, tmux PREFIX-matches on a miss: the answer would land in `nt-xy`'s agent.
+  it('targets the pane EXACTLY, on both the cancel and the keys', () => {
+    const l = line('nt-x', '1')
+    expect(l).toContain(`-t '=nt-x:'`)
+    expect(l).not.toMatch(/-t nt-x[ ;]/)
+  })
+
+  it('refuses a session id this app did not generate, and an empty answer', () => {
+    expect(() => remoteTmuxSendKeysArgs(conn, '/s.sock', 'nt-x; kill-server', '1')).toThrow(
+      /unsafe tmux paste target/
+    )
+    expect(() => remoteTmuxSendKeysArgs(conn, '/s.sock', 'nt-x', '')).toThrow(/no keys/)
   })
 })
 

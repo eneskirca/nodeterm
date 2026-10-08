@@ -139,11 +139,61 @@ describe('SshProjectManager', () => {
     for (let i = 0; i < commands.length; i++) {
       expect(commands[i]).toContain('umask 077')
       expect(commands[i]).toContain('.nodeterm/pending')
+      // The hold is checked in the SAME remote command (A06).
+      expect(commands[i]).toContain(`[ -f ~/'${'/.nodeterm/pending/node-1-2.json'.slice(1)}' ] || exit 3;`)
       expect(commands[i]).toContain(`mv -f -- ${temps[i]} ~/'${'/.nodeterm/pending/node-1-2.answer'.slice(1)}'`)
       expect(commands[i]).toContain(`rm -f -- ${temps[i]}`)
     }
     expect(calls.map((call) => call[1])).toEqual(['allow', 'deny']) // decisions stay on stdin
   })
+
+  it('answerPending tells a hold that ended (exit 3) from a failed write', async () => {
+    const { mgr, run } = makeMgr()
+    await mgr.connect('p1', conn)
+    run.mockImplementationOnce(async () => ({ code: 3, stdout: '' }))
+    expect(await mgr.answerPending('p1', 'node-1-2', 'allow')).toBe('gone')
+    run.mockImplementationOnce(async () => ({ code: 255, stdout: '' }))
+    expect(await mgr.answerPending('p1', 'node-1-2', 'allow')).toBe('failed')
+    run.mockImplementationOnce(async () => {
+      throw new Error('spawn failed')
+    })
+    expect(await mgr.answerPending('p1', 'node-1-2', 'allow')).toBe('failed')
+    expect(await mgr.answerPending('p9', 'node-1-2', 'allow')).toBe('failed')
+    run.mockImplementationOnce(async () => ({ code: 3, stdout: '' }))
+    expect(await mgr.writePendingAnswer('p1', 'node-1-2', 'allow')).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'the generated answer command, run under a real /bin/sh, answers a live hold and refuses an ended one',
+    async () => {
+      // POSIX-only: it runs the command the HOST would run, which is always sh.
+      const { execFileSync } = await import('child_process')
+      const { mgr, run } = makeMgr()
+      await mgr.connect('p1', conn)
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-pend-'))
+      const pending = path.join(home, '.nodeterm', 'pending')
+      await fs.mkdir(pending, { recursive: true })
+      const exec = (command: string, stdin: string): number => {
+        try {
+          execFileSync('/bin/sh', ['-c', command], { input: stdin, env: { HOME: home, PATH: '/usr/bin:/bin' } })
+          return 0
+        } catch (e) {
+          return (e as { status?: number }).status ?? 1
+        }
+      }
+      run.mockImplementation(async (args: string[], stdin?: string) => ({ code: exec(args.at(-1)!, stdin ?? ''), stdout: '' }))
+      try {
+        expect(await mgr.answerPending('p1', 'late-1', 'allow')).toBe('gone')
+        expect(await fs.readdir(pending)).toEqual([])
+        writeFileSync(path.join(pending, 'live-1.json'), '{}')
+        expect(await mgr.answerPending('p1', 'live-1', 'deny')).toBe('sent')
+        expect(await fs.readFile(path.join(pending, 'live-1.answer'), 'utf8')).toBe('deny')
+        expect((await fs.readdir(pending)).sort()).toEqual(['live-1.answer', 'live-1.json'])
+      } finally {
+        await fs.rm(home, { recursive: true, force: true })
+      }
+    }
+  )
 
   it('pushAgentStatus gives overlapping pushes separate temps and preserves private permissions', async () => {
     const { mgr, run } = makeMgr()
@@ -3265,6 +3315,115 @@ describe('SshProjectManager — atomic remote import (Task 6.2, Property 2 + 11)
     ).rejects.toThrow(/did not discover the imported conversation/)
     // The rollback removed the freshly installed target — no half-landed state.
     expect(seen.some((c) => /rm -f '[^']*rollout-x\.jsonl'/.test(c))).toBe(true)
+  })
+})
+
+describe('original-derived structured hook replies over an SSH project', () => {
+  const request = { hook_event_name: 'PermissionRequest', tool_name: 'Bash', permission_suggestions: [
+    { type: 'addRules', behavior: 'allow', destination: 'localSettings', rules: [{ toolName: 'Bash', ruleContent: 'npm test' }] }
+  ] }
+  it('rejects a foreign node ticket or an unavailable connection before executing anything', async () => {
+    const { mgr, run } = makeMgr()
+    expect(await mgr.answerPendingHook('none', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe('failed')
+    await mgr.connect('p1', conn)
+    const before = run.mock.calls.length
+    expect(await mgr.answerPendingHook('p1', 'other', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe('failed')
+    expect(run.mock.calls).toHaveLength(before)
+  })
+  it('keeps derived hook JSON off argv and rejects an unsupported suggested update', async () => {
+    const { mgr, run } = makeMgr()
+    await mgr.connect('p1', conn)
+    run.mockImplementationOnce(async () => ({ code: 0, stdout: `123 12\n${JSON.stringify(request)}` }))
+    run.mockImplementationOnce(async () => ({ code: 0, stdout: '' }))
+    expect(await mgr.answerPendingHook('p1', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe('sent')
+    const write = run.mock.calls.at(-1)!
+    expect(write[1]).toContain('nodeterm-hook-reply-v2\n')
+    expect(write[1]).toContain('updatedPermissions')
+    expect(write[0].join(' ')).not.toContain('npm test')
+    expect(write[0].join(' ')).toContain('cksum')
+    const before = run.mock.calls.length
+    run.mockImplementationOnce(async () => ({ code: 0, stdout: `123 12\n${JSON.stringify(request)}` }))
+    expect(await mgr.answerPendingHook('p1', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 1 })).toBe('failed')
+    expect(run.mock.calls).toHaveLength(before + 1)
+  })
+  it.skipIf(process.platform === 'win32')('refuses a hold deleted or replaced during a suspended stdin write and cleans its exact temp', async () => {
+    const { spawn, spawnSync } = await import('node:child_process')
+    const { openSync, closeSync, existsSync } = await import('node:fs')
+    const { mgr, run } = makeMgr()
+    await mgr.connect('p1', conn)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-hook-suspended-'))
+    const pending = path.join(home, '.nodeterm/pending')
+    await fs.mkdir(pending, { recursive: true })
+    const held = path.join(pending, 'node-1-1.json')
+    let change: 'replace' | 'remove' = 'remove'
+    run.mockImplementation(async (args: string[], stdin?: string) => {
+      const options = { env: { HOME: home, PATH: '/usr/bin:/bin' } }
+      if (stdin === undefined) {
+        const child = spawnSync('/bin/sh', ['-c', args.at(-1)!], { ...options, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
+        if (child.error) throw child.error
+        return { code: child.status ?? 1, stdout: child.stdout }
+      }
+      const child = spawn('/bin/sh', ['-c', args.at(-1)!], options)
+      let stdout = ''; child.stdout.setEncoding('utf8'); child.stdout.on('data', text => { stdout += text })
+      child.stdin.on('error', () => {})
+      const finished = new Promise<number>((resolve, reject) => { child.once('error', reject); child.once('close', code => resolve(code ?? 1)) })
+      child.stdin.write(stdin.slice(0, 16))
+      const deadline = Date.now() + 5000
+      while (!(await fs.readdir(pending)).some(name => name.endsWith('.tmp'))) {
+        if (Date.now() >= deadline) { child.kill(); throw new Error('writer did not open its private temp') }
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      if (change === 'remove') await fs.unlink(held)
+      else writeFileSync(held, JSON.stringify({ ...request, tool_name: 'Write' }))
+      child.stdin.end(stdin.slice(16))
+      return { code: await finished, stdout }
+    })
+    try {
+      for (const variant of ['remove', 'replace'] as const) {
+        change = variant; writeFileSync(held, JSON.stringify(request))
+        expect(await mgr.answerPendingHook('p1', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe(variant === 'remove' ? 'gone' : 'failed')
+        expect(existsSync(path.join(pending, 'node-1-1.answer'))).toBe(false)
+        expect((await fs.readdir(pending)).filter(name => name.endsWith('.tmp'))).toEqual([])
+      }
+    } finally { await fs.rm(home, { recursive: true, force: true }) }
+  })
+  it.skipIf(process.platform === 'win32')('executes actual bounded read and stdin write commands and refuses a request changed or removed between them', async () => {
+    const { spawnSync } = await import('node:child_process')
+    const { openSync, closeSync, readFileSync, existsSync } = await import('node:fs')
+    const { mgr, run } = makeMgr()
+    await mgr.connect('p1', conn)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'nt-hook-remote-'))
+    const pending = path.join(home, '.nodeterm/pending')
+    await fs.mkdir(pending, { recursive: true })
+    const held = path.join(pending, 'node-1-1.json')
+    const answer = path.join(pending, 'node-1-1.answer')
+    let changeAfterRead: 'replace' | 'remove' | undefined
+    run.mockImplementation(async (args: string[], stdin?: string) => {
+      const input = path.join(home, 'stdin')
+      writeFileSync(input, stdin ?? '')
+      const fd = openSync(input, 'r')
+      const child = spawnSync('/bin/sh', ['-c', args.at(-1)!], { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000, env: { HOME: home, PATH: '/usr/bin:/bin' } })
+      closeSync(fd)
+      if (child.error) throw child.error
+      if (stdin === undefined && changeAfterRead) {
+        if (changeAfterRead === 'remove') await fs.unlink(held)
+        else writeFileSync(held, JSON.stringify({ ...request, tool_name: 'Write' }))
+      }
+      return { code: child.status ?? 1, stdout: child.stdout }
+    })
+    try {
+      writeFileSync(held, JSON.stringify(request))
+      expect(await mgr.answerPendingHook('p1', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe('sent')
+      const output = JSON.parse(readFileSync(answer, 'utf8').substring(readFileSync(answer, 'utf8').indexOf('\n') + 1))
+      expect(output.hookSpecificOutput.decision.updatedPermissions).toEqual(request.permission_suggestions)
+      expect((await fs.stat(answer)).mode & 0o777).toBe(0o600)
+      await fs.unlink(answer)
+      for (const change of ['replace', 'remove'] as const) {
+        writeFileSync(held, JSON.stringify(request)); changeAfterRead = change
+        expect(await mgr.answerPendingHook('p1', 'node', 'node-1-1', { kind: 'allow-always', suggestionIndex: 0 })).toBe(change === 'remove' ? 'gone' : 'failed')
+        expect(existsSync(answer)).toBe(false)
+      }
+    } finally { await fs.rm(home, { recursive: true, force: true }) }
   })
 })
 

@@ -93,6 +93,15 @@ verify and stop any remaining host. Never recommend **End session** (it deletes 
 resume depends on supported, saved conversation history; it does not preserve running tasks.
 See `docs/windows-session-host.md` for the user-controlled preparation/recovery steps and limits.
 
+**Explicit phone Send is a captured-terminal transaction.** The public `pty.submitComposed`
+request/result stays the same across local tmux, direct native Windows PTYs and negotiated
+session hosts. `composed-input-v1` preparation mints one-use tickets bound to the live session
+generation and original subscribed socket; it never redeems a ticket on a replacement.
+Check lifetime inside the deferred send turn and after the actual emulator mode barrier.
+Paste and Enter are separate writes at least 150 ms apart. Sent-phase errors are uncertain,
+never automatic retries. Older live hosts refuse without being replaced or restarted.
+This explicit input path is separate from observed-screen agent-message submission.
+
 **Prepare for update** (#829 step 2, Windows only): ⌘K / the update card run
 `components/PrepareUpdateDialog.tsx` over the pure `lib/updatePrep.ts` plan. It refuses while any
 session's agent is working or waiting on the user (renderer store OR core mirror — unmounted nodes
@@ -126,10 +135,76 @@ applicable here":
    would need, and **mention @eneskirca** so it gets picked up there. "Not applicable" is a fine
    answer — just make it a stated one. Never assume the phone is an iPhone in desktop copy or
    defaults.
+   The **Android** companion is in this repo (`android/`, see docs/android.md). If you change what
+   a phone sees — a `host-service.ts` relay verb, the `projects.list` blob, the pairing payload,
+   the agent-status mirror (including the per-project `~/.nodeterm/agent-status-<projectId>.json`
+   slices an SSH host gets), or the `~/.nodeterm/{pending,acks,relay.json}` files — update the
+   Android client in the same PR. `./gradlew -p protocol test` (from `android/`, on JDK 17–24,
+   after your usual `npm install`) runs the relay leg against this repo's own host code: the handshake
+   and host-service's verb routing (`connectHostSession`; the pty, board, inbox and node-action
+   bridges behind the verbs are fakes, while `git.*` runs the real `GitService` over a temp
+   repository), pairing (`createPairingService`), and the `projects.list`
+   blob as the desktop builds it (`buildProjectsListBlob` in `src/core/projects-list-blob.ts` over
+   a real `WorkspaceStore` and an `agent-status.json` written by the real mirror). Legacy/adversarial
+   SSH browse and held-file cases still use hand-written fixtures. Newer `SshTransportTest`
+   Server-profile cases read actual Server config/platform, workspace and mirror publications over
+   private SSH; this component fixture does not run full Server boot, installed hooks or account
+   probes. `SshActionsInteropTest` and `ManagedSessionInteropTest` also run selected-profile services
+   and Kotlin writers, with the managed fixture naming its native process/CLI recorder boundary.
+   Two relay-advertisement cases run the actual account-level file writer/remover and SSH parser
+   with a fixture-only OS-home adapter. They check every field, replacement, removal and profile
+   isolation; they do not mint a token or establish adoption, SAS approval or revoke. Driven status
+   slices and legacy/malformed cases still need their matching hand-maintained fixtures. `AckSweepInteropTest` additionally runs
+   the actual Android `.seen` producer against the desktop's local/remote consumers: each consumer
+   requires positive ownership before reading/deleting a file, and remote ownership is the union
+   of all projects on that host. Keep this behavior compatible with iOS.
+   Android phone-owned plain SSH shells (`A90`) use dedicated `nodeterm-phone`
+   session metadata, without shared project-file writes, canvas registration or managed hook
+   identity. Keep desktop/server socket scans/reapers/kill fanout on `node-terminal` and
+   `nodeterm-rmt`; strip inherited `NODETERM_*` in a new phone pane. Cold-agent SSH refusal and
+   relay canvas creation remain. No existing RPC/blob/pairing/mirror/file contract changes;
+   flag isolated socket/creation-marker/metadata adoption for **@eneskirca** in iOS. Host regression
+   and build checks pass in the beta-8 baseline; beta 10 / code 11 is now installed on the intended
+   Pixel. Focused plain-SSH creation/history/restart/update/reconnect/exact End pass (item 32 Partial);
+   Focused relay plain-shell creation/cwd/input also pass. Managed-agent and cellular creation
+   and the full device matrix remain pending; the focused A91 otherwise-empty-host cycle passes.
+   Listing failures (`A91`) clear cached rows only for authoritative SSH `NothingFoundException`;
+   other failures retain them and cancellation propagates. Preserve the route-specific error and
+   connected SSH state on an empty host. Stamp a completed authoritative empty snapshot with its
+   fetch time (`A94`); zero means the initial loading state. This client policy changes no shared
+   host contract.
+   The Android interop fixture
+   (`android/protocol/src/test/interop/`) implements host-service's interfaces and is part of
+   `npm run typecheck`, so changing one of them fails the typecheck there until the fixture follows.
+   The Android workflow runs on every file that fixture bundles (`src/core`, `src/shared`,
+   `src/main/*.ts`, `src/main/remote`); an import that pulls a file from elsewhere into it fails
+   `WorkflowPathFilterTest` until the workflow's `paths` list it, and so does a protocol test that
+   reads a repo file outside `android/` (name it by a literal path from `InteropHarness.repoRoot`; a
+   computed path fails that test unless its `computedReads` says why it is covered). Do not copy CI's
+   `npm ci --ignore-scripts` onto a desktop checkout; it is for a machine without the native
+   toolchain. `npm ci` deletes `node_modules` first and the flag skips the node-pty patch and build,
+   so node-pty stays unpatched (unbuilt on Linux) until `npm install` or `npm run rebuild` runs again.
 
 Anything reachable from `window.nodeTerminal` needs a **real** implementation in
 `src/renderer/bridge/`, or a deliberate, documented degrade. The `satisfies NodeTerminalApi` gate
 forces you to *declare* every member, but a no-op stub compiles fine while doing nothing.
+
+Background answers must resolve the exact tmux session to a pane ID, cancel copy mode, and type
+into that same ID. Preserve per-node write order across the whole delivery and never retry an
+unconfirmed send. Control clients consume the startup attach reply before matching stdin replies;
+each control command gets one reply block, so do not combine multiple commands into one call.
+Android's SSH transport also requires exit status zero before reporting an answer sent.
+
+Phone Board writes made by this core use `workspace:server-change` so the mounted Board adopts
+them while retaining unsaved canvas edits (`A95`). Keep `workspace:external-change` for outside
+file edits: a dirty canvas may correctly ask the user to resolve those conflicts. Desktop preload
+must subscribe to the internal channel too; a Server-only or no-op bridge leaves Desktop stale.
+
+The Android All computers watcher uses automatic approval gating, serializes per-host refreshes,
+and cancels its poll/reconnect work on STOP without closing another screen or background user's
+connection. Keep session/output search local and retain original node/row identities. SSH anchor
+discovery follows bounded Includes and reads public keys only; changes require pairing/LAN interop
+coverage and an iOS follow-up for @eneskirca even when the field format stays the same.
 
 The **canvas and the kanban board are two views of the same nodes.** When you add something to a
 canvas node — a header action, a badge, a menu item — ask whether the board's card and card modal
@@ -228,6 +303,62 @@ priority, labels, the phone's label verb) rebuilds the entry from a fixed list a
 anything else. Board-level fields survive every transform — `pullLinks` is one.
 
 ## House rules
+
+- **Native history is inert and owned by one viewer (A129).** Advertise `pty.attach.scrollV1`
+  only for the served `pty.scrollV1 {streamId, dir, lines, viewId?}` route. Its `history` result
+  carries physical text/wrap/normal-or-alternate rows and viewer token/offset/total/cols/truncation/
+  older/newer fields; `input`, `refused` and `uncertain` are separate outcomes. Bound capture to
+  1 MiB/8192 rows, pages to 256 KiB/200 rows, shared retention to 16 MiB with 60-second inactivity
+  expiry, and per-stream FIFO work to 32 actions. Move three physical rows per notch. A valid token
+  pages only its immutable snapshot: live app mouse-mode changes cannot steal history gestures
+  as foreground input. Live, actual user input, resize or an explicit new intent closes the view;
+  foreign/expired tokens refuse instead of adopting fresh history. On each new intent, cross the
+  actual output/geometry barrier and check the headless xterm 6 tracking/encoding before planning
+  zero-byte mouse-off history or requested default/SGR/pixel wheels. Require captured backend
+  lifetime and exact session-host generation, original subscriber and socket inside the deferred
+  send turn; negotiate `scroll-view-v1`, never restart an old host or replay uncertain input.
+  Keep known-tmux/direct-SSH wheel ordering and momentum. Android's separate inert layer must keep
+  the shipped renderer xterm 5.5 live parser; actor/page/display epochs fence late pages, and Copy/
+  links read visible rows. Preserve automatic terminal reports when clearing user-input history.
+  Update host, Android and actual producer interop together and flag iOS adoption for @eneskirca.
+  Recorder/component tests prove their named boundaries, not physical ConPTY or phone acceptance.
+
+- **Co-view terminal replies have one live owner (A126).** Within one renderer, scope automatic
+  xterm responses to the exact `api.pty` object and actual session id, with live promotion on
+  exit/closed/recycled subscription or final disposal. Preserve genuine keyboard/paste/SGR mouse
+  input and actual DOM focus/blur from every view; automatic DEC1004 focus-state replies prefer the
+  connected textarea that is its owner document's active element. Canvas park retains the
+  subscription/lease, and adoption must not rewrap or rebind it. Pin origin regressions to actual
+  xterm 5.5. An unsupported private shape must warn and preserve input through a public fallback;
+  that fallback can still duplicate replies. This renderer-local invariant claims no cross-window
+  or Server-client ownership guarantee and changes no Android/iOS wire contract.
+
+- **Android queued output belongs to one viewer (A131).** Fence buffered bytes, delayed flushes
+  and commands waiting for page readiness by their original viewer. Paint before later bytes;
+  preserve the ready page's final tail before exit. Keep font setup and suspension page-global.
+  This does not fence JavaScript already dispatched to the WebView.
+
+- **Android contracts change together.** Keep host verbs, project/mirror/pairing payloads,
+  SSH-visible files and Android interop in the same change; flag iOS adoption for @eneskirca.
+  Retained history search addresses the attached generation/exact pane with bounded literal
+  results; stale queries/streams cannot publish into a replacement screen. Cold relay launch
+  resolves saved owner/account/agent and trusted project env/shell before accepting input. Use
+  that agent/host's measured permission dialect. Offscreen wake requires saved ownership and
+  exact process/generation proof; honor Pause and never create/adopt a pane or replay uncertain
+  input. Held rules/questions use the original hook request and guarded answer file, with no
+  guessed digits or arbitrary rule JSON; iOS must adopt the v2 fields/verbs together.
+  Direct SSH Git stays typed and physically jailed; remote rejection text never authorizes a
+  second push. SSH Board/node actions use the selected live profile's private typed service and
+  actual WorkspaceStore save queue. Missing receipts are uncertain; Server has no node nudges,
+  and canvas New is not a metadata-only write. Managed SSH creation is one host-owned transaction:
+  resolve an open owned local project, valid local account and actual CLI capabilities; derive
+  commands/env/shell from trusted host settings. The request supplies identifiers and display/size
+  choices only. Account absence means System; send a displayed default's id to freeze that choice.
+  Expanded launch text stays host-private, outside the git-shared recovery intent.
+  Revalidate across awaits, require exclusive exact-pane proof, and never replay an
+  uncertain launch. Advertise this method only after workspace load with supported tmux, on both
+  Desktop and Server. Update Android interop and flag the additive method/receipt for iOS.
+  See CLAUDE.md for the deeper invariants.
 
 - **Branch labels describe a checkout on one core.** Share existing status reads through
   `renderer/state/gitBranches.ts`; do not cache a branch forever by project id or copy a project
@@ -1189,6 +1320,8 @@ there, and esbuild fails on a `.node` require it cannot resolve (or, where the a
 on a file it has no loader for). No CI job builds the server bundle, but
 `src/server/server-build.test.ts` builds it in both views and goes red. The server runs from a
 `node_modules` tree, so an external is resolved at runtime.
+On a desktop checkout, `npm ci --ignore-scripts` deletes `node_modules` and leaves `node-pty`
+unpatched and unbuilt; run `npm install` or `npm run rebuild` before launching the desktop.
 
 ## Testing
 
@@ -1304,6 +1437,9 @@ in CLAUDE.md § Idle energy.
 ## Pull requests
 
 - Branch from `main`. CI runs `quality`, `CodeQL` and `Dependency review`; all three are required.
+  `CodeQL (Kotlin)` (the Android companion's Kotlin, built under CodeQL, in
+  `.github/workflows/android.yml`) runs on a PR that changes an Android-relevant file, but is not one
+  of them.
 - Explain **why**, not just what. If a decision has a trade-off, name it and say what you rejected.
 - If you measured something, put the numbers in — they save the next person the same afternoon.
 - Say what you did **not** verify. That is more useful than a confident summary.
@@ -1405,6 +1541,34 @@ paste mode immediately before Enter, not just the surviving PTY root. A missing 
 a transmitted text request is uncertain delivery, never a pre-paste refusal; show the no-resend
 warning. SessionStart idle rescue is scoped to that same nonempty session and agent identity,
 and a foreign idle must not broadcast fresh state proof to the renderer.
+
+## Retired WebGL contexts
+
+A restored xterm WebGL context is live again. When its owning Canvas listener replaces the addon,
+explicitly lose the captured original addon canvas after disposal and before notifying the budget
+coordinator. Querying the screen after disposal misses the detached canvas; disposing addon-webgl
+0.18 alone does not retire its context. Keep the already-lost `onContextLoss` path and delayed,
+budget-gated regrant policy unchanged. Behavioral helper tests cover retained detached canvases and
+fail-open retirement. Native restored-hook verification must separately observe the trusted restored
+event, old-context retirement, readable DOM fallback and a distinct fresh renderer; visible recovery
+alone does not prove that budget slots were released. Preserve stale-addon ownership guards and do
+not infer repeated/page-wide pressure coverage from a one-terminal pilot.
+
+## Canvas terminal mouse-leave ordering
+
+Canvas mouse leave defers only xterm blur to the next task (`terminal/deferred-blur.ts`).
+xterm 5.5's DOM renderer redraws its rows synchronously on blur; doing that during React's
+mouseout handling can detach the native target before screen mouseleave clears the link cursor.
+Do not replace the timer with a microtask. Cancel pending blur on re-entry, intentional focus
+and lifecycle cleanup before parking; a parked Terminal can be adopted by another component.
+Status/presence release stays synchronous. Behavioral tests cover cancellation and ownership;
+eight native Linux Desktop cases pass at `01b4a2f5`, with the immediate-blur and old-cap
+mutants caught and restored control passing. Synthetic SGR, DOM rendering and explicit disposable
+fixture exit do not verify real tmux/SSH, GPU, macOS, ordinary app quit or Android. Separate
+eight-case Linux Server control/restored runs at `dcdf664a` also catch both native mutants through
+the shipped Node entry and authenticated HTTP/WebSocket bridge. Chromium has no Desktop preload
+or injected API; passive observation verifies real PTY create/reply/output, and owned child cleanup
+passes. This remains DOM/synthetic-TUI verification, with no physical checklist promotion.
 
 Control and linked-context fallback must keep a known node identity on the endpoint family the
 session was born on. A foreign server being reachable is not evidence that it owns the canvas —

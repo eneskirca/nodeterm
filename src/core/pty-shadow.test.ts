@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+vi.mock('./native-windows-pane', () => ({ NativeWindowsPane: class {} }))
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -76,7 +77,7 @@ vi.mock('node-pty', () => ({
 const liveTmuxSessions = new Set<string>()
 
 vi.mock('child_process', () => {
-  type Cb = (err: Error | null, res?: { stdout: string; stderr: string }) => void
+  type Cb = (err: Error | null, res?: string | { stdout: string; stderr: string }, stderr?: string) => void
   const execFile = (file: string, args: string[], a?: unknown, b?: unknown): unknown => {
     const cb = (typeof a === 'function' ? a : b) as Cb | undefined
     const ok = (stdout: string): void => cb?.(null, { stdout, stderr: '' })
@@ -85,7 +86,7 @@ vi.mock('child_process', () => {
       if (liveTmuxSessions.has(target)) ok('')
       else cb?.(Object.assign(new Error('no such session'), { code: 1 }))
     } else if (args[0] === '-ilc') {
-      ok('__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__')
+      cb?.(null, '__NT_PATH_START__/usr/bin:/bin__NT_PATH_END__', '')
     } else {
       ok('')
     }
@@ -128,6 +129,7 @@ class FakeControlSpawn implements ControlSpawn {
       feed: (s) => onData?.(Buffer.from(s, 'latin1'))
     }
     this.children.push(child)
+    void Promise.resolve().then(() => child.feed('%begin 1700 0 0\n%end 1700 0 0\n'))
     return {
       stdin: {
         write: (s: string) => {

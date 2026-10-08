@@ -5,7 +5,7 @@
 //   R4 — killing a stream forgets it in the SAME synchronous turn, so a late Input frame for that
 //        streamId can never be written into a session that is already released.
 import { describe, expect, it, vi } from 'vitest'
-import { createHostHandlers, type HostFsOps, type HostPtyManager, type HostRelaySocket } from './host-service'
+import { createHostHandlers, type HostFsOps, type HostNewSessions, type HostPtyManager, type HostRelaySocket, type HostRemoteNodes } from './host-service'
 import { genKeyPair, deriveSharedKey, sasFromSharedKey, publicKeyToB64 } from './e2ee'
 import { connectRelay, type RelaySocket, type RelayTransport } from './relay-socket'
 import { OP, type Frame } from './framing'
@@ -117,8 +117,8 @@ describe('projects.list serves the host projects blob', () => {
     const listProjects = vi.fn(async () => 'FIXTURE')
     const handlers = createHostHandlers(pty, socket, fs, () => [], listProjects)
     handlers.onRpc({ id: '1', method: 'projects.list', params: undefined })
-    await Promise.resolve()
-    await Promise.resolve()
+    // A macrotask: the answer waits for the blob AND the LAN report (A74-refresh) to settle.
+    await new Promise((r) => setTimeout(r, 0))
     expect(listProjects).toHaveBeenCalledTimes(1)
     expect(responses).toEqual([{ id: '1', ok: true, body: { output: 'FIXTURE' } }])
   })
@@ -127,8 +127,7 @@ describe('projects.list serves the host projects blob', () => {
     const { socket, responses, fs, pty } = makeHostFakes()
     const handlers = createHostHandlers(pty, socket, fs, () => [])
     handlers.onRpc({ id: '2', method: 'projects.list', params: undefined })
-    await Promise.resolve()
-    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
     expect(responses).toEqual([{ id: '2', ok: true, body: { output: '' } }])
   })
 })
@@ -354,30 +353,45 @@ describe('pty.attach forwards the real pty size as OP.Resized', () => {
 // itself — its emulator swallows the gesture — so it asks the host to write it into the stream's
 // pty, which IS a tmux client. `lines` and the stream target both come off the wire.
 describe('pty.scroll drives tmux through the session pty', () => {
-  const attach = (handlers: ReturnType<typeof createHostHandlers>): void => {
+  const flush = async () => { await new Promise<void>(resolve => setImmediate(resolve)) }
+  const attach = async (handlers: ReturnType<typeof createHostHandlers>): Promise<void> => {
     handlers.onRpc({ id: 'a', method: 'pty.attach', params: { nodeId: 'node-a', cols: 80, rows: 24 } })
+    await flush()
+  }
+  const tmuxViewer = (pty: HostPtyManager): void => {
+    pty.scrollAttached = async (clientId, sessionId, up, lines, _capture, current) => {
+      if (!current()) return { status: 'refused', message: 'detached' }
+      for (let i = 0; i < lines; i++) pty.write(clientId, sessionId, `\x1b[<${up ? 64 : 65};1;1M`)
+      return { status: 'input' }
+    }
   }
   const writes = (pty: HostPtyManager): string[] =>
     (pty.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[2] as string)
 
-  it('writes one SGR wheel event per notch, up or down', () => {
+  it('writes one SGR wheel event per notch, up or down', async () => {
     const { socket, fs, pty } = makeHostFakes()
+    tmuxViewer(pty)
     const handlers = createHostHandlers(pty, socket, fs, () => ['/work'])
-    attach(handlers)
+    await attach(handlers)
     handlers.onRpc({ id: '1', method: 'pty.scroll', params: { streamId: 1, dir: 'up', lines: 3 } })
+    await flush()
     expect(writes(pty)).toEqual(['\x1b[<64;1;1M', '\x1b[<64;1;1M', '\x1b[<64;1;1M'])
     handlers.onRpc({ id: '2', method: 'pty.scroll', params: { streamId: 1, dir: 'down', lines: 1 } })
+    await flush()
     expect(writes(pty).at(-1)).toBe('\x1b[<65;1;1M')
   })
 
-  it('clamps a hostile `lines` (it arrives from a remote client) and ignores an unknown stream', () => {
+  it('clamps a hostile `lines` (it arrives from a remote client) and ignores an unknown stream', async () => {
     const { socket, responses, fs, pty } = makeHostFakes()
+    tmuxViewer(pty)
     const handlers = createHostHandlers(pty, socket, fs, () => ['/work'])
-    attach(handlers)
+    await attach(handlers)
     handlers.onRpc({ id: '1', method: 'pty.scroll', params: { streamId: 1, dir: 'up', lines: 1e9 } })
+    await flush()
     expect(writes(pty)).toHaveLength(20) // capped, not a million writes
     ;(pty.write as ReturnType<typeof vi.fn>).mockClear()
     handlers.onRpc({ id: '2', method: 'pty.scroll', params: { streamId: 1, lines: -5 } })
+    await flush()
     expect(writes(pty)).toHaveLength(1) // floored at one notch
     ;(pty.write as ReturnType<typeof vi.fn>).mockClear()
     // An unknown streamId is a no-op, and still answers — never a hang.
@@ -666,5 +680,277 @@ describe('remoteViewer presence reporting', () => {
     expect(base.pty.write).toHaveBeenCalledWith(null, 'sess', 'echo ok\n')
     handlers.onRpc({ id: 'k', method: 'pty.kill', params: { streamId: 1 } })
     expect(base.responses.at(-1)).toMatchObject({ id: 'k', ok: true })
+  })
+})
+
+// Audit A09: a node of an SSH project lives on ANOTHER host. The relay used to attach it to the
+// desktop's LOCAL tmux — creating a phantom `nt-<id>` here and offering to resume the agent on the
+// wrong machine. It is now attached over the project's ControlMaster, or refused.
+describe('pty.attach of an SSH-project node never runs locally', () => {
+  const sshRemote = {
+    controlPath: '/tmp/cm.sock',
+    conn: { host: 'box', user: 'me' },
+    remoteCwd: '~/repo',
+    hookEndpointPath: '/home/me/.nodeterm/hook.env'
+  }
+  const handlersWith = (
+    pty: HostPtyManager,
+    socket: HostRelaySocket,
+    fs: HostFsOps,
+    resolve: HostRemoteNodes['resolve']
+  ): ReturnType<typeof createHostHandlers> => {
+    // This group pins the older-manager compatibility route; the core-route refusal is above.
+    delete pty.prepareRelayAttach
+    return createHostHandlers(
+      pty, socket, fs, () => ['/work'],
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { resolve }
+    )
+  }
+  const addRemote = (pty: HostPtyManager): HostPtyManager =>
+    Object.assign(pty, {
+      sessionExistsOver: vi.fn(async () => false),
+      captureSnapshotOver: vi.fn(async () => 'REMOTE SCREEN')
+    })
+
+  it('attaches over the master, requireRemote, with the host freshness and snapshot', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    addRemote(pty)
+    const handlers = handlersWith(pty, socket, fs, (id) => (id === 'node-r' ? { where: 'me@box', sshRemote } : null))
+    handlers.onRpc({ id: 'r', method: 'pty.attach', params: { nodeId: 'node-r', cols: 90, rows: 30 } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(responses[0]).toMatchObject({ ok: true, body: { fresh: true } })
+    expect(pty.sessionExists).not.toHaveBeenCalled()
+    expect(pty.captureSnapshot).not.toHaveBeenCalled()
+    expect(pty.sessionExistsOver).toHaveBeenCalledWith('node-r', sshRemote)
+    expect(pty.captureSnapshotOver).toHaveBeenCalledWith('node-r', sshRemote)
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({
+      cols: 90,
+      rows: 30,
+      sshRemote,
+      requireRemote: true
+    })
+  })
+
+  it('refuses, naming the host, when the project is not connected — nothing is attached', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    addRemote(pty)
+    const handlers = handlersWith(pty, socket, fs, () => ({ where: 'me@box' }))
+    handlers.onRpc({ id: 'r', method: 'pty.attach', params: { nodeId: 'node-r', cols: 80, rows: 24 } })
+    await vi.waitFor(() => expect(responses.length).toBe(1))
+    expect(responses[0]).toMatchObject({ ok: false, body: { message: expect.stringContaining('me@box') } })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(pty.attachDetached).not.toHaveBeenCalled()
+    expect(pty.sessionExists).not.toHaveBeenCalled()
+  })
+
+  it('refuses rather than falls back when the pty manager cannot reach remote hosts', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    const handlers = handlersWith(pty, socket, fs, () => ({ where: 'me@box', sshRemote }))
+    handlers.onRpc({ id: 'r', method: 'pty.attach', params: { nodeId: 'node-r', cols: 80, rows: 24 } })
+    await vi.waitFor(() => expect(responses.length).toBe(1))
+    expect(responses[0].ok).toBe(false)
+    expect(pty.attachDetached).not.toHaveBeenCalled()
+  })
+
+  it('a local node is attached exactly as before', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    addRemote(pty)
+    const handlers = handlersWith(pty, socket, fs, () => null)
+    handlers.onRpc({ id: 'l', method: 'pty.attach', params: { nodeId: 'node-l', cols: 80, rows: 24 } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(responses[0].ok).toBe(true)
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+    expect(pty.sessionExistsOver).not.toHaveBeenCalled()
+  })
+})
+
+// Audit A33: a session the PHONE starts is created where the desktop would create it — the host
+// resolves the project's folder and the account from its own registry — and only when this attach
+// is the one creating it. On Windows the phone's `cd`/env launch prefix cannot work at all.
+describe('pty.attach creates a phone-started session in its project', () => {
+  const newSessions = (resolve: HostNewSessions['resolve']): HostNewSessions => ({ resolve })
+  const handlersWith = (pty: HostPtyManager, socket: HostRelaySocket, fs: HostFsOps, ns: HostNewSessions) => {
+    // Exercise the retained prepareDetachedAttach fallback directly, without a core-route fake
+    // bypassing it. Real core local preparation is covered by PtyManager's tests.
+    delete pty.prepareRelayAttach
+    return createHostHandlers(
+      pty, socket, fs, () => ['/work'],
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, ns
+    )
+  }
+
+  it('applies the host-resolved cwd/account/agent/owner when the attach creates the session', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    const resolve = vi.fn(() => ({
+      cwd: 'C:\\repo',
+      accountId: 'acct-1',
+      agentId: 'claude' as const,
+      ownerProjectId: 'p1'
+    }))
+    const handlers = handlersWith(pty, socket, fs, newSessions(resolve))
+    handlers.onRpc({
+      id: 'n',
+      method: 'pty.attach',
+      params: { nodeId: 'term-new-1', cols: 80, rows: 24, projectId: 'p1', accountId: 'acct-1', agentId: 'claude' }
+    })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(resolve).toHaveBeenCalledWith({ projectId: 'p1', accountId: 'acct-1', agentId: 'claude' })
+    // The agent is what gives the created session its agent-gated hook env, and the owner is what
+    // makes its pane messageable (audit A72) — both reach the spawn, exactly once, on the create.
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({
+      cols: 80, rows: 24, cwd: 'C:\\repo', accountId: 'acct-1', agentId: 'claude', ownerProjectId: 'p1'
+    })
+  })
+
+  // Everything the resolver answers — the pane OWNER above all — is create-only. A join must not
+  // claim a live pane for the phone's project (agents/pane-ownership.ts: ownership is recorded on a
+  // genuine fresh spawn only), and "could not tell" is a join, never a create.
+  const RESOLVED = { cwd: '/repo', agentId: 'claude' as const, ownerProjectId: 'p1' }
+
+  it('uses saved cold host facts instead of conflicting wire launch hints', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(false)
+    const resolve = vi.fn(() => ({ cwd: '/wrong', ownerProjectId: 'wrong' }))
+    const handlers = handlersWith(pty, socket, fs, { resolve, resolveNode: () => RESOLVED })
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'saved', projectId: 'wrong', agentId: 'codex' } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(resolve).not.toHaveBeenCalled()
+    expect(vi.mocked(pty.attachDetached).mock.calls[0][2]).toEqual({ cols: 80, rows: 24, ...RESOLVED })
+  })
+
+  it('keeps known ineligible nodes bare rather than accepting a replacement project hint', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(false)
+    const resolve = vi.fn(() => RESOLVED)
+    const handlers = handlersWith(pty, socket, fs, { resolve, resolveNode: () => null })
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'ineligible', projectId: 'p1' } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(resolve).not.toHaveBeenCalled()
+    expect(vi.mocked(pty.attachDetached).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('finishes preparation before responding and commits after SnapshotEnd without losing the launch line', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(false)
+    let finish!: () => void
+    const ready = new Promise<void>((resolve) => { finish = resolve })
+    const commit = vi.fn(() => 'prepared-session')
+    pty.prepareDetachedAttach = vi.fn(async () => { await ready; return { fresh: true, attach: commit } })
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    const phases: string[] = []
+    socket.sendFrame = (op, streamId) => {
+      if (op === OP.SnapshotEnd) {
+        phases.push('snapshot-end')
+        // Network input runs on the next turn, like the actual encrypted relay socket.
+        queueMicrotask(() => handlers.onFrame({ op: OP.Input, streamId, seq: 0,
+          payload: new TextEncoder().encode('claude --resume saved\r') }))
+      }
+      return true
+    }
+    commit.mockImplementation(() => { phases.push('attach'); return 'prepared-session' })
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'saved', projectId: 'p1' } })
+    await vi.waitFor(() => expect(pty.prepareDetachedAttach).toHaveBeenCalled())
+    expect(responses).toEqual([])
+    expect(commit).not.toHaveBeenCalled()
+    finish()
+    await vi.waitFor(() => expect(pty.write).toHaveBeenCalledWith(null, 'prepared-session', 'claude --resume saved\r'))
+    expect(phases).toEqual(['snapshot-end', 'attach'])
+    expect(responses[0]).toEqual({ id: 'n', ok: true, body: { streamId: 1, fresh: true } })
+    expect(pty.attachDetached).not.toHaveBeenCalled()
+  })
+
+  it('discards a preparation canceled while settings resolve without spawning or sending ready frames', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(false)
+    let finish!: () => void
+    const waiting = new Promise<void>((resolve) => { finish = resolve })
+    const commit = vi.fn(() => 'prepared')
+    pty.prepareDetachedAttach = vi.fn(async () => { await waiting; return { fresh: true, attach: commit } })
+    const frames = vi.fn(() => true)
+    socket.sendFrame = frames
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'saved', projectId: 'p1' } })
+    await vi.waitFor(() => expect(pty.prepareDetachedAttach).toHaveBeenCalled())
+    handlers.closeAll()
+    finish()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(commit).not.toHaveBeenCalled()
+    expect(responses).toEqual([])
+    expect(frames).not.toHaveBeenCalled()
+  })
+
+  it('reports the prepared warm verdict if another owner creates the pane while settings resolve', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(false)
+    pty.prepareDetachedAttach = vi.fn(async () => ({ fresh: false, attach: () => 'joined' }))
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'saved', projectId: 'p1' } })
+    await vi.waitFor(() => expect(responses).toHaveLength(1))
+    expect(responses[0]).toEqual({ id: 'n', ok: true, body: { streamId: 1, fresh: false } })
+  })
+
+  it('carries saved launch facts into preparation if an initially warm pane disappears before commit', async () => {
+    const { socket, responses, fs, pty } = makeHostFakes()
+    vi.mocked(pty.sessionExists).mockResolvedValue(true)
+    pty.prepareDetachedAttach = vi.fn(async () => ({ fresh: true, attach: () => 'recreated' }))
+    const handlers = handlersWith(pty, socket, fs, { resolve: () => null, resolveNode: () => RESOLVED })
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'saved' } })
+    await vi.waitFor(() => expect(responses).toHaveLength(1))
+    expect(pty.prepareDetachedAttach).toHaveBeenCalledWith('saved', { cols: 80, rows: 24, ...RESOLVED })
+    expect(responses[0]).toEqual({ id: 'n', ok: true, body: { streamId: 1, fresh: true } })
+  })
+
+  it('applies nothing when the session already exists (a join, not a create)', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(true)
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    handlers.onRpc({
+      id: 'n',
+      method: 'pty.attach',
+      params: { nodeId: 'term-a', cols: 80, rows: 24, projectId: 'p1', agentId: 'claude' }
+    })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('a probe that FAILS is a join: no owner, no agent, no folder', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('EAGAIN'))
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'term-c', cols: 80, rows: 24, projectId: 'p1' } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('a probe that never answers is a join once its budget runs out', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockReturnValue(new Promise<boolean>(() => {}))
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => RESOLVED))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'term-d', cols: 80, rows: 24, projectId: 'p1' } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled(), { timeout: 3000 })
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('an older phone that names no project creates exactly as before, owner-less', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    const resolve = vi.fn(() => RESOLVED)
+    const handlers = handlersWith(pty, socket, fs, newSessions(resolve))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'term-e', cols: 80, rows: 24 } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect(resolve).not.toHaveBeenCalled()
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('an unknown project (resolver says null) creates exactly as before', async () => {
+    const { socket, fs, pty } = makeHostFakes()
+    ;(pty.sessionExists as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+    const handlers = handlersWith(pty, socket, fs, newSessions(() => null))
+    handlers.onRpc({ id: 'n', method: 'pty.attach', params: { nodeId: 'term-b', cols: 80, rows: 24, projectId: 'nope' } })
+    await vi.waitFor(() => expect(pty.attachDetached).toHaveBeenCalled())
+    expect((pty.attachDetached as ReturnType<typeof vi.fn>).mock.calls[0][2]).toEqual({ cols: 80, rows: 24 })
   })
 })

@@ -6,6 +6,10 @@ import { sendTextWhenSettled } from './settled-text'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { sanitizePasteText } from './paste-injection'
 import { pasteThenSubmitWhenSettled, type SettleOptions } from './settled-submit'
+import { validSleepingWakeInput } from '../session-host/sleeping-wake'
+import { ComposedPty, waitForComposedEnter } from './composed-pty'
+import { COMPOSED_INPUT_UNCERTAIN, type ComposedInput, type ComposedInputResult } from '../shared/composed-input'
+import type { NativeScrollResult } from '../shared/history-scroll'
 
 export { sameNativeProcess } from '../session-host/windows-pane-owner'
 
@@ -17,6 +21,10 @@ export class NativeWindowsPane {
   private readonly screen: TerminalEmulator
   private tail: Promise<void> = Promise.resolve()
   private alive = true
+  private readonly composed = new ComposedPty({
+    bracketed: () => this.pasteAware(),
+    write: (data) => this.proc.write(data)
+  })
 
   constructor(
     private readonly proc: { pid: number; write(data: string): void },
@@ -41,6 +49,37 @@ export class NativeWindowsPane {
     return this.alive ? this.screen.serialize(full ? undefined : 200) : ''
   }
 
+  async historyText(): Promise<string> {
+    await this.tail
+    if (!this.alive) throw new Error('This terminal has exited.')
+    return this.screen.historyText()
+  }
+
+  /** Decide behind actual output/geometry, then write only to this still-owned native pane. */
+  scrollForHistory(up: boolean, lines: number, capture: boolean, current: () => boolean): Promise<NativeScrollResult> {
+    const refused = (): NativeScrollResult => ({ status: 'refused', message: 'This terminal viewer is no longer current or its mouse state is unavailable.' })
+    const uncertain = (): NativeScrollResult => ({ status: 'uncertain', message: 'Wheel input may have reached the terminal. It was not sent again.' })
+    const valid = (): boolean => this.alive && current()
+    const scrolling = this.tail.then((): NativeScrollResult => {
+      if (!valid()) return refused()
+      let attempted = false
+      try {
+        const plan = this.screen.scrollPlan(up, lines, capture)
+        if (!valid()) return refused()
+        if (plan.status !== 'wheel') return plan
+        for (const data of plan.data) {
+          if (!valid()) return attempted ? uncertain() : refused()
+          attempted = true
+          this.proc.write(data)
+        }
+        return valid() ? { status: 'input' } : uncertain()
+      } catch { return attempted ? uncertain() : refused() }
+    }, () => { this.alive = false; return refused() })
+    // Later output and geometry follow this turn; failed wheel writes do not poison raw input.
+    this.tail = scrolling.then(() => {}, () => { this.alive = false })
+    return scrolling
+  }
+
   async owner(): Promise<PaneOwner | null> {
     if (!this.alive) return null
     const owner = await this.probe(this.proc.pid, this.generation)
@@ -50,6 +89,15 @@ export class NativeWindowsPane {
   async pasteAware(): Promise<boolean> {
     await this.tail
     return this.alive && this.screen.bracketedPasteRequested()
+  }
+
+  async wakeSleeping(data: string, expected: PaneOwner): Promise<boolean> {
+    if (!this.alive || !validSleepingWakeInput(data)) return false
+    if (!sameNativeProcess(expected, await this.owner()) || !this.alive) return false
+    try {
+      this.proc.write(data)
+      return true
+    } catch { return false }
   }
 
   async sendEnvelope(envelope: string, expected?: PaneOwner): Promise<boolean> {
@@ -96,8 +144,24 @@ export class NativeWindowsPane {
     }, this.settle)
   }
 
+  /** Explicit phone Send, distinct from the observed-screen agent-message delivery above. */
+  async submitComposed(input: ComposedInput, current: () => boolean): Promise<ComposedInputResult> {
+    const valid = (): boolean => this.alive && current()
+    const prepared = this.composed.prepare(this, input, valid)
+    if (prepared.status !== 'prepared') return prepared
+    try {
+      const result = await this.composed.write(this, prepared.ticket, 'paste', valid)
+      if (result.status !== 'awaiting-enter') return result.status === 'delivered' && !valid()
+        ? { status: 'uncertain', message: COMPOSED_INPUT_UNCERTAIN } : result
+      await waitForComposedEnter()
+      const entered = await this.composed.write(this, prepared.ticket, 'enter', valid)
+      return entered.status === 'delivered' && valid() ? entered : { status: 'uncertain', message: COMPOSED_INPUT_UNCERTAIN }
+    } finally { this.composed.cancel(this, prepared.ticket) }
+  }
+
   dispose(): void {
     this.alive = false
+    this.composed.dispose()
     void this.tail.finally(() => this.screen.dispose())
   }
 }

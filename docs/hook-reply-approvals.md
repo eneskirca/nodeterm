@@ -1,15 +1,18 @@
-# Hook-reply approvals — deterministic Approve/Deny (v1 contract)
+# Hook replies — owned approval rules and complete questions (v2 contract)
 
-Inspired by claude-island's EventServer: its permission hook holds the HTTP request open and
-the UI's Allow/Deny **is the hook's reply** — no keystrokes, no prompt-layout coupling. This
-doc adapts that to nodeterm's architecture, where the answerer may be a **phone reaching the
-host over SSH** (no route to the desktop's loopback server), so the reply channel is a
-**file on the host the agent runs on** — reachable by every answerer we have.
+The managed Claude hook answers held requests through a private file on the computer running the
+agent. A phone can reach that file over SSH, or use the standing desktop's typed relay verbs. The
+answer is hook JSON; it does not depend on a permission dialog's numbering or which terminal pane
+has keyboard focus. Legacy one-line `allow` and `deny` replies remain supported; plans and held
+questions have the event-specific rules below.
 
-## Why replace send-keys
+Claude documents rule updates through `PermissionRequest.decision.updatedPermissions` and question
+answers through `PreToolUse.updatedInput`. The latter must retain the questions and provide the
+chosen answers; allowing the tool alone does not answer it. See the official [permission update
+entries](https://code.claude.com/docs/en/hooks#permission-update-entries), [tools requiring user
+interaction](https://code.claude.com/docs/en/hooks#tools-that-require-user-interaction), and [question
+answer representation](https://code.claude.com/docs/en/agent-sdk/user-input#return-answers-to-claude).
 
-The phone's quick-approve today types `1`/Escape into tmux. It depends on the permission
-prompt being on screen, focused, and numbered the way we assume. Hook-reply is deterministic.
 On the main thread Claude Code runs the hook CONCURRENTLY with the painted dialog — whichever
 answers first (the hook's decision or the user in the TUI) wins and the later one is ignored
 (research: docs/superpowers/plans/2026-09-26-answer-paths-research.md §1; an earlier version of
@@ -17,7 +20,12 @@ this doc said the decision lands "before the prompt is painted", which is true o
 subagent's request, whose dialog awaits the hook). On timeout the hook prints nothing and the
 dialog simply stays (fail-open, bit-for-bit legacy).
 
-## Mechanism
+## Hold and release
+
+`managed-script.ts` revision 6 holds a Claude `PermissionRequest`, or a parent `PreToolUse` for
+`AskUserQuestion`, only while `NODETERM_PERM_WAIT_SECS` is positive. The default injected wait is
+45 seconds when `hookReplyApprovals` is enabled. With no wait environment, the hook remains inert
+for this feature; ordinary tool events and child question events are not held.
 
 **Request** — the managed hook script's `PermissionRequest` branch (env-gated like everything
 else in `managed-script.ts`), only when `NODETERM_PERM_WAIT_SECS` is set (> 0) in the session
@@ -36,33 +44,36 @@ env:
 6. Timeout: `rm -f` the request file, print **nothing**, exit 0 → Claude shows its normal
    prompt; legacy send-keys still works as the fallback.
 
-POSIX sh only, no deps — same constraints as the existing managed script. The wait branch
-must be a **no-op** when the env var is absent (user's own terminals, older nodeterm).
+The script writes the original stdin JSON to
+`~/.nodeterm/pending/<nodeId>-<epoch-ms>-<pid>.json` under `umask 077`, then reports the ticket and
+`nodeterm_hook_reply=2` through the ordinary hook POST. It polls the corresponding `.answer` every
+0.5 seconds. After reading an accepted reply it removes the request and answer, reports the consumed
+answer through the existing hook endpoint, prints the decision JSON and exits. Timeout removes the
+request, prints no decision and returns to the CLI's normal interactive flow.
 
-**Answerers** (all write the same one-line answer file, atomically `printf > tmp && mv`):
-- **Phone (SSH)** — `InboxApproval` writes it over the connection when the approval event
-  carries `pendingId`; else falls back to send-keys. Digit `2`/"Always allow" keeps using
-  send-keys in v1 (hook `updatedPermissions` is out of scope).
-- **Desktop canvas** — the NEEDS-YOU badge gains Approve/Deny buttons (approval events with
-  `pendingId` only), routed over IPC to a main-side writer: local project → local fs; SSH
-  project → write via the project's ControlMaster. So desktop users are not left staring at
-  a held prompt — they get one-click approval the moment the badge pulses.
+The feature still uses the existing managed hook, endpoint and credentials. It creates no hosted
+service, account, permission-mode bypass or independent prompt simulator.
 
-**Event plumbing** — the hook server's raw `PermissionRequest` payload now carries
-`nodeterm_pending_id` (added by the script to its POST body); the mirror's approval
-`InboxEvent` gains `pendingId?: string`, riding the mirror (phone) and dropped from the
-push-notify POST body (the APNs payload doesn't need it — the phone re-reads the mirror
-before acting anyway).
+## Answer formats
 
-**Env injection** — `buildPtyEnv` adds `NODETERM_PERM_WAIT_SECS=<n>` when the new setting
-`hookReplyApprovals` (default **on**) is enabled AND the agent is claude (the only CLI whose
-PermissionRequest hook decision contract we've verified). Setting lives beside the mobile-push
-settings; off ⇒ env absent ⇒ script branch inert ⇒ exact legacy behavior.
+An ordinary permission reply is still exactly `allow` or `deny`. There are two additive structured
+formats. The Android v2 remembered-rule and complete-question reply is:
 
-**Cleanup** — the hook server sweeps `~/.nodeterm/pending/` for files older than 10 min on
-boot and hourly (orphans from killed sessions). The phone/desktop never create answer files
-for pendingIds they didn't read from a live approval event, and re-check the event is still
-unresolved before writing.
+```text
+nodeterm-hook-reply-v2
+<one compact JSON object containing hookSpecificOutput>
+```
+
+The marker lets the managed consumer distinguish the additive format from legacy files. It accepts
+only the output kind matching the hold: a remembered rule is a `PermissionRequest` decision, and a
+question is a `PreToolUse` decision. Plain permission replies cannot answer a held question.
+
+The builders in `src/shared/hook-answers.ts` and Android's `HookReplies.kt` validate the original
+request and produce this JSON. UI/RPC callers supply indexes, never arbitrary rules or hook output.
+Structured writers refuse original requests larger than 128 KiB, and generated decision JSON is
+bounded to the same size; the marker is separate framing. The separate structured chat contract
+below writes an unmarked, single-line `PermissionRequest` decision, capped at 64 KiB. It answers
+`PermissionRequest` plan/question holds; it cannot answer a v2 `PreToolUse` question hold.
 
 ## Plans and questions (structured answers, 2026-09)
 
@@ -90,8 +101,9 @@ multiSelect question, EVERY question the request asks must be answered (a partia
 the TUI never submits a half-answered picker), sizes capped (text 8000 chars, the whole decision 64 KB). A structured answer
 is refused when the request file is gone (the hold ended) — the call resolves `false`.
 
-**What the script prints** (`managed-script.ts`, tested under a real `/bin/sh` in
-`managed-script.answer.test.ts`): only (a) the fixed decisions for the words `allow`/`deny`, or (b)
+**What the PermissionRequest branch prints** (`managed-script.ts`, tested under a real `/bin/sh` in
+`managed-script.answer.test.ts`): (a) the fixed decisions for the words `allow`/`deny`, (b) a matching
+marker-framed v2 remembered-rule decision, or (c)
 the answer file VERBATIM when it starts with exactly
 `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":` + `"allow"`/`"deny"`,
 ends with `}`, is at most 64 KB and has no control bytes (so it is one line). Anything else prints
@@ -99,7 +111,7 @@ nothing — exactly what every earlier build did with an unknown answer. The ans
 decoded VERB, never the file (a structured answer holds user text, and nothing from it may reach an
 argv). Remote answers travel on the SSH command's stdin for the same reason.
 
-**The plain words, per tool** (so the phone and the header button need no change):
+**The plain words in a PermissionRequest hold, per tool**:
 
 | answer file | ExitPlanMode | AskUserQuestion | anything else |
 |---|---|---|---|
@@ -111,7 +123,12 @@ printing it would only end the hook, closing the chat-view answer path while cha
 the TUI. Core also refuses to write it (`answerPermission` → `false`) so no surface flips the badge
 for an answer that did nothing, and the header hides ✓ Approve for that ticket.
 
-**Hold time.** For these two tools the hook holds `PERM_WAIT_SECS_INTERACTIVE` = 540 s instead of 45 s
+A separately held v2 `PreToolUse` question accepts only its marker-framed question reply.
+Permission words and unmarked `PermissionRequest` decisions are consumed without releasing that
+hold; they print no decision and send no consumed-answer POST.
+
+**Hold time.** For these two tools' `PermissionRequest` hooks, the script holds
+`PERM_WAIT_SECS_INTERACTIVE` = 540 s instead of 45 s
 — people read plans for minutes. The installer writes an explicit `timeout: 600` on OUR PermissionRequest
 handler (`PERMISSION_REQUEST_HOOK_TIMEOUT_SECS`, `CLAUDE_HOOK_EVENTS`; local, managed-account and SSH
 installs alike, and an existing install is rewritten with it at the next install), so the bound the hold
@@ -125,23 +142,30 @@ undefined (and dropped by JSON) on the main thread; a nested false positive only
 The tool name is read from the FIRST `"tool_name":` in the payload and trusted only when no
 `"tool_input"` precedes it, so a nested key inside some tool's input can never make an ordinary tool
 look like a plan (an empty/unsafe name degrades to today's default behavior). The answer file's size is
-its BYTE count (`wc -c`) and at most cap+1 bytes are read (`head -c`).
+its BYTE count (`wc -c`). The consumer reads at most one byte past the larger marker-framed cap
+(`head -c`), then applies the chosen format's own size bound.
+The separate v2 `PreToolUse` question keeps the explicitly armed `NODETERM_PERM_WAIT_SECS`
+(normally 45 s); it does not inherit the longer plan/question permission hold.
 
 **Old script on an SSH host — gated by revision.** The script on a host is rewritten only at connect,
 so a long-connected project can hold a request with an older script. That script reads a JSON answer as
 neither `allow` nor `deny`, deletes it and prints nothing (the TUI still answers — verified by running the
 new sh tests against the previous script), while the WRITE succeeded; without a gate core would report
 success and the optimistic "answered" event would flip NEEDS YOU to working over an agent still waiting
-in its TUI. So the script's revision gates it: `MANAGED_SCRIPT_REVISION` is 5, every hook POST already
+in its TUI. Both parent branches used revision 5 for different answer formats, so that number cannot
+prove support for unmarked structured decisions. The merged contract uses `MANAGED_SCRIPT_REVISION`
+6, every hook POST already
 carries it (`clientRevision`), and the hook server (`labelHeldForRevision`) keeps an event's `held` ticket
-— and records the ticket as structured-capable — only for revision >= `MIN_STRUCTURED_ANSWER_REVISION` (5).
+— and records the ticket as structured-capable — only for revision >= `MIN_STRUCTURED_ANSWER_REVISION` (6).
 `answerHeldPermission` refuses (`false`, nothing written, no synthetic answered event) a structured answer
 for a ticket not recorded as capable, and a plain `allow` on a plan held by such a script (it would print a
-bare allow Claude drops). **UI consequence:** on an old-script host no plan/question controls are offered
-at all (the renderer never receives `held`), and the header ✓ Approve on a plan answers `false` instead of
+bare allow Claude drops). **Chat UI consequence:** on an old-script host no unmarked plan/question
+controls are offered (the renderer never receives `held`), and the header ✓ Approve on a plan answers `false` instead of
 pretending; Deny and ordinary approvals work exactly as before. Reconnecting the project installs the
 current script. The capability record is process-local and bounded, so a ticket from before an app
 restart is treated as not capable (the renderer's `held` is gone then too).
+Android's separately advertised marker-v2 rules and full questions remain available on a revision-5
+v2 host; the unmarked structured-answer gate does not remove those capabilities.
 
 **Renderer.** A held request's `{pendingId, toolName}` rides the normalized event as `held` and the
 agent-status store keeps it while the node is `blocked` or `waiting` — separate from `pendingId`, which
@@ -191,6 +215,103 @@ structured answers from the phone are an iOS follow-up.
 
 ## Out of scope
 
-- "Always allow" via hook `updatedPermissions`.
+## Allow and remember
+
+An approval may advertise `permissionSuggestions: [{index, label}]`. Each index points to a
+concrete `addRules` suggestion from that request's original `permission_suggestions`, with `allow`
+behavior, the same tool, explicit nonblank rule content, and one of `session`, `localSettings`,
+`projectSettings` or `userSettings`. Omitted whole-tool scope, a literal `*` scope, other tools,
+`setMode`, replacements and unsupported destinations are not offered.
+
+The Android card opens a confirmation showing each exact rule and destination. The desktop/Server
+canvas offers the same request-derived rule scopes beside Approve and Deny. A remembered reply
+uses the original rule contents and destination under
+`hookSpecificOutput.decision.updatedPermissions`; it does not change the session permission mode.
+A session destination lasts for that CLI session; settings destinations write the scope named by
+the original request. The UI does not claim the rule was applied merely because a file was written.
+
+Over the relay, `approvals.answer` retains `allow` and `deny` and adds
+`{nodeId, pendingId, decision:"allow-always", suggestionIndex}`. The host rechecks saved node
+ownership, the exact unresolved capability card, and the original request. Over direct SSH, the
+phone reads that request and builds the same reply, refusing nodes owned on another SSH host.
+An older host, a request with no eligible scope, or an unsupported response offers Open session;
+there is no fallback to a guessed `2`.
+
+## Complete question answers
+
+A held question advertises `questionPendingId` and `questions`, including every question's full
+text, header, option labels/descriptions and `multiSelect`. The supported schema is 1–4 questions
+with 2–4 distinct options each. Duplicate question text, duplicate labels, malformed fields,
+clipped/unsupported schema and incomplete selections are refused.
+
+Android renders radio choices for single-select questions and checkboxes for multi-select. Send
+answers stays disabled until every question has at least one permitted selection. It sends
+`questions.answer {nodeId, pendingId, selections:number[][]}`, where each inner list contains
+option indexes for one question. Both host and direct-SSH builders rederive the exact labels from
+the live original request. They preserve the complete original `tool_input`, including the original
+`questions`, and add an `answers` object keyed by exact question text. Multi-select labels are
+ordered by their original option positions and joined with comma-space. This sends all questions,
+not only the first picker.
+
+When a v2 question is held, its published card omits legacy `options` and `multiSelect`, including
+when the full schema cannot be answered. An older phone therefore offers Open session rather than
+typing a digit before a picker exists. An unheld legacy question keeps its existing behavior:
+measured single-choice quick keys, otherwise read-only choices and Open session. After a hold
+expires, the CLI may display its ordinary picker; no premature legacy action is republished by
+this v2 card. Free-text question entry and option-preview rendering are not added.
+
+## Ownership, races and outcomes
+
+New structured writers require a pending id belonging to the selected node. A fresh unresolved
+card must still carry the same ticket and advertised rules/questions before the phone submits.
+The host additionally rereads the original request. A missing or settled card never authorizes
+input into a newer prompt.
+
+The local writer stages a unique private reply file, then rechecks the request's regular-file
+identity, device/inode, modification time and size before atomic publication. SSH writers require a
+regular nonsymlink request, bound its read, retain a checksum and stream the reply through stdin.
+They recheck the request **after stdin completes and immediately before rename**, so an expiry or
+replacement during a suspended transfer cannot publish a stale answer. Exact temporary files are
+removed on refusal. The final check and rename remain separate operations; this is not a
+transaction with the hook's poller.
+
+Writers report `sent`, `gone` or `failed`. SSH requires a confirmed exit status and expected success
+output; a missing exit status or lost write acknowledgement is not success. An unanswered write is
+never retried through another connection or replaced with keystrokes. Android handles a gone hold
+as expired unless a fresh listing proves its own event resolved; unsupported responses open the
+session. Per-host/event native admission blocks rapid duplicate taps while an action is pending.
+
+Android v2 rule/question cards settle when the managed hook actually consumes the reply and sends
+its correlated POST. Legacy ordinary Approve/Deny and the separate structured chat answer path
+retain their existing optimistic update. A consumed question
+settles only its own question id; concurrent child permission tickets remain open. Existing boot
+and hourly pending sweeps remove old orphan files after ten minutes.
+
+## Surfaces and verification limits
+
+Desktop routes local requests through its private writer and SSH-project requests through that
+project's retained ControlMaster. Its standing relay uses those same writers. Server Edition's
+canvas supports local remembered rules; its existing SSH-project refusal remains, and it does not
+serve this legacy standing-phone relay. Direct SSH remains POSIX and writes only the selected
+computer's own hook tickets.
+
+Android parses the additive mirror fields, implements both relay verbs and the SSH reply contract,
+and exercises the real mirror producer/host router through its interop fixture. The bridges behind
+relay fixture answer verbs record calls; they are not a live Claude process. Separate regressions
+execute the shipped POSIX managed hook over real stdin/stdout and suspend real shell writers to
+exercise timeout/replacement before publication.
+
+The installed Claude 2.1.289 public bundle and official schemas were inspected. That evidence does
+not verify live CLI persistent-rule application, actual picker completion, an older CLI version or
+new physical phone behavior. Those remain explicit follow-up checks.
+
+**iOS implication — @eneskirca:** adopt `permissionSuggestions`, `questionPendingId`, full `questions`,
+`allow-always` plus `suggestionIndex`, `questions.answer` and the v2 SSH answer marker together.
+Keep legacy `allow`/`deny`, ticket ownership, full-input preservation, post-stdin expiry checks and
+unsupported-host degradation. Replace any blind Always allow digit with a request-owned rule;
+held question cards no longer expose the old numbered choices.
+
+## Out of scope
+
 - codex/gemini permission hooks (unverified decision contracts).
 - The desktop notch/HUD overlay (separate feature).

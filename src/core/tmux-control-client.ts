@@ -85,6 +85,8 @@ export class ControlModeClient {
   private readonly pending: Pending[] = []
   private proc: ReturnType<ControlSpawn['spawn']> | null = null
   private pendingBytes = 0
+  /** The attach command in argv emits its own reply before any command typed on stdin. */
+  private awaitingAttach = false
   private gone = false
   private disposed = false
 
@@ -102,7 +104,15 @@ export class ControlModeClient {
   start(): void {
     if (this.proc || this.disposed) return
     const args = ['-L', this.opts.socket, '-C', 'attach-session', '-t', this.opts.sessionName]
-    this.proc = this.spawner.spawn(this.opts.tmuxBin, args)
+    // Reserve the initial block before a caller can queue a command immediately after start().
+    // Otherwise that caller gets attach's empty success reply, and every later reply shifts too.
+    this.awaitingAttach = true
+    try {
+      this.proc = this.spawner.spawn(this.opts.tmuxBin, args)
+    } catch (error) {
+      this.awaitingAttach = false
+      throw error
+    }
     this.proc.stdout.on('data', (b) => this.onChunk(b))
     this.proc.on('exit', () => this.die('control-mode client exited'))
   }
@@ -187,6 +197,11 @@ export class ControlModeClient {
       const text = dec.write(Buffer.from(ev.data, 'latin1'))
       if (text) this.opts.onOutput(text)
     } else if (ev.kind === 'reply') {
+      if (this.awaitingAttach) {
+        this.awaitingAttach = false
+        if (!ev.ok) this.die('control-mode attach failed')
+        return
+      }
       this.pending.shift()?.resolve({ ok: ev.ok, body: ev.body })
     } else if (ev.kind === 'exited') {
       this.die('tmux control-mode client exited')

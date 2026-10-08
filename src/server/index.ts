@@ -16,8 +16,14 @@ import type { ServerConfig } from './config'
 import { initPlatform } from '../core/platform'
 import { SettingsStore } from '../core/settings-store'
 import { WorkspaceStore } from '../core/workspace-store'
+import { startSshActionsService } from '../core/ssh-actions'
+import { ManagedTerminals } from '../core/managed-terminals'
+import { createManagedTerminalPlanner } from '../core/managed-terminal-plan'
+import { findInLoginPath } from '../core/exec-path'
+import { codexIdentityCaps } from '../core/codex-identity-caps'
+import { grokCliCaps } from '../core/grok-cli'
 import { registerAgentEnvIpc } from '../core/agent-env-ipc'
-import { PtyManager } from '../core/pty-manager'
+import { PtyManager, resolveLocalSessionShell } from '../core/pty-manager'
 import { registerCoreHandlers } from './handlers'
 import { registerGitHubIntegration } from '../core/github/integration'
 import { registerBoardDispatchReportIpc } from '../core/board-dispatch-report'
@@ -59,6 +65,8 @@ import { refreshNodeTokens } from '../core/agents/node-token-service'
 import { armServerNodeIdentity } from './node-identity-arm'
 import { wireServerCodexSharedIdentity } from './codex-shared-identity'
 import {
+  writePendingAnswerLocal,
+  answerPendingHookLocal,
   localHeldPermissionIo,
   startPendingSweep,
   isValidPendingId,
@@ -78,8 +86,11 @@ import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
   recordAgentEvent,
+  hookTicketStillOpen,
   ackDone,
+  mirrorOwnsNode,
   setMirrorSettingsProvider,
+  mirrorClaudeAccount,
   setMirrorLiveNodesProvider,
   setMirrorServerProvider,
   onInboxActionable,
@@ -103,7 +114,6 @@ import { createMemoryPressureMonitor } from '../core/memory-pressure'
 import { createPtyPressureMonitor } from '../core/pty-pressure'
 import { claudeCliCaps, type ClaudeCliCaps } from '../core/claude-cli'
 import { codexCliCaps } from '../core/codex-cli'
-import { codexIdentityCaps } from '../core/codex-identity-caps'
 import type { CodexCliCaps } from '../shared/types'
 import { UNKNOWN_CODEX_CLI_CAPS } from '../shared/types'
 import { claudeConfigDirFor, registerClaudeAccountsSource } from '../core/claude-config-dir'
@@ -531,7 +541,7 @@ export async function startServer(
       ...(localCodexCaps?.noDaemon === true ? { codexNoDaemon: true } : {}),
       claudeAccounts: (s.claudeAccounts ?? [])
         .filter((a) => !a.host && !a.pending)
-        .map((a) => ({ id: a.id, dir: claudeConfigDirFor(a.id) })),
+        .map((a) => mirrorClaudeAccount(a, claudeConfigDirFor(a.id))),
       // Derived binary names only — never the launch command/env (see core/mirror-custom-agents.ts).
       customAgents: mirrorCustomAgents(s.customAgents)
     }
@@ -604,6 +614,10 @@ export async function startServer(
     if (typeof nodeId !== 'string' || !isValidPendingId(pendingId)) return false
     // An SSH-project node has no reachable ControlMaster here (v1): answer only local nodes.
     if (workspaceStore.sshProjectIdForNode(nodeId)) return false
+    if (payload.answer === undefined && payload.decision === 'allow-always') {
+      return !!workspaceStore.getNode(nodeId) && hookTicketStillOpen(nodeId, pendingId, 'approval') &&
+        await answerPendingHookLocal(nodeId, pendingId, { kind: 'allow-always', suggestionIndex: payload.suggestionIndex ?? -1 }, os.homedir()) === 'sent'
+    }
     // Same shared body as the desktop (core/agents/permission-decision.ts), local fs only.
     const res = await answerHeldPermission(
       pendingId,
@@ -649,6 +663,7 @@ export async function startServer(
   // SSH projects (v1); a host it hosts writes its own acks here. See core/ack-sweep.ts.
   createAckSweeper({
     handlers: {
+      ownsNode: mirrorOwnsNode,
       ackDone,
       onUnreadClear: (nodeId) => platform.broadcast(IPC.agentUnreadClear, nodeId)
     }
@@ -929,6 +944,24 @@ export async function startServer(
     }
   })
 
+  // Server Edition has no standing desktop renderer nudge consumer or SSH ControlMaster.
+  // Serve local Board writes and host-owned tmux creation through the shared save chain;
+  // leave renderer nudges and remote-project actions off.
+  const managedPlanner = createManagedTerminalPlanner({ store: workspaceStore,
+    userData: platform.userDataDir, settings: () => settingsStore.get(), trust: projectTrustStore,
+    executable: findInLoginPath, sessionShell: resolveLocalSessionShell,
+    claudeCaps: claudeCliCaps, codexCaps: codexCliCaps, grokCaps: grokCliCaps,
+    codexIdentity: codexIdentityCaps })
+  const managedTerminals = ptyManager.supportsManagedCreation() ? new ManagedTerminals(
+    platform.userDataDir, workspaceStore, {
+      supported: () => ptyManager.supportsManagedCreation(), ...managedPlanner,
+      create: (options, creationId, current) => ptyManager.createManagedHeadless(options, creationId, current),
+      verify: (receipt, current) => ptyManager.verifyManagedPane(receipt, current),
+      deliver: (receipt, command, current) => ptyManager.deliverManagedLaunch(receipt, command, current)
+    }) : undefined
+  const sshActionsService = await startSshActionsService(platform.userDataDir, workspaceStore,
+    undefined, false, managedTerminals)
+
   // Hosted team relay (docs/hosted-team-relay.md): this server as the relay host of a team. OFF
   // unless `team init` created <dataDir>/relay/team.json — with no team, start() answers 'no-team':
   // no relay listener is opened, and no host key, team.json or device id is written. What EVERY boot
@@ -1159,6 +1192,7 @@ export async function startServer(
     return {
       port: 0, // nothing bound
       async close() {
+        await sshActionsService?.stop()
         // Kill any in-flight setup/archive run: it is a detached process group, so nothing else in
         // this teardown reaches it. Same call, same reason, in the serving branch's close() below.
         projectSetupService.disposeAll()
@@ -1218,7 +1252,7 @@ export async function startServer(
       server.off('error', reject)
       resolve()
     })
-  })
+  }).catch(async (error) => { await sshActionsService?.stop(); throw error })
 
   const addr = server.address()
   const port = addr && typeof addr === 'object' ? addr.port : config.port
@@ -1226,6 +1260,7 @@ export async function startServer(
   return {
     port,
     async close() {
+      await sshActionsService?.stop()
       // Kill any in-flight setup/archive run first: it is a detached process group (setsid), so
       // neither the WS teardown nor ptyManager.killAll() below would ever reach it.
       projectSetupService.disposeAll()

@@ -15,10 +15,47 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
+import { execFile, type ChildProcess } from 'child_process'
 
-const runAsync = promisify(execFile)
+const SHELL_PROBE_TIMEOUT_MS = 5000
+
+/** execFile's timeout only sends a signal: its callback can still wait forever for close.
+ * Settle independently, then release only this probe's child and pipes. No PID/group lookup:
+ * an exited shell's descendants may hold stdout, but must never become cleanup targets. */
+function probeShell(shell: string, command: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let child: ChildProcess | undefined
+    let settled = false
+    const finish = (stdout: string | null): boolean => {
+      if (settled) return false
+      settled = true
+      clearTimeout(deadline)
+      resolve(stdout)
+      return true
+    }
+    const deadline = setTimeout(() => {
+      if (!finish(null) || !child) return
+      // kill() belongs to the returned ChildProcess, and its exit fields prevent signalling
+      // an already-reaped child whose old PID could now name an unrelated process.
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill('SIGKILL') } catch { /* best effort; fallback is already settled */ }
+      }
+      for (const stream of [child.stdin, child.stdout, child.stderr]) {
+        try { stream?.destroy() } catch { /* one pipe must not prevent releasing the others */ }
+      }
+    }, SHELL_PROBE_TIMEOUT_MS)
+    try {
+      child = execFile(shell, ['-ilc', command], {
+        encoding: 'utf-8',
+        timeout: SHELL_PROBE_TIMEOUT_MS
+      }, (error, stdout) => {
+        finish(error ? null : stdout)
+      })
+    } catch {
+      finish(null)
+    }
+  })
+}
 
 /**
  * Resolve the user's REAL login-shell PATH once, and cache it.
@@ -45,12 +82,9 @@ export function resolveShellPath(): Promise<string | null> {
   // Dotfiles routinely take hundreds of ms (nvm/conda init) and can hang, so this MUST be
   // async — a synchronous probe here froze every window and all IPC for up to the 5s timeout.
   // stderr is captured separately by execFile, so prompt/compinit noise can't pollute stdout.
-  shellPathPromise = runAsync(shell, ['-ilc', `command printf '${START}%s${END}' "$PATH"`], {
-    encoding: 'utf-8',
-    timeout: 5000
-  })
-    .then(({ stdout }) => {
-      const m = stdout.match(new RegExp(`${START}([\\s\\S]*?)${END}`))
+  shellPathPromise = probeShell(shell, `command printf '${START}%s${END}' "$PATH"`)
+    .then((stdout) => {
+      const m = stdout?.match(new RegExp(`${START}([\\s\\S]*?)${END}`))
       return m?.[1]?.trim() || null
     })
     .catch(() => null) // login shell hung / errored / isn't POSIX — inherited-PATH fallback
@@ -83,12 +117,9 @@ export function resolveShellEnvVar(name: string): Promise<string | null> {
   const shell = process.env.SHELL || '/bin/bash'
   const START = '__NT_VAR_START__'
   const END = '__NT_VAR_END__'
-  const p = runAsync(shell, ['-ilc', `command printf '${START}%s${END}' "$${name}"`], {
-    encoding: 'utf-8',
-    timeout: 5000
-  })
-    .then(({ stdout }) => {
-      const m = stdout.match(new RegExp(`${START}([\\s\\S]*?)${END}`))
+  const p = probeShell(shell, `command printf '${START}%s${END}' "$${name}"`)
+    .then((stdout) => {
+      const m = stdout?.match(new RegExp(`${START}([\\s\\S]*?)${END}`))
       return m?.[1]?.trim() || null
     })
     .catch(() => null)
@@ -169,9 +200,18 @@ export function unquotePathEntry(entry: string): string {
  *  harmless but says something untrue about the check; F_OK says what we actually test. */
 const ACCESS_MODE = os.platform() === 'win32' ? fs.constants.F_OK : fs.constants.X_OK
 
-/** Walk a PATH string for an executable — sync but SUBPROCESS-FREE (one accessSync per candidate),
- *  so it is safe on the main thread. Returns the first accessible match, or null. */
+/** Resolve an absolute executable directly, or walk PATH for a bare name — sync but
+ *  SUBPROCESS-FREE, so it is safe on the main thread. An unavailable absolute path never falls
+ *  through to PATH: joining it to a PATH entry would check an unrelated executable. */
 export function findInPathString(bin: string, pathStr: string | null | undefined): string | null {
+  if (path.isAbsolute(bin)) {
+    try {
+      fs.accessSync(bin, ACCESS_MODE)
+      return fs.statSync(bin).isFile() ? bin : null
+    } catch {
+      return null
+    }
+  }
   const names = executableCandidates(bin, os.platform(), process.env.PATHEXT)
   for (const raw of (pathStr ?? '').split(path.delimiter)) {
     const dir = unquotePathEntry(raw)
