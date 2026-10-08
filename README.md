@@ -16,12 +16,11 @@ hidden tabs.
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/eneskirca/nodeterm?style=flat)](https://github.com/eneskirca/nodeterm/stargazers)
 [![Latest release](https://img.shields.io/github/v/release/eneskirca/nodeterm?include_prereleases&sort=semver)](https://github.com/eneskirca/nodeterm/releases)
-<!-- Installer downloads: .dmg + .AppImage + .deb + .rpm + Setup .exe across every release, hand-written on purpose.
-     shields' github/downloads/…/total reads ~12× higher because electron-updater's own traffic
-     (latest-*.yml polls, mac .zip deltas, blockmaps) is counted as downloads there. Recount with:
-     gh api --paginate repos/eneskirca/nodeterm/releases --jq \
-       '[.[].assets[] | select(.name|test("\\.(dmg|AppImage|deb|rpm|exe)$")) | .download_count] | add' -->
-[![Downloads](https://img.shields.io/badge/downloads-1.2k-brightgreen)](https://github.com/eneskirca/nodeterm/releases)
+<!-- Installer downloads only (.dmg + .AppImage + .deb + .rpm + .exe across every release), kept live by
+     .github/workflows/download-badge.yml, which writes a shields endpoint JSON to the `badges` branch.
+     shields' github/downloads/…/total reads ~14× higher because electron-updater's own traffic
+     (latest-*.yml polls, mac .zip deltas, blockmaps) is counted as downloads there. -->
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Feneskirca%2Fnodeterm%2Fbadges%2Fdownloads.json)](https://github.com/eneskirca/nodeterm/releases)
 
 <a href="https://trendshift.io/repositories/103825?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-103825" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/103825" alt="eneskirca%2Fnodeterm | Trendshift" width="250" height="55"/></a>
 
