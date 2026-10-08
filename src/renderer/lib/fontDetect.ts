@@ -89,6 +89,17 @@ export function buildFontStack(family: string): string {
 }
 
 /**
+ * `buildFontStack` for reading text (the Markdown font): proportional fallbacks, ending in
+ * `sans-serif`. A generic family (`serif`, `system-ui`) is a complete stack on its own.
+ */
+export function buildProseFontStack(family: string): string {
+  const trimmed = family.trim()
+  if (!trimmed) return 'sans-serif'
+  if (isGenericFamily(trimmed)) return trimmed
+  return `${quoteFamily(trimmed)}, -apple-system, BlinkMacSystemFont, sans-serif`
+}
+
+/**
  * Whether `family` resolves to a real installed font.
  *
  * Generic families are true by definition. Everything else is available only if it measures
@@ -153,6 +164,44 @@ export const MONO_FONT_CATALOG: readonly string[] = [
   'Space Mono',
   'Ubuntu Mono',
   'Victor Mono'
+]
+
+/**
+ * Well-known reading fonts (sans and serif, across macOS, Windows and Linux) for the Markdown font
+ * picker. A catalogue like `MONO_FONT_CATALOG`: filtered by what is installed, never a whitelist.
+ */
+export const PROSE_FONT_CATALOG: readonly string[] = [
+  'Arial',
+  'Atkinson Hyperlegible',
+  'Avenir Next',
+  'Baskerville',
+  'Cantarell',
+  'Charter',
+  'DejaVu Sans',
+  'DejaVu Serif',
+  'Georgia',
+  'Gill Sans',
+  'Helvetica Neue',
+  'IBM Plex Sans',
+  'IBM Plex Serif',
+  'Inter',
+  'Iowan Old Style',
+  'Lato',
+  'Liberation Sans',
+  'Liberation Serif',
+  'New York',
+  'Noto Sans',
+  'Noto Serif',
+  'Open Sans',
+  'Optima',
+  'Palatino',
+  'Roboto',
+  'Segoe UI',
+  'Source Sans 3',
+  'Source Serif 4',
+  'Times New Roman',
+  'Ubuntu',
+  'Verdana'
 ]
 
 /**

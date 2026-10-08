@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   MONO_FONT_CATALOG,
   buildFontStack,
+  buildProseFontStack,
   detectInstalled,
   isFontAvailable,
   isGenericFamily,
@@ -137,5 +138,19 @@ describe('MONO_FONT_CATALOG', () => {
   it('has no duplicates and is sorted, so the picker reads predictably', () => {
     expect(new Set(MONO_FONT_CATALOG).size).toBe(MONO_FONT_CATALOG.length)
     expect([...MONO_FONT_CATALOG]).toEqual([...MONO_FONT_CATALOG].sort())
+  })
+})
+
+describe('buildProseFontStack', () => {
+  it('keeps proportional fallbacks ending in sans-serif', () => {
+    expect(buildProseFontStack('Iowan Old Style')).toBe('"Iowan Old Style", -apple-system, BlinkMacSystemFont, sans-serif')
+  })
+
+  it('keeps a generic family as a complete stack', () => {
+    expect(buildProseFontStack('serif')).toBe('serif')
+  })
+
+  it('answers sans-serif for nothing', () => {
+    expect(buildProseFontStack('  ')).toBe('sans-serif')
   })
 })

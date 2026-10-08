@@ -2000,6 +2000,14 @@ raw-HTML tokens as escaped TEXT (a program's `<stdin>` is not markup; parsed as 
 stripped it) and trims capture-pane's trailing padding. The escape is on the `html` token, never a
 global pre-escape of `<`, which would double-escape code spans/fences.
 
+**The rendered-Markdown font is a setting** (`markdownFontFamily` / `markdownFontSize`, Settings →
+Appearance; `@shared/markdown-font`). App.tsx publishes it as `--md-font-family` / `--md-font-size`
+on <html>, plus `--md-code-font-family` = the TERMINAL font family; styles.css keeps the defaults on
+`:root`. Every rule that sizes rendered Markdown reads the tokens — `.term-md__content` (⌘M output
+view, editor preview, the kanban file preview), `.term-chat__msg` and the ⌘M composer input —
+headings are `em`, and code is `0.92em` of the body (relative, so it stays in proportion).
+`styles.markdown-font.test.ts` pins this. Sticky notes keep their own font on purpose.
+
 **A link in rendered markdown must never navigate the app window.** DOMPurify keeps an anchor's
 href as written, and agents write relative links constantly (`[pty-manager.ts](src/core/pty-manager.ts:4100)`).
 A click resolved it against the app document: on the desktop another `file://` path, which the old

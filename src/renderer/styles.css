@@ -162,6 +162,11 @@
   --radius: 8px;
   --radius-sm: 6px;
   --radius-lg: 12px;
+  /* The rendered-Markdown views' font (Settings → Appearance). App.tsx overrides these on <html>
+     from settings; these are the defaults (@shared/markdown-font) for an un-hydrated store. */
+  --md-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --md-font-size: 13px;
+  --md-code-font-family: Menlo, Monaco, "Courier New", monospace;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro', 'Helvetica Neue',
     sans-serif;
   font-size: 13px;
@@ -3150,8 +3155,8 @@ body,
   min-height: 0;
   overflow: auto;
   padding: 12px 16px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   line-height: 1.6;
   color: var(--text);
   /* Allow text selection / copy (React Flow nodes are non-selectable by default). */
@@ -3167,14 +3172,16 @@ body,
   line-height: 1.3;
 }
 
+/* Heading sizes are proportions of the body size (20 / 17 / 15 px at the default 13), so they
+   follow the Markdown font size setting. */
 .term-md__content h1 {
-  font-size: 20px;
+  font-size: 1.54em;
 }
 .term-md__content h2 {
-  font-size: 17px;
+  font-size: 1.31em;
 }
 .term-md__content h3 {
-  font-size: 15px;
+  font-size: 1.15em;
 }
 
 .term-md__content p,
@@ -3188,8 +3195,9 @@ body,
 }
 
 .term-md__content code {
-  font-family: Menlo, Monaco, monospace;
-  font-size: 12px;
+  /* The terminal's font, at 0.92 of the Markdown size (12px at the default 13). */
+  font-family: var(--md-code-font-family);
+  font-size: 0.92em;
   background: rgba(var(--tint-rgb), 0.08);
   padding: 1px 5px;
   border-radius: 5px;
@@ -3326,7 +3334,8 @@ body,
    ASSISTANT's is plain full-width text on the panel with no bubble, roomy line height and paragraph
    spacing, and a quiet action row under each turn (ChatTurnActions). */
 .term-chat__msg {
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   line-height: 1.5;
   word-break: break-word;
   min-width: 0;
@@ -3420,6 +3429,10 @@ body,
 }
 .term-chat__text > :last-child {
   margin-bottom: 0;
+}
+.term-chat__text code {
+  font-family: var(--md-code-font-family);
+  font-size: 0.92em;
 }
 .term-chat__text pre {
   background: rgba(0, 0, 0, 0.35);
@@ -3797,8 +3810,8 @@ body,
   width: 100%;
   resize: none;
   padding: 4px 6px;
-  font-family: inherit;
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   color: var(--text-strong);
   background: transparent;
   border: none;

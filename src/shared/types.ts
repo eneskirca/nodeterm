@@ -7,6 +7,7 @@ import type { AgentIntegrationsSettings } from './agent-integrations'
 // Types shared across the main, preload, and renderer processes.
 
 import { TABBAR_HEIGHT_PX } from './window-chrome-metrics'
+import { DEFAULT_MARKDOWN_FONT_FAMILY, DEFAULT_MARKDOWN_FONT_SIZE } from './markdown-font'
 import { DEFAULT_WORKTREE_PATH_TEMPLATE } from './worktree'
 import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
@@ -1830,6 +1831,14 @@ export interface Settings {
    *  the default for anything that is not a finite number. Machine-local: it is one person's
    *  chrome, not a canvas fact. */
   tabBarHeight: number
+  /** Font of the rendered-Markdown reading views — the ⌘M output and chat views and the editor's
+   *  Markdown preview (Settings → Appearance). A CSS font stack. Hand-editable; read through
+   *  `resolveMarkdownFontFamily` (@shared/markdown-font). Code inside Markdown follows the
+   *  terminal `fontFamily` instead. Machine-local, like the terminal font. */
+  markdownFontFamily: string
+  /** Body size (CSS px) of the same views; headings scale from it, code is 0.92 of it. Read
+   *  through `resolveMarkdownFontSize`, which clamps to 8–28 and answers 13 for garbage. */
+  markdownFontSize: number
   /** Default size (px) for NEW terminal/agent nodes on the canvas. Existing nodes keep
    *  whatever size they were saved with; other node kinds keep their own defaults. */
   defaultNodeWidth: number
@@ -2322,6 +2331,8 @@ export const DEFAULT_SETTINGS: Settings = {
   snapToGrid: false,
   autoAlignGrid: false,
   tabBarHeight: TABBAR_HEIGHT_PX,
+  markdownFontFamily: DEFAULT_MARKDOWN_FONT_FAMILY,
+  markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
   defaultNodeWidth: 640,
   defaultNodeHeight: 440,
   sidebarAutoCollapse: true,
