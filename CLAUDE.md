@@ -1577,7 +1577,10 @@ session.
   lifecycle: capture on mount + a ↻ refresh, a request token that drops stale/late answers, an
   explicit empty state ('' is an answer; a rejected capture is a failure, not empty), only the
   LAST `MD_OUTPUT_MAX_LINES` (5000) lines rendered and announced when cut, scrolled to the latest
-  output. Entering the view (output or ChatPanel) blurs the xterm; leaving it restores focus
+  output. Entering the view (output or ChatPanel) blurs the xterm and, for the ChatPanel, puts the
+  keyboard in its composer (only when focus was nowhere, in this node or in a terminal — never out
+  of a text field elsewhere; a lazy-loading or disabled composer takes it when it mounts/enables,
+  and an exit cancels the request); leaving it restores focus
   only if the terminal had it on entry AND focus is now nowhere or still inside this node
   (`terminal/useMdModeFocus.ts`). While the view is open, every "take the keyboard" path (hover
   dwell, click, sidebar/notification jump) goes through `focusXtermUnlessCovered` and leaves the

@@ -19,6 +19,7 @@ import { chatKeyAction } from '../lib/chatPanel'
 import { appendToComposer, composerLabels, composerPickerCommand, type ComposerPicker } from '../lib/chatComposer'
 import { requestComposerDictation, subscribeComposerDictation } from '../lib/chatComposerDictation'
 import { clipboardImages, pasteHasText, pastedFiles } from '../terminal/file-drop'
+import { takeComposerFocusRequest } from '../terminal/useMdModeFocus'
 import { IconMic, IconPlus } from '../components/icons'
 import { Spinner } from '../components/Spinner'
 import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
@@ -244,6 +245,13 @@ export function ChatComposer({
     },
     [onChange]
   )
+
+  // Opening the ⌘M view hands the keyboard to the composer. On the first open the ChatPanel chunk
+  // is still loading when the view's entry runs, so the request waits for this mount — or, when
+  // the composer mounts disabled (a dialog on screen), for the moment it is enabled.
+  useEffect(() => {
+    if (!disabled) takeComposerFocusRequest(nodeId, inputRef.current)
+  }, [nodeId, disabled])
 
   // A dictated take for THIS composer lands in the draft, never in the pane.
   useEffect(() => subscribeComposerDictation(composerId, insertIntoComposer), [composerId, insertIntoComposer])
