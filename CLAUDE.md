@@ -470,6 +470,18 @@ project's nodes only.** The contract:
   machine-local, but in the **Server Edition** the setting rides that server's settings.json
   (shared by every browser hitting it) while the bit is per browser PROFILE, so two profiles can
   legitimately disagree about the lock. Desktop + Server Edition; **Mobile: N/A** (no canvas).
+  **The lock covers middle-drag on NODES too, and ⌘/Ctrl+middle-drag gets past it** (issue
+  #1130, `renderer/lib/modifierPan.ts`). React Flow's zoom filter accepts a middle-button
+  `mousedown` on a node / edge / selection before it reads `panOnDrag`, so turning `panOnDrag` off
+  never stopped a middle-drag that started on a node header or a terminal's hover guard (the xterm
+  itself was only safe by accident, via the #84 middle-click guard). While locked,
+  `installLockedMiddleGuard` stops a middle `mousedown` in the BUBBLE phase on
+  `.react-flow__viewport` — after the node (tmux, the middle-click paste setting) has seen it, before
+  React Flow's listener on an ancestor. `installModifierPan` is the deliberate way past the lock:
+  ⌘+middle-drag (Ctrl off-mac) pans anywhere, locked or not, by cancelling the pointerdown in the
+  capture phase on the flow wrapper (so no `mousedown` reaches d3, d3-drag or xterm). The
+  `canvas.toggleLock` command ships UNBOUND (⌘⇧L is the sessions sidebar's) and, like every canvas
+  command, does not fire while a terminal has the keyboard.
   It is one GLOBAL bit rather than per-project
   because `<Canvas />` is mounted once and is not keyed by project, so the lock always carried
   across project switches within a session. Restore is gated on settings HYDRATION (Canvas mounts

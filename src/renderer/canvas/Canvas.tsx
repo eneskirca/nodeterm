@@ -237,6 +237,7 @@ import { handoffsFor, installHandoffFocusReset, noteHandoff, suppressDoneAfterHa
 import { loadIdentity } from '../state/presence'
 import { runBoardKey } from '../lib/boardKeys'
 import { readCanvasLocked, writeCanvasLocked } from '../lib/canvasLock'
+import { installLockedMiddleGuard, installModifierPan } from '../lib/modifierPan'
 import {
   FLOW_NODE_CLASS,
   isFocusTarget,
@@ -5083,6 +5084,25 @@ export function Canvas() {
       offGesture?.()
     }
   }, [getViewport, setViewport, wheelZoom, wheelZoomSpeed, trackpadRouting, canvasLocked])
+
+  // ⌘+middle-drag (Ctrl off-mac) pans the camera even while the canvas lock is on, and over any
+  // node — the explicit "move the map" gesture (issue #1130; lib/modifierPan). Not gated on
+  // `canvasLocked` on purpose: getting past the lock is the point.
+  useEffect(() => {
+    const wrap = flowWrapRef.current
+    if (wrap === null) return
+    return installModifierPan(wrap, { isMac, getViewport, setViewport: (v) => void setViewport(v) })
+  }, [getViewport, setViewport])
+
+  // …and the lock really freezes a PLAIN middle-drag: React Flow lets a middle press on a node,
+  // edge or selection pan even with `panOnDrag` off, so a drag started on a node header (or a
+  // terminal's hover guard) slid the map past the lock (lib/modifierPan installLockedMiddleGuard).
+  useEffect(() => {
+    if (!canvasLocked) return
+    const viewport = flowWrapRef.current?.querySelector<HTMLElement>('.react-flow__viewport')
+    if (viewport === null || viewport === undefined) return
+    return installLockedMiddleGuard(viewport)
+  }, [canvasLocked])
 
   // Double-clicking EMPTY canvas pulls back to the overview zoom — the inverse of the node
   // double-click, which frames one node. A fixed zoom, not "the camera the last focus came from":
@@ -10010,6 +10030,7 @@ export function Canvas() {
       'canvas.fitAll': () => { fitAll(); return true },
       'canvas.tidy': () => { arrangeAllNodes(); return true },
       'canvas.tidyLineage': () => { arrangeByLineageAction(); return true },
+      'canvas.toggleLock': () => { setCanvasLocked((v) => !v); return true },
       // The kanban board's keys — the mounted board decides (and declines when the focused control
       // owns the key, or when no per-project board is up: Omni registers none). lib/boardKeys.
       'board.openCard': () => runBoardKey('open'),
@@ -18793,7 +18814,11 @@ export function Canvas() {
               </ControlButton>
             </Tooltip>
             <Tooltip
-              label={canvasLocked ? 'Unlock view (pan/zoom)' : 'Lock view (pan/zoom); nodes stay movable'}
+              label={
+                canvasLocked
+                  ? `Unlock view (pan/zoom). ${isMac ? '⌘' : 'Ctrl'}+middle-drag still pans`
+                  : 'Lock view (pan/zoom); nodes stay movable'
+              }
               placement="right"
             >
               <ControlButton
