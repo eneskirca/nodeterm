@@ -14,7 +14,7 @@ import {
 } from './agents/hook-endpoint-failover-sh'
 import { codexSandboxGuidanceLines } from './context-link-core'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
-import { AGENT_CONFIG, AGENT_HOOK_TARGETS, BUILTIN_AGENT_IDS } from '@shared/agents/config'
+import { AGENT_CONFIG, AGENT_HOOK_TARGETS, BUILTIN_AGENT_IDS, MODEL_SWITCH_CAPABLE } from '@shared/agents/config'
 import { RETRYABLE } from './agents/agent-message-decide'
 import { FANOUT_PER_TURN, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
@@ -792,6 +792,11 @@ export function parseControlRequest(
 // pattern as context-link's get-linked-context block, distinct markers).
 const CC_START = '<!-- nodeterm:manage-canvas:start -->'
 const CC_END = '<!-- nodeterm:manage-canvas:end -->'
+// Who honours `--model`, by label, from the one list that decides it (MODEL_SWITCH_CAPABLE), so the
+// sentence cannot drift from the gate again (it named three agents after cursor and grok joined).
+const MODEL_FLAG_AGENTS = ((labels: string[]) => `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`)(
+  MODEL_SWITCH_CAPABLE.map((id) => AGENT_CONFIG[id].label)
+)
 
 /** The two markers, for the SSH freshness probe, which must find the block exactly where the
  *  merge below would. */
@@ -933,8 +938,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  not a leading `/model`.',
     '  `--model <id>` picks the model the session launches with, instead of inheriting the',
     '  default. Use it to keep a cheap station cheap: a node whose whole job is editing a README',
-    '  does not need the model you give the node rewriting a test suite. Honoured by claude, codex',
-    '  and copilot (and custom agents based on them); any other agent ignores it and launches',
+    `  does not need the model you give the node rewriting a test suite. Honoured by ${MODEL_FLAG_AGENTS}`,
+    '  (and custom agents based on them); any other agent ignores it and launches',
     '  exactly as it would without the flag. The id is passed to the CLI as-is, so a name that',
     '  agent does not recognise fails inside the session, not at open time — name a model you know.',
     ...issueBindingDocLines(),
@@ -1516,7 +1521,7 @@ Verbs:
   \`--model <id>\` decides which model the session LAUNCHES with, instead of inheriting the
   project default. This is the lever for cost: a station whose job is editing a README does not
   need the model you give the station rewriting a 1000-line test suite, and without this flag
-  every station you open runs on the same one. Honoured by claude, codex and copilot (and custom
+  every station you open runs on the same one. Honoured by ${MODEL_FLAG_AGENTS} (and custom
   agents declaring one of those as their base); every other agent IGNORES it and launches exactly
   as it would have — the flag is never an error, so a mixed fan-out needs no special-casing. The
   id goes to the CLI verbatim: an unknown name fails inside the session on its first turn, not at

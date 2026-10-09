@@ -8,6 +8,7 @@ import { generateCommitMessage } from '../../core/commit-message'
 import { registerFsHandlers } from '../../core/fs-handlers'
 import { claudeCliCaps, registerClaudeCliIpc } from '../../core/claude-cli'
 import { registerGrokCliIpc } from '../../core/grok-cli'
+import { registerCursorCliIpc } from '../../core/cursor-cli'
 import { registerCodexIdentityIpc } from '../../core/codex-identity-caps'
 import { registerCodexCliIpc } from '../../core/codex-cli'
 import { registerWallpaperIpc } from '../../core/wallpaper'
@@ -79,6 +80,7 @@ export function registerCoreHandlers(
   // Invariant 11 for probes: registered in BOTH shells, or session-id minting silently works on
   // the desktop and not in the browser, with nothing to say which.
   registerGrokCliIpc()
+  registerCursorCliIpc()
   // The codex CLI's own approval vocabulary, and this one is registered FOR REAL rather than
   // stubbed. `registerCodexIdentityIpc` below declines a shared app-server on purpose; this is the
   // opposite case, and the distinction matters — the Server Edition's Codex sessions run on THIS

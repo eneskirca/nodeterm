@@ -4,6 +4,7 @@
 // agree with each other, which reads as confirmation while adding no evidence.
 //
 // Kept free of React/store imports so the lens table and the prompt wording are unit-testable.
+import { usesLinkedContextSkill } from './noteLink'
 
 /** Lens id → what that reviewer is told to hunt for. */
 const LENS_BRIEFS: Record<string, string> = {
@@ -51,7 +52,7 @@ export function parseLenses(raw: string | undefined): string[] {
 
 /** How a given agent is told to read a linked node's work. */
 function readInstruction(agentId: string | undefined, shimPath: string): string {
-  return !agentId || agentId === 'claude'
+  return usesLinkedContextSkill(agentId)
     ? 'read its work with the get-linked-context skill (summary first, then transcript if you need detail)'
     : `read its work by running: sh "${shimPath}" summary --node <id> (then transcript --node <id> for detail) — see the get-linked-context section of your global agent instructions`
 }

@@ -3,6 +3,7 @@ import { readFileSync } from 'fs'
 import path from 'path'
 import {
   grokModelsFrom,
+  cursorModelsFrom,
   normalizedAgentModel,
   MODEL_GATEWAY_ENV_KEYS,
   MODEL_GATEWAY_SECRET_REF,
@@ -347,6 +348,26 @@ describe('modelsForAgent — grok is offered its OWN models, never the gateway c
   })
 })
 
+describe('modelsForAgent: cursor never gets the gateway catalogue either', () => {
+  it('returns nothing for cursor, whatever else is passed', () => {
+    const GATEWAY = [{ id: 'anthropic/claude-x' }]
+    expect(modelsForAgent(GATEWAY, 'cursor')).toEqual([])
+    // A grok catalogue is never handed over either; only cursor's own list is.
+    expect(modelsForAgent(GATEWAY, 'cursor', [{ id: 'grok-4.6' }])).toEqual([])
+    expect(modelsForAgent(GATEWAY, 'cursor', [], [{ id: 'auto', name: 'Auto' }])).toEqual([
+      { id: 'auto', name: 'Auto' }
+    ])
+  })
+
+  it('still emits a flag for an explicit model (canvas-control --model), and no gateway env', () => {
+    expect(withAgentModel('cursor-agent', 'cursor', 'composer-2.5')).toBe(
+      "cursor-agent --model 'composer-2.5'"
+    )
+    const settings = { baseUrl: 'https://gw.example', apiKey: 'k' }
+    expect(modelGatewayEnv(settings as never, 'cursor', 'composer-2.5', {}, 'secret')).toEqual({})
+  })
+})
+
 describe('grok takes its model as a FLAG, and needs no gateway environment', () => {
   it('appends --model before anything else touches the line', () => {
     expect(withAgentModel('grok', 'grok', 'grok-4.5')).toBe("grok --model 'grok-4.5'")
@@ -365,5 +386,29 @@ describe('grok takes its model as a FLAG, and needs no gateway environment', () 
     expect(withAgentModel('grok', 'grok', 'grok-4.6 && rm -rf /')).toBe(
       "grok --model 'grok-4.6 && rm -rf /'"
     )
+  })
+})
+
+describe('cursorModelsFrom', () => {
+  // Shape measured on cursor-agent 2026.09.28; the zero-width spaces are in the real output.
+  const OUT =
+    'Available models\n\nauto - Auto (default)\ngpt-5.3-codex-low - Codex 5.3 Low\n' +
+    'grok-4.7-low-fast - Grok 4.7  Low Fast\u200b\u200b\n\n' +
+    "Tip: use --model <id> (or /model <id> in interactive mode) to switch. e.g. --model 'claude-opus-4-8[context=1m]'.\n"
+
+  it('reads ids and labels only, stripping zero-width spaces and the header/tip prose', () => {
+    expect(cursorModelsFrom(OUT)).toEqual([
+      { id: 'auto', name: 'Auto (default)' },
+      { id: 'gpt-5.3-codex-low', name: 'Codex 5.3 Low' },
+      { id: 'grok-4.7-low-fast', name: 'Grok 4.7 Low Fast' }
+    ])
+  })
+  it('fails open to [] on nothing, junk, or an unsafe id', () => {
+    expect(cursorModelsFrom(null)).toEqual([])
+    expect(cursorModelsFrom('Error: not logged in')).toEqual([])
+    expect(cursorModelsFrom('x;rm - evil')).toEqual([])
+  })
+  it('keeps the first of a duplicated id', () => {
+    expect(cursorModelsFrom('a - One\na - Two')).toEqual([{ id: 'a', name: 'One' }])
   })
 })

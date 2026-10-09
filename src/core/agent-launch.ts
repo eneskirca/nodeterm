@@ -390,7 +390,11 @@ function logicalLaunch(
   const sessionArgs: string[] = [];
   if (intent.newSessionId !== undefined) {
     if (!mintsSessionId(config.id)) fail("invalid-intent");
-    sessionArgs.push("--session-id", intent.newSessionId);
+    // cursor mints by resuming an id that does not exist yet (see withSessionId in shared/agents/launch).
+    sessionArgs.push(
+      config.id === "cursor" ? "--resume" : "--session-id",
+      intent.newSessionId,
+    );
   }
 
   const hasPrompt = Object.hasOwn(intent, "prompt");

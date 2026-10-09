@@ -27,6 +27,7 @@ import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import type { ContextTail } from './context-tail'
 import { locateCodex, locateGemini } from './handoff/locate'
+import { locateCursorChat } from './cursor-chat'
 import { resolveTranscript } from './transcript-ipc'
 import { SESSION_ID_RE } from './transcript-reader'
 
@@ -106,6 +107,10 @@ function localTranscriptFor(
       return locateCodex(q.sessionId)
     case 'gemini':
       return locateGemini(q.sessionId)
+    // cursor: the chat's `store.db`, STRICTLY by id (cwd is never passed, so it cannot even order a
+    // search, let alone stand in for the id). A remote node never gets here: `ensureRemote` is terminal.
+    case 'cursor':
+      return locateCursorChat(q.sessionId)
     default:
       return Promise.resolve(undefined)
   }

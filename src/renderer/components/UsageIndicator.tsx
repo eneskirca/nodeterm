@@ -32,7 +32,8 @@ import {
   limitLabel,
   limitShortLabel,
   primaryLimit,
-  providerLabel
+  providerLabel,
+  providerPillSegments
 } from '@shared/usage-limits'
 import { systemAccountDisplay } from '../state/workspace'
 
@@ -744,15 +745,20 @@ export function UsageIndicator({
         ))}
         {/* One segment per enabled provider, carrying only its worst limit — a provider's full
             breakdown belongs in the popover, not in a pill that has to fit beside the canvas. */}
+        {/* Cursor is the exception: all three buckets (providerPillSegments). */}
         {enabled.map((p, i) => {
-          const worst = primaryLimit(p.limits)
-          if (!worst) return null
+          const segments = providerPillSegments(p, labelFor(p.provider))
+          if (segments.length === 0) return null
           return (
             <span key={providerRowKey(p)} className="usage-pill__provider">
-              {(limits.length > 0 || i > 0) && <span className="usage-pill__sep">·</span>}
-              <span className="usage-pill__num">
-                {percentNumber(worst.usedPercent, percentMode)}% {labelFor(p.provider)}
-              </span>
+              {segments.map(({ limit: l, label }, j) => (
+                <span key={limitKey(l)}>
+                  {(limits.length > 0 || i > 0 || j > 0) && <span className="usage-pill__sep">·</span>}
+                  <span className="usage-pill__num">
+                    {percentNumber(l.usedPercent, percentMode)}% {label}
+                  </span>
+                </span>
+              ))}
             </span>
           )
         })}

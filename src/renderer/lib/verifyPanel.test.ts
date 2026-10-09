@@ -45,6 +45,7 @@ describe('verifyLensPrompt', () => {
     const codex = verifyLensPrompt({ ...base, lens: 'tests', agentId: 'codex' })
     expect(codex).toContain('/x/nodeterm.sh')
     expect(codex).not.toContain('get-linked-context skill')
+    expect(verifyLensPrompt({ ...base, lens: 'tests', agentId: 'cursor' })).toContain('get-linked-context skill')
   })
 
   it('gives an unknown lens a generic brief instead of dropping it', () => {

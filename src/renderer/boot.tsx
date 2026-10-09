@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
-import { ensureClaudeCliCaps, ensureGrokCliCaps } from './state/permissionMode'
+import { ensureClaudeCliCaps, ensureCursorCliCaps, ensureGrokCliCaps } from './state/permissionMode'
 import { ensureCodexIdentityCaps } from './state/codexIdentity'
 import { ensureCodexCliCaps } from './state/codexCli'
 import { initAgentResolver } from './state/agent-resolver'
@@ -44,6 +44,8 @@ void ensureClaudeCliCaps()
 // Same, for grok: its own probe, kicked off at boot so a node created seconds later already has
 // the real answer instead of the fail-open one.
 void ensureGrokCliCaps()
+// cursor's model list is network-backed: kick it off at boot so the menu is ready, never awaited.
+void ensureCursorCliCaps()
 
 // Same shape, same reason: a Codex launch line names the managed shared-identity launcher only if
 // this machine has one installed and armed. Unprobed ⇒ plain `codex`, which is what every Codex

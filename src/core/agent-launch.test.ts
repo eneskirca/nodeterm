@@ -155,6 +155,53 @@ describe("prepareAgentLaunch logical argv", () => {
     });
   });
 
+  it("puts Cursor's flags before its `agent` subcommand, not after the prompt", async () => {
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "bypassPermissions" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' '--force' 'agent' 'hi'" });
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "plan" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' '--mode' 'plan' 'agent' 'hi'" });
+    // The default mode emits nothing, so an untouched node's line is byte-identical to before.
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", permissionMode: "auto" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({ command: "'cursor-agent' '--auto-review' 'agent' 'hi'" });
+  });
+
+  it("resumes and mints Cursor with `--resume <id>` before the `agent` subcommand", async () => {
+    const id = "550e8400-e29b-41d4-a716-446655440000";
+    await expect(
+      prepareAgentLaunch(
+        resume("cursor", id, { permissionMode: "plan" }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({
+      command: `'cursor-agent' '--resume' '${id}' '--mode' 'plan'`,
+    });
+    await expect(
+      prepareAgentLaunch(
+        start("cursor", { prompt: "hi", newSessionId: id }),
+        "posix",
+        builtinContext("cursor"),
+      ),
+    ).resolves.toEqual({
+      command: `'cursor-agent' '--resume' '${id}' 'agent' 'hi'`,
+    });
+  });
+
   it("uses flag-prompt for OpenCode and preserves a trailing slash", async () => {
     await expect(
       prepareAgentLaunch(

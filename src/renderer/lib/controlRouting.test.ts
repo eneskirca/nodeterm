@@ -239,13 +239,13 @@ describe('sourceIsControlCapable', () => {
   })
 
   it('accepts every canvas-control-capable agent', () => {
-    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok']) {
+    for (const id of ['claude', 'codex', 'gemini', 'opencode', 'grok', 'cursor']) {
       expect(sourceIsControlCapable(id)).toBe(true)
     }
   })
 
   it('rejects an agent that never gets NODETERM_CANVAS_CONTROL', () => {
-    expect(sourceIsControlCapable('cursor')).toBe(false)
+    expect(sourceIsControlCapable('antigravity')).toBe(false)
   })
 })
 
@@ -322,7 +322,7 @@ describe('answerBrowserResolve — the renderer answers ONLY what it alone knows
   })
 
   it('a non-control-capable source is reported as such (main turns it into the refusal)', () => {
-    const p = proj({ nodes: [{ id: 'x-1', agentId: 'cursor' }], agentBrowserControl: true, capabilityAck: { agentBrowserControl: 'kept' } })
+    const p = proj({ nodes: [{ id: 'x-1', agentId: 'antigravity' }], agentBrowserControl: true, capabilityAck: { agentBrowserControl: 'kept' } })
     expect(answerBrowserResolve(p, 'x-1')).toMatchObject({ ok: true, sourceControlCapable: false })
   })
 })

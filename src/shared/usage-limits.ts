@@ -56,6 +56,27 @@ export function limitKey(limit: UsageLimit): string {
 }
 
 /**
+ * What one provider puts in the collapsed pill: each limit to show and its pill label. Most
+ * providers show only their worst limit, named by the provider ("37% Grok"). Cursor shows all
+ * three buckets, because its API bucket can sit at 100% for most of a cycle while the plan is far
+ * from spent: the total is named by the provider, the scoped buckets by their own lower-cased
+ * name ("35% Cursor · 33% auto · 100% api").
+ */
+export function providerPillSegments(
+  p: ProviderUsage,
+  providerName: string
+): { limit: UsageLimit; label: string }[] {
+  if (p.provider === 'cursor') {
+    return p.limits.map((limit) => ({
+      limit,
+      label: limit.scopeLabel ? limit.scopeLabel.toLowerCase() : providerName
+    }))
+  }
+  const worst = primaryLimit(p.limits)
+  return worst ? [{ limit: worst, label: providerName }] : []
+}
+
+/**
  * The providers the user has actually enabled: signed in AND with something to report. Anything
  * else is noise in the pill for someone who has never used that service.
  */
@@ -101,6 +122,7 @@ export const USAGE_PROVIDER_IDS = [
   'claude',
   'claude-remote',
   'codex',
+  'cursor',
   'gemini',
   'grok',
   'kimi',

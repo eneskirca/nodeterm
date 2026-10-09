@@ -533,6 +533,7 @@ import {
   canRename,
   canContextLink,
   canSwitchModel,
+  hasGatewayModels,
   capabilityAgentId,
   createdAgentId,
   resumeCommand,
@@ -711,7 +712,7 @@ import {
 } from '@shared/node-colors'
 import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
-import { activePermissionMode, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
+import { activePermissionMode, cursorCliCapsNow, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
 import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
 import { useSshServers } from '../state/sshServers'
@@ -1811,6 +1812,7 @@ export function Canvas() {
   // through the same probe memo the launch path uses; `modelsForAgent` decides who gets it, so no
   // model id and no agent id is spelled here.
   const grokModelList = (): GatewayModel[] => grokCliCapsNow().models.map((id) => ({ id }))
+  const cursorModelList = (): GatewayModel[] => cursorCliCapsNow().models
   const gatewayStatus = useModelGateway((s) => s.status)
   const gatewayError = useModelGateway((s) => s.error)
   const discoverModels = useModelGateway((s) => s.discover)
@@ -6457,12 +6459,13 @@ export function Canvas() {
       // The default gateway model applies ONLY when the launch mode asks for it
       // (`agentLaunchMode === 'gateway-model'`). 'gateway' launches with the CLI's own default
       // model, and 'subscription' strips the gateway entirely so its model is moot. Gated on
-      // `canSwitchModel` (base-resolved) so a non-capable agent is left model-less.
+      // `hasGatewayModels` (base-resolved) so a non-capable agent is left model-less, and so is one
+      // whose models are its own CLI's (grok, cursor): a gateway id is not in their catalogue.
       const settings = useSettings.getState().settings
       const model =
         settings.agentLaunchMode === 'gateway-model' &&
         settings.modelGatewayDefaultModel &&
-        canSwitchModel(agentId)
+        hasGatewayModels(agentId)
           ? settings.modelGatewayDefaultModel
           : undefined
       // Built OUTSIDE the setNodes updater so the caller gets the node back (the board assigns the
@@ -10042,6 +10045,7 @@ export function Canvas() {
       'node.newAgent.grok': () => { addAgentNode('grok'); return true },
       'node.newAgent.copilot': () => { addAgentNode('copilot'); return true },
       'node.newAgent.antigravity': () => { addAgentNode('antigravity'); return true },
+      'node.newAgent.cursor': () => { addAgentNode('cursor'); return true },
       'node.newSticky': () => { addSticky(); return true },
       'node.newBrowser': () => { addBrowser(); return true },
       // Opening the URL prompt IS claiming the chord — a cancelled prompt creates nothing, but the
@@ -10307,6 +10311,7 @@ export function Canvas() {
       gatewayStatus,
       gatewayError,
       grokModels: () => grokModelList(),
+      cursorModels: () => cursorModelList(),
       addToExistingGroup,
       groupSelection,
       removeFromGroup,
@@ -10390,6 +10395,7 @@ export function Canvas() {
         gatewayStatus,
         gatewayError,
         grokModels: () => grokModelList(),
+        cursorModels: () => cursorModelList(),
         writes,
         liveLinkMenuItems: liveLink,
         connectedProjectIdForHost,

@@ -29,6 +29,12 @@ describe('desktop remote context routing', () => {
     expect(h.locateClaude).not.toHaveBeenCalled()
     expect(h.claude.pathFor).not.toHaveBeenCalled()
   })
+  it('Cursor on a remote node is a terminal "not yet": no local fallback, no claude locator', async () => {
+    const h = harness()
+    expect(await h.ensure({ ...q, agentId: 'cursor' })).toBe('unresolved')
+    expect(h.locateClaude).not.toHaveBeenCalled()
+    expect(h.claude.track).not.toHaveBeenCalled()
+  })
   it('Claude retries unresolved discovery and tracks only the jailed resolver result', async () => {
     const h = harness(), ref = { path: '/remote/.claude/projects/r/session-1.jsonl' }
     expect(await h.ensure(q)).toBe('unresolved')

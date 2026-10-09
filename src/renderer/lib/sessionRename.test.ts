@@ -217,3 +217,19 @@ describe('renameCommand: a title cannot splice a second command', () => {
     })
   })
 })
+
+describe('pushSessionRename: a separate-submit agent (cursor)', () => {
+  it('sends ONE line with the default Enter; PtyManager.sendText splits it, nothing here does', async () => {
+    const calls: unknown[][] = []
+    const x = {
+      paneCommand: async () => 'cursor-agent',
+      sendText: async (...args: unknown[]) => {
+        calls.push(args.slice(1))
+        return true as const
+      },
+      sleep: async () => {}
+    }
+    await expect(pushSessionRename(x, 'n1', 'Probe', 'Old')).resolves.toBe(true)
+    expect(calls).toEqual([['/rename Probe']])
+  })
+})

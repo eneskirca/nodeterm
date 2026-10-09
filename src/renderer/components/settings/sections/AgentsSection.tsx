@@ -67,7 +67,7 @@ const ROWS = {
   },
   agents: {
     title: 'Show in Add menus',
-    keywords: ['agent', 'claude', 'codex', 'gemini', 'enable', 'disable', 'show', 'hide', 'menu', 'default']
+    keywords: ['agent', 'claude', 'codex', 'gemini', 'cursor', 'enable', 'disable', 'show', 'hide', 'menu', 'default']
   },
   launchCommands: {
     title: 'Launch commands',
@@ -85,7 +85,8 @@ const ROWS = {
       'codex',
       'gemini',
       'grok',
-      'opencode'
+      'opencode',
+      'cursor'
     ]
   },
   vanillaLaunch: {
@@ -127,6 +128,7 @@ const ROWS = {
       'grok',
       'gemini',
       'codex',
+      'cursor',
       'approval',
       'shift tab'
     ]

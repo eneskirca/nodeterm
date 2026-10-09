@@ -117,6 +117,37 @@ export const COPILOT_HOOK_EVENTS = [
 ] as const
 
 /**
+ * Cursor Agent CLI hook events (→ normalizeCursor), written into `~/.cursor/hooks.json` as flat
+ * `{command}` entries. Cursor's names are camelCase, and it publishes 21 of them
+ * (`cursor-agent` 2026.09.28 bundle); these are the five that move the badge, plus `sessionEnd`.
+ *
+ * Left out on purpose:
+ *   - `sessionStart`: does not fire on `--resume` (measured), so it cannot be relied on. Measured
+ *     again on 2026.10.01: a plain `cursor-agent` fires it before any prompt (with
+ *     `conversation_id`), but nodeterm launches every node as `--resume <minted id>`, which fired
+ *     nothing until `/quit` (two runs). Subscribing it would not give a fresh node a status.
+ *   (`sessionEnd` IS subscribed: interactive `/quit` fires it, measured; it puts cursor in
+ *   `SESSION_END_CAPABLE`. Dropping it here would make every quit read as a DROPPED crash.)
+ *   - `afterAgentResponse`, `afterAgentThought`, `beforeShellExecution`, `afterShellExecution`,
+ *     `afterFileEdit`, `beforeReadFile`, `beforeMCPExecution`, `afterMCPExecution`: three headless
+ *     runs with all of these subscribed (and a claude-format project file beside them) lost the
+ *     agent stream after the first reply ("Connection lost… WritableIterable is closed"), while a
+ *     run with only the five below plus sessionStart/sessionEnd finished clean. Which of the
+ *     differences broke it is unknown (docs/cursor-agent.md §3), so none is added without a run
+ *     that isolates it.
+ *   - `preToolUse` is a GATE (Cursor reads its stdout as a permission decision), so our command must
+ *     stay silent with exit 0, see `buildManagedHookCommand`'s `silent`.
+ */
+export const CURSOR_HOOK_EVENTS = [
+  'beforeSubmitPrompt',
+  'preToolUse',
+  'postToolUse',
+  'postToolUseFailure',
+  'stop',
+  'sessionEnd'
+] as const
+
+/**
  * Antigravity CLI (`agy`) hook events (→ normalizeAntigravity), subscribed in
  * `~/.gemini/config/hooks.json` under our own bundle key (core/agents/hooks/antigravity.ts).
  *

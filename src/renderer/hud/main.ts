@@ -8,6 +8,7 @@ import { CLAUDE_MASCOT, CODEX_MASCOT, DONE_BLOB } from '../lib/mascot'
 import { HUD_BRAND_PULSE_CLASS, brandPulseBackground, brandPulsePlan } from '../lib/brandPulse'
 import { createGrokMarkSvg } from '../lib/grokMark'
 import { createCopilotMarkSvg } from '../lib/copilotMark'
+import { createCursorMarkSvg } from '../lib/cursorMark'
 import { buildIndicator, orderIndicatorAgents } from './indicator'
 import { HUD_ROW_CAP, overflowLabel, splitPanelRows } from './panel-rows'
 import { percentText } from '../lib/usageFormat'
@@ -212,7 +213,9 @@ function workingMascot(agentId?: string): Element {
     return plan.kind === 'inline'
       ? plan.mark === 'copilot'
         ? createCopilotMarkSvg(plan.size, HUD_BRAND_PULSE_CLASS)
-        : createGrokMarkSvg(plan.size, HUD_BRAND_PULSE_CLASS)
+        : plan.mark === 'cursor'
+          ? createCursorMarkSvg(plan.size, HUD_BRAND_PULSE_CLASS)
+          : createGrokMarkSvg(plan.size, HUD_BRAND_PULSE_CLASS)
       : brandPulseMascot(plan.src, plan.size)
   }
   const dot = document.createElement('span')

@@ -10,6 +10,7 @@ import {
 import { CONTROL_CEILING_MS } from './hook-server'
 import { MANAGED_SCRIPT_REVISION } from './hooks/managed-script'
 import { frameLineRe } from './agent-message-envelope'
+import { RETRYABLE } from './agent-message-decide'
 import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
 import type { MirrorEntry } from '../agent-status-mirror'
 
@@ -247,6 +248,21 @@ describe('deliverAgentMessage — sequencing', () => {
     })
     expect(await deliverAgentMessage(req(), r.deps)).toEqual({ kind: 'targetGone' })
     expect(traced).toEqual(['targetGone'])
+  })
+
+  it("a write refused by the agent's own dialog is targetBusy/blocked (retryable), not targetGone", async () => {
+    const traced: string[] = []
+    const r = recorder({
+      sendEnvelope: async () => 'dialog',
+      trace: async (t) => {
+        traced.push(t.outcome)
+        return { traceId: 't', traced: 'memory' }
+      }
+    })
+    const out = await deliverAgentMessage(req(), r.deps)
+    expect(out).toEqual({ kind: 'targetBusy', state: 'blocked' })
+    expect(RETRYABLE[out.kind]).toBe(true)
+    expect(traced).toEqual(['targetBusy'])
   })
 
   it('EVERY refusal leaves a trace, including the ones that never reach a pane', async () => {

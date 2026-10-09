@@ -152,6 +152,8 @@ export interface NodeActionCtx {
   gatewayStatus: ModelDiscoveryStatus
   gatewayError: string
   grokModels: () => GatewayModel[]
+  /** Only called for a cursor node: an empty memo spawns `cursor-agent models`. */
+  cursorModels: () => GatewayModel[]
   addToExistingGroup: (ids: string[], groupId: string) => void
   groupSelection: (ids: string[]) => void
   removeFromGroup: (ids: string[]) => void
@@ -486,7 +488,12 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
   const switchCapable = !!sourceAgentId && canSwitchModel(sourceAgentId)
   const compatibleModels =
     sourceAgentId && ctx.sessionSource !== 'relay'
-      ? modelsForAgent(ctx.gatewayModels, sourceAgentId, ctx.grokModels())
+      ? modelsForAgent(
+          ctx.gatewayModels,
+          sourceAgentId,
+          ctx.grokModels(),
+          capabilityAgentId(sourceAgentId) === 'cursor' ? ctx.cursorModels() : []
+        )
       : []
   const currentModel = typeof n?.data.agentModel === 'string' ? n.data.agentModel : undefined
   // 'not-resumable' is permanent (a plain shell, opencode, a custom CLI with no exit
@@ -843,6 +850,8 @@ export interface OffCanvasCtxInput {
   gatewayStatus: ModelDiscoveryStatus
   gatewayError: string
   grokModels: () => GatewayModel[]
+  /** Only called for a cursor node: an empty memo spawns `cursor-agent models`. */
+  cursorModels: () => GatewayModel[]
   /** The project's write router (Canvas `nodeWritesFor(projectId)`). */
   writes: Pick<NodeWrites, 'setColor' | 'pickIcon'>
   liveLinkMenuItems: (nodeId: string) => MenuItem[]
@@ -879,6 +888,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     gatewayStatus: o.gatewayStatus,
     gatewayError: o.gatewayError,
     grokModels: o.grokModels,
+    cursorModels: o.cursorModels,
     addToExistingGroup: refuse,
     groupSelection: refuse,
     removeFromGroup: refuse,

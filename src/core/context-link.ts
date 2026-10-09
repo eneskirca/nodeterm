@@ -41,6 +41,7 @@ import {
 } from './context-link-render'
 import { hookServer } from './agents/hook-server'
 import { locateClaude, locateCodex, locateGemini, locateGrok } from './handoff/locate'
+import { cursorTranscriptText, locateCursorChat } from './cursor-chat'
 
 export { setNodeTranscript } from './context-link-core'
 
@@ -95,7 +96,21 @@ export interface ContextLinkDeps {
 // start mid-line, which only costs that one line (it fails to parse and is dropped).
 const REMOTE_TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024
 
-const LINK_LOCATORS = { claude: locateClaude, codex: locateCodex, gemini: locateGemini, grok: locateGrok }
+// cursor's locator takes (id, cwd?), NOT the shared (id, accountId?), wrapped so an account id can
+// never be read as a cwd. It locates strictly by the whole-UUID chat id.
+const LINK_LOCATORS = {
+  claude: locateClaude,
+  codex: locateCodex,
+  gemini: locateGemini,
+  grok: locateGrok,
+  cursor: (sessionId: string) => locateCursorChat(sessionId)
+}
+
+/** Agents whose "transcript path" is not a text file: the path names a store the agent's own reader
+ *  turns into transcript text. Everything else is read as utf-8. */
+const TRANSCRIPT_TEXT_READERS: Record<string, (p: string) => Promise<string | null>> = {
+  cursor: cursorTranscriptText
+}
 
 // The link documents, by node id — the same objects written to disk, kept in memory because they
 // are what authorizes a read (a node may only ever name a link inside ITS OWN document).
@@ -176,6 +191,8 @@ async function fetchTranscript(node: LinkDocEntry): Promise<string | null> {
       ? await deps.readRemoteFile(node.id, node.transcriptPath, REMOTE_TRANSCRIPT_MAX_BYTES)
       : null
   }
+  const read = node.agent ? TRANSCRIPT_TEXT_READERS[node.agent] : undefined
+  if (read) return read(node.transcriptPath)
   try {
     return await fs.promises.readFile(node.transcriptPath, 'utf-8')
   } catch {

@@ -1,0 +1,217 @@
+{
+  "_provenance": "Captured live from cursor-agent 2026.10.01-e373342 (macOS), 2026-10-04, INTERACTIVE TUI (--model composer-2.5 --trust) in a private tmux server (120x40, and 60x40 for the wrapped footer), scratch workspace with a logging hook for 15 events in <workspace>/.cursor/hooks.json. Prompt: ask red or blue with the question tool, then stop. Panes are capture-pane -p with trailing spaces and blank lines dropped. Hooks keep only the events nodeterm subscribes; email and workspace path redacted. Between beforeSubmitPrompt and stop only afterAgentThought fired (not subscribed): AskQuestion fires NO tool hook on show, answer (Enter) or skip (Esc). Every run's stop came 20 to 40 s after the answer with status error (the pane printed 'WritableIterable is closed').",
+  "panes": {
+    "shownDefaultTitle": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Try Cursor Grok 4.6 via /model, frontier intelligence at a fraction of the cost.",
+      "  Before doing anything, ask me with your question tool whether I prefer red or blue, then stop.",
+      "  I'll ask your color preference with the question tool, then stop.",
+      " ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",
+      " │ Clarifying Questions                                                                                               │",
+      " │                                                                                                                    │",
+      " │ Question 1 of 1                                                                                                    │",
+      " │                                                                                                                    │",
+      " │ 1. Do you prefer red or blue?                                                                                      │",
+      " │                                                                                                                    │",
+      " │   › [ ] Red                                                                                                        │",
+      " │     [ ] Blue                                                                                                       │",
+      " │     [ ] Other: (type to answer)                                                                                    │",
+      " │                                                                                                                    │",
+      " │ ↑/↓ option · ←/→ question · Space select · Enter next/submit · Esc to skip                                         │",
+      " └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+    ],
+    "shownWrappedFooter": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Use /run-everything to skip all approvals.",
+      "  Before doing anything, ask me two questions in one",
+      "  call of your question tool: red or blue, and cats",
+      "  or dogs (multi-select). Then stop.",
+      " ┌────────────────────────────────────────────────────────┐",
+      " │ Quick preferences                                      │",
+      " │                                                        │",
+      " │ Question 1 of 2                                        │",
+      " │                                                        │",
+      " │ 1. Red or blue?                                        │",
+      " │                                                        │",
+      " │   › [ ] Red                                            │",
+      " │     [ ] Blue                                           │",
+      " │     [ ] Other: (type to answer)                        │",
+      " │                                                        │",
+      " │ ↑/↓ option · ←/→ question · Space select · Enter       │",
+      " │ next/submit · Esc to skip                              │",
+      " └────────────────────────────────────────────────────────┘"
+    ],
+    "shownSecondOfTwoSelected": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Use /run-everything to skip all approvals.",
+      "  Before doing anything, ask me two questions in one",
+      "  call of your question tool: red or blue, and cats",
+      "  or dogs (multi-select). Then stop.",
+      " ┌────────────────────────────────────────────────────────┐",
+      " │ Quick preferences                                      │",
+      " │                                                        │",
+      " │ Question 2 of 2                                        │",
+      " │                                                        │",
+      " │ 2. Cats or dogs? (multi-select)                        │",
+      " │                                                        │",
+      " │   › [x] Cats                                           │",
+      " │     [ ] Dogs                                           │",
+      " │     [ ] Other: (type to answer)                        │",
+      " │                                                        │",
+      " │ ↑/↓ option · ←/→ question · Space select · Enter       │",
+      " │ next/submit · Esc to skip                              │",
+      " └────────────────────────────────────────────────────────┘"
+    ],
+    "answered": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Use /run-everything to skip all approvals.",
+      "  Before doing anything, ask me two questions in one",
+      "  call of your question tool: red or blue, and cats",
+      "  or dogs (multi-select). Then stop.",
+      "    AskQuestion Quick preferences (2)",
+      "    1. Red or blue?",
+      "      [x] Red",
+      "      [ ] Blue",
+      "    2. Cats or dogs? (multi-select)",
+      "      [x] Cats",
+      "      [ ] Dogs",
+      " ⠘⠆ Composing  128 tokens",
+      "  → Add a follow-up                         ctrl+c to stop",
+      "  Composer 2.5 · 8.8%",
+      "  /private/tmp/ntq-ask"
+    ],
+    "answeredReconnecting": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Try Cursor Grok 4.6 via /model, frontier intelligence at a fraction of the cost.",
+      "  Before doing anything, ask me with your question tool whether I prefer red or blue, then stop.",
+      "  I'll ask your color preference with the question tool, then stop.",
+      "    AskQuestion Clarifying Questions (1)",
+      "    1. Do you prefer red or blue?",
+      "      [ ] Red",
+      "      [x] Blue",
+      "  You chose blue. Stopping here as requested.",
+      " ⠠⠜ Reconnecting to agentn.global.api5.cursor.sh (attempt 3, 2s)",
+      "  → Add a follow-up",
+      "  Composer 2.5 · 10.2%",
+      "  /private/tmp/ntq-ask"
+    ],
+    "skipped": [
+      "  Cursor Agent",
+      "  v2026.10.01-e373342",
+      "  Tip: Type ? in the prompt bar to show in-app hints.",
+      "  Before doing anything, ask me with your question tool whether I prefer red or blue, then stop.",
+      "    AskQuestion Color preference (1) Questions skipped by user",
+      "    1. Do you prefer red or blue?",
+      "      [ ] Red",
+      "      [ ] Blue",
+      "  Question asked: Do you prefer red or blue?",
+      "  You skipped it, so I’m stopping here as requested. If you want to answer, just reply with red or blue.",
+      "  → Add a follow-up",
+      "  Composer 2.5 · 10.6%",
+      "  /private/tmp/ntq-ask",
+      "  Error: Something went wrong. Please try again.",
+      "  WritableIterable is closed"
+    ]
+  },
+  "hooks": {
+    "answeredEnter": [
+      {
+        "conversation_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "generation_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "model": "composer-2.5",
+        "is_background_agent": false,
+        "session_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "hook_event_name": "sessionStart",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": null
+      },
+      {
+        "conversation_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "generation_id": "6f6ddc3e-a2c1-4911-8985-490c5c92e713",
+        "model": "composer-2.5",
+        "prompt": "Before doing anything, ask me with your question tool whether I prefer red or blue, then stop.",
+        "attachments": [],
+        "session_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "hook_event_name": "beforeSubmitPrompt",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": null
+      },
+      {
+        "conversation_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "generation_id": "6f6ddc3e-a2c1-4911-8985-490c5c92e713",
+        "model": "composer-2.5",
+        "status": "error",
+        "loop_count": 0,
+        "input_tokens": 20400,
+        "output_tokens": 7,
+        "cache_read_tokens": 20384,
+        "cache_write_tokens": 0,
+        "session_id": "e030ef45-48c7-4a68-ac3d-acecbe9b3648",
+        "hook_event_name": "stop",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": "<home>/.cursor/projects/private-tmp-ntq-ask/agent-transcripts/e030ef45-48c7-4a68-ac3d-acecbe9b3648/e030ef45-48c7-4a68-ac3d-acecbe9b3648.jsonl"
+      }
+    ],
+    "skippedEsc": [
+      {
+        "conversation_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "generation_id": "a85821b1-e822-4f13-a9d0-99d4f56c114f",
+        "model": "composer-2.5",
+        "prompt": "Before doing anything, ask me with your question tool whether I prefer red or blue, then stop.",
+        "attachments": [],
+        "session_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "hook_event_name": "beforeSubmitPrompt",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": null
+      },
+      {
+        "conversation_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "generation_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "model": "composer-2.5",
+        "is_background_agent": false,
+        "session_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "hook_event_name": "sessionStart",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": null
+      },
+      {
+        "conversation_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "generation_id": "a85821b1-e822-4f13-a9d0-99d4f56c114f",
+        "model": "composer-2.5",
+        "status": "error",
+        "loop_count": 0,
+        "input_tokens": 21083,
+        "output_tokens": 163,
+        "cache_read_tokens": 20590,
+        "cache_write_tokens": 0,
+        "session_id": "6c1609ff-93f4-45ec-8f9b-ff19b5212399",
+        "hook_event_name": "stop",
+        "cursor_version": "2026.10.01-e373342",
+        "workspace_roots": [
+          "<workspace>"
+        ],
+        "transcript_path": "<home>/.cursor/projects/private-tmp-ntq-ask/agent-transcripts/6c1609ff-93f4-45ec-8f9b-ff19b5212399/6c1609ff-93f4-45ec-8f9b-ff19b5212399.jsonl"
+      }
+    ]
+  }
+}

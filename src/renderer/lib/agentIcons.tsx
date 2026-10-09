@@ -3,6 +3,7 @@ import { IconTerminal } from '../components/icons'
 import { BRAND_PULSE_CLASS, brandLogoSrc, brandPulsePlan } from './brandPulse'
 import { GROK_MARK_PATH, GROK_MARK_VIEWBOX } from './grokMark'
 import { COPILOT_MARK_PATHS, COPILOT_MARK_VIEWBOX } from './copilotMark'
+import { CURSOR_MARK_PATH, CURSOR_MARK_VIEWBOX } from './cursorMark'
 
 // The logo map itself lives in the REACT-FREE lib/brandPulse.ts, because the notch HUD needs the
 // same assets and must not import React. Re-exported here so React callers have one import for
@@ -76,6 +77,30 @@ export function CopilotMark({
   )
 }
 
+/** The Cursor mark, inlined like `CopilotMark`, geometry from `lib/cursorMark.ts`. */
+export function CursorMark({
+  size,
+  className
+}: {
+  size: number
+  className?: string
+}): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={CURSOR_MARK_VIEWBOX}
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+      className={className}
+      style={{ display: 'block' }}
+    >
+      <path fillRule="evenodd" d={CURSOR_MARK_PATH} />
+    </svg>
+  )
+}
+
 export function BrandPulse({ agentId, size }: { agentId?: AgentId; size: number }): React.JSX.Element | null {
   const plan = brandPulsePlan(agentId, size)
   if (!plan) return null
@@ -84,6 +109,8 @@ export function BrandPulse({ agentId, size }: { agentId?: AgentId; size: number 
   if (plan.kind === 'inline')
     return plan.mark === 'copilot' ? (
       <CopilotMark size={plan.size} className={BRAND_PULSE_CLASS} />
+    ) : plan.mark === 'cursor' ? (
+      <CursorMark size={plan.size} className={BRAND_PULSE_CLASS} />
     ) : (
       <GrokMark size={plan.size} className={BRAND_PULSE_CLASS} />
     )
@@ -101,6 +128,7 @@ export function AgentIcon({ agentId, size = 16 }: { agentId: AgentId; size?: num
   const iconAgentId = capabilityAgentId(agentId)
   if (iconAgentId === 'grok') return <GrokMark size={size} />
   if (iconAgentId === 'copilot') return <CopilotMark size={size} />
+  if (iconAgentId === 'cursor') return <CursorMark size={size} />
   // `brandLogoSrc`, not `AGENT_LOGO[iconAgentId]`: the id can be anything a hand-edited
   // project.json says, and a prototype key ('constructor') would hand back a Function as the image
   // source.

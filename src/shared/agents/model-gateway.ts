@@ -1,4 +1,4 @@
-import { canSwitchModel, capabilityAgentId, type AgentId } from './config'
+import { canSwitchModel, capabilityAgentId, hasGatewayModels, type AgentId } from './config'
 import { shellSingleQuote } from '../shell-quote'
 import { expandEnvVars } from './expansion'
 
@@ -190,7 +190,8 @@ export function parseGatewayModels(payload: unknown): GatewayModel[] {
 export function modelsForAgent(
   models: GatewayModel[],
   agentId: AgentId,
-  grokModels: readonly GatewayModel[] = []
+  grokModels: readonly GatewayModel[] = [],
+  cursorModels: readonly GatewayModel[] = []
 ): GatewayModel[] {
   if (!canSwitchModel(agentId)) return []
   // grok is offered ITS OWN models, never the gateway's, and this is a correctness rule rather than
@@ -199,6 +200,10 @@ export function modelsForAgent(
   // gateway catalogue would put ids on the menu that its CLI rejects at launch: a picker that looks
   // like it worked and kills the node.
   if (capabilityAgentId(agentId) === 'grok') return [...grokModels]
+  // cursor: same rule. Its list is `cursor-agent models` (account-scoped, network-backed, ~250 ids);
+  // the gateway's ids are not among them, so it is offered only its own, [] when the probe failed.
+  if (capabilityAgentId(agentId) === 'cursor') return [...cursorModels]
+  if (!hasGatewayModels(agentId)) return []
   return models
 }
 
@@ -237,6 +242,33 @@ export function grokModelsFrom(stdout: string | null | undefined): GatewayModel[
     // Same charset discipline as every other id that reaches a command line.
     if (!/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/.test(id)) continue
     if (!byId.has(id)) byId.set(id, { id })
+  }
+  return [...byId.values()]
+}
+
+/**
+ * Parse `cursor-agent models`. MEASURED (2026.09.28, 246 lines, all matching):
+ *
+ *   Available models
+ *
+ *   auto - Auto (default)
+ *   gpt-5.3-codex-low - Codex 5.3 Low
+ *   grok-4.7-low-fast - Grok 4.7  Low Fast<U+200B><U+200B>
+ *
+ *   Tip: use --model <id> ...
+ *
+ * Only `<id> - <label>` lines are read: the id is a bare token from the charset every command-line
+ * id already uses, the label is the rest with zero-width spaces stripped and whitespace collapsed.
+ * The header and the trailing `Tip:` prose never match (`Tip:` has no ` - ` after its first word).
+ * The list is network-backed and account-scoped, so anything unparseable is an EMPTY list, which
+ * the UI reads as "no model switching".
+ */
+export function cursorModelsFrom(stdout: string | null | undefined): GatewayModel[] {
+  const byId = new Map<string, GatewayModel>()
+  for (const raw of (stdout ?? '').split('\n')) {
+    const m = /^([A-Za-z0-9][A-Za-z0-9._/-]*) - (\S.*)$/.exec(raw.replace(/[\u200b-\u200d\ufeff]/g, '').trimEnd())
+    if (!m || byId.has(m[1])) continue
+    byId.set(m[1], { id: m[1], name: m[2].replace(/\s+/g, ' ').trim() })
   }
   return [...byId.values()]
 }

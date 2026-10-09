@@ -25,6 +25,7 @@ import { readGeminiChatTranscript } from './gemini-chat'
 import { chatMessagesFromCodex, locateCodexRollout, parseCodexChatWindow } from './codex-chat'
 import { chatMessagesFromCopilot, locateCopilotTranscript, parseCopilotChatWindow } from './copilot-chat'
 import { readOpencodeChat, type OpencodeExportRun } from './opencode-chat'
+import { readCursorChat } from './cursor-chat'
 import { locateGrok } from './handoff/locate'
 import { capabilityAgentId } from '../shared/agents/config'
 import {
@@ -414,6 +415,10 @@ export async function readChatTranscript(
   if (agentId && capabilityAgentId(agentId) === 'opencode') {
     return readOpencodeChat({ sessionId, remoteOnly }, page, deps.opencodeExport)
   }
+  // Cursor keeps chats in a SQLite store (`~/.cursor/chats/<md5 cwd>/<id>/store.db`), found strictly by
+  // its whole-UUID id, never claude's resolver, whose cwd fallback would answer with a stranger's
+  // session. Local only (`CHAT_LOCAL_ONLY`). See core/cursor-chat.ts.
+  if (agentId && capabilityAgentId(agentId) === 'cursor') return readCursorChat({ sessionId, cwd, remoteOnly }, page)
   if (page) return readChatPage({ sessionId, cwd, accountId, nodeId, ...(remoteOnly ? { remoteOnly } : {}) }, page, deps)
   const remote = deps.readRemote ? await deps.readRemote({ sessionId, cwd, accountId, nodeId }) : null
   // A resolved-but-unreadable remote file is NOT "no conversation yet" — the read failed

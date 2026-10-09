@@ -1,6 +1,7 @@
 import { REPORT_OUTCOME_CONTROL_REFUSAL } from '../../shared/station-outcome'
 import { sessionContextWindow } from '../model-window'
 import { labelHeldForRevision } from './permission-decision'
+import { createCursorApprovalWatch, type CursorApprovalWatch } from './cursor-approval'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { randomUUID, timingSafeEqual } from 'crypto'
 import { readFileSync, mkdirSync, chmodSync, unlinkSync } from 'fs'
@@ -506,6 +507,18 @@ export class HookServer {
 
   setListener(cb: (e: NormalizedAgentEvent) => void): void {
     this.listener = cb
+  }
+
+  /** Cursor's approval prompt has no hook, so a pending tool call earns up to three pane reads
+   *  (CURSOR_APPROVAL_READS_MS, core/agents/cursor-approval.ts). Both shells pass their pty manager's `captureSession`;
+   *  unset = cursor never shows NEEDS YOU, as before. The synthetic `blocked` rides `listener`. */
+  private cursorWatch: CursorApprovalWatch | null = null
+  setPaneReader(readPane: (nodeId: string) => Promise<string | null>): void {
+    this.cursorWatch = createCursorApprovalWatch({ readPane, emit: (e) => this.listener?.(e) })
+  }
+  /** A node was closed or recycled: its pending pane reads must not resurrect it as `blocked`. */
+  releaseCursorNode(nodeId: string): void {
+    this.cursorWatch?.release(nodeId)
   }
 
   private grokPermissionGate: GrokPermissionGate | null = null
@@ -1117,6 +1130,7 @@ export class HookServer {
           // Every grok event goes through the gate so their order is kept per node.
           if (agentId === 'grok') this.grokGate().handle(nodeId, payload, labelled)
           else if (labelled && this.listener) this.listener(labelled)
+          if (agentId === 'cursor') this.cursorWatch?.observe(nodeId, payload, verified)
         }
         res.writeHead(204)
         res.end()

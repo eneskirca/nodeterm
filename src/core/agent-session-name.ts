@@ -14,12 +14,15 @@
 //   codex  → `Thread.name`, read over the shared app-server's own socket (core/codex-session-name.ts).
 //            There is no file to read: with the shared server the name lives in the server, and the
 //            node's session id IS the thread id.
+//   cursor → `name` in the chat's `store.db`, located by the id (core/cursor-chat.ts)
 // Anything else has no readable session name; the claude reader answers null for it, which is what
 // every pre-grok caller already got.
 import { readSessionName, readSmallTail, TITLE_TAIL_BYTES } from './transcript-reader'
 import { readGrokSessionName, type GrokRemoteSummaryReader } from './grok-session'
 import { pickGeminiTitle } from './gemini-session'
 import { readCodexSessionName } from './codex-session-name'
+import { readCursorSessionName } from './cursor-chat'
+import { capabilityAgentId } from '../shared/agents/config'
 
 /**
  * Per-agent associations this router cannot own itself, injected by the shell.
@@ -81,10 +84,14 @@ export function readAgentSessionName(
   deps?: AgentSessionNameDeps
 ): Promise<string | null> {
   if (!sessionId) return Promise.resolve(null)
-  if (agentId === 'grok') return readGrokSessionName(sessionId, deps?.grokRemoteSummary)
-  if (agentId === 'gemini') return readGeminiSessionName(sessionId, deps?.geminiPathFor)
+  // Routed by the BASE harness, so a custom agent built on cursor reads cursor's store, not claude's.
+  const base = agentId ? capabilityAgentId(agentId) : undefined
+  if (base === 'grok') return readGrokSessionName(sessionId, deps?.grokRemoteSummary)
+  if (base === 'gemini') return readGeminiSessionName(sessionId, deps?.geminiPathFor)
   // Never falls through to claude's reader: that one SCANS ~/.claude/projects on a cache miss, so
   // an unrouted codex node would pay that scan once a minute for a guaranteed null.
-  if (agentId === 'codex') return readCodexSessionName(sessionId)
+  if (base === 'codex') return readCodexSessionName(sessionId)
+  // cursor → the `name` in its chat store (core/cursor-chat.ts), found by id; never claude's scan.
+  if (base === 'cursor') return readCursorSessionName(sessionId)
   return readSessionName(sessionId, accountId)
 }

@@ -1,0 +1,152 @@
+{
+  "_provenance": "Captured live from cursor-agent 2026.09.28-64d2043 (macOS), 2026-09-28, headless (-p) runs in a scratch workspace with a logging hook in <workspace>/.cursor/hooks.json. Email, workspace path, home path and thought text are redacted; keys, value shapes and ids are as measured. beforeSubmitPrompt, stop and postToolUseFailure are ABSENT: headless runs never fired the first two and no tool failed.",
+  "events": [
+    {
+      "conversation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "generation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "model": "composer-2.5",
+      "is_background_agent": false,
+      "session_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "hook_event_name": "sessionStart",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": null
+    },
+    {
+      "conversation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "generation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "model": "composer-2.5",
+      "tool_name": "Shell",
+      "tool_input": {
+        "command": "echo hi",
+        "cwd": "",
+        "timeout": 30000
+      },
+      "tool_use_id": "5e1eb2b6-0a8b-449c-8810-bd94cd3d73ee",
+      "cwd": "",
+      "session_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "hook_event_name": "preToolUse",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": null
+    },
+    {
+      "conversation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "generation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "model": "composer-2.5",
+      "tool_name": "Shell",
+      "tool_input": {
+        "command": "echo hi",
+        "cwd": "",
+        "timeout": 30000
+      },
+      "tool_output": "{\"output\":\"hi\\n\",\"exitCode\":0}",
+      "duration": 1752.623,
+      "tool_use_id": "5e1eb2b6-0a8b-449c-8810-bd94cd3d73ee",
+      "cwd": "",
+      "session_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "hook_event_name": "postToolUse",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": "/redacted/.cursor/projects/workspace/agent-transcripts/5a27c746-14a7-472d-8e3f-7f335a9df0db/5a27c746-14a7-472d-8e3f-7f335a9df0db.jsonl"
+    },
+    {
+      "conversation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "generation_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "model": "composer-2.5",
+      "reason": "completed",
+      "duration_ms": 18067,
+      "is_background_agent": false,
+      "final_status": "completed",
+      "session_id": "5a27c746-14a7-472d-8e3f-7f335a9df0db",
+      "hook_event_name": "sessionEnd",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": "/redacted/.cursor/projects/workspace/agent-transcripts/5a27c746-14a7-472d-8e3f-7f335a9df0db/5a27c746-14a7-472d-8e3f-7f335a9df0db.jsonl"
+    },
+    {
+      "conversation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "generation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "model": "composer-2.5",
+      "reason": "error",
+      "duration_ms": 44527,
+      "is_background_agent": false,
+      "final_status": "error",
+      "session_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "hook_event_name": "sessionEnd",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": "/redacted/.cursor/projects/workspace/agent-transcripts/22bc77d0-3f77-4629-af8d-f31330036c61/22bc77d0-3f77-4629-af8d-f31330036c61.jsonl"
+    },
+    {
+      "conversation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "generation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "model": "composer-2.5",
+      "command": "echo hi",
+      "cwd": "",
+      "sandbox": false,
+      "session_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "hook_event_name": "beforeShellExecution",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": "/redacted/.cursor/projects/workspace/agent-transcripts/22bc77d0-3f77-4629-af8d-f31330036c61/22bc77d0-3f77-4629-af8d-f31330036c61.jsonl"
+    },
+    {
+      "conversation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "generation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "model": "composer-2.5",
+      "command": "echo hi",
+      "output": "hi\n",
+      "duration": 1737.509,
+      "sandbox": false,
+      "session_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "hook_event_name": "afterShellExecution",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": "/redacted/.cursor/projects/workspace/agent-transcripts/22bc77d0-3f77-4629-af8d-f31330036c61/22bc77d0-3f77-4629-af8d-f31330036c61.jsonl"
+    },
+    {
+      "conversation_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "generation_id": "877b955c-3031-4f36-a6ac-8f9351e7cbc9-0-x2z7",
+      "model": "composer-2.5",
+      "model_id": "composer-2.5",
+      "model_params": [
+        {
+          "id": "speed",
+          "value": "default"
+        }
+      ],
+      "text": "redacted",
+      "duration_ms": 1,
+      "session_id": "22bc77d0-3f77-4629-af8d-f31330036c61",
+      "hook_event_name": "afterAgentThought",
+      "cursor_version": "2026.09.28-64d2043",
+      "workspace_roots": [
+        "/redacted/workspace"
+      ],
+      "user_email": "redacted@example.com",
+      "transcript_path": null
+    }
+  ]
+}

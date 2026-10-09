@@ -123,7 +123,7 @@ export interface MessagingStoredNode {
  */
 export interface AgentMessagingDeps {
   paneOwner(nodeId: string): Promise<PaneOwner | null>
-  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'>
   envelopePasteReady?(nodeId: string): Promise<boolean>
   /**
    * Does a session exist for this node at all — attached in this process OR held by a backend

@@ -6,6 +6,7 @@ import { tmpdir } from 'os'
 import path from 'path'
 import { readAgentSessionName } from './agent-session-name'
 import { rememberGrokSessionDir, forgetGrokSession } from './grok-session'
+import { setCustomAgentBaseResolver } from '../shared/agents/config'
 
 const root = mkdtempSync(path.join(tmpdir(), 'agent-session-name-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -84,6 +85,33 @@ describe('readAgentSessionName', () => {
     expect(await readAgentSessionName('thread-1', undefined, 'codex')).toBeNull()
     expect(await readAgentSessionName('thread-1', 'acct-2', 'codex')).toBeNull()
     delete process.env.CODEX_HOME
+  })
+
+  it("routes cursor to its chat store's reader: null for an unknown id, never claude's scan", async () => {
+    process.env.CURSOR_CONFIG_DIR = path.join(root, 'no-such-cursor-dir')
+    expect(await readAgentSessionName('66666666-e4c7-4f28-9d99-027f84c10837', undefined, 'cursor')).toBeNull()
+    delete process.env.CURSOR_CONFIG_DIR
+  })
+
+  it('routes a custom agent built on cursor to the cursor store, not claude\'s reader', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const cfg = path.join(root, 'cursor-cfg')
+    const id = '77777777-e4c7-4f28-9d99-027f84c10837'
+    const d = path.join(cfg, 'chats', 'b', id)
+    mkdirSync(d, { recursive: true })
+    const db = new DatabaseSync(path.join(d, 'store.db'))
+    db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);')
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(Buffer.from(JSON.stringify({ name: 'Cursor named it' })).toString('hex'))
+    db.close()
+    process.env.CURSOR_CONFIG_DIR = cfg
+    setCustomAgentBaseResolver((a) => (a === 'my-cursor' ? 'cursor' : undefined))
+    try {
+      expect(await readAgentSessionName(id, undefined, 'cursor')).toBe('Cursor named it')
+      expect(await readAgentSessionName(id, undefined, 'my-cursor')).toBe('Cursor named it')
+    } finally {
+      setCustomAgentBaseResolver(null)
+      delete process.env.CURSOR_CONFIG_DIR
+    }
   })
 
   it('answers null for an empty session id without asking either reader', async () => {

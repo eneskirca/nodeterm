@@ -1091,6 +1091,128 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
   return null
 }
 
+// Cursor Agent CLI payload. Every event carries the same envelope, MEASURED on cursor-agent
+// 2026.09.28 (src/shared/agents/__fixtures__/cursor/hook-payloads.json): `conversation_id` (the
+// chat id `cursor-agent --resume <id>` takes, verified), `session_id` (equal to it in every
+// capture), `generation_id`, `model`, `hook_event_name` (camelCase, the ONLY spelling), `cursor_version`,
+// `workspace_roots`, `user_email` and `transcript_path` (null until the first turn is written).
+// `cwd` exists on tool events only and was "" for Shell, so nothing here reads it.
+// `parent_tool_call_id` is the bundle's marker for a tool call made inside a subagent
+// (hooks_pb PreToolUseRequestQuery field 10); never seen on the wire, see isCursorChildToolEvent.
+// `status` on `stop`: `completed` was captured in the interactive TUI (subagent-payloads.json);
+// `aborted` and `error` are from the bundle/docs, never captured.
+interface CursorPayload {
+  hook_event_name?: unknown
+  conversation_id?: unknown
+  session_id?: unknown
+  generation_id?: unknown
+  parent_tool_call_id?: unknown
+  status?: unknown
+  is_background_agent?: unknown
+  tool_name?: unknown
+  tool_use_id?: unknown
+  tool_input?: unknown
+}
+
+/**
+ * A cursor tool event made INSIDE a subagent. MEASURED on 2026.10.01 (interactive TUI, three
+ * subagent runs, `__fixtures__/cursor/subagent-payloads.json`): a child's tool events carry the
+ * CHILD's own chat id as `conversation_id` AND as `generation_id`, and no `parent_tool_call_id`.
+ * A parent tool event carries its TURN's generation id, never the chat id (only `sessionStart`,
+ * which is no tool event, has the two equal). `parent_tool_call_id` stays as the bundle's marker.
+ * Wrong-guess cost: a parent tool event read as a child's is dropped; the badge still runs from
+ * `beforeSubmitPrompt` and `stop`.
+ */
+export function isCursorChildToolEvent(payload: unknown): boolean {
+  const p = (payload ?? {}) as CursorPayload
+  if (typeof p.parent_tool_call_id === 'string' && p.parent_tool_call_id) return true
+  return typeof p.conversation_id === 'string' && !!p.conversation_id && p.generation_id === p.conversation_id
+}
+
+/** A background agent's own lifecycle event (`is_background_agent: true`): never the node's. The
+ *  normalizer, the subagent tracker and the raw step all drop it with this one test. */
+export function isCursorBackgroundEvent(payload: unknown): boolean {
+  return ((payload ?? {}) as CursorPayload).is_background_agent === true
+}
+
+/**
+ * A payload Cursor sent, whichever hook ran it. Cursor also runs nodeterm's `claude.sh` (Claude
+ * settings import, docs/cursor-agent.md §5), so the claude raw listener sees Cursor's envelope too,
+ * often a CHILD's. A real Claude payload carries neither key.
+ */
+export function isCursorPayload(payload: unknown): boolean {
+  const p = (payload ?? {}) as Record<string, unknown>
+  return p.cursor_version !== undefined || p.conversation_id !== undefined
+}
+
+/**
+ * PURE. The event name is matched as a closed set of exact strings (rule 7); everything else,
+ * including the ~16 events we do not subscribe, is null.
+ *
+ * - `beforeSubmitPrompt` → `working` + `newTurn` (`newTurn` retires `lastTurnError`, #521).
+ * - `preToolUse` / `postToolUse` / `postToolUseFailure` → `working`. A subagent's tool call
+ *   (`isCursorChildToolEvent`) returns null: its `conversation_id` IS the child's (measured), and
+ *   child activity must not drive the parent or replace its recorded session id.
+ * - the parent's `preToolUse` for tool `Task` → `subagent-start`, keyed by `tool_use_id`.
+ * - `stop` → `done`; `interrupted` only for status `aborted`, `errored` only for `error`. Any
+ *   other status is a plain `done`, because `stop` ends the turn whatever it says.
+ *
+ * - `sessionEnd` → `session` phase `end` (SESSION_END_CAPABLE), unless `is_background_agent`.
+ *
+ * NEEDS YOU is deliberately absent HERE: the AskQuestion tool fires no tool hook and Cursor's own
+ * approval prompt has none either (docs/cursor-agent.md §4). The hook server adds a `blocked` from
+ * up to three pane reads of a still-pending tool call, and a `waiting` from the same reads of a quiet
+ * turn that ends on the AskQuestion box, instead (core/agents/cursor-approval.ts).
+ *
+ * `sessionId` is `conversation_id`, falling back to `session_id`: the resume feature keys on it.
+ */
+export function normalizeCursor(env: RawHookEnvelope): NormalizedAgentEvent | null {
+  const p = env.payload as CursorPayload
+  const ev = typeof p.hook_event_name === 'string' ? p.hook_event_name : undefined
+  const sessionId =
+    typeof p.conversation_id === 'string' && p.conversation_id
+      ? p.conversation_id
+      : typeof p.session_id === 'string' && p.session_id
+        ? p.session_id
+        : undefined
+  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId }
+
+  if (ev === 'beforeSubmitPrompt') return { ...base, kind: 'state', state: 'working', newTurn: true }
+  if (ev === 'preToolUse' || ev === 'postToolUse' || ev === 'postToolUseFailure') {
+    if (isCursorChildToolEvent(p)) return null
+    // The card's start. `subagentStart`/`subagentStop` never fired (three measured runs) and the
+    // parent's `Task` gets a preToolUse but NO postToolUse, so the end is the parent's `stop`,
+    // emitted by core/cursor-subagents.ts.
+    if (ev === 'preToolUse' && p.tool_name === 'Task' && typeof p.tool_use_id === 'string' && p.tool_use_id) {
+      const input = (p.tool_input ?? {}) as { subagent_type?: unknown; description?: unknown; prompt?: unknown }
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
+      return {
+        ...base,
+        kind: 'subagent-start',
+        toolUseId: p.tool_use_id,
+        subagentType: str(input.subagent_type),
+        taskLabel: str(input.description) ?? str(input.prompt)
+      }
+    }
+    return { ...base, kind: 'state', state: 'working' }
+  }
+  if (ev === 'stop') {
+    return {
+      ...base,
+      kind: 'state',
+      state: 'done',
+      ...(p.status === 'aborted' ? { interrupted: true } : {}),
+      ...(p.status === 'error' ? { errored: true } : {})
+    }
+  }
+  // Orderly `/quit` (measured: reason "completed"). A background agent's own end is not this node's.
+  if (ev === 'sessionEnd') {
+    if (isCursorBackgroundEvent(p)) return null
+    return { ...base, kind: 'session', sessionPhase: 'end' }
+  }
+  return null
+}
+
 export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): NormalizedAgentEvent | null {
   if (agentId === 'claude') return normalizeClaude(env)
   if (agentId === 'codex') return normalizeCodex(env)
@@ -1099,5 +1221,6 @@ export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): Normalized
   if (agentId === 'grok') return normalizeGrok(env)
   if (agentId === 'copilot') return normalizeCopilot(env)
   if (agentId === 'antigravity') return normalizeAntigravity(env)
+  if (agentId === 'cursor') return normalizeCursor(env)
   return null
 }

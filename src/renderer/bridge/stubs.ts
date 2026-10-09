@@ -17,6 +17,7 @@
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   UNKNOWN_GROK_CLI_CAPS,
+  UNKNOWN_CURSOR_CLI_CAPS,
   UNKNOWN_CODEX_IDENTITY_CAPS,
   UNKNOWN_CODEX_CLI_CAPS,
   type ClaudeUsage,
@@ -393,6 +394,10 @@ export function buildStubApi(): Omit<
       // Nothing taken is the honest answer where no shell can look, and it degrades to today's
       // behaviour: mint freely. Overridden by the real WS-backed namespace in ws-bridge.
       takenSessionIds: () => Promise.resolve([])
+    },
+    cursor: {
+      // Overridden by the real WS-backed namespace in ws-bridge. Never rejects: empty = no picker.
+      cliCaps: () => Promise.resolve(UNKNOWN_CURSOR_CLI_CAPS)
     },
     agent: {
       // No env snapshot outside the desktop window: the stub (and ws-bridge, identically) answers

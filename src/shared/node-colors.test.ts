@@ -190,3 +190,48 @@ describe('the narrower system boundary', () => {
     }
   })
 })
+
+/**
+ * A node's agent colour is its only identity on the dot, border, sidebar square and minimap, so two
+ * agent swatches that look the same defeat it. Cursor shipped at OKLab 0.018 from Grok (review
+ * 2026-10-03). 0.06 is about three just-noticeable differences.
+ */
+describe('agent swatches are told apart', () => {
+  // Local copy of renderer/terminal/glass-cell-backgrounds.ts `oklab` (the shared tsconfig cannot
+  // import renderer files). sRGB hex -> OKLab, Ottosson's matrices.
+  const lab = (hex: string): number[] => {
+    const [R, G, B] = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+    })
+    const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B)
+    const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B)
+    const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B)
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+    ]
+  }
+  const dist = (a: string, b: string) => Math.hypot(...lab(a).map((v, i) => v - lab(b)[i]))
+  // Upstream pair that predates this pin (0.054): two teal-greens. Listed, not loosened, so a new
+  // agent cannot hide behind it.
+  const KNOWN_CLOSE = new Set(['#10a37f|#00a3a3'])
+
+  it('every pair of agent swatches is at least 0.06 OKLab apart', () => {
+    const colors = AGENT_NODE_COLOR_SWATCHES.map((s) => s.value)
+    for (let i = 0; i < colors.length; i++)
+      for (let j = i + 1; j < colors.length; j++) {
+        const pair = `${colors[i]}|${colors[j]}`
+        if (KNOWN_CLOSE.has(pair)) continue
+        expect(dist(colors[i], colors[j]), pair).toBeGreaterThanOrEqual(0.06)
+      }
+  })
+
+  it('cursor is at least 0.08 from every swatch in the palette, system ones included', () => {
+    for (const c of NODE_COLORS) {
+      if (c === AGENT_CONFIG.cursor.color) continue
+      expect(dist(AGENT_CONFIG.cursor.color, c), c).toBeGreaterThanOrEqual(0.08)
+    }
+  })
+})

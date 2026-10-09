@@ -31,6 +31,11 @@ describe('chatSendRefusal / canSendFromChat', () => {
     expect(chatSendRefusal('claude', { state: 'blocked' })).toBe('dialog')
   })
 
+  it('refuses a cursor node blocked on its approval dialog (core/agents/cursor-approval.ts)', () => {
+    // Enter would pick "Run (once) (y)", the highlighted option.
+    expect(chatSendRefusal('cursor', { state: 'blocked' })).toBe('dialog')
+  })
+
   it('refuses a hibernated node even though its state still reads done: a SHELL owns the pane', () => {
     expect(chatSendRefusal('claude', { state: 'done', hibernated: true })).toBe('asleep')
     expect(canSendFromChat('claude', { state: 'done', hibernated: true })).toBe(false)

@@ -10,6 +10,7 @@ import {
 } from './approval-mode'
 import {
   ALL_PERMISSION_MODES,
+  DEFAULT_PERMISSION_MODE,
   PERMISSION_MODE_LABELS,
   type AgentPermissionMode
 } from './config'
@@ -206,6 +207,59 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
 
 })
 
+/**
+ * cursor-agent 2026.09.28-64d2043. Its modes are different FLAGS, not values of one
+ * (`--mode plan`, bare `--force`), and its bare launch is `approvalMode: allowlist`, which prompts.
+ * Measured in a real run, see CURSOR_MODES.
+ */
+describe('approvalFlags: cursor', () => {
+  it('maps auto to --auto-review, plan to --mode plan and bypass to --force, and nothing else', () => {
+    expect(approvalFlags('cursor', 'auto')).toEqual(['--auto-review'])
+    expect(approvalFlags('cursor', 'plan')).toEqual(['--mode', 'plan'])
+    expect(approvalFlags('cursor', 'bypassPermissions')).toEqual(['--force'])
+    for (const m of ['manual', 'acceptEdits'] as const)
+      expect(approvalFlags('cursor', m), m).toEqual([])
+  })
+
+  it('launches the DEFAULT mode in Auto-review, never in Run Everything', () => {
+    // `auto` is DEFAULT_PERMISSION_MODE. Measured: `--auto-review` auto-runs safe calls through a
+    // classifier and still prompts for the rest; a bare cursor asks for every command.
+    expect(approvalFlags('cursor', DEFAULT_PERMISSION_MODE)).toEqual(['--auto-review'])
+    expect(withPermissionMode('cursor-agent', 'cursor', DEFAULT_PERMISSION_MODE)).toBe(
+      'cursor-agent --auto-review'
+    )
+    for (const m of ALL_PERMISSION_MODES)
+      expect(approvalFlags('cursor', m).join(' '), m).not.toMatch(/yolo|sandbox|ask/)
+    expect(approvalFlags('cursor', DEFAULT_PERMISSION_MODE)).not.toContain('--force')
+  })
+
+  it('admits exactly the modes it cannot express', () => {
+    expect(modeSupported('cursor', 'manual')).toBe(true) // its own default already prompts
+    expect(modeSupported('cursor', 'auto')).toBe(true)
+    expect(modeSupported('cursor', 'plan')).toBe(true)
+    expect(modeSupported('cursor', 'bypassPermissions')).toBe(true)
+    expect(modeSupported('cursor', 'acceptEdits')).toBe(false)
+    expect(unsupportedModesNote()).not.toMatch(/Auto and Accept edits have no Cursor/)
+    expect(unsupportedModesNote()).toMatch(/Accept edits has no Cursor equivalent/)
+  })
+
+  it('lets a wrapper that already spells the flag win, per flag', () => {
+    expect(withPermissionMode('cursor-agent --force', 'cursor', 'bypassPermissions')).toBe(
+      'cursor-agent --force'
+    )
+    expect(withPermissionMode('cursor-agent --mode ask', 'cursor', 'plan')).toBe(
+      'cursor-agent --mode ask'
+    )
+  })
+
+  it('names cursor in the Bypass warning list but not in the sandbox caveat', () => {
+    expect(permissionModeAgentsLabel({ mode: 'bypassPermissions' })).toContain('Cursor')
+    // cursor's sandbox is off by default (`sandbox.mode: disabled`), so "still runs in its own
+    // sandbox" would be false for it.
+    expect(bypassSandboxCaveat()).not.toContain('Cursor')
+  })
+})
+
 describe('approvalFlags — an agent with no permission mode', () => {
   it('emits nothing for opencode and for a custom agent', () => {
     for (const id of ['opencode', 'custom:abc']) {
@@ -222,7 +276,8 @@ describe('approvalFlags — an agent with no permission mode', () => {
 describe('UI copy derived from the mapping', () => {
   it('names every agent whose start-up mode we can set', () => {
     const label = permissionModeAgentsLabel()
-    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex']) expect(label).toContain(name)
+    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Cursor'])
+      expect(label).toContain(name)
     expect(label).not.toContain('opencode')
   })
 
@@ -231,9 +286,9 @@ describe('UI copy derived from the mapping', () => {
     // the same drift the label helper exists to prevent, one level down. The ids are exported so the
     // caller can agree with them; this pins that they describe the SAME set the label does.
     const ids = permissionModeAgentIds({ exclude: ['claude'] })
-    expect(ids).toEqual(['grok', 'gemini', 'codex'])
+    expect(ids).toEqual(['grok', 'gemini', 'codex', 'cursor'])
     const label = permissionModeAgentsLabel({ exclude: ['claude'] })
-    for (const id of ids) expect(label.toLowerCase()).toContain(id === 'codex' ? 'codex' : id)
+    for (const id of ids) expect(label.toLowerCase()).toContain(id)
     expect(label).not.toContain('Claude')
   })
 

@@ -29,6 +29,7 @@ const { fetchCodexUsage } = vi.hoisted(() => ({
 }))
 
 vi.mock('./codex-usage', () => ({ fetchCodexUsage }))
+vi.mock('./cursor-usage', () => ({ fetchCursorUsage: async () => unavailableRow('cursor') }))
 vi.mock('./gemini-usage', () => ({ fetchGeminiUsage: async () => unavailableRow('gemini') }))
 vi.mock('./grok-usage', () => ({ fetchGrokUsage: async () => unavailableRow('grok') }))
 vi.mock('./kimi-usage', () => ({ fetchKimiUsage: async () => unavailableRow('kimi') }))

@@ -300,6 +300,13 @@ export interface ContextTailOptions {
    * keeps paying for. The file is a few KB, so re-reading it whole costs nothing worth optimizing.
    */
   wholeFile?: boolean
+  /**
+   * Replace the byte read entirely, for a source that is not a text file: cursor's numbers live in a
+   * SQLite `store.db` (WAL), whose bytes parse as nothing. Called every tick with the key the last
+   * successful read returned; a change gate lives in the source (return null when nothing changed
+   * or the read failed, so the meter keeps its last value). `text` is handed to `parse` as one line.
+   */
+  readSource?: (path: string, lastKey: string | undefined) => Promise<{ text: string; key: string } | null>
 }
 
 interface Tracked {
@@ -332,6 +339,8 @@ interface Tracked {
    * usage in it leaves the last known window alone.
    */
   parsedWindow: number | null
+  /** `readSource`'s last change key (undefined until its first successful read). */
+  sourceKey?: string
 }
 
 export interface ContextTail {
@@ -380,10 +389,24 @@ export function createContextTail(
     t.reading = true
     try {
       let size = -1
-      try {
-        size = (await fs.promises.stat(t.path)).size
-      } catch {
-        // file not created yet / unreadable — skip the byte read, still reconcile below
+      if (opts?.readSource) {
+        const r = await opts.readSource(t.path, t.sourceKey)
+        if (r) {
+          t.sourceKey = r.key
+          const latest = parse([r.text])
+          if (latest) {
+            t.used = latest.used
+            t.model = latest.model ?? t.model
+            t.effort = latest.effort ?? null
+            t.parsedWindow = latest.window ?? t.parsedWindow
+          }
+        }
+      } else {
+        try {
+          size = (await fs.promises.stat(t.path)).size
+        } catch {
+          // file not created yet / unreadable — skip the byte read, still reconcile below
+        }
       }
       if (size >= 0) {
         const before = t.offset

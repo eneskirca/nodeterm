@@ -35,6 +35,7 @@ import {
   COPILOT_HOOK_FILE,
   isSafeRemoteCopilotHome
 } from '../../core/agents/hooks/copilot'
+import { applyCursorHooks, cursorCommandFor, CURSOR_SCRIPT_FILE } from '../../core/agents/hooks/cursor'
 
 /**
  * Remote hook scripts get NO Codex thread-identity root.
@@ -180,9 +181,10 @@ const accountConfigDir = (home: string, accountId: string) => `${home}/.nodeterm
  * codex 0.156.1 `debug prompt-input`, gemini 0.62.0 `skills list`, opencode 1.18.33 `debug skill`,
  * grok 1.0.44 `inspect --json`; copilot 1.0.89 documents it in `copilot skill --help`). One
  * env-independent dir is what a host we cannot introspect cheaply needs: `$COPILOT_HOME`,
- * `$GROK_HOME` and `$XDG_CONFIG_HOME` on the host say nothing about it.
+ * `$GROK_HOME` and `$XDG_CONFIG_HOME` on the host say nothing about it. cursor-agent loads
+ * `~/.agents/skills` too (its bundle's skill roots, docs/cursor-agent.md; not run on a host).
  */
-const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok']
+const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok', 'cursor']
 const claudeSkillsRoot = (home: string) => `${home}/.claude`
 const agentsSkillsRoot = (home: string) => `${home}/.agents`
 
@@ -489,7 +491,9 @@ export class RemoteHooks {
       // grok: our own file in its hooks DIRECTORY, under the HOST's $GROK_HOME.
       ...(plan.install.has('grok') ? [this.installGrokRemote(conn, controlPath, home, remoteDir)] : []),
       // copilot: its own file/grammar under the HOST's $COPILOT_HOME hooks directory.
-      ...(plan.install.has('copilot') ? [this.installCopilotRemote(conn, controlPath, home, remoteDir)] : [])
+      ...(plan.install.has('copilot') ? [this.installCopilotRemote(conn, controlPath, home, remoteDir)] : []),
+      // cursor: merge into the host's SHARED ~/.cursor/hooks.json, only where cursor-agent exists.
+      ...(plan.install.has('cursor') ? [this.installCursorRemote(conn, controlPath, home, remoteDir)] : [])
     ])
     for (const r of installs) {
       if (r.status === 'rejected') {
@@ -538,6 +542,10 @@ export class RemoteHooks {
       }
       if (plan.remove.has('codex')) {
         await stripRemoteSettingsFile(`${home}/.codex/hooks.json`, run, (cfg) => (stripCodexManagedHooks(cfg as CodexHooksConfig) ?? cfg) as Record<string, unknown>)
+      }
+      if (plan.remove.has('cursor')) {
+        // Our entries only (exact managed command); the IDE's and other tools' hooks stay.
+        await stripRemoteSettingsFile(`${home}/.cursor/hooks.json`, run, (cfg) => (cfg.hooks === undefined ? cfg : applyCursorHooks(cfg, null)))
       }
       // Files we own outright: grok's and copilot's hook configs, and our hook scripts.
       const owned: string[] = []
@@ -925,6 +933,40 @@ export class RemoteHooks {
       )
     } catch (e) {
       warnNotInstalled('copilot status hook', e)
+    }
+  }
+
+  /**
+   * Install Cursor's status hook on the host: the same pure merge as the local installer
+   * (`applyCursorHooks`: other tools' entries survive, an unparseable file is left alone) through
+   * the locked stdin transaction (`updateRemoteSettingsFile`). Only where `cursor-agent` is on the
+   * host (PATH, or the vendor's `~/.local/bin`, which a non-login ssh shell often lacks): the file
+   * is shared with the Cursor IDE, so a host without the CLI gets nothing written. A command
+   * holding `//` is refused (cursor strips it as a JSONC comment and the whole file breaks).
+   * Fail-open, but logged (`warnNotInstalled`).
+   */
+  private async installCursorRemote(
+    conn: SshConnection,
+    controlPath: string,
+    home: string,
+    remoteDir: string
+  ): Promise<void> {
+    try {
+      const script = `${remoteDir}/agent-hooks/${CURSOR_SCRIPT_FILE}`
+      const command = cursorCommandFor(script)
+      if (command.includes('//')) return
+      const probe = await this.r.run(childArgs(conn, controlPath,
+        `command -v cursor-agent >/dev/null 2>&1 || [ -x ${posixQuote(`${home}/.local/bin/cursor-agent`)} ]`))
+      if (probe.code !== 0) return
+      await this.writeOwnedFile(conn, controlPath, script, buildManagedScript('cursor', REMOTE_IDENTITY_ROOT), {
+        mode: '755'
+      })
+      await updateRemoteSettingsFile(`${home}/.cursor/hooks.json`,
+        (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
+        (cfg) => applyCursorHooks(cfg, command))
+    } catch (e) {
+      // Fail-open for the connect, not silent: the remote cursor session runs without status hooks.
+      warnNotInstalled('cursor status hook', e)
     }
   }
 

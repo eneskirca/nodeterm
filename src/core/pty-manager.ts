@@ -21,6 +21,7 @@ import {
 } from '../shared/types'
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
+import { cursorApprovalIn, cursorPlanPromptIn, cursorQuestionIn } from './agents/cursor-approval'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
 import {
   probeSaysAbsent,
@@ -173,6 +174,7 @@ import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
 import {
   capabilityAgentId,
+  submitsSeparately,
   hasSharedIdentity,
   readsScreenDialogs,
   setCustomAgentBaseResolver,
@@ -1033,8 +1035,15 @@ function screenGate(screen: string): ChatPromptBlocked | null {
  * survives, so reopening the node or restarting the app reattaches and continues
  * where it left off. Without tmux, it falls back to a plain shell (no persistence).
  */
+/** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
+ *  measured shape: paste, then Enter as its own tmux invocation). */
+const SEPARATE_SUBMIT_DELAY_MS = 150
+
 export class PtyManager {
   private sessions = new Map<string, Session>()
+  /** persistKey -> the agent id its pane was created for (this app run). `sendText` asks it so an
+   *  agent in SEPARATE_SUBMIT_AGENTS gets its Enter as a second write (see `sendText`). */
+  private agentByKey = new Map<string, string>()
   /** persistKey (node id) → live sessionId. The index that makes `pty:create` idempotent:
    *  a second client asking for the same node subscribes to the running session. */
   private byPersistKey = new Map<string, string>()
@@ -2307,6 +2316,7 @@ export class PtyManager {
   private async create(clientId: ClientId, options: PtyCreateOptions): Promise<PtyCreateResult> {
     const key = options.persistKey
     if (!key) return this.spawnNew(clientId, options)
+    if (options.agentId) this.agentByKey.set(key, options.agentId)
     // SECURITY — the choke point for the node id. Every session spawn (local tmux, plain shell,
     // SSH remote) goes through here, `pty:create` validates its payload nowhere, and node ids come
     // from `.nodeterm/project.json` — a file that travels in a cloned/shared repo and is written on
@@ -5780,7 +5790,6 @@ export class PtyManager {
     opts?: { enter?: boolean; typedFor?: AgentId }
   ): Promise<TextDeliveryResult> {
     const enter = opts?.enter ?? true
-    const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
     // `typedFor` (the ⌘M chat view, set only by `sendChatPrompt`): deliver as keystrokes, not a
     // paste — see core/typed-input.ts. Only a SUBMITTED prompt on a tmux backend; everything else
@@ -5789,6 +5798,63 @@ export class PtyManager {
       const typed = await this.sendTyped(persistKey, text, opts.typedFor)
       if (typed !== null) return typed
     }
+    // An agent whose TUI ignores an Enter bundled into the same tmux invocation as a bracketed paste
+    // (SEPARATE_SUBMIT_AGENTS, cursor: MEASURED, the line sits unsubmitted in its composer) gets the
+    // paste and then a bare Enter as a second write. ONE place for every one-way writer: the chat
+    // composer, the phone, canvas `write`, trigger delivery and rename all reach here (review
+    // 2026-10-02 found only rename split it). Windows panes and the session host already submit
+    // with a separate, settled Enter, so they are left alone. The paste and its Enter run inside
+    // `serializePaneWrite`, so two overlapping sends cannot interleave as paste, paste, Enter, Enter.
+    if (enter && text && !live?.nativeWindowsPane && !live?.sessionHost && this.submitsSeparatelyKey(persistKey)) {
+      if (await this.cursorDialogShowing(persistKey)) return false // nothing written
+      const pasted = await this.deliverText(persistKey, text, false, live)
+      if (pasted !== true) return pasted
+      await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
+      if (await this.cursorDialogShowing(persistKey)) return 'pasted-not-submitted'
+      const entered = await this.deliverText(persistKey, '', true, live)
+      return entered === true ? true : 'pasted-not-submitted'
+    }
+    return this.deliverText(persistKey, text, enter, live)
+  }
+
+  /**
+   * The agent a pane runs: create()'s record this app run, else this machine's workspace records
+   * (`setRelayNodeResolver`) when every placement agrees. After a restart a node not mounted yet
+   * (off-screen canvas `write`, trigger, phone send) has no create() record.
+   */
+  private agentForKey(persistKey: string): string | undefined {
+    const known = this.agentByKey.get(persistKey)
+    if (known) return known
+    const ids = new Set((this.relayNodes?.placements(persistKey) ?? []).map((p) => p.node.agentId))
+    return ids.size === 1 ? [...ids][0] : undefined
+  }
+
+  /** Does this pane's agent ignore an Enter bundled with its paste (SEPARATE_SUBMIT_AGENTS)? */
+  private submitsSeparatelyKey(persistKey: string): boolean {
+    const agent = this.agentForKey(persistKey)
+    return !!agent && submitsSeparately(capabilityAgentId(agent as AgentId))
+  }
+
+  /**
+   * Is a Cursor dialog (approval, AskQuestion, plan "Ready to build?") on screen? The split's bare
+   * Enter must not answer one that opened during the gap. An empty or failed capture is not
+   * evidence (the `sendChatPrompt` rule): the Enter goes as before.
+   * note: Cursor detectors only; SEPARATE_SUBMIT_AGENTS is cursor alone today.
+   * note: fail-open on a blind capture: failing closed would block every send whenever the pane
+   * cannot be read (e.g. ssh missing).
+   */
+  private async cursorDialogShowing(persistKey: string): Promise<boolean> {
+    const screen = await this.captureSession(persistKey).catch(() => '')
+    return cursorApprovalIn(screen) || cursorQuestionIn(screen) || cursorPlanPromptIn(screen)
+  }
+
+  private async deliverText(
+    persistKey: string,
+    text: string,
+    enter: boolean,
+    live: ReturnType<PtyManager['liveSessionForPersistKey']>
+  ): Promise<TextDeliveryResult> {
+    const target = sessionName(persistKey)
     // A direct (non-persistent) Windows PTY has no session-host entry and no tmux: it is typed
     // into through the pane itself. Routing it to the session host below failed every time.
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendText(text, enter)
@@ -6244,11 +6310,11 @@ export class PtyManager {
    * accidental submit a messaging delivery must never perform — an empty envelope refuses here.
    * (`buildEnvelope` can never return '', so this is a guard against a future caller, not a path.)
    */
-  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean> {
+  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
     return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected))
   }
 
-  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean> {
+  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
     if (envelope.length === 0) return false
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return false
@@ -6258,24 +6324,36 @@ export class PtyManager {
       return expected ? sessionHostMessageEnvelope(target, envelope, expected) : false
     }
     const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
-    try {
-      if (sshRemote) {
-        const ssh = findSsh()
-        if (!ssh) return false
-        const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, envelope, true)
+    const deliver = async (body: string, enter: boolean): Promise<boolean> => {
+      try {
+        if (sshRemote) {
+          const ssh = findSsh()
+          if (!ssh) return false
+          const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, body, enter)
+          if (!plan) return false
+          return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        }
+        if (!this.tmuxPath) return false
+        const tmuxPath = this.tmuxPath
+        const plan = localPasteDelivery(TMUX_SOCKET, target, body, enter)
         if (!plan) return false
-        return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+        return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
+      } catch {
+        // A builder throwing (an unsafe target) lands here; `runPasteDelivery` itself answers false
+        // rather than throwing, so the buffer sweep is never skipped.
+        return false
       }
-      if (!this.tmuxPath) return false
-      const tmuxPath = this.tmuxPath
-      const plan = localPasteDelivery(TMUX_SOCKET, target, envelope, true)
-      if (!plan) return false
-      return await runPasteDelivery(plan, (args, input) => runWithStdin(tmuxPath, args, input))
-    } catch {
-      // A builder throwing (an unsafe target) lands here; `runPasteDelivery` itself answers false
-      // rather than throwing, so the buffer sweep is never skipped.
-      return false
     }
+    if (!this.submitsSeparatelyKey(persistKey)) return deliver(envelope, true)
+    // `sendText`'s split, inlined: this op already holds the pane's `serializePaneWrite` slot, so
+    // calling `sendText` here would queue behind itself. A dialog before the paste writes nothing
+    // ('dialog'). Once the paste is in, the answer is `true` whatever the Enter does (the
+    // `DeliveryDeps.sendEnvelope` contract), so the receipt watch reports `stalled`, not `targetGone`.
+    if (await this.cursorDialogShowing(persistKey)) return 'dialog'
+    if (!(await deliver(envelope, false))) return false
+    await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
+    if (!(await this.cursorDialogShowing(persistKey))) await deliver('', true)
+    return true
   }
 
   /**
@@ -6891,8 +6969,11 @@ export class PtyManager {
     // `tombstones`); a RECYCLE explicitly forgets, because the node is not going anywhere and its
     // replacement session must be spawnable. Recorded even when no live session exists in this
     // process: the node may be deleted from a canvas whose terminal was never opened here.
-    if (intent === 'delete') this.tombstone(persistKey, clientId)
-    else this.tombstones.delete(persistKey)
+    if (intent === 'delete') {
+      this.tombstone(persistKey, clientId)
+      // The node is gone; a recycle keeps it, and its respawn's create() re-records the agent.
+      this.agentByKey.delete(persistKey)
+    } else this.tombstones.delete(persistKey)
     if (dyingId && dying) {
       this.byPersistKey.delete(persistKey)
       dying.indexKey = undefined

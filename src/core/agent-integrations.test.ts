@@ -4,7 +4,7 @@
 // did not enable, a decline removes exactly what nodeterm wrote (a file they edited is kept and
 // reported), and every agent that has canvas control / context link still discovers them.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
@@ -234,6 +234,37 @@ describe('decline: remove exactly what we wrote', () => {
     expect(existsSync(path.join(home, '.nodeterm', 'agent-hooks', 'claude.sh'))).toBe(false)
     // codex is still enabled: untouched.
     expect(existsSync(path.join(home, '.codex', 'skills', CANVAS_SKILL, 'SKILL.md'))).toBe(true)
+  })
+
+  // cursor-agent loads `~/.cursor/skills` ahead of `~/.claude/skills`, so its skills follow ITS consent,
+  // not claude's. Its hooks.json is shared with the Cursor IDE: a decline strips only our entries.
+  it.skipIf(process.platform === 'win32')('cursor: hook and skills in ~/.cursor under its own consent; a decline removes only ours', () => {
+    const bin = path.join(home, '.local', 'bin', 'cursor-agent')
+    put(bin, '#!/bin/sh\n')
+    chmodSync(bin, 0o755)
+    let settings = withAgents({ cursor: 'enabled' })
+    const { lc } = lifecycle(() => settings, { realHooks: true })
+    lc.reconcile()
+    const hooksJson = path.join(home, '.cursor', 'hooks.json')
+    const skills = path.join(home, '.cursor', 'skills')
+    expect(read(hooksJson)).toContain('agent-hooks/cursor.sh')
+    expect(read(path.join(skills, CANVAS_SKILL, 'SKILL.md'))).toBe(buildCanvasSkillBody(SHIMS().canvas))
+    expect(read(path.join(skills, CONTEXT_SKILL, 'SKILL.md'))).toBe(buildContextLinkSkillBody(SHIMS().context))
+    expect(existsSync(path.join(home, '.nodeterm', 'agent-hooks', 'cursor.sh'))).toBe(true)
+    expect(existsSync(path.join(home, '.claude'))).toBe(false)
+    // The IDE (or another tool) adds its own hook beside ours.
+    const cfg = JSON.parse(read(hooksJson)) as { hooks: Record<string, { command: string }[]> }
+    cfg.hooks.stop.push({ command: 'ide-hook' })
+    writeFileSync(hooksJson, JSON.stringify(cfg))
+
+    settings = withAgents({ cursor: 'declined' })
+    lc.onSettingsChanged(settings)
+    const after = read(hooksJson)
+    expect(after).not.toContain('agent-hooks/cursor.sh')
+    expect(after).toContain('ide-hook')
+    expect(existsSync(path.join(skills, CANVAS_SKILL))).toBe(false)
+    expect(existsSync(path.join(skills, CONTEXT_SKILL))).toBe(false)
+    expect(existsSync(path.join(home, '.nodeterm', 'agent-hooks', 'cursor.sh'))).toBe(false)
   })
 
   it('never overwrites a skill the user edited while still enabled', () => {

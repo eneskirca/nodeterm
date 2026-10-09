@@ -42,6 +42,7 @@ describe('brandPulsePlan', () => {
     // The generalized inline plan carries WHICH mark so each surface draws the right geometry.
     expect(brandPulsePlan('grok', 16)).toEqual({ kind: 'inline', mark: 'grok', size: 16 })
     expect(brandPulsePlan('copilot', 16)).toEqual({ kind: 'inline', mark: 'copilot', size: 16 })
+    expect(brandPulsePlan('cursor', 16)).toEqual({ kind: 'inline', mark: 'cursor', size: 16 })
   })
 
   it('answers nothing for an agent with no mark, so the caller falls back to the dot', () => {

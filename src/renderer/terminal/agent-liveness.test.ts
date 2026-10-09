@@ -41,6 +41,8 @@ describe('looksDropped', () => {
     expect(looksDropped({ ...base, agentId: 'opencode' })).toBe(false)
     expect(looksDropped({ ...base, agentId: 'gemini' })).toBe(true)
     expect(looksDropped({ ...base, agentId: 'grok' })).toBe(true)
+    // cursor: normalizeCursor maps `sessionEnd` (subscribed in CURSOR_HOOK_EVENTS), so it is judged.
+    expect(looksDropped({ ...base, agentId: 'cursor' })).toBe(true)
   })
 
   // A plain terminal is a shell in a pane by definition — the whole canvas would light up.

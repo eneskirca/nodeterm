@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
+import { normalizeFor } from './normalize'
 import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   canBranch,
   canChat,
+  chatReadsLocalOnly,
   mintsSessionId,
   supportsSessionIdFlag,
   readsClaudeShapedTranscript,
@@ -18,8 +20,11 @@ import {
   canSwitchModel,
   createdAgentId,
   hasHooks,
+  hasGatewayModels,
   hasPermissionMode,
   hasUsage,
+  MODEL_SWITCH_CAPABLE,
+  OWN_MODEL_CATALOGUE,
   reportsOwnCopy,
   RENAME_CAPABLE,
   hasSharedIdentity,
@@ -32,8 +37,11 @@ import {
   readsScreenDialogs,
   queuesInputWhileWorking,
   LOCAL_ONLY_HOOK_AGENTS,
-  reportsSessionEnd
+  reportsSessionEnd,
+  resumeCommandWith,
+  submitsSeparately
 } from './config'
+import { CURSOR_HOOK_EVENTS } from './hook-events'
 
 describe('CONTEXT_LINK_CAPABLE', () => {
   it('all three builtin agents can context-link', () => {
@@ -54,9 +62,22 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     // grok joined once its leaf existed: `-m/--model` in the launch grammar plus `grok models` for
     // discovery. It is NOT in this list as an example of a non-capable agent any more.
     expect(canSwitchModel('grok')).toBe(true)
+    // cursor: `--model <id>` (a root option, measured before and after `agent`). Its models are its
+    // own catalogue, so it joins the list WITHOUT the gateway's models (OWN_MODEL_CATALOGUE).
+    expect(canSwitchModel('cursor')).toBe(true)
+    expect(hasGatewayModels('cursor')).toBe(false)
+    expect(hasGatewayModels('grok')).toBe(false)
+    for (const id of ['claude', 'codex', 'copilot'] as const)
+      expect(hasGatewayModels(id), id).toBe(true)
     for (const id of ['gemini', 'opencode', 'custom:plain'] as const) {
       expect(canSwitchModel(id), id).toBe(false)
+      expect(hasGatewayModels(id), id).toBe(false)
     }
+  })
+
+  it('OWN_MODEL_CATALOGUE is a subset of the switch-capable list', () => {
+    for (const id of OWN_MODEL_CATALOGUE)
+      expect(MODEL_SWITCH_CAPABLE as readonly string[]).toContain(id)
   })
 })
 
@@ -177,10 +198,11 @@ describe('grok capabilities', () => {
     expect(AGENT_CONFIG.grok.argvPromptSeparator).toBe('--')
   })
 
-  it('is the ONLY agent that asks for a separator', () => {
+  it('is the only agent besides cursor that asks for a separator', () => {
     // claude takes a positional too, but has no subcommand a one-word prompt could shadow — and
-    // adding `--` there would change a command line that works today.
-    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok')) {
+    // adding `--` there would change a command line that works today. cursor needs one for the
+    // same reason as grok, but its CLI ignores `--` (see the cursor block below).
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'grok' && a !== 'cursor')) {
       expect(AGENT_CONFIG[id].argvPromptSeparator, id).toBeUndefined()
     }
   })
@@ -382,6 +404,31 @@ describe('antigravity capabilities', () => {
   })
 })
 
+/**
+ * Cursor's lists so far: AGENT_HOOK_TARGETS (badge, unread dot, completion notification, `--after`
+ * dependency and trigger target; leaves `normalizeCursor` + the `~/.cursor/hooks.json` installer),
+ * PERMISSION_MODE_CAPABLE and MODEL_SWITCH_CAPABLE (leaf: CURSOR_MODES in approval-mode.ts).
+ * Everything else is a separate leaf that does not exist yet; docs/cursor-agent.md says which.
+ */
+describe('cursor capabilities', () => {
+  it('reports status through its own hooks, locally and on an SSH host (RemoteHooks.installCursorRemote)', () => {
+    expect(hasHooks('cursor')).toBe(true)
+    expect(hasHooksOverSsh('cursor')).toBe(true)
+  })
+
+  it('takes a permission mode and a model on its launch line', () => {
+    expect(hasPermissionMode('cursor')).toBe(true)
+    expect(canSwitchModel('cursor')).toBe(true)
+  })
+
+  it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
+    for (const can of [canRecur, canBranch]) {
+      expect(can('cursor')).toBe(false)
+    }
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
+  })
+})
+
 describe('copy feedback', () => {
   it('stays quiet for claude, whose CLI announces its own copies', () => {
     // Claude Code captures the mouse and prints "copied N chars to tmux buffer · paste with
@@ -458,6 +505,92 @@ describe('title read vs rename write', () => {
   it('a custom agent claims neither', () => {
     expect(canReadTitle('custom:abc')).toBe(false)
     expect(canRename('custom:abc')).toBe(false)
+  })
+})
+
+describe('cursor capabilities (transcript leaf)', () => {
+  it("shows its conversation in ⌘M from its own SQLite store, never through claude's resolver", () => {
+    expect(canChat('cursor')).toBe(true)
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
+  })
+  it('is local-only for the chat view: a remote node says "not supported yet"', () => {
+    expect(chatReadsLocalOnly('cursor')).toBe(true)
+  })
+  it('joins context link, transfer-from and the title READ leg', () => {
+    expect(canContextLink('cursor')).toBe(true)
+    expect(canTransferFrom('cursor')).toBe(true)
+    expect(canReadTitle('cursor')).toBe(true)
+  })
+})
+
+/**
+ * Cursor orchestration parity (docs/cursor-agent.md "Orchestration parity"), MEASURED on
+ * cursor-agent 2026.10.01 in the interactive TUI.
+ */
+describe('cursor capabilities (orchestration)', () => {
+  it('drives the canvas: ~/.claude/skills is listed by cursor, so membership is the whole wiring', () => {
+    expect(canControlCanvas('cursor')).toBe(true)
+  })
+  it('shows subagent cards (start: parent Task preToolUse, end: parent stop)', () => {
+    expect(canSubagent('cursor')).toBe(true)
+  })
+  it('renames: /rename lands in the store meta the READ leg reads, so read ⊇ write holds', () => {
+    expect(canRename('cursor')).toBe(true)
+    expect(canReadTitle('cursor')).toBe(true)
+  })
+  it('submits a one-way line with a SEPARATE Enter; claude and grok keep the one-shot paste', () => {
+    expect(submitsSeparately('cursor')).toBe(true)
+    for (const id of ['claude', 'grok', 'codex', 'gemini']) expect(submitsSeparately(id), id).toBe(false)
+  })
+  it('does NOT join RECURRING_CAPABLE: the loop skill was seen arming, its ticks were never measured', () => {
+    expect(canRecur('cursor')).toBe(false)
+  })
+})
+
+describe('cursor capabilities (context meter)', () => {
+  it('joins USAGE_CAPABLE with the agent’s own store numbers', () => {
+    expect(hasUsage('cursor')).toBe(true)
+  })
+  it('stays off claude’s transcript resolver: no find-bar index, no cold-resume, no cwd fallback', () => {
+    // hasUsage also gates context.ensure and the find bar's index in older code; the split is
+    // readsClaudeShapedTranscript, which must stay false or a cursor node is handed a stranger's claude session.
+    expect(readsClaudeShapedTranscript('cursor')).toBe(false)
+    expect(readsClaudeShapedTranscript('claude')).toBe(true)
+  })
+})
+
+describe('cursor capabilities (session continuity)', () => {
+  it('resumes with `--resume <id>` before the `agent` subcommand', () => {
+    expect(canResume('cursor')).toBe(true)
+    expect(resumeCommandWith('cursor-agent', 'cursor', 'abc-123')).toBe('cursor-agent --resume abc-123')
+    expect(resumeCommandWith('cursor-agent', 'cursor', 'x; rm -rf ~')).toBeNull()
+  })
+  it('mints with no probe of its own (the flag is resume, a fresh uuid is adopted)', () => {
+    expect(mintsSessionId('cursor')).toBe(true)
+    expect(supportsSessionIdFlag('cursor', false, false)).toBe(true)
+  })
+  it('reports a session end (normalizeCursor maps sessionEnd, CURSOR_HOOK_EVENTS subscribes it)', () => {
+    expect(reportsSessionEnd('cursor')).toBe(true)
+    expect(CURSOR_HOOK_EVENTS).toContain('sessionEnd')
+  })
+})
+
+/**
+ * Cursor wave 2 (F2): NEEDS YOU from a pane read, the SSH hook installer, the lost-stop net.
+ * No capability list gates the approval watch: it is the hook server's own seam
+ * (core/agents/cursor-approval.ts) and only `agentId === 'cursor'` posts reach it.
+ */
+describe('cursor NEEDS YOU, SSH hooks and lost stop', () => {
+  it('is no longer local-only: RemoteHooks installs into the host ~/.cursor/hooks.json', () => {
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).not.toContain('cursor')
+    expect(hasHooksOverSsh('cursor')).toBe(true)
+  })
+
+  it('the normalizer itself still never says blocked (the pane read adds it, not a hook)', () => {
+    for (const hook_event_name of ['preToolUse', 'beforeShellExecution', 'beforeMCPExecution', 'notification']) {
+      const ev = normalizeFor('cursor', { nodeId: 'n', agentId: 'cursor', payload: { hook_event_name, tool_use_id: 't' } })
+      expect(ev?.state === 'blocked', hook_event_name).toBe(false)
+    }
   })
 })
 

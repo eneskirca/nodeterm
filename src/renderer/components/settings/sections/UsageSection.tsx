@@ -27,6 +27,7 @@ const ROWS = {
       'ssh',
       'host',
       'codex',
+      'cursor',
       'gemini',
       'grok',
       'kimi',
@@ -54,6 +55,7 @@ const PROVIDER_BLURBS: Record<string, string> = {
   'claude-remote':
     "Limits for the Claude accounts on your connected SSH projects' hosts. Each read runs on the host itself over the existing connection — the credential never leaves it.",
   codex: 'Session and weekly limits from your ChatGPT (Codex) subscription.',
+  cursor: 'Monthly included usage (total, Auto and API) from the Cursor Agent CLI sign-in.',
   gemini: 'Per-model hourly quota from the Gemini CLI sign-in.',
   grok: 'Weekly credits and monthly budget from the Grok CLI sign-in.',
   kimi: 'Session and weekly quota from the Kimi Code sign-in.',

@@ -24,6 +24,7 @@ import {
   type RemoteUsageTarget
 } from './remote-claude-usage'
 import { fetchCodexUsage } from './codex-usage'
+import { fetchCursorUsage } from './cursor-usage'
 import { fetchRemoteCodexUsage } from './remote-codex-usage'
 import { fetchGeminiUsage } from './gemini-usage'
 import { fetchGrokUsage } from './grok-usage'
@@ -65,6 +66,7 @@ const OTHER_PROVIDERS: { id: string; fetch: () => Promise<ProviderUsage> }[] = [
   // Codex is NOT here — it is account-scoped (one system row + one row per managed account,
   // built dynamically in runProviders so each row is keyed by its own accountId and can never
   // collapse into another). See the Codex block in runProviders and S6 §4.3 (no mixing).
+  { id: 'cursor', fetch: () => fetchCursorUsage() },
   { id: 'gemini', fetch: fetchGeminiUsage },
   { id: 'grok', fetch: fetchGrokUsage },
   { id: 'kimi', fetch: fetchKimiUsage },

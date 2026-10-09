@@ -3621,6 +3621,19 @@ export interface GrokCliCaps {
 /** Unprobed grok ⇒ omit the flag, offer no models ⇒ today's command line, byte-identical. */
 export const UNKNOWN_GROK_CLI_CAPS: GrokCliCaps = { sessionIdFlag: false, models: [] }
 
+export interface CursorCliCaps {
+  /** `cursor-agent models`: id + label, the account's own catalogue. [] when it cannot be read. */
+  models: { id: string; name?: string }[]
+}
+
+/** Unprobed cursor ⇒ no models ⇒ no model switching (the pre-feature behaviour). */
+export const UNKNOWN_CURSOR_CLI_CAPS: CursorCliCaps = { models: [] }
+
+export interface CursorApi {
+  /** Never rejects; an unprobed or offline CLI resolves to the empty catalogue. */
+  cliCaps(): Promise<CursorCliCaps>
+}
+
 export interface GrokApi {
   /** Capabilities of the local grok CLI (memoized in the shell; safe to call repeatedly).
    *  Never rejects — an unprobed CLI resolves to the fail-open caps. */
@@ -4253,6 +4266,7 @@ export interface NodeTerminalApi {
   codex: CodexApi
   claude: ClaudeApi
   grok: GrokApi
+  cursor: CursorApi
   /** Custom-agent launch/preview (env-var expansion + command assembly). */
   agent: AgentApi
   chat: ChatApi

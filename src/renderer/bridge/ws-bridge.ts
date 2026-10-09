@@ -32,6 +32,9 @@ import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issu
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   UNKNOWN_GROK_CLI_CAPS,
+  UNKNOWN_CURSOR_CLI_CAPS,
+  type CursorApi,
+  type CursorCliCaps,
   type BoardLogApi,
   type LogApi,
   type LogRecord,
@@ -1172,6 +1175,16 @@ export function buildGrokApi(client: RpcClient): GrokApi {
   }
 }
 
+/** cursor's model catalogue over WS-RPC: a REAL handler server-side (`registerCursorCliIpc`). */
+export function buildCursorApi(client: RpcClient): CursorApi {
+  return {
+    cliCaps: () =>
+      (client.request(IPC.cursorCliCaps) as Promise<CursorCliCaps>).catch(
+        () => UNKNOWN_CURSOR_CLI_CAPS
+      )
+  }
+}
+
 /**
  * The two transcript READ channels, now that `registerTranscriptIpc` serves them in the server
  * shell too. Before this the browser had no handler at all: the stub rejected, the ⌘M panel never
@@ -1420,7 +1433,8 @@ export async function installWsBridge(): Promise<boolean> {
       return {
         chat: t.chat,
         claude: { ...buildClaudeApi(client, stubApi.claude), readTranscript: t.claudeReadTranscript },
-        grok: buildGrokApi(client)
+        grok: buildGrokApi(client),
+        cursor: buildCursorApi(client)
       }
     })(),
     // Web replacement for the Electron native dialog: an in-app server-directory browser over

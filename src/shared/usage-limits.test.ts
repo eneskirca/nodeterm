@@ -7,7 +7,9 @@ import {
   limitKey,
   enabledProviders,
   hasAnyUsage,
-  providerLabel
+  providerLabel,
+  providerPillSegments,
+  USAGE_PROVIDER_IDS
 } from './usage-limits'
 import type { ProviderUsage, RemoteAccountUsage, UsageLimit } from './types'
 
@@ -184,5 +186,33 @@ describe('providerLabel', () => {
 
   it('falls back to the raw id so a new provider never renders blank', () => {
     expect(providerLabel('whatever-next')).toBe('whatever-next')
+  })
+})
+
+describe('USAGE_PROVIDER_IDS', () => {
+  it('lists cursor, so it gets a Settings toggle and is shown by default', () => {
+    expect(USAGE_PROVIDER_IDS).toContain('cursor')
+    expect(providerLabel('cursor', 'Cursor')).toBe('Cursor')
+  })
+})
+
+describe('providerPillSegments', () => {
+  const row = (provider: string, limits: UsageLimit[]): ProviderUsage => ({
+    provider, limits, account: null, updatedAt: 0, status: 'ok'
+  })
+
+  it('keeps every other provider on its single worst limit, named by the provider', () => {
+    const p = row('grok', [limit({ usedPercent: 10 }), limit({ kind: 'weekly_all', usedPercent: 60 })])
+    expect(providerPillSegments(p, 'Grok')).toEqual([{ limit: p.limits[1], label: 'Grok' }])
+    expect(providerPillSegments(row('kimi', []), 'Kimi')).toEqual([])
+  })
+
+  it('shows all three Cursor buckets: total by provider name, the rest by lower-cased bucket', () => {
+    const p = row('cursor', [
+      limit({ kind: 'monthly', usedPercent: 35 }),
+      limit({ kind: 'monthly_scoped', scopeLabel: 'Auto', usedPercent: 33 }),
+      limit({ kind: 'monthly_scoped', scopeLabel: 'API', usedPercent: 100 })
+    ])
+    expect(providerPillSegments(p, 'Cursor').map((s) => s.label)).toEqual(['Cursor', 'auto', 'api'])
   })
 })

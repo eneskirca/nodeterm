@@ -15,12 +15,14 @@ import { recordAgentEvent, recordRawToolEvent, recordContextUsage,
   recordQuestionResult, turnInterruptEvent, ignoreQuestionHook
 } from '../core/agent-status-mirror'
 import { createSubagentTail, type SubagentTail } from '../core/subagent-tail'
+import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
 import { geminiContextParse } from '../core/gemini-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
+import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
@@ -28,7 +30,7 @@ import { codexHome } from '../core/usage/codex-usage'
 import { setNodeTranscript } from '../core/context-link'
 import { isSafeLocalTranscriptPath } from '../core/claude-accounts-core'
 import { linkedClaudeConfigDirs } from '../core/claude-config-dir'
-import { isAsyncSubagentLaunch, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
+import { isAsyncSubagentLaunch, isCursorPayload, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { IPC } from '../shared/ipc'
 import { subagentReplay } from '../core/subagent-replay'
@@ -37,6 +39,8 @@ import type { ServerPlatform } from './platform-server'
 /** The narrow surface of the hook server this module needs — injectable for tests. */
 export interface HookLike {
   setListener(cb: (e: NormalizedAgentEvent) => void): void
+  /** Optional so test fakes need not implement it; the real hook server does. */
+  releaseCursorNode?(nodeId: string): void
   setRawListener(
     cb: (
       agentId: string,
@@ -71,7 +75,7 @@ export interface WireAgentStatusOptions {
 export function wireAgentStatus(
   platform: ServerPlatform,
   opts: WireAgentStatusOptions = {}
-): { contextTail: ContextTail; geminiContextTail: ContextTail; codexContextTail: ContextTail } {
+): { contextTail: ContextTail; geminiContextTail: ContextTail; codexContextTail: ContextTail; cursorContextTail: ContextTail } {
   const hooks = opts.hooks ?? hookServer
   // nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
   // since the grok branch below, grok's)
@@ -116,6 +120,14 @@ export function wireAgentStatus(
     subagentTail.finish(n.toolUseId)
     nodeSubagents.get(nodeId)?.delete(n.toolUseId)
   }
+  // Cursor's subagent END (its hooks never send one) and child tail; same tracker in the desktop.
+  const cursorSubagents = createCursorSubagentTracker({
+    tail: subagentTail,
+    emit: (ev) => {
+      platform.broadcast(IPC.agentStatus, ev)
+      recordAgentEvent(ev)
+    }
+  })
 
   /** See the identical handler in src/main/index.ts: a tool RESULT settles an ask that ended with
    *  no hook (Esc on an AskUserQuestion), which otherwise left the node stuck on needs-you. */
@@ -172,6 +184,12 @@ export function wireAgentStatus(
     parse: grokContextParse,
     wholeFile: true
   })
+  // cursor's fourth tail. Its numbers are in a SQLite store, not a text file, so `readSource` replaces
+  // the byte read (stat-gated on the db + WAL). Same construction in both shells (invariant 11).
+  const cursorContextTail = createContextTail(pushContextUpdate, {
+    parse: cursorContextParse,
+    readSource: readCursorContextSource
+  })
 
   const emit = (e: NormalizedAgentEvent): void => {
     // Claude subagent events first become one card per child (claudeSubagents above); every other
@@ -220,6 +238,16 @@ export function wireAgentStatus(
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   // Hook server validates session-env capacity and caller identity once for both shells.
   hooks.setRawListener((agentId, nodeId, payload, _meta) => {
+    if (agentId === 'cursor') {
+      // Same shared step as the desktop (core/cursor-chat.ts `applyCursorRaw`). The server has no
+      // SSH projects, so nothing here is remote.
+      applyCursorRaw(
+        { tail: cursorContextTail, subagents: cursorSubagents, nodeSession: nodeContextSession, isRemote: () => false },
+        nodeId,
+        payload
+      )
+      return
+    }
     if (agentId === 'grok') {
       // This branch records two associations, neither of which grok's envelope states outright.
       // Everything the claude path does below hangs off `transcript_path`. Grok DOES send one --
@@ -374,6 +402,9 @@ export function wireAgentStatus(
     // Mirror the per-node "what it's doing now" activity line for the phone (mobile-usage-inbox).
     // Independent of the transcript-tailing below (no path needed), so it runs first.
     recordRawToolEvent(nodeId, payload)
+    // Cursor runs claude.sh too (Claude settings import), often with a CHILD's chat id: recording it
+    // here re-pointed the node's session, so the parent's cursor tail leaked past pty:destroy.
+    if (isCursorPayload(payload)) return
     // Claude's native subagent hooks, BEFORE the child-event gate below: that gate ignores every
     // agent_id-tagged payload, and these carry the CHILD's agent_id with the PARENT's
     // transcript_path. All they drive here is the child's own transcript tail, started at
@@ -445,6 +476,9 @@ export function wireAgentStatus(
   //    the old session's tails are dead either way (the respawned agent re-registers its own).
   const releaseNodeTails = (nodeId: string): void => {
     claudeSubagents.forgetNode(nodeId)
+    cursorSubagents.release(nodeId)
+    releaseCursorRaw(nodeId)
+    hooks.releaseCursorNode?.(nodeId)
     const sessionId = nodeContextSession.get(nodeId)
     if (sessionId) {
       // Every agent's tail, not just claude's: `nodeContextSession` now holds gemini and codex
@@ -454,6 +488,7 @@ export function wireAgentStatus(
       geminiContextTail.untrack(sessionId)
       codexContextTail.untrack(sessionId)
       grokContextTail.untrack(sessionId)
+      cursorContextTail.untrack(sessionId)
       nodeContextSession.delete(nodeId)
     }
     const subs = nodeSubagents.get(nodeId)
@@ -468,5 +503,5 @@ export function wireAgentStatus(
   // `codexContextTail` joins the two already returned so `src/server/index.ts` can register the
   // context-meter rehydration over all three. Keeping a tail private here would mean a second
   // instance somewhere else metering the same sessions twice.
-  return { contextTail, geminiContextTail, codexContextTail }
+  return { contextTail, geminiContextTail, codexContextTail, cursorContextTail }
 }

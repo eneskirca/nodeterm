@@ -8,6 +8,8 @@ import {
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
   UNKNOWN_GROK_CLI_CAPS,
+  UNKNOWN_CURSOR_CLI_CAPS,
+  type CursorCliCaps,
   type ClaudeCliCaps,
   type GrokCliCaps,
   type Project
@@ -97,6 +99,44 @@ export function ensureGrokCliCaps(): Promise<GrokCliCaps> {
 /** Last-known grok caps, synchronously — node creation is a sync factory. */
 export function grokCliCapsNow(): GrokCliCaps {
   return grokCaps
+}
+
+/** cursor's catalogue, same shape: fail-open [] until `cursor.cliCaps()` answers. Own memo (rule 9). */
+let cursorCaps: CursorCliCaps = UNKNOWN_CURSOR_CLI_CAPS
+let cursorCapsPromise: Promise<CursorCliCaps> | null = null
+
+export function ensureCursorCliCaps(): Promise<CursorCliCaps> {
+  if (!cursorCapsPromise) {
+    const probe = Promise.resolve()
+      .then(() => window.nodeTerminal.cursor.cliCaps())
+      .then((c) => (cursorCaps = c ?? UNKNOWN_CURSOR_CLI_CAPS))
+      .catch(() => UNKNOWN_CURSOR_CLI_CAPS)
+      .then((c) => {
+        // An empty catalogue (offline, signed out, CLI missing) is not remembered: core does not
+        // cache it either (core/cursor-cli.ts), so the next ask retries instead of hiding the model
+        // menu until an app reload (review 2026-10-02). A real catalogue stays memoized.
+        if (c.models.length === 0) cursorCapsPromise = null
+        return c
+      })
+    const timeout = new Promise<CursorCliCaps>((resolve) =>
+      setTimeout(() => resolve(cursorCaps), CAPS_WAIT_MS)
+    )
+    cursorCapsPromise = Promise.race([probe, timeout])
+  }
+  return cursorCapsPromise
+}
+
+/** Last-known cursor caps, synchronously. With nothing known yet it starts a retry in the
+ *  background, so the menu that asked finds the catalogue the next time it opens. */
+export function cursorCliCapsNow(): CursorCliCaps {
+  if (cursorCaps.models.length === 0) void ensureCursorCliCaps()
+  return cursorCaps
+}
+
+/** Test seam for the cursor memo. */
+export function resetCursorCliCapsForTests(): void {
+  cursorCaps = UNKNOWN_CURSOR_CLI_CAPS
+  cursorCapsPromise = null
 }
 
 /** Test seam for the grok memo. */

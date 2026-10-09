@@ -914,7 +914,8 @@ export function toolActivity(toolName: string, toolInput: Record<string, unknown
     case 'Read':
       out = `Reading ${basename(str(ti.file_path) || str(ti.notebook_path)) || 'file'}`
       break
-    case 'Bash': {
+    case 'Bash':
+    case 'Shell': { // cursor's shell tool, same `command` key (measured hook payload)
       const cmd = str(ti.command).replace(/\s+/g, ' ').trim()
       out = `Running ${cmd ? clip(cmd, 60) : 'command'}`
       break

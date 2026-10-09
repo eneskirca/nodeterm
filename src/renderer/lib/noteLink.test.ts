@@ -14,8 +14,10 @@ import {
   contextLinkForEdge,
   edgeToBridge,
   linkReadPairs,
-  isCurrentLinkDirection
+  isCurrentLinkDirection,
+  usesLinkedContextSkill
 } from './noteLink'
+import { setCustomAgentBaseResolver } from '@shared/agents/config'
 import type { CanvasNodeState } from '@shared/types'
 
 const term = (contextCapable = false) => ({ kind: 'terminal', contextCapable })
@@ -224,6 +226,23 @@ describe('buildContextLinkNote', () => {
     const msg = buildContextLinkNote('claude', 'Builder', '/x/context.sh')
     expect(msg).toContain('[nodeterm] You are now linked to "Builder"')
     expect(msg).toContain('get-linked-context skill')
+  })
+  it('cursor (reads ~/.claude/skills) gets the skill wording; grok, unverified, keeps the CLI', () => {
+    expect(buildContextLinkNote('cursor', 'Builder', '/x/context.sh')).toContain('get-linked-context skill')
+    expect(buildNotePushMessage('N', 'x'.repeat(3000), 'cursor')).toContain('get-linked-context skill')
+    expect(buildContextLinkNote('grok', 'Builder', '/x/context.sh')).toContain('sh "/x/context.sh"')
+  })
+  it('a custom agent words it as its base does: claude-base and cursor-base alike (LINKED_CONTEXT_SKILL_AGENTS)', () => {
+    setCustomAgentBaseResolver((id) => (id === 'my-claude' ? 'claude' : id === 'my-cursor' ? 'cursor' : id === 'my-grok' ? 'grok' : undefined))
+    try {
+      for (const id of ['my-claude', 'my-cursor']) {
+        expect(usesLinkedContextSkill(id), id).toBe(true)
+        expect(buildContextLinkNote(id, 'Builder', '/x/context.sh'), id).toContain('get-linked-context skill')
+      }
+      expect(usesLinkedContextSkill('my-grok')).toBe(false)
+    } finally {
+      setCustomAgentBaseResolver(null)
+    }
   })
   it('codex/gemini get the inline CLI command, single line', () => {
     const msg = buildContextLinkNote('codex', 'Builder', '/x/context.sh')

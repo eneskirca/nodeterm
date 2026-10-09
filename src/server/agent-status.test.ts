@@ -496,6 +496,94 @@ it('passes observed session capacity through the Server Edition transcript jail'
   expect(ctx.calls).toHaveLength(before)
 })
 
+/**
+ * The cursor branch of the raw listener: the store is found by conversation_id under CURSOR_CONFIG_DIR
+ * and the REAL tail pushes its numbers (used/max from root field 5) to the renderer channel; the
+ * payload's transcript_path is never followed. The desktop copy in src/main/index.ts is the same call
+ * (`trackCursorContext`), which the core tests pin.
+ */
+describe('wireAgentStatus: the cursor raw-listener branch', () => {
+  let cfg: string, prev: string | undefined
+  beforeEach(() => {
+    cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-cursor-'))
+    prev = process.env.CURSOR_CONFIG_DIR
+    process.env.CURSOR_CONFIG_DIR = cfg
+  })
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CURSOR_CONFIG_DIR
+    else process.env.CURSOR_CONFIG_DIR = prev
+    fs.rmSync(cfg, { recursive: true, force: true })
+  })
+
+  it('meters a cursor node from its store, and ptyDestroy releases the tail', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const id = '5667590a-e4c7-4f28-9d99-027f84c10837'
+    const d = path.join(cfg, 'chats', 'b', id)
+    fs.mkdirSync(d, { recursive: true })
+    const db = new DatabaseSync(path.join(d, 'store.db'))
+    db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);')
+    // root: field 5 = {1: 40000, 2: 200000}
+    const root = Buffer.from([0x2a, 0x08, 0x08, 0xc0, 0xb8, 0x02, 0x10, 0xc0, 0x9a, 0x0c])
+    db.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)').run('r00t', root)
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(Buffer.from(JSON.stringify({ latestRootBlobId: 'r00t', name: 'New Agent' })).toString('hex'))
+    db.close()
+
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never })
+    fh.fireRaw('cursor', 'c1', { hook_event_name: 'stop', conversation_id: id, transcript_path: '/etc/passwd' })
+    const deadline = Date.now() + 3000
+    const update = () => sent.find((s) => s.channel === IPC.contextUpdate)
+    while (!update() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
+    expect(update()?.args[0]).toMatchObject({ sessionId: id, usedTokens: 40000, windowTokens: 200000, windowSource: 'transcript' })
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['c1'])
+  })
+
+  it("claude.sh firing with Cursor's (child) payload does not re-point the node: destroy releases the parent tail", async () => {
+    // Cursor runs nodeterm's claude.sh too (Claude settings import), with its own envelope and often a
+    // CHILD's chat id. The claude branch used to record that id as the node's session, so ptyDestroy
+    // untracked the child and the parent's 1 Hz store tail leaked.
+    const { DatabaseSync } = await import('node:sqlite')
+    const parent = '5667590a-e4c7-4f28-9d99-027f84c10838'
+    const child = '5667590a-e4c7-4f28-9d99-027f84c10839'
+    const d = path.join(cfg, 'chats', 'b', parent)
+    fs.mkdirSync(d, { recursive: true })
+    const db = new DatabaseSync(path.join(d, 'store.db'))
+    db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);')
+    db.close()
+
+    const fh = fakeHooks()
+    const { cursorContextTail } = wireAgentStatus(platform, { hooks: fh.hooks as never })
+    fh.fireRaw('cursor', 'c3', { hook_event_name: 'stop', conversation_id: parent, generation_id: 'g1', cursor_version: 'v' })
+    const deadline = Date.now() + 3000
+    while (!cursorContextTail.pathFor(parent) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
+    expect(cursorContextTail.pathFor(parent)).toBeTruthy()
+    await new Promise((r) => setTimeout(r, 25)) // the async association lands after the track
+    const childPayload = { hook_event_name: 'preToolUse', conversation_id: child, generation_id: child, session_id: child,
+      cursor_version: 'v', tool_name: 'Read', transcript_path: path.join(os.homedir(), '.claude', 'projects', 'x.jsonl') }
+    fh.fireRaw('claude', 'c3', childPayload)
+    fh.fireRaw('cursor', 'c3', childPayload)
+    await new Promise((r) => setTimeout(r, 50))
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['c3'])
+    expect(cursorContextTail.pathFor(parent)).toBeUndefined()
+  })
+
+  it("ptyDestroy releases the node's cursor approval watch (no read may resurrect it)", () => {
+    const fh = fakeHooks()
+    const released: string[] = []
+    wireAgentStatus(platform, { hooks: { ...fh.hooks, releaseCursorNode: (id: string) => void released.push(id) } as never })
+    platform.cast(platform.attach({ sendText: () => {}, sendBinary: () => {} }), IPC.ptyDestroy, ['c4'])
+    expect(released).toEqual(['c4'])
+  })
+
+  it('an unknown chat id produces no meter and no throw', async () => {
+    const fh = fakeHooks()
+    wireAgentStatus(platform, { hooks: fh.hooks as never })
+    fh.fireRaw('cursor', 'c2', { hook_event_name: 'stop', conversation_id: '5667590a-e4c7-4f28-9d99-027f84c10999' })
+    await new Promise((r) => setTimeout(r, 100))
+    expect(sent.find((s) => s.channel === IPC.contextUpdate)).toBeUndefined()
+  })
+})
+
 // Claude's native SubagentStart/SubagentStop (core/claude-subagent-lifecycle.ts), replayed from the
 // REAL 2.1.284 capture (src/shared/agents/__fixtures__/claude/subagent-hook-payloads.json) through
 // this shell exactly as the hook server drives it: raw listener first, then the normalized one.

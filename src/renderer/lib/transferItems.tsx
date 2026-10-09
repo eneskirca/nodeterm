@@ -17,7 +17,8 @@ import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   canTransferFrom,
-  MODEL_SWITCH_CAPABLE
+  MODEL_SWITCH_CAPABLE,
+  OWN_MODEL_CATALOGUE
 } from '@shared/agents/config'
 import type { GatewayModel } from '@shared/agents/model-gateway'
 import type { CustomAgent } from '@shared/types'
@@ -120,11 +121,15 @@ export function transferConversationItems(
     // A model submenu only for a switch-capable target with discovered models, and never for a
     // relay source (its gateway is on another machine). Capability is resolved from the passed-in
     // `customAgents` (base-resolved, so a claude-base custom agent qualifies) rather than the
-    // runtime's injected resolver, so this stays pure and testable. gemini/grok and baseless
-    // customs stay flat — no model grammar. The gateway is shared across harnesses, so the full
-    // model list applies to any capable target.
+    // runtime's injected resolver, so this stays pure and testable. gemini and baseless customs
+    // stay flat (no model grammar). The gateway is shared across harnesses, so the full model list
+    // applies to any capable target, except one with its own catalogue (grok, cursor), which
+    // stays flat: a gateway id is not one of its models.
     const base = baseOf(tg.id, customAgents)
-    const capable = !!base && (MODEL_SWITCH_CAPABLE as readonly string[]).includes(base)
+    const capable =
+      !!base &&
+      (MODEL_SWITCH_CAPABLE as readonly string[]).includes(base) &&
+      !(OWN_MODEL_CATALOGUE as readonly string[]).includes(base)
     const models = capable && !relaySession ? (gatewayModels as GatewayModel[]) : []
     if (models.length === 0) {
       return {

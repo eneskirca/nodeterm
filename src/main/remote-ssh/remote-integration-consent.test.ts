@@ -3,7 +3,7 @@
 // wrote there (a file the user changed is kept and reported), and a host the user keeps has its
 // older builds' instruction blocks stripped.
 import { spawnSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -112,6 +112,36 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.applyIntegrationRemov
     expect(read('.claude/settings.json')).toContain('agent-hooks/claude.sh')
     expect(has('.agents/skills/manage-nodeterm-canvas/SKILL.md')).toBe(true)
     expect(has('.claude/skills/manage-nodeterm-canvas/SKILL.md')).toBe(true)
+  })
+
+  it('cursor: installed only when the plan installs it, skills in ~/.agents, a removal strips only our entries', async () => {
+    const bin = path.join(home, '.local/bin/cursor-agent')
+    mkdirSync(path.dirname(bin), { recursive: true })
+    writeFileSync(bin, '#!/bin/sh\n')
+    chmodSync(bin, 0o755)
+    // A host that has cursor-agent but whose plan does not install cursor gets nothing of cursor's.
+    await new RemoteHooks(hostRunner(), () => plan(['claude'], [])).installAgentHooks(conn, '/fixture.sock', home)
+    expect(has('.cursor/hooks.json')).toBe(false)
+    expect(has('.nodeterm/agent-hooks/cursor.sh')).toBe(false)
+
+    const on = new RemoteHooks(hostRunner(), () => plan(['cursor'], []))
+    await on.installAgentHooks(conn, '/fixture.sock', home)
+    await on.installAgentTools(conn, '/fixture.sock', home)
+    expect(read('.cursor/hooks.json')).toContain('agent-hooks/cursor.sh')
+    expect(has('.nodeterm/agent-hooks/cursor.sh')).toBe(true)
+    expect(has('.agents/skills/manage-nodeterm-canvas/SKILL.md')).toBe(true)
+    expect(has('.agents/skills/get-linked-context/SKILL.md')).toBe(true)
+    // The Cursor IDE's own hook beside ours.
+    const cfg = JSON.parse(read('.cursor/hooks.json')) as { hooks: Record<string, unknown[]> }
+    cfg.hooks.stop.push({ command: 'ide-hook' })
+    writeFileSync(path.join(home, '.cursor/hooks.json'), JSON.stringify(cfg))
+
+    await new RemoteHooks(hostRunner(), () => plan([], ['cursor'])).applyIntegrationRemovals(conn, '/fixture.sock', home, [])
+    const after = read('.cursor/hooks.json')
+    expect(after).not.toContain('agent-hooks/cursor.sh')
+    expect(after).toContain('ide-hook')
+    expect(has('.nodeterm/agent-hooks/cursor.sh')).toBe(false)
+    expect(has('.agents/skills/manage-nodeterm-canvas')).toBe(false)
   })
 
   it("an answered host has older builds' instruction blocks stripped, keeping the user's text", async () => {

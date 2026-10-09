@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resumeCommand, setCustomAgentBaseResolver } from '../../shared/agents/config'
 import { withPermissionMode } from '../../shared/agents/approval-mode'
+import { createAgentStatusSession } from '../state/agentStatus'
+import { chatSendRefusal } from '../lib/chatSendGate'
 import {
   __resetAgentRestartForTests,
   agentHibernateFns,
@@ -15,6 +17,7 @@ import {
   performRestartResume,
   performResumePhase,
   planBulkRestart,
+  EXIT_KEY_GAP_MS,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
   BULK_RESTART_CONCURRENCY,
@@ -46,6 +49,8 @@ describe('exitSequence', () => {
     expect(exitSequence('gemini')).not.toContain('--delete')
     expect(exitSequence('copilot')).toBe('/exit')
     expect(exitSequence('opencode')).toBe('/exit')
+    // cursor: bare `/quit`, measured in its TUI (exits clean, fires sessionEnd).
+    expect(exitSequence('cursor')).toBe('/quit')
     expect(exitSequence('my-custom')).toBeNull()
   })
 })
@@ -772,6 +777,31 @@ describe('performExitPhase', () => {
     }
   })
 
+  it('cursor (separate submit) gets Ctrl-U, a gap, `/quit`, a gap, then Enter', async () => {
+    // Measured 2026.10.01 in tmux: Ctrl-U and `/quit` in one burst, Enter 150 ms later, left the
+    // CLI running 10 of 10 (`/quit` dropped); with a gap after the Ctrl-U too it exited 10 of 10.
+    // A custom agent based on cursor gets the same sequence.
+    setCustomAgentBaseResolver((id) => (id === 'my-cursor' ? 'cursor' : undefined))
+    try {
+      for (const agentId of ['cursor', 'my-cursor']) {
+        const { written, io } = fakeIo()
+        let pane = 'cursor-agent'
+        const p = performExitPhase({ agentId, sessionId: 'sid-1', io, paneCommand: async () => pane, timeoutMs: 6000, pollMs: 100 })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(written).toEqual(['\x15'])
+        await vi.advanceTimersByTimeAsync(EXIT_KEY_GAP_MS)
+        expect(written).toEqual(['\x15', '/quit'])
+        await vi.advanceTimersByTimeAsync(EXIT_KEY_GAP_MS)
+        expect(written).toEqual(['\x15', '/quit', '\r'])
+        pane = 'zsh'
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(await p).toBe('exited')
+      }
+    } finally {
+      setCustomAgentBaseResolver(null)
+    }
+  })
+
   it('keeps gemini on its typed exit: line-clear, then a bare `/quit` in one burst', async () => {
     // gemini is the one agent not measured (its composer is only reachable after a login), so it
     // keeps the historical path byte-identical.
@@ -914,6 +944,26 @@ describe('performExitPhase', () => {
     await vi.advanceTimersByTimeAsync(200)
     expect(await p).toBe('not-eligible')
     expect(written).toEqual(['\x03'])
+  })
+
+  it('abandons the split CR when the pane dies mid-delay (cursor)', async () => {
+    const { written, io } = fakeIo()
+    let live = true
+    const p = performExitPhase({
+      agentId: 'cursor',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'cursor-agent',
+      timeoutMs: 6000,
+      pollMs: 100,
+      isLive: () => live
+    })
+    await vi.advanceTimersByTimeAsync(EXIT_KEY_GAP_MS)
+    expect(written).toEqual(['\x15', '/quit'])
+    live = false
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await p).toBe('not-eligible')
+    expect(written).toEqual(['\x15', '/quit']) // CR never sent into a dead pane
   })
 })
 
@@ -1088,6 +1138,68 @@ describe('performRestartResume — grok', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(await p).toBe('restarted')
     expect(written.join('')).toContain('grok --resume abc-1 --permission-mode plan')
+  })
+})
+
+/**
+ * Review 2026-10-03 (F1): our own `/quit` fires cursor's `sessionEnd` (Canvas records
+ * `sessionEnded`), and cursor fires no `sessionStart` on `--resume`. So after nodeterm relaunched
+ * the CLI itself, the chat composer and the phone refused a running node as "exited". The resume
+ * phase now reports its delivery through `onResumed`, which the node wires to clear the flag.
+ */
+describe('a delivered relaunch withdraws the recorded exit (cursor)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+  const SID = '11111111-1111-4111-8111-111111111111'
+  const exitedNode = () => {
+    const store = createAgentStatusSession().store
+    // Canvas's sessionPhase 'end' branch: clear the state, then record the exit.
+    store.getState().setState('n1', undefined, 'cursor')
+    store.getState().setSessionEnded('n1', true)
+    expect(chatSendRefusal('cursor', store.getState().byId.n1)).toBe('exited')
+    return { store, onResumed: () => store.getState().setSessionEnded('n1', false) }
+  }
+
+  it('in-place restart (and a model switch on a builtin, which shares it)', async () => {
+    const { store, onResumed } = exitedNode()
+    const { written, io } = fakeIo()
+    let pane = 'cursor-agent'
+    const p = performRestartResume({ agentId: 'cursor', sessionId: SID, io, paneCommand: async () => pane, timeoutMs: 6000, pollMs: 100, onResumed })
+    await vi.advanceTimersByTimeAsync(400)
+    pane = 'zsh'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('restarted')
+    expect(written.join('')).toContain(`cursor-agent --resume ${SID}`)
+    expect(chatSendRefusal('cursor', store.getState().byId.n1)).toBeNull()
+  })
+
+  it('wake from Pause / Eco (the resume half alone)', async () => {
+    const { store, onResumed } = exitedNode()
+    const { io } = fakeIo()
+    const p = performResumePhase({ agentId: 'cursor', sessionId: SID, io, onResumed })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await p).toBe('resumed')
+    expect(chatSendRefusal('cursor', store.getState().byId.n1)).toBeNull()
+  })
+
+  it('keeps the exit when nothing was relaunched', async () => {
+    const onResumed = vi.fn()
+    const timedOut = performRestartResume({ agentId: 'cursor', sessionId: SID, io: fakeIo().io, paneCommand: async () => 'cursor-agent', timeoutMs: 1000, pollMs: 100, onResumed })
+    await vi.advanceTimersByTimeAsync(62_000)
+    expect(await timedOut).toBe('exit-timeout')
+    const died = performResumePhase({ agentId: 'cursor', sessionId: SID, io: fakeIo().io, isLive: () => false, onResumed })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(await died).toBe('not-eligible')
+    expect(onResumed).not.toHaveBeenCalled()
+  })
+
+  it('TerminalNode wires restart, wake and the cold-restore relaunch (model switch) to it', () => {
+    const src = readFileSync(new URL('../nodes/TerminalNode.tsx', import.meta.url), 'utf8')
+    expect(src).toContain('const markRelaunched = (): void => useAgentStatus.getState().setSessionEnded(id, false)')
+    // restart + wake: both resume calls hand it over.
+    expect(src.match(/onResumed: markRelaunched/g)?.length).toBe(2)
+    // cold restore (also what a model switch and "restart agent and shell" recycle into).
+    expect(src).toContain("if (outcome === 'submitted') markRelaunched()")
   })
 })
 

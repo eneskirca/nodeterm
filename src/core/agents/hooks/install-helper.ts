@@ -117,6 +117,13 @@ export interface ManagedHookCommandOptions {
    * the wrong answer for some events. Omitted ⇒ the branch prints nothing, as it always has.
    */
   fallbackStdout?: string
+  /**
+   * Send the script's stdout AND stderr to /dev/null and force exit 0 (`sh q >/dev/null 2>&1 || :`).
+   * For an agent that reads a hook's stdout/exit code as a permission decision (cursor: invalid JSON
+   * on `preToolUse` DENIES, exit 2 denies) and is otherwise fail-open on silence. Omitted ⇒ the
+   * command is byte-identical to before.
+   */
+  silent?: boolean
 }
 
 const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
@@ -138,8 +145,9 @@ export function buildManagedHookCommand(scriptPath: string, opts: ManagedHookCom
   // printed (the script answers FIRST, then sources the endpoint file, whose syntax error would
   // otherwise leak out as `sh`'s status). So that branch forces 0, as the Windows wrapper does.
   // Every other agent's command stays byte-identical.
-  const exitZero = opts.fallbackStdout !== undefined ? ' || :' : ''
-  return `${prefix}if [ -r ${q} ]; then sh ${q}${exitZero}; else ${answer}cat >/dev/null 2>&1 || :; fi`
+  const exitZero = opts.fallbackStdout !== undefined || opts.silent ? ' || :' : ''
+  const quiet = opts.silent ? ' >/dev/null 2>&1' : ''
+  return `${prefix}if [ -r ${q} ]; then sh ${q}${quiet}${exitZero}; else ${answer}cat >/dev/null 2>&1 || :; fi`
 }
 
 /**

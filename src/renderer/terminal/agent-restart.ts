@@ -9,6 +9,7 @@ import {
   canResumeWith,
   capabilityAgentId,
   resumeCommand,
+  submitsSeparately,
   type AgentId
 } from '../../shared/agents/config'
 import { isShellCommand } from '@shared/agents/pane'
@@ -30,6 +31,7 @@ import {
  *  Each value is the CLI's own DOCUMENTED PRIMARY, and is sent BARE:
  *    - grok:   `/quit` (its `/exit` is an alias).
  *    - gemini: `/quit` (alias `/exit`), measured in its bundled `docs/reference/commands.md:325`.
+ *    - cursor: `/quit`, measured in its TUI.
  *
  *  Bare is a safety rule, not a style: gemini's `/quit` also takes a `--delete` flag that exits AND
  *  *permanently deletes* the session's history and temporary files — the very conversation the
@@ -39,6 +41,9 @@ const EXIT_SEQUENCES: Record<string, string> = {
   codex: '/quit',
   grok: '/quit',
   gemini: '/quit',
+  // cursor: `/quit` (measured 2026.09.28: exits clean, fires sessionEnd). Its TUI, like opencode's,
+  // leaves text+Enter from ONE write unsubmitted, so the Enter is a separate write below.
+  cursor: '/quit',
   copilot: '/exit',
   opencode: '/exit'
 }
@@ -146,6 +151,8 @@ export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
+/** Gap between the split exit writes (Ctrl-U, exit text, Enter) for a TUI that batches input. */
+export const EXIT_KEY_GAP_MS = 150
 
 /**
  * How much longer a user-asked RESTART keeps watching after RESTART_EXIT_TIMEOUT_MS, as long as
@@ -286,7 +293,7 @@ export async function performExitPhase(d: {
   // would then be reported as an exit timeout.
   //
   // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI that still
-  // gets a typed exit (today only gemini) — it is in every readline/ZLE prompt, and it is
+  // gets a typed exit (today gemini and cursor) — it is in every readline/ZLE prompt, and it is
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than
@@ -308,6 +315,11 @@ export async function performExitPhase(d: {
   // does nothing.
   const ctrlCs = CTRL_C_QUITS[capabilityAgentId(d.agentId)] ?? 0
   if (!ctrlCs) d.io.write(KILL_LINE)
+  // A separate-submit TUI (cursor) still gets a typed exit, and DROPS the exit line when it lands in
+  // the same input burst as the Ctrl-U: measured on 2026.10.01 in tmux, Ctrl-U+`/quit` then Enter
+  // 150 ms later left an empty composer and a running CLI, 10 of 10; a gap after the Ctrl-U too
+  // exited 10 of 10. Its TUI also leaves text+CR from one burst unsubmitted, so the CR is split off.
+  const separate = !ctrlCs && submitsSeparately(d.agentId)
   if (ctrlCs) {
     for (let i = 0; i < ctrlCs; i++) {
       if (i > 0) {
@@ -316,6 +328,13 @@ export async function performExitPhase(d: {
       }
       d.io.write(CTRL_C)
     }
+  } else if (separate) {
+    await new Promise((r) => setTimeout(r, EXIT_KEY_GAP_MS))
+    if (gone()) return 'not-eligible'
+    d.io.write(exit)
+    await new Promise((r) => setTimeout(r, EXIT_KEY_GAP_MS))
+    if (gone()) return 'not-eligible'
+    d.io.write('\r')
   } else {
     d.io.write(exit + '\r')
   }
@@ -393,6 +412,13 @@ export async function performResumePhase(d: {
    * would put a phantom in the bulk summary.
    */
   isLive?: () => boolean
+  /**
+   * Called once the resume line has been delivered, right before `'resumed'` is reported. The node
+   * uses it to withdraw its recorded exit (`sessionEnded`): our own exit fired that `sessionEnd`,
+   * and cursor fires no `sessionStart` on `--resume`, so nothing else would clear it before the
+   * next turn and the chat composer and phone would keep refusing the live CLI as "exited".
+   */
+  onResumed?: () => void
 }): Promise<ResumePhaseOutcome> {
   // The eligibility GATE (see performExitPhase): `canResumeWith` validates the session id without
   // building the command. The typed line is the caller's `d.command`; for a builtin with no
@@ -446,7 +472,9 @@ export async function performResumePhase(d: {
   })
   // The session can have died while the line was being verified — the delivery is then cancelled by
   // the teardown and nothing reached the pane, so don't claim a resume.
-  return gone() ? 'not-eligible' : 'resumed'
+  if (gone()) return 'not-eligible'
+  d.onResumed?.()
+  return 'resumed'
 }
 
 /**
@@ -484,6 +512,8 @@ export async function performRestartResume(d: {
    * io then silently no-ops and reporting `'restarted'` would put a phantom in the bulk summary.
    */
   isLive?: () => boolean
+  /** See `performResumePhase`. */
+  onResumed?: () => void
 }): Promise<RestartOutcome> {
   const exited = await performExitPhase({
     agentId: d.agentId,
@@ -506,7 +536,8 @@ export async function performRestartResume(d: {
     deliveryTimeoutMs: d.deliveryTimeoutMs,
     killLine: d.killLine,
     onDelivery: d.onDelivery,
-    isLive: d.isLive
+    isLive: d.isLive,
+    onResumed: d.onResumed
   })
   return resumed === 'resumed' ? 'restarted' : resumed
 }

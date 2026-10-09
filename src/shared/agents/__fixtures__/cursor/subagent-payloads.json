@@ -1,0 +1,110 @@
+{
+  "_provenance": "Captured live from cursor-agent 2026.10.01-e373342 (macOS), 2026-10-02, INTERACTIVE TUI in a private tmux server, scratch workspace with a logging hook for 10 events (incl. subagentStart/subagentStop) in <workspace>/.cursor/hooks.json. Turn: \"Use the probe-reader subagent to read config.txt\" (a custom .cursor/agents subagent). Email and home/workspace paths redacted; ids, keys and shapes as measured. subagentStart/subagentStop NEVER fired (3 subagent runs: explore x2, custom x1), and the parent Task got preToolUse but no postToolUse. childStoreSubagentInfo is the child chat store.db meta field; childTranscript is the child agent-transcripts JSONL, verbatim.",
+  "events": [
+    {
+      "conversation_id": "13993e38-911a-4558-8af0-73729368b113",
+      "generation_id": "405aea4a-6015-4ab7-9086-3ed421b1f8b8",
+      "model": "composer-2.5",
+      "prompt": "Use the probe-reader subagent to read config.txt and tell me what it returned. Do not read the file yourself.",
+      "attachments": [],
+      "session_id": "13993e38-911a-4558-8af0-73729368b113",
+      "hook_event_name": "beforeSubmitPrompt",
+      "cursor_version": "2026.10.01-e373342",
+      "workspace_roots": [
+        "<workspace>"
+      ],
+      "user_email": "<redacted>",
+      "transcript_path": "<home>/.cursor/projects/private-tmp-ntc-f1-proj/agent-transcripts/13993e38-911a-4558-8af0-73729368b113/13993e38-911a-4558-8af0-73729368b113.jsonl"
+    },
+    {
+      "conversation_id": "13993e38-911a-4558-8af0-73729368b113",
+      "generation_id": "405aea4a-6015-4ab7-9086-3ed421b1f8b8",
+      "model": "",
+      "tool_name": "Task",
+      "tool_input": {
+        "description": "probe-reader read config.txt",
+        "prompt": "You are the probe-reader agent defined at <workspace>/.cursor/agents/probe-reader.md.\n\nYour only job: read the single file config.txt in the workspace <workspace> and return its exact contents verbatim. Nothing else \u2014 no summary, no commentary, no preamble.",
+        "model": "fast",
+        "subagent_type": "explore"
+      },
+      "tool_use_id": "tool_0bcae8bf-7874-44ec-85f1-2de6e08f84d",
+      "session_id": "13993e38-911a-4558-8af0-73729368b113",
+      "hook_event_name": "preToolUse",
+      "cursor_version": "2026.10.01-e373342",
+      "workspace_roots": [
+        "<workspace>"
+      ],
+      "user_email": "<redacted>",
+      "transcript_path": "<home>/.cursor/projects/private-tmp-ntc-f1-proj/agent-transcripts/13993e38-911a-4558-8af0-73729368b113/13993e38-911a-4558-8af0-73729368b113.jsonl"
+    },
+    {
+      "conversation_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "generation_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "model": "composer-2.5",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "<workspace>/config.txt"
+      },
+      "tool_use_id": "tool_c6b40a00-f2e9-4464-a0cd-ea43fb7cdec",
+      "session_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "hook_event_name": "preToolUse",
+      "cursor_version": "2026.10.01-e373342",
+      "workspace_roots": [
+        "<workspace>"
+      ],
+      "user_email": "<redacted>",
+      "transcript_path": null
+    },
+    {
+      "conversation_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "generation_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "model": "composer-2.5",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "<workspace>/config.txt"
+      },
+      "tool_output": "{\"file_path\":\"<workspace>/config.txt\",\"content_length\":4}",
+      "duration": 0.826,
+      "tool_use_id": "tool_c6b40a00-f2e9-4464-a0cd-ea43fb7cdec",
+      "session_id": "d7074c73-aa64-42cb-80d0-fe56cdfb6082",
+      "hook_event_name": "postToolUse",
+      "cursor_version": "2026.10.01-e373342",
+      "workspace_roots": [
+        "<workspace>"
+      ],
+      "user_email": "<redacted>",
+      "transcript_path": "<home>/.cursor/projects/private-tmp-ntc-f1-proj/agent-transcripts/d7074c73-aa64-42cb-80d0-fe56cdfb6082/d7074c73-aa64-42cb-80d0-fe56cdfb6082.jsonl"
+    },
+    {
+      "conversation_id": "13993e38-911a-4558-8af0-73729368b113",
+      "generation_id": "405aea4a-6015-4ab7-9086-3ed421b1f8b8",
+      "model": "composer-2.5",
+      "status": "completed",
+      "loop_count": 0,
+      "input_tokens": 156902,
+      "output_tokens": 1469,
+      "cache_read_tokens": 150502,
+      "cache_write_tokens": 0,
+      "session_id": "13993e38-911a-4558-8af0-73729368b113",
+      "hook_event_name": "stop",
+      "cursor_version": "2026.10.01-e373342",
+      "workspace_roots": [
+        "<workspace>"
+      ],
+      "user_email": "<redacted>",
+      "transcript_path": "<home>/.cursor/projects/private-tmp-ntc-f1-proj/agent-transcripts/13993e38-911a-4558-8af0-73729368b113/13993e38-911a-4558-8af0-73729368b113.jsonl"
+    }
+  ],
+  "childStoreSubagentInfo": {
+    "parentAgentId": "13993e38-911a-4558-8af0-73729368b113",
+    "rootParentAgentId": "13993e38-911a-4558-8af0-73729368b113",
+    "toolCallId": "tool_0bcae8bf-7874-44ec-85f1-2de6e08f84d",
+    "typeName": "explore"
+  },
+  "childTranscript": [
+    "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>Friday, Oct 2, 2026, 12:21 PM (UTC-4)</timestamp>\\n<user_query>\\nYou are the probe-reader agent defined at <workspace>/.cursor/agents/probe-reader.md.\\n\\nYour only job: read the single file config.txt in the workspace <workspace> and return its exact contents verbatim. Nothing else \u2014 no summary, no commentary, no preamble.\\n</user_query>\"}]}}",
+    "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"[REDACTED]\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"path\":\"<workspace>/config.txt\"}}]}}",
+    "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"a=1\\n\\n[REDACTED]\"}]}}",
+    "{\"type\":\"turn_ended\",\"status\":\"success\"}"
+  ]
+}

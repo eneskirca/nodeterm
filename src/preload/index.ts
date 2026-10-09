@@ -628,6 +628,9 @@ const api: NodeTerminalApi = {
     cliCaps: () => ipcRenderer.invoke(IPC.grokCliCaps),
     takenSessionIds: (cwd) => ipcRenderer.invoke(IPC.grokTakenSessionIds, cwd)
   },
+  cursor: {
+    cliCaps: () => ipcRenderer.invoke(IPC.cursorCliCaps)
+  },
   agent: {
     envSnapshot: () => ipcRenderer.invoke(IPC.envSnapshot),
     discoverModels: (settings) => ipcRenderer.invoke(IPC.agentDiscoverModels, settings),

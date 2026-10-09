@@ -68,7 +68,8 @@ export const AGENT_BINARIES: Record<string, readonly string[]> = {
   gemini: ['gemini'],
   opencode: ['opencode'],
   grok: ['grok'],
-  antigravity: ['agy']
+  antigravity: ['agy'],
+  cursor: ['cursor-agent']
 }
 
 /**

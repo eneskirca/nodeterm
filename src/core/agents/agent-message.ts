@@ -128,9 +128,10 @@ export interface DeliveryDeps {
    * must carry no ESC byte of ours, because tmux ≥ 3.7 passes paste-buffer content through vis(3),
    * which renders an embedded frame as literal `^[` text (issue #453). Resolves false only when
    * the envelope did not reach the pane; a post-paste submit failure remains eligible for the
-   * receipt watch's honest `stalled` outcome.
+   * receipt watch's honest `stalled` outcome. `'dialog'`: nothing was written because the agent's
+   * own dialog owns the keyboard (`PtyManager.sendEnvelope`, Cursor).
    */
-  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'>
   /** The target's status mirror entry — gate 2's whole input. */
   mirrorEntry(nodeId: string): MirrorEntry | undefined
   /** `nodeTokenFilePresent(nodeId)`. */
@@ -461,6 +462,12 @@ export async function deliverAgentMessage(
     // demonstrably landed. See `watchForReceipt`: that miss is what makes an LLM send it twice.
     const watch = watchForReceipt(req.targetNodeId, deps.subscribeEvents)
     const wrote = await deps.sendEnvelope(req.targetNodeId, payload, owner)
+    // A dialog owned the keyboard and nothing was written: the pane waits on a person, which the
+    // idle gate already reports as `targetBusy` / `blocked` (retryable, queued when queueing is on).
+    if (wrote === 'dialog') {
+      watch.cancel()
+      return refuse({ kind: 'targetBusy', state: 'blocked' })
+    }
     // The pane went away between the gate and the write. Not a failure of ours and not retryable:
     // the node is gone. It IS traced: a `sendEnvelope` that fails after a partial write has left
     // bytes in somebody's pane, and that must not be the one event with no record.

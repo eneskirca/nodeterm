@@ -18,6 +18,9 @@ describe('cardBadge — the ONE badge rule the card and the chips share', () => 
     expect(cardBadge('terminal', st({ state: 'working' }))).toBe('running')
     expect(cardBadge('terminal', st({ state: 'waiting' }))).toBe('needs')
     expect(cardBadge('terminal', st({ state: 'blocked' }))).toBe('needs')
+    // A cursor node's pane-read `blocked` (core/agents/cursor-approval.ts) reads the same rule:
+    // the card, the chips and the card modal share it.
+    expect(cardBadge('cursor', st({ state: 'blocked' }))).toBe('needs')
     expect(cardBadge('terminal', st({ paused: true }))).toBe('paused')
     expect(cardBadge('terminal', st({ hibernated: true }))).toBe('sleeping')
     expect(cardBadge('terminal', st({ state: 'done' }))).toBeNull()

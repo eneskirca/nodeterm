@@ -19,6 +19,9 @@ import { renderGeminiTranscript } from './render-gemini'
 import { renderGrokTranscript } from './render-grok'
 import { budgetHandoff } from './budget'
 import { locateClaude, locateCodex, locateGemini, locateGrok } from '../../core/handoff/locate'
+import { cursorTranscriptText, locateCursorChat } from '../../core/cursor-chat'
+import { renderCursorTranscript } from './render-cursor'
+import { capabilityAgentId } from '../../shared/agents/config'
 
 export type HandoffResult = { filePath: string } | { error: string }
 
@@ -29,14 +32,17 @@ const RENDERERS: Record<string, Renderer> = {
   claude: renderClaudeTranscript,
   codex: renderCodexTranscript,
   gemini: renderGeminiTranscript,
-  grok: renderGrokTranscript
+  grok: renderGrokTranscript,
+  cursor: renderCursorTranscript
 }
 
 const LOCATORS: Record<string, Locator> = {
   claude: locateClaude,
   codex: locateCodex,
   gemini: locateGemini,
-  grok: locateGrok
+  grok: locateGrok,
+  // (id, accountId?) is the shared shape; cursor's second parameter is a cwd, so it is not passed.
+  cursor: (sessionId) => locateCursorChat(sessionId)
 }
 
 /** Filesystem-safe handoff filename for a node + ISO-ish timestamp. Node ids are
@@ -80,8 +86,16 @@ export async function buildHandoff(opts: {
 }): Promise<HandoffResult> {
   const { sessionId, agentId, sourceNodeId, cwd, accountId } = opts
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { error: 'No valid session id to transfer.' }
-  const render = RENDERERS[agentId]
+  // Routing only: a custom agent's conversation is its base harness's (`canTransferFrom` already
+  // resolves it, so the menu offers Transfer). The header still names the agent the user picked.
+  const base = capabilityAgentId(agentId)
+  const render = RENDERERS[base]
   if (!render) return { error: `Transfer is not supported from ${agentId}.` }
+  // cursor's chat is a SQLite store on the node's host; there is no remote reader, and the hook-fed
+  // path below is for an agent whose transcript is a text file. Refuse rather than read either.
+  if (base === 'cursor' && opts.remote?.isRemoteNode(sourceNodeId)) {
+    return { error: 'Transferring a Cursor conversation from a remote (SSH) session is not supported yet.' }
+  }
   // Everything below branches on ONE question: does this node's session live on a remote host?
   const remote = opts.remote?.isRemoteNode(sourceNodeId) ? opts.remote : undefined
 
@@ -101,12 +115,14 @@ export async function buildHandoff(opts: {
     raw = await remote.readRemoteFile(sourceNodeId, src, REMOTE_TRANSCRIPT_MAX_BYTES)
     if (raw === null) return { error: 'Failed to read the source transcript from the remote host.' }
   } else {
-    const locate = LOCATORS[agentId]
+    const locate = LOCATORS[base]
     if (!locate) return { error: `Transfer is not supported from ${agentId}.` }
     const src = await locate(sessionId, accountId)
     if (!src) return { error: "Couldn't find the source conversation transcript." }
     try {
-      raw = await fs.promises.readFile(src, 'utf8')
+      // cursor's `src` is its store.db: its own reader turns it into transcript text.
+      raw = base === 'cursor' ? await cursorTranscriptText(src) : await fs.promises.readFile(src, 'utf8')
+      if (raw === null) throw new Error('unreadable')
     } catch {
       return { error: 'Failed to read the source transcript.' }
     }
