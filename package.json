@@ -184,7 +184,7 @@
     "monaco-editor": "^0.57.0",
     "node-pty": "^1.0.0",
     "qrcode": "^1.5.4",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "smart-whisper": "^0.8.1",
     "ssh2": "^1.17.0",
     "tweetnacl": "^1.0.3",
