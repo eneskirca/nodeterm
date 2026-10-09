@@ -175,6 +175,31 @@ describe('planLaunch — one row per type', () => {
     expect(p.argv).not.toContain('SIM-1')
   })
 
+  it('dart (Flutter): a Chrome device runs on the web server, wherever the device is named', () => {
+    const web = { isFlutterProject: true, webServer: true }
+    // picked
+    expect(proc({ type: 'dart', program: 'lib/main.dart' }, { ...web, deviceId: 'chrome' }).argv).toEqual([
+      'flutter', 'run', '-t', 'lib/main.dart', '-d', 'web-server', '--pid-file', '/data/run/n.flutter.pid'
+    ])
+    // pinned in args, every spelling
+    expect(proc({ type: 'dart', program: 'lib/main.dart', args: ['-d', 'chrome'] }, web).argv).toContain('web-server')
+    expect(proc({ type: 'dart', program: 'lib/main.dart', args: ['-d=edge'] }, web).argv).toContain('-d=web-server')
+    expect(proc({ type: 'dart', program: 'lib/main.dart', toolArgs: ['--device-id', 'chrome'] }, web).argv).not.toContain('chrome')
+    // pinned as Dart-Code's deviceId field: passed as -d at all (it used to be dropped), swapped
+    expect(proc({ type: 'dart', program: 'lib/main.dart', deviceId: 'chrome' }, web).argv).toEqual([
+      'flutter', 'run', '-t', 'lib/main.dart', '-d', 'web-server', '--pid-file', '/data/run/n.flutter.pid'
+    ])
+    // phones and desktops are untouched
+    expect(proc({ type: 'dart', program: 'lib/main.dart' }, { ...web, deviceId: 'SIM-1' }).argv).toContain('SIM-1')
+  })
+
+  it('dart (Flutter): with the panel off, Chrome stays Chrome — and a deviceId field is still passed', () => {
+    expect(proc({ type: 'dart', program: 'lib/main.dart' }, { isFlutterProject: true, deviceId: 'chrome' }).argv).toContain('chrome')
+    expect(proc({ type: 'dart', program: 'lib/main.dart', deviceId: 'macos' }, { isFlutterProject: true }).argv).toEqual([
+      'flutter', 'run', '-t', 'lib/main.dart', '-d', 'macos', '--pid-file', '/data/run/n.flutter.pid'
+    ])
+  })
+
   it('dart (Flutter): integration tests run with flutter test on the device', () => {
     const p = proc({ type: 'dart', program: 'integration_test/auth_test.dart' }, { isFlutterProject: true, deviceId: 'SIM-1' })
     expect(p.argv).toEqual(['flutter', 'test', '-d', 'SIM-1', 'integration_test/auth_test.dart'])

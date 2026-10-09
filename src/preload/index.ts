@@ -559,6 +559,32 @@ const api: NodeTerminalApi = {
     load: (w) => ipcRenderer.invoke(IPC.wallpaperLoad, w),
     importImage: (p) => ipcRenderer.invoke(IPC.wallpaperImport, p)
   },
+  simulator: {
+    devices: (refresh) => ipcRenderer.invoke(IPC.simulatorDevices, refresh === true),
+    boot: (id) => ipcRenderer.invoke(IPC.simulatorBoot, id),
+    start: (nodeId, udid) => ipcRenderer.invoke(IPC.simulatorStart, nodeId, udid),
+    stop: (nodeId) => ipcRenderer.invoke(IPC.simulatorStop, nodeId),
+    input: (nodeId, cmd) => ipcRenderer.invoke(IPC.simulatorInput, nodeId, cmd),
+    shutdown: (udid) => ipcRenderer.invoke(IPC.simulatorShutdown, udid),
+    action: (udid, action) => ipcRenderer.invoke(IPC.simulatorAction, udid, action),
+    state: (udid) => ipcRenderer.invoke(IPC.simulatorState, udid),
+    screenshot: (udid, screenID, target, name) => ipcRenderer.invoke(IPC.simulatorScreenshot, udid, screenID, target, name),
+    startRecording: (udid, screenID, name) => ipcRenderer.invoke(IPC.simulatorRecordStart, udid, screenID, name),
+    stopRecording: (udid) => ipcRenderer.invoke(IPC.simulatorRecordStop, udid),
+    isRecording: (udid) => ipcRenderer.invoke(IPC.simulatorRecording, udid),
+    onFrame: (nodeId, listener) => {
+      const channel = IPC.simulatorFrame(nodeId)
+      const handler = (_e: unknown, frame: import('../shared/simulator').SimulatorFrame) => listener(frame)
+      ipcRenderer.on(channel, handler)
+      return () => ipcRenderer.removeListener(channel, handler)
+    },
+    onStatus: (nodeId, listener) => {
+      const channel = IPC.simulatorStatus(nodeId)
+      const handler = (_e: unknown, event: import('../shared/simulator').SimulatorStatusEvent) => listener(event)
+      ipcRenderer.on(channel, handler)
+      return () => ipcRenderer.removeListener(channel, handler)
+    }
+  },
   runConfig: {
     entries: (dir) => ipcRenderer.invoke(IPC.runEntries, dir),
     devices: (refresh) => ipcRenderer.invoke(IPC.runDevices, refresh),

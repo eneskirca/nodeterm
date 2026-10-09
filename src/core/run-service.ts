@@ -119,7 +119,7 @@ async function shellEnv(): Promise<NodeJS.ProcessEnv> {
   return p ? { ...process.env, PATH: p } : process.env
 }
 
-async function listSimulators(): Promise<RunDevice[]> {
+export async function listSimulators(): Promise<RunDevice[]> {
   if (process.platform !== 'darwin') return []
   try {
     const { stdout } = await run('/usr/bin/xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
@@ -212,11 +212,10 @@ export async function bootSimulator(udid: unknown): Promise<boolean> {
     if (!/current state: Booted/i.test(String((e as { stderr?: string }).stderr ?? (e as Error).message))) return false
   }
   devicesCache = null
-  try {
-    await run('/usr/bin/open', ['-a', 'Simulator'], { timeout: 15_000 })
-  } catch {
-    /* booted either way; the window is a convenience */
-  }
+  // DeviceHub is deliberately NOT opened: the device runs headless and a Simulator node shows it on
+  // the canvas. MEASURED (Xcode 27): a device takes input from its FIRST HID client only, and
+  // DeviceHub showing the device is one — so opening it here took touch input away from the node.
+  // "Open in DeviceHub" in the Simulator node's menu is the explicit way there.
   return true
 }
 
@@ -342,6 +341,7 @@ export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<Run
     pythonPath,
     deviceId: config.deviceId,
     extraArgs: config.extraArgs,
+    webServer: config.embedBrowser !== false,
     flutterPidFile: flutterPidFile(nodeId),
     tasks
   })

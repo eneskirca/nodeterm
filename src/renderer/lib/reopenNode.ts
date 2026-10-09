@@ -14,9 +14,11 @@ import {
   createDinoNode,
   createFilesNode,
   createRunNode,
+  createSimulatorNode,
   isAccountLoginNode
 } from '@renderer/state/workspace'
 import { normalizeRunConfig } from '@shared/run-config'
+import { normalizeSimulatorConfig } from '@shared/simulator'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
 
@@ -195,6 +197,9 @@ function buildBase(snapshot: ReopenNodeSnapshot, ctx: RecreateContext): CanvasNo
       return createBrowserNode(0, d.url ?? '', undefined, d.partition)
     case 'dino':
       return createDinoNode(0, undefined, d.highScore ?? 0)
+    // A Simulator node's whole state is which device it shows.
+    case 'simulator':
+      return createSimulatorNode(0, normalizeSimulatorConfig(d.simulator))
     default:
       return null
   }

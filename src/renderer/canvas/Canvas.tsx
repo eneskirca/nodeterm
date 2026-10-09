@@ -106,7 +106,9 @@ import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
 import BrowserNode from '../nodes/BrowserNode'
 import { FilesNode } from '../nodes/FilesNode'
+import { SimulatorNode } from '../nodes/SimulatorNode'
 import type { RunNodeConfig } from '@shared/run-config'
+import type { SimulatorNodeConfig } from '@shared/simulator'
 import { normalizeAddress } from '../nodes/browserUrl'
 import VideoNode from '../nodes/VideoNode'
 import WebNode from '../nodes/WebNode'
@@ -220,6 +222,8 @@ import {
   CONTENT_ADD_ITEMS,
   agentEntriesToMenuItems,
   buildGroupedAddMenu,
+  SIMULATOR_UNAVAILABLE_HINT,
+  simulatorAvailable,
   type AgentAddEntry,
   type AddHandlers
 } from '../lib/addMenuSpec'
@@ -870,6 +874,7 @@ import {
   createTriggerNode,
   createFilesNode,
   createRunNode,
+  createSimulatorNode,
   createDiffNode,
   createEditorNode,
   createGroupNode,
@@ -2257,7 +2262,8 @@ export function Canvas() {
       video: withNodeBoundary(VideoNode),
       web: withNodeBoundary(WebNode),
       browser: withNodeBoundary(BrowserNode),
-      files: withNodeBoundary(FilesNode)
+      files: withNodeBoundary(FilesNode),
+      simulator: withNodeBoundary(SimulatorNode)
     }),
     []
   )
@@ -6160,6 +6166,23 @@ export function Canvas() {
     window.addEventListener('nodeterm:open-run-config', onOpenRun)
     return () => window.removeEventListener('nodeterm:open-run-config', onOpenRun)
   }, [setNodes, markDirty])
+
+  /** A Simulator node (see nodes/SimulatorNode): a live iOS simulator or Android emulator screen.
+   *  Desktop app only — the menus disable the row elsewhere and this refuses with the same reason. */
+  const addSimulator = useCallback(
+    (center?: { x: number; y: number }, groupId?: string, config?: SimulatorNodeConfig) => {
+      if (!simulatorAvailable()) {
+        setCopyError(SIMULATOR_UNAVAILABLE_HINT)
+        return
+      }
+      setNodes((ns) => {
+        const node = createSimulatorNode(ns.length, config, center ?? emptyNodePos())
+        return [...ns, groupId ? parentInto(node, groupId) : node]
+      })
+      markDirty()
+    },
+    [setNodes, markDirty, emptyNodePos, parentInto]
+  )
 
   const addSticky = useCallback(
     (center?: { x: number; y: number }, groupId?: string) => {
@@ -10767,6 +10790,7 @@ export function Canvas() {
       sticky: (at) => addSticky(at),
       files: (at) => addFiles(at),
       run: (at) => void addRun(at),
+      simulator: (at) => addSimulator(at),
       dino: (at) => addDino(at),
       trigger: (at) => addTrigger(at),
       openFile: (at) => void openFileDialog(at),
@@ -10780,6 +10804,7 @@ export function Canvas() {
       addBrowser,
       addFiles,
       addRun,
+      addSimulator,
       addWebView,
       addSticky,
       addDino,
@@ -17919,6 +17944,9 @@ export function Canvas() {
       ...(isSshProject
         ? []
         : [{ id: 'new-run', label: 'New run configuration', icon: <IconPlay />, run: () => void addRun() }]),
+      ...(simulatorAvailable()
+        ? [{ id: 'new-simulator', label: 'New simulator', icon: <IconPhone />, run: () => addSimulator() }]
+        : []),
       { id: 'new-dino', label: 'New dino game', icon: <IconDino />, run: () => addDino() },
       { id: 'open-file', label: 'Open file…', icon: <IconEditor />, run: () => void openFileDialog() },
       // "New file…" needs a project folder to create into — hidden when the project has no cwd.
@@ -18227,6 +18255,7 @@ export function Canvas() {
     addAgentNode,
     addSticky,
     addRun,
+    addSimulator,
     addDino,
     addWebView,
     addBrowser,
@@ -19550,6 +19579,7 @@ export function Canvas() {
         onAddTrigger={addTrigger}
         onAddFiles={() => addFiles()}
         onAddRun={() => void addRun()}
+        onAddSimulator={() => addSimulator()}
         onAddAgent={(aid, accountId) => addAgentNode(aid, undefined, undefined, accountId)}
         onOpenFile={() => void openFileDialog()}
         onAddRemote={() => openRemotePicker({ x: window.innerWidth / 2, y: window.innerHeight / 2 })}

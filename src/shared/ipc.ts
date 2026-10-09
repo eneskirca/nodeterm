@@ -391,6 +391,19 @@ export const IPC = {
   runStop: 'run:stop',
   runSignal: 'run:signal',
   runWatch: 'run:watch',
+  // Simulator node (core/simulator/simulator-service.ts): live screen + touch/keys/buttons.
+  simulatorDevices: 'simulator:devices',
+  simulatorBoot: 'simulator:boot',
+  simulatorStart: 'simulator:start',
+  simulatorStop: 'simulator:stop',
+  simulatorInput: 'simulator:input',
+  simulatorShutdown: 'simulator:shutdown',
+  simulatorAction: 'simulator:action',
+  simulatorState: 'simulator:state',
+  simulatorScreenshot: 'simulator:screenshot',
+  simulatorRecordStart: 'simulator:record-start',
+  simulatorRecordStop: 'simulator:record-stop',
+  simulatorRecording: 'simulator:recording',
   // Trigger nodes (issue #493): machine-local arm/disarm + the card's status/run-now.
   triggersArm: 'triggers:arm',
   triggersDisarm: 'triggers:disarm',
@@ -415,6 +428,9 @@ export const IPC = {
   presencePeer: 'presence:peer',
   // Events broadcast from main to the renderer (sessionId is appended to the channel name).
   ptyData: (sessionId: string) => `pty:data:${sessionId}`,
+  /** Per-node simulator frames / status (Simulator node). */
+  simulatorFrame: (nodeId: string) => `simulator:frame:${nodeId}`,
+  simulatorStatus: (nodeId: string) => `simulator:status:${nodeId}`,
   ptyExit: (sessionId: string) => `pty:exit:${sessionId}`,
   /** Authoritative size of a co-attached session: min(cols) × min(rows) over all subscribers.
    *  Broadcast to every subscriber whenever the subscriber set or any reported size changes. */

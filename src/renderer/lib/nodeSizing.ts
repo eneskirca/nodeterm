@@ -23,7 +23,8 @@ export const NODE_MIN_SIZES: Record<NodeKind, { width: number; height: number }>
   subagent: { width: 180, height: 84 },
   loop: { width: 180, height: 84 },
   dino: { width: 400, height: 160 },
-  trigger: { width: 240, height: 120 }
+  trigger: { width: 240, height: 120 },
+  simulator: { width: 200, height: 260 }
 }
 
 export interface Rect {

@@ -30,6 +30,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   sticky: noop,
   files: noop,
   run: noop,
+  simulator: noop,
   dino: noop,
   trigger: noop,
   openFile: noop,
@@ -43,6 +44,7 @@ const allKinds: AddItem['kind'][] = [
   'terminal',
   'remote',
   'run',
+  'simulator',
   'browser',
   'web',
   'sticky',
@@ -88,6 +90,7 @@ describe('contentAddItemsToMenuItems', () => {
       'New terminal',
       'New remote…',
       'New run configuration',
+      'New simulator',
       'New browser',
       'New web view…',
       'New sticky note',
@@ -191,6 +194,7 @@ describe('contentAddItemsToDockRows', () => {
     // "New Remote Connection" flow. Emitting a terminal row here duplicated the Terminal entry.
     expect(rows.map((r) => r.kind)).toEqual([
       'run',
+      'simulator',
       'browser',
       'web',
       'sticky',
@@ -319,6 +323,7 @@ describe('buildGroupedAddMenu', () => {
     }
     expect(children(ADD_GROUP_LABEL.view)).toEqual([
       'New run configuration',
+      'New simulator',
       'New browser',
       'New web view…',
       'New sticky note',

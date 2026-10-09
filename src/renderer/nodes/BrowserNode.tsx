@@ -1,4 +1,4 @@
-import { Handle, NodeResizer, Position, useReactFlow, type NodeProps } from '@xyflow/react'
+import { Handle, NodeResizer, Position, useReactFlow, useStore, type NodeProps } from '@xyflow/react'
 import { Tooltip } from '../components/Tooltip'
 import { MaximizeButton } from './MaximizeButton'
 import { IconClose } from '../components/icons'
@@ -22,6 +22,8 @@ import { useWebviewKeepAlive } from '../state/webviewKeepAlive'
 export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const { deleteElements, updateNodeData } = useReactFlow()
   const ghost = data.ghost === true
+  const dockTo = typeof data.dockTo === 'string' ? data.dockTo : undefined
+  const canDock = useStore((st) => !ghost && !!dockTo && st.nodeLookup.get(dockTo)?.data?.runConfig !== undefined)
 
   return (
     <>
@@ -54,6 +56,18 @@ export default function BrowserNode({ id, data, selected }: NodeProps<CanvasNode
             drives a lease, in every case today). */}
         <BrowserDrivingIndicator nodeId={id} />
         <span className="term-node__spacer" />
+        {/* Popped out of a run node's browser panel: dock it back. */}
+        {canDock && (
+          <Tooltip label="Dock back into its run node">
+            <button
+              className="term-node__close"
+              aria-label="Dock into run node"
+              onClick={() => window.dispatchEvent(new CustomEvent('nodeterm:dock-preview', { detail: { nodeId: id, runNodeId: data.dockTo } }))}
+            >
+              ⇲
+            </button>
+          </Tooltip>
+        )}
         <MaximizeButton id={id} maximized={!!data.premaxRect} />
         <Tooltip label="Close">
           <button className="term-node__close" aria-label="Close" onClick={() => deleteElements({ nodes: [{ id }] })}>

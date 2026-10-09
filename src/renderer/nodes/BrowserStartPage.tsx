@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { searchOrUrl } from './browserUrl'
 import { SHORTCUTS, SiteIcon } from './browserIcons'
 import { useBrowserHistory } from '../state/browserHistory'
@@ -14,7 +14,11 @@ function hostLabel(url: string): string {
 /** The Chrome-like new-tab page shown inside a blank browser node. */
 export function BrowserStartPage({ onNavigate }: { onNavigate: (url: string) => void }): JSX.Element {
   const [q, setQ] = useState('')
-  const recent = useBrowserHistory((s) => s.recent(8))
+  // Select the stored list itself and slice it here: a selector that returns a NEW array on every
+  // read (`s.recent(8)`) never compares equal, and zustand 5 re-renders on it forever — "Maximum
+  // update depth exceeded" the moment a blank browser shows this page.
+  const entries = useBrowserHistory((s) => s.entries)
+  const recent = useMemo(() => entries.slice(0, 8), [entries])
   const submit = (): void => {
     const u = searchOrUrl(q)
     if (u) onNavigate(u)

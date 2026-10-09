@@ -27,6 +27,9 @@ type WebviewEl = HTMLElement & ZoomableWebview & {
 }
 
 interface BrowserSurfaceProps {
+  /** What to show while there is no page, instead of the new-tab start page (a run node's browser
+   *  panel says it is waiting for the run's address). */
+  blank?: React.ReactNode
   /** The node id — registers the guest webContents so main can route its new-window requests. */
   nodeId: string
   /** Initial URL (seeded once at mount). */
@@ -66,7 +69,8 @@ export function BrowserSurface({
   partition,
   onUrlChange,
   onTitleChange,
-  onGuestDiscarded
+  onGuestDiscarded,
+  blank
 }: BrowserSurfaceProps) {
   const ref = useRef<WebviewEl | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -310,7 +314,8 @@ export function BrowserSurface({
             style={{ width: '100%', height: '100%' }}
           />
         )}
-        {!src && !discarded && (
+        {!src && !discarded && blank}
+        {!src && !discarded && !blank && (
           <BrowserStartPage
             onNavigate={(u) => {
               // A navigation with an initiator: whatever it navigates to is not a restore echo.

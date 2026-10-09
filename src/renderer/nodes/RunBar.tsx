@@ -12,9 +12,22 @@ import {
   type RunStatus
 } from '@shared/run-config'
 import { isShellCommand } from '@shared/agents/pane'
+import { SIMULATOR_UDID } from '@shared/run-config'
+import { INLINE_SIM_HEIGHT, type InlineSimulatorConfig, type SimulatorNodeConfig } from '@shared/simulator'
+import { SimulatorView } from './SimulatorNode'
+import { BrowserSurface } from './BrowserSurface'
+import {
+  isWebDeviceId,
+  isPreviewUrl,
+  localUrlFromOutput,
+  previewKindFor,
+  type PreviewKind,
+  type RunBrowserConfig
+} from '@shared/run-preview'
+import { simulatorAvailable } from '../lib/addMenuSpec'
 import { useSession } from '../session/session'
 import { useProjects } from '../state/projects'
-import { terminalNodeSize, type CanvasNode } from '../state/workspace'
+import { createBrowserNode, createSimulatorNode, terminalNodeSize, type CanvasNode } from '../state/workspace'
 import { IconPlay, IconReload } from '../components/icons'
 
 /**
@@ -48,6 +61,10 @@ interface Props {
   config: RunNodeConfig
   /** A compound's sibling: start the run once on mount. */
   autoStart: boolean
+  /** The simulator shown inside this node, when it is (`data.runSimulator`). */
+  simulator?: InlineSimulatorConfig
+  /** The browser shown inside this node, when it is (`data.runBrowser`). */
+  browser?: RunBrowserConfig
 }
 
 /** Node id → title → device, for every run node on the live canvas, as one primitive. */
@@ -83,9 +100,9 @@ function parseSig(sig: string): Array<{ id: string; title: string; runConfig: { 
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export function RunBar({ nodeId, config, autoStart }: Props) {
+export function RunBar({ nodeId, config, autoStart, simulator, browser: browserPanel }: Props) {
   const { api } = useSession()
-  const { updateNodeData, setNodes } = useReactFlow()
+  const { updateNodeData, setNodes, getNodes } = useReactFlow()
   const [listing, setListing] = useState<RunEntriesResult | null>(null)
   const [devices, setDevices] = useState<RunDevice[] | null>(null)
   const [devicesError, setDevicesError] = useState<string | null>(null)
@@ -100,6 +117,10 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
 
   const cfgRef = useRef(config)
   cfgRef.current = config
+  // The preview panel, for the run-start path above it (see the 📱 / 🌐 section below).
+  const browserOpenRef = useRef(false)
+  const popOutRef = useRef<{ kind: PreviewKind; id: string } | null>(null)
+  const setPreviewRef = useRef<(next: { kind: 'browser'; cfg: RunBrowserConfig }) => void>(() => undefined)
   const running = !!status?.running
 
   const say = useCallback((kind: 'error' | 'info', text: string) => setNote({ kind, text }), [])
@@ -261,8 +282,14 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
       }
       if (r.kind === 'browser') {
         setBusy(null)
-        window.dispatchEvent(new CustomEvent('nodeterm:open-url-node', { detail: { url: r.url, sourceNodeId: nodeId } }))
-        if (!/^https?:\/\//i.test(r.url)) say('error', `Only http(s) URLs open in a browser node (${r.url}).`)
+        if (!isPreviewUrl(r.url)) {
+          say('error', `Only http(s) URLs open in the browser panel (${r.url}).`)
+          return
+        }
+        // The page opens in this node's browser panel (or the panel popped out of it).
+        const out = popOutRef.current
+        if (out?.kind === 'browser') updateNodeData(out.id, { url: r.url })
+        else setPreviewRef.current({ kind: 'browser', cfg: { url: r.url } })
         return
       }
       if (r.kind === 'compound') {
@@ -286,6 +313,12 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
       }
       const sent = await api.pty.sendText(nodeId, r.command)
       setNeedsRerun(false)
+      // A Flutter web run shows in this node (the host runs it on Flutter's web server — see
+      // `webServerDevice`): open the browser panel for it, unless it is open or popped out already.
+      const runDevice = target?.pinnedDevice ?? cfg.deviceId
+      if (target?.usesDevice && isWebDeviceId(runDevice) && cfg.embedBrowser !== false && !browserOpenRef.current) {
+        setPreviewRef.current({ kind: 'browser', cfg: {} })
+      }
       if (sent === 'pasted-not-submitted') say('info', 'The command is in the terminal — press Enter to start.')
       else if (sent !== true) say('error', 'Could not type into this terminal.')
       const deadline = Date.now() + 15_000
@@ -405,14 +438,225 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
   }, [nodeId, setNodes])
 
   useLayoutEffect(() => {
-    if (showTerminal) return
+    // With a simulator open the NODE's size is the user's: the panel fills it and scales with it.
+    if (showTerminal || simulator || browserPanel) return
     const bar = barRef.current
     if (!bar) return
     fitCompact()
     const ro = new ResizeObserver(() => fitCompact())
     ro.observe(bar)
     return () => ro.disconnect()
-  }, [showTerminal, fitCompact])
+  }, [showTerminal, simulator, browserPanel, fitCompact])
+
+  // ── 📱 / 🌐 The preview panel, inside this node ────────────────────────────────────────────
+  //
+  // One panel under the control rows, of the kind the run calls for (`previewKindFor`): a simulator
+  // for a run on a phone (its device preselected when it is one — an iOS UDID, or an Android
+  // emulator's adb serial, which is what Flutter names it — else empty to pick any), a browser for a
+  // run that targets one or serves a page (its URL from the launch configuration, or picked out of
+  // the run's output once it prints one). The button opens and closes it; ⇱ pops it out into its
+  // own node, whose ⇲ (or this button) docks it back. While it is open the panel fills the node, so
+  // resizing the node scales it; the compact fit above stands down. Opening grows the node by a
+  // panel's worth; closing hands it back (the compact fit, or the same amount with the terminal shown).
+
+  const panelRef = useRef<HTMLDivElement>(null)
+  const previewKind = previewKindFor({
+    picksDevice: showDevice,
+    deviceId: config.deviceId,
+    deviceKind: device?.kind,
+    browserConfig: !!entry?.browser,
+    pinnedDeviceId: entry?.usesDevice ? entry.pinnedDevice : undefined
+  })
+  const panelOpen = !!simulator || !!browserPanel
+  /** A panel popped out of this node into its own: its id and kind. Read as one primitive. */
+  const poppedOutSig = useStore((st) => {
+    for (const n of st.nodeLookup.values()) {
+      if (n.type === 'simulator' && (n.data.simulator as SimulatorNodeConfig | undefined)?.dockTo === nodeId) return `simulator:${n.id}`
+      if (n.type === 'browser' && n.data.dockTo === nodeId) return `browser:${n.id}`
+    }
+    return ''
+  })
+  const poppedOut = poppedOutSig ? { kind: poppedOutSig.slice(0, poppedOutSig.indexOf(':')) as PreviewKind, id: poppedOutSig.slice(poppedOutSig.indexOf(':') + 1) } : null
+  browserOpenRef.current = !!browserPanel || poppedOut?.kind === 'browser'
+  popOutRef.current = poppedOut
+
+  /** The kind the button shows: an open or popped-out panel's own, else what the run calls for. */
+  const shownKind: PreviewKind = simulator ? 'simulator' : browserPanel ? 'browser' : poppedOut ? poppedOut.kind : previewKind
+
+  type Preview = { kind: 'simulator'; cfg: InlineSimulatorConfig } | { kind: 'browser'; cfg: RunBrowserConfig } | undefined
+
+  /** Show `next` inside this node (or nothing), resizing the node around the change. `extra` adds or
+   *  removes other nodes in the same update (pop out / dock back). */
+  const setPreview = useCallback(
+    (next: Preview, extra?: (ns: CanvasNode[]) => CanvasNode[]) => {
+      const panelNow = panelRef.current?.offsetHeight || INLINE_SIM_HEIGHT
+      setNodes((all) => {
+        const ns = (extra ? extra(all as CanvasNode[]) : all) as CanvasNode[]
+        return ns.map((n) => {
+          if (n.id !== nodeId) return n
+          const was = !!n.data.runSimulator || !!n.data.runBrowser
+          const data = {
+            ...n.data,
+            runSimulator: next?.kind === 'simulator' ? next.cfg : undefined,
+            runBrowser: next?.kind === 'browser' ? next.cfg : undefined
+          }
+          if (was === !!next) return { ...n, data }
+          const showing = !!(n.data.runConfig as RunNodeConfig | undefined)?.showTerminal
+          // Hidden terminal + closing: the compact fit takes the height back by itself.
+          if (!next && !showing) return { ...n, data }
+          const now = (n.height as number | undefined) ?? n.measured?.height ?? 0
+          const height = Math.max(120, now + (next ? INLINE_SIM_HEIGHT : -panelNow))
+          return { ...n, height, style: { ...n.style, height }, data }
+        })
+      })
+    },
+    [nodeId, setNodes]
+  )
+
+  setPreviewRef.current = setPreview
+
+  /** ⇲ / the button on a popped-out panel: its node goes, and it comes back inside this one. */
+  const dockBack = useCallback(
+    (otherId: string) => {
+      const other = getNodes().find((n) => n.id === otherId)
+      if (!other) return
+      const remove = (ns: CanvasNode[]) => ns.filter((n) => n.id !== otherId)
+      if (other.type === 'browser') {
+        const url = other.data.url as string | undefined
+        setPreview({ kind: 'browser', cfg: isPreviewUrl(url) ? { url } : {} }, remove)
+        return
+      }
+      const { dockTo: _d, ...device } = (other.data.simulator as SimulatorNodeConfig | undefined) ?? {}
+      void _d
+      setPreview({ kind: 'simulator', cfg: device }, remove)
+    },
+    [getNodes, setPreview]
+  )
+
+  // A popped-out node's ⇲ asks for this.
+  useEffect(() => {
+    const onDock = (e: Event) => {
+      const d = (e as CustomEvent<{ nodeId?: string; runNodeId?: string }>).detail
+      if (d?.runNodeId === nodeId && d.nodeId) dockBack(d.nodeId)
+    }
+    window.addEventListener('nodeterm:dock-preview', onDock)
+    return () => window.removeEventListener('nodeterm:dock-preview', onDock)
+  }, [nodeId, dockBack])
+
+  /** The page this run shows: a browser configuration's own URL, else the newest local URL in the
+   *  run's output. Null when there is none yet. */
+  const browserUrlNow = useCallback(async (): Promise<RunBrowserConfig> => {
+    if (entry?.browser) {
+      const r = await api.runConfig.start(nodeId, cfgRef.current).catch(() => null)
+      return r?.ok && r.kind === 'browser' && isPreviewUrl(r.url) ? { url: r.url } : {}
+    }
+    const text = await api.pty.capture(nodeId, true).catch(() => '')
+    const url = localUrlFromOutput(text)
+    return url ? { url, auto: true } : {}
+  }, [api, nodeId, entry?.browser])
+
+  // The run's own device (the configuration's, else the pick) — a Flutter web run when it is a
+  // browser device, which shows here unless `embedBrowser` is off.
+  const runDevice = entry?.usesDevice ? (entry.pinnedDevice ?? config.deviceId) : undefined
+  const flutterWebRun = isWebDeviceId(runDevice)
+
+  /** The button: hides an open panel, docks a popped-out one back, and otherwise shows the one this
+   *  run calls for — a node runs one thing, so it is never a choice. */
+  const onPreviewButton = () => {
+    if (panelOpen) return setPreview(undefined)
+    if (poppedOut) return dockBack(poppedOut.id)
+    void openPreview(previewKind)
+  }
+
+  const openPreview = async (kind: PreviewKind) => {
+    if (kind === 'browser') {
+      if (flutterWebRun && running && config.embedBrowser === false) {
+        say('info', 'This Flutter web run is in its own Chrome window — turn on ⋯ → “Show web inside this node” and run again to show it here.')
+      }
+      setPreview({ kind: 'browser', cfg: await browserUrlNow() })
+      return
+    }
+    const id = showDevice ? config.deviceId : undefined
+    let next: InlineSimulatorConfig = {}
+    if (id && SIMULATOR_UDID.test(id)) next = { udid: id.toUpperCase(), name: device?.name ?? config.deviceName }
+    else if (id && /^emulator-\d+$/.test(id)) {
+      const avd = (await api.simulator.devices().catch(() => ({ devices: [] }))).devices.find((d) => d.serial === id)
+      if (avd) next = { udid: avd.id, name: avd.name }
+    }
+    setPreview({ kind: 'simulator', cfg: next })
+  }
+
+  // An open panel follows the run: pick a browser device and the simulator becomes the browser, and
+  // the other way round. The popped-out kind is left alone (the person moved it out on purpose).
+  const openPreviewRef = useRef(openPreview)
+  openPreviewRef.current = openPreview
+  const openKind: PreviewKind | null = simulator ? 'simulator' : browserPanel ? 'browser' : null
+  useEffect(() => {
+    if (openKind && openKind !== previewKind) void openPreviewRef.current(previewKind)
+  }, [openKind, previewKind])
+
+  /** ⇱: the panel becomes its own node beside this one, which can dock back. */
+  const popOut = () => {
+    if (!simulator && !browserPanel) return
+    setPreview(undefined, (ns) => {
+      const src = ns.find((n) => n.id === nodeId)
+      if (!src) return ns
+      let node: CanvasNode
+      if (simulator) node = createSimulatorNode(ns.length, { ...simulator, dockTo: nodeId })
+      else {
+        node = createBrowserNode(ns.length, browserPanel?.url ?? '')
+        node.data = { ...node.data, dockTo: nodeId }
+      }
+      const w = src.measured?.width ?? (src.width as number | undefined) ?? 640
+      node.position = { x: src.position.x + w + 40, y: src.position.y }
+      return [...ns, src.parentId ? { ...node, parentId: src.parentId, extent: 'parent' as const } : node]
+    })
+  }
+
+  const onSimConfig = useCallback(
+    (next: SimulatorNodeConfig) => {
+      updateNodeData(nodeId, (n) => (n.data.runSimulator ? { runSimulator: { ...next, dockTo: undefined } } : {}))
+    },
+    [nodeId, updateNodeData]
+  )
+
+  const onBrowserUrl = useCallback(
+    (url: string) => {
+      if (!isPreviewUrl(url)) return
+      updateNodeData(nodeId, (n) => {
+        const was = n.data.runBrowser as RunBrowserConfig | undefined
+        if (!was || was.url === url) return {}
+        return { runBrowser: { url, ...(was.auto ? { auto: true } : {}) } }
+      })
+    },
+    [nodeId, updateNodeData]
+  )
+
+  // Waiting for a page: while the browser panel has none and the run is up, read its output until
+  // it prints a local URL. A new run starts the wait over when the last URL was picked out of the
+  // output (a dev server may come back on another port); a URL the person typed is kept.
+  const lastRunning = useRef(running)
+  useEffect(() => {
+    const was = lastRunning.current
+    lastRunning.current = running
+    if (!was && running && browserPanel?.auto) updateNodeData(nodeId, { runBrowser: {} })
+  }, [running, browserPanel?.auto, nodeId, updateNodeData])
+  const waitingForUrl = !!browserPanel && !browserPanel.url && running && !entry?.browser
+  useEffect(() => {
+    if (!waitingForUrl) return
+    let live = true
+    const look = async () => {
+      const text = await api.pty.capture(nodeId, true).catch(() => '')
+      const url = live ? localUrlFromOutput(text) : null
+      if (url) updateNodeData(nodeId, (n) => (n.data.runBrowser && !(n.data.runBrowser as RunBrowserConfig).url ? { runBrowser: { url, auto: true } } : {}))
+    }
+    void look()
+    const t = setInterval(() => void look(), 1500)
+    return () => {
+      live = false
+      clearInterval(t)
+    }
+  }, [waitingForUrl, api, nodeId, updateNodeData])
 
   const toggleTerminal = useCallback(() => {
     const next = !showTerminal
@@ -487,7 +731,7 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
     (entry && !entry.supported ? entry.reason : null)
 
   return (
-    <div ref={barRef} className={`run-bar nodrag nowheel${showTerminal ? '' : ' run-bar--compact'}`}>
+    <div ref={barRef} className={`run-bar nodrag nowheel${showTerminal ? '' : ' run-bar--compact'}${panelOpen ? ' run-bar--sim' : ''}`}>
       <div className="run-bar__row">
         <select
           className="run-bar__select run-bar__select--folder"
@@ -627,6 +871,25 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
         <span className="run-bar__spacer" />
 
         <span className={`run-bar__status run-bar__status--${statusKind}`}>{statusText}</span>
+        {simulatorAvailable() && (
+          <>
+            {browserPanel && (
+              <button type="button" className="run-bar__icon" title="Pop the browser out into its own node" aria-label="Pop out" onClick={popOut}>
+                ⇱
+              </button>
+            )}
+            <button
+              type="button"
+              className={`run-bar__icon${panelOpen || poppedOut ? ' run-bar__icon--on' : ''}`}
+              title={previewButtonTitle(shownKind, panelOpen, !!poppedOut)}
+              aria-label={panelOpen ? `Hide the ${shownKind}` : `Show the ${shownKind}`}
+              aria-pressed={panelOpen}
+              onClick={onPreviewButton}
+            >
+              {shownKind === 'browser' ? '🌐' : '📱'}
+            </button>
+          </>
+        )}
         <button
           type="button"
           className={`run-bar__icon${showTerminal ? ' run-bar__icon--on' : ''}`}
@@ -653,12 +916,70 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
               e.stopPropagation()
             }}
           />
+          {flutterWebRun && (
+            <label
+              className="run-bar__check"
+              title="On: Flutter’s web server serves the app to the browser inside this node. Off: Flutter opens its own Chrome window."
+            >
+              <input
+                type="checkbox"
+                checked={config.embedBrowser !== false}
+                onChange={(e) => patch({ embedBrowser: e.target.checked ? undefined : false }, { changesRun: true })}
+              />
+              Show web inside this node
+            </label>
+          )}
         </div>
       )}
 
       {(note || blocker) && (
         <div className={`run-bar__note run-bar__note--${note?.kind ?? 'error'}`}>{note?.text ?? blocker}</div>
       )}
+
+      {browserPanel && (
+        <div ref={panelRef} className="run-sim-host">
+          <div className="run-web">
+            <BrowserSurface
+              nodeId={`${nodeId}.web`}
+              url={browserPanel.url ?? ''}
+              onUrlChange={onBrowserUrl}
+              onTitleChange={ignoreTitle}
+              blank={
+                <div className="run-web__waiting">
+                  {running ? 'Waiting for the run to print its local address… or type one above.' : 'Run it to show its page here — or type an address above.'}
+                </div>
+              }
+            />
+          </div>
+        </div>
+      )}
+      {simulator && (
+        <div ref={panelRef} className="run-sim-host">
+          <SimulatorView
+            streamId={`${nodeId}.sim`}
+            config={simulator}
+            onConfig={onSimConfig}
+            label={simulator.name ?? 'Simulator'}
+            className="run-sim"
+            barExtras={
+              <button className="run-bar__icon" title="Pop out into its own node" aria-label="Pop out" onClick={popOut}>
+                ⇱
+              </button>
+            }
+          />
+        </div>
+      )}
     </div>
   )
+}
+
+/** The browser panel keeps no title (the run node has its own); stable, so the page's listeners
+ *  are not re-attached on every render. */
+function ignoreTitle(): void {}
+
+function previewButtonTitle(kind: PreviewKind, open: boolean, poppedOut: boolean): string {
+  const what = kind === 'browser' ? 'browser' : 'simulator'
+  if (open) return `Hide the ${what}`
+  if (poppedOut) return `Dock the ${what} back into this node`
+  return 'Show a simulator or a browser here'
 }

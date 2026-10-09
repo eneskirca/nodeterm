@@ -32,6 +32,8 @@ interface DockProps {
   onAddFiles: () => void
   /** A run node (a launch.json configuration) rooted in the project folder. */
   onAddRun: () => void
+  /** A Simulator node (macOS desktop). */
+  onAddSimulator: () => void
   onAddAgent: (agentId: AgentId, accountId?: string) => void
   onOpenFile: () => void
   onAddRemote: () => void
@@ -83,6 +85,7 @@ export function Dock({
   onAddTrigger,
   onAddFiles,
   onAddRun,
+  onAddSimulator,
   onAddAgent,
   onOpenFile,
   onAddRemote,
@@ -197,6 +200,7 @@ export function Dock({
     trigger: onAddTrigger,
     files: onAddFiles,
     run: onAddRun,
+    simulator: onAddSimulator,
     openFile: onOpenFile,
     newFile: onNewFile,
     worktree: onAddWorktree

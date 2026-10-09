@@ -340,6 +340,25 @@ export function buildStubApi(): Omit<
       load: () => Promise.resolve(null),
       importImage: U('wallpaper.importImage')
     },
+    simulator: {
+      devices: () => Promise.resolve({ devices: [] }),
+      boot: () => Promise.resolve({ ok: false as const, error: 'Simulator views are only available in the desktop app.' }),
+      // DESKTOP only, deliberately not bridged: the helper talks to the simulator frameworks
+      // of the machine it runs on, and a Server Edition / relay tab's canvas is on another one. The
+      // node is not offered there; these say why if reached anyway.
+      start: () => Promise.resolve({ ok: false as const, error: 'Simulator views are only available in the macOS desktop app.' }),
+      stop: () => Promise.resolve(),
+      input: () => Promise.resolve(false),
+      shutdown: () => Promise.resolve(false),
+      action: () => Promise.resolve({ ok: false as const, error: 'Simulator views are only available in the macOS desktop app.' }),
+      state: () => Promise.resolve({}),
+      screenshot: () => Promise.resolve({ ok: false as const, error: 'Simulator views are only available in the macOS desktop app.' }),
+      startRecording: () => Promise.resolve({ ok: false as const, error: 'Simulator views are only available in the macOS desktop app.' }),
+      stopRecording: () => Promise.resolve({ ok: false as const, error: 'Not recording.' }),
+      isRecording: () => Promise.resolve(false),
+      onFrame: () => () => {},
+      onStatus: () => () => {}
+    },
     runConfig: {
       // Superseded by the real WS-backed namespace in ws-bridge (registerRunConfigIpc runs in the
       // server shell). A RELAY tab keeps this: its terminals run on the PEER, so this machine's

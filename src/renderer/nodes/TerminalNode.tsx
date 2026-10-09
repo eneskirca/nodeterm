@@ -6578,7 +6578,7 @@ export function TerminalNode({
           sessions only — a relay tab's or an SSH node's terminal runs on another machine, whose
           checkouts and devices this one cannot see. */}
       {data.runConfig && session.source === 'local' && !data.ssh && !data.sshRemoteTmux && (
-        <RunBar nodeId={id} config={data.runConfig} autoStart={!!data.runAutoStart} />
+        <RunBar nodeId={id} config={data.runConfig} autoStart={!!data.runAutoStart} simulator={data.runSimulator} browser={data.runBrowser} />
       )}
 
       {/* Body always mounted (keeps xterm alive); hidden via CSS when collapsed. */}

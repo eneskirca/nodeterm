@@ -47,6 +47,9 @@ export interface RunNodeConfig {
   reloadOnSave: boolean
   /** Whether the node shows its terminal (and the extra-arguments field). Default hidden. */
   showTerminal?: boolean
+  /** Flutter web runs (Chrome / Edge): show the app INSIDE the run node (the default — Flutter's
+   *  web server serves it to the node's browser panel). `false` = Flutter's own Chrome window. */
+  embedBrowser?: boolean
 }
 
 const MAX_PATH = 4096
@@ -98,6 +101,7 @@ export function normalizeRunConfig(raw: unknown): RunNodeConfig | undefined {
   const extraArgs = oneLine(r.extraArgs, MAX_EXTRA_ARGS)
   if (extraArgs) out.extraArgs = extraArgs
   if (r.showTerminal === true) out.showTerminal = true
+  if (r.embedBrowser === false) out.embedBrowser = false
   return out
 }
 
@@ -309,6 +313,19 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined
 }
 
+/** Flutter's browser devices open a Chrome window of their own; its web server serves the same app
+ *  to any browser and prints the address. Every other device is itself. */
+export function webServerDevice(d: string): string {
+  return d === 'chrome' || d === 'edge' ? 'web-server' : d
+}
+
+/** Whether a configuration names its device in its own args (as opposed to the `deviceId` field). */
+function pinnedInArgs(raw: Record<string, unknown>): boolean {
+  return [...strArray(raw.args), ...strArray(raw.toolArgs)].some(
+    (t) => t === '-d' || t === '--device-id' || t.startsWith('-d=') || t.startsWith('--device-id=')
+  )
+}
+
 /** The device a Dart configuration pins (`-d x`, `--device-id x`, `-d=x`, or `deviceId`). */
 export function pinnedDevice(raw: Record<string, unknown>): string | undefined {
   const a = [...strArray(raw.args), ...strArray(raw.toolArgs)]
@@ -442,6 +459,9 @@ export interface PlanContext {
   deviceId?: string
   /** The node's extra arguments, appended to the program's own. */
   extraArgs?: string
+  /** Run a Flutter browser device (chrome / edge) on Flutter's web server instead, so the app is
+   *  served to the run node's browser panel rather than to a Chrome window of Flutter's own. */
+  webServer?: boolean
   /** Where `flutter run` writes its pid (for hot reload / restart signals). */
   flutterPidFile: string
   tasks: readonly TaskDef[]
@@ -616,7 +636,22 @@ export function planLaunch(cfg: LaunchConfig, ctx: PlanContext): PlanResult {
         if (entry.typeLabel === 'Flutter') {
           // Dart-Code passes a Flutter config's `args` to `flutter run` too (the legacy behavior a
           // config like `"args": ["--flavor", "dev"]` relies on), after `toolArgs`.
-          const device = !entry.pinnedDevice && entry.usesDevice && ctx.deviceId ? ['-d', ctx.deviceId] : []
+          // The device: the node's pick, or the one the configuration names — in its args (rewritten
+          // in place) or as Dart-Code's `deviceId` field, which Dart-Code passes as `-d`.
+          const web = (d: string) => (ctx.webServer ? webServerDevice(d) : d)
+          let device: string[] = []
+          if (!entry.pinnedDevice && entry.usesDevice && ctx.deviceId) device = ['-d', web(ctx.deviceId)]
+          else if (entry.pinnedDevice && !pinnedInArgs(raw)) device = ['-d', web(entry.pinnedDevice)]
+          if (ctx.webServer) {
+            for (const list of [args, toolArgs]) {
+              for (let i = 0; i < list.length; i++) {
+                const t = list[i]
+                if ((t === '-d' || t === '--device-id') && list[i + 1]) list[i + 1] = web(list[i + 1])
+                else if (t.startsWith('-d=')) list[i] = `-d=${web(t.slice(3))}`
+                else if (t.startsWith('--device-id=')) list[i] = `--device-id=${web(t.slice('--device-id='.length))}`
+              }
+            }
+          }
           const mode = raw.flutterMode === 'profile' ? ['--profile'] : raw.flutterMode === 'release' ? ['--release'] : []
           if (isTest) return proc(['flutter', 'test', ...toolArgs, ...args, ...device, ...(program ? [program] : []), ...extra])
           return proc(
