@@ -271,6 +271,10 @@ export interface LaunchEntry {
   members?: string[]
   /** The configuration's `preLaunchTask`, if any. */
   preLaunchTask?: string
+  /** Flutter: the `--flavor` the configuration builds with. */
+  flavor?: string
+  /** A `"request": "attach"` configuration (Flutter: `flutter attach` to a running debug app). */
+  attach?: boolean
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -321,6 +325,121 @@ export function pinnedDevice(raw: Record<string, unknown>): string | undefined {
   return isSafeDeviceId(raw.deviceId) ? raw.deviceId : undefined
 }
 
+/** A Dart VM service URL as the engine prints it: loopback http, a port, the auth-code path. */
+export function isVmServiceUrl(s: string): boolean {
+  return /^http:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9_=+-]*\/?$/.test(s)
+}
+
+/**
+ * The VM service URLs a Flutter app announced in an iOS simulator's log, newest last, with the pid
+ * of the process that announced each. The engine logs `The Dart VM service is listening on <url>`
+ * at startup; `log show --style compact` prefixes `<process>[<pid>:<tid>]`.
+ *
+ * Needed because `flutter attach` cannot find an ALREADY-running app on the iOS simulator — it
+ * relies on mDNS, which the simulator barely supports. MEASURED (Flutter 3.47, iOS 27.1 sim): attach
+ * printed "The Dart VM Service was not discovered after 30 seconds … use the Dart VM service URL
+ * … with flutter attach --debug-url" and never connected; with the URL from this log line it
+ * connected in 26 s. The URL `flutter run` itself printed is useless here: it is the tool's DDS
+ * proxy, which closes when that tool detaches.
+ */
+export function parseVmServiceLog(text: string): Array<{ url: string; pid: string }> {
+  const out: Array<{ url: string; pid: string }> = []
+  for (const line of text.split('\n')) {
+    if (!line.includes('Dart VM service is listening on')) continue
+    const url = /listening on (http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_=+-]*\/?)/.exec(line)?.[1]
+    const pid = /\[(\d+):/.exec(line)?.[1]
+    if (url && pid && isVmServiceUrl(url)) out.push({ url: url.endsWith('/') ? url : `${url}/`, pid })
+  }
+  return out
+}
+
+/** The `--flavor` in a Flutter argv (`--flavor x` or `--flavor=x`). */
+export function flavorOf(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--flavor' && args[i + 1]) return args[i + 1]
+    if (args[i].startsWith('--flavor=')) return args[i].slice('--flavor='.length)
+  }
+  return undefined
+}
+
+/**
+ * The `flutter run` arguments `flutter attach` also understands, and the ones it would reject.
+ * MEASURED against `flutter attach --help` (Flutter 3.47): attach takes the target, dart-defines,
+ * the app id / VM service URL and device options — and NOT `--flavor`, `--web-port`, build modes or
+ * anything else that shapes a build, because attach builds nothing. An unknown option is a hard
+ * error ("Could not find an option named …"), so passing a run argv through would kill the attach.
+ * `-d` is left out on purpose: the device is always the node's own.
+ */
+const ATTACH_VALUE_FLAGS = new Set([
+  '-t', '--target', '-D', '--dart-define', '--dart-define-from-file', '--app-id', '--debug-url',
+  '--device-timeout', '--device-user', '--dds-port', '--device-vmservice-port', '--host-vmservice-port'
+])
+const ATTACH_BOOL_FLAGS = new Set(['--track-widget-creation', '--no-track-widget-creation', '--dds', '--no-dds'])
+
+export function attachArgs(args: readonly string[]): { kept: string[]; dropped: string[] } {
+  const kept: string[] = []
+  const dropped: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    const eq = a.indexOf('=')
+    const flag = a.startsWith('-') && eq > 0 ? a.slice(0, eq) : a
+    if (ATTACH_VALUE_FLAGS.has(flag)) {
+      if (eq > 0) kept.push(a)
+      else if (i + 1 < args.length) kept.push(a, args[++i])
+    } else if (ATTACH_BOOL_FLAGS.has(a)) {
+      kept.push(a)
+    } else if (a.startsWith('-')) {
+      // A flag attach does not know; drop its value too when it has one (`--flavor dev`).
+      dropped.push(a)
+      if (eq < 0 && i + 1 < args.length && !args[i + 1].startsWith('-') && RUN_VALUE_FLAGS.has(a)) dropped.push(args[++i])
+    } else {
+      dropped.push(a)
+    }
+  }
+  return { kept, dropped }
+}
+
+/** `flutter run` flags that take a value, so `attachArgs` drops the value with the flag. */
+const RUN_VALUE_FLAGS = new Set([
+  '--flavor', '-d', '--device-id', '--web-port', '--web-hostname', '--web-browser-flag', '--web-renderer',
+  '--route', '--dart-entrypoint-args', '-a', '--target-platform', '--build-name', '--build-number',
+  '--split-debug-info', '--obfuscation-map', '--web-launch-url', '--web-header', '--web-tls-cert-path',
+  '--web-tls-cert-key-path', '--device-connection'
+])
+
+/** What a running Flutter run was started from — enough to tell whether a switch can keep it. */
+export interface RunSnapshot {
+  projectDir: string
+  deviceId?: string
+  flavor?: string
+  hotReload: boolean
+}
+
+/**
+ * Can the node switch a running Flutter app to `to` WITHOUT rebuilding it — detach the tool, attach
+ * a new one from the new checkout, hot restart? Only when the running app is the one `to` would
+ * build: same device, same flavor, a Flutter run (not a test) on both sides. Anything native that
+ * differs between the checkouts (plugins, ios/, Info.plist) is not something this can know, which
+ * is why Rebuild stays offered beside it.
+ */
+export function canHotSwitch(from: RunSnapshot | null, to: { config: RunNodeConfig; entry: LaunchEntry | undefined }): boolean {
+  const e = to.entry
+  if (!from || !from.hotReload || !e || !e.supported || e.kind !== 'config' || !e.hotReload) return false
+  if (e.pinnedDevice) return false // a pinned device is web/desktop/explicit — attach is for the node's device
+  if (!from.deviceId || from.deviceId !== to.config.deviceId) return false
+  if ((from.flavor ?? '') !== (e.flavor ?? '')) return false
+  return true
+}
+
+/** Has `flutter attach` connected? It prints its key-command help once it has. `attachLine` is the
+ *  launcher's own `▶ flutter attach …` line: the help must come AFTER it (an earlier run's help may
+ *  still be on screen). When that line has scrolled away, everything on screen is newer than it. */
+export function attachConnected(screen: string): boolean {
+  const ready = Math.max(screen.lastIndexOf('Flutter run key commands'), screen.lastIndexOf('To hot restart changes'))
+  if (ready < 0) return false
+  return ready > screen.lastIndexOf('▶ flutter attach')
+}
+
 /** Dart-Code runs a `program` under test/ or integration_test/ (or a *_test.dart) as a TEST. */
 export function isDartTestProgram(program: string | undefined): boolean {
   if (!program) return false
@@ -355,7 +474,10 @@ export function describeConfig(cfg: LaunchConfig, isFlutterProject: boolean): La
     ...(str(cfg.raw.preLaunchTask) ? { preLaunchTask: str(cfg.raw.preLaunchTask) } : {})
   }
   const refuse = (reason: string): LaunchEntry => ({ ...base, supported: false, reason })
-  if (cfg.request !== 'launch') {
+  const flutter = cfg.type === 'dart' && (isFlutterProject || cfg.raw.flutterMode !== undefined)
+  // A Flutter attach is `flutter attach`: it connects to an app already running in debug mode.
+  // Every other attach (a debugger to a process, Xdebug, …) has nothing for us to start.
+  if (cfg.request !== 'launch' && !(cfg.request === 'attach' && flutter)) {
     return refuse(`“${cfg.name}” attaches to a process that is already running — there is nothing to start.`)
   }
   if (!(cfg.type in TYPE_LABEL)) return refuse(`“${cfg.type}” configurations are not supported yet.`)
@@ -364,9 +486,11 @@ export function describeConfig(cfg: LaunchConfig, isFlutterProject: boolean): La
   if (cfg.type === 'dart') {
     const program = str(cfg.raw.program)
     const isTest = isDartTestProgram(program)
-    const flutter = isFlutterProject || cfg.raw.flutterMode !== undefined
     if (flutter) {
       const pinned = pinnedDevice(cfg.raw)
+      const flavor = flavorOf([...strArray(cfg.raw.toolArgs), ...strArray(cfg.raw.args)])
+      const attach = cfg.request === 'attach'
+      if (attach && isTest) return refuse(`“${cfg.name}” attaches to a test — tests cannot be attached to.`)
       // A widget test runs headless; an integration test runs on a device, like the app.
       const onDevice = !isTest || /(^|\/)integration_test\//.test((program ?? '').replace(/\\/g, '/'))
       return {
@@ -374,7 +498,9 @@ export function describeConfig(cfg: LaunchConfig, isFlutterProject: boolean): La
         typeLabel: 'Flutter',
         usesDevice: onDevice,
         hotReload: !isTest,
-        ...(pinned ? { pinnedDevice: pinned } : {})
+        ...(pinned ? { pinnedDevice: pinned } : {}),
+        ...(flavor ? { flavor } : {}),
+        ...(attach ? { attach: true } : {})
       }
     }
     if (!program) return refuse(`“${cfg.name}” has no program to run.`)
@@ -580,7 +706,11 @@ export function planTask(label: string, ctx: PlanContext, depth = 0, seen = new 
 }
 
 /** Turn one launch configuration into what the host runs. Pure; every refusal is a sentence. */
-export function planLaunch(cfg: LaunchConfig, ctx: PlanContext): PlanResult {
+export function planLaunch(
+  cfg: LaunchConfig,
+  ctx: PlanContext,
+  opts: { attach?: boolean; debugUrl?: string } = {}
+): PlanResult {
   const entry = describeConfig(cfg, ctx.isFlutterProject)
   if (!entry.supported) return { ok: false, error: entry.reason ?? 'Not supported.' }
   try {
@@ -593,7 +723,8 @@ export function planLaunch(cfg: LaunchConfig, ctx: PlanContext): PlanResult {
     const envFile = str(raw.envFile) ? joinPath(ctx.workspace, x(raw.envFile as string)) : undefined
     const args = strArray(raw.args).map(x)
     const extra = ctx.extraArgs ? shellSplit(ctx.extraArgs) : []
-    const preTasks = str(raw.preLaunchTask) ? planTask(x(raw.preLaunchTask as string), ctx) : []
+    // A switch-attach runs nothing first: the app is already built and running.
+    const preTasks = str(raw.preLaunchTask) && !opts.attach ? planTask(x(raw.preLaunchTask as string), ctx) : []
     const proc = (argv: string[], hotReload = false): PlanResult => ({
       ok: true,
       plan: {
@@ -619,6 +750,24 @@ export function planLaunch(cfg: LaunchConfig, ctx: PlanContext): PlanResult {
           const device = !entry.pinnedDevice && entry.usesDevice && ctx.deviceId ? ['-d', ctx.deviceId] : []
           const mode = raw.flutterMode === 'profile' ? ['--profile'] : raw.flutterMode === 'release' ? ['--release'] : []
           if (isTest) return proc(['flutter', 'test', ...toolArgs, ...args, ...device, ...(program ? [program] : []), ...extra])
+          if (opts.attach || entry.attach) {
+            // `flutter attach` to the app already running on the node's device. Only the arguments
+            // attach understands survive (attachArgs); dart-defines do, so constants match.
+            // The host's discovered URL wins (an iOS simulator's app cannot be found by mDNS).
+            const vm = (opts.debugUrl && isVmServiceUrl(opts.debugUrl) ? opts.debugUrl : undefined) ?? str(raw.vmServiceUri) ?? str(raw.observatoryUri)
+            const attachDevice = entry.pinnedDevice ? ['-d', entry.pinnedDevice] : ctx.deviceId ? ['-d', ctx.deviceId] : []
+            return proc(
+              [
+                'flutter', 'attach',
+                ...(program ? ['-t', program] : []),
+                ...attachArgs([...toolArgs, ...args, ...extra]).kept,
+                ...(vm ? ['--debug-url', x(vm)] : []),
+                ...attachDevice,
+                '--pid-file', ctx.flutterPidFile
+              ],
+              true
+            )
+          }
           return proc(
             [
               'flutter', 'run',
@@ -850,8 +999,10 @@ export interface RunConfigApi {
   bootDevice(udid: string): Promise<boolean>
   /** Folders near `dir` that have a launch.json or are Flutter checkouts. */
   discoverProjects(dir: string): Promise<string[]>
-  /** Prepare a run: write the launcher and return the line to type (or a URL / compound members). */
-  start(nodeId: string, config: RunNodeConfig): Promise<RunStartResult>
+  /** Prepare a run: write the launcher and return the line to type (or a URL / compound members).
+   *  `attach`: `flutter attach` to the app already running on the node's device instead (the
+   *  no-rebuild folder switch). */
+  start(nodeId: string, config: RunNodeConfig, opts?: { attach?: boolean }): Promise<RunStartResult>
   status(nodeId: string): Promise<RunStatus>
   /** Interrupt the run (SIGINT, or SIGTERM when `force`). False when nothing is running. */
   stop(nodeId: string, force?: boolean): Promise<boolean>

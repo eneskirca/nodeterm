@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useReactFlow, useStore } from '@xyflow/react'
 import {
+  attachConnected,
+  canHotSwitch,
   deviceClaims,
   resolveEntry,
   runDirLabel,
@@ -9,6 +11,7 @@ import {
   type RunDevice,
   type RunEntriesResult,
   type RunNodeConfig,
+  type RunSnapshot,
   type RunStatus
 } from '@shared/run-config'
 import { isShellCommand } from '@shared/agents/pane'
@@ -38,7 +41,7 @@ const STATUS_POLL_MS = 2_000
 const STOP_GRACE_MS = 5_000
 const NOTE_MS = 6_000
 
-type Busy = 'booting' | 'starting' | 'stopping' | 'reloading' | 'restarting' | null
+type Busy = 'booting' | 'starting' | 'stopping' | 'reloading' | 'restarting' | 'switching' | null
 
 const CHOOSE_FOLDER = '\u0000choose'
 const NO_ENTRY = '\u0000none'
@@ -100,6 +103,8 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
 
   const cfgRef = useRef(config)
   cfgRef.current = config
+  /** The entry the node resolves to now (kept current below), for callbacks and the status poll. */
+  const entryRef = useRef<LaunchEntry | undefined>(undefined)
   const running = !!status?.running
 
   const say = useCallback((kind: 'error' | 'info', text: string) => setNote({ kind, text }), [])
@@ -155,6 +160,7 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
     [entries, config.launchConfig]
   )
   const wantsDevices = entries.some((e) => e.usesDevice)
+  entryRef.current = entry
 
   const loadDevices = useCallback(
     (refresh: boolean) => {
@@ -173,9 +179,18 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
   // Set while WE are stopping the run, so its end is not reported as unexpected.
   const stoppingRef = useRef(false)
   const lastRunningRef = useRef<boolean | null>(null)
+  /** What the live run was started from — what a folder switch must match to keep the app.
+   *  Set at Run; recovered from the node's config when the run was already going at mount (the
+   *  config cannot have changed before this view existed to change it). Cleared when it ends. */
+  const runningRef = useRef<RunSnapshot | null>(null)
   const pollStatus = useCallback(async () => {
     const s = await api.runConfig.status(nodeId)
     if (!mounted.current) return s.running
+    if (!s.running && !stoppingRef.current) runningRef.current = null
+    if (s.running && !runningRef.current && entryRef.current) {
+      const c = cfgRef.current
+      runningRef.current = { projectDir: c.projectDir, deviceId: c.deviceId, flavor: entryRef.current.flavor, hotReload: entryRef.current.hotReload }
+    }
     if (lastRunningRef.current === true && !s.running && !stoppingRef.current && !cfgRef.current.showTerminal) {
       const how = s.exitCode === null || s.exitCode === 0 ? 'The run ended' : `The run exited with code ${s.exitCode}`
       setNote({ kind: s.exitCode ? 'error' : 'info', text: `${how} — open ⋯ to see the terminal output.` })
@@ -284,6 +299,7 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
         await start({ launchConfig: first })
         return
       }
+      runningRef.current = { projectDir: cfg.projectDir, deviceId: cfg.deviceId, flavor: target?.flavor, hotReload: r.hotReload }
       const sent = await api.pty.sendText(nodeId, r.command)
       setNeedsRerun(false)
       if (sent === 'pasted-not-submitted') say('info', 'The command is in the terminal — press Enter to start.')
@@ -333,6 +349,73 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
     if (running && !(await stop())) return
     await start()
   }, [running, stop, start])
+
+  /**
+   * Switch the running Flutter app to the node's (new) folder WITHOUT rebuilding it:
+   *  1. `d` — flutter run/attach's own "detach": the tool exits, the app keeps running;
+   *  2. `flutter attach` from the new folder, to the same device;
+   *  3. once it has connected, a hot RESTART (SIGUSR2). Not a reload: a freshly attached tool only
+   *     pushes files that change after it connected, so the new checkout's code would mostly not
+   *     reach the app. A restart pushes the whole program — the app's state resets, nothing native
+   *     is rebuilt.
+   * Every failure leaves the app running and says so; Rebuild stays one click away.
+   */
+  const switchKeepApp = useCallback(async () => {
+    const cfg = cfgRef.current
+    setBusy('switching')
+    stoppingRef.current = true
+    await api.pty.sendText(nodeId, 'd', { enter: false })
+    const detached = await waitStopped(10_000)
+    stoppingRef.current = false
+    if (!detached) {
+      setBusy(null)
+      say('error', 'The running tool did not detach — open ⋯ to check the terminal.')
+      return
+    }
+    const r = await api.runConfig.start(nodeId, cfg, { attach: true })
+    if (!r.ok || r.kind !== 'process') {
+      setBusy(null)
+      say('error', `${r.ok ? 'Could not attach.' : r.error} The app is still running on the device; Rebuild restarts it from this folder.`)
+      return
+    }
+    const sent = await api.pty.sendText(nodeId, r.command)
+    if (sent !== true) {
+      setBusy(null)
+      say('error', sent === 'pasted-not-submitted' ? 'The attach command is in the terminal — press Enter.' : 'Could not type into this terminal.')
+      return
+    }
+    // Wait for the attach to connect (it prints its key help once it has). Discovering the app
+    // can take a while on a busy simulator; an attach that exits early has failed.
+    let connected = false
+    let sawRunning = false
+    const deadline = Date.now() + 120_000
+    while (mounted.current && Date.now() < deadline) {
+      if (attachConnected(await api.pty.capture(nodeId))) {
+        connected = true
+        break
+      }
+      const alive = await pollStatus()
+      if (alive) sawRunning = true
+      else if (sawRunning) break
+      await sleep(700)
+    }
+    if (!mounted.current) return
+    if (!connected) {
+      setBusy(null)
+      say('error', 'flutter attach did not connect — open ⋯ to see why. Rebuild starts the app from this folder.')
+      return
+    }
+    const restarted = await api.runConfig.signal(nodeId, 'restart')
+    runningRef.current = { projectDir: cfg.projectDir, deviceId: cfg.deviceId, flavor: entryRef.current?.flavor, hotReload: true }
+    setNeedsRerun(false)
+    setBusy(null)
+    say(
+      restarted ? 'info' : 'error',
+      restarted
+        ? `Switched to ${runDirLabel(cfg.projectDir)} without rebuilding — hot restarted (the app's state was reset).`
+        : 'Attached, but the hot restart failed — press R in the terminal.'
+    )
+  }, [api, nodeId, waitStopped, pollStatus, say])
 
   const signal = useCallback(
     async (kind: 'reload' | 'restart') => {
@@ -460,6 +543,9 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
   )
 
   const browser = !!entry?.browser
+  // Folder/configuration changed under a running Flutter app that the new choice would build the
+  // same way: offer to switch without rebuilding (canHotSwitch states the rule).
+  const hotSwitch = canHotSwitch(runningRef.current, { config, entry })
   const canRun = !!entry?.supported && !busy
   const statusText =
     busy === 'booting'
@@ -472,6 +558,8 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
             ? 'Hot reload'
             : busy === 'restarting'
               ? 'Hot restart'
+              : busy === 'switching'
+                ? 'Switching…'
               : running
                 ? 'Running'
                 : status?.exitCode
@@ -612,7 +700,29 @@ export function RunBar({ nodeId, config, autoStart }: Props) {
             </button>
           )
         )}
-        {needsRerun && running && (
+        {needsRerun && running && hotSwitch && (
+          <>
+            <button
+              type="button"
+              className="run-bar__btn run-bar__btn--accent"
+              title="Keep the app on the device: detach, attach from the new folder, hot restart. Its state resets; nothing native is rebuilt."
+              disabled={!!busy}
+              onClick={() => void switchKeepApp()}
+            >
+              ⇄ Switch (keep app)
+            </button>
+            <button
+              type="button"
+              className="run-bar__btn"
+              title="Stop and run again from scratch — needed when the folders differ in native code (plugins, ios/, Info.plist)"
+              disabled={!!busy}
+              onClick={() => void restart()}
+            >
+              Rebuild
+            </button>
+          </>
+        )}
+        {needsRerun && running && !hotSwitch && (
           <button
             type="button"
             className="run-bar__btn run-bar__btn--accent"

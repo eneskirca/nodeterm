@@ -18,6 +18,7 @@ import {
   parseEnvFile,
   parseLaunchFile,
   parseTasksFile,
+  parseVmServiceLog,
   planLaunch,
   resolveEntry,
   type LaunchConfig,
@@ -212,12 +213,63 @@ export async function bootSimulator(udid: unknown): Promise<boolean> {
     if (!/current state: Booted/i.test(String((e as { stderr?: string }).stderr ?? (e as Error).message))) return false
   }
   devicesCache = null
+  await openSimulatorApp()
+  return true
+}
+
+/**
+ * Show Simulator.app, best effort. `open -a Simulator` needs LaunchServices to know the app, and on
+ * a machine where it does not (MEASURED: a Mac whose Xcode ships no registered Simulator.app —
+ * "Unable to find application named 'Simulator'") the bundle inside the active Xcode is tried. A
+ * machine with neither runs its simulators headless, which is fine: the app runs either way.
+ */
+async function openSimulatorApp(): Promise<void> {
   try {
     await run('/usr/bin/open', ['-a', 'Simulator'], { timeout: 15_000 })
+    return
   } catch {
-    /* booted either way; the window is a convenience */
+    /* try the active Xcode's own copy */
   }
-  return true
+  try {
+    const { stdout } = await run('/usr/bin/xcode-select', ['-p'], { timeout: 5_000 })
+    await run('/usr/bin/open', [path.join(stdout.trim(), 'Applications', 'Simulator.app')], { timeout: 15_000 })
+  } catch {
+    /* headless simulators — nothing to show */
+  }
+}
+
+/**
+ * The running Flutter app's own VM service URL on an iOS simulator — read from the simulator's
+ * log (see `parseVmServiceLog` for why attach needs it). The newest announcement whose process is
+ * still alive wins; an app that started long ago is found by widening the window once.
+ */
+export async function simulatorVmServiceUrl(udid: string): Promise<string | null> {
+  if (process.platform !== 'darwin' || !SIMULATOR_UDID.test(udid)) return null
+  let alive: Set<string> | null = null
+  try {
+    const { stdout } = await run('/usr/bin/xcrun', ['simctl', 'spawn', udid, 'launchctl', 'list'], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 })
+    alive = new Set(stdout.split('\n').map((l) => l.split('\t')[0]).filter((p) => /^\d+$/.test(p)))
+  } catch {
+    return null
+  }
+  for (const window of ['1h', '24h']) {
+    let text = ''
+    try {
+      text = (
+        await run(
+          '/usr/bin/xcrun',
+          ['simctl', 'spawn', udid, 'log', 'show', '--style', 'compact', '--last', window, '--predicate', 'eventMessage CONTAINS "Dart VM service is listening on"'],
+          { timeout: 90_000, maxBuffer: 16 * 1024 * 1024 }
+        )
+      ).stdout
+    } catch {
+      continue
+    }
+    const hits = parseVmServiceLog(text).reverse()
+    const live = hits.find((h) => alive?.has(h.pid))
+    if (live) return live.url
+  }
+  return null
 }
 
 // ─── Project discovery ───────────────────────────────────────────────────────────────────────
@@ -299,7 +351,43 @@ function referencedEnv(...values: unknown[]): string[] {
   return names
 }
 
-export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<RunStartResult> {
+/**
+ * Does the app's own Dart code read `appFlavor`? `flutter attach` has no `--flavor`, and Flutter
+ * REFUSES a hand-passed `FLUTTER_APP_FLAVOR` define (flutter_command.dart,
+ * `_ensureReservedDartDefineIsUnset`), so after an attach + hot restart `appFlavor` falls back to
+ * the pubspec's default flavor — the wrong answer for an app that branches on it. Bounded scan of
+ * `lib/` (the app's code; packages are not the app's choice). A read failure answers "no".
+ */
+async function readsAppFlavor(dir: string): Promise<boolean> {
+  const stack = [path.join(dir, 'lib')]
+  let files = 0
+  while (stack.length && files < 4000) {
+    const d = stack.pop() as string
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await readdir(d, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) stack.push(p)
+      else if (e.name.endsWith('.dart')) {
+        files++
+        try {
+          if ((await readFile(p, 'utf8')).includes('appFlavor')) return true
+        } catch {
+          /* unreadable — not evidence */
+        }
+      }
+    }
+  }
+  return false
+}
+
+export async function startRun(nodeId: unknown, rawConfig: unknown, rawOpts?: unknown): Promise<RunStartResult> {
+  // `attach`: switch a running Flutter app to this folder without rebuilding it (see canHotSwitch).
+  const attach = !!rawOpts && typeof rawOpts === 'object' && (rawOpts as { attach?: unknown }).attach === true
   if (!validNode(nodeId)) return { ok: false, error: 'Invalid node.' }
   if (process.platform === 'win32') {
     return { ok: false, error: 'Run configurations need a POSIX shell — not supported on Windows yet.' }
@@ -326,7 +414,32 @@ export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<Run
     return { ok: false, error: `“${config.launchConfig}” is not in .vscode/launch.json.` }
   }
   if (!entry.supported) return { ok: false, error: entry.reason ?? 'This configuration cannot run here.' }
-  if (entry.kind === 'compound') return { ok: true, kind: 'compound', members: entry.members ?? [] }
+  if (entry.kind === 'compound') {
+    if (attach) return { ok: false, error: 'A compound cannot be switched to — rebuild instead.' }
+    return { ok: true, kind: 'compound', members: entry.members ?? [] }
+  }
+  let debugUrl: string | undefined
+  if (attach) {
+    if (!entry.hotReload || entry.typeLabel !== 'Flutter') {
+      return { ok: false, error: `“${entry.name}” is not a Flutter run — it cannot be switched to without a rebuild.` }
+    }
+    if (entry.flavor && (await readsAppFlavor(dir))) {
+      return {
+        ok: false,
+        error: 'This app reads appFlavor, which flutter attach cannot set — rebuild to switch.'
+      }
+    }
+    // On an iOS simulator attach cannot discover the running app by itself; hand it the URL.
+    if (config.deviceId && SIMULATOR_UDID.test(config.deviceId)) {
+      debugUrl = (await simulatorVmServiceUrl(config.deviceId)) ?? undefined
+      if (!debugUrl) {
+        return {
+          ok: false,
+          error: 'Could not find the running app on the simulator (no VM service URL in its log) — Rebuild to switch.'
+        }
+      }
+    }
+  }
 
   const cfg = file.configs.find((c) => c.name === entry.name) as LaunchConfig
   const tasks = await readTasks(dir)
@@ -344,7 +457,7 @@ export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<Run
     extraArgs: config.extraArgs,
     flutterPidFile: flutterPidFile(nodeId),
     tasks
-  })
+  }, { attach, debugUrl })
   if (!planned.ok) return planned
   const plan = planned.plan
   if (plan.kind === 'browser') return { ok: true, kind: 'browser', url: plan.url }
@@ -528,7 +641,7 @@ export function registerRunConfigIpc(): void {
   platform().handle(IPC.runDevices, (refresh: unknown) => listDevices(refresh === true))
   platform().handle(IPC.runBootDevice, (udid: unknown) => bootSimulator(udid))
   platform().handle(IPC.runDiscover, (dir: unknown) => discoverProjects(dir))
-  platform().handle(IPC.runStart, (nodeId: unknown, config: unknown) => startRun(nodeId, config))
+  platform().handle(IPC.runStart, (nodeId: unknown, config: unknown, opts: unknown) => startRun(nodeId, config, opts))
   platform().handle(IPC.runStatus, (nodeId: unknown) => runStatus(nodeId))
   platform().handle(IPC.runStop, (nodeId: unknown, force: unknown) => stopRun(nodeId, force === true))
   platform().handle(IPC.runSignal, (nodeId: unknown, kind: unknown) => signalRun(nodeId, kind))

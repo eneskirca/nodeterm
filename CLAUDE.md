@@ -1956,7 +1956,26 @@ session.
   `fs.watch` of `<dir>/lib` that deliberately OUTLIVES the node's view; (5) the terminal is hidden
   by default (`runConfig.showTerminal`, toggled by ⋯ with the extra-args field): collapse's
   `display: none` path via `.term-node:has(.run-bar--compact)` and a node height fitted to the
-  rows; a run that ends without our Stop says where to look. No "bring simulator forward":
+  rows; a run that ends without our Stop says where to look; (6) **switching folders keeps the app
+  when it can** (`canHotSwitch`: a running Flutter run, same device, same flavor, Flutter on both
+  sides): the toolbar offers **Switch (keep app)** beside **Rebuild** — type `d` (flutter's own
+  detach: the tool exits, the app keeps running), `flutter attach` from the new folder (only the
+  flags attach accepts survive, `attachArgs`, MEASURED against `flutter attach --help` — attach has
+  no `--flavor`), wait until it prints its key help AFTER its own `▶ flutter attach` line
+  (`attachConnected`), then a hot RESTART — never a reload: a freshly attached tool only pushes
+  files changed after it connected (MEASURED live, Flutter 3.47 / iOS 27.1 simulator: a reload
+  after attaching from the other checkout "Reloaded 0 libraries" and the old code kept running; a
+  SIGUSR2 restart swapped it in 2.6 s, same app pid, no rebuild). **On an iOS simulator attach
+  needs `--debug-url`**: it finds an already-running app by mDNS, which the simulator barely
+  supports ("The Dart VM Service was not discovered after 30 seconds"), and the URL `flutter run`
+  printed is its DDS proxy, gone with the detached tool. `simulatorVmServiceUrl` reads the app's
+  own "The Dart VM service is listening on …" line from `simctl spawn <udid> log show` (~3 s) and
+  takes the newest one whose process is still alive (`parseVmServiceLog`); not found ⇒ the switch
+  is refused with Rebuild offered. Some Macs ship no registered `Simulator.app` (`open -a
+  Simulator` fails); booting falls back to the active Xcode's copy and otherwise runs headless. Flutter REFUSES a hand-passed `FLUTTER_APP_FLAVOR`, so after an
+  attach `appFlavor` is the pubspec default; an app whose `lib/` reads `appFlavor` is refused the
+  switch with that reason. Dart `"request": "attach"` configurations run as `flutter attach` too;
+  every other attach is still refused. No "bring simulator forward":
   Simulator.app can only be activated as a whole (same-named simulators are told apart by id in
   the dropdown). Add menus: **New view ▸ New run configuration**. Local projects only (disabled
   with `RUN_SSH_HINT` in SSH projects; relay stub answers "managed on the host"); POSIX only

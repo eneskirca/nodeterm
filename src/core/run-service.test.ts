@@ -131,6 +131,33 @@ describe('run-service', () => {
     expect(await startRun('../x', { projectDir: w, reloadOnSave: true })).toMatchObject({ ok: false })
   })
 
+  it('switch mode writes a flutter attach launcher; refuses non-Flutter runs and apps that read appFlavor', async () => {
+    write('app/pubspec.yaml', PUBSPEC)
+    write('app/lib/main_dev.dart', 'void main() {}')
+    write('app/.vscode/launch.json', `{ "configurations": [
+      { "name": "Dev", "type": "dart", "request": "launch", "program": "lib/main_dev.dart", "args": ["--flavor", "dev", "--web-port=8080"] },
+      { "name": "Tool", "type": "node", "request": "launch", "program": "a.js" }
+    ] }`)
+    const app = path.join(root, 'app')
+    const r = await startRun('n8', { projectDir: app, launchConfig: 'Dev', deviceId: 'SIM-1', reloadOnSave: true }, { attach: true })
+    expect(r).toMatchObject({ ok: true, kind: 'process', hotReload: true })
+    const script = readFileSync(launcherPath('n8'), 'utf8')
+    expect(script).toContain(`'flutter' 'attach' '-t' 'lib/main_dev.dart' '-d' 'SIM-1' '--pid-file' '${flutterPidFile('n8')}'`)
+    expect(script).not.toContain('--flavor')
+    expect(script).not.toContain('--web-port')
+
+    expect(await startRun('n8', { projectDir: app, launchConfig: 'Tool', reloadOnSave: true }, { attach: true })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/not a Flutter run/)
+    })
+
+    write('app/lib/flavor.dart', "import 'package:flutter/services.dart'; final f = appFlavor;")
+    expect(await startRun('n8', { projectDir: app, launchConfig: 'Dev', deviceId: 'SIM-1', reloadOnSave: true }, { attach: true })).toEqual({
+      ok: false,
+      error: 'This app reads appFlavor, which flutter attach cannot set — rebuild to switch.'
+    })
+  })
+
   it.skipIf(!posix)('runs the preLaunchTask, then the program with env + envFile, and records the exit code', async () => {
     const w = path.join(root, 'w')
     const out = path.join(root, 'out.txt')

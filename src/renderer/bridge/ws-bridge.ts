@@ -1104,7 +1104,7 @@ export function buildRunConfigApi(client: RpcClient): Pick<NodeTerminalApi, 'run
     devices: (refresh) => client.request(IPC.runDevices, refresh) as Promise<RunDevicesResult>,
     bootDevice: (udid) => client.request(IPC.runBootDevice, udid) as Promise<boolean>,
     discoverProjects: (dir) => client.request(IPC.runDiscover, dir) as Promise<string[]>,
-    start: (nodeId, config) => client.request(IPC.runStart, nodeId, config) as Promise<RunStartResult>,
+    start: (nodeId, config, opts) => client.request(IPC.runStart, nodeId, config, opts) as Promise<RunStartResult>,
     status: (nodeId) => client.request(IPC.runStatus, nodeId) as Promise<RunStatus>,
     stop: (nodeId, force) => client.request(IPC.runStop, nodeId, force) as Promise<boolean>,
     signal: (nodeId, kind) => client.request(IPC.runSignal, nodeId, kind) as Promise<boolean>,
