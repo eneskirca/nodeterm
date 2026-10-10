@@ -113,11 +113,11 @@ const api: NodeTerminalApi = {
     sendChatPrompt: (persistKey, text, agentId) =>
       ipcRenderer.invoke(IPC.ptySendChatPrompt, persistKey, text, agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
-    paneCommand: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey),
+    paneCommand: (persistKey, opts) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey, opts),
     paneCwd: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCwd, persistKey),
     sendPaneKeys: (nodeId, data) => ipcRenderer.invoke(IPC.ptySendPaneKeys, nodeId, data),
     launchHeadless: (req) => ipcRenderer.invoke(IPC.ptyLaunchHeadless, req),
-    paneOwner: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneOwner, persistKey),
+    paneOwner: (persistKey, opts) => ipcRenderer.invoke(IPC.ptyPaneOwner, persistKey, opts),
     executeLaunch: (persistKey, request) => ipcRenderer.invoke(IPC.ptyExecuteLaunch, persistKey, request),
     terminateForeground: (persistKey, expectedAgentId) =>
       ipcRenderer.invoke(IPC.ptyTerminateForeground, persistKey, expectedAgentId),

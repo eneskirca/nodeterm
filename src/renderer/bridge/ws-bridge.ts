@@ -302,22 +302,23 @@ export function buildRealApi(
         .catch(() => ({ available: false, installCommand: null, installLabel: null, platform: null, persistence: null })) as Promise<TmuxStatus>,
     // Unknown on failure (null), never a rejection: the restart poller reads null as "not a
     // shell yet" and gives up on its own deadline.
-    paneCommand: (persistKey) =>
-      client.request(IPC.ptyPaneCommand, persistKey).catch(() => null) as Promise<string | null>,
+    paneCommand: (persistKey, opts) =>
+      client.request(IPC.ptyPaneCommand, persistKey, opts).catch(() => null) as Promise<string | null>,
     // Real: core registers it. Unknown (null) on failure — a relay host refuses it to a non-editor
     // (EDITOR_ONLY), which reads as "no live cwd" and file links keep the node's launch cwd.
-    sendPaneKeys: (nodeId, data) =>
-      client.request(IPC.ptySendPaneKeys, nodeId, data).catch(() => ({ ok: false, reason: 'failed' })) as Promise<PaneKeysResult>,
     paneCwd: (persistKey) =>
       client.request(IPC.ptyPaneCwd, persistKey).catch(() => null) as Promise<string | null>,
+    // Real: core registers it (host-only; a relay host refuses it). Never rejects.
+    sendPaneKeys: (nodeId, data) =>
+      client.request(IPC.ptySendPaneKeys, nodeId, data).catch(() => ({ ok: false, reason: 'failed' })) as Promise<PaneKeysResult>,
     // Documented degrade (#925): the Server Edition starts nodes through its HeadlessNodeFactory,
     // never through the browser renderer, so there is nothing for this to call.
     launchHeadless: () => unsupported('pty.launchHeadless'),
     // A REAL implementation, not a stub: core registers the handler, so the server this browser is
     // served from answers it. The hibernation exit fails CLOSED on a null, so a stub here would
     // have silently switched Eco off for the whole Server Edition rather than degrade it.
-    paneOwner: (persistKey) =>
-      client.request(IPC.ptyPaneOwner, persistKey).catch(() => null) as Promise<PaneOwner | null>,
+    paneOwner: (persistKey, opts) =>
+      client.request(IPC.ptyPaneOwner, persistKey, opts).catch(() => null) as Promise<PaneOwner | null>,
     terminateForeground: (persistKey, expectedAgentId) =>
       client.request(IPC.ptyTerminateForeground, persistKey, expectedAgentId).catch(() => false) as Promise<boolean | 'unsupported'>,
     // REAL: core registers it, so a server running on Windows answers with its own session host.

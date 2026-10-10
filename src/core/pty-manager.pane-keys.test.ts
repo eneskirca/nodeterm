@@ -42,9 +42,10 @@ vi.mock('child_process', async () => {
   return { execFile, execFileSync: (): string => '' }
 })
 
+const ssh = vi.hoisted(() => ({ path: '/usr/bin/ssh' as string | null }))
 vi.mock('./exec-path', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-path')>()),
-  findExecutableSync: (bin: string) => (bin === 'ssh' ? '/usr/bin/ssh' : null),
+  findExecutableSync: (bin: string) => (bin === 'ssh' ? ssh.path : null),
   shellPathNow: () => '/usr/bin:/bin',
   resolveShellPath: async () => '/usr/bin:/bin'
 }))
@@ -55,11 +56,14 @@ const REMOTE_OWNER = { projectId: 'p', hostKey: 'u@h', remote: { conn: CONN, con
 
 type Mgr = {
   tmuxPath: string | null
+  sessions: Map<string, Record<string, unknown>>
+  byPersistKey: Map<string, string>
+  zellijKeys: Set<string>
   getSettings: () => typeof DEFAULT_SETTINGS
   setRemoteNodeOwner(r: (id: string) => unknown): void
   sendPaneKeys(k: string, d: string): Promise<unknown>
-  paneCommand(k: string): Promise<string | null>
-  paneOwner(k: string): Promise<unknown>
+  paneCommand(k: string, o?: { resolveUnmounted?: boolean }): Promise<string | null>
+  paneOwner(k: string, o?: { resolveUnmounted?: boolean }): Promise<unknown>
 }
 async function makeManager(tmux: string | null = '/usr/bin/tmux') {
   const { PtyManager } = await import('./pty-manager')
@@ -68,9 +72,15 @@ async function makeManager(tmux: string | null = '/usr/bin/tmux') {
   return pm
 }
 
+function live(pm: Mgr, extra: Record<string, unknown>) {
+  pm.sessions.set('sess-1', { persistKey: 'n1', indexKey: 'n1', nodeId: 'n1', tmuxBacked: true, proc: { write: vi.fn() }, ...extra })
+  pm.byPersistKey.set('n1', 'sess-1')
+}
+
 beforeEach(() => {
   calls.length = 0
   script.answer = () => ({ stdout: '' })
+  ssh.path = '/usr/bin/ssh'
   vi.resetModules()
   initPlatform(fakePlatform())
 })
@@ -114,30 +124,80 @@ describe('sendPaneKeys', () => {
   })
 })
 
-describe('paneCommand / paneOwner for an unmounted SSH node', () => {
-  it('asks the host, not the local socket', async () => {
+describe('sendPaneKeys refusals', () => {
+  it.each([
+    ['session host', { sessionHost: true }],
+    ['native windows pane', { nativeWindowsPane: {} }],
+    ['not tmux-backed', { tmuxBacked: false }]
+  ])('refuses a live %s session', async (_n, extra) => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => null)
+    live(pm, extra)
+    await expect(pm.sendPaneKeys('n1', 'x')).resolves.toEqual({ ok: false, reason: 'unsupported-backend' })
+    expect(calls).toHaveLength(0)
+  })
+  it('refuses a Zellij node', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => null)
+    pm.zellijKeys.add('n1')
+    await expect(pm.sendPaneKeys('n1', 'x')).resolves.toEqual({ ok: false, reason: 'unsupported-backend' })
+    expect(calls).toHaveLength(0)
+  })
+  it('refuses with no-ssh when ssh is missing', async () => {
+    ssh.path = null
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => REMOTE_OWNER)
+    await expect(pm.sendPaneKeys('n1', 'x')).resolves.toEqual({ ok: false, reason: 'no-ssh' })
+    expect(calls).toHaveLength(0)
+  })
+  it('a live LOCAL session for an SSH-project node is not-connected, never the local socket', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => REMOTE_OWNER)
+    live(pm, {})
+    await expect(pm.sendPaneKeys('n1', 'x')).resolves.toEqual({ ok: false, reason: 'not-connected' })
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('paneCommand / paneOwner: legacy default vs resolveUnmounted', () => {
+  it('default: an unmounted SSH node is still asked on the LOCAL socket (pre-task behaviour)', async () => {
     const pm = await makeManager()
     pm.setRemoteNodeOwner(() => REMOTE_OWNER)
     script.answer = () => ({ stdout: 'zsh\n' })
     await expect(pm.paneCommand('n1')).resolves.toBe('zsh')
-    expect(calls[0].file).toMatch(/ssh$/)
+    expect(calls[0].file).toBe('/usr/bin/tmux')
   })
-  it('answers null when the owning project is disconnected', async () => {
-    const pm = await makeManager()
-    pm.setRemoteNodeOwner(() => ({ projectId: 'p', hostKey: 'u@h' }))
-    await expect(pm.paneCommand('n1')).resolves.toBeNull()
-    expect(calls).toHaveLength(0)
-  })
-  it('paneOwner: disconnected SSH project answers null without local tmux', async () => {
-    const pm = await makeManager()
-    pm.setRemoteNodeOwner(() => ({ projectId: 'p', hostKey: 'u@h' }))
-    await expect(pm.paneOwner('n1')).resolves.toBeNull()
-    expect(calls).toHaveLength(0)
-  })
-  it('paneOwner: connected SSH project asks the host', async () => {
+  it('default: paneOwner of an unmounted SSH node also stays local', async () => {
     const pm = await makeManager()
     pm.setRemoteNodeOwner(() => REMOTE_OWNER)
     await pm.paneOwner('n1')
+    expect(calls[0].file).toBe('/usr/bin/tmux')
+  })
+  it('resolveUnmounted: asks the host, not the local socket', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => REMOTE_OWNER)
+    script.answer = () => ({ stdout: 'zsh\n' })
+    await expect(pm.paneCommand('n1', { resolveUnmounted: true })).resolves.toBe('zsh')
     expect(calls[0].file).toMatch(/ssh$/)
+  })
+  it('resolveUnmounted: null when the owning project is disconnected', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => ({ projectId: 'p', hostKey: 'u@h' }))
+    await expect(pm.paneCommand('n1', { resolveUnmounted: true })).resolves.toBeNull()
+    await expect(pm.paneOwner('n1', { resolveUnmounted: true })).resolves.toBeNull()
+    expect(calls).toHaveLength(0)
+  })
+  it('resolveUnmounted: paneOwner connected asks the host', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => REMOTE_OWNER)
+    await pm.paneOwner('n1', { resolveUnmounted: true })
+    expect(calls[0].file).toMatch(/ssh$/)
+  })
+  it('resolveUnmounted: a live local session of an SSH-project node answers null', async () => {
+    const pm = await makeManager()
+    pm.setRemoteNodeOwner(() => REMOTE_OWNER)
+    live(pm, {})
+    await expect(pm.paneCommand('n1', { resolveUnmounted: true })).resolves.toBeNull()
+    expect(calls).toHaveLength(0)
   })
 })
