@@ -134,10 +134,14 @@ export interface KanbanViewProps {
   /**
    * The node's own rows for its card menu — the SAME builder the canvas node menu and the sessions
    * sidebar use (lib/nodeActionItems), narrowed by Canvas to `BOARD_NODE_ACTION_IDS`: stop agent
-   * control, color, icon, Share live link…, Switch Claude/Codex account. Optional: a board with no
-   * canvas behind it (a test, a future read-only view) shows none.
+   * control, color, icon, refresh terminal, Share live link…, restart, switch model, Switch
+   * Claude/Codex account, pause. Optional: a board with no canvas behind it (a test, a future
+   * read-only view) shows none.
    */
   nodeActionItems?: (nodeId: string) => MenuItem[]
+  /** The card modal's ⋯ session rows (same builder, narrowed to `BOARD_MODAL_ACTION_IDS`).
+   *  Optional: no ⋯ button without it. */
+  sessionActionItems?: (nodeId: string) => MenuItem[]
   /** "Name with AI" on a card (Canvas `aiNameSession`, the sessions sidebar's funnel). Optional. */
   onAiName?: (nodeId: string) => void
   /** Set a card's node color — the card modal's Color button. Optional: no button without it. */
@@ -241,7 +245,7 @@ function useCanvasCovered(): void {
 
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, onAiName, onSetColor, onAutoMoveFromPulls, issueAgentMenu,
+  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, sessionActionItems, onAiName, onSetColor, onAutoMoveFromPulls, issueAgentMenu,
   issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
@@ -1287,6 +1291,7 @@ export const KanbanView = memo(function KanbanView({
           onBrowserNav={(patch) => onBrowserNav(modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(modalNodeId, icon)}
           onSetColor={onSetColor ? (color) => onSetColor(modalNodeId, color) : undefined}
+          sessionActions={sessionActionItems ? () => sessionActionItems(modalNodeId) : undefined}
           onDelete={() => onDeleteNode(modalNodeId)}
           onAiName={onAiName ? () => onAiName(modalNodeId) : undefined}
           onOpenIssue={(ref) => {

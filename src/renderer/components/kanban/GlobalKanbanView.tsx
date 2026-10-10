@@ -87,6 +87,8 @@ interface SwimlaneProps {
    *  lane's project: a background lane gets its stored nodes, its own session source and its own
    *  write router, so nothing acts on the canvas of another project. */
   nodeActionItems?: (nodeId: string, projectId: string) => MenuItem[]
+  /** The card modal's ⋯ session rows (BOARD_MODAL_ACTION_IDS), asked for this lane's project. */
+  sessionActionItems?: (nodeId: string, projectId: string) => MenuItem[]
   /** "Name with AI" on a card of this lane. */
   onAiName?: (projectId: string, nodeId: string) => void
   /** Set a card's node color (the card modal's Color button), routed by the lane's project. */
@@ -94,7 +96,7 @@ interface SwimlaneProps {
 }
 
 const Swimlane = memo(function Swimlane({
-  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, onAiName, onSetColor
+  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor
 }: SwimlaneProps) {
   const dragRef = useRef<{ kind: 'column'; id: string } | { kind: 'card'; id: string } | null>(null)
   const setModalNodeId = useCallback(
@@ -354,6 +356,7 @@ const Swimlane = memo(function Swimlane({
           onBrowserNav={(patch) => onBrowserNav(projectId, modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(projectId, modalNodeId, icon)}
           onSetColor={onSetColor ? (color) => onSetColor(projectId, modalNodeId, color) : undefined}
+          sessionActions={sessionActionItems ? () => sessionActionItems(modalNodeId, projectId) : undefined}
           onDelete={() => onDeleteNode(projectId, modalNodeId)}
           onAiName={onAiName ? () => onAiName(projectId, modalNodeId) : undefined}
           team={teams.get(modalNodeId) ?? NO_STATIONS}
@@ -382,6 +385,9 @@ export interface GlobalKanbanViewProps {
   /** Canvas's node rows for a card (`boardNodeActionItems`), asked per lane's project.
    *  Optional: an overview with no canvas behind it offers none. */
   nodeActionItems?: (nodeId: string, projectId: string) => MenuItem[]
+  /** Canvas's card-modal ⋯ session rows (`boardSessionActionItems`), asked per lane's project.
+   *  Optional: no ⋯ button without it. */
+  sessionActionItems?: (nodeId: string, projectId: string) => MenuItem[]
   /** Canvas's "Name with AI" for a card of any lane (`aiNameFromKanban`). Optional. */
   onAiName?: (projectId: string, nodeId: string) => void
   /** Canvas's color write for a card of any lane (`setCardColor`, routed per project). Optional. */
@@ -392,7 +398,7 @@ export interface GlobalKanbanViewProps {
   onModalNodeChange?: (nodeId: string | null) => void
 }
 
-export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, nodeActionItems, onAiName, onSetColor }: GlobalKanbanViewProps) {
+export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, nodeActionItems, sessionActionItems, onAiName, onSetColor }: GlobalKanbanViewProps) {
   // Same rule as the per-project board: the canvas is covered but mounted underneath.
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
@@ -545,6 +551,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               liveTeams={isLive ? live.teams : undefined}
               highlight={highlightId === p.id}
               nodeActionItems={nodeActionItems}
+              sessionActionItems={sessionActionItems}
               onAiName={onAiName}
               onSetColor={onSetColor}
             />
