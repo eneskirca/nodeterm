@@ -127,6 +127,15 @@ describe('CardModal — session actions menu', () => {
     expect(actionsButton()).toBeNull()
   })
 
+  it('no button when the card has no session rows (empty or separator-only)', () => {
+    render({ sessionActions: () => [] })
+    expect(actionsButton()).toBeNull()
+    render({ sessionActions: () => [{ type: 'separator' }, { type: 'separator' }] })
+    expect(actionsButton()).toBeNull()
+    render({ sessionActions: () => [{ type: 'separator' }, { label: 'Pause', onClick: vi.fn() }] })
+    expect(actionsButton()).not.toBeNull()
+  })
+
   it('choosing a row closes the modal first and then runs the action once', () => {
     const order: string[] = []
     render({
@@ -151,10 +160,9 @@ describe('CardModal — session actions menu', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('builds the rows fresh on each open, and not while the menu is closed', () => {
+  it('builds the rows fresh on each open', () => {
     const sessionActions = vi.fn(() => [{ label: 'Restart agent', onClick: vi.fn() }])
     render({ sessionActions })
-    expect(sessionActions).not.toHaveBeenCalled()
     act(() => actionsButton()!.click())
     const afterFirst = sessionActions.mock.calls.length
     expect(afterFirst).toBeGreaterThan(0)

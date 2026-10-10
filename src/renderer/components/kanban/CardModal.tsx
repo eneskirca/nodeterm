@@ -206,6 +206,10 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   const panelOpen = useCardPanel((s) => s.open)
   const togglePanel = useCardPanel((s) => s.toggle)
   const isTerminal = session.kind === 'terminal'
+  // Built every render so the rows are always current. A card with no session rows (a plain shell,
+  // an agent we cannot quit and resume) gets NO button: an empty menu would be a dead click.
+  const sessionRows = isTerminal && sessionActions ? sessionActions() : []
+  const hasSessionRows = sessionRows.some((r) => r.type !== 'separator')
   const isBrowser = session.kind === 'browser'
 
   // ── The ⌘M view (board parity with the canvas node's markdown / chat face) ─────────────────
@@ -648,7 +652,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
               >
                 <IconBroadcast />
               </button>
-              {sessionActions && (
+              {hasSessionRows && (
                 <button
                   className="kanban-modal__action"
                   data-action="session-actions"
@@ -722,12 +726,12 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
             onClose={() => setColorMenu(null)}
           />
         )}
-        {actionsMenu && actionsMenuOpen && isTerminal && sessionActions && (
+        {actionsMenu && actionsMenuOpen && hasSessionRows && (
           <ContextMenu
             x={actionsMenu.x}
             y={actionsMenu.y}
             zIndex={65}
-            items={closeThen(sessionActions(), onClose)}
+            items={closeThen(sessionRows, onClose)}
             onClose={() => setActionsMenu(null)}
           />
         )}
