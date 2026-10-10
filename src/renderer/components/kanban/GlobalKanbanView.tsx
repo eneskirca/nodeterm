@@ -91,10 +91,13 @@ interface SwimlaneProps {
   onAiName?: (projectId: string, nodeId: string) => void
   /** Set a card's node color (the card modal's Color button), routed by the lane's project. */
   onSetColor?: (projectId: string, nodeId: string, color: string) => void
+  /** Start a card's held launch now (its QUEUED chip's ▶) — Canvas's `run` path, headless for a
+   *  background lane. */
+  onRunQueued?: (projectId: string, nodeId: string) => void
 }
 
 const Swimlane = memo(function Swimlane({
-  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, onAiName, onSetColor
+  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, onAiName, onSetColor, onRunQueued
 }: SwimlaneProps) {
   const dragRef = useRef<{ kind: 'column'; id: string } | { kind: 'card'; id: string } | null>(null)
   const setModalNodeId = useCallback(
@@ -118,6 +121,11 @@ const Swimlane = memo(function Swimlane({
       onOpenNode(nodeId, projectId)
     },
     [onOpenNode, projectId]
+  )
+  // Stable per lane, because SessionCard is memoized.
+  const runQueued = useMemo(
+    () => (onRunQueued ? (nodeId: string) => onRunQueued(projectId, nodeId) : undefined),
+    [onRunQueued, projectId]
   )
   const customAgents = useSettings((s) => s.settings.customAgents)
   const disabledAgents = useSettings((s) => s.settings.disabledAgents)
@@ -251,6 +259,7 @@ const Swimlane = memo(function Swimlane({
           liveLinkSource={liveLinkSource}
           ports={cardPorts}
           onOpenPort={openPort}
+          onRunQueued={runQueued}
         />
       ))
     }]
@@ -354,6 +363,7 @@ const Swimlane = memo(function Swimlane({
           onBrowserNav={(patch) => onBrowserNav(projectId, modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(projectId, modalNodeId, icon)}
           onSetColor={onSetColor ? (color) => onSetColor(projectId, modalNodeId, color) : undefined}
+          onRunQueued={runQueued ? () => runQueued(modalNodeId) : undefined}
           onDelete={() => onDeleteNode(projectId, modalNodeId)}
           onAiName={onAiName ? () => onAiName(projectId, modalNodeId) : undefined}
           team={teams.get(modalNodeId) ?? NO_STATIONS}
@@ -386,13 +396,16 @@ export interface GlobalKanbanViewProps {
   onAiName?: (projectId: string, nodeId: string) => void
   /** Canvas's color write for a card of any lane (`setCardColor`, routed per project). Optional. */
   onSetColor?: (projectId: string, nodeId: string, color: string) => void
+  /** Start a card's held launch now (its QUEUED chip's ▶) — Canvas's `run` path, headless for a
+   *  background lane. */
+  onRunQueued?: (projectId: string, nodeId: string) => void
   /** Canvas's `setKanbanModalNode` — the same hook the per-project board reports to. It is what
    *  makes an open card "watched" (Eco must not hibernate it), wakes a hibernated agent on open,
    *  and points the dictation shortcut at the card instead of the selected canvas node. */
   onModalNodeChange?: (nodeId: string | null) => void
 }
 
-export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, nodeActionItems, onAiName, onSetColor }: GlobalKanbanViewProps) {
+export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, onModalNodeChange, nodeActionItems, onAiName, onSetColor, onRunQueued }: GlobalKanbanViewProps) {
   // Same rule as the per-project board: the canvas is covered but mounted underneath.
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
@@ -547,6 +560,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               nodeActionItems={nodeActionItems}
               onAiName={onAiName}
               onSetColor={onSetColor}
+              onRunQueued={onRunQueued}
             />
           )
         })}

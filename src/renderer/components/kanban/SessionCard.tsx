@@ -22,6 +22,7 @@ import { TeamProgressChip } from '../TeamProgressChip'
 import type { TeamStation } from '../../lib/teamProgress'
 import { cardShowsOverdue, sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import { PortsChip } from '../PortsChip'
+import { QueuedLaunchChip } from './QueuedLaunchChip'
 
 const PRIO_COLOR = Object.fromEntries(PRIORITIES.map((p) => [p.id, p.color])) as Record<KanbanPriority, string>
 
@@ -61,11 +62,14 @@ interface SessionCardProps {
   ports?: { projectId: string; remote: boolean }
   /** A port row was picked: open it in a browser node beside the card's node (on the canvas). */
   onOpenPort?: (nodeId: string, url: string) => void
+  /** ▶ on the card's QUEUED chip: start the node's held launch now (Canvas's `run` path). Absent =
+   *  the chip shows without ▶ (a relay tab — the launch belongs to the host). */
+  onRunQueued?: (nodeId: string) => void
 }
 
 export const SessionCard = memo(function SessionCard({
   session, meta, labels = [], onOpen, onDragStart, onDragEnd, onDropAt, onContext, pulls,
-  pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, liveLinkSource, ports, onOpenPort
+  pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, liveLinkSource, ports, onOpenPort, onRunQueued
 }: SessionCardProps) {
   // THIS card's agent status, subscribed per card rather than threaded down from the board.
   // KanbanView used to hold `useAgentStatus((s) => s.byId)` and pass the map through the column:
@@ -166,6 +170,13 @@ export const SessionCard = memo(function SessionCard({
         )}
         {/* The canvas node header's Ports chip — one component, so the two views of a session
             cannot disagree. It stops its own clicks, so opening it never opens the card. */}
+        {session.kind === 'terminal' && session.pendingLaunch && (
+          <QueuedLaunchChip
+            nodeId={session.id}
+            pending={session.pendingLaunch}
+            onRun={onRunQueued ? () => onRunQueued(session.id) : undefined}
+          />
+        )}
         {session.kind === 'terminal' && ports && onOpenPort && (
           <PortsChip
             nodeId={session.id}

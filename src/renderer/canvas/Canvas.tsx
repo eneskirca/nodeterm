@@ -482,6 +482,7 @@ import { sameSshEndpoint, setKanbanPublishHook, setStoredCanvasPublishHook, useP
 import { useAgentStatus, recordsTurnInterrupt } from '../state/agentStatus'
 import { hostChatSend, hostChatSession, hostChatStatus } from '../lib/hostChatQuery'
 import { chatPaneRefusal } from '../lib/chatPaneGate'
+import { runQueuedNotice } from '../lib/boardRunQueued'
 import { useLaunchDelivery } from '../state/launchDelivery'
 import { useBrowserLease, drivingNodeIds } from '../state/browserLease'
 import { useTerminalFocus } from '../state/terminalFocus'
@@ -10423,6 +10424,34 @@ export function Canvas() {
     (nodeId: string, icon: NodeIcon | undefined) => nodeWritesFor(activeProjectId).setIcon(nodeId, icon),
     [nodeWritesFor, activeProjectId]
   )
+  // ▶ on a board card's QUEUED chip: the `run` verb's path (runQueuedNodeRef) — the mounted node's
+  // writer when the card's project is on the canvas, a headless start for a background Omni lane.
+  // A relay tab's launch belongs to the host (the canvas node's ▶ is disabled there too).
+  const runQueuedFromBoard = useCallback(
+    async (projectId: string, nodeId: string) => {
+      const project = useProjects.getState().getProject(projectId)
+      if (!project) return
+      const title =
+        (project.nodes.find((n) => n.id === nodeId)?.title ??
+          (nodesRef.current.find((n) => n.id === nodeId)?.data.title as string | undefined)) ||
+        nodeId
+      if (project.remote) {
+        setNotice({ kind: 'info', text: `"${title}" runs on the host — open the host to start it.` })
+        return
+      }
+      const notice = runQueuedNotice(await runQueuedNodeRef.current(project, nodeId), title)
+      if (notice) setNotice(notice)
+    },
+    []
+  )
+  const runActiveQueuedFromBoard = useCallback(
+    (nodeId: string) => void runQueuedFromBoard(activeProjectId, nodeId),
+    [runQueuedFromBoard, activeProjectId]
+  )
+  const runQueuedFromOmni = useCallback(
+    (projectId: string, nodeId: string) => void runQueuedFromBoard(projectId, nodeId),
+    [runQueuedFromBoard]
+  )
   // Stable identity for the memoized per-project board, which only ever shows the active project.
   const activeBoardNodeActionItems = useCallback(
     (nodeId: string): MenuItem[] => boardNodeActionItems(nodeId, activeProjectId),
@@ -18543,6 +18572,7 @@ export function Canvas() {
           nodeActionItems={boardNodeActionItems}
           onAiName={aiNameFromKanban}
           onSetColor={setCardColor}
+          onRunQueued={runQueuedFromOmni}
         />
       ) : perProjectKanbanOpen && (
         <KanbanView
@@ -18560,6 +18590,7 @@ export function Canvas() {
           nodeActionItems={activeBoardNodeActionItems}
           onAiName={aiNameFromActiveKanban}
           onSetColor={setActiveCardColor}
+          onRunQueued={runActiveQueuedFromBoard}
           onAutoMoveFromPulls={autoMoveCardFromPulls}
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
