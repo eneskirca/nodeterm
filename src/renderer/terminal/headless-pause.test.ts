@@ -36,10 +36,32 @@ describe('pauseNodeHeadless', () => {
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
     expect(d.markPaused).toHaveBeenCalled()
   })
-  it('refuses when the agent does not own the pane', async () => {
+  it('refuses when the pane owner is unreadable (null)', async () => {
     const d = deps({ paneOwner: vi.fn(async () => null) })
     await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('refuses when a shell, not the agent, owns the pane (not-in-this-pane)', async () => {
+    const d = deps({ paneOwner: vi.fn(async () => ({ ...OWNER, command: 'zsh', argv: ['zsh'] })) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('pre-exit paneOwner rejection is not-eligible, no keys', async () => {
+    const d = deps({ paneOwner: vi.fn(async () => { throw new Error('x') }) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('post-exit paneOwner rejection still marks paused with wake null', async () => {
+    let n = 0
+    const d = deps({ paneOwner: vi.fn(async () => { if (n++) throw new Error('x'); return OWNER as never }) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('paused')
+    expect(d.markPaused).toHaveBeenCalledWith('n1', { alreadyExited: false, wake: null })
+  })
+  it('a hung paneOwner does not hang the pause', async () => {
+    const d = deps({ paneOwner: vi.fn(() => new Promise(() => {})) })
+    await expect(
+      pauseNodeHeadless(T, false, d as never, { ...TIMING, ownerTimeoutMs: 10 })
+    ).resolves.toBe('not-eligible')
   })
   it('refuses a node whose CLI announced its exit, before any key', async () => {
     const d = deps({ status: vi.fn(() => ({ state: undefined, sessionId: SID, sessionEnded: true })) })
@@ -62,6 +84,13 @@ describe('pauseNodeHeadless', () => {
 })
 
 describe('runWithHostCap', () => {
+  it('a throwing item does not stop the others and the call resolves', async () => {
+    const seen: number[] = []
+    await expect(
+      runWithHostCap([1, 2, 3, 4], () => 'h', 2, async (i) => { if (i === 1) throw new Error('x'); seen.push(i) })
+    ).resolves.toBeUndefined()
+    expect(seen.sort()).toEqual([2, 3, 4])
+  })
   it('never runs more than cap per host at once', async () => {
     let live = 0, peak = 0
     await runWithHostCap(Array.from({ length: 10 }, (_, i) => i), () => 'h', 3, async () => {
