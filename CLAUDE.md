@@ -104,6 +104,18 @@ await, and the emulator's paste mode is checked again immediately before the syn
 the installed build (2026-09-14): with the `\r` in the same write as the paste, Codex rendered the
 whole envelope in its composer and never submitted it, so the delivery reported `stalled`; a
 separate Enter moments later sent it. A pane that never shows the envelope gets no Enter at all.
+**Both Windows owner reads get a longer budget than the 2 s `PANE_PROBE_TIMEOUT_MS`.** The session
+host's `messageOwnerV1` and `NativeWindowsPane.owner()` run the same PowerShell console/CIM probe
+(`readWindowsConsoleOwner`, its own child bounded at 4 s), measured at ~2.4 s on a loaded Windows 11
+machine — so under the 2 s bound every Windows target read `unknown` and refused as
+`targetPaneUnreadable`, permanently, behind an error that invites a retry. `PtyManager.
+paneProbeTimeoutMs` answers `WINDOWS_PANE_PROBE_TIMEOUT_MS` (8 s) for exactly the backends
+`paneOwner` routes to that probe, and both shells forward it as the optional
+`AgentMessagingDeps.paneProbeTimeoutMs` through ONE helper, `ptyPaneProbeDeps`, which binds the read
+and its budget together (an optional dep that is not forwarded fails silently). SSH and tmux keep 2 s: that bound exists because
+a lapsed ssh probe leaves a child alive that can turn into a full login against a dead master, a
+hazard a local `powershell.exe` does not have. The verdict rules are unchanged; only the deadline
+moves.
 An older live host refuses these unknown commands while keeping the v1/v2 terminal contract intact;
 never replace it automatically or fall back to name-only input to enable messaging. Windows OpenCode
 context exports go through `directExecutableInvocation` like every other app-owned subprocess (see

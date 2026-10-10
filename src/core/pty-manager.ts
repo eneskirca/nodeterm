@@ -99,6 +99,7 @@ import {
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
 import { binariesFor, isAgentPane, type PaneOwner } from '../shared/agents/pane-owner-predicate'
+import { PANE_PROBE_TIMEOUT_MS, WINDOWS_PANE_PROBE_TIMEOUT_MS } from './agents/pane-probe'
 import { readSpawnResources, spawnResourceNote } from './spawn-resources'
 import {
   primePtyCeiling,
@@ -6151,6 +6152,22 @@ export class PtyManager {
     }
   }
 
+  /**
+   * How long a `paneOwner` read for this node may take, for callers that bound it.
+   *
+   * The backend decides, because they differ by an order of magnitude: a tmux/ssh read is one or
+   * two round-trips, while both Windows backends shell out to PowerShell + CIM, measured at ~2.4 s
+   * on a loaded Windows 11 machine. Asks the same two questions `paneOwner` asks, in its order
+   * (a native pane first, then `sessionHostOwns`), so the budget and the backend that answers can
+   * never disagree. SSH and tmux keep `PANE_PROBE_TIMEOUT_MS`: that bound exists for ssh's sake.
+   */
+  paneProbeTimeoutMs(persistKey: string): number {
+    const live = this.liveSessionForPersistKey(persistKey)
+    if (this.isZellij(persistKey, live)) return PANE_PROBE_TIMEOUT_MS
+    return live?.nativeWindowsPane || (!live?.sshRemote && this.sessionHostOwns(persistKey, live))
+      ? WINDOWS_PANE_PROBE_TIMEOUT_MS
+      : PANE_PROBE_TIMEOUT_MS
+  }
 
   /**
    * WHO owns a node's pane right now, read from the kernel: the pane's pid and tty from tmux, then

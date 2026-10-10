@@ -472,3 +472,47 @@ describe('PtyManager.terminateForeground — identity gate', () => {
     expect(calls.some((c) => c.args.includes(PANE_OWNER_FMT))).toBe(false)
   })
 })
+
+describe('PtyManager.paneProbeTimeoutMs — the budget follows the backend that answers', () => {
+  // Both Windows backends read the pane through a PowerShell console/CIM probe (~2.4 s measured);
+  // tmux and ssh keep the 2 s bound that exists for ssh's sake. Asked in `paneOwner`'s own order.
+  type Mgr = {
+    sessions: Map<string, unknown>
+    byPersistKey: Map<string, string>
+    released: Map<string, unknown>
+    paneProbeTimeoutMs(id: string): number
+  }
+  beforeEach(() => {
+    vi.resetModules()
+    initPlatform(fakePlatform())
+  })
+  afterEach(() => resetPlatformForTests())
+
+  it('keeps 2 s for a local tmux pane and for an SSH pane', async () => {
+    const { PANE_PROBE_TIMEOUT_MS } = await import('./agents/pane-probe')
+    expect(((await manager()) as unknown as Mgr).paneProbeTimeoutMs(NODE)).toBe(PANE_PROBE_TIMEOUT_MS)
+    const ssh = (await manager({ sshRemote: { conn: {}, controlPath: '/tmp/cm' } })) as unknown as Mgr
+    expect(ssh.paneProbeTimeoutMs(NODE)).toBe(PANE_PROBE_TIMEOUT_MS)
+  })
+
+  it('gives an attached and a RELEASED session-host pane the Windows budget', async () => {
+    const { WINDOWS_PANE_PROBE_TIMEOUT_MS } = await import('./agents/pane-probe')
+    const mgr = (await manager()) as unknown as Mgr
+    mgr.sessions.clear()
+    mgr.sessions.set('host-session', { persistKey: NODE, indexKey: NODE, sessionHost: true })
+    mgr.byPersistKey.set(NODE, 'host-session')
+    expect(mgr.paneProbeTimeoutMs(NODE)).toBe(WINDOWS_PANE_PROBE_TIMEOUT_MS)
+    mgr.sessions.clear()
+    mgr.byPersistKey.clear()
+    mgr.released.set(NODE, { sessionId: 'host-session', remote: false, sessionHost: true })
+    expect(mgr.paneProbeTimeoutMs(NODE)).toBe(WINDOWS_PANE_PROBE_TIMEOUT_MS)
+  })
+
+  it('gives a non-persistent native Windows pane the Windows budget too — same probe', async () => {
+    const { WINDOWS_PANE_PROBE_TIMEOUT_MS } = await import('./agents/pane-probe')
+    const mgr = (await manager({ tmux: null })) as unknown as Mgr
+    mgr.sessions.set('plain-session', { indexKey: 'plain-node', nativeWindowsPane: {} })
+    mgr.byPersistKey.set('plain-node', 'plain-session')
+    expect(mgr.paneProbeTimeoutMs('plain-node')).toBe(WINDOWS_PANE_PROBE_TIMEOUT_MS)
+  })
+})
