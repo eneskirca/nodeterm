@@ -62,12 +62,30 @@ export function windowsHookWrapperFile(scriptFileName: string): string {
  * CRLF: batch files are line-oriented and cmd.exe is not reliably tolerant of LF, so this is CRLF
  * regardless of the host that generated it. `writer` names the agent in the bail comment only; the
  * codex wrapper's bytes are pinned by a test and must not move.
+ *
+ * `skipUnlessAnyEnv` (opt-in) drains and exits before locating a shell when NONE of the named
+ * variables is set — for a script whose own gate would do exactly that after starting one, so an
+ * agent run outside nodeterm costs one findstr per event instead of a Git launcher stub, a bash
+ * and a cat. `if not defined` reads an empty value as undefined, the same answer sh's `-z` gives.
+ * Anything that COULD be a nodeterm session still reaches the script, which stays the only place
+ * that decides what one is. Codex only: NEVER antigravity, whose hooks are synchronous gates where
+ * silence means "run the tool" — a drain there would change the decision (antigravity-decision.ts).
  */
-export function buildWindowsHookWrapper(scriptFileName: string, writer = 'the agent'): string {
+export function buildWindowsHookWrapper(
+  scriptFileName: string,
+  writer = 'the agent',
+  opts: { skipUnlessAnyEnv?: readonly string[] } = {}
+): string {
+  const skip = opts.skipUnlessAnyEnv ?? []
+  for (const name of skip) {
+    // Interpolated into a batch line: a plain identifier, never anything cmd.exe would parse.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`invalid env name: ${name}`)
+  }
   const lines = [
     '@echo off',
     'rem Managed by nodeterm (agent-hooks). Regenerated on every app launch; edits are lost.',
     'setlocal EnableExtensions',
+    ...(skip.length ? [`${skip.map((n) => `if not defined ${n} `).join('')}goto :nt_drain`] : []),
     `set "NT_SCRIPT=%~dp0${scriptFileName}"`,
     'if not exist "%NT_SCRIPT%" goto :nt_drain',
     'set "NT_SH="',

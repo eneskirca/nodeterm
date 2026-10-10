@@ -48,9 +48,26 @@ const TR_STRIP_SET = CURL_CONFIG_STRIP.map((c) =>
  *
  * `valueRef` is the sh expression holding the value, e.g. `$NODETERM_HOOK_TOKEN` — it is expanded
  * inside double quotes here, so it is never word-split or globbed.
+ *
+ * THE FAST PATH, and why it is not a second copy of the rule. The strip costs a command
+ * substitution plus a two-stage pipeline — three processes per header, nine per POST — and a hook
+ * fires on every tool call of every agent. On Windows each of those is an MSYS fork that the
+ * antivirus scans, and a handful of busy sessions was measured creating ~10 processes a second
+ * from this one function. So a value made ONLY of `[A-Za-z0-9._-]` skips the strip: none of the
+ * four stripped characters is in that alphabet, so stripping such a value is the identity, and
+ * that alphabet is exactly what every real value is drawn from (`kid.mac`, a UUID, an integer
+ * revision, or empty). Anything else — i.e. anything that COULD hold one of the four — still goes
+ * through the one `tr -d` below, unchanged. The gate only decides whether the rule can matter; it
+ * never restates it. (A locale that widens `A-Z` admits more letters, never a quote, a backslash
+ * or a line break.)
  */
 function headerLine(name: string, valueRef: string): string {
-  return `  printf 'header = "${name}: %s"\\n' "$(printf %s "${valueRef}" | tr -d '${TR_STRIP_SET}')"`
+  return [
+    `  case "${valueRef}" in`,
+    `    *[!A-Za-z0-9._-]*) printf 'header = "${name}: %s"\\n' "$(printf %s "${valueRef}" | tr -d '${TR_STRIP_SET}')" ;;`,
+    `    *) printf 'header = "${name}: %s"\\n' "${valueRef}" ;;`,
+    '  esac'
+  ].join('\n')
 }
 
 /**

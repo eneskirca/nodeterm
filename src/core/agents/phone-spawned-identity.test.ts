@@ -246,8 +246,10 @@ describe('a phone-spawned session presents its per-node token', () => {
         // byte-identical to a script that never had the line — while the generated sh stays valid
         // (deleting the assignment would leave an empty `if … then fi`, and a script that fails to
         // parse proves nothing about what a real old script sent).
-        .replace(/nt_node_token=\$\(head -n 1[^\n]*/, 'nt_node_token=""')
+        // The token read is a `read` redirect now (no `head` process); blank that line the same way.
+        .replace(/\{ IFS= read -r nt_node_token <[^\n]*/, 'nt_node_token=""')
         .replace(/nt_client_rev=\d+\n/, '')
+      expect(old).not.toContain('IFS= read -r nt_node_token')
       expect(old).not.toContain('nt_client_rev=')
       expect(old).not.toContain('$NODETERM_NODE_TOKEN_DIR/$NODETERM_NODE_ID')
       const script = writeScript('hook-5.sh', old)
