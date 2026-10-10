@@ -6,6 +6,11 @@ const t = (nodeId: string, agentId: string | undefined = 'claude', relay = false
 const SID = '11111111-2222-3333-4444-555555555555'
 
 describe('planBulkPause', () => {
+  it('a node whose CLI announced its exit is skipped as ended', () => {
+    const p = planBulkPause([t('a')], () => ({ state: undefined, sessionId: SID, sessionEnded: true }) as never)
+    expect(p.skip.map((x) => x.reason)).toEqual(['ended'])
+    expect(p.now).toHaveLength(0)
+  })
   it('idle done agent → now', () => {
     const p = planBulkPause([t('a')], () => ({ state: 'done', sessionId: SID }) as never)
     expect(p.now.map((x) => x.nodeId)).toEqual(['a'])

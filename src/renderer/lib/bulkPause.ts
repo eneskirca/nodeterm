@@ -5,7 +5,7 @@ import { canResumeWith } from '../../shared/agents/config'
 import type { AgentNodeStatus } from '../state/agentStatus'
 
 export type BulkPauseSkip =
-  | 'not-agent' | 'no-session-id' | 'not-resumable' | 'already-paused' | 'relay' | 'dropped'
+  | 'not-agent' | 'no-session-id' | 'not-resumable' | 'already-paused' | 'relay' | 'dropped' | 'ended'
 
 export interface BulkPauseTarget {
   nodeId: string
@@ -49,6 +49,8 @@ export function planBulkPause(
     // Already exited by Eco: nothing to type; the caller only marks it paused.
     if (st.hibernated) { plan.alreadyExited.push(target); continue }
     if (st.dropped) { skip('dropped'); continue }
+    // The CLI announced its exit: nothing to type an exit into (a shell owns the pane).
+    if (st.sessionEnded) { skip('ended'); continue }
     if (isBusyForPause(st)) plan.whenDone.push(target)
     else plan.now.push(target)
   }
