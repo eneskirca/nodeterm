@@ -95,6 +95,14 @@ export function buildCodexWindowsWrapper(): string {
     '@echo off',
     'rem Managed by nodeterm (agent-hooks). Regenerated on every app launch; edits are lost.',
     'setlocal EnableExtensions',
+    // The script's own gate, answered before paying for a shell. With neither variable the script
+    // can only do one thing — its thread-identity prelude needs CODEX_THREAD_ID, its gate needs
+    // NODETERM_NODE_ID, and without either it drains stdin and exits 0. That is exactly :nt_drain,
+    // so a codex the user runs OUTSIDE nodeterm costs one findstr per event instead of a Git
+    // launcher stub, a bash and a cat. `if not defined` reads an empty value as undefined, which
+    // is the same answer sh's `-z` gives. Anything that COULD be a nodeterm session still goes to
+    // the script, which stays the only place that decides what one is.
+    'if not defined NODETERM_NODE_ID if not defined CODEX_THREAD_ID goto :nt_drain',
     'set "NT_SCRIPT=%~dp0codex.sh"',
     'if not exist "%NT_SCRIPT%" goto :nt_drain',
     'set "NT_SH="',

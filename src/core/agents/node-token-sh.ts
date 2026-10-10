@@ -47,8 +47,8 @@
  *    already gave. It can never read as `forged` (that needs OUR kid over another node's mac, and
  *    the filename forbids it) and it can never read as a different node.
  *
- * So each candidate can turn `legacy` into `verified` and nothing else. The happy path costs
- * exactly one `head`, as before: only a miss walks.
+ * So each candidate can turn `legacy` into `verified` and nothing else. The happy path costs one
+ * file read by the shell's own `read` and no process at all: only a miss walks.
  *
  * NOT USED BY the codex launcher (`core/codex-identity-proxy.ts`), deliberately. That client
  * REFUSES outright when the endpoint file is unreadable (`nt_fail hook-endpoint-unavailable`) and
@@ -68,13 +68,16 @@
  * anchors to `$NODETERM_HOOK_ENDPOINT`.
  */
 export const NODE_TOKEN_READ_SH = [
-  '# `<dir of $1>/node-tokens`, or nothing when $1 names no directory. The endpoint file and the',
-  '# token dir are siblings on every surface we ship, so this needs no per-platform knowledge.',
+  '# Sets $nt_tdb_dir to `<dir of $1>/node-tokens`, or to nothing when $1 names no directory. The',
+  '# endpoint file and the token dir are siblings on every surface we ship, so this needs no',
+  '# per-platform knowledge. It SETS A VARIABLE rather than printing so the caller needs no command',
+  '# substitution: this runs on every hook event, and a subshell there is a whole process.',
   'nt_token_dir_beside() {',
+  '  nt_tdb_dir=""',
   '  case "$1" in */*) ;; *) return 0 ;; esac',
   '  nt_tdb=${1%/*}',
   '  [ -n "$nt_tdb" ] || return 0',
-  "  printf '%s/node-tokens' \"$nt_tdb\"",
+  '  nt_tdb_dir="$nt_tdb/node-tokens"',
   '}',
   '# nt_read_node_token [endpoint-file] — sets $nt_node_token. See node-token-sh.ts for why the',
   '# fallbacks below can only ever turn `legacy` into `verified`, and never anything into anything',
@@ -85,15 +88,30 @@ export const NODE_TOKEN_READ_SH = [
   '  [ -n "$NODETERM_NODE_ID" ] || return 0',
   '  nt_ntep="$1"',
   '  [ -n "$nt_ntep" ] || nt_ntep="$NODETERM_HOOK_ENDPOINT"',
+  '  nt_token_dir_beside "$nt_ntep"',
   '  for nt_ntd in \\',
   '    "$NODETERM_NODE_TOKEN_DIR" \\',
-  '    "$(nt_token_dir_beside "$nt_ntep")" \\',
+  '    "$nt_tdb_dir" \\',
   '    "$HOME/.nodeterm/node-tokens" \\',
   '    "$HOME/.nodeterm-server/node-tokens" \\',
   '    "$HOME/.config/node-terminal/node-tokens" \\',
   '    "$HOME/Library/Application Support/node-terminal/node-tokens"; do',
   '    [ -n "$nt_ntd" ] || continue',
-  '    nt_node_token=$(head -n 1 "$nt_ntd/$NODETERM_NODE_ID" 2>/dev/null) || nt_node_token=""',
+  '    # The first line, read by the shell itself: what `head -n 1` in a command substitution gave,',
+  '    # without the process. `read` answers non-zero at EOF, which is also what an unterminated',
+  '    # last line looks like — and it has ALREADY assigned that line by then, so the status is',
+  '    # ignored and only an unopenable file (the redirection fails, nothing is assigned) stays',
+  '    # empty. The braces are what put a missing file\'s "cannot open" behind 2>/dev/null.',
+  '    nt_node_token=""',
+  '    { IFS= read -r nt_node_token < "$nt_ntd/$NODETERM_NODE_ID"; } 2>/dev/null || :',
+  '    # A CRLF token file. Git for Windows\' bash drops the CR inside a command substitution, so the',
+  '    # `head` form read such a file clean there; `read` keeps it. Drop one trailing CR so the two',
+  '    # agree. It costs a process ONLY when the value really ends in a control character — never',
+  '    # for a token we wrote — and the wire was never at risk either way: the header emitter',
+  '    # strips CR from anything outside the token alphabet.',
+  '    case "$nt_node_token" in',
+  '      *[[:cntrl:]]) nt_cr=$(printf \'\\r\'); nt_node_token=${nt_node_token%"$nt_cr"} ;;',
+  '    esac',
   '    [ -n "$nt_node_token" ] && return 0',
   '  done',
   '  nt_node_token=""',
