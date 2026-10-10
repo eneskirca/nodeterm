@@ -37,6 +37,32 @@
 export const PANE_PROBE_TIMEOUT_MS = 2000
 
 /**
+ * The budget for a pane read on Windows, where there is no tmux and no ssh: both Windows backends
+ * read the pane through the same PowerShell console/CIM probe (`readWindowsConsoleOwner`, which
+ * bounds its own child at 4 s) — the session host to answer `messageOwnerV1` for a persistent
+ * pane, and `NativeWindowsPane.owner()` for a non-persistent one.
+ *
+ * MEASURED on Windows 11 (26200), on a loaded machine: `powershell.exe -NoProfile` +
+ * `Get-CimInstance Win32_Process` costs ~2.4s, of which ~1.4s is PowerShell STARTUP alone. Under
+ * `PANE_PROBE_TIMEOUT_MS` (2s) that read can never answer, so every Windows pane read `unknown` and
+ * every agent-to-agent delivery refused as `targetPaneUnreadable` — a permanent failure wearing a
+ * transient error's clothes. This budget must stay ABOVE the probe's own 4 s child timeout plus
+ * the host IPC hop, or the outer bound fires first and discards an answer that was on its way.
+ *
+ * Larger is SAFE here in a way it would not be on the ssh leg, and the difference is the whole
+ * reason this is a separate constant rather than a bigger `PANE_PROBE_TIMEOUT_MS`:
+ *  - The hazard the 2s bound protects against is ssh-specific — a lapsed probe leaves its `ssh`
+ *    child alive to `runAsync`'s 15s reap, and with `ControlMaster=auto` against a dead master each
+ *    of those is a full LOGIN (the 72k-logins shape). There is no ssh here: the child is one local
+ *    `powershell.exe` that exits on its own.
+ *  - Waiting longer cannot admit anything extra. The verdict is unchanged; only the deadline moves.
+ * The cost is latency on a refusal: a delivery to a pane that genuinely cannot be read now takes
+ * this long to say so, twice. Agent-to-agent messaging is not a hot path, and the per-pair rate
+ * limiter still sits in front of it.
+ */
+export const WINDOWS_PANE_PROBE_TIMEOUT_MS = 8000
+
+/**
  * Run `fn`, but never wait longer than `timeoutMs`.
  *
  * Null on lapse AND on throw, because from the gate's point of view they are the same fact: we

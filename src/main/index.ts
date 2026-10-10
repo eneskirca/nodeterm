@@ -81,6 +81,7 @@ import {
   isDeliverRequest,
   messagingEnabledVia,
   onMessagingAgentEvent,
+  ptyPaneProbeDeps,
   setDeliveryQueue,
   type AgentMessagingDeps
 } from '../core/agents/agent-messaging'
@@ -2150,7 +2151,7 @@ app.whenReady().then(async () => {
   // here; everything that authorizes or performs the delivery reads MAIN's stores. See
   // src/core/agents/agent-messaging.ts for the whole map.
   const messagingDeps: AgentMessagingDeps = {
-    paneOwner: (id) => ptyManager.paneOwner(id),
+    ...ptyPaneProbeDeps(ptyManager),
     sendEnvelope: (id, envelope, expected) => ptyManager.sendEnvelope(id, envelope, expected),
     envelopePasteReady: (id) => ptyManager.envelopePasteReady(id),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.

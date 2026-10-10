@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { PANE_PROBE_TIMEOUT_MS } from './pane-probe'
 import {
   awaitReceipt,
   deliverAgentMessage,
@@ -57,6 +58,9 @@ function recorder(over: Partial<DeliveryDeps> = {}, entry: MirrorEntry | undefin
     locked: false,
     emit: (e) => listeners.forEach((l) => l(e)),
     deps: {
+      // Declared because `deliverAgentMessage` reads it (optionally) on every delivery — the G5
+      // proxy below treats an undeclared read as a failure, which is how a new dep is caught.
+      paneProbeTimeoutMs: () => PANE_PROBE_TIMEOUT_MS,
       paneOwner: async (id) => {
         order.push(`paneOwner:${id}`)
         return claudePane
@@ -582,5 +586,38 @@ describe('deliverAgentMessage — outcomes carry the receipt and the trace', () 
     const r = recorder({ trace: async () => ({ traceId: 'tr', traced: 'memory' }) })
     const out = await deliverWithReceipt(r)
     expect(out).toMatchObject({ kind: 'delivered', traced: 'memory' })
+  })
+})
+
+describe('deliverAgentMessage — the per-target pane-read budget (paneProbeTimeoutMs)', () => {
+  // A Windows pane read (PowerShell console/CIM probe) was measured at ~2.4 s. The 2 s default
+  // abandons it; the backend-chosen budget must reach BOTH the pre-write and the post-write probe.
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+  const slowPane = (ms: number) => async (): Promise<typeof claudePane> => {
+    await new Promise((r) => setTimeout(r, ms))
+    return claudePane
+  }
+
+  it('without the dep, a 3 s read is abandoned at the 2 s default — exactly as before', async () => {
+    const r = recorder({ paneProbeTimeoutMs: undefined, paneOwner: slowPane(3000) })
+    const p = deliverAgentMessage(req(), r.deps)
+    await vi.advanceTimersByTimeAsync(PANE_PROBE_TIMEOUT_MS)
+    await expect(p).resolves.toEqual({ kind: 'targetPaneUnreadable' })
+    expect(r.sends).toEqual([])
+  })
+
+  it('with an 8 s budget a 3 s read answers on both probes, so the write is neither refused nor called replaced', async () => {
+    const r = recorder({ paneProbeTimeoutMs: () => 8000, paneOwner: slowPane(3000) })
+    const p = deliverAgentMessage(req(), r.deps)
+    await vi.advanceTimersByTimeAsync(3000) // the pre-write probe answers
+    expect(r.sends).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(3000) // the post-write probe answers
+    r.emit({ nodeId: 'n-dst', newTurn: true, verified: true })
+    await vi.advanceTimersByTimeAsync(0)
+    const out = await p
+    expect(out.kind).not.toBe('targetPaneUnreadable')
+    // A lapsed second probe reads as "a different pane" — that is what this budget must prevent.
+    expect(out.kind).not.toBe('deliveredToReplacedTarget')
   })
 })
