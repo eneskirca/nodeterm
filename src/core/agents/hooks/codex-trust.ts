@@ -303,13 +303,17 @@ function upsertTrustBlock(content: string, key: string, hash: string): string {
   return deduped + content.slice(cursor)
 }
 
-// Why: Codex emits the canonical form with the key double-quoted; we never
-// share this slot with another tool, so we don't bother accepting bare
-// dotted-key variants. The caller applies this only to complete physical lines
-// outside TOML multi-line strings.
+// Why: we write the key as a basic string, but Codex's /hooks flow writes it as
+// a literal string ([hooks.state.'C:\x\hooks.json:stop:0:0']). Both spell the
+// same TOML key, so missing the literal form made us append a second table and
+// Codex rejected config.toml with a duplicate-key error. We don't bother
+// accepting bare dotted-key variants. The caller applies this only to complete
+// physical lines outside TOML multi-line strings.
 function buildHeaderLinePattern(key: string): RegExp {
-  const escapedKey = escapeRegex(escapeTomlString(key))
-  return new RegExp(`^[ \\t]*\\[hooks\\.state\\."${escapedKey}"\\][ \\t]*(?:#[^\\r\\n]*)?$`)
+  const basicKey = `"${escapeRegex(escapeTomlString(key))}"`
+  // Literal strings cannot contain `'` or line breaks, so such keys have no literal form.
+  const keyForms = /['\r\n]/.test(key) ? basicKey : `(?:${basicKey}|'${escapeRegex(key)}')`
+  return new RegExp(`^[ \\t]*\\[hooks\\.state\\.${keyForms}\\][ \\t]*(?:#[^\\r\\n]*)?$`)
 }
 
 type TrustBlockRange = {
@@ -588,7 +592,9 @@ export function readHookTrustEntries(configPath: string): Map<string, CodexHookT
   // `'''...'''` multi-line string isn't mistaken for a real header.
   // Why: accept an optional `# inline comment` after `]` — TOML permits it,
   // and rejecting hides a real entry, making getStatus misreport trustMissing.
-  const headerLineRegex = /^[ \t]*\[hooks\.state\."((?:[^"\\]|\\.)*)"\][ \t]*(?:#[^\r\n]*)?$/
+  // Why: also accept the literal-string key form Codex's /hooks flow writes.
+  const headerLineRegex =
+    /^[ \t]*\[hooks\.state\.(?:"((?:[^"\\]|\\.)*)"|'([^'\r\n]*)')\][ \t]*(?:#[^\r\n]*)?$/
   let cursor = 0
   let multilineState: TomlMultilineState = { basic: false, literal: false }
   while (cursor < content.length) {
@@ -601,8 +607,8 @@ export function readHookTrustEntries(configPath: string): Map<string, CodexHookT
       ? null
       : headerLineRegex.exec(line)
     if (headerMatch) {
-      const escapedKey = headerMatch[1]
-      const key = unescapeTomlString(escapedKey)
+      const key =
+        headerMatch[1] !== undefined ? unescapeTomlString(headerMatch[1]) : headerMatch[2]
       // Why: block ends at the next *real* header (multi-line aware).
       const after = content.slice(nextCursor)
       const nextHeaderRel = findNextTableHeader(after)

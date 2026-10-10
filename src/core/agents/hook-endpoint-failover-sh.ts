@@ -157,7 +157,11 @@ export const OWNED_ENDPOINT_FALLBACK_SH = `
 # neither names an existing directory: the unknown-owner case. Never the global dirs (see above).
 nt_token_dir_of() {
   nt_otd="$NODETERM_NODE_TOKEN_DIR"
-  [ -n "$nt_otd" ] || nt_otd=$(nt_token_dir_beside "$1")
+  # nt_token_dir_beside SETS $nt_tdb_dir (no subshell on the per-event path); it prints nothing.
+  if [ -z "$nt_otd" ]; then
+    nt_token_dir_beside "$1"
+    nt_otd="$nt_tdb_dir"
+  fi
   [ -n "$nt_otd" ] && [ -d "$nt_otd" ] || return 1
   (cd "$nt_otd" 2>/dev/null && pwd -P)
 }

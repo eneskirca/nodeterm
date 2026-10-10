@@ -7,7 +7,7 @@
  * node it belongs to, and the node's badge/status would simply never move. This recovers the node
  * binding from the thread id.
  *
- * The mapping file is parsed as DATA (`sed`), never sourced as shell code, and both recovered
+ * The mapping file is parsed as DATA (a `read` loop — no process per field), never sourced as shell code, and both recovered
  * fields are re-validated before they are exported. The record itself is HMAC-signed by
  * `codex-identity-proxy.ts`; this prelude cannot verify that signature (no key in an agent's
  * shell), which is why the charset re-validation below is not redundant.
@@ -75,17 +75,41 @@ if [ -z "\${NODETERM_NODE_ID-}" ] && [ -n "\${CODEX_THREAD_ID-}" ]; then
       # ('' = system).
       nt_codex_try() {
         [ -r "$1" ] || return 0
-        nt_a=$(sed -n 's/^accountId=//p' "$1" | head -n 1)
+        # ONE PASS, by the shell itself. This used to be five \`sed | head\` command substitutions —
+        # fifteen processes per record, on every hook event of every tool shell — and it is the
+        # same read: the FIRST line that starts with each key wins (what \`head -n 1\` took, and what
+        # \`codex-identity-proxy.ts\` matches on the TypeScript side), the value is everything after
+        # the first \`=\`, and a record whose last line has no newline still counts (\`read\` answers
+        # non-zero there but has already assigned the line, hence the \`|| [ -n … ]\`). \`IFS=\` and
+        # \`-r\` keep the value byte-for-byte: no trimming, no backslash processing. Still DATA, never
+        # sourced. The \`nt_s*\` flags are what make "first" mean first even for an empty value.
+        nt_a='' nt_n='' nt_e='' nt_g='' nt_c=''
+        nt_sa='' nt_sn='' nt_se='' nt_sg='' nt_sc=''
+        while IFS= read -r nt_l || [ -n "$nt_l" ]; do
+          # A CRLF record. Git for Windows' \`sed\` reads in text mode and dropped the CR, so the old
+          # pipeline resolved such a record on Windows; \`read\` keeps it and every charset check
+          # below would then refuse the value. Drop ONE trailing CR to keep that working. (On
+          # Linux/macOS the old \`sed\` kept the CR and the record was refused, so this is the one
+          # place the rewrite is more lenient — harmlessly: the values are validated AFTER the
+          # strip, exactly as before.) The \`printf\` costs a process only for a line that really
+          # ends in a control character, which no record we write does.
+          case "$nt_l" in
+            *[[:cntrl:]]) nt_cr=$(printf '\\r'); nt_l=\${nt_l%"$nt_cr"} ;;
+          esac
+          case "$nt_l" in
+            accountId=*) [ -n "$nt_sa" ] || { nt_a=\${nt_l#accountId=}; nt_sa=1; } ;;
+            nodeId=*) [ -n "$nt_sn" ] || { nt_n=\${nt_l#nodeId=}; nt_sn=1; } ;;
+            endpoint=*) [ -n "$nt_se" ] || { nt_e=\${nt_l#endpoint=}; nt_se=1; } ;;
+            agentId=*) [ -n "$nt_sg" ] || { nt_g=\${nt_l#agentId=}; nt_sg=1; } ;;
+            canvasControl=*) [ -n "$nt_sc" ] || { nt_c=\${nt_l#canvasControl=}; nt_sc=1; } ;;
+          esac
+        done < "$1" 2>/dev/null
         # The record's own account line must AGREE with the directory it was found in. A system
         # record's line is empty or the reserved word 'system'; a managed record's line is its id.
         case "$2" in
           '') case "$nt_a" in ''|system) ;; *) return 0 ;; esac ;;
           *) [ "$nt_a" = "$2" ] || return 0 ;;
         esac
-        nt_n=$(sed -n 's/^nodeId=//p' "$1" | head -n 1)
-        nt_e=$(sed -n 's/^endpoint=//p' "$1" | head -n 1)
-        nt_g=$(sed -n 's/^agentId=//p' "$1" | head -n 1)
-        nt_c=$(sed -n 's/^canvasControl=//p' "$1" | head -n 1)
         case "$nt_n" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
         case "$nt_e" in /*) ;; *) return 0 ;; esac
         # SPACES ARE ADMITTED DELIBERATELY, and this line is the reason to say so. The endpoint is
@@ -96,7 +120,11 @@ if [ -z "\${NODETERM_NODE_ID-}" ] && [ -n "\${CODEX_THREAD_ID-}" ]; then
         # socket it names then reaches curl --unix-socket "$NODETERM_HOOK_SOCK" — every expansion
         # inside double quotes, so a space cannot split into extra arguments. The charset is what
         # keeps quoting and command substitution out; the leading slash above keeps it absolute.
-        [ "$(printf %s "$nt_e" | tr -cd 'A-Za-z0-9._/ -')" = "$nt_e" ] || return 0
+        # The same alphabet as a negated \`case\` class — the idiom the node id and the agent id use
+        # two lines away — instead of a \`tr -cd\` round-trip compared with the original: identical
+        # verdict, no command substitution and no pipeline. The space is the one character that
+        # needs quoting inside the class.
+        case "$nt_e" in *[!A-Za-z0-9._/\\ -]*) return 0 ;; esac
         # A PRE-AGENT record (no agentId line, or an empty one) means codex with canvas control:
         # every record written before the agent fields existed was written by this same Codex
         # spine, and codex is unconditionally canvas-control-capable, so the implied pair

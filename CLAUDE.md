@@ -104,6 +104,18 @@ await, and the emulator's paste mode is checked again immediately before the syn
 the installed build (2026-09-14): with the `\r` in the same write as the paste, Codex rendered the
 whole envelope in its composer and never submitted it, so the delivery reported `stalled`; a
 separate Enter moments later sent it. A pane that never shows the envelope gets no Enter at all.
+**Both Windows owner reads get a longer budget than the 2 s `PANE_PROBE_TIMEOUT_MS`.** The session
+host's `messageOwnerV1` and `NativeWindowsPane.owner()` run the same PowerShell console/CIM probe
+(`readWindowsConsoleOwner`, its own child bounded at 4 s), measured at ~2.4 s on a loaded Windows 11
+machine — so under the 2 s bound every Windows target read `unknown` and refused as
+`targetPaneUnreadable`, permanently, behind an error that invites a retry. `PtyManager.
+paneProbeTimeoutMs` answers `WINDOWS_PANE_PROBE_TIMEOUT_MS` (8 s) for exactly the backends
+`paneOwner` routes to that probe, and both shells forward it as the optional
+`AgentMessagingDeps.paneProbeTimeoutMs` through ONE helper, `ptyPaneProbeDeps`, which binds the read
+and its budget together (an optional dep that is not forwarded fails silently). SSH and tmux keep 2 s: that bound exists because
+a lapsed ssh probe leaves a child alive that can turn into a full login against a dead master, a
+hazard a local `powershell.exe` does not have. The verdict rules are unchanged; only the deadline
+moves.
 An older live host refuses these unknown commands while keeping the v1/v2 terminal contract intact;
 never replace it automatically or fall back to name-only input to enable messaging. Windows OpenCode
 context exports go through `directExecutableInvocation` like every other app-owned subprocess (see
@@ -1036,6 +1048,13 @@ unreachable there by construction; a Linux host is expected to have its own. Und
 `electron-vite dev` the last candidate resolves against `process.cwd()`, which is where
 `scripts/build-tmux.mjs` writes its artifact. If tmux is unavailable from all three,
 `PtyManager` still falls back to a plain shell; `TMUX`/`TMUX_PANE` are stripped from the child env to avoid nesting refusal.
+The same strip, one layer up, applies to a LAUNCHER that was itself an agent session: started from a
+Claude Code terminal, the app used to hand `CLAUDE_CODE_CHILD_SESSION` and its siblings to every pane,
+and the Claude CLI there then turned transcript saving off (no ⌘M view, no context meter, nothing for
+`--resume`). `buildPtyEnv` deletes the explicit, measured `NESTED_AGENT_ENV_STRIP` list
+(`core/nested-agent-env.ts`) and `ACCOUNT_SCOPE_UPDATE_ENV` lists the same names, so a tmux server
+seeded from such an environment does not hand them back (the #419 mechanism). Explicit names, never a
+`CLAUDE*` prefix sweep: `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are how a managed account is selected.
 
 **A session-host session follows its most recently ACTIVE viewer, like tmux's `window-size
 latest`** (issue #914). Under tmux a relay-mirrored phone is its own tmux client, so dismissing its
