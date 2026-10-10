@@ -1522,6 +1522,23 @@ clamp** (`src/shared/scrollback.ts`, re-clamped inside the host for older client
 session) where tmux stores only used cells, and nothing above the renderer's cap is ever shown.
 tmux's `history-limit` keeps the raw value.
 
+### Character widths — one table for every emulator (`@shared/terminal-width`)
+
+Every xterm in the stack sizes characters through `activateTerminalWidths`: the renderer's
+terminals (`renderer/terminal/unicode-width.ts`, which explains the move off Unicode 6) and the
+Windows session host's headless emulator, which is what a reattaching viewer is repainted from.
+The table is Unicode 11 plus one rule xterm's tables lack: **a one-cell emoji followed by VS16
+(U+FE0F) is two cells**, as are the keycap sequences (`1️⃣`). The program writing to the pane
+(`string-width` in every Node agent CLI) and tmux (`variation-selector-always-wide`, on by default)
+both count those pairs as two cells; xterm counted one, and every repaint by absolute position after
+such a character landed a column short and left stale text behind. Measured with claude-hud's
+`⏱️` status line, which read `113` for `11%` and `2h 327` for `2h 32m`. VS15 is deliberately left
+alone (`string-width` sizes `⭐︎` by its base, as xterm already does), and so is an ASCII base
+with VS16 alone (`1️` is not an RGI emoji) and the unqualified keycap `1⃣` (one cell, as tmux sizes
+it; some `string-width` releases say two). Known xterm limitation: in insert mode (IRM) a widened
+join overwrites the next cell instead of shifting the line. Agreement is the goal, not a particular
+number: change the table in that one module, never in one emulator.
+
 ## Terminal node lifecycle (gotchas)
 
 `src/renderer/nodes/TerminalNode.tsx` is the trickiest file:
