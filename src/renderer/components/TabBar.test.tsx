@@ -533,3 +533,130 @@ describe('TabBar location tooltip', () => {
     expect(tooltip()).toBeNull()
   })
 })
+
+describe('TabBar caret menu — "Agents may, without asking" (per-project confirm waivers)', () => {
+  let root: Root
+  let host: HTMLElement
+  let useSettings: typeof import('../state/settings').useSettings
+
+  const menuButton = (label: string): HTMLButtonElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>('.tab-menu button')).find((b) =>
+      // A group row's text carries its ▸ caret, an item row's a leading ✓ — match the label.
+      (b.textContent ?? '').replace('▸', '').trim().endsWith(label)
+    )
+  const waivers = (): unknown => useSettings.getState().settings.controlConfirmWaivers
+
+  async function mount(over: Partial<Project> = {}, seed?: unknown): Promise<void> {
+    const { TabBar, useProjects } = await load()
+    useSettings = (await import('../state/settings')).useSettings
+    // update() schedules a coalesced save through the bridge; give it somewhere to land.
+    ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = {
+      settings: { save: vi.fn(async () => undefined) }
+    }
+    useSettings.setState((s) => ({
+      settings: { ...s.settings, controlConfirmWaivers: seed as never }
+    }))
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    useProjects.setState({ projects: [project(over)], activeProjectId: 'p1' })
+    root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <TabBar
+          onSwitch={vi.fn()}
+          onReconnect={vi.fn()}
+          onReorder={vi.fn()}
+          onOpenWelcome={vi.fn()}
+          onRename={vi.fn()}
+          onSetFolder={vi.fn()}
+          onCloseProject={vi.fn()}
+          onRemoteAccess={vi.fn()}
+          onSetDefaultAccount={vi.fn()}
+          onSetDefaultPermissionMode={vi.fn()}
+          onOpenProjectSettings={vi.fn()}
+        />
+      )
+    })
+    await click(host.querySelector<HTMLButtonElement>('.tab__caret')!)
+  }
+
+  afterEach(() => {
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('asks by default: every row is unchecked until the user opts in', async () => {
+    await mount()
+    await click(menuButton('Agents may, without asking')!)
+    for (const label of ['Close nodes', 'Type into terminals', 'Open or add projects']) {
+      const row = menuButton(label)
+      expect(row, label).toBeDefined()
+      expect(row!.querySelector('.tab-menu__check')!.textContent).toBe('')
+    }
+  })
+
+  it('waives close for THIS project only, machine-locally, and turns it back off', async () => {
+    await mount()
+    await click(menuButton('Agents may, without asking')!)
+    await click(menuButton('Close nodes')!)
+    // The same settings.json map the dialog's "Don't ask again for agents in …" writes.
+    expect(waivers()).toEqual({ projects: { p1: ['close'] } })
+    // The menu stays open so several rows can be set in one visit, and the row shows its state.
+    expect(menuButton('Close nodes')!.querySelector('.tab-menu__check')!.textContent).toBe('✓')
+    expect(menuButton('Type into terminals')!.querySelector('.tab-menu__check')!.textContent).toBe('')
+    await click(menuButton('Close nodes')!)
+    expect(waivers()).toEqual({})
+  })
+
+  it('shows a machine-wide waiver as on, but sends the user to Settings to change it', async () => {
+    await mount({}, { always: ['close'] })
+    await click(menuButton('Agents may, without asking')!)
+    const row = menuButton('Close nodes')!
+    expect(row.disabled).toBe(true)
+    expect(row.title).toContain('Settings → Agents')
+    expect(row.querySelector('.tab-menu__check')!.textContent).toBe('✓')
+  })
+
+  it('offers nothing on a relay tab — that machine owns its agents’ confirms', async () => {
+    await mount({ remote: { peerId: 'x' } as never })
+    expect(menuButton('Agents may, without asking')).toBeUndefined()
+  })
+
+  it('offers nothing in the browser Server Edition, where these waivers gate nothing', async () => {
+    ;(await import('../bridge/runtime')).markBrowserRuntime()
+    await mount()
+    expect(menuButton('Agents may, without asking')).toBeUndefined()
+  })
+
+  it('shows an app-run waiver as in effect and never promises a dialog it would not raise', async () => {
+    await mount()
+    const { useControlConfirm } = await import('../state/controlConfirm')
+    await act(async () => useControlConfirm.getState().waiveForSession('close'))
+    await click(menuButton('Agents may, without asking')!)
+    const row = menuButton('Close nodes')!
+    expect(row.querySelector('.tab-menu__check')!.textContent).toBe('✓')
+    expect(row.disabled).toBe(true)
+    expect(row.title).toContain('until nodeterm quits')
+    expect(row.title).not.toContain('ask you first')
+  })
+
+  it('under global Bypass, removing the project grant says the dialog still will not come', async () => {
+    await mount({}, { projects: { p1: ['close'] }, bypassMode: true })
+    await act(async () =>
+      useSettings.setState((s) => ({
+        settings: { ...s.settings, claudePermissionMode: 'bypassPermissions' }
+      }))
+    )
+    await click(menuButton('Agents may, without asking')!)
+    const row = menuButton('Close nodes')!
+    expect(row.disabled).toBe(false)
+    expect(row.title).toContain('Bypass')
+    expect(row.title).not.toContain('Click to ask again')
+    await click(row)
+    // The project grant is gone, the gate still skips — and the row says why.
+    expect(waivers()).toEqual({ bypassMode: true })
+    const after = menuButton('Close nodes')!
+    expect(after.querySelector('.tab-menu__check')!.textContent).toBe('✓')
+    expect(after.disabled).toBe(true)
+  })
+})

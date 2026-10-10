@@ -1,8 +1,9 @@
 import {
   decideControlConfirm,
   isWaivableVerb,
-  pruneControlConfirmWaivers,
+  projectWaiverState,
   sanitizeControlConfirmWaivers,
+  withProjectWaiver,
   type ControlConfirmDecision,
   type ControlConfirmWaivers
 } from '@shared/control-confirm'
@@ -66,8 +67,8 @@ export function controlConfirmDecision(
  * `live` is every project the store holds, closed ones included — a closed project is parked, not
  * gone.
  *
- * The id being GRANTED survives the prune because the merge below happens after it, not because
- * of any exemption inside it — which matters for a project that went away between the dialog
+ * The id being GRANTED survives the prune because `withProjectWaiver` merges after pruning, not
+ * because of any exemption inside it — which matters for a project that went away between the dialog
  * appearing and the user answering it: their answer is still honoured. (`pruneCollapsedItems` has
  * an explicit `keepKey` for this; here the write order already says it, and a second mechanism
  * saying the same thing would be one no test could turn red.)
@@ -76,21 +77,51 @@ export function controlConfirmDecision(
  * report a waiver it did not get.
  */
 export function waiveControlConfirmForProject(verb: string, projectId: string | undefined): boolean {
+  return setControlConfirmWaivedForProject(verb, projectId, true)
+}
+
+/**
+ * Turn one verb's per-project waiver on or off — what the project tab menu's toggle calls, and the
+ * dialog grant above with `on = true`. The merge (prune, then set, then sanitize) is the pure
+ * `withProjectWaiver`, shared with the revoke row in Settings → Agents.
+ *
+ * Returns false when nothing could change (an unwaivable verb, or no project).
+ */
+export function setControlConfirmWaivedForProject(
+  verb: string,
+  projectId: string | undefined,
+  on: boolean
+): boolean {
   if (!isWaivableVerb(verb) || !projectId) return false
-  const current = activeControlConfirmWaivers()
   const live = new Set(useProjects.getState().projects.map((p) => p.id))
-  const pruned = pruneControlConfirmWaivers(current, live)
-  const next = {
-    ...pruned,
-    projects: {
-      ...(pruned.projects ?? {}),
-      [projectId]: [...new Set([...(pruned.projects?.[projectId] ?? []), verb])]
-    }
-  }
-  // Sanitized on the way OUT as well as in: the write is the file, and every other writer of this
-  // key does the same, so a bug here cannot persist a shape the readers would then drop in silence.
-  useSettings.getState().update({ controlConfirmWaivers: sanitizeControlConfirmWaivers(next) })
+  const next = withProjectWaiver(activeControlConfirmWaivers(), projectId, verb, on, live)
+  useSettings.getState().update({ controlConfirmWaivers: next })
   return true
+}
+
+/**
+ * `projectWaiverState` bound to the live stores, for the project tab menu's per-project toggle.
+ * The same inputs `controlConfirmDecision` weighs for a call acting on `projectId` — app-run
+ * waivers, the persisted ones, and the permission mode WITH its source — so the row and the gate
+ * cannot disagree. Callers that render it must also subscribe to those stores to re-render.
+ */
+export function projectWaiverRow(
+  verb: string,
+  projectId: string
+): ReturnType<typeof projectWaiverState> {
+  const { settings } = useSettings.getState()
+  const { mode, source } = resolvePermissionModeWithSource(
+    useProjects.getState().getProject(projectId),
+    settings
+  )
+  return projectWaiverState({
+    verb,
+    projectId,
+    sessionWaived: sessionWaivedVerbs(),
+    persisted: activeControlConfirmWaivers(),
+    permissionMode: mode,
+    permissionModeSource: source
+  })
 }
 
 /** The sanitized persisted waivers. `settings.json` is hand-editable, so this is the ONE read. */

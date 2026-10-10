@@ -25,6 +25,10 @@ import {
 import { bypassSandboxCaveat, permissionModeAgentsLabel } from '@shared/agents/approval-mode'
 import { codexApprovalCaps } from '@renderer/state/codexCli'
 import { PROJECT_NAME_MAX, clampProjectName } from '@shared/project-name'
+import { CONFIRM_WAIVABLE_VERBS, WAIVABLE_VERB_ACTIONS, otherWaiverHint } from '@shared/control-confirm'
+import { projectWaiverRow, setControlConfirmWaivedForProject } from '../state/controlConfirmGate'
+import { useControlConfirm } from '../state/controlConfirm'
+import { isBrowserRuntime } from '../bridge/runtime'
 
 interface TabBarProps {
   onSwitch: (id: string) => void
@@ -135,6 +139,13 @@ export function TabBar({
   const [acctOpen, setAcctOpen] = useState(false)
   // Whether the caret menu's "Default permission mode" group is expanded (same idiom as acctOpen).
   const [modeOpen, setModeOpen] = useState(false)
+  const [agentActsOpen, setAgentActsOpen] = useState(false)
+  // Per-project agent confirm rows read the live gate (`projectWaiverRow`) at render. These
+  // subscriptions are what re-render the menu when any input of that decision changes: the
+  // persisted waivers, the app-run ones, and the global permission mode (`globalMode` below; a
+  // project's own mode arrives with the projects store).
+  useSettings((s) => s.settings.controlConfirmWaivers)
+  useControlConfirm((s) => s.sessionWaived)
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
   // The mode a project without an override falls back to, shown in the "Use global (…)" entry.
   const globalMode = useSettings((s) => s.settings.claudePermissionMode)
@@ -177,6 +188,7 @@ export function TabBar({
     setMenuPos(null)
     setAcctOpen(false)
     setModeOpen(false)
+    setAgentActsOpen(false)
   }
 
   const openMenu = (id: string, anchor: HTMLElement) => {
@@ -662,6 +674,59 @@ export function TabBar({
                 ))}
               </div>
             )}
+            {
+              // Agent canvas-control confirms, per project: the SAME machine-local waiver the
+              // dialog's "Don't ask again for agents in …" grants (settings.json, never the
+              // git-shared project.json), reachable before any dialog has appeared. ✓ means agents
+              // in this project do it WITHOUT asking — the EFFECTIVE answer, read through the gate's
+              // own table (`projectWaiverRow`), so an app-run, machine-wide or Bypass waiver shows
+              // here too instead of the row promising a dialog that will not come.
+              // Desktop only: in the browser Server Edition canvas control is headless and gated by
+              // creator ownership, not by these waivers (@shared/control-confirm), so the rows would
+              // change nothing. A relay tab is another machine's project and its confirms are that
+              // machine's to waive.
+              !menuProject.remote &&
+                !isBrowserRuntime() && (
+                  <>
+                    <button
+                      className={`tab-menu__group${agentActsOpen ? ' open' : ''}`}
+                      onClick={() => setAgentActsOpen((v) => !v)}
+                    >
+                      Agents may, without asking
+                      <span className="tab-menu__caret">▸</span>
+                    </button>
+                    {agentActsOpen && (
+                      <div className="tab-menu__sub">
+                        {[...CONFIRM_WAIVABLE_VERBS].map((verb) => {
+                          const row = projectWaiverRow(verb, menuProject.id)
+                          // Another waiver still applies without this project's grant, so the row
+                          // cannot make agents ask again — name it and where it is revoked.
+                          const elsewhere = row.otherVia !== null
+                          return (
+                            <button
+                              key={verb}
+                              disabled={elsewhere && !row.granted}
+                              title={
+                                elsewhere
+                                  ? otherWaiverHint(row.otherVia!)
+                                  : row.granted
+                                    ? `Agents in "${menuProject.name}" do this without a confirm dialog (this computer only). Click to ask again.`
+                                    : `Agents in "${menuProject.name}" ask you first. Click to let them do this without asking (this computer only).`
+                              }
+                              onClick={() => {
+                                setControlConfirmWaivedForProject(verb, menuProject.id, !row.granted)
+                              }}
+                            >
+                              <span className="tab-menu__check">{row.skips ? '✓' : ''}</span>
+                              {WAIVABLE_VERB_ACTIONS[verb] ?? verb}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                )
+            }
             <button
               onClick={() => {
                 onOpenProjectSettings(menuProject.id)

@@ -342,7 +342,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   from the start with "ask me again" selected, "don't ask again for agents in <project>"
   (machine-local, keyed by project id, pruned like `settings.sidebarCollapsedItems`) or "don't ask
   again in any project until nodeterm quits" (in-memory — not `settings.json`, not `localStorage`,
-  so quitting restores the gate). Hiding a reach behind a checkbox made it read as missing. The machine-WIDE waiver stays Settings-only, because that is
+  so quitting restores the gate). Hiding a reach behind a checkbox made it read as missing. The
+  per-project answer can also be given up front from the project tab's "Agents may, without asking"
+  menu; it writes the same machine-local map through the same `withProjectWaiver`, never a second
+  copy of the merge, and each row shows what the gate will actually do (`projectWaiverState`), so
+  an app-run or global waiver is named rather than hidden behind an unchecked box. The machine-WIDE waiver stays Settings-only, because that is
   the one a stray click in a dialog that appeared under the user's hands must not be able to grant.
   Offering only the app-run one was its own failure: it is not what a user who ticks "don't ask
   again" means, so the real choices were "be asked forever" or "turn it off everywhere". Two rules

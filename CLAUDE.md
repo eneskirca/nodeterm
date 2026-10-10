@@ -4251,7 +4251,19 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     Waiving is not silence: every waived application raises the info strip through `waivedNotice`,
     which names the waiver that let it through — and, for the project scope, the PROJECT, since
     "this project" would point at whatever the user happens to be looking at — and every
-    per-project waiver is listed with a Revoke in Settings → Agents.
+    per-project waiver is listed with a Revoke in Settings → Agents. **The per-project scope can
+    also be set UP FRONT**, before any agent has asked: each project tab's ⌄ menu has an "Agents
+    may, without asking" group with one toggle per `CONFIRM_WAIVABLE_VERBS` member (labels in
+    `WAIVABLE_VERB_ACTIONS`). It writes the same `projects` map — the dialog grant, the toggle and
+    the Settings revoke all go through ONE pure merge, `withProjectWaiver` (prune, set, sanitize) —
+    so it is no new mechanism and nothing it does reaches `project.json`. **A row shows the
+    EFFECTIVE answer, not the map entry**: `projectWaiverState` asks `decideControlConfirm` itself,
+    with and without this project's grant, so an app-run, machine-wide or global-Bypass waiver shows
+    as in effect, names itself (`otherWaiverHint`) and points at Settings → Agents — a row that read
+    only the `projects` map promised "agents here ask you first" while the gate still skipped the
+    dialog. Surfaces: Desktop only. It is hidden in the browser Server Edition
+    (`isBrowserRuntime()`), whose headless control is gated by creator ownership and never by these
+    waivers, and on a relay tab, whose confirms belong to that machine; mobile N/A.
   - **`bypassPermissions` needs TWO locks, and this is the trap to understand before touching it.**
     The permission mode is persisted to `.nodeterm/project.json`, which is **git-shared** — so
     keying the waiver on the mode alone would let a repository the user CLONED silently disable

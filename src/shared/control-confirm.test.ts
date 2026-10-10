@@ -8,6 +8,10 @@ import {
   expiredDialogNotice,
   isWaivableVerb,
   pruneControlConfirmWaivers,
+  withProjectWaiver,
+  WAIVABLE_VERB_ACTIONS,
+  projectWaiverState,
+  otherWaiverHint,
   sanitizeControlConfirmWaivers,
   waiveChoices,
   waivedNotice
@@ -439,5 +443,99 @@ describe('waiveChoices — what the dialog offers, and what each choice promises
   it('never prints undefined when the name is missing', () => {
     const project = waiveChoices({ id: 'p1' }).find((c) => c.value === 'project')!
     expect(project.label).not.toContain('undefined')
+  })
+})
+
+describe('withProjectWaiver — the one write behind every per-project toggle', () => {
+  const live = new Set(['p1', 'p2'])
+
+  it('adds a verb to one project and leaves the rest of the waivers alone', () => {
+    expect(withProjectWaiver({ always: ['write'] }, 'p1', 'close', true, live)).toEqual({
+      always: ['write'],
+      projects: { p1: ['close'] }
+    })
+  })
+
+  it('removes a verb and drops the project key once it waives nothing', () => {
+    const w = { projects: { p1: ['close', 'write'], p2: ['close'] } }
+    expect(withProjectWaiver(w, 'p1', 'close', false, live)).toEqual({
+      projects: { p1: ['write'], p2: ['close'] }
+    })
+    expect(withProjectWaiver(w, 'p2', 'close', false, live)).toEqual({
+      projects: { p1: ['close', 'write'] }
+    })
+  })
+
+  it('is idempotent and prunes projects that no longer exist', () => {
+    const w = { projects: { gone: ['close'], p1: ['close'] } }
+    expect(withProjectWaiver(w, 'p1', 'close', true, live)).toEqual({ projects: { p1: ['close'] } })
+  })
+
+  it('keeps the answer for the target even if that project vanished meanwhile', () => {
+    expect(withProjectWaiver({}, 'late', 'close', true, live)).toEqual({ projects: { late: ['close'] } })
+  })
+
+  it('refuses an unwaivable verb or a missing project — nothing changes', () => {
+    expect(withProjectWaiver({}, 'p1', 'settings', true, live)).toEqual({})
+    expect(withProjectWaiver({}, undefined, 'close', true, live)).toEqual({})
+  })
+
+  it('has a menu label for every waivable verb', () => {
+    for (const v of CONFIRM_WAIVABLE_VERBS) expect(WAIVABLE_VERB_ACTIONS[v], v).toBeTruthy()
+  })
+})
+
+describe('projectWaiverState — what the per-project toggle may honestly show', () => {
+  const base = { verb: 'close', projectId: 'p1' }
+
+  it('asks by default', () => {
+    expect(projectWaiverState(base)).toEqual({ granted: false, skips: false, otherVia: null })
+  })
+
+  it('reports the project grant, with nothing else in play', () => {
+    expect(projectWaiverState({ ...base, persisted: { projects: { p1: ['close'] } } })).toEqual({
+      granted: true,
+      skips: true,
+      otherVia: null
+    })
+  })
+
+  it('names an app-run waiver that skips the dialog with or without the project grant', () => {
+    const session = new Set(['close'])
+    expect(projectWaiverState({ ...base, sessionWaived: session })).toEqual({
+      granted: false,
+      skips: true,
+      otherVia: 'session'
+    })
+    // Removing the project grant would restore nothing — the row must not promise "ask again".
+    expect(
+      projectWaiverState({ ...base, sessionWaived: session, persisted: { projects: { p1: ['close'] } } })
+    ).toEqual({ granted: true, skips: true, otherVia: 'session' })
+  })
+
+  it('names the machine-wide waiver', () => {
+    expect(projectWaiverState({ ...base, persisted: { always: ['close'] } }).otherVia).toBe('always')
+  })
+
+  it('names global Bypass, but never a Bypass that came from the project file', () => {
+    const bypass = { persisted: { bypassMode: true }, permissionMode: 'bypassPermissions' as const }
+    expect(projectWaiverState({ ...base, ...bypass, permissionModeSource: 'global' }).otherVia).toBe('bypass')
+    expect(projectWaiverState({ ...base, ...bypass, permissionModeSource: 'project' })).toEqual({
+      granted: false,
+      skips: false,
+      otherVia: null
+    })
+  })
+
+  it('never reports settings as waivable, whatever the file says', () => {
+    expect(
+      projectWaiverState({ ...base, verb: 'settings', persisted: { projects: { p1: ['settings'] } } })
+    ).toEqual({ granted: false, skips: false, otherVia: null })
+  })
+
+  it('points every other waiver at the place it is revoked', () => {
+    for (const via of ['session', 'always', 'bypass'] as const) {
+      expect(otherWaiverHint(via)).toContain('Settings → Agents')
+    }
   })
 })
