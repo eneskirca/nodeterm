@@ -31,7 +31,7 @@
 //    calls `buildRelayApi` while the approval dialog is still open, THEN awaits `ready()`. Building
 //    it after approval already fired leaves `ready()` pending forever and the api never comes up.
 
-import type { HostedRole, NodeTerminalApi } from '../../shared/types'
+import type { HostedRole, NodeTerminalApi, PaneKeysResult } from '../../shared/types'
 import { type FrameTransport, RelayFrameTransport } from './frame-transport'
 import { RoleGatedRpcClient } from './hosted-gate'
 import { emitLocalRelayClose } from './relay-local-close'
@@ -125,6 +125,8 @@ export function buildRelayApi(
     // channel, so subscribe on the local preload, same shape as a local pty.
     pty: {
       ...real.pty,
+      // Host-only: a relay tab never types into the host's panes by id.
+      sendPaneKeys: async () => ({ ok: false, reason: 'unsupported-backend' }) as PaneKeysResult,
       // On the NAMESPACED key main delivers relay output on — never the bare host id, which is a
       // LOCAL terminal's channel too (shared/relay-pty-channel.ts).
       onData: (sessionId, listener) => local.pty.onData(relayPtyDataKey(connectionId, sessionId), listener)

@@ -115,6 +115,7 @@ const api: NodeTerminalApi = {
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
     paneCommand: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey),
     paneCwd: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCwd, persistKey),
+    sendPaneKeys: (nodeId, data) => ipcRenderer.invoke(IPC.ptySendPaneKeys, nodeId, data),
     launchHeadless: (req) => ipcRenderer.invoke(IPC.ptyLaunchHeadless, req),
     paneOwner: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneOwner, persistKey),
     executeLaunch: (persistKey, request) => ipcRenderer.invoke(IPC.ptyExecuteLaunch, persistKey, request),

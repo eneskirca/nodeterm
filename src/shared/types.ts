@@ -239,6 +239,10 @@ export interface PaneCursor {
  * reattach to a still-running session (warm — e.g. an app restart). The renderer uses it to
  * replay the persisted scrollback and re-launch a resumable agent only on a cold start.
  */
+export type PaneKeysResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-session' | 'not-connected' | 'unsupported-backend' | 'no-ssh' | 'failed' }
+
 export interface PtyCreateResult {
   sessionId: string
   fresh: boolean
@@ -1364,6 +1368,8 @@ export interface PtyApi {
    *  no session, no tmux, the session-host backend, a failed query, or a surface that does not
    *  serve it (relay tabs) — and never a rejection. Used as the second cwd for file links. */
   paneCwd(persistKey: string): Promise<string | null>
+  /** Type raw keys into a node's tmux pane by node id; no mounted terminal needed. Never rejects. */
+  sendPaneKeys(nodeId: string, data: string): Promise<PaneKeysResult>
   /**
    * Desktop only (#925). Spawn-or-attach a node's session with no viewer and deliver `command`
    * through the echo-verified writer, then release the synthetic client (the tmux session keeps

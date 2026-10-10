@@ -437,6 +437,8 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   // Host-only for every peer (shared/host-control.ts): it would type a launch on the host and read
   // a host-local prompt file into it. A relay tab never sends it.
   IPC.ptyExecuteLaunch,
+  // Types into a pane by node id; HOST_ONLY, and relay-api.ts stubs it.
+  IPC.ptySendPaneKeys,
   // Project settings / setup / trust: relay-api.ts keeps these LOCAL; the setup ones are host-only.
   IPC.projectSettingsRead,
   IPC.projectSettingsWriteShared,

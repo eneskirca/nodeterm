@@ -33,6 +33,8 @@ export const IPC = {
   /** The foreground command of a node's tmux pane (`#{pane_current_command}`) — how the in-place
    *  agent restart sees that the CLI has exited and a shell owns the pane again. */
   ptyPaneCommand: 'pty:pane-command',
+  /** Type keys into a node's tmux pane by node id (no mounted terminal). Host-only. */
+  ptySendPaneKeys: 'pty:send-pane-keys',
   /** The live working directory of a node's tmux pane (`#{pane_current_path}`) — where a relative
    *  path an agent printed actually lives when it is not the node's launch cwd (file links). */
   ptyPaneCwd: 'pty:pane-cwd',

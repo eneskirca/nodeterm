@@ -59,6 +59,7 @@ import {
   type GitApi,
   type MemInfo,
   type NodeTerminalApi,
+  type PaneKeysResult,
   type PresenceApi,
   type PtyApi,
   type PtyCreateOptions,
@@ -305,6 +306,8 @@ export function buildRealApi(
       client.request(IPC.ptyPaneCommand, persistKey).catch(() => null) as Promise<string | null>,
     // Real: core registers it. Unknown (null) on failure — a relay host refuses it to a non-editor
     // (EDITOR_ONLY), which reads as "no live cwd" and file links keep the node's launch cwd.
+    sendPaneKeys: (nodeId, data) =>
+      client.request(IPC.ptySendPaneKeys, nodeId, data).catch(() => ({ ok: false, reason: 'failed' })) as Promise<PaneKeysResult>,
     paneCwd: (persistKey) =>
       client.request(IPC.ptyPaneCwd, persistKey).catch(() => null) as Promise<string | null>,
     // Documented degrade (#925): the Server Edition starts nodes through its HeadlessNodeFactory,

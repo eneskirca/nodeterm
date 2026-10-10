@@ -297,6 +297,8 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   // A host filesystem path, not a view of the terminal — a viewer's file links keep the node cwd.
   IPC.ptyPaneCwd,
   IPC.ptyTerminateForeground,
+  // Also HOST_ONLY (host-control.ts): refused for every relay peer before this table is read.
+  IPC.ptySendPaneKeys,
   IPC.ptyReadSessionName,
   // Executes an agent launch and reads a host-local prompt file. Also HOST-ONLY for every peer
   // (shared/host-control.ts); a relay tab never sends it (its terminals are not `source: 'local'`).

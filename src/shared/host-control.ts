@@ -80,6 +80,8 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   // Executes an agent launch on the host and reads a host-local `--prompt-file` into it. A relay
   // tab never sends it (its pty bridge omits the member); this holds the refusal host-side too.
   IPC.ptyExecuteLaunch,
+  // Types into a pane of THIS machine (or its SSH host); a relay peer must never reach it.
+  IPC.ptySendPaneKeys,
   // Prepare-for-update ends EVERY session on this machine's session host and quits the app. Only
   // the host's own user may do that. Raw ipcMain handlers (no peer reaches them); listed here too
   // so moving them onto the platform table later cannot quietly open them.

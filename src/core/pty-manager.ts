@@ -14,6 +14,7 @@ import { xtermScrollback } from '../shared/scrollback'
 import {
   DEFAULT_SETTINGS,
   type PaneCursor,
+  type PaneKeysResult,
   type PtyCreateOptions,
   type PtyCreateResult,
   type PtyRecycleTarget,
@@ -2145,6 +2146,7 @@ export class PtyManager {
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string) => this.paneCommand(persistKey))
+    platform().handle(IPC.ptySendPaneKeys, (persistKey: string, data: string) => this.sendPaneKeys(persistKey, data))
     platform().handle(IPC.ptyPaneCwd, (persistKey: string) => this.paneCwd(persistKey))
     // Registered HERE, beside its name-only sibling, rather than in either shell: core owns both
     // reads, so the desktop and the Server Edition are served by one line and cannot drift.
@@ -6420,6 +6422,64 @@ export class PtyManager {
   }
 
   /**
+   * Where a node's pane lives when asked BY NODE ID. A live session's own master wins; with nothing
+   * attached, the persisted index decides (`setRemoteNodeOwner`). An SSH-project node whose project
+   * has no live master answers 'unreachable' — never the local socket, which is the wrong machine.
+   */
+  private paneRemoteRef(
+    persistKey: string,
+    live: Session | undefined
+  ): { kind: 'local' } | { kind: 'remote'; conn: SshConnection; controlPath: string } | { kind: 'unreachable' } {
+    if (live?.sshRemote) return { kind: 'remote', conn: live.sshRemote.conn, controlPath: live.sshRemote.controlPath }
+    if (live) return { kind: 'local' }
+    const owner = this.remoteNodeOwner?.(persistKey) ?? null
+    if (!owner) return { kind: 'local' }
+    return owner.remote
+      ? { kind: 'remote', conn: owner.remote.conn, controlPath: owner.remote.controlPath }
+      : { kind: 'unreachable' }
+  }
+
+  /**
+   * Type raw keys into a node's tmux pane by node id — no mounted terminal needed. Same stdin-only
+   * `source-file -` plan a live-link controller uses (bytes never ride argv; exact target
+   * `=nt-<id>:`), local or over the owning project's ControlMaster. Never rejects.
+   */
+  async sendPaneKeys(persistKey: string, data: string): Promise<PaneKeysResult> {
+    if (typeof persistKey !== 'string' || typeof data !== 'string' || data.length === 0) {
+      return { ok: false, reason: 'failed' }
+    }
+    const live = this.liveSessionForPersistKey(persistKey)
+    if (this.isZellij(persistKey, live)) return { ok: false, reason: 'unsupported-backend' }
+    if (live && (live.sessionHost || live.nativeWindowsPane || !live.tmuxBacked)) {
+      return { ok: false, reason: 'unsupported-backend' }
+    }
+    const ref = this.paneRemoteRef(persistKey, live)
+    if (ref.kind === 'unreachable') return { ok: false, reason: 'not-connected' }
+    const target = sessionName(persistKey)
+    const chunk = { kind: 'keys' as const, data }
+    try {
+      if (ref.kind === 'remote') {
+        const ssh = findSsh()
+        if (!ssh) return { ok: false, reason: 'no-ssh' }
+        const plan = remoteControlInputPlan(ref.conn, ref.controlPath, target, chunk)
+        if (!plan) return { ok: false, reason: 'failed' }
+        return (await runPasteDelivery(plan, (a, i) => runWithStdin(ssh, a, i)))
+          ? { ok: true }
+          : { ok: false, reason: 'failed' }
+      }
+      const tmuxPath = this.tmuxPath
+      if (!tmuxPath) return { ok: false, reason: 'unsupported-backend' }
+      const plan = controlInputPlan(TMUX_SOCKET, target, chunk)
+      if (!plan) return { ok: false, reason: 'failed' }
+      return (await runPasteDelivery(plan, (a, i) => runWithStdin(tmuxPath, a, i)))
+        ? { ok: true }
+        : { ok: false, reason: 'failed' }
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
+  }
+
+  /**
    * The command currently in the foreground of a node's tmux pane (e.g. 'claude', 'zsh') — how
    * the in-place agent restart observes that the CLI has exited and a shell owns the pane again.
    * null when it is unknown: no live session, tmux unavailable, or the query failed. Unknown is
@@ -6434,7 +6494,9 @@ export class PtyManager {
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return this.zellijPaneCommand(target)
-    const sshRemote = live?.sshRemote
+    const ref = this.paneRemoteRef(persistKey, live)
+    if (ref.kind === 'unreachable') return null
+    const sshRemote = ref.kind === 'remote' ? { conn: ref.conn, controlPath: ref.controlPath } : undefined
     if (sshRemote) {
       const ssh = findSsh()
       if (!ssh) return null
@@ -6713,7 +6775,9 @@ export class PtyManager {
     // prove the owner", which every messaging gate already reads as a refusal.
     if (this.isZellij(persistKey, live)) return null
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.owner()
-    const sshRemote = live?.sshRemote
+    const ref = this.paneRemoteRef(persistKey, live)
+    if (ref.kind === 'unreachable') return null
+    const sshRemote = ref.kind === 'remote' ? { conn: ref.conn, controlPath: ref.controlPath } : undefined
     try {
       if (sshRemote) {
         // ONE round-trip, not two (issue #460): under a saturated or dead ControlMaster every
