@@ -483,6 +483,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   sees the pane app's own bytes — see CLAUDE.md's "We have our own VT emulator" for the one place
   that reasoning is inverted.
 
+- **The app's own environment is not the panes' environment.** Whatever launched nodeterm (often an
+  agent CLI's shell) leaves markers in `process.env` that describe THAT session. `buildPtyEnv` strips
+  an explicit list (`TMUX`, `NESTED_AGENT_ENV_STRIP`); add a name there, with its measurement, rather
+  than a prefix sweep — `CLAUDE_CONFIG_DIR`/`CODEX_HOME` select managed accounts and must survive.
+
 - **A new session-host push frame must be negotiated at `hello`, never just sent.** An older
   `SessionHostClient` treats EVERY push frame whose `type` is not `data` as an exit, and a
   long-lived host routinely outlives the app that started it — so a frame the connection did not

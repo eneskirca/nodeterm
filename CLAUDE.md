@@ -1036,6 +1036,13 @@ unreachable there by construction; a Linux host is expected to have its own. Und
 `electron-vite dev` the last candidate resolves against `process.cwd()`, which is where
 `scripts/build-tmux.mjs` writes its artifact. If tmux is unavailable from all three,
 `PtyManager` still falls back to a plain shell; `TMUX`/`TMUX_PANE` are stripped from the child env to avoid nesting refusal.
+The same strip, one layer up, applies to a LAUNCHER that was itself an agent session: started from a
+Claude Code terminal, the app used to hand `CLAUDE_CODE_CHILD_SESSION` and its siblings to every pane,
+and the Claude CLI there then turned transcript saving off (no ⌘M view, no context meter, nothing for
+`--resume`). `buildPtyEnv` deletes the explicit, measured `NESTED_AGENT_ENV_STRIP` list
+(`core/nested-agent-env.ts`) and `ACCOUNT_SCOPE_UPDATE_ENV` lists the same names, so a tmux server
+seeded from such an environment does not hand them back (the #419 mechanism). Explicit names, never a
+`CLAUDE*` prefix sweep: `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are how a managed account is selected.
 
 **A session-host session follows its most recently ACTIVE viewer, like tmux's `window-size
 latest`** (issue #914). Under tmux a relay-mirrored phone is its own tmux client, so dismissing its

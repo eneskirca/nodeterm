@@ -141,6 +141,7 @@ import {
 import { normalizeSessionBackend } from '../shared/session-backend'
 import { releasePty, type ReleasablePty } from './pty-release'
 import { terminateWindowsProcessTree } from '../session-host/windows-process-tree'
+import { NESTED_AGENT_ENV_STRIP } from './nested-agent-env'
 import { effectiveSize, type PtySize } from './pty-size'
 import { machOArch, archMismatch } from './macho-arch'
 import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-store'
@@ -403,7 +404,12 @@ export const ACCOUNT_SCOPE_UPDATE_ENV: readonly string[] = [
   ...AUTH_ENV_STRIP,
   'CODEX_HOME',
   'NODETERM_CODEX_ACCOUNT_ID',
-  ...CODEX_AUTH_ENV_STRIP
+  ...CODEX_AUTH_ENV_STRIP,
+  // The nested-session markers ride along for exactly the auth-strip reason stated above: the
+  // shared tmux server inherits the env of the client that STARTS it, so deleting these from each
+  // client env alone would leave a server seeded by an app launched inside a Claude Code session
+  // handing them back to every session created afterwards.
+  ...NESTED_AGENT_ENV_STRIP
 ]
 
 // LEAD-PANE WIDTH (issue #119): `leadPaneWidth` (settings.tmuxLeadPaneWidth) is OPT-IN and 0 by
@@ -3746,6 +3752,12 @@ export class PtyManager {
     delete env.NODETERM_SERVER_PASSWORD
     delete env.TMUX
     delete env.TMUX_PANE
+    // Same shape as the TMUX strip above, one layer up: markers saying the LAUNCHER was itself an
+    // agent CLI session must not be inherited by the sessions this app spawns. See
+    // `NESTED_AGENT_ENV_STRIP` for the measurement (an inherited CLAUDE_CODE_CHILD_SESSION turned
+    // transcript saving OFF in every pane, which costs the ⌘M view, the context meter, the
+    // find-bar index and `--resume`).
+    for (const k of NESTED_AGENT_ENV_STRIP) delete env[k]
 
     // A GUI app launched from Finder/Dock inherits only a minimal PATH, so spawned terminals
     // couldn't find tools in /usr/local/bin, Homebrew, ~/.local/bin, nvm, bun, etc. (the classic
@@ -6138,6 +6150,7 @@ export class PtyManager {
       return false
     }
   }
+
 
   /**
    * WHO owns a node's pane right now, read from the kernel: the pane's pid and tty from tmux, then
