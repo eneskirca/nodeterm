@@ -523,6 +523,10 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   only used cells; an xterm buffer (the renderer, the Windows session host's headless emulator,
   `NativeWindowsPane`) allocates every line at full width. Size them with `xtermScrollback` from
   `src/shared/scrollback.ts` (≤ 10k), so the host never keeps history the renderer cannot show.
+- **The app's own environment is not the panes' environment.** Whatever launched nodeterm (often an
+  agent CLI's shell) leaves markers in `process.env` that describe THAT session. `buildPtyEnv` strips
+  an explicit list (`TMUX`, `NESTED_AGENT_ENV_STRIP`); add a name there, with its measurement, rather
+  than a prefix sweep — `CLAUDE_CONFIG_DIR`/`CODEX_HOME` select managed accounts and must survive.
 
 - **A new session-host push frame must be negotiated at `hello`, never just sent.** An older
   `SessionHostClient` treats EVERY push frame whose `type` is not `data` as an exit, and a
