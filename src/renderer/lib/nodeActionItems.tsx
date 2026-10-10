@@ -398,7 +398,13 @@ export function buildNodeActionSections(
               {
                 label: 'Refresh terminal',
                 icon: <IconReload />,
-                hint: 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
+                // One node: it can only be rebuilt while its terminal is mounted. A selection of
+                // several keeps the old always-enabled row (the reload skips the unmounted ones).
+                disabled: ids.length === 1 && !ctx.attached(ids[0]),
+                hint:
+                  ids.length === 1 && !ctx.attached(ids[0])
+                    ? 'This terminal is not attached right now.'
+                    : 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
                 onClick: () => ctx.reloadTerminals(ids)
               }
             ]
@@ -518,11 +524,14 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
   // yet. Using the same narrower fact keeps what the row PROMISES in sync with what the
   // closure can actually do.
   const pauseGate = restartEligibility(sourceAgentId, st?.state, st?.sessionId)
+  const NOT_ATTACHED = 'This terminal is not attached right now.'
   const pauseWhy = !pauseGate.ok
     ? pauseGate.reason === 'working'
       ? 'This session is busy — try again once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : undefined
+    : !ctx.attached(ids[0])
+      ? NOT_ATTACHED
+      : undefined
   const restartRows: MenuItem[] = [
     {
       label: 'Restart agent',
@@ -670,7 +679,8 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
           {
             label: 'Resume session',
             icon: <IconPower />,
-            hint: 'Brings the conversation back.',
+            disabled: !ctx.attached(ids[0]),
+            hint: ctx.attached(ids[0]) ? 'Brings the conversation back.' : NOT_ATTACHED,
             onClick: () => void ctx.resumeAgentNode(ids[0])
           }
         ] as MenuItem[])

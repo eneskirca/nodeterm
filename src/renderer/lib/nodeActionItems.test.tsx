@@ -243,3 +243,38 @@ describe('buildNodeActionItems — filters', () => {
     for (const id of ['label', 'markdown-view', 'delete'] as const) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
   })
 })
+
+describe('session rows when the terminal is not attached', () => {
+  const NOT_ATTACHED = 'This terminal is not attached right now.'
+  const claude = term('a', { agentId: 'claude', agentSessionId: 'sess-1' })
+  const ctxDetached = (): NodeActionCtx => fakeCtx([claude], { attached: () => false })
+
+  it('disables Pause and Pause & end session with the not-attached reason', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Pause')).toBe(true)
+    expect(hintOf(items, 'Pause')).toBe(NOT_ATTACHED)
+    expect(disabledOf(items, 'Pause & end session')).toBe(true)
+    expect(hintOf(items, 'Pause & end session')).toBe(NOT_ATTACHED)
+  })
+
+  it('disables Resume session when detached, enables it when attached', () => {
+    useAgentStatus.setState({
+      byId: { a: { state: undefined, sessionId: 'sess-1', paused: true } as never }
+    })
+    const detached = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(detached, 'Resume session')).toBe(true)
+    expect(hintOf(detached, 'Resume session')).toBe(NOT_ATTACHED)
+    const attached = buildNodeActionItems(['a'], undefined, fakeCtx([claude]))
+    expect(disabledOf(attached, 'Resume session')).toBeFalsy()
+  })
+
+  it('disables Refresh terminal for one detached node and keeps the busy reason ahead of it', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(true)
+    expect(hintOf(items, 'Refresh terminal')).toBe(NOT_ATTACHED)
+    useAgentStatus.setState({ byId: { a: { state: 'working', sessionId: 'sess-1' } as never } })
+    const busy = buildNodeActionItems(['a'], undefined, fakeCtx([claude]))
+    expect(hintOf(busy, 'Pause')).toMatch(/busy/)
+  })
+})
