@@ -1,11 +1,12 @@
 import type { MenuItem } from '../ContextMenu'
 
 /**
- * Wrap every runnable row so the card modal closes BEFORE the action runs. Restarting the shell,
- * switching model, ending a paused session or moving to another account recycles the tmux
- * session the modal's terminal is co-attached to; closing first (the order the modal's Delete
- * already uses) means the viewer is gone before the session it watches is. A disabled row is
- * returned unchanged: clicking it must neither close the modal nor act.
+ * Wrap every runnable row so the card modal's `close()` is called BEFORE the action runs.
+ * Restarting the shell, switching model, ending a paused session or moving to another account
+ * recycles the tmux session the modal's terminal is co-attached to, so the modal is asked to go
+ * first (the call order the modal's Delete already uses). This guarantees only call order, not
+ * when React actually unmounts the modal. A disabled row is returned unchanged: clicking it must
+ * neither close the modal nor act.
  */
 export function closeThen(items: MenuItem[], close: () => void): MenuItem[] {
   return items.map((it): MenuItem => {

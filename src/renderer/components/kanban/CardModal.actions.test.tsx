@@ -10,6 +10,7 @@ import { resetDialogStack } from '../dialog-stack'
 import { useSessionNaming } from '../../state/sessionNaming'
 import { CardModal } from './CardModal'
 import type { KanbanSession } from './KanbanView'
+import type { MenuItem } from '../ContextMenu'
 
 const generateName = vi.fn()
 vi.mock('../../session/session', () => ({
@@ -199,6 +200,21 @@ describe('CardModal — session actions menu', () => {
       session: { ...session, id: 'n2', title: 'Other' }
     })
     expect(row('Restart agent')).toBeUndefined()
+  })
+
+  it('menus closed by a J/K step do not reappear when the modal steps back', () => {
+    const sessionActions = (): MenuItem[] => [{ label: 'Restart agent', onClick: vi.fn() }]
+    render({ sessionActions, onSetColor: vi.fn() })
+    act(() => actionsButton()!.click())
+    expect(row('Restart agent')).toBeDefined()
+    render({ sessionActions, onSetColor: vi.fn(), session: { ...session, id: 'n2', title: 'Other' } })
+    render({ sessionActions, onSetColor: vi.fn() })
+    expect(row('Restart agent')).toBeUndefined()
+    act(() => button('Color')!.click())
+    expect(document.body.querySelector('button[aria-label="Blue"]')).not.toBeNull()
+    render({ sessionActions, onSetColor: vi.fn(), session: { ...session, id: 'n2', title: 'Other' } })
+    render({ sessionActions, onSetColor: vi.fn() })
+    expect(document.body.querySelector('button[aria-label="Blue"]')).toBeNull()
   })
 })
 

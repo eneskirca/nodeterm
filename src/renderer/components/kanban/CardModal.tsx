@@ -358,6 +358,12 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   useEffect(() => {
     colorMenuOpenRef.current = colorMenuOpen
   }, [colorMenuOpen])
+  // A J/K step drops both header menus. Keying them by id hides them on the next card, but without
+  // this a step back to the card they were opened for would show them again.
+  useEffect(() => {
+    setColorMenu(null)
+    setActionsMenu(null)
+  }, [session.id])
   const actionsMenuOpenRef = useRef(false)
   useEffect(() => {
     actionsMenuOpenRef.current = actionsMenuOpen
