@@ -1007,13 +1007,13 @@ interface HostedMountOpts {
 /** What the agent-control handler's `reply` accepts, for helpers that build one outside it. */
 type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: string }
 
-/** The confirm dialogs, named so their setters can be wrapped in a synchronous open-guard (see
- *  `confirmFlags`): ONE confirm at a time, decided at call time rather than at the next render. */
 /** The ONE bulk-pause limiter: the batch path and the pending-pause watcher both run their exits
  *  through it, so the per-host cap (BULK_PAUSE_HOST_CAP) holds across the two. Module-level
  *  because the canvas is mounted once. */
 const hostLimiter = createHostLimiter(BULK_PAUSE_HOST_CAP)
 
+/** The confirm dialogs, named so their setters can be wrapped in a synchronous open-guard (see
+ *  `confirmFlags`): ONE confirm at a time, decided at call time rather than at the next render. */
 interface ConfirmState {
   message: string
   onConfirm: () => void

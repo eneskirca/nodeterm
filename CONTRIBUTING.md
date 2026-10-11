@@ -252,6 +252,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
 
 ## House rules
 
+- **Typing into a pane by node id goes through `PtyManager.sendPaneKeys`, and an SSH-project node
+  is never read or typed into on the local tmux socket.** An unmounted remote node resolves through
+  `remoteNodeOwner` or is refused (`not-connected`); `paneCommand` / `paneOwner` resolve unmounted
+  nodes only with the explicit `{ resolveUnmounted: true }` option. See Bulk pause in `CLAUDE.md`.
+
 - **Branch labels describe a checkout on one core.** Share existing status reads through
   `renderer/state/gitBranches.ts`; do not cache a branch forever by project id or copy a project
   branch onto worktree nodes. Source, Sessions and worktree headers consume the same observations,
