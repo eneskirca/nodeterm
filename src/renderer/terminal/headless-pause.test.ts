@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { pauseNodeHeadless, runWithHostCap, createHostLimiter } from './headless-pause'
+import { pauseNodeHeadless, createHostLimiter } from './headless-pause'
 
 const SID = '11111111-2222-3333-4444-555555555555'
 const OWNER = { panePid: 100, tty: 'pts/1', command: 'claude', argv: ['claude'], paneId: '%1' }
@@ -36,9 +36,9 @@ describe('pauseNodeHeadless', () => {
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
     expect(d.markPaused).toHaveBeenCalled()
   })
-  it('refuses when the pane owner is unreadable (null)', async () => {
+  it('an unreadable pane owner (null: host unreachable) is unverified, no keys', async () => {
     const d = deps({ paneOwner: vi.fn(async () => null) })
-    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('unverified')
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
   })
   it('refuses when a shell, not the agent, owns the pane (not-in-this-pane)', async () => {
@@ -46,9 +46,9 @@ describe('pauseNodeHeadless', () => {
     await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
   })
-  it('pre-exit paneOwner rejection is not-eligible, no keys', async () => {
+  it('pre-exit paneOwner rejection is unverified, no keys', async () => {
     const d = deps({ paneOwner: vi.fn(async () => { throw new Error('x') }) })
-    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('unverified')
     expect(d.sendPaneKeys).not.toHaveBeenCalled()
   })
   it('post-exit paneOwner rejection still marks paused with wake null', async () => {
@@ -61,7 +61,7 @@ describe('pauseNodeHeadless', () => {
     const d = deps({ paneOwner: vi.fn(() => new Promise(() => {})) })
     await expect(
       pauseNodeHeadless(T, false, d as never, { ...TIMING, ownerTimeoutMs: 10 })
-    ).resolves.toBe('not-eligible')
+    ).resolves.toBe('unverified')
   })
   it('refuses a node whose CLI announced its exit, before any key', async () => {
     const d = deps({ status: vi.fn(() => ({ state: undefined, sessionId: SID, sessionEnded: true })) })
@@ -83,27 +83,49 @@ describe('pauseNodeHeadless', () => {
   })
 })
 
-describe('runWithHostCap', () => {
-  it('a throwing item does not stop the others and the call resolves', async () => {
-    const seen: number[] = []
+describe('pauseNodeHeadless: unknown state and session binding', () => {
+  it('unknown state without a last-seen done is not-eligible, no keys', async () => {
+    const d = deps({ status: vi.fn(() => ({ sessionId: SID, lastSeen: { at: 1, state: 'working' } })) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('unknown state with no last-seen is not-eligible, no keys', async () => {
+    const d = deps({ status: vi.fn(() => ({ sessionId: SID })) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('unknown state with a last-seen done exits', async () => {
+    const d = deps({ status: vi.fn(() => ({ sessionId: SID, lastSeen: { at: 1, state: 'done' } })) })
+    await expect(pauseNodeHeadless(T, false, d as never, TIMING)).resolves.toBe('paused')
+  })
+  it('a target bound to another session is not-eligible, no keys', async () => {
+    const d = deps()
+    await expect(pauseNodeHeadless({ ...T, sessionId: 'other' }, false, d as never, TIMING)).resolves.toBe('not-eligible')
+    expect(d.sendPaneKeys).not.toHaveBeenCalled()
+  })
+  it('a target bound to its current session exits', async () => {
+    const d = deps()
+    await expect(pauseNodeHeadless({ ...T, sessionId: SID }, false, d as never, TIMING)).resolves.toBe('paused')
+  })
+  it('waits through the late-exit window by default (a CLI that quits after the base window is paused)', async () => {
+    let polls = 0
+    const d = deps({
+      sendPaneKeys: vi.fn(async () => ({ ok: true }) as const),
+      // Still the agent through the 20 ms base window, a shell afterwards.
+      paneCommand: vi.fn(async () => (polls++ > 40 ? 'zsh' : 'claude'))
+    })
     await expect(
-      runWithHostCap([1, 2, 3, 4], () => 'h', 2, async (i) => { if (i === 1) throw new Error('x'); seen.push(i) })
-    ).resolves.toBeUndefined()
-    expect(seen.sort()).toEqual([2, 3, 4])
+      pauseNodeHeadless(T, false, d as never, { pollMs: 1, timeoutMs: 20 })
+    ).resolves.toBe('paused')
   })
-  it('never runs more than cap per host at once', async () => {
-    let live = 0, peak = 0
-    await runWithHostCap(Array.from({ length: 10 }, (_, i) => i), () => 'h', 3, async () => {
-      live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 5)); live--
+  it('lateExitMs: 0 restores the bare base window', async () => {
+    const d = deps({
+      sendPaneKeys: vi.fn(async () => ({ ok: true }) as const),
+      paneCommand: vi.fn(async () => 'claude')
     })
-    expect(peak).toBe(3)
-  })
-  it('hosts run independently', async () => {
-    let peak = 0, live = 0
-    await runWithHostCap([1, 2, 3, 4], (i) => (i % 2 ? 'a' : 'b'), 1, async () => {
-      live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 5)); live--
-    })
-    expect(peak).toBe(2)
+    await expect(
+      pauseNodeHeadless(T, false, d as never, { pollMs: 1, timeoutMs: 20, lateExitMs: 0 })
+    ).resolves.toBe('exit-timeout')
   })
 })
 

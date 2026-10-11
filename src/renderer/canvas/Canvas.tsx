@@ -495,7 +495,8 @@ import { useAgentStatus, recordsTurnInterrupt } from '../state/agentStatus'
 import { usePendingPause, startPendingPauseWatcher } from '../state/pendingPause'
 import {
   planBulkPause,
-  bulkPauseSummary,
+  bulkPauseConfirmText,
+  bulkPauseResultText,
   describeSkips,
   type BulkPauseTarget
 } from '../lib/bulkPause'
@@ -6826,7 +6827,10 @@ export function Canvas() {
           // RECYCLE, not DESTROY: the node is NOT deleted — it stays on the canvas (here and on
           // every co-viewer's) and respawns into the fallback cwd. `destroy` would cast "closed
           // by <name>" to co-viewers, permanently bricking their still-present node.
-          if (n.type === 'terminal') transport.recycle(n.id)
+          if (n.type === 'terminal') {
+            transport.recycle(n.id)
+            usePendingPause.getState().remove([n.id]) // the recycled session's CLI is gone with it
+          }
         }
       }
       setNodes((ns) =>
@@ -8021,6 +8025,7 @@ export function Canvas() {
     // would be bricked until they deleted and re-added it. `recycle` tells them to restart onto the
     // replacement session instead, so they follow the node into its new cwd.
     transport.recycle(id)
+    usePendingPause.getState().remove([id]) // the recycled session's CLI is gone with it
     setNodes((ns) =>
       ns.map((n) =>
         n.id === id
@@ -8128,6 +8133,9 @@ export function Canvas() {
           : targetAgentId
             ? 'Reopen'
             : 'Restart'
+    // A restart (any variant: model switch, reopen as, fresh shell) replaces the CLI the pending
+    // "pause after this turn" mark was taken against.
+    usePendingPause.getState().remove([nodeId])
     let outcome: RestartOutcome
     try {
       outcome = await fn(targetAgentId, targetModel, restartShell, clearEnv)
@@ -8418,14 +8426,14 @@ export function Canvas() {
         })
         return
       }
-      const ok = await confirmBulkPause(
-        `Pause ${scopeLabel}? ${bulkPauseSummary(plan)}. Agents exit; their panes stay, and each ` +
-          'comes back with Resume.' +
-          (plan.skip.length ? ` Skipped: ${describeSkips(plan.skip)}.` : '')
-      )
+      const ok = await confirmBulkPause(bulkPauseConfirmText(scopeLabel, plan))
       if (!ok) return
       usePendingPause.getState().add(plan.whenDone)
-      const counts = { paused: 0, timeout: 0, unreachable: 0, deferred: 0, failed: 0 }
+      // EVERY outcome is counted: a node that is neither paused nor pending must still reach the
+      // summary, or a batch against a disconnected SSH host reads as "Paused 0" and nothing else.
+      const counts = {
+        paused: 0, deferred: 0, unreachable: 0, unverified: 0, notEligible: 0, timeout: 0, failed: 0
+      }
       await Promise.all(
         [
           ...plan.alreadyExited.map((t) => [t, true] as const),
@@ -8437,6 +8445,8 @@ export function Canvas() {
               if (o === 'paused') counts.paused++
               else if (o === 'exit-timeout') counts.timeout++
               else if (o === 'unreachable') counts.unreachable++
+              else if (o === 'unverified') counts.unverified++
+              else if (o === 'not-eligible') counts.notEligible++
               else if (o === 'deferred') {
                 // Became busy between the plan and its turn in the queue: pause after this turn.
                 counts.deferred++
@@ -8448,16 +8458,18 @@ export function Canvas() {
             })
         )
       )
-      const pending = plan.whenDone.length + counts.deferred
-      const parts = [`Paused ${counts.paused}`]
-      if (pending) parts.push(`${pending} after their current turn`)
-      if (counts.timeout) parts.push(`${counts.timeout} still running (nothing killed — check the pane)`)
-      if (counts.unreachable + counts.failed) parts.push(`${counts.unreachable + counts.failed} unreachable`)
-      if (plan.skip.length) parts.push(`${plan.skip.length} skipped`)
-      setNotice({
-        kind: counts.timeout || counts.unreachable || counts.failed ? 'error' : 'info',
-        text: parts.join(' · ')
-      })
+      setNotice(
+        bulkPauseResultText({
+          paused: counts.paused,
+          pending: plan.whenDone.length + counts.deferred,
+          unreachable: counts.unreachable,
+          unverified: counts.unverified,
+          notEligible: counts.notEligible,
+          timeout: counts.timeout,
+          failed: counts.failed,
+          skipped: plan.skip.length
+        })
+      )
     },
     [bulkPauseTargets, confirmBulkPause, headlessPauseDeps]
   )
@@ -8677,6 +8689,7 @@ export function Canvas() {
           })
           return
         }
+        usePendingPause.getState().remove([nodeId]) // the switch restarts the CLI
         const fn = agentRestartFn(nodeId)
         // The rebind rides the closure's own node update (`beforeRecycle`), so the respawn is
         // guaranteed to launch under the target account — a separate setNodes in the same tick can
@@ -8734,6 +8747,7 @@ export function Canvas() {
           )
         )
         markDirty()
+        usePendingPause.getState().remove([nodeId]) // the switch restarts the CLI
         const fn = agentRestartFn(nodeId)
         const outcome = fn ? await settleRestart(() => fn(undefined, undefined, true)) : 'not-eligible'
         await codexApi.finishSwitch(token)
@@ -8807,6 +8821,7 @@ export function Canvas() {
         if (!projectId) return { kind: 'refused', reason: 'no-connection' }
         ctx = { projectId }
       }
+      usePendingPause.getState().remove([nodeId]) // the switch restarts the CLI
       const fn = agentRestartFn(nodeId)
       if (!fn) return { kind: 'refused', reason: 'not-attached' }
       const { plan } = decision
@@ -8982,6 +8997,7 @@ export function Canvas() {
               id,
               hostKey: nodeHostKey,
               run: async () => {
+                usePendingPause.getState().remove([id]) // a restart replaces the CLI a mark waited on
                 const fn = agentRestartFn(id)
                 return fn ? await settleRestart(fn) : 'not-eligible'
               }

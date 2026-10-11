@@ -39,6 +39,35 @@ describe('bulk pause wiring', () => {
       expect(canvas.slice(i, i + 4000), fn).toContain('usePendingPause.getState().remove(')
     }
   })
+  it('every funnel that restarts or replaces the CLI drops the pending mark', () => {
+    // A pending "pause after this turn" was taken against one CLI session; a restart, model switch,
+    // reopen-as, account switch or recycle replaces it, and a mark left behind would quit the NEW
+    // session on its first turn end.
+    for (const fn of [
+      'const restartAgentNode = useCallback',
+      'const switchCodexAccountNode = useCallback',
+      'const runClaudeAccountSwitch = useCallback',
+      'const restartIdleAgents = useCallback',
+      'const resetDisplacedCwd = useCallback'
+    ]) {
+      const i = canvas.indexOf(fn)
+      expect(i, fn).toBeGreaterThan(-1)
+      expect(canvas.slice(i, i + 6000), fn).toContain('usePendingPause.getState().remove(')
+    }
+    // Every `transport.recycle(` site in Canvas is followed by the removal.
+    const sites = [...canvas.matchAll(/transport\.recycle\(([^)]+)\)/g)]
+    expect(sites.length).toBeGreaterThan(0)
+    for (const m of sites) {
+      expect(canvas.slice(m.index!, m.index! + 200), m[0]).toContain('usePendingPause.getState().remove(')
+    }
+  })
+  it('the batch summary counts every outcome through bulkPauseResultText', () => {
+    const i = canvas.indexOf('const pauseNodes = useCallback')
+    const body = canvas.slice(i, i + 5000)
+    expect(body).toContain('bulkPauseResultText(')
+    expect(body).toContain("o === 'unverified'")
+    expect(body).toContain("o === 'not-eligible'")
+  })
   it('headless pane reads opt into resolving unmounted panes', () => {
     expect(canvas).toMatch(/paneCommand\(id, \{ resolveUnmounted: true \}\)/)
     expect(canvas).toMatch(/paneOwner\(id, \{ resolveUnmounted: true \}\)/)
@@ -49,6 +78,7 @@ describe('bulk pause wiring', () => {
     const w = canvas.indexOf('startPendingPauseWatcher((')
     expect(canvas.slice(w, w + 600)).toMatch(/hostLimiter\s*\.run\(/)
     expect(canvas).not.toMatch(/runWithHostCap\(/)
+    expect(readFileSync('src/renderer/terminal/headless-pause.ts', 'utf8')).not.toContain('runWithHostCap')
   })
   it('resume all says why when the canvas is mid-switch', () => {
     expect(canvas).toContain('Resume all skipped: the project is still loading')

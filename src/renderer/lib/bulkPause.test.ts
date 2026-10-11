@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { planBulkPause, isBusyForPause, bulkPauseSummary, describeSkips, type BulkPauseTarget } from './bulkPause'
+import {
+  planBulkPause, isBusyForPause, bulkPauseSummary, describeSkips, bulkPauseResultText, bulkPauseConfirmText,
+  type BulkPauseTarget
+} from './bulkPause'
 
 const t = (nodeId: string, agentId: string | undefined = 'claude', relay = false): BulkPauseTarget =>
   ({ nodeId, agentId, relay, hostKey: 'local' })
@@ -46,6 +49,71 @@ describe('planBulkPause', () => {
   it('an agent that cannot be resumed is skipped', () => {
     const p = planBulkPause([t('x', 'some-unknown-agent')], () => ({ state: 'done', sessionId: SID }) as never)
     expect(p.skip[0].reason).toBe('not-resumable')
+  })
+})
+
+describe('planBulkPause: no exit sequence', () => {
+  it('an agent we can resume but cannot quit (antigravity) is skipped as not-resumable', () => {
+    const p = planBulkPause([t('x', 'antigravity')], () => ({ state: 'done', sessionId: SID }) as never)
+    expect(p.skip.map((s) => s.reason)).toEqual(['not-resumable'])
+    expect(p.now).toHaveLength(0)
+  })
+})
+
+describe('planBulkPause: unknown state (after a restart)', () => {
+  it('unknown + lastSeen done → now', () => {
+    const p = planBulkPause([t('a')], () => ({ sessionId: SID, lastSeen: { at: 1, state: 'done' } }) as never)
+    expect(p.now.map((x) => x.nodeId)).toEqual(['a'])
+  })
+  it('unknown + lastSeen working → skip state-unknown', () => {
+    const p = planBulkPause([t('a')], () => ({ sessionId: SID, lastSeen: { at: 1, state: 'working' } }) as never)
+    expect(p.skip.map((s) => s.reason)).toEqual(['state-unknown'])
+  })
+  it('unknown + no lastSeen → skip state-unknown', () => {
+    const p = planBulkPause([t('a')], () => ({ sessionId: SID }) as never)
+    expect(p.skip.map((s) => s.reason)).toEqual(['state-unknown'])
+    expect(describeSkips(p.skip)).toBe('1 state unknown since restart')
+  })
+})
+
+describe('planBulkPause: session binding', () => {
+  it('records the session id a target was planned against', () => {
+    const p = planBulkPause([t('a'), t('b')], (id) => (id === 'a'
+      ? { state: 'done', sessionId: SID } : { state: 'working', sessionId: 'sid-b' }) as never)
+    expect(p.now[0].sessionId).toBe(SID)
+    expect(p.whenDone[0].sessionId).toBe('sid-b')
+  })
+})
+
+describe('bulkPauseConfirmText', () => {
+  it('names the skipped count once', () => {
+    const p = planBulkPause([t('a'), { ...t('b'), agentId: undefined }, { ...t('c'), agentId: undefined }],
+      () => ({ state: 'done', sessionId: SID }) as never)
+    const text = bulkPauseConfirmText('project "x"', p)
+    expect(text).toContain('Skipped: 2 not an agent.')
+    expect(text).not.toMatch(/skip 2/)
+  })
+})
+
+describe('bulkPauseResultText', () => {
+  const zero = { paused: 0, pending: 0, unreachable: 0, unverified: 0, notEligible: 0, timeout: 0, failed: 0, skipped: 0 }
+  it('all paused is info', () =>
+    expect(bulkPauseResultText({ ...zero, paused: 3 })).toEqual({ kind: 'info', text: 'Paused 3' }))
+  it('pending and skipped stay info', () =>
+    expect(bulkPauseResultText({ ...zero, paused: 1, pending: 2, skipped: 1 })).toEqual({
+      kind: 'info', text: 'Paused 1 · 2 after their current turn · 1 skipped'
+    }))
+  it('every outcome is counted, and any failure is an error', () =>
+    expect(bulkPauseResultText({ paused: 3, pending: 2, unreachable: 1, unverified: 2, notEligible: 1, timeout: 1, failed: 1, skipped: 4 })).toEqual({
+      kind: 'error',
+      text:
+        "Paused 3 · 2 after their current turn · 2 unreachable · 2 couldn't verify the agent in its pane · " +
+        '1 not eligible · 1 still running (nothing killed — check the pane) · 4 skipped'
+    }))
+  it('a disconnected-only batch is not "Paused 0" silently', () => {
+    const r = bulkPauseResultText({ ...zero, unverified: 2 })
+    expect(r.kind).toBe('error')
+    expect(r.text).toContain("2 couldn't verify the agent in its pane")
   })
 })
 

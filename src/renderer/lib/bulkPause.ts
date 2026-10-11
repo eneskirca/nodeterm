@@ -3,15 +3,21 @@
 // the same rules serve the menu, the palette and the tests.
 import { canResumeWith } from '../../shared/agents/config'
 import type { AgentNodeStatus } from '../state/agentStatus'
+import { exitSequence } from '../terminal/agent-restart'
 
 export type BulkPauseSkip =
   | 'not-agent' | 'no-session-id' | 'not-resumable' | 'already-paused' | 'relay' | 'dropped' | 'ended'
+  | 'state-unknown'
 
 export interface BulkPauseTarget {
   nodeId: string
   agentId: string | undefined
   relay: boolean
   hostKey: string
+  /** The session the target was planned against (set by the planner for every actionable target).
+   *  A pending mark or a queued exit for it is void once the node runs another session — a
+   *  restart, a model or account switch, `/clear` — because the turn it was waiting on is gone. */
+  sessionId?: string
 }
 
 export interface BulkPausePlan {
@@ -24,12 +30,25 @@ export interface BulkPausePlan {
 /**
  * Typing an exit into a working/waiting/blocked session, or one holding a question/approval
  * ticket, would abandon the turn or ANSWER the dialog — those wait for their turn to end.
- * An unknown state is not busy (nothing says a turn is running).
+ * An unknown state is not busy, but it is not idle either: see `idleForPause`.
  */
 export function isBusyForPause(st: AgentNodeStatus | undefined): boolean {
   if (!st) return false
   if (st.state === 'working' || st.state === 'waiting' || st.state === 'blocked') return true
   return !!(st.held || st.pendingId)
+}
+
+/**
+ * Idle enough to type an exit into: a known `done`, or — when the live state is unknown, as after
+ * an app restart (state is transient; nothing has reported yet) — a persisted last-seen clock that
+ * says the last hook event was a `done`. Without either we cannot tell an idle CLI from one that is
+ * mid-turn, and an exit typed into a running turn abandons it: such a node is skipped, never
+ * guessed at. Busy is decided first by `isBusyForPause`; this is the other half.
+ */
+export function idleForPause(st: AgentNodeStatus | undefined): boolean {
+  if (!st) return false
+  if (st.state === 'done') return true
+  return st.state === undefined && st.lastSeen?.state === 'done'
 }
 
 export function planBulkPause(
@@ -45,14 +64,21 @@ export function planBulkPause(
     if (!target.agentId) { skip('not-agent'); continue }
     if (st?.paused) { skip('already-paused'); continue }
     if (!st?.sessionId) { skip('no-session-id'); continue }
-    if (!canResumeWith(target.agentId, st.sessionId)) { skip('not-resumable'); continue }
+    // Resumable AND quittable: an agent with no exit sequence (antigravity resumes but has no
+    // in-band quit) is refused by `performExitPhase` at fire time, so it is never planned at all.
+    if (!canResumeWith(target.agentId, st.sessionId) || !exitSequence(target.agentId)) {
+      skip('not-resumable')
+      continue
+    }
+    const bound: BulkPauseTarget = { ...target, sessionId: st.sessionId }
     // Already exited by Eco: nothing to type; the caller only marks it paused.
-    if (st.hibernated) { plan.alreadyExited.push(target); continue }
+    if (st.hibernated) { plan.alreadyExited.push(bound); continue }
     if (st.dropped) { skip('dropped'); continue }
     // The CLI announced its exit: nothing to type an exit into (a shell owns the pane).
     if (st.sessionEnded) { skip('ended'); continue }
-    if (isBusyForPause(st)) plan.whenDone.push(target)
-    else plan.now.push(target)
+    if (isBusyForPause(st)) plan.whenDone.push(bound)
+    else if (idleForPause(st)) plan.now.push(bound)
+    else skip('state-unknown')
   }
   return plan
 }
@@ -63,8 +89,49 @@ export function bulkPauseSummary(plan: BulkPausePlan): string {
   if (n) parts.push(`Pause ${n} now`)
   const w = plan.whenDone.length
   if (w) parts.push(`${w} after ${w === 1 ? 'its' : 'their'} current turn`)
-  if (plan.skip.length) parts.push(`skip ${plan.skip.length}`)
+  // The skipped count is not repeated here: the confirm appends the grouped reasons.
   return parts.join(', ') || 'Nothing to pause'
+}
+
+/** The confirm dialog's whole message. Skips are named once, with their reasons. */
+export function bulkPauseConfirmText(scopeLabel: string, plan: BulkPausePlan): string {
+  return (
+    `Pause ${scopeLabel}? ${bulkPauseSummary(plan)}. Agents exit; their panes stay, and each ` +
+    'comes back with Resume.' +
+    (plan.skip.length ? ` Skipped: ${describeSkips(plan.skip)}.` : '')
+  )
+}
+
+/** What a finished batch did, every outcome counted: a node that is neither paused nor pending
+ *  must still show up, or a batch against a disconnected host reads as "Paused 0" and nothing. */
+export interface BulkPauseCounts {
+  paused: number
+  /** Marked "pause after this turn" (planned busy, or turned busy before its exit ran). */
+  pending: number
+  /** A key write did not reach the pane. */
+  unreachable: number
+  /** The pane owner could not be read (host unreachable, no ControlMaster): nothing was typed. */
+  unverified: number
+  /** Re-asked at fire time and refused (another process owns the pane, the state went unknown…). */
+  notEligible: number
+  /** The exit was typed and the CLI is still there. Nothing is killed. */
+  timeout: number
+  /** The runner itself threw. */
+  failed: number
+  skipped: number
+}
+
+export function bulkPauseResultText(c: BulkPauseCounts): { kind: 'info' | 'error'; text: string } {
+  const parts = [`Paused ${c.paused}`]
+  if (c.pending) parts.push(`${c.pending} after their current turn`)
+  const unreachable = c.unreachable + c.failed
+  if (unreachable) parts.push(`${unreachable} unreachable`)
+  if (c.unverified) parts.push(`${c.unverified} couldn't verify the agent in its pane`)
+  if (c.notEligible) parts.push(`${c.notEligible} not eligible`)
+  if (c.timeout) parts.push(`${c.timeout} still running (nothing killed — check the pane)`)
+  if (c.skipped) parts.push(`${c.skipped} skipped`)
+  const bad = unreachable + c.unverified + c.notEligible + c.timeout
+  return { kind: bad ? 'error' : 'info', text: parts.join(' · ') }
 }
 
 const SKIP_TEXT: Record<BulkPauseSkip, string> = {
@@ -74,7 +141,8 @@ const SKIP_TEXT: Record<BulkPauseSkip, string> = {
   'already-paused': 'already paused',
   relay: 'on another machine',
   dropped: 'CLI already gone',
-  ended: 'CLI already exited'
+  ended: 'CLI already exited',
+  'state-unknown': 'state unknown since restart'
 }
 
 /** "2 not an agent, 1 already paused" — the skipped half of the confirm, grouped by reason. */

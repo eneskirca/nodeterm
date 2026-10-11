@@ -6,13 +6,25 @@ import type { DeliveryIo } from '@shared/command-delivery'
 import type { PaneKeysResult } from '@shared/types'
 import type { PaneOwner } from '@shared/agents/pane-owner-predicate'
 import type { AgentNodeStatus } from '../state/agentStatus'
-import { isBusyForPause, type BulkPauseTarget } from '../lib/bulkPause'
-import { performExitPhase, guardConcurrentRestart, RESTART_EXIT_TIMEOUT_MS } from './agent-restart'
+import { isBusyForPause, idleForPause, type BulkPauseTarget } from '../lib/bulkPause'
+import {
+  performExitPhase,
+  guardConcurrentRestart,
+  RESTART_EXIT_TIMEOUT_MS,
+  RESTART_LATE_EXIT_MS
+} from './agent-restart'
 import { decideHibernateExit, captureWakeContext, type WakeContext } from './wake-identity'
 
 export const BULK_PAUSE_HOST_CAP = 3
 
-export type HeadlessPauseOutcome = 'paused' | 'exit-timeout' | 'not-eligible' | 'deferred' | 'unreachable'
+/**
+ * - `unverified`: the pane owner could not be read before the exit (an SSH host with no live
+ *   ControlMaster, a read that hung or failed). Nothing was typed. Distinct from `not-eligible`,
+ *   which means the read SUCCEEDED and said no (or a gate refused): the summary must not fold an
+ *   unreachable host into "not a target".
+ */
+export type HeadlessPauseOutcome =
+  | 'paused' | 'exit-timeout' | 'not-eligible' | 'deferred' | 'unreachable' | 'unverified'
 
 export interface HeadlessPauseDeps {
   sendPaneKeys(nodeId: string, data: string): Promise<PaneKeysResult>
@@ -44,7 +56,10 @@ async function readOwnerSafe(
 
 /** A DeliveryIo whose writes go into the pane by node id, in order. `onData` is never used by the
  *  exit phase (it polls the pane command instead). The first failed write is remembered. */
-function paneKeysIo(nodeId: string, deps: HeadlessPauseDeps): { io: DeliveryIo; failed: () => Promise<boolean> } {
+function paneKeysIo(
+  nodeId: string,
+  deps: HeadlessPauseDeps
+): { io: DeliveryIo; failed: () => Promise<boolean>; failedSoFar: () => boolean } {
   let chain: Promise<unknown> = Promise.resolve()
   let failed = false
   const io: DeliveryIo = {
@@ -61,28 +76,40 @@ function paneKeysIo(nodeId: string, deps: HeadlessPauseDeps): { io: DeliveryIo; 
     },
     onData: () => () => {}
   }
-  return { io, failed: async () => { await chain; return failed } }
+  return { io, failed: async () => { await chain; return failed }, failedSoFar: () => failed }
 }
 
 export function pauseNodeHeadless(
   target: BulkPauseTarget,
   alreadyExited: boolean,
   deps: HeadlessPauseDeps,
-  timing?: { pollMs?: number; timeoutMs?: number; ownerTimeoutMs?: number }
+  timing?: { pollMs?: number; timeoutMs?: number; ownerTimeoutMs?: number; lateExitMs?: number }
 ): Promise<HeadlessPauseOutcome> {
   return guardConcurrentRestart(target.nodeId, async (): Promise<HeadlessPauseOutcome> => {
     const { nodeId, agentId } = target
-    const { ownerTimeoutMs = RESTART_EXIT_TIMEOUT_MS, ...exitTiming } = timing ?? {}
+    // The late window (as the menu's Restart uses): a CLI that quits a moment after the base 6 s
+    // is paused, not reported "still running" with nobody left watching it.
+    const {
+      ownerTimeoutMs = RESTART_EXIT_TIMEOUT_MS,
+      lateExitMs = RESTART_LATE_EXIT_MS,
+      ...exitTiming
+    } = timing ?? {}
     const st = deps.status(nodeId)
     if (!agentId || !st?.sessionId || st.paused || st.sessionEnded || !deps.stillExists(nodeId)) {
       return 'not-eligible'
     }
+    // Bound to the session it was planned against: another session in that pane means the turn
+    // (and the user's intent) this exit was for is gone.
+    if (target.sessionId && target.sessionId !== st.sessionId) return 'not-eligible'
     if (alreadyExited || st.hibernated) {
       deps.markPaused(nodeId, { alreadyExited: true, wake: null })
       return 'paused'
     }
     if (isBusyForPause(st)) return 'deferred' // fire-time re-ask: the plan-time verdict is stale
+    // Unknown state with no last-seen `done` (see `idleForPause`): never typed into on a guess.
+    if (!idleForPause(st)) return 'not-eligible'
     const owner = await readOwnerSafe(nodeId, deps, ownerTimeoutMs)
+    if (owner === null) return 'unverified'
     if (decideHibernateExit(owner, agentId, deps.binaries(agentId)) !== 'agent-owns-pane') return 'not-eligible'
     if (isBusyForPause(deps.status(nodeId))) return 'deferred'
     const keys = paneKeysIo(nodeId, deps)
@@ -91,7 +118,10 @@ export function pauseNodeHeadless(
       sessionId: st.sessionId,
       io: keys.io,
       paneCommand: () => deps.paneCommand(nodeId),
-      isLive: () => deps.stillExists(nodeId),
+      // A key write that did not reach the pane ends the wait at once: polling a pane we never
+      // typed into for the whole late window would only delay the "unreachable" answer by a minute.
+      isLive: () => deps.stillExists(nodeId) && !keys.failedSoFar(),
+      lateExitMs,
       ...exitTiming
     })
     // A failed key write usually surfaces as an exit timeout; report it as unreachable so the
@@ -149,16 +179,4 @@ export function createHostLimiter(cap: number): HostLimiter {
       }
     }
   }
-}
-
-/** Every item through a fresh limiter; per-item failures are contained (the caller's `run` owns
- *  reporting its own). */
-export async function runWithHostCap<T>(
-  items: T[],
-  hostKey: (t: T) => string,
-  cap: number,
-  run: (t: T) => Promise<void>,
-  limiter: HostLimiter = createHostLimiter(cap)
-): Promise<void> {
-  await Promise.all(items.map((it) => limiter.run(hostKey(it), () => run(it)).catch(() => {})))
 }

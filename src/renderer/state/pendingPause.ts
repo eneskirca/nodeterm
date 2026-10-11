@@ -32,7 +32,9 @@ export function shouldFirePendingPause(
   return !(next.held || next.pendingId)
 }
 
-/** Fires each pending target once on its done edge and drops marks whose node is gone or paused. */
+/** Fires each pending target once on its done edge and drops marks whose node is gone or paused,
+ *  or now runs a different session than the one the mark was taken against (a restart, a model or
+ *  account switch, `/clear`): the turn it was waiting on is over, and so is the request. */
 export function startPendingPauseWatcher(fire: (t: BulkPauseTarget) => void): () => void {
   return useAgentStatus.subscribe((s, prev) => {
     const pending = usePendingPause.getState().byId
@@ -47,6 +49,11 @@ export function startPendingPauseWatcher(fire: (t: BulkPauseTarget) => void): ()
       }
       if (next?.paused) {
         gone.push(id) // paused elsewhere
+        continue
+      }
+      const bound = pending[id].sessionId
+      if (bound && next?.sessionId && next.sessionId !== bound) {
+        gone.push(id)
         continue
       }
       if (shouldFirePendingPause(prev.byId[id], next)) {
