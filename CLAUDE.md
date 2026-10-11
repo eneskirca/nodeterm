@@ -1082,21 +1082,40 @@ Lifecycle, by intent:
   agent messaging and `terminateForeground` also call them, and if they resolved an unmounted
   remote node they would prove an owner on the HOST and then act on the LOCAL socket. Zellij, the
   Windows session host, a native Windows pane and a plain shell answer `unsupported-backend`.
-  (3) **`planBulkPause` (`lib/bulkPause.ts`) is the whole decision**: `now` (idle `done` or no
-  state), `whenDone` (working / waiting / blocked, or a held question/approval ticket — typing
-  `/exit` into those would answer a prompt), `alreadyExited` (hibernated by Eco: nothing to type,
-  just mark it paused), and named skips, exactly the `BulkPauseSkip` reasons: `not-agent`,
-  `no-session-id`, `not-resumable`, `already-paused`, `relay`, `dropped`, `ended`. A skipped node
-  says why; nothing is silently dropped.
+  (3) **`planBulkPause` (`lib/bulkPause.ts`) is the whole decision**: `now` (idle `done`, or an
+  UNKNOWN state whose persisted `agentStatus.lastSeen.state` is `done` — `idleForPause`),
+  `whenDone` (working / waiting / blocked, or a held question/approval ticket — typing `/exit` into
+  those would answer a prompt), `alreadyExited` (hibernated by Eco: nothing to type, just mark it
+  paused), and named skips, exactly the `BulkPauseSkip` reasons: `not-agent`, `no-session-id`,
+  `not-resumable` (also an agent with no `exitSequence`, e.g. antigravity: resumable, but nothing
+  can ask it to quit), `already-paused`, `relay`, `dropped`, `ended`, `state-unknown`. The
+  unknown-state rule exists because state is transient: right after an app restart every node reads
+  unknown, and an idle CLI and one mid-turn look the same — typing an exit into a running turn
+  abandons it. `lastSeen` is the one clock that survives the restart, so a node last seen `done` is
+  paused and every other unknown node is skipped, never guessed at (the runner re-asks the same
+  rule at fire time). A skipped node says why; nothing is silently dropped, and the result line
+  (`bulkPauseResultText`) counts EVERY outcome — paused, pending, unreachable, `unverified`, not
+  eligible, still running, skipped — so a batch against a disconnected host never reads "Paused 0".
   (4) **`whenDone` is `state/pendingPause.ts`, TRANSIENT** (never persisted: after a restart nothing
   is watched, so a stored mark would lie). It fires on a CLEAN `done` edge only (not errored,
   interrupted or held), the mark is removed BEFORE the fire so a second edge cannot double it, and
   Resume, Cancel, node delete or the fire clear it, and the watcher also drops a mark when the node
-  is paused elsewhere or its status disappears.
+  is paused elsewhere or its status disappears. **A mark is bound to the session it was planned
+  against** (`BulkPauseTarget.sessionId`): the watcher drops it unfired when the node's session id
+  changes, the runner refuses a mismatch, and every Canvas funnel that replaces the CLI —
+  `restartAgentNode` (restart, fresh shell, model switch, reopen as), the Claude and Codex account
+  switches, the bulk idle restart and both `transport.recycle` sites — removes it, or a mark taken
+  for one turn would quit the NEW session on its first turn end.
   (5) **Every exit holds `guardConcurrentRestart(nodeId, …)`** (the Eco / Pause / restart set) and
-  runs through ONE `createHostLimiter(BULK_PAUSE_HOST_CAP = 3)` per host key (`local` or the SSH
-  project id), shared by the batch and the pending fires; owner reads are bounded.
-  `pauseNodeHeadless` (`terminal/headless-pause.ts`) is `performExitPhase` over `sendPaneKeys`.
+  runs through ONE `createHostLimiter(BULK_PAUSE_HOST_CAP = 3)` per host key, shared by the batch
+  and the pending fires; owner reads are bounded. The host key is `local` or the **SSH project id**,
+  not the host: ControlMasters are per project, so the cap bounds channels per master.
+  `pauseNodeHeadless` (`terminal/headless-pause.ts`) is `performExitPhase` over `sendPaneKeys`, with
+  the menu restart's late window (`RESTART_LATE_EXIT_MS`) so a CLI that quits just after the base
+  6 s is paused rather than reported "still running"; a failed key write ends that wait at once
+  (`unreachable`). A pane owner that cannot be read before the exit (no live ControlMaster, a hung
+  read) is `unverified`, distinct from `not-eligible` (read and refused): nothing is typed in
+  either case.
   (6) **Resume all is the active project only**: waking is the mounted node's `wakeHibernatedNode`,
   so elsewhere the row is disabled with `Open the project to resume`.
   Surfaces: Desktop full (local + SSH); Server Edition has the core primitive and a real ws-bridge
