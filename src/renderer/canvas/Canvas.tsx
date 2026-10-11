@@ -8336,13 +8336,32 @@ export function Canvas() {
   // same `guardConcurrentRestart` lock single Pause, Eco and wake hold. Shallow only — the tmux
   // pane and its scrollback stay. Busy sessions are never typed into: they get a transient
   // "pause after this turn" mark the watcher below fires on their next clean `done`.
+  /** The project that owns a node: the one React Flow holds when the node is on the live canvas
+   *  (its stored copy lags), else the stored owner. */
+  const owningProjectOf = useCallback(
+    (id: string) => {
+      const projects = useProjects.getState().projects
+      const live = nodesRef.current.some((n) => n.id === id)
+      return live && nodesProjectIdRef.current
+        ? projects.find((x) => x.id === nodesProjectIdRef.current)
+        : nodeOwner(projects, id)
+    },
+    [nodesRef, nodesProjectIdRef]
+  )
+  // Core-bound `pty` comes from the node's OWNING project's session (grep gate), not the global.
+  const ptyFor = useCallback(
+    (id: string) =>
+      sessionForProject(owningProjectOf(id)?.id ?? useProjects.getState().activeProjectId ?? '')
+        .api.pty,
+    [owningProjectOf]
+  )
   const headlessPauseDeps = useMemo<HeadlessPauseDeps>(
     () => ({
-      sendPaneKeys: (id, d) => window.nodeTerminal.pty.sendPaneKeys(id, d),
+      sendPaneKeys: (id, d) => ptyFor(id).sendPaneKeys(id, d),
       // `resolveUnmounted`: the default answers only for a node with a LIVE pty client, and most
       // nodes a project-wide pause reaches are not mounted (another project, offscreen-released).
-      paneCommand: (id) => window.nodeTerminal.pty.paneCommand(id, { resolveUnmounted: true }),
-      paneOwner: (id) => window.nodeTerminal.pty.paneOwner(id, { resolveUnmounted: true }),
+      paneCommand: (id) => ptyFor(id).paneCommand(id, { resolveUnmounted: true }),
+      paneOwner: (id) => ptyFor(id).paneOwner(id, { resolveUnmounted: true }),
       status: (id) => useAgentStatus.getState().byId[id],
       binaries: (agentId) => binariesFor(agentId, useSettings.getState().settings.customAgents),
       // Gone from BOTH the live canvas and the stored projects. For the project React Flow holds,
@@ -8364,21 +8383,17 @@ export function Canvas() {
         s.setPaused(id, true)
       }
     }),
-    [nodesRef, nodesProjectIdRef]
+    [nodesRef, nodesProjectIdRef, ptyFor]
   )
 
   /** Terminal nodes as bulk-pause targets, each with the project that owns it (relay tabs are
    *  refused by the planner; SSH projects get their own host-cap key). */
   const bulkPauseTargets = useCallback(
     (ids: readonly string[]): BulkPauseTarget[] => {
-      const projects = useProjects.getState().projects
       const byId = useAgentStatus.getState().byId
       return ids.flatMap((id): BulkPauseTarget[] => {
         const live = nodesRef.current.find((n) => n.id === id)
-        const p =
-          live && nodesProjectIdRef.current
-            ? projects.find((x) => x.id === nodesProjectIdRef.current)
-            : nodeOwner(projects, id)
+        const p = owningProjectOf(id)
         const stored = live ? undefined : p?.nodes.find((n) => n.id === id)
         const isTerminal = live ? live.type === 'terminal' : stored?.kind === 'terminal'
         if (!isTerminal) return []
@@ -8387,7 +8402,7 @@ export function Canvas() {
         return [{ nodeId: id, agentId, relay: !!p?.remote, hostKey: p?.ssh ? p.id : 'local' }]
       })
     },
-    [nodesRef, nodesProjectIdRef]
+    [nodesRef, owningProjectOf]
   )
 
   /** A promise over Canvas's one ConfirmDialog. A dialog already up (an agent's destructive
