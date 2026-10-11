@@ -1037,8 +1037,9 @@ Lifecycle, by intent:
   restart nothing can hibernate and deferring would make Eco a memory regression). Eco is
   structurally inert for sessions with no turn in the current app run, and that is now a DECISION,
   not a follow-up: the persisted `agentStatus.lastSeen` clock (see **Status-grouped sessions**) is
-  deliberately never an idle proof — see "A restored clock is not an idle proof" in
-  `terminal/hibernation-policy.ts`.
+  deliberately never an idle proof FOR ECO — see "A restored clock is not an idle proof" in
+  `terminal/hibernation-policy.ts`. (A user-confirmed bulk pause is the one place it is read as weak
+  evidence; see **Bulk pause** and the `lastSeen` rules under **Status-grouped sessions**.)
   The deferral is also unaware of `paused`: a deep-paused node's freshly recycled shell keeps its
   xterm alive until the hard cap, waiting for a hibernation that (being already exited, or having
   no CLI to exit) can never come — a second documented follow-up.
@@ -3473,6 +3474,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     prompt after boot would not be enough: the background-task stamp and the subagent cards Eco
     also needs are transient and cannot be rebuilt after a restart, and `/exit` kills both
     silently. A session becomes a candidate again from its next live `done`.
+  - **Bulk pause is the ONE reader that acts on it** (`idleForPause`, `lib/bulkPause.ts`): an
+    unknown-state session is pausable only when `lastSeen.state === 'done'`. The difference from Eco
+    is consent and proof, not the clock: a person confirmed the pause, the runner still proves the
+    agent owns its pane before typing, and without it every session after a restart would be
+    unpausable exactly when memory is tightest. The residual is stated there: a session last seen
+    idle that started a turn while the app was closed (cron, loop, task notification) can be
+    interrupted. Nothing automatic may read it.
   - **Its own key, so the main table's write cadence is unchanged.** State events still write
     nothing to `nodeterm.agentStatus`. That matters twice: the main table carries `loop.items` (up to
     100 × 4000 chars per loop node — 428 KB and ~2.1 ms per stringify with one full loop, measured in
