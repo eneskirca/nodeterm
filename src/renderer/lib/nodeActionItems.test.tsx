@@ -9,6 +9,8 @@ import {
   BOARD_NODE_ACTION_IDS,
   BOARD_SPATIAL_ROW_IDS,
   buildNodeActionItems,
+  NOT_ATTACHED_HINT,
+  RELEASED_HINT,
   type NodeActionCtx
 } from './nodeActionItems'
 
@@ -21,6 +23,8 @@ function fakeCtx(nodes: CanvasNode[], over: Partial<NodeActionCtx> = {}): NodeAc
     nodes,
     sessionSource: 'local',
     attached: () => true,
+    // Like the live canvas: the canvas holds every node it was given.
+    onCanvas: (id) => nodes.some((n) => n.id === id),
     agentIdOf: (id) => nodes.find((n) => n.id === id)?.data.agentId as never,
     gatewayModels: [],
     gatewayStatus: 'idle',
@@ -135,12 +139,12 @@ describe('buildNodeActionItems — the canvas node menu, moved verbatim', () => 
     expect(hintOf(items, 'Restart agent')).toBe('Nothing to resume yet — this session has not reported an id.')
   })
 
-  it('an unmounted agent says its terminal is not attached', () => {
+  it('an agent not on the canvas says its terminal is not attached', () => {
     useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1' } } } as never)
     const items = buildNodeActionItems(
       ['a1'],
       undefined,
-      fakeCtx([term('a1', { agentId: 'claude' })], { attached: () => false })
+      fakeCtx([term('a1', { agentId: 'claude' })], { attached: () => false, onCanvas: () => false })
     )
     expect(hintOf(items, 'Restart agent')).toBe('This terminal is not attached right now.')
   })
@@ -247,7 +251,44 @@ describe('buildNodeActionItems — filters', () => {
 describe('session rows when the terminal is not attached', () => {
   const NOT_ATTACHED = 'This terminal is not attached right now.'
   const claude = term('a', { agentId: 'claude', agentSessionId: 'sess-1' })
-  const ctxDetached = (): NodeActionCtx => fakeCtx([claude], { attached: () => false })
+  // Not on the canvas at all: an Omni lane of a project the canvas does not hold.
+  const ctxDetached = (): NodeActionCtx =>
+    fakeCtx([claude], { attached: () => false, onCanvas: () => false })
+  // On the live canvas, its terminal released while off screen.
+  const ctxReleased = (): NodeActionCtx => fakeCtx([claude], { attached: () => false })
+
+  it('a node released off screen keeps Refresh terminal enabled (the respawn revives it)', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxReleased())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(false)
+    expect(hintOf(items, 'Refresh terminal')).not.toBe(NOT_ATTACHED_HINT)
+  })
+
+  it('a node not on the canvas disables Refresh terminal with the not-attached reason', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(true)
+    expect(hintOf(items, 'Refresh terminal')).toBe(NOT_ATTACHED_HINT)
+  })
+
+  it('released on the canvas: session rows say the terminal was released, not that it is unattached', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxReleased())
+    for (const label of ['Restart agent', 'Restart agent and shell', 'Restart on subscription', 'Pause', 'Pause & end session']) {
+      expect(disabledOf(items, label)).toBe(true)
+      expect(hintOf(items, label)).toBe(RELEASED_HINT)
+    }
+    useAgentStatus.setState({ byId: { a: { sessionId: 'sess-1', paused: true } as never } })
+    const paused = buildNodeActionItems(['a'], undefined, ctxReleased())
+    expect(disabledOf(paused, 'Resume session')).toBe(true)
+    expect(hintOf(paused, 'Resume session')).toBe(RELEASED_HINT)
+  })
+
+  it('not on the canvas: the same rows keep the not-attached reason', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    for (const label of ['Restart agent', 'Restart agent and shell', 'Restart on subscription', 'Pause', 'Pause & end session']) {
+      expect(hintOf(items, label)).toBe(NOT_ATTACHED_HINT)
+    }
+  })
 
   it('disables Pause and Pause & end session with the not-attached reason', () => {
     useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
@@ -306,7 +347,7 @@ describe('board allowlist carries the session sections', () => {
     for (const id of BOARD_SPATIAL_ROW_IDS) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
   })
 
-  it('a working agent: restarts and pauses are disabled with the busy reason, clicks do nothing', () => {
+  it('a working agent: restarts and pauses are disabled with the busy reason and nothing runs', () => {
     useAgentStatus.setState({ byId: { a: { state: 'working', sessionId: 's' } as never } })
     const restartAgentNode = vi.fn(async () => {})
     const pauseAgentNode = vi.fn(async () => {})
@@ -318,6 +359,9 @@ describe('board allowlist carries the session sections', () => {
       expect(disabledOf(items, label)).toBe(true)
       expect(hintOf(items, label)).toMatch(/busy/)
     }
+    // Building the menu never runs a session action on its own.
+    expect(restartAgentNode).not.toHaveBeenCalled()
+    expect(pauseAgentNode).not.toHaveBeenCalled()
   })
 
   it('a relay card: recycling rows are disabled with the host wording', () => {
@@ -327,8 +371,25 @@ describe('board allowlist carries the session sections', () => {
       allow: BOARD_NODE_ACTION_IDS
     })
     expect(disabledOf(items, 'Restart agent and shell')).toBe(true)
+    expect(hintOf(items, 'Restart agent and shell')).toBe('Restart the shell on the machine hosting this relay session.')
     expect(disabledOf(items, 'Pause & end session')).toBe(true)
+    expect(hintOf(items, 'Pause & end session')).toBe(
+      'Ends the tmux session on the machine hosting this relay session, not here.'
+    )
+    expect(disabledOf(items, 'Restart on subscription')).toBe(true)
+    expect(hintOf(items, 'Restart on subscription')).toBe('Restart the shell on the machine hosting this relay session.')
     expect(disabledOf(items, 'Restart agent')).toBeFalsy()
+  })
+
+  it('a browser card gets no session rows', () => {
+    const browser = {
+      id: 'b1',
+      type: 'browser',
+      position: { x: 0, y: 0 },
+      data: { title: 'b1', url: 'https://example.com' }
+    } as unknown as CanvasNode
+    const l = labels(buildNodeActionItems(['b1'], undefined, fakeCtx([browser]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l.some((x) => /Restart|Pause|Switch model|Refresh/.test(x))).toBe(false)
   })
 
   it('a paused node shows Resume and never Pause', () => {

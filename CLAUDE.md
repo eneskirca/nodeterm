@@ -9838,7 +9838,10 @@ For every OTHER test dir, two layers, both needed:
   runs, because restart-and-shell, switch model, account switch and pause-and-end recycle the tmux
   session its terminal is attached to; a card of a project the canvas does not hold shows these
   rows disabled with 'This terminal is not attached right now.', and a card with no session row
-  (a plain shell, a non-resumable agent) gets no ⋯ button at all. Kanban itself is
+  (a plain shell, a non-resumable agent) gets no ⋯ button at all. A node the canvas holds but
+  whose terminal was released while off screen is a different case (`NodeActionCtx.onCanvas`
+  true, `attached` false): Refresh stays enabled, since its respawn is what revives the node,
+  and the session rows say the terminal was released (`RELEASED_HINT`). Kanban itself is
   desktop+Server-Edition (pure renderer + `workspace.save`); the iOS board is a separate read/move
   mirror (`nodeterm-ios`, `KanbanGrouping`/`ProjectBoardView`).
 

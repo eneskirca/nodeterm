@@ -10368,6 +10368,8 @@ export function Canvas() {
       nodes: nodesRef.current as CanvasNode[],
       sessionSource: session.source,
       attached: (nodeId) => !!agentRestartFn(nodeId),
+      // Held by React Flow — true while its terminal is released off screen, unlike `attached`.
+      onCanvas: (nodeId) => nodesRef.current.some((n) => n.id === nodeId),
       agentIdOf,
       gatewayModels,
       gatewayStatus,

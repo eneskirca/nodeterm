@@ -161,8 +161,21 @@ export const BOARD_MODAL_ACTION_IDS = [
   'pause'
 ] as const satisfies readonly NodeActionId[]
 
-/** The one reason a session row gives when the node's terminal is not mounted and wired. */
-const NOT_ATTACHED_HINT = 'This terminal is not attached right now.'
+/** The reason a session row gives when the node is not on the canvas at all (an Omni lane of a
+ *  project the canvas does not hold), so nothing can be wired to it from here. */
+export const NOT_ATTACHED_HINT = 'This terminal is not attached right now.'
+/** The reason a session row gives when the node IS on the live canvas but its terminal was
+ *  released while off screen (the offscreen release): the pane is alive (the card modal shows it),
+ *  only the canvas node's client is gone. Refresh, or bringing it into view, wires it again. */
+export const RELEASED_HINT =
+  'This terminal was released while off screen — refresh it from the card menu or bring it into view on the canvas.'
+
+/** Why a session row cannot act on this node right now because nothing is wired to it, or
+ *  undefined when it is. The ONE place that tells "released on the canvas" from "not on it". */
+function detachedHint(ctx: NodeActionCtx, nodeId: string): string | undefined {
+  if (ctx.attached(nodeId)) return undefined
+  return ctx.onCanvas(nodeId) ? RELEASED_HINT : NOT_ATTACHED_HINT
+}
 
 /** Everything the node rows read from, or do through, the canvas that owns the node. */
 export interface NodeActionCtx {
@@ -174,6 +187,10 @@ export interface NodeActionCtx {
   /** Is the node's terminal mounted and wired (its restart closure registered)? Always false for a
    *  project the canvas does not hold. */
   attached: (nodeId: string) => boolean
+  /** Does the canvas hold this node (it is in React Flow's live array)? True even while the node's
+   *  terminal is released off screen — which is exactly when Refresh is needed. Always false for a
+   *  project the canvas does not hold. */
+  onCanvas: (nodeId: string) => boolean
   agentIdOf: (nodeId: string) => AgentId | undefined
   gatewayModels: GatewayModel[]
   gatewayStatus: ModelDiscoveryStatus
@@ -425,11 +442,13 @@ export function buildNodeActionSections(
               {
                 label: 'Refresh terminal',
                 icon: <IconReload />,
-                // One node: it can only be rebuilt while its terminal is mounted. A selection of
-                // several keeps the old always-enabled row (the reload skips the unmounted ones).
-                disabled: ids.length === 1 && !ctx.attached(ids[0]),
+                // One node: it can be rebuilt while the canvas holds it — including a terminal
+                // released off screen, which the respawn revives (so NOT `attached`, which is false
+                // for exactly that node). A node of a project the canvas does not hold cannot. A
+                // selection of several keeps the old always-enabled row.
+                disabled: ids.length === 1 && !ctx.onCanvas(ids[0]),
                 hint:
-                  ids.length === 1 && !ctx.attached(ids[0])
+                  ids.length === 1 && !ctx.onCanvas(ids[0])
                     ? NOT_ATTACHED_HINT
                     : 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
                 onClick: () => ctx.reloadTerminals(ids)
@@ -532,15 +551,13 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
     ? gate.reason === 'working'
       ? 'This session is busy — restart it once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : !ctx.attached(ids[0])
-      ? NOT_ATTACHED_HINT
-      : // Not every dead end is visible from here: the closure ALSO refuses a tmux
-        // session that is closed / ended / gone, and a pane it cannot observe at all
-        // (tmux off / absent — it pre-flights one `pane_current_command` before writing
-        // anything). Only the node knows the first, and the second costs an IPC that must
-        // not run per menu RENDER. Both reach the user through `restartAgentNode`'s skip
-        // notice, which names them, rather than through a hint this row cannot compute.
-        undefined
+    : // Not every dead end is visible from here: the closure ALSO refuses a tmux
+      // session that is closed / ended / gone, and a pane it cannot observe at all
+      // (tmux off / absent — it pre-flights one `pane_current_command` before writing
+      // anything). Only the node knows the first, and the second costs an IPC that must
+      // not run per menu RENDER. Both reach the user through `restartAgentNode`'s skip
+      // notice, which names them, rather than through a hint this row cannot compute.
+      detachedHint(ctx, ids[0])
   // Pause/Resume have their OWN eligibility, computed on `st?.sessionId` alone — NOT
   // `sessionId` above, which also falls back to `n?.data.agentSessionId` (the id
   // nodeterm minted at node creation, for a node whose hooks never landed). The `pause`/
@@ -555,9 +572,7 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
     ? pauseGate.reason === 'working'
       ? 'This session is busy — try again once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : !ctx.attached(ids[0])
-      ? NOT_ATTACHED_HINT
-      : undefined
+    : detachedHint(ctx, ids[0])
   const restartRows: MenuItem[] = [
     {
       label: 'Restart agent',
@@ -616,9 +631,8 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
               ? 'Nothing to resume yet — this session has not reported an id.'
               : ctx.sessionSource === 'relay'
                 ? 'Restart the shell on the machine hosting this relay session.'
-                : !ctx.attached(ids[0])
-                  ? NOT_ATTACHED_HINT
-                  : 'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
+                : detachedHint(ctx, ids[0]) ??
+                  'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
             onClick: () => void ctx.restartAgentNode(ids[0], undefined, undefined, undefined, true)
           }
         ]
@@ -706,7 +720,7 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
             label: 'Resume session',
             icon: <IconPower />,
             disabled: !ctx.attached(ids[0]),
-            hint: ctx.attached(ids[0]) ? 'Brings the conversation back.' : NOT_ATTACHED_HINT,
+            hint: detachedHint(ctx, ids[0]) ?? 'Brings the conversation back.',
             onClick: () => void ctx.resumeAgentNode(ids[0])
           }
         ] as MenuItem[])
@@ -763,9 +777,7 @@ export function buildAccountSwitchRows(nodeId: string, ctx: NodeActionCtx): Menu
     ? gate.reason === 'working'
       ? 'This session is busy — switch it once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : !ctx.attached(nodeId)
-      ? NOT_ATTACHED_HINT
-      : undefined
+    : detachedHint(ctx, nodeId)
   return [
     // Switch this running Claude node onto another account already logged in on its
     // machine — this one, or the SSH host its pane runs on — with no /login in the pane
@@ -901,6 +913,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     nodes: o.nodes,
     sessionSource: o.sessionSource,
     attached: () => false,
+    onCanvas: () => false,
     // Canvas `agentIdOf`, over the stored copy.
     agentIdOf: (nodeId) => {
       const n = o.nodes.find((x) => x.id === nodeId)
