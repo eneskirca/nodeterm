@@ -806,6 +806,17 @@ body,
   cursor: not-allowed;
 }
 
+/* A menu row whose disabled reason lives on a wrapper: a disabled button takes no pointer events
+   in Chromium, so neither its own `title` nor the cursor would ever show. */
+.tab-menu__reason {
+  display: block;
+  cursor: not-allowed;
+}
+
+.tab-menu__reason > button:disabled {
+  pointer-events: none;
+}
+
 .tab-menu button.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--state-error) 15%, transparent);
 }

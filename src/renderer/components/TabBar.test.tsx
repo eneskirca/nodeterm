@@ -129,6 +129,17 @@ describe('TabBar caret menu', () => {
     expect(onPauseProject).toHaveBeenCalledWith('p1')
   })
 
+  it('a disabled Resume all carries its reason on a hoverable wrapper (a disabled button shows no title)', async () => {
+    const { useProjects } = await import('../state/projects')
+    await act(async () => {
+      useProjects.setState({ projects: [project(), project({ id: 'p2', name: 'Beta' })], activeProjectId: 'p2' })
+    })
+    const b = menuButton('Resume all')!
+    expect(b.disabled).toBe(true)
+    expect(b.getAttribute('title')).toBeNull()
+    expect(b.parentElement?.getAttribute('title')).toBe('Open the project to resume')
+  })
+
   it('closes on a press anywhere outside it, including the bar the menu hangs from', async () => {
     // The dismiss backdrop is below the bar so a click on another tab still switches projects,
     // which leaves the bar itself unable to close the menu without this.

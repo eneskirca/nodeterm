@@ -713,18 +713,25 @@ export function TabBar({
                 Cancel pending pauses
               </button>
             )}
-            <button
-              // Resume needs each node's mounted terminal (it re-launches the CLI into the pane and
-              // guards the typing), and only the active project's nodes are mounted.
-              disabled={menuProject.id !== activeId}
+            {/* Chromium shows no `title` for a DISABLED button (it receives no pointer events), so
+                the reason sits on a wrapper the pointer can reach; the disabled button lets the
+                pointer through to it (`.tab-menu__reason > button:disabled`). */}
+            <span
+              className="tab-menu__reason"
               title={menuProject.id !== activeId ? 'Open the project to resume' : undefined}
-              onClick={() => {
-                onResumeAllProject(menuProject.id)
-                closeMenu()
-              }}
             >
-              Resume all
-            </button>
+              <button
+                // Resume needs each node's mounted terminal (it re-launches the CLI into the pane
+                // and guards the typing), and only the active project's nodes are mounted.
+                disabled={menuProject.id !== activeId}
+                onClick={() => {
+                  onResumeAllProject(menuProject.id)
+                  closeMenu()
+                }}
+              >
+                Resume all
+              </button>
+            </span>
             <button
               onClick={() => {
                 onCloseProject(menuProject.id)
