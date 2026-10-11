@@ -1084,13 +1084,15 @@ Lifecycle, by intent:
   Windows session host, a native Windows pane and a plain shell answer `unsupported-backend`.
   (3) **`planBulkPause` (`lib/bulkPause.ts`) is the whole decision**: `now` (idle `done` or no
   state), `whenDone` (working / waiting / blocked, or a held question/approval ticket — typing
-  `/exit` into those would answer a prompt), `alreadyExited` (hibernated/paused: just mark), and
-  named skips (relay tab, `ended`, `dropped`, not an agent, no resumable session, …). A skipped
-  node says why; nothing is silently dropped.
+  `/exit` into those would answer a prompt), `alreadyExited` (hibernated by Eco: nothing to type,
+  just mark it paused), and named skips, exactly the `BulkPauseSkip` reasons: `not-agent`,
+  `no-session-id`, `not-resumable`, `already-paused`, `relay`, `dropped`, `ended`. A skipped node
+  says why; nothing is silently dropped.
   (4) **`whenDone` is `state/pendingPause.ts`, TRANSIENT** (never persisted: after a restart nothing
   is watched, so a stored mark would lie). It fires on a CLEAN `done` edge only (not errored,
   interrupted or held), the mark is removed BEFORE the fire so a second edge cannot double it, and
-  Resume, Cancel, node delete or the fire clear it.
+  Resume, Cancel, node delete or the fire clear it, and the watcher also drops a mark when the node
+  is paused elsewhere or its status disappears.
   (5) **Every exit holds `guardConcurrentRestart(nodeId, …)`** (the Eco / Pause / restart set) and
   runs through ONE `createHostLimiter(BULK_PAUSE_HOST_CAP = 3)` per host key (`local` or the SSH
   project id), shared by the batch and the pending fires; owner reads are bounded.
