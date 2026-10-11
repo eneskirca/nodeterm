@@ -83,4 +83,11 @@ describe('bulk pause wiring', () => {
   it('resume all says why when the canvas is mid-switch', () => {
     expect(canvas).toContain('Resume all skipped: the project is still loading')
   })
+  it('pane traffic is routed only through the owning project, never a guess at the active one', () => {
+    const start = canvas.indexOf('const ptyFor = useCallback(')
+    expect(start).toBeGreaterThan(-1)
+    const body = canvas.slice(start, canvas.indexOf('[owningProjectOf]', start))
+    expect(body).toContain('paneRouteProjectId(owningProjectOf(id))')
+    expect(body).not.toContain('activeProjectId')
+  })
 })

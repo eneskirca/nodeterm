@@ -151,3 +151,16 @@ export function describeSkips(skip: BulkPausePlan['skip']): string {
   for (const s of skip) n.set(s.reason, (n.get(s.reason) ?? 0) + 1)
   return [...n].map(([r, c]) => `${c} ${SKIP_TEXT[r]}`).join(', ')
 }
+
+/**
+ * Which project's session may carry a node's pane traffic (keys, pane-command and pane-owner reads)
+ * during a bulk pause. `null` = refuse, and the runner then reports the node unverified/unreachable:
+ *  - no known owner: a node read while its project is still loading has none, and falling back to
+ *    the ACTIVE project would route its keys through whatever session that is — a relay tab's
+ *    included, i.e. into a pane on another machine;
+ *  - a relay-owned node: the planner already skips it, this keeps the route refusing on its own.
+ */
+export function paneRouteProjectId(owner: { id: string; remote?: boolean } | undefined): string | null {
+  if (!owner || owner.remote) return null
+  return owner.id
+}

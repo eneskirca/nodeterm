@@ -498,6 +498,7 @@ import {
   bulkPauseConfirmText,
   bulkPauseResultText,
   describeSkips,
+  paneRouteProjectId,
   type BulkPauseTarget
 } from '../lib/bulkPause'
 import {
@@ -8349,19 +8350,24 @@ export function Canvas() {
     [nodesRef, nodesProjectIdRef]
   )
   // Core-bound `pty` comes from the node's OWNING project's session (grep gate), not the global.
+  // No owner, or a relay owner, means no route at all (`paneRouteProjectId`): never a guess at the
+  // active project, which could be a relay tab whose session types into another machine's pane.
   const ptyFor = useCallback(
-    (id: string) =>
-      sessionForProject(owningProjectOf(id)?.id ?? useProjects.getState().activeProjectId ?? '')
-        .api.pty,
+    (id: string) => {
+      const projectId = paneRouteProjectId(owningProjectOf(id))
+      return projectId === null ? null : sessionForProject(projectId).api.pty
+    },
     [owningProjectOf]
   )
   const headlessPauseDeps = useMemo<HeadlessPauseDeps>(
     () => ({
-      sendPaneKeys: (id, d) => ptyFor(id).sendPaneKeys(id, d),
+      sendPaneKeys: async (id, d) =>
+        (await ptyFor(id)?.sendPaneKeys(id, d)) ?? { ok: false, reason: 'not-connected' },
       // `resolveUnmounted`: the default answers only for a node with a LIVE pty client, and most
       // nodes a project-wide pause reaches are not mounted (another project, offscreen-released).
-      paneCommand: (id) => ptyFor(id).paneCommand(id, { resolveUnmounted: true }),
-      paneOwner: (id) => ptyFor(id).paneOwner(id, { resolveUnmounted: true }),
+      // No route answers null, which the runner reports as "couldn't verify the agent in its pane".
+      paneCommand: async (id) => (await ptyFor(id)?.paneCommand(id, { resolveUnmounted: true })) ?? null,
+      paneOwner: async (id) => (await ptyFor(id)?.paneOwner(id, { resolveUnmounted: true })) ?? null,
       status: (id) => useAgentStatus.getState().byId[id],
       binaries: (agentId) => binariesFor(agentId, useSettings.getState().settings.customAgents),
       // Gone from BOTH the live canvas and the stored projects. For the project React Flow holds,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   planBulkPause, isBusyForPause, bulkPauseSummary, describeSkips, bulkPauseResultText, bulkPauseConfirmText,
-  type BulkPauseTarget
+  paneRouteProjectId, type BulkPauseTarget
 } from './bulkPause'
 
 const t = (nodeId: string, agentId: string | undefined = 'claude', relay = false): BulkPauseTarget =>
@@ -141,4 +141,17 @@ describe('describeSkips', () => {
       ])
     ).toBe('2 not an agent, 1 already paused, 1 CLI already exited'))
   it('empty → empty string', () => expect(describeSkips([])).toBe(''))
+})
+
+describe('paneRouteProjectId', () => {
+  it('routes through the owning local or SSH project', () => {
+    expect(paneRouteProjectId({ id: 'p1' })).toBe('p1')
+    expect(paneRouteProjectId({ id: 'p2', remote: false })).toBe('p2')
+  })
+  it('refuses a node with no known owner — never the active project as a guess', () => {
+    expect(paneRouteProjectId(undefined)).toBeNull()
+  })
+  it('refuses a relay-owned node — its pane is on another machine', () => {
+    expect(paneRouteProjectId({ id: 'r1', remote: true })).toBeNull()
+  })
 })
