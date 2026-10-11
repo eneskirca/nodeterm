@@ -87,7 +87,7 @@ const GOLDEN_STRINGS = [
 
 const GOLDEN_TEMPLATES = [
   "Add selection to ${targetGroup.data.title || 'group'}",
-  "Pause ${agents.length} ${agents.length === 1 ? 'session' : 'sessions'}",
+  'Pause ${agents.length} sessions',
   'Quits this CLI and resumes the same session as ${variant.label}.',
   'Restarts the terminal session and resumes this conversation with ${model.id}.',
   'Switch model (${currentModel})',

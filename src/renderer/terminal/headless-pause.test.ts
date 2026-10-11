@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { pauseNodeHeadless, runWithHostCap } from './headless-pause'
+import { pauseNodeHeadless, runWithHostCap, createHostLimiter } from './headless-pause'
 
 const SID = '11111111-2222-3333-4444-555555555555'
 const OWNER = { panePid: 100, tty: 'pts/1', command: 'claude', argv: ['claude'], paneId: '%1' }
@@ -104,5 +104,44 @@ describe('runWithHostCap', () => {
       live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 5)); live--
     })
     expect(peak).toBe(2)
+  })
+})
+
+describe('createHostLimiter', () => {
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 1))
+
+  it('two callers sharing one limiter never exceed the cap on a host', async () => {
+    const lim = createHostLimiter(3)
+    let inFlight = 0
+    let peak = 0
+    const job = async (): Promise<void> => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await tick()
+      inFlight--
+    }
+    // A batch and a stream of single fires (the pending watcher), both on host 'h'.
+    const batch = Promise.all(Array.from({ length: 6 }, () => lim.run('h', job)))
+    const singles = Promise.all(Array.from({ length: 4 }, () => lim.run('h', job)))
+    await Promise.all([batch, singles])
+    expect(peak).toBe(3)
+  })
+
+  it('a throwing fn rejects only its own promise and frees its slot', async () => {
+    const lim = createHostLimiter(1)
+    const bad = lim.run('h', async () => { throw new Error('x') })
+    const good = lim.run('h', async () => 'ok')
+    await expect(bad).rejects.toThrow('x')
+    await expect(good).resolves.toBe('ok')
+  })
+
+  it('different hosts are independent', async () => {
+    const lim = createHostLimiter(1)
+    let release: () => void = () => {}
+    const blockA = lim.run('a', () => new Promise<void>((r) => { release = r }))
+    const b = await lim.run('b', async () => 'b-done') // must not wait on host a
+    expect(b).toBe('b-done')
+    release()
+    await blockA
   })
 })

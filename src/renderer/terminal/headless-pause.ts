@@ -103,27 +103,62 @@ export function pauseNodeHeadless(
   })()
 }
 
+export interface HostLimiter {
+  run<T>(hostKey: string, fn: () => Promise<T>): Promise<T>
+}
+
+/**
+ * At most `cap` jobs in flight per host key, the rest queued FIFO. ONE instance must be shared by
+ * every caller that exits CLIs on a host — the batch AND the pending-pause watcher — or each
+ * caller gets its own cap and together they exceed it. A throwing `fn` rejects only its own
+ * promise and frees its slot.
+ */
+export function createHostLimiter(cap: number): HostLimiter {
+  const inFlight = new Map<string, number>()
+  const queues = new Map<string, (() => void)[]>()
+  const release = (key: string): void => {
+    const next = queues.get(key)?.shift()
+    if (next) {
+      next() // the slot passes straight to the next waiter
+      return
+    }
+    queues.delete(key)
+    const n = (inFlight.get(key) ?? 1) - 1
+    if (n > 0) inFlight.set(key, n)
+    else inFlight.delete(key)
+  }
+  const acquire = (key: string): Promise<void> => {
+    const n = inFlight.get(key) ?? 0
+    if (n < cap) {
+      inFlight.set(key, n + 1)
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => {
+      const q = queues.get(key) ?? []
+      q.push(resolve)
+      queues.set(key, q)
+    })
+  }
+  return {
+    async run<T>(hostKey: string, fn: () => Promise<T>): Promise<T> {
+      await acquire(hostKey)
+      try {
+        return await fn()
+      } finally {
+        release(hostKey)
+      }
+    }
+  }
+}
+
+/** Every item through a fresh limiter; per-item failures are contained (the caller's `run` owns
+ *  reporting its own). */
 export async function runWithHostCap<T>(
   items: T[],
   hostKey: (t: T) => string,
   cap: number,
-  run: (t: T) => Promise<void>
+  run: (t: T) => Promise<void>,
+  limiter: HostLimiter = createHostLimiter(cap)
 ): Promise<void> {
-  const queues = new Map<string, T[]>()
-  for (const it of items) {
-    const k = hostKey(it)
-    queues.set(k, [...(queues.get(k) ?? []), it])
-  }
-  await Promise.all(
-    [...queues.values()].map(async (q) => {
-      const workers = Array.from({ length: Math.min(cap, q.length) }, async () => {
-        for (let next = q.shift(); next !== undefined; next = q.shift()) {
-          // Contained per item: the caller's `run` owns reporting its own failure, and one throw
-          // must not reject early while sibling workers keep draining detached.
-          try { await run(next) } catch { /* reported by the caller */ }
-        }
-      })
-      await Promise.all(workers)
-    })
-  )
+  await Promise.all(items.map((it) => limiter.run(hostKey(it), () => run(it)).catch(() => {})))
 }

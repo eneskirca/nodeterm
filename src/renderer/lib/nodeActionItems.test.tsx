@@ -265,6 +265,18 @@ describe('bulk pause from a multi-selection', () => {
     expect(pauseNodes).toHaveBeenCalledWith(['a1', 'a2'])
   })
 
+  it('one agent in a mixed selection keeps the single Pause session submenu (with Pause & end session)', () => {
+    useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1' } } } as never)
+    const pauseAgentNode = vi.fn(async () => {})
+    const nodes = [term('a1', { agentId: 'claude' }), term('t1'), term('t2')]
+    const items = buildNodeActionItems(['a1', 't1', 't2'], undefined, fakeCtx(nodes, { pauseAgentNode }))
+    expect(top(items)).toContain('Pause session ▸')
+    expect(row(items, 'Pause 1 session')).toBeUndefined()
+    expect(row(items, 'Pause & end session')).toBeDefined()
+    ;(row(items, 'Pause') as { onClick: () => void }).onClick()
+    expect(pauseAgentNode).toHaveBeenCalledWith('a1', false)
+  })
+
   it('no agent in the selection → no bulk pause row', () => {
     const items = buildNodeActionItems(['t1', 't2'], undefined, fakeCtx([term('t1'), term('t2')]))
     expect(top(items).some((r) => r.startsWith('Pause'))).toBe(false)

@@ -501,7 +501,7 @@ import {
 } from '../lib/bulkPause'
 import {
   pauseNodeHeadless,
-  runWithHostCap,
+  createHostLimiter,
   BULK_PAUSE_HOST_CAP,
   type HeadlessPauseDeps
 } from '../terminal/headless-pause'
@@ -1009,6 +1009,11 @@ type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: s
 
 /** The confirm dialogs, named so their setters can be wrapped in a synchronous open-guard (see
  *  `confirmFlags`): ONE confirm at a time, decided at call time rather than at the next render. */
+/** The ONE bulk-pause limiter: the batch path and the pending-pause watcher both run their exits
+ *  through it, so the per-host cap (BULK_PAUSE_HOST_CAP) holds across the two. Module-level
+ *  because the canvas is mounted once. */
+const hostLimiter = createHostLimiter(BULK_PAUSE_HOST_CAP)
+
 interface ConfirmState {
   message: string
   onConfirm: () => void
@@ -8421,28 +8426,27 @@ export function Canvas() {
       if (!ok) return
       usePendingPause.getState().add(plan.whenDone)
       const counts = { paused: 0, timeout: 0, unreachable: 0, deferred: 0, failed: 0 }
-      await runWithHostCap(
+      await Promise.all(
         [
           ...plan.alreadyExited.map((t) => [t, true] as const),
           ...plan.now.map((t) => [t, false] as const)
-        ],
-        ([t]) => t.hostKey,
-        BULK_PAUSE_HOST_CAP,
-        async ([t, exited]) => {
-          try {
-            const o = await pauseNodeHeadless(t, exited, headlessPauseDeps)
-            if (o === 'paused') counts.paused++
-            else if (o === 'exit-timeout') counts.timeout++
-            else if (o === 'unreachable') counts.unreachable++
-            else if (o === 'deferred') {
-              // Became busy between the plan and its turn in the queue: pause after this turn.
-              counts.deferred++
-              usePendingPause.getState().add([t])
-            }
-          } catch {
-            counts.failed++
-          }
-        }
+        ].map(([t, exited]) =>
+          hostLimiter
+            .run(t.hostKey, () => pauseNodeHeadless(t, exited, headlessPauseDeps))
+            .then((o) => {
+              if (o === 'paused') counts.paused++
+              else if (o === 'exit-timeout') counts.timeout++
+              else if (o === 'unreachable') counts.unreachable++
+              else if (o === 'deferred') {
+                // Became busy between the plan and its turn in the queue: pause after this turn.
+                counts.deferred++
+                usePendingPause.getState().add([t])
+              }
+            })
+            .catch(() => {
+              counts.failed++
+            })
+        )
       )
       const pending = plan.whenDone.length + counts.deferred
       const parts = [`Paused ${counts.paused}`]
@@ -8463,7 +8467,10 @@ export function Canvas() {
   useEffect(
     () =>
       startPendingPauseWatcher((t) => {
-        void pauseNodeHeadless(t, false, headlessPauseDeps)
+        // Through the SAME limiter as the batch: a burst of turns ending together must not put
+        // more than BULK_PAUSE_HOST_CAP exits in flight on one host.
+        void hostLimiter
+          .run(t.hostKey, () => pauseNodeHeadless(t, false, headlessPauseDeps))
           .then((o) => {
             if (o === 'deferred') usePendingPause.getState().add([t])
           })
@@ -8499,11 +8506,18 @@ export function Canvas() {
     [projectTerminalIds]
   )
 
-  /** Resume every PAUSED session of the active project, one at a time through the same
-   *  `resumeAgentNode` a single Resume uses. Only the active project: resume types into a
-   *  MOUNTED terminal (echo-verified, input buffered), and only that project's nodes are mounted. */
+  /** Resume every PAUSED session of the active project through the same `resumeAgentNode` a single
+   *  Resume uses. Each wake is fire-and-forget (the trigger owns its retries and the
+   *  guardConcurrentRestart lock), so this starts them all and does not wait. Only the active
+   *  project: resume types into a MOUNTED terminal (echo-verified, input buffered), and only that
+   *  project's nodes are mounted. Each call raises its own "Resuming…" line; the summary below is
+   *  set after the loop, so it is the one left on screen. */
   const resumeAllInActiveProject = useCallback(() => {
-    if (useProjects.getState().activeProjectId !== nodesProjectIdRef.current) return
+    if (useProjects.getState().activeProjectId !== nodesProjectIdRef.current) {
+      // Mid-switch: the live array still holds the outgoing project's nodes.
+      setNotice({ kind: 'error', text: 'Resume all skipped: the project is still loading — try again.' })
+      return
+    }
     const byId = useAgentStatus.getState().byId
     const paused = nodesRef.current.filter((n) => n.type === 'terminal' && byId[n.id]?.paused)
     let resumed = 0

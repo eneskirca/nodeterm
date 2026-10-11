@@ -452,7 +452,7 @@ export function buildNodeActionSections(
     { id: 'restart', items: session.restart },
     { id: 'switch-model', items: session.switchModel },
     { id: 'switch-account', items: session.switchAccount },
-    { id: 'pause', items: ids.length > 1 ? bulkPauseRows(ids, ctx) : session.pause },
+    { id: 'pause', items: ids.length > 1 ? bulkPauseRows(ids, ctx, hidden) : session.pause },
     SEPARATOR,
     {
       id: 'delete',
@@ -467,14 +467,21 @@ export function buildNodeActionSections(
  * "Pause 3 sessions" over two agents and a sticky would promise a pause that never happens. No
  * agent selected ⇒ no row (there is nothing to pause), never a disabled one.
  */
-function bulkPauseRows(ids: string[], ctx: NodeActionCtx): MenuItem[] {
+function bulkPauseRows(
+  ids: string[],
+  ctx: NodeActionCtx,
+  hidden: Parameters<typeof sessionRows>[2]
+): MenuItem[] {
   const agents = ids.filter(
     (id) => ctx.nodes.find((n) => n.id === id)?.type === 'terminal' && !!ctx.agentIdOf(id)
   )
   if (agents.length === 0) return []
+  // One agent among other nodes: that agent's own Pause submenu (eligibility gate, "Pause & end
+  // session" included) — the bulk row would be a one-node bulk with fewer choices.
+  if (agents.length === 1) return sessionRows(agents[0], ctx, hidden).pause
   return [
     {
-      label: `Pause ${agents.length} ${agents.length === 1 ? 'session' : 'sessions'}`,
+      label: `Pause ${agents.length} sessions`,
       icon: <IconPower />,
       hint: 'Quits each CLI; busy ones pause after their current turn. Resume brings each back.',
       onClick: () => ctx.pauseNodes(agents)

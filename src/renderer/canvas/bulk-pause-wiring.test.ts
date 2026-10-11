@@ -43,4 +43,14 @@ describe('bulk pause wiring', () => {
     expect(canvas).toMatch(/paneCommand\(id, \{ resolveUnmounted: true \}\)/)
     expect(canvas).toMatch(/paneOwner\(id, \{ resolveUnmounted: true \}\)/)
   })
+  it('batch and watcher share ONE host limiter (the 3-per-host cap holds across both)', () => {
+    expect(canvas.match(/createHostLimiter\(/g)?.length).toBe(1)
+    expect(canvas).toMatch(/createHostLimiter\(BULK_PAUSE_HOST_CAP\)/)
+    const w = canvas.indexOf('startPendingPauseWatcher((')
+    expect(canvas.slice(w, w + 600)).toMatch(/hostLimiter\s*\.run\(/)
+    expect(canvas).not.toMatch(/runWithHostCap\(/)
+  })
+  it('resume all says why when the canvas is mid-switch', () => {
+    expect(canvas).toContain('Resume all skipped: the project is still loading')
+  })
 })
