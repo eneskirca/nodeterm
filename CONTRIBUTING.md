@@ -166,7 +166,9 @@ picker — goes in `renderer/lib/nodeActionItems.tsx`, never inline in `Canvas.t
 menu, the sessions-sidebar row menu and both kanban card menus (through
 `components/kanban/cardMenu.tsx`) build from it. Decide in the same change whether a card offers
 the new row: a card takes only `BOARD_NODE_ACTION_IDS`, and a row that acts on canvas position goes
-in `BOARD_SPATIAL_ROW_IDS` instead. Remember the board acts on nodes of projects that are NOT on the
+in `BOARD_SPATIAL_ROW_IDS` instead. The card modal's ⋯ menu takes `BOARD_MODAL_ACTION_IDS` through
+its `sessionActions` prop, closes the modal before the action runs, and is absent when the card has
+no session row. Remember the board acts on nodes of projects that are NOT on the
 canvas (the Omni board): write through Canvas's `nodeWritesFor(projectId)` (built on
 `createNodeWriteRouter`, `lib/nodeWriteRouter.ts`), never a live-canvas callback, and report a failure with a `nodeterm:toast`.
 `lib/nodeActionItems.guard.test.ts` fails on a second copy of the rows.
