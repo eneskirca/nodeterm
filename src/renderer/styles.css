@@ -632,6 +632,16 @@ body,
 }
 
 /* Unread-completion count badge on a project tab. */
+/* Bulk pause: "⏸ 3 · 1 pending" after the tab name. Muted text, no fill — a paused project is a
+   resting state, not something asking for attention like the unread badge beside it. */
+.tab__paused {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .tab__badge {
   display: inline-flex;
   align-items: center;

@@ -52,6 +52,7 @@ const GOLDEN_STRINGS = [
   'Pause & end session',
   'Pause session',
   'Quits Claude, moves this conversation to the account and resumes it there — no login needed.',
+  'Quits each CLI; busy ones pause after their current turn. Resume brings each back.',
   'Quits the CLI and ends its tmux session too, for a fuller memory reclaim. Resume starts a fresh session with the same conversation.',
   'Quits the CLI and relaunches it with --resume (same conversation).',
   'Quits the CLI, respawns a fresh shell (picks up env/profile changes), then resumes.',
@@ -86,6 +87,7 @@ const GOLDEN_STRINGS = [
 
 const GOLDEN_TEMPLATES = [
   "Add selection to ${targetGroup.data.title || 'group'}",
+  "Pause ${agents.length} ${agents.length === 1 ? 'session' : 'sessions'}",
   'Quits this CLI and resumes the same session as ${variant.label}.',
   'Restarts the terminal session and resumes this conversation with ${model.id}.',
   'Switch model (${currentModel})',

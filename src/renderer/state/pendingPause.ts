@@ -50,7 +50,10 @@ export function startPendingPauseWatcher(fire: (t: BulkPauseTarget) => void): ()
         continue
       }
       if (shouldFirePendingPause(prev.byId[id], next)) {
-        gone.push(id)
+        // Drop the mark BEFORE firing: `fire` may re-queue the same node (a fire-time re-ask that
+        // finds it busy again answers 'deferred'), and a batch removal after the loop would wipe
+        // that fresh mark.
+        usePendingPause.getState().remove([id])
         fire(pending[id])
       }
     }

@@ -69,6 +69,7 @@ describe('TabBar caret menu', () => {
   let root: Root
   let host: HTMLElement
   let onOpenProjectSettings: ReturnType<typeof vi.fn<(id: string) => void>>
+  let onPauseProject: ReturnType<typeof vi.fn<(id: string) => void>>
 
   const menuButton = (label: string): HTMLButtonElement | undefined =>
     Array.from(document.querySelectorAll<HTMLButtonElement>('.tab-menu button')).find(
@@ -81,6 +82,7 @@ describe('TabBar caret menu', () => {
     document.body.appendChild(host)
     useProjects.setState({ projects: [project()], activeProjectId: 'p1' })
     onOpenProjectSettings = vi.fn<(id: string) => void>()
+    onPauseProject = vi.fn<(id: string) => void>()
     root = createRoot(host)
     await act(async () => {
       root.render(
@@ -96,6 +98,9 @@ describe('TabBar caret menu', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={onOpenProjectSettings}
+          onPauseProject={onPauseProject}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
         />
       )
     })
@@ -114,6 +119,14 @@ describe('TabBar caret menu', () => {
     expect(onOpenProjectSettings).toHaveBeenCalledWith('p1')
     // …and the menu closes behind it, like every other action in this menu.
     expect(document.querySelector('.tab-menu')).toBeNull()
+  })
+
+  it('offers "Pause project" for the project it was opened on, and Resume all on the active one', async () => {
+    expect(menuButton('Resume all')?.disabled).toBe(false)
+    // Nothing is pending, so there is nothing to cancel.
+    expect(menuButton('Cancel pending pauses')).toBeUndefined()
+    await click(menuButton('Pause project')!)
+    expect(onPauseProject).toHaveBeenCalledWith('p1')
   })
 
   it('closes on a press anywhere outside it, including the bar the menu hangs from', async () => {
@@ -172,6 +185,9 @@ describe('TabBar New-project pin', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={vi.fn()}
+          onPauseProject={vi.fn()}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
         />
       )
     })
@@ -244,6 +260,9 @@ describe('TabBar drag-reorder', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={vi.fn()}
+          onPauseProject={vi.fn()}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
         />
       )
     })
@@ -313,6 +332,9 @@ describe('TabBar options button', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={vi.fn()}
+          onPauseProject={vi.fn()}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
         />
       )
     })
@@ -369,6 +391,9 @@ describe('TabBar Share with team', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={vi.fn()}
+          onPauseProject={vi.fn()}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
           {...(props.share === false ? {} : { onShareWithTeam })}
           shareBlockedReason={props.blocked}
         />
@@ -482,6 +507,9 @@ describe('TabBar location tooltip', () => {
           onSetDefaultAccount={vi.fn()}
           onSetDefaultPermissionMode={vi.fn()}
           onOpenProjectSettings={vi.fn()}
+          onPauseProject={vi.fn()}
+          onCancelPendingPauses={vi.fn()}
+          onResumeAllProject={vi.fn()}
         />
       )
     })

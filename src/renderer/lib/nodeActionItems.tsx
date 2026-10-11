@@ -173,6 +173,8 @@ export interface NodeActionCtx {
     clearEnv?: boolean
   ) => Promise<unknown>
   pauseAgentNode: (nodeId: string, deep: boolean) => Promise<unknown>
+  /** Bulk pause for a multi-selection (Canvas `pauseNodes`): one confirm, the plan, the summary. */
+  pauseNodes: (ids: string[]) => void
   resumeAgentNode: (nodeId: string) => unknown
   switchClaudeAccountNode: (
     nodeId: string,
@@ -450,11 +452,32 @@ export function buildNodeActionSections(
     { id: 'restart', items: session.restart },
     { id: 'switch-model', items: session.switchModel },
     { id: 'switch-account', items: session.switchAccount },
-    { id: 'pause', items: session.pause },
+    { id: 'pause', items: ids.length > 1 ? bulkPauseRows(ids, ctx) : session.pause },
     SEPARATOR,
     {
       id: 'delete',
       items: [{ label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => ctx.deleteNodes(ids) }]
+    }
+  ]
+}
+
+/**
+ * A multi-selection's pause row: the selected AGENT sessions go to Canvas's one bulk path, which
+ * plans now / after-their-turn / skipped and asks once. Only agents are counted and handed over —
+ * "Pause 3 sessions" over two agents and a sticky would promise a pause that never happens. No
+ * agent selected ⇒ no row (there is nothing to pause), never a disabled one.
+ */
+function bulkPauseRows(ids: string[], ctx: NodeActionCtx): MenuItem[] {
+  const agents = ids.filter(
+    (id) => ctx.nodes.find((n) => n.id === id)?.type === 'terminal' && !!ctx.agentIdOf(id)
+  )
+  if (agents.length === 0) return []
+  return [
+    {
+      label: `Pause ${agents.length} ${agents.length === 1 ? 'session' : 'sessions'}`,
+      icon: <IconPower />,
+      hint: 'Quits each CLI; busy ones pause after their current turn. Resume brings each back.',
+      onClick: () => ctx.pauseNodes(agents)
     }
   ]
 }
@@ -897,6 +920,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     transferConversation: refuse,
     restartAgentNode: refuseLater,
     pauseAgentNode: refuseLater,
+    pauseNodes: refuse,
     resumeAgentNode: refuse,
     switchClaudeAccountNode: refuseLater,
     switchCodexAccountNode: refuseLater,

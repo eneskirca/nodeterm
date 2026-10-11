@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planBulkPause, isBusyForPause, bulkPauseSummary, type BulkPauseTarget } from './bulkPause'
+import { planBulkPause, isBusyForPause, bulkPauseSummary, describeSkips, type BulkPauseTarget } from './bulkPause'
 
 const t = (nodeId: string, agentId: string | undefined = 'claude', relay = false): BulkPauseTarget =>
   ({ nodeId, agentId, relay, hostKey: 'local' })
@@ -59,4 +59,18 @@ describe('bulkPauseSummary', () => {
       ? { state: 'done', sessionId: SID } : { state: 'working', sessionId: SID }) as never)
     expect(bulkPauseSummary(p)).toBe('Pause 1 now, 1 after its current turn')
   })
+})
+
+describe('describeSkips', () => {
+  const t = (nodeId: string): BulkPauseTarget => ({ nodeId, agentId: 'claude', relay: false, hostKey: 'local' })
+  it('groups by reason, in first-seen order', () =>
+    expect(
+      describeSkips([
+        { target: t('a'), reason: 'not-agent' },
+        { target: t('b'), reason: 'already-paused' },
+        { target: t('c'), reason: 'not-agent' },
+        { target: t('d'), reason: 'ended' }
+      ])
+    ).toBe('2 not an agent, 1 already paused, 1 CLI already exited'))
+  it('empty → empty string', () => expect(describeSkips([])).toBe(''))
 })

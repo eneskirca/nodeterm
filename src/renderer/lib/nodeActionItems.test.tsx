@@ -41,6 +41,7 @@ function fakeCtx(nodes: CanvasNode[], over: Partial<NodeActionCtx> = {}): NodeAc
     transferConversation: noop,
     restartAgentNode: async () => {},
     pauseAgentNode: async () => {},
+    pauseNodes: noop,
     resumeAgentNode: noop,
     switchClaudeAccountNode: async () => {},
     switchCodexAccountNode: async () => {},
@@ -241,5 +242,38 @@ describe('buildNodeActionItems — filters', () => {
   it('no spatial row is ever on the board list, nor a row the board owns itself', () => {
     for (const id of BOARD_SPATIAL_ROW_IDS) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
     for (const id of ['label', 'markdown-view', 'delete'] as const) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
+  })
+})
+
+describe('bulk pause from a multi-selection', () => {
+  it('several agents selected → one "Pause N sessions" row that hands every agent to pauseNodes', () => {
+    const pauseNodes = vi.fn()
+    const nodes = ['a1', 'a2', 'a3'].map((id) => term(id, { agentId: 'claude' }))
+    const items = buildNodeActionItems(['a1', 'a2', 'a3'], undefined, fakeCtx(nodes, { pauseNodes }))
+    const r = row(items, 'Pause 3 sessions')
+    expect(r).toBeDefined()
+    expect(top(items)).not.toContain('Pause session ▸')
+    ;(r as { onClick: () => void }).onClick()
+    expect(pauseNodes).toHaveBeenCalledWith(['a1', 'a2', 'a3'])
+  })
+
+  it('counts only agent sessions in a mixed selection', () => {
+    const pauseNodes = vi.fn()
+    const nodes = [term('a1', { agentId: 'claude' }), term('a2', { agentId: 'codex' }), term('t1')]
+    const items = buildNodeActionItems(['a1', 'a2', 't1'], undefined, fakeCtx(nodes, { pauseNodes }))
+    ;(row(items, 'Pause 2 sessions') as { onClick: () => void }).onClick()
+    expect(pauseNodes).toHaveBeenCalledWith(['a1', 'a2'])
+  })
+
+  it('no agent in the selection → no bulk pause row', () => {
+    const items = buildNodeActionItems(['t1', 't2'], undefined, fakeCtx([term('t1'), term('t2')]))
+    expect(top(items).some((r) => r.startsWith('Pause'))).toBe(false)
+  })
+
+  it('one agent keeps the single Pause session submenu', () => {
+    useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1' } } } as never)
+    const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude' })]))
+    expect(top(items)).toContain('Pause session ▸')
+    expect(row(items, 'Pause 1 sessions')).toBeUndefined()
   })
 })

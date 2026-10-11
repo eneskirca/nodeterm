@@ -42,4 +42,17 @@ describe('watcher', () => {
     expect(usePendingPause.getState().byId.n1).toBeUndefined()
     stop()
   })
+  it('drops the mark BEFORE firing, so a fire that re-queues (deferred) is not wiped', () => {
+    const seen: (string | undefined)[] = []
+    const stop = startPendingPauseWatcher((t) => {
+      seen.push(usePendingPause.getState().byId[t.nodeId]?.nodeId)
+      usePendingPause.getState().add([t]) // a synchronous re-queue, as a deferred outcome does
+    })
+    usePendingPause.getState().add([T])
+    useAgentStatus.getState().setState('n1', 'working')
+    useAgentStatus.getState().setState('n1', 'done')
+    expect(seen).toEqual([undefined])
+    expect(usePendingPause.getState().byId.n1).toBeDefined()
+    stop()
+  })
 })

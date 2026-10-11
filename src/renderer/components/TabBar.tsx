@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useProjects } from '../state/projects'
 import { isOmniKanbanEnabled, toggleBoardView, useViewMode, viewFor } from '../state/viewMode'
 import { useAgentStatus } from '../state/agentStatus'
+import { usePauseCounts } from '../state/pauseCounts'
 import { useSettings } from '../state/settings'
 import { accountsForProject, sshAccountsHint, systemAccountDisplay } from '../state/workspace'
 import { useSshConn } from '../state/sshConn'
@@ -54,6 +55,13 @@ interface TabBarProps {
   /** Why the share cannot start for this project right now (the row is then disabled with it as
    *  its tooltip), or null when it can. */
   shareBlockedReason?: (projectId: string) => string | null
+  /** Pause every agent session in the project (Canvas `pauseNodes`: one confirm, busy ones after
+   *  their current turn). */
+  onPauseProject: (id: string) => void
+  /** Drop the project's "pause after the current turn" marks. */
+  onCancelPendingPauses: (id: string) => void
+  /** Resume every PAUSED session of the ACTIVE project (offered only there). */
+  onResumeAllProject: (id: string) => void
 }
 
 /**
@@ -91,7 +99,10 @@ export function TabBar({
   onSetDefaultPermissionMode,
   onOpenProjectSettings,
   onShareWithTeam,
-  shareBlockedReason
+  shareBlockedReason,
+  onPauseProject,
+  onCancelPendingPauses,
+  onResumeAllProject
 }: TabBarProps) {
   // Select the raw array and filter in a memo, a `.filter()` inside the selector returns a
   // fresh array every store snapshot, which re-rendered the TabBar on EVERY projects change.
@@ -113,6 +124,10 @@ export function TabBar({
     return ids
   })
   const unreadSet = useMemo(() => new Set(unreadIds.split('|').filter(Boolean)), [unreadIds])
+  // ⏸ badge + the "Cancel pending pauses" row. Computed HERE, not in Canvas: this component
+  // already holds the projects array, and Canvas subscribing to it would re-render the whole canvas
+  // on every node serialization.
+  const pauseCounts = usePauseCounts(projects)
   const [menuId, setMenuId] = useState<string | null>(null)
   // `flipBase` is the ANCHOR's top edge: when the menu would overflow the bottom of the window,
   // it opens upward from the caret button instead (see useMenuFlip below).
@@ -438,6 +453,16 @@ export function TabBar({
 
                 {multiSession && <TabSessionLabel projectId={p.id} />}
 
+                {pauseCounts[p.id] && (
+                  <span
+                    className="tab__paused"
+                    title={`${pauseCounts[p.id].paused} paused${pauseCounts[p.id].pending ? `, ${pauseCounts[p.id].pending} pausing after their current turn` : ''}`}
+                  >
+                    ⏸ {pauseCounts[p.id].paused}
+                    {pauseCounts[p.id].pending ? ` · ${pauseCounts[p.id].pending} pending` : ''}
+                  </span>
+                )}
+
                 {unreadCount > 0 && (
                   <span className="tab__badge" title={`${unreadCount} unread`}>
                     {unreadCount}
@@ -669,6 +694,36 @@ export function TabBar({
               }}
             >
               Project settings…
+            </button>
+            <button
+              onClick={() => {
+                onPauseProject(menuProject.id)
+                closeMenu()
+              }}
+            >
+              Pause project
+            </button>
+            {(pauseCounts[menuProject.id]?.pending ?? 0) > 0 && (
+              <button
+                onClick={() => {
+                  onCancelPendingPauses(menuProject.id)
+                  closeMenu()
+                }}
+              >
+                Cancel pending pauses
+              </button>
+            )}
+            <button
+              // Resume needs each node's mounted terminal (it re-launches the CLI into the pane and
+              // guards the typing), and only the active project's nodes are mounted.
+              disabled={menuProject.id !== activeId}
+              title={menuProject.id !== activeId ? 'Open the project to resume' : undefined}
+              onClick={() => {
+                onResumeAllProject(menuProject.id)
+                closeMenu()
+              }}
+            >
+              Resume all
             </button>
             <button
               onClick={() => {

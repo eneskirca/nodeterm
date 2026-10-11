@@ -66,3 +66,20 @@ export function bulkPauseSummary(plan: BulkPausePlan): string {
   if (plan.skip.length) parts.push(`skip ${plan.skip.length}`)
   return parts.join(', ') || 'Nothing to pause'
 }
+
+const SKIP_TEXT: Record<BulkPauseSkip, string> = {
+  'not-agent': 'not an agent',
+  'no-session-id': 'no session yet',
+  'not-resumable': 'cannot be resumed',
+  'already-paused': 'already paused',
+  relay: 'on another machine',
+  dropped: 'CLI already gone',
+  ended: 'CLI already exited'
+}
+
+/** "2 not an agent, 1 already paused" — the skipped half of the confirm, grouped by reason. */
+export function describeSkips(skip: BulkPausePlan['skip']): string {
+  const n = new Map<BulkPauseSkip, number>()
+  for (const s of skip) n.set(s.reason, (n.get(s.reason) ?? 0) + 1)
+  return [...n].map(([r, c]) => `${c} ${SKIP_TEXT[r]}`).join(', ')
+}
