@@ -279,6 +279,7 @@ describe('TabBar drag-reorder', () => {
 
   it('scrolls the strip while a tab is dragged past its edge, and stops when the drag ends', async () => {
     let frames: FrameRequestCallback[] = []
+    let clock = 0
     vi.stubGlobal('requestAnimationFrame', (f: FrameRequestCallback) => frames.push(f))
     vi.stubGlobal('cancelAnimationFrame', () => {
       frames = []
@@ -286,7 +287,7 @@ describe('TabBar drag-reorder', () => {
     const flush = (): void => {
       const due = frames
       frames = []
-      due.forEach((f) => f(0))
+      due.forEach((f) => f((clock += 1000 / 60)))
     }
     const strip = host.querySelector<HTMLElement>('.tabbar__tabs')!
     strip.getBoundingClientRect = () =>

@@ -42,12 +42,13 @@ describe('edgeScrollStep', () => {
 describe('startDragAutoScroll', () => {
   let el: HTMLDivElement
   let frames: FrameRequestCallback[]
+  let clock = 0
 
   const flush = (n = 1): void => {
     for (let i = 0; i < n; i++) {
       const due = frames
       frames = []
-      due.forEach((f) => f(0))
+      due.forEach((f) => f((clock += 1000 / 60)))
     }
   }
   const dragOver = (clientX: number, clientY: number): void => {
@@ -87,6 +88,23 @@ describe('startDragAutoScroll', () => {
     dragOver(400, 900)
     flush(2)
     expect(el.scrollTop).toBe(2 * MAX_SCROLL_STEP_PX)
+    stop()
+  })
+
+  it('scrolls at the same speed on a 120 Hz display as on a 60 Hz one', () => {
+    el.scrollLeft = 1000
+    const stop = startDragAutoScroll(el, 'x')
+    dragOver(10, 10)
+    // Two 120 Hz frames cover one 60 Hz frame's time: together they move one 60 Hz step.
+    flush(1) // first frame counts as one 60 Hz frame
+    const afterFirst = el.scrollLeft
+    const run = frames
+    frames = []
+    run.forEach((f) => f((clock += 1000 / 120)))
+    const run2 = frames
+    frames = []
+    run2.forEach((f) => f((clock += 1000 / 120)))
+    expect(afterFirst - el.scrollLeft).toBe(MAX_SCROLL_STEP_PX)
     stop()
   })
 

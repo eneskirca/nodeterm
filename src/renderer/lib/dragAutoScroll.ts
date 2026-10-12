@@ -18,8 +18,12 @@ export const EDGE_BELT_PX = 40
 /** Extra distance past the edge over which the speed ramps up to its maximum. */
 export const OVERSHOOT_RAMP_PX = 120
 export const MIN_SCROLL_STEP_PX = 2
-/** Per frame; at 60 fps that is ~1400 px/s, a 30-tab strip end to end in ~3 s. */
+/** Per 60 Hz frame (~1400 px/s), a 30-tab strip end to end in ~3 s. The loop scales it by the
+ *  real frame time, so a 120 Hz display scrolls at the same speed, not twice as fast. */
 export const MAX_SCROLL_STEP_PX = 24
+const FRAME_MS = 1000 / 60
+/** A frame time longer than this (a stalled tab, a debugger pause) counts as this, not as a jump. */
+const MAX_FRAME_MS = 50
 
 function stepFor(depth: number, belt: number): number {
   const t = Math.min(1, depth / (belt + OVERSHOOT_RAMP_PX))
@@ -49,6 +53,7 @@ export function edgeScrollStep(pos: number, start: number, end: number): number 
 export function startDragAutoScroll(el: HTMLElement, axis: DragScrollAxis): () => void {
   let pos: number | null = null
   let frame = 0
+  let lastTime: number | null = null
   let stopped = false
 
   const onDragOver = (e: DragEvent): void => {
@@ -57,8 +62,10 @@ export function startDragAutoScroll(el: HTMLElement, axis: DragScrollAxis): () =
     if (e.clientX === 0 && e.clientY === 0) return
     pos = axis === 'x' ? e.clientX : e.clientY
   }
-  const tick = (): void => {
+  const tick = (time: number): void => {
     if (stopped) return
+    const elapsed = lastTime === null ? FRAME_MS : Math.min(MAX_FRAME_MS, Math.max(0, time - lastTime))
+    lastTime = time
     // The container left the DOM mid-drag (its panel closed): nothing left to scroll.
     if (!el.isConnected) {
       stop()
@@ -66,7 +73,8 @@ export function startDragAutoScroll(el: HTMLElement, axis: DragScrollAxis): () =
     }
     if (pos !== null) {
       const r = el.getBoundingClientRect()
-      const step = axis === 'x' ? edgeScrollStep(pos, r.left, r.right) : edgeScrollStep(pos, r.top, r.bottom)
+      const perFrame = axis === 'x' ? edgeScrollStep(pos, r.left, r.right) : edgeScrollStep(pos, r.top, r.bottom)
+      const step = Math.round((perFrame * elapsed) / FRAME_MS)
       if (step !== 0) {
         if (axis === 'x') el.scrollLeft += step
         else el.scrollTop += step

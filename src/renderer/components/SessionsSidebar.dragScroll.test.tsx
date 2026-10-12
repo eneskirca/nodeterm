@@ -24,10 +24,11 @@ const project = (id: string): Project =>
 let root: Root
 let host: HTMLDivElement
 let frames: FrameRequestCallback[]
+let clock = 0
 const flush = (): void => {
   const due = frames
   frames = []
-  due.forEach((f) => f(0))
+  due.forEach((f) => f((clock += 1000 / 60)))
 }
 const dragEvent = async (el: EventTarget, type: string, clientY = 0): Promise<void> => {
   const e = new Event(type, { bubbles: true, cancelable: true })
