@@ -86,3 +86,23 @@ it('scrolls the sidebar body while a project is dragged below it, and stops when
   flush()
   expect(body.scrollTop).toBe(afterDrag)
 })
+
+it('stops scrolling when the sidebar closes mid-drag', async () => {
+  const api = { git: { status: vi.fn(async () => ({ hasRepo: false })) }, fs: {} } as unknown as NodeTerminalApi
+  const session = createSession('local', api, 'local')
+  setActiveSession(session.id)
+  const render = (open: boolean): Promise<void> =>
+    act(async () => {
+      root.render(
+        <SessionProvider session={session}>
+          <SessionsSidebar {...props} open={open} />
+        </SessionProvider>
+      )
+    })
+  await render(true)
+  const head = host.querySelector('.ss-group__head')!
+  await dragEvent(head, 'dragstart')
+  expect(frames.length).toBeGreaterThan(0)
+  await render(false)
+  expect(frames).toHaveLength(0)
+})

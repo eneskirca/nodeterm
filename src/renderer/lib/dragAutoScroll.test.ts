@@ -98,6 +98,25 @@ describe('startDragAutoScroll', () => {
     stop()
   })
 
+  it('ignores a (0, 0) dragover, which Chromium can send at the window boundary', () => {
+    el.scrollLeft = 1000
+    const stop = startDragAutoScroll(el, 'x')
+    dragOver(5000, 300) // overshooting to the right
+    dragOver(0, 0)
+    flush(1)
+    expect(el.scrollLeft).toBe(1000 + MAX_SCROLL_STEP_PX)
+    stop()
+  })
+
+  it('stops by itself once the container is removed from the DOM', () => {
+    const stop = startDragAutoScroll(el, 'x')
+    dragOver(10, 10)
+    el.remove()
+    flush(1)
+    expect(frames).toHaveLength(0)
+    stop()
+  })
+
   it('stops scrolling and listening once stopped', () => {
     el.scrollLeft = 1000
     const stop = startDragAutoScroll(el, 'x')

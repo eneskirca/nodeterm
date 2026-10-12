@@ -52,10 +52,18 @@ export function startDragAutoScroll(el: HTMLElement, axis: DragScrollAxis): () =
   let stopped = false
 
   const onDragOver = (e: DragEvent): void => {
+    // Chromium can report (0, 0) for a drag event at the window boundary; taken at face value it
+    // would flip a drag that overshot the right/bottom edge into scrolling the other way.
+    if (e.clientX === 0 && e.clientY === 0) return
     pos = axis === 'x' ? e.clientX : e.clientY
   }
   const tick = (): void => {
     if (stopped) return
+    // The container left the DOM mid-drag (its panel closed): nothing left to scroll.
+    if (!el.isConnected) {
+      stop()
+      return
+    }
     if (pos !== null) {
       const r = el.getBoundingClientRect()
       const step = axis === 'x' ? edgeScrollStep(pos, r.left, r.right) : edgeScrollStep(pos, r.top, r.bottom)
