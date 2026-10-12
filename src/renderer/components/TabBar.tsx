@@ -17,6 +17,7 @@ import { runPendingUpdate, usePendingUpdate } from '../state/pendingUpdate'
 import { ProjectGlyph } from './ProjectGlyph'
 import { useTooltip } from './Tooltip'
 import { projectTabTooltip } from '../lib/projectTabTooltip'
+import { useDragAutoScroll } from '../lib/dragAutoScroll'
 import {
   ALL_PERMISSION_MODES,
   PERMISSION_MODE_LABELS,
@@ -232,6 +233,9 @@ export function TabBar({
   // The strip scrolls without a visible scrollbar (see .tabbar__tabs), so keep it navigable:
   // a plain mouse wheel scrolls it horizontally, and the active tab is brought into view.
   const tabsRef = useRef<HTMLDivElement>(null)
+  // While a tab is dragged the strip scrolls itself near (or past) its left/right edge, so a tab
+  // can travel from the far end to the front in one drag.
+  useDragAutoScroll(tabsRef, 'x', dragId !== null)
   const pendingUpdate = usePendingUpdate((s) => s.pending)
   useEffect(() => {
     tabsRef.current
