@@ -3427,6 +3427,41 @@ body,
   border-radius: 6px;
   overflow-x: auto;
 }
+/* A code block with its Copy button (nodes/CodeBlockCopy.tsx): the wrapper is the positioned box,
+   because the <pre> scrolls sideways and would carry the button with it. The wrapper takes the
+   <pre>'s block margin so the thread's first/last-child margin rules still apply. */
+.term-chat__code {
+  position: relative;
+  margin: 1em 0;
+}
+.term-chat__code > pre {
+  margin: 0;
+}
+/* Same control as the per-turn Copy (.term-chat__action), in the block's top-right corner. Hidden
+   until the block is hovered or the button is keyboard-focused, and kept while it says "Copied".
+   A solid backing so the code underneath does not show through it. */
+.term-chat__code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.term-chat__code:hover .term-chat__code-copy,
+.term-chat__code-copy:focus-visible,
+.term-chat__code-copy[data-copied] {
+  opacity: 1;
+}
+.term-chat__code-copy:hover {
+  background: var(--bg);
+  border-color: rgba(var(--tint-rgb), 0.3);
+}
 .term-chat__text a {
   color: var(--accent);
   text-decoration: underline;

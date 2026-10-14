@@ -3701,6 +3701,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the legacy and paged paths; absent when the line states none — never a made-up time). One
   60-second `now` tick in ChatPanel drives every row's label. No thumbs / read-aloud / retry (no
   terminal equivalent). `.term-chat__text` stays the markdown sink the link guard scopes to.
+  **Every code block has the same Copy control in its top-right corner** (`nodes/CodeBlockCopy.tsx`;
+  ONE button component, `ChatCopyButton`, shared with the per-turn Copy so the two cannot drift).
+  The Markdown is an HTML string, so after each new string the hook wraps every `<pre>` in a
+  positioned `.term-chat__code` (never inside the `<pre>`: it scrolls sideways and would carry the
+  button) and portals the button beside it. It copies the block's `<code>` text minus marked's one
+  trailing newline (`lib/codeBlockCopy.ts`) — a pasted command must not run on paste. Hover-revealed,
+  kept visible while it says "Copied". Chat messages, thinking and plan/question cards all render
+  through `MarkdownText`, so all get it; the ⌘M output view and the editor preview do not.
   **The composer (2026-09-26, claude.ai-style)** is one rounded box — textarea on top, a toolbar
   under it: "+" attach on the left; model label, muted effort label and a mic on the right (pure
   decisions in `lib/chatComposer.ts`). Four rules: (1) **attach = paths in the DRAFT, resolved the
