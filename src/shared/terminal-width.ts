@@ -73,7 +73,7 @@ const STATE_KEYCAP_BASE = 2
 /** `[0-9#*]` + VS16: the keycap mark that follows makes it two cells. */
 const STATE_KEYCAP_VS16 = 3
 
-// ASCII's only Emoji-property characters are the keycap bases, handled before this is asked.
+// Below U+00A9 the only Emoji-property characters are the keycap bases, handled before this is asked.
 const EMOJI = /^\p{Emoji}$/u
 const isKeycapBase = (cp: number): boolean => (cp >= 0x30 && cp <= 0x39) || cp === 0x23 || cp === 0x2a
 
@@ -93,6 +93,9 @@ export function withEmojiPresentation(base: WidthProvider): WidthProvider {
       // Only a fresh one-cell character can start a sequence; a join keeps the base's answer.
       if ((value & 1) !== 0 || widthOf(value) !== 1) return value
       if (isKeycapBase(cp)) return pack(STATE_KEYCAP_BASE, 1, false)
+      // Hot path: this runs per printed character. No code point below © (U+00A9) other than the
+      // keycap bases has the Emoji property, so plain text never pays for the regex below.
+      if (cp < 0xa9) return value
       if (EMOJI.test(String.fromCodePoint(cp))) return pack(STATE_EMOJI_BASE, 1, false)
       return value
     }

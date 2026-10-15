@@ -11,9 +11,14 @@
  * the keycap case reddens. Drop the `isKeycapBase` branch → the ASCII + VS16 case reddens (an
  * ASCII digit would then count as an emoji base).
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/headless'
-import { activateTerminalWidths, TERMINAL_WIDTH_VERSION } from './terminal-width'
+import {
+  activateTerminalWidths,
+  TERMINAL_WIDTH_VERSION,
+  withEmojiPresentation,
+  type WidthProvider
+} from './terminal-width'
 
 const VS16 = '\u{fe0f}'
 const VS15 = '\u{fe0e}'
@@ -85,3 +90,35 @@ describe('the shared terminal width table', () => {
     expect(await cells(`1${KEYCAP}`)).toBe(1) // unqualified: one cell, as tmux sizes it
   })
 })
+
+// charProperties runs once per printed character, so plain ASCII must never pay for the emoji
+// regex: on ~20 MB of ASCII the regex alone slowed parsing by ~75%. MUTATION: drop the
+// `cp < 0xa9` fast path → the spy below is called and this test reddens.
+describe('the width wrapper on plain text', () => {
+  // A base table that answers "one fresh cell" for everything, so every code point reaches the
+  // part of the wrapper that would ask the regex.
+  const base: WidthProvider = {
+    version: 'stub',
+    wcwidth: () => 1,
+    charProperties: () => 1 << 1
+  }
+
+  it('never runs the emoji regex for a character below U+00A9', () => {
+    const provider = withEmojiPresentation(base)
+    const spy = vi.spyOn(RegExp.prototype, 'test')
+    try {
+      for (let cp = 0x20; cp < 0xa9; cp++) {
+        if (cp >= 0x7f && cp < 0xa0) continue
+        provider.charProperties(cp, 0)
+      }
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('still marks U+00A9 as an emoji base, so the fast path stops short of it', async () => {
+    expect(await cells(`\u{a9}${VS16}`)).toBe(2)
+  })
+})
+
