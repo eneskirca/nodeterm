@@ -6,11 +6,6 @@ import { SYSTEM_NODE_COLORS, type CanvasNode } from '../state/workspace'
 import type { KanbanSession } from '../components/kanban/KanbanView'
 import type { PendingLaunch } from '@shared/types'
 
-/** TerminalNode's `firstOpenInFlight`, minus the delivery store (the chip reads that itself). */
-function firstOpenInFlight(n: CanvasNode, p: PendingLaunch): boolean {
-  return !!n.data.initialCommand && !p.after?.length && !p.awaitSetupGroup && !p.afterPr && !p.afterSuccess
-}
-
 /** One canvas node as a board card, or null when this kind is not a card at all (a group frame, an
  *  editor, a diff). The board derives its cards from the canvas live, so this is the single
  *  definition of that mapping — the card list and the board-log's `cardTitle` lookup must agree on
@@ -58,9 +53,11 @@ export function toKanbanSession(n: CanvasNode): KanbanSession | null {
     // Re-validated, like everything read off node data for display: the issue card groups sessions
     // by this, and a malformed value must bind to nothing rather than to a wrong card.
     issueRef: normalizeIssueRef(n.data.issueRef),
-    // The node hides a first-open launch still in flight (its `pendingLaunch` is only the
-    // write-ahead record then); the card follows the same rule so the two views agree.
-    ...(pending && !firstOpenInFlight(n, pending) ? { pendingLaunch: pending } : {}),
+    // The held launch always rides the card; whether a first-open launch still in flight hides the
+    // chip is decided by the chip itself (lib/pendingLaunch `firstOpenInFlight`, the node's own
+    // predicate), because only it reads the delivery store — a delivery that failed before the
+    // `initialCommand` alias cleared must show ⚠ QUEUED on the card exactly as it does on the node.
+    ...(pending ? { pendingLaunch: pending, ...(n.data.initialCommand ? { launchFirstOpen: true } : {}) } : {}),
     // What the card modal's co-attach terminal needs to join THIS node's session the same way the
     // canvas TerminalNode does.
     spawn: {

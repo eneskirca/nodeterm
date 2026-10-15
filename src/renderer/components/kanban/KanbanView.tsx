@@ -94,8 +94,11 @@ export interface KanbanSession {
    *  nearest bound ancestor). A pull request whose head is this branch links to the card. */
   worktreeBranch?: string
   /** The node's held launch (terminal cards only) — shown as QUEUED with a ▶ on the card and in its
-   *  modal. Absent while a node's own first-open launch is merely in flight (the node hides it too). */
+   *  modal. */
   pendingLaunch?: PendingLaunch
+  /** The node's first-open `initialCommand` is still set: with no reported delivery and no hold, the
+   *  launch is merely in flight and the chip hides (the node hides it too — `firstOpenInFlight`). */
+  launchFirstOpen?: boolean
 }
 
 /** What the per-column "+ New" menu can create. */

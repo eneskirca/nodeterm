@@ -274,7 +274,7 @@ import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../sta
 import { ensureCodexLaunchCaps } from '../state/codexCli'
 import { useAgentStatus, agentStatusForApi, inferInterruptAfterSettle } from '../state/agentStatus'
 import { useLaunchDelivery } from '../state/launchDelivery'
-import { erroredDeps, handedOverDeps, holdReason, interruptedDeps, launchTooltip } from '../lib/pendingLaunch'
+import { erroredDeps, firstOpenInFlight as isFirstOpenInFlight, handedOverDeps, holdReason, interruptedDeps, launchTooltip } from '../lib/pendingLaunch'
 import { useStationHandovers } from '../state/stationHandovers'
 import { useSuccessWait } from '../lib/useSuccessWait'
 import { StationFailedChip } from '../components/StationFailedChip'
@@ -2140,18 +2140,9 @@ export function TerminalNode({
   // A headless start (#925) is typing this node's launch from core: the badge says so, without the
   // warning, and ▶ stands aside — a click would splice a second copy into the pane.
   const startingNow = launchDelivery?.kind === 'starting'
-  // A node's own first-open launch is in flight: the live `initialCommand` alias is still set
-  // (it is cleared on every outcome) and nothing holds it. Its `pendingLaunch` is only the durable
-  // write-ahead record — and it carries `manualOnly` from the claim until Enter lands — so showing
-  // the chip here painted "⚠ QUEUED" on EVERY freshly opened agent for the length of its delivery.
-  // A real hold (deps, setup script) or a reported failure/stall still shows.
-  const firstOpenInFlight =
-    !!data.initialCommand &&
-    !observedLaunchDelivery &&
-    !(pendingLaunch?.after?.length) &&
-    !pendingLaunch?.awaitSetupGroup &&
-    !pendingLaunch?.afterPr &&
-    !pendingLaunch?.afterSuccess
+  // A node's own first-open launch still in flight hides the chip (lib/pendingLaunch — the board
+  // card asks the same predicate).
+  const firstOpenInFlight = isFirstOpenInFlight(!!data.initialCommand, pendingLaunch, observedLaunchDelivery)
   // `--after-success`: where the wait stands (lib/useSuccessWait — the hold through the shape rule,
   // its stations, and the tooltip, which flips to EXPIRED on its own deadline tick).
   const successWait = useSuccessWait(

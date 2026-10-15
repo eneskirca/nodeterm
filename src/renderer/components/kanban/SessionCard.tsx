@@ -62,8 +62,8 @@ interface SessionCardProps {
   ports?: { projectId: string; remote: boolean }
   /** A port row was picked: open it in a browser node beside the card's node (on the canvas). */
   onOpenPort?: (nodeId: string, url: string) => void
-  /** ▶ on the card's QUEUED chip: start the node's held launch now (Canvas's `run` path). Absent =
-   *  the chip shows without ▶ (a relay tab — the launch belongs to the host). */
+  /** ▶ on the card's QUEUED chip: start the node's held launch now (Canvas's `run` path; on a relay
+   *  tab Canvas answers with a "runs on the host" notice instead). Absent = the chip shows without ▶. */
   onRunQueued?: (nodeId: string) => void
 }
 
@@ -168,15 +168,16 @@ export const SessionCard = memo(function SessionCard({
         {session.kind === 'terminal' && team && team.length > 0 && onTravel && (
           <TeamProgressChip stations={team} onTravel={onTravel} />
         )}
-        {/* The canvas node header's Ports chip — one component, so the two views of a session
-            cannot disagree. It stops its own clicks, so opening it never opens the card. */}
         {session.kind === 'terminal' && session.pendingLaunch && (
           <QueuedLaunchChip
             nodeId={session.id}
             pending={session.pendingLaunch}
+            firstOpen={session.launchFirstOpen}
             onRun={onRunQueued ? () => onRunQueued(session.id) : undefined}
           />
         )}
+        {/* The canvas node header's Ports chip — one component, so the two views of a session
+            cannot disagree. It stops its own clicks, so opening it never opens the card. */}
         {session.kind === 'terminal' && ports && onOpenPort && (
           <PortsChip
             nodeId={session.id}

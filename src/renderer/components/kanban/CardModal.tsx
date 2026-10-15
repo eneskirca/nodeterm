@@ -495,7 +495,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           {isTerminal && onOpenIssue && <IssueRefChip issueRef={session.issueRef} onOpen={onOpenIssue} />}
           {isTerminal && team && team.length > 0 && onTravel && <TeamProgressChip stations={team} onTravel={onTravel} />}
           {isTerminal && session.pendingLaunch && (
-            <QueuedLaunchChip nodeId={session.id} pending={session.pendingLaunch} onRun={onRunQueued} />
+            <QueuedLaunchChip nodeId={session.id} pending={session.pendingLaunch} firstOpen={session.launchFirstOpen} onRun={onRunQueued} />
           )}
           {/* The same Ports chip as the canvas node header. Opening a port places the browser node
               beside this node ON THE CANVAS, so the modal hands over to the canvas to show it. */}

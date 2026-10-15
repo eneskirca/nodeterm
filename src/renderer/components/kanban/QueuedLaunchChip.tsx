@@ -1,6 +1,6 @@
 import type { PendingLaunch } from '@shared/types'
 import { useLaunchDelivery } from '../../state/launchDelivery'
-import { launchTooltip } from '../../lib/pendingLaunch'
+import { firstOpenInFlight, launchTooltip } from '../../lib/pendingLaunch'
 import { IconPlay } from '../icons'
 
 /**
@@ -17,16 +17,21 @@ import { IconPlay } from '../icons'
 export function QueuedLaunchChip({
   nodeId,
   pending,
+  firstOpen = false,
   onRun,
   className = ''
 }: {
   nodeId: string
   pending: PendingLaunch
-  /** Absent = no ▶ (a relay tab: the launch belongs to the host). */
+  /** The node's first-open `initialCommand` is still set (`KanbanSession.launchFirstOpen`). */
+  firstOpen?: boolean
+  /** Absent = no ▶ (a board with no run wiring). A relay tab DOES get ▶: Canvas answers it with a
+   *  notice that the launch runs on the host, rather than starting anything here. */
   onRun?: () => void
   className?: string
 }) {
   const observed = useLaunchDelivery((s) => s.byId[nodeId])
+  if (firstOpenInFlight(firstOpen, pending, observed)) return null
   const delivery = observed ?? (pending.manualOnly ? { kind: 'failed' as const, attempts: 1, at: 0 } : undefined)
   const starting = delivery?.kind === 'starting'
   const waitingOn = (pending.after ?? []).join(', ')
