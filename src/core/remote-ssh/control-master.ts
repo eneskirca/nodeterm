@@ -653,6 +653,26 @@ export function remotePaneCommandArgs(conn: SshConnection, controlPath: string, 
   )
 }
 
+/**
+ * One closed-set key into a remote pane (`PtyManager.sendKeys`, the phone's relay `agent.key`).
+ * `keyArgs` comes from `relay-keys.tmuxKeyArgs` — a digit 1–9 after `-l`, or a fixed key name —
+ * and is re-checked here before it lands on a remote command line.
+ */
+export function remoteSendKeyArgs(
+  conn: SshConnection,
+  controlPath: string,
+  sessionId: string,
+  keyArgs: readonly string[]
+): string[] {
+  const safe = keyArgs.every((a) => /^(-l|[1-9]|Escape|Enter|Right)$/.test(a))
+  if (!safe || !/^[A-Za-z0-9._-]+$/.test(sessionId)) throw new Error('unsafe remote send-keys')
+  return childArgs(
+    conn,
+    controlPath,
+    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${sessionId} ${keyArgs.join(' ')}`)
+  )
+}
+
 /** The remote counterpart of `PtyManager.paneCwd`'s local `display-message` path. */
 export function remotePaneCwdArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
   return childArgs(

@@ -78,6 +78,15 @@ export function autosaveDelay(
 }
 
 /**
+ * Whether main's quit / restart-to-update flush request (`workspace.onFlushRequest`) should write
+ * now. Same conflict rule as `autosaveDelay`: with the conflict bar up the user owes a decision,
+ * and a flush on the way out must not silently "keep mine" over the external version.
+ */
+export function shouldFlushOnQuit(dirty: boolean, conflictOpen: boolean): boolean {
+  return dirty && !conflictOpen
+}
+
+/**
  * The sentence the save-failure strip shows, or `null` while there is nothing to report.
  *
  * Says what was observed and never a cause that was not measured: from the renderer a refused

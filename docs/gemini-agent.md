@@ -609,4 +609,19 @@ SSH + surfaces
 30. Phone Chat screen on a LOCAL gemini node over the relay: the same thread as ⌘M, the model
     label under it.
 31. Close a gemini node, reopen its transcript from "Recently closed": it reads.
+
+Windows (hook wrapper + .cmd shims; nothing here has run on a device yet)
+32. On Windows, start nodeterm once and open ~/.gemini/settings.json: every managed event holds ONE
+    entry, `C:\Windows\System32\cmd.exe /d /c call "<home>\.nodeterm\agent-hooks\gemini-hook.cmd "`,
+    and an older POSIX `if [ -r ...` entry is gone (replaced, not duplicated).
+33. With Git for Windows installed, repeat items 1-3 under BOTH pwsh.exe and Windows PowerShell
+    (gemini picks pwsh.exe when present, else powershell.exe; ComSpec=powershell wins over both):
+    RUNNING appears and clears, a real permission prompt flips the badge to NEEDS YOU.
+34. Rename/move Git out of the way (no sh.exe anywhere): a gemini turn still runs with no hook
+    error line in the TUI and the badge simply stays Unknown (the wrapper drains and exits 0).
+35. In a gemini node run the canvas skill's line, `& "<userData>\canvas-control\nodeterm.cmd" list`,
+    and the context skill's `& "<userData>\context-links\context.cmd" list`: both answer. Then
+    `... open-terminal --cmd=--version` and a `--prompt "two words"` value arrive intact.
+36. Draw a context link to a gemini node: the injected note names `context.cmd` with `& `, and
+    running it verbatim works.
 ```

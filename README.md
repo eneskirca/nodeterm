@@ -153,7 +153,9 @@ Gemini / GitHub Copilot / opencode / Grok / custom) · 📝 **Sticky note** (lin
   from your phone — plus push notifications and a mobile board view.
 - **Power & sleep** — while an agent is working, nodeterm keeps the machine from
   idle-sleeping, and lets go the moment it finishes (on by default; toggle in the setup
-  tour or Settings → Behavior). No app can hold a machine awake through a closed lid —
+  tour or Settings → Behavior). It lets the machine sleep anyway on battery below 5% or
+  when the machine runs critically hot. No app can hold a machine awake through a closed lid
+  (a Mac with the lid closed stays awake only while plugged in with an external display) —
   for overnight runs keep the laptop open and plugged in, or run the agents on a box
   that doesn't sleep via the [Server Edition](./docs/SERVER.md).
 - **Command palette** (⌘K), **file explorer** (⌘⇧E), **markdown view** (⌘M),
@@ -216,7 +218,7 @@ detects your platform. Everything is also listed at
 - **Windows (x64) — beta** — `nodeterm-Setup-<version>.exe` (per-user installer) or a
   portable `-win.zip`. Early support, so know what you are getting: the installer is
   **unsigned** (SmartScreen will ask — *More info → Run anyway*), **updates are manual**
-  for now (grab the next build from the same page), and **session continuity across
+  for now (the app tells you when a new version is out and links the download), and **session continuity across
   restarts is still landing** — Windows has no tmux, so the standalone session host that
   replaces it is being packaged in [#579](https://github.com/eneskirca/nodeterm/pull/579).
   Everything else — canvas, agents, kanban, hooks — is the same app. Please

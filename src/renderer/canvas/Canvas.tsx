@@ -13,6 +13,7 @@ import { arrangeArgsRefusal, isTopLevelGroupArg, TOP_ARRANGE_LAYOUTS } from '@sh
 import { createControlOpenBatch } from '../lib/controlOpenBatch'
 import { commitOwnedLaunchAttempt, registerLaunchCommit } from '../terminal/launch-attempt'
 import { hasLaunchWriter, launchCommand } from '../terminal/launch-command'
+import { useCoreIsWindows } from '../terminal/use-core-platform'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useContextLinkSync } from './useContextLinkSync'
 import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
@@ -57,10 +58,15 @@ import {
 } from '../nodes/TerminalNode'
 import { solveFitPadding } from './fit-view'
 import { FloatingEdge } from './FloatingEdge'
-import { MacWheelGestureRouter, trackpadRoutingEnabled } from './wheel-gesture'
+import {
+  MacWheelGestureRouter,
+  trackpadRoutingEnabled,
+  trackpadRoutingSupported,
+  wheelGestureReporting
+} from './wheel-gesture'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { WheelZoomBurstLimiter, clampWheelZoomSpeed, nextWheelZoom } from './wheel-zoom'
-import { selectedLocalFilePaths } from './canvas-file-copy'
+import { canCopyFilesToClipboard, selectedLocalFilePaths } from './canvas-file-copy'
 import {
   canvasImagePasteArmedAfterKey,
   canvasImportRefusal,
@@ -99,6 +105,11 @@ import {
   releaseAllHiddenGrants,
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
+import {
+  BACKGROUND_RELEASE_DWELL_MS,
+  isWindowBackgrounded,
+  setWindowBackgrounded
+} from '../terminal/window-backgrounded'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
@@ -200,6 +211,7 @@ import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
   autosaveDelay,
+  shouldFlushOnQuit,
   nextSaveDelivery,
   type SaveDelivery
 } from '../lib/savePersistence'
@@ -300,7 +312,7 @@ import {
   requestTerminalFontZoom,
   type TerminalFontZoomRequest
 } from '../terminal/terminal-font-zoom'
-import { isMacPlatform } from '@shared/platform-utils'
+import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
 import {
   dispatchGlobalKeydown,
   type GlobalKeyEvent,
@@ -1315,6 +1327,18 @@ function setupApi(): typeof window.nodeTerminal.projectSetup {
   return window.nodeTerminal.projectSetup
 }
 
+/**
+ * The renderer's bulk reclaim pair, shared by memory pressure and a window put away for the
+ * background dwell. Both halves are idempotent and cost only warmth: a reclaimed HIDDEN context
+ * re-grants on its next visibility transition (a visible holder is never touched — see
+ * `releaseAllHiddenGrants`), and a dropped park re-mounts as an ordinary warm reattach unless it
+ * holds live work (`disposeAllParkedTerminals` asks the live-work gate).
+ */
+function runReclaimLevers(): void {
+  releaseAllHiddenGrants()
+  disposeAllParkedTerminals()
+}
+
 export function Canvas() {
   // This canvas's core api (a context read — stable for the session, no store subscription).
   // For the local session it IS window.nodeTerminal, so every call resolves identically.
@@ -2081,6 +2105,8 @@ export function Canvas() {
   /** The active project runs on a remote host → every worktree affordance is off (see
    *  WORKTREE_SSH_HINT). Reactive, so the menus rebuild when the user switches projects. */
   const isSshProject = !!activeSshServer
+  // Run configurations launch a POSIX `sh` script on the core — gated off on a Windows core.
+  const isWindowsCore = useCoreIsWindows()
   /** The active SSH project's host, once it is CONNECTED — the host the consent banner asks about
    *  (nothing is installed there until it is answered). */
   const activeSshHostKey = useSshConn((c) => {
@@ -4081,6 +4107,17 @@ export function Canvas() {
     })
   }, [])
 
+  // Quit / restart-to-update: main asks for the pending edits the debounce above still holds
+  // (src/main/renderer-flush.ts). Without this, the last ~800 ms of node moves / renames / camera
+  // changes were lost on every ⌘Q and every update restart. Same conflict rule as the autosave.
+  useEffect(
+    () =>
+      api.workspace.onFlushRequest(async () => {
+        if (shouldFlushOnQuit(dirtyRef.current, !!conflictRef.current)) await persist()
+      }),
+    [api, persist]
+  )
+
   // Debounced auto-save for canvas edits. Suppressed while a conflict bar is up: the bar only ever
   // appears WHILE dirty, so without this gate the 800ms timer would fire and silently "keep mine"
   // (overwrite the external disk version) before the user can choose. `conflict` is a dep so
@@ -4758,10 +4795,13 @@ export function Canvas() {
     async (selfId: string, otherId: string) => {
       if (useAgentStatus.getState().byId[selfId]?.state === 'working') return
       const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
-      const { shimPath } = await window.nodeTerminal.contextLink.info()
+      const { shimPath, platform: shimHost } = await window.nodeTerminal.contextLink.info()
+      // The shim named here is the LOCAL core's; an SSH node's agent runs on its host, whose skill
+      // is POSIX, so only a local node gets the host-platform wording (`.cmd` on Windows).
+      const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
       void api.pty.sendText(
         selfId,
-        buildContextLinkNote(agentIdOf(selfId), title, shimPath)
+        buildContextLinkNote(agentIdOf(selfId), title, shimPath, isRemoteSessionNode(selfData) ? undefined : shimHost)
       ).then(reportTextDelivery)
     },
     [agentIdOf]
@@ -5029,7 +5069,11 @@ export function Canvas() {
   const wheelZoomSpeed = clampWheelZoomSpeed(settings.wheelZoomSpeed)
   // The escape hatch, resolved ONCE: the router and React Flow's panOnScroll below must agree, or
   // a gesture neither of them pans is a gesture that does nothing.
-  const trackpadRouting = trackpadRoutingEnabled(isMac, settings.trackpadPan)
+  // macOS and Windows (heuristic there — see trackpadRoutingSupported); never Linux.
+  const trackpadRouting = trackpadRoutingEnabled(
+    trackpadRoutingSupported({ mac: isMac, windows: isWindowsPlatform() }),
+    settings.trackpadPan
+  )
   useEffect(() => {
     const wrap = flowWrapRef.current
     if (!wrap) return
@@ -5037,7 +5081,7 @@ export function Canvas() {
     // router routes by device FACT instead of delta-shape guessing — a precise-pixel mouse
     // (MX Master) zooms while the trackpad pans, both settings on. The browser (Server Edition)
     // has no such stream: reporting stays off and the router keeps its heuristics.
-    const gestureReporting = isMac && !isBrowserRuntime()
+    const gestureReporting = wheelGestureReporting({ mac: isMac, browser: isBrowserRuntime() })
     const wheelRouting = new MacWheelGestureRouter(gestureReporting)
     const offGesture = gestureReporting
       ? window.nodeTerminal.onCanvasTrackpadGesture?.((active) => wheelRouting.noteGesture(active))
@@ -8149,18 +8193,30 @@ export function Canvas() {
               // a bare shell with no agent (issue #899), so the notice carries the resume line.
               text: exitTimeoutNotice(action, exitTimeoutResumeLine(nodeId))
             }
-          : {
+          : outcome === 'host-unsupported'
+            ? {
+                kind: 'error',
+                // Windows only: the session host serving this pane predates the verb that stops
+                // the agent by process. A live host is never replaced by an app update or restart
+                // (docs/windows-session-host.md) — it retires once its sessions end, which is what
+                // "Prepare for update…" coordinates.
+                text:
+                  `${action} skipped: this session runs on a session host started by an older ` +
+                  'nodeterm, which cannot stop the agent safely. It is replaced once its sessions ' +
+                  'end (Prepare for update… does this). Nothing was written to the pane.'
+              }
+            : {
               kind: 'error',
               // 'not-eligible' is every "not a target right now": the gate re-checked and refused,
-              // the tmux session is closed / ended / gone (which the menu row cannot see — only the
-              // node knows its session state), the pane cannot be observed at all (persistent tmux
-              // sessions off, or no tmux on this machine — the restart needs to watch the pane to
-              // know when the CLI has quit), or a restart of this node was already in flight (the
-              // per-node action and the bulk one can reach the same node).
+              // the session is closed / ended / gone (which the menu row cannot see — only the
+              // node knows its session state), the pane cannot be observed at all (persistent
+              // sessions off, or no persistence backend on this machine — the restart needs to
+              // watch the pane to know when the CLI has quit), or a restart of this node was
+              // already in flight (the per-node action and the bulk one can reach the same node).
               text:
                 `${action} skipped: this session is busy, already restarting, not attached ` +
                 '(closed, ended, or nothing to resume), or its pane cannot be watched without ' +
-                'persistent tmux sessions. Nothing was written to the pane.'
+                'persistent sessions. Nothing was written to the pane.'
             }
     )
   }, [setNodes, markDirty])
@@ -8487,7 +8543,11 @@ export function Canvas() {
         })
       )
       if (copy?.ok) markDirty()
-      if (outcome !== 'restarted') return { kind: 'not-restarted', outcome }
+      // `host-unsupported` only comes from the terminate leg (model switch / clearEnv), which this
+      // restartShell path never takes; folded into the refusal it would be if it ever did.
+      if (outcome !== 'restarted') {
+        return { kind: 'not-restarted', outcome: outcome === 'host-unsupported' ? 'not-eligible' : outcome }
+      }
       const moved = copy as ClaudeSessionCopyResult | undefined
       return moved?.ok ? { kind: 'switched' } : { kind: 'copy-failed', reason: moved?.ok === false ? moved.reason : 'failed' }
     },
@@ -9758,13 +9818,18 @@ export function Canvas() {
     //
     // Gated to where it can actually succeed, because the failure path raises a banner that
     // stays until dismissed — and before this feature the keystroke was a silent no-op, which
-    // is what every other machine must keep getting. `writeFilesToClipboard` is darwin-gated
-    // in main and the browser bridge stub answers false, so on a non-mac renderer (desktop OR
-    // Server Edition) this branch could only ever produce that banner, wearing macOS-specific
-    // copy on a Linux box. The board is an opaque overlay over the canvas, so a copy there
-    // would act on a selection the user cannot see (the canvas-only-shortcut discipline).
+    // is what every other machine must keep getting. `writeFilesToClipboard` is darwin/win32-
+    // gated in main and the browser bridge stub answers false, so elsewhere (Linux desktop, any
+    // Server Edition) this branch could only ever produce that banner. The board is an opaque
+    // overlay over the canvas, so a copy there would act on a selection the user cannot see
+    // (the canvas-only-shortcut discipline).
     const projects = useProjects.getState()
-    if (!isMac || isGlobalKanbanOpen() || isKanbanOpen(projects.activeProjectId)) return false
+    if (
+      !canCopyFilesToClipboard({ mac: isMac, windows: isWindowsPlatform() }, isBrowserRuntime()) ||
+      isGlobalKanbanOpen() ||
+      isKanbanOpen(projects.activeProjectId)
+    )
+      return false
     const paths = selectedLocalFilePaths(nodesRef.current, {
       projectIsRelay: !!projects.getProject(projects.activeProjectId ?? '')?.remote
     })
@@ -9776,7 +9841,7 @@ export function Canvas() {
         setCopyError(
           copied
             ? null
-            : 'Copy failed — only existing local files can be copied from the macOS desktop app.'
+            : 'Copy failed — only existing local files can be copied from the desktop app.'
         )
       })
       .catch(() => setCopyError('Copy failed — the system clipboard is unavailable.'))
@@ -10783,9 +10848,10 @@ export function Canvas() {
     () => ({
       hasCwd: !!(useProjects.getState().getProject(activeProjectId)?.ssh?.remoteCwd ??
         useProjects.getState().getProject(activeProjectId)?.cwd),
-      isSshProject
+      isSshProject,
+      isWindowsCore
     }),
-    [activeProjectId, isSshProject]
+    [activeProjectId, isSshProject, isWindowsCore]
   )
   const addHandlers = useMemo<AddHandlers>(
     () => ({
@@ -14600,7 +14666,10 @@ export function Canvas() {
             }
             const lenses = parseLenses(args.lenses)
             const wantJudge = (args.synthesis ?? 'on').trim().toLowerCase() !== 'off'
-            const { shimPath: vShim } = await window.nodeTerminal.contextLink.info()
+            const { shimPath: vShim, platform: vShimHost } = await window.nodeTerminal.contextLink.info()
+            // Reviewers open where the target's cwd says; an SSH-project panel runs on the host,
+            // whose shim is POSIX, so only a local panel gets the host-platform wording.
+            const vHost = sshFor(target.data.cwd as string | undefined) ? undefined : vShimHost
             const targetTitle = (target.data.title as string) || targetId
             const targetCwd = target.data.cwd as string | undefined
             const live = nodesRef.current as CanvasNode[]
@@ -14629,6 +14698,7 @@ export function Canvas() {
                     targetId,
                     agentId: reviewAgent,
                     shimPath: vShim,
+                    hostPlatform: vHost,
                     focus: args.focus
                   })
                 )
@@ -14661,7 +14731,8 @@ export function Canvas() {
                 lenses,
                 targetTitle,
                 agentId: reviewAgent,
-                shimPath: vShim
+                shimPath: vShim,
+                hostPlatform: vHost
               })
             )
             const judge = wantJudge
@@ -17698,11 +17769,49 @@ export function Canvas() {
   // session-reaper sweep) belongs to the shell, not here. Optional-called because the Server
   // Edition's bridge declares this a documented no-op.
   useEffect(() => {
-    const off = window.nodeTerminal.onMemoryPressure?.(() => {
-      releaseAllHiddenGrants()
-      disposeAllParkedTerminals()
-    })
+    const off = window.nodeTerminal.onMemoryPressure?.(() => runReclaimLevers())
     return () => off?.()
+  }, [])
+
+  // Window put away (close-to-tray — the Windows default —, macOS hide-on-close, minimize): flip
+  // the backgrounded flag, which makes every terminal report itself offscreen so the offscreen
+  // release runs on its (dwell-shortened) timer behind all of its gates, live-work included. Then,
+  // once the window has stayed hidden for the dwell, run the same reclaim pair memory pressure runs:
+  // by then every terminal reads hidden, so `releaseAllHiddenGrants` frees the contexts the
+  // on-screen terminals held too, and the parks go (`disposeAllParkedTerminals` keeps a park that
+  // holds live work). A quick close/reopen cancels the dwell and nothing is released. On show the
+  // observers' real verdicts flow again: released nodes warm-reattach, contexts re-grant through
+  // the budget. Server Edition: the bridge declares the signal a no-op (see stubs.ts).
+  useEffect(() => {
+    let dwell: ReturnType<typeof setTimeout> | null = null
+    const clearDwell = (): void => {
+      if (dwell) clearTimeout(dwell)
+      dwell = null
+    }
+    const onSignal = (state: 'hidden' | 'shown'): void => {
+      const hidden = state === 'hidden'
+      setWindowBackgrounded(hidden)
+      if (!hidden) return clearDwell()
+      if (dwell) return
+      dwell = setTimeout(() => {
+        dwell = null
+        if (isWindowBackgrounded()) runReclaimLevers()
+      }, BACKGROUND_RELEASE_DWELL_MS)
+    }
+    const off = window.nodeTerminal.onWindowVisibility?.(onSignal)
+    // Fail-safe for a missed `'shown'` (a window manager that restores without a `restore` event):
+    // a document that has FOCUS is being looked at, so it can never stay backgrounded — otherwise
+    // the user would sit in front of released plates until the next hide/show cycle.
+    const onFocus = (): void => {
+      if (isWindowBackgrounded()) onSignal('shown')
+    }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      off?.()
+      window.removeEventListener('focus', onFocus)
+      clearDwell()
+      setWindowBackgrounded(false)
+    }
   }, [])
 
   // Permanently remove a project (from the "Recently closed" list): end every terminal's tmux
@@ -17945,7 +18054,7 @@ export function Canvas() {
             }
           ]
         : []),
-      ...(isSshProject
+      ...(isSshProject || isWindowsCore
         ? []
         : [{ id: 'new-run', label: 'New run configuration', icon: <IconPlay />, run: () => void addRun() }]),
       { id: 'new-dino', label: 'New dino game', icon: <IconDino />, run: () => addDino() },
@@ -18262,6 +18371,7 @@ export function Canvas() {
     openFileDialog,
     openWorktreeDialog,
     isSshProject,
+    isWindowsCore,
     newProjectFile,
     addProject,
     fitView,

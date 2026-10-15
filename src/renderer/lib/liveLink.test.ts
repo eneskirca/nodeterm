@@ -385,6 +385,17 @@ describe('watchableOnlyWhileOpen', () => {
     expect(watchableOnlyWhileOpen({ persistence: undefined, remoteNode: false })).toBe(false)
     expect(watchableOnlyWhileOpen({ persistence: null, remoteNode: false })).toBe(false)
   })
+
+  it('a session host that speaks watch-attach can be watched with the node closed', () => {
+    const p = (backend: string | null, watchJoin?: boolean, enabled = true) => ({ enabled, backend, watchJoin })
+    expect(watchableOnlyWhileOpen({ persistence: p('session-host', true), remoteNode: false })).toBe(false)
+    // An older running host, or one not connected yet: the conservative note stays.
+    expect(watchableOnlyWhileOpen({ persistence: p('session-host', false), remoteNode: false })).toBe(true)
+    expect(watchableOnlyWhileOpen({ persistence: p('session-host'), remoteNode: false })).toBe(true)
+    // The flag is the session host's alone, and persistence switched off still wins.
+    expect(watchableOnlyWhileOpen({ persistence: p('zellij', true), remoteNode: false })).toBe(true)
+    expect(watchableOnlyWhileOpen({ persistence: p('session-host', true, false), remoteNode: false })).toBe(true)
+  })
 })
 
 // R64/M3: the stream follows the terminal CLIENT, so tmux's chooser and a session switch reach viewers.

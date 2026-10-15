@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasNode } from '../state/workspace'
-import { selectedLocalFilePaths } from './canvas-file-copy'
+import { canCopyFilesToClipboard, selectedLocalFilePaths } from './canvas-file-copy'
 
 const node = (
   id: string,
@@ -55,5 +55,18 @@ describe('selectedLocalFilePaths', () => {
         node('url', 'web', '')
       ])
     ).toEqual([])
+  })
+})
+
+describe('canCopyFilesToClipboard', () => {
+  it('is the macOS and Windows desktop app only', () => {
+    expect(canCopyFilesToClipboard({ mac: true, windows: false }, false)).toBe(true)
+    expect(canCopyFilesToClipboard({ mac: false, windows: true }, false)).toBe(true)
+    expect(canCopyFilesToClipboard({ mac: false, windows: false }, false)).toBe(false)
+  })
+
+  it('never claims the keystroke in the Server Edition, whose bridge cannot write files', () => {
+    expect(canCopyFilesToClipboard({ mac: true, windows: false }, true)).toBe(false)
+    expect(canCopyFilesToClipboard({ mac: false, windows: true }, true)).toBe(false)
   })
 })

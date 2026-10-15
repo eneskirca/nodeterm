@@ -244,6 +244,7 @@ describe('createPushNotify', () => {
     expect(body.hostLabel).toBe('niova')
     expect(body.events[0]).toEqual({
       kind: 'approval',
+      eventId: 'id', // the mirror InboxEvent.id, renamed — the raw `id` key itself stays out
       title: 'Approve write to /etc/hosts',
       detail: 'Edit needs sudo',
       nodeId: 'node-9',
@@ -254,6 +255,27 @@ describe('createPushNotify', () => {
     expect(body.events[0]).not.toHaveProperty('id')
     expect(body.events[0]).not.toHaveProperty('resolved')
     expect(body.events[0]).not.toHaveProperty('pendingId')
+    h.stop()
+  })
+
+  it('forwards the mirror inbox event id as eventId on an immediate send', async () => {
+    const em = makeEmitter()
+    const h = createPushNotify(baseDeps({ subscribe: em.subscribe }))
+    em.emit(iev({ nodeId: 'a', id: '1789-7', title: 'A' }))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(bodyOf().events[0].eventId).toBe('1789-7')
+    h.stop()
+  })
+
+  it('batched events each carry their OWN eventId, in order', async () => {
+    const em = makeEmitter()
+    const h = createPushNotify(baseDeps({ subscribe: em.subscribe }))
+    em.emit(iev({ nodeId: 'a', id: '1000-1', title: 'A' }))
+    em.emit(iev({ nodeId: 'b', id: '1000-2', kind: 'done', title: 'B' }))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(bodyOf().events.map((e) => e.eventId)).toEqual(['1000-1', '1000-2'])
     h.stop()
   })
 
@@ -508,6 +530,19 @@ describe('createPushNotify', () => {
         expect(body).not.toHaveProperty('hostPublicKeyB64')
         expect(body.events).toHaveLength(1)
         expect(body.events[0].title).toBe('A')
+      }
+      h.stop()
+    })
+
+    it('grant-mode POSTs carry the same eventId as host mode', async () => {
+      const em = makeEmitter()
+      const h = createPushNotify(grantDeps({ subscribe: em.subscribe }))
+      em.emit(iev({ nodeId: 'a', id: '2000-3', title: 'A' }))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      for (const c of fetchMock.mock.calls) {
+        expect(c[1].headers.authorization).toMatch(/^Bearer /)
+        expect(JSON.parse(c[1].body).events[0].eventId).toBe('2000-3')
       }
       h.stop()
     })
@@ -802,6 +837,23 @@ describe('createPushNotify', () => {
       await vi.advanceTimersByTimeAsync(2000)
       expect(fetchMock).toHaveBeenCalledTimes(1)
       expect(bodyOf().events.map((e) => e.title)).toEqual(['A', 'B'])
+      h.stop()
+    })
+
+    it('a held event flushed on the away edge still carries its eventId', async () => {
+      const em = makeEmitter()
+      const pres = presenceEmitter()
+      const h = createPushNotify(
+        baseDeps({ subscribe: em.subscribe, isUserPresent: () => true, subscribePresence: pres.subscribe })
+      )
+      em.emit(iev({ nodeId: 'a', id: '3000-1', title: 'A' }))
+      em.emit(iev({ nodeId: 'b', id: '3000-2', title: 'B' }))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(fetchMock).not.toHaveBeenCalled() // held while present
+      pres.away()
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(bodyOf().events.map((e) => e.eventId)).toEqual(['3000-1', '3000-2'])
       h.stop()
     })
 

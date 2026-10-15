@@ -29,8 +29,20 @@ export interface ResolvedHost {
   identityAgent?: string
   /** `ProxyJump` chain as written (`[user@]host[:port],…`), or undefined. */
   proxyJump?: string
-  /** `ProxyCommand`, present so the caller can REFUSE it by name (not supported natively). */
+  /** `ProxyCommand` as written (tokens unexpanded — proxy-command.ts expands them). */
   proxyCommand?: string
+  /** `ProxyUseFdpass yes`: the proxy hands back a socket fd, which this transport cannot take. */
+  proxyUseFdpass?: boolean
+  /**
+   * `ForwardAgent` as `ssh -G` prints it: `yes`, `no`, a socket/pipe path, or `$VAR`. Resolved by
+   * `resolveForwardAgent`; kept raw so an unknown spelling is decided in one place.
+   */
+  forwardAgent?: string
+  /**
+   * Options the config sets that the native transport does NOT honor (e.g. `certificatefile`,
+   * `localforward`), by `ssh -G` name — warned about once per connection, never silently dropped.
+   */
+  unsupported?: string[]
   /** Name the host key is recorded under in known_hosts (`HostKeyAlias`), else the host. */
   hostKeyAlias?: string
   userKnownHostsFiles: string[]
@@ -88,6 +100,7 @@ export function parseSshG(out: string, home: string = os.homedir()): ResolvedHos
     return v && v !== 'none' ? v : undefined
   }
   const timeout = Number(single.get('connecttimeout'))
+  const unsupported = UNSUPPORTED_OPTIONS.filter((k) => opt(k) !== undefined)
   return {
     hostname,
     port,
@@ -97,12 +110,77 @@ export function parseSshG(out: string, home: string = os.homedir()): ResolvedHos
     identityAgent: opt('identityagent'),
     proxyJump: opt('proxyjump'),
     proxyCommand: opt('proxycommand'),
+    proxyUseFdpass: single.get('proxyusefdpass') === 'yes',
+    forwardAgent: opt('forwardagent'),
     hostKeyAlias: opt('hostkeyalias'),
     userKnownHostsFiles: words('userknownhostsfile'),
     globalKnownHostsFiles: words('globalknownhostsfile'),
     strictHostKeyChecking: single.get('stricthostkeychecking') ?? 'ask',
     connectTimeout: Number.isFinite(timeout) && timeout > 0 ? timeout : undefined,
-    addKeysToAgent: single.get('addkeystoagent')
+    addKeysToAgent: single.get('addkeystoagent'),
+    ...(unsupported.length ? { unsupported } : {})
+  }
+}
+
+/**
+ * Config options `ssh -G` prints only when the user's config sets them, and that this transport
+ * does not act on: user certificates and config-declared forwards (nodeterm never relied on the
+ * latter, and opening them would hide their bind failures). Named in a warning, never guessed at.
+ */
+export const UNSUPPORTED_OPTIONS = ['certificatefile', 'localforward', 'remoteforward', 'dynamicforward'] as const
+
+/**
+ * The agent to forward to the host for `ForwardAgent`, or undefined for none. `yes` forwards the
+ * agent this connection authenticates with (`agentPath`); a path or `$VAR` names another one, as
+ * OpenSSH >= 8.2 allows. A Windows named pipe (`\\.\pipe\…`) is a path like any other.
+ */
+export function resolveForwardAgent(
+  value: string | undefined,
+  agentPath: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir()
+): string | undefined {
+  if (!value || value === 'no') return undefined
+  if (value === 'yes') return agentPath
+  if (value.startsWith('$')) {
+    const name = value.replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/, '$1')
+    if (name === value) return undefined
+    return env[name] || (name === 'SSH_AUTH_SOCK' ? agentPath : undefined)
+  }
+  return expandHomePath(value, home)
+}
+
+/**
+ * The host as OpenSSH would resolve it with NO config file — what the native transport falls back
+ * to when there is no ssh binary to run `ssh -G` with (Windows without the OpenSSH Client feature).
+ * Aliases, per-host keys and ProxyJump in ~/.ssh/config are then not evaluated; the caller says so.
+ */
+export function defaultHostFromQuery(
+  t: HostQuery,
+  home: string = os.homedir(),
+  localUser: string = os.userInfo().username,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): ResolvedHost {
+  const p = platform === 'win32' ? path.win32 : path.posix
+  const ssh = (f: string): string => p.join(home, '.ssh', f)
+  const global =
+    platform === 'win32'
+      ? [p.join(env.ProgramData || env.PROGRAMDATA || 'C:\\ProgramData', 'ssh', 'ssh_known_hosts')]
+      : ['/etc/ssh/ssh_known_hosts', '/etc/ssh/ssh_known_hosts2']
+  return {
+    hostname: t.host,
+    port: t.port ?? 22,
+    user: t.user ?? localUser,
+    // OpenSSH's built-in default order; a file that does not exist is simply skipped.
+    identityFiles: t.identityFile
+      ? [t.identityFile]
+      : ['id_rsa', 'id_ecdsa', 'id_ecdsa_sk', 'id_ed25519', 'id_ed25519_sk'].map(ssh),
+    identitiesOnly: !!t.identityFile,
+    identityAgent: t.identityAgent,
+    userKnownHostsFiles: [ssh('known_hosts'), ssh('known_hosts2')],
+    globalKnownHostsFiles: global,
+    strictHostKeyChecking: 'ask'
   }
 }
 

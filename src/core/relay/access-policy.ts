@@ -298,6 +298,9 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.ptyPaneCwd,
   IPC.ptyTerminateForeground,
   IPC.ptyReadSessionName,
+  // Executes an agent launch and reads a host-local prompt file. Also HOST-ONLY for every peer
+  // (shared/host-control.ts); a relay tab never sends it (its terminals are not `source: 'local'`).
+  IPC.ptyExecuteLaunch,
   // Workspace, project settings and setup: writes, probes of arbitrary folders, trust, scripts.
   IPC.workspaceSave,
   IPC.workspaceProbeFolder,

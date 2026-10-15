@@ -411,6 +411,12 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
 // other than a no-op.
 export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+// Agents whose TOOL shell on Windows is POSIX: Claude Code runs its Bash tool (and its hooks)
+// through Git Bash, so `sh "<shim>.sh"` works there exactly as on macOS/Linux. Every other agent
+// runs tools in PowerShell (codex, gemini, copilot — measured in their sources) or cmd.exe, where
+// `sh` is not on PATH on a stock Git install; they are told to run the `.cmd` launcher instead
+// (`shimDialectFor` in ./shim-invocation.ts). Membership only matters on a win32 host.
+export const POSIX_TOOL_SHELL_ON_WINDOWS = ['claude'] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
@@ -572,6 +578,7 @@ export const reportsSessionEnd = (id: AgentId): boolean => includes(SESSION_END_
 export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
+export const usesPosixToolShellOnWindows = (id: AgentId): boolean => includes(POSIX_TOOL_SHELL_ON_WINDOWS, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
 export const hasSharedIdentity = (id: AgentId): boolean => includes(SHARED_IDENTITY_CAPABLE, id)

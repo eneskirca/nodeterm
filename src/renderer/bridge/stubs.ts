@@ -246,6 +246,10 @@ export function buildStubApi(): Omit<
       // Server Edition has no updater at all (initUpdater runs only in src/main) and a browser
       // tab cannot self-install, so there is no channel state to report either way.
       onNoChannel: noopUnsub,
+      // No self-install in a browser, so there is never an install in progress to report.
+      onInstalling: noopUnsub,
+      // Nothing is ever staged in a browser.
+      getStaged: () => Promise.resolve(null),
       check: noop,
       getVersion: U('updates.getVersion'),
       // Boot path awaits this and reads `p.mandatory` UNGUARDED (UpdateCard.tsx), so the old
@@ -608,6 +612,12 @@ export function buildStubApi(): Omit<
     // on its own terms; pushing our levers over the wire would fight it, not help it. Deliberate
     // no-op, not an oversight.
     onMemoryPressure: noopUnsub,
+    // Deliberate no-op, not an oversight. The desktop signal means "the user put the app away"
+    // (tray / hide / minimize). The browser's nearest analogue, `visibilitychange`, fires on every
+    // tab switch AND on occlusion — wiring it here would release every terminal of a user who
+    // glanced at another tab for two minutes. The browser throttles and discards a hidden tab on
+    // its own terms; the viewport-driven levers keep working unchanged.
+    onWindowVisibility: noopUnsub,
     // Same asymmetry, one step further: the desktop's pty-pressure banner exists to offer "Fix
     // automatically…", which ends in macOS's admin-password dialog on the HOST's physical display.
     // A browser tab cannot answer that prompt, so the host keeps the reaper leg and says nothing

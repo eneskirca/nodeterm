@@ -65,7 +65,8 @@ export function registerUpdatePrepIpc(deps: UpdatePrepDeps): void {
         kind: 'host',
         sessions: inspection.sessions,
         shutdownSupported: inspection.shutdown,
-        mirror
+        mirror,
+        staged: inspection.staging === 'staged'
       }
     } catch (error) {
       return { kind: 'error', error: error instanceof Error ? error.message : String(error) }

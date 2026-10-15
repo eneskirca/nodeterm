@@ -3,12 +3,22 @@ import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { PtyManager } from './pty-manager'
 
-const host = vi.hoisted(() => ({ supported: vi.fn(() => false) }))
-vi.mock('./session-host-backend', () => ({ sessionHostSupported: host.supported }))
+const host = vi.hoisted(() => ({
+  supported: vi.fn(() => false),
+  watchKnown: vi.fn((): boolean | undefined => undefined)
+}))
+vi.mock('./session-host-backend', () => ({
+  sessionHostSupported: host.supported,
+  sessionHostWatchKnown: host.watchKnown
+}))
 vi.mock('node-pty', () => ({ spawn: vi.fn() }))
 
 describe('local persistence discovery (#575)', () => {
-  beforeEach(() => { initPlatform(fakePlatform()); host.supported.mockReturnValue(false) })
+  beforeEach(() => {
+    initPlatform(fakePlatform())
+    host.supported.mockReturnValue(false)
+    host.watchKnown.mockReset().mockReturnValue(undefined)
+  })
   afterEach(() => { vi.restoreAllMocks(); resetPlatformForTests() })
 
   function manager(platform: NodeJS.Platform, tmux: boolean, enabled = true): PtyManager {
@@ -32,6 +42,22 @@ describe('local persistence discovery (#575)', () => {
   })
   it('never treats a Windows tmux path as protection', () => {
     expect(manager('win32', true).tmuxStatus().persistence?.backend).toBeNull()
+  })
+  it('reports watchJoin only for a session-host backend whose CONNECTED host speaks watch-attach', () => {
+    host.supported.mockReturnValue(true)
+    host.watchKnown.mockReturnValue(true)
+    expect(manager('win32', false).tmuxStatus().persistence).toEqual({
+      enabled: true,
+      backend: 'session-host',
+      watchJoin: true
+    })
+    // tmux has its own watcher client: the flag is never asked there.
+    host.watchKnown.mockClear()
+    expect(manager('linux', true).tmuxStatus().persistence).toEqual({ enabled: true, backend: 'tmux' })
+    expect(host.watchKnown).not.toHaveBeenCalled()
+    // An older host (false) or no connection yet (undefined): absent, the conservative note stays.
+    host.watchKnown.mockReturnValue(false)
+    expect(manager('win32', false).tmuxStatus().persistence).not.toHaveProperty('watchJoin')
   })
   it('keeps the user setting distinct from backend discovery', () => {
     host.supported.mockReturnValue(true)

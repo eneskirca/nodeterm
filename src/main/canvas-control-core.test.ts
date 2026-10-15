@@ -1684,3 +1684,27 @@ describe('one-way context links (issue #852) — agent-facing docs', () => {
     expect(buildCanvasSkillBody('/x/nodeterm.sh')).toContain('--one-way')
   })
 })
+
+// Windows (`windows-cmd` dialect): what a PowerShell-run agent reads. The POSIX default is pinned
+// byte-for-byte, because every SSH-host skill is built without a dialect.
+describe('buildCanvasSkillBody — shim invocation dialect', () => {
+  it('the default is the historical `sh` block, unchanged', () => {
+    const body = buildCanvasSkillBody('/x/nodeterm.sh')
+    expect(body).toContain('```sh\nsh "/x/nodeterm.sh" <verb> [args]\n```\n\nFlags take a value')
+    expect(body).toBe(buildCanvasSkillBody('/x/nodeterm.sh', 'posix'))
+    expect(body).not.toContain('nodeterm.cmd')
+  })
+
+  it('windows-cmd: PowerShell call of the .cmd launcher, plus the cmd/Git Bash spellings and the batch limit', () => {
+    const body = buildCanvasSkillBody('C:\\d\\nodeterm.sh', 'windows-cmd')
+    expect(body).toContain('```powershell\n& "C:\\d\\nodeterm.cmd" <verb> [args]\n```')
+    expect(body).toContain('Git for Windows')
+    expect(body).toContain('In cmd.exe drop the leading `& `')
+    expect(body).toContain('`sh "C:\\d\\nodeterm.sh"`')
+    expect(body).toContain('`--prompt-file`')
+    // Only the invocation block changes: the verb reference after it is the same text.
+    const tail = (b: string) => b.slice(b.indexOf('Flags take a value'))
+    expect(tail(body)).toBe(tail(buildCanvasSkillBody('C:\\d\\nodeterm.sh')))
+  })
+})
+

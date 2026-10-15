@@ -7,6 +7,66 @@ export function escapeDroppedPath(p: string): string {
   return p.replace(/([ \t"'`\\()&;|<>$!*?[\]{}#~])/g, '\\$1')
 }
 
+/**
+ * How a dropped path is spelled for the program reading the pane.
+ *
+ *  - `posix`: backslash-escape (`escapeDroppedPath`) — zsh/bash/fish and the agent CLIs on
+ *    macOS/Linux, every SSH host, and Git Bash on Windows. Byte-identical to the pre-dialect output.
+ *  - `win-cmd` / `win-pwsh`: a Windows path, where `\` IS the separator and must never be doubled.
+ *    Bare when nothing in it needs quoting, else double-quoted — what Windows Terminal and Explorer
+ *    write on a drag-drop, and what cmd, PowerShell and the Windows agent CLIs read as one token.
+ *    `win-pwsh` single-quotes (doubling `'`) a path holding `$` or a backtick, because PowerShell
+ *    expands both inside double quotes. cmd cannot quote `%` at the prompt at all; a `%` filename
+ *    is accepted as a known miss (vanishingly rare, and no spelling would fix it).
+ */
+export type DropDialect = 'posix' | 'win-cmd' | 'win-pwsh'
+
+const WIN_BARE = /^[A-Za-z0-9_\-.:\\/]+$/
+
+export function quoteDroppedPath(p: string, dialect: DropDialect = 'posix'): string {
+  if (dialect === 'posix') return escapeDroppedPath(p)
+  if (WIN_BARE.test(p)) return p
+  if (dialect === 'win-pwsh' && /[$`]/.test(p)) return `'${p.replace(/'/g, "''")}'`
+  return `"${p}"`
+}
+
+export interface DropDialectFacts {
+  /** `process.platform` reported by the core that owns the pane; null = not observed (yet). */
+  corePlatform: string | null
+  /** The pane runs on another (POSIX) machine: an SSH project, or a standalone `ssh` node. */
+  remote: boolean
+  /** The node's shell, or the resolved default. Unknown reads as PowerShell — the core's own
+   *  Windows default. */
+  shell?: string | null
+  /** An agent CLI owns the pane, so the reader is its composer, not the shell. */
+  agentPane?: boolean
+  /** Fallback when `corePlatform` is null — the SAME rule `terminalKillLine` applies: the viewer's
+   *  OS stands in only for the desktop's own local core, never for a Server Edition/relay tab. */
+  localDesktop?: boolean
+  viewerWindows?: boolean
+}
+
+/** Which `DropDialect` a pane reads. Anything that is not provably a Windows core is `posix`, so
+ *  every macOS/Linux/SSH drop is spelled exactly as before. */
+export function dropDialect(f: DropDialectFacts): DropDialect {
+  if (f.remote) return 'posix'
+  const platform = f.corePlatform ?? (f.localDesktop && f.viewerWindows ? 'win32' : null)
+  if (platform !== 'win32') return 'posix'
+  // Agent composers take a double-quoted path; `$`/backtick get pwsh's single quotes, which the
+  // CLIs read as quoting too.
+  if (f.agentPane) return 'win-pwsh'
+  const exe = (f.shell ?? '').split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '') ?? ''
+  if (exe === 'pwsh' || exe === 'powershell') return 'win-pwsh'
+  // Git Bash / MSYS / WSL bash read backslash escapes; `C:\\Users\\Jane\ Doe` is right there.
+  if (exe === 'bash' || exe === 'sh' || exe === 'zsh' || exe === 'fish' || exe === 'wsl') return 'posix'
+  if (exe === 'cmd') return 'win-cmd'
+  // No shell configured (or one we do not recognise): the core's own Windows default is PowerShell
+  // (`resolveWindowsShell`: pwsh, then the powershell.exe every install ships; COMSPEC only after
+  // both), so spell it for PowerShell. The two dialects differ only for a `$`/backtick path, which
+  // double quotes would let PowerShell expand into a different path.
+  return 'win-pwsh'
+}
+
 /** Extension for a clipboard blob that arrives with no filename, keyed off its MIME type. A
  *  screenshot is `image/png` with an empty `name`, and an agent asked to look at `pasted-<ts>`
  *  with no suffix has to guess what it is holding. */
@@ -185,15 +245,16 @@ export async function localPathsForFiles(files: File[], sink: UploadSink): Promi
 /**
  * Resolve dropped/pasted files to terminal-pasteable paths. For an SSH-project terminal a local
  * path is useless on the host, so each file is uploaded over the project's ControlMaster and its
- * REMOTE absolute path is returned; for a local terminal the local path is used. Fail-open: files
- * that can't be resolved/uploaded are dropped from the result (never throws).
+ * REMOTE absolute path is returned (always POSIX-escaped — the host is POSIX whatever `dialect`
+ * says); for a local terminal the local path is used, spelled for `dialect` (default `posix`).
+ * Fail-open: files that can't be resolved/uploaded are dropped from the result (never throws).
  */
 export async function droppedPaths(
   files: File[],
-  opts: { sshRemoteTmux: boolean; projectId: string }
+  opts: { sshRemoteTmux: boolean; projectId: string; dialect?: DropDialect }
 ): Promise<string[]> {
   const pairs = await localFilesWithPaths(files, uploadsSink)
-  if (!opts.sshRemoteTmux) return pairs.map((p) => escapeDroppedPath(p.path))
+  if (!opts.sshRemoteTmux) return pairs.map((p) => quoteDroppedPath(p.path, opts.dialect))
   const uploaded = await Promise.all(
     pairs.map((p) =>
       window.nodeTerminal.sshProject

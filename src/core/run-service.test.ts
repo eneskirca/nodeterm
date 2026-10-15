@@ -131,6 +131,46 @@ describe('run-service', () => {
     expect(await startRun('../x', { projectDir: w, reloadOnSave: true })).toMatchObject({ ok: false })
   })
 
+  describe('on a Windows core', () => {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor
+    beforeEach(() => Object.defineProperty(process, 'platform', { value: 'win32' }))
+    afterEach(() => Object.defineProperty(process, 'platform', real))
+
+    it('still opens browser configs and browser-only compounds, and refuses a process run with a sentence', async () => {
+      write('w/.vscode/launch.json', `{ "configurations": [
+        { "name": "Web", "type": "chrome", "request": "launch", "url": "http://localhost:3000" },
+        { "name": "API", "type": "node", "request": "launch", "program": "a.js" },
+      ], "compounds": [
+        { "name": "Pages", "configurations": ["Web"] },
+        { "name": "Stack", "configurations": ["Web", "API"] }
+      ] }`)
+      const w = path.join(root, 'w')
+      expect(await startRun('n1', { projectDir: w, launchConfig: 'Web', reloadOnSave: true })).toEqual({
+        ok: true,
+        kind: 'browser',
+        url: 'http://localhost:3000'
+      })
+      expect(await startRun('n1', { projectDir: w, launchConfig: 'Pages', reloadOnSave: true })).toEqual({
+        ok: true,
+        kind: 'compound',
+        members: ['Web']
+      })
+      const refused = { ok: false, error: 'Run configurations that launch a process are not supported on Windows yet.' }
+      expect(await startRun('n1', { projectDir: w, launchConfig: 'API', reloadOnSave: true })).toEqual(refused)
+      expect(await startRun('n1', { projectDir: w, launchConfig: 'Stack', reloadOnSave: true })).toEqual(refused)
+      expect(existsSync(launcherPath('n1'))).toBe(false)
+
+      // The listing says so before Start, so the bar disables Run with the reason.
+      const r = await listEntries(w)
+      expect(r.entries.map((e) => [e.name, e.supported])).toEqual([
+        ['Web', true],
+        ['API', false],
+        ['Pages', true],
+        ['Stack', false]
+      ])
+    })
+  })
+
   it.skipIf(!posix)('runs the preLaunchTask, then the program with env + envFile, and records the exit code', async () => {
     const w = path.join(root, 'w')
     const out = path.join(root, 'out.txt')

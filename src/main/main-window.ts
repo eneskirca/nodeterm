@@ -69,9 +69,16 @@ export function createCrashReloadPolicy(
 
 // macOS convention: closing the window hides it (the app — and its tmux sessions,
 // hook server, updater, license watchers — keeps running); a real close only happens
-// on quit. Other platforms quit on window close, so never intercept there.
-export function shouldHideOnClose(platform: NodeJS.Platform | string, quitting: boolean): boolean {
-  return platform === 'darwin' && !quitting
+// on quit. On Windows/Linux the same hide is opt-in "background mode"
+// (`settings.runInBackgroundOnClose`, resolved by `resolveBackgroundOnClose` in
+// ./background-mode): the window hides to the notification-area tray so the phone relay
+// host, hook server and notifications outlive it. Off ⇒ close quits, as it always did.
+export function shouldHideOnClose(
+  platform: NodeJS.Platform | string,
+  quitting: boolean,
+  backgroundOnClose = false
+): boolean {
+  return !quitting && (platform === 'darwin' || backgroundOnClose)
 }
 
 export type CloseAction = 'default' | 'hide' | 'leave-fullscreen-then-hide'
@@ -82,12 +89,14 @@ export type CloseAction = 'default' | 'hide' | 'leave-fullscreen-then-hide'
  * known Electron behavior electron/electron#20263) — so fullscreen must be exited, the async
  * `leave-full-screen` transition awaited, and only THEN the window hidden. The quit path is not
  * affected: there the window really closes and the app (and its Space) goes away with it.
+ * Spaces are a macOS concept, so a background-mode hide elsewhere is a plain hide.
  */
 export function closeAction(
   platform: NodeJS.Platform | string,
   quitting: boolean,
-  isFullScreen: boolean
+  isFullScreen: boolean,
+  backgroundOnClose = false
 ): CloseAction {
-  if (!shouldHideOnClose(platform, quitting)) return 'default'
-  return isFullScreen ? 'leave-fullscreen-then-hide' : 'hide'
+  if (!shouldHideOnClose(platform, quitting, backgroundOnClose)) return 'default'
+  return platform === 'darwin' && isFullScreen ? 'leave-fullscreen-then-hide' : 'hide'
 }

@@ -321,6 +321,14 @@ both without either shell being edited (the two drifted once before — see CLAU
 - **Mobile companion** (`~/projects/nodeterm-ios`) — N/A. It attaches to tmux sessions over the
   transport protocol; which app-server a Codex session talks to is invisible to it, and the
   `plain codex` chip is a canvas-node affordance the phone has no slot for. No protocol change owed.
+- **Windows** — deliberately OFF (phase 1). `refreshCodexIdentityCaps` returns early on `win32`
+  with `unavailableReason: 'unsupported-platform'` (no probe, no launcher write), `pty-manager`
+  prepends no launcher dir to the session PATH (`codexLauncherPathDir` is null there), and
+  Settings → Agents shows one muted line under Codex. It was already off by accident — the runtime
+  stat looks for an extensionless `codex`, and the launcher is an `sh` script cmd/PowerShell cannot
+  resolve by name — but silently. Phase 2 needs three device facts first (item 13 below) and then a
+  non-sh launcher (`nodeterm-codex.cmd` running a Node script under the Electron-as-Node or
+  session-host runtime, porting `buildCodexLauncherScript`'s bind/fallback/POST logic).
 - **Kanban** — the mode lives in a store the card modal could read; the chip is on the canvas node
   header only. Adding it to the card's expanded detail row is a small follow-up.
 
@@ -427,3 +435,10 @@ come first. Items 1, 2 and 5 fall out of a single capture run on one fresh node.
     Electron's environment while the pane resolves `--remote unix://` from its own, so this is where
     they diverge: confirm what actually happens — shared against the wrong home, or a start that
     succeeds followed by a resume that misses.
+13. **Windows, before phase 2 is built.** On a Windows machine with the standalone codex install:
+    (a) does `%USERPROFILE%\.codex\packages\standalone\current\codex.exe` exist; (b) do
+    `codex app-server daemon start` / `version` work there, and over what control channel (named
+    pipe vs unix socket); (c) does `codex --remote <that endpoint>` accept it. Until all three hold,
+    the `unsupported-platform` gate stays. Also confirm today's gate: Settings → Agents shows the
+    muted line and a Codex node's PATH has no `codex-bin` entry.
+

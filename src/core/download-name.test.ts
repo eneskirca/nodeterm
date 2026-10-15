@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { candidateName, safeDownloadBasename } from './download-name'
+import { candidateName, localChildName, safeDownloadBasename, uniqueChildName } from './download-name'
 
 describe('safeDownloadBasename', () => {
   it('takes the basename of a remote path', () => {
@@ -39,5 +39,55 @@ describe('candidateName', () => {
   it('appends at the end when there is no extension to protect', () => {
     expect(candidateName('README', 2)).toBe('README (2)')
     expect(candidateName('.bashrc', 2)).toBe('.bashrc (2)')
+  })
+})
+
+describe('localChildName', () => {
+  it.each([
+    ['a:b', 'a_b'],
+    ['x?.txt', 'x_.txt'],
+    ['q"<>|*', 'q_____'],
+    ['a\\b', 'a_b'],
+    ['CON', '_CON'],
+    ['com1.txt', '_com1.txt'],
+    ['Lpt9', '_Lpt9'],
+    ['console.log', 'console.log'],
+    ['name. ', 'name'],
+    ['nul. ', '_nul'],
+    ['...', 'download'],
+    ['tab\there', 'tab_here']
+  ])('win32: %j → %j', (name, want) => {
+    expect(localChildName(name, 'win32')).toBe(want)
+  })
+
+  it('POSIX hosts keep every name a POSIX filesystem can hold', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      for (const n of ['a:b', 'x?.txt', 'CON', 'com1.txt', 'name. ', 'a\\b']) expect(localChildName(n, platform)).toBe(n)
+      // A separator is never a path, anywhere.
+      expect(localChildName('a/b', platform)).toBe('a_b')
+    }
+  })
+
+  it('names nothing for the directory entries', () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      expect(localChildName('.', platform)).toBeNull()
+      expect(localChildName('..', platform)).toBeNull()
+      expect(localChildName('', platform)).toBeNull()
+    }
+  })
+})
+
+describe('uniqueChildName', () => {
+  it('win32: case-insensitive, so Foo and foo do not overwrite each other', () => {
+    const taken = new Set<string>()
+    expect(uniqueChildName('Foo.txt', taken, 'win32')).toBe('Foo.txt')
+    expect(uniqueChildName('foo.txt', taken, 'win32')).toBe('foo (2).txt')
+    expect(uniqueChildName('FOO.TXT', taken, 'win32')).toBe('FOO (3).TXT')
+  })
+  it('POSIX: case-sensitive, as the filesystem is', () => {
+    const taken = new Set<string>()
+    expect(uniqueChildName('Foo', taken, 'linux')).toBe('Foo')
+    expect(uniqueChildName('foo', taken, 'linux')).toBe('foo')
+    expect(uniqueChildName('foo', taken, 'linux')).toBe('foo (2)')
   })
 })

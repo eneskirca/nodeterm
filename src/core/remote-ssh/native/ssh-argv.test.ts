@@ -7,6 +7,8 @@ import {
   masterRoundTripArgs,
   hookForwardArgs,
   hookForwardCancelArgs,
+  localForwardArgs,
+  localForwardCancelArgs,
   scpArgs,
   scpDownArgs,
   remoteTmuxPtyArgs,
@@ -71,6 +73,34 @@ describe('parseSshArgv reads back every builder in control-master.ts', () => {
     expect(parseSshArgv(hookForwardCancelArgs(plain, CP, '/r.sock', 1))).toMatchObject({ op: 'cancel' })
   })
 
+  it('local (-L) forwards, IPv4 and bracketed IPv6, for forward and cancel', () => {
+    expect(parseSshArgv(localForwardArgs(plain, CP, 5173, '10.0.0.7', 3000))).toMatchObject({
+      kind: 'control',
+      op: 'forward',
+      forward: { kind: 'local', bindHost: '127.0.0.1', localPort: 5173, toHost: '10.0.0.7', toPort: 3000 }
+    })
+    expect(parseSshArgv(localForwardCancelArgs(plain, CP, 8080, '::1', 8080))).toMatchObject({
+      op: 'cancel',
+      forward: { kind: 'local', localPort: 8080, toHost: '::1', toPort: 8080 }
+    })
+    expect(parseSshArgv(hookForwardArgs(plain, CP, '/r.sock', 1))).toMatchObject({ forward: { kind: 'reverse' } })
+  })
+
+  it('refuses every -L the builders never emit', () => {
+    const fwd = (spec: string): string[] => ['-O', 'forward', '-L', spec, '-o', `ControlPath=${CP}`, 'a@b']
+    expect(() => parseSshArgv(fwd('0.0.0.0:80:127.0.0.1:80'))).toThrow(/-L 0\.0\.0\.0/)
+    expect(() => parseSshArgv(fwd('8080:127.0.0.1:80'))).toThrow(/-L/)
+    expect(() => parseSshArgv(fwd('127.0.0.1:80:localhost:80'))).toThrow(/-L/)
+    expect(() => parseSshArgv(fwd('127.0.0.1:80:::1:80'))).toThrow(/-L/)
+    expect(() => parseSshArgv(fwd('127.0.0.1:80:999.0.0.1:80'))).toThrow(/-L/)
+    expect(() => parseSshArgv(fwd('127.0.0.1:0:127.0.0.1:80'))).toThrow(/-L port/)
+    expect(() =>
+      parseSshArgv(['-O', 'forward', '-L', '127.0.0.1:1:127.0.0.1:2', '-R', '/r.sock:127.0.0.1:3', 'a@b'])
+    ).toThrow(/-L with -R/)
+    expect(() => parseSshArgv(['-L', '127.0.0.1:1:127.0.0.1:2', 'a@b'])).toThrow(/-L outside/)
+    expect(() => parseSshArgv(['-O', 'check', '-L', '127.0.0.1:1:127.0.0.1:2', 'a@b'])).toThrow(/-L with -O check/)
+  })
+
   it('interactive pty', () => {
     const p = parseSshArgv(remoteTmuxPtyArgs(plain, CP, 'nt-node-1', '~/proj'))
     expect(p.kind).toBe('exec')
@@ -81,6 +111,7 @@ describe('parseSshArgv reads back every builder in control-master.ts', () => {
 
   it('refuses what it does not know, naming it', () => {
     expect(() => parseSshArgv(['-L', '8080:localhost:80', 'a@b'])).toThrow(UnsupportedSshArgv)
+    expect(() => parseSshArgv(['-D', '1080', 'a@b'])).toThrow(/-D/)
     expect(() => parseSshArgv(['-o', 'ProxyCommand=nc %h %p', 'a@b'])).toThrow(/ProxyCommand/)
     expect(() => parseSshArgv(['-o', 'BatchMode=maybe', 'a@b'])).toThrow(/BatchMode/)
     expect(() => parseSshArgv(['-O', 'stop', 'a@b'])).toThrow(/-O stop/)

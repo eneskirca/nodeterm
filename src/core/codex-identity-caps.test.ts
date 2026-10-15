@@ -17,6 +17,9 @@ import {
 const remote = (yes: boolean) => () => Promise.resolve(yes)
 /** Stand-in for the managed-runtime stat — "can this INSTALL run an app-server at all?". */
 const appServer = (yes: boolean) => () => yes
+/** The probes only run off Windows; pinning the host keeps these rows meaning the same on a
+ *  Windows CI runner (where the answer is the deliberate `unsupported-platform` gate below). */
+const POSIX = 'linux'
 import {
   resetCodexThreadIdentityAuthSecret,
   setCodexThreadIdentityAuthSecret
@@ -44,7 +47,7 @@ afterEach(() => {
 describe('codexIdentityCaps', () => {
   it('says yes, and installs the launcher, once the secret is in and the CLI has --remote', async () => {
     setCodexThreadIdentityAuthSecret(randomBytes(32))
-    const caps = await refreshCodexIdentityCaps(remote(true), appServer(true))
+    const caps = await refreshCodexIdentityCaps(remote(true), appServer(true), POSIX)
     expect(caps.shared).toBe(true)
     expect(fs.existsSync(caps.launcherPath as string)).toBe(true)
   })
@@ -52,7 +55,7 @@ describe('codexIdentityCaps', () => {
   it('says no without the secret, and installs nothing', () => {
     // Half-armed is the state to avoid: a launcher on PATH with no capability to present would
     // reach the routes, be refused, and fall back one process later. Better to never name it.
-    return refreshCodexIdentityCaps(remote(true), appServer(true)).then((caps) => {
+    return refreshCodexIdentityCaps(remote(true), appServer(true), POSIX).then((caps) => {
       expect(caps).toEqual({
         shared: false,
         launcherPath: null,
@@ -68,7 +71,7 @@ describe('codexIdentityCaps', () => {
     // app-server but no --remote dies on a usage error where nothing can fall back. Answering it
     // here turns a dead node into a plain-codex node on every machine, not just the tester's.
     setCodexThreadIdentityAuthSecret(randomBytes(32))
-    const caps = await refreshCodexIdentityCaps(remote(false), appServer(true))
+    const caps = await refreshCodexIdentityCaps(remote(false), appServer(true), POSIX)
     expect(caps).toEqual({
       shared: false,
       launcherPath: null,
@@ -88,7 +91,7 @@ describe('codexIdentityCaps', () => {
   // not, and this row is what keeps it inert.
   it('says no on an npm install — `--remote` in help, no standalone runtime — and writes no launcher', async () => {
     setCodexThreadIdentityAuthSecret(randomBytes(32))
-    const caps = await refreshCodexIdentityCaps(remote(true), appServer(false))
+    const caps = await refreshCodexIdentityCaps(remote(true), appServer(false), POSIX)
     expect(caps).toEqual({
       shared: false,
       launcherPath: null,
@@ -106,7 +109,7 @@ describe('codexIdentityCaps', () => {
     await refreshCodexIdentityCaps(() => {
       asked += 1
       return Promise.resolve(true)
-    }, appServer(false))
+    }, appServer(false), POSIX)
     expect(asked).toBe(0)
   })
 
@@ -116,7 +119,7 @@ describe('codexIdentityCaps', () => {
     setCodexThreadIdentityAuthSecret(randomBytes(32))
     const threw = await refreshCodexIdentityCaps(remote(true), () => {
       throw new Error('stat failed')
-    })
+    }, POSIX)
     expect(threw).toEqual({
       shared: false,
       launcherPath: null,
@@ -125,7 +128,8 @@ describe('codexIdentityCaps', () => {
     })
     resetCodexIdentityCapsForTests()
     const rejected = await refreshCodexIdentityCaps(remote(true), () =>
-      Promise.reject(new Error('probe timed out'))
+      Promise.reject(new Error('probe timed out')),
+      POSIX
     )
     expect(rejected.shared).toBe(false)
     expect(fs.existsSync(path.join(dir, 'codex-bin', 'nodeterm-codex'))).toBe(false)
@@ -141,18 +145,54 @@ describe('codexIdentityCaps', () => {
     await Promise.resolve()
     expect(settled).toBe(false)
     setCodexThreadIdentityAuthSecret(randomBytes(32))
-    await refreshCodexIdentityCaps(remote(true), appServer(true))
+    await refreshCodexIdentityCaps(remote(true), appServer(true), POSIX)
     expect((await asked).shared).toBe(true)
   })
 
   it('answers immediately once refreshed', async () => {
-    await refreshCodexIdentityCaps(remote(false), appServer(true))
+    await refreshCodexIdentityCaps(remote(false), appServer(true), POSIX)
     expect(await codexIdentityCaps()).toEqual({
       shared: false,
       launcherPath: null,
       remoteFlag: false,
       appServer: true
     })
+  })
+})
+
+describe('codexIdentityCaps — Windows (phase 1: deliberately off, and saying so)', () => {
+  it('answers unsupported-platform without probing anything or writing a launcher', async () => {
+    setCodexThreadIdentityAuthSecret(randomBytes(32))
+    let probed = 0
+    const caps = await refreshCodexIdentityCaps(
+      () => {
+        probed += 1
+        return Promise.resolve(true)
+      },
+      () => {
+        probed += 1
+        return true
+      },
+      'win32'
+    )
+    expect(probed).toBe(0)
+    expect(caps).toEqual({
+      shared: false,
+      launcherPath: null,
+      remoteFlag: false,
+      appServer: false,
+      unavailableReason: 'unsupported-platform'
+    })
+    expect(fs.existsSync(path.join(dir, 'codex-bin', 'nodeterm-codex'))).toBe(false)
+    expect(await codexIdentityCaps()).toEqual(caps)
+  })
+
+  it('every other platform carries no reason (unchanged shape)', async () => {
+    for (const p of ['darwin', 'linux']) {
+      resetCodexIdentityCapsForTests()
+      const caps = await refreshCodexIdentityCaps(remote(false), appServer(true), p)
+      expect(caps).not.toHaveProperty('unavailableReason')
+    }
   })
 })
 

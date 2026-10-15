@@ -5,13 +5,15 @@ import net, { type AddressInfo } from 'net'
 import path from 'path'
 import { Server, type Connection } from 'ssh2'
 import { NativeMux } from './native-mux'
-import { runSshArgv, spawnSshArgvStream, startNativeMaster, useNativeSsh } from './native-invoke'
+import { download, runSshArgv, spawnSshArgvStream, startNativeMaster, useNativeSsh } from './native-invoke'
 import {
   checkMasterArgs,
   childArgs,
   exitMasterArgs,
   hookForwardArgs,
   hookForwardCancelArgs,
+  localForwardArgs,
+  localForwardCancelArgs,
   masterArgs
 } from '../control-master'
 import type { SshConnection } from '../../../shared/ssh'
@@ -26,6 +28,8 @@ let port: number
 let clients: Connection[] = []
 /** Remote socket path → the server-side client that asked for it (to push a connection back). */
 const streamForwards = new Map<string, Connection>()
+/** Every direct-tcpip open the server saw, as `addr:port`. */
+const tcpipOpens: string[] = []
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-native-inv-'))
@@ -47,6 +51,17 @@ beforeAll(async () => {
           return accept?.()
         }
         reject?.()
+      })
+      // direct-tcpip (`-L`): dial the destination on this loopback "host" and splice.
+      client.on('tcpip', (accept, reject, info) => {
+        tcpipOpens.push(`${info.destIP}:${info.destPort}`)
+        const out = net.connect({ host: info.destIP, port: info.destPort })
+        out.once('error', () => reject?.())
+        out.once('connect', () => {
+          const ch = accept()
+          ch.on('error', () => out.destroy())
+          ch.pipe(out).pipe(ch)
+        })
       })
       client.on('session', (accept) => {
         accept().on('exec', (a, _r, info) => {
@@ -195,9 +210,196 @@ describe('native-invoke', () => {
     }
   })
 
+  describe('-O forward -L (dev-server port forwarding)', () => {
+    const echo = (): Promise<{ srv: net.Server; port: number }> =>
+      new Promise((r) => {
+        const srv = net.createServer((s) => s.pipe(s))
+        srv.listen(0, '127.0.0.1', () => r({ srv, port: (srv.address() as AddressInfo).port }))
+      })
+    const freePort = (): Promise<number> =>
+      new Promise((r) => {
+        const s = net.createServer()
+        s.listen(0, '127.0.0.1', () => {
+          const p = (s.address() as AddressInfo).port
+          s.close(() => r(p))
+        })
+      })
+    const roundTrip = (lport: number, text: string): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const c = net.connect({ host: '127.0.0.1', port: lport })
+        let got = ''
+        c.on('data', (d) => {
+          got += d.toString()
+          if (got.length >= text.length) {
+            c.end()
+            resolve(got)
+          }
+        })
+        c.on('error', reject)
+        c.write(text)
+      })
+    const canListen = (p: number): Promise<boolean> =>
+      new Promise((r) => {
+        const s = net.createServer()
+        s.once('error', () => r(false))
+        s.listen(p, '127.0.0.1', () => s.close(() => r(true)))
+      })
+
+    it('carries a local loopback connection to the host port, built and parsed by the real builders', async () => {
+      const { srv, port: remotePort } = await echo()
+      try {
+        const m = mux()
+        await runSshArgv(m, childArgs(conn(), CP(), 'true'))
+        const lport = await freePort()
+        const fwd = await runSshArgv(m, localForwardArgs(conn(), CP(), lport, '127.0.0.1', remotePort))
+        expect(fwd.code).toBe(0)
+        expect(await roundTrip(lport, 'hello dev server')).toBe('hello dev server')
+        expect(tcpipOpens).toContain(`127.0.0.1:${remotePort}`)
+        // A duplicate is acknowledged again (the registry's 'maybe-ours' adoption depends on it).
+        expect((await runSshArgv(m, localForwardArgs(conn(), CP(), lport, '127.0.0.1', remotePort))).code).toBe(0)
+        expect(await canListen(lport)).toBe(false)
+        // Cancel frees the port; a cancel of what is not held is not an error.
+        expect((await runSshArgv(m, localForwardCancelArgs(conn(), CP(), lport, '127.0.0.1', remotePort))).code).toBe(0)
+        expect(await canListen(lport)).toBe(true)
+        expect((await runSshArgv(m, localForwardCancelArgs(conn(), CP(), lport, '127.0.0.1', remotePort))).code).toBe(0)
+      } finally {
+        srv.close()
+      }
+    })
+
+    it('two concurrent requests for one spec are both acknowledged (one listener, not a self-race)', async () => {
+      const { srv, port: remotePort } = await echo()
+      try {
+        const m = mux()
+        await runSshArgv(m, childArgs(conn(), CP(), 'true'))
+        const lport = await freePort()
+        const args = localForwardArgs(conn(), CP(), lport, '127.0.0.1', remotePort)
+        const [a, b] = await Promise.all([runSshArgv(m, args), runSshArgv(m, args)])
+        expect([a.code, b.code]).toEqual([0, 0])
+        expect(await roundTrip(lport, 'both')).toBe('both')
+        expect((await runSshArgv(m, localForwardCancelArgs(conn(), CP(), lport, '127.0.0.1', remotePort))).code).toBe(0)
+        expect(await canListen(lport)).toBe(true)
+      } finally {
+        srv.close()
+      }
+    })
+
+    it('a port someone else holds is OpenSSH\'s "Port forwarding failed", exit 255', async () => {
+      const m = mux()
+      await runSshArgv(m, childArgs(conn(), CP(), 'true'))
+      const foreign = net.createServer()
+      await new Promise<void>((r) => foreign.listen(0, '127.0.0.1', () => r()))
+      const busy = (foreign.address() as AddressInfo).port
+      try {
+        const r = await runSshArgv(m, localForwardArgs(conn(), CP(), busy, '127.0.0.1', 1))
+        expect(r.code).toBe(255)
+        expect(r.stderr.toString()).toMatch(/Port forwarding failed/)
+      } finally {
+        foreign.close()
+      }
+    })
+
+    it('without a master it fails like ssh; a dropped or exited master releases its listeners', async () => {
+      const m = mux()
+      const lport = await freePort()
+      const none = await runSshArgv(m, localForwardArgs(conn(), CP(), lport, '127.0.0.1', 1))
+      expect(none.code).toBe(255)
+      expect(none.stderr.toString()).toMatch(/Control socket connect/)
+
+      await runSshArgv(m, childArgs(conn(), CP(), 'true'))
+      expect((await runSshArgv(m, localForwardArgs(conn(), CP(), lport, '127.0.0.1', 1))).code).toBe(0)
+      expect(await canListen(lport)).toBe(false)
+      for (const c of clients) c.end() // the host drops the connection
+      for (let i = 0; i < 50 && !(await canListen(lport)); i++) await new Promise((r) => setTimeout(r, 20))
+      expect(await canListen(lport)).toBe(true)
+
+      const lport2 = await freePort()
+      await runSshArgv(m, childArgs(conn(), CP(), 'true'))
+      expect((await runSshArgv(m, localForwardArgs(conn(), CP(), lport2, '127.0.0.1', 1))).code).toBe(0)
+      expect((await runSshArgv(m, exitMasterArgs(conn(), CP()))).code).toBe(0)
+      expect(await canListen(lport2)).toBe(true)
+    })
+  })
+
   it('an argv the parser refuses is a named exit 255, not a guess', async () => {
     const r = await runSshArgv(mux(), ['-L', '1:h:2', 'dev@127.0.0.1'])
     expect(r.code).toBe(255)
     expect(r.stderr.toString()).toMatch(/unsupported ssh argument -L/)
+  })
+})
+
+describe('download() — a remote tree onto a Windows filesystem', () => {
+  // A fake SFTP over an in-memory POSIX tree: names Windows cannot hold, and two that collide.
+  const tree: Record<string, string[] | string> = {
+    '/r': ['.', '..', 'a:b', 'a_b', 'CON', 'notes. ', 'sub'],
+    '/r/a:b': 'colon',
+    '/r/a_b': 'underscore',
+    '/r/CON': 'device',
+    '/r/notes. ': 'dots',
+    '/r/sub': ['Foo', 'foo', 'ok.txt'],
+    '/r/sub/Foo': 'upper',
+    '/r/sub/foo': 'lower',
+    '/r/sub/ok.txt': 'fine'
+  }
+  type Cb<T> = (err: Error | undefined, v: T) => void
+  const sftp = {
+    stat: (p: string, cb: Cb<{ isDirectory(): boolean }>) =>
+      p in tree ? cb(undefined, { isDirectory: () => Array.isArray(tree[p]) }) : cb(new Error(`no ${p}`), undefined as never),
+    readdir: (p: string, cb: Cb<{ filename: string }[]>) => cb(undefined, (tree[p] as string[]).map((filename) => ({ filename }))),
+    fastGet: (r: string, l: string, cb: (err?: Error) => void) => {
+      fs.writeFileSync(l, tree[r] as string)
+      cb()
+    }
+  } as unknown as Parameters<typeof download>[0]
+
+  const files = (root: string): Record<string, string> => {
+    const out: Record<string, string> = {}
+    const walk = (d: string, rel: string): void => {
+      // The entry's type comes from the listing itself (no stat-then-read on the path — CodeQL
+      // js/file-system-race), which is also what a test over a temp tree needs.
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, e.name)
+        if (e.isDirectory()) walk(full, `${rel}${e.name}/`)
+        else out[`${rel}${e.name}`] = fs.readFileSync(full, 'utf8')
+      }
+    }
+    walk(root, '')
+    return out
+  }
+
+  it('win32: every child gets a legal, unique name, and the renames are counted', async () => {
+    const local = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-dl-'))
+    try {
+      const renamed = { count: 0 }
+      await download(sftp, '/r', path.join(local, 'r'), true, 'win32', renamed)
+      expect(files(path.join(local, 'r'))).toEqual({
+        a_b: 'colon',
+        'a_b (2)': 'underscore',
+        _CON: 'device',
+        notes: 'dots',
+        'sub/Foo': 'upper',
+        'sub/foo (2)': 'lower',
+        'sub/ok.txt': 'fine'
+      })
+      // a:b, a_b (displaced), CON, `notes. `, foo.
+      expect(renamed.count).toBe(5)
+    } finally {
+      fs.rmSync(local, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('POSIX: the tree lands byte-for-byte as named', async () => {
+    // Not runnable on Windows: the point is names that Windows cannot create.
+    const local = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-dl-'))
+    try {
+      const renamed = { count: 0 }
+      await download(sftp, '/r', path.join(local, 'r'), true, 'linux', renamed)
+      expect(Object.keys(files(path.join(local, 'r'))).sort()).toEqual(
+        ['CON', 'a:b', 'a_b', 'notes. ', 'sub/Foo', 'sub/foo', 'sub/ok.txt'].sort()
+      )
+      expect(renamed.count).toBe(0)
+    } finally {
+      fs.rmSync(local, { recursive: true, force: true })
+    }
   })
 })

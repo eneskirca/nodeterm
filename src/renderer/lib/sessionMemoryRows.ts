@@ -5,7 +5,7 @@
 // orphan/closed-project policy is unit-testable without mounting anything.
 
 import type { AgentState } from '@shared/agents/normalize'
-import type { Project, SessionMemoryRow } from '@shared/types'
+import type { Project, SessionHostOverhead, SessionMemoryRow } from '@shared/types'
 
 export interface SessionMemoryView {
   row: SessionMemoryRow
@@ -70,7 +70,17 @@ export function resolveSessionRows(
   })
 }
 
-/** Grand total across the resolved rows — the panel header's number. */
-export function totalMb(views: readonly SessionMemoryView[]): number {
-  return views.reduce((sum, v) => sum + v.row.totalMb, 0)
+/**
+ * Grand total — the panel header's number: every resolved row, plus the Windows session host's own
+ * cost when it was measured (it belongs to no row, so leaving it out understates what nodeterm's
+ * sessions hold; absent = not measured, which adds nothing rather than a guess).
+ */
+export function totalMb(views: readonly SessionMemoryView[], host?: SessionHostOverhead): number {
+  return views.reduce((sum, v) => sum + v.row.totalMb, 0) + (host?.totalMb ?? 0)
+}
+
+/** The host line's label: `nodeterm session host (3 consoles)`. */
+export function hostOverheadLabel(host: SessionHostOverhead): string {
+  const n = host.consoleCount
+  return `nodeterm session host (${n} console${n === 1 ? '' : 's'})`
 }

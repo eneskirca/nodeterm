@@ -573,3 +573,42 @@ describe('ensureSharedCodexDaemon: reuse-if-reachable-else-start-once (§2.2)', 
     expect(started).toBe(1)
   })
 })
+
+describe('readCodexAuthEmail / codexAppServerReachable (Windows identity leg)', () => {
+  const jwt = (payload: unknown): string =>
+    ['eyJhbGciOiJSUzI1NiJ9', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'sig'].join('.')
+  const auth = (idToken: unknown): string => JSON.stringify({ tokens: { id_token: idToken } })
+
+  it('reads the email claim from the id_token payload (signature not verified — display only)', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(readCodexAuthEmail(auth(jwt({ email: ' me@example.com ' })))).toBe('me@example.com')
+  })
+
+  it('falls back to the OpenAI profile claim', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(
+      readCodexAuthEmail(auth(jwt({ 'https://api.openai.com/profile': { email: 'p@example.com' } })))
+    ).toBe('p@example.com')
+  })
+
+  it('is null — never a throw — for anything unreadable', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(readCodexAuthEmail('not json')).toBeNull()
+    expect(readCodexAuthEmail('null')).toBeNull()
+    expect(readCodexAuthEmail('{}')).toBeNull()
+    expect(readCodexAuthEmail(JSON.stringify({ tokens: {} }))).toBeNull()
+    expect(readCodexAuthEmail(auth(42))).toBeNull()
+    expect(readCodexAuthEmail(auth('only-one-part'))).toBeNull()
+    expect(readCodexAuthEmail(auth('a.!!not base64!!.c'))).toBeNull()
+    expect(readCodexAuthEmail(auth(`a.${Buffer.from('not json').toString('base64url')}.c`))).toBeNull()
+    expect(readCodexAuthEmail(auth(jwt({ sub: 'x' })))).toBeNull()
+    expect(readCodexAuthEmail(auth(jwt({ email: '   ' })))).toBeNull()
+  })
+
+  it('the app-server socket is unreachable on win32 only', async () => {
+    const { codexAppServerReachable } = await import('./codex-accounts-core')
+    expect(codexAppServerReachable('win32')).toBe(false)
+    expect(codexAppServerReachable('darwin')).toBe(true)
+    expect(codexAppServerReachable('linux')).toBe(true)
+  })
+})

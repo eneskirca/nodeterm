@@ -15,6 +15,7 @@ import {
 } from './agents/hook-endpoint-failover-sh'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
 import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
+import { shimCommand, shimFence, windowsShimNoteLines, type ShimDialect } from '../shared/agents/shim-invocation'
 
 /** The shim's generic transport-failure sentence — exported so the agent-facing docs below can
  *  quote it verbatim and the parity test holds the two ends together. */
@@ -353,7 +354,10 @@ export const CONTEXT_SHIM_SCRIPT = buildContextShimScript()
 /** The get-linked-context SKILL.md body, pointing at the shim at `shimPath`. Parameterized
  *  because the same skill is installed twice with different paths: into the desktop's config
  *  dirs, and onto an SSH host for remote agent nodes. */
-export function buildContextLinkSkillBody(shimPath: string): string {
+export function buildContextLinkSkillBody(shimPath: string, dialect: ShimDialect = 'posix'): string {
+  // `dialect` as in buildCanvasSkillBody: only a non-claude agent on a Windows host gets the `.cmd`
+  // line; the default keeps the POSIX and SSH bodies byte-identical.
+  const windowsNote = windowsShimNoteLines(shimPath, dialect)
   return `---
 name: get-linked-context
 description: Read the conversation/transcript, a recent summary, or the terminal output of another agent node (Claude, Codex or Gemini) you are linked to on the nodeterm canvas. Use when you need to know what a connected node has been doing, hand off, or continue its work. Only meaningful inside a nodeterm session with a context-link edge. Also reads sticky notes linked to this node as context.
@@ -367,10 +371,10 @@ running the local CLI shim below. Nothing is pushed to you automatically — pul
 
 Run the shim (absolute path):
 
-\`\`\`sh
-sh "${shimPath}" <command> [--node <id|title>] [-n <N>]
+\`\`\`${shimFence(dialect)}
+${shimCommand(shimPath, dialect)} <command> [--node <id|title>] [-n <N>]
 \`\`\`
-
+${windowsNote.length ? `\n${windowsNote.join('\n')}\n` : ''}
 Commands:
 - \`list\` — list the nodes you are linked to (start here).
 - \`summary [--node X] [-n 15]\` — the last N lines of a linked node's conversation.

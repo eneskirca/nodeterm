@@ -11,6 +11,7 @@ import { Switch } from '@renderer/ui/Switch'
 import { NumberField } from '@renderer/ui/NumberField'
 import { Select } from '@renderer/ui/Select'
 import { normalizeSessionBackend, ZELLIJ_BACKEND_GAPS } from '@shared/session-backend'
+import { XTERM_SCROLLBACK_MAX } from '@shared/scrollback'
 import {
   LEAD_PANE_WIDTH_DEFAULT,
   LEAD_PANE_WIDTH_MAX,
@@ -103,6 +104,10 @@ export function TmuxSection({ isActive }: { isActive: boolean }): React.JSX.Elem
       <SearchableRow {...ROWS.scrollback}>
         <FieldRow
           label="Scrollback lines"
+          description={
+            'tmux’s history-limit for each terminal. ' +
+            `Without tmux (Windows), history is capped at ${XTERM_SCROLLBACK_MAX.toLocaleString('en-US')} lines: the app holds it at full width in memory.`
+          }
           control={
             <NumberField
               value={settings.tmuxScrollback}

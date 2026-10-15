@@ -23,6 +23,7 @@ import {
   type IntegrationAgentId
 } from '../shared/agent-integrations'
 import { canContextLink, canControlCanvas } from '../shared/agents/config'
+import { shimDialectFor } from '../shared/agents/shim-invocation'
 import type { Settings } from '../shared/types'
 import { installManagedAgentHooks, removeManagedAgentHooks } from './agents/hooks'
 import {
@@ -164,11 +165,21 @@ export function skillRootsFor(
   }
 }
 
-/** The skills one agent gets, as (file name → body). */
-export function skillsFor(agent: IntegrationAgentId, shims: IntegrationShims): Map<string, string> {
+/**
+ * The skills one agent gets, as (file name → body). `hostPlatform` is THIS machine's — these skills
+ * are written into its own config dirs and point at its own shims — and it picks the invocation:
+ * on Windows every agent but claude is told to run the `.cmd` launcher (`shimDialectFor`). The SSH
+ * installers build their bodies themselves, without a dialect, so a host always gets `sh`.
+ */
+export function skillsFor(
+  agent: IntegrationAgentId,
+  shims: IntegrationShims,
+  hostPlatform: string = process.platform
+): Map<string, string> {
   const out = new Map<string, string>()
-  if (shims.canvas && canControlCanvas(agent)) out.set(CANVAS_SKILL, buildCanvasSkillBody(shims.canvas))
-  if (canContextLink(agent)) out.set(CONTEXT_SKILL, buildContextLinkSkillBody(shims.context))
+  const dialect = shimDialectFor(agent, hostPlatform)
+  if (shims.canvas && canControlCanvas(agent)) out.set(CANVAS_SKILL, buildCanvasSkillBody(shims.canvas, dialect))
+  if (canContextLink(agent)) out.set(CONTEXT_SKILL, buildContextLinkSkillBody(shims.context, dialect))
   return out
 }
 
@@ -188,12 +199,15 @@ export function legacyInstructionFiles(agent: IntegrationAgentId, home: string =
   }
 }
 
+// Every file a declined agent loses, Windows wrappers included (`windowsHookWrapperFile`: the
+// `.cmd` that PowerShell-run hooks call). A wrapper left behind would outlive its script harmlessly
+// (it drains and exits 0), but "remove exactly what we wrote" means all of it.
 const HOOK_SCRIPTS: Partial<Record<IntegrationAgentId, string[]>> = {
   claude: ['claude.sh'],
   codex: ['codex.sh', 'codex-hook.cmd'],
-  gemini: ['gemini.sh'],
-  grok: ['grok.sh'],
-  copilot: ['copilot.sh'],
+  gemini: ['gemini.sh', 'gemini-hook.cmd'],
+  grok: ['grok.sh', 'grok-hook.cmd'],
+  copilot: ['copilot.sh', 'copilot-hook.cmd'],
   antigravity: ['antigravity.sh', 'antigravity-hook.cmd']
 }
 

@@ -165,6 +165,28 @@ describe("prepareAgentLaunch logical argv", () => {
     ).resolves.toEqual({ command: "'opencode' '--prompt' 'repo/'" });
   });
 
+  it("passes a flag-interactive builtin's prompt through its own flag, never as a positional", async () => {
+    // Same flags the typed line uses (`assembleLaunchCommand`): a positional is a subcommand slot
+    // for both CLIs, so the earlier argv fallthrough would have launched the wrong thing.
+    await expect(
+      prepareAgentLaunch(
+        start("copilot", { prompt: "fix it" }),
+        "posix",
+        builtinContext("copilot"),
+      ),
+    ).resolves.toEqual({ command: "'copilot' '--interactive' 'fix it'" });
+    await expect(
+      prepareAgentLaunch(
+        start("antigravity", { prompt: "fix it" }),
+        "posix",
+        builtinContext("antigravity"),
+      ),
+    ).resolves.toEqual({ command: "'agy' '--prompt-interactive' 'fix it'" });
+    await expect(
+      prepareAgentLaunch(start("copilot"), "posix", builtinContext("copilot")),
+    ).resolves.toEqual({ command: "'copilot'" });
+  });
+
   it("preserves Gemini's historical positional prompt, including an empty prompt", async () => {
     await expect(
       prepareAgentLaunch(

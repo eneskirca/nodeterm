@@ -374,17 +374,23 @@ export function capUnits(s: string, max: number): string {
 /**
  * R63: whether a link to a node can be watched ONLY while the node is open in this app. A viewer joins
  * a session this process holds (the canvas node, a parked view) or — with nothing held — spawns its
- * own read-only tmux client; a machine whose LOCAL terminals are not tmux (Windows' session host, tmux
- * switched off or missing, Zellij) has no such client. An SSH project's node runs in the HOST's tmux,
- * which does. Unknown (the status not read yet, or unreadable) claims nothing: the popover's waiting
- * line still tells the truth at runtime.
+ * own read-only tmux client; a machine whose LOCAL terminals are not tmux (tmux switched off or
+ * missing, Zellij) has no such client. The session host has its read-only equivalent (`watch-attach`)
+ * when the running host speaks it (`watchJoin`); one from an older build does not. An SSH project's
+ * node runs in the HOST's tmux, which does. Unknown (the status not read yet, or unreadable) claims
+ * nothing: the popover's waiting line still tells the truth at runtime.
  */
 export function watchableOnlyWhileOpen(o: {
-  persistence: { enabled: boolean; backend: string | null } | null | undefined
+  persistence:
+    | { enabled: boolean; backend: string | null; watchJoin?: boolean }
+    | null
+    | undefined
   remoteNode: boolean
 }): boolean {
   if (o.remoteNode || !o.persistence) return false
-  return !(o.persistence.enabled && o.persistence.backend === 'tmux')
+  if (!o.persistence.enabled) return true
+  if (o.persistence.backend === 'tmux') return false
+  return !(o.persistence.backend === 'session-host' && o.persistence.watchJoin === true)
 }
 export function watchWhileOpenNote(): string {
   return `On ${thisMachine()}, viewers can watch this terminal only while it is open in nodeterm; otherwise they wait until you open it.`

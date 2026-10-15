@@ -17,7 +17,7 @@
 import fs from 'fs'
 import path from 'path'
 import { platform } from './platform'
-import { writeManagedHookFileAtomic } from './agents/hooks/install-helper'
+import { syncWindowsShLauncher, writeManagedHookFileAtomic } from './agents/hooks/install-helper'
 import { IPC } from '../shared/ipc'
 import type { ContextLinkInfo, ContextLinkMap } from '../shared/types'
 import { type PtyManager } from './pty-manager'
@@ -63,6 +63,8 @@ function writeCliFiles(): void {
   fs.mkdirSync(d, { recursive: true })
   // Temp + rename, never a truncating write: agents execute this file (see canvas-control.ts).
   writeManagedHookFileAtomic(cliShimPath(), buildContextShimScript(codexThreadIdentityRoot()), undefined, 0o755)
+  // Windows: `context.cmd` beside it for PowerShell-run agents (see canvas-control.ts).
+  syncWindowsShLauncher(d, 'context.sh')
   // Sweep the retired Electron-as-Node CLI off upgraders' disks: the shim no longer execs it,
   // and it would sit there pointing at a binary path that moves with every app update.
   try {
@@ -317,5 +319,7 @@ export function initContextLink(ptyManager: PtyManager, platformDeps: ContextLin
     return
   }
   platform().handle(IPC.contextLinkSetLinks, (map: ContextLinkMap) => setContextLinks(map))
-  platform().handle(IPC.contextLinkInfo, () => ({ shimPath: cliShimPath() }))
+  // `platform` is THIS core's: the renderer words the connect-time note for the machine whose shim
+  // it names (a Windows core's non-claude agents run the `.cmd` launcher), never the viewer's.
+  platform().handle(IPC.contextLinkInfo, () => ({ shimPath: cliShimPath(), platform: process.platform }))
 }

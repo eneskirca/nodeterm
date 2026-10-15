@@ -118,3 +118,17 @@ describe('startDevPortsService', () => {
     expect((await scan({ projectId: 'ssh' })).forwards).toEqual([{ nodeId: 'web', remotePort: 5173, localPort: 5173 }])
   })
 })
+
+describe('startDevPortsService — Windows local scan', () => {
+  it('threads the session host and the platform into the local scan', async () => {
+    const sessionHost = vi.fn(async () => ({ running: false, names: [], sessions: [] }))
+    startDevPortsService({ tmuxBin: () => null, sessionHost, platformName: 'win32' })
+    expect(await scan({ projectId: 'p' })).toEqual({ ok: true, nodes: {} })
+    expect(sessionHost).toHaveBeenCalledTimes(1)
+  })
+
+  it('without a session host a Windows core stays unsupported', async () => {
+    startDevPortsService({ tmuxBin: () => null, platformName: 'win32' })
+    expect((await scan({ projectId: 'p' })).reason).toBe('unsupported')
+  })
+})

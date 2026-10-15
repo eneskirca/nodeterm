@@ -16,7 +16,10 @@ describe('relay attach routing is wired in the desktop shell', () => {
   })
   it('the relay host attaches only through core’s decision, never the bare local attach', () => {
     const src = read('main/remote/host-service.ts')
-    expect(src).toMatch(/pty\.prepareRelayAttach\(nodeId, \{ cols, rows \}, \{ projectId: projectHint \}\)/)
+    // The phone's project hint (and, when asked, its jailed launch request) is all that crosses.
+    expect(src).toMatch(
+      /pty\.prepareRelayAttach\(\n\s*nodeId,\n\s*\{ cols, rows \},\n\s*launchReq \? \{ projectId: projectHint, launch: launchReq \} : \{ projectId: projectHint \}\n\s*\)/
+    )
     expect(src).not.toMatch(/pty\.attachDetached\(/)
   })
   it('a Team Access guest’s create in an SSH project is forced requireRemote', () => {

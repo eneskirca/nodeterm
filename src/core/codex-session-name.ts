@@ -25,6 +25,7 @@ import { WebSocket } from 'ws'
 // copy of the bare charset, which accepted `.` and `..` — harmless over the RPC wire here, but the
 // ids it validates (a thread the app-server just minted, one a node persisted) are handed straight
 // to the record store, where they ARE path segments. One rule, so the two cannot drift apart.
+import { codexAppServerReachable } from './codex-accounts-core'
 import { CODEX_THREAD_START_TIMEOUT_MS, isSafeThreadId } from './codex-identity-proxy'
 
 /**
@@ -668,15 +669,23 @@ export function forgetCodexSessionNames(): void {
  *
  * When the shared app-server reports no name, fall back to the relay's on-disk copy
  * (`relayedCodexSessionName`) so a conversation forked in the TUI still shows its title.
+ *
+ * On a host that cannot reach the app-server at all (Windows — see `codexAppServerReachable`) the
+ * relayed copy IS the read: no socket connect that can only fail, on every sweep. A named-pipe
+ * app-server endpoint is the follow-up once one is confirmed on a device.
  */
 export function readCodexSessionName(
   threadId: string,
-  socketPath = defaultCodexAppServerSocket()
+  socketPath = defaultCodexAppServerSocket(),
+  hostPlatform: NodeJS.Platform = process.platform
 ): Promise<string | null> {
   if (!isSafeThreadId(threadId)) return Promise.resolve(null)
   const key = `${socketPath}\0${threadId}`
   const cached = names.get(key)
   if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.name)
+  if (!codexAppServerReachable(hostPlatform)) {
+    return Promise.resolve(relayedCodexSessionName(socketPath, threadId))
+  }
   const running = inflight.get(key)
   if (running) return running
   const request = readCodexSessionNameAt(socketPath, threadId).then(

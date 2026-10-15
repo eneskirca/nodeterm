@@ -12,6 +12,7 @@ import {
   buildLauncher,
   defaultFlutterConfig,
   describeLaunchFile,
+  gateEntriesForPlatform,
   isSafeRunDir,
   normalizeRunConfig,
   osKeyFor,
@@ -20,6 +21,7 @@ import {
   parseTasksFile,
   planLaunch,
   resolveEntry,
+  RUN_WINDOWS_REASON,
   type LaunchConfig,
   type LaunchEntry,
   type LaunchFile,
@@ -106,10 +108,14 @@ export async function listEntries(dir: unknown): Promise<RunEntriesResult> {
   if (!launch.found) {
     // A Flutter checkout with no launch.json still runs: `flutter run`, as VS Code's F5 would.
     const entries = flutter ? describeLaunchFile({ configs: [defaultFlutterConfig()], compounds: [] }, true) : []
-    return { found: false, entries, isFlutterProject: flutter }
+    return { found: false, entries: gateEntriesForPlatform(entries, process.platform), isFlutterProject: flutter }
   }
   if ('error' in launch) return { found: true, entries: [], error: launch.error, isFlutterProject: flutter }
-  return { found: true, entries: describeLaunchFile(launch.file, flutter), isFlutterProject: flutter }
+  return {
+    found: true,
+    entries: gateEntriesForPlatform(describeLaunchFile(launch.file, flutter), process.platform),
+    isFlutterProject: flutter
+  }
 }
 
 // ─── Devices (Flutter) ───────────────────────────────────────────────────────────────────────
@@ -301,9 +307,6 @@ function referencedEnv(...values: unknown[]): string[] {
 
 export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<RunStartResult> {
   if (!validNode(nodeId)) return { ok: false, error: 'Invalid node.' }
-  if (process.platform === 'win32') {
-    return { ok: false, error: 'Run configurations need a POSIX shell — not supported on Windows yet.' }
-  }
   const config = normalizeRunConfig(rawConfig)
   if (!config) return { ok: false, error: 'Choose a folder first.' }
   try {
@@ -319,7 +322,9 @@ export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<Run
     : flutter
       ? { configs: [defaultFlutterConfig()], compounds: [] }
       : { configs: [], compounds: [] }
-  const entries: LaunchEntry[] = describeLaunchFile(file, flutter)
+  // The Windows gate is applied to the entries (not up front), so a browser configuration — and a
+  // compound of them — still runs on a Windows core; only a process launch is refused.
+  const entries: LaunchEntry[] = gateEntriesForPlatform(describeLaunchFile(file, flutter), process.platform)
   if (entries.length === 0) return { ok: false, error: 'This folder has no .vscode/launch.json.' }
   const entry = resolveEntry(entries, config.launchConfig)
   if (!entry || (config.launchConfig && entry.name !== config.launchConfig && config.launchConfig !== DEFAULT_FLUTTER_ENTRY)) {
@@ -348,6 +353,8 @@ export async function startRun(nodeId: unknown, rawConfig: unknown): Promise<Run
   if (!planned.ok) return planned
   const plan = planned.plan
   if (plan.kind === 'browser') return { ok: true, kind: 'browser', url: plan.url }
+  // Belt and braces behind the entry gate: the launcher below is a POSIX `sh` script.
+  if (process.platform === 'win32') return { ok: false, error: RUN_WINDOWS_REASON }
 
   let envFileVars: Record<string, string> = {}
   if (plan.envFile) {

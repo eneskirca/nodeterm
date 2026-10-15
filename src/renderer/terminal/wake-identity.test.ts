@@ -130,11 +130,12 @@ describe('decideWakeResume — may we type the resume line into this pane?', () 
     ).toBe('agent-running')
   })
 
-  it('keeps the allowlist-free recognition for nu / xonsh / pwsh users', () => {
+  it('keeps the allowlist-free recognition for xonsh / elvish users', () => {
     // The exit half accepts a shell its allowlist does not know; without this the wake would be
     // STRICTER than the exit that produced it and such a user would be hibernated and never woken.
-    const nu = owner({ command: 'nu', argv: ['nu'] })
-    const nuRecord: WakeContext = { command: 'nu', panePid: 3182371, paneId: '%0' }
+    // (`nu` and `pwsh` have since joined the allowlist, so `xonsh` is what exercises this path.)
+    const nu = owner({ command: 'xonsh', argv: ['xonsh'] })
+    const nuRecord: WakeContext = { command: 'xonsh', panePid: 3182371, paneId: '%0' }
     expect(
       decideWakeResume({ owner: nu, recorded: nuRecord, exitedByUs: true, agentId: 'claude' })
     ).toBe('resume')
@@ -170,6 +171,17 @@ describe('decideWakeResume — may we type the resume line into this pane?', () 
       expect(
         decideWakeResume({ owner: LOCAL_SHELL, recorded: null, exitedByUs: false, agentId: 'claude' })
       ).toBe('resume')
+    })
+    it('resumes into a Windows session-host shell (image names: pwsh.exe / cmd.exe)', () => {
+      // The session host reports the console owner's image name. Before `isShellCommand` knew
+      // these, a PAUSED / dropped node on Windows answered 'context-changed' forever.
+      for (const command of ['pwsh', 'pwsh.exe', 'cmd.exe', 'powershell.exe']) {
+        const win = owner({ command, argv: [command] })
+        expect(
+          decideWakeResume({ owner: win, recorded: null, exitedByUs: false, agentId: 'claude' }),
+          command
+        ).toBe('resume')
+      }
     })
     it('still refuses a pane that is not a shell', () => {
       expect(

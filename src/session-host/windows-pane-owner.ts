@@ -2,6 +2,9 @@ import { execFile } from 'child_process'
 import { readFileSync } from 'fs'
 import { win32 as winPath } from 'path'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+import { powershellArgs, powershellExe } from '../core/win32-powershell'
+import { windowsConsoleProbeScript } from './windows-probe-script'
+import { getWindowsProbeWorker, type WindowsProbeWorker } from './windows-probe-worker'
 
 /** Exact Windows console/process generation, not merely a reused PID or executable name. */
 export function sameNativeProcess(before: PaneOwner | undefined, after: PaneOwner | null): boolean {
@@ -37,6 +40,10 @@ export interface WindowsConsoleSnapshot {
 }
 
 const SHELLS = new Set(['pwsh', 'powershell', 'cmd', 'bash', 'sh'])
+/** Is `command` (a `PaneOwner.command`, i.e. the lower-cased executable name) a console shell? */
+export function isConsoleShellBinary(command: string): boolean {
+  return SHELLS.has(command.toLowerCase().replace(/\.exe$/, ''))
+}
 /**
  * Interpreters whose identity is the script they run, not their own executable. An npm-installed
  * agent CLI on Windows is `cmd` -> `node <package>\bin\<cli>.js` (Codex measured 2026-09-14, with
@@ -176,44 +183,49 @@ export function windowsConsoleOwner(
   return null
 }
 
-/** Probe only. The helper joins the console to read its process list, writes nothing into
- * it, and detaches in finally. The target PID is a validated integer, never shell text.
- * Do not log stdout: the result is an internal identity read. */
-export function windowsConsoleProbeScript(rootPid: number): string {
-  if (!Number.isSafeInteger(rootPid) || rootPid <= 0) throw new Error('invalid console root PID')
-  return `$ErrorActionPreference = 'Stop';
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class NtConsoleProbe { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); [DllImport("shell32.dll", SetLastError=true)] static extern IntPtr CommandLineToArgvW([MarshalAs(UnmanagedType.LPWStr)] string cmd, out int count); [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p); public static string ScriptArg(string cmd) { if (String.IsNullOrEmpty(cmd)) return ""; int n; IntPtr p = CommandLineToArgvW(cmd, out n); if (p == IntPtr.Zero) return ""; try { if (n < 2) return ""; string a = Marshal.PtrToStringUni(Marshal.ReadIntPtr(p, IntPtr.Size)); return (a == null || a.StartsWith("-")) ? "" : a; } finally { LocalFree(p); } } }';
-$interpreters = @('node', 'nodejs', 'bun', 'deno', 'python', 'python3', 'ruby', 'perl');
-$self = $PID; $ids = @();
-try {
-  [void][NtConsoleProbe]::FreeConsole();
-  if (-not [NtConsoleProbe]::AttachConsole(${rootPid})) { throw 'console unavailable' };
-  $buffer = New-Object 'System.UInt32[]' 1024;
-  $count = [NtConsoleProbe]::GetConsoleProcessList($buffer, $buffer.Length);
-  if ($count -eq 0 -or $count -gt $buffer.Length) { throw 'console identity unavailable' };
-  for ($i = 0; $i -lt $count; $i++) { if ($buffer[$i] -ne $self) { $ids += [int]$buffer[$i] } };
-} finally { [void][NtConsoleProbe]::FreeConsole() };
-$rows = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self } | ForEach-Object {
-  $row = @{ pid = [int]$_.ProcessId; parent = [int]$_.ParentProcessId; executable = [string]$_.ExecutablePath; born = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }) };
-  $exe = ([IO.Path]::GetFileNameWithoutExtension([string]$_.ExecutablePath)).ToLower();
-  if (($ids -contains [int]$_.ProcessId) -and ($interpreters -contains $exe)) { $row.script = [NtConsoleProbe]::ScriptArg([string]$_.CommandLine) };
-  $row
-});
-@{ console = @($ids); processes = $rows } | ConvertTo-Json -Depth 4 -Compress;`
+export { windowsConsoleProbeScript }
+
+/** A probe's JSON as a snapshot, or null when it is not one. */
+function asSnapshot(value: unknown): WindowsConsoleSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  const snapshot = value as WindowsConsoleSnapshot
+  if (!Array.isArray(snapshot.console) || !Array.isArray(snapshot.processes)) return null
+  return snapshot
 }
 
-export async function readWindowsConsoleOwner(rootPid: number, generation: string): Promise<PaneOwner | null> {
-  if (process.platform !== 'win32') return null
-  const script = windowsConsoleProbeScript(rootPid)
+/** The original path: one powershell.exe for this probe. Now the fallback when the worker cannot
+ *  answer. ABSOLUTE PowerShell path, never a bare name (see core/win32-powershell.ts). */
+function readOneShot(rootPid: number, generation: string, script: string): Promise<PaneOwner | null> {
   return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    execFile(powershellExe(), powershellArgs(script),
       { timeout: 4000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
         if (error) return resolve(null)
         try {
-          const snapshot = JSON.parse(stdout) as WindowsConsoleSnapshot
-          if (!Array.isArray(snapshot.console) || !Array.isArray(snapshot.processes)) return resolve(null)
-          resolve(windowsConsoleOwner(rootPid, generation, snapshot))
+          const snapshot = asSnapshot(JSON.parse(stdout))
+          resolve(snapshot ? windowsConsoleOwner(rootPid, generation, snapshot) : null)
         } catch { resolve(null) }
       })
   })
+}
+
+/**
+ * The console owner of `rootPid`'s console. Routed through this process's long-lived probe worker
+ * (windows-probe-worker.ts: the C# type is compiled once, not per probe); a worker that cannot
+ * answer falls back to the one-shot script, and a probe that FAILED in the worker is null, exactly
+ * as a failed one-shot run is.
+ */
+export async function readWindowsConsoleOwner(
+  rootPid: number,
+  generation: string,
+  worker: Pick<WindowsProbeWorker, 'request'> | null = getWindowsProbeWorker()
+): Promise<PaneOwner | null> {
+  if (process.platform !== 'win32') return null
+  const script = windowsConsoleProbeScript(rootPid) // validates the pid (throws) before anything runs
+  const answer = worker ? await worker.request({ op: 'owner', pid: rootPid }) : null
+  if (answer?.kind === 'ok') {
+    const snapshot = asSnapshot(answer.result)
+    return snapshot ? windowsConsoleOwner(rootPid, generation, snapshot) : null
+  }
+  if (answer?.kind === 'failed') return null
+  return readOneShot(rootPid, generation, script)
 }

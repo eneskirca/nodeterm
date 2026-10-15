@@ -64,6 +64,11 @@ script to `~/.nodeterm/agent-hooks/copilot.sh`. It observes:
 - turn completion (`Stop`);
 - the closed notification types `permission_prompt` and `elicitation_dialog`.
 
+On Windows each entry also carries a `powershell` key — the one Copilot runs there — pointing at
+`~/.nodeterm/agent-hooks/copilot-hook.cmd` through `<abs cmd.exe> /d /c call "<wrapper> "`; the
+wrapper finds Git for Windows' `sh.exe` and runs the same `copilot.sh`. `bash` is kept, and an SSH
+host's file never gets the key.
+
 `PermissionRequest` is deliberately not installed because it is a decision hook that can change
 authorization. `ErrorOccurred` is omitted because recoverable errors can occur before a turn
 continues. Unknown notifications are no-ops, preventing sticky NEEDS YOU badges.
@@ -112,3 +117,10 @@ suite:
    progress refreshes live. Repeat from the phone's Chat screen over the relay.
 8. ⌘M on a copilot node in an SSH project shows "Reading a remote GitHub Copilot session's
    transcript isn't supported yet." with no Retry, and never a local conversation.
+9. Windows: `nodeterm-status.json` entries carry both `bash` and `powershell`; with Git for Windows
+   installed a turn flips RUNNING → IDLE and a permission prompt flips NEEDS YOU (i.e. Copilot does
+   run the `powershell` key, under PowerShell, and the wrapper invocation survives it). Without
+   Git, turns run with no hook error and the badge stays Unknown.
+10. Windows: from a Copilot node run `& "<userData>\canvas-control\nodeterm.cmd" list` (the line
+    the canvas skill now gives it) and a `--prompt "two words"` open; both arrive intact.
+

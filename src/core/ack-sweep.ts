@@ -50,6 +50,26 @@ export interface AckSweepHandlers {
 }
 
 /**
+ * Apply ONE phone read-ack: resolve the node's done event(s) + fire the end seam, then clear the
+ * desktop unread dot without re-acking. The single body every arrival path runs — the local
+ * `.seen` sweep below, the SSH hosts' remote sweep, and the relay's `inbox.ack` (a relay-only host,
+ * every Windows pairing, has no SSH for the phone to drop a file over). Each half is best-effort
+ * and independent: a throwing `ackDone` must not leave the dot set.
+ */
+export function applyPhoneReadAck(nodeId: string, handlers: AckSweepHandlers): void {
+  try {
+    handlers.ackDone(nodeId)
+  } catch {
+    // ackDone is best-effort; the unread clear below still runs.
+  }
+  try {
+    handlers.onUnreadClear(nodeId)
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * One pass over `dir`: for each `<nodeId>.seen` file, run `ackDone` + `onUnreadClear`, then delete
  * the file. Returns the node ids it consumed. Tolerant at every step: a missing dir, an
  * unreadable/unstattable file, or an odd name are skipped silently (a half-written file simply
@@ -80,16 +100,7 @@ export function sweepAckDir(dir: string, fsi: AckSweepFsLike, handlers: AckSweep
       continue
     }
     // A handler must never break the sweep (or leave the file un-consumed): ack + clear, then delete.
-    try {
-      handlers.ackDone(nodeId)
-    } catch {
-      // ackDone is best-effort; keep going so the file is still deleted + unread still cleared.
-    }
-    try {
-      handlers.onUnreadClear(nodeId)
-    } catch {
-      // ignore
-    }
+    applyPhoneReadAck(nodeId, handlers)
     try {
       fsi.rmSync(full, { force: true })
     } catch {

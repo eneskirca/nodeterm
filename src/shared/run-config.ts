@@ -412,6 +412,27 @@ export function describeLaunchFile(file: LaunchFile, isFlutterProject: boolean):
   return [...configs, ...compounds]
 }
 
+/** Why a process run is refused on a Windows core (the launcher is a POSIX `sh` script, stopped and
+ *  hot-reloaded by POSIX signals). One sentence, shared by the core's refusal and the entry gate. */
+export const RUN_WINDOWS_REASON = 'Run configurations that launch a process are not supported on Windows yet.'
+
+/**
+ * Gate entries for the core's platform, so a Windows core says "cannot run here" BEFORE Start
+ * instead of failing on click. Off win32 this is the identity (same array, untouched entries).
+ * On win32 a browser configuration still works (it opens a browser node, no process), and so does a
+ * compound whose every member is one; anything that would launch a process is refused with
+ * `RUN_WINDOWS_REASON`.
+ */
+export function gateEntriesForPlatform(entries: LaunchEntry[], platform: string): LaunchEntry[] {
+  if (platform !== 'win32') return entries
+  const byName = new Map(entries.filter((e) => e.kind === 'config').map((e) => [e.name, e]))
+  return entries.map((e) => {
+    if (!e.supported) return e
+    const launches = e.kind === 'config' ? !e.browser : (e.members ?? []).some((m) => !byName.get(m)?.browser)
+    return launches ? { ...e, supported: false, reason: RUN_WINDOWS_REASON } : e
+  })
+}
+
 /** The synthetic entry a Flutter checkout with no launch.json gets: plain `flutter run`. */
 export const DEFAULT_FLUTTER_ENTRY = 'flutter run (lib/main.dart)'
 

@@ -48,7 +48,7 @@ import { promisify } from 'util'
 import { IPC } from '../shared/ipc'
 import { directExecutableInvocation } from './exec-path'
 import { platform } from './platform'
-import { type CodexIdentityCaps } from '../shared/types'
+import { UNKNOWN_CODEX_IDENTITY_CAPS, type CodexIdentityCaps } from '../shared/types'
 import { installCodexLauncher, codexThreadIdentityAvailable } from './codex-identity-proxy'
 import { codexHome } from './usage/codex-usage'
 import { findInLoginPath } from './pty-manager'
@@ -171,15 +171,27 @@ let announce: ((c: CodexIdentityCaps) => void) | null = null
  */
 export async function refreshCodexIdentityCaps(
   probeRemote: () => Promise<boolean> = probeRemoteFlag,
-  probeAppServer: () => boolean | Promise<boolean> = codexManagedRuntimeInstalled
+  probeAppServer: () => boolean | Promise<boolean> = codexManagedRuntimeInstalled,
+  platformName: NodeJS.Platform | string = process.platform
 ): Promise<CodexIdentityCaps> {
-  const appServer = await Promise.resolve()
-    .then(() => probeAppServer())
-    .catch(() => false)
-  const remoteFlag = appServer ? await probeRemote() : false
-  const launcher =
-    appServer && remoteFlag && codexThreadIdentityAvailable() ? installCodexLauncher() : null
-  latest = { shared: !!launcher, launcherPath: launcher, remoteFlag, appServer }
+  if (platformName === 'win32') {
+    // Windows, phase 1: a DELIBERATE off, said out loud. It used to be off by accident — the stat
+    // looks for an extensionless `codex` (the Windows runtime would be `codex.exe`) and the launcher
+    // is an `sh` script PowerShell/cmd cannot resolve by name — with nothing telling the user. The
+    // early return also guarantees `installCodexLauncher` never drops an sh launcher onto a Windows
+    // PATH should a later release ship an extensionless `codex`. Lifting it needs device facts
+    // first (standalone `codex.exe` layout, the daemon's control channel, `--remote`) and a
+    // non-sh launcher; see docs/codex-shared-identity.md ("Windows").
+    latest = { ...UNKNOWN_CODEX_IDENTITY_CAPS, unavailableReason: 'unsupported-platform' }
+  } else {
+    const appServer = await Promise.resolve()
+      .then(() => probeAppServer())
+      .catch(() => false)
+    const remoteFlag = appServer ? await probeRemote() : false
+    const launcher =
+      appServer && remoteFlag && codexThreadIdentityAvailable() ? installCodexLauncher() : null
+    latest = { shared: !!launcher, launcherPath: launcher, remoteFlag, appServer }
+  }
   if (announce) {
     announce(latest)
     announce = null

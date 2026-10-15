@@ -32,6 +32,8 @@ beforeEach(() => {
       onError: sub('error'),
       onNotAvailable: sub('notAvailable'),
       onNoChannel: sub('noChannel'),
+      onInstalling: sub('installing'),
+      getVersion: () => Promise.reject(new Error('unsupported')),
       getPolicy: () => Promise.resolve({ minSupported: null, mandatory: false }),
       check: () => {},
       restart: () => {},
@@ -100,7 +102,9 @@ describe('the no-channel card', () => {
 })
 
 describe('the states either side of it are unchanged', () => {
-  it('"not available" still renders the up-to-date card', () => {
+  it('"not available" still renders the up-to-date card for a user check', () => {
+    // (An AUTOMATIC check's "not available" is silent — see UpdateCard.flow.test.tsx.)
+    act(() => window.dispatchEvent(new CustomEvent('nodeterm:update-checking')))
     act(() => fire.notAvailable())
     expect(text()).toContain("You're up to date")
     expect(text()).toContain('nodeterm is on the latest version.')

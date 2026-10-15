@@ -19,6 +19,8 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'fs'
 import { managedEventName, type ManagedHookEvent } from '@shared/agents/hook-events'
 import { renameAtomicSync, tempNameFor } from '../../fs-atomic'
 import { buildManagedScript } from './managed-script'
+import { buildWindowsHookInvocation, buildWindowsHookWrapper, buildWindowsShLauncher, windowsHookWrapperFile } from './windows-hook-wrapper'
+import { cmdShimPathFor } from '@shared/agents/shim-invocation'
 
 type HookDef = { matcher?: string; hooks?: { type: string; command: string; timeout?: number }[] }
 type Settings = { hooks?: Record<string, HookDef[]>; [k: string]: unknown }
@@ -43,6 +45,23 @@ export function writeManagedHookFileAtomic(
     rmSync(tmp, { force: true })
     throw e
   }
+}
+
+/**
+ * Keep the `.cmd` launcher beside a user-invoked POSIX CLI shim (`nodeterm.sh`, `context.sh`) in
+ * step with the platform: written on Windows — where every agent but claude runs tools in
+ * PowerShell/cmd.exe and is told to run it (`shimDialectFor`) — and removed anywhere else, so a
+ * data dir carried across machines holds no stale launcher. Throws on a failed write, like the
+ * shim write it accompanies.
+ */
+export function syncWindowsShLauncher(
+  dir: string,
+  scriptFileName: string,
+  platformName: NodeJS.Platform | string = process.platform
+): void {
+  const target = path.join(dir, cmdShimPathFor(scriptFileName))
+  if (platformName === 'win32') writeManagedHookFileAtomic(target, buildWindowsShLauncher(scriptFileName))
+  else rmSync(target, { force: true })
 }
 
 /**
@@ -121,7 +140,31 @@ export interface ManagedHookCommandOptions {
 
 const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`
 
-export function buildManagedHookCommand(scriptPath: string, opts: ManagedHookCommandOptions = {}): string {
+/**
+ * `platform` is the platform of the machine that will RUN the agent, and it is POSIX unless a
+ * caller says otherwise — deliberately NOT `process.platform`: the SSH installers
+ * (`RemoteHooks`) call this for a POSIX host whatever the desktop is, and a default that followed
+ * the desktop would hand a Linux server a `cmd.exe` line. Only the LOCAL installers pass their own
+ * platform. On `win32` the command runs the agent's `.cmd` wrapper beside the script
+ * (`windowsHookWrapperFile`) through `buildWindowsHookInvocation` — the codex form, measured to run
+ * under PowerShell and cmd.exe alike.
+ */
+export function buildManagedHookCommand(
+  scriptPath: string,
+  opts: ManagedHookCommandOptions = {},
+  platform: NodeJS.Platform | string = 'posix',
+  cmdExe?: string
+): string {
+  if (platform === 'win32') {
+    // Only antigravity uses these, and it has its own wrapper + command (it reads stdout as a
+    // decision). Refuse rather than silently drop them on the Windows line.
+    if (opts.env || opts.fallbackStdout !== undefined) {
+      throw new Error('env / fallbackStdout are not supported by the Windows hook wrapper')
+    }
+    const dir = scriptPath.slice(0, Math.max(scriptPath.lastIndexOf('\\'), scriptPath.lastIndexOf('/')) + 1)
+    const leaf = scriptPath.slice(dir.length)
+    return buildWindowsHookInvocation(`${dir}${windowsHookWrapperFile(leaf)}`, cmdExe)
+  }
   // POSIX single-quote escape so $, `, " and \ in the path are taken literally.
   const q = shQuote(scriptPath)
   const prefix = Object.entries(opts.env ?? {})
@@ -174,6 +217,24 @@ function managedMarkerFor(command: string): string {
 }
 
 /**
+ * BOTH spellings of one agent's managed entry, whichever one we were handed: the POSIX
+ * `agent-hooks/<agent>.sh` and the Windows wrapper `agent-hooks/<agent>-hook.cmd`.
+ *
+ * Matching only the spelling THIS install writes is #558 again: a Windows settings.json that
+ * already carries the POSIX entry (every Windows gemini install before the wrapper existed) would
+ * keep it and gain the `.cmd` one beside it — two hooks per event, one of which can never run. With
+ * the pair, the next launch REPLACES it, and an uninstall strips both. Same rule codex's own matcher
+ * follows (`isManagedCommand` in codex.ts). On POSIX this only ever widens the sweep to a `.cmd`
+ * entry of ours, which nothing on POSIX writes.
+ */
+function managedMarkersFor(marker: string): string[] {
+  const m = marker.match(/^agent-hooks\/(.+?)(?:-hook\.cmd|\.sh)$/)
+  if (!m) return [marker]
+  const script = `${m[1]}.sh`
+  return [`agent-hooks/${script}`, `agent-hooks/${windowsHookWrapperFile(script)}`]
+}
+
+/**
  * Does one handler's command belong to us? `legacy` also accepts the pre-hook-server
  * `claude-signals` marker (the install path sweeps it; the uninstall path deliberately does not,
  * so it only ever removes what this build wrote).
@@ -182,10 +243,11 @@ function managedMarkerFor(command: string): string {
  * rather than throwing, or one malformed entry skips the whole agent's install.
  */
 function managedCommandMatcher(marker: string, legacy: boolean): (command?: string) => boolean {
+  const markers = managedMarkersFor(marker)
   return (command?: string) => {
     if (typeof command !== 'string') return false
     const c = normalizeHookCommand(command)
-    return c.includes(marker) || (legacy && c.includes('claude-signals'))
+    return markers.some((m) => c.includes(m)) || (legacy && c.includes('claude-signals'))
   }
 }
 
@@ -293,15 +355,45 @@ export interface InstallHooksOptions {
   events: readonly ManagedHookEvent[]
   /** Atomic replacement is safe only when nodeterm owns the config file outright (Grok). */
   atomicConfig?: boolean
+  /**
+   * Does this agent run its hooks through PowerShell / cmd.exe on Windows? Then a Windows install
+   * writes the `.cmd` wrapper beside the script and points the config at it (gemini, grok). Claude
+   * leaves it off: Claude Code runs hooks through Git Bash, where the POSIX command is correct.
+   */
+  windowsWrapper?: boolean
+  /** The platform the agent runs on. Test seam; the local installers run where the agent does. */
+  platform?: NodeJS.Platform | string
+  /** Test seam for the Windows invocation's interpreter (default: `defaultWindowsCmdExe()`). */
+  cmdExe?: string
+}
+
+/**
+ * Write the agent's `.cmd` wrapper beside its managed script. Returns false when it could not be
+ * written — the caller must then leave the config alone, because a command pointing at a missing
+ * wrapper is exactly the dead entry the wrapper exists to replace.
+ */
+export function installWindowsHookWrapper(agentId: string, scriptPath: string): boolean {
+  const leaf = path.basename(scriptPath)
+  try {
+    writeManagedHookFileAtomic(path.join(path.dirname(scriptPath), windowsHookWrapperFile(leaf)), buildWindowsHookWrapper(leaf, agentId))
+    return true
+  } catch (e) {
+    console.warn(`[agent-hooks] ${agentId} Windows wrapper write failed`, e)
+    return false
+  }
 }
 
 export function installHooksInto(opts: InstallHooksOptions): void {
   const { agentId, scriptFileName, configPath, events, atomicConfig = false } = opts
+  const platform = opts.platform ?? process.platform
+  const wrapped = platform === 'win32' && !!opts.windowsWrapper
 
   const sp = installManagedHookScript(agentId, scriptFileName)
   if (!sp) return
+  // Order matters: the wrapper must exist before the config points the agent at it.
+  if (wrapped && !installWindowsHookWrapper(agentId, sp)) return
 
-  const command = buildManagedHookCommand(sp)
+  const command = wrapped ? buildManagedHookCommand(sp, {}, 'win32', opts.cmdExe) : buildManagedHookCommand(sp)
   if (!atomicConfig) {
     updateSettingsFile(configPath, (config) => mergeManagedHook(config, command, events))
     return

@@ -11,6 +11,8 @@
  *  - `mac:<path under /System/Library/Desktop Pictures>` presets are the stock macOS stills, read
  *    from disk at runtime and NEVER bundled (they are Apple's). Converted to JPEG by `sips` in
  *    core, since Chromium cannot decode HEIC.
+ *  - `win:<path under %WINDIR%\\Web\\Wallpaper>` presets are the stock Windows stills, read and
+ *    converted the same way through Electron's `nativeImage` (desktop only).
  *  - `image` is a picture the user chose, COPIED into `<userData>/wallpapers/` on import so moving
  *    the original does not break it. `path` names that copy; core refuses to read anything else.
  */
@@ -92,7 +94,11 @@ export function normalizeWallpaper(v: unknown): DesktopWallpaper {
   const o = v as Record<string, unknown>
   if (o.kind === 'preset' && typeof o.id === 'string' && o.id.length > 0 && o.id.length < MAX_FIELD) {
     if (o.id.startsWith('gradient:') && !gradientCss(o.id)) return NO_WALLPAPER
-    if (!o.id.startsWith('gradient:') && !o.id.startsWith('mac:')) return NO_WALLPAPER
+    // `mac:` / `win:` name a system still; core re-resolves it against its OWN fresh scan, so an id
+    // from the other OS (a settings.json synced across machines) simply loads nothing there.
+    if (!o.id.startsWith('gradient:') && !o.id.startsWith('mac:') && !o.id.startsWith('win:')) {
+      return NO_WALLPAPER
+    }
     return { kind: 'preset', id: o.id }
   }
   if (o.kind === 'image' && typeof o.path === 'string' && o.path.length > 0 && o.path.length < MAX_FIELD) {
@@ -103,8 +109,9 @@ export function normalizeWallpaper(v: unknown): DesktopWallpaper {
 
 /**
  * What Liquid Glass picks when it is chosen with no wallpaper, so glass never sits over plain
- * black: the first macOS still (the scan already orders Sonoma Horizon first), else the first
- * gradient — the answer on Linux, Windows and the Server Edition, where the list is empty.
+ * black: the first system still (the macOS scan already orders Sonoma Horizon first; Windows lists
+ * its stock stills when the desktop shell can convert them), else the first gradient — the answer
+ * on Linux and the Server Edition, where the list is empty.
  */
 export function defaultWallpaper(stills: readonly { id: string }[]): DesktopWallpaper {
   return stills[0] ? { kind: 'preset', id: stills[0].id } : { kind: 'preset', id: GRADIENT_WALLPAPERS[0].id }

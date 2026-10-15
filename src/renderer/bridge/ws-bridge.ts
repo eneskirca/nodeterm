@@ -80,6 +80,7 @@ import {
 } from '../../shared/types'
 import type { PeerIdentity } from '../../shared/presence'
 import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
+import type { LaunchIntentExecutionResult } from '../../shared/types'
 import { buildStubApi, unsupported } from './stubs'
 import { sanitizeStationNotices } from '@shared/station-notice'
 import { sanitizeOutcomeRecords } from '@shared/station-outcome'
@@ -315,7 +316,19 @@ export function buildRealApi(
     paneOwner: (persistKey) =>
       client.request(IPC.ptyPaneOwner, persistKey).catch(() => null) as Promise<PaneOwner | null>,
     terminateForeground: (persistKey, expectedAgentId) =>
-      client.request(IPC.ptyTerminateForeground, persistKey, expectedAgentId).catch(() => false) as Promise<boolean>,
+      client.request(IPC.ptyTerminateForeground, persistKey, expectedAgentId).catch(() => false) as Promise<boolean | 'unsupported'>,
+    // REAL: core registers it, so a server running on Windows answers with its own session host.
+    // On the Linux server every call answers `unsupported-shell` and the caller types its legacy
+    // line. A transport failure is `delivery-failed`, NOT a fallback: the reply may be what was
+    // lost, and typing the legacy line after a launch that did land would start the agent twice.
+    executeLaunch: (persistKey, request) =>
+      (client.request(IPC.ptyExecuteLaunch, persistKey, request) as Promise<LaunchIntentExecutionResult>).catch(
+        (): LaunchIntentExecutionResult => ({
+          ok: false,
+          reason: 'delivery-failed',
+          message: 'The agent launch could not be delivered to the terminal.'
+        })
+      ),
     // No server handler — the session-name poll degrades to no adopted name. A PRE-EXISTING gap,
     // and not any one agent's: `IPC.ptyReadSessionName` has never been registered server-side, so
     // claude's, grok's and gemini's read legs are equally stubbed here (the write leg works on both
@@ -366,7 +379,10 @@ export function buildRealApi(
     // REAL: Server Edition canvas control broadcasts its own persisted bridge/rope changes here —
     // wider than the node-only canvas:mut vocabulary, but ours, so they must not travel the
     // outside-edit channel and end up behind the conflict bar (see server/canvas-control.ts).
-    onServerChange: (cb) => client.subscribe(IPC.workspaceServerChange, cb as Listener)
+    onServerChange: (cb) => client.subscribe(IPC.workspaceServerChange, cb as Listener),
+    // Documented degrade: the quit / restart-to-update flush is a desktop main-process request.
+    // The server never quits on a tab's behalf, and the debounced autosave covers a browser.
+    onFlushRequest: () => () => {}
   }
 
   // REAL: WorkspaceStore (core) registers the project-settings:* channels too — same
@@ -939,6 +955,8 @@ export function buildSpeechApi(client: RpcClient): Pick<NodeTerminalApi, 'speech
     deleteModel: (id) => client.request(IPC.speechModelDelete, { id }) as Promise<void>,
     onProgress: (cb) => client.subscribe(IPC.speechProgress, cb as Listener),
     micConsent: () => Promise.resolve(true)
+    // `openMicSettings` is deliberately ABSENT: a browser's mic permission is its own site
+    // setting, and the dictation overlay hides its "Open microphone settings" button without it.
   }
   return { speech }
 }

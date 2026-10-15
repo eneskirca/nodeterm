@@ -41,4 +41,10 @@ describe('review of #1067 — sentences that must not over-claim', () => {
     expect(unmeasuredNote(3)).toMatch(/^3 Zellij sessions are running here/)
     expect(unmeasuredNote(null)).toMatch(/could not be counted/)
   })
+  it('session-host sessions an older host could not describe are named as such, not as Zellij', () => {
+    expect(unmeasuredNote(1, 'session-host')).toMatch(/^1 session is running here and not measured/)
+    expect(unmeasuredNote(2, 'session-host')).toMatch(/^2 sessions are running here.*session host predates/)
+    expect(unmeasuredNote(2, 'session-host')).not.toMatch(/Zellij/)
+    expect(unmeasuredNote(null, 'session-host')).toMatch(/could not be counted/)
+  })
 })

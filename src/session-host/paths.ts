@@ -52,6 +52,10 @@ export interface SessionHostState {
   tokenPath: string
   startedAt: number
   protocolVersion: number
+  /** The host's own `process.execPath` (additive; absent from hosts before it was published).
+   *  Read only by prepare-for-update to tell a staged host from one that holds the install
+   *  directory — never to locate, launch or kill anything. */
+  exe?: string
 }
 
 export function currentProtocolVersion(): number {

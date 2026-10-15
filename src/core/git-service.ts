@@ -55,11 +55,12 @@ const GH_AUTH_TTL_MS = 10 * 60_000
 let ghAuthedCache: { value: boolean; at: number } | null = null
 let ghAuthedInFlight: Promise<boolean> | null = null
 
-async function ghAuthed(): Promise<boolean> {
+async function ghAuthed(opts?: { recheckNegative?: boolean }): Promise<boolean> {
   const invocation = ghInvocation(['auth', 'status'])
   if (!invocation) return false
   const now = Date.now()
-  if (ghAuthedCache && now - ghAuthedCache.at < GH_AUTH_TTL_MS) return ghAuthedCache.value
+  const trusted = ghAuthedCache && (ghAuthedCache.value || !opts?.recheckNegative)
+  if (ghAuthedCache && trusted && now - ghAuthedCache.at < GH_AUTH_TTL_MS) return ghAuthedCache.value
   if (ghAuthedInFlight) return ghAuthedInFlight
   ghAuthedInFlight = (async () => {
     let value = false
@@ -187,7 +188,15 @@ function parseNumstat(out: string): Map<string, { added: number; deleted: number
 function githubTokenFromGitCredentials(cwd: string): Promise<string | null> {
   return new Promise((resolve) => {
     let out = ''
-    const child = spawn('git', ['credential', 'fill'], { cwd: cwd || undefined, env: GIT_ENV })
+    // A STORED token only — never an interactive login. Git Credential Manager (the default helper
+    // in Git for Windows, optional on macOS/Linux) opens a GUI sign-in for an empty store, which
+    // `GIT_TERMINAL_PROMPT=0` does not suppress; Source Control retries publish every few seconds
+    // while the user runs `gh auth login` (renderer/lib/publishFallback), so without this every
+    // retry would stack another GCM window. Helpers other than GCM ignore the variable.
+    const child = spawn('git', ['credential', 'fill'], {
+      cwd: cwd || undefined,
+      env: { ...GIT_ENV, GCM_INTERACTIVE: 'never' }
+    })
     const timer = setTimeout(() => child.kill('SIGKILL'), 5000)
     child.stdout.on('data', (d) => {
       out += d.toString()
@@ -819,7 +828,10 @@ export class GitService {
     // (the one that already lets them push) so publishing doesn't demand a separate
     // `gh auth login`. If neither is available, signal the UI to start a login.
     const env: NodeJS.ProcessEnv = { ...GIT_ENV }
-    if (!(await ghAuthed())) {
+    // A cached "not signed in" is re-asked here: publish is user-initiated, and the Source Control
+    // panel retries it right after running `gh auth login` in a terminal — trusting a 10-minute-old
+    // negative would make that retry fail for the rest of the TTL.
+    if (!(await ghAuthed({ recheckNegative: true }))) {
       const token = await githubTokenFromGitCredentials(cwd)
       if (!token) {
         return { ok: false, message: 'Sign in to GitHub to publish.', needsAuth: true }

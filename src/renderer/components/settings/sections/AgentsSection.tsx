@@ -40,6 +40,7 @@ import {
   unsupportedModesNote
 } from '@shared/agents/approval-mode'
 import { codexApprovalCaps } from '@renderer/state/codexCli'
+import { codexIdentityCapsNow } from '@renderer/state/codexIdentity'
 import { AgentIcon } from '../../../lib/agentIcons'
 import { chipFor } from '../../../lib/keybindingOverrides'
 import { NODE_IDENTITY_STRICT_DATE } from '@shared/node-identity'
@@ -548,6 +549,11 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               {hasSharedIdentity(id) && settings.agentLaunchCommands[id]?.trim() ? (
                 <span className="text-[12px] text-muted">
                   Overrides the managed per-node launcher — sessions join as plain clients.
+                </span>
+              ) : null}
+              {hasSharedIdentity(id) && codexIdentityCapsNow().unavailableReason === 'unsupported-platform' ? (
+                <span className="text-[12px] text-muted">
+                  Shared Codex app-server is not available on Windows yet; each node runs its own codex.
                 </span>
               ) : null}
             </div>

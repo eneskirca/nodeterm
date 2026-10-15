@@ -11,6 +11,19 @@ import { fakePlatform } from '../platform-fake'
 import { hookServer } from './hook-server'
 import { nodeAuthToken } from './node-auth-token'
 import { REQUEST_ID_HINT_LEAD, REQUEST_ID_REPLAYED_LEAD } from '../control-request-ledger'
+import { NODE_IDENTITY_STRICT_AFTER } from './node-identity-policy'
+
+/**
+ * An UNVERIFIED caller only reaches the ledger inside the dated warning window — past
+ * `NODE_IDENTITY_STRICT_AFTER` the route refuses it (403) before the ledger or the handler run.
+ * The unverified-ledger tests below are about request-id handling, not about the date, so they
+ * stand one millisecond before the cutoff through the hook server's clock seam instead of reading
+ * the machine's clock (which turned them red on 2026-10-13).
+ */
+const inWarningWindow = (): void =>
+  hookServer.setIdentityClockForTests(() => new Date(NODE_IDENTITY_STRICT_AFTER.getTime() - 1))
+const pastCutoff = (): void =>
+  hookServer.setIdentityClockForTests(() => new Date(NODE_IDENTITY_STRICT_AFTER.getTime()))
 
 const secret = Buffer.alloc(32, 7)
 let dir: string
@@ -39,12 +52,14 @@ beforeAll(async () => {
   })
 })
 beforeEach(() => {
+  hookServer.setIdentityClockForTests(() => new Date())
   handled = []
   lateOffered = []
   let n = 0
   next = async (cmd) => ({ ok: true, message: `opened n${++n}`, result: { ids: [`n${n}`], verb: cmd.verb } })
 })
 afterAll(() => {
+  hookServer.setIdentityClockForTests(() => new Date())
   hookServer.setIdentityStrictOverride(() => undefined)
   hookServer.clearNodeAuthSecretForTests()
   hookServer.stop()
@@ -182,6 +197,7 @@ describe('control route: --request-id makes a retried open idempotent', () => {
   })
 
   it('an unverified caller gets NO dedupe (never a shared bucket) and an explicit id says so', async () => {
+    inWarningWindow()
     const node = freshNode()
     const args = { 'request-id': 'legacy-1' }
     const a = await post('open-terminal', { node, args, verified: false })
@@ -192,6 +208,18 @@ describe('control route: --request-id makes a retried open idempotent', () => {
     // The per-run id alone is silent: the caller never asked for anything.
     const c = await post('open-terminal', { node, cliRequestId: 'cli-9', verified: false })
     expect(c.body).not.toMatch(/request id ignored/i)
+  })
+
+  it('past the cutoff an unverified caller is refused before the ledger and the handler', async () => {
+    pastCutoff()
+    const node = freshNode()
+    const args = { 'request-id': 'legacy-2' }
+    const a = await post('open-terminal', { node, args, verified: false })
+    const b = await post('open-terminal', { node, args, verified: false })
+    expect(a.status).toBe(403)
+    expect(b.status).toBe(403)
+    // Refused before the ledger: nothing ran, so there is no outcome for it to hold or replay.
+    expect(handled).toHaveLength(0)
   })
 
   it('a dry run bypasses the ledger: the real call with the same id still runs', async () => {
@@ -255,12 +283,15 @@ describe('control route: --request-id makes a retried open idempotent', () => {
   })
 
   it('with no claim there is no id to name, and the handler is offered no late-answer path', async () => {
+    inWarningWindow()
     next = async () => ({ ok: false, error: 'no answer within 120s — check the canvas', indeterminate: true })
     const unverified = await post('open-worktree', {
       node: freshNode(),
       args: { branch: 'b', 'request-id': 'mine' },
       verified: false
     })
+    // Reached the handler (the warning window), so the missing hint is a real answer, not a 403.
+    expect(unverified.status).toBe(400)
     expect(unverified.body).not.toContain(REQUEST_ID_HINT_LEAD)
     const noId = await post('open-worktree', { node: freshNode(), args: { branch: 'b' } })
     expect(noId.body).not.toContain(REQUEST_ID_HINT_LEAD)

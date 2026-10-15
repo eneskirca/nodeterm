@@ -121,6 +121,18 @@ describe('trigger delivery — immediate outcomes', () => {
     expect(w.sent).toHaveLength(1)
   })
 
+  it('a plain terminal on the Windows session host delivers into pwsh.exe / cmd.exe', async () => {
+    const w = world()
+    w.nodes.set('term-tgt-1', {}) // no agentId
+    for (const pane of ['pwsh.exe', 'cmd.exe']) {
+      w.pane = pane
+      expect((await w.delivery.fire(row())).outcome, pane).toBe('fired')
+    }
+    w.pane = 'node.exe'
+    expect((await w.delivery.fire(row())).outcome).toBe('missed')
+    expect(w.sent).toHaveLength(2)
+  })
+
   it('a busy agent target queues; an unknown agent state queues too', async () => {
     const w = world()
     w.state = 'working'

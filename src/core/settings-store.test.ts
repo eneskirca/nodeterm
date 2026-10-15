@@ -194,6 +194,29 @@ describe('SettingsStore nested-default merge', () => {
     })
   })
 
+  describe('runInBackgroundOnClose', () => {
+    const load = (saved: Record<string, unknown>): Settings => {
+      writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')
+      const store = new SettingsStore()
+      store.init()
+      return store.get()
+    }
+
+    it("defaults to 'auto' for a settings.json that predates the key", () => {
+      expect(load({ fontSize: 13 }).runInBackgroundOnClose).toBe('auto')
+    })
+
+    it('keeps the three known values', () => {
+      for (const v of ['auto', 'on', 'off']) expect(load({ runInBackgroundOnClose: v }).runInBackgroundOnClose).toBe(v)
+    })
+
+    it("normalizes a hand-edited garbage value to 'auto'", () => {
+      expect(load({ runInBackgroundOnClose: true }).runInBackgroundOnClose).toBe('auto')
+      expect(load({ runInBackgroundOnClose: 'tray' }).runInBackgroundOnClose).toBe('auto')
+      expect(load({ runInBackgroundOnClose: null }).runInBackgroundOnClose).toBe('auto')
+    })
+  })
+
   describe('agent launch mode migration', () => {
     const loadWith = (saved: Record<string, unknown>): Settings => {
       writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(saved), 'utf-8')

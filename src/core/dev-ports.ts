@@ -27,6 +27,8 @@ import { indexProcesses, type PaneRef } from './session-memory'
 import { fencedListPanesCommand, parseFencedPanes } from './session-memory-remote'
 import { TMUX_SOCKET } from './tmux-naming'
 import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import type { SessionHostListing } from './session-host-client'
+import { cimRows, powershellArgs, powershellExe } from './win32-powershell'
 
 const runAsync = promisify(execFile)
 
@@ -425,17 +427,176 @@ export function forwardTarget(addresses: readonly string[]): string | null {
   return specific ?? null
 }
 
+// ── Windows: the session host's panes + one PowerShell call ─────────────────────────────────────
+//
+// Windows has no `/bin/sh` and no tmux, so the POSIX script cannot run there. The three facts are
+// the same, from different sources: the panes come from the session host (each session's pty pid —
+// its `sessionDetails` listing), and the process table and listening sockets from ONE PowerShell
+// call — `Win32_Process` and `Get-NetTCPConnection` (owning pid is a field, no name to forge), or
+// `netstat -ano` where the NetTCPIP module is missing. The pure parsers below feed the very same
+// `assembleDevPorts`, so ownership is decided by one tree walk on every platform.
+
+/**
+ * The Windows probe. Fenced like the POSIX one (`##PROCS`/`##LISTEN`/`##VIA`/`##END`), and any
+ * error inside it exits 1 — which the exec seam reports as a rejection, i.e. `unreachable`. One
+ * line, single quotes only: the whole script is one argv element and contains no `"` for Windows'
+ * argv quoting to mangle.
+ *
+ * `Where-Object State -eq Listen` over the UNFILTERED cmdlet, not `-State Listen`: the filtered
+ * form throws "no matching objects" when nothing listens, which would read as a failed probe.
+ */
+export const WIN32_DEV_PORTS_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  'try {',
+  `'${PROCS}';`,
+  'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress;',
+  `'${LISTEN}';`,
+  'if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {',
+  "'##VIA nettcp';",
+  "Get-NetTCPConnection | Where-Object { $_.State -eq 'Listen' } | Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress",
+  '} else {',
+  "'##VIA netstat';",
+  'netstat.exe -ano;',
+  "if ($LASTEXITCODE -ne 0) { throw ('netstat exited ' + $LASTEXITCODE) }",
+  '};',
+  `'${END}'`,
+  '} catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }'
+].join(' ')
+
+/** `Win32_Process` rows (ConvertTo-Json) → ProcRow. `Name` keeps its basename without `.exe`, the
+ *  same shape `ps`'s comm gives the menu row. Null for unreadable JSON. */
+export function parseWin32ProcRows(json: string): ProcRow[] | null {
+  const rows = cimRows(json)
+  if (rows === null) return null
+  const out: ProcRow[] = []
+  for (const r of rows) {
+    const pid = Number(r.ProcessId)
+    const ppid = Number(r.ParentProcessId)
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(ppid)) continue
+    const name = typeof r.Name === 'string' ? r.Name : ''
+    out.push({ pid, ppid, command: name.replace(/\.exe$/i, '') })
+  }
+  return out
+}
+
+/** One address+port as the shared normalizer reads it (brackets for IPv6, mapped IPv4 unwrapped). */
+function winHostPort(address: string, port: number): { address: string; port: number } | null {
+  return splitHostPort(address.includes(':') ? `[${address}]:${port}` : `${address}:${port}`)
+}
+
+/** `Get-NetTCPConnection` listeners (ConvertTo-Json). The owning pid is a kernel FIELD, not text a
+ *  process can rename itself into, so the owner carries no name to cross-check. Null for bad JSON. */
+export function parseWinNetTcpListeners(json: string): Listener[] | null {
+  const rows = cimRows(json)
+  if (rows === null) return null
+  const out: Listener[] = []
+  for (const r of rows) {
+    const pid = Number(r.OwningProcess)
+    if (typeof r.LocalAddress !== 'string' || !Number.isSafeInteger(pid)) continue
+    const hp = winHostPort(r.LocalAddress, Number(r.LocalPort))
+    if (hp) out.push({ owners: [{ pid, command: '' }], ...hp })
+  }
+  return out
+}
+
+/**
+ * `netstat -ano` → TCP listeners. The state column is LOCALIZED (`LISTENING`, `ABHÖREN`, …), so a
+ * listener is recognised by what is language-neutral: a TCP row whose FOREIGN address has port 0
+ * (`0.0.0.0:0`, `[::]:0`) — an established or waiting connection always has a real peer port.
+ */
+export function parseNetstatListeners(text: string): Listener[] {
+  const out: Listener[] = []
+  for (const line of text.split('\n')) {
+    const m = /^\s*TCP\s+(\S+)\s+(\S+)\s+.*?(\d+)\s*$/i.exec(line.replace(/\r$/, ''))
+    if (!m || !/:0$/.test(m[2])) continue
+    const hp = splitHostPort(m[1])
+    if (hp) out.push({ owners: [{ pid: Number(m[3]), command: '' }], ...hp })
+  }
+  return out
+}
+
+/** Parse the Windows probe for the given panes. Every failure is `unreachable`, never "no ports". */
+export function parseWin32DevPortsProbe(stdout: string, panes: readonly PaneRef[]): DevPortsReport {
+  const lines = stdout.split('\n').map((l) => l.replace(/\r$/, ''))
+  const iProcs = lines.indexOf(PROCS)
+  const iListen = lines.indexOf(LISTEN)
+  const iEnd = lines.lastIndexOf(END)
+  if (iProcs < 0 || iListen < 0 || iEnd < 0 || !(iProcs < iListen && iListen < iEnd)) return fail('unreachable')
+  const procs = parseWin32ProcRows(lines.slice(iProcs + 1, iListen).join('\n'))
+  if (!procs || procs.length === 0) return fail('unreachable')
+  const listen = lines.slice(iListen + 1, iEnd)
+  const via = /^##VIA (\w+)$/.exec(listen[0] ?? '')?.[1]
+  const body = listen.slice(1).join('\n')
+  let listeners: Listener[] | null
+  if (via === 'nettcp') listeners = parseWinNetTcpListeners(body)
+  else if (via === 'netstat') listeners = parseNetstatListeners(body)
+  else return fail('unreachable')
+  if (!listeners) return fail('unreachable')
+  return { ok: true, nodes: assembleDevPorts(panes, procs, listeners) }
+}
+
+/**
+ * The Windows local scan. The session host's listing decides everything before PowerShell runs:
+ *  - a failed read, or a host too old to name its sessions' pids → `unreachable` ("could not look");
+ *  - no host running, or no nt- session → ok with no ports (an answer), and NO PowerShell spawn;
+ *  - otherwise one PowerShell call, whose non-zero exit (the exec rejects) is `unreachable`.
+ */
+export async function collectWin32DevPorts(
+  listing: Promise<SessionHostListing | null>,
+  exec: (bin: string, args: string[]) => Promise<string>
+): Promise<DevPortsReport> {
+  let read: SessionHostListing | null
+  try {
+    read = await listing
+  } catch {
+    read = null
+  }
+  if (!read) return fail('unreachable')
+  if (!read.running) return { ok: true, nodes: {} }
+  if (read.sessions === null) return fail('unreachable')
+  const panes: PaneRef[] = read.sessions
+    .filter((row) => row.name.startsWith('nt-'))
+    .map((row) => ({ session: row.name, panePid: row.pid, command: '' }))
+  if (panes.length === 0) return { ok: true, nodes: {} }
+  try {
+    return parseWin32DevPortsProbe(await exec(powershellExe(), powershellArgs(WIN32_DEV_PORTS_SCRIPT)), panes)
+  } catch {
+    return fail('unreachable')
+  }
+}
+
 export interface LocalDevPortsOptions {
   /** The app's tmux (`PtyManager.getTmuxBin()`); null = no tmux, so there is no pane tree at all. */
   tmuxBin: () => string | null
   exec?: (command: string) => Promise<string>
   platformName?: NodeJS.Platform
+  /**
+   * Windows: the session host's listing (`PtyManager.sessionHostListing()`), `undefined` when the
+   * session host is not the backend (tmux persistence switched off) — then honestly unsupported.
+   */
+  sessionHost?: () => Promise<SessionHostListing | null> | undefined
+  /** Windows: the PowerShell exec seam. */
+  execWin?: (bin: string, args: string[]) => Promise<string>
 }
 
-/** Runs the probe on this machine. Windows has no `/bin/sh` and no tmux: honestly unsupported. */
+/** Runs the probe on this machine — the POSIX script, or on Windows the session-host leg above. */
 export async function collectLocalDevPorts(opts: LocalDevPortsOptions): Promise<DevPortsReport> {
   const platformName = opts.platformName ?? process.platform
-  if (platformName === 'win32') return fail('unsupported')
+  if (platformName === 'win32') {
+    const listing = opts.sessionHost?.()
+    if (listing === undefined) return fail('unsupported')
+    const execWin =
+      opts.execWin ??
+      (async (bin: string, args: string[]): Promise<string> => {
+        const { stdout } = await runAsync(bin, args, {
+          timeout: 15_000,
+          maxBuffer: 16 * 1024 * 1024,
+          windowsHide: true
+        })
+        return stdout
+      })
+    return collectWin32DevPorts(listing, execWin)
+  }
   // No tmux means every terminal is a plain shell (PtyManager's fallback): no nt- pane tree exists
   // to own a port. Unsupported for this run rather than a "could not look" asked every 30 s.
   const tmuxBin = opts.tmuxBin()

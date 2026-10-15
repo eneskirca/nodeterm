@@ -52,7 +52,11 @@ export function installGrokHooks(): void {
     scriptFileName: SCRIPT_FILE_NAME,
     configPath: grokHookConfigPath(),
     events: GROK_EVENTS,
-    atomicConfig: true
+    atomicConfig: true,
+    // Grok's hook docs (user-guide/10-hooks.md) say commands run under PowerShell on Windows; its
+    // binary names powershell.exe and cmd.exe. The wrapper invocation runs under either. NOT yet
+    // measured on a device — see docs/grok-agent.md's checklist.
+    windowsWrapper: true
   })
 }
 

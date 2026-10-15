@@ -4,6 +4,8 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   SETUP_OUTPUT_CAP,
+  WINDOWS_NO_SH_MESSAGE,
+  isPowerShellScript,
   makeLocalSetupRunner,
   resolveProjectSetupTarget,
   type ProjectSetupTargetInfo
@@ -98,6 +100,94 @@ describe('makeLocalSetupRunner', () => {
     expect(combined).toContain('one')
     expect(combined).toContain('two')
     expect(combined).toContain('three')
+  })
+})
+
+describe('makeLocalSetupRunner on Windows (platform injected)', () => {
+  let tmpDir: string
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-setup-win-'))
+  })
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  const go = (runner: ReturnType<typeof makeLocalSetupRunner>, script: string) => {
+    const chunks: string[] = []
+    const promise = runner({
+      script,
+      cwd: tmpDir,
+      env: {},
+      onChunk: (t) => chunks.push(t),
+      signal: new AbortController().signal
+    })
+    return { promise, chunks }
+  }
+
+  it('with no Git Bash, spawns nothing and says how to fix it, as exit 127', async () => {
+    const marker = path.join(tmpDir, 'ran')
+    const runner = makeLocalSetupRunner({ platform: 'win32', resolveWinSh: () => null })
+    const { promise, chunks } = go(runner, `touch '${marker}'`)
+    expect(await promise).toEqual({ exitCode: 127 })
+    expect(chunks.join('')).toContain(WINDOWS_NO_SH_MESSAGE)
+    expect(chunks.join('')).toContain('Install Git for Windows')
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'runs through the resolved sh, in the project folder, with CHERE_INVOKING set',
+    async () => {
+      const runner = makeLocalSetupRunner({ platform: 'win32', resolveWinSh: () => '/bin/sh' })
+      const { promise, chunks } = go(runner, 'echo "inv=$CHERE_INVOKING"; pwd')
+      expect(await promise).toEqual({ exitCode: 0 })
+      expect(chunks.join('')).toContain('inv=1')
+      expect(chunks.join('')).toContain(fs.realpathSync(tmpDir))
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')('runs a pwsh-shebang script under PowerShell via -EncodedCommand', async () => {
+    const fake = path.join(tmpDir, 'fake-pwsh')
+    fs.writeFileSync(fake, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 })
+    const script = "#!/usr/bin/env pwsh\nWrite-Host 'it''s here'\n"
+    let shCalled = false
+    const runner = makeLocalSetupRunner({
+      platform: 'win32',
+      resolveWinSh: () => {
+        shCalled = true
+        return '/bin/sh'
+      },
+      resolveWinPwsh: () => fake
+    })
+    const { promise, chunks } = go(runner, script)
+    expect(await promise).toEqual({ exitCode: 0 })
+    const argv = chunks.join('').trim().split('\n')
+    expect(argv.slice(0, 5)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand'])
+    expect(Buffer.from(argv[5], 'base64').toString('utf16le')).toBe(script)
+    expect(shCalled).toBe(false)
+  })
+
+  it('leaves POSIX untouched: a pwsh shebang still runs under sh -lc off Windows', async () => {
+    let resolved = false
+    const runner = makeLocalSetupRunner({
+      platform: 'linux',
+      resolveWinSh: () => {
+        resolved = true
+        return null
+      }
+    })
+    const { promise, chunks } = go(runner, '#!/usr/bin/env pwsh\necho posix')
+    expect(await promise).toEqual({ exitCode: 0 })
+    expect(chunks.join('')).toContain('posix')
+    expect(resolved).toBe(false)
+  })
+})
+
+describe('isPowerShellScript', () => {
+  it('matches only a first-line pwsh/powershell shebang', () => {
+    expect(isPowerShellScript('#!/usr/bin/env pwsh\nnpm ci')).toBe(true)
+    expect(isPowerShellScript('\uFEFF#!powershell.exe\r\nnpm ci')).toBe(true)
+    expect(isPowerShellScript('#!/bin/sh\n# pwsh later')).toBe(false)
+    expect(isPowerShellScript('npm ci && pwsh -c x')).toBe(false)
   })
 })
 

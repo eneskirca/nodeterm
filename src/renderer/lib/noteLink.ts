@@ -5,6 +5,7 @@
 import type { Edge } from '@xyflow/react'
 import { oneLine } from '@shared/one-line'
 import type { BridgeLink } from '@shared/types'
+import { shimCommand, shimDialectFor } from '@shared/agents/shim-invocation'
 import {
   classifyLink,
   planBridges,
@@ -165,7 +166,10 @@ export function buildNotePushMessage(title: string, text: string, agentId?: stri
 export function buildContextLinkNote(
   agentId: string | undefined,
   otherTitle: string,
-  shimPath: string
+  shimPath: string,
+  /** `process.platform` of the core whose shim this is (`contextLink.info()`); undefined for a
+   *  remote node or an older core ⇒ the POSIX line. On win32 a non-claude agent gets the `.cmd`. */
+  hostPlatform?: string
 ): string {
   const other = oneLine(otherTitle)
   // Both variants must self-defuse: the note is injected + submitted as a prompt, and an
@@ -174,7 +178,7 @@ export function buildContextLinkNote(
   if (!agentId || agentId === 'claude') {
     return `[nodeterm] You are now linked to "${other}". Use the get-linked-context skill to read its context when you need it. No action needed now — just acknowledge briefly.`
   }
-  return `[nodeterm] You are now linked to "${other}". When you need its context (and only then) run: sh "${shimPath}" list — then summary | transcript | terminal --node <id>. Details are in the get-linked-context section of your global agent instructions. No action needed now — acknowledge briefly and do not run these commands yet.`
+  return `[nodeterm] You are now linked to "${other}". When you need its context (and only then) run: ${shimCommand(shimPath, shimDialectFor(agentId, hostPlatform))} list — then summary | transcript | terminal --node <id>. Details are in the get-linked-context section of your global agent instructions. No action needed now — acknowledge briefly and do not run these commands yet.`
 }
 
 // The link-map builders moved to @shared: the Server Edition derives the same map from persisted

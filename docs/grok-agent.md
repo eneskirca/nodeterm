@@ -748,3 +748,16 @@ Two traps with no code fix — appended so the numbering above stays stable
     command palette and Settings → Agents, and flip the theme. If it reads as a smudge, the fix is a
     size-specific viewBox nudge, not a colour change.
 ```
+33. **Windows: which interpreter runs a grok hook?** Grok's docs say PowerShell (`$VAR` is
+    rewritten to `$env:VAR` there) and the binary names both `powershell.exe` and `cmd.exe`, so on
+    Windows the hook file points at `grok-hook.cmd` through
+    `<abs cmd.exe> /d /c call "<wrapper> "` — the codex form, measured to run under either. NOT
+    measured for grok. Check `$GROK_HOME\hooks\nodeterm-status.json` holds that line, then that a
+    turn flips RUNNING → IDLE and a permission ask flips NEEDS YOU. If grok turns out to run hooks
+    through Git Bash instead, the unquoted backslashed `cmd.exe` path is mangled there and the fix
+    is to drop grok's `windowsWrapper` (one line in `hooks/grok.ts`).
+34. **Windows: grok's tool shell.** The canvas/context skills tell a grok node to run
+    `& "<userData>\canvas-control\nodeterm.cmd" <verb>` (PowerShell). Run `list` both ways from a
+    grok node; if grok's tool shell is cmd.exe the leading `& ` must go (the skill says so), and if
+    it is Git Bash grok belongs in `POSIX_TOOL_SHELL_ON_WINDOWS` beside claude.
+

@@ -142,10 +142,24 @@ export function clearEnvEligibility(
   return { ok: true }
 }
 
-export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible'
+/** `'host-unsupported'`: the kill a model switch / "Restart on subscription" needs went to a
+ *  Windows session host that predates `terminateOwnerV1`. Nothing was signalled or written; the
+ *  remedy (restart the app so a current host serves new sessions) differs from `'not-eligible'`'s. */
+export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible' | 'host-unsupported'
 
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
+
+/**
+ * The fewest READABLE post-exit samples the exit phase takes before it may report `'exit-timeout'`.
+ * A tmux pane answers in ~4 ms, so the 6 s window holds ~24 samples and this floor never binds. A
+ * Windows session-host pane is a process-table walk through PowerShell — up to ~1.5 s cold — and
+ * there the wall-clock window alone could close after two or three samples, reporting a CLI that
+ * quit at 4 s as one that refused. While the pane keeps ANSWERING (slowly), each owed sample gets at
+ * least `max(window left, timeoutMs / 2)`; a pane that stops answering ends the run exactly as
+ * before. Bounded: at most this many samples are owed, and nothing is ever killed.
+ */
+export const RESTART_MIN_EXIT_SAMPLES = 4
 
 /**
  * How much longer a user-asked RESTART keeps watching after RESTART_EXIT_TIMEOUT_MS, as long as
@@ -323,16 +337,25 @@ export async function performExitPhase(d: {
   // Equal to `deadline` when no late window was asked for, so every bound below is unchanged.
   const lateDeadline = deadline + Math.max(0, d.lateExitMs ?? 0)
   let last: string | null = null
+  // RESTART_MIN_EXIT_SAMPLES: readable samples so far, and whether the previous one was readable.
+  // The pre-flight's reading counts as "readable" for the first poll's budget, not as a sample.
+  let samples = 0
+  let readable = true
   for (;;) {
     await new Promise((r) => setTimeout(r, pollMs))
     // Each query is bounded by the window it runs in: a query wedged inside the base window still
     // lapses at `deadline` (and its null ends the run there), exactly as without a late window.
     const until = Date.now() <= deadline ? deadline : lateDeadline
-    const pane = await queryPaneWithin(d.paneCommand, Math.max(0, until - Date.now()))
+    const left = Math.max(0, until - Date.now())
+    // A pane that has been answering, just slowly, is owed its minimum samples even past the window.
+    const owedSample = readable && samples < RESTART_MIN_EXIT_SAMPLES
+    const pane = await queryPaneWithin(d.paneCommand, owedSample ? Math.max(left, timeoutMs / 2) : left)
     if (gone()) return 'not-eligible' // stop polling a pane that no longer exists
+    readable = pane !== null
+    if (readable) samples++
     // Two ways to know the CLI let go of the pane. The allowlist is the confident one and is
     // taken immediately. The other — "the foreground command is no longer what it was before the
-    // exit" — covers the shells the allowlist cannot know (`nu`, `xonsh`, `pwsh`, anything the
+    // exit" — covers the shells the allowlist cannot know (`xonsh`, `elvish`, anything the
     // user set as `defaultShell`), where waiting for a listed shell would time out with the agent
     // already quit and never resumed. It is required on two CONSECUTIVE polls: a single changed
     // reading can be a momentary foreground child of a still-running CLI, and typing the resume
@@ -343,7 +366,13 @@ export async function performExitPhase(d: {
     // Past the base window, keep going only inside the late window and only while the pane is
     // still readable — i.e. the CLI we asked to quit is visibly still there (or a changed reading
     // is waiting for its confirming second poll). A pane we can no longer see is not "slow".
-    if (Date.now() >= deadline && (Date.now() > lateDeadline || pane === null)) return 'exit-timeout'
+    if (
+      Date.now() >= deadline &&
+      (Date.now() > lateDeadline || pane === null) &&
+      // Still readable and under the floor: one more (slow) sample before giving up.
+      !(pane !== null && samples < RESTART_MIN_EXIT_SAMPLES)
+    )
+      return 'exit-timeout'
   }
 }
 
@@ -837,7 +866,7 @@ export function summarizeBulkRestart(
   outcomes: RestartOutcome[],
   skipped: { working: number; noSession: number }
 ): string {
-  const notEligible = outcomes.filter((o) => o === 'not-eligible').length
+  const notEligible = outcomes.filter((o) => o === 'not-eligible' || o === 'host-unsupported').length
   return summarizeOutcomes(outcomes, {
     working: skipped.working,
     noSession: skipped.noSession + notEligible

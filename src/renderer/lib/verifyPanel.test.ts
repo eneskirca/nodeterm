@@ -47,6 +47,19 @@ describe('verifyLensPrompt', () => {
     expect(codex).not.toContain('get-linked-context skill')
   })
 
+  it('on a Windows core, a non-claude reviewer is told to run the .cmd launcher', () => {
+    const win = { ...base, shimPath: 'C:\\d\\context.sh', hostPlatform: 'win32' }
+    const codex = verifyLensPrompt({ ...win, lens: 'tests', agentId: 'codex' })
+    expect(codex).toContain('running: & "C:\\d\\context.cmd" summary --node <id>')
+    expect(verifySynthesisPrompt({ ...win, lenses: ['tests'], agentId: 'gemini' })).toContain('& "C:\\d\\context.cmd"')
+    // claude and every POSIX/unknown host keep their exact text.
+    expect(verifyLensPrompt({ ...win, lens: 'tests', agentId: 'claude' })).toContain('get-linked-context skill')
+    expect(verifyLensPrompt({ ...base, lens: 'tests', agentId: 'codex', hostPlatform: 'linux' })).toBe(
+      verifyLensPrompt({ ...base, lens: 'tests', agentId: 'codex' })
+    )
+    expect(verifyLensPrompt({ ...base, lens: 'tests', agentId: 'codex' })).toContain('running: sh "/x/nodeterm.sh" summary')
+  })
+
   it('gives an unknown lens a generic brief instead of dropping it', () => {
     expect(verifyLensPrompt({ ...base, lens: 'accessibility' })).toContain(
       'problems of this kind: accessibility'

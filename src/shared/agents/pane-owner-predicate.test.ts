@@ -37,13 +37,15 @@ describe('isAgentPane', () => {
   })
 
   // The two holes the old negative predicate had, closed:
-  it('refuses a shell OUTSIDE the seven-name allowlist', () => {
-    for (const sh of ['nu', 'pwsh', 'xonsh', 'elvish', 'ssh host', 'python3 -i']) {
+  it('refuses a shell OUTSIDE the isShellCommand allowlist', () => {
+    for (const sh of ['xonsh', 'elvish', 'ssh host', 'python3 -i']) {
       const cmd = sh.split(' ')[0]
-      // The old gate's exact reading: not one of seven shell names, therefore "an agent".
+      // The old gate's exact reading: not one of the allowlisted shell names, therefore "an agent".
       expect(isShellCommand(cmd)).toBe(false)
       expect(isAgentPane(owner([sh], cmd), 'claude')).toBe('not-agent')
     }
+    // (`nu` / `pwsh` have since joined the allowlist; the kernel-truth answer is unchanged.)
+    for (const sh of ['nu', 'pwsh']) expect(isAgentPane(owner([sh], sh), 'claude')).toBe('not-agent')
   })
 
   it('refuses a pane whose CLI exited even though agentId is still persisted', () => {

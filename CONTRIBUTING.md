@@ -71,6 +71,17 @@ its terminals and refuses the extension; never restart it automatically or fall 
 Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
 an unresolved file conflict. See `docs/windows-session-host.md`.
 
+**Windows pane probes:** never start a `powershell.exe` per probe. Pane-command and console-owner
+reads go through the per-process probe worker (`session-host/windows-probe-worker.ts`), which falls
+back to the one-shot script (absolute `powershellExe()` path) only when it cannot answer. Coalesce
+concurrent table reads, but do not add a time-based cache: the restart exit poll needs two real
+consecutive observations before it trusts a changed pane.
+
+**Windows agent launches:** a new agent launch site that types a prompt-bearing line must go
+through the launch writer (`createLaunchWriter`) so a Windows-native pane can execute the node's
+`data.launchIntent` instead (`pty:execute-launch`). If you add a launch input the core planner does
+not model, exclude it in `heldLaunchIntentFor`, or the Windows pane launches without it.
+
 Claude usage identity is scoped to the same config directory as its credentials. Read organization
 metadata even when credentials already include an email, and degrade to the email-only row when
 metadata cannot be read. Managed usage must never fall back to an unscoped system Keychain token:
@@ -84,6 +95,15 @@ transcript discovery or debug-file writes finish; an older write must never rest
 Coalesce renderer updates before building the workspace map, without resetting the scheduled task.
 Intermediate publications retain resolved transcript paths only for unchanged identities; changing
 a session/account/location/hook path or removing the target invalidates that cache immediately.
+
+Windows updates (unsigned beta): `release-win` builds `dist:win:release` (`nodeTermUpdates=manual`)
+and uploads `latest.yml`, so the app shows a passive "new version — Download" card; it never
+downloads or installs, and main refuses restart-to-update for any non-self-installing build.
+Keep local `dist:win` on `disabled`, and never upload Windows `*.blockmap`s until signing lands.
+
+Updater UX: an update-check button must call `checkForUpdatesNow()` (`state/pendingUpdate.ts`) —
+the card treats every other check as automatic and silent. Never flip quitting flags before
+the install can start (macOS waits for Squirrel.Mac); see CLAUDE.md "Packaging & auto-update".
 
 Windows installer safety (#829): `build/installer.nsh` overrides NSIS's process-killing check.
 A running app or session host blocks install/uninstall, and a failed process query blocks too.
@@ -101,6 +121,9 @@ confirms what still stops (Cancel focused), then sends the host's `shutdown` com
 once the host process is confirmed gone. `shutdown` is a negotiated hello feature: never send it to
 a host that did not advertise it, and never add a taskkill/name-kill fallback — an older host gets
 the manual steps. The flow never deletes a node. Server Edition: degraded stub (`unsupported`).
+A host classified `staged` (runs from its `%LOCALAPPDATA%` copy) only needs a quit, so the dialog
+leads with "Quit nodeterm (sessions keep running)"; `unknown` must never be treated as staged.
+The NSIS preflight waits (bounded, exit 10 only) in silent/`--updated` runs and never kills.
 
 Staged host runtime (#829 step 3): a packaged Windows build launches the host from a private
 copy, `%LOCALAPPDATA%\nodeterm\session-host\<version>-<fingerprint>\nodeterm-sessionhost-v2.exe`
@@ -318,6 +341,13 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   cannot read) and test Windows dispatch WITHOUT `windowsVerbatimArguments`; keep the `AutoRun`
   refusal. Deep version: `docs/antigravity-agent.md` and CLAUDE.md § Agent support.
 
+- **On Windows, only claude runs POSIX.** Claude Code runs hooks and tools through Git Bash; codex,
+  gemini, grok and copilot run them in PowerShell/cmd.exe. So a hook command or a "run this shim"
+  line for any other agent goes through the `.cmd` helpers in
+  `src/core/agents/hooks/windows-hook-wrapper.ts` / `shared/agents/shim-invocation.ts`, and every
+  builder takes the RUNNING machine's platform with a POSIX default — never `process.platform`
+  inside a builder an SSH installer also calls. Deep version: CLAUDE.md § Hook installers.
+
 - **Finding `agy` for hook installation is not enough to launch it.** The measured Windows
   installer wrote `%LOCALAPPDATA%\agy\bin` into a `REG_SZ` user PATH, so command lookup kept the
   percent expression literal and `agy` was not found even though its executable existed. Local
@@ -472,6 +502,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   on POSIX a backslash is legal filename text — do not treat both separators as interchangeable
   unless the owning filesystem is known to be Windows.
 
+- **No unix sockets and no symlink privilege on Windows.** A `ws+unix://` dial (the Codex
+  app-server) cannot work there — read the same fact from disk instead (managed Codex identity is
+  the `auth.json` JWT email, `codexAppServerReachable` is the gate). An untyped `fs.symlink` throws
+  EPERM on a stock account: link a shared asset through `linkSharedEntry`
+  (`src/core/shared-entry-link.ts` — junction for directories, hardlink then warned copy for files).
+
 - **Anything tmux does for us on POSIX, the session host owes on Windows.** The two delivery paths
   are not symmetric and the missing half fails in the direction that LOOKS like success: `sendText`
   rides `tmux paste-buffer -p` on POSIX, which frames the payload from the pane's real
@@ -483,12 +519,20 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   sees the pane app's own bytes — see CLAUDE.md's "We have our own VT emulator" for the one place
   that reasoning is inverted.
 
+- **An xterm-shaped buffer never takes the raw `tmuxScrollback`.** tmux's `history-limit` stores
+  only used cells; an xterm buffer (the renderer, the Windows session host's headless emulator,
+  `NativeWindowsPane`) allocates every line at full width. Size them with `xtermScrollback` from
+  `src/shared/scrollback.ts` (≤ 10k), so the host never keeps history the renderer cannot show.
+
 - **A new session-host push frame must be negotiated at `hello`, never just sent.** An older
   `SessionHostClient` treats EVERY push frame whose `type` is not `data` as an exit, and a
   long-lived host routinely outlives the app that started it — so a frame the connection did not
   opt into retires a live session. Add the capability to `SESSION_HOST_FEATURES`, send it only to
   sockets that listed it (the `geometry` push of issue #914 is the worked example), and pin that
   against the real bundled host as `session-host/geometry-host.test.ts` does.
+  The same goes for a richer REPLY: `listSessions`' per-session rows ride the `sessionDetails`
+  feature, and a host that never negotiated it answers `{names}` — which a consumer must read as
+  "named, not described", never as "detached" or "no processes".
 
 - **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
   correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
@@ -498,6 +542,20 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   prompts and other user-controlled arguments would become shell syntax. `.bat`/`.ps1`, CR/LF/NUL
   arguments and lines above cmd's limit fail explicitly. Keep stdin direct: PowerShell's text
   pipeline changes Unicode and line endings under Windows PowerShell 5.1.
+
+- **Need a POSIX `sh` on Windows? Resolve Git Bash, never spawn bare `sh`.** A stock Git install
+  puts only `Git\cmd` on PATH. `resolveWindowsSh` (`src/core/windows-sh.ts`) walks Git's real
+  layouts, then PATH minus WSL shims; the codex hook wrapper's batch candidate list is derived from
+  the same data, so add a layout there, once. With no shell, say "Install Git for Windows" — the
+  project setup-script runner is the worked example (it also sets `CHERE_INVOKING=1`, or Git Bash's
+  login profile leaves the project folder). And do not type a chained command line (`a && b '<x>'`)
+  into a terminal for the user: PowerShell 5.1 and cmd parse it differently. Type one bare command
+  and do the rest in-process (Source Control's publish fallback, `lib/publishFallback.ts`).
+- **Closing the window on Windows hides it to the tray (background mode), it does not quit.** The
+  relay host, hook server and notifications must outlive the window there as they do on macOS. Any
+  new app-initiated quit (updater-style) must set `quitting` before `app.quit()`, or the hidden
+  window's close handler turns the quit back into a hide. Every new raise (`show`/`focus`) needs a
+  user action and an entry in `window-raise.guard.test.ts`.
 
 - **The phone reaches a Windows desktop through the relay only.** Everything the iOS app sends over
   SSH is POSIX sh plus tmux, and Windows OpenSSH hands out `cmd.exe`, so Windows pairing installs no
@@ -685,6 +743,12 @@ bug.
 **A project-scoped lookup cannot prove a node does not exist elsewhere.** Link refusals must
 name the project boundary and explain that cross-project linking is unsupported; do not scan other
 projects just to improve a missing-endpoint diagnostic.
+
+**A memory lever that drops a terminal's PTY client asks the live-work gate first**
+(`terminal/live-work.ts`): without tmux the pty IS the shell, and the "free" release kills the
+agent in it. A hidden/minimized window feeds the existing levers by making every node read
+offscreen (`terminal/window-backgrounded.ts`) — reuse that input rather than adding a parallel
+release path that would have to re-implement every gate.
 
 **A failed read is never evidence of absence.** "Could not measure" and "there is nothing" are
 different facts and must stay distinguishable at every layer. Collapsing them is how a panel ends up
@@ -1181,7 +1245,9 @@ bite most often:
 **SSH projects on Windows** run over an in-process transport (`src/core/remote-ssh/native/`),
 not the ssh binary. If you add an ssh call site, route it through `useNativeSsh()` like the
 others, and if you add an ssh option to `control-master.ts`, teach `ssh-argv.ts` about it (the
-parser refuses unknown options on purpose). Test from macOS/Linux with `NODETERM_NATIVE_SSH=1`.
+parser refuses unknown options on purpose). Test from macOS/Linux with `NODETERM_NATIVE_SSH=1`. Resolve the ssh
+program with `resolveSshProgram()` (never a private `findExecutableSync('ssh', …)`): on Windows it
+may be the bare `ssh` sentinel, which only the native runners can serve.
 
 **A dependency with a native addon that the Server Edition reaches is `--external:` in
 `server:build`.** Hosts build the bundle after `npm ci --ignore-scripts`, so no addon is compiled

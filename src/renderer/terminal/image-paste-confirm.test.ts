@@ -8,7 +8,7 @@ import {
   pasteWithImageReceipt,
   xtermScreenText
 } from './image-paste-confirm'
-import { escapeDroppedPath } from './file-drop'
+import { escapeDroppedPath, quoteDroppedPath } from './file-drop'
 
 // Screens captured from Claude Code 2.1.285 (see the fixture's provenance). `before` is the pane
 // after one earlier paste (#12 on screen); `pngAndBmp` after pasting a png and a bmp together;
@@ -22,6 +22,11 @@ describe('expectation: only claude, only the extensions claude turned into [Imag
   })
   it('an escaped space still ends in the extension', () => {
     expect(expectedImagePlaceholders('claude', [escapeDroppedPath('/a/pasted 2.png')])).toBe(1)
+  })
+  it('a quoted Windows path still counts (the quotes are not the extension)', () => {
+    expect(expectedImagePlaceholders('claude', [quoteDroppedPath('C:\\Users\\Jane Doe\\shot.png', 'win-cmd')])).toBe(1)
+    expect(expectedImagePlaceholders('claude', [quoteDroppedPath("C:\\a$b\\shot.PNG", 'win-pwsh')])).toBe(1)
+    expect(expectedImagePlaceholders('claude', ['"C:\\a b\\x.bmp"'])).toBe(0)
   })
   it('other agents and no agent get no expectation (nothing is claimed for them)', () => {
     for (const a of ['codex', 'gemini', 'grok', 'copilot', 'opencode', undefined])

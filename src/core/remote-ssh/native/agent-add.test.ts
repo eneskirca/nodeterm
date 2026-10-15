@@ -26,6 +26,7 @@ import {
 } from './agent-add'
 import { findExecutableSync } from '../../exec-path'
 import { ed25519KeyPair } from './test-keys'
+import { pickWindowsAgent } from './windows-agent-discovery'
 
 function parsed(k: string, pass?: string): ParsedKey {
   const p = utils.parseKey(k, pass)
@@ -156,6 +157,10 @@ describe('decideAgentAdd', () => {
     expect(decideAgentAdd({ agentPath: WIN, addKeysToAgent: 'false', windowsAgentOptIn: true })).toEqual({})
     expect(decideAgentAdd({ agentPath: WIN.toUpperCase(), addKeysToAgent: 'false', windowsAgentOptIn: true })).toEqual({})
     expect(decideAgentAdd({ agentPath: '\\\\.\\pipe\\pageant.x', addKeysToAgent: 'false', windowsAgentOptIn: true })).toBeNull()
+    // The Pageant pipe windows-agent-discovery.ts picks as a default agent is never written to by the opt-in.
+    const discovered = pickWindowsAgent({ pipes: ['pageant.dev.3f9a1c0b2e'], user: 'dev' }) as string
+    expect(discovered).toBe('\\\\.\\pipe\\pageant.dev.3f9a1c0b2e')
+    expect(decideAgentAdd({ agentPath: discovered, addKeysToAgent: 'false', windowsAgentOptIn: true })).toBeNull()
     expect(decideAgentAdd({ agentPath: '/tmp/agent.sock', addKeysToAgent: 'false', windowsAgentOptIn: true })).toBeNull()
   })
   it("the host's own AddKeysToAgent is honoured on any agent, a lifetime kept as a constraint", () => {

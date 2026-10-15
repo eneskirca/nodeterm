@@ -20,7 +20,7 @@ describe('phone chat verbs are wired end to end', () => {
   it('both phone hosts forward bridge.chat into the session, and the session into the handlers', () => {
     expect(read('main/remote/host-service.ts')).toMatch(/chat: bridge\.chat,/)
     expect(read('main/remote/standing-host.ts')).toMatch(/chat: bridge\.chat,/)
-    expect(read('main/remote/host-service.ts')).toMatch(/opts\.kanban,\n\s*opts\.chat\n\s*\)/)
+    expect(read('main/remote/host-service.ts')).toMatch(/opts\.kanban,\n\s*opts\.chat,\n\s*opts\.relayExtras \?\? \{\}\n\s*\)/)
   })
   it('the remote transcript leg resolves an UNMOUNTED SSH node by its project', () => {
     const src = read('main/index.ts')

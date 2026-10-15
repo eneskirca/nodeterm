@@ -16,9 +16,12 @@ import { promisify } from 'util'
 import { IPC } from '../shared/ipc'
 import {
   accountConfigDir,
+  expandTildeLinkedDir,
+  isUnderLinkedConfigDir,
   isSupportedClaudeVersion,
   normalizeLinkedConfigDir,
-  parseLoginCapture
+  parseLoginCapture,
+  sameLinkedConfigDir
 } from './claude-accounts-core'
 import {
   claudeAccountsSnapshot,
@@ -199,8 +202,11 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // shell, so nothing else would ever expand it — and `~/.claude-2` is exactly how the user
     // refers to the dir their own shell function exports.
     const typed = rawDir.trim()
-    const expanded =
-      typed === '~' || typed.startsWith('~/') ? path.join(homedir(), typed.slice(1)) : typed
+    const expanded = expandTildeLinkedDir(
+      typed,
+      homedir(),
+      process.platform === 'win32' ? 'win32' : 'posix'
+    )
     const configDir = normalizeLinkedConfigDir(expanded)
     if (!configDir) {
       throw new Error(`Not an absolute path: ${typed}`)
@@ -210,7 +216,9 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // path we should not be stat'ing, and refusing `~/.claude` needs to say so even on a machine
     // where the dir has not been created yet ("no such directory" would be a misleading answer to
     // "why can't I link my system account?").
-    if (configDir === normalizeLinkedConfigDir(path.join(homedir(), '.claude'))) {
+    // Compared by the filesystem's own rule (case-insensitive on Windows), not `===` — else
+    // `c:\users\x\.CLAUDE` slips past every refusal below and one dir gets two ids.
+    if (sameLinkedConfigDir(configDir, path.join(homedir(), '.claude'))) {
       throw new Error('That is the system Claude config dir — it is already the default account.')
     }
     const managedRoot = normalizeLinkedConfigDir(
@@ -219,13 +227,16 @@ export function registerClaudeAccountsIpc(deps: ClaudeAccountsDeps = {}): void {
     // Under the managed root ⇒ it is an account nodeterm created. Linking it would give one dir two
     // account ids, and the second one would be removable-without-delete while the first still
     // `rm -rf`s the same directory.
-    if (managedRoot && (configDir === managedRoot || configDir.startsWith(managedRoot + path.sep))) {
+    if (
+      managedRoot &&
+      (sameLinkedConfigDir(configDir, managedRoot) || isUnderLinkedConfigDir(configDir, managedRoot))
+    ) {
       throw new Error('That is a nodeterm-managed account directory — add it with Add account.')
     }
     // Duplicate by NORMALIZED path, not by the string typed: `~/.claude-2/` and `/home/u/.claude-2`
     // are the same dir, and two rows for one dir would show two chips for one identity.
     for (const a of claudeAccountsSnapshot()) {
-      if (!a.host && normalizeLinkedConfigDir(a.configDir) === configDir) {
+      if (!a.host && sameLinkedConfigDir(a.configDir, configDir)) {
         throw new Error(`That config dir is already linked (${a.label || a.email || a.id}).`)
       }
     }

@@ -7,7 +7,11 @@ import { NumberField } from '@renderer/ui/NumberField'
 import { Select } from '@renderer/ui/Select'
 import { SegmentedPill } from '@renderer/ui/SegmentedPill'
 import { Input } from '@renderer/ui/Input'
-import { hintLabel } from '@shared/platform-utils'
+import { hintLabel, isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
+import { trackpadRoutingSupported } from '@renderer/canvas/wheel-gesture'
+import { isBrowserRuntime } from '@renderer/bridge/runtime'
+import { backgroundCloseDescription, backgroundCloseRowVisible } from '@renderer/lib/backgroundClose'
+import type { BackgroundOnCloseSetting } from '@shared/types'
 import { clampWheelZoomSpeed } from '@renderer/canvas/wheel-zoom'
 import { DEFAULT_WORKTREE_PATH_TEMPLATE } from '@shared/worktree'
 
@@ -75,7 +79,7 @@ const ROWS = {
   },
   trackpadPan: {
     title: 'Trackpad scroll pans',
-    keywords: ['trackpad', 'pan', 'scroll', 'zoom', 'magic', 'mouse', 'two-finger', 'macos']
+    keywords: ['trackpad', 'pan', 'scroll', 'zoom', 'magic', 'mouse', 'two-finger', 'macos', 'windows', 'touchpad']
   },
   dragMode: {
     title: 'Canvas left-drag',
@@ -87,14 +91,21 @@ const ROWS = {
   },
   keepAwake: {
     title: 'Keep awake while agents work',
-    keywords: ['sleep', 'awake', 'power', 'battery', 'suspend', 'run']
+    keywords: ['sleep', 'awake', 'power', 'battery', 'suspend', 'run', 'lid', 'thermal', 'heat']
   },
   confirmQuit: {
     title: 'Confirm before quitting',
     keywords: ['quit', 'exit', 'close', 'confirm', 'dialog', 'ask']
+  },
+  backgroundClose: {
+    title: 'Keep running when the window closes',
+    keywords: ['tray', 'background', 'close', 'minimize', 'notification area', 'system tray', 'quit', 'phone']
   }
 }
-const ENTRIES = Object.values(ROWS)
+// The background-close row only exists for a desktop window off macOS, so search must not offer
+// it anywhere else. Decided once: neither the platform nor the runtime changes under a live page.
+const SHOW_BACKGROUND_CLOSE = backgroundCloseRowVisible(isMacPlatform(), isBrowserRuntime())
+const ENTRIES = Object.values(ROWS).filter((r) => SHOW_BACKGROUND_CLOSE || r !== ROWS.backgroundClose)
 
 export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const settings = useSettings((s) => s.settings)
@@ -397,21 +408,23 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           />
         </SearchableRow>
       </div>
-      <SearchableRow {...ROWS.trackpadPan}>
-        <FieldRow
-          label="Trackpad scroll pans"
-          description={hintLabel(
-            'macOS: a two-finger trackpad scroll pans the canvas even with wheel zoom on. The desktop app tells mouse and trackpad apart directly, so a wheel mouse still zooms; in the browser (Server Edition) detection is heuristic — turn off there if a precise-pixel mouse (Magic Mouse, MX) pans when you meant to zoom.'
-          )}
-          control={
-            <Switch
-              checked={settings.trackpadPan}
-              onChange={(v) => update({ trackpadPan: v })}
-              ariaLabel="Trackpad scroll pans"
-            />
-          }
-        />
-      </SearchableRow>
+      {trackpadRoutingSupported({ mac: isMacPlatform(), windows: isWindowsPlatform() }) && (
+        <SearchableRow {...ROWS.trackpadPan}>
+          <FieldRow
+            label="Trackpad scroll pans"
+            description={hintLabel(
+              'A two-finger trackpad scroll pans the canvas even with wheel zoom on, while a wheel mouse still zooms. The macOS desktop app tells mouse and trackpad apart directly; on Windows and in the browser (Server Edition) detection is heuristic — turn off if a smooth-scrolling mouse (Magic Mouse, MX) pans when you meant to zoom.'
+            )}
+            control={
+              <Switch
+                checked={settings.trackpadPan}
+                onChange={(v) => update({ trackpadPan: v })}
+                ariaLabel="Trackpad scroll pans"
+              />
+            }
+          />
+        </SearchableRow>
+      )}
       <SearchableRow {...ROWS.dragMode}>
         <FieldRow
           label="Canvas left-drag"
@@ -444,7 +457,7 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
       <SearchableRow {...ROWS.keepAwake}>
         <FieldRow
           label="Keep awake while agents work"
-          description="Holds off idle sleep while a local agent is running. A closed lid still sleeps the machine."
+          description="Holds off idle sleep while a local agent is running. Lets the machine sleep on battery below 5% or when it runs critically hot. A closed lid still sleeps the machine, except on macOS when plugged in with an external display connected."
           control={
             <Switch
               checked={settings.keepAwakeWhileAgentsWork}
@@ -467,6 +480,25 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           }
         />
       </SearchableRow>
+      {SHOW_BACKGROUND_CLOSE && (
+        <SearchableRow {...ROWS.backgroundClose}>
+          <FieldRow
+            label="Keep running when the window closes"
+            description={backgroundCloseDescription(isWindowsPlatform())}
+            control={
+              <Select
+                aria-label="Keep running when the window closes"
+                value={settings.runInBackgroundOnClose}
+                onChange={(e) => update({ runInBackgroundOnClose: e.target.value as BackgroundOnCloseSetting })}
+              >
+                <option value="auto">Automatic</option>
+                <option value="on">Always</option>
+                <option value="off">Never (closing quits)</option>
+              </Select>
+            }
+          />
+        </SearchableRow>
+      )}
     </SettingsSection>
   )
 }

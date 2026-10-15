@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import {
   buildManagedHookCommand,
   mergeManagedHook,
+  stripManagedHook,
+  syncWindowsShLauncher,
   writeManagedHookConfig,
   writeManagedHookFileAtomic,
   type HookSettings
@@ -257,3 +259,79 @@ describe('mergeManagedHook — only OUR handler is removed from a shared definit
     expect(mergeManagedHook(before, cmd, ['Stop']).hooks!.SubagentStop).toBe('nonsense')
   })
 })
+
+describe('buildManagedHookCommand — Windows wrapper (gemini / grok / copilot)', () => {
+  const CMD = 'C:\\WINDOWS\\System32\\cmd.exe'
+  const winScript = 'C:\\Users\\u\\.nodeterm\\agent-hooks\\gemini.sh'
+
+  it('win32: runs the agent wrapper through the measured cmd.exe invocation', () => {
+    expect(buildManagedHookCommand(winScript, {}, 'win32', CMD)).toBe(
+      `${CMD} /d /c call "C:\\Users\\u\\.nodeterm\\agent-hooks\\gemini-hook.cmd "`
+    )
+  })
+
+  it('the default and every non-win32 platform stay byte-identical to the POSIX line', () => {
+    const posix =
+      "if [ -r '/h/.nodeterm/agent-hooks/gemini.sh' ]; then sh '/h/.nodeterm/agent-hooks/gemini.sh'; else cat >/dev/null 2>&1 || :; fi"
+    expect(buildManagedHookCommand('/h/.nodeterm/agent-hooks/gemini.sh')).toBe(posix)
+    expect(buildManagedHookCommand('/h/.nodeterm/agent-hooks/gemini.sh', {}, 'linux', CMD)).toBe(posix)
+    expect(buildManagedHookCommand('/h/.nodeterm/agent-hooks/gemini.sh', {}, 'darwin', CMD)).toBe(posix)
+  })
+
+  it('refuses antigravity-only options on win32 instead of dropping them', () => {
+    expect(() => buildManagedHookCommand(winScript, { env: { A: 'b' } }, 'win32', CMD)).toThrow()
+    expect(() => buildManagedHookCommand(winScript, { fallbackStdout: '{}' }, 'win32', CMD)).toThrow()
+  })
+
+  it('an upgrade REPLACES the POSIX entry with the .cmd one (one handler per event, not two)', () => {
+    const posixCmd = buildManagedHookCommand(winScript)
+    const winCmd = buildManagedHookCommand(winScript, {}, 'win32', CMD)
+    const foreign = { hooks: [{ type: 'command', command: 'echo mine' }] }
+    const before = { hooks: { AfterTool: [foreign, { hooks: [{ type: 'command', command: posixCmd }] }] } }
+    const out = mergeManagedHook(before, winCmd, ['AfterTool'])
+    expect(out.hooks!.AfterTool).toEqual([foreign, { hooks: [{ type: 'command', command: winCmd }] }])
+    // Both spellings present at once (a half-upgraded file) still collapse to one.
+    const both = { hooks: { AfterTool: [{ hooks: [{ type: 'command', command: posixCmd }] }, { hooks: [{ type: 'command', command: winCmd }] }] } }
+    expect(mergeManagedHook(both, winCmd, ['AfterTool']).hooks!.AfterTool).toEqual([
+      { hooks: [{ type: 'command', command: winCmd }] }
+    ])
+  })
+
+  it('uninstall strips both spellings and no other agent\'s entry', () => {
+    const posixCmd = buildManagedHookCommand(winScript)
+    const winCmd = buildManagedHookCommand(winScript, {}, 'win32', CMD)
+    const claudeWin = buildManagedHookCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\claude.sh')
+    const cfg = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'command', command: posixCmd }] },
+          { hooks: [{ type: 'command', command: winCmd }] },
+          { hooks: [{ type: 'command', command: claudeWin }] }
+        ]
+      }
+    }
+    expect(stripManagedHook(cfg, 'gemini.sh', ['Stop']).hooks!.Stop).toEqual([
+      { hooks: [{ type: 'command', command: claudeWin }] }
+    ])
+  })
+})
+
+describe('syncWindowsShLauncher — the .cmd beside a CLI shim', () => {
+  it('win32 writes nodeterm.cmd running nodeterm.sh; another platform removes a stray copy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nt-launcher-'))
+    try {
+      syncWindowsShLauncher(dir, 'nodeterm.sh', 'win32')
+      const text = readFileSync(join(dir, 'nodeterm.cmd'), 'utf8')
+      expect(text).toContain('set "NT_SCRIPT=%~dp0nodeterm.sh"')
+      expect(text).toContain('"%NT_SH%" "%NT_ARG%" %*')
+      expect(text).not.toContain(dir) // no baked absolute path
+      syncWindowsShLauncher(dir, 'nodeterm.sh', 'linux')
+      expect(readdirSync(dir)).toEqual([])
+      // Removing what is not there is not an error.
+      syncWindowsShLauncher(dir, 'context.sh', 'darwin')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+

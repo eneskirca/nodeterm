@@ -51,6 +51,22 @@ describe('existing session-host ownership reads', () => {
     })
   })
 
+  it('keeps a published exe and drops a malformed one without refusing the state', () => {
+    const withExe = (exe: unknown): string =>
+      JSON.stringify({ ...JSON.parse(validState), exe })
+    const read = (raw: string) =>
+      readExistingSessionHostIdentity(statePath, options(reader({ [statePath]: raw, [tokenPath]: bearerToken })))
+    expect(read(withExe('C:\\x\\nodeterm-sessionhost-v2.exe'))).toMatchObject({
+      kind: 'ready',
+      state: { exe: 'C:\\x\\nodeterm-sessionhost-v2.exe' }
+    })
+    for (const bad of [42, '', '  ', null]) {
+      const result = read(withExe(bad))
+      expect(result.kind).toBe('ready')
+      expect(result.kind === 'ready' && 'exe' in result.state).toBe(false)
+    }
+  })
+
   it.each(['state', 'token'] as const)('treats only an ENOENT %s file as absent', (missing) => {
     const entries: Record<string, string | Error> = {
       [statePath]: missing === 'state' ? codedError('ENOENT') : validState,

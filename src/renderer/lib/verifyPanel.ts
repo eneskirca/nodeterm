@@ -4,6 +4,7 @@
 // agree with each other, which reads as confirmation while adding no evidence.
 //
 // Kept free of React/store imports so the lens table and the prompt wording are unit-testable.
+import { shimCommand, shimDialectFor } from '@shared/agents/shim-invocation'
 
 /** Lens id → what that reviewer is told to hunt for. */
 const LENS_BRIEFS: Record<string, string> = {
@@ -50,10 +51,10 @@ export function parseLenses(raw: string | undefined): string[] {
 }
 
 /** How a given agent is told to read a linked node's work. */
-function readInstruction(agentId: string | undefined, shimPath: string): string {
+function readInstruction(agentId: string | undefined, shimPath: string, hostPlatform?: string): string {
   return !agentId || agentId === 'claude'
     ? 'read its work with the get-linked-context skill (summary first, then transcript if you need detail)'
-    : `read its work by running: sh "${shimPath}" summary --node <id> (then transcript --node <id> for detail) — see the get-linked-context section of your global agent instructions`
+    : `read its work by running: ${shimCommand(shimPath, shimDialectFor(agentId, hostPlatform))} summary --node <id> (then transcript --node <id> for detail) — see the get-linked-context section of your global agent instructions`
 }
 
 /**
@@ -71,13 +72,15 @@ export function verifyLensPrompt(opts: {
   targetId: string
   agentId?: string
   shimPath: string
+  /** `process.platform` of the core whose shim this is; undefined (remote, unknown) ⇒ POSIX. */
+  hostPlatform?: string
   focus?: string
 }): string {
   const brief = LENS_BRIEFS[opts.lens] ?? `problems of this kind: ${opts.lens}`
   const focus = opts.focus?.trim() ? ` The work under review is specifically about: ${opts.focus.trim()}.` : ''
   return [
     `You are one reviewer on a verification panel, looking at the work of the linked node "${opts.targetTitle}" (${opts.targetId}) through a single lens: ${opts.lens}.`,
-    `First ${readInstruction(opts.agentId, opts.shimPath)}, and read enough of the actual code it touched to judge it for yourself rather than trusting its summary.${focus}`,
+    `First ${readInstruction(opts.agentId, opts.shimPath, opts.hostPlatform)}, and read enough of the actual code it touched to judge it for yourself rather than trusting its summary.${focus}`,
     `Then hunt specifically for ${brief}.`,
     `Report only what you can point at — a file:line, a concrete input that breaks it, or a command you ran and its output. If this lens turns up nothing real, say "nothing found" and stop; do not pad the report to look thorough.`,
     `Do NOT change any files and do NOT fix anything — other reviewers are reading the same checkout right now, and repairing is a separate job from finding.`
@@ -90,10 +93,11 @@ export function verifySynthesisPrompt(opts: {
   targetTitle: string
   agentId?: string
   shimPath: string
+  hostPlatform?: string
 }): string {
   return [
     `You are the judge of a verification panel on the work of "${opts.targetTitle}". ${opts.lenses.length} reviewers each examined it through one lens: ${opts.lenses.join(', ')}.`,
-    `Each reviewer is linked to you — ${readInstruction(opts.agentId, opts.shimPath)} for each of them.`,
+    `Each reviewer is linked to you — ${readInstruction(opts.agentId, opts.shimPath, opts.hostPlatform)} for each of them.`,
     `Then produce ONE verdict: drop every finding the reviewer could not point at concretely, merge the duplicates that several lenses reported, and rank what survives by what it would actually cost to ship.`,
     `Say plainly which lenses found nothing, and say plainly if nothing survived at all — an empty verdict is a real result, not a failed one.`,
     `Do NOT fix anything; report.`

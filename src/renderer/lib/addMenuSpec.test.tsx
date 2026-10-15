@@ -10,6 +10,7 @@ import {
   contentAddItemsToDockRows,
   FILES_NO_CWD_HINT,
   RUN_SSH_HINT,
+  RUN_WINDOWS_HINT,
   NEW_FILE_NO_CWD_HINT,
   WORKTREE_NO_CWD_HINT,
   WORKTREE_SSH_HINT,
@@ -62,6 +63,15 @@ describe('Run configuration row', () => {
     expect(row).toMatchObject({ label: 'New run configuration', disabled: true, hint: RUN_SSH_HINT })
     const [dock] = contentAddItemsToDockRows([{ kind: 'run' }], handlers(), ctx)
     expect(dock).toMatchObject({ kind: 'run', disabled: true, hint: RUN_SSH_HINT })
+  })
+  it('is disabled with its reason on a Windows core, menu and Dock alike — SSH keeps its own reason', () => {
+    const ctx = { hasCwd: true, isSshProject: false, isWindowsCore: true }
+    const [row] = contentAddItemsToMenuItems([{ kind: 'run' }], handlers(), ctx)
+    expect(row).toMatchObject({ label: 'New run configuration', disabled: true, hint: RUN_WINDOWS_HINT })
+    const [dock] = contentAddItemsToDockRows([{ kind: 'run' }], handlers(), ctx)
+    expect(dock).toMatchObject({ kind: 'run', disabled: true, hint: RUN_WINDOWS_HINT })
+    const [ssh] = contentAddItemsToMenuItems([{ kind: 'run' }], handlers(), { ...ctx, isSshProject: true })
+    expect(ssh).toMatchObject({ disabled: true, hint: RUN_SSH_HINT })
   })
   it('is enabled in a local project, even with no folder yet (it asks for one)', () => {
     const [row] = contentAddItemsToMenuItems([{ kind: 'run' }], handlers(), { hasCwd: false, isSshProject: false })

@@ -41,3 +41,17 @@ export function selectedLocalFilePaths(
   }
   return paths
 }
+
+/**
+ * Where ⌘/Ctrl+C on file-backed nodes can actually put FILES on the clipboard: the DESKTOP app on
+ * macOS (pasteboard plist) and Windows (CF_HDROP). Everywhere else — Linux desktop, and the
+ * Server Edition on any OS, whose bridge stub answers false — the keystroke stays the silent no-op
+ * it always was, because the failure path raises a sticky banner.
+ */
+export function canCopyFilesToClipboard(
+  viewer: { mac: boolean; windows: boolean },
+  browserRuntime: boolean
+): boolean {
+  if (browserRuntime) return false
+  return viewer.mac || viewer.windows
+}

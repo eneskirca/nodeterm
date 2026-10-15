@@ -53,7 +53,9 @@ import { useSession } from '../../session/session'
 // imports from `components/kanban/*`, and none of those re-import CardModal.
 import { nodeUploadScope, wakeHibernatedNode } from '../../nodes/TerminalNode'
 import { StationFailedChip } from '../StationFailedChip'
-import { droppedPaths } from '../../terminal/file-drop'
+import { dropDialect, droppedPaths } from '../../terminal/file-drop'
+import { hostPlatformFor } from '../../terminal/host-platform'
+import { isWindowsPlatform } from '@shared/platform-utils'
 import { requestTerminalFocusOnExit } from '../../terminal/useMdModeFocus'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
@@ -144,7 +146,7 @@ interface CardModalProps {
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
 export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName, onRunQueued }: CardModalProps) {
-  const { api } = useSession()
+  const { api, source: coreSource } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
   const sessionIcon = normalizeNodeIcon(session.icon)
@@ -784,10 +786,18 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
                             agentId={createdAgent!}
                             // Same resolution as a drop onto this card's live viewer (ModalTerminal):
                             // an SSH node uploads over the master its PTY runs on.
-                            pathsForFiles={(files) =>
+                            // The composer feeds the agent CLI, so a Windows core gets quoted paths.
+                            pathsForFiles={async (files) =>
                               droppedPaths(files, {
                                 sshRemoteTmux: !!session.spawn.sshRemoteTmux,
-                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : ''
+                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : '',
+                                dialect: dropDialect({
+                                  corePlatform: await hostPlatformFor(api),
+                                  remote: !!session.spawn.sshRemoteTmux || !!session.spawn.ssh,
+                                  agentPane: true,
+                                  localDesktop: coreSource === 'local' && !isBrowserRuntime(),
+                                  viewerWindows: isWindowsPlatform()
+                                })
                               })
                             }
                             sshProjectId={session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : undefined}

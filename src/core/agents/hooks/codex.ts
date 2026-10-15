@@ -29,6 +29,7 @@ import { renameAtomicSync } from '../../fs-atomic'
 import { buildManagedScript } from './managed-script'
 import { normalizeHookCommand } from './install-helper'
 import { buildCodexWindowsWrapper, CODEX_WINDOWS_WRAPPER_FILE } from './codex-windows-wrapper'
+import { buildWindowsHookInvocation, defaultWindowsCmdExe } from './windows-hook-wrapper'
 import {
   computeTrustedHash,
   getCodexCanonicalTrustPath,
@@ -156,23 +157,9 @@ export function stripCodexManagedHooks(config: HooksConfig): HooksConfig | null 
   return removed ? { ...config, hooks: next } : null
 }
 
-/**
- * `%SystemRoot%\System32\cmd.exe`, or bare `cmd` when that cannot be spelled unquoted.
- *
- * Unquoted is the whole constraint: quoting the program name is exactly what breaks under
- * PowerShell (a quoted leading token is a string literal, which is #685), so a resolved path
- * carrying a space or a shell metacharacter is unusable and the PATH lookup is the lesser evil.
- * `windir` is the fallback name for the same value on older installs.
- */
-export function defaultWindowsCmdExe(): string {
-  const root = process.env.SystemRoot || process.env.windir || ''
-  if (!root) return 'cmd'
-  const abs = `${root}\\System32\\cmd.exe`
-  // Deliberately a strict allow-list, not a metacharacter deny-list: anything outside a plain
-  // drive-letter path is not worth guessing at. The fallback then attempts a PATH lookup, which is
-  // what this function exists to avoid — but an unusable absolute path would run nothing at all.
-  return /^[A-Za-z]:\\[A-Za-z0-9\\._-]*$/.test(abs) ? abs : 'cmd'
-}
+// `defaultWindowsCmdExe` moved to windows-hook-wrapper.ts (shared by every wrapped agent); re-exported
+// here because callers and tests import it from codex.
+export { defaultWindowsCmdExe }
 
 /**
  * The hook command, formed the SAME way for hooks.json AND the trust entry — the trust hash is
@@ -247,7 +234,7 @@ export function buildManagedCommand(
     // exit-2 "block the prompt" convention does not survive this path. The managed script exits 0
     // on every branch, including its bails, so no behaviour in this repo relies on the distinction.
     const dir = script.slice(0, Math.max(script.lastIndexOf('\\'), script.lastIndexOf('/')) + 1)
-    return `${cmdExe} /d /c call "${dir}${CODEX_WINDOWS_WRAPPER_FILE} "`
+    return buildWindowsHookInvocation(`${dir}${CODEX_WINDOWS_WRAPPER_FILE}`, cmdExe)
   }
   // POSIX single-quote escape so $, `, ", \ in the path are taken literally.
   const quoted = `'${script.replaceAll("'", "'\\''")}'`

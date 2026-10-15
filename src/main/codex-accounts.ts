@@ -19,6 +19,7 @@ import { ipcMain, type WebContents } from 'electron'
 import { IPC } from '../shared/ipc'
 import {
   assertCodexAccountId,
+  codexAppServerReachable,
   commitCodexRolloutExposure,
   codexAccountHome,
   codexHomeForAccount,
@@ -29,10 +30,14 @@ import {
   migrateLegacyCodexAccountHome,
   migrateLegacyCodexAccountHomes,
   planCodexRolloutExposure,
+  readCodexAuthEmail,
+  systemCodexHome,
   type CodexRolloutExposurePlan
 } from '../core/codex-accounts-core'
 import { readCodexAccountAt, readCodexThreadAt } from '../core/codex-session-name'
 import { directExecutableInvocation } from '../core/exec-path'
+import { linkSharedEntry } from '../core/shared-entry-link'
+import { readRegularFileNoFollow } from '../core/read-regular-file'
 import { ensureCodexRelayRoot } from './codex-relay-daemon'
 import { platform } from '../core/platform'
 import { findInLoginPath } from '../core/pty-manager'
@@ -96,6 +101,12 @@ export function localCodexSocket(accountId?: string): string {
   return codexSocketForAccount(platform().userDataDir, accountId)
 }
 
+/** The host OS the app-server legs branch on — a seam so the Windows leg is testable on Linux. */
+let hostPlatform = (): NodeJS.Platform => process.platform
+export function setCodexAccountsHostPlatformForTests(p: NodeJS.Platform | null): void {
+  hostPlatform = p ? () => p : () => process.platform
+}
+
 /**
  * Reuse the account's shared app-server if it is already answering on its control socket, else boot
  * one exactly once (§2.2). The managed home is migrated to its short form first so the app-server
@@ -103,6 +114,12 @@ export function localCodexSocket(accountId?: string): string {
  * device-verification owed; the control flow (probe → start-once) is pure and tested via injection.
  */
 export async function ensureCodexAccountDaemon(accountId?: string): Promise<void> {
+  // No `ws+unix` app-server on Windows (`codexAppServerReachable`): starting one could only spawn a
+  // daemon nothing can dial and then time out (15 s) — say so at once instead. Identity no longer
+  // comes through here on Windows; this is what the conversation switch / transfer legs hit.
+  if (!codexAppServerReachable(hostPlatform())) {
+    throw new Error('The Codex app-server is not reachable on Windows yet')
+  }
   if (accountId) migrateLegacyCodexAccountHome(platform().userDataDir, accountId)
   const socket = localCodexSocket(accountId)
   await ensureSharedCodexDaemon(
@@ -124,9 +141,10 @@ export async function ensureCodexAccountDaemon(accountId?: string): Promise<void
 }
 
 /**
- * Create a managed account's private home (0700) and symlink the shared, NON-secret runtime assets
- * from the system home in. Credentials (`auth.json`) and the thread DB are never shared — only
- * installation assets. A missing source asset is skipped; an existing target link is left as-is.
+ * Create a managed account's private home (0700) and link the shared, NON-secret runtime assets
+ * from the system home in (`linkSharedEntry` — symlinks on POSIX). Credentials (`auth.json`) and
+ * the thread DB are never shared — only installation assets. A missing source asset is skipped; an
+ * existing target link is left as-is.
  */
 async function initializeAccountHome(id: string): Promise<string> {
   migrateLegacyCodexAccountHome(platform().userDataDir, id)
@@ -136,21 +154,32 @@ async function initializeAccountHome(id: string): Promise<string> {
   const sourceHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex')
   for (const name of SHARED_ENTRIES) {
     const source = path.join(sourceHome, name)
-    const target = path.join(home, name)
-    try {
-      await fs.lstat(source)
-      await fs.symlink(source, target)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT' && code !== 'EEXIST') throw error
-    }
+    // POSIX: a plain symlink. Windows: junction / hardlink / copy, never a blocking EPERM.
+    await linkSharedEntry(source, path.join(home, name))
   }
   return home
 }
 
 async function accountIdentity(accountId?: string): Promise<{ email: string | null } | null> {
+  if (!codexAppServerReachable(hostPlatform())) return authFileIdentity(accountId)
   await ensureCodexAccountDaemon(accountId)
   return readCodexAccountAt(localCodexSocket(accountId), 5000)
+}
+
+/**
+ * The identity on a host with no reachable app-server (Windows): NO daemon start — it could only
+ * time out on every poll — just the account's own `auth.json`, under the same gate as the login
+ * wait (a REAL file, never a symlink; absent ⇒ `null`). The email is the id_token's claim, a display
+ * label only (`readCodexAuthEmail`); a credential with no readable email is still a login.
+ */
+async function authFileIdentity(accountId?: string): Promise<{ email: string | null } | null> {
+  const home = accountId ? localCodexAccountHome(accountId) : systemCodexHome()
+  const file = path.join(home, 'auth.json')
+  // The gate and the read share ONE descriptor (no lstat-then-read on the name — a swap in between
+  // could hand the read a symlink the gate never saw): a link, FIFO, directory or absent file is null.
+  const text = await readRegularFileNoFollow(file)
+  if (text === null) return null
+  return { email: readCodexAuthEmail(text) }
 }
 
 /**

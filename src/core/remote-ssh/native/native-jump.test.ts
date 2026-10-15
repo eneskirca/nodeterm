@@ -15,6 +15,22 @@ import { childArgs } from '../control-master'
 import { parseProxyJump, sshGArgs, type HostQuery, type ResolvedHost } from './ssh-config'
 import type { SshConnection } from '../../../shared/ssh'
 import { ed25519KeyPair } from './test-keys'
+import { spawn } from 'child_process'
+import type { ProxySpawn } from './proxy-command'
+
+/**
+ * A ProxySpawn that reads the EXPANDED `pipe <host> <port>` the mux handed the shell and runs a
+ * node stdio↔TCP pipe to it instead — the shell is not the subject here, the token expansion and
+ * the stdio transport are (proxy-command.test.ts covers the real /bin/sh form).
+ */
+const proxyLines: string[] = []
+const pipeSpawn: ProxySpawn = (_file, args) => {
+  const line = args[args.length - 1].replace(/^exec /, '').replace(/^"|"$/g, '')
+  proxyLines.push(line)
+  const [, host, port] = line.split(' ')
+  const script = `const s=require('net').connect(${Number(port)},${JSON.stringify(host)});process.stdin.pipe(s).pipe(process.stdout)`
+  return spawn(process.execPath, ['-e', script], { stdio: ['pipe', 'pipe', 'pipe'] })
+}
 
 const clientKey = ed25519KeyPair() // the target accepts only this
 const jumpKey = ed25519KeyPair() // the jumps accept only this
@@ -114,6 +130,7 @@ function base(port: number, user: string, id: string): ResolvedHost {
 function mux(): NativeMux {
   const m = new NativeMux({
     defaultAgent: () => undefined,
+    spawnProxy: pipeSpawn,
     resolveHost: async (q) => {
       asked.push(q)
       const c = config[q.host]
@@ -240,11 +257,43 @@ describe('NativeMux over a ProxyJump chain', () => {
     expect(loop.stderr.toString()).toMatch(/ProxyJump loop/)
   })
 
-  it('refuses a ProxyCommand on a jump by name', async () => {
-    config.jump1 = { ...base(jump1.port, 'ops', 'jump_id'), proxyCommand: 'nc %h %p' }
-    const r = await mux().exec(exec('echo hi'))
+  it('starts the chain from the FIRST hop\'s ProxyCommand (tokens expanded for that hop)', async () => {
+    proxyLines.length = 0
+    config.jump1 = { ...base(jump1.port, 'ops', 'jump_id'), proxyCommand: 'pipe %h %p' }
+    const r = await mux().exec(exec('echo via-proxy'))
+    expect(r.stderr.toString()).toBe('')
+    expect(r.stdout.toString()).toBe('target ran: echo via-proxy\n')
+    expect(proxyLines).toEqual([`pipe 127.0.0.1 ${jump1.port}`])
+    expect(jump1.forwards).toEqual([`127.0.0.1:${target.port}`])
+  })
+
+  it('a direct ProxyCommand on the target; ProxyUseFdpass is refused by name', async () => {
+    proxyLines.length = 0
+    config['target.test'] = { ...base(target.port, 'dev', 'id'), proxyCommand: 'pipe %h %p' }
+    const r = await mux().exec(exec('echo direct'))
+    expect(r.stdout.toString()).toBe('target ran: echo direct\n')
+    expect(proxyLines).toEqual([`pipe 127.0.0.1 ${target.port}`])
+    expect(jump1.logins).toBe(0)
+
+    config['target.test'] = { ...base(target.port, 'dev', 'id'), proxyCommand: 'pipe %h %p', proxyUseFdpass: true }
+    const f = await mux().exec(exec('echo fd'))
+    expect(f.code).toBe(255)
+    expect(f.stderr.toString()).toMatch(/ProxyUseFdpass is not supported/)
+  })
+
+  it('a ProxyCommand that fails before the handshake reports its stderr', async () => {
+    const failing = new NativeMux({
+      defaultAgent: () => undefined,
+      spawnProxy: () =>
+        spawn(process.execPath, ['-e', `process.stderr.write('kex_exchange: Connection refused\\n');process.exit(255)`], {
+          stdio: ['pipe', 'pipe', 'pipe']
+        }),
+      resolveHost: async () => ({ ...base(target.port, 'dev', 'id'), proxyCommand: 'whatever' })
+    })
+    muxes.push(failing)
+    const r = await failing.exec(exec('echo x'))
     expect(r.code).toBe(255)
-    expect(r.stderr.toString()).toMatch(/ProxyCommand is not supported .*jump host jump1/)
+    expect(r.stderr.toString()).toMatch(/ProxyCommand exited \(code 255\).*kex_exchange: Connection refused/)
   })
 
   it('overflow connections (MaxSessions spill) reuse the primary\'s jump chain', async () => {

@@ -15,6 +15,10 @@
 //     before the paste — never a fixed `#1`;
 //   - a backslash-escaped space (`pasted\ 2.png`, what `escapeDroppedPath` writes) still attaches.
 //
+// Only the backslash-escaped (POSIX) spelling was measured. A Windows pane gets the path quoted
+// instead (`"C:\Users\Jane Doe\shot.png"`, `quoteDroppedPath`), so the extension is read with
+// one pair of surrounding quotes stripped; whether claude on Windows attaches it is a device check.
+//
 // So for claude the pane itself says whether the image was taken, and we read it from OUR emulator
 // (the xterm buffer), not from tmux — the pane app's output already arrives here. Other agents
 // were not measured: they get no receipt either way, exactly as before, and nothing claims success
@@ -31,7 +35,7 @@ export function expectedImagePlaceholders(agentId: string | undefined, paths: st
   if (!agentId || capabilityAgentId(agentId) !== 'claude') return 0
   let n = 0
   for (const p of paths) {
-    const m = /\.([A-Za-z0-9]+)$/.exec(p)
+    const m = /\.([A-Za-z0-9]+)$/.exec(p.replace(/^(["'])(.*)\1$/, '$2'))
     if (m && (CLAUDE_IMAGE_EXTENSIONS as readonly string[]).includes(m[1].toLowerCase())) n++
   }
   return n

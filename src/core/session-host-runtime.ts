@@ -398,6 +398,8 @@ export async function stageHostRuntime(opts: StageOptions): Promise<StagedHostRu
 export interface ProcessInfo {
   name: string
   path: string | null
+  /** Win32_Process.ProcessId, when the query reported one. */
+  pid?: number
 }
 /** Answers every process, or null when the query failed. */
 export type ProcessQuery = () => Promise<ProcessInfo[] | null>
@@ -413,7 +415,7 @@ export const defaultProcessQuery: ProcessQuery = () =>
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        "$ErrorActionPreference='Stop'; @(Get-CimInstance -ClassName Win32_Process | Select-Object Name, ExecutablePath) | ConvertTo-Json -Compress"
+        "$ErrorActionPreference='Stop'; @(Get-CimInstance -ClassName Win32_Process | Select-Object Name, ExecutablePath, ProcessId) | ConvertTo-Json -Compress"
       ],
       { windowsHide: true, timeout: 20_000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout) => {
@@ -436,11 +438,16 @@ export function parseProcessJson(text: string): ProcessInfo[] | null {
   const out: ProcessInfo[] = []
   for (const p of list) {
     if (!p || typeof p !== 'object') return null
-    const { Name, ExecutablePath } = p as { Name?: unknown; ExecutablePath?: unknown }
+    const { Name, ExecutablePath, ProcessId } = p as {
+      Name?: unknown
+      ExecutablePath?: unknown
+      ProcessId?: unknown
+    }
     if (typeof Name !== 'string') return null
     out.push({
       name: Name,
-      path: typeof ExecutablePath === 'string' && ExecutablePath.trim() ? ExecutablePath : null
+      path: typeof ExecutablePath === 'string' && ExecutablePath.trim() ? ExecutablePath : null,
+      ...(Number.isInteger(ProcessId) && (ProcessId as number) > 0 ? { pid: ProcessId as number } : {})
     })
   }
   return out
@@ -545,6 +552,63 @@ export async function collectStagedRuntimes(opts: CollectOptions): Promise<Colle
     }
   }
   return report
+}
+
+/**
+ * Where a RUNNING host's executable lives, for prepare-for-update (U3, issue #829):
+ *   - `staged`  — `STAGED_HOST_EXE` inside the staged runtime root. It maps none of the installed
+ *                 files, so the installer can replace them while the host keeps its sessions:
+ *                 quitting the app is enough.
+ *   - `install` — inside the installation, or one of the names an installer/uninstaller matches
+ *                 machine-wide (`nodeterm.exe`, `nodeterm-session-host.exe`): it blocks the update.
+ *   - `unknown` — anything else, including no path at all. Never treated as staged: the caller
+ *                 falls back to today's stop-the-host flow.
+ * Windows paths: case-insensitive, either separator, and a directory BOUNDARY (a sibling
+ * `session-host-evil\…` is not under `session-host`). Pure; exported for tests.
+ */
+export type HostImageStaging = 'staged' | 'install' | 'unknown'
+
+export function classifyHostImage(
+  exe: string | null | undefined,
+  installDir: string | null | undefined,
+  stagedRoot: string | null | undefined
+): HostImageStaging {
+  if (typeof exe !== 'string' || !exe.trim()) return 'unknown'
+  const image = norm(exe.trim())
+  const base = image.slice(image.lastIndexOf('\\') + 1)
+  const under = (dir: string | null | undefined): boolean =>
+    typeof dir === 'string' && dir.trim().length > 0 && image.startsWith(norm(dir.trim()) + '\\')
+  if (under(installDir) || base === 'nodeterm.exe' || base === 'nodeterm-session-host.exe') {
+    return 'install'
+  }
+  if (base === STAGED_HOST_EXE && under(stagedRoot)) return 'staged'
+  return 'unknown'
+}
+
+/**
+ * Classify the running host from what it published (`exe` in its state file, hosts from this
+ * build on) or, for a host that predates that field (0.4.1–0.4.3), from a process query by its
+ * pid. A failed, throwing or pid-less query answers `unknown` — fail closed to the stop flow.
+ */
+export async function resolveHostStaging(opts: {
+  exe?: string | null
+  pid?: number | null
+  installDir: string | null | undefined
+  stagedRoot: string | null | undefined
+  query?: ProcessQuery
+}): Promise<HostImageStaging> {
+  if (typeof opts.exe === 'string' && opts.exe.trim()) {
+    return classifyHostImage(opts.exe, opts.installDir, opts.stagedRoot)
+  }
+  if (!Number.isInteger(opts.pid) || (opts.pid as number) <= 0) return 'unknown'
+  let processes: ProcessInfo[] | null
+  try {
+    processes = await (opts.query ?? defaultProcessQuery)()
+  } catch {
+    return 'unknown'
+  }
+  const match = processes?.find((p) => p.pid === opts.pid)
+  return match ? classifyHostImage(match.path, opts.installDir, opts.stagedRoot) : 'unknown'
 }
 
 let memo: { key: string; promise: Promise<StagedHostRuntime | null> } | null = null

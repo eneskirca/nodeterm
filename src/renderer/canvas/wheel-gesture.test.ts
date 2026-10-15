@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { MacWheelGestureRouter, trackpadRoutingEnabled } from './wheel-gesture'
+import {
+  MacWheelGestureRouter,
+  trackpadRoutingEnabled,
+  trackpadRoutingSupported,
+  wheelGestureReporting
+} from './wheel-gesture'
 
 const gesture = (
   deltaY: number,
@@ -138,5 +143,47 @@ describe('MacWheelGestureRouter with main-process gesture reporting', () => {
     router.noteGesture(true, 995)
     router.noteGesture(false, 996)
     expect(router.shouldPan(gesture(6.25), true, 1000)).toBe(true)
+  })
+})
+
+describe('Windows routing (heuristic, no gesture reporting)', () => {
+  const win = { mac: false, windows: true }
+  const routing = (trackpadPan: boolean): boolean =>
+    trackpadRoutingEnabled(trackpadRoutingSupported(win), trackpadPan)
+
+  it('is on for macOS and Windows viewers only, and the escape hatch still turns it off', () => {
+    expect(routing(true)).toBe(true)
+    expect(routing(false)).toBe(false)
+    expect(trackpadRoutingSupported({ mac: true, windows: false })).toBe(true)
+    expect(trackpadRoutingSupported({ mac: false, windows: false })).toBe(false)
+  })
+
+  it('never turns on main-process gesture reporting off the macOS desktop', () => {
+    expect(wheelGestureReporting({ mac: false, browser: false })).toBe(false)
+    expect(wheelGestureReporting({ mac: true, browser: true })).toBe(false)
+    expect(wheelGestureReporting({ mac: true, browser: false })).toBe(true)
+  })
+
+  it('a notched Windows mouse wheel (deltaY 100, wheelDeltaY ±120) stays on the zoom path', () => {
+    const router = new MacWheelGestureRouter()
+    expect(router.destination(gesture(100, { wheelDeltaY: -120 }), routing(true), no, 1000)).toBe('native')
+    // 125% display scaling: deltaY 125, still a 120 notch.
+    expect(router.destination(gesture(-125, { wheelDeltaY: 120 }), routing(true), no, 1100)).toBe('native')
+    // Two notches coalesced into one packet.
+    expect(router.destination(gesture(200, { wheelDeltaY: -240 }), routing(true), no, 1200)).toBe('native')
+  })
+
+  it('precision-touchpad packets pan, and stay sticky across a quantized 120 packet', () => {
+    const router = new MacWheelGestureRouter()
+    expect(router.destination(gesture(13.5, { wheelDeltaY: -16 }), routing(true), no, 1000)).toBe('flow-pan')
+    expect(router.destination(gesture(8, { deltaX: 3, wheelDeltaY: -9 }), routing(true), no, 1040)).toBe('flow-pan')
+    expect(router.destination(gesture(100, { wheelDeltaY: -120 }), routing(true), no, 1080)).toBe('flow-pan')
+    // Over a terminal/native scroller it scrolls that surface instead.
+    expect(router.destination(gesture(7.5, { wheelDeltaY: -9 }), routing(true), yes, 1100)).toBe('native')
+  })
+
+  it('pinch (ctrl+wheel) never pans on Windows', () => {
+    const router = new MacWheelGestureRouter()
+    expect(router.destination(gesture(3.2, { ctrlKey: true }), routing(true), no, 1000)).toBe('native')
   })
 })

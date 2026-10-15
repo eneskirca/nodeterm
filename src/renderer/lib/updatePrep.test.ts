@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planUpdatePrep, updatePrepStopSummary, type PrepNode, type PrepStatus } from './updatePrep'
+import { planUpdatePrep, prepareEntry, updatePrepStopSummary, type PrepNode, type PrepStatus } from './updatePrep'
 
 const node = (nodeId: string, agentId?: string, extra: Partial<PrepNode> = {}): PrepNode => ({
   nodeId,
@@ -113,5 +113,17 @@ describe('planUpdatePrep (issue #829)', () => {
     expect(text).toContain('unsaved work in them is lost')
     expect(text).toContain('Canvas nodes are kept')
     expect(updatePrepStopSummary(p, 1).join('\n')).toContain('1 agent exited cleanly')
+  })
+})
+
+describe('prepareEntry (U3: staged host)', () => {
+  it('offers the plain quit only for a positively staged host', () => {
+    expect(prepareEntry({ kind: 'host', staged: true }, false)).toBe('quit-keeps-sessions')
+    expect(prepareEntry({ kind: 'host', staged: false }, false)).toBe('stop-sessions')
+    expect(prepareEntry({ kind: 'host' }, false)).toBe('stop-sessions')
+    expect(prepareEntry({ kind: 'no-host' }, false)).toBe('stop-sessions')
+  })
+  it('the user can still choose to stop sessions on a staged host', () => {
+    expect(prepareEntry({ kind: 'host', staged: true }, true)).toBe('stop-sessions')
   })
 })

@@ -66,6 +66,22 @@ Codex install + a **logged-in 2nd managed account**. Headless CI cannot run them
       login completes with no email), a new Codex node on that host runs under the managed home
       (`echo $CODEX_HOME` in the pane), and Remove leaves no `~/.nodeterm/cx/<digest>` behind.
 
+### Windows (managed local accounts)
+
+- [ ] **Add + login on a stock (non-admin, no Developer Mode) account.** Add completes (no EPERM);
+      `skills`/`plugins` in `~/.nodeterm/cx/<digest>` are junctions and `config.toml` a hardlink or
+      (with a logged warning) a copy. `codex login` completes, the row leaves pending and shows the
+      email read from `auth.json`'s id_token, and a new Codex node under that account runs with
+      `CODEX_HOME` set to the managed home (`echo %CODEX_HOME%` / `$env:CODEX_HOME`).
+- [ ] **System Codex row** shows the email from `%USERPROFILE%\.codex\auth.json`.
+- [ ] **No `codex app-server daemon start`** process appears while a login is pending.
+- [ ] **Remove does not follow the junctions.** After removing a managed account whose `skills` /
+      `plugins` were junctioned in, `%USERPROFILE%\.codex\skills` and `plugins` are still intact
+      (`fs.rm` must unlink the junction, never recurse through it into the system home).
+- [ ] **Conversation switch / transfer** between Codex accounts fails at once with "The Codex
+      app-server is not reachable on Windows yet" (no daemon spawned, no 15 s wait) — the explicit
+      degrade until a named-pipe app-server endpoint exists.
+
 ## Happy-path acceptance walk (the one a human runs end to end)
 
 On a real Mac with a real SSH host and a 2nd ChatGPT login available:

@@ -34,7 +34,10 @@ vi.mock('electron', () => ({
       ipcHandle[ch] = fn
     }
   },
-  Notification: Object.assign(function () {}, { isSupported: () => false })
+  Notification: Object.assign(function () {}, { isSupported: () => false }),
+  // Electron's own (Squirrel) autoUpdater — only wired on darwin; the restart flow is pinned in
+  // updater.restart.test.ts.
+  autoUpdater: { on: () => {} }
 }))
 
 // `vi.mock` factories are hoisted above every const, so the double the factory returns has to be
@@ -47,6 +50,7 @@ const { updaterEvents, autoUpdater } = vi.hoisted(() => {
       autoDownload: true,
       autoInstallOnAppQuit: true,
       checkForUpdates: vi.fn(() => Promise.resolve(null)),
+      downloadUpdate: vi.fn(() => Promise.resolve([])),
       quitAndInstall: vi.fn(),
       on: (ev: string, fn: (...a: unknown[]) => void) => {
         events[ev] = fn
@@ -61,7 +65,7 @@ vi.mock('./main-window', () => ({
 }))
 vi.mock('./notifications', () => ({ retainUntilDismissed: () => {} }))
 
-import { initUpdater } from './updater'
+import { describeCheckFailure, initUpdater, lastUpdateCheck } from './updater'
 
 const realReadFileSync = fs.readFileSync
 
@@ -94,6 +98,7 @@ beforeEach(() => {
   for (const k of Object.keys(updaterEvents)) delete updaterEvents[k]
   sent.length = 0
   autoUpdater.checkForUpdates.mockClear()
+  autoUpdater.quitAndInstall.mockClear()
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   appMock.isPackaged = true
@@ -206,5 +211,136 @@ describe('the paths that must not move', () => {
     packageWith(null)
     initUpdater()
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+})
+
+const restart = (): void => ipcOn[IPC.appRestartToUpdate]?.()
+
+/**
+ * The unsigned Windows beta (`dist:win:release` → `nodeTermUpdates=manual`): it must LEARN that a
+ * new version is out — a passive "available, download it" card — and must never download or
+ * install it, because an unsigned auto-update is a downgrade in trust.
+ */
+describe('the unsigned Windows beta (manual marker)', () => {
+  const onBeforeRestart = vi.fn()
+
+  beforeEach(() => {
+    onBeforeRestart.mockClear()
+    setPlatform('win32')
+    packageWith('manual')
+    initUpdater({ onBeforeRestart })
+  })
+
+  it('checks the feed on launch and every six hours', () => {
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(6 * 60 * 60 * 1000)
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2)
+  })
+
+  it('never downloads and never installs on quit', () => {
+    expect(autoUpdater.autoDownload).toBe(false)
+    expect(autoUpdater.autoInstallOnAppQuit).toBe(false)
+  })
+
+  it('surfaces a found version as the manual Download card, not "no channel"', () => {
+    updaterEvents['update-available']?.({ version: '9.9.9' })
+    expect(sent.at(-1)).toEqual({
+      channel: IPC.appUpdateAvailable,
+      payload: { version: '9.9.9', notes: '', manual: true }
+    })
+    check()
+    expect(channels()).not.toContain(IPC.appUpdateNoChannel)
+  })
+
+  it('an automatic check failure stays silent; a user-initiated one still reports', async () => {
+    // electron-updater emits 'error' for the silent launch check too (offline, or a feed mirror
+    // that does not serve latest.yml yet) — that must not put an error card up on every launch.
+    updaterEvents['error']?.(new Error('HttpError: 404 latest.yml'))
+    expect(channels()).not.toContain(IPC.appUpdateError)
+    // electron-updater emits 'error' for the rejected manual check too; that listener is the one
+    // owner of the report (the catch only logs), so exactly one card comes up.
+    autoUpdater.checkForUpdates.mockImplementationOnce(() => {
+      updaterEvents['error']?.(new Error('offline'))
+      return Promise.reject(new Error('offline'))
+    })
+    check()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(channels().filter((c) => c === IPC.appUpdateError)).toHaveLength(1)
+  })
+
+  it('a silent check failure is recorded and logged as an actionable warning, not dropped', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    updaterEvents['error']?.(new Error('HttpError: 404 "method: GET url: https://nodeterm.dev/updates/latest.yml"'))
+    expect(channels()).not.toContain(IPC.appUpdateError)
+    expect(lastUpdateCheck()).toMatchObject({ ok: false, message: expect.stringContaining('404') })
+    expect(warn).toHaveBeenCalledWith('[updater]', expect.stringMatching(/update feed is missing/))
+    updaterEvents['update-not-available']?.()
+    expect(lastUpdateCheck()).toMatchObject({ ok: true })
+  })
+
+  it('refuses restart-to-update in main: quitAndInstall never runs', () => {
+    restart()
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled()
+    // Nor is the app flagged as quitting for a quit that will never come.
+    expect(onBeforeRestart).not.toHaveBeenCalled()
+  })
+})
+
+describe('restart-to-update elsewhere', () => {
+  it('a self-installing release still restarts into a downloaded update', async () => {
+    // (macOS's wait for Squirrel.Mac is pinned in updater.restart.test.ts; AppImage installs from
+    // the downloaded file, so it is the immediate case.)
+    const onBeforeRestart = vi.fn()
+    setPlatform('linux')
+    process.env.APPIMAGE = '/tmp/nodeterm.AppImage'
+    packageWith(undefined)
+    initUpdater({ onBeforeRestart, flushRenderer: () => Promise.resolve() })
+    updaterEvents['update-downloaded']?.({ version: '9.9.9' })
+    restart()
+    await vi.waitFor(() => expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1))
+    expect(onBeforeRestart).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Linux .deb: a BACKGROUND check failure is logged, not carded; a user check still reports', () => {
+    setPlatform('linux')
+    packageWith(undefined)
+    initUpdater()
+    updaterEvents['error']?.(new Error('boom'))
+    expect(channels()).not.toContain(IPC.appUpdateError)
+    check()
+    updaterEvents['error']?.(new Error('boom'))
+    expect(sent.filter((s) => s.channel === IPC.appUpdateError)).toEqual([
+      { channel: IPC.appUpdateError, payload: 'boom' }
+    ])
+  })
+
+  it('a Linux .deb (manual-install) refuses it too', () => {
+    setPlatform('linux')
+    packageWith(undefined)
+    initUpdater()
+    restart()
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('a no-channel build refuses it — it has nothing to install', () => {
+    setPlatform('win32')
+    packageWith('disabled')
+    initUpdater()
+    restart()
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+})
+
+describe('describeCheckFailure', () => {
+  it('names a 404 on a latest*.yml as a missing feed file', () => {
+    expect(describeCheckFailure('HttpError: 404 Not Found ... latest.yml')).toMatch(/feed is missing/)
+    expect(describeCheckFailure('Cannot find latest-linux.yml (404)')).toMatch(/feed is missing/)
+  })
+  it('anything else is a plain check failure', () => {
+    expect(describeCheckFailure('net::ERR_INTERNET_DISCONNECTED')).toBe(
+      'update check failed: net::ERR_INTERNET_DISCONNECTED'
+    )
+    expect(describeCheckFailure('HttpError: 500 latest.yml')).toMatch(/^update check failed/)
   })
 })

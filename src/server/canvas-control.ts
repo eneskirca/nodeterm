@@ -28,6 +28,7 @@ import {
 } from '../core/agent-status-mirror'
 import type { BoardLogHandlers } from '../core/board-log-handlers'
 import { buildControlShimScript } from '../core/canvas-control-core'
+import { syncWindowsShLauncher } from '../core/agents/hooks/install-helper'
 import { codexIdentityCaps } from '../core/codex-identity-caps'
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
 import { claudeCliCaps, type ClaudeCliCaps } from '../core/claude-cli'
@@ -109,6 +110,9 @@ function writeShim(): void {
   } catch {
     /* best effort on filesystems without POSIX modes */
   }
+  // The `.cmd` launcher the skill names on a Windows host (skillsFor picks that dialect from this
+  // core's platform); a no-op removal on the Linux hosts the Server Edition targets.
+  syncWindowsShLauncher(dir, 'nodeterm.sh')
   // Same upgrade sweep as desktop: the POSIX shim replaced this Electron-as-Node script.
   try {
     fs.rmSync(path.join(dir, 'canvas-control-cli.mjs'), { force: true })

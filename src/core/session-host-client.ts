@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto'
 // socket 'close' events dispatch first, even inside fake-timer tests.
 import { setImmediate as realSetImmediate } from 'timers'
 import { sessionHostPaths } from '../session-host/paths'
+import { WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS } from '../session-host/windows-process-tree'
 import {
   EMPTY_LOCK_STALE_MS,
   LISTEN_RETRY_BUDGET_MS,
@@ -32,9 +33,14 @@ import {
   type HasSessionResult,
   type PaneCommandResult,
   type CaptureResult,
+  type CaptureVisibleResult,
+  type PaneCwdResult,
+  type SessionHostFeature,
+  type PaneModesResult,
   type KillSessionResult,
   type ExecuteLaunchResult,
   type ListSessionsResult,
+  type SessionHostSessionDetail,
   type ShutdownResult
 } from '../session-host/protocol'
 import { resolveSessionHostScript, spawnSessionHost } from './session-host-launcher'
@@ -45,6 +51,7 @@ export const STAGED_RUNTIME_WAIT_MS = 45_000
 import { latestClaimSize, type SizeClaim } from './pty-size'
 import { isTerminalReport } from './terminal-reports'
 import type { PreparedAgentLaunch } from './agent-launch'
+import type { HostImageStaging } from './session-host-runtime'
 
 export interface SessionSubscriber {
   onData(data: string): void
@@ -63,10 +70,82 @@ export const SESSION_HOST_REQUEST_TIMEOUT_MS = 10_000
 /** A `shutdown` ends every session (each kill confirmed by the host within its own 20 s bound),
  *  so it gets a longer deadline than an ordinary request. */
 export const SHUTDOWN_REQUEST_TIMEOUT_MS = 45_000
+/** `terminateOwnerV1` runs the host's owner probe (`readWindowsConsoleOwner`, a PowerShell
+ *  execFile bounded at 4 s) and then `taskkill /T /F` plus the root-absence poll (bounded at
+ *  `WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS`, 8 s). The ordinary 10 s deadline is shorter than
+ *  that sum, and its expiry is not a plain `false`: the agent may already be dead (the caller then
+ *  skips the recycle and strands a bare shell) AND the deadline retires the whole socket, dropping
+ *  every other session's stream on this connection. So the kill gets the full budget plus slack. */
+export const TERMINATE_OWNER_REQUEST_TIMEOUT_MS =
+  4_000 + WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS + 6_000
 
 export type HostUpdateInspection =
   | { running: false }
-  | { running: true; sessions: string[]; shutdown: boolean }
+  | {
+      running: true
+      sessions: string[]
+      shutdown: boolean
+      /** Where the running host's executable lives (`classifyHostImage`). Only `staged` means a
+       *  plain quit lets the installer run; `unknown` is never read as staged. */
+      staging: HostImageStaging
+    }
+
+/**
+ * What the running host holds, for the observability surfaces (session reaper, session-memory
+ * panel, dev-server ports). `null` from `listSessionsDetailed` is the FAILED read — never this
+ * shape with no sessions, because a failed read is never evidence of absence.
+ *  - `running: false` — no host is published, so there are no sessions. An ANSWER.
+ *  - `sessions: null` — a host that predates `sessionDetails` can name its sessions but not
+ *    describe them; consumers must treat every name as unmeasured / not reapable.
+ *  - otherwise `sessions` holds a validated row per live generation; a name without a row is not
+ *    described (retiring, or a malformed row dropped here) and is treated the same way.
+ */
+export interface SessionHostListing {
+  running: boolean
+  names: string[]
+  sessions: SessionHostSessionDetail[] | null
+  /**
+   * The host process's pid, from the state file the connection was verified against (every host
+   * version writes it, so this needs no protocol change). Absent when unknown or not a safe
+   * positive integer. Only the memory panel reads it, to report the host's own cost.
+   */
+  hostPid?: number
+}
+
+const GENERATION_RE = /^[A-Za-z0-9_-]{8,128}$/
+
+/** Keep only rows whose every field is the type the consumers rely on. A malformed row is dropped
+ *  — its session then reads as undescribed, never as detached or empty. */
+function validSessionDetails(raw: unknown): SessionHostSessionDetail[] {
+  if (!Array.isArray(raw)) return []
+  const out: SessionHostSessionDetail[] = []
+  for (const r of raw) {
+    if (!r || typeof r !== 'object') continue
+    const o = r as Record<string, unknown>
+    if (
+      typeof o.name !== 'string' ||
+      !Number.isSafeInteger(o.pid) ||
+      (o.pid as number) <= 0 ||
+      !Number.isSafeInteger(o.subscribers) ||
+      (o.subscribers as number) < 0 ||
+      !Number.isFinite(o.lastOutputMs) ||
+      !Number.isFinite(o.createdMs) ||
+      typeof o.generation !== 'string' ||
+      !GENERATION_RE.test(o.generation)
+    ) {
+      continue
+    }
+    out.push({
+      name: o.name,
+      pid: o.pid as number,
+      subscribers: o.subscribers as number,
+      lastOutputMs: o.lastOutputMs as number,
+      createdMs: o.createdMs as number,
+      generation: o.generation
+    })
+  }
+  return out
+}
 
 export type HostShutdownOutcome =
   | { kind: 'no-host' }
@@ -128,6 +207,9 @@ type SubscriberEntry = {
   spawn?: SessionHostSpawnOptions
   scrollback: number
   phase: 'attaching' | 'attached'
+  /** A `watch-attach` viewer (live link / relay viewer): it never holds a size claim or a pause
+   *  ticket, and its writes are dropped here — the host refuses them too. */
+  watch?: boolean
 }
 
 type BufferedFrame = {
@@ -149,6 +231,10 @@ type KillOperationIdentity = {
   requireV2: boolean
   expectedAbsent: boolean
   prepared?: boolean
+  /** The generation came from the CALLER's observation (a `listSessionsDetailed` row), not from
+   *  this client's own attachment. Such a kill never tears down local attachment state that is
+   *  not provably the generation it ended (see `killSession`). */
+  observed?: boolean
 }
 
 type ClientSessionState = {
@@ -178,6 +264,10 @@ type ClientSessionState = {
   appliedAttached: boolean
   appliedPaused: boolean
   appliedSize: TerminalSize | null
+  /** The host holds this connection's attachment in WATCH mode (no geometry claim): true while
+   *  every local subscriber is a watcher. A resize is never sent in this mode (the host refuses
+   *  it); the next claim-carrying attach upgrades it, `reconcileOnSocket` downgrades it. */
+  appliedWatch?: boolean
 }
 
 function sleep(ms: number): Promise<void> {
@@ -210,6 +300,14 @@ function isTransportUncertainty(value: unknown): boolean {
 
 /** Protocol-v1 hosts stay alive for warm terminal continuity. Operations that need atomic
  * generation or replacement semantics fail closed without replacing that live host. */
+/** `attachWatch` against a host that did not advertise `watch-attach`: the viewer is refused. */
+export class SessionHostWatchUnsupportedError extends Error {
+  constructor(name: string) {
+    super(`session-host does not support read-only watch attach for '${name}'`)
+    this.name = 'SessionHostWatchUnsupportedError'
+  }
+}
+
 export class SessionHostProtocolCompatibilityError extends Error {
   readonly code = 'SESSION_HOST_PROTOCOL_INCOMPATIBLE'
 
@@ -300,6 +398,9 @@ export class SessionHostClient {
    *  ask the host to end every session and exit. An older host lacks it, and the app then falls
    *  back to the manual steps — never to killing the host itself. */
   private hostShutdownFeature = false
+  /** Every additive feature the CURRENT connection negotiated (cleared with the socket). Newer
+   *  features are read from here rather than given one boolean each. */
+  private hostFeatures = new Set<SessionHostFeature>()
   /** The pid the host published in its state file for the current connection. Read only to
    *  confirm a shutdown actually ended the process. */
   private hostPid: number | null = null
@@ -323,6 +424,8 @@ export class SessionHostClient {
   private readonly killOperations = new Map<string, KillOperationIdentity>()
   private readonly replacementTokens = new Map<string, string>()
   private connecting: Promise<void> | null = null
+  /** The in-flight `connecting` attempt was started with `launch: false` (see `ensureConnected`). */
+  private connectingWithoutLaunch = false
   private everConnected = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempt = 0
@@ -335,6 +438,9 @@ export class SessionHostClient {
       repoRoot?: string | null
       /** Stage (or reuse) a host runtime outside the install directory. Absent = legacy launch. */
       stageRuntime?: (script: string) => Promise<{ exe: string; script: string } | null>
+      /** Classify the running host's image for prepare-for-update (`resolveHostStaging`). Absent
+       *  (every non-Windows or unpackaged client) ⇒ `unknown`. */
+      hostStaging?: (host: { exe?: string; pid: number | null }) => Promise<HostImageStaging>
     }
   ) {}
 
@@ -413,6 +519,16 @@ export class SessionHostClient {
     return false
   }
 
+  /** Every local subscriber of `state` is a watcher, and the host can hold that without a claim. */
+  private watchOnly(state: ClientSessionState): boolean {
+    return (
+      state.sizeClaims.size === 0 &&
+      state.entries.size > 0 &&
+      this.negotiatedProtocolVersion === 2 &&
+      this.hostFeatures.has('watch-attach')
+    )
+  }
+
   private hasDesiredAttachments(): boolean {
     for (const state of this.sessions.values()) {
       if (this.hasAttachedEntry(state)) return true
@@ -462,16 +578,30 @@ export class SessionHostClient {
     return true
   }
 
-  private async ensureConnected(): Promise<void> {
+  /**
+   * `launch: false` connects only to a host that is ALREADY answering — a read-only observer (the
+   * session reaper, the memory panel, the ports chip) must never start the process it is asking
+   * about. A published-but-stale state file (the host was killed, or the machine rebooted) would
+   * otherwise make every such poll spawn a fresh host. A launching caller that arrives while such
+   * a no-launch attempt is in flight waits for it and, if it found nothing, connects normally.
+   */
+  private async ensureConnected(options: { launch?: boolean } = {}): Promise<void> {
+    const launch = options.launch !== false
     if (this.shutDownForUpdate) {
       throw new Error('session-host was shut down to prepare for an update; restart nodeterm')
     }
     // A newly authenticated socket is visible while its reconnect restoration is still running.
     // The barrier wins over the raw socket check so no later request can overtake replay.
-    if (this.connecting) return this.connecting
+    if (this.connecting) {
+      if (launch && this.connectingWithoutLaunch) {
+        return this.connecting.catch(() => this.ensureConnected())
+      }
+      return this.connecting
+    }
     if (this.socket && !this.socket.destroyed) return
-    const attempt = this.doConnect()
+    const attempt = this.doConnect(launch)
     this.connecting = attempt
+    this.connectingWithoutLaunch = !launch
     void attempt.then(
       () => {
         if (this.connecting === attempt) this.connecting = null
@@ -485,13 +615,14 @@ export class SessionHostClient {
     return attempt
   }
 
-  private async doConnect(): Promise<void> {
+  private async doConnect(launch = true): Promise<void> {
     const wasConnectedBefore = this.everConnected
     if (await this.tryConnectBeforeLaunch()) {
       const socket = this.socket
       if (wasConnectedBefore && socket) await this.restoreSocket(socket)
       return
     }
+    if (!launch) throw new Error('session-host: no running host answered (not launching one)')
 
     const script = resolveSessionHostScript({
       resourcesPath: this.deps.resourcesPath,
@@ -609,6 +740,7 @@ export class SessionHostClient {
       let protocolVersion: 1 | 2 | null = null
       let geometryEvents = false
       let shutdownFeature = false
+      let negotiatedFeatures: SessionHostFeature[] = []
       const finish = (ok: boolean, trailing: SessionHostFrame[] = []): void => {
         if (settled) return
         settled = true
@@ -623,6 +755,7 @@ export class SessionHostClient {
             return
           }
           this.hostShutdownFeature = shutdownFeature
+          this.hostFeatures = new Set(negotiatedFeatures)
           this.hostPid = Number.isInteger(identity.state.pid) ? identity.state.pid : null
           this.attachSocket(socket, protocolVersion, geometryEvents)
           for (const frame of trailing) this.handleFrame(socket, frame)
@@ -721,6 +854,9 @@ export class SessionHostClient {
             const features = (frame.result as HelloResult | undefined)?.features
             geometryEvents = Array.isArray(features) && features.includes('geometry')
             shutdownFeature = Array.isArray(features) && features.includes('shutdown')
+            negotiatedFeatures = Array.isArray(features)
+              ? SESSION_HOST_FEATURES.filter((feature) => features.includes(feature))
+              : []
             finish(true, frames.slice(index + 1))
           } else {
             failHandshake(new Error(`session-host hello rejected: ${frame.error}`))
@@ -772,6 +908,7 @@ export class SessionHostClient {
       this.socket = null
       this.negotiatedProtocolVersion = null
       this.hostGeometryEvents = false
+      this.hostFeatures = new Set()
       for (const state of this.sessions.values()) {
         // The next connection re-learns the size from its own attach replies.
         state.hostGeometry = null
@@ -780,6 +917,7 @@ export class SessionHostClient {
         state.appliedAttached = false
         state.appliedPaused = false
         state.appliedSize = null
+        state.appliedWatch = false
       }
     }
     for (const [id, entry] of this.pending) {
@@ -924,6 +1062,7 @@ export class SessionHostClient {
     state.appliedAttached = false
     state.appliedPaused = false
     state.appliedSize = null
+    state.appliedWatch = false
     if (state.entries.size === 0 && this.sessions.get(state.name) === state) {
       this.sessions.delete(state.name)
     }
@@ -1049,13 +1188,15 @@ export class SessionHostClient {
     state: ClientSessionState,
     socket: net.Socket,
     paused: boolean,
-    size: TerminalSize
+    /** Null: the host attached this connection in WATCH mode (no claim, never paused). */
+    size: TerminalSize | null
   ): void {
     if (this.sessions.get(state.name) !== state || !this.hasAttachedEntry(state)) return
     state.appliedSocket = socket
     state.appliedAttached = true
     state.appliedPaused = paused
     state.appliedSize = size
+    state.appliedWatch = size === null
     if (!paused && state.pauseOwners.size === 0) {
       state.releasePending = false
       this.flushData(state)
@@ -1073,7 +1214,13 @@ export class SessionHostClient {
         const paused = state.pauseOwners.size > 0
         const protocolVersion = this.negotiatedProtocolVersion
         if (!protocolVersion) throw new Error('session-host: not connected')
+        // Only watchers here: re-attach WITHOUT a claim, or not at all — a replacement host that
+        // lost the feature must not be handed the 80x24 fallback as a viewer's size vote.
+        const watchRestore = state.sizeClaims.size === 0
         try {
+          if (watchRestore && !this.watchOnly(state)) {
+            throw new Error(`session-host no longer supports watch attach for '${state.name}'`)
+          }
           if (state.protocolVersion && state.protocolVersion !== protocolVersion) {
             throw new Error(
               `session-host protocol changed while '${state.name}' was detached; warm replay is unsafe`
@@ -1112,7 +1259,7 @@ export class SessionHostClient {
             state.generation = result.generation ?? expectedGeneration
             if (state.generation) this.sessionGenerations.set(state.name, state.generation)
             this.recordHostGeometry(state, result.geometry)
-            this.applyAttachment(state, replaySocket, paused, size)
+            this.applyAttachment(state, replaySocket, watchRestore ? false : paused, watchRestore ? null : size)
             if (result.screen && state.appliedSocket === replaySocket) {
               this.deliverData(state, RECONNECT_REPAINT_PREFIX + result.screen)
             }
@@ -1132,14 +1279,16 @@ export class SessionHostClient {
           } else {
             await this.requestOnSocket<AttachResult>(
               socket,
-              {
-                cmd: 'attachExisting',
-                name: state.name,
-                expectedGeneration,
-                cols: size.cols,
-                rows: size.rows,
-                paused
-              },
+              watchRestore
+                ? { cmd: 'attachExisting', name: state.name, expectedGeneration, watch: true }
+                : {
+                    cmd: 'attachExisting',
+                    name: state.name,
+                    expectedGeneration,
+                    cols: size.cols,
+                    rows: size.rows,
+                    paused
+                  },
               applyReplay
             )
           }
@@ -1161,6 +1310,7 @@ export class SessionHostClient {
           state.appliedAttached = false
           state.appliedPaused = false
           state.appliedSize = null
+          state.appliedWatch = false
           const failure = asError(error)
           for (const entry of state.entries.values()) {
             try {
@@ -1198,8 +1348,25 @@ export class SessionHostClient {
       if (this.sessions.get(state.name) !== state) return
     }
 
+    // The last voting subscriber left a watcher behind: withdraw this connection's claim, so a
+    // viewer never keeps the owner's old size pinned (the host keeps the pty at the size it has).
+    // A claim-carrying attach is the only way back up, so a watch-mode attachment never resizes.
+    if (this.watchOnly(state) && !state.appliedWatch) {
+      await this.requestOnSocket(socket, {
+        cmd: 'attachExisting',
+        name: state.name,
+        expectedGeneration: state.generation ?? this.sessionGenerations.get(state.name),
+        watch: true
+      })
+      if (this.socket !== socket) return
+      // The host returned any pause this connection held along with the claim.
+      state.appliedWatch = true
+      state.appliedSize = null
+      state.appliedPaused = false
+      if (this.sessions.get(state.name) !== state) return
+    }
     const desiredSize = this.effectiveSize(state)
-    if (!sameSize(state.appliedSize, desiredSize)) {
+    if (!state.appliedWatch && !sameSize(state.appliedSize, desiredSize)) {
       await this.requestOnSocket(socket, {
         cmd: 'resize',
         name: state.name,
@@ -1289,13 +1456,44 @@ export class SessionHostClient {
     )
   }
 
+  /**
+   * A live link / relay viewer's READ-ONLY attach (`watch-attach`): never spawns, never claims a size,
+   * never pauses, never types. Rejects with `SessionHostWatchUnsupportedError` — before anything is
+   * registered — when the connected host did not advertise the feature (a long-lived host from an
+   * older build), so the caller can refuse the viewer instead of casting a size vote for it.
+   */
+  async attachWatch(name: string, sub: SessionSubscriber): Promise<AttachResult> {
+    await this.ensureConnected()
+    if (this.negotiatedProtocolVersion !== 2 || !this.hostFeatures.has('watch-attach')) {
+      throw new SessionHostWatchUnsupportedError(name)
+    }
+    return this.attachSubscriber(name, sub, { kind: 'existing', scrollback: 1 }, null)
+  }
+
+  /** Does the CURRENT connection speak `feature`? Connects first (a probe of a host that is not
+   *  running yet would otherwise answer from a stale, empty set). False on any connect failure. */
+  async supportsFeature(feature: SessionHostFeature): Promise<boolean> {
+    try {
+      await this.ensureConnected()
+    } catch {
+      return false
+    }
+    return this.hostFeatures.has(feature)
+  }
+
+  /** The negotiated answer for `feature` WITHOUT connecting: undefined while there is no connection. */
+  connectedFeature(feature: SessionHostFeature): boolean | undefined {
+    return this.socket ? this.hostFeatures.has(feature) : undefined
+  }
+
   private async attachSubscriber(
     name: string,
     sub: SessionSubscriber,
     requestKind:
       | { kind: 'create'; spawn: SessionHostSpawnOptions; scrollback: number }
       | { kind: 'existing'; scrollback: number },
-    initialSize: TerminalSize
+    /** Null: a watcher (`attachWatch`), which casts no size claim at all. */
+    initialSize: TerminalSize | null
   ): Promise<AttachResult> {
     if (this.killReplayBarriers.has(name)) {
       throw new Error(
@@ -1314,11 +1512,13 @@ export class SessionHostClient {
       sub,
       ...(requestKind.kind === 'create' ? { spawn: requestKind.spawn } : {}),
       scrollback: requestKind.scrollback,
-      phase: 'attaching'
+      phase: 'attaching',
+      ...(initialSize === null ? { watch: true } : {})
     }
     state.entries.set(sub, entry)
     // A new viewer is the most recently active one, exactly as a freshly attached tmux client is.
-    state.sizeClaims.set(sub, { ...initialSize, recency: ++this.claimClock })
+    // A watcher is not a viewer in that sense: it never votes.
+    if (initialSize) state.sizeClaims.set(sub, { ...initialSize, recency: ++this.claimClock })
 
     return this.enqueueState(state, async () => {
       if (this.sessions.get(name) !== state || state.entries.get(sub) !== entry) {
@@ -1342,6 +1542,12 @@ export class SessionHostClient {
         }
         const expectedGeneration = state.generation ?? this.sessionGenerations.get(name)
         const replacementToken = useWarmOnly ? undefined : this.replacementTokens.get(name)
+        // Nobody local votes (a watcher alone, or a watcher joining other watchers): attach without
+        // a claim. A watcher joining an owner rides the owner's claim like any co-attach.
+        const watchAttach = useWarmOnly && this.watchOnly(state)
+        if (entry.watch && !watchAttach && !this.hasAttachedEntry(state) && state.sizeClaims.size === 0) {
+          throw new SessionHostWatchUnsupportedError(name)
+        }
         state.preAckEntries.add(entry)
         let response: AttachResult | undefined
         const attempts = replacementToken ? 2 : 1
@@ -1356,14 +1562,21 @@ export class SessionHostClient {
                     scrollback: 1,
                     paused
                   })
-                : await this.request<AttachResult>({
-                    cmd: 'attachExisting',
-                    name,
-                    expectedGeneration,
-                    cols: size.cols,
-                    rows: size.rows,
-                    paused
-                  })
+                : watchAttach
+                  ? await this.request<AttachResult>({
+                      cmd: 'attachExisting',
+                      name,
+                      expectedGeneration,
+                      watch: true
+                    })
+                  : await this.request<AttachResult>({
+                      cmd: 'attachExisting',
+                      name,
+                      expectedGeneration,
+                      cols: size.cols,
+                      rows: size.rows,
+                      paused
+                    })
               : await this.request<AttachResult>({
                   cmd: 'attach',
                   name,
@@ -1426,14 +1639,15 @@ export class SessionHostClient {
         if (!socket) throw new Error('session-host: not connected')
         if (this.sessions.get(name) === state && state.entries.get(sub) === entry) {
           entry.phase = 'attached'
-          this.applyAttachment(state, socket, paused, size)
+          this.applyAttachment(state, socket, watchAttach ? false : paused, watchAttach ? null : size)
         } else {
           // The attach reached the host before its owner retired. Remember the confirmed
           // membership on the retired state so its ordered teardown can return pause + detach.
           state.appliedSocket = socket
           state.appliedAttached = true
-          state.appliedPaused = paused
-          state.appliedSize = size
+          state.appliedPaused = watchAttach ? false : paused
+          state.appliedSize = watchAttach ? null : size
+          state.appliedWatch = watchAttach
         }
         if (this.sessions.get(name) !== state || state.entries.get(sub) !== entry) {
           // If another local subscriber remains, this attach also restored its socket membership;
@@ -1542,6 +1756,8 @@ export class SessionHostClient {
     const state = this.sessions.get(name)
     const entry = state?.entries.get(sub)
     if (!state || !entry) return
+    // A watcher is read-only: its xterm's automatic answers (and anything else) never reach the pane.
+    if (entry.watch) return
     // Typing makes a viewer the active one, as it does a tmux client. An emulator's automatic
     // answer to a query does not: every attached xterm answers, and counting those would hand the
     // session to whichever viewer answered last.
@@ -1572,6 +1788,11 @@ export class SessionHostClient {
   ): void {
     const state = this.sessions.get(name)
     if (!state || !state.entries.has(sub)) return
+    // A watcher never votes; it is only told the size the pty runs at.
+    if (state.entries.get(sub)?.watch) {
+      this.notifySize(state)
+      return
+    }
     const previous = state.sizeClaims.get(sub) ?? { cols: 80, rows: 24, recency: 0 }
     const next: SizeClaim = {
       cols: normalizeDimension(cols, previous.cols),
@@ -1591,6 +1812,8 @@ export class SessionHostClient {
   pause(name: string, sub: SessionSubscriber): void {
     const state = this.sessions.get(name)
     if (!state || !state.entries.has(sub) || state.pauseOwners.has(sub)) return
+    // A viewer never holds a pause ticket on the shared pty: the owner must not slow down for it.
+    if (state.entries.get(sub)?.watch) return
     const wasFlowing = state.pauseOwners.size === 0
     state.pauseOwners.add(sub)
     if (wasFlowing) this.queueReconcile(state)
@@ -1645,9 +1868,86 @@ export class SessionHostClient {
     } catch { return false }
   }
 
+  /** `terminateOwnerV1`. `'unsupported'` = the live host predates the verb (it answered `unknown
+   *  command`) — distinct from `false`, so the UI can say "restart the app" instead of "busy". Any
+   *  other failure, a lost reply included, is `false`: the caller then refuses to recycle. Never
+   *  retried — a second kill aimed at a re-proven owner is the host's job, not a resend's. */
+  async terminateOwner(name: string, expected: PaneOwner): Promise<boolean | 'unsupported'> {
+    try {
+      const result = await this.request<{ terminated?: unknown } | undefined>(
+        { cmd: 'terminateOwnerV1', name, expected },
+        undefined,
+        undefined,
+        TERMINATE_OWNER_REQUEST_TIMEOUT_MS
+      )
+      return result?.terminated === true
+    } catch (error) {
+      return error instanceof SessionHostRequestRejectedError && error.message === 'unknown command'
+        ? 'unsupported'
+        : false
+    }
+  }
+
+  /** `writeDetachedV1`: raw bytes into a session this process holds no attachment on. True only on
+   *  the host's acknowledgement. NEVER retried and never re-routed through `sendKeys`: a lost reply
+   *  may still have been typed, and an older host's refusal never reached the pty at all — either
+   *  way a second attempt risks typing the input twice or in a different shape. */
+  async writeDetached(name: string, data: string): Promise<boolean> {
+    try {
+      await this.request<unknown>({ cmd: 'writeDetachedV1', name, data })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** The pane app's mouse-tracking protocol, or null when unknown: no such session, or an older
+   *  live host that predates `paneModesV1` (never replaced to learn it). Callers treat null as
+   *  "the app did not ask for the mouse". */
+  async mouseTrackingMode(name: string): Promise<PaneModesResult['mouseTracking'] | null> {
+    try {
+      const r = await this.request<PaneModesResult | null>({ cmd: 'paneModesV1', name })
+      const m = r?.mouseTracking
+      return m === 'none' || m === 'x10' || m === 'vt200' || m === 'drag' || m === 'any' ? m : null
+    } catch {
+      return null
+    }
+  }
+
   async capture(name: string, full: boolean): Promise<string> {
     const result = await this.request<CaptureResult>({ cmd: 'capture', name, full })
     return result.text
+  }
+
+  /** A live link's keyframe (`captureVisible` feature). Null when the host did not advertise the
+   *  feature (never sent then), the session is gone, or anything failed — a keyframe is an
+   *  optimisation, and "no capture" must stay distinguishable from an empty screen. */
+  async captureVisible(name: string): Promise<CaptureVisibleResult | null> {
+    try {
+      if (!(await this.supportsFeature('captureVisible'))) return null
+      const r = await this.request<CaptureVisibleResult>({ cmd: 'captureVisible', name })
+      if (!r || typeof r.screen !== 'string' || typeof r.altScreen !== 'boolean') return null
+      const c = r.cursor
+      const cursor =
+        c && Number.isInteger(c.x) && Number.isInteger(c.y) && c.x >= 0 && c.y >= 0
+          ? { x: c.x, y: c.y }
+          : null
+      return { screen: r.screen, cursor, altScreen: r.altScreen }
+    } catch {
+      return null
+    }
+  }
+
+  /** The cwd the pane last REPORTED (`paneCwd` feature); null without the feature, before any
+   *  report, or on any failure. */
+  async paneCwd(name: string): Promise<string | null> {
+    try {
+      if (!(await this.supportsFeature('paneCwd'))) return null
+      const r = await this.request<PaneCwdResult>({ cmd: 'paneCwd', name })
+      return typeof r?.cwd === 'string' && r.cwd ? r.cwd : null
+    } catch {
+      return null
+    }
   }
 
   /** Execute already-rendered trusted input through the persistent generation's exactly-once
@@ -1702,6 +2002,10 @@ export class SessionHostClient {
       reserveReplacement?: boolean
       requireV2?: boolean
       expectedAbsent?: boolean
+      /** The generation the caller OBSERVED (a `listSessionsDetailed` row). Wins over anything
+       *  this client remembers, so a kill planned from a listing can never end a same-name
+       *  successor created after it — the host answers "already gone" instead. */
+      expectedGeneration?: string
     } = {}
   ): Promise<void> {
     const reserveReplacement = options.reserveReplacement === true
@@ -1724,6 +2028,15 @@ export class SessionHostClient {
           `expectedAbsent=${String(knownIdentity.expectedAbsent)}`
       )
     }
+    // A kill planned from a LISTING (the session reaper) is for a session nobody in this process is
+    // watching. If this client holds attachments for the name now, the plan is stale: refuse rather
+    // than end — or, for a same-name successor, silently strand — a terminal someone just opened.
+    if (options.expectedGeneration !== undefined && !knownIdentity) {
+      const local = this.sessions.get(name)
+      if (local && (local.entries.size > 0 || local.preAckEntries.size > 0)) {
+        throw new Error(`session-host: '${name}' is attached in this process; observed-generation kill refused`)
+      }
+    }
     const active = this.killsInFlight.get(name)
     if (active) return active
 
@@ -1733,10 +2046,12 @@ export class SessionHostClient {
     const state = this.sessions.get(name)
     const identity: KillOperationIdentity = knownIdentity ?? {
       operationId: randomUUID(),
-      expectedGeneration: state?.generation ?? this.sessionGenerations.get(name),
+      expectedGeneration:
+        options.expectedGeneration ?? state?.generation ?? this.sessionGenerations.get(name),
       reserveReplacement,
       requireV2,
-      expectedAbsent
+      expectedAbsent,
+      observed: options.expectedGeneration !== undefined
     }
     this.killOperations.set(name, identity)
     let operation!: Promise<void>
@@ -1793,7 +2108,8 @@ export class SessionHostClient {
       identity.operationId,
       identity.expectedGeneration,
       identity.reserveReplacement,
-      identity.requireV2
+      identity.requireV2,
+      identity.observed === true
     )
   }
 
@@ -1802,7 +2118,8 @@ export class SessionHostClient {
     operationId: string,
     expectedGeneration: string | undefined,
     reserveReplacement: boolean,
-    requireV2: boolean
+    requireV2: boolean,
+    observed = false
   ): Promise<void> {
     let lastError = new Error('session-host kill did not run')
     for (let attempt = 0; attempt < KILL_CONFIRMATION_ATTEMPTS; attempt++) {
@@ -1841,8 +2158,17 @@ export class SessionHostClient {
           }
           this.replacementTokens.delete(name)
         }
-        this.clearLocalSessionState(name)
-        this.sessionGenerations.delete(name)
+        // An observed-generation kill whose name gained a local attachment meanwhile must not
+        // clear it: the host answers success for a generation that is already gone, so the live
+        // attachment may be a same-name SUCCESSOR. If it really was the generation just ended,
+        // the host's exit frame retires it through the ordinary exit path instead.
+        const local = this.sessions.get(name)
+        const raced =
+          observed && !!local && (local.entries.size > 0 || local.preAckEntries.size > 0)
+        if (!raced) {
+          this.clearLocalSessionState(name)
+          this.sessionGenerations.delete(name)
+        }
         this.killReplayBarriers.delete(name)
         if (!reserveReplacement && this.killOperations.get(name)?.operationId === operationId) {
           this.killOperations.delete(name)
@@ -1895,6 +2221,7 @@ export class SessionHostClient {
     state.appliedAttached = false
     state.appliedPaused = false
     state.appliedSize = null
+    state.appliedWatch = false
     this.stopReconnectIfIdle()
   }
 
@@ -1912,7 +2239,25 @@ export class SessionHostClient {
     if (identity.kind === 'absent') return { running: false }
     await this.ensureConnected()
     const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' })
-    return { running: true, sessions: result.names, shutdown: this.hostShutdownFeature }
+    return {
+      running: true,
+      sessions: result.names,
+      shutdown: this.hostShutdownFeature,
+      staging: await this.hostStagingFor(identity.state)
+    }
+  }
+
+  /** The published state names a pid and (newer hosts) an image. Classified only when that pid is
+   *  the host this client is connected to: a host replaced between the read and the connect is
+   *  `unknown`, never someone else's answer. Any failure is `unknown`. */
+  private async hostStagingFor(state: { pid: number; exe?: string }): Promise<HostImageStaging> {
+    const classify = this.deps.hostStaging
+    if (!classify || this.hostPid === null || state.pid !== this.hostPid) return 'unknown'
+    try {
+      return await classify({ exe: state.exe, pid: this.hostPid })
+    } catch {
+      return 'unknown'
+    }
   }
 
   /**
@@ -1982,5 +2327,42 @@ export class SessionHostClient {
   async listSessions(): Promise<string[]> {
     const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' })
     return result.names
+  }
+
+  /**
+   * The observability read (see `SessionHostListing`). Like `inspectForUpdate` it never launches a
+   * host when nothing is published — a session reaper, a memory panel or a ports chip asking a
+   * question must not start the process whose sessions it is asking about. Every failure (a
+   * request that threw, a reply without `names`) is `null`, never an empty listing.
+   */
+  async listSessionsDetailed(): Promise<SessionHostListing | null> {
+    try {
+      const connected = !!this.socket && !this.socket.destroyed
+      if (!connected) {
+        const paths = sessionHostPaths(this.deps.userDataDir)
+        const identity = readExistingSessionHostIdentity(paths.statePath, {
+          expectedEndpoint: paths.endpoint,
+          expectedTokenPath: paths.tokenPath
+        })
+        if (identity.kind === 'absent') return { running: false, names: [], sessions: [] }
+        // Published state is not proof of a live host (a killed host, a reboot): connect only to
+        // one that answers. Nothing answering is a FAILED read (null) — never a launch.
+        await this.ensureConnected({ launch: false })
+      }
+      const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' })
+      if (!result || !Array.isArray(result.names) || !result.names.every((n) => typeof n === 'string')) {
+        return null
+      }
+      // Read AFTER the request: `request()` is what establishes the connection on a cold client.
+      const sessions = this.hostFeatures.has('sessionDetails') && Array.isArray(result.sessions)
+        ? validSessionDetails(result.sessions).filter((row) => result.names.includes(row.name))
+        : null
+      const hostPid = this.hostPid
+      return Number.isSafeInteger(hostPid) && (hostPid as number) > 0
+        ? { running: true, names: result.names, sessions, hostPid: hostPid as number }
+        : { running: true, names: result.names, sessions }
+    } catch {
+      return null
+    }
   }
 }

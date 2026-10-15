@@ -5,6 +5,8 @@ import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Switch } from '@renderer/ui/Switch'
 import { Button } from '@renderer/ui/Button'
+import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
+import { notificationsBlockedCopy } from '@renderer/lib/notificationsBlockedCopy'
 import { checkCustomSfx, playSfx } from '@renderer/lib/sfx'
 import { readAsBase64 } from '@renderer/terminal/file-drop'
 import {
@@ -147,6 +149,9 @@ function CustomSoundRow({ kind, volume }: { kind: AlertSoundKind; volume: number
   )
 }
 
+// The OS-refusal repair row's wording follows the OS whose notification center refused us.
+const blockedCopy = notificationsBlockedCopy(isMacPlatform() ? 'mac' : isWindowsPlatform() ? 'windows' : 'other')
+
 export function NotificationsSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const notifyOnClaudeDone = useSettings((s) => s.settings.notifyOnClaudeDone)
   const soundEffects = useSettings((s) => s.settings.soundEffects)
@@ -197,10 +202,12 @@ export function NotificationsSection({ isActive }: { isActive: boolean }): React
         />
         {osBlocked && (
           <div className="mt-2 flex items-center gap-3 text-[13px] text-[color:var(--caution)]">
-            macOS is blocking notifications for this app.
-            <Button onClick={() => void window.nodeTerminal.openNotificationSettings()}>
-              Open System Settings
-            </Button>
+            {blockedCopy.message}
+            {blockedCopy.button && (
+              <Button onClick={() => void window.nodeTerminal.openNotificationSettings()}>
+                {blockedCopy.button}
+              </Button>
+            )}
           </div>
         )}
       </SearchableRow>

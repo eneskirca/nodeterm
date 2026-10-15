@@ -96,9 +96,9 @@
 // keyframe needs a capture STARTED after it asked. A per-viewer sequence makes sure an older result
 // is never painted after a newer one, and streaming resumes only on the newest.
 //
-// NO CAPTURE IS NOT AN EMPTY SCREEN (R36). A backend with no visible-only capture (the Windows session
-// host, a direct Windows pty, a plain shell) and a capture that failed answer `unavailable`, and then
-// NO keyframe is sent: the viewer paints a keyframe as reset + clear, so an empty one would erase what
+// NO CAPTURE IS NOT AN EMPTY SCREEN (R36). A backend with no visible-only capture (a session host from
+// a build before `captureVisible`, a direct Windows pty, a plain shell) and a capture that failed answer
+// `unavailable`, and then NO keyframe is sent: the viewer paints a keyframe as reset + clear, so an empty one would erase what
 // the stream had drawn. The viewer follows the stream instead (at the join it still gets meta), and a
 // throttled viewer resumes streaming without a repaint. Residual: on such a backend a throttled
 // viewer shows gaps until the application repaints them.
@@ -465,7 +465,12 @@ function normalizeCapture(c: unknown): VisibleCapture {
   if ((c as VisibleCapture).unavailable === true) return unavailableCapture()
   const cur = (c as VisibleCapture).cursor
   const ok = !!cur && Number.isInteger(cur.x) && Number.isInteger(cur.y) && cur.x >= 0 && cur.y >= 0
-  return { screen: (c as VisibleCapture).screen, cursor: ok ? { x: cur!.x, y: cur!.y } : null }
+  const alt = (c as VisibleCapture).altScreen
+  return {
+    screen: (c as VisibleCapture).screen,
+    cursor: ok ? { x: cur!.x, y: cur!.y } : null,
+    ...(typeof alt === 'boolean' ? { altScreen: alt } : {})
+  }
 }
 
 export function createLinkHost(record: WatchLinkRecord, deps: LinkHostDeps): LinkHost {
@@ -675,7 +680,8 @@ export function createLinkHost(record: WatchLinkRecord, deps: LinkHostDeps): Lin
         sessionId: sid,
         // A FRESH filter: the capture starts in ground state, and carries OSC 8 links verbatim (R9).
         screen: createStreamFilter().push(cap.screen),
-        altScreen: c.altScreen,
+        // The join's answer (R18), unless the capture knows the stream's buffer itself (session host).
+        altScreen: cap.altScreen ?? c.altScreen,
         ...(cap.cursor ? { cursor: { x: cap.cursor.x, y: cap.cursor.y } } : {})
       }
       if (!send(c, WATCH_EVENT.keyframe, kf)) return

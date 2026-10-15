@@ -49,8 +49,19 @@ function sanitize(data: unknown): CheckResult {
     minSupported: typeof u.minSupported === 'string' ? u.minSupported : null,
     mandatory: u.mandatory === true
   }
+  // Optional release highlights for the update card. Both or neither: notes without the version
+  // they describe could be pinned to the wrong card.
+  if (typeof u.notes === 'string' && u.notes.trim() && typeof u.latestVersion === 'string' && u.latestVersion) {
+    update.notes = u.notes.slice(0, NOTES_MAX)
+    update.latestVersion = u.latestVersion.slice(0, 64)
+  }
   return { messages, update }
 }
+
+const NOTES_MAX = 16 * 1024
+
+/** Test seam: the sanitizer is the whole contract with the feed's shape. */
+export const sanitizeCheckForTest = sanitize
 
 let cache: { at: number; data: CheckResult } | null = null
 

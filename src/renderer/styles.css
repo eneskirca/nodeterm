@@ -5231,6 +5231,56 @@ body,
   background: var(--accent-hover);
 }
 
+/* Preparing / restarting: the click was taken, the button says so and cannot be pressed twice. */
+.update-card__btn:disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.7;
+  cursor: default;
+}
+
+.update-card__btn:disabled:hover {
+  background: var(--accent);
+}
+
+.update-card__spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: nt-spin 0.8s linear infinite;
+  animation-play-state: var(--nt-anim-state);
+}
+
+.update-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.update-card__actions .update-card__link {
+  align-self: center;
+}
+
+.update-card__notes {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: rgba(var(--tint-rgb), 0.7);
+}
+
+.update-card__notes li + li {
+  margin-top: 2px;
+}
+
+.update-card__hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+
 .update-card--pill {
   flex-direction: row;
   align-items: center;
@@ -8987,6 +9037,27 @@ button.group-node__setup:disabled {
 }
 /* The attribution line: quieter than a row, above the foot rule, and rendered in EVERY state — a
    failed sweep is exactly when a user is most likely to be blaming the wrong process. */
+/* The session host's own cost: a quiet, non-interactive line under the rows (Windows only). */
+.sessmem-host {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 2px 0;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.08);
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+.sessmem-host__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessmem-host__mb {
+  font-variant-numeric: tabular-nums;
+}
 .sessmem-panel__attrib {
   margin-top: 10px;
   font-size: 11px;
@@ -9255,6 +9326,14 @@ button.group-node__setup:disabled {
   padding: 0 2px;
 }
 .scm-error__dismiss:hover {
+  color: var(--text-strong);
+}
+/* Neutral variant: "waiting for GitHub sign-in" while Publish retries in-process. */
+.scm-error--info {
+  border-color: rgba(var(--tint-rgb), 0.18);
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.scm-error--info .scm-error__msg {
   color: var(--text-strong);
 }
 
@@ -16986,7 +17065,7 @@ body.focus-mode .dock:hover {
 }
 /* RAM panel secondary text (N5-L2): hard-coded 0.45–0.6 ink measured 3.95–4.22:1 on glass; it takes
    the glass secondary label. */
-:root[data-nt-glass='on'] :is(.sessmem-panel__scope, .sessmem-panel__note, .sessmem-row__project, .sessmem-row__orphan, .sessmem-row__cmd, .sessmem-row__kids, .sessmem-panel__attrib, .sessmem-panel__foot) {
+:root[data-nt-glass='on'] :is(.sessmem-panel__scope, .sessmem-panel__note, .sessmem-row__project, .sessmem-row__orphan, .sessmem-row__cmd, .sessmem-row__kids, .sessmem-panel__attrib, .sessmem-panel__foot, .sessmem-host) {
   color: var(--muted);
 }
 /* The Members picker's hover was a solid accent row with white text (3.65:1) while every other list

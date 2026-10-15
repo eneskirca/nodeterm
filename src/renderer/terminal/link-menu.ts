@@ -15,6 +15,7 @@ import type { MenuItem } from '../components/ContextMenu'
 import type { DownloadRoute } from '../lib/download'
 import { downloadMenuEntries } from '../lib/filesNode'
 import { tidySeparators } from '../lib/tidySeparators'
+import { osRevealLabel, type RevealOs } from '../lib/osReveal'
 import { findExistingForHit, type LinkHit, type PathResolution } from './file-links'
 
 /** What a right-click resolved to, once a path's existence is known. */
@@ -34,6 +35,8 @@ export interface LinkMenuContext {
   route: DownloadRoute
   /** `canUseLocalShell` — this machine's file manager can act on the path. */
   localShell: boolean
+  /** Which OS file manager the reveal row names; defaults to the viewer's. */
+  os?: RevealOs
   /** The Explorer drawer's root. Its reveal only works INSIDE that root (anything else opens the
    *  drawer onto nothing), so the row is withheld outside it. */
   explorerRoot?: string
@@ -139,6 +142,6 @@ export function linkMenuItems(
   items.push({ type: 'separator' })
   items.push({ label: 'Copy path', onClick: () => act.copy(abs) })
   if (rel !== null) items.push({ label: 'Copy relative path', onClick: () => act.copy(rel) })
-  if (ctx.localShell) items.push({ label: 'Reveal in Finder', onClick: () => act.revealInOs(abs) })
+  if (ctx.localShell) items.push({ label: osRevealLabel(ctx.os), onClick: () => act.revealInOs(abs) })
   return tidySeparators(items)
 }

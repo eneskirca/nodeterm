@@ -46,13 +46,16 @@ export interface KeepAwakeOpts {
   enabled(): boolean
   /** True for nodes homed on an SSH project — their work isn't on this machine. */
   isRemoteNode(nodeId: string): boolean
+  /** Power guards (keep-awake-power.ts): false = let the machine sleep even while agents work
+   *  (low battery, critical thermal state). Absent = always allowed. Read LIVE on every reconcile. */
+  powerAllows?(): boolean
   log?(msg: string): void
 }
 
 export interface KeepAwakeTracker {
   /** Fold one NodeStateChange edge (agent-status-mirror). */
   onChange(c: KeepAwakeEdge): void
-  /** Re-evaluate after a settings change (live toggle). */
+  /** Re-evaluate after a settings change (live toggle) or a power-guard change. */
   refresh(): void
   /** Converge to the mirror's authoritative `working` node ids (boot seed + every flush).
    *  Covers every reset the edge stream never reports — loadPersisted restores, the SessionStart
@@ -78,7 +81,7 @@ export function createKeepAwake(opts: KeepAwakeOpts): KeepAwakeTracker {
   let held = false
 
   const reconcile = (): void => {
-    const want = opts.enabled() && working.size > 0
+    const want = working.size > 0 && opts.enabled() && (opts.powerAllows?.() ?? true)
     if (want === held) return
     held = want
     if (want) {

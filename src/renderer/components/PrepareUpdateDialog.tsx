@@ -2,12 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useDialogStack } from './dialog-stack'
-import { MANUAL_UPDATE_STEPS, type UpdatePrepInspection } from '@shared/update-prep'
+import {
+  MANUAL_UPDATE_STEPS,
+  STAGED_UPDATE_STEPS,
+  type UpdatePrepInspection
+} from '@shared/update-prep'
 import { useAgentStatus } from '../state/agentStatus'
 import { agentUpdateExitFn } from '../terminal/agent-restart'
 import { RELEASES_URL } from '../state/pendingUpdate'
 import {
   planUpdatePrep,
+  prepareEntry,
   updatePrepStopSummary,
   type PrepNode,
   type PrepRow,
@@ -23,6 +28,8 @@ import {
 //   3. say plainly what still stops (shells, unreachable agents) and confirm — Cancel is focused;
 //   4. ask the host to end every session and exit (`shutdown`), confirm it is gone, then quit.
 // A host from an older build cannot shut itself down: the dialog shows the manual steps instead.
+// A host running from its STAGED copy (0.4.1+) does not block the installer at all: the dialog then
+// leads with "Quit nodeterm (sessions keep running)", and stopping sessions is the secondary path.
 // There is no path here that kills the host process or ends a session through node deletion.
 
 type Phase =
@@ -63,6 +70,8 @@ function rowLabel(row: PrepRow): string {
 export function PrepareUpdateDialog({ collectNodes, onTravel, onClose }: Props): JSX.Element {
   const [phase, setPhase] = useState<Phase>({ k: 'inspecting' })
   const [openDownload, setOpenDownload] = useState(true)
+  /** The user chose to stop sessions even though the host is staged (U3). */
+  const [stopAnyway, setStopAnyway] = useState(false)
   const busyRef = useRef(false)
   const isTop = useDialogStack()
 
@@ -266,6 +275,43 @@ export function PrepareUpdateDialog({ collectNodes, onTravel, onClose }: Props):
         <>
           <p className="confirm__msg">Could not read the session host: {inspection.error}</p>
           {manualSteps}
+        </>
+      )
+    } else if (prepareEntry(inspection, stopAnyway) === 'quit-keeps-sessions') {
+      const count = inspection.kind === 'host' ? inspection.sessions.length : 0
+      content = (
+        <>
+          <p className="confirm__msg">
+            Your {count} session{count === 1 ? '' : 's'} can keep running through the update: the
+            session host runs from its own copy outside the installation, so it does not block the
+            installer.
+          </p>
+          <ol className="update-prep__list">
+            {STAGED_UPDATE_STEPS.map((s) => (
+              <li key={s}>{s}</li>
+            ))}
+          </ol>
+          <label className="confirm__option">
+            <input
+              type="checkbox"
+              checked={openDownload}
+              onChange={(e) => setOpenDownload(e.target.checked)}
+            />
+            Open the download page after quitting
+          </label>
+        </>
+      )
+      actions = (
+        <>
+          <button className="confirm__btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="confirm__btn" onClick={() => setStopAnyway(true)}>
+            Stop all sessions instead…
+          </button>
+          <button className="confirm__btn primary" autoFocus onClick={quit}>
+            Quit nodeterm (sessions keep running)
+          </button>
         </>
       )
     } else if (plan && plan.blocking.length > 0) {

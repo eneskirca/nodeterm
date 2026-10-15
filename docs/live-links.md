@@ -244,9 +244,14 @@ A keyframe is `PtyManager.captureVisible(sessionId)`: **the visible screen, neve
   what makes it visible-only);
 - **SSH:** the same over the project's ControlMaster (`remoteCaptureVisibleArgs`), again without the
   `-S -200` the existing remote builder always adds; proven under a real `/bin/sh`;
-- **Windows session host and the direct Windows pty: none.** `sessionHostCapture` returns ~200 lines of
-  scrollback, not the visible screen; a visible-only read needs an additive, negotiated session-host
-  command (a follow-up). Never history instead. **A plain shell with no tmux: none.**
+- **Windows session host:** the host's negotiated `captureVisible` (`sessionHostCaptureVisible`) — the
+  visible rows of its headless emulator's ACTIVE buffer, the viewport cursor, and `altScreen` from that
+  buffer (no tmux client sits between the pane and the stream, so the pane's buffer IS the stream's;
+  this is the one route whose capture sets `VisibleCapture.altScreen`, and the link host prefers it over
+  the join's). It keeps the private-mode tail (bracketed paste, application cursor keys, mouse) a
+  mid-stream viewer never saw. A host from a build before the feature answers nothing, so `unavailable`;
+  never the ~200-line scrollback `capture` in its place.
+- **The direct Windows pty: none.** **A plain shell with no tmux: none.**
 - **A Zellij node (the optional local backend, `settings.sessionBackend`): none.** Its Session is marked
   `tmuxBacked` like a tmux one, but there is no tmux session to capture, so `visibleCaptureRoute` routes
   it to none rather than aiming the tmux socket at it. A viewer still co-attaches to a Zellij painter
@@ -911,16 +916,24 @@ carry it to teammates and the canvas authority would write it into the git-share
   untouched. **Availability is
   checked before the Pro gate** (`liveLinkUnavailable` then `requireProOr`), so a Server Edition or relay
   tab never sees an Upgrade dialog; an unavailable row is disabled with its reason, never hidden.
-- **Desktop where local terminals are not tmux** (Windows' session host; tmux switched off or missing;
-  the Zellij backend): there is no watcher client of its own, so a viewer can co-attach only to a
-  terminal this app has OPEN (mounted, or parked) — after a restart, for a background project or an
+- **Windows' session host** has its own read-only client: a join-only create (a watcher, or a hosted-relay
+  viewer) for a node this app does not hold asks the host STRICTLY (`hasSession`; an unanswered probe
+  refuses) and joins through `watch-attach` — an attachment with no geometry claim and no pause ticket,
+  whose writes and resizes the host refuses and which never spawns. It is never indexed as the node's
+  session, so an owner opening the node gets its own typing attachment. A host from an older build
+  lacks the feature: refused (`join-only`), never an ordinary attach that would cast the viewer's size.
+  The create dialog's note follows `tmuxStatus().persistence.watchJoin` (the CONNECTED host's answer).
+  Control typing needs the node open WHEN THE VIEWER JOINS: a viewer that joined through `watch-attach`
+  keeps that read-only attachment (its input route is decided at join, `none`) even after the owner
+  opens the node, until it rejoins (the session ends, or the link reconnects).
+- **Desktop where local terminals are neither tmux nor such a session host** (tmux switched off or
+  missing; the Zellij backend; an older host): there is no watcher client of its own, so a viewer can
+  co-attach only to a terminal this app has OPEN (mounted, or parked) — after a restart, for a background project or an
   offscreen-released node, viewers wait. This is said, never silent (R63): the create dialog states it
   before the link exists (`watchableOnlyWhileOpen`, from the local core's `tmuxStatus().persistence`; an
   SSH project's node is served by the host's tmux and gets no note), and while a viewer's join is
   refused the chip turns amber (`LIVE · 1 waiting`) and its title and the popover say "Viewers are
-  waiting — open this terminal in nodeterm to let them watch." The fix is a session-host watcher join
-  (an additive, negotiated attach-only subscribe with no size vote, beside the visible capture): a
-  follow-up.
+  waiting — open this terminal in nodeterm to let them watch."
 - **The LIVE chip** (`LiveLinkChip`, one component): node header (beside `PresenceChips`), kanban card,
   card modal header, sessions-sidebar row. `● LIVE`, `● LIVE · 2`, `LIVE · 3 · 1 typing` (someone typed
   in the last 4 s; the title names who, quoted), amber `LIVE · offline` (reconnecting), amber `LIVE · 1
@@ -989,8 +1002,8 @@ Found while building it:
   per viewer at a 2.7 MB/s flood (measured), ≤ 10 viewers per link.
 - **Text typed with no escape after a co-attach join lags** until the next escape or the 2 s keyframe
   (R23): the mid-stream filter swallows it by design.
-- **On a backend with no visible capture** (Windows session host, direct Windows pty, plain shell,
-  Zellij) a throttled viewer shows gaps until the app repaints (R36). A Zellij node with no painter held
+- **On a backend with no visible capture** (a session host from an older build, direct Windows pty,
+  plain shell, Zellij) a throttled viewer shows gaps until the app repaints (R36). A Zellij node with no painter held
   in this process (a closed project, after a restart) cannot be watched at all until one is.
 - **A single capture failure on a tmux/SSH backend is treated as "no capture"**: no repaint until the
   next keyframe or the app's redraw. Retrying there would stall the stream for good on the backends that
@@ -1005,9 +1018,10 @@ Found while building it:
   agents included) or a session switch (`C-b (` / `)`) reaches every viewer. It is the owner's own
   action, shown on the owner's own screen too, and the create dialog's warning says so. Following
   `#{client_session}` and treating a switch as a lifecycle event is a possible follow-up.
-- **Windows, and any machine whose local terminals are not tmux:** a link to a terminal that is not
-  open in the app cannot be watched until it is (Surfaces, above). Said, never silent; the session-host
-  watcher join is the follow-up.
+- **Any machine whose local terminals are neither tmux nor a `watch-attach` session host:** a link to a
+  terminal that is not open in the app cannot be watched until it is (Surfaces, above). Said, never
+  silent. On the session host, Control typing still needs the node open at the moment the viewer joins (a
+  viewer already riding a `watch-attach` attachment is not upgraded when the owner opens the node).
 - **A tmux < 3.2 host cannot be watched** (fail closed, "waiting").
 - **After a run whose index was missing, unreadable or corrupt, node-gone waits for the next launch**
   (R44/R54): a link to a node deleted in that run lives until its expiry (≤ 24 h) — an Unlimited link

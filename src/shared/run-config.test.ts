@@ -6,6 +6,7 @@ import {
   describeConfig,
   describeLaunchFile,
   deviceClaims,
+  gateEntriesForPlatform,
   normalizeRunConfig,
   parseEnvFile,
   parseJsonc,
@@ -135,6 +136,40 @@ describe('describeConfig', () => {
       false
     )
     expect(entries[1]).toMatchObject({ kind: 'compound', supported: false, reason: expect.stringMatching(/: B\.$/) })
+  })
+})
+
+describe('gateEntriesForPlatform', () => {
+  const entries = describeLaunchFile(
+    {
+      configs: [
+        cfg({ name: 'Web', type: 'chrome', url: 'http://localhost:3000' }),
+        cfg({ name: 'API', type: 'node', program: 'a.js' }),
+        cfg({ name: 'Attach', type: 'node', request: 'attach' })
+      ],
+      compounds: [
+        { name: 'Pages', configurations: ['Web'] },
+        { name: 'Stack', configurations: ['Web', 'API'] }
+      ]
+    },
+    false
+  )
+  it('is the identity off Windows (same array, untouched entries)', () => {
+    expect(gateEntriesForPlatform(entries, 'darwin')).toBe(entries)
+    expect(gateEntriesForPlatform(entries, 'linux')).toBe(entries)
+  })
+  it('refuses process launches on win32 but keeps browser configs, browser compounds and existing reasons', () => {
+    const gated = gateEntriesForPlatform(entries, 'win32')
+    expect(gated.map((e) => [e.name, e.supported])).toEqual([
+      ['Web', true],
+      ['API', false],
+      ['Attach', false],
+      ['Pages', true],
+      ['Stack', false]
+    ])
+    expect(gated[1].reason).toMatch(/not supported on Windows/)
+    expect(gated[2].reason).toMatch(/attaches/)
+    expect(gated[4].reason).toMatch(/not supported on Windows/)
   })
 })
 

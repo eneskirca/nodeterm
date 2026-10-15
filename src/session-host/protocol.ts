@@ -65,7 +65,9 @@ export type SessionHostRequest =
       name: string
       spawn: SessionHostSpawnOptions
       /** Cap on both the emulator's live scrollback buffer and how much `capture`'s `full: true`
-       *  returns — mirrors `settings.tmuxScrollback` / tmux's own `history-limit`. */
+       *  returns. Clients send `xtermScrollback(settings.tmuxScrollback)` (≤ 10k — the renderer's
+       *  own cap, NOT tmux's history-limit); the host clamps again (`clampEmulatorScrollback`) so
+       *  an older client's raw 50,000 cannot allocate history nobody can scroll to. */
       scrollback: number
       /** Capability established by a confirmed kill. Required to cold-create that reserved name;
        * other authenticated app clients cannot steal the replacement window. */
@@ -87,6 +89,11 @@ export type SessionHostRequest =
       cols?: number
       rows?: number
       paused?: boolean
+      /** `watch-attach` feature only: subscribe this connection WITHOUT a geometry claim (a live
+       * link viewer / relay viewer's read-only view). Carries no cols/rows; never spawns. On a
+       * connection already attached it WITHDRAWS that connection's claim (its last voting
+       * subscriber left). A later claim-carrying attach upgrades it again. */
+      watch?: boolean
     }
   | { id: number; cmd: 'hasSession'; name: string }
   | { id: number; cmd: 'write'; name: string; data: string }
@@ -98,7 +105,24 @@ export type SessionHostRequest =
   | { id: number; cmd: 'messageOwnerV1'; name: string }
   | { id: number; cmd: 'messagePasteReadyV1'; name: string }
   | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
+  /** End the proven agent process tree (`expected`, from `messageOwnerV1`) without touching the
+   *  console root. Result: `TerminateOwnerResult`. Additive like the messaging extension: an older
+   *  live host answers `unknown command`, which the client reports as unsupported. */
+  | { id: number; cmd: 'terminateOwnerV1'; name: string; expected: PaneOwner }
+  /** Raw, verbatim keystroke bytes into a session this connection need NOT be attached to — the
+   *  `tmux send-keys -H` of a released node. No framing, no sanitizing, no Enter. An older host
+   *  answers `unknown command`; the client then fails closed and never falls back to sendKeys. */
+  | { id: number; cmd: 'writeDetachedV1'; name: string; data: string }
   | { id: number; cmd: 'capture'; name: string; full: boolean }
+  /** `captureVisible` feature only: the VISIBLE rows (no history) plus cursor + active buffer — a
+   *  live link's keyframe. Never sent to a host that did not advertise it. */
+  | { id: number; cmd: 'captureVisible'; name: string }
+  /** `paneCwd` feature only: the last cwd the pane REPORTED (OSC 7 / 9;9 / 633), never the spawn
+   *  cwd. */
+  | { id: number; cmd: 'paneCwd'; name: string }
+  /** Additive (the `messageOwnerV1` idiom): an older live host answers `unknown command`, which the
+   *  client reads as "unknown", never as a reason to replace the host. Result: `PaneModesResult`. */
+  | { id: number; cmd: 'paneModesV1'; name: string }
   | {
       id: number
       cmd: 'executeLaunch'
@@ -205,8 +229,21 @@ export interface AttachResult {
   geometry?: { cols: number; rows: number }
 }
 /** Additive, independently negotiated capabilities (see the `hello` request). */
-export type SessionHostFeature = 'geometry' | 'shutdown'
-export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = ['geometry', 'shutdown']
+export type SessionHostFeature =
+  | 'geometry'
+  | 'shutdown'
+  | 'sessionDetails'
+  | 'watch-attach'
+  | 'captureVisible'
+  | 'paneCwd'
+export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = [
+  'geometry',
+  'shutdown',
+  'sessionDetails',
+  'watch-attach',
+  'captureVisible',
+  'paneCwd'
+]
 
 /** `result` of a successful `shutdown`: the session names whose process trees were ended. The
  *  host exits right after this reply is flushed. A shutdown that could not confirm every kill
@@ -238,11 +275,51 @@ export interface ExecuteLaunchResult {
 export interface PaneCommandResult {
   command: string | null
 }
+export interface TerminateOwnerResult {
+  terminated: boolean
+}
+/** `result` of `paneModesV1`; `null` result = no such live session. */
+export interface PaneModesResult {
+  mouseTracking: 'none' | 'x10' | 'vt200' | 'drag' | 'any'
+}
 export interface CaptureResult {
   text: string
 }
+/** `result` of `captureVisible`. `screen` is one `\n`-terminated line per visible row with SGR (the
+ *  shape `capture-pane -p -e` prints), '' for a session that never painted; `cursor` is 0-based and
+ *  viewport-relative; `altScreen` is the emulator's ACTIVE buffer. A missing session is an error. */
+export interface CaptureVisibleResult {
+  screen: string
+  cursor: { x: number; y: number } | null
+  altScreen: boolean
+}
+export interface PaneCwdResult {
+  cwd: string | null
+}
 export interface ListSessionsResult {
   names: string[]
+  /** One row per LIVE generation — present only for a connection that negotiated the
+   *  `sessionDetails` feature, so an older client keeps reading `{names}` byte-for-byte. A name in
+   *  `names` with no row here (a generation already retiring) is simply not described; a consumer
+   *  must never read that absence as "detached" or "no processes". */
+  sessions?: SessionHostSessionDetail[]
+}
+
+/** What the observability surfaces (session reaper, session-memory panel, dev-server ports) need
+ *  to know about one host session — the session host's answer to tmux's `list-windows`/`list-panes`
+ *  formats. All stamps are epoch MILLISECONDS on the host's clock. */
+export interface SessionHostSessionDetail {
+  name: string
+  /** The pty's own child (the pane's shell) — the root of the session's process tree. */
+  pid: number
+  /** Connections subscribed to this generation's output right now (tmux's `session_attached`). */
+  subscribers: number
+  /** When the pty last produced OUTPUT — the reaper's idleness clock (tmux's `window_activity`).
+   *  Starts at `createdMs`; nothing that only LOOKS at the session (attach, capture) moves it. */
+  lastOutputMs: number
+  createdMs: number
+  /** Exact process generation, so a kill planned from this row cannot hit a same-name successor. */
+  generation: string
 }
 
 /**

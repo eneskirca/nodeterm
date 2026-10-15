@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IPC } from '../shared/ipc'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
+import { DEFAULT_SETTINGS } from '../shared/types'
 
 const backend = vi.hoisted(() => ({
   supported: vi.fn(() => true),
@@ -87,6 +88,15 @@ function fakeSessionHostPty(ready = Promise.resolve({ fresh: true })) {
 describe('PtyManager session-host contracts', () => {
   let manager: import('./pty-manager').PtyManager | undefined
   let host: FakePlatform
+  let PtyManagerCtor: typeof import('./pty-manager').PtyManager
+
+  // The first dynamic import of pty-manager is cold and heavy (~5 s on the windows-latest runner).
+  // Paying it inside makeManager() charged it to whichever test ran first, which then hit the
+  // default 5 s test timeout (the #914 size test failed that way twice). Load it once, here, under
+  // a hook timeout sized for a cold import; every test then only constructs.
+  beforeAll(async () => {
+    PtyManagerCtor = (await import('./pty-manager')).PtyManager
+  }, 60_000)
 
   beforeEach(() => {
     host = fakePlatform()
@@ -109,8 +119,7 @@ describe('PtyManager session-host contracts', () => {
   })
 
   async function makeManager() {
-    const { PtyManager } = await import('./pty-manager')
-    manager = new PtyManager()
+    manager = new PtyManagerCtor()
     return manager
   }
 
@@ -238,6 +247,89 @@ describe('PtyManager session-host contracts', () => {
       expect(spawn.shell).toBe(process.env.SHELL || 'bash')
     }
     expect(spawn.args).toEqual([])
+  })
+
+  it('caps the session-host emulator at the renderer scrollback cap, not tmux history-limit', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    for (const [tmuxScrollback, expected] of [
+      [50000, 10000],
+      [2000, 2000],
+      [500, 1000]
+    ] as const) {
+      backend.create.mockClear()
+      const m = new PtyManager({ runtimePlatform: 'win32' })
+      ;(m as unknown as { getSettings: () => unknown }).getSettings = () => ({
+        ...DEFAULT_SETTINGS,
+        tmuxScrollback
+      })
+      m.createDetached(
+        { cols: 80, rows: 24, persistKey: `node-sb-${tmuxScrollback}` },
+        { onData: () => {}, onExit: () => {} }
+      )
+      expect(backend.create).toHaveBeenCalledTimes(1)
+      expect(backend.create.mock.calls[0][2]).toBe(expected)
+      await m.killAll()
+    }
+  })
+
+  it('sends no launch dialect from a POSIX core, so its spawn request is unchanged', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    for (const runtimePlatform of ['darwin', 'linux'] as const) {
+      backend.create.mockClear()
+      const m = new PtyManager({ runtimePlatform })
+      ;(m as unknown as { getSettings: () => unknown }).getSettings = () => ({
+        ...DEFAULT_SETTINGS,
+        defaultShell: 'pwsh'
+      })
+      m.createDetached({ cols: 80, rows: 24, persistKey: `node-${runtimePlatform}` }, { onData: () => {}, onExit: () => {} })
+      const spawn = backend.create.mock.calls[0][1] as Record<string, unknown>
+      expect('launchDialect' in spawn).toBe(false)
+      await m.killAll()
+    }
+  })
+
+  const PS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+
+  it('records the Windows-native dialect at spawn and keeps the HOST-reported one for execute-launch', async () => {
+    const { PtyManager } = await import('./pty-manager')
+    // The host answers with its own record of the generation's parser (a warm attach reports what
+    // the shell WAS spawned as) — that, not the spawn request, is what the launch is encoded for.
+    backend.create.mockImplementation(() =>
+      fakeSessionHostPty(Promise.resolve({ fresh: true, launchDialect: 'cmd' }) as never)
+    )
+    const m = new PtyManager({ runtimePlatform: 'win32' })
+    manager = m
+    ;(m as unknown as { getSettings: () => unknown }).getSettings = () => ({
+      ...DEFAULT_SETTINGS,
+      defaultShell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+    })
+    m.registerIpc()
+    await host.handlers[IPC.ptyCreate](7, { cols: 80, rows: 24, persistKey: 'node-win', agentId: 'claude' })
+    const spawn = backend.create.mock.calls[0][1] as { launchDialect?: string }
+    expect(spawn.launchDialect).toBe('pwsh')
+
+    const execute = vi.fn(async () => ({ status: 'executed' as const }))
+    ;(m as unknown as { launchIntentDepsOverride: Record<string, unknown> }).launchIntentDepsOverride = {
+      customAgents: () => [],
+      sharedIdentityAvailable: async () => false,
+      codexCaps: async () => ({ approvalValues: null, noDaemon: null }),
+      exists: (c: string) => c === 'C:\\Tools\\claude.exe' || c === PS,
+      systemRoot: 'C:\\Windows',
+      execute
+    }
+    // The spawn PATH recorded here is this POSIX test host's; point it at a Windows directory.
+    ;(m as unknown as { sessions: Map<string, { launchPath?: string }> }).sessions.forEach((s) => {
+      s.launchPath = 'C:\\Tools'
+    })
+    const result = await host.handlers[IPC.ptyExecuteLaunch]('node-win', {
+      launchId: '123e4567-e89b-42d3-a456-426614174000',
+      intent: { kind: 'agent', action: 'start', agentId: 'claude', prompt: "it's" }
+    })
+    expect(result).toEqual({ ok: true })
+    // Encoded for `cmd` (the host's word), not `pwsh` (the request): the ASCII-only wrapper line.
+    const plan = (execute.mock.calls[0] as unknown[])[2] as { command: string }
+    expect(plan.command.startsWith(`"${PS}" -NoLogo -NoProfile -EncodedCommand `)).toBe(true)
+    expect(plan.command).not.toContain("it's")
   })
 
   it('fails a create closed, parks racing followers, and publishes only the recovered generation', async () => {
@@ -641,6 +733,31 @@ describe('PtyManager session-host contracts', () => {
     }
     expect(joined.fresh).toBe(false) // it did join the live session…
     expect(joined.coAttachAltScreen).toBeUndefined() // …but there is no tmux alt screen to restore
+    expect(joined.tmuxClient).toBeUndefined()
+  })
+
+  it('never tells a session-host joiner to enable tmux mouse tracking (no tmux runs `mouse on` there)', async () => {
+    // Was gated on `persistKey`, which a session-host session carries: the joiner (card modal,
+    // reloaded node, teammate) entered ?1000/?1002/?1006 tracking with no tmux behind it, so the
+    // wheel and drags went to the shell as SGR reports instead of scrolling and selecting.
+    backend.create.mockReturnValue(fakeSessionHostPty())
+    const m = await makeManager()
+    m.registerIpc()
+    const create = host.handlers[IPC.ptyCreate]
+    const options = { cols: 80, rows: 24, persistKey: 'node-mouse' }
+
+    await create(7, options)
+    const joined = (await create(8, options)) as {
+      fresh: boolean
+      persistent?: boolean
+      coAttachMouse?: boolean
+      coAttachAltScreen?: boolean
+      tmuxClient?: boolean
+    }
+    expect(joined.fresh).toBe(false)
+    expect(joined.persistent).toBe(true) // still a session that outlives its clients…
+    expect(joined.coAttachMouse).toBeUndefined() // …but with no tmux mouse to turn on
+    expect(joined.coAttachAltScreen).toBeUndefined()
     expect(joined.tmuxClient).toBeUndefined()
   })
 

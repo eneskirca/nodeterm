@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { isAgentPane } from '../shared/agents/pane-owner-predicate'
 import {
+  readWindowsConsoleOwner,
   scriptCommandName,
   windowsConsoleOwner,
   windowsConsoleProbeScript,
@@ -100,5 +101,54 @@ describe('Windows console agent identity', () => {
   it('never interpolates a non-integer process identifier into PowerShell', () => {
     expect(() => windowsConsoleProbeScript(NaN)).toThrow()
     expect(() => windowsConsoleProbeScript(-1)).toThrow()
+  })
+})
+
+describe('readWindowsConsoleOwner through the probe worker', () => {
+  const real = process.platform
+  const setPlatform = (value: string): void => {
+    Object.defineProperty(process, 'platform', { value, configurable: true })
+  }
+  afterEach(() => setPlatform(real))
+
+  const snapshot = {
+    console: [10, 20],
+    processes: [root, agent]
+  }
+
+  it('answers from the worker snapshot', async () => {
+    setPlatform('win32')
+    const asked: unknown[] = []
+    const owner = await readWindowsConsoleOwner(10, 'gen-1', {
+      request: async (req) => {
+        asked.push(req)
+        return { kind: 'ok', result: snapshot }
+      }
+    })
+    expect(asked).toEqual([{ op: 'owner', pid: 10 }])
+    expect(owner?.command).toBe('opencode')
+  })
+
+  it('a probe the worker reports as failed, or a non-snapshot result, is null', async () => {
+    setPlatform('win32')
+    await expect(readWindowsConsoleOwner(10, 'gen-1', { request: async () => ({ kind: 'failed' }) })).resolves.toBeNull()
+    await expect(
+      readWindowsConsoleOwner(10, 'gen-1', { request: async () => ({ kind: 'ok', result: { console: 'x' } }) })
+    ).resolves.toBeNull()
+  })
+
+  it('an invalid pid is refused before the worker is asked; off Windows nothing runs', async () => {
+    setPlatform('win32')
+    let asked = 0
+    const worker = {
+      request: async () => {
+        asked++
+        return { kind: 'failed' as const }
+      }
+    }
+    await expect(readWindowsConsoleOwner(-1, 'gen-1', worker)).rejects.toThrow()
+    setPlatform('linux')
+    await expect(readWindowsConsoleOwner(10, 'gen-1', worker)).resolves.toBeNull()
+    expect(asked).toBe(0)
   })
 })

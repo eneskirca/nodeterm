@@ -149,17 +149,70 @@ interface Plan {
   bin: string
   args: string[]
   stdin: string | null
+  /** Removes what the plan created ({promptFile}'s temp dir); call once the agent has exited. */
+  cleanup?: () => void
 }
 
-function planAgent(settings: Settings, prompt: string): Plan | { error: string } {
+/** CreateProcess caps the whole command line at 32,767 UTF-16 units; keep headroom for quoting. */
+const WIN_CMDLINE_MAX = 32_000
+
+/** A Windows command line's length for `bin args…` as libuv quotes it: each element wrapped in
+ *  quotes, every `"` and `\` possibly escaped — an upper bound, which is what a refusal needs. */
+function winCommandLineLength(bin: string, args: string[]): number {
+  const quoted = (a: string) => a.length + 3 + (a.match(/["\\]/g)?.length ?? 0)
+  return [bin, ...args].reduce((n, a) => n + quoted(a), 0)
+}
+
+/** Why a `{prompt}` plan cannot work on Windows — said up front, instead of the spawn failing with
+ *  "Cannot safely execute Windows script" or a raw ENAMETOOLONG. */
+export const WINDOWS_INLINE_PROMPT_ERROR =
+  'On Windows this command cannot receive a multi-line prompt as an argument (npm .cmd shim / command-line length limit). Remove {prompt} to send it on stdin, or use {promptFile}.'
+
+export interface PlanAgentOptions {
+  /** The platform to plan for (default `os.platform()`). */
+  platform?: NodeJS.Platform
+  /** Where {promptFile}'s private temp dir is made (default `os.tmpdir()`). */
+  tmpDir?: string
+}
+
+/** Exported for tests only. */
+export function planAgent(settings: Settings, prompt: string, opts: PlanAgentOptions = {}): Plan | { error: string } {
+  const platform = opts.platform ?? os.platform()
   if (settings.commitAgent === 'custom') {
     const tokens = tokenize(settings.commitAgentCommand)
     if (tokens.length === 0) return { error: 'No custom commit command set (Settings → Commit messages).' }
     const bin = resolveBinary(tokens[0])
     if (!bin) return { error: `Command "${tokens[0]}" not found.` }
     const rest = tokens.slice(1)
+    const inlineRefused = (args: string[]): boolean =>
+      platform === 'win32' &&
+      rest.includes('{prompt}') &&
+      (directExecutableInvocation(bin, args, { platform }) === null || winCommandLineLength(bin, args) > WIN_CMDLINE_MAX)
+    if (rest.includes('{promptFile}')) {
+      // The prompt as a FILE PATH: no argv quoting, no shim line-break refusal, no length limit —
+      // the one inline form that works for every CLI on every platform. A private dir per run
+      // (mkdtemp is 0700 on POSIX; Windows' per-user %TEMP% is already private), removed by
+      // `cleanup` after the agent exits.
+      const dir = fs.mkdtempSync(path.join(opts.tmpDir ?? os.tmpdir(), 'nt-prompt-'))
+      const file = path.join(dir, 'prompt.txt')
+      try {
+        fs.writeFileSync(file, prompt, { mode: 0o600 })
+      } catch (e) {
+        fs.rmSync(dir, { recursive: true, force: true })
+        return { error: `Could not write the prompt file: ${(e as Error).message}` }
+      }
+      const cleanup = () => fs.rmSync(dir, { recursive: true, force: true })
+      const args = rest.map((t) => (t === '{promptFile}' ? file : t === '{prompt}' ? prompt : t))
+      if (inlineRefused(args)) {
+        cleanup()
+        return { error: WINDOWS_INLINE_PROMPT_ERROR }
+      }
+      return { bin, args, stdin: null, cleanup }
+    }
     if (rest.includes('{prompt}')) {
-      return { bin, args: rest.map((t) => (t === '{prompt}' ? prompt : t)), stdin: null }
+      const args = rest.map((t) => (t === '{prompt}' ? prompt : t))
+      if (inlineRefused(args)) return { error: WINDOWS_INLINE_PROMPT_ERROR }
+      return { bin, args, stdin: null }
     }
     return { bin, args: rest, stdin: prompt }
   }
@@ -323,7 +376,12 @@ export async function runAgent(
   if ('error' in plan) return { ok: false, message: plan.error }
 
   const spawnCwd = localAgentCwd(cwd, !!resolveGitRemote(cwd), os.homedir())
-  const res = await spawnAgent(plan.bin, plan.args, spawnCwd, plan.stdin, env)
+  let res: Awaited<ReturnType<typeof spawnAgent>>
+  try {
+    res = await spawnAgent(plan.bin, plan.args, spawnCwd, plan.stdin, env)
+  } finally {
+    plan.cleanup?.()
+  }
   const message = cleanMessage(res.stdout)
   // A nonzero exit is a failure even when stdout has text: that text is the CLI's error message,
   // never an answer. Same for a known error line on a zero exit.

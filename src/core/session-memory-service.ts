@@ -7,7 +7,8 @@
 import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import type { MemInfo, SessionMemoryQuery, SessionMemoryReport } from '../shared/types'
-import { collectSessionMemory, readMemInfo } from './session-memory'
+import { collectSessionHostMemory, collectSessionMemory, readMemInfo, type ProcEntry } from './session-memory'
+import type { SessionHostListing } from './session-host-client'
 import { fetchRemoteSessionMemory, type RemoteSessionMemoryRunner } from './session-memory-remote'
 
 export interface SessionMemoryServiceOptions {
@@ -15,6 +16,15 @@ export interface SessionMemoryServiceOptions {
   tmuxBin: () => string | null
   /** Live local sessions the tmux sweep cannot measure (Zellij-backed; PtyManager answers). */
   unmeasuredSessions?: () => Promise<number | null>
+  /**
+   * The session host's listing (`PtyManager.sessionHostListing()`), answering `undefined` when the
+   * session host is not this machine's backend — then nothing below changes. When it IS (Windows),
+   * its sessions are measured by `collectSessionHostMemory`; see `mergeLocalLegs` for how that leg
+   * and the tmux one combine.
+   */
+  sessionHost?: () => Promise<SessionHostListing | null> | undefined
+  /** Process-table override for the session-host leg (tests). */
+  sessionHostTable?: () => Promise<ProcEntry[] | null>
   /** Host RAM reader, injectable for tests. Defaults to the real `/proc/meminfo` read. */
   readMem?: () => MemInfo | null
   /**
@@ -65,6 +75,29 @@ export function sshScopePredicate(sources: SshScopeSources): (projectId: string)
 
 const EMPTY = (): SessionMemoryReport => ({ ok: false, rows: [], mem: null })
 
+/**
+ * Combine this machine's two sweeps (tmux and the session host). A leg that ANSWERED is never
+ * overridden by one that failed: `ok` is false only when neither answered, because then nobody
+ * looked. Rows are concatenated and re-sorted by total, the order every single leg already uses.
+ * A failed leg's sessions are invisible to the merged report, which is the same honest gap a
+ * single failed tmux socket already leaves.
+ */
+export function mergeLocalLegs(a: SessionMemoryReport, b: SessionMemoryReport): SessionMemoryReport {
+  if (!a.ok && !b.ok) return { ok: false, rows: [], mem: a.mem ?? b.mem }
+  const answered = [a, b].filter((r) => r.ok)
+  const rows = answered.flatMap((r) => r.rows).sort((x, y) => y.totalMb - x.totalMb)
+  const out: SessionMemoryReport = { ok: true, rows, mem: a.mem ?? b.mem }
+  const counts = answered.map((r) => (r.unmeasured === undefined ? 0 : r.unmeasured))
+  const unmeasured = counts.some((n) => n === null) ? null : (counts as number[]).reduce((x, y) => x + y, 0)
+  if (unmeasured !== 0) out.unmeasured = unmeasured
+  const backend = answered.find((r) => r.unmeasuredBackend)?.unmeasuredBackend
+  if (backend && unmeasured !== 0) out.unmeasuredBackend = backend
+  // Only the session-host leg ever carries it; a failed leg's is never adopted.
+  const host = answered.find((r) => r.host)?.host
+  if (host) out.host = host
+  return out
+}
+
 export function startSessionMemoryService(opts: SessionMemoryServiceOptions): { dispose(): void } {
   /**
    * Two independent sources say "this scope is remote", and EITHER is enough:
@@ -101,6 +134,24 @@ export function startSessionMemoryService(opts: SessionMemoryServiceOptions): { 
     return p
   }
 
+  /** The session-host leg, plus the tmux leg only when a tmux binary also exists (a no-tmux
+   *  machine's tmux sweep is a guaranteed `ok:false` that must not be what the panel reports). */
+  const collectLocalWithSessionHost = async (
+    listing: Promise<SessionHostListing | null>
+  ): Promise<SessionMemoryReport> => {
+    const hostLeg = collectSessionHostMemory({
+      list: () => listing,
+      readMem: opts.readMem,
+      ...(opts.sessionHostTable ? { readTable: opts.sessionHostTable } : {})
+    })
+    if (!opts.tmuxBin()) return hostLeg
+    const [tmuxLeg, host] = await Promise.all([
+      collectSessionMemory({ tmuxBin: opts.tmuxBin, readMem: opts.readMem }),
+      hostLeg
+    ])
+    return mergeLocalLegs(tmuxLeg, host)
+  }
+
   platform().handle(
     IPC.sessionMemory,
     async (q: SessionMemoryQuery = {}): Promise<SessionMemoryReport> => {
@@ -112,11 +163,17 @@ export function startSessionMemoryService(opts: SessionMemoryServiceOptions): { 
         if (!run || !q.projectId) return EMPTY()
         return readRemote(q.projectId, run)
       }
+      const hostListing = opts.sessionHost?.()
       const [report, unmeasured] = await Promise.all([
-        collectSessionMemory({ tmuxBin: opts.tmuxBin, readMem: opts.readMem }),
+        hostListing === undefined
+          ? collectSessionMemory({ tmuxBin: opts.tmuxBin, readMem: opts.readMem })
+          : collectLocalWithSessionHost(hostListing),
         opts.unmeasuredSessions ? opts.unmeasuredSessions().catch(() => null) : Promise.resolve(0)
       ])
-      return unmeasured === 0 ? report : { ...report, unmeasured }
+      if (unmeasured === 0) return report
+      // Zellij sessions are now part of the count, so a session-host-only label would misname them.
+      const { unmeasuredBackend: _label, ...rest } = report
+      return { ...rest, unmeasured: addUnmeasured(report.unmeasured, unmeasured) }
     }
   )
 
@@ -135,4 +192,10 @@ export function startSessionMemoryService(opts: SessionMemoryServiceOptions): { 
   // only unsettled promises). `dispose` exists so a shell can treat this like the other services it
   // starts.
   return { dispose: (): void => {} }
+}
+
+/** Zellij's count on top of whatever a leg already reported unmeasured; unknown stays unknown. */
+function addUnmeasured(already: number | null | undefined, zellij: number | null): number | null {
+  if (zellij === null || already === null) return null
+  return (already ?? 0) + zellij
 }

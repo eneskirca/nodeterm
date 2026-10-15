@@ -3,6 +3,7 @@ import {
   isDangerousWorktreeRemovalPath,
   decideMergeStrategy,
   isValidGitRef,
+  worktreePathKey,
   type WorktreeListResult
 } from './worktree'
 
@@ -234,7 +235,7 @@ export async function worktreeRemove(
   // terminal's tmux session and rewrite their persisted cwds while the directory is still there.
   // Report the failure; a removal the user can retry beats a removal that destroys the wrong thing.
   if (!listed.ok) return UNREADABLE(repoPath)
-  const entry = listed.entries.find((e) => e.path.replace(/\/+$/, '') === wtPath.replace(/\/+$/, ''))
+  const entry = listed.entries.find((e) => worktreePathKey(e.path) === worktreePathKey(wtPath))
   if (!entry) {
     // git answered, and it does not know this path. Only the DIRECTORY's absence proves the
     // worktree is gone: a path git does not list but that still EXISTS is a binding pointing

@@ -17,6 +17,8 @@
  * name is duplicated as a plain string constant below.
  */
 
+import { micErrorMessage, micPlatform, type MicPlatform } from './micPermission'
+
 /** Must match `PCM_WORKLET_NAME` in `./pcm-worklet.ts` (not imported — see file header). */
 const WORKLET_PROCESSOR_NAME = 'pcm-capture'
 
@@ -24,8 +26,6 @@ const CAPTURE_SAMPLE_RATE = 16000
 /** Buffer size for the `ScriptProcessorNode` fallback; 4096 frames @ 16 kHz ≈ 256 ms per chunk. */
 const SCRIPT_PROCESSOR_BUFFER_SIZE = 4096
 
-export const MIC_PERMISSION_DENIED_MESSAGE =
-  'Microphone access was denied — allow it in System Settings (or your browser site settings) and try again.'
 
 /** Concatenates PCM chunks, in order, into one buffer. Pure — no side effects. */
 export function concatChunks(chunks: Float32Array[]): Float32Array {
@@ -55,6 +55,9 @@ function rms(chunk: Float32Array): number {
  * earlier `start()` was still opening the microphone (see `generation`).
  */
 export class PcmCapture {
+  /** Which platform's denial copy to show; injectable so tests can pin each one. */
+  constructor(private readonly platform: () => MicPlatform = micPlatform) {}
+
   private chunks: Float32Array[] = []
   private lastChunk: Float32Array = new Float32Array(0)
   private running = false
@@ -157,9 +160,10 @@ export class PcmCapture {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
       })
     } catch (err) {
-      if (err instanceof Error && err.name === 'NotAllowedError') {
-        throw new Error(MIC_PERMISSION_DENIED_MESSAGE)
-      }
+      // Denied / in use / missing → copy that names the setting to change (per platform: the
+      // Windows privacy toggle, macOS System Settings, or the browser's site settings).
+      const readable = micErrorMessage(err, this.platform())
+      if (readable) throw new Error(readable)
       throw err
     }
   }

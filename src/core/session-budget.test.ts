@@ -654,3 +654,130 @@ describe('sessionBudgetConfig with fractional env values', () => {
     }
   })
 })
+
+describe('createSessionReaper — session-host leg (no tmux, Windows)', () => {
+  const base = {
+    readMem: () => ({ availableMb: 100, totalMb: 64_000 }), // under the watermark: pressure
+    env: {} as NodeJS.ProcessEnv,
+    nowSec: () => NOW,
+    log: () => {}
+  }
+  const hostRow = (name: string, clients: number, idleH: number): SessionInfo => ({
+    name,
+    clients,
+    activitySec: NOW - idleH * 3600,
+    outputSec: NOW - idleH * 3600
+  })
+  const fakeHost = (listings: Array<SessionInfo[] | null>) => {
+    const killed: string[] = []
+    let call = 0
+    return {
+      killed,
+      backend: {
+        list: async () => listings[Math.min(call++, listings.length - 1)],
+        kill: async (name: string) => {
+          killed.push(name)
+          return true
+        }
+      }
+    }
+  }
+
+  it('reaps detached, silent sessions past the grace window and spares attached ones', async () => {
+    const rows = [hostRow('nt-idle', 0, 100), hostRow('nt-watched', 1, 100), hostRow('nt-fresh', 0, 1)]
+    const h = fakeHost([rows])
+    const lines: string[] = []
+    const reaper = createSessionReaper({
+      ...base,
+      log: (m) => lines.push(m),
+      tmuxBin: () => null,
+      sessionHost: () => h.backend
+    })
+    expect(await reaper.sweep()).toBe(1)
+    expect(h.killed).toEqual(['nt-idle'])
+    expect(lines).toEqual([
+      '[session-budget] reaped detached session nt-idle — no pane output for 100.0h (session host)'
+    ])
+  })
+
+  it('a failed (null) listing kills nothing', async () => {
+    const h = fakeHost([null])
+    const reaper = createSessionReaper({ ...base, tmuxBin: () => null, sessionHost: () => h.backend })
+    expect(await reaper.sweep()).toBe(0)
+    expect(h.killed).toEqual([])
+  })
+
+  it('a listing that throws kills nothing and the sweep does not throw', async () => {
+    const reaper = createSessionReaper({
+      ...base,
+      tmuxBin: () => null,
+      sessionHost: () => ({
+        list: async () => {
+          throw new Error('host gone')
+        },
+        kill: async () => true
+      })
+    })
+    expect(await reaper.sweep()).toBe(0)
+  })
+
+  it('re-verifies at kill time: attached, freshly active, vanished or unlistable sessions are spared', async () => {
+    const planned = [hostRow('nt-a', 0, 100), hostRow('nt-b', 0, 100), hostRow('nt-c', 0, 100)]
+    const fresh = [hostRow('nt-a', 1, 100), hostRow('nt-b', 0, 0)] // nt-c vanished
+    const h = fakeHost([planned, fresh])
+    const reaper = createSessionReaper({ ...base, tmuxBin: () => null, sessionHost: () => h.backend })
+    expect(await reaper.sweep()).toBe(0)
+    expect(h.killed).toEqual([])
+
+    const unlistable = fakeHost([planned, null])
+    const r2 = createSessionReaper({ ...base, tmuxBin: () => null, sessionHost: () => unlistable.backend })
+    expect(await r2.sweep()).toBe(0)
+    expect(unlistable.killed).toEqual([])
+  })
+
+  it('a kill the backend did not confirm is not counted', async () => {
+    const reaper = createSessionReaper({
+      ...base,
+      tmuxBin: () => null,
+      sessionHost: () => ({ list: async () => [hostRow('nt-a', 0, 100)], kill: async () => false })
+    })
+    expect(await reaper.sweep()).toBe(0)
+  })
+
+  it('without pressure and under the cap, nothing is planned (same budget rules as tmux)', async () => {
+    const h = fakeHost([[hostRow('nt-idle', 0, 100)]])
+    const reaper = createSessionReaper({
+      ...base,
+      readMem: () => ({ availableMb: 60_000, totalMb: 64_000 }),
+      tmuxBin: () => null,
+      sessionHost: () => h.backend
+    })
+    expect(await reaper.sweep()).toBe(0)
+    expect(await reaper.sweep({ pressure: 'pty' })).toBe(1)
+  })
+
+  it('is never consulted while tmux exists, and the kill switch covers it too', async () => {
+    let asked = 0
+    const backend = () => {
+      asked++
+      return fakeHost([[hostRow('nt-idle', 0, 100)]]).backend
+    }
+    const w = fakeWorld({})
+    const reaper = createSessionReaper({ ...base, tmuxBin: () => 'tmux', exec: w.exec, sessionHost: backend })
+    await reaper.sweep()
+    expect(asked).toBe(0)
+    const off = createSessionReaper({
+      ...base,
+      env: { NODETERM_SESSION_REAP_DISABLED: '1' },
+      tmuxBin: () => null,
+      sessionHost: backend
+    })
+    expect(await off.sweep()).toBe(0)
+    expect(asked).toBe(0)
+  })
+
+  it('no backend (session host not in use) is the historical no-op', async () => {
+    const reaper = createSessionReaper({ ...base, tmuxBin: () => null, sessionHost: () => undefined })
+    expect(await reaper.sweep()).toBe(0)
+  })
+})

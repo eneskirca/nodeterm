@@ -158,6 +158,12 @@ describe('shouldHideOnClose', () => {
     expect(shouldHideOnClose('win32', false)).toBe(false)
     expect(shouldHideOnClose('linux', false)).toBe(false)
   })
+  it('hides off macOS only in background mode, and never while quitting', () => {
+    expect(shouldHideOnClose('win32', false, true)).toBe(true)
+    expect(shouldHideOnClose('linux', false, true)).toBe(true)
+    expect(shouldHideOnClose('win32', false, false)).toBe(false)
+    expect(shouldHideOnClose('win32', true, true)).toBe(false)
+  })
 })
 
 describe('closeAction', () => {
@@ -174,5 +180,21 @@ describe('closeAction', () => {
   it('never intercepts on other platforms, fullscreen included', () => {
     expect(closeAction('linux', false, true)).toBe('default')
     expect(closeAction('win32', false, true)).toBe('default')
+  })
+  it('hides to the tray off macOS when background mode is on — plain hide, no Space dance', () => {
+    expect(closeAction('win32', false, false, true)).toBe('hide')
+    expect(closeAction('win32', false, true, true)).toBe('hide')
+    expect(closeAction('linux', false, true, true)).toBe('hide')
+  })
+  it('lets the close through when quitting, background mode or not', () => {
+    expect(closeAction('win32', true, false, true)).toBe('default')
+    expect(closeAction('linux', true, true, true)).toBe('default')
+  })
+  it('macOS is unchanged by the background flag (it always hides)', () => {
+    for (const bg of [false, true]) {
+      expect(closeAction('darwin', false, false, bg)).toBe('hide')
+      expect(closeAction('darwin', false, true, bg)).toBe('leave-fullscreen-then-hide')
+      expect(closeAction('darwin', true, true, bg)).toBe('default')
+    }
   })
 })

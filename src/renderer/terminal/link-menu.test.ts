@@ -30,6 +30,7 @@ function recorder(): { calls: string[]; act: LinkMenuActions } {
 const LOCAL_DESKTOP: LinkMenuContext = {
   route: 'none',
   localShell: true,
+  os: 'darwin',
   explorerRoot: '/home/me/proj',
   terminals: true,
   downloading: () => false
@@ -119,6 +120,14 @@ describe('linkMenuItems — file', () => {
       'Copy relative path',
       'Reveal in Finder'
     ])
+  })
+
+  it('Windows desktop names File Explorer, distinct from the in-app Explorer drawer row', () => {
+    const target: LinkMenuTarget = { kind: 'file', abs: '/home/me/proj/a.csv', dir: false }
+    const items = labels(linkMenuItems(target, { ...LOCAL_DESKTOP, os: 'win32' }, recorder().act))
+    expect(items).toContain('Show in File Explorer')
+    expect(items).toContain('Reveal in Explorer')
+    expect(items).not.toContain('Reveal in Finder')
   })
 
   it('Server Edition: the HTTP route has no "Download to…" and no OS reveal', () => {

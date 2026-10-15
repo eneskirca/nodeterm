@@ -155,6 +155,43 @@ export function normalizeLinkedConfigDir(raw: unknown): string | null {
   return segmentsOf(n, d).includes('..') ? null : n
 }
 
+/**
+ * Expand a leading `~` in a config dir TYPED into Settings (no shell ever sees it, so nothing else
+ * would). `~` and `~/…` in every dialect; `~\…` too in the win32 dialect only — on POSIX a
+ * backslash is filename text, so `~\x` stays the literal (relative, hence refused) name it is.
+ */
+export function expandTildeLinkedDir(typed: string, home: string, dialect: PathDialect): string {
+  const tilde =
+    typed === '~' || typed.startsWith('~/') || (dialect === 'win32' && typed.startsWith('~\\'))
+  return tilde ? pathFor(dialect).join(home, typed.slice(1)) : typed
+}
+
+/** Two linked config dirs name the same directory: both re-validated, same dialect, compared by the
+ *  owning filesystem's rule (case-insensitive on win32 — `C:\Users\X\.claude` is
+ *  `c:\users\x\.CLAUDE\`). An invalid side is never "the same". */
+export function sameLinkedConfigDir(a: unknown, b: unknown): boolean {
+  const na = normalizeLinkedConfigDir(a)
+  const nb = normalizeLinkedConfigDir(b)
+  if (!na || !nb) return false
+  const d = pathDialectOf(na)
+  return d === pathDialectOf(nb) && sameDir(na, nb, d)
+}
+
+/** `child` lies strictly BELOW `root` (both re-validated, same dialect; case-insensitive on win32,
+ *  where either separator is accepted by normalization). Equality is `sameLinkedConfigDir`. */
+export function isUnderLinkedConfigDir(child: unknown, root: unknown): boolean {
+  const c = normalizeLinkedConfigDir(child)
+  const r = normalizeLinkedConfigDir(root)
+  if (!c || !r) return false
+  const d = pathDialectOf(c)
+  if (d !== pathDialectOf(r)) return false
+  const sep = d === 'win32' ? '\\' : '/'
+  const prefix = r.endsWith(sep) ? r : r + sep
+  return d === 'win32'
+    ? c.length > prefix.length && c.toLowerCase().startsWith(prefix.toLowerCase())
+    : c.length > prefix.length && c.startsWith(prefix)
+}
+
 /** The settings rows a linked-dir match may consult: local (a linked dir is local by definition —
  *  see §7 of the plan), settled, and carrying a value that survives re-validation. */
 function linkedDirOf(acct: ClaudeAccount): string | null {

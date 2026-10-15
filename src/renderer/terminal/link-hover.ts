@@ -12,6 +12,7 @@
 // Pure pieces (the modifier routing, the hint text, the per-surface refusal) are separate from the
 // one DOM piece (the tooltip), so every decision is unit-testable without a terminal.
 import { canUseLocalShell, type DownloadContext } from '../lib/download'
+import { osFileManagerName } from '../lib/osReveal'
 
 /** What a modified click on a link asks for. `system` = hand it to the OS default app. */
 export type LinkOpenIntent = 'none' | 'open' | 'system'
@@ -37,6 +38,8 @@ export interface FileHintOpts {
   dir: boolean
   /** macOS glyphs (⌘ ⇧) vs spelled-out Ctrl/Shift. */
   mac: boolean
+  /** Windows names its file manager "File Explorer" in the directory hint. */
+  windows?: boolean
   /** Shift+modifier-click can hand the path to the OS here (`systemOpenRefusal` answered null).
    *  When it cannot, the gesture is not advertised — a hint promising a click that only toasts
    *  would be worse than no hint. */
@@ -44,14 +47,15 @@ export interface FileHintOpts {
 }
 
 /** The hover text for a file or directory link. */
-export function fileLinkHint({ abs, dir, mac, systemOpen }: FileHintOpts): string {
+export function fileLinkHint({ abs, dir, mac, windows, systemOpen }: FileHintOpts): string {
   const m = mod(mac)
   const shift = mac ? '⇧⌘' : 'Shift+Ctrl'
   // A plain modified click on a directory reveals it in the Explorer drawer (TerminalNode's
   // `openFile`), not an editor — say so.
   const parts = [dir ? `${m}-click to reveal` : `${m}-click to open`]
   if (systemOpen) {
-    parts.push(dir ? `${shift}-click to open in ${mac ? 'Finder' : 'file manager'}` : `${shift}-click to open with default app`)
+    const manager = osFileManagerName(mac ? 'darwin' : windows ? 'win32' : 'other')
+    parts.push(dir ? `${shift}-click to open in ${manager}` : `${shift}-click to open with default app`)
   }
   return `${abs} (${parts.join(' · ')})`
 }

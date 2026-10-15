@@ -10,10 +10,12 @@ import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types'
+import { shimDialectFor } from '../shared/agents/shim-invocation'
 import {
   CANVAS_SKILL,
   CONTEXT_SKILL,
   createIntegrationLifecycle,
+  skillsFor,
   detectExistingIntegrations,
   resolveIntegrationConsentAtBoot
 } from './agent-integrations'
@@ -132,23 +134,25 @@ describe('discovery: every capable agent still finds canvas control and context 
     const all = { claude: 'enabled', codex: 'enabled', gemini: 'enabled', grok: 'enabled', copilot: 'enabled', opencode: 'enabled' } as const
     const { lc, hookCalls } = lifecycle(() => withAgents(all))
     lc.reconcile()
-    const canvas = buildCanvasSkillBody(SHIMS().canvas)
-    const context = buildContextLinkSkillBody(SHIMS().context)
-    const dirs: Record<string, [boolean, boolean]> = {
-      [path.join(home, '.claude', 'skills')]: [true, true],
-      [path.join(home, 'codex-home', 'skills')]: [true, true],
-      [path.join(home, '.gemini', 'skills')]: [true, true],
-      [path.join(home, 'grok-home', 'skills')]: [true, true],
-      [path.join(home, 'copilot-home', 'skills')]: [true, false], // copilot: canvas control only
-      [path.join(home, 'xdg', 'opencode', 'skills')]: [true, true]
+    // The body depends on THIS host (a Windows runner tells non-claude agents to run the `.cmd`
+    // launcher), so the expectation is derived the same way the installer derives it.
+    const canvas = (agent: string) => buildCanvasSkillBody(SHIMS().canvas, shimDialectFor(agent, process.platform))
+    const context = (agent: string) => buildContextLinkSkillBody(SHIMS().context, shimDialectFor(agent, process.platform))
+    const dirs: Record<string, [string, boolean, boolean]> = {
+      [path.join(home, '.claude', 'skills')]: ['claude', true, true],
+      [path.join(home, 'codex-home', 'skills')]: ['codex', true, true],
+      [path.join(home, '.gemini', 'skills')]: ['gemini', true, true],
+      [path.join(home, 'grok-home', 'skills')]: ['grok', true, true],
+      [path.join(home, 'copilot-home', 'skills')]: ['copilot', true, false], // copilot: canvas control only
+      [path.join(home, 'xdg', 'opencode', 'skills')]: ['opencode', true, true]
     }
-    for (const [dir, [hasCanvas, hasContext]] of Object.entries(dirs)) {
+    for (const [dir, [agent, hasCanvas, hasContext]] of Object.entries(dirs)) {
       const c = path.join(dir, CANVAS_SKILL, 'SKILL.md')
       const x = path.join(dir, CONTEXT_SKILL, 'SKILL.md')
       expect(existsSync(c), c).toBe(hasCanvas)
       expect(existsSync(x), x).toBe(hasContext)
-      if (hasCanvas) expect(read(c)).toBe(canvas)
-      if (hasContext) expect(read(x)).toBe(context)
+      if (hasCanvas) expect(read(c)).toBe(canvas(agent))
+      if (hasContext) expect(read(x)).toBe(context(agent))
     }
     for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', 'codex-home/AGENTS.md', 'copilot-home/copilot-instructions.md', 'xdg/opencode/AGENTS.md']) {
       expect(existsSync(path.join(home, f)), f).toBe(false)
@@ -296,5 +300,35 @@ describe('the existing-vs-new default', () => {
   it('an answered record is never rewritten at boot', () => {
     const answered = withAgents({ claude: 'declined' })
     expect(resolveIntegrationConsentAtBoot(answered, true)).toBeNull()
+  })
+})
+
+describe('skillsFor — the invocation follows the host and the agent\'s tool shell', () => {
+  const shims = { canvas: 'C:\\nt\\canvas-control\\nodeterm.sh', context: 'C:\\nt\\context-links\\context.sh' }
+
+  it('win32: a PowerShell-run agent is told to run the .cmd launcher', () => {
+    for (const agent of ['codex', 'gemini', 'grok', 'opencode'] as const) {
+      const skills = skillsFor(agent, shims, 'win32')
+      expect(skills.get(CANVAS_SKILL), agent).toContain('& "C:\\nt\\canvas-control\\nodeterm.cmd" <verb> [args]')
+      expect(skills.get(CONTEXT_SKILL), agent).toContain('& "C:\\nt\\context-links\\context.cmd" <command>')
+      expect(skills.get(CANVAS_SKILL), agent).not.toContain('```sh\nsh "')
+    }
+    expect(skillsFor('copilot', shims, 'win32').get(CANVAS_SKILL)).toContain('nodeterm.cmd')
+  })
+
+  it('win32: claude keeps `sh` (its Bash tool is Git Bash) — the exact POSIX body', () => {
+    const skills = skillsFor('claude', shims, 'win32')
+    expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody(shims.canvas))
+    expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody(shims.context))
+  })
+
+  it('every non-win32 host gets the byte-identical POSIX bodies for every agent', () => {
+    for (const host of ['darwin', 'linux']) {
+      for (const agent of ['claude', 'codex', 'gemini', 'grok', 'opencode'] as const) {
+        const skills = skillsFor(agent, { canvas: '/u/nodeterm.sh', context: '/u/context.sh' }, host)
+        expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody('/u/nodeterm.sh'))
+        expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody('/u/context.sh'))
+      }
+    }
   })
 })

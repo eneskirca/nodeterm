@@ -15,6 +15,7 @@ import {
 import { codexSandboxGuidanceLines } from './context-link-core'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
 import { AGENT_CONFIG, AGENT_HOOK_TARGETS, BUILTIN_AGENT_IDS } from '@shared/agents/config'
+import { shimCommand, shimFence, windowsShimNoteLines, type ShimDialect } from '@shared/agents/shim-invocation'
 import { RETRYABLE } from './agents/agent-message-decide'
 import { FANOUT_PER_TURN, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
@@ -1383,8 +1384,11 @@ export const CONTROL_SHIM_SCRIPT = buildControlShimScript()
 
 /** The manage-nodeterm-canvas SKILL.md body, pointing at the shim at `shimPath`.
  *  Parameterized because the same skill is installed twice with different paths: into the
- *  desktop's config dirs, and onto an SSH host for remote agent nodes. */
-export function buildCanvasSkillBody(shimPath: string): string {
+ *  desktop's config dirs, and onto an SSH host for remote agent nodes. `dialect` is how the agent
+ *  reaching it must run it (`shimDialectFor`): `windows-cmd` only for a non-claude agent on a
+ *  Windows host; the default keeps every POSIX and SSH body byte-identical. */
+export function buildCanvasSkillBody(shimPath: string, dialect: ShimDialect = 'posix'): string {
+  const windowsNote = windowsShimNoteLines(shimPath, dialect, '--prompt-file')
   const agentChoices = `${BUILTIN_AGENT_IDS.join('|')}|<custom-id>`
   const statusAgents = AGENT_HOOK_TARGETS.join('/')
   const agentLabels = BUILTIN_AGENT_IDS.map((id) => AGENT_CONFIG[id].label).join(' / ')
@@ -1400,10 +1404,10 @@ running the local CLI shim below. Every node you open is connected to your node 
 
 Run the shim (absolute path):
 
-\`\`\`sh
-sh "${shimPath}" <verb> [args]
+\`\`\`${shimFence(dialect)}
+${shimCommand(shimPath, dialect)} <verb> [args]
 \`\`\`
-
+${windowsNote.length ? `\n${windowsNote.join('\n')}\n` : ''}
 Flags take a value: \`--flag value\`, or \`--flag=value\`. Use the \`=\` form when the value itself
 starts with \`--\` (\`--cmd=--version\`); written as two tokens, a leading \`--\` is read as the
 next flag, so \`--text --oops\` sends an empty \`--text\` plus a stray \`--oops\`. A flag with no
