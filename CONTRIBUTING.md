@@ -541,6 +541,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   feature, and a host that never negotiated it answers `{names}` — which a consumer must read as
   "named, not described", never as "detached" or "no processes".
 
+- **Every xterm sizes characters through `activateTerminalWidths` (`src/shared/terminal-width.ts`).**
+  The renderer's terminals and the session host's emulator must agree with each other, with tmux and
+  with the agent CLIs about how many cells a character takes, or a repaint by cursor position leaves
+  stale text behind (an emoji + VS16 did exactly that). Change widths there, never in one emulator,
+  and test them on a real `@xterm/headless` terminal rather than on the provider's return values.
+
 - **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
   correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
   shim directly. For short-lived app-owned subprocesses, pass the resolved path and argv through
@@ -1181,6 +1187,20 @@ Grok billing diagnostics must keep HTTP codes and safe failure categories per bi
   was typed. Nothing may treat it as "safe to resend": the phone keeps the draft, re-reads, and lets
   the user decide. Only `'refused'` means nothing was typed.
 
+**`nodeterm://` links.** A link proves nothing about who sent it (any web page can build one), so
+the confirm sheet is its whole authority. It is off unless the user turns on
+`settings.allowOpenLinks`, and main checks that flag itself. Four rules get a PR sent back:
+- **No power flags.** A link opens one node in the project's default permission mode. Never add a
+  param for a permission mode, `--after`, a model, a count or "open without asking" (the signed-link
+  design in `docs/superpowers/specs/2026-10-13-open-link-design.md` is the only planned way to skip
+  the sheet).
+- **The renderer only chooses.** Its answer is a candidate id main offered, "new project", and a
+  title. The cwd and prompt in the final open come from main (`src/main/open-link.ts`), never the
+  reply.
+- **Enter never opens it.** Only a pointer click on Open, after the 1 s arm.
+- **What the human sees is what runs.** No hidden Unicode in a prompt or path (`hasHiddenText`), no
+  path that can reach another machine, and the permission mode shown is re-checked at landing.
+
 ## User-owned agent settings
 
 **Nothing writes into an agent's global config except `src/core/agent-integrations.ts`** (issue
@@ -1334,6 +1354,15 @@ name at once. Write real-tmux suites the normal way — pick your own socket nam
 tmux without carrying `TMUX_TMPDIR` into it, which is the one way left to escape the sandbox.
 `src/core/tmux-socket-isolation.guard.test.ts` holds the short allowlist of suites that name a
 production socket on purpose; adding a third is a review conversation, not a checkbox.
+
+**A test never touches the real home.** The hook installers write `~/.codex/config.toml` (Codex's
+trust in nodeterm's hooks), `~/.claude/settings.json` and friends, and they use
+`import { homedir } from 'os'`, which `vi.spyOn(os, 'homedir')` does not reach — one test doing that
+rewrote a developer's real Codex config and Codex stopped running nodeterm's hooks. Every run points
+HOME/USERPROFILE at a private sandbox (`test/setup/home-sandbox.ts`) and clears `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR` and the other relocation variables (one list, `HOME_OVERRIDE_ENV` in
+`src/core/test-home.ts`, which `test/setup/agent-env.ts` reuses). If a test needs its own home, mock the
+module (`vi.mock('os', …)`, see `install-helper.fs.test.ts`), never spy on it.
 
 **Session code has two local backends on POSIX: tmux and Zellij.** `settings.sessionBackend` picks
 where a NEW local terminal's session is created (default tmux); an existing session is always

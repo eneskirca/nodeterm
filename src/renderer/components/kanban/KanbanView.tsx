@@ -1,6 +1,6 @@
 import { KanbanScopeSwitch } from './KanbanScopeSwitch'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { KanbanColumnCategory, KanbanLabel, KanbanSavedView, KanbanViewQuery, ProjectKanban } from '@shared/types'
+import type { KanbanColumnCategory, KanbanLabel, KanbanSavedView, KanbanViewQuery, PendingLaunch, ProjectKanban } from '@shared/types'
 import { deleteView, renameView, sameViewQuery, saveView, updateView, viewQuery } from '@shared/kanban-views'
 import { promptDialog } from '../promptDialog'
 import {
@@ -93,6 +93,12 @@ export interface KanbanSession {
   /** The branch of the worktree the node's enclosing group is bound to (`data.worktree.branch`,
    *  nearest bound ancestor). A pull request whose head is this branch links to the card. */
   worktreeBranch?: string
+  /** The node's held launch (terminal cards only) — shown as QUEUED with a ▶ on the card and in its
+   *  modal. */
+  pendingLaunch?: PendingLaunch
+  /** The node's first-open `initialCommand` is still set: with no reported delivery and no hold, the
+   *  launch is merely in flight and the chip hides (the node hides it too — `firstOpenInFlight`). */
+  launchFirstOpen?: boolean
 }
 
 /** What the per-column "+ New" menu can create. */
@@ -142,6 +148,8 @@ export interface KanbanViewProps {
   onAiName?: (nodeId: string) => void
   /** Set a card's node color — the card modal's Color button. Optional: no button without it. */
   onSetColor?: (nodeId: string, color: string) => void
+  /** Start a card's held launch now (its QUEUED chip's ▶) — Canvas's `run` path. */
+  onRunQueued?: (nodeId: string) => void
   /** The board moving a session card itself because its linked pull requests merged (Canvas owns
    *  the compare-and-set + board-log line). Optional: without it nothing ever auto-moves. */
   onAutoMoveFromPulls?: (
@@ -241,7 +249,7 @@ function useCanvasCovered(): void {
 
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, onAiName, onSetColor, onAutoMoveFromPulls, issueAgentMenu,
+  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, onAiName, onSetColor, onRunQueued, onAutoMoveFromPulls, issueAgentMenu,
   issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
@@ -947,6 +955,7 @@ export const KanbanView = memo(function KanbanView({
             liveLinkSource={liveLinkSource}
             ports={cardPorts}
             onOpenPort={openPort}
+            onRunQueued={onRunQueued}
           />
         ))
       })
@@ -1287,6 +1296,7 @@ export const KanbanView = memo(function KanbanView({
           onBrowserNav={(patch) => onBrowserNav(modalNodeId, patch)}
           onSetIcon={(icon) => onSetIcon(modalNodeId, icon)}
           onSetColor={onSetColor ? (color) => onSetColor(modalNodeId, color) : undefined}
+          onRunQueued={onRunQueued ? () => onRunQueued(modalNodeId) : undefined}
           onDelete={() => onDeleteNode(modalNodeId)}
           onAiName={onAiName ? () => onAiName(modalNodeId) : undefined}
           onOpenIssue={(ref) => {

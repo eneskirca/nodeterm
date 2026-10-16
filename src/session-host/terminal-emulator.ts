@@ -1,6 +1,7 @@
 import { Terminal, type ITerminalAddon } from '@xterm/headless'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { clampEmulatorScrollback } from '../shared/scrollback'
+import { activateTerminalWidths } from '../shared/terminal-width'
 
 // @xterm/addon-serialize's published types are written against @xterm/xterm's (browser) Terminal,
 // which has a superset of DOM-specific members @xterm/headless's Terminal lacks. The addon only
@@ -44,6 +45,14 @@ export class TerminalEmulator {
       scrollback: this.defaultScrollback,
       allowProposedApi: true
     })
+    // The renderer's width table, not xterm's Unicode 6 default: this buffer is what a reattaching
+    // viewer is repainted from, so a character it sizes differently from the viewer (an emoji, an
+    // emoji + VS16) shifts every later column of that line in the repaint.
+    try {
+      activateTerminalWidths(this.term)
+    } catch {
+      // Fail open: xterm's default table, exactly as before the shared table existed.
+    }
     this.serializer = new SerializeAddon()
     this.term.loadAddon(this.serializer as unknown as ITerminalAddon)
   }

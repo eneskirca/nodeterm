@@ -495,6 +495,18 @@ project's nodes only.** The contract:
   machine-local, but in the **Server Edition** the setting rides that server's settings.json
   (shared by every browser hitting it) while the bit is per browser PROFILE, so two profiles can
   legitimately disagree about the lock. Desktop + Server Edition; **Mobile: N/A** (no canvas).
+  **The lock covers middle-drag on NODES too, and ⌘/Ctrl+middle-drag gets past it** (issue
+  #1130, `renderer/lib/modifierPan.ts`). React Flow's zoom filter accepts a middle-button
+  `mousedown` on a node / edge / selection before it reads `panOnDrag`, so turning `panOnDrag` off
+  never stopped a middle-drag that started on a node header or a terminal's hover guard (the xterm
+  itself was only safe by accident, via the #84 middle-click guard). While locked,
+  `installLockedMiddleGuard` stops a middle `mousedown` in the BUBBLE phase on
+  `.react-flow__viewport` — after the node (tmux, the middle-click paste setting) has seen it, before
+  React Flow's listener on an ancestor. `installModifierPan` is the deliberate way past the lock:
+  ⌘+middle-drag (Ctrl off-mac) pans anywhere, locked or not, by cancelling the pointerdown in the
+  capture phase on the flow wrapper (so no `mousedown` reaches d3, d3-drag or xterm). The
+  `canvas.toggleLock` command ships UNBOUND (⌘⇧L is the sessions sidebar's) and, like every canvas
+  command, does not fire while a terminal has the keyboard.
   It is one GLOBAL bit rather than per-project
   because `<Canvas />` is mounted once and is not keyed by project, so the lock always carried
   across project switches within a session. Restore is gated on settings HYDRATION (Canvas mounts
@@ -1529,6 +1541,23 @@ clamp** (`src/shared/scrollback.ts`, re-clamped inside the host for older client
 session) where tmux stores only used cells, and nothing above the renderer's cap is ever shown.
 tmux's `history-limit` keeps the raw value.
 
+### Character widths — one table for every emulator (`@shared/terminal-width`)
+
+Every xterm in the stack sizes characters through `activateTerminalWidths`: the renderer's
+terminals (`renderer/terminal/unicode-width.ts`, which explains the move off Unicode 6) and the
+Windows session host's headless emulator, which is what a reattaching viewer is repainted from.
+The table is Unicode 11 plus one rule xterm's tables lack: **a one-cell emoji followed by VS16
+(U+FE0F) is two cells**, as are the keycap sequences (`1️⃣`). The program writing to the pane
+(`string-width` in every Node agent CLI) and tmux (`variation-selector-always-wide`, on by default)
+both count those pairs as two cells; xterm counted one, and every repaint by absolute position after
+such a character landed a column short and left stale text behind. Measured with claude-hud's
+`⏱️` status line, which read `113` for `11%` and `2h 327` for `2h 32m`. VS15 is deliberately left
+alone (`string-width` sizes `⭐︎` by its base, as xterm already does), and so is an ASCII base
+with VS16 alone (`1️` is not an RGI emoji) and the unqualified keycap `1⃣` (one cell, as tmux sizes
+it; some `string-width` releases say two). Known xterm limitation: in insert mode (IRM) a widened
+join overwrites the next cell instead of shifting the line. Agreement is the goal, not a particular
+number: change the table in that one module, never in one emulator.
+
 ## Terminal node lifecycle (gotchas)
 
 `src/renderer/nodes/TerminalNode.tsx` is the trickiest file:
@@ -1643,7 +1672,10 @@ tmux's `history-limit` keeps the raw value.
   lifecycle: capture on mount + a ↻ refresh, a request token that drops stale/late answers, an
   explicit empty state ('' is an answer; a rejected capture is a failure, not empty), only the
   LAST `MD_OUTPUT_MAX_LINES` (5000) lines rendered and announced when cut, scrolled to the latest
-  output. Entering the view (output or ChatPanel) blurs the xterm; leaving it restores focus
+  output. Entering the view (output or ChatPanel) blurs the xterm and, for the ChatPanel, puts the
+  keyboard in its composer (only when focus was nowhere, in this node or in a terminal — never out
+  of a text field elsewhere; a lazy-loading or disabled composer takes it when it mounts/enables,
+  and an exit cancels the request); leaving it restores focus
   only if the terminal had it on entry AND focus is now nowhere or still inside this node
   (`terminal/useMdModeFocus.ts`). While the view is open, every "take the keyboard" path (hover
   dwell, click, sidebar/notification jump) goes through `focusXtermUnlessCovered` and leaves the
@@ -2033,7 +2065,26 @@ tmux's `history-limit` keeps the raw value.
   `fs.watch` of `<dir>/lib` that deliberately OUTLIVES the node's view; (5) the terminal is hidden
   by default (`runConfig.showTerminal`, toggled by ⋯ with the extra-args field): collapse's
   `display: none` path via `.term-node:has(.run-bar--compact)` and a node height fitted to the
-  rows; a run that ends without our Stop says where to look. No "bring simulator forward":
+  rows; a run that ends without our Stop says where to look; (6) **switching folders keeps the app
+  when it can** (`canHotSwitch`: a running Flutter run, same device, same flavor, Flutter on both
+  sides): the toolbar offers **Switch (keep app)** beside **Rebuild** — type `d` (flutter's own
+  detach: the tool exits, the app keeps running), `flutter attach` from the new folder (only the
+  flags attach accepts survive, `attachArgs`, MEASURED against `flutter attach --help` — attach has
+  no `--flavor`), wait until it prints its key help AFTER its own `▶ flutter attach` line
+  (`attachConnected`), then a hot RESTART — never a reload: a freshly attached tool only pushes
+  files changed after it connected (MEASURED live, Flutter 3.47 / iOS 27.1 simulator: a reload
+  after attaching from the other checkout "Reloaded 0 libraries" and the old code kept running; a
+  SIGUSR2 restart swapped it in 2.6 s, same app pid, no rebuild). **On an iOS simulator attach
+  needs `--debug-url`**: it finds an already-running app by mDNS, which the simulator barely
+  supports ("The Dart VM Service was not discovered after 30 seconds"), and the URL `flutter run`
+  printed is its DDS proxy, gone with the detached tool. `simulatorVmServiceUrl` reads the app's
+  own "The Dart VM service is listening on …" line from `simctl spawn <udid> log show` (~3 s) and
+  takes the newest one whose process is still alive (`parseVmServiceLog`); not found ⇒ the switch
+  is refused with Rebuild offered. Some Macs ship no registered `Simulator.app` (`open -a
+  Simulator` fails); booting falls back to the active Xcode's copy and otherwise runs headless. Flutter REFUSES a hand-passed `FLUTTER_APP_FLAVOR`, so after an
+  attach `appFlavor` is the pubspec default; an app whose `lib/` reads `appFlavor` is refused the
+  switch with that reason. Dart `"request": "attach"` configurations run as `flutter attach` too;
+  every other attach is still refused. No "bring simulator forward":
   Simulator.app can only be activated as a whole (same-named simulators are told apart by id in
   the dropdown). Add menus: **New view ▸ New run configuration**. Local projects only (disabled
   with `RUN_SSH_HINT` in SSH projects; relay stub answers "managed on the host"); POSIX only
@@ -2076,6 +2127,14 @@ goes through `renderer/lib/terminalOutputMarkdown.ts` instead: a private `Marked
 raw-HTML tokens as escaped TEXT (a program's `<stdin>` is not markup; parsed as HTML, DOMPurify
 stripped it) and trims capture-pane's trailing padding. The escape is on the `html` token, never a
 global pre-escape of `<`, which would double-escape code spans/fences.
+
+**The rendered-Markdown font is a setting** (`markdownFontFamily` / `markdownFontSize`, Settings →
+Appearance; `@shared/markdown-font`). App.tsx publishes it as `--md-font-family` / `--md-font-size`
+on <html>, plus `--md-code-font-family` = the TERMINAL font family; styles.css keeps the defaults on
+`:root`. Every rule that sizes rendered Markdown reads the tokens — `.term-md__content` (⌘M output
+view, editor preview, the kanban file preview), `.term-chat__msg` and the ⌘M composer input —
+headings are `em`, and code is `0.92em` of the body (relative, so it stays in proportion).
+`styles.markdown-font.test.ts` pins this. Sticky notes keep their own font on purpose.
 
 **A link in rendered markdown must never navigate the app window.** DOMPurify keeps an anchor's
 href as written, and agents write relative links constantly (`[pty-manager.ts](src/core/pty-manager.ts:4100)`).
@@ -2991,7 +3050,52 @@ else, and its context links must keep classifying across restarts).
   put a `.cmd` command on a Linux host); and `isManagedCommand` matches **both** leaves
   (`codex.sh` AND `codex-hook.cmd`) on every platform — matching only the local one would leave a
   pre-fix entry unrecognized, so the fresh one is appended beside it, which is #558 on a second
-  file. Matching both is what REPAIRS an existing Windows install at the next launch. **Both
+  file. Matching both is what REPAIRS an existing Windows install at the next launch.
+  **Codex hook trust is re-checked at every LOCAL Codex spawn, not only at boot, in the HOME that
+  session runs under** (`ensureCodexHooksCurrent(home)` in `core/agents/hooks/codex.ts`, called
+  from `PtyManager.spawnSession` inside the local codex-scope block with the same
+  `codexScope.CODEX_HOME` it puts in the pane's env — a managed account's private home or the
+  system one). Codex reads hooks.json and the config.toml `trusted_hash` blocks from its
+  CODEX_HOME at SESSION START and silently skips an untrusted hook; boot was the only install, so a
+  config.toml rewritten while the app ran (codex's own /hooks flow, another tool, a test run on the
+  real home) left every Codex session started afterwards dark — measured on a Windows desktop:
+  every message to those nodes queued as `targetStatusStale` and expired. `codexHookDrift(home)`
+  is read-only (script + Windows wrapper bytes, our hooks.json entries via the same
+  `buildCodexHooksAndTrust`, and each trust key's hash); only drift re-runs
+  `installCodexHooks(home)`, with a warning naming the home and what was repaired, so a current
+  install never rewrites config.toml (codex writes it too). It never throws into the spawn, never
+  creates a missing home, and an `accountId` that is not a known Codex account gets no repair
+  (never a fallback to `~/.codex`). **Both repairs are consent-gated (issue #744):** the spawn
+  check is reached only through `currentIntegrationLifecycle()?.ensureCodexHooksForLaunch(home)`
+  and the account-home pass only inside `reconcile()` — both in `core/agent-integrations.ts`, both
+  a no-op unless codex is `enabled` (declined, undecided, the Server Edition veto, or no lifecycle
+  registered ⇒ nothing is written). Calling `ensureCodexHooksCurrent` from anywhere else would
+  re-install hooks for a user who declined them. **Managed account homes symlink hooks.json + config.toml to
+  `~/.codex`** (`initializeAccountHome`), so every write goes through the link (`writeTarget`,
+  realpath) — a temp+rename onto the link would replace it with a private copy no later system
+  install reaches. A home whose links were never made or were replaced by real files is repaired in
+  place; boot now covers those homes too (`ensureCodexHooksForAccounts`, from the lifecycle's reconcile in both shells), where before
+  it installed only `~/.codex` and relied on the links. Not covered: SSH hosts (RemoteHooks owns
+  those files) and an in-pane restart/resume that types `codex` without a new spawn.
+  **A trust table is found by its DECODED key, never by spelling** (`tableHeaderPath`,
+  `codex-trust.ts`): bare, `"basic"` (escapes, `\u`) and `'literal'` segments name the same TOML
+  key. Measured live on a Windows desktop (2026-10-07): config.toml held our tables as
+  `[hooks.state.'C:\…']`, the matcher only knew our `"C:\\…"` spelling, the repair APPENDED a second
+  table per key, and Codex refused to start ("duplicate key") — every Codex node dead. The boot
+  install had the same flaw before the launch repair existed; the launch repair just ran it more
+  often. A repair now REWRITES the existing table whatever its quoting (keeping `enabled = false`),
+  and **an edit that would leave any `[table]` defined twice is refused** (`assertTomlTablesUnique`,
+  run inside `upsertHookTrustEntriesInContent` whenever it changed the text): the local installer
+  computes the config.toml edit BEFORE writing hooks.json, so a refusal writes nothing and warns; the
+  SSH installer throws inside its update and writes no config.toml. No TOML parser is in our deps, so
+  the guard is the duplicate-table check, not full validation. **A managed hook command is matched
+  only under our own directories** (`OWN_HOOK_DIRS`: `/.nodeterm`, `/node-terminal`,
+  `/.nodeterm-server` + `/agent-hooks/<leaf>`), never a bare `agent-hooks/<leaf>` tail: another tool keeps
+  `~/.other/agent-hooks/codex-hook.cmd` and the tail match stripped it on every repair (and that tool
+  did the same to ours). A stale entry from a Server Edition run with a custom `--data-dir` is no
+  longer swept — **by repair OR by a declined codex's cleanup** (`removeCodexHooks` shares the
+  matcher). Decided, not overlooked: a decline removes exactly what we wrote, and a tail match cannot
+  tell our legacy entry from another tool's live one, so the inert legacy entry is left. install-helper's matcher for the other agents still matches by tail (not changed here). **Both
   sides of the managed-entry match go through `normalizeHookCommand`** — the marker used to be
   folded to `/` while the stored command was compared raw, so on Windows nodeterm never recognized
   its OWN entry and appended a fresh set every launch (#558: nine copies of nine events, nine
@@ -3720,6 +3824,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the legacy and paged paths; absent when the line states none — never a made-up time). One
   60-second `now` tick in ChatPanel drives every row's label. No thumbs / read-aloud / retry (no
   terminal equivalent). `.term-chat__text` stays the markdown sink the link guard scopes to.
+  **Every code block has the same Copy control in its top-right corner** (`nodes/CodeBlockCopy.tsx`;
+  ONE button component, `ChatCopyButton`, shared with the per-turn Copy so the two cannot drift).
+  The Markdown is an HTML string, so after each new string the hook wraps every `<pre>` in a
+  positioned `.term-chat__code` (never inside the `<pre>`: it scrolls sideways and would carry the
+  button) and portals the button beside it. It copies the block's `<code>` text minus marked's one
+  trailing newline (`lib/codeBlockCopy.ts`) — a pasted command must not run on paste. Hover-revealed,
+  kept visible while it says "Copied". Chat messages, thinking and plan/question cards all render
+  through `MarkdownText`, so all get it; the ⌘M output view and the editor preview do not.
   **The composer (2026-09-26, claude.ai-style)** is one rounded box — textarea on top, a toolbar
   under it: "+" attach on the left; model label, muted effort label and a mic on the right (pure
   decisions in `lib/chatComposer.ts`). Four rules: (1) **attach = paths in the DRAFT, resolved the
@@ -8813,6 +8925,51 @@ unix-socket forward and dev-server `-L` forward over it. POSIX keeps OpenSSH unt
   (`applyPhoneReadAck`, the ack sweeper's body), plus `fs.browse` (home-jailed, dirs only) and
   `pty.capture`; `host.info` lists them. All additive — an old phone keeps its old path.
 
+## `nodeterm://` links (another app asks to open a node)
+
+`nodeterm://open?agent=…&project=…|project-cwd=…&cwd=…&prompt=…|prompt-file=…&title=…&source=…`
+lets an app with no node identity (a review tool, a script, a bookmark) ask for ONE node; the human
+approves every link in a confirm sheet. Spec + as-built decisions:
+`docs/superpowers/specs/2026-10-13-open-link-design.md`. Parser `@shared/open-link`, service
+`main/open-link.ts` (electron-free, tested), wiring `main/open-link-wiring.ts`, sheet
+`components/OpenLinkSheet.tsx`. Invariants:
+- **Behind a flag, OFF by default** (`settings.allowOpenLinks`, Settings → Behavior "Allow
+  nodeterm:// links"). Main reads it on every link and again on accept; off, a link is not even
+  parsed — one notice says where to turn it on. The scheme is still registered, so the notice is
+  what a click meets.
+- **The parser refuses, never drops**: unknown/duplicate params, over-cap values, relative paths,
+  controls. No canvas-control power flags exist here; `source` is display-only.
+- **Paths are stat'ed before the sheet, so a path may not reach another machine.** A POSIX-form
+  path with a backslash is refused (Windows reads `/\host\share` as UNC and a stat there
+  authenticates to that host — NTLM), as are UNC and the macOS automount roots `/net`, `/Network`.
+- **Nothing the sheet would not show reaches the agent**: `hasHiddenText` (every `\p{Cf}` except
+  ZWJ, plus C1 — bidi overrides, zero-width, Unicode TAG "ASCII smuggling") refuses an inline
+  prompt, a prompt file's text, every path and every label. The sheet prints the prompt's size.
+- **The permission mode shown is the one launched.** A new-project choice adopts the folder's
+  committed `project.json`, so the sheet probes it (Open waits) and labels from it; a mode that
+  differs at landing refuses. `bypassPermissions` gets a warning in the sheet.
+- **The prompt file is read from ONE non-blocking open** (no stat first, `O_NONBLOCK` so a FIFO
+  cannot park a thread, looped read to EOF/cap). A project whose folder changed while the sheet was
+  up refuses on accept; `/`, the home folder and its ancestors are never offered as a new project.
+- **Main is the authority**: it resolves project candidates from ITS workspace index (SSH and
+  handed-off projects never offered), stats the cwd, reads `prompt-file`, and on accept re-checks
+  the renderer's choice (a candidate id or the offered new-project folder), re-reads the file,
+  refuses if it changed, and copies it into `<userData>/launch-prompts`. Requests are single use and
+  expire after 10 min.
+- **Delivery**: `open-url` registered in `will-finish-launching` (macOS), argv on cold start and in
+  `second-instance` (Windows/Linux); held until the renderer calls `openLink.ready()`, held again on
+  every page death (`clearRendererKeyState`). 5 links a minute; a second link replaces only an
+  untouched sheet. The window raise is the shared `raiseForUserLaunch`.
+- **The sheet**: Enter never opens, nor Space on the focused button (`detail === 0` is ignored);
+  Open is disabled for 1 s, then a pointer click only. A second link replaces the sheet only within
+  that first second and untouched — after that it is dropped (reading fires no event). An accepted
+  link waiting for its project to load is dropped after 30 s, never created later.
+- `pair`/`join` links open the existing code prompt pre-filled; never auto-connect.
+- Desktop only. Server Edition stub is inert; `open-link:` is a host-only prefix. A dev run registers
+  the scheme only with `NODETERM_DEV_PROTOCOL=1`. An `NT_MULTI` sandbox takes links (argv,
+  `second-instance`, `open -a <Electron.app> 'nodeterm://…'`) only with that variable and never
+  registers the scheme — that is the live-test setup beside an installed app.
+
 ## Push webhook (a script or CI job rings the paired phone)
 
 Settings → Phone → **Push webhook** mints a per-host bearer token; anything that can run `curl`
@@ -9796,6 +9953,32 @@ For every OTHER test dir, two layers, both needed:
   `hook-endpoint.env` into the first core's already-removed directory. `initContextLink` and
   `hookServer.stop()` now drop the memo. Found with `strace -f -e trace=mkdir,rename` — an EMPTY
   leftover dir is the signature of a late writer, not of a missing `rm`.
+
+## The test suite never touches the real home
+
+The hook installers write the user's real agent config — `~/.codex/hooks.json` plus the
+`[hooks.state."…"]` trust blocks in `~/.codex/config.toml`, `~/.claude/settings.json`,
+`~/.gemini/settings.json`, grok's and copilot's hook files — and they resolve home through
+`import { homedir } from 'os'`. **A `vi.spyOn(os, 'homedir')` does not reach that binding**:
+measured on a Windows dev box, running `src/core/agents/hooks/index.test.ts` alone (which
+"isolated" home with exactly that spy) rewrote the developer's real `~/.codex/config.toml` and
+`hooks.json`. Runs from several worktrees then raced each other, and the user's own Codex, on those
+files; a Codex session started inside that window had no trust entries for nodeterm's hooks, so its
+hooks never fired and every agent message to it expired as `targetStatusStale`.
+
+- **Every run gets a private home** (`test/setup/home-sandbox.ts` + `home-worker-env.ts`,
+  `src/core/test-home.ts`): HOME and USERPROFILE point at one directory created and removed by
+  `globalSetup`, re-asserted per worker (refusing to run without it), and the agents' relocation
+  variables (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `COPILOT_HOME`, `GEMINI_CLI_HOME`,
+  `KIMI_CODE_HOME`, `XDG_*`) are cleared. On Windows APPDATA/LOCALAPPDATA move inside it too.
+  `os.homedir()` reads the variable on every call, so every installer and every child process lands
+  in the sandbox whatever its import style. Registered BEFORE the temp sandbox (it lives in the real
+  temp dir and is never counted as a leak there).
+- A test that needs its own home uses a MODULE mock (`vi.mock('os', …)` returning `homedir`, as
+  `install-helper.fs.test.ts` and `codex.ensure.test.ts` do), never the spy.
+- `src/core/test-home.guard.test.ts` runs the real `installCodexHooks()` and proves it wrote the
+  sandbox while the real `~/.codex` (read from `os.userInfo().homedir`, which ignores HOME) kept its
+  size and mtime.
 
 ## Conventions
 

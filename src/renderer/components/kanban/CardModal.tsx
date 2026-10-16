@@ -30,6 +30,7 @@ import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { IssueRefChip } from '../IssueRefChip'
 import { TeamProgressChip } from '../TeamProgressChip'
 import { PortsChip } from '../PortsChip'
+import { QueuedLaunchChip } from './QueuedLaunchChip'
 import { useProjects } from '../../state/projects'
 import type { TeamStation } from '../../lib/teamProgress'
 import { sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
@@ -136,13 +137,15 @@ interface CardModalProps {
    *  row uses, so the header ✦ and the menu row cannot disagree: it reports a failure, asks the
    *  card's OWN core, and drives the shared per-node naming spinner. */
   onAiName?: () => void
+  /** ▶ on the header's QUEUED chip (the card's held launch). Absent = chip without ▶. */
+  onRunQueued?: () => void
 }
 
 /** Trello-style card popup over the board. Scrim click / Esc close it; the board (and the
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
-export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName }: CardModalProps) {
+export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName, onRunQueued }: CardModalProps) {
   const { api, source: coreSource } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
@@ -491,6 +494,9 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           </div>
           {isTerminal && onOpenIssue && <IssueRefChip issueRef={session.issueRef} onOpen={onOpenIssue} />}
           {isTerminal && team && team.length > 0 && onTravel && <TeamProgressChip stations={team} onTravel={onTravel} />}
+          {isTerminal && session.pendingLaunch && (
+            <QueuedLaunchChip nodeId={session.id} pending={session.pendingLaunch} firstOpen={session.launchFirstOpen} onRun={onRunQueued} />
+          )}
           {/* The same Ports chip as the canvas node header. Opening a port places the browser node
               beside this node ON THE CANVAS, so the modal hands over to the canvas to show it. */}
           {isTerminal && portsProjectId && (
