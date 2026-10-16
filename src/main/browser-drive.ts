@@ -259,6 +259,8 @@ async function runAction(
  * detaches+drops first; a go-ahead runs the action, converting any thrown allowlist/lease refusal
  * into a named `ok:false` (never a hang, never a raw Electron error).
  */
+const activeActions = new WeakSet<Sendable>()
+
 export async function driveBrowser(
   input: { call: BrowserCall; ownerNodeId: string; verified: boolean; resolve: BrowserResolve },
   deps: DriveDeps
@@ -278,6 +280,9 @@ export async function driveBrowser(
   }
   // guestPresent was true, so `guest` is non-null; the check keeps the type honest.
   if (!guest) return { ok: false, message: browserDiscardedMessage(input.call.node) }
+  // Do not measure/click a target while another action is still scrolling the same page.
+  if (activeActions.has(guest.session)) return { ok: false, message: 'browser: another action is still running on this page; wait for it to finish' }
+  activeActions.add(guest.session)
   const ctx: RunContext = {
     browserNodeId: input.call.node,
     ownerNodeId: input.ownerNodeId,
@@ -290,5 +295,7 @@ export async function driveBrowser(
     return await runAction(input.call, guest, deps.refs, ctx, deps)
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : 'browser: the command failed' }
+  } finally {
+    activeActions.delete(guest.session)
   }
 }

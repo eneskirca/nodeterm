@@ -124,6 +124,12 @@ describe('gateProjectTarget (spec §3/§5) — every branch, fail closed', () =>
     })
   })
 
+  it('refuses `board --project <foreign, ungranted>` like any stranger id (#1179)', () => {
+    expect(gateProjectTarget({ ...base, verb: 'board', targetProjectId: 'proj-foreign' })).toEqual({
+      refuse: PROJECT_TARGET_REFUSED
+    })
+  })
+
   it('is a no-op when no --project is present', () => {
     expect(gateProjectTarget({ ...base, targetProjectId: undefined })).toBe('allow')
   })

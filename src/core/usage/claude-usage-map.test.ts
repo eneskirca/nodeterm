@@ -3,10 +3,12 @@ import {
   HOLD_LAST_GOOD_MAX_MS,
   emptyUsage,
   holdLastGood,
+  holdLastGoodProvider,
   mapUsageLimits,
   parseResetTimestamp,
   usageFromPayload
 } from './claude-usage-map'
+import type { ProviderUsage } from '../../shared/types'
 import { findLimit, limitLabel, limitShortLabel } from '../../shared/usage-limits'
 
 /**
@@ -227,5 +229,21 @@ describe('holdLastGood', () => {
       const next = emptyUsage('me@example.com', NOW, status)
       expect(holdLastGood(good, next, NOW)).toBe(next)
     }
+  })
+})
+
+describe('holdLastGoodProvider (Codex rows, issue #1168)', () => {
+  const limit = { kind: 'session', group: 'session', usedPercent: 40, severity: null, resetsAt: null, windowMinutes: 300, scopeLabel: null, isActive: false }
+  const good: ProviderUsage = { provider: 'codex', accountId: 'a', account: 'a@x', limits: [limit], updatedAt: 1_000, status: 'ok' }
+  const limited: ProviderUsage = { provider: 'codex', accountId: 'a', account: 'a@x', limits: [], updatedAt: 2_000, status: 'error', rateLimited: true }
+
+  it('keeps the last good numbers through a rate-limited read, marked error + rateLimited', () => {
+    expect(holdLastGoodProvider(good, limited, 2_000)).toEqual({ ...good, status: 'error', rateLimited: true })
+  })
+
+  it('never holds another account\'s numbers, nor across a sign-out', () => {
+    expect(holdLastGoodProvider(good, { ...limited, accountId: 'b' }, 2_000)).toEqual({ ...limited, accountId: 'b' })
+    const out: ProviderUsage = { ...limited, status: 'unavailable', rateLimited: undefined }
+    expect(holdLastGoodProvider(good, out, 2_000)).toBe(out)
   })
 })

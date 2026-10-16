@@ -24,6 +24,7 @@ import { spawn as spawnChild } from 'child_process'
 import type { Readable, Writable } from 'stream'
 import { powershellArgs, powershellExe } from '../core/win32-powershell'
 import { validProbePid, WINDOWS_PROBE_WORKER_SCRIPT } from './windows-probe-script'
+import { PROBE_FIRST_REQUEST_TIMEOUT_MS } from './windows-probe-budget'
 
 export type ProbeRequest = { op: 'owner'; pid: number } | { op: 'table' }
 
@@ -56,7 +57,7 @@ export interface ProbeWorkerDeps {
 }
 
 export const PROBE_REQUEST_TIMEOUT_MS = 1500
-export const PROBE_FIRST_REQUEST_TIMEOUT_MS = 6000
+export { PROBE_FIRST_REQUEST_TIMEOUT_MS }
 export const PROBE_IDLE_MS = 60_000
 export const PROBE_MAX_FAILURES = 2
 export const PROBE_COOLDOWN_MS = 5 * 60_000

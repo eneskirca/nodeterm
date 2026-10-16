@@ -265,8 +265,12 @@ describe('SINGLE-USER REGRESSION: co-attach must not change the solo path', () =
     expect(args[args.indexOf('-c') + 1]).toBe(cwd)
     expect(args.slice(-2)).toEqual(['-s', sessionName('solo-1')])
     // The spawned process env is the pre-co-attach env: forced TERM, no inherited TMUX nesting,
-    // and the real login-shell PATH.
-    expect(spawnArgs[0].cwd).toBe(cwd)
+    // and the real login-shell PATH. The CLIENT runs from a stable dir, never the node's: the
+    // pane's directory is the `-c` above (issue #1131 — a client in the project dir can start the
+    // shared server there, and tmux 3.7 then drops every later pane's `-c` once that dir is gone).
+    const { localTmuxClientCwd } = await import('./pty-manager')
+    expect(spawnArgs[0].cwd).toBe(localTmuxClientCwd())
+    expect(spawnArgs[0].cwd).not.toBe(cwd)
     expect(env.TERM).toBe('xterm-256color')
     expect(env.TMUX).toBeUndefined()
     expect(env.TMUX_PANE).toBeUndefined()

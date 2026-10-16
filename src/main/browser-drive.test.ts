@@ -310,3 +310,20 @@ describe('driveBrowser end-to-end refusals', () => {
     expect(r).toEqual({ ok: false, message: STRICT_CONTROL_REFUSAL })
   })
 })
+
+describe('actions cannot share a temporary viewport', () => {
+  it('refuses overlap and releases the lock after failure', async () => {
+    const { guest } = makeGuest()
+    let reject!: (e: Error) => void
+    const send = vi.spyOn(guest.session, 'send').mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    const deps: DriveDeps = { ledger: freshLedgerOwning(), refs: new RefTable(), sessionFor: () => guest, revoke: vi.fn() }
+    const input = { call: readTitleCall(), ownerNodeId: OWNER, verified: true, resolve: okResolve }
+    const first = driveBrowser(input, deps)
+    const second = await driveBrowser(input, deps)
+    expect(second).toEqual({ ok: false, message: expect.stringContaining('another action') })
+    expect(send).toHaveBeenCalledTimes(1)
+    reject(new Error('fixture failed'))
+    expect((await first).ok).toBe(false)
+    expect((await driveBrowser(input, deps)).ok).toBe(true)
+  })
+})

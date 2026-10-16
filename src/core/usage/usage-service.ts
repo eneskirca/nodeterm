@@ -17,7 +17,7 @@ import type {
   RemoteAccountUsage,
   RemoteUsageQuery
 } from '../../shared/types'
-import { emptyUsage, holdLastGood, usageFromPayload } from './claude-usage-map'
+import { emptyUsage, holdLastGood, holdLastGoodProvider, usageFromPayload } from './claude-usage-map'
 import {
   fetchRemoteUsage,
   type RemoteUsageRunner,
@@ -350,6 +350,8 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
   // or relabelled) the cache is busted so a snapshot from a DIFFERENT account set is never served —
   // switching accounts can't show stale numbers (S6 §4.3, cache fingerprint).
   let codexAccountsFingerprint = ''
+  // The last Codex row with numbers, per account (`accountId ?? ''`) — what a failed read holds.
+  const lastGoodCodex = new Map<string, ProviderUsage>()
 
   // A throwing provider must never break the sweep — fail closed to the empty set (system-only),
   // never a fabricated account (S6 §4.3).
@@ -409,8 +411,19 @@ export function startUsageService(opts: UsageServiceOptions = {}): UsageService 
       )
     )
     try {
-      providersCache = await providersInFlight
-      providersAt = Date.now()
+      const fresh = await providersInFlight
+      // A failed Codex read (a 429 above all, issue #1168) keeps that row's last good numbers
+      // instead of blanking it — keyed per account, so a held row is only ever its own account's.
+      const now = Date.now()
+      providersCache = fresh.map((row) => {
+        if (row.provider !== 'codex') return row
+        const key = row.accountId ?? ''
+        const held = holdLastGoodProvider(lastGoodCodex.get(key), row, now)
+        if (held.limits.length > 0) lastGoodCodex.set(key, held)
+        else lastGoodCodex.delete(key)
+        return held
+      })
+      providersAt = now
       return providersCache
     } finally {
       providersInFlight = null

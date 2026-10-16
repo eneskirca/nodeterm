@@ -81,6 +81,9 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   IPC.projectSetupConsentSubmit,
   IPC.projectSetupRequestTrust,
   IPC.ptyLaunchHeadless,
+  // A relay peer never delivers a held launch (commitOwnedLaunchAttempt), and a peer that could
+  // claim one would make every viewer of the host stand down from it (#1173).
+  IPC.workspaceClaimLaunch,
   // Executes an agent launch on the host and reads a host-local `--prompt-file` into it. A relay
   // tab never sends it (its pty bridge omits the member); this holds the refusal host-side too.
   IPC.ptyExecuteLaunch,

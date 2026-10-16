@@ -125,12 +125,12 @@ describe('the --project targeted-opens block (source pins)', () => {
     )
   })
 
-  it('the --project belt is ONE definition: open-* and run both call resolveProjectTarget (#925)', () => {
+  it('the --project belt is ONE definition: open-*, run and board all call resolveProjectTarget (#925, #1179)', () => {
     // Two hand-copies of the caller-project resolution + source + target checks are how one of
     // them drifts (CLAUDE.md "Adding a new agent" rule 10). Neither block may re-grow an inline
     // copy of the belt; each passes only the word its refusal differs in.
     const body = targetedOpensBody()
-    expect(body.match(/resolveProjectTarget\(/g)?.length).toBe(2)
+    expect(body.match(/resolveProjectTarget\(/g)?.length).toBe(3)
     expect(body).toMatch(/resolveProjectTarget\(\{[^}]*sshVerbWord: 'opening'/)
     expect(body).toMatch(/resolveProjectTarget\(\{[^}]*sshVerbWord: 'starting'/)
     for (const inline of [

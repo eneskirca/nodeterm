@@ -194,6 +194,33 @@ describe('terminal co-attach: one PTY, N subscribers', () => {
     expect(spawned[0].writes).toEqual(['a', 'b'])
   })
 
+  // Issue #1172: tmux's client handshake (DA1 `ESC[c`, DA2 `ESC[>c`) reaches EVERY subscriber's
+  // xterm and every one answers. tmux consumes one answer; the rest used to be typed into the pane
+  // (`1;2c0;276;0c` in front of an agent's launch line).
+  it('only ONE viewer\'s answer to the client\'s DA handshake reaches the pty; keystrokes are untouched', async () => {
+    await manager()
+    const { sessionId } = await create(ALICE)
+    await create(BOB)
+    spawned[0].onDataCb?.('\x1b[c\x1b[>c\x1b[>q\x1b]11;?\x1b\\')
+    write(ALICE, sessionId, '\x1b[?1;2c')
+    write(ALICE, sessionId, '\x1b[>0;276;0c')
+    write(BOB, sessionId, '\x1b[?1;2c')
+    write(BOB, sessionId, '\x1b[>0;276;0c')
+    write(BOB, sessionId, '\x1b[1;2R') // Shift+F3, the same bytes as a cursor-position report
+    write(ALICE, sessionId, 'claude\r')
+    expect(spawned[0].writes).toEqual(['\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[1;2R', 'claude\r'])
+  })
+
+  it('a DA answer nobody asked for (or that arrives after the query expired) never reaches the pty', async () => {
+    await manager()
+    const { sessionId } = await create(ALICE)
+    write(ALICE, sessionId, '\x1b[?1;2c')
+    spawned[0].onDataCb?.('\x1b[>c')
+    vi.advanceTimersByTime(60_000)
+    write(ALICE, sessionId, '\x1b[>0;276;0c')
+    expect(spawned[0].writes).toEqual([])
+  })
+
   it('a destroyed node is never co-attached to, and never respawned (the × path un-indexes + tombstones it)', async () => {
     const m = await manager()
     await create(ALICE)

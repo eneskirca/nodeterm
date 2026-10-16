@@ -160,8 +160,7 @@ describe('Start with agent in a new worktree', () => {
 describe('a new issue frame is centred on the view', () => {
   it('emptyNodePos(box) answers a TOP-LEFT that centres the box (freeSpot answers top-lefts)', () => {
     const pos = between('const emptyNodePos = useCallback(', 'const scmCwd = useCallback(')
-    expect(pos).toContain('const preferred = box ? { x: center.x - box.w / 2, y: center.y - box.h / 2 } : center')
-    expect(pos).toContain('return freeSpot(boxes, preferred, box ?? { w, h })')
+    expect(pos).toContain('if (box) return freeSpot(boxes, { x: center.x - box.w / 2, y: center.y - box.h / 2 }, box)')
   })
 })
 

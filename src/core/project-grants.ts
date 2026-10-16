@@ -63,7 +63,8 @@ export function clearAll(): void {
 /** The verbs that accept `--project` (spec §2.2): the three open verbs, `run` (#925), plus
  *  `settings`, whose per-project keys (@shared/settings-verb) may name a project other than the
  *  caller's — own or granted only, the same rule, decided here before anything is forwarded.
- *  `--project` on any other verb is dead weight the gate deliberately ignores (spec §7.5). */
+ *  `--project` on any other verb is dead weight the gate deliberately ignores (spec §7.5). The
+ *  renderer resolves a targetable verb's `--project` itself; a verb added here owes that too. */
 export const PROJECT_TARGETABLE_VERBS: ReadonlySet<string> = new Set([
   'open-terminal',
   'open-claude',
@@ -73,7 +74,10 @@ export const PROJECT_TARGETABLE_VERBS: ReadonlySet<string> = new Set([
   'settings',
   // Read-only GitHub lane of a project (core/github/control-read.ts): own or granted, like the rest.
   'issues',
-  'prs'
+  'prs',
+  // #1179: a read of another project's kanban board — own or granted, like issues/prs. Without it
+  // `--project` was ignored and the caller's own board answered, silently about another project.
+  'board'
 ])
 
 /** The flat refusal an UNVERIFIED caller's `--project` gets — one sentence, no diagnosis, no

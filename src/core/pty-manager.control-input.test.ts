@@ -13,6 +13,7 @@ import { TMUX_SOCKET, sessionName } from './tmux-naming'
 import { PANE_INPUT_DEADLINE_MS, keysCommandText, remoteKeysArgs } from './watch-link/pane-input'
 import { INPUT_DELIVERY_TIMEOUT_MS } from './watch-link/link-host'
 import { DEFAULT_SETTINGS } from '../shared/types'
+import { DaReplyGate } from './da-reply-gate'
 
 type Call = { file: string; args: string[]; input: string | undefined }
 const calls = vi.hoisted(() => [] as Array<{ file: string; args: string[]; input: string | undefined }>)
@@ -94,7 +95,7 @@ async function manager(session: Record<string, unknown> | null, tmux: string | n
   mgr.tmuxPath = tmux
   const write = vi.fn()
   if (session) {
-    mgr.sessions.set('sess-1', { persistKey: NODE, indexKey: NODE, nodeId: NODE, tmuxBacked: true, proc: { write }, ...session })
+    mgr.sessions.set('sess-1', { persistKey: NODE, indexKey: NODE, nodeId: NODE, tmuxBacked: true, daReplies: new DaReplyGate(4_000), proc: { write }, ...session })
     mgr.byPersistKey.set(NODE, 'sess-1')
   }
   return { mgr, write }

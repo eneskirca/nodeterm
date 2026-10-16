@@ -15,3 +15,15 @@ export interface ChatPromptBlocked {
 export type ChatPromptResult = TextDeliveryResult | ChatPromptBlocked
 export const isChatPromptBlocked = (r: ChatPromptResult): r is ChatPromptBlocked =>
   typeof r === 'object' && r !== null && r.blocked === 'screen'
+
+/**
+ * Why a write that must land only in an EMPTY composer (`pty.sendToEmptyPrompt` — the context-link
+ * and note-link pushes, issue #1144) was not made. Every refusal is decided before a byte is written,
+ * except `not-submitted` (typed, but the Enter was withheld) and `failed` (the transport refused).
+ * - `unsupported` — no measured reader for this agent's composer, so emptiness cannot be proven.
+ * - `draft` — the composer already holds the user's text.
+ * - `no-prompt` — a dialog owns the keyboard, or no input box is on screen (a shell, a starting CLI).
+ * - `unknown` — the screen could not be read.
+ */
+export type EmptyPromptRefusal = 'unsupported' | 'draft' | 'no-prompt' | 'unknown' | 'not-submitted' | 'failed'
+export type EmptyPromptResult = { sent: true } | { sent: false; reason: EmptyPromptRefusal }

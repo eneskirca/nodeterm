@@ -714,8 +714,27 @@ function fileCandidates(
   return out
 }
 
+/**
+ * Whether the terminal HAD a selection when the current press began — read in a capture-phase
+ * `mousedown` on `term.element`, i.e. before xterm's SelectionService turns a Shift press into an
+ * extension of the last click's anchor. Without an element (or before any press) it answers the
+ * live selection, the old rule. The listener lives and dies with the terminal's element.
+ */
+function trackSelectionAtPress(term: Terminal): () => boolean {
+  let atPress: boolean | null = null
+  term.element?.addEventListener(
+    'mousedown',
+    (ev) => {
+      if (ev.button === 0) atPress = term.hasSelection()
+    },
+    { capture: true }
+  )
+  return () => atPress ?? term.hasSelection()
+}
+
 /** xterm link provider for file paths. Register once per terminal with a reachable filesystem. */
 export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILinkProvider {
+  const selectedAtPress = trackSelectionAtPress(term)
   return {
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void {
       // Resolve the paragraph CONTAINING the hovered row (not just one starting at it), so
@@ -752,9 +771,12 @@ export function createFileLinkProvider(term: Terminal, deps: FileLinkDeps): ILin
               if (intent === 'none') return
               sink?.leave()
               if (intent === 'system') {
-                // Shift also extends an xterm selection: a Shift+Cmd click that left one behind
-                // was a selection gesture, not an open.
-                if (term.hasSelection()) return
+                // Shift also extends an xterm selection. Extending a selection the user HAD is a
+                // selection gesture, not an open. But xterm extends from the last click's anchor
+                // even when nothing was selected (every plain click leaves one, invisibly), so the
+                // selection the press itself made is not evidence (issue #1176): drop it and open.
+                if (selectedAtPress()) return
+                term.clearSelection()
                 ;(deps.openWithSystem ?? deps.activate)(abs, dir)
                 return
               }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useContextUsage } from '../state/contextWindow'
 import { useSettings } from '../state/settings'
 import { capabilityAgentId } from '@shared/agents/config'
+import { isHidden } from '../lib/ui-visibility'
 import { barFillPercent, contextFillColor, contextPillText, formatModelLabel, formatTimeAgo, formatTokensShort, percentText } from '../lib/usageFormat'
 
 /**
@@ -22,6 +23,9 @@ export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromL
   // to the node that requested them; never fall back to a local/session-only snapshot.
   const usage = useContextUsage({ sessionId, nodeId, scoped })
   const percentMode = useSettings((s) => s.settings.usagePercentMode)
+  // Issue #1141: hideable from Settings → Appearance (same list as the header buttons). Read here
+  // rather than at the three call sites so the header, the card and the modal cannot disagree.
+  const hiddenByUser = useSettings((s) => isHidden('context-meter', s.settings.hiddenHeaderButtons))
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -34,7 +38,7 @@ export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromL
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
-  if (!usage) return null
+  if (!usage || hiddenByUser) return null
   // The NUMBER honours the used/remaining/tokens display setting; the bar and its color stay
   // keyed to context FILL, so the severity colors keep meaning the same thing in every mode
   // (issue #78).

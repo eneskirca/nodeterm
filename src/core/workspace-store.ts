@@ -43,6 +43,7 @@ import { localizeAdoptedNode } from '../shared/adopt-cwd'
 import { clampProjectName, folderName } from '../shared/project-name'
 import { SYSTEM_NODE_COLORS } from '../shared/node-colors'
 import { codedError } from './relay/admin-error'
+import { createLaunchClaimLedger } from './launch-claim-ledger'
 
 /** What `WorkspaceStore.adoptFolder` did: the project now holding the folder, and whether this call
  *  added it (`created: false` = an existing project already held the same real directory). */
@@ -389,6 +390,8 @@ export class WorkspaceStore {
    * hands it out (a client that cannot save cannot be the one whose save would drop it).
    */
   private pendingAdoptions = new Set<string>()
+  /** Exactly-once claim of renderer-delivered held launches across viewers (#1173). */
+  private readonly launchClaims = createLaunchClaimLedger()
   /** The content authority, when this process runs one (Server Edition hosting a team). */
   private contentAuthority: ContentAuthorityHooks | null = null
 
@@ -421,6 +424,9 @@ export class WorkspaceStore {
     })
     platform().handle(IPC.workspaceSave, (workspace: Workspace, opts?: WorkspaceSaveOptions) =>
       this.saveFromRenderer(workspace, opts?.localOnly === true))
+    platform().handleWithSender(IPC.workspaceClaimLaunch,
+      (senderId: number, nodeId: unknown, command: unknown, manual: unknown) =>
+        this.launchClaims.claim(nodeId as string, command as string, manual === true, senderId))
     platform().handle(IPC.workspaceProbeFolder, (folder: string) => this.probeFolder(folder))
     platform().handle(IPC.workspaceProjectFileState, (cwd: unknown) =>
       typeof cwd === 'string' && cwd ? this.projectFileState(cwd) : 'unreadable')

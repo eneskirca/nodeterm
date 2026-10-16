@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { ZONES, ZONE_GUTTER_PX, zoneTargetRect } from './nodeZones'
+import { ZONES, ZONE_COMMANDS, ZONE_GUTTER_PX, zoneTargetRect } from './nodeZones'
+import { COMMAND_DEFINITIONS, isCommandId } from '@shared/keybindings'
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from './nodeMaximize'
 import type { ScreenInsets } from './pinnedInsets'
 
@@ -110,5 +111,28 @@ describe('zoneTargetRect', () => {
     const right = zoneTargetRect(VP, W, H, 'right-half', M, G, insets)!
     expect(left.x).toBe(max.x)
     expect(right.x + right.width).toBeCloseTo(max.x + max.width)
+  })
+})
+
+describe('ZONE_COMMANDS (issue #1169)', () => {
+  it('gives every zone in the menu exactly one registry command', () => {
+    for (const z of ZONES) {
+      const id = ZONE_COMMANDS[z.id]
+      expect(isCommandId(id), z.id).toBe(true)
+      const def = COMMAND_DEFINITIONS.find((d) => d.id === id)
+      expect(def?.scope, z.id).toBe('canvas')
+      expect(def?.allowInTerminal, z.id).toBe(true)
+    }
+    expect(new Set(Object.values(ZONE_COMMANDS)).size).toBe(ZONES.length)
+  })
+
+  it('keeps the halves bound on mac and ships thirds and quarters unbound everywhere', () => {
+    const halves = new Set(['left-half', 'right-half', 'top-half', 'bottom-half'])
+    for (const z of ZONES) {
+      const def = COMMAND_DEFINITIONS.find((d) => d.id === ZONE_COMMANDS[z.id])!
+      if (halves.has(z.id)) continue
+      expect(def.defaultBindings.darwin, z.id).toEqual([])
+      expect(def.defaultBindings.other, z.id).toEqual([])
+    }
   })
 })

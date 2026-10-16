@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { ISSUE_BRANCH_SLUG_MAX } from '../shared/issue-worktree'
 import {
   GITHUB_READ_LIMIT_DEFAULT as GH_READ_LIMIT_DEFAULT,
@@ -9,6 +11,7 @@ import {
 } from '../core/github/control-read'
 import {
   parseControlRequest,
+  browserFlagRefusal,
   isDestructiveVerb,
   mergeCanvasControlBlock,
   buildCanvasControlInstructions,
@@ -1669,6 +1672,24 @@ describe('the read-only GitHub lane verbs (issues, prs) in both agent-facing bod
   })
 })
 
+describe('board --project (issue #1179)', () => {
+  const bodies: [string, string][] = [
+    ['skill', buildCanvasSkillBody('/x/shim.sh')],
+    ['instructions', buildCanvasControlInstructions('/x/shim.sh')]
+  ]
+
+  it('board is --project-targetable, so main gates the id (own or granted)', () => {
+    expect(PROJECT_TARGETABLE_VERBS.has('board')).toBe(true)
+  })
+
+  it('no body still claims board acts on the CURRENTLY OPEN project', () => {
+    for (const [name, body] of bodies) {
+      expect(body, name).not.toMatch(/CURRENTLY OPEN project/)
+      expect(body, name).toContain('`board [--project <id>]`')
+    }
+  })
+})
+
 describe('open-project --name limit in the agent-facing text (issue #940)', () => {
   it('both bodies name the limit, rendered from PROJECT_NAME_MAX', () => {
     const sentence = `\`--name\` over ${PROJECT_NAME_MAX} characters`
@@ -1708,3 +1729,39 @@ describe('buildCanvasSkillBody — shim invocation dialect', () => {
   })
 })
 
+describe('browser control unknown flags (#539)', () => {
+  it.each(['width', 'height', 'viewport', 'size', 'preset'])('refuses open-browser --%s before creating anything', (key) => {
+    expect(parseControlRequest('open-browser', { url: 'https://example.test', [key]: '375' })).toEqual({ error: `open-browser: unknown flag --${key}` })
+  })
+  it('refuses a browser typo at the shared Desktop/Server boundary', () => {
+    expect(parseControlRequest('browser', { node: 'b1', screenshot: 'x.png', ful: 'true' })).toEqual({ error: 'browser: unknown flag --ful' })
+  })
+})
+
+describe('browserFlagRefusal is the one gate both shells run (#539)', () => {
+  it('names the unknown flag on both browser verbs and passes known ones', () => {
+    expect(browserFlagRefusal('open-browser', { url: 'https://x.test', width: '375' })).toBe('open-browser: unknown flag --width')
+    expect(browserFlagRefusal('open-browser', { url: 'https://x.test', project: 'p1', 'dry-run': 'true' })).toBeNull()
+    expect(browserFlagRefusal('browser', { node: 'b1', screenshot: 'a.png', full: 'true' })).toBeNull()
+    expect(browserFlagRefusal('show-web', { url: 'https://x.test', width: '1' })).toBeNull()
+  })
+  it('desktop main runs it before forwarding or driving (it never runs parseControlRequest)', () => {
+    const src = readFileSync(join(__dirname, 'index.ts'), 'utf8')
+    const gate = src.indexOf('const browserRefusal = browserFlagRefusal(verb, args)')
+    expect(gate).toBeGreaterThan(0)
+    expect(gate).toBeLessThan(src.indexOf("if (verb === 'browser') return handleBrowserVerb("))
+  })
+})
+
+describe('the browser verb text matches #539 behaviour, in both bodies', () => {
+  it.each([
+    ['skill body', buildCanvasSkillBody('/x/nodeterm.sh')],
+    ['instructions block', buildCanvasControlInstructions('/x/nodeterm.sh')]
+  ])('%s', (_name, body) => {
+    const flat = body.replace(/\s+/g, ' ')
+    expect(flat).toContain('`+200` or `-200`')
+    expect(flat).toContain('MEASURED once the page stopped moving')
+    expect(flat).toContain('an unknown flag (on `browser` or `open-browser`) is refused by name, never ignored')
+    expect(flat).toContain('sizes the page\'s viewport to the full content height')
+  })
+})

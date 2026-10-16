@@ -235,3 +235,46 @@ describe('BrowserLeaseManager', () => {
     expect(mgr.get('browser-1')).toBeUndefined()
   })
 })
+
+describe('a viewport override never outlives the lease (#539)', () => {
+  const OVERRIDE = { width: 1280, height: 3000, deviceScaleFactor: 0, mobile: false }
+  const methods = (dbg: FakeDebugger) => dbg.sends.map((x) => x.method)
+
+  it('release() clears an unconfirmed override BEFORE it detaches', async () => {
+    const { session, dbg } = makeSession()
+    dbg.hangNext = true
+    void session.send('Emulation.setDeviceMetricsOverride', OVERRIDE).catch(() => {})
+    let clearedWhileAttached = false
+    const orig = dbg.sendCommand.bind(dbg)
+    dbg.sendCommand = (m, p, sid) => {
+      if (m === 'Emulation.clearDeviceMetricsOverride') clearedWhileAttached = dbg.attached
+      return orig(m, p, sid)
+    }
+    session.release()
+    expect(methods(dbg)).toContain('Emulation.clearDeviceMetricsOverride')
+    expect(clearedWhileAttached).toBe(true)
+    expect(dbg.attached).toBe(false)
+    expect(dbg.attachCalls).toBe(1)
+  })
+
+  it('a confirmed clear means the next detach sends nothing extra', async () => {
+    const { session, dbg } = makeSession()
+    await session.send('Emulation.setDeviceMetricsOverride', OVERRIDE)
+    await session.send('Emulation.clearDeviceMetricsOverride', {})
+    await Promise.resolve()
+    const before = dbg.sends.length
+    session.release()
+    expect(dbg.sends.length).toBe(before)
+  })
+
+  it('a detach we did not make leaves the clear for the FIRST command of the next attach', async () => {
+    const { session, dbg } = makeSession()
+    await session.send('Emulation.setDeviceMetricsOverride', OVERRIDE)
+    dbg.attached = false
+    dbg.fireDetach('canceled_by_user')
+    expect(dbg.attachCalls).toBe(1) // nothing reattaches by itself
+    await session.send('Page.getLayoutMetrics', {})
+    const tail = methods(dbg).slice(-2)
+    expect(tail).toEqual(['Emulation.clearDeviceMetricsOverride', 'Page.getLayoutMetrics'])
+  })
+})

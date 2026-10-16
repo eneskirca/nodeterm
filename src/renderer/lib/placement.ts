@@ -16,20 +16,55 @@ export interface Box {
   h: number
 }
 
+/** How far a bounded placement steps down-right off a node whose top-left it would share (#1140):
+ *  enough to leave that node's header row showing above the new one. */
+export const CASCADE_STEP = 32
+const CASCADE_MAX_HOPS = 64
+
+/** `p`, moved down-right by `CASCADE_STEP` until no box in `existing` starts within a step of it. */
+function cascadeOff(existing: Box[], p: { x: number; y: number }): { x: number; y: number } {
+  let { x, y } = p
+  for (
+    let hop = 0;
+    hop < CASCADE_MAX_HOPS &&
+    existing.some((b) => Math.abs(b.x - x) < CASCADE_STEP && Math.abs(b.y - y) < CASCADE_STEP);
+    hop++
+  ) {
+    x += CASCADE_STEP
+    y += CASCADE_STEP
+  }
+  return { x, y }
+}
+
 /**
  * The nearest position (to `preferred`) where a `size` box does not overlap any of `existing`,
  * searched outward on a grid stepped by the node size. Returns `preferred` unchanged when it's
  * already clear (so a lone node / an empty canvas keeps the centered placement). Pure + testable.
+ * `preferred` and the answer are TOP-LEFT corners.
  *
  * `gap` is the minimum breathing room kept between boxes. The ring search is capped so a pathological
  * canvas can never loop forever — past the cap it gives up and returns `preferred` (overlap is a far
  * lesser evil than a hang).
+ *
+ * `bounds` (issue #1140) keeps the answer inside a rectangle — the visible canvas — so a node made
+ * from a shortcut never lands somewhere the user cannot see. Inside it the search runs on a half-step
+ * grid (a view is only a few nodes wide), and when nothing in view is clear it takes the in-view
+ * spot covered LEAST, nearest first: a busy view gets a visible, partly overlapping node rather than
+ * a clear one off screen. The search starts from `preferred` pulled inside `bounds` (a pinned panel
+ * can push the view centre's box past the visible edge), and a node too big for `bounds` at all
+ * (zoomed in past the node's size) stays at `preferred`.
+ *
+ * Whatever the bounded branch answers is CASCADED off any node whose top-left it would share
+ * (`CASCADE_STEP` down-right per hit, like stacked windows): a view under about two node-widths has
+ * no other in-view cell, and without this every node made in a row landed exactly on the last one —
+ * invisible, the very pile this function exists to prevent.
  */
 export function freeSpot(
   existing: Box[],
   preferred: { x: number; y: number },
   size: { w: number; h: number },
-  gap = 28
+  gap = 28,
+  bounds?: Box
 ): { x: number; y: number } {
   const clear = (x: number, y: number): boolean =>
     !existing.some(
@@ -41,6 +76,42 @@ export function freeSpot(
     )
 
   if (clear(preferred.x, preferred.y)) return preferred
+
+  if (bounds) {
+    // "Does it fit at all" is size against bounds, never where the centred box happens to sit.
+    if (size.w > bounds.w || size.h > bounds.h) return cascadeOff(existing, preferred)
+    const inside = (x: number, y: number): boolean =>
+      x >= bounds.x && y >= bounds.y && x + size.w <= bounds.x + bounds.w && y + size.h <= bounds.y + bounds.h
+    const start = {
+      x: Math.min(Math.max(preferred.x, bounds.x), bounds.x + bounds.w - size.w),
+      y: Math.min(Math.max(preferred.y, bounds.y), bounds.y + bounds.h - size.h)
+    }
+    if (clear(start.x, start.y)) return start
+    const covered = (x: number, y: number): number =>
+      existing.reduce((sum, b) => {
+        const w = Math.min(x + size.w, b.x + b.w) - Math.max(x, b.x)
+        const h = Math.min(y + size.h, b.y + b.h) - Math.max(y, b.y)
+        return w > 0 && h > 0 ? sum + w * h : sum
+      }, 0)
+    const sx = (size.w + gap) / 2
+    const sy = (size.h + gap) / 2
+    const rings = Math.min(200, Math.ceil(Math.max(bounds.w / sx, bounds.h / sy)) + 1)
+    let best = { x: start.x, y: start.y, area: covered(start.x, start.y) }
+    for (let ring = 1; ring <= rings; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue // perimeter only
+          const x = start.x + dx * sx
+          const y = start.y + dy * sy
+          if (!inside(x, y)) continue
+          if (clear(x, y)) return { x, y }
+          const area = covered(x, y)
+          if (area < best.area) best = { x, y, area }
+        }
+      }
+    }
+    return cascadeOff(existing, { x: best.x, y: best.y })
+  }
 
   const stepX = size.w + gap
   const stepY = size.h + gap
@@ -57,6 +128,24 @@ export function freeSpot(
     }
   }
   return preferred
+}
+
+/**
+ * `freeSpot` in the terms the node factories speak: a CENTRE in, a CENTRE out (`placeAt` turns a
+ * centre into the top-left by subtracting half the size). Issue #1140: `emptyNodePos` used to hand
+ * the view centre to `freeSpot` AS a top-left and then give the answer to the factories AS a centre,
+ * so every overlap check was made half a node away from where the node actually landed.
+ */
+export function emptySpotCenter(
+  existing: Box[],
+  view: Box | undefined,
+  center: { x: number; y: number },
+  size: { w: number; h: number },
+  gap = 28
+): { x: number; y: number } {
+  const topLeft = { x: center.x - size.w / 2, y: center.y - size.h / 2 }
+  const at = freeSpot(existing, topLeft, size, gap, view)
+  return at === topLeft ? center : { x: at.x + size.w / 2, y: at.y + size.h / 2 }
 }
 
 /**

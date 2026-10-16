@@ -36,6 +36,10 @@ export const HIDEABLE_MENU_ITEMS: readonly HideableRow[] = [
 
 /** Hideable terminal node header buttons, in header order. */
 export const HIDEABLE_HEADER_BUTTONS: readonly HideableRow[] = [
+  // Not a button but the model + context-usage pill (issue #1141). `ContextMeter` asks this id
+  // itself, so it hides on all three places the pill is drawn: node header, kanban card, card
+  // modal. Display only — usage tracking and the ⌘M composer's model label are unaffected.
+  { id: 'context-meter', label: 'Model & context meter' },
   { id: 'maximize', label: 'Maximize' },
   { id: 'refresh', label: 'Refresh' },
   { id: 'mic', label: 'Dictate' },
@@ -61,5 +65,7 @@ const HIDEABLE_IDS = new Set<string>(
  * ignored, and an id outside the inventory stays visible no matter what the list says.
  */
 export function isHidden(id: string, hidden: readonly string[]): boolean {
-  return HIDEABLE_IDS.has(id) && hidden.includes(id)
+  // settings.json is hand-editable and nothing normalizes these two lists on load: a non-array
+  // value must read as "nothing hidden", not throw inside a node header's render.
+  return HIDEABLE_IDS.has(id) && Array.isArray(hidden) && hidden.includes(id)
 }

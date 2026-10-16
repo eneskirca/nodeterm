@@ -14,6 +14,10 @@ describe('isHidden', () => {
     for (const id of ['delete', 'restart-agent', 'search', 'close', 'branch'])
       expect(isHidden(id, [id])).toBe(false)
   })
+  it('reads a hand-edited non-array value as nothing hidden', () => {
+    for (const bad of [5, 'context-meter', null, undefined, { 'context-meter': true }])
+      expect(isHidden('context-meter', bad as unknown as string[])).toBe(false)
+  })
   it('ignores unknown ids in the list', () => {
     expect(isHidden('duplicate', ['nonsense', 'duplicate'])).toBe(true)
     expect(isHidden('nonsense', ['nonsense'])).toBe(false)
@@ -27,7 +31,7 @@ describe('hideable inventories', () => {
       'markdown-view', 'refresh-terminal', 'live-link', 'vanilla-restart'
     ])
     expect(HIDEABLE_HEADER_BUTTONS.map((r) => r.id)).toEqual([
-      'maximize', 'refresh', 'mic', 'ai-name', 'comments', 'share-link', 'hide-fanout', 'tidy-fanout', 'md-hint'
+      'context-meter', 'maximize', 'refresh', 'mic', 'ai-name', 'comments', 'share-link', 'hide-fanout', 'tidy-fanout', 'md-hint'
     ])
   })
   it('gives every entry a user-facing label', () => {

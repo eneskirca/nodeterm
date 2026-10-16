@@ -47,7 +47,9 @@ export const APPEARANCE_RESET_KEYS = [
   'canvasDots',
   'glassTint',
   'glassBlurWhileMoving',
-  'windowTitleActiveSession'
+  'windowTitleActiveSession',
+  'stickyNoteBacking',
+  'groupFrameBacking'
 ] as const satisfies readonly (keyof Settings)[]
 
 /** The defaults for `keys`, as a patch for `useSettings.update`. */

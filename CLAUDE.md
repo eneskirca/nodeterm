@@ -119,10 +119,12 @@ whole envelope in its composer and never submitted it, so the delivery reported 
 separate Enter moments later sent it. A pane that never shows the envelope gets no Enter at all.
 **Both Windows owner reads get a longer budget than the 2 s `PANE_PROBE_TIMEOUT_MS`.** The session
 host's `messageOwnerV1` and `NativeWindowsPane.owner()` run the same PowerShell console/CIM probe
-(`readWindowsConsoleOwner`, its own child bounded at 4 s), measured at ~2.4 s on a loaded Windows 11
-machine — so under the 2 s bound every Windows target read `unknown` and refused as
-`targetPaneUnreadable`, permanently, behind an error that invites a retry. `PtyManager.
-paneProbeTimeoutMs` answers `WINDOWS_PANE_PROBE_TIMEOUT_MS` (8 s) for exactly the backends
+(`readWindowsConsoleOwner`), measured at ~2.4 s one-shot on a loaded Windows 11 machine — so under
+the 2 s bound every Windows target read `unknown` and refused as `targetPaneUnreadable`, behind an
+error that invites a retry (#1211). The #1206 probe worker is fast only once WARM and exits after
+60 s idle, so a message sent minutes after the last meets its 6 s first-request deadline plus the 4 s
+one-shot fallback. `PtyManager.paneProbeTimeoutMs` answers `WINDOWS_PANE_PROBE_TIMEOUT_MS` — DERIVED
+from those two deadlines + 1 s (`session-host/windows-probe-budget.ts`; never a literal) — for exactly the backends
 `paneOwner` routes to that probe, and both shells forward it as the optional
 `AgentMessagingDeps.paneProbeTimeoutMs` through ONE helper, `ptyPaneProbeDeps`, which binds the read
 and its budget together (an optional dep that is not forwarded fails silently). SSH and tmux keep 2 s: that bound exists because
@@ -641,6 +643,22 @@ xterm's SelectionService takes, then a release anywhere), not on `onSelectionCha
 addon's `select()` must never touch the clipboard. Canvas node and kanban modal only, never the
 settings preview; attached once per xterm (it survives park/adopt) and written via the bridge's
 `{ quiet: true }` path so a failed write raises no toast per drag.
+
+**Every viewer answers the tmux client's handshake; only one answer may reach it** (issue #1172).
+A new tmux client queries the terminal it is drawn in (DA1 `ESC[c`, DA2 `ESC[>c`, XTVERSION, OSC
+10/11 — measured on 3.4). With N viewers on one pty (two Server Edition tabs, a canvas node plus its
+kanban card modal, a relay peer) all N xterms answer; tmux consumes ONE DA answer inside its ~5 s
+query timeout and passes the rest — and a lone late one — to the pane as typed input, so
+`1;2c0;276;0c` landed in front of agent launch lines (the echo check passes: the line itself is
+intact) and in live prompts on every reattach. OSC replies are always consumed by tmux. The gate is
+`core/da-reply-gate.ts`, per Session, fed from `proc.onData` and applied in `PtyManager.write`: a write
+made ONLY of DA1/DA2 replies spends one open query of its kind per reply, and a reply with no open
+query (a duplicate, an unsolicited one, or one past `DA_REPLY_TTL_TMUX_MS` = 4 s for a real tmux
+client) is dropped. Rules: match only `CSI ? … c` / `CSI > … c` — no key produces them, while a
+broader report match eats keystrokes (`ESC[1;2R` is CPR AND Shift+F3); touch only whole reply-only
+writes (xterm.js emits each reply as its own data event, so a mixed write is a person); never close
+the gate for the session's life (a pane app's DCS-passthrough query shows up as the same `ESC[c` and
+gets exactly one answer).
 
 **A tmux client is not necessarily a watcher.** `SessionInfo.clients` is a COUNT
 (`#{session_attached}`), never a boolean, because one session can hold several: the app's painter,
@@ -1165,6 +1183,19 @@ and the Claude CLI there then turned transcript saving off (no ⌘M view, no con
 (`core/nested-agent-env.ts`) and `ACCOUNT_SCOPE_UPDATE_ENV` lists the same names, so a tmux server
 seeded from such an environment does not hand them back (the #419 mechanism). Explicit names, never a
 `CLAUDE*` prefix sweep: `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are how a managed account is selected.
+
+**The local tmux CLIENT is spawned from `localTmuxClientCwd()` (home, else `/`), never the node's
+cwd — the pane's directory rides `new-session -c` only** (issue #1131). Any client can be the one
+that starts the shared server, the server keeps that client's cwd for life, and from tmux 3.7
+`spawn.c` applies a pane's `-c` only when the server's own `getcwd()` succeeds: once the dir the
+server started in is deleted (a removed worktree), every NEW pane on the server inherits the deleted
+dir whatever `-c` said, and agents launched there hang. MEASURED on a locally built tmux 3.7c
+(private socket): client in the doomed dir → `-c <proj>` pane at `<gone> (deleted)`; client in
+`$HOME` → pane at `<proj>`. tmux 3.4–3.6 honour `-c` either way, which is why CI cannot reproduce it
+and the guard is a spawn-options assertion (`pty-tmux-client-cwd.test.ts`). The plain-shell fallback
+is the pane itself and keeps the project cwd; remote tmux is started from an ssh exec channel, which
+sshd places in the login home. A server started by an earlier build keeps its old cwd until it is
+restarted (`tmux -L node-terminal kill-server`, which ends every session).
 
 **A session-host session follows its most recently ACTIVE viewer, like tmux's `window-size
 latest`** (issue #914). Under tmux a relay-mirrored phone is its own tmux client, so dismissing its
@@ -2217,6 +2248,49 @@ click, relative or http(s), navigated the app's own tab away. Two layers now:
   and query ignored, so reload and dev HMR work); a safe external scheme goes to the OS; everything
   else — any other `file://` path, any other dev-server path — is blocked.
 
+### Browser control geometry (#539)
+
+`browser-actions.ts` waits for quiet layout metrics after wheel input and before resolving
+click/type targets; the CDP acknowledgement itself is not a rendered frame. Polling has an
+initial grace period, a quiet window and a bounded sample count. A continuously moving page
+returns a refusal instead of a misleading movement report.
+
+`driveBrowser` permits only one active action per guest session so a click cannot overtake a
+scroll's settlement. Revocation during a polling delay aborts without reattaching the debugger.
+
+**`--screenshot --full true` renders the page as ONE viewport** (`browser-screenshot.ts`
+`captureFullPage`). `captureBeyondViewport` alone paints off-viewport layers without re-laying the
+page out: MEASURED on Electron 42.9.1 against a page scrolled 400px, the sticky header came out at
+y=400 and the fixed footer mid-image — the reported "header twice / overlapping" shot. The capture
+now sends `Emulation.setDeviceMetricsOverride` (width unchanged, height = content height, capped at
+`MAX_VIEWPORT_OVERRIDE` 16384 and said so), settles, captures, clears in `finally`, and puts the
+scroll back with one wheel (an override that tall clamps scroll to 0 and clearing does not restore
+it — measured); a position it could not restore is in the reply. Rules a refactor must keep:
+- **The allowlist admits exactly that shape** — the four keys, bounded integers,
+  `deviceScaleFactor: 0`, `mobile: false`, plus a parameterless clear; every other Emulation method
+  stays default-denied. No agent value reaches it; a caller-sized viewport (a resize verb, #539's
+  feature ask) is a separate decision with its own validator.
+- **The override survives `debugger.detach()` and a reload** (measured), so its lifecycle is the
+  LEASE's: `BrowserSession.metricsOverridden` goes up when the set is sent and down only on a
+  confirmed clear; every detach we make sends the clear first (measured to take effect when sent
+  immediately before `detach()`), and after a detach we did not make the FIRST command of the next
+  attach is the clear. The screenshot never reattaches a released lease to clear or restore.
+- Side effect, stated in the agent text: the page sees one resize, so `100vh` content renders
+  taller (one bounded re-measure follows growth).
+- Residual, stated: a detach we did not make (not our release/idle/revoke, not page teardown) in
+  the sub-second capture window leaves the page tall until the node is next driven. No path we
+  know triggers one today (DevTools does not detach the lease — see browser-lease.ts's probe note).
+The disposable probe `scripts/probes/browser-539.ts` asserts all of it on a real Electron
+(header once at the top, footer once at the bottom, scroll restored, release clears).
+
+`browser` and `open-browser` reject unknown flags through ONE gate, `browserFlagRefusal`
+(`core/canvas-control-core.ts`): the Server Edition runs it inside `parseControlRequest`, and desktop
+main calls it directly, because that handler never runs the parser (the `--issue` trap — #918's first
+version only reached the Server Edition). This does not add resize, console, network or
+attribute-reading actions. Server Edition retains its explicit
+browser-control refusal; its supported `open-browser` route shares flag validation. Mobile has
+no new wire fields or UI; host-side Desktop control inherits the fix.
+
 ### Webview keep-alive across project switches (browser/web nodes)
 
 Issue #301: a project switch used to reload every browser node's page — SPA state, forms, scroll,
@@ -2497,6 +2571,22 @@ else, and its context links must keep classifying across restarts).
   hook server's try/catch before), never the node's delivery chain. A remote (SSH) grok node's file is on its host, so it reads "cannot
   tell" and behaves exactly as before — a remote leg is a follow-up. Unmeasured: `events.jsonl`'s
   shape on other grok versions (a changed shape degrades to today's behaviour).
+- **Codex NEEDS YOU is checked against the session rollout under its auto-reviewer**
+  (`core/agents/codex-permission-gate.ts`, issue #1171, in the hook server, so both shells get it).
+  With `approvals_reviewer = "auto_review"` codex fires `PermissionRequest`, then its own reviewer
+  subagent approves or refuses with nobody asked; no hook fires until the approved command's
+  `PostToolUse`, so the node read NEEDS YOU for the review plus the whole command. MEASURED
+  (2026-10-16, private CODEX_HOME + fake Responses model, codex 0.156.1 `exec` and 0.163.0 TUI;
+  fixture `shared/agents/__fixtures__/codex/auto-review-permission.json`): the hook payload has NO
+  reviewer field; the rollout's per-turn `turn_context` carries `approvals_reviewer` and a `turn_id`
+  equal to the hook's, already on disk when the hook runs; `guardian_subagent` is recorded as
+  `auto_review`; a failed review rejects to the agent, never to a person. Rules: a closed match (the
+  `turn_context` for THIS `turn_id`, value in `CODEX_AUTO_REVIEWERS`) suppresses the event, so the
+  node keeps PreToolUse's `working`; everything else — no `turn_id`, unknown value, a path outside
+  the codex sessions roots (system `$CODEX_HOME/sessions`, managed `~/.nodeterm/cx/<16hex>/sessions`),
+  unreadable file (O_NOFOLLOW), no match within the 16 MB backward scan, a read over 500 ms — is
+  published unchanged as `waiting`. The hook reply never waits on the read; later events of the
+  node wait behind it. A remote (SSH) codex node's rollout is on its host, so it behaves as before.
 - **Grok chat view (⌘M + phone `chat.page`)** — `parseGrokChat` (`core/grok-chat.ts`) reads
   `chat_history.jsonl` into claude's `ChatMessage`/`ChatPart` shapes (no new wire field): typed
   prompts, assistant text, tool calls (`arg` = the salient argument — `command`, `target_file`, …, in
@@ -3061,10 +3151,21 @@ else, and its context links must keep classifying across restarts).
   file is KEPT and listed in Settings, bounded at 20 — legacy blocks, our hook scripts);
   **undecided** = nothing either way. Server `installHooks: false` is a hard veto. Rules a refactor
   must not undo:
-  - **Grandfathering is decided at boot from OUR files only** (non-empty `~/.nodeterm/agent-hooks/`
-    or the userData shims), before `settingsStore.registerIpc()` and before any install: an existing
-    install gets every agent + `hostDefault` enabled and a one-time notice; a new install gets NO
-    record and a banner (Enable all / Choose… / Not now — "Not now" declines all, so it asks once).
+  - **Grandfathering is decided at boot from OUR files only** (a non-empty `~/.nodeterm/agent-hooks/`),
+    before `settingsStore.registerIpc()` and before any install: an existing install gets every
+    agent + `hostDefault` enabled and a one-time notice; a new install gets NO record and a banner
+    (Enable all / Choose… / Not now — "Not now" declines all, so it asks once). **Evidence must be a
+    file only a pre-consent build wrote** — the userData canvas/context shims are written on EVERY
+    boot, consent or not, and counting them grandfathered every fresh install on its second boot
+    (issue #1149: a systemd restart, the update timer, a desktop quit before the banner was
+    answered — 11 hook entries in `~/.claude/settings.json`, Codex `trusted_hash` pre-approvals).
+    And the decision is made ONCE: the first boot that finds no evidence writes
+    `<userData>/integration-consent-fresh-install` (`FRESH_INSTALL_MARKER`), after which no boot of
+    that install grandfathers — so a sibling install sharing `~/.nodeterm` (desktop + Server Edition)
+    enabling ITS hooks cannot grandfather this one either. A marker FILE, not a settings key:
+    `SettingsStore.init` reads an unreadable settings.json as the defaults, and a boot-time save of
+    a "not answered yet" record would overwrite the user's file. Same function, same call, both
+    shells.
   - **No caller reaches an installer by omission.** `installManagedAgentHooks(agents)` takes a
     REQUIRED set; `RemoteHooks` takes a REQUIRED plan (`NO_REMOTE_INTEGRATION` = fail-closed);
     account add/link asks `currentIntegrationLifecycle()` and writes nothing when none is registered.
@@ -3092,6 +3193,29 @@ else, and its context links must keep classifying across restarts).
   installer needs is why events are typed `ManagedHookEvent` (`string | {event, matcher}`): grok's
   tool matcher is a REGEX and must be `.*` — a bare `*` is invalid and silently stops tool events
   firing. Plain-string events keep their byte-identical output for every other agent.
+  **opencode gets TWO plugin files, because no single module loads on both of its generations**
+  (issue #1136, `hooks/opencode.ts`, measured 2026-10-16 on @opencode/cli 2.0.30 and opencode-ai
+  1.1.4 / 1.2.10 / 1.18.28 / 1.18.33). 2.x accepts only a default export OBJECT `{ id, setup }` (a
+  function default is refused) and loads `plugins/*.js` and plugin DIRECTORIES; 1.x loads only
+  `{plugin,plugins}/*.{ts,js}` files, and up to **1.2.10 calls every export as a function** — an
+  object default there throws and kills every opencode command on the machine, inside nodeterm or
+  not (bisected: 1.2.10 crashes, 1.2.11 does not). So `plugins/nodeterm-status.js` keeps ONLY the
+  named 1.x export (2.x logs a harmless "failed to load plugin" WARN for it at every start) and 2.x
+  gets `plugins/nodeterm-status-v2/index.js`, a directory no 1.x glob matches. **Never add a default
+  export to the 1.x file**, and never "simplify" the pair back into one dual-shape file. A
+  process-wide latch (`Symbol.for('nodeterm.opencode.status.api')`, keyed by API, not by call)
+  keeps a process that runs both from posting twice. The 2.x plugin translates its event stream to
+  the 1.x wire names (`session.execution.started` → user `message.updated`, `…succeeded|interrupted`
+  → `session.idle`, `…failed` → `session.error`, `form.*` → `question.*`), so `normalizeOpencode` has
+  one dialect, and it drops a subagent child session's turn events (forwarding its permission/form
+  under the root session). **It refuses to run inside 2.x's shared background server**
+  (`serve --service`, argv): by default every 2.x CLI talks to ONE server that keeps the env of
+  whichever pane started it and outlives it — measured, a second pane's events carried the first
+  pane's `NODETERM_NODE_ID` — so posting from it would paint one node's status on another (the
+  codex `--no-daemon` problem). Only a `--standalone` server (the pane's own `serve --stdio` child)
+  reports, so **2.x status needs `opencode --standalone`**; nodeterm does not pass it yet (1.x exits
+  on the unknown flag, so it needs a codex-style `--help` probe — follow-up), and until then the
+  Launch commands override (`opencode --standalone`) is the user's switch.
   **Codex is the one agent whose hook command is NOT a POSIX one-liner on Windows** (issue #567):
   it builds the command as `cmd.exe /C <string>` (`codex-rs/hooks/src/engine/command_runner.rs`,
   rust-v0.151.0) unless the session has a shell configured, which a default Windows install has
@@ -4789,8 +4913,18 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   (`carryLocalNodeExec`); the reflector forwards one only between OWNER clients
   (`CorePlatform.isOwnerClient`: the app window, a cookie-authenticated Server Edition tab — never a
   relay peer), stamped `origin: 'core'`, which a client cannot supply and a relay tab ignores. That
-  owner→owner leg is load-bearing: it is how two Server Edition tabs agree a launch was claimed, and
-  how a headless delivery's clear reaches the browser, so nothing types it twice. Our OWN writes
+  owner→owner leg is load-bearing: it is how two Server Edition tabs converge on a launch's
+  attempted/cleared state, and how a headless delivery's clear reaches the browser. **It is NOT the
+  exactly-once guarantee** — it lands only after a publish → reflector → apply hop, and two tabs on
+  one project both claimed a fresh node's launch inside that window and both typed it (#1173). The
+  claim therefore asks the CORE first: `commitLaunchAttempt`'s `claim` → `workspace.claimLaunch`
+  (`workspace:claim-launch`, `core/launch-claim-ledger.ts`, registered by `WorkspaceStore` in both
+  shells, host-only). Keyed (node id, command) → the claiming CLIENT: the first claimant owns it, a
+  later AUTOMATIC claim from another client answers `elsewhere` and types nothing and marks
+  nothing (the writer's outcome `elsewhere` is not a failure; the canvas loop keeps it in flight),
+  the owner asking again is still the owner, and a manual Run now is never refused. In memory and
+  bounded (4096): a process restart forgets it, and the persisted `attempted` mark is the barrier
+  then. Desktop has one renderer, so its single claimer always wins. Our OWN writes
   into a background project go through `applyOwnNodeMutation` (unstripped — a cold open keeps its
   launch, a patch to `undefined` clears it); `applyNodeMutation` is the peer path (the one reducer,
   `applyCanvasOp`). On a Server Edition that governs a shared project, the canvas authority hears
@@ -5414,8 +5548,24 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   host whose transcripts and tmux it reads, and SSH projects are a desktop-only concept. Discovery is the `get-linked-context` skill in each consented
   context-link-capable agent's own skills dir (since #744; the old marker block
   `<!-- nodeterm:get-linked-context:start/end -->` in AGENTS.md / GEMINI.md is stripped — see
-  **Agent-integration consent**). On connect an idle-gated one-line note is injected into each endpoint
-  (claude → skill pointer; codex/gemini → inline CLI command via `contextLink.info()`).
+  **Agent-integration consent**). On connect a one-line discovery note is typed into each endpoint
+  (claude → skill pointer; codex/gemini → inline CLI command via `contextLink.info()`) — **only into
+  an idle agent at an EMPTY prompt** (issue #1144: it used to be a bare `sendText` gated only on
+  `state !== 'working'`, so it was pasted in front of the user's half-typed draft and the Enter
+  submitted both as one prompt, and a `blocked`/`waiting` pane would have had its dialog ANSWERED).
+  Two halves: the renderer's `linkNoteRefusal` (`renderer/lib/noteLink.ts` — the ⌘M composer's
+  `chatSendRefusal`: never working / waiting / blocked / CLI gone) and core's
+  `PtyManager.sendToEmptyPrompt` (`pty:send-to-empty-prompt`, both shells), which reads a STYLED
+  capture with `readClaudeComposer` (`shared/agents/claude-screen.ts`) and writes only on `empty`,
+  inside `serializePaneWrite`. MEASURED on Claude Code 2.1.301 (fixtures
+  `__fixtures__/claude/composer-capture.json`): the empty composer's placeholder is SGR 2 (dim), a
+  draft is not, shell mode (`!`) is a draft. Only dim text counts as placeholder, so a capture that
+  lost its SGR reads `draft` — the safe direction. Emptiness is therefore provable only for an agent
+  in `SCREEN_DIALOG_READABLE` (claude); **every other agent gets no note** (`unsupported`). A refused
+  note is DROPPED, not queued — the link is the capability (pull-based), the note only advertises
+  it, and a note arriving minutes later is the same unsolicited prompt at a moment nobody chose —
+  and every skipped endpoint is named in ONE info strip (`linkNoteSkippedNotice`). Residual: a
+  keystroke in the milliseconds between the capture and the write.
   (Replaced the earlier MCP-based bridge.)
   **One-way links (issue #852):** a context bridge may carry `reader` (`BridgeLink.reader`, the ONE
   endpoint allowed to read the other); absent = both read, which is every pre-#852 link, so old
@@ -5442,9 +5592,9 @@ bridges enter live state only via `appendBridgeEdges`) and the server
   which the peer then saved and published back. A malformed reader on the wire REFUSES the op
   (never dropped — dropping widens), and a rope never carries one.
   **Note links:** a sticky note can be connected to ANY terminal node (one-way, sticky →
-  terminal). On connect, agent sessions get a one-shot idle-gated push of the note text
-  (`buildNotePushMessage`, single-line, truncated at 2000 chars); plain terminals get no
-  push (sendText appends Enter — the text would execute). The note's live text also rides
+  terminal). On connect, agent sessions get a one-shot push of the note text
+  (`buildNotePushMessage`, single-line, truncated at 2000 chars) through the SAME empty-prompt gate
+  as the context-link note above (#1144); plain terminals get no push (the text would execute). The note's live text also rides
   the link file (`ContextLinkInfo.note`), so Claude reads the current text via the
   get-linked-context CLI (`summary`/`transcript` print it; `list` marks `(note)`). Pure
   edge/push/map logic in `renderer/lib/noteLink.ts`.
@@ -5806,6 +5956,11 @@ bridges enter live state only via `appendBridgeEdges`) and the server
   read usage." in both the single-account and multi-account popovers, including beside healthy
   provider rows. Nonempty snapshots retain their last-known bars on error; no error-specific
   authentication advice is inferred from the status.
+  **Local Codex reads (issue #1168)**: an HTTP 429 from the backend returns `rateLimited` and
+  starts a per-home cooldown (`Retry-After`, else 2 min doubling, 30 s–1 h); during it NEITHER
+  tier is asked — the app-server fallback reads the same account's limits, so falling through
+  after a 429 spent the budget twice. The service holds each account row's last good numbers
+  (`holdLastGoodProvider`). The SSH Codex reader has no cooldown yet.
 
 - **Remote usage** (SSH hosts, `src/core/usage/remote-claude-usage.ts`) — the source behind the
   SSH scope above. v1 excluded remote accounts, which left a user whose Claude only ever runs on a

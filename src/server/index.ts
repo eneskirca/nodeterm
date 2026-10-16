@@ -275,7 +275,8 @@ export async function startServer(
     console.warn('[model-gateway] could not migrate the legacy API key to secret storage', error)
   }
   // Agent-integration consent (issue #744): grandfather an install from before this feature (our own
-  // hook scripts / shims are on disk) as enabled, before any browser can load settings.
+  // hook scripts are on disk) as enabled, before any browser can load settings. Decided once per
+  // install: a first boot without evidence is marked fresh and never grandfathered later (#1149).
   if (config.installHooks !== false) {
     try {
       const grandfathered = resolveIntegrationConsentAtBoot(

@@ -1,6 +1,5 @@
 import { PrepareUpdateDialog } from '../components/PrepareUpdateDialog'
 import type { PrepNode } from '../lib/updatePrep'
-import { reportTextDelivery } from '../lib/textDelivery'
 import { useDevPortScanner } from './useDevPortScanner'
 import { withCodexNoDaemon } from '@shared/agents/codex-daemon'
 import { codexApprovalCaps } from '../state/codexCli'
@@ -402,7 +401,8 @@ import {
   projectTargetFlagRefusal,
   resolveProjectTarget,
   clearAttachConsent,
-  folderName
+  folderName,
+  rootPositionIn
 } from '../lib/projectOpen'
 import {
   absolutePosition,
@@ -414,7 +414,13 @@ import {
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from '../lib/nodeMaximize'
 import { measurePinnedInsets, type ScreenInsets } from '../lib/pinnedInsets'
 import { measureMaximizeInsets, MAXIMIZE_CHROME_SELECTOR } from '../lib/maximizeInsets'
-import { ZONE_GUTTER_PX, zoneTargetRect, type ZoneId } from '../lib/nodeZones'
+import {
+  ZONES,
+  ZONE_COMMANDS,
+  ZONE_GUTTER_PX,
+  zoneTargetRect,
+  type ZoneId
+} from '../lib/nodeZones'
 import {
   recordBreadcrumb,
   stepBreadcrumb,
@@ -668,7 +674,7 @@ import { answerHostedRequest, type HostedAnswer } from '../lib/hostedOwner'
 import { headRequest, type QueuedRequest } from '../lib/hostedPendingQueue'
 import { useHostedPending } from '../state/hostedPending'
 import { hostedInfoFor, isHostedReadOnly, useHostedTeams } from '../state/hostedTeams'
-import { appendBridgeEdges, bridgeToEdge, buildContextLinkNote, contextLinkForEdge, buildNotePushMessage, classifyLink, edgeToBridge, gainedReaders, hiddenLinkIds, isCurrentLinkDirection, linkIdsCoveredByRopes, linkReadPairs, pairKey, planBridges, withLinkReader, type LinkEndpoint } from '../lib/noteLink'
+import { appendBridgeEdges, bridgeToEdge, buildContextLinkNote, contextLinkForEdge, buildNotePushMessage, classifyLink, edgeToBridge, gainedReaders, hiddenLinkIds, isCurrentLinkDirection, linkIdsCoveredByRopes, linkNoteRefusal, linkNoteSkippedNotice, linkReadPairs, pairKey, planBridges, withLinkReader, type LinkEndpoint, type LinkNoteSkip } from '../lib/noteLink'
 import {
   deliveriesToRetire,
   launchesToFire,
@@ -708,6 +714,7 @@ import {
 } from '../lib/edgeModel'
 import { triggerEdges } from '../lib/triggerCard'
 import {
+  emptySpotCenter,
   freeSpot,
   placeBelowSource,
   pendingClaimBoxes,
@@ -780,7 +787,7 @@ import type {
   TranscriptHit
 } from '@shared/types'
 import type { KanbanCreateChoice, KanbanSession } from '../components/kanban/KanbanView'
-import { assignNode, assignedTo, defaultKanban, labelsForCard, migrateProjectTags, resolveColumnRef, unassigned } from '../lib/kanban'
+import { assignNode, defaultKanban, labelsForCard, migrateProjectTags, resolveColumnRef } from '../lib/kanban'
 import { registerWorkspaceDirty } from '../state/workspaceDirty'
 import { snapNodeToGrid } from '../lib/nodeSizing'
 import { snapResizeChanges } from '../lib/resizeSnap'
@@ -953,6 +960,7 @@ import {
 import type { CodexAccount } from '@shared/codex-account'
 import { useSystemCodexAccount } from '../state/systemCodexAccount'
 import { kanbanSessionsFrom, toKanbanSession } from './toKanbanSession'
+import { boardVerbReply } from '../lib/boardVerb'
 import type { TeamStation } from '../lib/teamProgress'
 import { canvasTeamStations, useTeamStations } from '../state/teamStations'
 import { applyPullAutoMove } from '../lib/pullAutoMove'
@@ -2664,6 +2672,13 @@ export function Canvas() {
           launchInFlight.current.delete(f.id)
           return
         }
+        if (outcome === 'elsewhere') {
+          // Another viewer of this project (a second Server Edition tab) claimed this launch and is
+          // typing it (#1173). Not a failure, and nothing to retry: keep it in flight here so the
+          // loop does not ask again, and let that viewer's attempted/cleared state arrive by sync.
+          clearStallTimer(f.id)
+          return
+        }
         // The verified writer already exhausted its bounded echo repair. A failed launch
         // needs an explicit retry; unrelated hooks and remounts must never inject it later.
         setNodes((ns) => ns.map((n) => n.id === f.id && n.data.pendingLaunch
@@ -3668,6 +3683,15 @@ export function Canvas() {
       pending: node.data.pendingLaunch,
       command,
       manual,
+      // Exactly once across every viewer of this project (#1173): every owner tab runs this loop
+      // against its OWN copy of the node, so the decision belongs to the core that owns the shell.
+      claim: api.workspace.claimLaunch
+        ? () => api.workspace.claimLaunch!(nodeId, command, manual)
+        : undefined,
+      // The claim is a round trip: decide against the node as it stands when it answers.
+      current: () => canCommitCanvas(nodesProjectIdRef.current, projectId)
+        ? nodesRef.current.find((n) => n.id === nodeId)?.data.pendingLaunch
+        : undefined,
       update: (pendingLaunch) => {
         const next = nodesRef.current.map((n) => n.id === nodeId
           ? { ...n, data: { ...n.data, pendingLaunch } } : n)
@@ -4833,22 +4857,57 @@ export function Canvas() {
     [agentIdOf]
   )
 
-  // One-shot discovery note into an idle agent endpoint that can now read `otherId` (skip a node
-  // mid-turn so we don't interrupt it). Claude gets the skill pointer; codex/gemini the CLI inline.
-  const announceContextLink = useCallback(
-    async (selfId: string, otherId: string) => {
-      if (useAgentStatus.getState().byId[selfId]?.state === 'working') return
-      const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
-      const { shimPath, platform: shimHost } = await window.nodeTerminal.contextLink.info()
-      // The shim named here is the LOCAL core's; an SSH node's agent runs on its host, whose skill
-      // is POSIX, so only a local node gets the host-platform wording (`.cmd` on Windows).
-      const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
-      void api.pty.sendText(
-        selfId,
-        buildContextLinkNote(agentIdOf(selfId), title, shimPath, isRemoteSessionNode(selfData) ? undefined : shimHost)
-      ).then(reportTextDelivery)
+  // Type one link note into an agent node — ONLY into an idle agent at an EMPTY prompt (issue
+  // #1144: the note used to be pasted + Enter'd over the user's half-typed draft, and into a
+  // blocked/waiting pane whose dialog the Enter would answer). The state gate is the renderer's
+  // (`linkNoteRefusal`), the empty-composer proof is core's (`pty.sendToEmptyPrompt`). Answers why
+  // it was skipped, or null when it was delivered; nothing is queued for later.
+  const pushLinkNote = useCallback(
+    async (targetId: string, text: string): Promise<LinkNoteSkip | null> => {
+      const agentId = agentIdOf(targetId)
+      if (!agentId) return 'unsupported'
+      const refused = linkNoteRefusal(agentId, useAgentStatus.getState().byId[targetId] ?? {})
+      if (refused) return refused
+      try {
+        const r = await api.pty.sendToEmptyPrompt(targetId, text, capabilityAgentId(agentId))
+        return r.sent ? null : r.reason
+      } catch {
+        return 'failed'
+      }
     },
     [agentIdOf]
+  )
+
+  // One-shot discovery note into an agent endpoint that can now read `otherId`. Claude gets the
+  // skill pointer; codex/gemini the CLI inline. Answers the skip (with the node's title for the
+  // notice), or null when delivered.
+  const announceContextLink = useCallback(
+    async (selfId: string, otherId: string): Promise<{ title: string; reason: LinkNoteSkip } | null> => {
+      const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
+      const selfTitle = (selfData?.title as string) || selfId
+      const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
+      let note: string
+      try {
+        const { shimPath, platform: shimHost } = await window.nodeTerminal.contextLink.info()
+        // The shim named here is the LOCAL core's; an SSH node's agent runs on its host, whose skill
+        // is POSIX, so only a local node gets the host-platform wording (`.cmd` on Windows).
+        note = buildContextLinkNote(agentIdOf(selfId), title, shimPath, isRemoteSessionNode(selfData) ? undefined : shimHost)
+      } catch {
+        return { title: selfTitle, reason: 'failed' }
+      }
+      const reason = await pushLinkNote(selfId, note)
+      return reason ? { title: selfTitle, reason } : null
+    },
+    [agentIdOf, pushLinkNote]
+  )
+  // Every endpoint that was not told is named in ONE strip — a skipped note is never silent.
+  const reportLinkNotes = useCallback(
+    async (kind: 'context' | 'note', pending: Promise<{ title: string; reason: LinkNoteSkip } | null>[]) => {
+      const skips = (await Promise.all(pending)).filter((s): s is { title: string; reason: LinkNoteSkip } => s !== null)
+      const n = linkNoteSkippedNotice(kind, skips)
+      if (n) setNotice(n)
+    },
+    []
   )
 
   // Draw a link: context (two agent nodes read each other) or note (sticky text becomes
@@ -4876,28 +4935,29 @@ export function Canvas() {
         addEdge({ id: `bridge-${source}-${target}`, source, target }, es)
       )
       markDirty()
-      const status = useAgentStatus.getState().byId
       if (kind === 'context') {
-        // Discovery: tell each idle endpoint it is now linked (skip a node mid-turn so we
-        // don't interrupt it). Claude gets the skill pointer; codex/gemini get the CLI inline.
-        void announceContextLink(source, target)
-        void announceContextLink(target, source)
+        // Discovery: tell each endpoint it is now linked — only where it is idle at an empty
+        // prompt (pushLinkNote); every endpoint skipped is named in one notice.
+        void reportLinkNotes('context', [announceContextLink(source, target), announceContextLink(target, source)])
         return
       }
-      // Note link: push the note text once into the terminal — agent sessions only.
-      // pty.sendText appends Enter, so pushing into a plain shell would EXECUTE the text
-      // as a command; plain terminals get the link file but no injection.
+      // Note link: push the note text once into the terminal — agent sessions only. A plain
+      // shell would EXECUTE the text as a command; plain terminals get the link file but no
+      // injection, and say nothing (there is no agent there to tell).
       if (!agentIdOf(target)) return
-      if (status[target]?.state === 'working') return
       const sticky = nodes.find((n) => n.id === source)
       const msg = buildNotePushMessage(
         (sticky?.data.title as string) || 'Note',
         (sticky?.data.text as string) ?? '',
         agentIdOf(target)
       )
-      if (msg) void api.pty.sendText(target, msg).then(reportTextDelivery)
+      if (!msg) return
+      const targetTitle = (nodes.find((n) => n.id === target)?.data.title as string) || target
+      void reportLinkNotes('note', [
+        pushLinkNote(target, msg).then((reason) => (reason ? { title: targetTitle, reason } : null))
+      ])
     },
-    [linkEndpointOf, agentIdOf, setLinkEdges, markDirty, nodes, announceContextLink]
+    [linkEndpointOf, agentIdOf, setLinkEdges, markDirty, nodes, announceContextLink, pushLinkNote, reportLinkNotes]
   )
 
   // Right-click a context link: pick its direction (issue #852) or remove it. Direction is a
@@ -4925,9 +4985,10 @@ export function Canvas() {
           es.map((x) => (x.id === link.id ? { ...bridgeToEdge(next), selected: x.selected } : x))
         )
         markDirty()
-        for (const id of gainedReaders(current, next)) {
-          void announceContextLink(id, id === next.source ? next.target : next.source)
-        }
+        void reportLinkNotes(
+          'context',
+          gainedReaders(current, next).map((id) => announceContextLink(id, id === next.source ? next.target : next.source))
+        )
       }
       const a = titleOf(link.source)
       const b = titleOf(link.target)
@@ -4959,7 +5020,7 @@ export function Canvas() {
         ]
       })
     },
-    [setLinkEdges, markDirty, announceContextLink]
+    [setLinkEdges, markDirty, announceContextLink, reportLinkNotes]
   )
 
   // Of these ropes, the ones that are NOT live waits. A waiting rope's removal means "stop waiting
@@ -5229,33 +5290,50 @@ export function Canvas() {
   }, [screenToFlowPosition])
 
   /**
-   * A non-overlapping drop point for a NODE created without a cursor (dock / palette / kanban
-   * board) — otherwise every one lands on the view center and piles into a stack you only discover
-   * when you switch back to the canvas. Returns undefined only if the view isn't measured yet.
+   * A non-overlapping drop point for a NODE created without a cursor (dock / palette / keyboard
+   * shortcut / kanban board) — otherwise every one lands on the view center and piles into a stack
+   * you only discover when you switch back to the canvas. Returns undefined only if the view isn't
+   * measured yet.
+   *
+   * Issue #1140: a node's answer stays INSIDE the visible canvas (minus pinned panels, the controls
+   * and the dock — `measureMaximizeInsets`), so a node made from a shortcut never lands where the
+   * user cannot see it; a full view gets the least-covered visible spot instead. The camera is not
+   * moved.
    */
   // `box` places something other than a default-sized node — a worktree frame, say. For a box the
-  // answer is a TOP-LEFT that centres it on the view (`freeSpot` answers top-lefts); without one
-  // the historical point is returned unchanged.
+  // answer is a TOP-LEFT that centres it on the view (`freeSpot` answers top-lefts); without one it
+  // is a CENTRE, which is what the node factories take (`placeAt` subtracts half the size) — the
+  // search itself is made on the centred box the factory will place (`emptySpotCenter`).
   const emptyNodePos = useCallback((box?: { w: number; h: number }): { x: number; y: number } | undefined => {
+    const wrapRect = flowWrapRef.current?.getBoundingClientRect()
     const center = viewCenter()
-    if (!center) return undefined
-    const preferred = box ? { x: center.x - box.w / 2, y: center.y - box.h / 2 } : center
-    const s = useSettings.getState().settings
-    const w = s.defaultNodeWidth || 640
-    const h = s.defaultNodeHeight || 440
+    if (!center || !wrapRect) return undefined
+    const insets = measureMaximizeInsets(wrapRect)
+    const a = screenToFlowPosition({ x: wrapRect.left + insets.left, y: wrapRect.top + (insets.top ?? 0) })
+    const b = screenToFlowPosition({ x: wrapRect.right - insets.right, y: wrapRect.bottom - (insets.bottom ?? 0) })
+    const view = b.x > a.x && b.y > a.y ? { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y } : undefined
+    const term = terminalNodeSize()
+    const w = term.width
+    const h = term.height
     // Real, laid-out nodes only (skip ephemeral subagent/loop cards, which aren't persisted and
-    // vanish on their own — see useAgentNodes).
+    // vanish on their own — see useAgentNodes). Positions in ROOT space: a group child's position
+    // is relative to its frame.
     const ephemeral = new Set(Object.keys(useAgentNodes.getState().byId))
-    const boxes = nodesRef.current
-      .filter((n) => !ephemeral.has(n.id))
-      .map((n) => ({
-        x: n.position.x,
-        y: n.position.y,
+    const live = nodesRef.current.filter((n) => !ephemeral.has(n.id))
+    const boxes = live.map((n) => {
+      const at = rootPositionIn(live, n)
+      return {
+        x: at.x,
+        y: at.y,
         w: (n.measured?.width as number | undefined) ?? (n.width as number | undefined) ?? w,
         h: (n.measured?.height as number | undefined) ?? (n.height as number | undefined) ?? h
-      }))
-    return freeSpot(boxes, preferred, box ?? { w, h })
-  }, [viewCenter])
+      }
+    })
+    // A frame keeps the unbounded search: drawn over existing nodes it would read as containing
+    // them, which is worse than landing beside the view.
+    if (box) return freeSpot(boxes, { x: center.x - box.w / 2, y: center.y - box.h / 2 }, box)
+    return emptySpotCenter(boxes, view, center, { w, h })
+  }, [viewCenter, screenToFlowPosition])
 
   /** The checkout a Source Control action refers to. The panel hands its ACTIVE SCOPE's cwd
    *  (main checkout or a bound worktree) with every relative path, so the diff/agent node it opens
@@ -10503,10 +10581,10 @@ export function Canvas() {
       'node.focusUp': () => moveNodeFocus('up'),
       'node.focusDown': () => moveNodeFocus('down'),
       'node.maximize': toggleMaximizeCommand,
-      'node.zoneLeft': () => snapNodeToZone('left-half'),
-      'node.zoneRight': () => snapNodeToZone('right-half'),
-      'node.zoneUp': () => snapNodeToZone('top-half'),
-      'node.zoneDown': () => snapNodeToZone('bottom-half')
+      // Every zone, halves through quarters, from the one table (issue #1169).
+      ...Object.fromEntries(
+        ZONES.map((z) => [ZONE_COMMANDS[z.id], () => snapNodeToZone(z.id)])
+      )
       // node.close / node.toggleMarkdown: main-process intercepted on desktop; deliberately
       // no renderer handler here. The browser owns ⌘W in the Server Edition (see
       // bridge/stubs.ts); ⌘/Ctrl+M there is matched by the bridge's OWN window listener
@@ -13604,6 +13682,38 @@ export function Canvas() {
           return
         }
       }
+      // #1179: `board --project <id>` reads THAT project's board. Main has already gated the id (own
+      // or granted, PROJECT_TARGETABLE_VERBS); this resolves it with the same belt as `run`. It used
+      // to fall through and answer with the caller's own board, silently about the wrong project.
+      // Read-only: the board is answered from the target's nodes (live when it is on screen, else
+      // its serialized ones) and never moves the user's view.
+      if (verb === 'board' && args.project !== undefined) {
+        const boardStore = useProjects.getState()
+        const boardResolved = resolveProjectTarget({
+          targetId: args.project,
+          sourceNodeId,
+          liveNodes: nodesRef.current,
+          projects: boardStore.projects,
+          activeProjectId: boardStore.activeProjectId,
+          sshVerbWord: 'opening'
+        })
+        if (boardResolved.kind === 'refused') {
+          reply({ ok: false, error: boardResolved.error })
+          return
+        }
+        if (boardResolved.kind === 'target') {
+          const target = boardResolved.project
+          const targetNodes =
+            target.id === boardStore.activeProjectId && nodesProjectIdRef.current === target.id
+              ? (nodesRef.current as CanvasNode[])
+              : nodeStatesToFlow(target.nodes)
+          const sessions = targetNodes
+            .map(toKanbanSession)
+            .filter((s): s is KanbanSession => s !== null)
+          reply({ ok: true, ...boardVerbReply(target.kanban, sessions, target.name) })
+          return
+        }
+      }
       // ── end of the early-handled (store-answered) verbs ─────────────────────────────────────
 
       // Which canvas answers? React Flow holds only the ACTIVE project's nodes, but every OTHER
@@ -15960,56 +16070,19 @@ export function Canvas() {
             return
           }
           case 'board': {
-            // Read-only snapshot of the CALLER'S project's kanban board: columns + the session
-            // cards filed in each, plus the virtual Ungrouped column. The board's cards ARE the
-            // canvas session nodes (toKanbanSession), derived from `ctlNodes()` — the board file
-            // only stores column assignments, so a session with no/dangling assignment sits
-            // Ungrouped.
+            // Read-only snapshot of the CALLER'S project's kanban board (lib/boardVerb): columns +
+            // the session cards filed in each, plus the virtual Ungrouped column. The board's cards
+            // ARE the canvas session nodes (toKanbanSession), derived from `ctlNodes()`.
+            // `board --project <other>` never reaches here — it is answered before the routing.
             //
             // `ctlProject`, not `activeProjectId`: off canvas those are two different projects, and
             // reading the active one would answer a background agent's `board` with whatever the
             // human happens to be looking at. On screen they are the same project, which is why
             // the old read was never wrong in practice — the travel had already made it true.
-            const board = ctlProject?.kanban
             const sessions = ctlNodes()
               .map(toKanbanSession)
               .filter((s): s is KanbanSession => s !== null)
-            const titleOf = new Map(sessions.map((s) => [s.id, s.title || 'Untitled']))
-            const sessionIds = sessions.map((s) => s.id)
-            if (!board) {
-              // No board yet (lazy default not written) — every session is Ungrouped.
-              const lines = [
-                'Kanban board: (no columns yet — default To Do / In Progress / Done appears on first edit)',
-                `Ungrouped (${sessionIds.length}):`,
-                ...sessionIds.map((id) => `  - ${titleOf.get(id)} (id: ${id})`)
-              ]
-              reply({
-                ok: true,
-                message: lines.join('\n'),
-                result: { columns: [], ungrouped: sessionIds }
-              })
-              return
-            }
-            const columnsOut = board.columns.map((c) => {
-              const ids = assignedTo(board, c.id).filter((id) => titleOf.has(id))
-              return { id: c.id, title: c.title, cards: ids }
-            })
-            const ungroupedIds = unassigned(board, sessionIds)
-            const fmt = (ids: string[]) => ids.map((id) => `  - ${titleOf.get(id)} (id: ${id})`)
-            const lines = [
-              'Kanban board:',
-              ...columnsOut.flatMap((c) => [
-                `${c.title} (${c.cards.length}) [column id: ${c.id}]:`,
-                ...fmt(c.cards)
-              ]),
-              `Ungrouped (${ungroupedIds.length}):`,
-              ...fmt(ungroupedIds)
-            ]
-            reply({
-              ok: true,
-              message: lines.join('\n'),
-              result: { columns: columnsOut, ungrouped: ungroupedIds }
-            })
+            reply({ ok: true, ...boardVerbReply(ctlProject?.kanban, sessions) })
             return
           }
           case 'assign': {

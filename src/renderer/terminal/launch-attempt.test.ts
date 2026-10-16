@@ -104,3 +104,61 @@ it('acknowledges an owning local workspace only after its durable claim save', a
   expect(update).toHaveBeenCalledWith({ after: [], command: 'cmd', attempted: true, manualOnly: true })
   expect(save).toHaveBeenCalledTimes(1)
 })
+
+it('an unreachable claim falls back to the per-viewer barrier (older core, disconnect)', async () => {
+  const update = vi.fn(), save = vi.fn(async () => {})
+  expect(await commitLaunchAttempt({ pending: { after: [], command: 'cmd', attempted: false }, command: 'cmd', manual: false,
+    update, save, claim: async () => { throw new Error('E_DISCONNECTED') } })).toBe(true)
+  expect(save).toHaveBeenCalledTimes(1)
+})
+
+it('a launch that changed while the core was asked is not written over', async () => {
+  let pending: PendingLaunch | undefined = { after: [], command: 'cmd', attempted: false }
+  const update = vi.fn(), save = vi.fn(async () => {})
+  const result = commitLaunchAttempt({ pending, current: () => pending, command: 'cmd', manual: false, update, save,
+    claim: async () => { pending = { after: [], command: 'cmd', attempted: true, manualOnly: true }; return 'claimed' } })
+  expect(await result).toBe(false)
+  expect(update).not.toHaveBeenCalled()
+})
+
+// #1173: two viewers of one project (two Server Edition tabs) each hold their OWN copy of a fresh
+// node's never-attempted launch. The per-viewer barrier alone let both claim and both type.
+it('two viewers with their own copies of one launch: exactly one types it, the other stands down', async () => {
+  // The core ledger's contract (src/core/launch-claim-ledger.ts, tested there): first claimant
+  // owns the launch. The real ledger cannot be imported across the web/node project boundary.
+  const owners = new Map<string, number>()
+  const ledger = { claim: (node: string, command: string, _manual: boolean, client: number) => {
+    const owner = owners.get(`${node}\0${command}`)
+    if (owner !== undefined && owner !== client) return 'elsewhere' as const
+    owners.set(`${node}\0${command}`, client)
+    return 'claimed' as const
+  } }
+  const typed: string[] = []
+  const viewer = (client: number) => {
+    let pending: PendingLaunch | undefined = { after: [], command: 'claude --session-id s', attempted: false }
+    const update = vi.fn((next: PendingLaunch) => { pending = next })
+    let echo: ((d: string) => void) | undefined
+    const writer = createLaunchWriter({
+      shellReady: async () => true, killLine: '\x15', cleanup: () => {},
+      io: { write: (d) => { typed.push(`${client}:${d}`); if (d.endsWith('\r')) return; echo?.(d) },
+        onData: (cb) => { echo = cb; return () => {} } },
+      claimAttempt: (manual, command) => commitLaunchAttempt({
+        pending, current: () => pending, command, manual, update, save: async () => {},
+        claim: async () => ledger.claim('node', command, manual, client)
+      })
+    })
+    return { writer, update, pending: () => pending }
+  }
+  const a = viewer(1), b = viewer(2)
+  const [ra, rb] = await Promise.all([a.writer('claude --session-id s', false), b.writer('claude --session-id s', false)])
+  expect([ra, rb].filter((o) => o === 'elsewhere')).toHaveLength(1)
+  expect(typed.filter((t) => t.startsWith('2:'))).toEqual([])
+  expect(typed.some((t) => t.startsWith('1:claude'))).toBe(true)
+  // The viewer that stood down leaves its copy untouched (no ⚠ manualOnly over someone else's launch).
+  expect(b.update).not.toHaveBeenCalled()
+  expect(b.pending()).toMatchObject({ attempted: false })
+  expect(b.pending()?.manualOnly).toBeUndefined()
+  // And it keeps standing down: an automatic retry is not a failure, and types nothing.
+  expect(await b.writer('claude --session-id s', false)).toBe('elsewhere')
+  expect(typed.filter((t) => t.startsWith('2:'))).toEqual([])
+})

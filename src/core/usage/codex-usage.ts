@@ -22,6 +22,38 @@ export const CODEX_BACKEND_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usa
 const FETCH_TIMEOUT_MS = 8000
 const APP_SERVER_TIMEOUT_MS = 10_000
 
+/**
+ * After the backend answers HTTP 429 (issue #1168) this home is left alone for a while: no backend
+ * request AND no app-server fallback, which reads the same account's limits and so spends the same
+ * budget. `Retry-After` wins when the backend sends one (clamped); otherwise the wait starts at
+ * the default and doubles on each consecutive 429. A successful read clears it.
+ */
+export const CODEX_RATE_LIMIT_MIN_MS = 30_000
+export const CODEX_RATE_LIMIT_DEFAULT_MS = 2 * 60_000
+export const CODEX_RATE_LIMIT_MAX_MS = 60 * 60_000
+const cooldowns = new Map<string, { until: number; strikes: number }>()
+
+/** Test seam: forget every cooldown. */
+export function resetCodexUsageCooldownsForTests(): void {
+  cooldowns.clear()
+}
+
+/** `Retry-After` as a delay in ms — delta-seconds or an HTTP-date; null when absent/unreadable. */
+export function parseRetryAfter(value: string | null | undefined, now: number): number | null {
+  const v = value?.trim()
+  if (!v) return null
+  if (/^\d+$/.test(v)) return Number(v) * 1000
+  const at = Date.parse(v)
+  return Number.isFinite(at) ? Math.max(0, at - now) : null
+}
+
+/** The wait after a 429, given the header and how many 429s in a row came before this one. */
+export function codexRateLimitCooldownMs(retryAfterMs: number | null, priorStrikes: number): number {
+  const base =
+    retryAfterMs ?? CODEX_RATE_LIMIT_DEFAULT_MS * 2 ** Math.min(Math.max(priorStrikes, 0), 10)
+  return Math.min(CODEX_RATE_LIMIT_MAX_MS, Math.max(CODEX_RATE_LIMIT_MIN_MS, base))
+}
+
 /** Fallback bucket durations, used only when the backend omits `limit_window_seconds`. */
 const PRIMARY_WINDOW_MINUTES = 300 // 5h
 const SECONDARY_WINDOW_MINUTES = 10_080 // 7d
@@ -116,8 +148,8 @@ function snapshot(
   return { provider: 'codex', limits, account, accountId, updatedAt: Date.now(), status }
 }
 
-/** Tier 1: the endpoint the Codex CLI itself reads. */
-async function fetchViaBackend(home: string): Promise<ProviderUsage | null> {
+/** Tier 1: the endpoint the Codex CLI itself reads. `'rate-limited'` = it answered HTTP 429. */
+async function fetchViaBackend(home: string): Promise<ProviderUsage | 'rate-limited' | null> {
   const { accessToken, accountId } = await readCodexAuth(home)
   if (!accessToken) return null
 
@@ -135,6 +167,13 @@ async function fetchViaBackend(home: string): Promise<ProviderUsage | null> {
   const res = await fetch(CODEX_BACKEND_USAGE_URL, { signal: ctrl.signal, headers }).finally(() =>
     clearTimeout(t)
   )
+  if (res.status === 429) {
+    const now = Date.now()
+    const strikes = cooldowns.get(home)?.strikes ?? 0
+    const wait = codexRateLimitCooldownMs(parseRetryAfter(res.headers?.get?.('retry-after'), now), strikes)
+    cooldowns.set(home, { until: now + wait, strikes: strikes + 1 })
+    return 'rate-limited'
+  }
   if (!res.ok) return null
 
   const payload = (await res.json()) as Record<string, any>
@@ -143,6 +182,7 @@ async function fetchViaBackend(home: string): Promise<ProviderUsage | null> {
   // the app-server tier still gets its turn instead of reporting a confidently empty snapshot.
   if (typeof payload.plan_type !== 'string') return null
 
+  cooldowns.delete(home)
   return snapshot(mapCodexLimits(payload.rate_limit), 'ok')
 }
 
@@ -276,8 +316,15 @@ export async function fetchCodexUsage(
 ): Promise<ProviderUsage> {
   const account = identity?.email || identity?.label || null
   const accountId = identity?.id
+  // Rate limited (issue #1168): named, and neither tier is asked again until the cooldown ends —
+  // the app-server reads the same account's limits, so falling through would spend the same
+  // budget twice. The service keeps the last good numbers on screen meanwhile (holdLastGoodProvider).
+  const rateLimited = (): ProviderUsage => ({ ...snapshot([], 'error', account, accountId), rateLimited: true })
+  const cooling = cooldowns.get(home)
+  if (cooling && Date.now() < cooling.until) return rateLimited()
   try {
     const viaBackend = await fetchViaBackend(home)
+    if (viaBackend === 'rate-limited') return rateLimited()
     if (viaBackend) return { ...viaBackend, account, accountId }
   } catch {
     // fall through to the app-server tier

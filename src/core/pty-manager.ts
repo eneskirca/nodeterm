@@ -1,5 +1,5 @@
-import type { ChatPromptBlocked, ChatPromptResult, TextDeliveryResult } from '../shared/text-delivery'
-import { claudeScreenBlocksInput, readClaudeScreen } from '../shared/agents/claude-screen'
+import type { ChatPromptBlocked, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from '../shared/text-delivery'
+import { claudeScreenBlocksInput, readClaudeComposer, readClaudeScreen } from '../shared/agents/claude-screen'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
@@ -149,6 +149,7 @@ import { releasePty, type ReleasablePty } from './pty-release'
 import { terminateWindowsProcessTree } from '../session-host/windows-process-tree'
 import { NESTED_AGENT_ENV_STRIP } from './nested-agent-env'
 import { effectiveSize, type PtySize } from './pty-size'
+import { DaReplyGate, DA_REPLY_TTL_OTHER_MS, DA_REPLY_TTL_TMUX_MS } from './da-reply-gate'
 import { machOArch, archMismatch } from './macho-arch'
 import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-store'
 import { snapshotDue } from './scrollback-cadence'
@@ -864,6 +865,8 @@ interface Session {
    *  create re-attaches with `new-session -A`. It is the precondition for the idle reap — see
    *  pty-reap.ts — and it is exactly the condition `persisted` is computed from at spawn. */
   tmuxBacked: boolean
+  /** One DA1/DA2 answer per query from however many viewers answer it (issue #1172, da-reply-gate.ts). */
+  daReplies: DaReplyGate
   /** When the reap sweep first saw this session with nobody attached (no live subscriber, no relay
    *  sink); `null` while somebody is. See `reapTick`. */
   unwatchedSince: number | null
@@ -976,6 +979,36 @@ export interface DetachedSinks {
    *  phone build today, which ignores the relay's `Resized` frame — makes the sink's own size a
    *  CEILING for the shared session: a viewer that cannot adapt would wrap a wider pty's output. */
   adaptsToSize?: boolean
+}
+
+/**
+ * The working directory a LOCAL tmux CLIENT is spawned in (issue #1131) — never the node's own
+ * directory, which reaches tmux only through `new-session -c`.
+ *
+ * Any client can be the one that STARTS the shared `-L node-terminal` server, and the server keeps
+ * that client's cwd for the rest of its life. From tmux 3.7, `spawn.c` applies a new pane's `-c`
+ * only when the SERVER's own `getcwd()` succeeds; once the directory the server started in is
+ * deleted (a removed worktree, a cleaned-up station), `getcwd()` fails, the `chdir` is skipped and
+ * every new pane on the server inherits the deleted directory, whatever `-c` said. MEASURED on a
+ * locally built tmux 3.7c (private socket): server started from a dir that was then removed → a
+ * `new-session -c <proj>` pane at `<gone> (deleted)`; the same sequence with the client in $HOME →
+ * the pane at `<proj>`. tmux 3.4–3.6 honour `-c` either way. The home directory is what the issue's
+ * reporter and every terminal emulator use; `/` is the fallback when even that is missing.
+ *
+ * Not for the plain-shell fallback: there the spawned process IS the pane and needs the project
+ * cwd. A server started by an earlier build keeps its old cwd until it is restarted.
+ */
+export function localTmuxClientCwd(
+  home: string = os.homedir(),
+  isDir: (p: string) => boolean = (p) => {
+    try {
+      return fs.statSync(p).isDirectory()
+    } catch {
+      return false
+    }
+  }
+): string {
+  return home && isDir(home) ? home : '/'
 }
 
 /**
@@ -2151,6 +2184,10 @@ export class PtyManager {
       // `agentId` crosses a process boundary: it only picks the screen reader, and a non-string
       // picks none (plain `sendText`), never a wrong one.
       this.sendChatPrompt(persistKey, text, typeof agentId === 'string' ? agentId : '')
+    )
+    platform().handle(IPC.ptySendToEmptyPrompt, (persistKey: string, text: string, agentId: unknown) =>
+      // Like `agentId` above: it only picks the composer reader, and a non-string picks none.
+      this.sendToEmptyPrompt(persistKey, text, typeof agentId === 'string' ? agentId : '')
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string, opts?: { resolveUnmounted?: boolean }) =>
@@ -4831,6 +4868,9 @@ export class PtyManager {
             xtermScrollback(settings.tmuxScrollback)
           )) as unknown as pty.IPty
     } else {
+      // A tmux client must not pin the project dir as the shared server's cwd (#1131): the pane's
+      // directory is the `-c` argument above, never the client's own cwd.
+      const spawnCwd = useLocalTmux ? localTmuxClientCwd() : cwd
       try {
         proc =
           nativeSshArgv && useNativeSsh()
@@ -4847,7 +4887,7 @@ export class PtyManager {
                 name: 'xterm-256color',
                 cols: options.cols,
                 rows: options.rows,
-                cwd,
+                cwd: spawnCwd,
                 env
               })
       } catch (err) {
@@ -4860,7 +4900,7 @@ export class PtyManager {
         // Re-read the devices rather than reusing the pre-flight's reading: this spawn just consumed
         // (and, per the leak above, kept) devices of its own, so the number the user is shown should
         // be the one that was true when the failure happened.
-        throw this.spawnFailureError(reason, file, cwd, spawnHelperArchMismatch(), readPtyDevices())
+        throw this.spawnFailureError(reason, file, spawnCwd, spawnHelperArchMismatch(), readPtyDevices())
       }
     }
 
@@ -4931,6 +4971,11 @@ export class PtyManager {
       // asks a different question of it: not "is it worth snapshotting" but "would releasing this
       // pty client destroy anything" (pty-reap.ts).
       tmuxBacked: persisted,
+      // A real tmux client (local or the SSH project's remote one) gives up on its handshake after
+      // ~5 s; anything else has no known deadline. Zellij is not measured, so it gets the generous one.
+      daReplies: new DaReplyGate(
+        persisted && !useSessionHost && !useLocalZellij ? DA_REPLY_TTL_TMUX_MS : DA_REPLY_TTL_OTHER_MS
+      ),
       unwatchedSince: null,
       pausedBy: new Set<string>(),
       accountFallback,
@@ -4980,6 +5025,7 @@ export class PtyManager {
       // rollback removes this exact generation, late callbacks must not recreate its flush timer
       // or leak bytes into a replacement that happens to reuse the same node id.
       if (this.sessions.get(sessionId) !== session) return
+      session.daReplies.noteOutput(data, Date.now())
       session.nativeWindowsPane?.recordOutput(data)
       this.queueData(sessionId, session, data)
     })
@@ -5424,6 +5470,10 @@ export class PtyManager {
   write(clientId: ClientId | null, sessionId: string, data: string): void {
     const session = this.sessions.get(sessionId)
     if (!session) return this.backgroundWriteBySessionId(sessionId, data)
+    // Every viewer's xterm answers the tmux client's DA handshake; only one answer per question may
+    // reach tmux, or the rest are typed into the pane (issue #1172, da-reply-gate.ts).
+    data = session.daReplies.filterInput(data, Date.now())
+    if (!data) return
     if (clientId !== null && session.nodeId && presenceHub.peerCount() > 1)
       presenceHub.noteTyping(clientId, session.nodeId)
     session.proc.write(data)
@@ -6513,6 +6563,44 @@ export class PtyManager {
     } catch {
       return { ok: false, reason: 'failed' }
     }
+  }
+
+  /**
+   * Write `text` + Enter into an agent's composer ONLY when that composer is empty — the app's own
+   * unsolicited notes (the context-link discovery note, a sticky note pushed over a note link).
+   * Issue #1144: those were `sendText` calls gated on nothing but `state !== 'working'`, so a note
+   * landed in front of the user's half-typed draft and the Enter submitted both as one prompt (and a
+   * `blocked`/`waiting` pane would have had its dialog ANSWERED by that Enter).
+   *
+   * Emptiness is read off a STYLED capture (`readClaudeComposer`: the placeholder is dim, a draft is
+   * not), so only an agent with a measured composer reader may receive one (`readsScreenDialogs`);
+   * every other agent answers `unsupported` and nothing is written. The read and the write run inside
+   * `serializePaneWrite`, so no other app write lands between them. What no gate closes: a keystroke
+   * the user makes in the milliseconds between the capture and the paste. A claude composer is TYPED
+   * (`typesChatInput`) and re-checks for a dialog before its Enter, like a chat prompt.
+   */
+  async sendToEmptyPrompt(persistKey: string, text: string, agentId: string): Promise<EmptyPromptResult> {
+    if (!readsScreenDialogs(agentId)) return { sent: false, reason: 'unsupported' }
+    return this.serializePaneWrite(persistKey, async (): Promise<EmptyPromptResult> => {
+      const composer = readClaudeComposer(await this.captureStyledScreen(persistKey))
+      if (composer !== 'empty') return { sent: false, reason: composer }
+      const delivered = await this.sendTextNow(
+        persistKey,
+        text,
+        typesChatInput(agentId) ? { typedFor: agentId } : undefined
+      )
+      if (delivered === true) return { sent: true }
+      return { sent: false, reason: delivered === 'pasted-not-submitted' ? 'not-submitted' : 'failed' }
+    })
+  }
+
+  /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already
+   *  carries `-e` (`remoteCapturePaneArgs`), everything else is `captureSnapshot`. '' on any failure. */
+  private async captureStyledScreen(persistKey: string): Promise<string> {
+    const live = this.liveSessionForPersistKey(persistKey)
+    if (live?.sshRemote) return this.captureSession(persistKey)
+    if (live?.nativeWindowsPane) return ''
+    return this.captureSnapshot(persistKey)
   }
 
   /**

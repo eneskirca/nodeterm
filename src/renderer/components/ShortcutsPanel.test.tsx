@@ -56,7 +56,8 @@ function bindEverything(isMac: boolean): (id: CommandId) => readonly string[] {
     ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
     ...'0123456789'.split(''),
     ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
-    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown',
+    'Comma', 'Slash', 'Period', 'Home', 'End', 'Insert', 'Delete', 'Backspace', 'Tab'
   ]
   expect(pool.length).toBeGreaterThanOrEqual(COMMAND_DEFINITIONS.length)
   const map = new Map<CommandId, string[]>()

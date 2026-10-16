@@ -558,6 +558,9 @@ export function normalizeCodex(env: RawHookEnvelope): NormalizedAgentEvent | nul
   if (ev === 'SessionStart' || ev === 'PreToolUse' || ev === 'PostToolUse') {
     return { ...base, kind: 'state', state: 'working' }
   }
+  // Under codex's own auto-reviewer (`approvals_reviewer = "auto_review"`) nobody is asked; the
+  // hook server's codex permission gate (core/agents/codex-permission-gate.ts) reads the rollout
+  // and drops this event then. The payload alone cannot tell (measured: no reviewer field).
   if (ev === 'PermissionRequest') return { ...base, kind: 'state', state: 'waiting' }
   if (ev === 'Stop') return { ...base, kind: 'state', state: 'done' }
   return null

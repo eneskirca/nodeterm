@@ -30,6 +30,11 @@ import { type DebuggerLike, sendCdp } from './browser-cdp-send'
 // timings still read together at this one call site and every existing importer is unaffected.
 import { INDICATOR_LINGER_MS } from '@shared/browser-indicator'
 
+/** The viewport override `--screenshot --full true` uses, and its clear. Named once so the session's
+ *  lifecycle bookkeeping and the screenshot cannot disagree about which methods they mean. */
+export const METRICS_OVERRIDE = 'Emulation.setDeviceMetricsOverride'
+export const METRICS_OVERRIDE_CLEAR = 'Emulation.clearDeviceMetricsOverride'
+
 /** The lease outlives the last verb by this long; a verb within the window does not re-attach. */
 export const LEASE_IDLE_MS = 60_000
 export { INDICATOR_LINGER_MS }
@@ -103,6 +108,16 @@ export class BrowserSession {
    */
   private readonly targets = new Map<string, string>()
   private readonly detachRejectors = new Set<(e: Error) => void>()
+  /**
+   * Did we send `Emulation.setDeviceMetricsOverride` without a confirmed clear? (#539 full-page
+   * screenshots.) MEASURED on Electron 42.9.1: an override SURVIVES `debugger.detach()` and even a
+   * page reload, so a detach that forgets it leaves the user's page rendered at the full content
+   * height. Hence: every detach WE make sends the clear first (a clear sent immediately before
+   * `detach()` was measured to take effect), and a detach we did NOT make keeps this set so the next
+   * attach clears it before anything else. Never a reattach just to clear: a revoked lease stays
+   * detached.
+   */
+  private metricsOverridden = false
 
   constructor(opts: BrowserSessionOpts) {
     this.nodeId = opts.nodeId
@@ -240,7 +255,15 @@ export class BrowserSession {
       return Promise.reject(e)
     }
     this.extendLease()
-    return this.race(sendCdp(this.dbg, method, params, this.currentCtx(), sessionId))
+    const sent = sendCdp(this.dbg, method, params, this.currentCtx(), sessionId)
+    if (sessionId === undefined && method === METRICS_OVERRIDE) {
+      // Possibly applied from the moment it is sent, so the flag goes up BEFORE the reply.
+      this.metricsOverridden = true
+    } else if (sessionId === undefined && method === METRICS_OVERRIDE_CLEAR) {
+      // Only a confirmed clear lowers it: one still in flight when a detach lands may never apply.
+      void sent.then(() => { this.metricsOverridden = false }, () => {})
+    }
+    return this.race(sent)
   }
 
   /** The viewport the allowlist bounds a coordinate against: the last real measurement when we have
@@ -260,6 +283,15 @@ export class BrowserSession {
       throw new Error(msg)
     }
     this.attached = true
+    // A detach we did not make (see `metricsOverridden`) left an override behind: clear it first.
+    if (this.metricsOverridden) this.sendClearBestEffort()
+  }
+
+  /** Send the override clear without waiting (it is ordered before anything sent after it, and
+   *  before a `detach()` that follows it). Errors are ignored: the page may already be gone. */
+  private sendClearBestEffort(): void {
+    this.metricsOverridden = false
+    sendCdp(this.dbg, METRICS_OVERRIDE_CLEAR, {}, this.currentCtx(), undefined).catch(() => {})
   }
 
   private extendLease(): void {
@@ -269,6 +301,7 @@ export class BrowserSession {
 
   private detachInternal(): void {
     if (this.attached) {
+      if (this.metricsOverridden) this.sendClearBestEffort()
       try {
         this.dbg.detach()
       } catch {

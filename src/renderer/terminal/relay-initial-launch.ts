@@ -30,7 +30,8 @@ export function deliverRelayInitialLaunch(opts: {
     if (fired) return
     fired = true
     void write(opts.command, false).then((outcome) => {
-      if (outcome !== 'submitted' && outcome !== 'deferred') opts.onFailure(outcome)
+      // Its claim always answers true, so `elsewhere` cannot come back here.
+      if (outcome !== 'submitted' && outcome !== 'deferred' && outcome !== 'elsewhere') opts.onFailure(outcome)
     })
   })
 }

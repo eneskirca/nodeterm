@@ -5,6 +5,7 @@ import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { powershellArgs, powershellExe } from '../core/win32-powershell'
 import { windowsConsoleProbeScript } from './windows-probe-script'
 import { getWindowsProbeWorker, type WindowsProbeWorker } from './windows-probe-worker'
+import { WINDOWS_ONESHOT_PROBE_TIMEOUT_MS } from './windows-probe-budget'
 
 /** Exact Windows console/process generation, not merely a reused PID or executable name. */
 export function sameNativeProcess(before: PaneOwner | undefined, after: PaneOwner | null): boolean {
@@ -198,7 +199,7 @@ function asSnapshot(value: unknown): WindowsConsoleSnapshot | null {
 function readOneShot(rootPid: number, generation: string, script: string): Promise<PaneOwner | null> {
   return new Promise((resolve) => {
     execFile(powershellExe(), powershellArgs(script),
-      { timeout: 4000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
+      { timeout: WINDOWS_ONESHOT_PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
         if (error) return resolve(null)
         try {
           const snapshot = asSnapshot(JSON.parse(stdout))

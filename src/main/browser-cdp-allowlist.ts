@@ -18,7 +18,8 @@
  * to it), Fetch (request interception is a proxy for the user's session), Security (can disable
  * certificate errors), Storage / IndexedDB / DOMStorage (the token stores this whole design exists to
  * keep out), DOM.getOuterHTML / getAttributes (the full-DOM read arriving by another door),
- * Page.bringToFront (a page that can raise itself can steal a click the user aimed elsewhere) and
+ * Page.bringToFront (a page that can raise itself can steal a click the user aimed elsewhere),
+ * every Emulation method but the full-page screenshot's own sized override and its clear, and
  * Network.getAllCookies (one call empties the jar for every site the profile ever touched, and no
  * useful audit line names a domain). None of these is in the table, so default-deny refuses them.
  */
@@ -58,6 +59,9 @@ function valueOnlyArgs(args: unknown): boolean {
 
 const MAX_SELECTOR = 1024
 const MAX_INSERT_TEXT = 8192
+/** The largest viewport side the full-page screenshot may request, in CSS px. A taller page is
+ *  captured to this height and the reply says so (browser-screenshot.ts `FULL_PAGE_MAX_HEIGHT`). */
+export const MAX_VIEWPORT_OVERRIDE = 16_384
 
 /**
  * The cookie-JAR-MUTATING CDP methods, listed in ONE place so the decision is recorded, and pinned
@@ -224,6 +228,27 @@ const ALLOW = new Map<string, Validator>([
       return true
     }
   ],
+
+  // `--screenshot --full true` (#539) sizes the page's viewport to its content for ONE capture, then
+  // clears it. `captureBeyondViewport` alone is not a full-page render: MEASURED on Electron 42.9.1, a
+  // scrolled page's sticky header came out at the stale scroll offset and a fixed footer mid-page.
+  // The surface is the narrowest one that capture needs, and NO agent value reaches it — width and
+  // height come from our own layout metrics (browser-screenshot.ts): exactly these four keys, a
+  // bounded integer size, `deviceScaleFactor: 0` (keep the page's own) and `mobile: false`. No
+  // screen orientation, no `viewport` sub-rect, no positions, no device emulation. A caller-chosen
+  // size (a resize verb) would be a separate decision with its own validator. The override survives
+  // a debugger detach, so its lifecycle lives in the lease (browser-lease.ts `metricsOverridden`).
+  [
+    'Emulation.setDeviceMetricsOverride',
+    (p) => {
+      if (!isRecord(p)) return false
+      const keys = Object.keys(p).sort().join(',')
+      if (keys !== 'deviceScaleFactor,height,mobile,width') return false
+      const size = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= MAX_VIEWPORT_OVERRIDE
+      return size(p.width) && size(p.height) && p.deviceScaleFactor === 0 && p.mobile === false
+    }
+  ],
+  ['Emulation.clearDeviceMetricsOverride', (p) => isRecord(p) && Object.keys(p).length === 0],
 
   // ---- Session lifecycle (issued by the lease, browser-lease.ts, not by an agent verb). Still gated
   //      here so the "single gate" property is literal: every sendCommand, infra or not, is checked. ----

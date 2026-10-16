@@ -113,7 +113,7 @@ function DefaultAccountMark({
 }
 
 /** Why the bars above are old — only for numbers kept through a failed read. */
-function HeldNote({ u }: { u: ClaudeUsage | null | undefined }) {
+function HeldNote({ u }: { u: ClaudeUsage | ProviderUsage | null | undefined }) {
   const text = u ? heldUsageText(u) : null
   return text ? <div className="usage-popover__held">{text}</div> : null
 }
@@ -325,16 +325,18 @@ function ProviderBlock({ u, mode, hostKey }: { u: ProviderUsage; mode: 'used' | 
       {u.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
+      {/* Numbers the service kept because the latest read failed (a Codex 429, issue #1168). */}
+      <HeldNote u={u} />
       {/* One line per distinct reason (issue #912): two views failing the same way are one
           failure of this provider, not two paragraphs of the same sentence. */}
-      {usageDiagnosticLines(label, u.diagnostics).map((line) => (
+      {usageDiagnosticLines(label, u.diagnostics, u.provider).map((line) => (
         <div className="usage-popover__empty" key={line}>
           {line}
         </div>
       ))}
       {u.limits.length === 0 && !u.diagnostics?.length && (
         <div className="usage-popover__empty">
-          {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
+          {u.status === 'error' ? usageFailureText(u) : 'No usage data.'}
         </div>
       )}
     </div>

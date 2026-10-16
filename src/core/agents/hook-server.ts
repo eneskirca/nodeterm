@@ -19,6 +19,12 @@ import {
   type GrokPermissionGate,
   type GrokPermissionGateDeps
 } from './grok-permission-gate'
+import {
+  createCodexPermissionGate,
+  defaultCodexPermissionGateDeps,
+  type CodexPermissionGate,
+  type CodexPermissionGateDeps
+} from './codex-permission-gate'
 import { classifyClaudeConfigDir, configDirFromTranscriptPath } from '../claude-accounts-core'
 import { claudeAccountsSnapshot } from '../claude-config-dir'
 import type { CodexIdentityEvent, ObservedClaudeAccount } from '../../shared/types'
@@ -524,6 +530,24 @@ export class HookServer {
       )
     }
     return this.grokPermissionGate
+  }
+
+  private codexPermissionGate: CodexPermissionGate | null = null
+  private codexGateDeps: CodexPermissionGateDeps | undefined
+  /** Test seam: the codex permission gate's file/timer deps. */
+  setCodexPermissionGateDeps(deps: CodexPermissionGateDeps): void {
+    this.codexPermissionGate?.dispose()
+    this.codexPermissionGate = null
+    this.codexGateDeps = deps
+  }
+  private codexGate(): CodexPermissionGate {
+    if (!this.codexPermissionGate) {
+      this.codexPermissionGate = createCodexPermissionGate(
+        (e) => this.listener?.(e),
+        this.codexGateDeps ?? defaultCodexPermissionGateDeps()
+      )
+    }
+    return this.codexPermissionGate
   }
 
   // Raw payload listener: receives the parsed (un-normalized) hook JSON. Drives the
@@ -1116,6 +1140,11 @@ export class HookServer {
           // published, and cleared from it once answered (core/agents/grok-permission-gate.ts).
           // Every grok event goes through the gate so their order is kept per node.
           if (agentId === 'grok') this.grokGate().handle(nodeId, payload, labelled)
+          // Codex's PermissionRequest is checked against the session rollout: under codex's own
+          // auto-reviewer nobody is asked, so it must not read as NEEDS YOU (issue #1171,
+          // core/agents/codex-permission-gate.ts). Every codex event goes through the gate so their
+          // order is kept per node.
+          else if (agentId === 'codex') this.codexGate().handle(nodeId, payload, labelled)
           else if (labelled && this.listener) this.listener(labelled)
         }
         res.writeHead(204)
@@ -1556,6 +1585,8 @@ export class HookServer {
     this.requestLedgerFile = null
     this.grokPermissionGate?.dispose()
     this.grokPermissionGate = null
+    this.codexPermissionGate?.dispose()
+    this.codexPermissionGate = null
     this.server?.close()
     this.server = null
     // The file must not advertise a listener that no longer exists (issue #445): a stopped server

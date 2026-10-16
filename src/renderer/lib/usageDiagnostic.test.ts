@@ -38,3 +38,22 @@ describe('usageDiagnosticLines (issue #912)', () => {
     expect(usageDiagnosticLines('Grok', [])).toEqual([])
   })
 })
+
+describe('Grok 401 hint (issue #983)', () => {
+  const d401 = { view: 'credits', reason: 'http', httpStatus: 401 } as const
+
+  it('says that starting a Grok session refreshes the saved credentials', () => {
+    const [line] = usageDiagnosticLines('Grok', [d401], 'grok')
+    expect(line).toMatch(/Grok authentication failed \(HTTP 401\)/)
+    expect(line).toMatch(/Starting a Grok session refreshes the saved credentials/)
+    expect(line).not.toMatch(/expired/)
+    expect(usageDiagnosticText('Grok', d401, 'grok')).toMatch(/Starting a Grok session/)
+  })
+
+  it('keeps the generic text for a 403, for other providers, and without a provider id', () => {
+    const generic = /Check the CLI authentication on the machine running this project\.$/
+    expect(usageDiagnosticLines('Grok', [{ ...d401, httpStatus: 403 }], 'grok')[0]).toMatch(generic)
+    expect(usageDiagnosticLines('Codex', [d401], 'codex')[0]).toMatch(generic)
+    expect(usageDiagnosticLines('Grok', [d401])[0]).toMatch(generic)
+  })
+})

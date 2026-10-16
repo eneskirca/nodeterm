@@ -9,6 +9,7 @@
 // where it was put.
 
 import type { Viewport } from '@xyflow/system'
+import type { CommandId } from '@shared/keybindings'
 import { NODE_MAXIMIZE_MARGIN_PX, type FlowRect } from './nodeMaximize'
 import { NO_INSETS, type ScreenInsets } from './pinnedInsets'
 
@@ -49,6 +50,24 @@ export const ZONES: readonly { id: ZoneId; label: string; frac: ZoneFraction }[]
   { id: 'center-third', label: 'Center third', frac: { x0: 1 / 3, y0: 0, x1: 2 / 3, y1: 1 } },
   { id: 'right-third', label: 'Right third', frac: { x0: 2 / 3, y0: 0, x1: 1, y1: 1 } }
 ]
+
+/**
+ * The keyboard command for each zone (issue #1169). Total over `ZoneId`, so a new zone is a
+ * compile error until it has a command; Canvas dispatches from this table, never a hand list.
+ */
+export const ZONE_COMMANDS: Readonly<Record<ZoneId, CommandId>> = {
+  'left-half': 'node.zoneLeft',
+  'right-half': 'node.zoneRight',
+  'top-half': 'node.zoneUp',
+  'bottom-half': 'node.zoneDown',
+  'top-left': 'node.zoneTopLeft',
+  'top-right': 'node.zoneTopRight',
+  'bottom-left': 'node.zoneBottomLeft',
+  'bottom-right': 'node.zoneBottomRight',
+  'left-third': 'node.zoneLeftThird',
+  'center-third': 'node.zoneCenterThird',
+  'right-third': 'node.zoneRightThird'
+}
 
 const ZONES_BY_ID: ReadonlyMap<ZoneId, ZoneFraction> = new Map(ZONES.map((z) => [z.id, z.frac]))
 

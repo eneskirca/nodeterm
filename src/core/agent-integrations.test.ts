@@ -17,6 +17,7 @@ import {
   createIntegrationLifecycle,
   skillsFor,
   detectExistingIntegrations,
+  FRESH_INSTALL_MARKER,
   resolveIntegrationConsentAtBoot
 } from './agent-integrations'
 import { buildCanvasSkillBody, frameCanvasControlBlock } from './canvas-control-core'
@@ -296,6 +297,47 @@ describe('the existing-vs-new default', () => {
   it('a new install (nothing of ours on disk) is NOT grandfathered — it is asked', () => {
     expect(detectExistingIntegrations(userData, home)).toBe(false)
     expect(resolveIntegrationConsentAtBoot(DEFAULT_SETTINGS, false)).toBeNull()
+    expect(existsSync(path.join(userData, FRESH_INSTALL_MARKER))).toBe(true)
+  })
+
+  // Issue #1149: our canvas/context shims are written on EVERY boot, consent or not, so they say
+  // nothing about a pre-consent install. Counting them grandfathered every fresh install on its
+  // second boot (a systemd restart, the update timer, a desktop quit before the prompt was answered).
+  it('our always-written shims are never evidence of an existing install', () => {
+    mkdirSync(path.join(userData, 'canvas-control'), { recursive: true })
+    mkdirSync(path.join(userData, 'context-links'), { recursive: true })
+    writeFileSync(path.join(userData, 'canvas-control', 'nodeterm.sh'), '#!/bin/sh\n')
+    writeFileSync(path.join(userData, 'context-links', 'context.sh'), '#!/bin/sh\n')
+    expect(detectExistingIntegrations(userData, home)).toBe(false)
+  })
+
+  it('the issue #1149 sequence: boot 1 writes the shims, boot 2 still asks', () => {
+    // Boot 1: nothing of ours on disk.
+    expect(resolveIntegrationConsentAtBoot(DEFAULT_SETTINGS, detectExistingIntegrations(userData, home))).toBeNull()
+    // …then the shells write the shims, as every boot does.
+    mkdirSync(path.join(userData, 'context-links'), { recursive: true })
+    writeFileSync(path.join(userData, 'context-links', 'context.sh'), '#!/bin/sh\n')
+    mkdirSync(path.join(userData, 'canvas-control'), { recursive: true })
+    writeFileSync(path.join(userData, 'canvas-control', 'nodeterm.sh'), '#!/bin/sh\n')
+    // Boot 2: the record is still empty and must stay so.
+    expect(resolveIntegrationConsentAtBoot(DEFAULT_SETTINGS, detectExistingIntegrations(userData, home))).toBeNull()
+  })
+
+  it('a fresh install is never grandfathered on a LATER boot, even once hook scripts appear', () => {
+    expect(detectExistingIntegrations(userData, home)).toBe(false)
+    // A sibling install sharing ~/.nodeterm (desktop + Server Edition) enabled its integrations.
+    mkdirSync(path.join(home, '.nodeterm', 'agent-hooks'), { recursive: true })
+    writeFileSync(path.join(home, '.nodeterm', 'agent-hooks', 'claude.sh'), '#!/bin/sh\n')
+    expect(detectExistingIntegrations(userData, home)).toBe(false)
+    expect(resolveIntegrationConsentAtBoot(DEFAULT_SETTINGS, false)).toBeNull()
+  })
+
+  it('an existing install is not marked fresh, so a failed grandfather save is retried next boot', () => {
+    mkdirSync(path.join(home, '.nodeterm', 'agent-hooks'), { recursive: true })
+    writeFileSync(path.join(home, '.nodeterm', 'agent-hooks', 'claude.sh'), '#!/bin/sh\n')
+    expect(detectExistingIntegrations(userData, home)).toBe(true)
+    expect(existsSync(path.join(userData, FRESH_INSTALL_MARKER))).toBe(false)
+    expect(detectExistingIntegrations(userData, home)).toBe(true)
   })
 
   it('an answered record is never rewritten at boot', () => {

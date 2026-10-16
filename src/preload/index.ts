@@ -113,6 +113,8 @@ const api: NodeTerminalApi = {
       ipcRenderer.invoke(IPC.ptySendText, persistKey, text, opts?.enter),
     sendChatPrompt: (persistKey, text, agentId) =>
       ipcRenderer.invoke(IPC.ptySendChatPrompt, persistKey, text, agentId),
+    sendToEmptyPrompt: (persistKey, text, agentId) =>
+      ipcRenderer.invoke(IPC.ptySendToEmptyPrompt, persistKey, text, agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
     paneCommand: (persistKey, opts) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey, opts),
     paneCwd: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCwd, persistKey),
@@ -164,6 +166,8 @@ const api: NodeTerminalApi = {
   workspace: {
     load: () => ipcRenderer.invoke(IPC.workspaceLoad),
     save: (workspace: Workspace, opts?: WorkspaceSaveOptions) => ipcRenderer.invoke(IPC.workspaceSave, workspace, opts),
+    claimLaunch: (nodeId: string, command: string, manual: boolean) =>
+      ipcRenderer.invoke(IPC.workspaceClaimLaunch, nodeId, command, manual),
     probeFolder: (folder: string) => ipcRenderer.invoke(IPC.workspaceProbeFolder, folder),
     projectFileState: (folder: string) => ipcRenderer.invoke(IPC.workspaceProjectFileState, folder),
     onMigrated: (cb: (kind: WorkspaceMigrationKind) => void) => {

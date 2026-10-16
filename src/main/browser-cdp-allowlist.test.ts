@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkCdpCommand, COOKIE_WRITE_METHODS, type CdpContext } from './browser-cdp-allowlist'
+import { checkCdpCommand, COOKIE_WRITE_METHODS, MAX_VIEWPORT_OVERRIDE, type CdpContext } from './browser-cdp-allowlist'
 import { NT_SCRIPTS } from './browser-nt-scripts'
 
 const ctx: CdpContext = { viewport: { width: 1280, height: 800 } }
@@ -166,5 +166,33 @@ describe('debugger.sendCommand has exactly one call site in ALL of src/main', ()
       if (/\bsendCommand\s*\(/.test(code)) offenders.push(f)
     }
     expect(offenders).toEqual([])
+  })
+})
+
+describe('the full-page screenshot override is the only Emulation door (#539)', () => {
+  const ctx = { viewport: { width: 1280, height: 800 } }
+  const ok = { width: 1280, height: 3000, deviceScaleFactor: 0, mobile: false }
+  it('admits exactly the screenshot shape', () => {
+    expect(checkCdpCommand('Emulation.setDeviceMetricsOverride', ok, ctx)).toBe(true)
+    expect(checkCdpCommand('Emulation.clearDeviceMetricsOverride', {}, ctx)).toBe(true)
+  })
+  it.each([
+    ['an extra key', { ...ok, screenOrientation: { type: 'portraitPrimary', angle: 0 } }],
+    ['a viewport sub-rect', { ...ok, viewport: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }],
+    ['mobile emulation', { ...ok, mobile: true }],
+    ['a device scale factor', { ...ok, deviceScaleFactor: 3 }],
+    ['a fractional size', { ...ok, height: 10.5 }],
+    ['a zero size', { ...ok, width: 0 }],
+    ['an oversized side', { ...ok, height: MAX_VIEWPORT_OVERRIDE + 1 }],
+    ['a missing key', { width: 1280, height: 3000, deviceScaleFactor: 0 }],
+    ['a string size', { ...ok, width: '1280' }]
+  ])('refuses %s', (_name, params) => {
+    expect(checkCdpCommand('Emulation.setDeviceMetricsOverride', params, ctx)).toBe(false)
+  })
+  it('refuses a clear with parameters and every other Emulation method', () => {
+    expect(checkCdpCommand('Emulation.clearDeviceMetricsOverride', { x: 1 }, ctx)).toBe(false)
+    for (const m of ['Emulation.setUserAgentOverride', 'Emulation.setGeolocationOverride', 'Emulation.setTouchEmulationEnabled', 'Emulation.setScriptExecutionDisabled']) {
+      expect(checkCdpCommand(m, {}, ctx)).toBe(false)
+    }
   })
 })

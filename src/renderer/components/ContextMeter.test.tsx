@@ -45,3 +45,22 @@ it('shows only the requested SSH node even when local and remote rollouts share 
     await act(async () => root.unmount())
   }
 })
+
+// Issue #1141: "Model & context meter" in Settings → Appearance → Terminal header buttons hides
+// the pill everywhere this component renders (node header, kanban card, card modal).
+it('renders nothing when the context meter is hidden in Appearance', async () => {
+  const el = document.createElement('div')
+  const root = createRoot(el)
+  const usage = { sessionId: 'h', usedTokens: 10, windowTokens: 100, usedPercent: 10, model: 'm', updatedAt: Date.now(), windowSource: 'transcript' as const }
+  useContextWindow.getState().set(usage)
+  try {
+    useSettings.setState(s => ({ settings: { ...s.settings, hiddenHeaderButtons: [] } }))
+    await act(async () => root.render(<ContextMeter sessionId="h" />))
+    expect(el.querySelector('button')).not.toBeNull()
+    await act(async () => { useSettings.setState(s => ({ settings: { ...s.settings, hiddenHeaderButtons: ['context-meter'] } })) })
+    expect(el.querySelector('.ctx-meter')).toBeNull()
+  } finally {
+    useSettings.setState(s => ({ settings: { ...s.settings, hiddenHeaderButtons: [] } }))
+    await act(async () => root.unmount())
+  }
+})

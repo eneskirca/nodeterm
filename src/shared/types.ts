@@ -1,4 +1,4 @@
-import type { ChatPromptResult, TextDeliveryResult } from './text-delivery'
+import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { PrWaitHold } from './pr-wait'
@@ -1359,6 +1359,10 @@ export interface PtyApi {
    *  (`readsScreenDialogs`), refused BEFORE anything is written when the agent's own dialog owns the
    *  keyboard (`ChatPromptBlocked`) — such dialogs fire no hook. Otherwise the `sendText` contract. */
   sendChatPrompt(persistKey: string, text: string, agentId: string): Promise<ChatPromptResult>
+  /** Type `text` + Enter ONLY into an empty composer of an agent whose composer can be read
+   *  (issue #1144 — the app's own link notes). Refused, with the reason, before anything is written
+   *  when the composer holds a draft, a dialog owns the keyboard, or emptiness cannot be proven. */
+  sendToEmptyPrompt(persistKey: string, text: string, agentId: string): Promise<EmptyPromptResult>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>
@@ -1448,6 +1452,13 @@ export interface WorkspaceApi {
    *  round trips (the mirror is owed and rides the next ordinary save). For a write-ahead barrier
    *  that must be durable here but must not wait on a remote host — see WorkspaceStore.save. */
   save(workspace: Workspace, opts?: WorkspaceSaveOptions): Promise<void>
+  /**
+   * Ask the core to claim one held launch (node id + command) before any viewer types it
+   * (issue #1173): `claimed` = this viewer delivers it, `elsewhere` = another viewer of the same
+   * project already claimed it, type nothing. A manual Run now is never refused. Optional: a
+   * client without it (an older core, a test double) keeps the per-viewer barrier alone.
+   */
+  claimLaunch?(nodeId: string, command: string, manual: boolean): Promise<'claimed' | 'elsewhere'>
   /** Reads <folder>/.nodeterm/project.json and returns the assembled Project (cwd resolved), or null. */
   probeFolder(folder: string): Promise<Project | null>
   /** Whether <folder>/.nodeterm/project.json is `present`, definitely `absent`, or `unreadable`
@@ -1890,6 +1901,11 @@ export interface Settings {
    *  the default for anything that is not a finite number. Machine-local: it is one person's
    *  chrome, not a canvas fact. */
   tabBarHeight: number
+  /** How solid sticky notes / group frames are behind their colour tint, 0–100 (Settings →
+   *  Appearance, issue #1113). 0 = see-through, the original look. Hand-editable; read through
+   *  `resolveCanvasBacking` (@shared/canvas-backing). Machine-local. */
+  stickyNoteBacking: number
+  groupFrameBacking: number
   /** Font of the rendered-Markdown reading views — the ⌘M output and chat views and the editor's
    *  Markdown preview (Settings → Appearance). A CSS font stack. Hand-editable; read through
    *  `resolveMarkdownFontFamily` (@shared/markdown-font). Code inside Markdown follows the
@@ -2405,6 +2421,8 @@ export const DEFAULT_SETTINGS: Settings = {
   snapToGrid: false,
   autoAlignGrid: false,
   tabBarHeight: TABBAR_HEIGHT_PX,
+  stickyNoteBacking: 0,
+  groupFrameBacking: 0,
   markdownFontFamily: DEFAULT_MARKDOWN_FONT_FAMILY,
   markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
   defaultNodeWidth: 640,
@@ -3076,9 +3094,14 @@ export interface ProviderUsage {
   updatedAt: number
   /**
    * 'unavailable' = not signed in / no subscription to report → hide this provider entirely.
-   * 'fetching' = request in flight. 'ok' = limits present. 'error' = the fetch failed.
+   * 'fetching' = request in flight. 'ok' = limits present. 'error' = the fetch failed — and when
+   * `limits` is non-empty alongside it, those are the LAST GOOD numbers the service kept
+   * (`holdLastGoodProvider`), still stamped with their own `updatedAt`.
    */
   status: 'unavailable' | 'fetching' | 'ok' | 'error'
+  /** The latest read was refused with HTTP 429 (Codex today, issue #1168). Absent = not rate
+   *  limited, or not known to be. */
+  rateLimited?: boolean
 }
 
 /** Host memory snapshot in MB. `null` from any reader means "could not read" — never "zero".

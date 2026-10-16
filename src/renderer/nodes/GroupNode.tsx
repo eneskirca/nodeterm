@@ -10,6 +10,8 @@ import { useWorktrees, WORKTREE_STATUS_POLL_MS } from '../state/worktrees'
 import { useSession } from '../session/session'
 import { useGitBranch } from '../state/gitBranches'
 import { useProjectSetup } from '../state/projectSetup'
+import { useSettings } from '../state/settings'
+import { backedFillStyle } from '@shared/canvas-backing'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
 
@@ -35,6 +37,8 @@ export function setWorktreeActionHandler(
 export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const { updateNodeData, setNodes } = useReactFlow()
   const [showColors, setShowColors] = useState(false)
+  // Settings → Appearance → Group frame background (issue #1113); 0 = the old see-through look.
+  const backing = useSettings((s) => s.settings.groupFrameBacking)
   // The frame element, observed for viewport visibility by the worktree-status tick below.
   const frameRef = useRef<HTMLDivElement | null>(null)
 
@@ -157,7 +161,8 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
       className={frameClass}
       style={{
         borderColor: bound && stale ? undefined : data.color,
-        background: bound && stale ? undefined : `${data.color}${bound ? '1c' : '0f'}`,
+        // A stale worktree frame keeps its CSS look; everything else gets the tint (+ backing).
+        ...(bound && stale ? {} : backedFillStyle(data.color, bound ? '1c' : '0f', backing)),
         // Rounded selection ring (box-shadow follows border-radius, unlike the resizer line).
         boxShadow: selected ? `0 0 0 1.5px ${data.color}` : undefined
       }}

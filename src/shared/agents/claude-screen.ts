@@ -107,3 +107,82 @@ export function readClaudeScreen(screen: string): ClaudeScreen {
 export function claudeScreenBlocksInput(s: ClaudeScreen): boolean {
   return s.kind === 'dialog' || s.kind === 'no-prompt'
 }
+
+/**
+ * Is Claude Code's composer EMPTY right now? Read from a STYLED capture (`capture-pane -e`): the one
+ * fact the plain text cannot carry is the placeholder. MEASURED on Claude Code 2.1.301 (fullscreen
+ * TUI, fixtures in `__fixtures__/claude/composer-capture.json`): an empty composer reads
+ * `❯ Try "fix typecheck errors"` with the suggestion drawn SGR 2 (dim); a typed draft is the same
+ * line in the default style. Shell mode (`!`) is a draft even with a dim placeholder after it — the
+ * mode itself was typed, and text sent there runs as a shell command. A multi-line draft fills the
+ * lines under the prompt line.
+ *
+ * Exists for issue #1144: the context-link discovery note was pasted + Enter'd into a composer that
+ * already held the user's half-typed text, and both were submitted as one prompt.
+ *
+ * - `empty` — a live input box whose prompt line holds nothing but dim text (or nothing at all).
+ * - `draft` — anything typed into it.
+ * - `no-prompt` — a dialog owns the keyboard, or no input box is on screen (see `readClaudeScreen`).
+ * - `unknown` — nothing readable (a failed or empty capture).
+ *
+ * The error is asymmetric on purpose: only dim text counts as placeholder, so a capture that lost
+ * its SGR (or a CLI that styles the placeholder differently) reads `draft` and the caller does NOT
+ * type — the safe direction.
+ */
+export type ClaudeComposer = 'empty' | 'draft' | 'no-prompt' | 'unknown'
+
+/** Does any visible, non-blank character of this styled line (from `from`, a plain-text column)
+ *  sit outside SGR dim? Walks the SGR state; non-SGR escapes are skipped. */
+function hasUndimmedText(styled: string, from: number): boolean {
+  let dim = false
+  let col = 0
+  let i = 0
+  while (i < styled.length) {
+    if (styled[i] === '\x1b') {
+      const csi = /^\x1b\[([0-?]*)([ -/]*)([@-~])/.exec(styled.slice(i))
+      if (csi) {
+        if (csi[3] === 'm') dim = applySgrDim(csi[1], dim)
+        i += csi[0].length
+        continue
+      }
+      // eslint-disable-next-line no-control-regex
+      const osc = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(styled.slice(i))
+      i += osc ? osc[0].length : 1
+      continue
+    }
+    const ch = String.fromCodePoint(styled.codePointAt(i)!)
+    if (col >= from && ch.trim() !== '' && !dim) return true
+    col += ch.length
+    i += ch.length
+  }
+  return false
+}
+
+/** The dim flag after one SGR sequence's parameters. Extended colours (`38;5;n`, `38;2;r;g;b`, and
+ *  the 48/58 forms) consume their arguments, so the `2` in `38;2;…` is never read as dim. */
+function applySgrDim(params: string, dim: boolean): boolean {
+  const ps = params === '' ? ['0'] : params.split(/[;:]/)
+  for (let k = 0; k < ps.length; k++) {
+    const p = ps[k] === '' ? 0 : Number(ps[k])
+    if (p === 38 || p === 48 || p === 58) {
+      const mode = Number(ps[k + 1])
+      k += mode === 5 ? 2 : mode === 2 ? 4 : 1
+    } else if (p === 0 || p === 22) dim = false
+    else if (p === 2) dim = true
+  }
+  return dim
+}
+
+export function readClaudeComposer(styledScreen: string): ClaudeComposer {
+  const styled = styledScreen.split(/\r?\n/)
+  const lines = styled.map((l) => l.replace(ANSI, '').trimEnd())
+  if (lines.every((l) => l === '')) return 'unknown'
+  if (readClaudeScreen(styledScreen).kind !== 'prompt') return 'no-prompt'
+  const box = inputBox(lines)
+  if (!box) return 'no-prompt'
+  const promptAt = box[0] + 1
+  const prompt = lines[promptAt]
+  if (!prompt.startsWith('❯')) return 'draft'
+  for (let i = promptAt + 1; i < box[1]; i++) if (lines[i].trim() !== '') return 'draft'
+  return hasUndimmedText(styled[promptAt], 1) ? 'draft' : 'empty'
+}

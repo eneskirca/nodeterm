@@ -27,7 +27,7 @@ import {
   type RpcMessage
 } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
-import type { ChatPromptResult } from '../../shared/text-delivery'
+import type { ChatPromptResult, EmptyPromptResult } from '../../shared/text-delivery'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
@@ -295,6 +295,8 @@ export function buildRealApi(
       client.request(IPC.ptySendText, persistKey, text, opts?.enter) as Promise<boolean>,
     sendChatPrompt: (persistKey, text, agentId) =>
       client.request(IPC.ptySendChatPrompt, persistKey, text, agentId) as Promise<ChatPromptResult>,
+    sendToEmptyPrompt: (persistKey, text, agentId) =>
+      client.request(IPC.ptySendToEmptyPrompt, persistKey, text, agentId) as Promise<EmptyPromptResult>,
     // A failed read is unknown, never evidence that persistence is available.
     tmuxStatus: () =>
       client
@@ -360,6 +362,10 @@ export function buildRealApi(
   const workspace: WorkspaceApi = {
     load: () => client.request(IPC.workspaceLoad) as Promise<Workspace>,
     save: (ws: Workspace, opts?: WorkspaceSaveOptions) => client.request(IPC.workspaceSave, ws, opts) as Promise<void>,
+    // REAL: core's WorkspaceStore registers it, and it is the whole point on this surface — two
+    // browser tabs on one project must not both type a launch (#1173).
+    claimLaunch: (nodeId: string, command: string, manual: boolean) =>
+      client.request(IPC.workspaceClaimLaunch, nodeId, command, manual) as Promise<'claimed' | 'elsewhere'>,
     // REAL: WorkspaceStore (core) registers IPC.workspaceProbeFolder, so the server serves it.
     // Stubbing it to `null` meant "Open folder…" on a repo that already carries a committed
     // .nodeterm/project.json concluded there was no project there, created an EMPTY one, and the

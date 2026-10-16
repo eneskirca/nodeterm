@@ -5,7 +5,8 @@ import { join } from 'node:path'
 /**
  * Rendered-Markdown tables get gridlines in every reading view. The chat view had no table rules
  * at all (cells ran together with no lines), and the output view's lines used the 10% separator
- * token. One rule group now covers both containers; this pins that neither drops out of it.
+ * token. One rule group now covers both containers, and sticky notes (canvas + kanban card modal,
+ * issue #1179); this pins that none of them drops out of it.
  */
 const CSS = readFileSync(join(__dirname, 'styles.css'), 'utf8').replace(/\r\n/g, '\n')
 
@@ -19,17 +20,17 @@ function group(selectors: string[]): string {
 
 describe('Markdown table gridlines', () => {
   it('every cell of both views has a visible border', () => {
-    const cells = group(['.term-md__content th', '.term-md__content td', '.term-chat__text th', '.term-chat__text td'])
+    const cells = group(['.term-md__content th', '.term-md__content td', '.term-chat__text th', '.term-chat__text td', '.sticky-node__md th', '.sticky-node__md td'])
 
     expect(cells).toMatch(/border:\s*1px solid rgba\(var\(--tint-rgb\), 0\.22\)/)
   })
 
   it('header cells are tinted in both views', () => {
-    expect(group(['.term-md__content th', '.term-chat__text th'])).toMatch(/background:/)
+    expect(group(['.term-md__content th', '.term-chat__text th', '.sticky-node__md th'])).toMatch(/background:/)
   })
 
   it('a wide table scrolls inside itself in both views', () => {
-    const table = group(['.term-md__content table', '.term-chat__text table'])
+    const table = group(['.term-md__content table', '.term-chat__text table', '.sticky-node__md table'])
 
     expect(table).toMatch(/border-collapse:\s*collapse/)
     expect(table).toMatch(/overflow-x:\s*auto/)
@@ -37,8 +38,8 @@ describe('Markdown table gridlines', () => {
   })
 
   it('leaves text-align to the Markdown column alignment, start-aligning only unaligned headers', () => {
-    const cells = group(['.term-md__content th', '.term-md__content td', '.term-chat__text th', '.term-chat__text td'])
-    const unaligned = group(['.term-md__content th:not([align])', '.term-chat__text th:not([align])'])
+    const cells = group(['.term-md__content th', '.term-md__content td', '.term-chat__text th', '.term-chat__text td', '.sticky-node__md th', '.sticky-node__md td'])
+    const unaligned = group(['.term-md__content th:not([align])', '.term-chat__text th:not([align])', '.sticky-node__md th:not([align])'])
 
     expect(cells).not.toMatch(/text-align/)
     expect(unaligned).toMatch(/text-align:\s*start/)

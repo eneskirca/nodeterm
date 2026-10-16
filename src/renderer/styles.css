@@ -3254,9 +3254,11 @@ body,
    and a horizontal scroll inside the table for one wider than the view, so the thread never
    scrolls sideways. A column's `:---:` alignment arrives as an `align` attribute, which an author
    `text-align` would override — so only a header WITHOUT one is set (to the start edge, matching
-   its cells, instead of the browser's centred default). */
+   its cells, instead of the browser's centred default). Sticky notes (on the canvas and in the
+   kanban card modal — both render through `.sticky-node__md`) share the group (issue #1179). */
 .term-md__content table,
-.term-chat__text table {
+.term-chat__text table,
+.sticky-node__md table {
   display: block;
   width: max-content;
   max-width: 100%;
@@ -3268,20 +3270,24 @@ body,
 .term-md__content th,
 .term-md__content td,
 .term-chat__text th,
-.term-chat__text td {
+.term-chat__text td,
+.sticky-node__md th,
+.sticky-node__md td {
   border: 1px solid rgba(var(--tint-rgb), 0.22);
   padding: 4px 10px;
   vertical-align: top;
 }
 
 .term-md__content th,
-.term-chat__text th {
+.term-chat__text th,
+.sticky-node__md th {
   background: rgba(var(--tint-rgb), 0.06);
   font-weight: 600;
 }
 
 .term-md__content th:not([align]),
-.term-chat__text th:not([align]) {
+.term-chat__text th:not([align]),
+.sticky-node__md th:not([align]) {
   text-align: start;
 }
 

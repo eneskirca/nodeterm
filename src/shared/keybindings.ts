@@ -94,6 +94,13 @@ export type CommandId =
   | 'node.zoneRight'
   | 'node.zoneUp'
   | 'node.zoneDown'
+  | 'node.zoneLeftThird'
+  | 'node.zoneCenterThird'
+  | 'node.zoneRightThird'
+  | 'node.zoneTopLeft'
+  | 'node.zoneTopRight'
+  | 'node.zoneBottomLeft'
+  | 'node.zoneBottomRight'
   | 'node.close'
   | 'node.toggleMarkdown'
   | 'board.openCard'
@@ -246,7 +253,6 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   // default is Ctrl+Alt (literal Control, not Cmd). Off-mac the halves ship UNBOUND: Ctrl+Alt+Arrow
   // would trip the speech.dictation hold chord there ('Cmd+Alt' resolves to Ctrl+Alt held — the
   // exact trap the node.focus* comment documents), and Ctrl+Shift+Arrow is those focus commands.
-  // Quarters and thirds have no commands — the node context menu's "Snap to zone" carries them.
   { id: 'node.zoneLeft', title: 'Snap node to left half', group: 'Nodes', scope: 'canvas',
     defaultBindings: { darwin: ['Ctrl+Alt+ArrowLeft'], other: [] }, allowInTerminal: true },
   { id: 'node.zoneRight', title: 'Snap node to right half', group: 'Nodes', scope: 'canvas',
@@ -255,6 +261,24 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
     defaultBindings: { darwin: ['Ctrl+Alt+ArrowUp'], other: [] }, allowInTerminal: true },
   { id: 'node.zoneDown', title: 'Snap node to bottom half', group: 'Nodes', scope: 'canvas',
     defaultBindings: { darwin: ['Ctrl+Alt+ArrowDown'], other: [] }, allowInTerminal: true },
+  // Thirds and quarters (issue #1169): the rest of the zone list, same rules as the halves, but
+  // shipped UNBOUND on every platform. There is no free chord family left for seven more zones
+  // (Ctrl+Alt+Arrow is the halves', Ctrl+Shift+Arrow and Cmd+Arrow are focus), and a default here
+  // would steal a key from somebody's shell via allowInTerminal. The user binds the ones they use.
+  { id: 'node.zoneLeftThird', title: 'Snap node to left third', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneCenterThird', title: 'Snap node to center third', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneRightThird', title: 'Snap node to right third', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneTopLeft', title: 'Snap node to top left quarter', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneTopRight', title: 'Snap node to top right quarter', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneBottomLeft', title: 'Snap node to bottom left quarter', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
+  { id: 'node.zoneBottomRight', title: 'Snap node to bottom right quarter', group: 'Nodes', scope: 'canvas',
+    defaultBindings: both(), allowInTerminal: true },
   // Main-process intercepted today (unconditional): keep firing everywhere.
   { id: 'node.close', title: 'Close node / window', group: 'Nodes', scope: 'app',
     defaultBindings: both('Cmd+W'), allowInTerminal: true, allowWhileTyping: true },

@@ -68,3 +68,28 @@ describe('probeWithin', () => {
     expect(PANE_PROBE_TIMEOUT_MS).toBe(2000)
   })
 })
+
+describe('WINDOWS_PANE_PROBE_TIMEOUT_MS covers the Windows probe it bounds (#1211)', () => {
+  // A messaging read reaches `readWindowsConsoleOwner`, which asks this process's long-lived probe
+  // worker (#1206) and falls back to a one-shot powershell.exe when the worker cannot answer. The
+  // worker idles out after a minute, so a message sent minutes after the last one meets a COLD
+  // worker: its first-request deadline (PowerShell startup + Add-Type) and, if that lapses, the
+  // one-shot run. An outer budget below that sum discards the answer that was on its way and reads
+  // a healthy pane as `targetPaneUnreadable`.
+  it('is above the cold-worker deadline plus the one-shot fallback', async () => {
+    const { WINDOWS_PANE_PROBE_TIMEOUT_MS } = await import('./pane-probe')
+    const { PROBE_FIRST_REQUEST_TIMEOUT_MS, WINDOWS_ONESHOT_PROBE_TIMEOUT_MS } = await import(
+      '../../session-host/windows-probe-budget'
+    )
+    expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeGreaterThan(
+      PROBE_FIRST_REQUEST_TIMEOUT_MS + WINDOWS_ONESHOT_PROBE_TIMEOUT_MS
+    )
+  })
+
+  it('stays a real bound, above the tmux/ssh one', async () => {
+    // The outer bound only has to outlast the inner ones; it must stay a bound (finite, sane).
+    const { WINDOWS_PANE_PROBE_TIMEOUT_MS, PANE_PROBE_TIMEOUT_MS } = await import('./pane-probe')
+    expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeGreaterThan(PANE_PROBE_TIMEOUT_MS)
+    expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(15_000)
+  })
+})

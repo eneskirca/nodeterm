@@ -37,7 +37,11 @@ The Server Edition's `installHooks: false` is a hard veto that outranks every ch
 ## Default for existing vs new installs (product decision — confirm)
 
 - **Existing installs are grandfathered as enabled.** Evidence is our own files only: a non-empty
-  `~/.nodeterm/agent-hooks/` or the canvas/context shims under userData. The record is written at
+  `~/.nodeterm/agent-hooks/`. The canvas/context shims under userData are NOT evidence — every boot
+  writes them, consent or not, which grandfathered fresh installs on their second boot (#1149). The
+  decision is taken once: the first boot without evidence writes
+  `<userData>/integration-consent-fresh-install`, and no later boot of that install grandfathers
+  (not even when a sibling install sharing `~/.nodeterm` enabled its own hooks). The record is written at
   boot, before the renderer loads settings and before any install, with every agent enabled and
   `hostDefault: enabled`, so nobody's badges or canvas control stop on upgrade. A one-time
   dismissible notice says integrations are now a choice and links to Settings → Agents.

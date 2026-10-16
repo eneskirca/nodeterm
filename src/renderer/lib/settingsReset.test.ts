@@ -31,6 +31,15 @@ describe('reset key lists', () => {
 
   // Deliberate exclusion: the terminal renders with it, but it belongs to the tmux section, and
   // resetting a scrollback limit from an appearance button would be a surprise.
+  // Issue #1113: the note/frame backing sliders sit in the Appearance section, so its reset owns
+  // them — otherwise "Reset appearance" leaves an 80% backing behind and reads as pristine.
+  it('claims the sticky-note and group-frame backing', () => {
+    expect(APPEARANCE_RESET_KEYS).toContain('stickyNoteBacking')
+    expect(APPEARANCE_RESET_KEYS).toContain('groupFrameBacking')
+    const touched: Settings = { ...DEFAULT_SETTINGS, stickyNoteBacking: 80 }
+    expect(isPristine(APPEARANCE_RESET_KEYS, touched)).toBe(false)
+  })
+
   it('does not claim tmuxScrollback', () => {
     expect(TERMINAL_RESET_KEYS).not.toContain('tmuxScrollback')
   })

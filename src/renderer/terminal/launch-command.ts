@@ -5,7 +5,9 @@ import { deliverCommand, type DeliveryIo, type DeliveryOutcome } from '@shared/c
 // A writer belongs to the PTY lifetime (including a parked view), not a Canvas render.
 // A durable write-ahead claim distinguishes a never-attempted warm launch from an uncertain
 // earlier submission whose clearing autosave may have been lost.
-type LaunchOutcome = DeliveryOutcome | 'deferred'
+// `'elsewhere'`: another viewer of the project claimed this launch (#1173); nothing was typed and
+// nothing failed.
+type LaunchOutcome = DeliveryOutcome | 'deferred' | 'elsewhere'
 type Writer = (command: string, manual: boolean) => Promise<LaunchOutcome>
 const defaultScope = {}
 const scopedWriters = new WeakMap<object, Map<string, Writer>>()
@@ -44,6 +46,7 @@ export function createLaunchWriter(opts: {
   execute?(command: string, manual: boolean): Promise<DeliveryOutcome | 'fallback'>
 }): Writer {
   let attempted = false
+  let elsewhere = false
   let submitted = false
   let inFlight: Promise<LaunchOutcome> | undefined
   let disposed = false
@@ -51,11 +54,18 @@ export function createLaunchWriter(opts: {
   return (command, manual) => {
     if (submitted) return Promise.resolve('submitted') // stale UI/save; never paste twice
     if (inFlight) return inFlight
+    // Another viewer owns this launch: an automatic retry stands down again rather than reading
+    // as a failure. Run now (manual) still goes through, as everywhere else.
+    if (!manual && elsewhere && !disposed) return Promise.resolve('elsewhere')
     if (disposed || (!manual && attempted)) return Promise.resolve('cancelled')
     inFlight = (async () => {
       if (!(await opts.shellReady(manual)) || disposed) return 'cancelled' as const
       const claim = await opts.claimAttempt(manual, command)
       if (claim === 'deferred' && !disposed) return 'deferred' as const
+      if (claim === 'elsewhere' && !disposed) {
+        elsewhere = true
+        return 'elsewhere' as const
+      }
       if (!claim || disposed) return 'cancelled' as const
       attempted = true
       // Saving can take a remote round trip. Recheck after the barrier, before any input.
@@ -106,6 +116,12 @@ export function deliverInitialLaunch(command: string, opts: {
   opts.whenReady(() => {
     void opts.write(command, false).then((outcome) => {
       if (outcome === 'deferred') return // no input/claim; retain never-attempted intent
+      if (outcome === 'elsewhere') {
+        // Another viewer of this project claimed and is typing it (#1173). Drop only the live
+        // alias; the durable record converges from that viewer over the canvas sync.
+        opts.update({ initialCommand: undefined })
+        return
+      }
       opts.update({ initialCommand: undefined,
         pendingLaunch: outcome === 'submitted' ? undefined : { ...pendingLaunch, attempted: true, manualOnly: true } })
       if (outcome !== 'submitted') opts.onFailure(outcome)

@@ -1,0 +1,573 @@
+{
+ "note": "Captured 2026-10-16 with codex-cli 0.163.0 (interactive TUI, private CODEX_HOME, local fake Responses model, approvals_reviewer = \"auto_review\", approval_policy = \"on-request\", sandbox_mode = \"read-only\"). The same shapes were seen with 0.156.1 under codex exec. Paths rewritten to /lab. receivedAt = epoch seconds the hook script ran. rollout = the main thread rollout records (developer message text elided).",
+ "hooks": [
+  {
+   "receivedAt": 1792143394.6406503,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "SessionStart",
+    "model": "fake",
+    "permission_mode": "default",
+    "source": "startup"
+   }
+  },
+  {
+   "receivedAt": 1792143394.6451676,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "UserPromptSubmit",
+    "model": "fake",
+    "permission_mode": "default",
+    "prompt": "run the tests"
+   }
+  },
+  {
+   "receivedAt": 1792143394.677283,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "PreToolUse",
+    "model": "fake",
+    "permission_mode": "default",
+    "tool_name": "Bash",
+    "tool_input": {
+     "command": "touch /lab/outside-12 && sleep 4"
+    },
+    "tool_use_id": "call12"
+   }
+  },
+  {
+   "receivedAt": 1792143394.7050555,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "PermissionRequest",
+    "model": "fake",
+    "permission_mode": "default",
+    "tool_name": "Bash",
+    "tool_input": {
+     "command": "touch /lab/outside-12 && sleep 4",
+     "description": "need to write outside sandbox"
+    }
+   }
+  },
+  {
+   "receivedAt": 1792143398.8070297,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "PostToolUse",
+    "model": "fake",
+    "permission_mode": "default",
+    "tool_name": "Bash",
+    "tool_input": {
+     "command": "touch /lab/outside-12 && sleep 4"
+    },
+    "tool_response": "",
+    "tool_use_id": "call12"
+   }
+  },
+  {
+   "receivedAt": 1792143398.83488,
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "transcript_path": "/lab/codexhome/sessions/2026/10/16/rollout-2026-10-16T12-36-34-01a14412-0711-7150-a315-ffbf31a65435.jsonl",
+    "cwd": "/lab/work",
+    "hook_event_name": "Stop",
+    "model": "fake",
+    "permission_mode": "default",
+    "stop_hook_active": false,
+    "last_assistant_message": "done"
+   }
+  }
+ ],
+ "rollout": [
+  {
+   "timestamp": "2026-10-16T09:36:34.621Z",
+   "ordinal": 0,
+   "type": "session_meta",
+   "payload": {
+    "session_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "timestamp": "2026-10-16T09:36:34.579Z",
+    "cwd": "/lab/work",
+    "runtime_workspace_roots": [
+     "/lab/work"
+    ],
+    "originator": "codex-tui",
+    "cli_version": "0.163.0",
+    "source": "vscode",
+    "thread_source": "user",
+    "model_provider": "fake",
+    "history_mode": "paginated",
+    "context_window": {
+     "window_id": "01a14412-0712-77d3-b873-62635003554e"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.621Z",
+   "ordinal": 1,
+   "type": "event_msg",
+   "payload": {
+    "type": "task_started",
+    "turn_attribution": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "turn_trigger": "user",
+     "parent_turn_id": null,
+     "initiating_agent_path": null,
+     "root_turn_id": "01a14412-073a-7333-91b1-416c357192ac"
+    },
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "root_turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "started_at": 1792143394,
+    "model_context_window": 258400,
+    "collaboration_mode_kind": "default"
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.633Z",
+   "ordinal": 2,
+   "type": "response_item",
+   "payload": {
+    "type": "message",
+    "id": "msg_01a14412-0749-7330-9661-4de9833ab8fc",
+    "role": "developer",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<elided by fixture>"
+     }
+    ],
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "create_time": 1792143394.6334124,
+     "content_item_kinds": [
+      "host_skills.instructions",
+      "permissions.instructions",
+      "collaboration_mode.instructions"
+     ]
+    }
+   },
+   "metadata": {
+    "client_authored": false,
+    "mcp_attribution": {
+     "status": "none"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.633Z",
+   "ordinal": 3,
+   "type": "response_item",
+   "payload": {
+    "type": "message",
+    "id": "msg_01a14412-0749-7330-9661-4dfdab95e628",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "<environment_context>\n  <cwd>/lab/work</cwd>\n  <shell>bash</shell>\n  <current_date>2026-10-16</current_date>\n  <timezone>Europe/Istanbul</timezone>\n  <filesystem><workspace_roots><root>/lab/work</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+     }
+    ],
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "create_time": 1792143394.6334188,
+     "content_item_kinds": [
+      "environments.environment_context"
+     ]
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.635Z",
+   "ordinal": 5,
+   "type": "turn_context",
+   "payload": {
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "root_turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "disabled_plugin_ids": [],
+    "cwd": "/lab/work",
+    "approval_policy": "on-request",
+    "approvals_reviewer": "auto_review",
+    "sandbox_policy": {
+     "type": "read-only"
+    },
+    "permission_profile": {
+     "type": "managed",
+     "file_system": {
+      "type": "restricted",
+      "entries": [
+       {
+        "path": {
+         "type": "special",
+         "value": {
+          "kind": "root"
+         }
+        },
+        "access": "read"
+       }
+      ]
+     },
+     "network": "restricted"
+    },
+    "model": "fake",
+    "collaboration_mode": {
+     "mode": "default",
+     "settings": {
+      "model": "fake",
+      "reasoning_effort": null,
+      "developer_instructions": "# Collaboration Mode: Default\n\nYou are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.\n\nYour active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.\n\n## request_user_input availability\n\nUse the `request_user_input` tool only when it is listed in the available tools for this turn.\n\nIn Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions.\n\nUse the `request_user_input` tool only for optional questions where the answer would materially improve the quality of the work.\n\nIf `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.\n\nNever use the `request_user_input` tool for permission requests or permission-related escalations.\n\nIf explicit user input is required for another reason before progress can safely continue, do not use the `request_user_input` tool. Ask the user directly with one concise plain-text question instead. Never write a multiple choice question as a textual assistant message.\n"
+     }
+    },
+    "multi_agent_version": "v1",
+    "realtime_active": false,
+    "summary": "none"
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.635Z",
+   "ordinal": 6,
+   "type": "event_msg",
+   "payload": {
+    "type": "thread_settings_applied",
+    "thread_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "thread_settings": {
+     "model": "fake",
+     "model_provider_id": "fake",
+     "approval_policy": "on-request",
+     "approvals_reviewer": "auto_review",
+     "permission_profile": {
+      "type": "managed",
+      "file_system": {
+       "type": "restricted",
+       "entries": [
+        {
+         "path": {
+          "type": "special",
+          "value": {
+           "kind": "root"
+          }
+         },
+         "access": "read"
+        }
+       ]
+      },
+      "network": "restricted"
+     },
+     "cwd": "/lab/work",
+     "runtime_workspace_roots": [
+      "/lab/work"
+     ],
+     "collaboration_mode": {
+      "mode": "default",
+      "settings": {
+       "model": "fake",
+       "reasoning_effort": null,
+       "developer_instructions": "# Collaboration Mode: Default\n\nYou are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.\n\nYour active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.\n\n## request_user_input availability\n\nUse the `request_user_input` tool only when it is listed in the available tools for this turn.\n\nIn Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions.\n\nUse the `request_user_input` tool only for optional questions where the answer would materially improve the quality of the work.\n\nIf `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.\n\nNever use the `request_user_input` tool for permission requests or permission-related escalations.\n\nIf explicit user input is required for another reason before progress can safely continue, do not use the `request_user_input` tool. Ask the user directly with one concise plain-text question instead. Never write a multiple choice question as a textual assistant message.\n"
+      }
+     },
+     "disabled_plugin_ids": []
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.645Z",
+   "ordinal": 7,
+   "type": "response_item",
+   "payload": {
+    "type": "message",
+    "id": "msg_01a14412-0755-7ed2-a0bd-1c876f36b476",
+    "role": "user",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "run the tests"
+     }
+    ],
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "create_time": 1792143394.6456115,
+     "content_item_kinds": [
+      "user.text"
+     ]
+    }
+   },
+   "metadata": {
+    "retained_source": {
+     "id": {
+      "message_id": "msg_01a14412-0755-7ed2-a0bd-1c876f36b476",
+      "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+      "role": "user"
+     },
+     "revision": "retained_01a14412-0755-7ed2-a0bd-1ca634a45f43",
+     "complete": true
+    },
+    "client_authored": false,
+    "user_input_order": 0,
+    "mcp_attribution": {
+     "status": "none"
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.646Z",
+   "ordinal": 8,
+   "type": "event_msg",
+   "payload": {
+    "type": "item_completed",
+    "thread_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "item": {
+     "type": "UserMessage",
+     "id": "01a14412-0755-7ed2-a0bd-1c94dd571a01",
+     "client_id": "ef49187c-3d13-4541-b46d-0ce657b85026",
+     "content": [
+      {
+       "type": "text",
+       "text": "run the tests",
+       "text_elements": []
+      }
+     ]
+    },
+    "started_at_ms": 1792143394646,
+    "completed_at_ms": 1792143394646
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:34.669Z",
+   "ordinal": 9,
+   "type": "response_item",
+   "payload": {
+    "type": "function_call",
+    "id": "fc12",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"touch /lab/outside-12 && sleep 4\",\"sandbox_permissions\":\"require_escalated\",\"justification\":\"need to write outside sandbox\"}",
+    "call_id": "call12",
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac"
+    }
+   },
+   "metadata": {
+    "client_authored": false,
+    "user_input_order": 1
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.801Z",
+   "ordinal": 11,
+   "type": "event_msg",
+   "payload": {
+    "type": "item_completed",
+    "thread_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "item": {
+     "type": "CommandExecution",
+     "id": "call12",
+     "process_id": "78676",
+     "command": [
+      "/bin/bash",
+      "-lc",
+      "touch /lab/outside-12 && sleep 4"
+     ],
+     "cwd": "file:///lab/work",
+     "parsed_cmd": [
+      {
+       "type": "unknown",
+       "cmd": "touch /lab/outside-12 && sleep 4"
+      }
+     ],
+     "source": "unified_exec_startup",
+     "status": "completed",
+     "aggregated_output": "",
+     "exit_code": 0,
+     "duration": {
+      "secs": 3,
+      "nanos": 857768531
+     }
+    },
+    "started_at_ms": 1792143394943,
+    "completed_at_ms": 1792143398801
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.807Z",
+   "ordinal": 12,
+   "type": "response_item",
+   "payload": {
+    "type": "function_call_output",
+    "id": "fco_01a14412-1797-72d0-8598-da94e4694366",
+    "call_id": "call12",
+    "output": "Chunk ID: 289115\nWall time: 3.8578 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "create_time": 1792143398.807718
+    }
+   },
+   "metadata": {
+    "client_authored": false,
+    "fallback_token_limit_override": 3000
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.808Z",
+   "ordinal": 13,
+   "type": "event_msg",
+   "payload": {
+    "type": "token_count",
+    "info": {
+     "total_token_usage": {
+      "input_tokens": 10,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 15
+     },
+     "last_token_usage": {
+      "input_tokens": 10,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 15
+     },
+     "model_context_window": 258400
+    },
+    "rate_limits": {
+     "limit_id": "codex",
+     "limit_name": null,
+     "primary": null,
+     "secondary": null,
+     "credits": null,
+     "individual_limit": null,
+     "spend_control_reached": null,
+     "plan_type": null,
+     "rate_limit_reached_type": null
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.825Z",
+   "ordinal": 14,
+   "type": "event_msg",
+   "payload": {
+    "type": "item_completed",
+    "thread_id": "01a14412-0711-7150-a315-ffbf31a65435",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "item": {
+     "type": "AgentMessage",
+     "id": "m16",
+     "content": [
+      {
+       "type": "Text",
+       "text": "done"
+      }
+     ]
+    },
+    "started_at_ms": 1792143398825,
+    "completed_at_ms": 1792143398825
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.826Z",
+   "ordinal": 15,
+   "type": "response_item",
+   "payload": {
+    "type": "message",
+    "id": "m16",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "done"
+     }
+    ],
+    "internal_chat_message_metadata_passthrough": {
+     "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+     "content_item_kinds": [
+      "unknown"
+     ]
+    }
+   },
+   "metadata": {
+    "retained_source": {
+     "id": {
+      "message_id": "m16",
+      "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+      "role": "assistant"
+     },
+     "revision": "retained_01a14412-17aa-70d0-a7a1-00295e13a9f8",
+     "complete": true
+    },
+    "client_authored": false,
+    "user_input_order": 2
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.827Z",
+   "ordinal": 17,
+   "type": "event_msg",
+   "payload": {
+    "type": "token_count",
+    "info": {
+     "total_token_usage": {
+      "input_tokens": 20,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 10,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 30
+     },
+     "last_token_usage": {
+      "input_tokens": 10,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5,
+      "reasoning_output_tokens": 0,
+      "total_tokens": 15
+     },
+     "model_context_window": 258400
+    },
+    "rate_limits": {
+     "limit_id": "codex",
+     "limit_name": null,
+     "primary": null,
+     "secondary": null,
+     "credits": null,
+     "individual_limit": null,
+     "spend_control_reached": null,
+     "plan_type": null,
+     "rate_limit_reached_type": null
+    }
+   }
+  },
+  {
+   "timestamp": "2026-10-16T09:36:38.836Z",
+   "ordinal": 18,
+   "type": "event_msg",
+   "payload": {
+    "type": "task_complete",
+    "root_turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "turn_id": "01a14412-073a-7333-91b1-416c357192ac",
+    "last_agent_message": "done",
+    "started_at": 1792143394,
+    "completed_at": 1792143398,
+    "duration_ms": 4216,
+    "time_to_first_token_ms": 49
+   }
+  }
+ ]
+}

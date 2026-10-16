@@ -13,7 +13,12 @@
  * Main-side only (it holds a debugger and writes a real file); never Server Edition.
  */
 import path from 'node:path'
-import type { Driver, ActionResult } from './browser-actions'
+import { settledViewport, type Driver, type ActionResult, type LayoutMetrics } from './browser-actions'
+import { MAX_VIEWPORT_OVERRIDE } from './browser-cdp-allowlist'
+import { METRICS_OVERRIDE, METRICS_OVERRIDE_CLEAR } from './browser-lease'
+
+/** `--full true` captures at most this many CSS px of height; a taller page says it was cut. */
+export const FULL_PAGE_MAX_HEIGHT = MAX_VIEWPORT_OVERRIDE
 
 /** Refused: the resolved path (or a symlink on the way to it) is not inside the project directory. */
 export const SCREENSHOT_OUTSIDE_PROJECT =
@@ -80,6 +85,8 @@ export async function resolveScreenshotPath(
  *  write is injected so the action is testable without touching disk. */
 export interface ScreenshotDeps extends ScreenshotPathDeps {
   writeFile(p: string, data: Buffer): Promise<void>
+  /** The settle poll's delay, injected so tests do not wait on real time. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 /**
@@ -98,37 +105,119 @@ export async function browserScreenshot(
 ): Promise<ActionResult> {
   const resolved = await resolveScreenshotPath(projectCwd, rawPath, deps)
   if (!resolved.ok) return { ok: false, message: resolved.message }
-  const m = await s.refreshViewport()
   const full = opts.full === true
-  // The clip is OURS — from the measured page, never a caller field. Default is the visible viewport
-  // (no clip); --full captures the whole content box.
-  const params = full
-    ? {
-        format: 'png',
-        captureBeyondViewport: true,
-        clip: {
-          x: 0,
-          y: 0,
-          width: Math.round(m.contentWidth),
-          height: Math.round(m.contentHeight),
-          scale: 1
-        }
-      }
-    : { format: 'png' }
-  const res = (await s.send('Page.captureScreenshot', params)) as { data?: unknown }
-  const b64 = typeof res?.data === 'string' ? res.data : ''
-  if (!b64) return { ok: false, message: `browser: ${nodeId} returned no screenshot data` }
-  const buf = Buffer.from(b64, 'base64')
+  let shot: FullCapture
+  try {
+    shot = full ? await captureFullPage(s, deps.sleep) : await captureViewport(s)
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : `browser: ${nodeId} could not be captured` }
+  }
+  if (!shot.b64) return { ok: false, message: `browser: ${nodeId} returned no screenshot data` }
+  const buf = Buffer.from(shot.b64, 'base64')
   try {
     await deps.writeFile(resolved.abs, buf)
   } catch {
     return { ok: false, message: `browser: could not write the screenshot to ${resolved.abs}` }
   }
-  const w = full ? Math.round(m.contentWidth) : Math.round(m.width)
-  const h = full ? Math.round(m.contentHeight) : Math.round(m.height)
+  const { w, h } = shot
   const kb = Math.max(1, Math.round(buf.length / 1024))
   return {
     ok: true,
-    message: `wrote ${resolved.abs} (${w}×${h}, ${kb} KB) — show it with: show-image ${resolved.abs}`
+    message:
+      `wrote ${resolved.abs} (${w}×${h}, ${kb} KB)${shot.notes.map((n) => `; ${n}`).join('')}` +
+      ` — show it with: show-image ${resolved.abs}`
+  }
+}
+
+interface FullCapture {
+  b64: string
+  w: number
+  h: number
+  /** Facts the reply owes the caller (a cut page, a scroll position we could not put back). */
+  notes: string[]
+}
+
+function dataOf(res: unknown): string {
+  const d = (res as { data?: unknown } | null)?.data
+  return typeof d === 'string' ? d : ''
+}
+
+async function captureViewport(s: Driver): Promise<FullCapture> {
+  const m = await s.refreshViewport()
+  const res = await s.send('Page.captureScreenshot', { format: 'png' })
+  return { b64: dataOf(res), w: Math.round(m.width), h: Math.round(m.height), notes: [] }
+}
+
+/**
+ * The whole page, rendered as ONE viewport (#539). `captureBeyondViewport` on its own paints layers
+ * outside the viewport without re-laying the page out, so a scrolled page's `position: sticky`
+ * header lands at the old scroll offset and a `fixed` footer mid-page (measured, Electron 42.9.1).
+ * So: size the viewport to the content (width unchanged, so the page keeps its own breakpoints),
+ * let layout settle, capture, clear the override in `finally`, then put the scroll position back —
+ * an override this tall clamps scroll to 0, and clearing it does not restore it (measured).
+ *
+ * Side effect, stated in the reply contract: the page sees one resize, so content sized to the
+ * viewport (`100vh`) renders taller in the image. Grown content gets ONE re-measure, bounded by
+ * {@link FULL_PAGE_MAX_HEIGHT}. If the lease is released mid-capture the session has already sent the
+ * clear before detaching; nothing here reattaches it.
+ */
+async function captureFullPage(s: Driver, sleep?: (ms: number) => Promise<void>): Promise<FullCapture> {
+  const before = await settledViewport(s, sleep)
+  const width = Math.max(1, Math.min(FULL_PAGE_MAX_HEIGHT, Math.round(before.width)))
+  const want = (m: LayoutMetrics) => Math.max(1, Math.min(FULL_PAGE_MAX_HEIGHT, Math.round(m.contentHeight)))
+  const notes: string[] = []
+  let height = want(before)
+  let b64 = ''
+  let w = 0
+  let h = 0
+  let fullHeight = Math.round(before.contentHeight)
+  try {
+    await s.send(METRICS_OVERRIDE, { width, height, deviceScaleFactor: 0, mobile: false })
+    let m = await settledViewport(s, sleep)
+    if (want(m) > height) {
+      height = want(m)
+      await s.send(METRICS_OVERRIDE, { width, height, deviceScaleFactor: 0, mobile: false })
+      m = await settledViewport(s, sleep)
+    }
+    fullHeight = Math.round(m.contentHeight)
+    h = Math.min(height, Math.max(1, fullHeight))
+    w = Math.max(1, Math.round(m.contentWidth))
+    const res = await s.send('Page.captureScreenshot', {
+      format: 'png',
+      // Belt for anything still outside the (now page-sized) viewport, e.g. horizontal overflow.
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: w, height: h, scale: 1 }
+    })
+    b64 = dataOf(res)
+  } finally {
+    if (s.isAttached?.() !== false) await s.send(METRICS_OVERRIDE_CLEAR, {}).catch(() => {})
+  }
+  if (fullHeight > h) notes.push(`page is ${fullHeight}px tall; captured the first ${h}px`)
+  const restored = await restoreScroll(s, before, sleep)
+  if (restored) notes.push(restored)
+  return { b64, w, h, notes }
+}
+
+/** Put the page back where it was scrolled before the capture. Returns a note when it could not. */
+async function restoreScroll(
+  s: Driver,
+  before: LayoutMetrics,
+  sleep?: (ms: number) => Promise<void>
+): Promise<string | null> {
+  if (s.isAttached?.() === false) return null
+  const target = { x: Math.round(before.scrollX), y: Math.round(before.scrollY) }
+  try {
+    let now = await settledViewport(s, sleep)
+    const dx = target.x - Math.round(now.scrollX)
+    const dy = target.y - Math.round(now.scrollY)
+    if (dx !== 0 || dy !== 0) {
+      const at = { x: Math.floor(now.width / 2), y: Math.floor(now.height / 2) }
+      await s.send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...at, deltaX: dx, deltaY: dy })
+      now = await settledViewport(s, sleep)
+    }
+    if (Math.round(now.scrollX) === target.x && Math.round(now.scrollY) === target.y) return null
+    return `the page was at scroll ${target.y} and is now at ${Math.round(now.scrollY)} — re-scroll before clicking`
+  } catch {
+    return 'could not restore the scroll position — re-read the page before clicking'
   }
 }
