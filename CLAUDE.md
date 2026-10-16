@@ -2357,6 +2357,14 @@ else, and its context links must keep classifying across restarts).
   the shared mapping. Desktop and Server Edition use the same core handler; relay tabs deliberately
   do not apply this machine's gateway to another core. Mobile needs a settings/model-picker surface
   before it can expose the feature.
+  **A canvas-control `--model` (and a spawn-team role's `model`) is refused at open time ONLY on a
+  confident negative** (issue #519, `renderer/lib/modelRefusal.ts`): a builtin claude/codex/copilot
+  launching through the gateway (not subscription mode, not a relay tab, no project agent env or
+  launch override), a finished non-empty discovery read OF THE CURRENT saved settings
+  (`useModelGateway.forKey`), and an id absent from it (provider prefix and case tolerated; claude's
+  own aliases always pass). Every other case passes through, as before. Never widen it to a guessed
+  list: a false refusal blocks an orchestrator, a pass-through costs one failed turn. Server
+  Edition's headless control has no catalogue and passes through.
 - **Grok** (`@xai-official/grok` 1.0.0, builtin since 2026-08) — in `AGENT_HOOK_TARGETS`,
   `RESUMABLE_AGENTS`, `RENAME_CAPABLE`, `PERMISSION_MODE_CAPABLE`, `CANVAS_CONTROL_CAPABLE`,
   `CONTEXT_LINK_CAPABLE`, `CHAT_CAPABLE`, `TRANSFER_SOURCE_CAPABLE`, `USAGE_CAPABLE`,

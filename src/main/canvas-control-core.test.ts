@@ -600,6 +600,18 @@ describe('parseControlRequest', () => {
     }
   })
 
+  it('both agent-facing texts say an id missing from the gateway list is refused at open time (issue #519)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      const flat = body.replace(/\s+/g, ' ')
+      expect(flat).toContain('REFUSED at open time')
+      expect(flat).toMatch(/never retry the same id/)
+      // The pass-through case is still stated, so an agent without a gateway list is not surprised.
+      expect(flat).toMatch(/fails inside the session on its first turn/)
+      // The old blanket claim ("not at open time") is gone.
+      expect(flat).not.toMatch(/fails inside the session(,| on its first turn,) not at open time/)
+    }
+  })
+
   it('both agent-facing texts document --base accepting a station id (issue #530)', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       // The flag surface must show the widened grammar…

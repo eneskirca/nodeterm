@@ -936,8 +936,11 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  default. Use it to keep a cheap station cheap: a node whose whole job is editing a README',
     '  does not need the model you give the node rewriting a test suite. Honoured by claude, codex',
     '  and copilot (and custom agents based on them); any other agent ignores it and launches',
-    '  exactly as it would without the flag. The id is passed to the CLI as-is, so a name that',
-    '  agent does not recognise fails inside the session, not at open time — name a model you know.',
+    '  exactly as it would without the flag. When nodeterm holds your model gateway\'s model list for',
+    '  that agent, an id the list does not contain is REFUSED at open time and the reply names the',
+    '  list (nothing opens; use an id from it or drop `--model`, never retry the same id). With no',
+    '  such list (no gateway, subscription mode, a custom agent, grok) the id goes to the CLI as-is',
+    '  and an unknown name fails inside the session on its first turn — name a model you know.',
     ...issueBindingDocLines(),
     ...afterPrDocLines(),
     ...afterHandoverDocLines(),
@@ -1522,9 +1525,14 @@ Verbs:
   need the model you give the station rewriting a 1000-line test suite, and without this flag
   every station you open runs on the same one. Honoured by claude, codex and copilot (and custom
   agents declaring one of those as their base); every other agent IGNORES it and launches exactly
-  as it would have — the flag is never an error, so a mixed fan-out needs no special-casing. The
-  id goes to the CLI verbatim: an unknown name fails inside the session on its first turn, not at
-  open time, so name a model you know that CLI accepts rather than guessing.
+  as it would have, so a mixed fan-out needs no special-casing. When nodeterm holds your model
+  gateway's model list for that agent (claude, codex or copilot launching through the gateway),
+  an id the list does not contain is REFUSED at open time and the reply names the list: nothing
+  opens; use an id from that list or drop \`--model\`, and never retry the same id. With no such
+  list (no gateway configured, subscription mode, a custom agent, grok) the id goes to the CLI
+  verbatim and an unknown name fails inside the session on its first turn, so name a model you
+  know that CLI accepts rather than guessing. The same check applies to each spawn-team role's
+  \`model\`.
 ${issueBindingDocLines().join('\n')}
 ${afterPrDocLines().join('\n')}
 ${afterHandoverDocLines().join('\n')}

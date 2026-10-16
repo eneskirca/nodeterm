@@ -240,6 +240,7 @@ import { effectiveAccountId, observationIsRemote, type ObservationOrigin } from 
 import { reopenVariants } from '../lib/reopenVariants'
 import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { useModelGateway } from '../state/modelGateway'
+import { modelCheckApplies, unknownModelRefusal } from '../lib/modelRefusal'
 import { viewportAtZoom } from '../lib/zoomReset'
 import { containerOrigin, snapPointInRootSpace } from '../lib/gridSnap'
 import { zoomFromPct } from '../lib/zoomPresets'
@@ -12648,6 +12649,41 @@ export function Canvas() {
         reply({ ok: false, error: prWaitPre.error })
         return
       }
+      // `--model` (issue #519): refused at open time ONLY on a confident negative — the model
+      // gateway's catalogue is a finished read of the current settings, the agent launches through
+      // that gateway, and the id is not on it (lib/modelRefusal.ts lists every pass-through). Asked
+      // HERE, once, for the project the node opens in, before any path reads the store (the
+      // project launch-info lookup may cost a round trip). Dry runs get the same answer.
+      const modelRefusalFor = async (
+        agentId: string,
+        model: string | undefined,
+        project: Project | undefined
+      ): Promise<string | null> => {
+        const st = useSettings.getState().settings
+        const gw = useModelGateway.getState()
+        const input = {
+          agentId,
+          model,
+          catalogue: { models: gw.models, status: gw.status, forKey: gw.forKey },
+          gateway: st.modelGateway,
+          launchMode: st.agentLaunchMode,
+          relay: !!project?.remote
+        }
+        if (!project || !modelCheckApplies(input)) return null
+        if (!projectLaunchInfoNow(project.id)) await ensureProjectLaunchInfo(project.id)
+        return unknownModelRefusal({ ...input, projectInfo: projectLaunchInfoNow(project.id) })
+      }
+      if (issueOpen && openScopePre?.ok) {
+        const modelErr = await modelRefusalFor(
+          verb === 'open-agent' ? (args.agent ?? '') : 'claude',
+          args.model,
+          openProjectPre
+        )
+        if (modelErr) {
+          reply({ ok: false, error: `${verb}: ${modelErr}` })
+          return
+        }
+      }
       const prHoldPre = prWaitPre.hold
       // What the replies add: the wait, and any `:merged` wait that was already met when armed.
       const prReplyLines = [
@@ -14899,6 +14935,18 @@ export function Canvas() {
                 reply({
                   ok: false,
                   error: `spawn-team: role ${rName} promptFile not found: ${r.promptFile}`
+                })
+                return
+              }
+            }
+            // Per-role `model`: the same open-time check as `--model` (issue #519), against the
+            // project the team opens in. The first refused role refuses the whole team.
+            for (const [ri, r] of roles.entries()) {
+              const modelErr = await modelRefusalFor(r.agent, r.model, ctlProject ?? undefined)
+              if (modelErr) {
+                reply({
+                  ok: false,
+                  error: `spawn-team: role ${r.title ? `"${r.title}"` : `#${ri + 1}`}: ${modelErr}`
                 })
                 return
               }
