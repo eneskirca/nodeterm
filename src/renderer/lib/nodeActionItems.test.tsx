@@ -282,6 +282,11 @@ describe('session rows when the terminal is not attached', () => {
     expect(hintOf(paused, 'Resume session')).toBe(RELEASED_HINT)
   })
 
+  it('the released hint names no single surface (canvas menu, sidebar and board all show it)', () => {
+    expect(RELEASED_HINT).not.toMatch(/card menu/i)
+    expect(RELEASED_HINT).toMatch(/refresh the terminal/i)
+  })
+
   it('not on the canvas: the same rows keep the not-attached reason', () => {
     useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
     const items = buildNodeActionItems(['a'], undefined, ctxDetached())

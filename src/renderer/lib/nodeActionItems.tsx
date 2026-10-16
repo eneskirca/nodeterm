@@ -168,7 +168,7 @@ export const NOT_ATTACHED_HINT = 'This terminal is not attached right now.'
  *  released while off screen (the offscreen release): the pane is alive (the card modal shows it),
  *  only the canvas node's client is gone. Refresh, or bringing it into view, wires it again. */
 export const RELEASED_HINT =
-  'This terminal was released while off screen — refresh it from the card menu or bring it into view on the canvas.'
+  'This terminal was released while off screen — refresh the terminal or bring it into view on the canvas.'
 
 /** Why a session row cannot act on this node right now because nothing is wired to it, or
  *  undefined when it is. The ONE place that tells "released on the canvas" from "not on it". */

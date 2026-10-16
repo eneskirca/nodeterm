@@ -82,7 +82,7 @@ const GOLDEN_STRINGS = [
   'This session is busy — switch it once its turn (or permission prompt) is done.',
   'This session is busy — try again once its turn (or permission prompt) is done.',
   'This terminal is not attached right now.',
-  'This terminal was released while off screen — refresh it from the card menu or bring it into view on the canvas.'
+  'This terminal was released while off screen — refresh the terminal or bring it into view on the canvas.'
 ]
 
 const GOLDEN_TEMPLATES = [
