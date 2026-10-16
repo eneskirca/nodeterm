@@ -1,4 +1,6 @@
 import { registerUpdatePrepIpc } from './update-prep'
+import { installOpenLinks } from './open-link-wiring'
+import { nodetermUrlFromArgv } from '../shared/open-link'
 import { createRemoteContextEnsure } from '../core/remote-context-ensure'
 import { isKnownRemoteCodexAccount } from '../core/remote-ssh/codex-home'
 import { createRemoteCodexContext, type RemoteCodexContextTarget } from '../core/remote-ssh/codex-context'
@@ -536,6 +538,9 @@ let terminalFocused = false
 const clearRendererKeyState = (): void => {
   shortcutRecording = false
   terminalFocused = false
+  // The same page death ends the `nodeterm://` link listener: hold links again until the next page
+  // says it is ready (a link must not be sent into a renderer that is not there to show it).
+  openLinks.notReady()
   // The menu leg follows the same state, so it must follow it here too — otherwise a crash or a
   // reload while stood down would leave Window ▸ Minimize disabled with nothing left to re-enable
   // it, i.e. ⌘M dead app-wide. Safe before any window exists: it no-ops without a menu.
@@ -927,15 +932,65 @@ const nodeSubagents = new Map<string, Set<string>>() // nodeId → active subage
 // "[detached (from session ...)]" dead terminals. Bail out and focus the existing window
 // instead. (This guards against a stray real GUI launch.)
 const gotSingleInstanceLock = NT_MULTI || app.requestSingleInstanceLock()
+
+/** Bring the window forward because the USER launched us again: a second launch, or a click on a
+ *  `nodeterm://` link (which reaches us as a second launch on Windows/Linux, `open-url` on macOS).
+ *  The one raise both share — see window-raise.guard.test.ts. */
+function raiseForUserLaunch(): void {
+  const win = getMainWindow()
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+// `nodeterm://` links (main/open-link.ts). Created before `ready` so a link that cold-starts the app
+// is held until the renderer says it is listening. NT_MULTI dev sandboxes take links only when
+// asked (NODETERM_DEV_PROTOCOL=1, for a live test beside the installed app) and never register the
+// scheme: it belongs to the real app.
+const openLinks = installOpenLinks({
+  userDataDir: () => app.getPath('userData'),
+  indexEntries: () => workspaceStore.linkProjectEntries(),
+  loadIndex: () => workspaceStore.load({ sideline: false }),
+  raise: raiseForUserLaunch,
+  enabled: () => settingsStore.get().allowOpenLinks === true
+})
+const linksEnabled = !NT_MULTI || process.env.NODETERM_DEV_PROTOCOL === '1'
+if (linksEnabled) {
+  // macOS delivers a clicked link as `open-url`, including the one that launched the app — which
+  // is why the listener goes on in `will-finish-launching`, before `ready`.
+  app.on('will-finish-launching', () => {
+    app.on('open-url', (event, url) => {
+      event.preventDefault()
+      openLinks.receive(url)
+    })
+  })
+  // Windows/Linux: the link that launched us is on our own argv.
+  const coldLink = nodetermUrlFromArgv(process.argv)
+  if (coldLink) openLinks.receive(coldLink)
+  // Register as the scheme's handler. A packaged build always; a dev run only when asked
+  // (NODETERM_DEV_PROTOCOL=1), because registering the bare Electron binary would take the scheme
+  // away from the installed app until it next launches.
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient('nodeterm')
+  } else if (!NT_MULTI && process.env.NODETERM_DEV_PROTOCOL === '1' && process.argv[1]) {
+    app.setAsDefaultProtocolClient('nodeterm', process.execPath, [resolve(process.argv[1])])
+  }
+}
+
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    const win = getMainWindow()
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
+  app.on('second-instance', (_event, argv) => {
+    // Windows/Linux: a link clicked while we run starts a second instance carrying it. The link
+    // service raises the window itself when it has something to show, so a rate-limited link (or
+    // one while links are off) does not pull the window forward.
+    const url = nodetermUrlFromArgv(argv)
+    if (url && linksEnabled) {
+      openLinks.receive(url)
+      return
+    }
+    if (!url) raiseForUserLaunch()
   })
 }
 

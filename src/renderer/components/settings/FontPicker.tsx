@@ -13,6 +13,8 @@ import {
 
 /** Marks the free-text row in the dropdown — anything not in the detected list. */
 const CUSTOM = '__custom__'
+/** Marks the `systemOption` row: the setting's own default stack. */
+const SYSTEM = '__system__'
 
 /**
  * Whether this browser exposes the Local Font Access API. Chromium-only, and in the Server
@@ -40,10 +42,24 @@ async function queryAllFamilies(): Promise<string[]> {
  */
 export function FontPicker({
   value,
-  onChange
+  onChange,
+  catalog = MONO_FONT_CATALOG,
+  buildStack = buildFontStack,
+  systemOption,
+  label = 'Font'
 }: {
   value: string
   onChange: (stack: string) => void
+  /** Families offered in the list (filtered by what is installed). Default: coding fonts. */
+  catalog?: readonly string[]
+  /** Turns a picked family into the stored stack (keeps fallbacks). Default: monospace ones. */
+  buildStack?: (family: string) => string
+  /** An extra first row meaning "this setting's default stack" — for a default that is not one
+   *  installed family (the system font stack starts with `-apple-system`, which no list holds and
+   *  which a font probe on another OS would report as missing). */
+  systemOption?: { label: string; stack: string }
+  /** Prefixes the two controls' accessible names ("Font family", "Font stack"). */
+  label?: string
 }): React.JSX.Element {
   // One measurer for the lifetime of the picker: it holds a single reused canvas, and building one
   // per probe is what turns a 31-font scan into a visible hitch.
@@ -65,19 +81,21 @@ export function FontPicker({
 
   const installed = useMemo(() => {
     if (!measure) return []
-    const all = [...new Set([...MONO_FONT_CATALOG, ...extraFamilies])].sort((a, b) =>
+    const all = [...new Set([...catalog, ...extraFamilies])].sort((a, b) =>
       a.localeCompare(b)
     )
     return detectInstalled(all, measure)
     // fontsReady is a re-scan trigger, not a value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure, extraFamilies, fontsReady])
+  }, [measure, catalog, extraFamilies, fontsReady])
 
   const primary = primaryFamily(value)
+  const isSystem = systemOption !== undefined && value.trim() === systemOption.stack
   // `measure` being null (no canvas) means we cannot tell — and "unknown" must not render as a
-  // warning that the user's font is missing.
-  const missing = !!measure && !!primary && !isFontAvailable(primary, measure)
-  const selectValue = installed.includes(primary) ? primary : CUSTOM
+  // warning that the user's font is missing. The system stack is never "missing": its first name
+  // is a platform alias with fallbacks behind it.
+  const missing = !isSystem && !!measure && !!primary && !isFontAvailable(primary, measure)
+  const selectValue = isSystem ? SYSTEM : installed.includes(primary) ? primary : CUSTOM
 
   async function browseAll(): Promise<void> {
     setBrowseError(null)
@@ -95,11 +113,14 @@ export function FontPicker({
       <Select
         className="w-64"
         value={selectValue}
-        aria-label="Font family"
+        aria-label={`${label} family`}
         onChange={(e) => {
-          if (e.target.value !== CUSTOM) onChange(buildFontStack(e.target.value))
+          const picked = e.target.value
+          if (picked === SYSTEM && systemOption !== undefined) onChange(systemOption.stack)
+          else if (picked !== CUSTOM) onChange(buildStack(picked))
         }}
       >
+        {systemOption !== undefined && <option value={SYSTEM}>{systemOption.label}</option>}
         {installed.length > 0 && (
           <optgroup label="Installed">
             {installed.map((f) => (
@@ -116,7 +137,7 @@ export function FontPicker({
       <Input
         className="w-64"
         value={value}
-        aria-label="Font stack"
+        aria-label={`${label} stack`}
         onChange={(e) => onChange(e.target.value)}
       />
       {missing ? (

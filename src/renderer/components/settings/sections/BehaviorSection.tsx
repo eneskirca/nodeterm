@@ -56,6 +56,10 @@ const ROWS = {
     title: 'Remember the canvas lock',
     keywords: ['lock', 'canvas', 'view', 'pan', 'zoom', 'freeze', 'remember', 'restart', 'persist']
   },
+  openLinks: {
+    title: 'Allow nodeterm:// links',
+    keywords: ['link', 'url', 'scheme', 'deep link', 'nodeterm://', 'open', 'other apps', 'protocol', 'external']
+  },
   mdPreview: {
     title: 'Open Markdown in preview',
     keywords: ['markdown', 'md', 'preview', 'render', 'editor', 'docs', 'readme', 'file']
@@ -105,7 +109,12 @@ const ROWS = {
 // The background-close row only exists for a desktop window off macOS, so search must not offer
 // it anywhere else. Decided once: neither the platform nor the runtime changes under a live page.
 const SHOW_BACKGROUND_CLOSE = backgroundCloseRowVisible(isMacPlatform(), isBrowserRuntime())
-const ENTRIES = Object.values(ROWS).filter((r) => SHOW_BACKGROUND_CLOSE || r !== ROWS.backgroundClose)
+// nodeterm:// links are a desktop OS URL scheme: the Server Edition registers none and its bridge
+// stub refuses every link, so the switch would do nothing in a browser tab.
+const SHOW_OPEN_LINKS = !isBrowserRuntime()
+const ENTRIES = Object.values(ROWS).filter(
+  (r) => (SHOW_BACKGROUND_CLOSE || r !== ROWS.backgroundClose) && (SHOW_OPEN_LINKS || r !== ROWS.openLinks)
+)
 
 export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.Element {
   const settings = useSettings((s) => s.settings)
@@ -304,6 +313,21 @@ export function BehaviorSection({ isActive }: { isActive: boolean }): React.JSX.
           }
         />
       </SearchableRow>
+      {SHOW_OPEN_LINKS && (
+        <SearchableRow {...ROWS.openLinks}>
+          <FieldRow
+            label="Allow nodeterm:// links"
+            description="Lets other apps, scripts and web pages ask nodeterm to open one agent or terminal node, or pre-fill a pairing code. Every link shows a confirm sheet first and opens nothing until you click Open. Off: links are ignored."
+            control={
+              <Switch
+                checked={settings.allowOpenLinks}
+                onChange={(v) => update({ allowOpenLinks: v })}
+                ariaLabel="Allow nodeterm:// links"
+              />
+            }
+          />
+        </SearchableRow>
+      )}
       <SearchableRow {...ROWS.mdPreview}>
         <FieldRow
           label="Open Markdown in preview"

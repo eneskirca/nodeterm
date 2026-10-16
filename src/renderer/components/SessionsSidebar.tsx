@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildSessionList,
   buildStatusList,
@@ -30,6 +30,7 @@ import { useSettings } from '../state/settings'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSessionNaming } from '../state/sessionNaming'
 import { ProjectBranch } from './ProjectBranch'
+import { useDragAutoScroll } from '../lib/dragAutoScroll'
 
 const HISTORY_COLLAPSE_KEY = 'history'
 
@@ -164,6 +165,11 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // before ('' = end of the list). Distinct from the session drag above — one at a time.
   const [dragProj, setDragProj] = useState<string | null>(null)
   const [dropProj, setDropProj] = useState<string | null>(null)
+  // The body scrolls itself while a project or session is dragged near (or past) its top/bottom.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  // Gated on `open` too: closing the sidebar mid-drag removes the body without unmounting this
+  // component, and the detached drag source's dragend may never reach the window.
+  useDragAutoScroll(bodyRef, 'y', open && (dragProj !== null || drag !== null))
   // Inline group rename: the group node id being edited + its draft title.
   const [editGroup, setEditGroup] = useState<{ id: string; draft: string } | null>(null)
 
@@ -590,6 +596,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
 
       <div
         className="sessions-sidebar__body"
+        ref={bodyRef}
         // The body's empty space is the project drag's "drop at the end" zone (headers
         // stopPropagation their own drops).
         onDragOver={(e) => {

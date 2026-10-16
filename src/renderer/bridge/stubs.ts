@@ -553,6 +553,16 @@ export function buildStubApi(): Omit<
       // renderer's own dispatcher (`keyDispatchContextFor`), which reads focus directly.
       setTerminalFocused: noop
     },
+    // Deliberate degrade: `nodeterm://` links are an OS URL-scheme registration, which only the
+    // desktop app has. Nothing ever fires here; accept refuses.
+    openLink: {
+      ready: noop,
+      onRequest: noopUnsub,
+      onPair: noopUnsub,
+      onNotice: noopUnsub,
+      accept: U('openLink.accept'),
+      cancel: noop
+    },
     // REAL, not a stub: a browser tab has no main process to intercept ⌘/Ctrl+M, so the chord is
     // matched by a window keydown listener here (bindings, terminal-first stand-down and focus all
     // read live — see markdown-toggle-key.ts, including why macOS Chrome never delivers ⌘M).

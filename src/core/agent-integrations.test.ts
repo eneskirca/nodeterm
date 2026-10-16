@@ -24,6 +24,7 @@ import { buildContextLinkSkillBody, frameInstructionsBlock } from './context-lin
 import { MAX_RETAINED } from './integration-files'
 import { registerClaudeAccountsSource, resetClaudeAccountsSourceForTests } from './claude-config-dir'
 import { accountConfigDir } from './claude-accounts-core'
+import { codexAccountHome } from './codex-accounts-core'
 import type { ClaudeAccount } from '../shared/types'
 
 const ENV_KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME', 'COPILOT_HOME', 'XDG_CONFIG_HOME', 'GEMINI_CLI_HOME']
@@ -330,5 +331,49 @@ describe('skillsFor — the invocation follows the host and the agent\'s tool sh
         expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody('/u/context.sh'))
       }
     }
+  })
+})
+
+// The codex hook-trust repairs (spawn-time + managed account homes) write the user's real
+// ~/.codex/hooks.json and config.toml, so they obey the same consent as the boot install: a
+// declined or undecided codex — or the Server Edition veto — gets nothing written, ever.
+describe('codex hook repair is consent-gated', () => {
+  const codexAccount = { id: 'acct-1', label: 'work', createdAt: 1 } as Settings['codexAccounts'][number]
+
+  it('a launch repair writes NOTHING for an undecided or declined codex, or under the veto', () => {
+    const cases: Array<[Settings, boolean]> = [
+      [DEFAULT_SETTINGS, false],
+      [withAgents({ codex: 'declined' }), false],
+      [withAgents({ claude: 'enabled' }), false],
+      [withAgents({ codex: 'enabled' }), true]
+    ]
+    for (const [settings, veto] of cases) {
+      const { lc } = lifecycle(() => settings, { veto, realHooks: true })
+      lc.ensureCodexHooksForLaunch(path.join(home, '.codex'))
+      expect(filesUnder(home), JSON.stringify(settings.agentIntegrations ?? 'undecided')).toEqual([])
+    }
+  })
+
+  it('a launch repair installs hooks + trust for an ENABLED codex', () => {
+    const { lc } = lifecycle(() => withAgents({ codex: 'enabled' }), { realHooks: true })
+    lc.ensureCodexHooksForLaunch(path.join(home, '.codex'))
+    expect(read(path.join(home, '.codex', 'hooks.json'))).toContain('agent-hooks')
+    expect(read(path.join(home, '.codex', 'config.toml'))).toContain('trusted_hash')
+  })
+
+  it('managed codex account homes are repaired by reconcile only when codex is enabled', () => {
+    const acctHome = codexAccountHome(userData, codexAccount.id)
+    mkdirSync(acctHome, { recursive: true })
+    const choices: Array<Record<string, 'enabled' | 'declined'>> = [{}, { codex: 'declined' }, { claude: 'enabled' }]
+    for (const agents of choices) {
+      const { lc } = lifecycle(() => withAgents(agents, { codexAccounts: [codexAccount] }), { realHooks: true })
+      lc.reconcile()
+      expect(readdirSync(acctHome), JSON.stringify(agents)).toEqual([])
+    }
+    const { lc } = lifecycle(() => withAgents({ codex: 'enabled' }, { codexAccounts: [codexAccount] }), {
+      realHooks: true
+    })
+    lc.reconcile()
+    expect(read(path.join(acctHome, 'config.toml'))).toContain('trusted_hash')
   })
 })

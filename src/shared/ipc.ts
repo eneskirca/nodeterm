@@ -673,6 +673,15 @@ export const IPC = {
   remoteHostPeerPendingCleared: 'remote:host:peer-pending-cleared',
   remoteHostApprove: 'remote:host:approve',
   remotePhoneApprove: 'remote:phone:approve',
+  // `nodeterm://` links (desktop only, raw ipcMain, main-window sender only — see main/open-link.ts).
+  // main → renderer: an `open` link to confirm, a pair/join link to route, a refusal to toast.
+  openLinkRequest: 'open-link:request',
+  openLinkPair: 'open-link:pair',
+  openLinkNotice: 'open-link:notice',
+  // renderer → main: listening (deliver held links), the human's choice, a dismissal.
+  openLinkReady: 'open-link:ready',
+  openLinkAccept: 'open-link:accept',
+  openLinkCancel: 'open-link:cancel',
   remoteHostReject: 'remote:host:reject',
   // Host canvas mirror: renderer pushes its serialized active-project canvas to main;
   // main pushes a client's mutation back to the host renderer to apply.

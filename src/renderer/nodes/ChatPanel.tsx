@@ -51,6 +51,7 @@ import { AnswerControlsUpdating, PlanAnswerControls, QuestionAnswerControls } fr
 import type { PermissionAnswer } from '@shared/agents/permission-answer'
 import { ChatComposer } from './ChatComposer'
 import { ChatTurnActions } from './ChatTurnActions'
+import { useCodeBlockCopy } from './CodeBlockCopy'
 import { assistantTurnEnds } from '../lib/chatThread'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 
@@ -58,9 +59,17 @@ import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSessi
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
 // `breaks`: a single newline is a line break, as Claude Code's own TUI renders it — without it a
 // multi-line prompt, or a reply quoting one line by line (`> a` / `> b`), collapsed onto one line.
+// Every code block gets a Copy button in its top-right corner (useCodeBlockCopy).
 export const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => renderMarkdown(text, { breaks: true }), [text])
-  return <div className="term-chat__text" dangerouslySetInnerHTML={{ __html: html }} />
+  const ref = useRef<HTMLDivElement>(null)
+  const copyButtons = useCodeBlockCopy(ref, html)
+  return (
+    <>
+      <div ref={ref} className="term-chat__text" dangerouslySetInnerHTML={{ __html: html }} />
+      {copyButtons}
+    </>
+  )
 })
 
 interface ChatPanelProps {

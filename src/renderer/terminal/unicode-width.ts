@@ -1,5 +1,5 @@
-import { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { Terminal } from '@xterm/xterm'
+import { activateTerminalWidths, type UnicodeTerminal } from '@shared/terminal-width'
 
 /**
  * Put xterm on the SAME character-width table as everything else in the stack.
@@ -42,14 +42,16 @@ import type { Terminal } from '@xterm/xterm'
  * realistic case is the one this fixes; a host that misaligns AFTER this change is the case to
  * report, and the fix there is that host's tmux, not a return to Unicode 6.
  *
+ * The table is Unicode 11 plus one rule for emoji followed by VS16 (`@shared/terminal-width`, where
+ * the reasoning lives); the Windows session host's emulator loads the same table.
+ *
  * Applies to every renderer, so it is loaded at terminal construction rather than anywhere near
  * glyphgrid. Failure is non-fatal by design: a terminal on the old table renders as it did
  * yesterday, which is far better than a terminal that does not open.
  */
 export function activateUnicode11(term: Terminal): void {
   try {
-    term.loadAddon(new Unicode11Addon())
-    term.unicode.activeVersion = '11'
+    activateTerminalWidths(term as unknown as UnicodeTerminal)
   } catch (err) {
     console.warn('[terminal] could not activate Unicode 11 widths; staying on xterm’s default', err)
   }

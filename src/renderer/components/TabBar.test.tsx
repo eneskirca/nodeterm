@@ -277,6 +277,38 @@ describe('TabBar drag-reorder', () => {
     expect(host.querySelector('.tab__dropline')).not.toBeNull()
   })
 
+  it('scrolls the strip while a tab is dragged past its edge, and stops when the drag ends', async () => {
+    let frames: FrameRequestCallback[] = []
+    let clock = 0
+    vi.stubGlobal('requestAnimationFrame', (f: FrameRequestCallback) => frames.push(f))
+    vi.stubGlobal('cancelAnimationFrame', () => {
+      frames = []
+    })
+    const flush = (): void => {
+      const due = frames
+      frames = []
+      due.forEach((f) => f((clock += 1000 / 60)))
+    }
+    const strip = host.querySelector<HTMLElement>('.tabbar__tabs')!
+    strip.getBoundingClientRect = () =>
+      ({ left: 200, right: 600, top: 0, bottom: 40, width: 400, height: 40 }) as DOMRect
+    strip.scrollLeft = 500
+    const [, , third] = tabs()
+    await drag(third, 'dragstart')
+    // Far left of the strip and below it — over the brand / canvas, not the strip itself.
+    const over = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.defineProperties(over, { clientX: { value: 20 }, clientY: { value: 300 } })
+    document.body.dispatchEvent(over)
+    flush()
+    flush()
+    expect(strip.scrollLeft).toBeLessThan(500)
+    const afterDrag = strip.scrollLeft
+    await drag(third, 'dragend')
+    flush()
+    expect(strip.scrollLeft).toBe(afterDrag)
+    vi.unstubAllGlobals()
+  })
+
   it('drops at the end when released on the strip itself', async () => {
     const [first] = tabs()
     await drag(first, 'dragstart')

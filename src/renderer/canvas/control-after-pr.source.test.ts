@@ -131,8 +131,10 @@ describe('the launch loop judges the wait on the ACTIVE project’s pull request
 
 describe('the node badge', () => {
   it('a PR hold is a real hold: it is never hidden as a first-open delivery', () => {
-    const first = slice('const firstOpenInFlight =', '\n  const ', node)
-    expect(first).toContain('!pendingLaunch?.afterPr')
+    // The rule is shared with the board card (lib/pendingLaunch `firstOpenInFlight`).
+    expect(node).toContain('isFirstOpenInFlight(!!data.initialCommand, pendingLaunch, observedLaunchDelivery)')
+    const rule = slice('export function firstOpenInFlight(', '\n}\n', read('../lib/pendingLaunch.ts'))
+    expect(rule).toContain('!pending?.afterPr')
   })
 
   it('reads EXPIRED and hands the PR wait to the tooltip', () => {

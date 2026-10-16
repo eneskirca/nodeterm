@@ -32,6 +32,7 @@ import {
   installClaudeHooksInto,
   removeClaudeHooksFrom
 } from './agents/hooks/claude'
+import { ensureCodexHooksCurrent, ensureCodexHooksForAccounts } from './agents/hooks/codex'
 import { copilotHomeDir } from './agents/hooks/copilot'
 import { managedHookScriptPath } from './agents/hooks/install-helper'
 import { opencodeConfigDir } from './agents/hooks/opencode'
@@ -114,6 +115,8 @@ export interface IntegrationLifecycleDeps {
   /** Test seams. */
   installHooks?: (agents: ReadonlySet<string>) => void
   removeHooks?: (agents: ReadonlySet<string>) => void
+  ensureCodexHome?: (home: string) => void
+  ensureCodexAccounts?: (userDataDir: string, accounts: ReadonlyArray<{ id: string }>) => void
   home?: () => string
 }
 
@@ -218,6 +221,10 @@ export interface IntegrationLifecycle {
   onSettingsChanged(settings: Settings): void
   /** For a managed/linked Claude account dir just added: install there if claude is enabled. */
   installIntoClaudeAccount(configDir: string): void
+  /** Right before a LOCAL Codex session spawns under `codexHome`: repair its hook install if it
+   *  drifted — only when codex is enabled (never for a declined or undecided agent, never under the
+   *  veto). Never throws. */
+  ensureCodexHooksForLaunch(codexHome: string): void
   /** The last report (for Settings). */
   lastReport(): IntegrationReport | null
   /** The ownership receipts (also used for skills written on SSH hosts). */
@@ -234,6 +241,8 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
   const receipts = new ReceiptStore(() => deps.userDataDir())
   const installHooks = deps.installHooks ?? installManagedAgentHooks
   const removeHooks = deps.removeHooks ?? removeManagedAgentHooks
+  const ensureCodexHome = deps.ensureCodexHome ?? ensureCodexHooksCurrent
+  const ensureCodexAccounts = deps.ensureCodexAccounts ?? ensureCodexHooksForAccounts
   let last: IntegrationReport | null = null
   let lastSig = ''
 
@@ -288,6 +297,21 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
       // Shared system skills (issue #643) is its own explicit, per-account opt-in, independent of
       // this consent (it links INTO the account dir, never writes the user's skills).
       if (a.shareSystemSkills) void applySkillShare(dir, true)
+    }
+    // Codex accounts: each local managed home is its own CODEX_HOME. Its hooks.json/config.toml
+    // normally symlink to the system ones (just installed above), but a link never made or since
+    // replaced by a real file leaves that account's sessions with no trusted hooks. Drift-gated, so
+    // a linked home costs reads only. Enabled only — a declined codex is cleaned in the system home
+    // by `removeHooks`; a private copy inside an account home is the account's own file and is left.
+    if (enabled.includes('codex')) {
+      try {
+        ensureCodexAccounts(
+          deps.userDataDir(),
+          (settings.codexAccounts ?? []).filter((a) => !a.host && !a.pending)
+        )
+      } catch (e) {
+        console.warn('[integrations] codex account hook check failed', e)
+      }
     }
     // A $CLAUDE_CONFIG_DIR that moved the system dir leaves the legacy ~/.claude behind.
     const legacyClaude = path.join(home, '.claude')
@@ -370,6 +394,15 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
         }
       } catch (e) {
         console.warn('[integrations] account install failed', configDir, e)
+      }
+    },
+    ensureCodexHooksForLaunch(codexHome) {
+      if (deps.veto) return
+      try {
+        if (integrationsOf(deps.settings()).agents?.codex !== 'enabled') return
+        ensureCodexHome(codexHome)
+      } catch (e) {
+        console.warn('[integrations] codex launch hook check failed', codexHome, e)
       }
     },
     lastReport: () => last,

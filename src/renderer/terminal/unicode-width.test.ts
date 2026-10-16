@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Terminal } from '@xterm/xterm'
 import { activateUnicode11 } from './unicode-width'
+import { TERMINAL_WIDTH_VERSION } from '@shared/terminal-width'
 
 /**
  * These tests pin the FACT the 2026-08-05 emoji fix rests on, not the plumbing.
@@ -52,13 +53,13 @@ function stubTerminal(): { term: Terminal; provider: () => WidthProvider; versio
 }
 
 describe('activateUnicode11', () => {
-  it('puts the terminal on the Unicode 11 table', () => {
+  it('puts the terminal on the shared table (Unicode 11 + the VS16 rule)', () => {
     const t = stubTerminal()
     activateUnicode11(t.term)
-    expect(t.provider().version).toBe('11')
+    expect(t.provider().version).toBe(TERMINAL_WIDTH_VERSION)
     // Registering the provider is not enough — xterm keeps using the ACTIVE version, so a missing
     // assignment here would leave every terminal on the old widths with no other symptom.
-    expect(t.version()).toBe('11')
+    expect(t.version()).toBe(TERMINAL_WIDTH_VERSION)
   })
 
   describe('the widths the emoji fix depends on', () => {
