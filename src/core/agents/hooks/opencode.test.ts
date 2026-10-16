@@ -5,14 +5,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   PLUGIN_MARKER,
   buildOpencodePlugin,
+  buildOpencodeV2Plugin,
   installOpencodeHooks,
   opencodeConfigDir,
   pluginPath,
-  removeOpencodeHooks
+  removeOpencodeHooks,
+  v2PluginPath
 } from './opencode'
+import { normalizeOpencode } from '../../../shared/agents/normalize'
+
+// Both generated plugins share one process-wide latch (which plugin API armed first). Every test
+// loads fresh module copies into the SAME process, so the latch is reset before each one.
+const LATCH = Symbol.for('nodeterm.opencode.status.api')
+const g = globalThis as unknown as Record<symbol, unknown>
 
 let tmp: string
 beforeEach(() => {
+  delete g[LATCH]
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-oc-'))
   vi.spyOn(os, 'homedir').mockReturnValue(tmp)
   // CI runners export XDG_CONFIG_HOME (GitHub Actions: /home/runner/.config), which wins
@@ -465,5 +474,340 @@ describe('opencodeConfigDir honors XDG_CONFIG_HOME', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+// Issue #1136. OpenCode 2.x needs a default export object `{ id, setup }`; OpenCode <= 1.2.10
+// calls every export as a function and dies on an object (bisected on real builds). So there are
+// TWO plugins: the 1.x file (named export only) and a 2.x DIRECTORY no 1.x glob matches.
+const planted2 = () => path.join(tmp, '.config', 'opencode', 'plugins', 'nodeterm-status-v2', 'index.js')
+
+describe('opencode plugin install — the 2.x directory plugin', () => {
+  it('plants both plugins, each marker-bearing, at the paths each opencode generation loads', () => {
+    installOpencodeHooks()
+    expect(v2PluginPath()).toBe(planted2())
+    expect(fs.readFileSync(planted(), 'utf8')).toBe(buildOpencodePlugin())
+    expect(fs.readFileSync(planted2(), 'utf8')).toBe(buildOpencodeV2Plugin())
+    expect(fs.readFileSync(planted2(), 'utf8').startsWith(PLUGIN_MARKER)).toBe(true)
+  })
+  it('refreshes a stale managed copy (an older build\'s body) but never a user file', () => {
+    fs.mkdirSync(path.dirname(planted2()), { recursive: true })
+    fs.writeFileSync(planted2(), PLUGIN_MARKER + '\n// old body\n')
+    installOpencodeHooks()
+    expect(fs.readFileSync(planted2(), 'utf8')).toBe(buildOpencodeV2Plugin())
+    fs.writeFileSync(planted2(), '// my own v2 plugin\n')
+    installOpencodeHooks()
+    expect(fs.readFileSync(planted2(), 'utf8')).toBe('// my own v2 plugin\n')
+  })
+  it('does not rewrite an up-to-date file (opencode 2.x watches plugin files and reloads on change)', () => {
+    installOpencodeHooks()
+    const past = Math.floor(Date.now() / 1000) - 60 // whole seconds: mtimeMs is a float
+    fs.utimesSync(planted2(), past, past)
+    installOpencodeHooks()
+    expect(Math.round(fs.statSync(planted2()).mtimeMs / 1000)).toBe(past)
+  })
+  it('remove deletes both managed plugins and the now-empty directory, but keeps anything else', () => {
+    installOpencodeHooks()
+    removeOpencodeHooks()
+    expect(fs.existsSync(planted())).toBe(false)
+    expect(fs.existsSync(path.dirname(planted2()))).toBe(false)
+    installOpencodeHooks()
+    fs.writeFileSync(path.join(path.dirname(planted2()), 'notes.txt'), 'mine')
+    removeOpencodeHooks()
+    expect(fs.existsSync(planted2())).toBe(false)
+    expect(fs.readFileSync(path.join(path.dirname(planted2()), 'notes.txt'), 'utf8')).toBe('mine')
+  })
+})
+
+describe('generated plugins, module shapes (executed)', () => {
+  let posts: Array<Record<string, unknown>>
+
+  beforeEach(() => {
+    posts = []
+    vi.stubGlobal('fetch', (_url: string, init: { body: string }) => {
+      posts.push(JSON.parse(new URLSearchParams(init.body).get('payload') ?? '{}'))
+      return Promise.resolve(new Response())
+    })
+    vi.stubEnv('NODETERM_NODE_ID', 'node-1')
+    vi.stubEnv('NODETERM_HOOK_PORT', '43210')
+    vi.stubEnv('NODETERM_HOOK_TOKEN', 'tok')
+    vi.stubEnv('NODETERM_HOOK_ENDPOINT', '')
+    vi.stubEnv('NODETERM_HOOK_SOCK', '')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  type V1Hooks = Record<string, (input: unknown) => Promise<void>>
+  type V2Def = { id: string; setup: (ctx: unknown) => Promise<(() => void) | void> }
+
+  async function load(body: string): Promise<Record<string, unknown>> {
+    const file = path.join(tmp, `plugin-${Math.random().toString(36).slice(2)}.mjs`)
+    fs.writeFileSync(file, body)
+    return import(/* @vite-ignore */ `file://${file}`)
+  }
+  const loadV1 = async (): Promise<{ NodetermStatus: () => Promise<V1Hooks> }> =>
+    (await load(buildOpencodePlugin())) as unknown as { NodetermStatus: () => Promise<V1Hooks> }
+  const loadV2 = async (): Promise<V2Def> => (await load(buildOpencodeV2Plugin())).default as V2Def
+
+  /** A 2.x context: an event stream we push into, and a tool-hook registry. */
+  function v2Context(): {
+    ctx: unknown
+    push: (type: string, data: Record<string, unknown>) => void
+    end: () => void
+    toolHooks: Array<{ name: string; cb: (input: unknown) => unknown }>
+    subscribed: () => number
+    signal: () => AbortSignal | undefined
+  } {
+    const queue: unknown[] = []
+    let wake: (() => void) | null = null
+    let done = false
+    let subs = 0
+    let sig: AbortSignal | undefined
+    const toolHooks: Array<{ name: string; cb: (input: unknown) => unknown }> = []
+    const ctx = {
+      event: {
+        subscribe: (options?: { signal?: AbortSignal }) => {
+          subs++
+          sig = options?.signal
+          return {
+            async *[Symbol.asyncIterator]() {
+              for (;;) {
+                if (queue.length) {
+                  yield queue.shift()
+                  continue
+                }
+                if (done || sig?.aborted) return
+                await new Promise<void>((r) => (wake = r))
+              }
+            }
+          }
+        }
+      },
+      tool: {
+        hook: async (name: string, cb: (input: unknown) => unknown) => {
+          toolHooks.push({ name, cb })
+          return { dispose: () => {} }
+        }
+      }
+    }
+    return {
+      ctx,
+      push: (type, data) => {
+        queue.push({ id: 'evt_' + queue.length, created: 1, type, location: { directory: '/p' }, data })
+        wake?.()
+      },
+      end: () => {
+        done = true
+        wake?.()
+      },
+      toolHooks,
+      subscribed: () => subs,
+      signal: () => sig
+    }
+  }
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+  it('1.x file: ONLY the named function export — a default would crash opencode <= 1.2.10', async () => {
+    const mod = await load(buildOpencodePlugin())
+    // opencode <= 1.2.10 does `for (const [, fn] of Object.entries(mod)) await fn(input)`.
+    expect(Object.keys(mod)).toEqual(['NodetermStatus'])
+    for (const v of Object.values(mod)) expect(typeof v).toBe('function')
+  })
+
+  it('2.x directory plugin: a default OBJECT with an id and a setup function, nothing else exported', async () => {
+    const mod = await load(buildOpencodeV2Plugin())
+    expect(Object.keys(mod)).toEqual(['default'])
+    const def = mod.default as V2Def
+    expect(typeof def).toBe('object')
+    expect(def.id).toBe('nodeterm-status')
+    expect(typeof def.setup).toBe('function')
+  })
+
+  it('2.x: translates the event stream to the 1.x wire names normalizeOpencode reads', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    expect(v2.subscribed()).toBe(1)
+    v2.push('session.created', { sessionID: 'ses_1', projectID: 'p', slug: 's', version: '2.0.30' })
+    v2.push('session.inbox.enqueued', { sessionID: 'ses_1' })
+    v2.push('session.execution.started', { sessionID: 'ses_1' })
+    v2.push('session.text.delta', { sessionID: 'ses_1', delta: 'hi' })
+    v2.push('permission.asked', { id: 'per_1', sessionID: 'ses_1', action: 'shell' })
+    v2.push('permission.replied', { sessionID: 'ses_1', requestID: 'per_1', reply: 'once' })
+    v2.push('form.created', { form: { id: 'frm_1', sessionID: 'ses_1', title: 'Questions' } })
+    v2.push('form.replied', { id: 'frm_1', sessionID: 'ses_1', answer: { q0: 'Red' } })
+    v2.push('form.created', { form: { id: 'frm_2', sessionID: 'ses_1' } })
+    v2.push('form.cancelled', { id: 'frm_2', sessionID: 'ses_1' })
+    v2.push('session.execution.succeeded', { sessionID: 'ses_1' })
+    v2.push('session.execution.started', { sessionID: 'ses_1' })
+    v2.push('session.execution.interrupted', { sessionID: 'ses_1' })
+    v2.push('session.execution.started', { sessionID: 'ses_1' })
+    v2.push('session.execution.failed', { sessionID: 'ses_1', error: {} })
+    await flush()
+    expect(posts).toEqual([
+      { event: 'session.created', sessionID: 'ses_1' },
+      { event: 'message.updated', sessionID: 'ses_1', role: 'user' },
+      { event: 'permission.asked', sessionID: 'ses_1' },
+      { event: 'permission.replied', sessionID: 'ses_1' },
+      { event: 'question.asked', sessionID: 'ses_1' },
+      { event: 'question.replied', sessionID: 'ses_1' },
+      { event: 'question.asked', sessionID: 'ses_1' },
+      { event: 'question.rejected', sessionID: 'ses_1' },
+      { event: 'session.idle', sessionID: 'ses_1' },
+      { event: 'message.updated', sessionID: 'ses_1', role: 'user' },
+      { event: 'session.idle', sessionID: 'ses_1' },
+      { event: 'message.updated', sessionID: 'ses_1', role: 'user' },
+      { event: 'session.error', sessionID: 'ses_1' }
+    ])
+    v2.end()
+  })
+
+  it('2.x: a real 2.0.30 TUI turn (as captured) normalizes to the same states as a 1.x turn', async () => {
+    // The order a measured `opencode --standalone` turn produced: a shell call behind a
+    // permission prompt, then a question form, then the end of the turn.
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    const hook = v2.toolHooks[0].cb
+    v2.push('session.created', { sessionID: 'ses_1' })
+    v2.push('session.execution.started', { sessionID: 'ses_1' })
+    await flush()
+    hook({ tool: 'shell', sessionID: 'ses_1' })
+    v2.push('permission.asked', { id: 'per_1', sessionID: 'ses_1' })
+    v2.push('permission.replied', { sessionID: 'ses_1', requestID: 'per_1', reply: 'once' })
+    await flush()
+    hook({ tool: 'question', sessionID: 'ses_1' })
+    v2.push('form.created', { form: { id: 'frm_1', sessionID: 'ses_1' } })
+    v2.push('form.replied', { id: 'frm_1', sessionID: 'ses_1', answer: { q0: 'Red' } })
+    v2.push('session.execution.succeeded', { sessionID: 'ses_1' })
+    await flush()
+    const states = posts.map((payload) => {
+      const n = normalizeOpencode({ nodeId: 'node-1', agentId: 'opencode', payload })
+      return n && (n.kind === 'state' ? n.state + (n.newTurn ? '+newTurn' : '') : n.kind)
+    })
+    expect(states).toEqual([
+      'session',
+      'working+newTurn',
+      'working',
+      'blocked',
+      'working',
+      'working',
+      'blocked',
+      'working',
+      'done'
+    ])
+    v2.end()
+  })
+
+  it('2.x: the tool hook posts tool.execute.before and never throws into the tool call', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    expect(v2.toolHooks.map((h) => h.name)).toEqual(['execute.before'])
+    expect(() => v2.toolHooks[0].cb({ tool: 'shell', sessionID: 'ses_1', id: 'call_1' })).not.toThrow()
+    expect(() => v2.toolHooks[0].cb(undefined)).not.toThrow()
+    expect(posts[0]).toEqual({ event: 'tool.execute.before', sessionID: 'ses_1' })
+    v2.end()
+  })
+
+  it('2.x: a subagent child session does not move the node, but its blocking prompts do (under the root id)', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    v2.push('session.created', { sessionID: 'ses_c', parentID: 'ses_1' })
+    v2.push('session.created', { sessionID: 'ses_g', parentID: 'ses_c' })
+    v2.push('session.execution.started', { sessionID: 'ses_c' })
+    v2.push('permission.asked', { id: 'per_1', sessionID: 'ses_g' })
+    v2.push('form.created', { form: { id: 'frm_1', sessionID: 'ses_c' } })
+    v2.push('form.replied', { id: 'frm_1', sessionID: 'ses_c' })
+    v2.push('session.execution.succeeded', { sessionID: 'ses_c' })
+    await flush()
+    v2.toolHooks[0].cb({ tool: 'read', sessionID: 'ses_c' })
+    expect(posts).toEqual([
+      { event: 'permission.asked', sessionID: 'ses_1' },
+      { event: 'question.asked', sessionID: 'ses_1' },
+      { event: 'question.replied', sessionID: 'ses_1' }
+    ])
+    v2.end()
+  })
+
+  it('2.x: stays inert inside the shared background server (`serve --service`) — its env names another pane', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    const argv = process.argv
+    process.argv = ['bun', '/$bunfs/root/opencode', 'serve', '--service']
+    try {
+      await def.setup(v2.ctx)
+    } finally {
+      process.argv = argv
+    }
+    expect(v2.subscribed()).toBe(0)
+    expect(v2.toolHooks).toEqual([])
+    expect(g[LATCH]).toBeUndefined()
+  })
+
+  it('2.x: no NODETERM_NODE_ID (outside nodeterm) → no subscription, no hook', async () => {
+    vi.stubEnv('NODETERM_NODE_ID', '')
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    expect(v2.subscribed()).toBe(0)
+    expect(v2.toolHooks).toEqual([])
+  })
+
+  it('2.x: a context without an event stream (a 1.x compatibility pass) is a no-op', async () => {
+    const def = await loadV2()
+    await def.setup({ options: {}, agent: {}, catalog: {} })
+    await def.setup(undefined)
+    expect(g[LATCH]).toBeUndefined()
+  })
+
+  it('both plugins in ONE process: 1.x armed first keeps 2.x inert (no double posts)', async () => {
+    const v1 = await loadV1()
+    const hooks = await v1.NodetermStatus()
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    expect(v2.subscribed()).toBe(0)
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_1' } } })
+    expect(posts).toEqual([{ event: 'session.idle', sessionID: 'ses_1' }])
+  })
+
+  it('both plugins in ONE process: 2.x armed first keeps the 1.x hooks empty', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    await def.setup(v2.ctx)
+    const v1 = await loadV1()
+    expect(await v1.NodetermStatus()).toEqual({})
+    v2.end()
+  })
+
+  it('the latch is per API, not per call: a second plugin instance of the SAME API still arms', async () => {
+    const v1 = await loadV1()
+    expect(typeof (await v1.NodetermStatus()).event).toBe('function')
+    expect(typeof (await v1.NodetermStatus()).event).toBe('function')
+    const def = await loadV2()
+    delete g[LATCH]
+    const a = v2Context()
+    const b = v2Context()
+    await def.setup(a.ctx)
+    await def.setup(b.ctx)
+    expect(a.subscribed()).toBe(1)
+    expect(b.subscribed()).toBe(1)
+    a.end()
+    b.end()
+  })
+
+  it('2.x: the cleanup setup returns aborts the subscription', async () => {
+    const def = await loadV2()
+    const v2 = v2Context()
+    const cleanup = await def.setup(v2.ctx)
+    expect(typeof cleanup).toBe('function')
+    expect(v2.signal()?.aborted).toBe(false)
+    ;(cleanup as () => void)()
+    expect(v2.signal()?.aborted).toBe(true)
+    v2.end()
   })
 })

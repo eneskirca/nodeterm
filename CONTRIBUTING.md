@@ -1249,6 +1249,13 @@ silently enabled every agent on a fresh install's second boot (#1149). Only a no
 `~/.nodeterm/agent-hooks/` counts, and only on an install's first boot (the fresh-install marker). Do not merge text into `AGENTS.md` / `GEMINI.md` — agents get skills (progressive disclosure)
 instead; the old blocks crowded codex's 32 KiB instruction budget.
 
+**opencode has two managed plugins and they must stay two** (issue #1136): the 1.x file
+`plugins/nodeterm-status.js` exports ONLY the named function — opencode <= 1.2.10 calls every export
+as a function and dies on a default object, for every command on the machine — and 2.x gets the
+directory `plugins/nodeterm-status-v2/`, which no 1.x loads. The 2.x plugin stays silent inside the
+shared `serve --service` server (its env belongs to another pane); see CLAUDE.md for the
+measurements.
+
 Claude/Gemini settings must go through the guarded transactions in
 `src/core/agents/hooks/{settings-file,remote-settings-file}.ts`. Confirmed absence or a successfully read empty/whitespace file may start from `{}`;
 malformed, non-object and unreadable files must survive unchanged.

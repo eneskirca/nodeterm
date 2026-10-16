@@ -3133,6 +3133,29 @@ else, and its context links must keep classifying across restarts).
   installer needs is why events are typed `ManagedHookEvent` (`string | {event, matcher}`): grok's
   tool matcher is a REGEX and must be `.*` — a bare `*` is invalid and silently stops tool events
   firing. Plain-string events keep their byte-identical output for every other agent.
+  **opencode gets TWO plugin files, because no single module loads on both of its generations**
+  (issue #1136, `hooks/opencode.ts`, measured 2026-10-16 on @opencode/cli 2.0.30 and opencode-ai
+  1.1.4 / 1.2.10 / 1.18.28 / 1.18.33). 2.x accepts only a default export OBJECT `{ id, setup }` (a
+  function default is refused) and loads `plugins/*.js` and plugin DIRECTORIES; 1.x loads only
+  `{plugin,plugins}/*.{ts,js}` files, and up to **1.2.10 calls every export as a function** — an
+  object default there throws and kills every opencode command on the machine, inside nodeterm or
+  not (bisected: 1.2.10 crashes, 1.2.11 does not). So `plugins/nodeterm-status.js` keeps ONLY the
+  named 1.x export (2.x logs a harmless "failed to load plugin" WARN for it at every start) and 2.x
+  gets `plugins/nodeterm-status-v2/index.js`, a directory no 1.x glob matches. **Never add a default
+  export to the 1.x file**, and never "simplify" the pair back into one dual-shape file. A
+  process-wide latch (`Symbol.for('nodeterm.opencode.status.api')`, keyed by API, not by call)
+  keeps a process that runs both from posting twice. The 2.x plugin translates its event stream to
+  the 1.x wire names (`session.execution.started` → user `message.updated`, `…succeeded|interrupted`
+  → `session.idle`, `…failed` → `session.error`, `form.*` → `question.*`), so `normalizeOpencode` has
+  one dialect, and it drops a subagent child session's turn events (forwarding its permission/form
+  under the root session). **It refuses to run inside 2.x's shared background server**
+  (`serve --service`, argv): by default every 2.x CLI talks to ONE server that keeps the env of
+  whichever pane started it and outlives it — measured, a second pane's events carried the first
+  pane's `NODETERM_NODE_ID` — so posting from it would paint one node's status on another (the
+  codex `--no-daemon` problem). Only a `--standalone` server (the pane's own `serve --stdio` child)
+  reports, so **2.x status needs `opencode --standalone`**; nodeterm does not pass it yet (1.x exits
+  on the unknown flag, so it needs a codex-style `--help` probe — follow-up), and until then the
+  Launch commands override (`opencode --standalone`) is the user's switch.
   **Codex is the one agent whose hook command is NOT a POSIX one-liner on Windows** (issue #567):
   it builds the command as `cmd.exe /C <string>` (`codex-rs/hooks/src/engine/command_runner.rs`,
   rust-v0.151.0) unless the session has a shell configured, which a default Windows install has
