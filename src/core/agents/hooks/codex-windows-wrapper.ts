@@ -50,10 +50,18 @@ import { buildWindowsHookWrapper } from './windows-hook-wrapper'
 
 export { WINDOWS_SH_CANDIDATES, windowsShProbeBatch } from './windows-hook-wrapper'
 
+/**
+ * The variables codex.sh needs to do anything: its gate needs NODETERM_NODE_ID, its
+ * thread-identity prelude needs CODEX_THREAD_ID. With neither, the script drains and exits 0.
+ */
+export const CODEX_SESSION_ENV = ['NODETERM_NODE_ID', 'CODEX_THREAD_ID'] as const
+
 /** The wrapper's file name, beside the managed script it runs. */
 export const CODEX_WINDOWS_WRAPPER_FILE = 'codex-hook.cmd'
 
 /** The batch wrapper's content: `codex.sh`, found beside the wrapper, run by the first POSIX shell. */
 export function buildCodexWindowsWrapper(): string {
-  return buildWindowsHookWrapper('codex.sh', 'codex')
+  // The script's own gate, answered before paying for a shell: with neither variable set,
+  // codex.sh can only drain stdin and exit 0 (see buildWindowsHookWrapper's `skipUnlessAnyEnv`).
+  return buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: CODEX_SESSION_ENV })
 }

@@ -126,16 +126,56 @@ export const BOARD_SPATIAL_ROW_IDS = [
  * The sections a kanban card menu takes from this builder. Everything else is either spatial
  * (above), owned by the card menu itself (`label` — a card is always one node; `markdown-view` —
  * the board opens the card modal in its chat/markdown view instead of flipping the canvas node's
- * `data.mdMode`; `delete` — the board keeps its own confirm-first Delete), or not offered on a card
- * yet (session management and node-creating rows).
+ * `data.mdMode`; `delete` — the board keeps its own confirm-first Delete), or creates a node
+ * (`duplicate`, `branch`, `transfer` — Plan C: they need a placement policy and, on the Omni
+ * board, a create path that does not switch the user's tab).
+ *
+ * The session-management rows (`refresh-terminal`, `restart`, `switch-model`, `pause`) are here
+ * because the canvas keeps the terminal MOUNTED under the board: for a card of the project the
+ * canvas holds, the live context's closures act on the same node. For any other project (an Omni
+ * lane) `ctx.attached` is false, so they render disabled with "This terminal is not attached
+ * right now." — they are never hidden and never reach the canvas.
  */
 export const BOARD_NODE_ACTION_IDS = [
   'stop-agent-control',
   'colors',
   'icon',
+  'refresh-terminal',
   'live-link',
-  'switch-account'
+  'restart',
+  'switch-model',
+  'switch-account',
+  'pause'
 ] as const satisfies readonly NodeActionId[]
+
+/**
+ * The card MODAL's actions menu. The modal header already has search, dictate, AI name, color,
+ * icon and live link, and its terminal has its own refresh (it re-attaches only the modal's own
+ * pty, which is a different action from the canvas node's `respawnNonce` bump), so only the
+ * session-management sections are offered here.
+ */
+export const BOARD_MODAL_ACTION_IDS = [
+  'restart',
+  'switch-model',
+  'switch-account',
+  'pause'
+] as const satisfies readonly NodeActionId[]
+
+/** The reason a session row gives when the node is not on the canvas at all (an Omni lane of a
+ *  project the canvas does not hold), so nothing can be wired to it from here. */
+export const NOT_ATTACHED_HINT = 'This terminal is not attached right now.'
+/** The reason a session row gives when the node IS on the live canvas but its terminal was
+ *  released while off screen (the offscreen release): the pane is alive (the card modal shows it),
+ *  only the canvas node's client is gone. Refresh, or bringing it into view, wires it again. */
+export const RELEASED_HINT =
+  'This terminal was released while off screen — refresh the terminal or bring it into view on the canvas.'
+
+/** Why a session row cannot act on this node right now because nothing is wired to it, or
+ *  undefined when it is. The ONE place that tells "released on the canvas" from "not on it". */
+function detachedHint(ctx: NodeActionCtx, nodeId: string): string | undefined {
+  if (ctx.attached(nodeId)) return undefined
+  return ctx.onCanvas(nodeId) ? RELEASED_HINT : NOT_ATTACHED_HINT
+}
 
 /** Everything the node rows read from, or do through, the canvas that owns the node. */
 export interface NodeActionCtx {
@@ -147,6 +187,10 @@ export interface NodeActionCtx {
   /** Is the node's terminal mounted and wired (its restart closure registered)? Always false for a
    *  project the canvas does not hold. */
   attached: (nodeId: string) => boolean
+  /** Does the canvas hold this node (it is in React Flow's live array)? True even while the node's
+   *  terminal is released off screen — which is exactly when Refresh is needed. Always false for a
+   *  project the canvas does not hold. */
+  onCanvas: (nodeId: string) => boolean
   agentIdOf: (nodeId: string) => AgentId | undefined
   gatewayModels: GatewayModel[]
   gatewayStatus: ModelDiscoveryStatus
@@ -400,7 +444,15 @@ export function buildNodeActionSections(
               {
                 label: 'Refresh terminal',
                 icon: <IconReload />,
-                hint: 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
+                // One node: it can be rebuilt while the canvas holds it — including a terminal
+                // released off screen, which the respawn revives (so NOT `attached`, which is false
+                // for exactly that node). A node of a project the canvas does not hold cannot. A
+                // selection of several keeps the old always-enabled row.
+                disabled: ids.length === 1 && !ctx.onCanvas(ids[0]),
+                hint:
+                  ids.length === 1 && !ctx.onCanvas(ids[0])
+                    ? NOT_ATTACHED_HINT
+                    : 'Rebuilds the view and re-attaches to the same session. Nothing running is interrupted.',
                 onClick: () => ctx.reloadTerminals(ids)
               }
             ]
@@ -529,15 +581,13 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
     ? gate.reason === 'working'
       ? 'This session is busy — restart it once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : !ctx.attached(ids[0])
-      ? 'This terminal is not attached right now.'
-      : // Not every dead end is visible from here: the closure ALSO refuses a tmux
-        // session that is closed / ended / gone, and a pane it cannot observe at all
-        // (tmux off / absent — it pre-flights one `pane_current_command` before writing
-        // anything). Only the node knows the first, and the second costs an IPC that must
-        // not run per menu RENDER. Both reach the user through `restartAgentNode`'s skip
-        // notice, which names them, rather than through a hint this row cannot compute.
-        undefined
+    : // Not every dead end is visible from here: the closure ALSO refuses a tmux
+      // session that is closed / ended / gone, and a pane it cannot observe at all
+      // (tmux off / absent — it pre-flights one `pane_current_command` before writing
+      // anything). Only the node knows the first, and the second costs an IPC that must
+      // not run per menu RENDER. Both reach the user through `restartAgentNode`'s skip
+      // notice, which names them, rather than through a hint this row cannot compute.
+      detachedHint(ctx, ids[0])
   // Pause/Resume have their OWN eligibility, computed on `st?.sessionId` alone — NOT
   // `sessionId` above, which also falls back to `n?.data.agentSessionId` (the id
   // nodeterm minted at node creation, for a node whose hooks never landed). The `pause`/
@@ -552,7 +602,7 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
     ? pauseGate.reason === 'working'
       ? 'This session is busy — try again once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : undefined
+    : detachedHint(ctx, ids[0])
   const restartRows: MenuItem[] = [
     {
       label: 'Restart agent',
@@ -611,9 +661,8 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
               ? 'Nothing to resume yet — this session has not reported an id.'
               : ctx.sessionSource === 'relay'
                 ? 'Restart the shell on the machine hosting this relay session.'
-                : !ctx.attached(ids[0])
-                  ? 'This terminal is not attached right now.'
-                  : 'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
+                : detachedHint(ctx, ids[0]) ??
+                  'Restarts the session with gateway/provider env stripped — uses your own subscription/credentials.',
             onClick: () => void ctx.restartAgentNode(ids[0], undefined, undefined, undefined, true)
           }
         ]
@@ -700,7 +749,8 @@ function sessionRows(nodeId: string, ctx: NodeActionCtx, hidden: readonly string
           {
             label: 'Resume session',
             icon: <IconPower />,
-            hint: 'Brings the conversation back.',
+            disabled: !ctx.attached(ids[0]),
+            hint: detachedHint(ctx, ids[0]) ?? 'Brings the conversation back.',
             onClick: () => void ctx.resumeAgentNode(ids[0])
           }
         ] as MenuItem[])
@@ -757,9 +807,7 @@ export function buildAccountSwitchRows(nodeId: string, ctx: NodeActionCtx): Menu
     ? gate.reason === 'working'
       ? 'This session is busy — switch it once its turn (or permission prompt) is done.'
       : 'Nothing to resume yet — this session has not reported an id.'
-    : !ctx.attached(nodeId)
-      ? 'This terminal is not attached right now.'
-      : undefined
+    : detachedHint(ctx, nodeId)
   return [
     // Switch this running Claude node onto another account already logged in on its
     // machine — this one, or the SSH host its pane runs on — with no /login in the pane
@@ -895,6 +943,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     nodes: o.nodes,
     sessionSource: o.sessionSource,
     attached: () => false,
+    onCanvas: () => false,
     // Canvas `agentIdOf`, over the stored copy.
     agentIdOf: (nodeId) => {
       const n = o.nodes.find((x) => x.id === nodeId)

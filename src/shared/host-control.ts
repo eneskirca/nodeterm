@@ -68,7 +68,11 @@ export const HOST_ONLY_CHANNEL_PREFIXES: readonly string[] = [
   'watchLink:',
   // Agent-integration consent status: paths in the host's home it kept or wrote. The consent itself
   // is in settings (already host-only).
-  'integrations:'
+  'integrations:',
+  // `nodeterm://` links: a link clicked on THIS machine opens a node here after THIS machine's user
+  // approves it. Raw ipcMain handlers (no peer reaches them); listed so a move onto the platform
+  // table cannot quietly open them.
+  'open-link:'
 ]
 
 export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([

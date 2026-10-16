@@ -66,6 +66,7 @@ export type CommandId =
   | 'canvas.fitAll'
   | 'canvas.tidy'
   | 'canvas.tidyLineage'
+  | 'canvas.toggleLock'
   | 'canvas.groupSelection'
   | 'node.newTerminal'
   | 'node.newAgent'
@@ -168,6 +169,10 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
     // exactly like arrangeAllNodes (kanban open, <2 top-level nodes, no usable rope).
     defaultBindings: both() },
   { id: 'canvas.groupSelection', title: 'Group selection', group: 'Canvas', scope: 'canvas',
+    defaultBindings: both() },
+  { id: 'canvas.toggleLock', title: 'Toggle canvas lock', group: 'Canvas', scope: 'canvas',
+    // Ships unbound (issue #1130): the obvious chord, Cmd+Shift+L, is the sessions sidebar's.
+    // Not allowInTerminal — a focused terminal keeps the chord, like every canvas command.
     defaultBindings: both() },
 
   // Nodes

@@ -54,4 +54,20 @@ describe('Canvas nodeActionCtxFor', () => {
       'buildNodeActionItems([nodeId], undefined, nodeActionCtxFor(projectId), { allow: BOARD_NODE_ACTION_IDS })'
     )
   })
+
+  it('card modal session rows are BOARD_MODAL_ACTION_IDS through nodeActionCtxFor, wired to both boards', () => {
+    const start = src.indexOf('const boardSessionActionItems = useCallback(')
+    expect(start).toBeGreaterThan(-1)
+    const decl = src.slice(start, src.indexOf('\n  )\n', start))
+    expect(decl).toContain(
+      'buildNodeActionItems([nodeId], undefined, nodeActionCtxFor(projectId), { allow: BOARD_MODAL_ACTION_IDS })'
+    )
+    // The per-project board is bound to the active project with a stable identity.
+    expect(src).toMatch(
+      /const activeBoardSessionActionItems = useCallback\(\n\s+\(nodeId: string\): MenuItem\[\] => boardSessionActionItems\(nodeId, activeProjectId\),/
+    )
+    // The Omni board asks per lane; the per-project board gets the active binding.
+    expect(src).toContain('sessionActionItems={boardSessionActionItems}')
+    expect(src).toContain('sessionActionItems={activeBoardSessionActionItems}')
+  })
 })

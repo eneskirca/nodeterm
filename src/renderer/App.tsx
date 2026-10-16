@@ -17,6 +17,11 @@ import { resolveTerminalRenderer } from '../shared/webgl'
 import { resolveTerminalTheme } from './terminal/themes'
 import { resolveUiScale } from '../shared/ui-scale'
 import { resolveTabBarHeight } from '../shared/window-chrome-metrics'
+import {
+  resolveMarkdownCodeFontFamily,
+  resolveMarkdownFontFamily,
+  resolveMarkdownFontSize
+} from '../shared/markdown-font'
 import { useAppTheme } from './state/useAppTheme'
 import { installWindowActivityOnDocument } from './lib/windowActivity'
 import {
@@ -66,6 +71,19 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--tabbar-h', `${resolveTabBarHeight(tabBarHeight)}px`)
   }, [tabBarHeight])
+
+  // The rendered-Markdown views' font (Settings → Appearance; @shared/markdown-font). Published as
+  // tokens like `--tabbar-h`: styles.css keeps the defaults on :root, so an un-hydrated store
+  // draws the default font. Code inside Markdown takes the terminal's font family.
+  const markdownFontFamily = useSettings((s) => s.settings.markdownFontFamily)
+  const markdownFontSize = useSettings((s) => s.settings.markdownFontSize)
+  const terminalFontFamily = useSettings((s) => s.settings.fontFamily)
+  useEffect(() => {
+    const style = document.documentElement.style
+    style.setProperty('--md-font-family', resolveMarkdownFontFamily(markdownFontFamily))
+    style.setProperty('--md-font-size', `${resolveMarkdownFontSize(markdownFontSize)}px`)
+    style.setProperty('--md-code-font-family', resolveMarkdownCodeFontFamily(terminalFontFamily))
+  }, [markdownFontFamily, markdownFontSize, terminalFontFamily])
 
   // Hold every infinite CSS animation still while nobody is looking at this window (the gate is
   // `--nt-anim-state` / `[data-nt-window]` in styles.css, where the measurements live). Installed

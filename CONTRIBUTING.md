@@ -63,6 +63,9 @@ Do not replace that read with a stored `agentId` or the restart heuristic's deep
 An interpreter such as `node` is named by its script's package `bin` entry, never as `node`, so
 npm-installed CLIs such as Codex are recognized. A session released by park expiry or offscreen
 release is still messageable: existence and routing ask the backend, not the attached client.
+Both Windows owner reads (session host and direct ConPTY) shell out to PowerShell and take ~2.4 s, so
+they get their own `WINDOWS_PANE_PROBE_TIMEOUT_MS` through `PtyManager.paneProbeTimeoutMs`; ssh and
+tmux keep the 2 s bound. A shell that wires agent messaging must forward that optional dep.
 Never put the submitting Enter in the same write as a message paste: `core/settled-submit.ts`
 pastes, waits for the envelope to render, then submits separately, on every backend.
 The persistent session-host transport has its own versioned messaging extension: the host checks
@@ -166,7 +169,9 @@ picker — goes in `renderer/lib/nodeActionItems.tsx`, never inline in `Canvas.t
 menu, the sessions-sidebar row menu and both kanban card menus (through
 `components/kanban/cardMenu.tsx`) build from it. Decide in the same change whether a card offers
 the new row: a card takes only `BOARD_NODE_ACTION_IDS`, and a row that acts on canvas position goes
-in `BOARD_SPATIAL_ROW_IDS` instead. Remember the board acts on nodes of projects that are NOT on the
+in `BOARD_SPATIAL_ROW_IDS` instead. The card modal's ⋯ menu takes `BOARD_MODAL_ACTION_IDS` through
+its `sessionActions` prop, closes the modal before the action runs, and is absent when the card has
+no session row. Remember the board acts on nodes of projects that are NOT on the
 canvas (the Omni board): write through Canvas's `nodeWritesFor(projectId)` (built on
 `createNodeWriteRouter`, `lib/nodeWriteRouter.ts`), never a live-canvas callback, and report a failure with a `nodeterm:toast`.
 `lib/nodeActionItems.guard.test.ts` fails on a second copy of the rows.
@@ -377,7 +382,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   from the start with "ask me again" selected, "don't ask again for agents in <project>"
   (machine-local, keyed by project id, pruned like `settings.sidebarCollapsedItems`) or "don't ask
   again in any project until nodeterm quits" (in-memory — not `settings.json`, not `localStorage`,
-  so quitting restores the gate). Hiding a reach behind a checkbox made it read as missing. The machine-WIDE waiver stays Settings-only, because that is
+  so quitting restores the gate). Hiding a reach behind a checkbox made it read as missing. The
+  per-project answer can also be given up front from the project tab's "Agents may, without asking"
+  menu; it writes the same machine-local map through the same `withProjectWaiver`, never a second
+  copy of the merge, and each row shows what the gate will actually do (`projectWaiverState`), so
+  an app-run or global waiver is named rather than hidden behind an unchecked box. The machine-WIDE waiver stays Settings-only, because that is
   the one a stray click in a dialog that appeared under the user's hands must not be able to grant.
   Offering only the app-run one was its own failure: it is not what a user who ticks "don't ask
   again" means, so the real choices were "be asked forever" or "turn it off everywhere". Two rules
@@ -528,6 +537,10 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   only used cells; an xterm buffer (the renderer, the Windows session host's headless emulator,
   `NativeWindowsPane`) allocates every line at full width. Size them with `xtermScrollback` from
   `src/shared/scrollback.ts` (≤ 10k), so the host never keeps history the renderer cannot show.
+- **The app's own environment is not the panes' environment.** Whatever launched nodeterm (often an
+  agent CLI's shell) leaves markers in `process.env` that describe THAT session. `buildPtyEnv` strips
+  an explicit list (`TMUX`, `NESTED_AGENT_ENV_STRIP`); add a name there, with its measurement, rather
+  than a prefix sweep — `CLAUDE_CONFIG_DIR`/`CODEX_HOME` select managed accounts and must survive.
 
 - **A new session-host push frame must be negotiated at `hello`, never just sent.** An older
   `SessionHostClient` treats EVERY push frame whose `type` is not `data` as an exit, and a
@@ -538,6 +551,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   The same goes for a richer REPLY: `listSessions`' per-session rows ride the `sessionDetails`
   feature, and a host that never negotiated it answers `{names}` — which a consumer must read as
   "named, not described", never as "detached" or "no processes".
+
+- **Every xterm sizes characters through `activateTerminalWidths` (`src/shared/terminal-width.ts`).**
+  The renderer's terminals and the session host's emulator must agree with each other, with tmux and
+  with the agent CLIs about how many cells a character takes, or a repaint by cursor position leaves
+  stale text behind (an emoji + VS16 did exactly that). Change widths there, never in one emulator,
+  and test them on a real `@xterm/headless` terminal rather than on the provider's return values.
 
 - **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
   correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
@@ -1179,6 +1198,20 @@ Grok billing diagnostics must keep HTTP codes and safe failure categories per bi
   was typed. Nothing may treat it as "safe to resend": the phone keeps the draft, re-reads, and lets
   the user decide. Only `'refused'` means nothing was typed.
 
+**`nodeterm://` links.** A link proves nothing about who sent it (any web page can build one), so
+the confirm sheet is its whole authority. It is off unless the user turns on
+`settings.allowOpenLinks`, and main checks that flag itself. Four rules get a PR sent back:
+- **No power flags.** A link opens one node in the project's default permission mode. Never add a
+  param for a permission mode, `--after`, a model, a count or "open without asking" (the signed-link
+  design in `docs/superpowers/specs/2026-10-13-open-link-design.md` is the only planned way to skip
+  the sheet).
+- **The renderer only chooses.** Its answer is a candidate id main offered, "new project", and a
+  title. The cwd and prompt in the final open come from main (`src/main/open-link.ts`), never the
+  reply.
+- **Enter never opens it.** Only a pointer click on Open, after the 1 s arm.
+- **What the human sees is what runs.** No hidden Unicode in a prompt or path (`hasHiddenText`), no
+  path that can reach another machine, and the permission mode shown is re-checked at landing.
+
 ## User-owned agent settings
 
 **Nothing writes into an agent's global config except `src/core/agent-integrations.ts`** (issue
@@ -1332,6 +1365,15 @@ name at once. Write real-tmux suites the normal way — pick your own socket nam
 tmux without carrying `TMUX_TMPDIR` into it, which is the one way left to escape the sandbox.
 `src/core/tmux-socket-isolation.guard.test.ts` holds the short allowlist of suites that name a
 production socket on purpose; adding a third is a review conversation, not a checkbox.
+
+**A test never touches the real home.** The hook installers write `~/.codex/config.toml` (Codex's
+trust in nodeterm's hooks), `~/.claude/settings.json` and friends, and they use
+`import { homedir } from 'os'`, which `vi.spyOn(os, 'homedir')` does not reach — one test doing that
+rewrote a developer's real Codex config and Codex stopped running nodeterm's hooks. Every run points
+HOME/USERPROFILE at a private sandbox (`test/setup/home-sandbox.ts`) and clears `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR` and the other relocation variables (one list, `HOME_OVERRIDE_ENV` in
+`src/core/test-home.ts`, which `test/setup/agent-env.ts` reuses). If a test needs its own home, mock the
+module (`vi.mock('os', …)`, see `install-helper.fs.test.ts`), never spy on it.
 
 **Session code has two local backends on POSIX: tmux and Zellij.** `settings.sessionBackend` picks
 where a NEW local terminal's session is created (default tmux); an existing session is always

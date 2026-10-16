@@ -260,3 +260,39 @@ describe('codex thread identity prelude — the exported agent label and grant',
     await expect(run('/bin/sh', ['-n', agentScript])).resolves.toBeTruthy()
   })
 })
+
+// The record is parsed by ONE `read` loop rather than a `sed | head` pair per field (a process
+// budget: this prelude runs on every hook event). These pin that the loop reads it the way the
+// pipelines did: the FIRST line per key wins, even when its value is empty, and a last line with
+// no newline still counts. The one deliberate difference is CRLF, asserted on its own below.
+describe('codex thread identity prelude — record parsing edge cases', () => {
+  const endpoint = (): string => `${dir}/hook-endpoint.env`
+
+  it('takes the FIRST line of a repeated key', async () => {
+    record('thread-dup', `nodeId=node-first\nnodeId=node-second\nendpoint=${endpoint()}\n`)
+    expect(await resolve({ CODEX_THREAD_ID: 'thread-dup' })).toBe(`node-first|${endpoint()}|1`)
+  })
+
+  it('an EMPTY first occurrence still wins, so the record resolves nothing', async () => {
+    record('thread-empty', `nodeId=\nnodeId=node-late\nendpoint=${endpoint()}\n`)
+    expect(await resolve({ CODEX_THREAD_ID: 'thread-empty' })).toBe('||')
+  })
+
+  it('reads a last line that has no trailing newline', async () => {
+    const body = `nodeId=node-u\nendpoint=${endpoint()}`
+    expect(body.endsWith('\n')).toBe(false)
+    record('thread-unterminated', body)
+    expect(await resolve({ CODEX_THREAD_ID: 'thread-unterminated' })).toBe(`node-u|${endpoint()}|1`)
+  })
+
+  it('accepts a CRLF record — the one deliberate widening', async () => {
+    // Git for Windows' text-mode `sed` dropped the CR, so the old pipelines resolved a CRLF record
+    // there; GNU/BSD `sed` kept it and the charset checks refused the value. One trailing CR per
+    // line is now dropped on every platform, BEFORE the same checks run, so nothing outside the
+    // value alphabets can get through — a record otherwise valid simply resolves everywhere.
+    const body = `nodeId=node-c\r\nendpoint=${endpoint()}\r\nsignature=x\r\n`
+    expect(body.split('\r\n')).toHaveLength(4) // the fixture really is CRLF
+    record('thread-crlf', body)
+    expect(await resolve({ CODEX_THREAD_ID: 'thread-crlf' })).toBe(`node-c|${endpoint()}|1`)
+  })
+})

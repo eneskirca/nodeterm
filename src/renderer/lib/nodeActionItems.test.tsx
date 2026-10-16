@@ -9,6 +9,8 @@ import {
   BOARD_NODE_ACTION_IDS,
   BOARD_SPATIAL_ROW_IDS,
   buildNodeActionItems,
+  NOT_ATTACHED_HINT,
+  RELEASED_HINT,
   type NodeActionCtx
 } from './nodeActionItems'
 
@@ -21,6 +23,8 @@ function fakeCtx(nodes: CanvasNode[], over: Partial<NodeActionCtx> = {}): NodeAc
     nodes,
     sessionSource: 'local',
     attached: () => true,
+    // Like the live canvas: the canvas holds every node it was given.
+    onCanvas: (id) => nodes.some((n) => n.id === id),
     agentIdOf: (id) => nodes.find((n) => n.id === id)?.data.agentId as never,
     gatewayModels: [],
     gatewayStatus: 'idle',
@@ -136,12 +140,12 @@ describe('buildNodeActionItems — the canvas node menu, moved verbatim', () => 
     expect(hintOf(items, 'Restart agent')).toBe('Nothing to resume yet — this session has not reported an id.')
   })
 
-  it('an unmounted agent says its terminal is not attached', () => {
+  it('an agent not on the canvas says its terminal is not attached', () => {
     useAgentStatus.setState({ byId: { a1: { state: 'done', sessionId: 's1' } } } as never)
     const items = buildNodeActionItems(
       ['a1'],
       undefined,
-      fakeCtx([term('a1', { agentId: 'claude' })], { attached: () => false })
+      fakeCtx([term('a1', { agentId: 'claude' })], { attached: () => false, onCanvas: () => false })
     )
     expect(hintOf(items, 'Restart agent')).toBe('This terminal is not attached right now.')
   })
@@ -218,7 +222,7 @@ describe('buildNodeActionItems — filters', () => {
           allow: BOARD_NODE_ACTION_IDS
         })
       )
-    ).toEqual(['[colors]', 'Set icon…', '—', 'Share live link…'])
+    ).toEqual(['[colors]', 'Set icon…', '—', 'Refresh terminal', 'Share live link…'])
   })
 
   it('on the board list the live-link row comes before the account switch', () => {
@@ -287,5 +291,187 @@ describe('bulk pause from a multi-selection', () => {
     const items = buildNodeActionItems(['a1'], undefined, fakeCtx([term('a1', { agentId: 'claude' })]))
     expect(top(items)).toContain('Pause session ▸')
     expect(row(items, 'Pause 1 sessions')).toBeUndefined()
+  })
+})
+
+describe('session rows when the terminal is not attached', () => {
+  const NOT_ATTACHED = 'This terminal is not attached right now.'
+  const claude = term('a', { agentId: 'claude', agentSessionId: 'sess-1' })
+  // Not on the canvas at all: an Omni lane of a project the canvas does not hold.
+  const ctxDetached = (): NodeActionCtx =>
+    fakeCtx([claude], { attached: () => false, onCanvas: () => false })
+  // On the live canvas, its terminal released while off screen.
+  const ctxReleased = (): NodeActionCtx => fakeCtx([claude], { attached: () => false })
+
+  it('a node released off screen keeps Refresh terminal enabled (the respawn revives it)', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxReleased())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(false)
+    expect(hintOf(items, 'Refresh terminal')).not.toBe(NOT_ATTACHED_HINT)
+  })
+
+  it('a node not on the canvas disables Refresh terminal with the not-attached reason', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(true)
+    expect(hintOf(items, 'Refresh terminal')).toBe(NOT_ATTACHED_HINT)
+  })
+
+  it('released on the canvas: session rows say the terminal was released, not that it is unattached', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxReleased())
+    for (const label of ['Restart agent', 'Restart agent and shell', 'Restart on subscription', 'Pause', 'Pause & end session']) {
+      expect(disabledOf(items, label)).toBe(true)
+      expect(hintOf(items, label)).toBe(RELEASED_HINT)
+    }
+    useAgentStatus.setState({ byId: { a: { sessionId: 'sess-1', paused: true } as never } })
+    const paused = buildNodeActionItems(['a'], undefined, ctxReleased())
+    expect(disabledOf(paused, 'Resume session')).toBe(true)
+    expect(hintOf(paused, 'Resume session')).toBe(RELEASED_HINT)
+  })
+
+  it('the released hint names no single surface (canvas menu, sidebar and board all show it)', () => {
+    expect(RELEASED_HINT).not.toMatch(/card menu/i)
+    expect(RELEASED_HINT).toMatch(/refresh the terminal/i)
+  })
+
+  it('not on the canvas: the same rows keep the not-attached reason', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    for (const label of ['Restart agent', 'Restart agent and shell', 'Restart on subscription', 'Pause', 'Pause & end session']) {
+      expect(hintOf(items, label)).toBe(NOT_ATTACHED_HINT)
+    }
+  })
+
+  it('disables Pause and Pause & end session with the not-attached reason', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 'sess-1' } as never } })
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Pause')).toBe(true)
+    expect(hintOf(items, 'Pause')).toBe(NOT_ATTACHED)
+    expect(disabledOf(items, 'Pause & end session')).toBe(true)
+    expect(hintOf(items, 'Pause & end session')).toBe(NOT_ATTACHED)
+  })
+
+  it('disables Resume session when detached, enables it when attached', () => {
+    useAgentStatus.setState({
+      byId: { a: { state: undefined, sessionId: 'sess-1', paused: true } as never }
+    })
+    const detached = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(detached, 'Resume session')).toBe(true)
+    expect(hintOf(detached, 'Resume session')).toBe(NOT_ATTACHED)
+    const attached = buildNodeActionItems(['a'], undefined, fakeCtx([claude]))
+    expect(disabledOf(attached, 'Resume session')).toBeFalsy()
+  })
+
+  it('disables Refresh terminal for one detached node and keeps the busy reason ahead of it', () => {
+    const items = buildNodeActionItems(['a'], undefined, ctxDetached())
+    expect(disabledOf(items, 'Refresh terminal')).toBe(true)
+    expect(hintOf(items, 'Refresh terminal')).toBe(NOT_ATTACHED)
+    useAgentStatus.setState({ byId: { a: { state: 'working', sessionId: 'sess-1' } as never } })
+    const busy = buildNodeActionItems(['a'], undefined, fakeCtx([claude]))
+    expect(hintOf(busy, 'Pause')).toMatch(/busy/)
+  })
+
+  it('busy and no-id outrank not-attached on a detached node', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'working', sessionId: 'sess-1' } as never } })
+    expect(hintOf(buildNodeActionItems(['a'], undefined, ctxDetached()), 'Pause')).toMatch(/busy/)
+    useAgentStatus.setState({ byId: { a: { state: 'done' } as never } })
+    expect(hintOf(buildNodeActionItems(['a'], undefined, ctxDetached()), 'Pause')).toBe(
+      'Nothing to resume yet — this session has not reported an id.'
+    )
+  })
+
+  it('a selection of several detached terminals keeps Refresh terminal enabled', () => {
+    const items = buildNodeActionItems(['t1', 't2'], undefined, fakeCtx([term('t1'), term('t2')], { attached: () => false }))
+    expect(disabledOf(items, 'Refresh terminal')).toBe(false)
+  })
+})
+
+describe('board allowlist carries the session sections', () => {
+  const labels = (items: MenuItem[]): string[] => top(items)
+
+  it('offers refresh, restart, pause for an idle attached claude card, and no node-creating rows', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 's' } as never } })
+    const n = term('a', { agentId: 'claude', agentSessionId: 's' })
+    const l = labels(buildNodeActionItems(['a'], undefined, fakeCtx([n]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l).toEqual(expect.arrayContaining(['Refresh terminal', 'Restart ▸', 'Pause session ▸']))
+    for (const never of ['Duplicate', 'Branch conversation', 'Group node', 'Collapse'])
+      expect(l.some((x) => x.startsWith(never))).toBe(false)
+    for (const id of BOARD_SPATIAL_ROW_IDS) expect(BOARD_NODE_ACTION_IDS).not.toContain(id)
+  })
+
+  it('a working agent: restarts and pauses are disabled with the busy reason and nothing runs', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'working', sessionId: 's' } as never } })
+    const restartAgentNode = vi.fn(async () => {})
+    const pauseAgentNode = vi.fn(async () => {})
+    const n = term('a', { agentId: 'claude', agentSessionId: 's' })
+    const items = buildNodeActionItems(['a'], undefined, fakeCtx([n], { restartAgentNode, pauseAgentNode }), {
+      allow: BOARD_NODE_ACTION_IDS
+    })
+    for (const label of ['Restart agent', 'Restart agent and shell', 'Pause', 'Pause & end session']) {
+      expect(disabledOf(items, label)).toBe(true)
+      expect(hintOf(items, label)).toMatch(/busy/)
+    }
+    // Building the menu never runs a session action on its own.
+    expect(restartAgentNode).not.toHaveBeenCalled()
+    expect(pauseAgentNode).not.toHaveBeenCalled()
+  })
+
+  it('a relay card: recycling rows are disabled with the host wording', () => {
+    useAgentStatus.setState({ byId: { a: { state: 'done', sessionId: 's' } as never } })
+    const n = term('a', { agentId: 'claude', agentSessionId: 's' })
+    const items = buildNodeActionItems(['a'], undefined, fakeCtx([n], { sessionSource: 'relay' }), {
+      allow: BOARD_NODE_ACTION_IDS
+    })
+    expect(disabledOf(items, 'Restart agent and shell')).toBe(true)
+    expect(hintOf(items, 'Restart agent and shell')).toBe('Restart the shell on the machine hosting this relay session.')
+    expect(disabledOf(items, 'Pause & end session')).toBe(true)
+    expect(hintOf(items, 'Pause & end session')).toBe(
+      'Ends the tmux session on the machine hosting this relay session, not here.'
+    )
+    expect(disabledOf(items, 'Restart on subscription')).toBe(true)
+    expect(hintOf(items, 'Restart on subscription')).toBe('Restart the shell on the machine hosting this relay session.')
+    expect(disabledOf(items, 'Restart agent')).toBeFalsy()
+  })
+
+  it('a browser card gets no session rows', () => {
+    const browser = {
+      id: 'b1',
+      type: 'browser',
+      position: { x: 0, y: 0 },
+      data: { title: 'b1', url: 'https://example.com' }
+    } as unknown as CanvasNode
+    const l = labels(buildNodeActionItems(['b1'], undefined, fakeCtx([browser]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l.some((x) => /Restart|Pause|Switch model|Refresh/.test(x))).toBe(false)
+  })
+
+  it('a paused node shows Resume and never Pause', () => {
+    useAgentStatus.setState({ byId: { a: { sessionId: 's', paused: true } as never } })
+    const n = term('a', { agentId: 'claude', agentSessionId: 's' })
+    const l = labels(buildNodeActionItems(['a'], undefined, fakeCtx([n]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l).toContain('Resume session')
+    expect(l).not.toContain('Pause session ▸')
+  })
+
+  it('sticky and plain-shell cards get no agent rows; the shell still refreshes', () => {
+    const sticky = { id: 's1', type: 'sticky', position: { x: 0, y: 0 }, data: {} } as unknown as CanvasNode
+    const shell = term('t')
+    const l1 = labels(buildNodeActionItems(['s1'], undefined, fakeCtx([sticky]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l1.some((x) => /Restart|Pause|Refresh/.test(x))).toBe(false)
+    const l2 = labels(buildNodeActionItems(['t'], undefined, fakeCtx([shell]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l2).toContain('Refresh terminal')
+    expect(l2.some((x) => /Restart|Pause/.test(x))).toBe(false)
+  })
+
+  it('hiding refresh-terminal in Settings hides it on the card', () => {
+    useSettings.setState({
+      settings: { ...DEFAULT_SETTINGS, hiddenNodeMenuItems: ['refresh-terminal'] }
+    })
+    const l = labels(buildNodeActionItems(['t'], undefined, fakeCtx([term('t')]), { allow: BOARD_NODE_ACTION_IDS }))
+    expect(l).not.toContain('Refresh terminal')
+  })
+
+  it('the modal allowlist is a subset without refresh', async () => {
+    const mod = await import('./nodeActionItems')
+    expect(mod.BOARD_MODAL_ACTION_IDS).toEqual(['restart', 'switch-model', 'switch-account', 'pause'])
+    for (const id of mod.BOARD_MODAL_ACTION_IDS) expect(BOARD_NODE_ACTION_IDS).toContain(id)
   })
 })

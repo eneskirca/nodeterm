@@ -182,30 +182,35 @@ describe('the managed script for antigravity', () => {
     // antigravity code — and compared equal to this branch's output before being pinned here.
     // If the SHARED script legitimately changes, recompute these deliberately from the base
     // commit's builder — a silent diff here is exactly the regression to catch.
+    //
+    // RECOMPUTED deliberately for the Windows hook-cost change (no subshell/mkdir on the pending
+    // dir once it exists, token read by `read` instead of `head`, the `[A-Za-z0-9._-]` curl-config
+    // header fast path): the shared script changed for every agent, so every pin moved. Each
+    // change is pinned behaviourally in managed-script / node-token-sh / hook-curl-config tests.
     const expected: Record<string, [string, string]> = {
       claude: [
-        '26e5dd697ee602a053c6a8ec054128dfb1fad0255b63d65efefed82106660ecc',
-        '6d7202781175407bc84d6831b1e1d5aba44574212ceb1c2e506aef5e9d9dac3d'
+        '0c160e0081608c44e327bb22f394aa51e17e852bc277523d0edee9c6d867711d',
+        'e0fd180e49fd26fca4b74b281f1357c8d26eea6338b39dc20e6a38e266ced42f'
       ],
       codex: [
-        '9b47a045193b8e434139215d8c6992bda1926e86eaa7078d666eb2fac254d660',
-        '736e0076437ff236673664d1d3c44807e9a0f54fe8cc49676f1a8a5978c787e1'
+        '592fe88ee069db002c9f5c385a2e0465f9659bade3f0bd18c86b5b51f7644e59',
+        '3a09c15cb7a3ce6ba71f8bc695a50e58346f05c8015b2eb8812b8003a2e384ea'
       ],
       gemini: [
-        '06d6c8ef62ae425c6aa253afc1536cb0913dc5ef4a173b1ce66c8a163849ec73',
-        'bc1a805b3ceb015f61bdf2bc66fa5c9b8f6b0c236f4cfd761cba20db4dd0bafc'
+        'c3fb01424ff2a78012ffd6e87200430badfe60b05f603731bf205ee3b791f988',
+        '23d62f97dc80483fba92ef760c0dc6a5b3e2f923ce706915739baee1b76579d8'
       ],
       opencode: [
-        'ee9c4a9a35e0456d1f5853a0737efe6d1064ad47942ab40cb79d3305fb232161',
-        'b2935b048eb450759c9652eb1fb8b5047fc5816e28150f446eb2aeccc8941e51'
+        '910dc7bc71c9af9043f05509d72584c633a790c0dee66d621baeee1db671845f',
+        '89d5b0c9b9fc083befb429493093af76d48c5ff5782b6f9cfdb2cdb1adf44344'
       ],
       grok: [
-        '000363fb622b1fbe65579763557596ff4d0cab972cb61fb6c184e340ba1263ef',
-        '42c5f271ba8656a161dd1e06b05309b020fd4b92c95064c1ed70a6b9dab72672'
+        'fe9636e0e6e961109a3d96079a5f10d0304d77e751a6d1de57aa2810b2075b6c',
+        '313c0e80dd5160d61b893d8438c952d8a40a1d13bb9ff5280730df507ae910b2'
       ],
       copilot: [
-        '3e21c72e394caa5c703cf1f06c017e82b3aedb6502f15c9ca7324e3e956c9678',
-        '766e961c8138cb1d2ade63be3fa420eeb1af7f53dbcfa658def6e09bd189b390'
+        '8907ee6ac3274cc92f3aa44f55119cc3d42b5a2446fcbd4a847fe42064c1f015',
+        '27117418faf66ab0c5960cdec22d0bf2594058df0874910b5da16cb56c10c528'
       ]
     }
     const sha = (s: string): string => createHash('sha256').update(s).digest('hex')

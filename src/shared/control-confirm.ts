@@ -103,7 +103,9 @@ export interface ControlConfirmWaivers {
    * forever" or "turn it off everywhere". A user who trusts the orchestrator in one repo should be
    * able to say exactly that, and this is the scope the DIALOG may therefore grant: it is bounded
    * by a project the user is looking at, revocable from Settings, and it cannot follow them into
-   * the repo where they do not trust it.
+   * the repo where they do not trust it. The project tab's "Agents may, without asking" menu sets
+   * the same entries up front, before any dialog has appeared; every writer goes through
+   * `withProjectWaiver`.
    *
    * SHAPE follows `settings.sidebarCollapsedItems`, the established per-project machine-local
    * state, PRUNING INCLUDED (`pruneControlConfirmWaivers`): settings.json is forever and project
@@ -321,6 +323,81 @@ export function pruneControlConfirmWaivers(
   if (Object.keys(kept).length) out.projects = kept
   else delete out.projects
   return out
+}
+
+/**
+ * Turn ONE verb's per-project waiver on or off — the single write every surface goes through: the
+ * dialog's "Don't ask again for agents in …", the project tab menu's per-project toggle, and the
+ * revoke row in Settings → Agents. One merge, so the three cannot drift apart on the prune or the
+ * sanitize — the kind of drift this file exists to prevent.
+ *
+ * Prunes dead projects first (see `pruneControlConfirmWaivers`); the target project survives the
+ * prune because the merge happens after it, so a project that went away while a dialog was open
+ * still gets the answer the user gave. An unwaivable verb or a missing project id changes nothing.
+ * The result is sanitized, so no writer can persist a shape the readers would then drop in silence.
+ */
+export function withProjectWaiver(
+  waivers: ControlConfirmWaivers,
+  projectId: string | undefined,
+  verb: string,
+  on: boolean,
+  live: ReadonlySet<string>
+): ControlConfirmWaivers {
+  if (!projectId || !isWaivableVerb(verb)) return sanitizeControlConfirmWaivers(waivers)
+  const pruned = pruneControlConfirmWaivers(waivers, live)
+  const current = pruned.projects?.[projectId] ?? []
+  const nextVerbs = on ? [...new Set([...current, verb])] : current.filter((v) => v !== verb)
+  const projects = { ...(pruned.projects ?? {}) }
+  if (nextVerbs.length) projects[projectId] = nextVerbs
+  else delete projects[projectId]
+  return sanitizeControlConfirmWaivers({ ...pruned, projects })
+}
+
+/**
+ * What a per-project toggle (the project tab menu's "Agents may, without asking" row) can honestly
+ * show for one verb: whether THIS project's waiver is granted, and whether the verb would still
+ * skip its dialog WITHOUT that grant — because of the app-run, machine-wide or bypass waiver.
+ *
+ * Asked through `decideControlConfirm` itself, never re-derived: a row that read only the
+ * `projects` map would promise "agents here ask you first" while an app-run waiver or the
+ * global-Bypass lock still waives the dialog, and "click to ask again" when removing the project
+ * grant restores nothing. `otherVia` is the waiver that would still apply, so the row can name it
+ * and send the user to the control that revokes it (`otherWaiverHint`).
+ */
+export function projectWaiverState(
+  input: Omit<Parameters<typeof decideControlConfirm>[0], 'projectId'> & { projectId: string }
+): { granted: boolean; skips: boolean; otherVia: ConfirmWaiverVia | null } {
+  const { verb, projectId, persisted } = input
+  const granted = !!sanitizeControlConfirmWaivers(persisted).projects?.[projectId]?.includes(verb)
+  const without = withProjectWaiver(persisted ?? {}, projectId, verb, false, new Set([projectId]))
+  const otherVia = decideControlConfirm({ ...input, persisted: without }).via
+  return { granted, skips: granted || otherVia !== null, otherVia }
+}
+
+/** Why a verb skips its dialog even without the project's own waiver — the tooltip on that row. */
+export function otherWaiverHint(via: ConfirmWaiverVia): string {
+  switch (via) {
+    case 'session':
+      return 'Waived in every project until nodeterm quits — revoke it in Settings → Agents.'
+    case 'always':
+      return 'Waived permanently in every project on this computer — change it in Settings → Agents.'
+    case 'bypass':
+      return 'Not asked while your global permission mode is Bypass and the Bypass waiver is on — Settings → Agents.'
+    default:
+      return 'Waived for this project.'
+  }
+}
+
+/**
+ * What each waivable verb lets an agent do, phrased for the project tab menu's per-project toggle
+ * ("Agents may, without asking: Close nodes"). The menu iterates `CONFIRM_WAIVABLE_VERBS` and a
+ * test asserts every member has a label here, so a verb joining that table cannot render as a
+ * blank row.
+ */
+export const WAIVABLE_VERB_ACTIONS: Readonly<Record<string, string>> = {
+  close: 'Close nodes',
+  write: 'Type into terminals',
+  'open-project': 'Open or add projects'
 }
 
 /**

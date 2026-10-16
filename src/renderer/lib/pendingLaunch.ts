@@ -423,6 +423,30 @@ export function deliveriesToRetire(
  * `starting` comes first, ahead even of the relay sentence: while core is typing the launch, no
  * sentence may offer ▶, and "waiting for X" would describe a wait that is already over.
  */
+/**
+ * A node's own first-open launch is in flight: the live `initialCommand` alias is still set (it is
+ * cleared on every outcome), the delivery loop has reported nothing, and nothing holds it. Its
+ * `pendingLaunch` is then only the durable write-ahead record — and it carries `manualOnly` from the
+ * claim until Enter lands — so a QUEUED chip there would paint "⚠ QUEUED" on EVERY freshly opened
+ * agent for the length of its delivery. A real hold (deps, setup script, PR / success wait) or a
+ * reported failure/stall still shows. ONE rule for the canvas node and the board card, so the two
+ * views of a session cannot disagree about whether it is queued.
+ */
+export function firstOpenInFlight(
+  hasInitialCommand: boolean,
+  pending: PendingLaunch | undefined,
+  observedDelivery: LaunchDelivery | undefined
+): boolean {
+  return (
+    hasInitialCommand &&
+    !observedDelivery &&
+    !pending?.after?.length &&
+    !pending?.awaitSetupGroup &&
+    !pending?.afterPr &&
+    !pending?.afterSuccess
+  )
+}
+
 export function launchTooltip(
   delivery: LaunchDelivery | undefined,
   waitingOn: string,

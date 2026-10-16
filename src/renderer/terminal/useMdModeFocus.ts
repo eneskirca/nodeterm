@@ -12,7 +12,8 @@ export interface FocusableTerm {
  *
  * Opening the view covers the xterm but used to leave it focused, so every keystroke kept flowing
  * into a pane the user could no longer see — into an agent's composer or a shell prompt. On entry
- * the terminal is blurred; on exit focus goes back ONLY if the terminal had it when the view
+ * the terminal is blurred and, when the face is the ChatPanel, its composer takes the keyboard
+ * (`takeComposerFocusRequest`); on exit focus goes back ONLY if the terminal had it when the view
  * opened. Restoring unconditionally would pull focus out of whatever the user moved to meanwhile
  * (another node, a text field) the moment they toggle the view off from the menu.
  *
@@ -42,6 +43,57 @@ export function requestTerminalFocusOnExit(nodeId: string): void {
   focusOnExit.add(nodeId)
 }
 
+/**
+ * Entries of a ⌘M view whose chat composer has not mounted yet, keyed by node id. Opening the
+ * view moves the keyboard to the composer (the reason to open the chat face is usually to type
+ * into it), but the ChatPanel is code-split: on the first open it suspends, so the composer
+ * mounts a commit or more AFTER this hook's entry effect ran. The composer takes the request on
+ * mount (`takeComposerFocusRequest`). The root is kept so the composer can tell whether it is
+ * the one the request was made for (the canvas node and the kanban card modal share a node id)
+ * and whether the user moved on to something else while it loaded. Cleared on exit, so a
+ * composer that appears later — the session id arrived while the output view was up — does not
+ * grab the keyboard out of nowhere.
+ */
+const composerFocusPending = new Map<string, () => Element | null | undefined>()
+
+/** The selector of a mounted, usable chat composer textarea (ChatComposer's box carries the id). */
+const COMPOSER_TEXTAREA = '[data-chat-composer-id] textarea:not(:disabled)'
+
+/**
+ * Whether opening the ⌘M view may move the keyboard into its composer: focus is nowhere, already
+ * inside this node, or in a terminal (this one was just blurred; another terminal under a
+ * click-to-focus pointer is a pane, not a field the user is typing a form into). A text field
+ * elsewhere — a rename box, the sessions filter, another node's composer — keeps it.
+ */
+export function mayFocusComposer(
+  active: Element | null,
+  nodeRoot: Element | null | undefined,
+  body: Element | null
+): boolean {
+  if (mayRestoreFocus(active, nodeRoot, body)) return true
+  return active !== null && active.classList.contains('xterm-helper-textarea')
+}
+
+function focusComposerIn(root: Element | null | undefined): boolean {
+  const ta = root?.querySelector<HTMLTextAreaElement>(COMPOSER_TEXTAREA)
+  if (ta === null || ta === undefined) return false
+  ta.focus()
+  return true
+}
+
+/**
+ * Called by a chat composer on mount: if the ⌘M view of `nodeId` was just opened and its
+ * composer had not mounted yet, take the keyboard now. `el` is the composer's textarea.
+ */
+export function takeComposerFocusRequest(nodeId: string, el: HTMLTextAreaElement | null): void {
+  const getRoot = composerFocusPending.get(nodeId)
+  if (getRoot === undefined || el === null || el.disabled) return
+  const root = getRoot()
+  if (root === null || root === undefined || !root.contains(el)) return // another mount of the same session (card modal vs node)
+  composerFocusPending.delete(nodeId)
+  if (mayFocusComposer(document.activeElement, root, document.body)) el.focus()
+}
+
 export function useMdModeFocus(
   mdMode: boolean,
   getTerm: () => FocusableTerm | null | undefined,
@@ -66,7 +118,18 @@ export function useMdModeFocus(
       const ta = term?.textarea
       restoreRef.current = !!ta && document.activeElement === ta
       term?.blur()
-    } else if (nodeIdRef.current !== undefined && focusOnExit.delete(nodeIdRef.current)) {
+      // Hand the keyboard to the chat composer (when this face has one). Mounted already — the
+      // ChatPanel chunk was loaded and the composer's own mount effect ran before this parent
+      // effect — focus it here; otherwise leave a request for its mount.
+      const id = nodeIdRef.current
+      const root = getRootRef.current()
+      if (id !== undefined && mayFocusComposer(document.activeElement, root, document.body)) {
+        if (!focusComposerIn(root)) composerFocusPending.set(id, () => getRootRef.current())
+      }
+      return
+    }
+    if (nodeIdRef.current !== undefined) composerFocusPending.delete(nodeIdRef.current)
+    if (nodeIdRef.current !== undefined && focusOnExit.delete(nodeIdRef.current)) {
       // An explicit "go to the terminal" (see `requestTerminalFocusOnExit`): the user just clicked
       // inside this node to get here, so nothing they chose elsewhere is being overridden.
       restoreRef.current = false

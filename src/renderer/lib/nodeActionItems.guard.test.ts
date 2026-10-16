@@ -19,6 +19,19 @@ function sources(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/** Every `import … from '…'` statement of a file: the module specifiers and the bound names. */
+function imports(src: string): { specifiers: string[]; names: string[] } {
+  const specifiers: string[] = []
+  const names: string[] = []
+  for (const m of src.matchAll(/^import\s+(type\s+)?([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/gm)) {
+    specifiers.push(m[3])
+    for (const part of m[2].replace(/[{}*]/g, ' ').split(/[\s,]+/)) {
+      if (part && part !== 'type' && part !== 'as') names.push(part)
+    }
+  }
+  return { specifiers, names }
+}
+
 /** The source of one `const name = useCallback(…)` up to the next `const` at the same depth. */
 function callback(src: string, name: string): string {
   const at = src.indexOf(`const ${name} = useCallback(`)
@@ -46,6 +59,20 @@ describe('node actions: one builder for every surface', () => {
     expect(read('components/kanban/GlobalKanbanView.tsx')).toContain('buildCardMenuItems({')
     expect(read('components/kanban/cardMenu.tsx')).toContain('...(a.nodeActions?.(card.id) ?? []),')
     expect(callback(canvas, 'boardNodeActionItems')).toContain('{ allow: BOARD_NODE_ACTION_IDS }')
+  })
+
+  it('the card modal renders only the rows its sessionActions prop hands it', () => {
+    const modal = imports(read('components/kanban/CardModal.tsx'))
+    for (const name of ['buildNodeActionItems', 'sessionRows', 'restartEligibility']) {
+      expect(modal.names, name).not.toContain(name)
+    }
+    expect(modal.specifiers.filter((s) => /lib\/nodeActionItems$/.test(s))).toEqual([])
+  })
+
+  it('neither board imports the builder directly; Canvas hands them the rows', () => {
+    for (const file of ['components/kanban/KanbanView.tsx', 'components/kanban/GlobalKanbanView.tsx']) {
+      expect(imports(read(file)).specifiers.filter((s) => /lib\/nodeActionItems$/.test(s)), file).toEqual([])
+    }
   })
 
   it('no other renderer file defines the node rows again', () => {

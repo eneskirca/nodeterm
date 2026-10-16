@@ -11,7 +11,8 @@ import {
   WINDOWS_SH_REQUIRED_MESSAGE,
   windowsHookWrapperFile
 } from './windows-hook-wrapper'
-import { buildCodexWindowsWrapper } from './codex-windows-wrapper'
+import { buildCodexWindowsWrapper, CODEX_SESSION_ENV } from './codex-windows-wrapper'
+import { buildAntigravityWindowsWrapper } from './antigravity-windows-wrapper'
 
 // These pin what the generators CONSTRUCT. Whether cmd.exe runs them is a device fact (the codex
 // wrapper's was measured for #567/#685; the new agents' rows are in the docs' device checklists).
@@ -47,7 +48,38 @@ describe('buildWindowsHookWrapper', () => {
   })
 
   it('keeps the codex wrapper byte-identical (it is the same template)', () => {
-    expect(buildWindowsHookWrapper('codex.sh', 'codex')).toBe(buildCodexWindowsWrapper())
+    expect(buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: CODEX_SESSION_ENV })).toBe(
+      buildCodexWindowsWrapper()
+    )
+  })
+})
+
+describe('buildWindowsHookWrapper — the no-session early exit is opt-in', () => {
+  const EARLY = 'if not defined NODETERM_NODE_ID if not defined CODEX_THREAD_ID goto :nt_drain'
+
+  it('drains before locating a shell when none of the named variables is set', () => {
+    const lines = buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: CODEX_SESSION_ENV }).split('\r\n')
+    // Right after setlocal, before the script/shell search costs anything.
+    expect(lines[3]).toBe(EARLY)
+    expect(lines.indexOf(EARLY)).toBeLessThan(lines.indexOf('set "NT_SH="'))
+  })
+
+  it('is on for codex only — never for the shared wrappers installed for other agents', () => {
+    expect(buildCodexWindowsWrapper()).toContain(EARLY)
+    for (const agent of ['gemini', 'grok', 'copilot']) {
+      expect(buildWindowsHookWrapper(`${agent}.sh`, agent)).not.toContain('if not defined NODETERM_NODE_ID')
+    }
+  })
+
+  it('never reaches antigravity, where silence means "run the tool"', () => {
+    expect(buildAntigravityWindowsWrapper()).not.toContain('if not defined NODETERM_NODE_ID')
+    expect(buildAntigravityWindowsWrapper()).not.toContain('CODEX_THREAD_ID')
+  })
+
+  it('refuses a variable name cmd.exe could read as anything but a name', () => {
+    for (const bad of ['', 'A B', 'X&calc', '%PATH%', '1X']) {
+      expect(() => buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: [bad] })).toThrow()
+    }
   })
 })
 

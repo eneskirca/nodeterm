@@ -10,6 +10,7 @@ import { resetDialogStack } from '../dialog-stack'
 import { useSessionNaming } from '../../state/sessionNaming'
 import { CardModal } from './CardModal'
 import type { KanbanSession } from './KanbanView'
+import type { MenuItem } from '../ContextMenu'
 
 const generateName = vi.fn()
 vi.mock('../../session/session', () => ({
@@ -106,6 +107,114 @@ describe('CardModal — node actions in the header', () => {
     render()
     expect(button('Color')).toBeNull()
     expect(button('Delete')).toBeNull()
+  })
+})
+
+describe('CardModal — session actions menu', () => {
+  const actionsButton = (): HTMLButtonElement | null =>
+    document.body.querySelector<HTMLButtonElement>('[data-action="session-actions"]')
+  const row = (label: string): HTMLElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLElement>('.ctx-item')).find((e) => e.textContent?.includes(label))
+
+  it('shows a session actions button only when sessionActions is given, for terminal cards', () => {
+    render()
+    expect(actionsButton()).toBeNull()
+    render({ sessionActions: () => [{ label: 'Restart agent', onClick: vi.fn() }] })
+    expect(actionsButton()).not.toBeNull()
+    render({
+      sessionActions: () => [{ label: 'Restart agent', onClick: vi.fn() }],
+      session: { ...session, kind: 'sticky' }
+    })
+    expect(actionsButton()).toBeNull()
+  })
+
+  it('no button when the card has no session rows (empty or separator-only)', () => {
+    render({ sessionActions: () => [] })
+    expect(actionsButton()).toBeNull()
+    render({ sessionActions: () => [{ type: 'separator' }, { type: 'separator' }] })
+    expect(actionsButton()).toBeNull()
+    render({ sessionActions: () => [{ type: 'separator' }, { label: 'Pause', onClick: vi.fn() }] })
+    expect(actionsButton()).not.toBeNull()
+  })
+
+  it('choosing a row closes the modal first and then runs the action once', () => {
+    const order: string[] = []
+    render({
+      onClose: () => order.push('close'),
+      sessionActions: () => [{ label: 'Restart agent', onClick: () => order.push('run') }]
+    })
+    act(() => actionsButton()!.click())
+    act(() => row('Restart agent')!.click())
+    expect(order).toEqual(['close', 'run'])
+  })
+
+  it('a disabled row neither closes nor runs', () => {
+    const onClose = vi.fn()
+    const run = vi.fn()
+    render({
+      onClose,
+      sessionActions: () => [{ label: 'Pause', disabled: true, hint: 'busy', onClick: run }]
+    })
+    act(() => actionsButton()!.click())
+    act(() => row('Pause')!.click())
+    expect(onClose).not.toHaveBeenCalled()
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('builds the rows fresh on each open', () => {
+    const sessionActions = vi.fn(() => [{ label: 'Restart agent', onClick: vi.fn() }])
+    render({ sessionActions })
+    act(() => actionsButton()!.click())
+    const afterFirst = sessionActions.mock.calls.length
+    expect(afterFirst).toBeGreaterThan(0)
+    // Dismiss by clicking away (the menu's backdrop).
+    act(() => document.querySelector<HTMLElement>('.ctx-backdrop')!.click())
+    expect(row('Restart agent')).toBeUndefined()
+    act(() => actionsButton()!.click())
+    expect(sessionActions.mock.calls.length).toBeGreaterThan(afterFirst)
+  })
+
+  it('click-away and Esc dismiss the menu without closing the modal or running anything', () => {
+    const onClose = vi.fn()
+    const run = vi.fn()
+    render({ onClose, sessionActions: () => [{ label: 'Restart agent', onClick: run }] })
+    act(() => actionsButton()!.click())
+    act(() => document.querySelector<HTMLElement>('.ctx-backdrop')!.click())
+    expect(row('Restart agent')).toBeUndefined()
+    act(() => actionsButton()!.click())
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(row('Restart agent')).toBeUndefined()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('a menu opened for one card is gone after the modal steps to another card', () => {
+    const run = vi.fn()
+    render({ sessionActions: () => [{ label: 'Restart agent', onClick: run }] })
+    act(() => actionsButton()!.click())
+    expect(row('Restart agent')).toBeDefined()
+    render({
+      sessionActions: () => [{ label: 'Restart agent', onClick: run }],
+      session: { ...session, id: 'n2', title: 'Other' }
+    })
+    expect(row('Restart agent')).toBeUndefined()
+  })
+
+  it('menus closed by a J/K step do not reappear when the modal steps back', () => {
+    const sessionActions = (): MenuItem[] => [{ label: 'Restart agent', onClick: vi.fn() }]
+    render({ sessionActions, onSetColor: vi.fn() })
+    act(() => actionsButton()!.click())
+    expect(row('Restart agent')).toBeDefined()
+    render({ sessionActions, onSetColor: vi.fn(), session: { ...session, id: 'n2', title: 'Other' } })
+    render({ sessionActions, onSetColor: vi.fn() })
+    expect(row('Restart agent')).toBeUndefined()
+    act(() => button('Color')!.click())
+    expect(document.body.querySelector('button[aria-label="Blue"]')).not.toBeNull()
+    render({ sessionActions, onSetColor: vi.fn(), session: { ...session, id: 'n2', title: 'Other' } })
+    render({ sessionActions, onSetColor: vi.fn() })
+    expect(document.body.querySelector('button[aria-label="Blue"]')).toBeNull()
   })
 })
 
