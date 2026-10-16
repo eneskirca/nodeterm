@@ -10,7 +10,8 @@ import {
 
 describe('visibleCaptureRoute', () => {
   it('never routes to a capture that returns history', () => {
-    expect(visibleCaptureRoute({ sessionHost: {} }, true)).toBe('none')
+    // The session host answers its own visible-only `captureVisible`, never its scrollback capture.
+    expect(visibleCaptureRoute({ sessionHost: {} }, true)).toBe('sessionHost')
     expect(visibleCaptureRoute({ nativeWindowsPane: {} }, true)).toBe('none')
     expect(visibleCaptureRoute({ sshRemote: {} }, true)).toBe('ssh')
     expect(visibleCaptureRoute({ tmuxBacked: true }, true)).toBe('tmux')
@@ -18,10 +19,11 @@ describe('visibleCaptureRoute', () => {
     expect(visibleCaptureRoute({ tmuxBacked: false }, true)).toBe('none')
   })
 
-  it('a session-host session is none even when it is also marked tmux-backed or remote', () => {
-    // The session host's only capture is ~200 lines of scrollback; nothing may route around that.
-    expect(visibleCaptureRoute({ sessionHost: true, tmuxBacked: true }, true)).toBe('none')
-    expect(visibleCaptureRoute({ sessionHost: true, sshRemote: {} }, true)).toBe('none')
+  it('a session-host session goes to the host even when it is also marked tmux-backed or remote', () => {
+    // Never aimed at a tmux socket (local or over ssh): the host's emulator is the only screen it has.
+    expect(visibleCaptureRoute({ sessionHost: true, tmuxBacked: true }, true)).toBe('sessionHost')
+    expect(visibleCaptureRoute({ sessionHost: true, tmuxBacked: true }, false)).toBe('sessionHost')
+    expect(visibleCaptureRoute({ sessionHost: true, sshRemote: {} }, true)).toBe('sessionHost')
     expect(visibleCaptureRoute({ nativeWindowsPane: {}, tmuxBacked: true }, true)).toBe('none')
   })
 

@@ -43,6 +43,14 @@ describe('pushSessionRename', () => {
     }
   })
 
+  it('recognizes the Windows session host\'s shells — never types `/rename` into PowerShell or cmd', async () => {
+    for (const pane of ['cmd.exe', 'pwsh.exe', 'PowerShell.exe']) {
+      const x = io([pane])
+      await expect(pushSessionRename(x, 'n1', 'x', 'was'), pane).resolves.toBe(false)
+      expect(x.sent, pane).toEqual([])
+    }
+  })
+
   it('waits for the CLI to boot, then writes once', async () => {
     const x = io(['zsh', 'zsh', 'node'])
     await expect(pushSessionRename(x, 'n1', 'Later', 'Earlier')).resolves.toBe(true)

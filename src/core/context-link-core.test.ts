@@ -282,3 +282,20 @@ describe('the context-link shim', () => {
     expect(CONTEXT_SHIM_SCRIPT).not.toContain('nt_node_token=$(head -n 1 "$NODETERM_NODE_TOKEN_DIR')
   })
 })
+
+describe('buildContextLinkSkillBody — shim invocation dialect', () => {
+  it('the default is the historical `sh` block, unchanged', () => {
+    const body = buildContextLinkSkillBody('/x/context.sh')
+    expect(body).toContain('```sh\nsh "/x/context.sh" <command> [--node <id|title>] [-n <N>]\n```\n\nCommands:')
+    expect(body).toBe(buildContextLinkSkillBody('/x/context.sh', 'posix'))
+  })
+
+  it('windows-cmd: names context.cmd through PowerShell and keeps the command reference', () => {
+    const body = buildContextLinkSkillBody('C:\\d\\context.sh', 'windows-cmd')
+    expect(body).toContain('```powershell\n& "C:\\d\\context.cmd" <command> [--node <id|title>] [-n <N>]\n```')
+    expect(body).toContain('Git for Windows')
+    const tail = (b: string) => b.slice(b.indexOf('Commands:'))
+    expect(tail(body)).toBe(tail(buildContextLinkSkillBody('C:\\d\\context.sh')))
+  })
+})
+

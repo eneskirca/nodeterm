@@ -129,3 +129,29 @@ describe('PcmCapture.start — cancelled while the microphone is still opening',
     expect(secondTrack.stop).not.toHaveBeenCalled()
   })
 })
+
+describe('PcmCapture.start — a getUserMedia rejection becomes platform copy', () => {
+  const rejectWith = (name: string): void => {
+    const err = Object.assign(new Error(`raw ${name}`), { name })
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: () => Promise.reject(err) } })
+  }
+
+  it('NotAllowedError names the Windows privacy toggle on win32 and System Settings on darwin', async () => {
+    rejectWith('NotAllowedError')
+    await expect(new PcmCapture(() => 'win32').start()).rejects.toThrow(/Privacy & security → Microphone/)
+    await expect(new PcmCapture(() => 'darwin').start()).rejects.toThrow(/System Settings/)
+    await expect(new PcmCapture(() => 'browser').start()).rejects.toThrow(/browser settings/)
+  })
+
+  it('in-use and missing devices read as such instead of raw DOMException text', async () => {
+    rejectWith('NotReadableError')
+    await expect(new PcmCapture(() => 'win32').start()).rejects.toThrow(/in use by another app/)
+    rejectWith('NotFoundError')
+    await expect(new PcmCapture(() => 'win32').start()).rejects.toThrow(/No microphone was found/)
+  })
+
+  it('an unknown error keeps its own message', async () => {
+    rejectWith('AbortError')
+    await expect(new PcmCapture(() => 'win32').start()).rejects.toThrow('raw AbortError')
+  })
+})

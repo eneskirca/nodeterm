@@ -32,7 +32,10 @@ export class SessionHostPty {
     client: SessionHostClient,
     name: string,
     spawn: SessionHostSpawnOptions | null,
-    scrollback: number
+    scrollback: number,
+    /** A read-only viewer's attachment (`SessionHostClient.attachWatch`): `spawn` must be null. Its
+     *  writes, resizes and pauses never reach the host. */
+    mode: 'owner' | 'watch' = 'owner'
   ) {
     this.client = client
     this.name = name
@@ -53,7 +56,9 @@ export class SessionHostPty {
     }
     this.ready = spawn
       ? client.attach(name, spawn, scrollback, this.sub)
-      : client.attachExisting(name, this.sub)
+      : mode === 'watch'
+        ? client.attachWatch(name, this.sub)
+        : client.attachExisting(name, this.sub)
     // node-pty's real spawn never rejects asynchronously (a spawn failure throws synchronously,
     // before a Session is even constructed) — an attach failure here is the closest analogue, and
     // it must not become an unhandled rejection just because some callers (write/resize/pause/

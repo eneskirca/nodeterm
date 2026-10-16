@@ -110,6 +110,8 @@ describe('registry invariants', () => {
         darwin: [], other: [] },
       { id: 'canvas.groupSelection', title: 'Group selection', group: 'Canvas', scope: 'canvas',
         darwin: [], other: [] },
+      { id: 'canvas.toggleLock', title: 'Toggle canvas lock', group: 'Canvas', scope: 'canvas',
+        darwin: [], other: [] },
       { id: 'node.newTerminal', title: 'New terminal node', group: 'Nodes', scope: 'canvas',
         darwin: ['Cmd+T'], other: ['Cmd+T'] },
       { id: 'node.newAgent', title: 'New agent node', group: 'Nodes', scope: 'canvas',

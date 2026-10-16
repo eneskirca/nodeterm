@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { IPC } from '../shared/ipc'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform, type FakePlatform } from './platform-fake'
-import { startSessionMemoryService, sshScopePredicate } from './session-memory-service'
+import { mergeLocalLegs, startSessionMemoryService, sshScopePredicate } from './session-memory-service'
 import type { MemInfo, SessionMemoryReport, SessionMemoryQuery } from '../shared/types'
 
 // The repo's own platform fake (src/core/platform-fake.ts) — a plain recording object whose
@@ -289,5 +289,104 @@ describe('startSessionMemoryService', () => {
     startSessionMemoryService({ tmuxBin: () => null })
     const r = await (platform.handlers[IPC.sessionMemory]() as Promise<SessionMemoryReport>)
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('startSessionMemoryService — session-host leg (Windows)', () => {
+  const MEM = { availableMb: 8000, totalMb: 16000 }
+  const listing = {
+    running: true,
+    names: ['nt-a'],
+    sessions: [{ name: 'nt-a', pid: 100, subscribers: 0, lastOutputMs: 1, createdMs: 1, generation: 'gen-aaaaaaaa' }]
+  }
+  const table = async () => [{ pid: 100, ppid: 1, rssKb: 2048 }]
+
+  it('no tmux + a session host answers ok:true with its rows (was always ok:false)', async () => {
+    startSessionMemoryService({
+      tmuxBin: () => null,
+      readMem: () => MEM,
+      sessionHost: async () => listing,
+      sessionHostTable: table
+    })
+    const r = await read({ projectId: 'p1' })
+    expect(r.ok).toBe(true)
+    expect(r.rows.map((x) => [x.session, x.totalMb])).toEqual([['nt-a', 2]])
+  })
+
+  it('no host running is "no sessions", not a failure', async () => {
+    startSessionMemoryService({
+      tmuxBin: () => null,
+      readMem: () => MEM,
+      sessionHost: async () => ({ running: false, names: [], sessions: [] })
+    })
+    expect(await read({ projectId: 'p1' })).toEqual({ ok: true, rows: [], mem: MEM })
+  })
+
+  it('a session host that is not the backend (undefined) leaves the tmux path untouched', async () => {
+    startSessionMemoryService({ tmuxBin: () => null, readMem: () => MEM, sessionHost: () => undefined })
+    expect(await read({ projectId: 'p1' })).toEqual({ ok: false, rows: [], mem: MEM })
+  })
+
+  it('a failed host read is ok:false', async () => {
+    startSessionMemoryService({ tmuxBin: () => null, readMem: () => MEM, sessionHost: async () => null })
+    expect((await read({ projectId: 'p1' })).ok).toBe(false)
+  })
+
+  it('a Zellij count rides on top and drops the session-host label', async () => {
+    startSessionMemoryService({
+      tmuxBin: () => null,
+      readMem: () => MEM,
+      unmeasuredSessions: async () => 2,
+      sessionHost: async () => ({ ...listing, sessions: null })
+    })
+    const r = await read({ projectId: 'p1' })
+    expect(r.unmeasured).toBe(3)
+    expect(r).not.toHaveProperty('unmeasuredBackend')
+  })
+
+  it('an SSH scope never reaches the session host', async () => {
+    const sessionHost = vi.fn(async () => listing)
+    startSessionMemoryService({ tmuxBin: () => null, sessionHost, remote: { isRemoteProject: () => true } })
+    expect((await read({ projectId: 'ssh1', remote: true })).ok).toBe(false)
+    expect(sessionHost).not.toHaveBeenCalled()
+  })
+})
+
+describe('mergeLocalLegs', () => {
+  const r = (ok: boolean, totals: number[], extra: Partial<SessionMemoryReport> = {}): SessionMemoryReport => ({
+    ok,
+    rows: totals.map((t, i) => ({
+      session: `nt-${ok}-${i}`,
+      nodeId: `${ok}-${i}`,
+      panePid: i + 1,
+      command: '',
+      selfMb: t,
+      childrenMb: 0,
+      childCount: 0,
+      totalMb: t
+    })),
+    mem: null,
+    ...extra
+  })
+  it('a leg that answered is never overridden by one that failed', () => {
+    expect(mergeLocalLegs(r(false, []), r(true, [5])).ok).toBe(true)
+    expect(mergeLocalLegs(r(true, [5]), r(false, [])).ok).toBe(true)
+    expect(mergeLocalLegs(r(false, []), r(false, [])).ok).toBe(false)
+  })
+  it('rows from both legs, sorted by total descending', () => {
+    expect(mergeLocalLegs(r(true, [3, 1]), r(true, [2])).rows.map((x) => x.totalMb)).toEqual([3, 2, 1])
+  })
+  it('unmeasured adds up; unknown stays unknown; the label survives', () => {
+    const m = mergeLocalLegs(r(true, []), r(true, [], { unmeasured: 2, unmeasuredBackend: 'session-host' }))
+    expect(m.unmeasured).toBe(2)
+    expect(m.unmeasuredBackend).toBe('session-host')
+    expect(mergeLocalLegs(r(true, [], { unmeasured: null }), r(true, [], { unmeasured: 1 })).unmeasured).toBeNull()
+    expect(mergeLocalLegs(r(true, []), r(true, []))).not.toHaveProperty('unmeasured')
+  })
+  it("the session host's own cost survives the merge, but never from a leg that failed", () => {
+    const host = { pid: 9, selfMb: 60, consoleMb: 8, consoleCount: 1, totalMb: 68 }
+    expect(mergeLocalLegs(r(true, [1]), r(true, [], { host })).host).toEqual(host)
+    expect(mergeLocalLegs(r(true, [1]), r(false, [], { host }))).not.toHaveProperty('host')
+    expect(mergeLocalLegs(r(true, []), r(true, []))).not.toHaveProperty('host')
   })
 })

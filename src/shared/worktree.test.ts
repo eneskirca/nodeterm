@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   descendantIds,
   displacedByWorktree,
+  isAncestorPath,
   isInsideDir,
+  worktreePathKey,
   sanitizeWorktreeBranch,
   computeWorktreePath,
   resolveWorktreePath,
@@ -179,6 +181,16 @@ describe('worktreeFromCreate', () => {
       createdByApp: true
     })
   })
+  it("stores a Windows path '/'-separated, case kept, the shape git prints", () => {
+    expect(
+      worktreeFromCreate({ repoPath: 'C:\\r', mode: 'new', branch: 'b', baseRef: 'main', path: 'C:\\r.worktrees\\B' }).path
+    ).toBe('C:/r.worktrees/B')
+  })
+  it('leaves a POSIX path with a backslash in a name untouched', () => {
+    expect(
+      worktreeFromCreate({ repoPath: '/r', mode: 'new', branch: 'b', baseRef: 'main', path: '/r.worktrees/a\\b' }).path
+    ).toBe('/r.worktrees/a\\b')
+  })
   it('trims the collected fields', () => {
     const wt = worktreeFromCreate({
       repoPath: ' /repo ',
@@ -262,6 +274,47 @@ describe('isDangerousWorktreeRemovalPath', () => {
   })
   it('allows a normal sibling worktree dir', () => {
     expect(isDangerousWorktreeRemovalPath('/Users/me/worktrees/r/feature-x', '/repo', home)).toBe(false)
+  })
+})
+
+describe('worktreePathKey (Windows-shaped paths compare by identity, POSIX by exact case)', () => {
+  it('folds separators, trailing slashes, drive-letter and path case for Windows paths', () => {
+    expect(worktreePathKey('C:\\r\\wt\\')).toBe('c:/r/wt')
+    expect(worktreePathKey('c:/R/Wt')).toBe(worktreePathKey('C:\\r\\wt'))
+    expect(worktreePathKey('\\\\server\\share\\Wt')).toBe('//server/share/wt')
+  })
+  it('keeps a POSIX path byte-identical to the old trailing-slash strip', () => {
+    expect(worktreePathKey('/A/wt/')).toBe('/A/wt')
+    expect(worktreePathKey('/A/wt')).not.toBe(worktreePathKey('/a/wt'))
+    expect(worktreePathKey(' /x ')).toBe('/x')
+  })
+  it('does not fold a POSIX path that merely contains a backslash (a legal filename char there)', () => {
+    expect(worktreePathKey('/home/u/A\\b/')).toBe('/home/u/A\\b')
+    expect(worktreePathKey('/home/u/A\\b')).not.toBe(worktreePathKey('/home/u/a/b'))
+    expect(isAncestorPath('/home/u/a', '/home/u/A\\b')).toBe(false)
+  })
+  it('isAncestorPath matches across separators and case on Windows paths only', () => {
+    expect(isAncestorPath('C:/Users', 'C:\\Users\\x')).toBe(true)
+    expect(isAncestorPath('c:\\users\\', 'C:/Users/x/y')).toBe(true)
+    expect(isAncestorPath('C:/Users', 'C:/Users2')).toBe(false)
+    expect(isAncestorPath('/Users', '/users/x')).toBe(false)
+    expect(isAncestorPath('/', '/x')).toBe(true)
+  })
+})
+
+describe('isDangerousWorktreeRemovalPath on Windows paths', () => {
+  it('refuses home spelled with the other separator or case', () => {
+    expect(isDangerousWorktreeRemovalPath('C:/Users/x', 'C:/r', 'C:\\Users\\x')).toBe(true)
+    expect(isDangerousWorktreeRemovalPath('c:/users', 'C:/r', 'C:\\Users\\x')).toBe(true)
+    expect(isDangerousWorktreeRemovalPath('C:\\R', 'c:/r', 'C:\\Users\\x')).toBe(true)
+  })
+  it('refuses a bare drive root in every spelling', () => {
+    for (const root of ['C:/', 'C:\\', 'c:', 'D:\\']) {
+      expect(isDangerousWorktreeRemovalPath(root, 'E:/r', 'E:/Users/x')).toBe(true)
+    }
+  })
+  it('allows a sibling worktree', () => {
+    expect(isDangerousWorktreeRemovalPath('C:/r.worktrees/feat', 'C:/r', 'C:\\Users\\x')).toBe(false)
   })
 })
 

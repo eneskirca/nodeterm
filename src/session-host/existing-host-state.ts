@@ -78,6 +78,11 @@ function parseState(raw: string): SessionHostState {
   ) {
     throw invalidState('protocolVersion must be a positive integer')
   }
+  // Optional and advisory (prepare-for-update only): a malformed value is dropped, never fatal —
+  // refusing the whole state over it would make a working host unreachable.
+  if (state.exe !== undefined && (typeof state.exe !== 'string' || state.exe.trim().length === 0)) {
+    delete state.exe
+  }
 
   return state as SessionHostState
 }

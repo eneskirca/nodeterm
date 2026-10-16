@@ -68,7 +68,11 @@ export const HOST_ONLY_CHANNEL_PREFIXES: readonly string[] = [
   'watchLink:',
   // Agent-integration consent status: paths in the host's home it kept or wrote. The consent itself
   // is in settings (already host-only).
-  'integrations:'
+  'integrations:',
+  // `nodeterm://` links: a link clicked on THIS machine opens a node here after THIS machine's user
+  // approves it. Raw ipcMain handlers (no peer reaches them); listed so a move onto the platform
+  // table cannot quietly open them.
+  'open-link:'
 ]
 
 export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
@@ -77,6 +81,9 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   IPC.projectSetupConsentSubmit,
   IPC.projectSetupRequestTrust,
   IPC.ptyLaunchHeadless,
+  // Executes an agent launch on the host and reads a host-local `--prompt-file` into it. A relay
+  // tab never sends it (its pty bridge omits the member); this holds the refusal host-side too.
+  IPC.ptyExecuteLaunch,
   // Prepare-for-update ends EVERY session on this machine's session host and quits the app. Only
   // the host's own user may do that. Raw ipcMain handlers (no peer reaches them); listed here too
   // so moving them onto the platform table later cannot quietly open them.

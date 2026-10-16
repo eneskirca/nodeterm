@@ -295,3 +295,30 @@ describe('readCodexThreadAt / readCodexAccountAt', () => {
     expect(await readCodexAccountAt(s)).toEqual({ email: 'dev@example.com' })
   })
 })
+
+describe('readCodexSessionName on a host with no reachable app-server (Windows)', () => {
+  it('serves the relayed copy without dialing the socket', async () => {
+    const savedHome = process.env.HOME
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-name-win-'))
+    process.env.HOME = home
+    forgetCodexSessionNames()
+    try {
+      // `thread-known` has a real server name; on win32 the socket is never asked, so the relayed
+      // copy is the answer — proof that no WebSocket was dialed.
+      const scope = createHash('sha256').update(sock).digest('hex').slice(0, 16)
+      const nameDir = path.join(home, '.nodeterm', 'codex-thread-names', scope)
+      fs.mkdirSync(nameDir, { recursive: true })
+      fs.writeFileSync(path.join(nameDir, 'thread-known'), 'Relayed only')
+      expect(await readCodexSessionName('thread-known', sock, 'win32')).toBe('Relayed only')
+      expect(await readCodexSessionName('thread-absent', sock, 'win32')).toBeNull()
+      // A seeded cache still wins first.
+      rememberCodexSessionName('thread-seeded-win', 'Seeded', sock)
+      expect(await readCodexSessionName('thread-seeded-win', sock, 'win32')).toBe('Seeded')
+    } finally {
+      forgetCodexSessionNames()
+      if (savedHome === undefined) delete process.env.HOME
+      else process.env.HOME = savedHome
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+})

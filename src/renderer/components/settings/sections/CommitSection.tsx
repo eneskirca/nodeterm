@@ -15,7 +15,7 @@ const ROWS = {
     title: 'Commit agent',
     keywords: ['commit', 'message', 'ai', 'claude', 'codex', 'generate']
   },
-  command: { title: 'Custom command', keywords: ['commit', 'custom', 'command'] },
+  command: { title: 'Custom command', keywords: ['commit', 'custom', 'command', 'prompt', 'promptFile'] },
   extra: { title: 'Extra prompt', keywords: ['commit', 'prompt', 'conventional', 'gitmoji'] }
 }
 const ENTRIES = Object.values(ROWS)
@@ -65,6 +65,7 @@ export function CommitSection({ isActive }: { isActive: boolean }): React.JSX.El
         <SearchableRow {...ROWS.command}>
           <FieldRow
             label="Command"
+            description="The prompt goes to the command's stdin by default. {prompt} passes it inline as one argument instead (not for npm .cmd shims on Windows, nor for diffs past the Windows command-line limit); {promptFile} passes the path of a private temp file holding it."
             control={
               <Input
                 className="w-72"

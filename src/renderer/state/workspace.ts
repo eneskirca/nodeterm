@@ -3,6 +3,7 @@ import type {
   CanvasMutation,
   CanvasNodeState,
   ClaudeAccount,
+  HeldLaunchIntent,
   NodeKind,
   PendingLaunch,
   Project,
@@ -18,6 +19,7 @@ import {
   supportsSessionIdFlag
 } from '@shared/agents/config'
 import { assembleLaunchCommand, assembleResumeCommand } from '@shared/agents/launch'
+import { heldLaunchIntentFor } from '@shared/agents/launch-intent'
 import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
 import { agentEnvSnapshot } from '../lib/agentEnv'
@@ -140,6 +142,13 @@ export interface NodeData {
   premaxRect?: { x: number; y: number; width: number; height: number }
   /** One-shot command run once when the terminal first opens (not persisted). */
   initialCommand?: string
+  /**
+   * The semantic twin of a prompt-bearing agent `initialCommand` (shared/agents/launch-intent.ts),
+   * bound to that exact line. A local Windows session-host pane executes THIS instead of typing the
+   * POSIX line (`pty:execute-launch`); every other surface ignores it. Not persisted — absent from
+   * flowToNodeStates, like initialCommand.
+   */
+  launchIntent?: HeldLaunchIntent
   /**
    * Terminal nodes armed with canvas-control's `--after`: the launch is held until every node
    * in `after` reports idle. Unlike `initialCommand` this IS persisted — the wait is durable
@@ -842,6 +851,20 @@ export function createAgentNode(
       `[custom-agent] ${label}: ${missingEnv.map((m) => '${env:' + m + '}').join(', ')} unset in launch command — expanded to empty.`
     )
   }
+  // The same launch as a semantic request, for a Windows pane whose shell is not POSIX. Only where
+  // it describes this exact line faithfully — see heldLaunchIntentFor for every exclusion.
+  const launchIntent = heldLaunchIntentFor({
+    agentId,
+    command: initialCommand,
+    launchCmdOverride,
+    model,
+    remote: !!ssh,
+    resume: resumeSessionId !== undefined,
+    initialPrompt,
+    promptFile,
+    permissionMode,
+    mintedSessionId
+  })
   const size = terminalNodeSize()
   return {
     id: nextId('term'),
@@ -867,6 +890,7 @@ export function createAgentNode(
       ...(model ? { agentModel: model } : {}),
       cwd: ssh ? ssh.remoteCwd : cwd,
       initialCommand,
+      ...(launchIntent ? { launchIntent } : {}),
       ...(ssh ? { ssh: ssh.server, sshRemoteTmux: true } : {})
     }
   }
@@ -2341,7 +2365,7 @@ export function duplicateNode(node: CanvasNode, offset = 28): CanvasNode {
     // the binding would put a phantom run on the issue card (a chip and `#N` with no run-started,
     // then a run-ended when it closes). `openedBy` likewise: nobody's open verb made the copy, and
     // an orchestrator told about it would be told about a station it never opened.
-    data: { ...node.data, initialCommand: undefined, issueRef: undefined, openedBy: undefined }
+    data: { ...node.data, initialCommand: undefined, launchIntent: undefined, issueRef: undefined, openedBy: undefined }
   }
 }
 

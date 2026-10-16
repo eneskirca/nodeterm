@@ -17,6 +17,7 @@ import {
   planBulkRestart,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
+  RESTART_MIN_EXIT_SAMPLES,
   BULK_RESTART_CONCURRENCY,
   registerAgentHibernate,
   registerAgentRestart,
@@ -1531,6 +1532,12 @@ describe('summarizeBulkRestart', () => {
     ).toBe('1 restarted · 1 skipped (working) · 3 skipped (no session)')
   })
 
+  it("folds 'host-unsupported' into the same skip bucket, so it never vanishes from the line", () => {
+    expect(summarizeBulkRestart(['restarted', 'host-unsupported'], { working: 0, noSession: 0 })).toBe(
+      '1 restarted · 1 skipped (no session)'
+    )
+  })
+
   it('reports a run where every node was busy', () => {
     expect(summarizeBulkRestart([], { working: 2, noSession: 0 })).toBe(
       '0 restarted · 2 skipped (working)'
@@ -1809,5 +1816,64 @@ describe('settleRecycledNode — the recycle outlives its canvas', () => {
     settleRecycledNode({ ...t.d, patch: undefined })
     expect(t.stored).toEqual([{ agentId: 'claude' }])
     expect(t.calls).toContain('dropPark')
+  })
+})
+
+// A Windows session-host pane is read through a PowerShell process-table walk, ~1.5 s per sample
+// when cold. The 6 s window alone then holds two or three samples, and a CLI that quit at ~8 s
+// (6.5 s after the exit was written) would be reported as one that refused.
+describe('performExitPhase on a SLOW pane read (Windows session host)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const slowPane = (exitAtMs: number, running: string, shell: string) => {
+    const start = Date.now()
+    let calls = 0
+    return {
+      calls: () => calls,
+      read: () => {
+        calls++
+        return new Promise<string | null>((r) =>
+          setTimeout(() => r(Date.now() - start >= exitAtMs ? shell : running), 1500)
+        )
+      }
+    }
+  }
+
+  it.each(['pwsh.exe', 'powershell.exe', 'cmd.exe'])(
+    'takes its minimum samples and sees %s take the pane back',
+    async (shell) => {
+      const { io } = fakeIo()
+      const pane = slowPane(8000, 'node.exe', shell)
+      const p = performExitPhase({ agentId: 'gemini', sessionId: 'sid-1', io, paneCommand: pane.read })
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(await p).toBe('exited')
+      expect(pane.calls()).toBeGreaterThanOrEqual(1 + RESTART_MIN_EXIT_SAMPLES)
+    }
+  )
+
+  it('a slow pane whose CLI never quits still ends, bounded, with nothing killed', async () => {
+    const { written, io } = fakeIo()
+    const pane = slowPane(Number.POSITIVE_INFINITY, 'node.exe', 'pwsh.exe')
+    const p = performExitPhase({ agentId: 'gemini', sessionId: 'sid-1', io, paneCommand: pane.read })
+    await vi.advanceTimersByTimeAsync(RESTART_EXIT_TIMEOUT_MS + RESTART_MIN_EXIT_SAMPLES * 3500)
+    expect(await p).toBe('exit-timeout')
+    expect(written).toEqual(['\x15', '/quit\r'])
+  })
+
+  it('a fast (tmux) pane is untouched by the floor: it times out at the window', async () => {
+    const { io } = fakeIo()
+    let settled = false
+    const p = performExitPhase({
+      agentId: 'gemini',
+      sessionId: 'sid-1',
+      io,
+      paneCommand: async () => 'gemini',
+      timeoutMs: 1000,
+      pollMs: 100
+    }).finally(() => (settled = true))
+    await vi.advanceTimersByTimeAsync(1150)
+    expect(settled).toBe(true)
+    expect(await p).toBe('exit-timeout')
   })
 })

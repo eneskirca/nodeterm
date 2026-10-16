@@ -209,3 +209,40 @@ describe('DictationOverlay — the ordinary hold still works', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('DictationOverlay — a denied microphone', () => {
+  const asWindows = (): void => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+  }
+  afterEach(() => vi.restoreAllMocks())
+
+  it('on Windows names the privacy toggle and offers to open it', async () => {
+    asWindows()
+    const openMicSettings = vi.fn(async () => true)
+    micConsent.mockResolvedValue(false)
+    ;(window as unknown as { nodeTerminal: { speech: object } }).nodeTerminal.speech = {
+      micConsent,
+      transcribe,
+      openMicSettings
+    }
+    await render(true)
+    await flush()
+
+    expect(h.FakeCapture.instances).toHaveLength(0)
+    expect(document.body.textContent).toContain('Let desktop apps access your microphone')
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Open microphone settings')
+    expect(button).toBeTruthy()
+    await act(async () => button!.click())
+    expect(openMicSettings).toHaveBeenCalledOnce()
+  })
+
+  it('renders no settings button where the bridge has no openMicSettings (Server Edition)', async () => {
+    asWindows()
+    micConsent.mockResolvedValue(false)
+    await render(true)
+    await flush()
+
+    expect(document.body.textContent).toContain('Microphone access')
+    expect(document.body.textContent).not.toContain('Open microphone settings')
+  })
+})

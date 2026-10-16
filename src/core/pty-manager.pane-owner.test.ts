@@ -58,13 +58,19 @@ const NODE = 'node-1'
 const hostMessaging = vi.hoisted(() => ({
   owner: vi.fn(async () => null as unknown),
   pasteReady: vi.fn(async () => false),
-  send: vi.fn(async () => false)
+  send: vi.fn(async () => false),
+  terminate: vi.fn(async (): Promise<boolean | 'unsupported'> => true),
+  writeDetached: vi.fn(async () => true),
+  supported: vi.fn(() => true)
 }))
 vi.mock('./session-host-backend', async (original) => ({
   ...(await original<typeof import('./session-host-backend')>()),
   sessionHostMessageOwner: hostMessaging.owner,
   sessionHostMessagePasteReady: hostMessaging.pasteReady,
-  sessionHostMessageEnvelope: hostMessaging.send
+  sessionHostMessageEnvelope: hostMessaging.send,
+  sessionHostTerminateOwner: hostMessaging.terminate,
+  sessionHostWriteDetached: hostMessaging.writeDetached,
+  sessionHostSupported: hostMessaging.supported
 }))
 const TARGET = sessionName(NODE)
 const TTY = '/dev/pts/7'
@@ -470,5 +476,187 @@ describe('PtyManager.terminateForeground — identity gate', () => {
     expect(await mgr.terminateForeground(NODE)).toBe(true)
     expect(killed).toEqual([-2503294])
     expect(calls.some((c) => c.args.includes(PANE_OWNER_FMT))).toBe(false)
+  })
+})
+
+// ── Windows legs of terminateForeground (session host / direct ConPTY) ─────────────────────────
+// No process group, no `ps`, no tmux: the kill is the proven agent's TREE, never the console root.
+
+/** What `readWindowsConsoleOwner` answers for `cmd` -> `node …\claude\cli.js` (argv = the bin). */
+const WIN_OWNER = {
+  panePid: 700,
+  tty: 'win32-console:700',
+  paneId: 'win32:gen-1:2026-10-01T00:00:00Z',
+  command: 'node',
+  argv: ['claude'],
+  pids: [701],
+  processBirths: ['2026-10-01T00:00:05Z']
+}
+
+async function windowsManager(live: Record<string, unknown> | null) {
+  const { PtyManager } = await import('./pty-manager')
+  const mgr = new PtyManager() as unknown as {
+    tmuxPath: string | null
+    sessions: Map<string, unknown>
+    released: Map<string, unknown>
+    getSettings: () => unknown
+    terminateProcessTree: (pid: number) => Promise<void>
+    terminateForeground(k: string, expected?: string): Promise<boolean | 'unsupported'>
+    backgroundWrite(k: string, data: string): Promise<boolean>
+  }
+  mgr.tmuxPath = null
+  if (live) mgr.sessions.set('sess-1', { persistKey: NODE, sshRemote: undefined, ...live })
+  mgr.getSettings = () => ({ customAgents: [], tmuxEnabled: true, ptyShadowClients: true })
+  return mgr
+}
+
+describe('PtyManager.terminateForeground — Windows session host', () => {
+  beforeEach(() => {
+    calls.length = 0
+    vi.resetModules()
+    initPlatform(fakePlatform())
+    hostMessaging.owner.mockReset().mockResolvedValue(WIN_OWNER)
+    hostMessaging.terminate.mockReset().mockResolvedValue(true)
+    hostMessaging.supported.mockReset().mockReturnValue(true)
+  })
+  afterEach(() => resetPlatformForTests())
+
+  it('hands the PROVEN owner to the host and never reaches tmux or ps', async () => {
+    const mgr = await windowsManager({ sessionHost: true, proc: { pid: 700 } })
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(true)
+    expect(hostMessaging.terminate).toHaveBeenCalledWith(TARGET, WIN_OWNER)
+    expect(calls).toEqual([])
+  })
+
+  it('routes a RELEASED session-host node to the host too', async () => {
+    const mgr = await windowsManager(null)
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: false, sessionHost: true })
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(true)
+    expect(hostMessaging.terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it("surfaces an older host's refusal as 'unsupported'", async () => {
+    hostMessaging.terminate.mockResolvedValue('unsupported')
+    const mgr = await windowsManager({ sessionHost: true, proc: { pid: 700 } })
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe('unsupported')
+  })
+
+  it('refuses without an expected agent — the legacy shell-only guard is not provable here', async () => {
+    const mgr = await windowsManager({ sessionHost: true, proc: { pid: 700 } })
+    expect(await mgr.terminateForeground(NODE)).toBe(false)
+    expect(hostMessaging.terminate).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+
+  it('refuses when a different program owns the pane', async () => {
+    hostMessaging.owner.mockResolvedValue({ ...WIN_OWNER, command: 'vim', argv: ['vim'] })
+    const mgr = await windowsManager({ sessionHost: true, proc: { pid: 700 } })
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+    expect(hostMessaging.terminate).not.toHaveBeenCalled()
+  })
+
+  it('maps a rejecting host call to false, not a throw', async () => {
+    hostMessaging.terminate.mockRejectedValue(new Error('pipe closed'))
+    const mgr = await windowsManager({ sessionHost: true, proc: { pid: 700 } })
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+  })
+})
+
+describe('PtyManager.terminateForeground — direct Windows ConPTY', () => {
+  beforeEach(() => {
+    calls.length = 0
+    vi.resetModules()
+    initPlatform(fakePlatform())
+    hostMessaging.terminate.mockReset()
+  })
+  afterEach(() => resetPlatformForTests())
+
+  function nativePane(...owners: unknown[]) {
+    const owner = vi.fn(async () => owners.length > 1 ? owners.shift() : owners[0])
+    return { owner }
+  }
+
+  it('re-proves the owner and kills ONLY its pid tree', async () => {
+    const pane = nativePane(WIN_OWNER)
+    const mgr = await windowsManager({ nativeWindowsPane: pane, proc: { pid: 700 } })
+    const killed: number[] = []
+    mgr.terminateProcessTree = async (pid) => void killed.push(pid)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(true)
+    expect(killed).toEqual([701])
+    expect(pane.owner).toHaveBeenCalledTimes(2) // the identity gate, then the pre-kill re-proof
+    expect(hostMessaging.terminate).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+
+  it('refuses when the pid was reused between the gate and the kill (birth time changed)', async () => {
+    const pane = nativePane(WIN_OWNER, { ...WIN_OWNER, processBirths: ['2026-10-01T09:00:00Z'] })
+    const mgr = await windowsManager({ nativeWindowsPane: pane, proc: { pid: 700 } })
+    const killed: number[] = []
+    mgr.terminateProcessTree = async (pid) => void killed.push(pid)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+    expect(killed).toEqual([])
+  })
+
+  it('never kills the console root, even when the owner read names it', async () => {
+    const rootOwner = { ...WIN_OWNER, pids: [700] }
+    const mgr = await windowsManager({ nativeWindowsPane: nativePane(rootOwner), proc: { pid: 700 } })
+    const killed: number[] = []
+    mgr.terminateProcessTree = async (pid) => void killed.push(pid)
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+    expect(killed).toEqual([])
+  })
+
+  it('reports false when the tree kill rejects', async () => {
+    const mgr = await windowsManager({ nativeWindowsPane: nativePane(WIN_OWNER), proc: { pid: 700 } })
+    mgr.terminateProcessTree = async () => { throw new Error('access denied') }
+    expect(await mgr.terminateForeground(NODE, 'claude')).toBe(false)
+  })
+})
+
+describe('PtyManager.backgroundWrite — released session-host node', () => {
+  beforeEach(() => {
+    calls.length = 0
+    vi.resetModules()
+    initPlatform(fakePlatform())
+    hostMessaging.writeDetached.mockReset().mockResolvedValue(true)
+    hostMessaging.supported.mockReset().mockReturnValue(true)
+  })
+  afterEach(() => resetPlatformForTests())
+
+  it('writes the exact bytes to nt-<id> through the host, with no tmux and no shadow', async () => {
+    const mgr = await windowsManager(null)
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: false, sessionHost: true })
+    expect(await mgr.backgroundWrite(NODE, '\x1b[A')).toBe(true)
+    expect(hostMessaging.writeDetached).toHaveBeenCalledWith(TARGET, '\x1b[A')
+    expect(calls).toEqual([])
+  })
+
+  it('is not gated on ptyShadowClients (that switch governs tmux -C children)', async () => {
+    const mgr = await windowsManager(null)
+    mgr.getSettings = () => ({ customAgents: [], tmuxEnabled: true, ptyShadowClients: false })
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: false, sessionHost: true })
+    expect(await mgr.backgroundWrite(NODE, 'x')).toBe(true)
+  })
+
+  it('refuses with no released record, a remote one, or persistence off — and reports a host refusal', async () => {
+    const mgr = await windowsManager(null)
+    expect(await mgr.backgroundWrite(NODE, 'x')).toBe(false)
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: true, sessionHost: true })
+    expect(await mgr.backgroundWrite(NODE, 'x')).toBe(false)
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: false, sessionHost: true })
+    mgr.getSettings = () => ({ customAgents: [], tmuxEnabled: false, ptyShadowClients: true })
+    expect(await mgr.backgroundWrite(NODE, 'x')).toBe(false)
+    expect(hostMessaging.writeDetached).not.toHaveBeenCalled()
+    mgr.getSettings = () => ({ customAgents: [], tmuxEnabled: true, ptyShadowClients: true })
+    hostMessaging.writeDetached.mockResolvedValue(false)
+    expect(await mgr.backgroundWrite(NODE, 'x')).toBe(false)
+    expect(hostMessaging.writeDetached).toHaveBeenCalledTimes(1) // never retried
+  })
+
+  it('leaves a released TMUX record on the tmux path (host never asked)', async () => {
+    const mgr = await windowsManager(null)
+    mgr.released.set(NODE, { sessionId: 'sess-1', remote: false })
+    await mgr.backgroundWrite(NODE, 'x') // tmuxPath is null ⇒ the tmux leg refuses as before
+    expect(hostMessaging.writeDetached).not.toHaveBeenCalled()
   })
 })

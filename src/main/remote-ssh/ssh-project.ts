@@ -1,4 +1,4 @@
-import { nativeMux, setNativePassphrasePrompt, useNativeSsh } from '../../core/remote-ssh/native/native-runtime'
+import { findSshBinary, nativeMux, setNativePassphrasePrompt, useNativeSsh } from '../../core/remote-ssh/native/native-runtime'
 import { runScpArgv, runSshArgv, startNativeMaster } from '../../core/remote-ssh/native/native-invoke'
 import { promises as fs } from 'fs'
 import path from 'path'
@@ -28,7 +28,7 @@ import {
   remoteClaudeConfigDir,
   remoteSessionCopyCommand
 } from '../../core/remote-claude-session-copy'
-import { candidateName, safeDownloadBasename } from '../../core/download-name'
+import { candidateName, localChildName, safeDownloadBasename } from '../../core/download-name'
 import { removeAtomic, renameAtomic } from '../../core/fs-atomic'
 import { findExecutableSync, shellPathNow } from '../../core/exec-path'
 import { isSafeRemoteHome } from '../../core/remote-safety'
@@ -233,10 +233,11 @@ async function removeScpPart(partPath: string): Promise<void> {
     .catch(() => {})
 }
 
-/** Windows aliases terminal dots/spaces, so do not let two remote names bypass one reservation. */
+/** Windows aliases terminal dots/spaces (and reserves device names), so do not let two remote
+ *  names bypass one reservation. The ONE rule, shared with a tree's children (download-name.ts). */
 function localDownloadName(name: string): string {
   if (process.platform !== 'win32') return name
-  return name.replace(/[. ]+$/, '') || 'download'
+  return localChildName(name, 'win32') ?? 'download'
 }
 
 /** Cap on how much master stderr we retain (a misconfigured host can spew), enough for the error. */
@@ -435,16 +436,8 @@ interface Conn {
  * the common locations. A MISS is only memoized once the async PATH probe has settled.
  * (Do NOT use the brief's always-returns-first stub.)
  */
-let cachedSsh: string | null | undefined
 function sshBin(): string {
-  if (cachedSsh !== undefined) return cachedSsh ?? 'ssh'
-  const found = findExecutableSync('ssh', [
-    '/usr/bin/ssh',
-    '/usr/local/bin/ssh',
-    '/opt/homebrew/bin/ssh'
-  ])
-  if (found || shellPathNow() !== undefined) cachedSsh = found
-  return found ?? 'ssh'
+  return findSshBinary() ?? 'ssh'
 }
 
 /** Resolve an absolute `scp` path the same way `sshBin()` resolves `ssh` (GUI apps lack shell PATH). */
@@ -3025,7 +3018,10 @@ export function initSshProject(
       }),
     runScp: (args) =>
       native
-        ? runScpArgv(nativeMux(), args).then((r) => ({ code: r.code }))
+        ? runScpArgv(nativeMux(), args).then((r) => {
+            if (r.renamed) console.warn(`[ssh] download: ${r.renamed} file name(s) were changed to be valid on this computer`)
+            return { code: r.code }
+          })
         : new Promise((resolve) => {
         // Same reason as `run`: scp re-authenticates when the master socket is gone.
         execFile(scp, args, { maxBuffer: 1024 * 1024, env: { ...process.env, ...appSshAgent.env() } }, (err) =>

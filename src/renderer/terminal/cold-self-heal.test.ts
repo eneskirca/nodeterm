@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { isShellCommand } from '@shared/agents/pane'
 import { coldSelfHealVerdict, COLD_SELF_HEAL_MAX_AGE_S } from './cold-self-heal'
 
 /** A shell allowlist of the shape `isShellCommand` uses; the real one is injected in production. */
@@ -45,6 +46,13 @@ describe('coldSelfHealVerdict', () => {
   it('refuses when an agent CLI already owns the pane, however young the session is', () => {
     // Belt to the age check's braces: whatever the clock says, we must not type into a live agent.
     expect(coldSelfHealVerdict({ ...base, ageSeconds: 1, paneCommand: 'claude' })).toBe(
+      'pane-not-a-shell'
+    )
+  })
+
+  it('with the production predicate, a Windows shell image name reads as a shell', () => {
+    expect(coldSelfHealVerdict({ ...base, isShell: isShellCommand, paneCommand: 'pwsh.exe' })).toBe('cold')
+    expect(coldSelfHealVerdict({ ...base, isShell: isShellCommand, paneCommand: 'claude.exe' })).toBe(
       'pane-not-a-shell'
     )
   })

@@ -965,17 +965,40 @@ export async function readSessionName(
 }
 
 // Durable resolver by working directory: Claude stores a project's transcripts under
-// ~/.claude/projects/<cwd with every '/' and '.' replaced by '-'>/. We pick the most
-// recently modified .jsonl there — the node's active session. Unlike the sessionId path
+// ~/.claude/projects/<cwd with every non-alphanumeric character replaced by '-'>/. We pick the
+// most recently modified .jsonl there — the node's active session. Unlike the sessionId path
 // this needs no live hook event, so the find-bar works even after a reload/restart or when
-// reattaching to a session this app instance didn't spawn. (Encoding leaves no '/', so it
+// reattaching to a session this app instance didn't spawn. (Encoding leaves no separator, so it
 // can't traverse.) Limitation: multiple Claude nodes in the SAME cwd resolve to the same
 // newest transcript — the sessionId path above is preferred when known for that reason.
 
+/** Claude Code's own cap on the encoded name; longer ones are truncated and get a hash suffix. */
+const TRANSCRIPT_DIR_MAX = 200
+
+/** The CLI's suffix hash: a 32-bit `h*31 + c` over UTF-16 code units, |abs|, base 36. */
+function transcriptDirHash(s: string): string {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  return Math.abs(h).toString(36)
+}
+
 /** The per-cwd directory name Claude uses under a transcript root. Exported because the REMOTE
  *  locator (remote-transcript-locate.ts) must encode a host path the identical way — a second
- *  copy that drifted would make the exact-path probe silently never hit. */
+ *  copy that drifted would make the exact-path probe silently never hit.
+ *
+ *  Mirrors the CLI's sanitizer (read out of Claude Code 2.1.296): EVERY character outside
+ *  `[A-Za-z0-9]` becomes '-', so a Windows `C:\Users\me\proj` is `C--Users-me-proj` and a POSIX
+ *  `/a/my proj_x` is `-a-my-proj-x`. Names past 200 characters are cut and suffixed with the
+ *  CLI's hash. The earlier `[/.]`-only encoding (kept as `legacyEncodeTranscriptDir`) agreed with
+ *  this only for paths made of letters, digits, '/' and '.', and never on Windows. */
 export function encodeTranscriptDir(cwd: string): string {
+  const enc = cwd.replace(/[^A-Za-z0-9]/g, '-')
+  if (enc.length <= TRANSCRIPT_DIR_MAX) return enc
+  return `${enc.slice(0, TRANSCRIPT_DIR_MAX)}-${transcriptDirHash(cwd)}`
+}
+
+/** The pre-fix encoding, tried only as a second directory when the exact one misses. */
+export function legacyEncodeTranscriptDir(cwd: string): string {
   return cwd.replace(/[/.]/g, '-')
 }
 
@@ -984,7 +1007,15 @@ export async function transcriptPathForCwd(
   accountId?: string
 ): Promise<string | undefined> {
   if (!cwd) return undefined
-  const dir = path.join(transcriptRoot(accountId), encodeTranscriptDir(cwd))
+  const root = transcriptRoot(accountId)
+  const exact = encodeTranscriptDir(cwd)
+  const legacy = legacyEncodeTranscriptDir(cwd)
+  const found = await newestJsonlIn(path.join(root, exact))
+  if (found || legacy === exact) return found
+  return newestJsonlIn(path.join(root, legacy))
+}
+
+async function newestJsonlIn(dir: string): Promise<string | undefined> {
   let entries: string[]
   try {
     entries = await fs.promises.readdir(dir)

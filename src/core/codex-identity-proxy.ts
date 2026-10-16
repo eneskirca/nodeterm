@@ -658,6 +658,16 @@ export function codexLauncherDir(): string {
   return path.join(platform().userDataDir, 'codex-bin')
 }
 
+/**
+ * The directory a LOCAL shared-identity session gets prepended to its PATH, or null where there is
+ * none to reach. Windows answers null: shared identity is gated off there (`refreshCodexIdentityCaps`
+ * returns `unsupported-platform`), the launcher is an extensionless sh script cmd/PowerShell could
+ * not resolve anyway, and a session's PATH should be exactly the user's.
+ */
+export function codexLauncherPathDir(platformName: NodeJS.Platform | string = process.platform): string | null {
+  return platformName === 'win32' ? null : codexLauncherDir()
+}
+
 export const CODEX_LAUNCHER_NAME = 'nodeterm-codex'
 
 export function codexLauncherPath(): string {

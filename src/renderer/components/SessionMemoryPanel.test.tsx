@@ -77,6 +77,7 @@ function mount(over: Partial<ReturnType<typeof useSessionMemory.getState>> = {})
     rows: ROWS,
     loadedScope: '',
     loading: false,
+    host: undefined,
     refreshFull,
     startHostPoll,
     stopHostPoll,
@@ -156,6 +157,38 @@ describe('SessionMemoryPanel', () => {
     mount()
     // 900 + 500 + 120 + 40 = 1560 MB. Summing `selfMb` instead would print 1.2 GB.
     expect(host.querySelector('.sessmem-panel__total')?.textContent).toBe('1.5 GB')
+  })
+
+  describe("the Windows session host's own cost", () => {
+    const HOST = { pid: 900, selfMb: 300, consoleMb: 40, consoleCount: 4, totalMb: 340 }
+    const line = (): Element | null => host.querySelector('.sessmem-host')
+
+    it('renders a non-killable line, adds to the total, and is not a session', () => {
+      mount({ host: HOST })
+      expect(line()?.textContent).toContain('nodeterm session host (4 consoles)')
+      expect(line()?.querySelector('button')).toBeNull()
+      // 1560 + 340 = 1900 MB.
+      expect(host.querySelector('.sessmem-panel__total')?.textContent).toBe('1.9 GB')
+      expect(host.querySelector('.sessmem-panel__count')?.textContent).toBe('4 sessions')
+      expect(rowsOf()).toHaveLength(4)
+    })
+
+    it('shows beside "no sessions" too — an idle host still costs memory', () => {
+      mount({ rows: [], host: { ...HOST, consoleCount: 1 } })
+      expect(text()).toContain('No sessions are running here.')
+      expect(line()?.textContent).toContain('(1 console)')
+    })
+
+    it('never renders unmeasured: absent, failed, or not yet measured', () => {
+      mount()
+      expect(line()).toBeNull()
+      act(() => root.unmount())
+      mount({ ok: false, host: HOST })
+      expect(line()).toBeNull()
+      act(() => root.unmount())
+      mount({ loadedScope: null, host: HOST })
+      expect(line()).toBeNull()
+    })
   })
 
   it("resolves a CLOSED project's session to its real title", () => {

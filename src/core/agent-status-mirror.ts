@@ -248,6 +248,13 @@ export interface MirrorSettings {
    * custom node, exactly as before this field existed.
    */
   customAgents?: MirrorCustomAgent[]
+  /**
+   * `process.platform` of the machine whose sessions this file describes (`darwin` / `linux` /
+   * `win32`). A phone must not type POSIX shell syntax into a `win32` host's fresh pane — pwsh and
+   * cmd reject `2>/dev/null`, `env -u`, `VAR=x cmd` — so it asks the host to launch instead
+   * (`pty.attach { launch }`). Absent on old files and on SSH slices (whose hosts are POSIX).
+   */
+  hostPlatform?: string
 }
 
 /** One custom agent as the mirror advertises it (see MirrorSettings.customAgents). */
@@ -1373,6 +1380,18 @@ export function pendingTicketsFor(nodeId: string): string[] {
   }
   for (const id of state.get(nodeId)?.concurrentApprovalIds ?? []) out.add(id)
   return [...out]
+}
+
+/**
+ * The ask that is CURRENTLY open on a node — its newest unresolved approval/question card, the same
+ * pick the phone renders its answer card from (`LiveActivityManager.needsYouContent`). The relay's
+ * `agent.key` compares it with the kind of answer it is about to type: a question's digit typed
+ * into a permission prompt ANSWERS it (`2` = "don't ask again"). Undefined = no open ask. Pure read.
+ */
+export function openAskFor(nodeId: string): { kind: 'approval' | 'question'; pendingId?: string } | undefined {
+  const e = newestUnresolved(inboxEvents, nodeId)
+  if (!e) return undefined
+  return { kind: e.kind as 'approval' | 'question', ...(e.pendingId ? { pendingId: e.pendingId } : {}) }
 }
 
 export function isEventUnresolved(nodeId: string, eventId: string): boolean {

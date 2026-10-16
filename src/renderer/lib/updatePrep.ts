@@ -182,3 +182,18 @@ export function updatePrepStopSummary(plan: UpdatePrepPlan, exited: number): str
   lines.push('Canvas nodes are kept. Agents resume with --resume on the next launch.')
   return lines
 }
+
+/**
+ * The prepare dialog's first screen for a running host (U3). A host running from its STAGED copy
+ * (0.4.1+) maps none of the installed files, so a plain quit lets the installer run and every
+ * session keeps running — that is offered first, and stopping sessions becomes the explicit
+ * secondary path (`stopAnyway`). A legacy/install-dir host, or one whose location is unknown,
+ * keeps the stop flow unchanged: `staged` is only ever true on a positive classification.
+ */
+export type PrepareEntry = 'quit-keeps-sessions' | 'stop-sessions'
+
+export function prepareEntry(inspection: { kind: string; staged?: boolean }, stopAnyway: boolean): PrepareEntry {
+  return inspection.kind === 'host' && inspection.staged === true && !stopAnyway
+    ? 'quit-keeps-sessions'
+    : 'stop-sessions'
+}

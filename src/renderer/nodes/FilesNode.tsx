@@ -55,6 +55,7 @@ import { promptDialog } from '../components/promptDialog'
 import { ContextMenu, type MenuItem } from '../components/ContextMenu'
 import { isBrowserRuntime } from '../bridge/runtime'
 import { canUseLocalShell, downloadRoute } from '../lib/download'
+import { osRevealLabel } from '../lib/osReveal'
 import { ROW_DOWNLOAD_TITLE, useDownloads, type RowDownloadState } from '../lib/useDownloads'
 import { DownloadStrip } from '../components/DownloadStrip'
 
@@ -368,7 +369,7 @@ export function FilesNode({ id, data, selected }: NodeProps<CanvasNode>) {
         onClick: () => api.clipboard.writeText(path)
       })
       if (localShell) {
-        items.push({ label: 'Reveal in file manager', onClick: () => api.shell.reveal(path) })
+        items.push({ label: osRevealLabel(), onClick: () => api.shell.reveal(path) })
       }
       setMenu({ x: e.clientX, y: e.clientY, items })
     },

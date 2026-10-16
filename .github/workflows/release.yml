@@ -197,11 +197,14 @@ jobs:
             dist/latest-linux.yml
 
   # Windows build: UNSIGNED BETA (#454), on a plain GitHub runner. Publishes the NSIS
-  # installer + zip as assets on the same tag's GitHub Release — and NOTHING to the update
-  # feed: `dist:win` stamps the package `nodeTermUpdates=disabled` (see src/main/updater.ts),
-  # so the shipped app's updater is cleanly off — no latest.yml is uploaded anywhere, no 404
-  # polling in the field. Auto-update arrives with code signing; an unsigned auto-update is a
-  # trust downgrade. Users update by downloading the next installer.
+  # installer + zip + latest.yml as assets on the same tag's GitHub Release. latest.yml is a
+  # PASSIVE notice feed only: `dist:win:release` stamps the package `nodeTermUpdates=manual`
+  # (see src/shared/update-platform.ts), so the shipped app checks the feed and shows a
+  # "new version available — Download" card linking the releases page, but never downloads or
+  # installs (quitAndInstall is refused in main). Self-install arrives with code signing; an
+  # unsigned auto-update is a trust downgrade. The nodeterm.dev/updates mirror must serve
+  # latest.yml the way it serves latest-mac.yml / latest-linux.yml (hosted outside this repo);
+  # the `verify-feed` job below reports whether it does.
   #
   # BEST-EFFORT by design: the `publish` promote gate below deliberately does NOT wait on
   # this job, so a Windows failure never strands the mac+linux release as a prerelease. A
@@ -223,10 +226,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # make-icon + electron-vite build + electron-builder --win --x64 --publish never.
-      # Unsigned: no signing secrets exist for Windows yet; SmartScreen will warn.
+      # make-icon + electron-vite build + electron-builder --win --x64 --publish never, stamped
+      # nodeTermUpdates=manual (plain `dist:win` stays `disabled` for local packages that must
+      # never poll). Unsigned: no signing secrets exist for Windows yet; SmartScreen will warn.
       - name: Build Windows packages (NSIS installer + zip, unsigned)
-        run: npm run dist:win
+        run: npm run dist:win:release
 
       # The artifact names are the contract (same check as win-package-smoke.yml): a silent
       # target/artifactName regression must fail here, before the upload step lies about it.
@@ -237,10 +241,12 @@ jobs:
           version=$(node -p "require('./package.json').version")
           test -f "dist/nodeterm-Setup-${version}.exe" || { echo "::error::NSIS installer missing"; exit 1; }
           ls dist/nodeterm-*-win.zip >/dev/null 2>&1 || { echo "::error::win zip missing"; exit 1; }
+          test -f dist/latest.yml || { echo "::error::latest.yml (update notice feed) missing"; exit 1; }
 
-      # Deliberately narrow globs: only the installer + zip. No *.yml (that would be the
-      # update-feed leg this job must not have) and no *.blockmap (differential updates are
-      # part of the same auto-update story that waits on signing).
+      # Deliberately narrow globs: the installer + zip + latest.yml (the passive notice feed).
+      # No *.blockmap: differential downloads belong to the self-install story that waits on
+      # signing. The feed may briefly name this version before `publish` promotes it — harmless,
+      # the card only links the releases page and never downloads a file.
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -253,7 +259,7 @@ jobs:
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --verify-tag --prerelease --notes "" || true
           n=1
-          until gh release upload "$tag" dist/nodeterm-Setup-*.exe dist/nodeterm-*-win.zip --clobber --repo "$GITHUB_REPOSITORY"; do
+          until gh release upload "$tag" dist/nodeterm-Setup-*.exe dist/nodeterm-*-win.zip dist/latest.yml --clobber --repo "$GITHUB_REPOSITORY"; do
             if [ "$n" -ge 5 ]; then
               echo "::error::asset upload failed after $n attempts"
               exit 1
@@ -268,8 +274,8 @@ jobs:
   # feeds) keeps serving the previous complete release — a mac-runner sleep or an upload
   # failure can no longer put a partial release in front of users. If one platform job
   # fails, fix/rerun it; this job then runs on the rerun and publishes.
-  # release-win is deliberately NOT in `needs`: the Windows asset is an unsigned beta with no
-  # update feed behind it, and its failure must never hold the mac+linux release hostage.
+  # release-win is deliberately NOT in `needs`: the Windows asset is an unsigned beta whose feed
+  # is a passive notice only, and its failure must never hold the mac+linux release hostage.
   publish:
     runs-on: ubuntu-latest
     needs: [release-mac, release-linux]
@@ -332,3 +338,53 @@ jobs:
       # Homebrew: the cask is NOT updated from here. It lives in the official homebrew/cask,
       # whose autobump follows /releases/latest — which excludes prereleases, so it only ever
       # picks up a release this publish job has promoted. (nodeterm/homebrew-tap is retired.)
+
+  # The update FEED is what installed apps actually read, and it is not the GitHub Release: the
+  # apps poll https://nodeterm.dev/updates (package.json build.publish), a mirror hosted OUTSIDE
+  # this repo. Nothing used to check it, which is how latest.yml 404'd there while every job here
+  # was green — and a check-only Windows build reports a failed automatic check only in its log, so
+  # the passive update notice was dead with no signal anywhere (U2). This job turns that hidden
+  # dependency into a visible result, AFTER the release is already promoted: it never holds a
+  # release back, a red run is the alarm.
+  #
+  # STRICT files fail the job when the mirror does not serve this tag's version within the retry
+  # window (mirror sync / CDN delay); ADVISORY files only warn. latest.yml is advisory until the
+  # mirror is confirmed to serve it — move it to STRICT then. It is checked only when release-win
+  # itself succeeded (that job is best-effort and may finish later or need a rerun).
+  verify-feed:
+    runs-on: ubuntu-latest
+    needs: [publish, release-win]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    steps:
+      - name: Verify the update feed serves this release
+        env:
+          FEED: https://nodeterm.dev/updates
+          STRICT: latest-mac.yml latest-linux.yml
+          ADVISORY: latest.yml
+          WIN_RESULT: ${{ needs.release-win.result }}
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          fail=0
+          check() {
+            f="$1"; level="$2"; n=1; got=""
+            while [ "$n" -le 10 ]; do
+              got=$(curl -fsSL --max-time 20 "$FEED/$f" 2>/dev/null \
+                | sed -n 's/^version:[[:space:]]*//p' | head -n 1 | tr -d "\"' \r")
+              if [ "$got" = "$want" ]; then
+                echo "$FEED/$f serves $got"
+                return 0
+              fi
+              echo "attempt $n: $FEED/$f serves '${got:-<missing>}', want $want; retrying in 30s…"
+              n=$((n + 1))
+              sleep 30
+            done
+            echo "::$level::$FEED/$f serves version '${got:-<missing>}', expected $want"
+            if [ "$level" = error ]; then fail=1; fi
+          }
+          for f in $STRICT; do check "$f" error; done
+          if [ "$WIN_RESULT" = success ]; then
+            for f in $ADVISORY; do check "$f" warning; done
+          else
+            echo "::warning::release-win result is '$WIN_RESULT'; latest.yml was not checked"
+          fi
+          exit "$fail"

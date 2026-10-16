@@ -1,7 +1,7 @@
 // The repair issue #558 actually owes the user: their settings.json ON DISK must come back to one
 // managed entry per event at the next launch, not just a fresh install. `installManagedAgentHooks`
 // runs `installHooksInto` for every agent at boot, so proving it here proves the repair.
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -98,5 +98,57 @@ describe('owned Grok config repair', () => {
     writeFileSync(configPath(), raw)
     installHooksInto({ agentId: 'grok', scriptFileName: 'grok.sh', configPath: configPath(), events: ['Stop'], atomicConfig: true })
     expect(readConfig().hooks.Stop[0].hooks[0].command).toContain('grok.sh')
+  })
+})
+
+describe('installHooksInto — Windows wrapper for PowerShell-run hooks (gemini, grok)', () => {
+  const CMD = 'C:\\WINDOWS\\System32\\cmd.exe'
+  const geminiInstall = (platform: string) =>
+    installHooksInto({
+      agentId: 'gemini',
+      scriptFileName: 'gemini.sh',
+      configPath: configPath(),
+      events: ['AfterTool', 'Notification'],
+      windowsWrapper: true,
+      platform,
+      cmdExe: CMD
+    })
+  const wrapperPath = () => path.join(dir, '.nodeterm', 'agent-hooks', 'gemini-hook.cmd')
+
+  it('win32: writes the CRLF wrapper beside the script and points every event at it', () => {
+    geminiInstall('win32')
+    const wrapper = readFileSync(wrapperPath(), 'utf8')
+    expect(wrapper).toContain('set "NT_SCRIPT=%~dp0gemini.sh"')
+    expect(wrapper).toContain('\r\n')
+    const command = readConfig().hooks.AfterTool[0].hooks[0].command
+    expect(command).toBe(`${CMD} /d /c call "${wrapperPath()} "`)
+    expect(readConfig().hooks.Notification[0].hooks[0].command).toBe(command)
+  })
+
+  it('win32: replaces the POSIX entry an older build left (no duplicate per event)', () => {
+    geminiInstall('linux')
+    geminiInstall('win32')
+    expect(readConfig().hooks.AfterTool).toHaveLength(1)
+    expect(readConfig().hooks.AfterTool[0].hooks[0].command).toContain('gemini-hook.cmd')
+  })
+
+  it('win32: a wrapper that cannot be written leaves the config untouched (wrapper BEFORE config)', () => {
+    // A directory where the wrapper file must go makes the atomic publish fail.
+    mkdirSync(wrapperPath(), { recursive: true })
+    writeFileSync(configPath(), '{"model":"keep"}')
+    geminiInstall('win32')
+    expect(readFileSync(configPath(), 'utf8')).toBe('{"model":"keep"}')
+  })
+
+  it('other platforms: no wrapper, and the command is the POSIX guard', () => {
+    geminiInstall('darwin')
+    expect(existsSync(wrapperPath())).toBe(false)
+    expect(readConfig().hooks.AfterTool[0].hooks[0].command).toMatch(/^if \[ -r /)
+  })
+
+  it('claude never gets a wrapper, even on win32 (its hooks run in Git Bash)', () => {
+    installHooksInto({ agentId: 'claude', scriptFileName: 'claude.sh', configPath: configPath(), events: ['Stop'], platform: 'win32' })
+    expect(existsSync(path.join(dir, '.nodeterm', 'agent-hooks', 'claude-hook.cmd'))).toBe(false)
+    expect(readConfig().hooks.Stop[0].hooks[0].command).toMatch(/^if \[ -r /)
   })
 })

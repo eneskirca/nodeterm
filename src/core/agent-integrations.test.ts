@@ -10,10 +10,12 @@ import path from 'path'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types'
+import { shimDialectFor } from '../shared/agents/shim-invocation'
 import {
   CANVAS_SKILL,
   CONTEXT_SKILL,
   createIntegrationLifecycle,
+  skillsFor,
   detectExistingIntegrations,
   resolveIntegrationConsentAtBoot
 } from './agent-integrations'
@@ -22,6 +24,7 @@ import { buildContextLinkSkillBody, frameInstructionsBlock } from './context-lin
 import { MAX_RETAINED } from './integration-files'
 import { registerClaudeAccountsSource, resetClaudeAccountsSourceForTests } from './claude-config-dir'
 import { accountConfigDir } from './claude-accounts-core'
+import { codexAccountHome } from './codex-accounts-core'
 import type { ClaudeAccount } from '../shared/types'
 
 const ENV_KEYS = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GROK_HOME', 'COPILOT_HOME', 'XDG_CONFIG_HOME', 'GEMINI_CLI_HOME']
@@ -132,23 +135,25 @@ describe('discovery: every capable agent still finds canvas control and context 
     const all = { claude: 'enabled', codex: 'enabled', gemini: 'enabled', grok: 'enabled', copilot: 'enabled', opencode: 'enabled' } as const
     const { lc, hookCalls } = lifecycle(() => withAgents(all))
     lc.reconcile()
-    const canvas = buildCanvasSkillBody(SHIMS().canvas)
-    const context = buildContextLinkSkillBody(SHIMS().context)
-    const dirs: Record<string, [boolean, boolean]> = {
-      [path.join(home, '.claude', 'skills')]: [true, true],
-      [path.join(home, 'codex-home', 'skills')]: [true, true],
-      [path.join(home, '.gemini', 'skills')]: [true, true],
-      [path.join(home, 'grok-home', 'skills')]: [true, true],
-      [path.join(home, 'copilot-home', 'skills')]: [true, false], // copilot: canvas control only
-      [path.join(home, 'xdg', 'opencode', 'skills')]: [true, true]
+    // The body depends on THIS host (a Windows runner tells non-claude agents to run the `.cmd`
+    // launcher), so the expectation is derived the same way the installer derives it.
+    const canvas = (agent: string) => buildCanvasSkillBody(SHIMS().canvas, shimDialectFor(agent, process.platform))
+    const context = (agent: string) => buildContextLinkSkillBody(SHIMS().context, shimDialectFor(agent, process.platform))
+    const dirs: Record<string, [string, boolean, boolean]> = {
+      [path.join(home, '.claude', 'skills')]: ['claude', true, true],
+      [path.join(home, 'codex-home', 'skills')]: ['codex', true, true],
+      [path.join(home, '.gemini', 'skills')]: ['gemini', true, true],
+      [path.join(home, 'grok-home', 'skills')]: ['grok', true, true],
+      [path.join(home, 'copilot-home', 'skills')]: ['copilot', true, false], // copilot: canvas control only
+      [path.join(home, 'xdg', 'opencode', 'skills')]: ['opencode', true, true]
     }
-    for (const [dir, [hasCanvas, hasContext]] of Object.entries(dirs)) {
+    for (const [dir, [agent, hasCanvas, hasContext]] of Object.entries(dirs)) {
       const c = path.join(dir, CANVAS_SKILL, 'SKILL.md')
       const x = path.join(dir, CONTEXT_SKILL, 'SKILL.md')
       expect(existsSync(c), c).toBe(hasCanvas)
       expect(existsSync(x), x).toBe(hasContext)
-      if (hasCanvas) expect(read(c)).toBe(canvas)
-      if (hasContext) expect(read(x)).toBe(context)
+      if (hasCanvas) expect(read(c)).toBe(canvas(agent))
+      if (hasContext) expect(read(x)).toBe(context(agent))
     }
     for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', 'codex-home/AGENTS.md', 'copilot-home/copilot-instructions.md', 'xdg/opencode/AGENTS.md']) {
       expect(existsSync(path.join(home, f)), f).toBe(false)
@@ -296,5 +301,79 @@ describe('the existing-vs-new default', () => {
   it('an answered record is never rewritten at boot', () => {
     const answered = withAgents({ claude: 'declined' })
     expect(resolveIntegrationConsentAtBoot(answered, true)).toBeNull()
+  })
+})
+
+describe('skillsFor — the invocation follows the host and the agent\'s tool shell', () => {
+  const shims = { canvas: 'C:\\nt\\canvas-control\\nodeterm.sh', context: 'C:\\nt\\context-links\\context.sh' }
+
+  it('win32: a PowerShell-run agent is told to run the .cmd launcher', () => {
+    for (const agent of ['codex', 'gemini', 'grok', 'opencode'] as const) {
+      const skills = skillsFor(agent, shims, 'win32')
+      expect(skills.get(CANVAS_SKILL), agent).toContain('& "C:\\nt\\canvas-control\\nodeterm.cmd" <verb> [args]')
+      expect(skills.get(CONTEXT_SKILL), agent).toContain('& "C:\\nt\\context-links\\context.cmd" <command>')
+      expect(skills.get(CANVAS_SKILL), agent).not.toContain('```sh\nsh "')
+    }
+    expect(skillsFor('copilot', shims, 'win32').get(CANVAS_SKILL)).toContain('nodeterm.cmd')
+  })
+
+  it('win32: claude keeps `sh` (its Bash tool is Git Bash) — the exact POSIX body', () => {
+    const skills = skillsFor('claude', shims, 'win32')
+    expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody(shims.canvas))
+    expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody(shims.context))
+  })
+
+  it('every non-win32 host gets the byte-identical POSIX bodies for every agent', () => {
+    for (const host of ['darwin', 'linux']) {
+      for (const agent of ['claude', 'codex', 'gemini', 'grok', 'opencode'] as const) {
+        const skills = skillsFor(agent, { canvas: '/u/nodeterm.sh', context: '/u/context.sh' }, host)
+        expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody('/u/nodeterm.sh'))
+        expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody('/u/context.sh'))
+      }
+    }
+  })
+})
+
+// The codex hook-trust repairs (spawn-time + managed account homes) write the user's real
+// ~/.codex/hooks.json and config.toml, so they obey the same consent as the boot install: a
+// declined or undecided codex — or the Server Edition veto — gets nothing written, ever.
+describe('codex hook repair is consent-gated', () => {
+  const codexAccount = { id: 'acct-1', label: 'work', createdAt: 1 } as Settings['codexAccounts'][number]
+
+  it('a launch repair writes NOTHING for an undecided or declined codex, or under the veto', () => {
+    const cases: Array<[Settings, boolean]> = [
+      [DEFAULT_SETTINGS, false],
+      [withAgents({ codex: 'declined' }), false],
+      [withAgents({ claude: 'enabled' }), false],
+      [withAgents({ codex: 'enabled' }), true]
+    ]
+    for (const [settings, veto] of cases) {
+      const { lc } = lifecycle(() => settings, { veto, realHooks: true })
+      lc.ensureCodexHooksForLaunch(path.join(home, '.codex'))
+      expect(filesUnder(home), JSON.stringify(settings.agentIntegrations ?? 'undecided')).toEqual([])
+    }
+  })
+
+  it('a launch repair installs hooks + trust for an ENABLED codex', () => {
+    const { lc } = lifecycle(() => withAgents({ codex: 'enabled' }), { realHooks: true })
+    lc.ensureCodexHooksForLaunch(path.join(home, '.codex'))
+    expect(read(path.join(home, '.codex', 'hooks.json'))).toContain('agent-hooks')
+    expect(read(path.join(home, '.codex', 'config.toml'))).toContain('trusted_hash')
+  })
+
+  it('managed codex account homes are repaired by reconcile only when codex is enabled', () => {
+    const acctHome = codexAccountHome(userData, codexAccount.id)
+    mkdirSync(acctHome, { recursive: true })
+    const choices: Array<Record<string, 'enabled' | 'declined'>> = [{}, { codex: 'declined' }, { claude: 'enabled' }]
+    for (const agents of choices) {
+      const { lc } = lifecycle(() => withAgents(agents, { codexAccounts: [codexAccount] }), { realHooks: true })
+      lc.reconcile()
+      expect(readdirSync(acctHome), JSON.stringify(agents)).toEqual([])
+    }
+    const { lc } = lifecycle(() => withAgents({ codex: 'enabled' }, { codexAccounts: [codexAccount] }), {
+      realHooks: true
+    })
+    lc.reconcile()
+    expect(read(path.join(acctHome, 'config.toml'))).toContain('trusted_hash')
   })
 })

@@ -52,9 +52,14 @@ vi.mock('node-pty', () => ({
 }))
 
 const hostCapture = vi.hoisted(() => vi.fn(async () => 'HISTORY LINE 1\nHISTORY LINE 2\n'))
+// The host's negotiated visible-only read; null = an older host without the feature.
+const hostCaptureVisible = vi.hoisted(() =>
+  vi.fn(async (_name: string): Promise<{ screen: string; cursor: { x: number; y: number } | null; altScreen: boolean } | null> => null)
+)
 vi.mock('./session-host-backend', async (original) => ({
   ...(await original<typeof import('./session-host-backend')>()),
-  sessionHostCapture: hostCapture
+  sessionHostCapture: hostCapture,
+  sessionHostCaptureVisible: hostCaptureVisible
 }))
 
 const NODE = 'node-1'
@@ -144,7 +149,17 @@ describe('captureVisible — local tmux', () => {
 })
 
 describe('captureVisible — never history', () => {
-  it('a session-host session gets NO keyframe — its only capture is scrollback', async () => {
+  it("a session-host session's keyframe is the host's visible-only read, with its own altScreen", async () => {
+    hostCaptureVisible.mockResolvedValueOnce({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
+    const m = await manager({ sessionHost: true })
+    expect(await m.captureVisible('sess-1')).toEqual({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
+    expect(hostCaptureVisible).toHaveBeenCalledWith(sessionName(NODE))
+    expect(hostCapture).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+
+  it('a session host without the read (older build) gets NO keyframe — never its scrollback capture', async () => {
+    hostCaptureVisible.mockResolvedValueOnce(null)
     const m = await manager({ sessionHost: true })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
     expect(hostCapture).not.toHaveBeenCalled()

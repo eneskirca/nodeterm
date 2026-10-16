@@ -17,7 +17,10 @@ export function installGeminiHooks(): void {
     agentId: 'gemini',
     scriptFileName: SCRIPT_FILE_NAME,
     configPath: configPath(),
-    events: GEMINI_HOOK_EVENTS
+    events: GEMINI_HOOK_EVENTS,
+    // Gemini runs a hook through PowerShell on Windows (`getShellConfiguration`: ComSpec when it is
+    // powershell/pwsh, else pwsh.exe, else powershell.exe), which cannot parse the POSIX line.
+    windowsWrapper: true
   })
 }
 

@@ -32,6 +32,21 @@ describe('reconcileWorktrees', () => {
     expect(r.stale).toEqual([])
   })
 
+  it('matches a Windows binding to git\'s path across separators and drive-letter case', () => {
+    const entries = [wt('C:/r', 'main'), wt('C:/r/wt', 'feat')]
+    for (const p of ['C:\\r\\wt', 'c:/r/wt', 'C:\\R\\WT\\']) {
+      const r = reconcileWorktrees([bound('g1', p, 'feat')], entries)
+      expect(r.stale).toEqual([])
+      expect(r.orphans).toEqual([])
+    }
+  })
+
+  it('keeps POSIX paths case-sensitive', () => {
+    const r = reconcileWorktrees([bound('g1', '/A/wt', 'feat')], [wt('/repo', 'main'), wt('/a/wt', 'feat')])
+    expect(r.stale).toEqual(['g1'])
+    expect(r.orphans.map((o) => o.path)).toEqual(['/a/wt'])
+  })
+
   it('reports a worktree on disk that no group is bound to as an orphan', () => {
     const r = reconcileWorktrees([], [wt('/repo', 'main'), wt('/wt/loose', 'loose')])
     expect(r.orphans.map((o) => o.path)).toEqual(['/wt/loose'])

@@ -13,6 +13,7 @@ import { arrangeArgsRefusal, isTopLevelGroupArg, TOP_ARRANGE_LAYOUTS } from '@sh
 import { createControlOpenBatch } from '../lib/controlOpenBatch'
 import { commitOwnedLaunchAttempt, registerLaunchCommit } from '../terminal/launch-attempt'
 import { hasLaunchWriter, launchCommand } from '../terminal/launch-command'
+import { useCoreIsWindows } from '../terminal/use-core-platform'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useContextLinkSync } from './useContextLinkSync'
 import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
@@ -57,10 +58,15 @@ import {
 } from '../nodes/TerminalNode'
 import { solveFitPadding } from './fit-view'
 import { FloatingEdge } from './FloatingEdge'
-import { MacWheelGestureRouter, trackpadRoutingEnabled } from './wheel-gesture'
+import {
+  MacWheelGestureRouter,
+  trackpadRoutingEnabled,
+  trackpadRoutingSupported,
+  wheelGestureReporting
+} from './wheel-gesture'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { WheelZoomBurstLimiter, clampWheelZoomSpeed, nextWheelZoom } from './wheel-zoom'
-import { selectedLocalFilePaths } from './canvas-file-copy'
+import { canCopyFilesToClipboard, selectedLocalFilePaths } from './canvas-file-copy'
 import {
   canvasImagePasteArmedAfterKey,
   canvasImportRefusal,
@@ -99,6 +105,11 @@ import {
   releaseAllHiddenGrants,
   WEBGL_GESTURE_SETTLE_MS
 } from '../terminal/webgl-budget'
+import {
+  BACKGROUND_RELEASE_DWELL_MS,
+  isWindowBackgrounded,
+  setWindowBackgrounded
+} from '../terminal/window-backgrounded'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
@@ -200,6 +211,7 @@ import { describeOs, REPO_URL } from '../lib/bugReport'
 import { shouldReleasePaneFocus } from '../lib/paneFocus'
 import {
   autosaveDelay,
+  shouldFlushOnQuit,
   nextSaveDelivery,
   type SaveDelivery
 } from '../lib/savePersistence'
@@ -237,6 +249,7 @@ import { handoffsFor, installHandoffFocusReset, noteHandoff, suppressDoneAfterHa
 import { loadIdentity } from '../state/presence'
 import { runBoardKey } from '../lib/boardKeys'
 import { readCanvasLocked, writeCanvasLocked } from '../lib/canvasLock'
+import { installLockedMiddleGuard, installModifierPan } from '../lib/modifierPan'
 import {
   FLOW_NODE_CLASS,
   isFocusTarget,
@@ -300,7 +313,7 @@ import {
   requestTerminalFontZoom,
   type TerminalFontZoomRequest
 } from '../terminal/terminal-font-zoom'
-import { isMacPlatform } from '@shared/platform-utils'
+import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
 import {
   dispatchGlobalKeydown,
   type GlobalKeyEvent,
@@ -482,6 +495,7 @@ import { sameSshEndpoint, setKanbanPublishHook, setStoredCanvasPublishHook, useP
 import { useAgentStatus, recordsTurnInterrupt } from '../state/agentStatus'
 import { hostChatSend, hostChatSession, hostChatStatus } from '../lib/hostChatQuery'
 import { chatPaneRefusal } from '../lib/chatPaneGate'
+import { runQueuedNotice } from '../lib/boardRunQueued'
 import { useLaunchDelivery } from '../state/launchDelivery'
 import { useBrowserLease, drivingNodeIds } from '../state/browserLease'
 import { useTerminalFocus } from '../state/terminalFocus'
@@ -540,9 +554,14 @@ import {
   AGENT_CONFIG,
   BUILTIN_AGENT_IDS,
   resolvePermissionMode,
+  hasPermissionMode,
+  PERMISSION_MODE_LABELS,
   type AgentId,
   type AgentPermissionMode
 } from '@shared/agents/config'
+import { comparablePath, type OpenLinkAcceptResult, type OpenLinkChoice, type OpenLinkPrompt } from '@shared/open-link'
+import { OpenLinkSheet } from '../components/OpenLinkSheet'
+import { NEW_PROJECT_KEY, nextSheetAction, type LinkPermissionView } from '../lib/openLinkSheet'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
 import { encodeUtf8Base64, launchPromptFor } from '../lib/promptSpill'
@@ -979,6 +998,10 @@ interface HostedMountOpts {
 
 /** What the agent-control handler's `reply` accepts, for helpers that build one outside it. */
 type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: string }
+/** An accepted `nodeterm://open` link, as main answered it (prompt possibly spilled to a file). */
+type LinkOpen = Extract<OpenLinkAcceptResult, { ok: true }>['open']
+/** An accepted link waiting for its project to load is dropped after this (see pendingLinkRef). */
+const PENDING_LINK_MAX_MS = 30_000
 
 /** The confirm dialogs, named so their setters can be wrapped in a synchronous open-guard (see
  *  `confirmFlags`): ONE confirm at a time, decided at call time rather than at the next render. */
@@ -1312,6 +1335,18 @@ function StatusAwareMiniMap({ onNodeDoubleClick }: { onNodeDoubleClick: (node: N
  */
 function setupApi(): typeof window.nodeTerminal.projectSetup {
   return window.nodeTerminal.projectSetup
+}
+
+/**
+ * The renderer's bulk reclaim pair, shared by memory pressure and a window put away for the
+ * background dwell. Both halves are idempotent and cost only warmth: a reclaimed HIDDEN context
+ * re-grants on its next visibility transition (a visible holder is never touched — see
+ * `releaseAllHiddenGrants`), and a dropped park re-mounts as an ordinary warm reattach unless it
+ * holds live work (`disposeAllParkedTerminals` asks the live-work gate).
+ */
+function runReclaimLevers(): void {
+  releaseAllHiddenGrants()
+  disposeAllParkedTerminals()
 }
 
 export function Canvas() {
@@ -1686,6 +1721,11 @@ export function Canvas() {
   const pendingFocusRef = useRef<string | null>(null)
   // "Open recent": a conversation to resume once the project it belongs to is on the canvas.
   const pendingResumeRef = useRef<{ projectId: string; conv: RecentConversation } | null>(null)
+  // A `nodeterm://open` link the human accepted: the node to create once its project is on the canvas.
+  // `at`: a link that has not landed within PENDING_LINK_MAX_MS is dropped, never created later
+  // out of context (e.g. on the next load of that project, hours on).
+  const pendingLinkRef = useRef<{ projectId: string; open: LinkOpen; at: number } | null>(null)
+  const linkCreateRef = useRef<(open: LinkOpen) => void>(() => {})
   // One-shot: the next active-project load keeps the CURRENT camera instead of applying the
   // project's saved viewport. Set by reloadActiveProject (in-place external-change reload).
   const preserveViewportRef = useRef(false)
@@ -2080,6 +2120,8 @@ export function Canvas() {
   /** The active project runs on a remote host → every worktree affordance is off (see
    *  WORKTREE_SSH_HINT). Reactive, so the menus rebuild when the user switches projects. */
   const isSshProject = !!activeSshServer
+  // Run configurations launch a POSIX `sh` script on the core — gated off on a Windows core.
+  const isWindowsCore = useCoreIsWindows()
   /** The active SSH project's host, once it is CONNECTED — the host the consent banner asks about
    *  (nothing is installed there until it is answered). */
   const activeSshHostKey = useSshConn((c) => {
@@ -3347,6 +3389,12 @@ export function Canvas() {
         pendingResumeRef.current = null
         resumeCreateRef.current(pendingResume.conv)
       }
+      // Finish a `nodeterm://open` link that had to land on this project first.
+      const pendingLink = pendingLinkRef.current
+      if (pendingLink && pendingLink.projectId === project.id) {
+        pendingLinkRef.current = null
+        if (Date.now() - pendingLink.at < PENDING_LINK_MAX_MS) linkCreateRef.current(pendingLink.open)
+      }
       // Consume a cross-project focus request (notification click on a background node).
       const pending = pendingFocusRef.current
       if (pending) {
@@ -4080,6 +4128,17 @@ export function Canvas() {
     })
   }, [])
 
+  // Quit / restart-to-update: main asks for the pending edits the debounce above still holds
+  // (src/main/renderer-flush.ts). Without this, the last ~800 ms of node moves / renames / camera
+  // changes were lost on every ⌘Q and every update restart. Same conflict rule as the autosave.
+  useEffect(
+    () =>
+      api.workspace.onFlushRequest(async () => {
+        if (shouldFlushOnQuit(dirtyRef.current, !!conflictRef.current)) await persist()
+      }),
+    [api, persist]
+  )
+
   // Debounced auto-save for canvas edits. Suppressed while a conflict bar is up: the bar only ever
   // appears WHILE dirty, so without this gate the 800ms timer would fire and silently "keep mine"
   // (overwrite the external disk version) before the user can choose. `conflict` is a dep so
@@ -4757,10 +4816,13 @@ export function Canvas() {
     async (selfId: string, otherId: string) => {
       if (useAgentStatus.getState().byId[selfId]?.state === 'working') return
       const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
-      const { shimPath } = await window.nodeTerminal.contextLink.info()
+      const { shimPath, platform: shimHost } = await window.nodeTerminal.contextLink.info()
+      // The shim named here is the LOCAL core's; an SSH node's agent runs on its host, whose skill
+      // is POSIX, so only a local node gets the host-platform wording (`.cmd` on Windows).
+      const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
       void api.pty.sendText(
         selfId,
-        buildContextLinkNote(agentIdOf(selfId), title, shimPath)
+        buildContextLinkNote(agentIdOf(selfId), title, shimPath, isRemoteSessionNode(selfData) ? undefined : shimHost)
       ).then(reportTextDelivery)
     },
     [agentIdOf]
@@ -5028,7 +5090,11 @@ export function Canvas() {
   const wheelZoomSpeed = clampWheelZoomSpeed(settings.wheelZoomSpeed)
   // The escape hatch, resolved ONCE: the router and React Flow's panOnScroll below must agree, or
   // a gesture neither of them pans is a gesture that does nothing.
-  const trackpadRouting = trackpadRoutingEnabled(isMac, settings.trackpadPan)
+  // macOS and Windows (heuristic there — see trackpadRoutingSupported); never Linux.
+  const trackpadRouting = trackpadRoutingEnabled(
+    trackpadRoutingSupported({ mac: isMac, windows: isWindowsPlatform() }),
+    settings.trackpadPan
+  )
   useEffect(() => {
     const wrap = flowWrapRef.current
     if (!wrap) return
@@ -5036,7 +5102,7 @@ export function Canvas() {
     // router routes by device FACT instead of delta-shape guessing — a precise-pixel mouse
     // (MX Master) zooms while the trackpad pans, both settings on. The browser (Server Edition)
     // has no such stream: reporting stays off and the router keeps its heuristics.
-    const gestureReporting = isMac && !isBrowserRuntime()
+    const gestureReporting = wheelGestureReporting({ mac: isMac, browser: isBrowserRuntime() })
     const wheelRouting = new MacWheelGestureRouter(gestureReporting)
     const offGesture = gestureReporting
       ? window.nodeTerminal.onCanvasTrackpadGesture?.((active) => wheelRouting.noteGesture(active))
@@ -5083,6 +5149,25 @@ export function Canvas() {
       offGesture?.()
     }
   }, [getViewport, setViewport, wheelZoom, wheelZoomSpeed, trackpadRouting, canvasLocked])
+
+  // ⌘+middle-drag (Ctrl off-mac) pans the camera even while the canvas lock is on, and over any
+  // node — the explicit "move the map" gesture (issue #1130; lib/modifierPan). Not gated on
+  // `canvasLocked` on purpose: getting past the lock is the point.
+  useEffect(() => {
+    const wrap = flowWrapRef.current
+    if (wrap === null) return
+    return installModifierPan(wrap, { isMac, getViewport, setViewport: (v) => void setViewport(v) })
+  }, [getViewport, setViewport])
+
+  // …and the lock really freezes a PLAIN middle-drag: React Flow lets a middle press on a node,
+  // edge or selection pan even with `panOnDrag` off, so a drag started on a node header (or a
+  // terminal's hover guard) slid the map past the lock (lib/modifierPan installLockedMiddleGuard).
+  useEffect(() => {
+    if (!canvasLocked) return
+    const viewport = flowWrapRef.current?.querySelector<HTMLElement>('.react-flow__viewport')
+    if (viewport === null || viewport === undefined) return
+    return installLockedMiddleGuard(viewport)
+  }, [canvasLocked])
 
   // Double-clicking EMPTY canvas pulls back to the overview zoom — the inverse of the node
   // double-click, which frames one node. A fixed zoom, not "the camera the last focus came from":
@@ -5292,7 +5377,9 @@ export function Canvas() {
       initialCommand?: string,
       groupId?: string,
       /** Force the working directory (e.g. a Source Control action running in a worktree scope). */
-      cwdOverride?: string
+      cwdOverride?: string,
+      /** A title for the node (a `nodeterm://open` link's `title`). */
+      title?: string
     ) => {
       // Live read + epoch guard: same rule as addAgentNode (issue #443) — a menu closure built
       // under the previous project must not root a terminal in that project's folder.
@@ -5323,7 +5410,8 @@ export function Canvas() {
       // passing `project?.ssh` straight through.
       const ssh = nodeSshFor(project?.ssh, cwdOverride)
       setNodes((ns) => {
-        const node = createTerminalNode(ns.length, cwd, center ?? emptyNodePos(), initialCommand, ssh)
+        const made = createTerminalNode(ns.length, cwd, center ?? emptyNodePos(), initialCommand, ssh)
+        const node = title ? { ...made, data: { ...made.data, title } } : made
         return [...ns, groupId ? parentInto(node, groupId) : node]
       })
       markDirty()
@@ -6400,7 +6488,15 @@ export function Canvas() {
       // `awaitSetupGroup` holds the launch for that worktree frame's setup script (the issue card's
       // "Start with agent in a new worktree" opens the agent in the same tick as the frame) — the
       // same `PendingLaunch` hold a control open into a preparing frame gets (`setupHoldGroup`).
-      extra?: { issueRef?: IssueRef; awaitSetupGroup?: string }
+      extra?: {
+        issueRef?: IssueRef
+        awaitSetupGroup?: string
+        // A `nodeterm://open` link (main/open-link.ts), every value already checked by main: the
+        // folder the node runs in, its title, and a first prompt stored as a file (`--prompt-file`).
+        cwd?: string
+        title?: string
+        promptFile?: string
+      }
     ): { node: CanvasNode; placed: CanvasNode; projectId: string } | undefined => {
       // Resolve the target project LIVE, at click time — never from this callback's render
       // closure. Menu onClick closures outlive the render that built them (`setMenu` freezes
@@ -6417,7 +6513,7 @@ export function Canvas() {
         return
       }
       const project = useProjects.getState().getProject(targetProjectId)
-      const cwd = cwdForNewNodeIn(groupId) ?? project?.cwd
+      const cwd = extra?.cwd ?? cwdForNewNodeIn(groupId) ?? project?.cwd
       // Codex accounts (S6) resolve through their OWN fail-closed gate: an explicitly picked account
       // that is missing/hostile/unconnected is REFUSED here rather than silently downgraded to the
       // system login (Property 4). Claude keeps its project-default-aware resolver. The factory
@@ -6479,10 +6575,14 @@ export function Canvas() {
         // Same funnel as the account above: the active project owns the node, so its own
         // `.nodeterm/settings.json` launch command layers over the global one.
         targetProjectId,
-        model
+        model,
+        extra?.promptFile
       )
       const issueRef = normalizeIssueRef(extra?.issueRef)
-      const bound = issueRef ? { ...created, data: { ...created.data, issueRef } } : created
+      const titled = extra?.title
+        ? { ...created, data: { ...created.data, title: extra.title, titleAuto: false } }
+        : created
+      const bound = issueRef ? { ...titled, data: { ...titled.data, issueRef } } : titled
       const node = extra?.awaitSetupGroup ? queueControlLaunch(bound, [], extra.awaitSetupGroup) : bound
       // Parented HERE, not inside the updater: the updater runs at render time, and a render that
       // a zustand write flushes first (SyncLane, skipping this DefaultLane update) mirrors
@@ -8148,18 +8248,30 @@ export function Canvas() {
               // a bare shell with no agent (issue #899), so the notice carries the resume line.
               text: exitTimeoutNotice(action, exitTimeoutResumeLine(nodeId))
             }
-          : {
+          : outcome === 'host-unsupported'
+            ? {
+                kind: 'error',
+                // Windows only: the session host serving this pane predates the verb that stops
+                // the agent by process. A live host is never replaced by an app update or restart
+                // (docs/windows-session-host.md) — it retires once its sessions end, which is what
+                // "Prepare for update…" coordinates.
+                text:
+                  `${action} skipped: this session runs on a session host started by an older ` +
+                  'nodeterm, which cannot stop the agent safely. It is replaced once its sessions ' +
+                  'end (Prepare for update… does this). Nothing was written to the pane.'
+              }
+            : {
               kind: 'error',
               // 'not-eligible' is every "not a target right now": the gate re-checked and refused,
-              // the tmux session is closed / ended / gone (which the menu row cannot see — only the
-              // node knows its session state), the pane cannot be observed at all (persistent tmux
-              // sessions off, or no tmux on this machine — the restart needs to watch the pane to
-              // know when the CLI has quit), or a restart of this node was already in flight (the
-              // per-node action and the bulk one can reach the same node).
+              // the session is closed / ended / gone (which the menu row cannot see — only the
+              // node knows its session state), the pane cannot be observed at all (persistent
+              // sessions off, or no persistence backend on this machine — the restart needs to
+              // watch the pane to know when the CLI has quit), or a restart of this node was
+              // already in flight (the per-node action and the bulk one can reach the same node).
               text:
                 `${action} skipped: this session is busy, already restarting, not attached ` +
                 '(closed, ended, or nothing to resume), or its pane cannot be watched without ' +
-                'persistent tmux sessions. Nothing was written to the pane.'
+                'persistent sessions. Nothing was written to the pane.'
             }
     )
   }, [setNodes, markDirty])
@@ -8486,7 +8598,11 @@ export function Canvas() {
         })
       )
       if (copy?.ok) markDirty()
-      if (outcome !== 'restarted') return { kind: 'not-restarted', outcome }
+      // `host-unsupported` only comes from the terminate leg (model switch / clearEnv), which this
+      // restartShell path never takes; folded into the refusal it would be if it ever did.
+      if (outcome !== 'restarted') {
+        return { kind: 'not-restarted', outcome: outcome === 'host-unsupported' ? 'not-eligible' : outcome }
+      }
       const moved = copy as ClaudeSessionCopyResult | undefined
       return moved?.ok ? { kind: 'switched' } : { kind: 'copy-failed', reason: moved?.ok === false ? moved.reason : 'failed' }
     },
@@ -9757,13 +9873,18 @@ export function Canvas() {
     //
     // Gated to where it can actually succeed, because the failure path raises a banner that
     // stays until dismissed — and before this feature the keystroke was a silent no-op, which
-    // is what every other machine must keep getting. `writeFilesToClipboard` is darwin-gated
-    // in main and the browser bridge stub answers false, so on a non-mac renderer (desktop OR
-    // Server Edition) this branch could only ever produce that banner, wearing macOS-specific
-    // copy on a Linux box. The board is an opaque overlay over the canvas, so a copy there
-    // would act on a selection the user cannot see (the canvas-only-shortcut discipline).
+    // is what every other machine must keep getting. `writeFilesToClipboard` is darwin/win32-
+    // gated in main and the browser bridge stub answers false, so elsewhere (Linux desktop, any
+    // Server Edition) this branch could only ever produce that banner. The board is an opaque
+    // overlay over the canvas, so a copy there would act on a selection the user cannot see
+    // (the canvas-only-shortcut discipline).
     const projects = useProjects.getState()
-    if (!isMac || isGlobalKanbanOpen() || isKanbanOpen(projects.activeProjectId)) return false
+    if (
+      !canCopyFilesToClipboard({ mac: isMac, windows: isWindowsPlatform() }, isBrowserRuntime()) ||
+      isGlobalKanbanOpen() ||
+      isKanbanOpen(projects.activeProjectId)
+    )
+      return false
     const paths = selectedLocalFilePaths(nodesRef.current, {
       projectIsRelay: !!projects.getProject(projects.activeProjectId ?? '')?.remote
     })
@@ -9775,7 +9896,7 @@ export function Canvas() {
         setCopyError(
           copied
             ? null
-            : 'Copy failed — only existing local files can be copied from the macOS desktop app.'
+            : 'Copy failed — only existing local files can be copied from the desktop app.'
         )
       })
       .catch(() => setCopyError('Copy failed — the system clipboard is unavailable.'))
@@ -10010,6 +10131,7 @@ export function Canvas() {
       'canvas.fitAll': () => { fitAll(); return true },
       'canvas.tidy': () => { arrangeAllNodes(); return true },
       'canvas.tidyLineage': () => { arrangeByLineageAction(); return true },
+      'canvas.toggleLock': () => { setCanvasLocked((v) => !v); return true },
       // The kanban board's keys — the mounted board decides (and declines when the focused control
       // owns the key, or when no per-project board is up: Omni registers none). lib/boardKeys.
       'board.openCard': () => runBoardKey('open'),
@@ -10423,6 +10545,34 @@ export function Canvas() {
     (nodeId: string, icon: NodeIcon | undefined) => nodeWritesFor(activeProjectId).setIcon(nodeId, icon),
     [nodeWritesFor, activeProjectId]
   )
+  // ▶ on a board card's QUEUED chip: the `run` verb's path (runQueuedNodeRef) — the mounted node's
+  // writer when the card's project is on the canvas, a headless start for a background Omni lane.
+  // A relay tab's launch belongs to the host (the canvas node's ▶ is disabled there too).
+  const runQueuedFromBoard = useCallback(
+    async (projectId: string, nodeId: string) => {
+      const project = useProjects.getState().getProject(projectId)
+      if (!project) return
+      const title =
+        (project.nodes.find((n) => n.id === nodeId)?.title ??
+          (nodesRef.current.find((n) => n.id === nodeId)?.data.title as string | undefined)) ||
+        nodeId
+      if (project.remote) {
+        setNotice({ kind: 'info', text: `"${title}" runs on the host — open the host to start it.` })
+        return
+      }
+      const notice = runQueuedNotice(await runQueuedNodeRef.current(project, nodeId), title)
+      if (notice) setNotice(notice)
+    },
+    []
+  )
+  const runActiveQueuedFromBoard = useCallback(
+    (nodeId: string) => void runQueuedFromBoard(activeProjectId, nodeId),
+    [runQueuedFromBoard, activeProjectId]
+  )
+  const runQueuedFromOmni = useCallback(
+    (projectId: string, nodeId: string) => void runQueuedFromBoard(projectId, nodeId),
+    [runQueuedFromBoard]
+  )
   // Stable identity for the memoized per-project board, which only ever shows the active project.
   const activeBoardNodeActionItems = useCallback(
     (nodeId: string): MenuItem[] => boardNodeActionItems(nodeId, activeProjectId),
@@ -10754,9 +10904,10 @@ export function Canvas() {
     () => ({
       hasCwd: !!(useProjects.getState().getProject(activeProjectId)?.ssh?.remoteCwd ??
         useProjects.getState().getProject(activeProjectId)?.cwd),
-      isSshProject
+      isSshProject,
+      isWindowsCore
     }),
-    [activeProjectId, isSshProject]
+    [activeProjectId, isSshProject, isWindowsCore]
   )
   const addHandlers = useMemo<AddHandlers>(
     () => ({
@@ -14571,7 +14722,10 @@ export function Canvas() {
             }
             const lenses = parseLenses(args.lenses)
             const wantJudge = (args.synthesis ?? 'on').trim().toLowerCase() !== 'off'
-            const { shimPath: vShim } = await window.nodeTerminal.contextLink.info()
+            const { shimPath: vShim, platform: vShimHost } = await window.nodeTerminal.contextLink.info()
+            // Reviewers open where the target's cwd says; an SSH-project panel runs on the host,
+            // whose shim is POSIX, so only a local panel gets the host-platform wording.
+            const vHost = sshFor(target.data.cwd as string | undefined) ? undefined : vShimHost
             const targetTitle = (target.data.title as string) || targetId
             const targetCwd = target.data.cwd as string | undefined
             const live = nodesRef.current as CanvasNode[]
@@ -14600,6 +14754,7 @@ export function Canvas() {
                     targetId,
                     agentId: reviewAgent,
                     shimPath: vShim,
+                    hostPlatform: vHost,
                     focus: args.focus
                   })
                 )
@@ -14632,7 +14787,8 @@ export function Canvas() {
                 lenses,
                 targetTitle,
                 agentId: reviewAgent,
-                shimPath: vShim
+                shimPath: vShim,
+                hostPlatform: vHost
               })
             )
             const judge = wantJudge
@@ -17517,6 +17673,208 @@ export function Canvas() {
     [resumeContext, travelToNode, resumeWhenLanded, reopenProject, switchProject, openOrAdoptFolder]
   )
 
+  // ── `nodeterm://` links (main/open-link.ts, components/OpenLinkSheet.tsx) ──────────────────────
+  // Main validates a link and asks; the sheet shows exactly what will open and where; main re-checks
+  // the human's choice and answers with the final open, which is created here like any new node.
+  const [linkSheet, setLinkSheet] = useState<{ req: OpenLinkPrompt; touched: boolean; shownAt: number } | null>(null)
+  const linkSheetRef = useRef(linkSheet)
+  linkSheetRef.current = linkSheet
+  // "Open <folder> as a new project" ADOPTS that folder's committed .nodeterm/project.json, whose
+  // permission mode then applies. The sheet must show that mode, so the folder is probed when the
+  // sheet appears; `project: undefined` = still reading.
+  // The ref is the value (callbacks read it); the state only re-renders the sheet when it lands.
+  const linkProbeRef = useRef<{ reqId: string; project: Project | null | undefined } | null>(null)
+  const [, setLinkProbe] = useState(linkProbeRef.current)
+
+  /** Create the accepted node on the canvas on screen (which is the link's project by now). */
+  const createFromLink = useCallback(
+    (open: LinkOpen): void => {
+      const center = viewCenter()
+      if (open.agent === 'terminal') {
+        addTerminal(center, undefined, undefined, open.cwd, open.title)
+        return
+      }
+      const made = addAgentNode(open.agent, center, undefined, undefined, open.prompt, {
+        ...(open.cwd ? { cwd: open.cwd } : {}),
+        ...(open.title ? { title: open.title } : {}),
+        ...(open.promptFile ? { promptFile: open.promptFile } : {})
+      })
+      if (made) goToNode(made.placed)
+    },
+    [viewCenter, addTerminal, addAgentNode, goToNode]
+  )
+  useEffect(() => {
+    linkCreateRef.current = createFromLink
+  })
+
+  const runLinkOpen = useCallback(
+    async (accepted: Extract<OpenLinkAcceptResult, { ok: true }>['open'], shownMode?: string): Promise<void> => {
+      // A long inline prompt goes to a file the pane's shell reads (#706) — decided BEFORE landing,
+      // so no await sits between "this project is on screen" and the node's creation.
+      let open: LinkOpen = accepted
+      if (accepted.prompt && accepted.agent !== 'terminal') {
+        const p = await launchPromptFor(
+          { prompt: accepted.prompt, localFs: true },
+          { saveUpload: (name, data) => api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64 }
+        )
+        open = { ...accepted, prompt: p.prompt, promptFile: p.promptFile ?? accepted.promptFile }
+      }
+      setWelcomeOpen(false)
+      let projectId = accepted.projectId
+      if (accepted.newProjectCwd) {
+        const folder = comparablePath(accepted.newProjectCwd)
+        await openOrAdoptFolder(accepted.newProjectCwd)
+        projectId = useProjects
+          .getState()
+          .projects.find((p) => !p.ssh && !p.remote && p.cwd && comparablePath(p.cwd) === folder)?.id
+      }
+      const project = projectId ? useProjects.getState().getProject(projectId) : undefined
+      if (!projectId || !project) {
+        setNotice({ kind: 'error', text: 'Could not open the link: its project is no longer available.' })
+        return
+      }
+      // The sheet showed a permission mode; the session must start in that one. A project file that
+      // changed in between (a pull, an adopted folder that differs from the probe) refuses.
+      if (shownMode !== undefined && accepted.agent !== 'terminal' && hasPermissionMode(accepted.agent)) {
+        const now = PERMISSION_MODE_LABELS[projectPermissionMode(project, accepted.agent)]
+        if (now !== shownMode) {
+          setNotice({
+            kind: 'error',
+            text: `Did not open the link: the project's permission mode is now "${now}", not the "${shownMode}" the sheet showed. Click the link again.`
+          })
+          return
+        }
+      }
+      if (projectId === useProjects.getState().activeProjectId && canCreateOnCanvas(nodesProjectIdRef.current, projectId)) {
+        createFromLink(open)
+        return
+      }
+      pendingLinkRef.current = { projectId, open, at: Date.now() }
+      if (project.closed) {
+        const ok = await reopenProject(projectId)
+        if (!ok && pendingLinkRef.current?.open === open) pendingLinkRef.current = null
+      } else switchProject(projectId)
+    },
+    [api, openOrAdoptFolder, createFromLink, reopenProject, switchProject]
+  )
+
+  const linkPermissionLabel = useCallback(
+    (key: string | null): LinkPermissionView | null => {
+      const req = linkSheetRef.current?.req
+      const agent = req?.agent
+      if (!req || !agent || agent === 'terminal' || !hasPermissionMode(agent)) return null
+      let project: Project | undefined
+      if (key === NEW_PROJECT_KEY) {
+        const probe = linkProbeRef.current
+        if (!probe || probe.reqId !== req.id || probe.project === undefined) {
+          return { label: 'Checking the folder…', bypass: false, pending: true }
+        }
+        project = probe.project ?? undefined
+      } else if (key) {
+        project = useProjects.getState().getProject(key)
+      }
+      const mode = projectPermissionMode(project, agent)
+      return { label: PERMISSION_MODE_LABELS[mode], bypass: mode === 'bypassPermissions' }
+    },
+    []
+  )
+  const acceptLink = useCallback(
+    async (choice: OpenLinkChoice): Promise<string | null> => {
+      const cur = linkSheetRef.current
+      if (!cur) return null
+      const shown = linkPermissionLabel(choice.newProject ? NEW_PROJECT_KEY : (choice.projectId ?? null))
+      if (shown?.pending) return 'Still reading the folder — try again in a moment.'
+      let res: OpenLinkAcceptResult
+      try {
+        res = await window.nodeTerminal.openLink.accept(cur.req.id, choice)
+      } catch (err) {
+        return `Could not open: ${stripIpcPrefix(err instanceof Error ? err.message : String(err))}`
+      }
+      // Main forgets a request on its first answer, so a refusal closes the sheet too.
+      setLinkSheet(null)
+      if (!res.ok) {
+        setNotice({ kind: 'error', text: `Could not open the link: ${res.reason}` })
+        return null
+      }
+      void runLinkOpen(res.open, shown?.label).catch((err: unknown) =>
+        setNotice({ kind: 'error', text: `Could not open the link: ${err instanceof Error ? err.message : String(err)}` })
+      )
+      return null
+    },
+    [runLinkOpen, linkPermissionLabel]
+  )
+
+  const cancelLink = useCallback(() => {
+    const cur = linkSheetRef.current
+    if (cur) window.nodeTerminal.openLink.cancel(cur.req.id)
+    setLinkSheet(null)
+  }, [])
+
+  const linkAccountLabel = useCallback((key: string | null): string | null => {
+    if (linkSheetRef.current?.req.agent !== 'claude') return null
+    const project = key && key !== NEW_PROJECT_KEY ? useProjects.getState().getProject(key) : undefined
+    const accounts = useSettings.getState().settings.claudeAccounts ?? []
+    const id = resolveNewNodeAccount(undefined, project, accounts)
+    return id ? (accounts.find((a) => a.id === id)?.label ?? null) : null
+  }, [])
+
+  useEffect(() => {
+    const ol = window.nodeTerminal.openLink
+    const unRequest = ol.onRequest((req) => {
+      const cur = linkSheetRef.current
+      const action = nextSheetAction(cur, Date.now())
+      if (action === 'drop') {
+        ol.cancel(req.id)
+        setNotice({ kind: 'info', text: 'Another nodeterm link arrived while one is open — it was ignored.' })
+        return
+      }
+      if (action === 'replace' && cur) ol.cancel(cur.req.id)
+      const sheet = { req, touched: false, shownAt: Date.now() }
+      linkSheetRef.current = sheet
+      setLinkSheet(sheet)
+      const folder = req.resolution.newProjectCwd
+      if (folder) {
+        const probe = { reqId: req.id, project: undefined }
+        linkProbeRef.current = probe
+        setLinkProbe(probe)
+        void api.workspace
+          .probeFolder(folder)
+          .catch(() => null)
+          .then((project) => {
+            if (linkProbeRef.current?.reqId !== req.id) return
+            const done = { reqId: req.id, project }
+            linkProbeRef.current = done
+            setLinkProbe(done)
+          })
+      }
+    })
+    // Pair / join links go to the existing flows, which have their own approval (the SAS compare).
+    // Pre-filled, never auto-accepted: the human presses OK first.
+    const unPair = ol.onPair(({ kind, url }) => {
+      void (async () => {
+        const code = (
+          await promptDialog({
+            message:
+              kind === 'join'
+                ? 'A link asks to join a hosted team. Check the code, then connect:'
+                : "A link carries a host's pairing code. Check it, then connect:",
+            initialValue: url,
+            confirmLabel: 'Connect'
+          })
+        )?.trim()
+        if (code) void connectOffer(code)
+      })()
+    })
+    const unNotice = ol.onNotice(({ text }) => setNotice({ kind: 'error', text }))
+    // Listening: main delivers anything that arrived first (a link that launched the app).
+    ol.ready()
+    return () => {
+      unRequest()
+      unPair()
+      unNotice()
+    }
+  }, [connectOffer, api])
+
   const recentActionFor = useCallback(
     (conv: RecentConversation): { label: string; disabled?: string } => {
       const plan = planResume(conv, resumeContext())
@@ -17669,11 +18027,49 @@ export function Canvas() {
   // session-reaper sweep) belongs to the shell, not here. Optional-called because the Server
   // Edition's bridge declares this a documented no-op.
   useEffect(() => {
-    const off = window.nodeTerminal.onMemoryPressure?.(() => {
-      releaseAllHiddenGrants()
-      disposeAllParkedTerminals()
-    })
+    const off = window.nodeTerminal.onMemoryPressure?.(() => runReclaimLevers())
     return () => off?.()
+  }, [])
+
+  // Window put away (close-to-tray — the Windows default —, macOS hide-on-close, minimize): flip
+  // the backgrounded flag, which makes every terminal report itself offscreen so the offscreen
+  // release runs on its (dwell-shortened) timer behind all of its gates, live-work included. Then,
+  // once the window has stayed hidden for the dwell, run the same reclaim pair memory pressure runs:
+  // by then every terminal reads hidden, so `releaseAllHiddenGrants` frees the contexts the
+  // on-screen terminals held too, and the parks go (`disposeAllParkedTerminals` keeps a park that
+  // holds live work). A quick close/reopen cancels the dwell and nothing is released. On show the
+  // observers' real verdicts flow again: released nodes warm-reattach, contexts re-grant through
+  // the budget. Server Edition: the bridge declares the signal a no-op (see stubs.ts).
+  useEffect(() => {
+    let dwell: ReturnType<typeof setTimeout> | null = null
+    const clearDwell = (): void => {
+      if (dwell) clearTimeout(dwell)
+      dwell = null
+    }
+    const onSignal = (state: 'hidden' | 'shown'): void => {
+      const hidden = state === 'hidden'
+      setWindowBackgrounded(hidden)
+      if (!hidden) return clearDwell()
+      if (dwell) return
+      dwell = setTimeout(() => {
+        dwell = null
+        if (isWindowBackgrounded()) runReclaimLevers()
+      }, BACKGROUND_RELEASE_DWELL_MS)
+    }
+    const off = window.nodeTerminal.onWindowVisibility?.(onSignal)
+    // Fail-safe for a missed `'shown'` (a window manager that restores without a `restore` event):
+    // a document that has FOCUS is being looked at, so it can never stay backgrounded — otherwise
+    // the user would sit in front of released plates until the next hide/show cycle.
+    const onFocus = (): void => {
+      if (isWindowBackgrounded()) onSignal('shown')
+    }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      off?.()
+      window.removeEventListener('focus', onFocus)
+      clearDwell()
+      setWindowBackgrounded(false)
+    }
   }, [])
 
   // Permanently remove a project (from the "Recently closed" list): end every terminal's tmux
@@ -17916,7 +18312,7 @@ export function Canvas() {
             }
           ]
         : []),
-      ...(isSshProject
+      ...(isSshProject || isWindowsCore
         ? []
         : [{ id: 'new-run', label: 'New run configuration', icon: <IconPlay />, run: () => void addRun() }]),
       { id: 'new-dino', label: 'New dino game', icon: <IconDino />, run: () => addDino() },
@@ -18233,6 +18629,7 @@ export function Canvas() {
     openFileDialog,
     openWorktreeDialog,
     isSshProject,
+    isWindowsCore,
     newProjectFile,
     addProject,
     fitView,
@@ -18543,6 +18940,7 @@ export function Canvas() {
           nodeActionItems={boardNodeActionItems}
           onAiName={aiNameFromKanban}
           onSetColor={setCardColor}
+          onRunQueued={runQueuedFromOmni}
         />
       ) : perProjectKanbanOpen && (
         <KanbanView
@@ -18560,6 +18958,7 @@ export function Canvas() {
           nodeActionItems={activeBoardNodeActionItems}
           onAiName={aiNameFromActiveKanban}
           onSetColor={setActiveCardColor}
+          onRunQueued={runActiveQueuedFromBoard}
           onAutoMoveFromPulls={autoMoveCardFromPulls}
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
@@ -18793,7 +19192,11 @@ export function Canvas() {
               </ControlButton>
             </Tooltip>
             <Tooltip
-              label={canvasLocked ? 'Unlock view (pan/zoom)' : 'Lock view (pan/zoom); nodes stay movable'}
+              label={
+                canvasLocked
+                  ? `Unlock view (pan/zoom). ${isMac ? '⌘' : 'Ctrl'}+middle-drag still pans`
+                  : 'Lock view (pan/zoom); nodes stay movable'
+              }
               placement="right"
             >
               <ControlButton
@@ -18922,6 +19325,22 @@ export function Canvas() {
       )}
 
       {remoteDialogOpen && <RemoteAccessDialog onClose={() => setRemoteDialogOpen(false)} />}
+      {linkSheet && (
+        <OpenLinkSheet
+          key={linkSheet.req.id}
+          request={linkSheet.req}
+          activeProjectId={activeProjectId}
+          permissionLabel={linkPermissionLabel}
+          accountLabel={linkAccountLabel}
+          onTouched={() => {
+            if (linkSheetRef.current && !linkSheetRef.current.touched) {
+              setLinkSheet({ ...linkSheetRef.current, touched: true })
+            }
+          }}
+          onOpen={acceptLink}
+          onCancel={cancelLink}
+        />
+      )}
 
       {shareProjectId && (
         <ShareTeamDialog

@@ -352,6 +352,16 @@ describe('createLinkHost — a viewer session', () => {
     expect(v.keyframes()[0]).toEqual({ sessionId: 's1', screen: '', altScreen: false })
   })
 
+  it("a session-host capture states its own altScreen, which wins over the join's (no tmux client between)", async () => {
+    const t = setup({
+      join: () => ({ sessionId: 's1', cols: 80, rows: 24, altScreen: false }),
+      capture: () => ({ screen: 'vim\n', cursor: { x: 0, y: 0 }, altScreen: true })
+    })
+    t.host.start()
+    const v = await openViewer(t)
+    expect(v.keyframes()[0]).toEqual({ sessionId: 's1', screen: 'vim\n', altScreen: true, cursor: { x: 0, y: 0 } })
+  })
+
   it("denies a peer whose key is not the link's viewer key, and reopens a listener", async () => {
     const t = setup()
     t.host.start()

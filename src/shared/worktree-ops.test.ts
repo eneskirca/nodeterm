@@ -272,6 +272,13 @@ describe('worktreeRemove', () => {
     expect(calls.some((c) => c.join(' ') === 'worktree prune')).toBe(true)
     expect(calls.some((c) => c.join(' ') === 'branch -d feature/x')).toBe(true)
   })
+  it('finds a Windows binding spelled with backslashes in git\'s forward-slash listing', async () => {
+    const list = 'worktree C:/r\nbranch refs/heads/main\n\nworktree C:/r/wt\nbranch refs/heads/feat\n'
+    const { git, calls } = fakeGit({ 'worktree list --porcelain': ok(list) })
+    const r = await worktreeRemove(git, 'C:/r', 'C:\\r\\wt', 'C:\\Users\\me', false)
+    expect(r.ok).toBe(true)
+    expect(calls.some((c) => c.join(' ') === 'worktree remove --force -- C:\\r\\wt')).toBe(true)
+  })
   it('keeps the branch when the caller does not own it', async () => {
     const list = 'worktree /repo\nbranch refs/heads/main\n\nworktree /wt/x\nbranch refs/heads/feature/x\n'
     const { git, calls } = fakeGit({ 'worktree list --porcelain': ok(list) })

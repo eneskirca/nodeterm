@@ -12,6 +12,7 @@ import { accountsForProject, sshAccountsHint } from '../state/workspace'
 import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
 import { layoutSubtitle, sortedLayouts } from '../lib/canvasLayoutView'
 import { ZOOM_PRESETS, activeZoomPreset } from '../lib/zoomPresets'
+import { useCoreIsWindows } from '../terminal/use-core-platform'
 import { Tooltip } from './Tooltip'
 
 const isMac = /Mac/i.test(navigator.platform || navigator.userAgent)
@@ -186,6 +187,7 @@ export function Dock({
   // remote-connection is a different flow than the pane menu's remote picker).
   const hasCwd = !!(activeProject?.ssh?.remoteCwd ?? activeProject?.cwd)
   const isSshProject = !!activeProject?.ssh
+  const isWindowsCore = useCoreIsWindows()
   const dockAddHandlers: AddHandlers = {
     terminal: onAddTerminal,
     remote: onAddRemote,
@@ -203,7 +205,8 @@ export function Dock({
   }
   const contentRows = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, dockAddHandlers, {
     hasCwd,
-    isSshProject
+    isSshProject,
+    isWindowsCore
   })
 
   return (

@@ -5,8 +5,7 @@
  * Self-contained: only node fs/path/crypto. We port just the functions our
  * installer needs (trust hashing/keys, byte-preserving config.toml edits) and
  * deliberately drop the project-trust path (upsertProjectTrustLevel) — out
- * of scope. `escapeRegex` is inlined (rather than pulling in unrelated
- * modules); the rename itself goes through core/fs-atomic.ts.
+ * of scope. The rename itself goes through core/fs-atomic.ts.
  */
 import {
   copyFileSync,
@@ -192,16 +191,9 @@ function isCodexEventLabel(value: string): value is CodexEventLabel {
 // Why: TOML 1.0 forbids BOMs but real-world editors (especially on Windows) sometimes
 // write them. A leading ﻿ would break header regexes anchored at `^[ \t]*\[`, so
 // strip it once at the file boundary and let the rest of the parser stay simple.
-function readTomlFile(configPath: string): string {
+export function readTomlFile(configPath: string): string {
   const raw = readFileSync(configPath, 'utf-8')
   return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
-}
-
-// Why: escape special regex characters so a path/key can be matched literally
-// in a RegExp. Inlined to keep this module
-// self-contained.
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // Why: regex-edit ~/.codex/config.toml rather than parse + reserialize. The
@@ -237,6 +229,9 @@ export function upsertHookTrustEntriesInContent(
   for (const entry of entries) {
     updated = upsertTrustBlock(updated, computeTrustKey(entry), computeTrustedHash(entry))
   }
+  // Never hand back a config Codex refuses to load: one WE changed must not carry a table defined
+  // twice ("duplicate key" = codex will not start). Throws; every caller fails open.
+  if (updated !== existing) assertTomlTablesUnique(updated)
   return updated
 }
 
@@ -303,13 +298,90 @@ function upsertTrustBlock(content: string, key: string, hash: string): string {
   return deduped + content.slice(cursor)
 }
 
-// Why: Codex emits the canonical form with the key double-quoted; we never
-// share this slot with another tool, so we don't bother accepting bare
-// dotted-key variants. The caller applies this only to complete physical lines
-// outside TOML multi-line strings.
-function buildHeaderLinePattern(key: string): RegExp {
-  const escapedKey = escapeRegex(escapeTomlString(key))
-  return new RegExp(`^[ \\t]*\\[hooks\\.state\\."${escapedKey}"\\][ \\t]*(?:#[^\\r\\n]*)?$`)
+// Why: a header is matched by its DECODED key path, never by spelling. Codex (or another tool)
+// may write the same table as `[hooks.state.'C:\…']` (literal string) where we write
+// `[hooks.state."C:\\…"]` (basic string) — one key to TOML. Matching only our spelling made a
+// repair APPEND a second table for that key, and Codex then refused to start ("duplicate key";
+// measured on a Windows desktop, 2026-10-07). The caller applies this only to complete physical
+// lines outside TOML multi-line strings.
+function isTrustHeaderFor(line: string, key: string): boolean {
+  const path = tableHeaderPath(line)
+  return (
+    path !== null &&
+    path.length === 3 &&
+    path[0] === 'hooks' &&
+    path[1] === 'state' &&
+    path[2] === key
+  )
+}
+
+/**
+ * The decoded key path of a `[table]` header line (bare, `"basic"` and `'literal'` segments), or
+ * null for anything else — including an `[[array.of.tables]]` header, which may repeat.
+ */
+export function tableHeaderPath(line: string): string[] | null {
+  const text = line.replace(/\r$/, '').trimStart()
+  if (!text.startsWith('[') || text.startsWith('[[')) return null
+  const path: string[] = []
+  let i = 1
+  const skipWs = (): void => {
+    while (text[i] === ' ' || text[i] === '\t') i++
+  }
+  for (;;) {
+    skipWs()
+    const ch = text[i]
+    if (ch === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1
+      if (j >= text.length) return null
+      path.push(unescapeTomlString(text.slice(i + 1, j)))
+      i = j + 1
+    } else if (ch === "'") {
+      const j = text.indexOf("'", i + 1)
+      if (j === -1) return null
+      path.push(text.slice(i + 1, j))
+      i = j + 1
+    } else {
+      const m = /^[A-Za-z0-9_-]+/.exec(text.slice(i))
+      if (!m) return null
+      path.push(m[0])
+      i += m[0].length
+    }
+    skipWs()
+    if (text[i] === '.') {
+      i++
+      continue
+    }
+    if (text[i] !== ']') return null
+    return /^\s*(#.*)?$/.test(text.slice(i + 1)) ? path : null
+  }
+}
+
+/**
+ * Throws when a `[table]` is defined twice (by decoded key path) — the way our line edits can
+ * produce a config.toml Codex will not load. Not a full TOML validator (none is in our deps): it
+ * guards the failure mode these edits can introduce, reading headers outside multi-line strings.
+ */
+export function assertTomlTablesUnique(content: string): void {
+  const seen = new Set<string>()
+  const dupes = new Set<string>()
+  let multilineState: TomlMultilineState = { basic: false, literal: false }
+  for (const raw of content.split('\n')) {
+    const line = raw.replace(/\r$/, '')
+    if (!isInsideTomlMultilineString(multilineState)) {
+      const path = tableHeaderPath(line)
+      if (path) {
+        const id = JSON.stringify(path)
+        if (seen.has(id)) dupes.add(path.join('.'))
+        seen.add(id)
+        continue
+      }
+    }
+    multilineState = updateTomlMultilineState(multilineState, line)
+  }
+  if (dupes.size > 0) {
+    throw new Error(`refusing to write config.toml: table defined twice: ${[...dupes].join(', ')}`)
+  }
 }
 
 type TrustBlockRange = {
@@ -319,7 +391,6 @@ type TrustBlockRange = {
 }
 
 function findTrustBlockRanges(content: string, key: string): TrustBlockRange[] {
-  const headerPattern = buildHeaderLinePattern(key)
   const ranges: TrustBlockRange[] = []
   let cursor = 0
   let multilineState: TomlMultilineState = { basic: false, literal: false }
@@ -329,7 +400,7 @@ function findTrustBlockRanges(content: string, key: string): TrustBlockRange[] {
     const rawLine = content.slice(cursor, lineEnd)
     const line = rawLine.replace(/\r$/, '')
     const nextCursor = newlineIdx === -1 ? content.length : newlineIdx + 1
-    if (!isInsideTomlMultilineString(multilineState) && headerPattern.test(line)) {
+    if (!isInsideTomlMultilineString(multilineState) && isTrustHeaderFor(line, key)) {
       const headerLineEnd = rawLine.endsWith('\r') ? lineEnd - 1 : lineEnd
       const after = content.slice(headerLineEnd)
       const nextHeaderRel = findNextTableHeader(after)
@@ -588,7 +659,6 @@ export function readHookTrustEntries(configPath: string): Map<string, CodexHookT
   // `'''...'''` multi-line string isn't mistaken for a real header.
   // Why: accept an optional `# inline comment` after `]` — TOML permits it,
   // and rejecting hides a real entry, making getStatus misreport trustMissing.
-  const headerLineRegex = /^[ \t]*\[hooks\.state\."((?:[^"\\]|\\.)*)"\][ \t]*(?:#[^\r\n]*)?$/
   let cursor = 0
   let multilineState: TomlMultilineState = { basic: false, literal: false }
   while (cursor < content.length) {
@@ -597,12 +667,14 @@ export function readHookTrustEntries(configPath: string): Map<string, CodexHookT
     const rawLine = content.slice(cursor, lineEnd)
     const line = rawLine.replace(/\r$/, '')
     const nextCursor = newlineIdx === -1 ? content.length : newlineIdx + 1
-    const headerMatch = isInsideTomlMultilineString(multilineState)
-      ? null
-      : headerLineRegex.exec(line)
-    if (headerMatch) {
-      const escapedKey = headerMatch[1]
-      const key = unescapeTomlString(escapedKey)
+    const headerPath = isInsideTomlMultilineString(multilineState) ? null : tableHeaderPath(line)
+    if (
+      headerPath &&
+      headerPath.length === 3 &&
+      headerPath[0] === 'hooks' &&
+      headerPath[1] === 'state'
+    ) {
+      const key = headerPath[2]
       // Why: block ends at the next *real* header (multi-line aware).
       const after = content.slice(nextCursor)
       const nextHeaderRel = findNextTableHeader(after)
@@ -646,6 +718,17 @@ function unescapeTomlString(escaped: string): string {
         result += '"'
       } else if (next === '\\') {
         result += '\\'
+      } else if (next === 'u' || next === 'U') {
+        // \uXXXX / \UXXXXXXXX: two spellings of one key must decode to the same key.
+        const len = next === 'u' ? 4 : 8
+        const hex = escaped.slice(i + 2, i + 2 + len)
+        const cp = /^[0-9A-Fa-f]+$/.test(hex) && hex.length === len ? Number.parseInt(hex, 16) : -1
+        if (cp >= 0 && cp <= 0x10ffff) {
+          result += String.fromCodePoint(cp)
+          i += 2 + len
+          continue
+        }
+        result += `\\${next}`
       }
       // Why: unknown escapes round-trip — preserve the backslash so we don't
       // silently drop information.

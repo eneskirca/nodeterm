@@ -37,6 +37,8 @@ export const APPEARANCE_RESET_KEYS = [
   'appTheme',
   'uiScale',
   'tabBarHeight',
+  'markdownFontFamily',
+  'markdownFontSize',
   'accent',
   'desktopWallpaper',
   'hiddenNodeMenuItems',

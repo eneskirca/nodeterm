@@ -17,6 +17,7 @@ import { IconClose } from './icons'
 import { createPortal } from 'react-dom'
 import { equalizerBars } from '../lib/dictation-equalizer'
 import { PcmCapture } from '../lib/pcm-capture'
+import { micDeniedMessage, micPlatform } from '../lib/micPermission'
 import { useSession } from '../session/session'
 import { useSettings } from '../state/settings'
 import { hasSpeechModel } from '@shared/speech'
@@ -195,9 +196,7 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
       try {
         const ok = await window.nodeTerminal.speech.micConsent()
         if (!ok) {
-          setError(
-            'Microphone access was not granted — allow it in System Settings (or your browser site settings) and try again.'
-          )
+          setError(micDeniedMessage(micPlatform()))
           return
         }
       } catch (err) {
@@ -306,9 +305,20 @@ export function DictationOverlay({ target, stopSignal, onClose, onOpenLicense }:
 
   const mode = dictationMode(target, modelReady)
 
+  // Desktop only: the browser bridge leaves `openMicSettings` absent (its permission is the
+  // browser's own site setting), so the button simply does not render there.
+  // Only macOS and Windows have a privacy page to open.
+  const platform = micPlatform()
+  const openMicSettings =
+    platform === 'darwin' || platform === 'win32' ? window.nodeTerminal.speech?.openMicSettings : undefined
   const errorBlock = error && (
     <div className="dictation__error">
       <span>{error}</span>
+      {openMicSettings && error === micDeniedMessage(platform) && (
+        <button type="button" className="dictation__error-action" onClick={() => void openMicSettings().catch(() => undefined)}>
+          Open microphone settings
+        </button>
+      )}
       {isProGateError(error) && (
         <button type="button" className="dictation__error-action" onClick={onOpenLicense}>
           See nodeterm Pro

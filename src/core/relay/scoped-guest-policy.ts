@@ -434,6 +434,9 @@ export const SCOPED: Readonly<Record<string, Check>> = Object.freeze({
 export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   // A whole-workspace write from a peer would replace the host's other projects.
   IPC.workspaceSave,
+  // Host-only for every peer (shared/host-control.ts): it would type a launch on the host and read
+  // a host-local prompt file into it. A relay tab never sends it.
+  IPC.ptyExecuteLaunch,
   // Project settings / setup / trust: relay-api.ts keeps these LOCAL; the setup ones are host-only.
   IPC.projectSettingsRead,
   IPC.projectSettingsWriteShared,

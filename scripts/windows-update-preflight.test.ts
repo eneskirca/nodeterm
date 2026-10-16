@@ -92,10 +92,48 @@ describe('NSIS safety wiring', () => {
     expect(fs.readFileSync(templates + 'uninstaller.nsh', 'utf8')).toContain('!insertmacro CHECK_APP_RUNNING')
     expect(include).toContain('"${PROJECT_DIR}\\scripts\\windows-update-preflight.ps1"')
   })
+  // U6: an update the app hands itself over to (--updated) or any silent run starts while the
+  // app's own processes are still exiting. It waits for them — bounded, on "running" only — and,
+  // if they never leave, gives the user their app back instead of nothing.
+  it('unattended runs wait a bounded time, and only on exit code 10', () => {
+    const body = include.slice(include.indexOf('nodeterm_preflight_retry:'), include.indexOf('SetErrorLevel 2'))
+    expect(body).toMatch(
+      /\$\{If\} \$R0 == 10\s+\$\{If\} \$\{isUpdated\}\s+\$\{OrIf\} \$\{Silent\}\s+\$\{If\} \$R1 < 30\s+IntOp \$R1 \$R1 \+ 1\s+Sleep 1000\s+Goto nodeterm_preflight_retry/
+    )
+    expect(include).toMatch(/StrCpy \$R1 0\s+nodeterm_preflight_retry:/)
+    // Exit 20 (could not verify) never loops.
+    expect(body).not.toMatch(/\$R0 == 20/)
+    expect(body.match(/Goto nodeterm_preflight_retry/g)).toHaveLength(1)
+  })
+  it('a timed-out --updated install records why and relaunches the installed app before quitting', () => {
+    const unattended = include.slice(include.indexOf('nodeterm_preflight_unattended:'), include.indexOf('nodeterm_preflight_cancel:'))
+    expect(unattended).toContain('!ifndef BUILD_UNINSTALLER')
+    expect(unattended).toMatch(/\$\{If\} \$\{isUpdated\}/)
+    expect(unattended).toContain('ReadEnvStr $R2 LOCALAPPDATA')
+    expect(unattended).toContain('"$R2\\nodeterm\\update-failed.json"')
+    // nsExec can answer "error"/"timeout" instead of a number: the code must be a JSON string.
+    expect(unattended).toContain('"code":"$R0"')
+    const marker = unattended.indexOf('FileWrite')
+    const exec = unattended.indexOf('Exec \'"$INSTDIR\\${APP_EXECUTABLE_FILENAME}"\'')
+    expect(marker).toBeGreaterThan(0)
+    expect(exec).toBeGreaterThan(marker)
+    expect(include.indexOf('nodeterm_preflight_cancel:')).toBeGreaterThan(include.indexOf('nodeterm_preflight_unattended:'))
+  })
+  it('tells the user to quit from the tray first, and to Prepare only if still blocked', () => {
+    const running = include.split('\n').find((l) => l.includes('MessageBox') && l.includes('nodeterm is still running'))
+    expect(running).toBeDefined()
+    const tray = running!.indexOf('system tray')
+    const prepare = running!.indexOf('Prepare for update')
+    expect(tray).toBeGreaterThan(0)
+    expect(prepare).toBeGreaterThan(tray)
+    expect(running).toMatch(/Only if this message comes back after quitting/)
+  })
   it('only proceeds on proven clear; silent, error and cancellation paths quit nonzero', () => {
     expect(include).toMatch(/\$R0 == 0\s+Goto nodeterm_preflight_clear/)
-    expect(include).toMatch(/SetErrorLevel 2\s+IfSilent nodeterm_preflight_cancel/)
+    expect(include).toMatch(/SetErrorLevel 2\s+IfSilent nodeterm_preflight_unattended/)
     expect(include).toMatch(/nodeterm_preflight_cancel:\s+Quit/)
+    // The interactive branch must not fall into the unattended relaunch below it.
+    expect(include).toMatch(/\$\{EndIf\}\s+Goto nodeterm_preflight_cancel\s+nodeterm_preflight_unattended:/)
     expect(include.match(/\/SD IDCANCEL/g)).toHaveLength(2)
     const production = include + fs.readFileSync(script, 'utf8')
     expect(production).not.toMatch(/\b(?:Stop-Process|taskkill|KILL_PROCESS|_CHECK_APP_RUNNING|Set-ExecutionPolicy)\b/i)

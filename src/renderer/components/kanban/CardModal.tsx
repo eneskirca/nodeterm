@@ -30,6 +30,7 @@ import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { IssueRefChip } from '../IssueRefChip'
 import { TeamProgressChip } from '../TeamProgressChip'
 import { PortsChip } from '../PortsChip'
+import { QueuedLaunchChip } from './QueuedLaunchChip'
 import { useProjects } from '../../state/projects'
 import type { TeamStation } from '../../lib/teamProgress'
 import { sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
@@ -52,7 +53,9 @@ import { useSession } from '../../session/session'
 // imports from `components/kanban/*`, and none of those re-import CardModal.
 import { nodeUploadScope, wakeHibernatedNode } from '../../nodes/TerminalNode'
 import { StationFailedChip } from '../StationFailedChip'
-import { droppedPaths } from '../../terminal/file-drop'
+import { dropDialect, droppedPaths } from '../../terminal/file-drop'
+import { hostPlatformFor } from '../../terminal/host-platform'
+import { isWindowsPlatform } from '@shared/platform-utils'
 import { requestTerminalFocusOnExit } from '../../terminal/useMdModeFocus'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
@@ -134,14 +137,16 @@ interface CardModalProps {
    *  row uses, so the header ✦ and the menu row cannot disagree: it reports a failure, asks the
    *  card's OWN core, and drives the shared per-node naming spinner. */
   onAiName?: () => void
+  /** ▶ on the header's QUEUED chip (the card's held launch). Absent = chip without ▶. */
+  onRunQueued?: () => void
 }
 
 /** Trello-style card popup over the board. Scrim click / Esc close it; the board (and the
  *  canvas under it) stay mounted. Terminal cards carry the node header's actions too:
  *  search / dictate / AI-name / the ⌘M view — ChatPanel or the output markdown, the same face the
  *  canvas node shows (the node itself is hidden under the board). */
-export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName }: CardModalProps) {
-  const { api } = useSession()
+export function CardModal({ session, projectId, projectName, projectColor, columnTitle, board, onChangeBoard, onClose, portsProjectId, onOpenCanvas, onRename, onEditSticky, onBrowserNav, onSetIcon, onOpenIssue, mentionables, team, onTravel, initialView, onSetColor, onDelete, onAiName, onRunQueued }: CardModalProps) {
+  const { api, source: coreSource } = useSession()
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
   const sessionIcon = normalizeNodeIcon(session.icon)
@@ -489,6 +494,9 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           </div>
           {isTerminal && onOpenIssue && <IssueRefChip issueRef={session.issueRef} onOpen={onOpenIssue} />}
           {isTerminal && team && team.length > 0 && onTravel && <TeamProgressChip stations={team} onTravel={onTravel} />}
+          {isTerminal && session.pendingLaunch && (
+            <QueuedLaunchChip nodeId={session.id} pending={session.pendingLaunch} firstOpen={session.launchFirstOpen} onRun={onRunQueued} />
+          )}
           {/* The same Ports chip as the canvas node header. Opening a port places the browser node
               beside this node ON THE CANVAS, so the modal hands over to the canvas to show it. */}
           {isTerminal && portsProjectId && (
@@ -778,10 +786,18 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
                             agentId={createdAgent!}
                             // Same resolution as a drop onto this card's live viewer (ModalTerminal):
                             // an SSH node uploads over the master its PTY runs on.
-                            pathsForFiles={(files) =>
+                            // The composer feeds the agent CLI, so a Windows core gets quoted paths.
+                            pathsForFiles={async (files) =>
                               droppedPaths(files, {
                                 sshRemoteTmux: !!session.spawn.sshRemoteTmux,
-                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : ''
+                                projectId: session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : '',
+                                dialect: dropDialect({
+                                  corePlatform: await hostPlatformFor(api),
+                                  remote: !!session.spawn.sshRemoteTmux || !!session.spawn.ssh,
+                                  agentPane: true,
+                                  localDesktop: coreSource === 'local' && !isBrowserRuntime(),
+                                  viewerWindows: isWindowsPlatform()
+                                })
                               })
                             }
                             sshProjectId={session.spawn.sshRemoteTmux ? nodeUploadScope(session.spawn.ssh) : undefined}

@@ -1955,6 +1955,23 @@ export class WorkspaceStore {
       .map((e) => ({ id: e.id, ssh: e.ssh as NonNullable<Project['ssh']> }))
   }
 
+  /** Every project in the loaded index as a `nodeterm://open` link may name it (main/open-link.ts):
+   *  id, name, folder, closed, and the two kinds a link never offers (SSH, handed to a hosted team).
+   *  Undefined before the index is loaded. Sync, like `localCwdForProject`. */
+  linkProjectEntries():
+    | { id: string; name: string; cwd?: string; closed?: boolean; ssh?: boolean; handedOff?: boolean }[]
+    | undefined {
+    if (!this.index) return undefined
+    return this.index.entries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      ...(e.cwd ? { cwd: e.cwd } : {}),
+      ...(e.closed ? { closed: true } : {}),
+      ...(e.ssh ? { ssh: true } : {}),
+      ...(e.handedOffTo ? { handedOff: true } : {})
+    }))
+  }
+
   /** The local folder cwd of a project by id (index lookup), or undefined for ssh/inline/unknown
    *  projects. Sync (reads the in-memory index): the board-log router's local-vs-unsupported call. */
   localCwdForProject(projectId: string): string | undefined {

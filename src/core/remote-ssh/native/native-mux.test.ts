@@ -7,7 +7,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { AddressInfo } from 'net'
-import { Server, utils, type Connection } from 'ssh2'
+import { Client, Server, utils, type Connection, type ConnectConfig } from 'ssh2'
 import { NativeMux, noMasterMessage } from './native-mux'
 import { parseSshArgv } from './ssh-argv'
 import { childArgs, masterRoundTripArgs, remoteTmuxPtyArgs } from '../control-master'
@@ -26,6 +26,10 @@ let port: number
 let connections = 0
 let live: Connection[] = []
 let serverHostKey = hostKey.private
+/** Per session: the requests seen before its exec ('auth-agent', 'pty'), with the command. */
+let sessions: { requests: string[]; cmd: string }[] = []
+/** Whether the server grants agent forwarding (AllowAgentForwarding). */
+let allowAgentFwd = true
 
 function pubMatches(offered: { algo: string; data: Buffer }, pub: string): boolean {
   const k = utils.parseKey(pub)
@@ -47,14 +51,22 @@ function startServer(): Promise<void> {
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept()
+        const requests: string[] = []
         let ptyInfo: { cols: number; rows: number } | undefined
+        session.on('auth-agent', (acceptFwd, rejectFwd) => {
+          requests.push('auth-agent')
+          if (allowAgentFwd) acceptFwd?.()
+          else rejectFwd?.()
+        })
         session.on('pty', (acceptPty, _reject, info) => {
+          requests.push('pty')
           ptyInfo = { cols: info.cols, rows: info.rows }
           acceptPty?.()
         })
         session.on('exec', (acceptExec, _reject, info) => {
           const ch = acceptExec()
           const cmd = info.command
+          sessions.push({ requests: [...requests], cmd })
           if (cmd === 'cat') {
             const chunks: Buffer[] = []
             ch.on('data', (d: Buffer) => chunks.push(d))
@@ -126,6 +138,8 @@ const muxes: NativeMux[] = []
 afterEach(() => {
   for (const m of muxes.splice(0)) m.exitAll()
   for (const c of live.splice(0)) c.end()
+  sessions = []
+  allowAgentFwd = true
 })
 const track = (m: NativeMux): NativeMux => (muxes.push(m), m)
 
@@ -322,5 +336,138 @@ describe('NativeMux over a real SSH protocol peer', () => {
     await expect(
       m.forward(CP(), { remoteSocket: '/r.sock', localHost: '127.0.0.1', localPort: 1 })
     ).rejects.toThrow(noMasterMessage(CP()))
+  })
+})
+
+describe('ForwardAgent (target PTY channels only)', () => {
+  const pty = () => {
+    const p = parseSshArgv(remoteTmuxPtyArgs(conn(), CP(), 'nt-fwd', '~'))
+    if (p.kind !== 'exec') throw new Error()
+    return p
+  }
+  const drain = (ch: NodeJS.ReadableStream & NodeJS.EventEmitter): Promise<void> =>
+    new Promise((r) => {
+      ch.on('close', () => r())
+      ch.resume()
+    })
+  const fwdMux = (forwardAgent: string | undefined, extra: Partial<ConstructorParameters<typeof NativeMux>[0]> = {}) =>
+    track(
+      mux({
+        resolveHost: async () => ({ ...host(), forwardAgent }),
+        defaultAgent: () => '/fake/agent.sock',
+        ...extra
+      })
+    )
+
+  it('`yes`: the pty channel asks for forwarding; background execs never do', async () => {
+    const m = fwdMux('yes')
+    expect((await m.exec(exec('echo bg'))).code).toBe(0)
+    await drain(await m.shell(pty(), { cols: 80, rows: 24 }))
+    expect((await m.exec(exec('echo bg2'))).code).toBe(0)
+    const bg = sessions.filter((x) => x.cmd.startsWith('echo'))
+    expect(bg.every((x) => !x.requests.includes('auth-agent'))).toBe(true)
+    const term = sessions.find((x) => x.cmd.includes('new-session'))
+    expect(term?.requests).toEqual(['auth-agent', 'pty'])
+  })
+
+  it('`no` / absent: nothing is requested', async () => {
+    for (const v of ['no', undefined]) {
+      const m = fwdMux(v)
+      await drain(await m.shell(pty(), { cols: 80, rows: 24 }))
+      m.exitAll()
+    }
+    expect(sessions.some((x) => x.requests.includes('auth-agent'))).toBe(false)
+  })
+
+  it('a server that refuses forwarding still gets its terminal, and is not asked again', async () => {
+    allowAgentFwd = false
+    const logs: string[] = []
+    const m = fwdMux('yes', { log: (l) => logs.push(l) })
+    const out = await new Promise<string>((resolve, reject) => {
+      m.shell(pty(), { cols: 80, rows: 24 }).then((ch) => {
+        let text = ''
+        ch.on('data', (d: Buffer) => (text += d.toString()))
+        ch.on('close', () => resolve(text))
+      }, reject)
+    })
+    expect(out).toContain('pty 80x24')
+    await drain(await m.shell(pty(), { cols: 80, rows: 24 }))
+    const terms = sessions.filter((x) => x.cmd.includes('new-session'))
+    expect(terms.map((x) => x.requests.includes('auth-agent'))).toEqual([false, false])
+    expect(logs.filter((l) => /refused agent forwarding/.test(l))).toHaveLength(1)
+  })
+})
+
+describe('agent selection on Windows (Pageant pipe)', () => {
+  const me = os.userInfo().username
+  const capture = (): { agents: unknown[]; restore(): void } => {
+    const agents: unknown[] = []
+    const real = Client.prototype.connect
+    Client.prototype.connect = function (this: Client, cfg: ConnectConfig) {
+      agents.push(cfg.agent)
+      return real.call(this, cfg)
+    }
+    return { agents, restore: () => void (Client.prototype.connect = real) }
+  }
+
+  it('`IdentityAgent pageant` is the discovered pipe — never the string ssh2 turns into pagent.exe', async () => {
+    const cap = capture()
+    try {
+      const m = track(
+        mux({
+          platform: 'win32',
+          listWindowsPipes: () => ['openssh-ssh-agent', `pageant.${me}.abc123`],
+          resolveHost: async () => ({ ...host(), identityAgent: 'pageant', forwardAgent: 'yes' })
+        })
+      )
+      expect((await m.exec(exec('echo pg'))).code).toBe(0)
+      expect(cap.agents).toEqual([`\\\\.\\pipe\\pageant.${me}.abc123`])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('no Pageant pipe: no agent at all, and one warning saying why', async () => {
+    const cap = capture()
+    const logs: string[] = []
+    try {
+      const m = track(
+        mux({
+          platform: 'win32',
+          listWindowsPipes: () => ['openssh-ssh-agent'],
+          log: (l) => logs.push(l),
+          resolveHost: async () => ({ ...host(), identityAgent: 'PAGEANT', forwardAgent: 'yes' })
+        })
+      )
+      expect((await m.exec(exec('echo nopg'))).code).toBe(0)
+      expect(cap.agents).toEqual([undefined])
+      expect(logs.filter((l) => /IdentityAgent pageant: no Pageant pipe/.test(l))).toHaveLength(1)
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('POSIX keeps the value as written', async () => {
+    const cap = capture()
+    try {
+      const m = track(mux({ platform: 'linux', resolveHost: async () => ({ ...host(), identityAgent: '/tmp/a.sock', forwardAgent: 'yes' }) }))
+      expect((await m.exec(exec('echo posix'))).code).toBe(0)
+      expect(cap.agents).toEqual(['/tmp/a.sock'])
+    } finally {
+      cap.restore()
+    }
+  })
+})
+
+describe('unsupported ~/.ssh/config options', () => {
+  it('are named in ONE warning, and the connection still comes up', async () => {
+    const logs: string[] = []
+    const m = track(
+      mux({ log: (l) => logs.push(l), resolveHost: async () => ({ ...host(), unsupported: ['certificatefile', 'localforward'] }) })
+    )
+    expect((await m.exec(exec('echo a'))).code).toBe(0)
+    await m.exit(CP())
+    expect((await m.exec(exec('echo b'))).code).toBe(0)
+    expect(logs.filter((l) => /does not support are ignored: certificatefile, localforward/.test(l))).toHaveLength(1)
   })
 })

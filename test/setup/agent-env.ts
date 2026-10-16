@@ -6,13 +6,14 @@
 // account dir (measured: a server boot test overwrote the session's `get-linked-context` skill).
 // CI never sets these; stripping them here makes every machine behave like CI. A test that needs
 // one sets it itself.
+//
+// The relocation list has ONE home — `HOME_OVERRIDE_ENV` in `src/core/test-home.ts`, which the
+// HOME sandbox (`home-sandbox.ts` / `home-worker-env.ts`) clears too. Only the nodeterm session
+// variables, which relocate nothing, are added here.
+import { HOME_OVERRIDE_ENV } from '../../src/core/test-home'
+
 for (const k of [
-  'CLAUDE_CONFIG_DIR',
-  'CODEX_HOME',
-  'GROK_HOME',
-  'COPILOT_HOME',
-  'GEMINI_CLI_HOME',
-  'XDG_CONFIG_HOME',
+  ...HOME_OVERRIDE_ENV,
   'NODETERM_NODE_ID',
   'NODETERM_HOOK_ENDPOINT',
   'NODETERM_CANVAS_CONTROL'

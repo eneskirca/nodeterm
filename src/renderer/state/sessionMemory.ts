@@ -10,7 +10,13 @@
 // for different scopes without any intervening bump, which is exactly the switch this must catch.
 
 import { create } from 'zustand'
-import type { MemInfo, SessionMemoryApi, SessionMemoryQuery, SessionMemoryRow } from '@shared/types'
+import type {
+  MemInfo,
+  SessionHostOverhead,
+  SessionMemoryApi,
+  SessionMemoryQuery,
+  SessionMemoryRow
+} from '@shared/types'
 import { activeSessionApi, sessionForProject } from '../session/session'
 
 /** How often the pill re-reads the LOCAL machine's RAM. Local only — see `startHostPoll`. */
@@ -21,6 +27,10 @@ interface SessionMemoryState {
   rows: SessionMemoryRow[]
   /** Live sessions the sweep could not measure (Zellij); 0 = none, null = could not tell. */
   unmeasured: number | null
+  /** Whose sessions `unmeasured` counts — absent = Zellij (see SessionMemoryReport). */
+  unmeasuredBackend?: 'session-host'
+  /** The Windows session host's own cost (SessionMemoryReport.host); absent = none / unmeasured. */
+  host?: SessionHostOverhead
   mem: MemInfo | null
   loading: boolean
   /** Scope key the current rows belong to; null before the first successful load. */
@@ -86,12 +96,20 @@ export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
       if (scopeKey !== activeScope) return
       // `ok:false` is carried through untouched: the panel renders "could not measure", never an
       // empty session list.
-      set({ ok: r.ok, rows: r.rows, mem: r.mem, unmeasured: r.unmeasured ?? 0, loadedScope: scopeKey })
+      set({
+        ok: r.ok,
+        rows: r.rows,
+        mem: r.mem,
+        unmeasured: r.unmeasured ?? 0,
+        unmeasuredBackend: r.unmeasuredBackend,
+        host: r.ok ? r.host : undefined,
+        loadedScope: scopeKey
+      })
     } catch {
       // A rejected call (dead WS bridge, no session yet) is the same fact as `ok:false` — the sweep
       // could not run. It is emphatically not "there are no sessions".
       if (scopeKey !== activeScope) return
-      set({ ok: false, rows: [], unmeasured: 0 })
+      set({ ok: false, rows: [], unmeasured: 0, unmeasuredBackend: undefined, host: undefined })
     } finally {
       // A response for a scope we have left owns nothing here — `enterScope` already cleared the
       // spinner when it switched.
@@ -133,5 +151,14 @@ function enterScope(scopeKey: string, set: SetState): void {
   activeScope = scopeKey
   // `loading:false` too: whatever was in flight now belongs to a scope we have left, so its
   // `finally` will (correctly) not clear the spinner it set.
-  set({ ok: true, rows: [], unmeasured: 0, mem: null, loading: false, loadedScope: null })
+  set({
+    ok: true,
+    rows: [],
+    unmeasured: 0,
+    unmeasuredBackend: undefined,
+    host: undefined,
+    mem: null,
+    loading: false,
+    loadedScope: null
+  })
 }

@@ -43,72 +43,17 @@
 //   3. **Exit 0 when there is no shell and no script.** "nodeterm is not installed here" must look
 //      like nothing happening, not like a broken hook — same contract the POSIX `else` branch has.
 //
-// The shell search order is Git for Windows' real layouts first (both `bin` and `usr\bin`, 64-bit
-// and 32-bit program dirs, and the per-user install under LOCALAPPDATA, which is what `winget
-// install Git.Git` produces without admin), then whatever `sh.exe` is on PATH. PATH is last on
-// purpose: it is the least predictable, and a WSL `sh` shim there cannot run a Windows-path script.
+// The shell search, the wrapper template and the cmd.exe invocation live in
+// `windows-hook-wrapper.ts`, shared with gemini, grok, copilot and antigravity. This file keeps the
+// codex-specific names and the measurements above; the codex wrapper's bytes are pinned by a test.
+import { buildWindowsHookWrapper } from './windows-hook-wrapper'
 
-/** Where the wrapper looks for a POSIX shell, in order. cmd.exe expands these itself. */
-export const WINDOWS_SH_CANDIDATES = [
-  '%ProgramFiles%\\Git\\bin\\sh.exe',
-  '%ProgramFiles%\\Git\\usr\\bin\\sh.exe',
-  '%ProgramFiles(x86)%\\Git\\bin\\sh.exe',
-  '%ProgramFiles(x86)%\\Git\\usr\\bin\\sh.exe',
-  '%LOCALAPPDATA%\\Programs\\Git\\bin\\sh.exe',
-  '%LOCALAPPDATA%\\Programs\\Git\\usr\\bin\\sh.exe'
-] as const
+export { WINDOWS_SH_CANDIDATES, windowsShProbeBatch } from './windows-hook-wrapper'
 
 /** The wrapper's file name, beside the managed script it runs. */
 export const CODEX_WINDOWS_WRAPPER_FILE = 'codex-hook.cmd'
 
-/**
- * The batch wrapper's content.
- *
- * `%~dp0` is the wrapper's own directory (with a trailing backslash), so the wrapper carries NO
- * absolute path of its own — it finds `codex.sh` beside itself. That matters because
- * `managedHookScriptPath`'s whole point is one stable machine-wide location, and baking the path
- * in would give us a second copy of it to keep in sync.
- *
- * The script path is handed to sh with forward slashes (`%VAR:\=/%`): MSYS converts a
- * `C:\...`-shaped argument in most cases, but `C:/...` needs no conversion at all and cannot be
- * mistaken for an option or an escape.
- *
- * CRLF: batch files are line-oriented and cmd.exe is not reliably tolerant of LF, so this is
- * written with CRLF regardless of the host that generated it (an SSH host never runs it — see
- * `buildManagedCommand`'s platform parameter).
- */
-/**
- * The batch lines that leave `NT_SH` naming a POSIX shell (or undefined): the candidates above in
- * order, then PATH. Shared with the antigravity wrapper so the two cannot disagree about where Git
- * Bash lives. The caller must `set "NT_SH="` first.
- */
-export function windowsShProbeBatch(): string[] {
-  return [
-    ...WINDOWS_SH_CANDIDATES.map((p) => `if not defined NT_SH if exist "${p}" set "NT_SH=${p}"`),
-    // PATH last: least predictable, and a WSL shim there cannot run a Windows-path script.
-    'if not defined NT_SH for %%I in (sh.exe) do if not defined NT_SH set "NT_SH=%%~$PATH:I"'
-  ]
-}
-
+/** The batch wrapper's content: `codex.sh`, found beside the wrapper, run by the first POSIX shell. */
 export function buildCodexWindowsWrapper(): string {
-  const lines = [
-    '@echo off',
-    'rem Managed by nodeterm (agent-hooks). Regenerated on every app launch; edits are lost.',
-    'setlocal EnableExtensions',
-    'set "NT_SCRIPT=%~dp0codex.sh"',
-    'if not exist "%NT_SCRIPT%" goto :nt_drain',
-    'set "NT_SH="',
-    ...windowsShProbeBatch(),
-    'if not defined NT_SH goto :nt_drain',
-    'set "NT_ARG=%NT_SCRIPT:\\=/%"',
-    '"%NT_SH%" "%NT_ARG%"',
-    'exit /b %ERRORLEVEL%',
-    ':nt_drain',
-    'rem No shell or no script: consume the payload codex wrote to our stdin, then succeed.',
-    'rem Bailing without reading can EPIPE the writer mid-payload (#186/#187).',
-    'findstr /r ".*" >nul 2>&1',
-    'exit /b 0',
-    ''
-  ]
-  return lines.join('\r\n')
+  return buildWindowsHookWrapper('codex.sh', 'codex')
 }

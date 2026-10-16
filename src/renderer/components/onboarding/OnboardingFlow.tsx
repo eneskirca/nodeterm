@@ -460,7 +460,9 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
                 </p>
                 <p>
                   Closing the lid still sleeps the machine — keep it open and plugged in for
-                  overnight runs.
+                  overnight runs (on a Mac, a closed lid works when plugged in with an external
+                  display). On battery below 5%, or when the machine runs critically hot, it is
+                  allowed to sleep.
                 </p>
                 <div className="onb-toggle-row">
                   <Switch

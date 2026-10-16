@@ -121,10 +121,10 @@ export interface AgentNodeStatus {
    * moment of hibernation, persisted beside the flag, and dropped with it.
    *
    * The wake refuses to type a launch line into a pane it does not recognize as a shell, and its
-   * allowlist (`isShellCommand`) knows zsh/bash/fish/… but not `nu`, `xonsh` or `pwsh`. The EXIT
+   * allowlist (`isShellCommand`) knows zsh/bash/fish/pwsh/cmd/nu/… but not `xonsh` or `elvish`. The EXIT
    * half has a second, allowlist-free signal for exactly those users (the foreground command
    * stopped being the CLI, twice in a row) — so without this the wake is STRICTER than the exit,
-   * and a `nu` user could be hibernated and then never woken: the chip would refuse forever.
+   * and an `xonsh` user could be hibernated and then never woken: the chip would refuse forever.
    * Remembering what we exited TO closes that gap, and it is narrow by construction: it permits
    * one specific string, on one specific node, recorded by us.
    *

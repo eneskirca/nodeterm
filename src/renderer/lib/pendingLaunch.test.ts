@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { PendingLaunch } from '@shared/types'
 import {
+  firstOpenInFlight,
   launchesToFire,
   queueControlLaunch,
   controlLaunchState,
@@ -674,5 +675,20 @@ describe('launchBriefPresent — only a definite "not there" holds a launch', ()
     expect(await launchBriefPresent('/x', { id: 'p', remote: true }, exists)).toBe(true)
     expect(await launchBriefPresent('/x', undefined, exists)).toBe(true)
     expect(exists).not.toHaveBeenCalled()
+  })
+})
+
+describe('firstOpenInFlight (one rule for the canvas node and the board card)', () => {
+  const plain: PendingLaunch = { after: [], command: 'claude', manualOnly: true }
+  it('is in flight only with the initialCommand alias, no reported delivery and no hold', () => {
+    expect(firstOpenInFlight(true, plain, undefined)).toBe(true)
+    expect(firstOpenInFlight(false, plain, undefined)).toBe(false)
+  })
+  it('a reported delivery (failed, stalled, starting) is no longer "in flight"', () => {
+    expect(firstOpenInFlight(true, plain, { kind: 'failed', attempts: 1, at: 0 })).toBe(false)
+  })
+  it('a real hold always shows', () => {
+    expect(firstOpenInFlight(true, { ...plain, after: ['a1'] }, undefined)).toBe(false)
+    expect(firstOpenInFlight(true, { ...plain, awaitSetupGroup: 'g1' }, undefined)).toBe(false)
   })
 })

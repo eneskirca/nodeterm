@@ -21,6 +21,10 @@ export type UpdatePrepInspection =
        *  on screen (an unmounted node's renderer state is cleared). `attention` = an unanswered
        *  question or approval ticket is held. */
       mirror: Record<string, { state?: string; attention: boolean }>
+      /** The host runs from its staged copy outside the installation (0.4.1+), so it does not
+       *  block the installer: quitting nodeterm — from the tray too — is enough, and sessions keep
+       *  running. False for a legacy/install-dir host AND for one whose location is unknown. */
+      staged: boolean
     }
   | { kind: 'error'; error: string }
 
@@ -35,6 +39,14 @@ export type UpdatePrepShutdown =
   | { kind: 'unconfirmed'; error: string }
   /** The host predates the `shutdown` feature. */
   | { kind: 'host-unsupported' }
+
+/** The steps for a STAGED host: nothing has to stop. Kept beside the legacy steps so the dialog,
+ *  the installer text and the docs say the same thing. */
+export const STAGED_UPDATE_STEPS: readonly string[] = [
+  'Quit nodeterm — if it keeps running in the system tray, right-click the tray icon and choose Quit.',
+  'Run the installer. Your sessions keep running in the background session host and reattach when nodeterm starts again.',
+  'Only if the installer still says nodeterm is running: reopen nodeterm and use Prepare for update to stop the sessions.'
+]
 
 /** The manual steps, for a host that cannot shut itself down (or did not confirm it did). Kept in
  *  one place so the dialog and the docs say the same thing. */

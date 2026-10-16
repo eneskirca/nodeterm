@@ -14,7 +14,10 @@ import {
   isSafeLocalTranscriptPath,
   classifyClaudeConfigDir,
   configDirFromTranscriptPath,
-  normalizeLinkedConfigDir
+  normalizeLinkedConfigDir,
+  expandTildeLinkedDir,
+  sameLinkedConfigDir,
+  isUnderLinkedConfigDir
 } from './claude-accounts-core'
 import type { ClaudeAccount } from '../shared/types'
 
@@ -559,5 +562,40 @@ describe('isSafeLocalTranscriptPath — linked config dirs', () => {
     expect(
       isSafeLocalTranscriptPath(`${home}/.claude/projects/s.jsonl`, home, ud, undefined, undefined, linkedDirs)
     ).toBe(true)
+  })
+})
+
+describe('linked config dir path helpers (link refusals on every dialect)', () => {
+  it('expands ~ and ~/ everywhere, ~\\ only in the win32 dialect', () => {
+    expect(expandTildeLinkedDir('~/.claude-2', '/home/u', 'posix')).toBe('/home/u/.claude-2')
+    expect(expandTildeLinkedDir('~', '/home/u', 'posix')).toBe('/home/u')
+    // POSIX: a backslash is filename text — left literal (then refused as relative).
+    expect(expandTildeLinkedDir('~\\.claude-2', '/home/u', 'posix')).toBe('~\\.claude-2')
+    expect(expandTildeLinkedDir('~\\.claude-2', 'C:\\Users\\X', 'win32')).toBe('C:\\Users\\X\\.claude-2')
+    expect(expandTildeLinkedDir('~/.claude-2', 'C:\\Users\\X', 'win32')).toBe('C:\\Users\\X\\.claude-2')
+    expect(expandTildeLinkedDir('/abs/~/x', '/home/u', 'posix')).toBe('/abs/~/x')
+    expect(expandTildeLinkedDir('~other/x', '/home/u', 'posix')).toBe('~other/x')
+  })
+
+  it('sameLinkedConfigDir is case-insensitive on win32 only', () => {
+    expect(sameLinkedConfigDir('C:\\Users\\X\\.claude', 'c:\\users\\x\\.CLAUDE\\')).toBe(true)
+    expect(sameLinkedConfigDir('C:/Users/X/.claude', 'c:\\users\\x\\.claude')).toBe(true)
+    expect(sameLinkedConfigDir('/home/u/.claude', '/home/u/.claude/')).toBe(true)
+    expect(sameLinkedConfigDir('/home/u/.claude', '/home/u/.CLAUDE')).toBe(false)
+    expect(sameLinkedConfigDir('/home/u/.claude', 'relative')).toBe(false)
+    expect(sameLinkedConfigDir(undefined, undefined)).toBe(false)
+  })
+
+  it('isUnderLinkedConfigDir is a strict, separator-bounded, dialect-correct prefix', () => {
+    const root = 'C:\\Users\\X\\AppData\\Roaming\\nodeterm\\claude-accounts'
+    expect(isUnderLinkedConfigDir('c:\\users\\x\\appdata\\roaming\\NODETERM\\claude-accounts\\abc', root)).toBe(
+      true
+    )
+    expect(isUnderLinkedConfigDir(root, root)).toBe(false)
+    expect(isUnderLinkedConfigDir(`${root}-evil\\abc`, root)).toBe(false)
+    expect(isUnderLinkedConfigDir('/data/claude-accounts/abc', '/data/claude-accounts')).toBe(true)
+    expect(isUnderLinkedConfigDir('/data/Claude-accounts/abc', '/data/claude-accounts')).toBe(false)
+    expect(isUnderLinkedConfigDir('/data/claude-accounts-x/abc', '/data/claude-accounts')).toBe(false)
+    expect(isUnderLinkedConfigDir('C:\\a\\b', '/a')).toBe(false)
   })
 })

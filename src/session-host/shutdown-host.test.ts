@@ -182,6 +182,18 @@ async function hello(conn: Connection, token: string, features?: string[]): Prom
 }
 
 describe('session-host shutdown (issue #829)', () => {
+  // U3: prepare-for-update tells a staged host (a plain quit is enough) from one that holds the
+  // installation by the image the host itself publishes. No kill involved, so it runs on Windows.
+  it('publishes its own executable in the state file', async () => {
+    const { child, state } = await startHost()
+    try {
+      expect(state.exe).toBe(process.execPath)
+    } finally {
+      child.kill()
+      await waitForExit(child)
+    }
+  })
+
   posixKillPath('ends every session, replies with their names, then exits and removes its identity', async () => {
     const { child, dataDir, state, token } = await startHost()
     const sockets: Socket[] = []

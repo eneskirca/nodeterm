@@ -16,6 +16,12 @@ describe('looksDropped', () => {
       expect(looksDropped({ ...base, pane })).toBe(true)
   })
 
+  it('accepts the Windows session host\'s shell image names', () => {
+    for (const pane of ['pwsh.exe', 'cmd.exe', 'powershell.exe', 'C:\\Windows\\System32\\cmd.exe'])
+      expect(looksDropped({ ...base, pane })).toBe(true)
+    expect(looksDropped({ ...base, pane: 'node.exe' })).toBe(false)
+  })
+
   // The signal's other half: something is still running in there.
   it('is silent while the agent still owns the pane', () => {
     for (const pane of ['claude', 'node', 'vim', 'npm'])

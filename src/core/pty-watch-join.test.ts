@@ -461,6 +461,24 @@ describe('joinAsWatcher over SSH', () => {
   })
 })
 
+describe('spawnRefusal with no ssh binary (Windows without the OpenSSH Client feature)', () => {
+  const SSH_REMOTE = { controlPath: '/tmp/nt-test-cm', conn: { host: 'h', user: 'u' }, remoteCwd: '/srv/app' }
+  const opts = { cols: 80, rows: 24, persistKey: 'n-native', sshRemote: SSH_REMOTE, requireRemote: true } as PtyCreateOptions
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('refused as ssh where ssh is a process; served where the native transport carries it', async () => {
+    ssh.path = null
+    const m = await manager()
+    const refusal = (o: PtyCreateOptions): string | undefined =>
+      (m as unknown as { spawnRefusal(o: PtyCreateOptions): string | undefined }).spawnRefusal(o)
+    vi.stubEnv('NODETERM_NATIVE_SSH', '0')
+    expect(refusal(opts)).toBe('ssh')
+    // The `ssh` sentinel every runner routes to NativeMux: nothing is spawned from it.
+    vi.stubEnv('NODETERM_NATIVE_SSH', '1')
+    expect(refusal(opts)).toBeUndefined()
+  })
+})
+
 describe('joinAsWatcher (continued)', () => {
   it('the join-only, non-voting rules are FORCED — a caller cannot turn them off', async () => {
     const m = await manager()

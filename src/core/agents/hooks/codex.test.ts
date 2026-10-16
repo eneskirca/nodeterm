@@ -164,7 +164,7 @@ describe('buildCodexHooksAndTrust', () => {
   })
 
   it('is idempotent — re-running on its own output does not duplicate the managed handler', () => {
-    const command = buildManagedCommand('/x/agent-hooks/codex.sh')
+    const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh')
     const first = buildCodexHooksAndTrust({}, command, '/x/hooks.json')!
     const second = buildCodexHooksAndTrust(first.config, command, '/x/hooks.json')!
     for (const ev of CODEX_EVENTS) {
@@ -177,7 +177,7 @@ describe('buildCodexHooksAndTrust', () => {
   })
 
   it('preserves a user-authored hook at its original index before the managed handler', () => {
-    const command = buildManagedCommand('/x/agent-hooks/codex.sh')
+    const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh')
     const userDef = { hooks: [{ type: 'command' as const, command: 'echo mine' }] }
     const built = buildCodexHooksAndTrust({ hooks: { Stop: [userDef] } }, command, '/x/hooks.json')!
     const stop = built.config.hooks?.Stop ?? []
@@ -186,7 +186,7 @@ describe('buildCodexHooksAndTrust', () => {
   })
 
   it('keeps two user definitions at their trust-key indices and trusts the managed tail', () => {
-    const command = buildManagedCommand('/x/agent-hooks/codex.sh')
+    const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh')
     const firstUserDef = { hooks: [{ type: 'command' as const, command: 'echo first' }] }
     const secondUserDef = { hooks: [{ type: 'command' as const, command: 'echo second' }] }
     const built = buildCodexHooksAndTrust(
@@ -205,7 +205,7 @@ describe('buildCodexHooksAndTrust', () => {
   })
 
   it('sweeps a stale managed handler out of an event we no longer subscribe to', () => {
-    const command = buildManagedCommand('/x/agent-hooks/codex.sh')
+    const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh')
     // PreCompact is not in CODEX_EVENTS; a stale managed copy there must be removed.
     const stale = { hooks: [{ type: 'command' as const, command }] }
     const built = buildCodexHooksAndTrust({ hooks: { PreCompact: [stale] } }, command, '/x/hooks.json')!
@@ -271,7 +271,7 @@ describe('buildCodexHooksAndTrust', () => {
   // BARE quoted wrapper path — the entry PowerShell reads as a string literal and never runs. It
   // has to be REPLACED, not appended beside: were the matcher to miss it, the dead entry would
   // survive every launch while still being reported `Completed`. The matcher keys off the
-  // `agent-hooks/codex-hook.cmd` tail, which both spellings carry, so the strip catches it.
+  // `.nodeterm/agent-hooks/codex-hook.cmd` path, which both spellings carry, so the strip catches it.
   it('replaces the pre-#685 bare-quoted wrapper entry with the cmd /c one', () => {
     const stale = {
       hooks: [
@@ -298,6 +298,34 @@ describe('buildCodexHooksAndTrust', () => {
     const stale = {
       hooks: [{ type: 'command' as const, command: '"/home/u/.nodeterm/agent-hooks/codex-hook.cmd"' }]
     }
+    const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh', 'linux')
+    const built = buildCodexHooksAndTrust({ hooks: { Stop: [stale] } }, command, '/h/hooks.json')!
+    expect(built.config.hooks!.Stop).toEqual([{ hooks: [{ type: 'command', command }] }])
+  })
+
+  // Another tool with the same layout is not us. Measured on a Windows desktop: another tool's own
+  // `~/.other/agent-hooks/codex-hook.cmd` entry was stripped by every repair because the matcher
+  // keyed off the bare `agent-hooks/<leaf>` tail.
+  it("keeps another tool's agent-hooks entry with the same leaf name", () => {
+    const other = { hooks: [{ type: 'command' as const, command: 'C:/Users/u/.other/agent-hooks/codex-hook.cmd' }] }
+    const otherPosix = { hooks: [{ type: 'command' as const, command: "sh '/home/u/.other/agent-hooks/codex.sh'" }] }
+    const command = buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32')
+    const built = buildCodexHooksAndTrust(
+      { hooks: { Stop: [other, otherPosix] } },
+      command,
+      'C:\\Users\\u\\.codex\\hooks.json'
+    )!
+    expect(built.config.hooks!.Stop).toEqual([other, otherPosix, { hooks: [{ type: 'command', command }] }])
+    expect(built.trustEntries.find((e) => e.eventLabel === 'stop')).toMatchObject({ groupIndex: 2 })
+  })
+
+  // The directories we HAVE written to are still ours, so a stale entry from them is replaced.
+  it.each([
+    '/home/u/.nodeterm/agent-hooks/codex.sh',
+    "C:\\Users\\u\\AppData\\Roaming\\node-terminal\\agent-hooks\\codex.sh",
+    '/root/.nodeterm-server/agent-hooks/codex.sh'
+  ])('still sweeps a stale entry of ours at %s', (script) => {
+    const stale = { hooks: [{ type: 'command' as const, command: `sh '${script}'` }] }
     const command = buildManagedCommand('/home/u/.nodeterm/agent-hooks/codex.sh', 'linux')
     const built = buildCodexHooksAndTrust({ hooks: { Stop: [stale] } }, command, '/h/hooks.json')!
     expect(built.config.hooks!.Stop).toEqual([{ hooks: [{ type: 'command', command }] }])

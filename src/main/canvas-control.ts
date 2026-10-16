@@ -13,7 +13,7 @@ import path from 'path'
 import { app } from 'electron'
 import { buildControlShimScript } from '../core/canvas-control-core'
 import { codexThreadIdentityRoot } from '../core/codex-identity-proxy'
-import { writeManagedHookFileAtomic } from '../core/agents/hooks/install-helper'
+import { syncWindowsShLauncher, writeManagedHookFileAtomic } from '../core/agents/hooks/install-helper'
 
 function dir(): string {
   return path.join(app.getPath('userData'), 'canvas-control')
@@ -30,6 +30,9 @@ function writeCliFiles(): void {
   // Temp + rename, never a truncating write: agents execute this file, and a shim caught half
   // written is a canvas call that exits 0 having done nothing.
   writeManagedHookFileAtomic(canvasControlShimPath(), buildControlShimScript(codexThreadIdentityRoot()), undefined, 0o755)
+  // Windows: `nodeterm.cmd` beside it, which PowerShell-run agents are told to call (it runs this
+  // same script through Git for Windows' sh.exe). Elsewhere a stray copy is removed.
+  syncWindowsShLauncher(d, 'nodeterm.sh')
   // Sweep the retired Electron-as-Node CLI off upgraders' disks — the shim no longer execs it,
   // so it would sit there forever pointing at a binary path that moves with every app update.
   try {

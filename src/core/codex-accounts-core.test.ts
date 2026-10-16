@@ -12,7 +12,7 @@ import {
 } from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ACCOUNT_ID_RE,
   assertCodexAccountId,
@@ -124,8 +124,15 @@ describe('managed Codex account paths', () => {
 
   it('keeps the managed daemon socket below macOS SUN_LEN', () => {
     const userData = '/Users/example/Library/Application Support/node-terminal'
+    // The short root hangs off the HOME, so the claim is about a real macOS home — not the test
+    // run's sandboxed one (test/setup/home-sandbox.ts), which sits much deeper in the temp dir.
+    const home = vi.spyOn(os, 'homedir').mockReturnValue('/Users/example')
     const accountId = 'be28d3d4-c18c-430c-a257-ae550d3dd7ed'
-    expect(Buffer.byteLength(codexSocketForAccount(userData, accountId))).toBeLessThan(104)
+    try {
+      expect(Buffer.byteLength(codexSocketForAccount(userData, accountId))).toBeLessThan(104)
+    } finally {
+      home.mockRestore()
+    }
   })
 })
 
@@ -571,5 +578,44 @@ describe('ensureSharedCodexDaemon: reuse-if-reachable-else-start-once (§2.2)', 
       }
     )
     expect(started).toBe(1)
+  })
+})
+
+describe('readCodexAuthEmail / codexAppServerReachable (Windows identity leg)', () => {
+  const jwt = (payload: unknown): string =>
+    ['eyJhbGciOiJSUzI1NiJ9', Buffer.from(JSON.stringify(payload)).toString('base64url'), 'sig'].join('.')
+  const auth = (idToken: unknown): string => JSON.stringify({ tokens: { id_token: idToken } })
+
+  it('reads the email claim from the id_token payload (signature not verified — display only)', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(readCodexAuthEmail(auth(jwt({ email: ' me@example.com ' })))).toBe('me@example.com')
+  })
+
+  it('falls back to the OpenAI profile claim', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(
+      readCodexAuthEmail(auth(jwt({ 'https://api.openai.com/profile': { email: 'p@example.com' } })))
+    ).toBe('p@example.com')
+  })
+
+  it('is null — never a throw — for anything unreadable', async () => {
+    const { readCodexAuthEmail } = await import('./codex-accounts-core')
+    expect(readCodexAuthEmail('not json')).toBeNull()
+    expect(readCodexAuthEmail('null')).toBeNull()
+    expect(readCodexAuthEmail('{}')).toBeNull()
+    expect(readCodexAuthEmail(JSON.stringify({ tokens: {} }))).toBeNull()
+    expect(readCodexAuthEmail(auth(42))).toBeNull()
+    expect(readCodexAuthEmail(auth('only-one-part'))).toBeNull()
+    expect(readCodexAuthEmail(auth('a.!!not base64!!.c'))).toBeNull()
+    expect(readCodexAuthEmail(auth(`a.${Buffer.from('not json').toString('base64url')}.c`))).toBeNull()
+    expect(readCodexAuthEmail(auth(jwt({ sub: 'x' })))).toBeNull()
+    expect(readCodexAuthEmail(auth(jwt({ email: '   ' })))).toBeNull()
+  })
+
+  it('the app-server socket is unreachable on win32 only', async () => {
+    const { codexAppServerReachable } = await import('./codex-accounts-core')
+    expect(codexAppServerReachable('win32')).toBe(false)
+    expect(codexAppServerReachable('darwin')).toBe(true)
+    expect(codexAppServerReachable('linux')).toBe(true)
   })
 })

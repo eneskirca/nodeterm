@@ -17,7 +17,7 @@
 // `DisableDelayedExpansion`: `!` is legal in a Windows path, and delayed expansion would eat it.
 // `%` in the profile path remains a known limit, shared with the codex wrapper.
 import { antigravityDecisionBatch, ANTIGRAVITY_EVENT_ENV } from './antigravity-decision'
-import { windowsShProbeBatch } from './codex-windows-wrapper'
+import { windowsShProbeBatch } from './windows-hook-wrapper'
 
 /** The wrapper's file name, beside the managed script it runs. */
 export const ANTIGRAVITY_WINDOWS_WRAPPER_FILE = 'antigravity-hook.cmd'

@@ -6,8 +6,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { childArgs } from './control-master'
-import { nativeExecFileAsync, useNativeSsh } from './native/native-runtime'
-import { findExecutableSync, shellPathNow } from '../exec-path'
+import { nativeExecFileAsync, resolveSshProgram, useNativeSsh } from './native/native-runtime'
 import { posixQuote, quoteRemotePath, type SshConnection } from '../../shared/ssh'
 
 const run = promisify(execFile)
@@ -22,20 +21,9 @@ export function remoteGitArgs(conn: SshConnection, controlPath: string, cwd: str
   return childArgs(conn, controlPath, remote)
 }
 
-let sshPath: string | null | undefined
+/** The shared resolver (native-runtime.ts): the binary, or the native-transport sentinel. */
 function findSsh(): string | null {
-  if (sshPath !== undefined) return sshPath
-  // GUI apps don't inherit the shell PATH. Subprocess-free (was a sync login-shell probe plus
-  // an `ssh -V` spawn per candidate, blocking the main thread): walk the cached login-shell
-  // PATH from exec-path.ts, then the hardcoded locations. A MISS is only memoized once the
-  // async PATH probe has settled, so a custom-location ssh isn't cached away forever.
-  const found = findExecutableSync('ssh', [
-    '/usr/bin/ssh',
-    '/usr/local/bin/ssh',
-    '/opt/homebrew/bin/ssh'
-  ])
-  if (found || shellPathNow() !== undefined) sshPath = found
-  return found
+  return resolveSshProgram()
 }
 
 /** Run a git command on the remote over the master. Returns the same shape as the local git() helper. */

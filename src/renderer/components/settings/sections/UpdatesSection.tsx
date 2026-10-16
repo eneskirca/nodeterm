@@ -3,6 +3,7 @@ import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { Button } from '@renderer/ui/Button'
+import { checkForUpdatesNow } from '@renderer/state/pendingUpdate'
 
 const ROWS = {
   updates: { title: 'Updates', keywords: ['update', 'version', 'check', 'upgrade'] }
@@ -22,12 +23,7 @@ export function UpdatesSection({ isActive }: { isActive: boolean }): React.JSX.E
             label="Current version"
             control={<span className="text-[13px] text-muted">{version || '…'}</span>}
           />
-          <Button
-            onClick={() => {
-              window.dispatchEvent(new CustomEvent('nodeterm:update-checking'))
-              window.nodeTerminal.updates.check()
-            }}
-          >
+          <Button onClick={checkForUpdatesNow}>
             Check for updates
           </Button>
           <p className="text-sm text-muted">Results appear in the update card at the bottom-right.</p>

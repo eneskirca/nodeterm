@@ -7,6 +7,7 @@ import type { AgentIntegrationsSettings } from './agent-integrations'
 // Types shared across the main, preload, and renderer processes.
 
 import { TABBAR_HEIGHT_PX } from './window-chrome-metrics'
+import { DEFAULT_MARKDOWN_FONT_FAMILY, DEFAULT_MARKDOWN_FONT_SIZE } from './markdown-font'
 import { DEFAULT_WORKTREE_PATH_TEMPLATE } from './worktree'
 import type { CloneProgress } from './clone-url'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
@@ -115,6 +116,30 @@ export type LaunchIntentFailureReason =
 export type LaunchIntentExecutionResult =
   | { ok: true }
   | { ok: false; reason: LaunchIntentFailureReason; message: string }
+
+/**
+ * `pty:execute-launch` request (`PtyApi.executeLaunch`). `launchId` is a fresh UUID v4 per
+ * delivery attempt — the session host's exactly-once ledger key. `promptFile` is the
+ * canvas-control `--prompt-file` path: the core reads it (the file is on the core's machine) and
+ * fills `intent.prompt`, so no shell ever has to expand `$(cat …)`. Only legal on a `start`
+ * intent that carries no `prompt` of its own.
+ */
+export interface LaunchIntentRequest {
+  launchId: string
+  intent: AgentLaunchIntent
+  promptFile?: string
+}
+
+/**
+ * A semantic launch held beside a terminal node's legacy typed line (`data.launchIntent`). Bound
+ * to the EXACT `command` it was assembled with: a writer delivering any other line (a manual Run
+ * now of an edited command, a resume) never uses it. Live node data only — never serialized.
+ */
+export interface HeldLaunchIntent {
+  command: string
+  intent: AgentLaunchIntent
+  promptFile?: string
+}
 
 export interface PtyCreateOptions {
   shell?: string
@@ -299,7 +324,9 @@ export interface PtyCreateResult {
    * is set. Since our tmux is always `mouse on` (local and remote), enabling these unconditionally
    * on a tmux-backed join matches tmux's own invariant client state; the enable is idempotent.
    * Set on BOTH join branches (screen-painted and resized) — the resize does not deliver them.
-   * Absent for a plain-shell join (no tmux ⇒ no tmux mouse) and for the solo spawn path.
+   * Absent for a plain-shell join (no tmux ⇒ no tmux mouse), for a session-host (Windows) join —
+   * same gate as `coAttachAltScreen`: no tmux runs `mouse on` there, and enabled tracking would
+   * hand the wheel and drags to the shell — and for the solo spawn path.
    */
   coAttachMouse?: boolean
   /**
@@ -1201,7 +1228,13 @@ export interface TmuxStatus {
   /** tmux discovery only; retained for older callers and install polling. */
   available: boolean
   /** Absent on older peers; null when discovery could not be read. */
-  persistence?: { enabled: boolean; backend: 'tmux' | 'zellij' | 'session-host' | null } | null
+  persistence?: {
+    enabled: boolean
+    backend: 'tmux' | 'zellij' | 'session-host' | null
+    /** Session host only: the CONNECTED host speaks `watch-attach`, so a live link viewer can join a
+     *  node nobody holds open. Absent = no / not known yet. */
+    watchJoin?: boolean
+  } | null
   /**
    * The optional Zellij backend (@shared/session-backend): whether a `zellij` binary was found and
    * whether this machine's setting selects it for NEW local terminals. Absent on older peers and on
@@ -1347,11 +1380,21 @@ export interface PtyApi {
    *  it. `null` is "could not read", never evidence that the pane is free (see `isAgentPane`'s
    *  three-valued verdict, which is what consumers should decide on). */
   paneOwner(persistKey: string): Promise<PaneOwner | null>
+  /**
+   * Execute a semantic agent launch in a node's live LOCAL Windows session-host pane: the core
+   * encodes it for the pane's own shell (pwsh / Windows PowerShell / cmd) and the host types it
+   * exactly once. Every other session (tmux, SSH, Zellij, plain shell, POSIX core, Git Bash/WSL)
+   * answers `unsupported-shell`, and the caller keeps its legacy typed line. Optional: surfaces
+   * that cannot serve it (relay tabs, test fakes) simply omit it — the caller's answer is the same.
+   */
+  executeLaunch?(persistKey: string, request: LaunchIntentRequest): Promise<LaunchIntentExecutionResult>
   /** Terminate the foreground process group in a node's pane. Returns false when the pane/process
    *  cannot be safely identified; it never kills the pane's login shell. When `expectedAgentId` is
    *  given, the kill happens only if that harness actually owns the foreground group (argv-verified)
-   *  — so a stale menu can never SIGTERM vim or a build the user started in the pane. */
-  terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean>
+   *  — so a stale menu can never SIGTERM vim or a build the user started in the pane. On Windows
+   *  (session host / direct ConPTY) the identity gate is mandatory and the kill is the proven agent's
+   *  process tree, never the shell; `'unsupported'` = the running session host predates that verb. */
+  terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean | 'unsupported'>
   /** The agent session's display name (`/rename` name, else auto name) read from the agent's own
    *  session store, resolved strictly by sessionId; null if unknown. Keeps a node title in sync with
    *  the `/resume` name (e.g. after resume) without cross-contaminating same-folder sessions.
@@ -1416,6 +1459,13 @@ export interface WorkspaceApi {
   /** Fired when THIS core wrote the project itself (Server Edition headless canvas control: an agent
    *  opened, renamed, moved, closed…). Not an outside edit — the renderer merges it, never asks. */
   onServerChange(cb: (project: Project) => void): () => void
+  /**
+   * Main asks for pending canvas edits to be written NOW — before a quit or a restart-to-update
+   * (`src/main/renderer-flush.ts`). The callback's settling is the answer; main waits at most ~1 s
+   * either way. Desktop only: the Server Edition has no main process to quit, so its bridge never
+   * fires it. Returns unsubscribe.
+   */
+  onFlushRequest(cb: () => Promise<unknown> | void): () => void
 }
 
 export interface ProjectSettingsApi {
@@ -1749,6 +1799,9 @@ export interface ZoomActualSizeModifiers {
   control: boolean
 }
 
+/** `settings.runInBackgroundOnClose` — see the field's doc. */
+export type BackgroundOnCloseSetting = 'auto' | 'on' | 'off'
+
 /** User-configurable application settings (settings.json). */
 export interface Settings {
   fontSize: number
@@ -1830,6 +1883,14 @@ export interface Settings {
    *  the default for anything that is not a finite number. Machine-local: it is one person's
    *  chrome, not a canvas fact. */
   tabBarHeight: number
+  /** Font of the rendered-Markdown reading views — the ⌘M output and chat views and the editor's
+   *  Markdown preview (Settings → Appearance). A CSS font stack. Hand-editable; read through
+   *  `resolveMarkdownFontFamily` (@shared/markdown-font). Code inside Markdown follows the
+   *  terminal `fontFamily` instead. Machine-local, like the terminal font. */
+  markdownFontFamily: string
+  /** Body size (CSS px) of the same views; headings scale from it, code is 0.92 of it. Read
+   *  through `resolveMarkdownFontSize`, which clamps to 8–28 and answers 13 for garbage. */
+  markdownFontSize: number
   /** Default size (px) for NEW terminal/agent nodes on the canvas. Existing nodes keep
    *  whatever size they were saved with; other node kinds keep their own defaults. */
   defaultNodeWidth: number
@@ -1894,6 +1955,13 @@ export interface Settings {
    *  the lock is one person's view state. Machine-local on Desktop; in the Server Edition this
    *  setting is the server's while the lock is per browser profile. */
   rememberCanvasLock: boolean
+  /** Whether `nodeterm://` links from other apps are handled (docs/superpowers/specs/
+   *  2026-10-13-open-link-design.md). OFF by default: a link can come from any web page, script
+   *  or app, so taking them is something a person turns on. On, a `nodeterm://open` link shows a
+   *  confirm sheet and opens ONE agent or terminal node only after a click; `nodeterm://pair` and
+   *  `nodeterm://join` pre-fill the code prompt. Off, a link opens nothing and a notice says where
+   *  to turn it on. Machine-local (settings.json); read by main on every link. */
+  allowOpenLinks: boolean
   /** Open Markdown files (.md, .markdown, …) in rendered preview instead of the code editor.
    *  Only picks the view an editor node OPENS in — the node's Preview/Edit toggle (and the
    *  markdown-toggle chord) still switches either way. Default ON since the release after
@@ -2222,6 +2290,14 @@ export interface Settings {
    *  The auto-update "Restart to update" flow never asks — that decision was already made.
    *  Settings → Behavior. */
   confirmBeforeQuit: boolean
+  /** Windows/Linux "background mode": closing the window hides it to the notification-area tray
+   *  instead of quitting, so the phone relay host, hook server, notifications and updater keep
+   *  running — the analogue of macOS keeping the app in the Dock. `'auto'` (default) = on for
+   *  Windows, off for Linux (whose tray support depends on the desktop environment). Resolved by
+   *  `resolveBackgroundOnClose` (src/main/background-mode.ts); ignored on macOS (always hides) and
+   *  on the Server Edition (no window). Hand-editable: an unknown value reads as `'auto'`.
+   *  Settings → Behavior (Windows/Linux only). */
+  runInBackgroundOnClose: BackgroundOnCloseSetting
   /** macOS Notch HUD (docs/notch-hud.md): a transparent always-on-top strip by the notch showing
    *  walking agent mascots while agents work, expanding into a mini session panel. Default on;
    *  macOS + desktop only (ignored on other platforms / Server Edition). */
@@ -2322,6 +2398,8 @@ export const DEFAULT_SETTINGS: Settings = {
   snapToGrid: false,
   autoAlignGrid: false,
   tabBarHeight: TABBAR_HEIGHT_PX,
+  markdownFontFamily: DEFAULT_MARKDOWN_FONT_FAMILY,
+  markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
   defaultNodeWidth: 640,
   defaultNodeHeight: 440,
   sidebarAutoCollapse: true,
@@ -2337,6 +2415,7 @@ export const DEFAULT_SETTINGS: Settings = {
   focusZoomToNode: true,
   offerCloseProjectOnLastSession: false,
   rememberCanvasLock: false,
+  allowOpenLinks: false,
   openMarkdownPreview: true,
   openMarkdownPreviewMigrated: true,
   terminalMiddleClickPaste: false,
@@ -2434,6 +2513,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Confirm-before-quit default ON: sessions survive a quit anyway, but an accidental ⌘Q
   // tears down every window at once; the toggle is one switch away for who finds it noisy.
   confirmBeforeQuit: true,
+  // Background mode 'auto' = on for Windows (the tray is always there), off for Linux.
+  runInBackgroundOnClose: 'auto',
   // macOS Notch HUD default ON (guarded to darwin at runtime; a no-op elsewhere).
   notchHud: true,
   notchWidth: 168,
@@ -2481,6 +2562,11 @@ export interface SpeechApi {
   /** Ask for microphone permission. Electron: OS-level (macOS TCC prompt); browser: always
    *  resolves true — the browser's own getUserMedia prompt is not ours to gate. */
   micConsent(): Promise<boolean>
+  /** Open the OS microphone-privacy page (Windows `ms-settings:privacy-microphone`, macOS System
+   *  Settings). Desktop only — ABSENT in the browser bridge (a browser's mic permission lives in
+   *  its own site settings), and the overlay hides its button when absent. Resolves false where
+   *  the OS has no such page. */
+  openMicSettings?(): Promise<boolean>
 }
 
 export interface SshApi {
@@ -2788,6 +2874,17 @@ export interface UpdatePolicy {
   minSupported: string | null
   /** True when the running version is below the minimum supported version. */
   mandatory: boolean
+  /** Optional release highlights (markdown) the feed carries for `latestVersion`. */
+  notes?: string
+  /** The version `notes` describe. Notes are shown only on a card for this exact version. */
+  latestVersion?: string
+}
+
+/** Restart-to-update was accepted: `preparing` = waiting for the OS updater to stage it (macOS),
+ *  `restarting` = the install is starting now. */
+export interface UpdateInstalling {
+  phase: 'preparing' | 'restarting'
+  version: string | null
 }
 
 export interface UpdateProgress {
@@ -2815,6 +2912,13 @@ export interface UpdateApi {
    * and "we cannot look" are different facts with different remedies. Returns unsubscribe.
    */
   onNoChannel(listener: () => void): () => void
+  /** Restart-to-update was accepted and is preparing / restarting. Returns unsubscribe. */
+  onInstalling(listener: (s: UpdateInstalling) => void): () => void
+  /**
+   * The update main already staged this run (announced once), or null. A renderer that loads after
+   * that one-time `onDownloaded` — ⌘R, a window recreated after a crash — asks on mount.
+   */
+  getStaged(): Promise<{ version: string; notes: string } | null>
   /** Trigger a manual update check. */
   check(): void
   /** The running app version. */
@@ -2886,8 +2990,10 @@ export type ContextLinkMap = Record<string, ContextLinkInfo[]>
 export interface ContextLinkApi {
   /** Push the current link map to main; main rewrites the per-node link files. */
   setLinks(map: ContextLinkMap): Promise<void>
-  /** Static facts the renderer needs to compose link messages: the CLI shim's absolute path. */
-  info(): Promise<{ shimPath: string }>
+  /** Static facts the renderer needs to compose link messages: the CLI shim's absolute path, and
+   *  the `process.platform` of the core that wrote it (absent from an older core ⇒ treat as POSIX).
+   *  On `win32` a non-claude agent is told to run the `.cmd` launcher beside the shim. */
+  info(): Promise<{ shimPath: string; platform?: string }>
 }
 
 /** One usage window (5h session or 7d weekly) as shown in the indicator. */
@@ -3035,6 +3141,31 @@ export interface SessionMemoryReport {
    * panel must never say "no sessions are running" while this is non-zero or unknown.
    */
   unmeasured?: number | null
+  /** Which backend the `unmeasured` sessions belong to, for the panel's sentence. Absent = Zellij
+   *  (the original and, off Windows, only case); `'session-host'` = a running session host older
+   *  than this app, which names its sessions but cannot describe their processes. */
+  unmeasuredBackend?: 'session-host'
+  /**
+   * The Windows session host's OWN cost, which belongs to no session row (CLAUDE.md, Session
+   * memory): its process (every session's headless emulator, node-pty's per-session conout worker
+   * thread) and its non-shell children (one conhost/OpenConsole per ConPTY — they are the host's
+   * children, siblings of the shell, so no row's tree reaches them). Absent = no session host, or it
+   * could not be measured: never a fake zero. The tmux leg never sets it.
+   */
+  host?: SessionHostOverhead
+}
+
+/** See `SessionMemoryReport.host`. All MB figures are MEASURED working sets, not estimates. */
+export interface SessionHostOverhead {
+  pid: number
+  /** The session-host process itself. */
+  selfMb: number
+  /** Its non-shell children (conhost / OpenConsole, plus anything under them — including the
+   *  pane-probe PowerShell worker while it is warm, which is the host's child and its cost). */
+  consoleMb: number
+  /** Direct children recognised as a console host — "N consoles" in the panel. */
+  consoleCount: number
+  totalMb: number
 }
 
 /**
@@ -3689,6 +3820,10 @@ export interface CodexIdentityCaps {
    *  flag in its help and no such runtime, so it can never serve a shared identity. Unknown ⇒
    *  false ⇒ plain codex. */
   appServer: boolean
+  /** Why shared identity is off by DESIGN rather than by probe, when it is. `unsupported-platform`
+   *  = a Windows core (phase 1: not wired there yet; every node runs its own codex). Absent on
+   *  every other answer — an older core never sends it. */
+  unavailableReason?: 'unsupported-platform'
 }
 
 /** The answer before the probe has run, and the one the Server Edition gives on purpose. */
@@ -4209,6 +4344,22 @@ export interface TriggersApi {
   ): Promise<{ outcome: 'fired' | 'missed' | 'failed' | 'queued'; detail?: string }>
 }
 
+/** `nodeterm://` links (see main/open-link.ts, @shared/open-link). */
+export interface OpenLinkApi {
+  /** The renderer is listening: main delivers any link that arrived before (a cold start). */
+  ready(): void
+  /** An `open` link for the confirm sheet. */
+  onRequest(listener: (req: import('./open-link').OpenLinkPrompt) => void): () => void
+  /** A `pair` / `join` link: route to the existing pairing / join flow, never auto-accept. */
+  onPair(listener: (link: { kind: 'pair' | 'join'; url: string }) => void): () => void
+  /** A refused or dropped link, as one sentence for a toast. */
+  onNotice(listener: (n: { text: string }) => void): () => void
+  /** The human's choice; main re-checks it and answers with the final open. */
+  accept(id: string, choice: import('./open-link').OpenLinkChoice): Promise<import('./open-link').OpenLinkAcceptResult>
+  /** The sheet was dismissed (or replaced): forget the request. */
+  cancel(id: string): void
+}
+
 export interface NodeTerminalApi {
   pty: PtyApi
   workspace: WorkspaceApi
@@ -4273,6 +4424,9 @@ export interface NodeTerminalApi {
   pairing: PairingApi
   presence: PresenceApi
   shortcuts: ShortcutsApi
+  /** `nodeterm://` links clicked outside the app. Desktop only (the Server Edition has no URL
+   *  scheme: its stub never fires and refuses accept). */
+  openLink: OpenLinkApi
   /** Fires when the user presses Cmd/Ctrl+M (toggle markdown view). Returns unsubscribe. */
   onMarkdownToggle(listener: () => void): () => void
   /** Fires when the user presses Cmd/Ctrl+W (close selected node). Returns unsubscribe. */
@@ -4322,6 +4476,12 @@ export interface NodeTerminalApi {
    *  need only be idempotent, not cheap. Returns unsubscribe. Server Edition: never fires (the
    *  pressure levers run host-side there; a browser tab's memory belongs to the browser). */
   onMemoryPressure(listener: (severity: 'warning' | 'critical') => void): () => void
+  /** Fires when the main window is put away (`'hidden'`: close-to-tray, macOS hide-on-close,
+   *  minimize) or brought back (`'shown'`). The renderer answers by treating every terminal as
+   *  offscreen while hidden (renderer/terminal/window-backgrounded.ts). Returns unsubscribe.
+   *  Server Edition: never fires — a browser tab being hidden is a routine tab switch, not the app
+   *  being put away, so the levers stay on their viewport-only behaviour there. */
+  onWindowVisibility(listener: (state: 'hidden' | 'shown') => void): () => void
   /** Fires when THIS MACHINE's pty-device pressure band changes (core/pty-pressure.ts): the
    *  renderer raises/lowers the banner that warns before `kern.tty.ptmx_max` stops every new
    *  terminal from opening. Band changes only, re-sent for a held band at most once every five

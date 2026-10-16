@@ -91,6 +91,10 @@ function mergeSettings(saved: Partial<Settings> | null | undefined): Settings {
   }
   // Keep the mirror in lockstep with the resolved mode so an older build still honors the choice.
   merged.vanillaLaunchDefault = merged.agentLaunchMode === "subscription";
+  // Background mode is hand-editable too: anything but the three known values is the default.
+  const bg = merged.runInBackgroundOnClose as unknown;
+  if (bg !== "auto" && bg !== "on" && bg !== "off")
+    merged.runInBackgroundOnClose = DEFAULT_SETTINGS.runInBackgroundOnClose;
   // Pre-release switch that became the "Liquid Glass" appearance; honoured once so a tester's
   // choice carries over, and only where the appearance still followed the terminal.
   const legacyGlass = (saved as { glassTerminals?: unknown } | null | undefined)?.glassTerminals;

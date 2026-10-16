@@ -5,7 +5,10 @@ import {
   pickSessionName,
   readSessionName,
   setRemoteTranscriptReader,
-  TASK_NOTIFIED_RESULT
+  TASK_NOTIFIED_RESULT,
+  encodeTranscriptDir,
+  legacyEncodeTranscriptDir,
+  transcriptPathForCwd
 } from './transcript-reader'
 import type { TranscriptLine } from '../shared/types'
 
@@ -1253,5 +1256,78 @@ describe('prompts queued while a turn was running', () => {
     const lines = parseTranscriptLines([typed('What is 2+2?'), notification].join('\n'))
 
     expect(lines).toEqual([{ role: 'user', text: 'What is 2+2?' }])
+  })
+})
+
+// The cwd fallback's directory name must be the one Claude Code itself writes, or the fallback
+// silently never hits. The CLI replaces EVERY non-alphanumeric character — the old `[/.]` rule
+// matched it only for paths made of letters, digits, '/' and '.', and never on Windows.
+describe('encodeTranscriptDir — Claude Code\'s own project-dir sanitizer', () => {
+  it('keeps the POSIX answers the old encoding already got right', () => {
+    expect(encodeTranscriptDir('/a/b.c')).toBe('-a-b-c')
+    expect(encodeTranscriptDir('/root/nodeterm')).toBe('-root-nodeterm')
+  })
+
+  it('encodes a Windows cwd the way the CLI does', () => {
+    expect(encodeTranscriptDir('C:\\Users\\me\\proj')).toBe('C--Users-me-proj')
+  })
+
+  it('replaces spaces and underscores too', () => {
+    expect(encodeTranscriptDir('/a/my proj_x')).toBe('-a-my-proj-x')
+  })
+
+  it('truncates past 200 characters with the CLI\'s hash suffix', () => {
+    const long = '/' + 'a'.repeat(250)
+    const enc = encodeTranscriptDir(long)
+    expect(enc.startsWith('-' + 'a'.repeat(199) + '-')).toBe(true)
+    // Expected suffix computed independently: the CLI's `(h<<5)-h+c|0`, Math.abs, base 36.
+    let h = 0
+    for (const ch of long) h = ((h << 5) - h + ch.charCodeAt(0)) | 0
+    expect(enc).toBe(`${('-' + 'a'.repeat(250)).slice(0, 200)}-${Math.abs(h).toString(36)}`)
+    expect(enc).toMatch(/^[A-Za-z0-9-]+$/)
+  })
+
+  it('the legacy encoding is the old `[/.]` rule', () => {
+    expect(legacyEncodeTranscriptDir('/a/my proj_x')).toBe('-a-my proj_x')
+  })
+})
+
+describe('transcriptPathForCwd', () => {
+  let home: string
+  const root = () => path.join(home, '.claude', 'projects')
+  const put = (dir: string, id: string) => {
+    fs.mkdirSync(path.join(root(), dir), { recursive: true })
+    const p = path.join(root(), dir, `${id}.jsonl`)
+    fs.writeFileSync(p, '{}\n')
+    return p
+  }
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-cwd-fallback-'))
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  it('resolves a Windows-style cwd to the CLI\'s `C--Users-me-proj` directory', async () => {
+    const p = put('C--Users-me-proj', 'sid-1')
+    expect(await transcriptPathForCwd('C:\\Users\\me\\proj')).toBe(p)
+  })
+
+  it('resolves a POSIX cwd with a space', async () => {
+    const p = put('-work-my-proj', 'sid-2')
+    expect(await transcriptPathForCwd('/work/my proj')).toBe(p)
+  })
+
+  it('falls back to the legacy directory when the exact one is absent', async () => {
+    const p = put('-work-my proj', 'sid-3')
+    expect(await transcriptPathForCwd('/work/my proj')).toBe(p)
+  })
+
+  it('answers undefined when neither exists', async () => {
+    expect(await transcriptPathForCwd('/nowhere/x')).toBeUndefined()
   })
 })

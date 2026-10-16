@@ -35,3 +35,18 @@ describe('recent wallpaper image (choosing a preset keeps the last import)', () 
     expect(recentWallpaperImage('')).toBeNull()
   })
 })
+
+describe('normalizeWallpaper system-still prefixes', () => {
+  it('round-trips mac: and win: still ids', () => {
+    expect(normalizeWallpaper({ kind: 'preset', id: 'mac:Sonoma.heic' })).toEqual({ kind: 'preset', id: 'mac:Sonoma.heic' })
+    expect(normalizeWallpaper({ kind: 'preset', id: 'win:Windows/img0.jpg' })).toEqual({
+      kind: 'preset',
+      id: 'win:Windows/img0.jpg'
+    })
+  })
+
+  it('still collapses an unknown prefix to none', () => {
+    expect(normalizeWallpaper({ kind: 'preset', id: 'linux:x.jpg' })).toEqual({ kind: 'none' })
+    expect(normalizeWallpaper({ kind: 'preset', id: 'windows:x.jpg' })).toEqual({ kind: 'none' })
+  })
+})

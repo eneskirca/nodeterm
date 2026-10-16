@@ -44,6 +44,16 @@ import {
   resolveTabBarHeight
 } from '@shared/window-chrome-metrics'
 import { NumberField } from '@renderer/ui/NumberField'
+import { FontPicker } from '../FontPicker'
+import { PROSE_FONT_CATALOG, buildProseFontStack } from '@renderer/lib/fontDetect'
+import {
+  DEFAULT_MARKDOWN_FONT_FAMILY,
+  DEFAULT_MARKDOWN_FONT_SIZE,
+  MARKDOWN_FONT_SIZE_MAX,
+  MARKDOWN_FONT_SIZE_MIN,
+  resolveMarkdownFontFamily,
+  resolveMarkdownFontSize
+} from '@shared/markdown-font'
 import { SectionReset } from '../SectionReset'
 import { APPEARANCE_RESET_KEYS } from '@renderer/lib/settingsReset'
 
@@ -59,6 +69,14 @@ const ROWS = {
   tabBarHeight: {
     title: 'Tab bar height',
     keywords: ['tab', 'bar', 'height', 'strip', 'top', 'title bar', 'thickness', 'compact', 'dense']
+  },
+  markdownFont: {
+    title: 'Markdown font',
+    keywords: ['markdown', 'font', 'family', 'typeface', 'chat', 'preview', 'reading', 'output', 'text', 'serif', 'sans']
+  },
+  markdownFontSize: {
+    title: 'Markdown font size',
+    keywords: ['markdown', 'font', 'size', 'text', 'bigger', 'larger', 'smaller', 'chat', 'preview', 'reading', 'readability']
   },
   accent: { title: 'Accent', keywords: ['accent', 'color', 'theme', 'appearance'] },
   wallpaper: {
@@ -228,6 +246,51 @@ function TabBarHeightRow(): React.JSX.Element {
         </div>
       }
     />
+  )
+}
+
+/** Applies to the ⌘M output and chat views and the editor's Markdown preview (@shared/markdown-font). */
+function MarkdownFontRows(): React.JSX.Element {
+  const family = useSettings((s) => s.settings.markdownFontFamily)
+  const size = useSettings((s) => s.settings.markdownFontSize)
+  const update = useSettings((s) => s.update)
+  return (
+    <>
+      <SearchableRow {...ROWS.markdownFont}>
+        <FieldRow
+          label="Markdown font"
+          description="Used by the ⌘M output and chat views and the editor's Markdown preview. Code inside them uses your terminal font."
+          control={
+            <FontPicker
+              label="Markdown font"
+              value={resolveMarkdownFontFamily(family)}
+              onChange={(stack) => update({ markdownFontFamily: stack })}
+              catalog={PROSE_FONT_CATALOG}
+              buildStack={buildProseFontStack}
+              systemOption={{ label: 'System font', stack: DEFAULT_MARKDOWN_FONT_FAMILY }}
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.markdownFontSize}>
+        <FieldRow
+          label="Markdown font size"
+          description={`Body text size in the same views, in pixels (${MARKDOWN_FONT_SIZE_MIN}–${MARKDOWN_FONT_SIZE_MAX}; default ${DEFAULT_MARKDOWN_FONT_SIZE}). Headings and code scale with it.`}
+          control={
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <NumberField
+                value={resolveMarkdownFontSize(size)}
+                min={MARKDOWN_FONT_SIZE_MIN}
+                max={MARKDOWN_FONT_SIZE_MAX}
+                ariaLabel="Markdown font size"
+                onChange={(v) => update({ markdownFontSize: resolveMarkdownFontSize(v) })}
+              />
+              <span style={{ opacity: 0.6 }}>px</span>
+            </div>
+          }
+        />
+      </SearchableRow>
+    </>
   )
 }
 
@@ -475,6 +538,7 @@ export function AppearanceSection({ isActive }: { isActive: boolean }): React.JS
       <SearchableRow {...ROWS.tabBarHeight}>
         <TabBarHeightRow />
       </SearchableRow>
+      <MarkdownFontRows />
       <SearchableRow {...ROWS.accent}>
         <div className="flex items-center justify-between gap-4 py-2.5">
           <span className="text-[13px] text-text">Accent</span>

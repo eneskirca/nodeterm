@@ -34,7 +34,7 @@
 // behavior, one passphrase prompt at worst. Never a blocked connect.
 import { execFile } from 'child_process'
 import path from 'path'
-import { findExecutableSync } from '../exec-path'
+import { findSshBinary } from './native/native-runtime'
 import type { SshConnection } from '../../shared/ssh'
 
 /** `ssh -G` may run the user's own `Match exec` commands; bound it so a hung one cannot stall a
@@ -45,8 +45,9 @@ const PROBE_TIMEOUT_MS = 3_000
  *  picked up on the next reconnect without restarting the app. */
 const PROBE_TTL_MS = 15_000
 
+/** The real ssh BINARY (never the native sentinel): this probe execs `ssh -G` itself. */
 function findSsh(): string | null {
-  return findExecutableSync('ssh', ['/usr/bin/ssh', '/usr/local/bin/ssh', '/opt/homebrew/bin/ssh'])
+  return findSshBinary()
 }
 
 /** The `identityagent` line of an `ssh -G` dump, verbatim, or undefined when the effective config

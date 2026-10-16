@@ -59,6 +59,27 @@ for v1: a low ceiling OOM-kills a long-context session, which is worse than the 
 **Do not re-derive these numbers.** They are here so the next person does not spend an afternoon on
 `/proc` arithmetic to reach the same conclusion.
 
+**Power users: capping a node-based agent's heap.** nodeterm still ships no cap and must not grow a
+`NODE_OPTIONS` default. A user who wants one can set `NODE_OPTIONS=--max-old-space-size=2048` in a
+**custom agent's env** (Settings → Agents); project env cannot, because `NODE_OPTIONS` is a reserved
+spawn key (a code-execution guard). Three caveats belong with that advice: a session that outgrows
+the cap is OOM-killed (the pane and `--resume` recover the conversation, not the turn); it only
+affects npm-installed **node** CLIs (`claude.cmd`, gemini) — the native `claude.exe` is a Bun
+binary and codex is Rust, so there it does nothing (`where claude` says which one a Windows user
+runs); and it is a per-machine choice, never a project one.
+
+**Attached sessions are never reaped, by design.** The reaper (`session-budget.ts`) only ends
+DETACHED sessions; anything mounted on a canvas is watched and untouchable, on tmux and on the
+Windows session host alike. The levers for live sessions are offscreen release (which detaches the
+viewer, so the grace window / count cap can apply), Eco, Pause, and the panel's `×`. Heavy users can
+shorten the grace with `NODETERM_SESSION_GRACE_HOURS` (fractional values are honoured; see below).
+
+**Windows: the session host's own cost is shown, not hidden.** On Windows the panel adds a
+non-killable `nodeterm session host (N consoles)` line — the host process (headless emulators,
+node-pty's per-session conout worker thread) plus its conhost/OpenConsole children, which no
+session row can reach. It is a measured working set, added to the total only when measured. See
+docs/windows-session-host.md ("Observability", "Pane probes").
+
 ### A fractional `NODETERM_SESSION_*` value must not disarm the guard
 
 Found while running the live reaper experiment with `NODETERM_SESSION_GRACE_HOURS=1`.

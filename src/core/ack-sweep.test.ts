@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sweepAckDir, createAckSweeper, type AckSweepFsLike } from './ack-sweep'
+import { applyPhoneReadAck, sweepAckDir, createAckSweeper, type AckSweepFsLike } from './ack-sweep'
 
 /**
  * In-memory fs double for the sweeper. `dir` is a flat map of name → content; `mtime` advances on
@@ -152,5 +152,24 @@ describe('createAckSweeper — dir-mtime gate + no re-ack loop', () => {
     sweeper.start() // idempotent — no second timer
     sweeper.stop()
     expect(acked).toEqual([])
+  })
+})
+
+// The relay's `inbox.ack` (relay-only hosts: no SSH to drop a `.seen` over) runs the same body.
+describe('applyPhoneReadAck — the one read-ack body every arrival path shares', () => {
+  it('acks then clears, once each, without re-acking', () => {
+    const calls: string[] = []
+    applyPhoneReadAck('n1', { ackDone: (id) => calls.push(`ack:${id}`), onUnreadClear: (id) => calls.push(`clear:${id}`) })
+    expect(calls).toEqual(['ack:n1', 'clear:n1'])
+  })
+  it('a throwing ackDone still clears the unread dot', () => {
+    const calls: string[] = []
+    applyPhoneReadAck('n1', {
+      ackDone: () => {
+        throw new Error('boom')
+      },
+      onUnreadClear: (id) => calls.push(`clear:${id}`)
+    })
+    expect(calls).toEqual(['clear:n1'])
   })
 })

@@ -7,7 +7,7 @@
  *  - measured on this host, a pane running the fake agent `…/fakebin/claude --resume x` (a
  *    `#!/usr/bin/env node` script) reports `#{pane_current_command}` = `node`. Every npm-installed
  *    agent CLI has that shape, so a name gate cannot tell claude from any other node process.
- *  - `isShellCommand` (`src/shared/agents/pane.ts`) is a SEVEN-name allowlist, so `!isShellCommand`
+ *  - `isShellCommand` (`src/shared/agents/pane.ts`) was then a SEVEN-name allowlist, so `!isShellCommand`
  *    — the old "this pane is an agent" gate — is true for `nu`, `pwsh`, `xonsh`, `elvish`, `ssh`
  *    and `python`. Text delivered there executes, because `sendText` appends Enter.
  *

@@ -27,6 +27,9 @@
 //
 // Electron-free (src/core): all exec/mem/clock access is behind injectable seams (template:
 // ack-sweep.ts), so both shells boot it and tests drive it without touching tmux.
+//
+// Windows has no tmux: there the same budget runs over the session host's own listing
+// (`SessionReaperOpts.sessionHost`) — same plan, same rules, a generation-checked kill.
 
 import os from 'os'
 import { execFile } from 'child_process'
@@ -412,6 +415,22 @@ export function hostMemReader(platform: NodeJS.Platform = process.platform): () 
   return platform === 'darwin' ? (): null => null : readMemInfo
 }
 
+/**
+ * The Windows session host (or any machine with no tmux, where PtyManager runs sessions under it)
+ * as a reaper backend — the same two questions the tmux leg asks with `list-windows` and
+ * `kill-session`. `PtyManager.sessionHostReaperBackend()` supplies it.
+ *
+ * `list()` answers with SessionInfo rows whose `clients` is the host's SUBSCRIBER count and whose
+ * `outputSec` is the host's last-output stamp (its `window_activity`); `null` is a failed or
+ * undescribable listing (an older host that names sessions without describing them), and yields NO
+ * candidates — never "everything is detached". `kill(name)` ends exactly the generation the most
+ * recent `list()` observed, and resolves true only when the host acknowledged the kill.
+ */
+export interface SessionHostReaperBackend {
+  list(): Promise<SessionInfo[] | null>
+  kill(name: string): Promise<boolean>
+}
+
 export interface SessionReaperOpts {
   /** Lazy tmux binary resolver (PtyManager resolves after init; null = tmux unavailable → no-op). */
   tmuxBin: () => string | null
@@ -444,6 +463,16 @@ export interface SessionReaperOpts {
    * session of the same name on `nodeterm-rmt` must keep its exemption.
    */
   shadowed?: (socket: string) => Iterable<string>
+  /**
+   * The session-host leg, consulted ONLY when `tmuxBin()` is null — which is exactly when
+   * PtyManager runs persistent sessions under the session host (Windows). Lazy, like `tmuxBin`:
+   * PtyManager decides after init whether the host is this machine's backend, and answers
+   * `undefined` when it is not. The tmux leg never reads it, so a tmux machine's sweep is unchanged.
+   *
+   * No `shadowed`-style subtraction is owed here: the session host has no control-mode shadows —
+   * background writes (`sendKeys`) need no subscription — so every subscriber is a real viewer.
+   */
+  sessionHost?: () => SessionHostReaperBackend | undefined
   exec?: (bin: string, args: string[]) => Promise<string>
   readMem?: () => MemInfo | null
   env?: NodeJS.ProcessEnv
@@ -523,10 +552,57 @@ export function createSessionReaper(opts: SessionReaperOpts): SessionReaper {
     }
   }
 
+  const listHost = async (backend: SessionHostReaperBackend): Promise<SessionInfo[] | null> => {
+    try {
+      return await backend.list()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The session-host leg: the SAME `planReap` and the same kill-time re-verify as tmux, over the
+   * host's own listing. The re-verify is one notch stricter than the tmux leg's — a session that
+   * produced output between plan and kill is spared too, not only one that got a viewer — because
+   * the host's clock is cheap to re-read and a reaper that kills a session someone is using is far
+   * worse than one that waits a sweep.
+   */
+  const sweepSessionHost = async (sweepOpts?: SweepOptions): Promise<number> => {
+    const backend = opts.sessionHost?.()
+    if (!backend) return 0
+    const listed = await listHost(backend)
+    if (!listed) return 0
+    const now = nowSec()
+    const plan = planReap(listed, readMem(), now, cfg, sweepOpts?.pressure !== undefined)
+    if (plan.length === 0) return 0
+    const fresh = await listHost(backend)
+    if (!fresh) return 0
+    const reapable = new Map(
+      fresh
+        .filter((s) => s.clients === 0 && now - s.outputSec >= cfg.graceSec)
+        .map((s) => [s.name, s])
+    )
+    let killed = 0
+    for (const name of plan) {
+      const row = reapable.get(name)
+      if (!row) continue
+      try {
+        if (!(await backend.kill(name))) continue
+        killed++
+        log(
+          `[session-budget] reaped detached session ${name} — no pane output for ${((now - row.outputSec) / 3600).toFixed(1)}h (session host)`
+        )
+      } catch {
+        // A vanished-in-between session or a kill failure changes nothing; next sweep re-plans.
+      }
+    }
+    return killed
+  }
+
   const sweep = async (sweepOpts?: SweepOptions): Promise<number> => {
     if (cfg.disabled) return 0
     const bin = opts.tmuxBin()
-    if (!bin) return 0
+    if (!bin) return sweepSessionHost(sweepOpts)
 
     const bySocket = new Map<string, SessionInfo[]>()
     for (const s of sockets) {

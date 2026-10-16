@@ -1,4 +1,4 @@
-import type { GroupWorktree, WorktreeEntry } from './worktree'
+import { worktreePathKey, type GroupWorktree, type WorktreeEntry } from './worktree'
 
 /** A group node that carries a worktree binding. */
 export interface BoundGroup {
@@ -20,8 +20,9 @@ export interface Reconciliation {
   orphans: WorktreeEntry[]
 }
 
-/** Compare worktree paths as git prints them vs. as we persisted them: trailing slashes differ. */
-export const normWorktreePath = (p: string): string => p.trim().replace(/\/+$/, '')
+/** Compare worktree paths as git prints them vs. as we persisted them: trailing slashes differ, and
+ *  on Windows so do separators and case (`worktreePathKey`). A comparison KEY — never a path to use. */
+export const normWorktreePath = (p: string): string => worktreePathKey(p)
 
 const norm = normWorktreePath
 

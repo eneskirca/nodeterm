@@ -231,6 +231,22 @@ describe('buildContextLinkNote', () => {
     expect(msg).toContain('Builder')
     expect(msg).not.toContain('\n')
   })
+  it('a Windows core: codex/gemini are told to run the .cmd launcher; claude keeps the skill line', () => {
+    const msg = buildContextLinkNote('codex', 'Builder', 'C:\\d\\context.sh', 'win32')
+    expect(msg).toContain('run: & "C:\\d\\context.cmd" list')
+    expect(msg).not.toContain('sh "')
+    expect(msg).not.toContain('\n')
+    expect(buildContextLinkNote('claude', 'Builder', 'C:\\d\\context.sh', 'win32')).toBe(
+      buildContextLinkNote('claude', 'Builder', 'C:\\d\\context.sh')
+    )
+  })
+  it('a POSIX or unknown core (remote node, older core) keeps the exact sh line', () => {
+    for (const host of [undefined, 'linux', 'darwin']) {
+      expect(buildContextLinkNote('gemini', 'Builder', '/x/context.sh', host)).toBe(
+        buildContextLinkNote('gemini', 'Builder', '/x/context.sh')
+      )
+    }
+  })
   it('every variant says the note is informational — no action now', () => {
     // The message is injected + submitted as a prompt, so an agent that reads it as a task
     // launches an unsolicited investigation (observed with gemini). It must self-defuse.

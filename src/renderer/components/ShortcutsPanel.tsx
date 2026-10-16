@@ -134,6 +134,8 @@ function extraRows(group: CommandGroup, o: ShortcutSectionsOptions): ShortcutRow
             row(['Middle-drag'], 'Pan the canvas')
           ]),
       row(['Space', 'drag'], 'Pan the canvas (any drag mode)'),
+      // lib/modifierPan: deliberately ⌘ on mac and Ctrl elsewhere, so spelled per platform.
+      row([o.isMac ? '⌘' : 'Ctrl', 'middle-drag'], 'Pan the canvas, even while it is locked'),
       row(['⇧', 'click'], 'Add a node to the selection'),
       ...(o.doubleClickFocus
         ? [row(['Double-click'], 'Center & focus a node')]

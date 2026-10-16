@@ -15,6 +15,7 @@ import path from 'path'
 import type { SFTPWrapper } from 'ssh2'
 import { NativeMux, channelExit, noMasterMessage, type ExecResult } from './native-mux'
 import { parseScpArgv, parseSshArgv, type ParsedSsh } from './ssh-argv'
+import { localChildName, uniqueChildName } from '../../download-name'
 
 export function useNativeSsh(
   platform: NodeJS.Platform = process.platform,
@@ -53,13 +54,15 @@ export async function runSshArgv(
       return (await mux.exit(cp)) ? result(0, '', 'Exit request sent.\n') : result(255, '', `${noMasterMessage(cp)}\n`)
     case 'forward':
       try {
-        await mux.forward(cp, p.forward)
+        if (p.forward.kind === 'local') await mux.forwardLocal(cp, p.forward)
+        else await mux.forward(cp, p.forward)
         return result(0, '', '')
       } catch (e) {
         return result(255, '', `${(e as Error).message}\n`)
       }
     case 'cancel':
-      await mux.cancel(cp, p.forward)
+      if (p.forward.kind === 'local') await mux.cancelLocal(cp, p.forward)
+      else await mux.cancel(cp, p.forward)
       return result(0, '', '')
   }
 }
@@ -120,7 +123,11 @@ export function startNativeMaster(mux: NativeMux, argv: string[]): NativeMasterH
  * The scp argv scpArgs / scpDownArgs build, over SFTP on the shared connection. Files and (for a
  * download) directory trees; a recursive UPLOAD is not something any builder produces.
  */
-export async function runScpArgv(mux: NativeMux, argv: string[]): Promise<{ code: number; stderr: string }> {
+export async function runScpArgv(
+  mux: NativeMux,
+  argv: string[],
+  platform: NodeJS.Platform = process.platform
+): Promise<{ code: number; stderr: string; renamed?: number }> {
   let p: ReturnType<typeof parseScpArgv>
   try {
     p = parseScpArgv(argv)
@@ -132,13 +139,14 @@ export async function runScpArgv(mux: NativeMux, argv: string[]): Promise<{ code
     const sftp = await mux.sftp(cp, p.target, p.options)
     try {
       const remote = await realRemotePath(sftp, p.remotePath)
+      const renamed = { count: 0 }
       if (p.direction === 'up') {
         if (p.recursive) throw new Error('scp: recursive upload is not supported')
         await promisify<void>((cb) => sftp.fastPut(p.localPath, remote, cb))
       } else {
-        await download(sftp, remote, p.localPath, p.recursive)
+        await download(sftp, remote, p.localPath, p.recursive, platform, renamed)
       }
-      return { code: 0, stderr: '' }
+      return renamed.count ? { code: 0, stderr: '', renamed: renamed.count } : { code: 0, stderr: '' }
     } finally {
       sftp.end()
     }
@@ -154,7 +162,19 @@ async function realRemotePath(sftp: SFTPWrapper, p: string): Promise<string> {
   return p === '' || p === '.' ? home : `${home.replace(/\/$/, '')}/${p}`
 }
 
-async function download(sftp: SFTPWrapper, remote: string, local: string, recursive: boolean): Promise<void> {
+/**
+ * One remote file, or a directory tree. Each CHILD name is made valid for this machine and unique
+ * within its directory (download-name.ts) — the top-level name is the caller's — and every name
+ * that had to change is counted in `renamed`.
+ */
+export async function download(
+  sftp: Pick<SFTPWrapper, 'stat' | 'readdir' | 'fastGet'>,
+  remote: string,
+  local: string,
+  recursive: boolean,
+  platform: NodeJS.Platform = process.platform,
+  renamed: { count: number } = { count: 0 }
+): Promise<void> {
   const st = await promisify<{ isDirectory(): boolean }>((cb) => sftp.stat(remote, cb))
   if (!st.isDirectory()) {
     await promisify<void>((cb) => sftp.fastGet(remote, local, cb))
@@ -163,9 +183,13 @@ async function download(sftp: SFTPWrapper, remote: string, local: string, recurs
   if (!recursive) throw new Error(`scp: ${remote}: not a regular file`)
   fs.mkdirSync(local, { recursive: true })
   const entries = await promisify<{ filename: string }[]>((cb) => sftp.readdir(remote, cb))
+  const taken = new Set<string>()
   for (const e of entries) {
-    if (e.filename === '.' || e.filename === '..') continue
-    await download(sftp, `${remote}/${e.filename}`, path.join(local, e.filename), true)
+    const safe = localChildName(e.filename, platform)
+    if (safe === null) continue
+    const name = uniqueChildName(safe, taken, platform)
+    if (name !== e.filename) renamed.count++
+    await download(sftp, `${remote}/${e.filename}`, path.join(local, name), true, platform, renamed)
   }
 }
 

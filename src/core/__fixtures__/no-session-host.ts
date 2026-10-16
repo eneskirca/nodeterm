@@ -48,6 +48,23 @@ export function noSessionHost(): Record<string, unknown> {
     sessionHostKillSession: async () => {},
     sessionHostListSessions: async () => [],
     sessionHostPaneCommand: async () => null,
-    sessionHostSendKeys: async () => false
+    sessionHostSendKeys: async () => false,
+    sessionHostCaptureVisible: async () => null,
+    sessionHostPaneCwd: async () => null,
+    sessionHostSupportsWatch: async () => false,
+    sessionHostWatchKnown: () => undefined,
+    sessionHostListSessionsDetailed: async () => null,
+    sessionHostMessageOwner: async () => null,
+    sessionHostMessagePasteReady: async () => false,
+    sessionHostMessageEnvelope: async () => false,
+    sessionHostTerminateOwner: async () => 'unsupported',
+    sessionHostWriteDetached: async () => false,
+    // Error classes are read by `instanceof` checks on catch paths; a fresh class never matches.
+    SessionHostProtocolCompatibilityError: class extends Error {},
+    SessionHostWatchUnsupportedError: class extends Error {},
+    sessionHostMouseTracking: async () => null,
+    sessionHostExecuteLaunch: async () => {
+      throw new Error('session-host launch in a suite that mocked the backend out')
+    }
   }
 }

@@ -3,10 +3,12 @@
 // Pure: no tmux, no ssh, no PtyManager. `PtyManager.captureVisible` runs the argv built here (locally,
 // or over the ControlMaster through `remoteCaptureVisibleArgs`) and parses the reply here.
 //
-// Which backend gets one (`visibleCaptureRoute`): the session host's capture is ~200 lines of
-// scrollback and a direct Windows pane has no visible-only read, so both get NO keyframe (the viewer
-// starts from the live stream) rather than history. A plain shell has no tmux to ask, and neither has
-// a Zellij session (the optional local backend, zellij-backend.ts).
+// Which backend gets one (`visibleCaptureRoute`): the session host answers its own negotiated
+// `captureVisible` from its headless emulator (route `sessionHost`; an older host without the feature
+// answers nothing, never its ~200-line scrollback `capture`). A direct Windows pane has no visible-only
+// read, so it gets NO keyframe (the viewer starts from the live stream) rather than history. A plain
+// shell has no tmux to ask, and neither has a Zellij session (the optional local backend,
+// zellij-backend.ts).
 //
 // The screen and the cursor are read in ONE tmux invocation (`capture-pane … ; display-message …`), so
 // both describe the same instant: a cursor read in a second round trip could describe a screen that has
@@ -28,13 +30,16 @@
 /**
  * What a visible-only capture returns: the screen and the cursor, read at one instant.
  *
- * Deliberately NO alternate-screen flag (controller ruling R18). A keyframe's `altScreen` is decided
- * by the CALLER from the join (a tmux-backed client ⇒ `true`), not from the capture: a watcher
+ * No alternate-screen flag on the tmux and SSH routes (controller ruling R18). A keyframe's `altScreen`
+ * is decided by the CALLER from the join (a tmux-backed client ⇒ `true`), not from the capture: a watcher
  * co-attaches to the tmux CLIENT's output, and tmux paints its client on the alternate screen
  * whatever the pane's application does, so every `tmux`/`ssh`-route join means `altScreen: true`.
  * The pane's own `#{alternate_on}` (vim, a TUI) describes a different screen — a shell pane reads 0
  * while the stream is on the alternate screen — and mapping it into the keyframe would scroll every
  * tmux redraw into the viewer's history.
+ *
+ * The SESSION-HOST route is the exception and sets `altScreen` itself: there is no tmux client between
+ * the pane and the stream, so the emulator's active buffer is exactly the stream's.
  */
 export interface VisibleCapture {
   /** The visible screen with SGR, byte-identical to what `capture-pane -p -e` prints on its own
@@ -49,6 +54,9 @@ export interface VisibleCapture {
    * "no capture" would erase everything the stream had drawn. The link host sends no keyframe for it.
    */
   unavailable?: true
+  /** Set ONLY by the `sessionHost` route (see above); the link host then uses it instead of the
+   *  join's. Absent on every tmux/SSH capture. */
+  altScreen?: boolean
 }
 
 /** A session with no visible-only capture, or one that failed: nothing to paint, nothing known. */
@@ -59,11 +67,12 @@ export function unavailableCapture(): VisibleCapture {
 export function visibleCaptureRoute(
   s: { sessionHost?: unknown; nativeWindowsPane?: unknown; sshRemote?: unknown; tmuxBacked?: boolean; zellij?: boolean },
   tmuxAvailable: boolean
-): 'none' | 'ssh' | 'tmux' {
+): 'none' | 'ssh' | 'tmux' | 'sessionHost' {
   // A Zellij session is `tmuxBacked` too (that field means "releasing a client destroys nothing"),
   // but there is no tmux session to capture: never aim the tmux socket at it (pty-manager's rule
   // for every path that would talk to tmux). No keyframe — the viewer starts from the live stream.
-  if (s.sessionHost || s.nativeWindowsPane || s.zellij) return 'none'
+  if (s.nativeWindowsPane || s.zellij) return 'none'
+  if (s.sessionHost) return 'sessionHost'
   if (s.sshRemote) return 'ssh'
   return tmuxAvailable && s.tmuxBacked ? 'tmux' : 'none'
 }

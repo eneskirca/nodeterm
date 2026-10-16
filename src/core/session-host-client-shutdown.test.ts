@@ -36,7 +36,11 @@ function deadPid(): number {
   return spawnSync(process.execPath, ['-e', '']).pid as number
 }
 
-function fixture(publish: boolean, pid = deadPid()): { userDataDir: string; endpoint: string } {
+function fixture(
+  publish: boolean,
+  pid = deadPid(),
+  extra: Record<string, unknown> = {}
+): { userDataDir: string; endpoint: string } {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-shutdown-client-'))
   dirs.add(userDataDir)
   const paths = sessionHostPaths(userDataDir)
@@ -49,7 +53,8 @@ function fixture(publish: boolean, pid = deadPid()): { userDataDir: string; endp
         endpoint: paths.endpoint,
         tokenPath: paths.tokenPath,
         startedAt: Date.now(),
-        protocolVersion: SESSION_HOST_PROTOCOL_VERSION
+        protocolVersion: SESSION_HOST_PROTOCOL_VERSION,
+        ...extra
       })
     )
   }
@@ -120,10 +125,45 @@ describe('SessionHostClient prepare-for-update (issue #829)', () => {
     await expect(client.inspectForUpdate()).resolves.toEqual({
       running: true,
       sessions: ['nt-a', 'nt-b'],
-      shutdown: false
+      shutdown: false,
+      // No classifier injected (every non-Windows client): never read as staged.
+      staging: 'unknown'
     })
     await expect(client.shutdownForUpdate()).resolves.toEqual({ kind: 'unsupported' })
     expect(requests.some((r) => r.cmd === 'shutdown')).toBe(false)
+  })
+
+  it('classifies the host from the exe its state file publishes, for the pid it is connected to', async () => {
+    const exe = 'C:\\Users\\me\\AppData\\Local\\nodeterm\\session-host\\0.4.4-abc\\nodeterm-sessionhost-v2.exe'
+    const pid = deadPid()
+    const { userDataDir, endpoint } = fixture(true, pid, { exe })
+    await fakeHost(userDataDir, endpoint, { shutdown: true })
+    const seen: Array<{ exe?: string; pid: number | null }> = []
+    const client = new SessionHostClient({
+      userDataDir,
+      hostStaging: async (host) => {
+        seen.push(host)
+        return 'staged'
+      }
+    })
+    expect(await client.inspectForUpdate()).toMatchObject({ running: true, staging: 'staged' })
+    expect(seen).toEqual([{ exe, pid }])
+  })
+
+  it('an old host without exe is passed by pid alone; a throwing classifier is unknown', async () => {
+    const pid = deadPid()
+    const { userDataDir, endpoint } = fixture(true, pid)
+    await fakeHost(userDataDir, endpoint, { shutdown: true })
+    const seen: Array<{ exe?: string; pid: number | null }> = []
+    const client = new SessionHostClient({
+      userDataDir,
+      hostStaging: async (host) => {
+        seen.push(host)
+        throw new Error('query denied')
+      }
+    })
+    expect(await client.inspectForUpdate()).toMatchObject({ running: true, staging: 'unknown' })
+    expect(seen).toEqual([{ exe: undefined, pid }])
   })
 
   it('shuts down, confirms the host is gone, and then refuses to reconnect', async () => {

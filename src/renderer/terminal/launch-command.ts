@@ -34,6 +34,14 @@ export function createLaunchWriter(opts: {
   shellReady(manual: boolean): Promise<boolean>
   killLine: string
   cleanup(cancel: () => void): void
+  /**
+   * Optional direct executor, asked AFTER the claim and the ready re-check — the same exactly-once
+   * gates the typed line passes. `'fallback'` = it delivered nothing (not its kind of pane, or it
+   * refused before touching the pane) and the typed line runs as before; any other answer is the
+   * delivery outcome itself. Today: a local Windows session-host pane's semantic launch
+   * (terminal/launch-intent.ts).
+   */
+  execute?(command: string, manual: boolean): Promise<DeliveryOutcome | 'fallback'>
 }): Writer {
   let attempted = false
   let submitted = false
@@ -52,6 +60,11 @@ export function createLaunchWriter(opts: {
       attempted = true
       // Saving can take a remote round trip. Recheck after the barrier, before any input.
       if (!(await opts.shellReady(manual)) || disposed) return 'cancelled' as const
+      if (opts.execute) {
+        const direct = await opts.execute(command, manual)
+        if (direct !== 'fallback') return direct
+        if (disposed) return 'cancelled' as const
+      }
       return new Promise<DeliveryOutcome>((resolve) => {
         try {
           // A cancelled delivery may have left an unsubmitted prefix in the shell editor.

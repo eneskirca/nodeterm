@@ -261,7 +261,7 @@ describe('forwardTarget', () => {
 })
 
 describe('runners', () => {
-  it('local: Windows is unsupported, a throwing exec is unreachable', async () => {
+  it('local: Windows without the session host is unsupported, a throwing exec is unreachable', async () => {
     const tmuxBin = (): string => '/usr/bin/tmux'
     expect(await collectLocalDevPorts({ tmuxBin, exec: async () => '', platformName: 'win32' })).toEqual({
       ok: false,

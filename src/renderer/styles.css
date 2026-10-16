@@ -162,6 +162,11 @@
   --radius: 8px;
   --radius-sm: 6px;
   --radius-lg: 12px;
+  /* The rendered-Markdown views' font (Settings → Appearance). App.tsx overrides these on <html>
+     from settings; these are the defaults (@shared/markdown-font) for an un-hydrated store. */
+  --md-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --md-font-size: 13px;
+  --md-code-font-family: Menlo, Monaco, "Courier New", monospace;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro', 'Helvetica Neue',
     sans-serif;
   font-size: 13px;
@@ -3150,8 +3155,8 @@ body,
   min-height: 0;
   overflow: auto;
   padding: 12px 16px;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   line-height: 1.6;
   color: var(--text);
   /* Allow text selection / copy (React Flow nodes are non-selectable by default). */
@@ -3167,14 +3172,16 @@ body,
   line-height: 1.3;
 }
 
+/* Heading sizes are proportions of the body size (20 / 17 / 15 px at the default 13), so they
+   follow the Markdown font size setting. */
 .term-md__content h1 {
-  font-size: 20px;
+  font-size: 1.54em;
 }
 .term-md__content h2 {
-  font-size: 17px;
+  font-size: 1.31em;
 }
 .term-md__content h3 {
-  font-size: 15px;
+  font-size: 1.15em;
 }
 
 .term-md__content p,
@@ -3188,8 +3195,9 @@ body,
 }
 
 .term-md__content code {
-  font-family: Menlo, Monaco, monospace;
-  font-size: 12px;
+  /* The terminal's font, at 0.92 of the Markdown size (12px at the default 13). */
+  font-family: var(--md-code-font-family);
+  font-size: 0.92em;
   background: rgba(var(--tint-rgb), 0.08);
   padding: 1px 5px;
   border-radius: 5px;
@@ -3219,14 +3227,41 @@ body,
   max-width: 100%;
 }
 
-.term-md__content table {
+/* Tables in rendered Markdown — the ⌘M output view, the editor preview and the ⌘M chat view (its
+   messages and plan/question cards all render through `.term-chat__text`). Gridlines strong enough
+   to read (`--border` is a 10% separator, which made cells blur together), a tinted header row,
+   and a horizontal scroll inside the table for one wider than the view, so the thread never
+   scrolls sideways. A column's `:---:` alignment arrives as an `align` attribute, which an author
+   `text-align` would override — so only a header WITHOUT one is set (to the start edge, matching
+   its cells, instead of the browser's centred default). */
+.term-md__content table,
+.term-chat__text table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
+  margin: 0 0 10px;
 }
 
 .term-md__content th,
-.term-md__content td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
+.term-md__content td,
+.term-chat__text th,
+.term-chat__text td {
+  border: 1px solid rgba(var(--tint-rgb), 0.22);
+  padding: 4px 10px;
+  vertical-align: top;
+}
+
+.term-md__content th,
+.term-chat__text th {
+  background: rgba(var(--tint-rgb), 0.06);
+  font-weight: 600;
+}
+
+.term-md__content th:not([align]),
+.term-chat__text th:not([align]) {
+  text-align: start;
 }
 
 /* Chat panel — replaces the markdown overlay on chat-capable agent nodes (Cmd+M). */
@@ -3326,7 +3361,8 @@ body,
    ASSISTANT's is plain full-width text on the panel with no bubble, roomy line height and paragraph
    spacing, and a quiet action row under each turn (ChatTurnActions). */
 .term-chat__msg {
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   line-height: 1.5;
   word-break: break-word;
   min-width: 0;
@@ -3421,11 +3457,50 @@ body,
 .term-chat__text > :last-child {
   margin-bottom: 0;
 }
+.term-chat__text code {
+  font-family: var(--md-code-font-family);
+  font-size: 0.92em;
+}
 .term-chat__text pre {
   background: rgba(0, 0, 0, 0.35);
   padding: 8px;
   border-radius: 6px;
   overflow-x: auto;
+}
+/* A code block with its Copy button (nodes/CodeBlockCopy.tsx): the wrapper is the positioned box,
+   because the <pre> scrolls sideways and would carry the button with it. The wrapper takes the
+   <pre>'s block margin so the thread's first/last-child margin rules still apply. */
+.term-chat__code {
+  position: relative;
+  margin: 1em 0;
+}
+.term-chat__code > pre {
+  margin: 0;
+}
+/* Same control as the per-turn Copy (.term-chat__action), in the block's top-right corner. Hidden
+   until the block is hovered or the button is keyboard-focused, and kept while it says "Copied".
+   A solid backing so the code underneath does not show through it. */
+.term-chat__code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.term-chat__code:hover .term-chat__code-copy,
+.term-chat__code-copy:focus-visible,
+.term-chat__code-copy[data-copied] {
+  opacity: 1;
+}
+.term-chat__code-copy:hover {
+  background: var(--bg);
+  border-color: rgba(var(--tint-rgb), 0.3);
 }
 .term-chat__text a {
   color: var(--accent);
@@ -3797,8 +3872,8 @@ body,
   width: 100%;
   resize: none;
   padding: 4px 6px;
-  font-family: inherit;
-  font-size: 13px;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
   color: var(--text-strong);
   background: transparent;
   border: none;
@@ -5229,6 +5304,56 @@ body,
 
 .update-card__btn:hover {
   background: var(--accent-hover);
+}
+
+/* Preparing / restarting: the click was taken, the button says so and cannot be pressed twice. */
+.update-card__btn:disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.7;
+  cursor: default;
+}
+
+.update-card__btn:disabled:hover {
+  background: var(--accent);
+}
+
+.update-card__spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: nt-spin 0.8s linear infinite;
+  animation-play-state: var(--nt-anim-state);
+}
+
+.update-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.update-card__actions .update-card__link {
+  align-self: center;
+}
+
+.update-card__notes {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: rgba(var(--tint-rgb), 0.7);
+}
+
+.update-card__notes li + li {
+  margin-top: 2px;
+}
+
+.update-card__hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: rgba(var(--tint-rgb), 0.6);
 }
 
 .update-card--pill {
@@ -8987,6 +9112,27 @@ button.group-node__setup:disabled {
 }
 /* The attribution line: quieter than a row, above the foot rule, and rendered in EVERY state — a
    failed sweep is exactly when a user is most likely to be blaming the wrong process. */
+/* The session host's own cost: a quiet, non-interactive line under the rows (Windows only). */
+.sessmem-host {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 2px 0;
+  border-top: 1px solid rgba(var(--tint-rgb), 0.08);
+  font-size: 12px;
+  color: rgba(var(--tint-rgb), 0.6);
+}
+.sessmem-host__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessmem-host__mb {
+  font-variant-numeric: tabular-nums;
+}
 .sessmem-panel__attrib {
   margin-top: 10px;
   font-size: 11px;
@@ -9255,6 +9401,14 @@ button.group-node__setup:disabled {
   padding: 0 2px;
 }
 .scm-error__dismiss:hover {
+  color: var(--text-strong);
+}
+/* Neutral variant: "waiting for GitHub sign-in" while Publish retries in-process. */
+.scm-error--info {
+  border-color: rgba(var(--tint-rgb), 0.18);
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.scm-error--info .scm-error__msg {
   color: var(--text-strong);
 }
 
@@ -12675,6 +12829,77 @@ button.pull-checks__name {
    the scrolling region so Share / Close stay on screen however long the lists are. */
 .confirm.share-team {
   width: 480px;
+}
+
+/* ---- nodeterm://open confirm sheet (components/OpenLinkSheet.tsx; reuses the .confirm shell) ---- */
+.confirm.open-link {
+  width: 520px;
+}
+.open-link__title {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.open-link__source {
+  flex: 0 0 auto;
+  margin: 2px 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.open-link__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+.open-link__label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.open-link__field {
+  margin-bottom: 10px;
+}
+.open-link__value {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.open-link__muted {
+  color: var(--muted);
+}
+.open-link__prompt {
+  margin: 0 0 10px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(var(--tint-rgb), 0.06);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.open-link__note,
+.open-link__warn {
+  margin: -4px 0 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+}
+.open-link__error {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--danger);
 }
 .share-team__title {
   flex: 0 0 auto;
@@ -16986,7 +17211,7 @@ body.focus-mode .dock:hover {
 }
 /* RAM panel secondary text (N5-L2): hard-coded 0.45–0.6 ink measured 3.95–4.22:1 on glass; it takes
    the glass secondary label. */
-:root[data-nt-glass='on'] :is(.sessmem-panel__scope, .sessmem-panel__note, .sessmem-row__project, .sessmem-row__orphan, .sessmem-row__cmd, .sessmem-row__kids, .sessmem-panel__attrib, .sessmem-panel__foot) {
+:root[data-nt-glass='on'] :is(.sessmem-panel__scope, .sessmem-panel__note, .sessmem-row__project, .sessmem-row__orphan, .sessmem-row__cmd, .sessmem-row__kids, .sessmem-panel__attrib, .sessmem-panel__foot, .sessmem-host) {
   color: var(--muted);
 }
 /* The Members picker's hover was a solid accent row with white text (3.65:1) while every other list

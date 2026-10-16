@@ -47,6 +47,9 @@ describe('fileLinkHint', () => {
     expect(fileLinkHint({ abs: '/p/src', dir: true, mac: false, systemOpen: true })).toBe(
       '/p/src (Ctrl-click to reveal · Shift+Ctrl-click to open in file manager)'
     )
+     expect(fileLinkHint({ abs: 'C:\\p\\src', dir: true, mac: false, windows: true, systemOpen: true })).toBe(
+      'C:\\p\\src (Ctrl-click to reveal · Shift+Ctrl-click to open in File Explorer)'
+    )
   })
   it('does not advertise the OS-app gesture where it cannot work', () => {
     expect(fileLinkHint({ abs: '/p/a.ts', dir: false, mac: true, systemOpen: false })).toBe(

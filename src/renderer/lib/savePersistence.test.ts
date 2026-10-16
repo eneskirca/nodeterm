@@ -6,6 +6,7 @@ import {
   nextSaveDelivery,
   saveFailureMessage,
   saveRetryDelay,
+  shouldFlushOnQuit,
   SAVE_DEBOUNCE_MS,
   SAVE_RETRY_ATTEMPTS,
   type SaveDelivery
@@ -140,5 +141,14 @@ describe('the call site still honours the rule', () => {
     // That spelling IS the bug: it discards the rejection AND the exception. Every save must
     // either be awaited by a caller that reports, or carry its own .catch.
     expect(SRC).not.toContain('void api.workspace.save(')
+  })
+})
+
+describe('shouldFlushOnQuit', () => {
+  it('writes only dirty edits, and never over an open conflict bar', () => {
+    expect(shouldFlushOnQuit(true, false)).toBe(true)
+    expect(shouldFlushOnQuit(false, false)).toBe(false)
+    expect(shouldFlushOnQuit(true, true)).toBe(false)
+    expect(shouldFlushOnQuit(false, true)).toBe(false)
   })
 })

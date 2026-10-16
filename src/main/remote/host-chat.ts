@@ -24,6 +24,8 @@ import {
   type HeldPermissionIo
 } from '../../core/agents/permission-decision'
 import type { HostChatOps } from './host-service'
+import type { RelayKey } from '../../core/relay-keys'
+import { isValidPendingId } from '../../core/agents/pending-approvals'
 
 /** What the host knows about a node, from its own records. */
 export interface HostChatNode {
@@ -67,6 +69,13 @@ export interface HostChatDeps {
    *  an ssh round trip (and the child gate's queue) on a master that may be half dead; `chat.status`
    *  must never wait on that. Default `HOST_CHAT_CATALOG_TIMEOUT_MS`. */
   catalogTimeoutMs?: number
+  /** The node's agent state per the HOST's mirror (`nodeState`) — the keyed answer's guard. Absent
+   *  ⇒ `agent.key` is not served. */
+  agentState?(nodeId: string): string | undefined
+  /** The ask currently open on the node (`openAskFor`): its newest unresolved approval/question. */
+  openAsk?(nodeId: string): { kind: 'approval' | 'question'; pendingId?: string } | undefined
+  /** Deliver closed-set keys into the node's pane (`PtyManager.sendKeys`). Absent ⇒ not served. */
+  sendKeys?(nodeId: string, keys: readonly RelayKey[]): Promise<boolean>
   /** The approval tickets the host's mirror holds for this node (`pendingTicketsFor`). */
   knownTickets(nodeId: string): string[]
   /** How long a status query may take, and how long a send has to START (the renderer refuses a
@@ -89,6 +98,47 @@ export function mirrorChatSendRefusal(
   if (entry.state === 'working') return 'working'
   if (entry.state === 'waiting' || entry.state === 'blocked') return 'dialog'
   return entry.pendingQuestion || (entry.concurrentApprovalIds?.length ?? 0) > 0 ? 'dialog' : null
+}
+
+/** What a keyed answer is answering — decides which states it may act on and which open ask it fits. */
+export type KeyAnswerKind = 'approval' | 'question' | 'submit'
+
+export interface KeyRequest {
+  keys: readonly RelayKey[]
+  ask: KeyAnswerKind
+  /** The states the phone's card was built for; only NARROWS the host's own set (`keyAcceptStates`). */
+  states?: readonly string[]
+  /** The approval's hook-reply ticket, when the card carried one. */
+  pendingId?: string
+}
+
+export type KeyOutcome =
+  | { result: 'sent' }
+  /** The node is no longer asking what the card answered — nothing was typed. */
+  | { result: 'alreadyHandled' }
+  | { result: 'refused'; reason: 'busy' | 'unavailable' | 'unsupported' }
+
+/** The needs-you states an answer kind may act on — the phone's `InboxApproval.acceptStates`, held
+ *  host-side: an approval only on a still-`blocked` node (a stale Allow/Deny must not land in a
+ *  question that replaced it), a question option / multi-select Submit also on `waiting`. */
+export function keyAcceptStates(ask: KeyAnswerKind): readonly string[] {
+  return ask === 'approval' ? ['blocked'] : ['blocked', 'waiting']
+}
+
+/** Does the answer fit the ask that is open NOW? (The phone's `answerFitsAsk`.) No open ask fails
+ *  open, exactly as the phone does against a host too old to send an inbox. */
+export function keyFitsAsk(ask: KeyAnswerKind, open: { kind: 'approval' | 'question' } | undefined): boolean {
+  if (!open) return true
+  return ask === 'approval' ? open.kind === 'approval' : open.kind === 'question'
+}
+
+/** The hook-reply decision a single approval key maps to (`1` = allow, Escape = deny); anything
+ *  else ("2" = always allow, a question digit) has no file decision and stays a keypress. */
+export function keyFileDecision(keys: readonly RelayKey[]): 'allow' | 'deny' | null {
+  if (keys.length !== 1) return null
+  const k = keys[0]
+  if ('digit' in k) return k.digit === '1' ? 'allow' : null
+  return k.name === 'Escape' ? 'deny' : null
 }
 
 /** How long a node stays busy after an UNCONFIRMED send whose dispatch never settles (main drops an
@@ -241,6 +291,41 @@ export function createHostChat(deps: HostChatDeps): HostChatOps {
       } catch {
         release()
         return { result: 'refused', reason: 'unavailable' }
+      }
+    },
+
+    async key(nodeId, req) {
+      const node = deps.lookupNode(nodeId)
+      if (!node) return 'unknown-node'
+      if (!deps.sendKeys || !deps.agentState) return { result: 'refused', reason: 'unsupported' }
+      // Re-checked HERE, on the host, at delivery time: a permission answered on another surface
+      // must not have a stray key typed into whatever replaced it. The phone's states may narrow
+      // the host's set, never widen it.
+      const allowed = keyAcceptStates(req.ask).filter((st) => !req.states || req.states.includes(st))
+      const state = deps.agentState(nodeId)
+      if (!state || !allowed.includes(state)) return { result: 'alreadyHandled' }
+      if (!keyFitsAsk(req.ask, deps.openAsk?.(nodeId))) return { result: 'alreadyHandled' }
+      if (sending.has(nodeId)) return { result: 'refused', reason: 'busy' }
+      sending.add(nodeId)
+      try {
+        // Hook-reply first (deterministic: the hook applies the decision before the prompt paints);
+        // a failed answer falls through to the keypress exactly once, like the phone's SSH path.
+        const decision = req.ask === 'approval' ? keyFileDecision(req.keys) : null
+        if (decision && req.pendingId && isValidPendingId(req.pendingId)) {
+          if (await ticketBelongsTo(nodeId, node.agentId, req.pendingId)) {
+            const res = await answerHeld(req.pendingId, { decision }, deps.answerIo(nodeId, req.pendingId))
+            if (res.ok) {
+              if (res.decision) deps.onAnswered?.(nodeId, req.pendingId, res.decision)
+              return { result: 'sent' }
+            }
+          }
+        }
+        const ok = await deps.sendKeys(nodeId, req.keys)
+        return ok ? { result: 'sent' } : { result: 'refused', reason: 'unavailable' }
+      } catch {
+        return { result: 'refused', reason: 'unavailable' }
+      } finally {
+        sending.delete(nodeId)
       }
     },
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { localAgentCwd, resolveBinary } from './commit-message'
+import { WINDOWS_INLINE_PROMPT_ERROR, localAgentCwd, planAgent, resolveBinary, runAgent } from './commit-message'
 
 /**
  * The 2026-08-05 report: "AI commit message" failed on every SSH project with
@@ -222,5 +222,90 @@ describe('AI naming account + error output', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
     expect(env.PATH).toBe('/bin')
+  })
+})
+
+/**
+ * `{prompt}` inlines the prompt as one argv element. On Windows an npm `.cmd` shim refuses a CR/LF
+ * argument outright and every CLI is capped by CreateProcess's command-line length, so that plan is
+ * refused with a sentence up front; `{promptFile}` (a private temp file's path) works everywhere.
+ */
+describe('planAgent — {prompt} / {promptFile}', () => {
+  let dir: string
+  const custom = (cmd: string) => ({ commitAgent: 'custom', commitAgentCommand: cmd }) as never
+  const PROMPT = 'Write a commit message.\nStaged diff:\n+ x'
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nt-plan-'))
+  })
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const bin = (name: string): string => {
+    const p = path.join(dir, name)
+    fs.writeFileSync(p, '')
+    return p
+  }
+
+  it('writes {promptFile} as a private file, substitutes its path, and cleanup removes it', () => {
+    const agent = bin('agent')
+    const plan = planAgent(custom(`${agent} --file {promptFile}`), PROMPT, { tmpDir: dir })
+    if ('error' in plan) throw new Error(plan.error)
+    expect(plan.stdin).toBeNull()
+    expect(plan.args[0]).toBe('--file')
+    const file = plan.args[1]
+    expect(path.dirname(path.dirname(file))).toBe(dir)
+    expect(fs.readFileSync(file, 'utf8')).toBe(PROMPT)
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    plan.cleanup?.()
+    expect(fs.existsSync(path.dirname(file))).toBe(false)
+  })
+
+  it('keeps POSIX {prompt} inline and the default on stdin, unchanged', () => {
+    const agent = bin('agent')
+    expect(planAgent(custom(`${agent} -p {prompt}`), PROMPT, { platform: 'linux' })).toEqual({
+      bin: agent,
+      args: ['-p', PROMPT],
+      stdin: null
+    })
+    expect(planAgent(custom(`${agent} -p`), PROMPT, { platform: 'darwin' })).toEqual({
+      bin: agent,
+      args: ['-p'],
+      stdin: PROMPT
+    })
+  })
+
+  it('refuses {prompt} for a .cmd shim on win32 with an actionable sentence', () => {
+    const shim = bin('mycli.cmd')
+    expect(planAgent(custom(`${shim} {prompt}`), PROMPT, { platform: 'win32' })).toEqual({
+      error: WINDOWS_INLINE_PROMPT_ERROR
+    })
+  })
+
+  it('refuses {prompt} past the Windows command-line limit even for an .exe', () => {
+    const exe = bin('agent.exe')
+    const long = 'x'.repeat(40_000)
+    expect(planAgent(custom(`${exe} {prompt}`), long, { platform: 'win32' })).toEqual({
+      error: WINDOWS_INLINE_PROMPT_ERROR
+    })
+    expect(planAgent(custom(`${exe} {prompt}`), 'short', { platform: 'win32' })).toMatchObject({
+      args: ['short']
+    })
+  })
+
+  it('serves {promptFile} on win32 for the same .cmd shim', () => {
+    const shim = bin('mycli.cmd')
+    const plan = planAgent(custom(`${shim} --file {promptFile}`), PROMPT, { platform: 'win32', tmpDir: dir })
+    expect('error' in plan).toBe(false)
+    if (!('error' in plan)) plan.cleanup?.()
+  })
+
+  it.skipIf(process.platform === 'win32')('runAgent hands the file to a real CLI and removes it after', async () => {
+    const before = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('nt-prompt-')))
+    const r = await runAgent('Fix the parser', dir, custom('cat {promptFile}'))
+    expect(r).toEqual({ ok: true, message: 'Fix the parser' })
+    const after = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('nt-prompt-') && !before.has(n))
+    expect(after).toEqual([])
   })
 })

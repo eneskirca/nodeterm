@@ -50,6 +50,9 @@ export interface PushHostIdentity {
 /** The per-event body the backend `/v1/push/notify` expects (a subset of InboxEvent). */
 export interface PushNotifyEvent {
   kind: 'approval' | 'question' | 'done'
+  /** The mirror inbox event id (`InboxEvent.id`, `${ts}-${seq}`), so a phone can claim the exact
+   *  Inbox card. The backend forwards it to FCM only; the APNs payload never carries it. */
+  eventId?: string
   title: string
   detail?: string
   nodeId: string
@@ -580,6 +583,7 @@ export function createPushNotify(deps: PushNotifyDeps): PushNotifyHandle {
     }
     const payload: PushNotifyEvent = {
       kind: e.kind,
+      eventId: e.id,
       title: e.title,
       ...(e.detail ? { detail: e.detail } : {}),
       nodeId: e.nodeId,

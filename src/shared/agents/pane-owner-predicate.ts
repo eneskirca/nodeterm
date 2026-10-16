@@ -219,7 +219,7 @@ export function binariesFor(
  *
  * The old gate asked a persisted field what the pane SHOULD be running. `agentId` is durable and
  * outlives the CLI, so a plain terminal whose claude exited weeks ago still read as an agent — and
- * `isShellCommand` is a SEVEN-NAME allowlist (zsh/bash/sh/fish/dash/ksh/tcsh), so `nu`, `pwsh`,
+ * `isShellCommand` was then a SEVEN-NAME allowlist (zsh/bash/sh/fish/dash/ksh/tcsh), so `nu`, `pwsh`,
  * `xonsh`, `ssh` and `python` all fell through its negation and were admitted as agents. Text
  * delivered to any of those EXECUTES, because sendText appends Enter.
  *

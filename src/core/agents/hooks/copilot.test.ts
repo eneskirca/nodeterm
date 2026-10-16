@@ -30,7 +30,9 @@ describe('copilot hook installer', () => {
   it("writes Copilot's native hook-file shape and the shared managed script", async () => {
     const { copilotHookConfigPath, installCopilotHooks } =
       await import('./copilot')
-    installCopilotHooks()
+    // Explicit platform: the exact entry below is the POSIX one, and the Windows CI runner would
+    // otherwise (correctly) add a `powershell` key.
+    installCopilotHooks('linux')
     expect(copilotHookConfigPath()).toBe(
       path.join(home, '.copilot', 'hooks', 'nodeterm-status.json')
     )
@@ -97,5 +99,27 @@ describe('copilot hook installer', () => {
       version: 1,
       hooks: {}
     })
+  })
+
+  it('win32: adds the powershell key (the one Copilot runs there) beside bash, wrapper first', async () => {
+    const { copilotHookConfigPath, installCopilotHooks } = await import('./copilot')
+    const CMD = 'C:\\WINDOWS\\System32\\cmd.exe'
+    installCopilotHooks('win32', CMD)
+    const wrapper = path.join(home, '.nodeterm', 'agent-hooks', 'copilot-hook.cmd')
+    expect(readFileSync(wrapper, 'utf8')).toContain('set "NT_SCRIPT=%~dp0copilot.sh"')
+    const cfg = JSON.parse(readFileSync(copilotHookConfigPath(), 'utf8'))
+    for (const [event, entries] of Object.entries(cfg.hooks) as [string, Record<string, unknown>[]][]) {
+      expect(entries, event).toHaveLength(1)
+      expect(entries[0].bash, event).toMatch(/^if \[ -r /)
+      expect(entries[0].powershell, event).toBe(`${CMD} /d /c call "${wrapper} "`)
+    }
+    expect(cfg.hooks.Notification[0].matcher).toBe('permission_prompt|elicitation_dialog')
+  })
+
+  it('buildCopilotHookConfig: no windows command (the SSH installer) means no powershell key', async () => {
+    const { buildCopilotHookConfig } = await import('./copilot')
+    const cfg = buildCopilotHookConfig('POSIX')
+    for (const entries of Object.values(cfg.hooks)) expect(entries[0]).not.toHaveProperty('powershell')
+    expect(buildCopilotHookConfig('POSIX', 'WIN').hooks.Stop?.[0]).toMatchObject({ bash: 'POSIX', powershell: 'WIN' })
   })
 })

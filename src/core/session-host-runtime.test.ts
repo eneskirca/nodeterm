@@ -7,11 +7,13 @@ import {
   STAGED_HOST_EXE,
   RUNTIME_MARKER,
   SMOKE_OK,
+  classifyHostImage,
   collectStagedRuntimes,
   ensureStagedHostRuntime,
   parseProcessJson,
   planRuntimeFiles,
   resetStagedHostRuntimeForTests,
+  resolveHostStaging,
   runtimeKey,
   stageHostRuntime,
   stagedRuntimeRoot,
@@ -274,5 +276,76 @@ describe('parseProcessJson', () => {
   })
   it('anything unexpected is a failed query', () => {
     for (const t of ['', 'not json', '[]', '[1]', '[{"ExecutablePath":"x"}]']) expect(parseProcessJson(t)).toBeNull()
+  })
+})
+
+describe('parseProcessJson pid', () => {
+  it('keeps a positive integer ProcessId and ignores anything else', () => {
+    expect(parseProcessJson('[{"Name":"a","ExecutablePath":null,"ProcessId":42},{"Name":"b","ExecutablePath":null,"ProcessId":"7"}]')).toEqual([
+      { name: 'a', path: null, pid: 42 },
+      { name: 'b', path: null }
+    ])
+  })
+})
+
+// U3: a staged host does not block the installer; everything else keeps the stop flow.
+describe('classifyHostImage', () => {
+  const install = 'C:\\Users\\me\\AppData\\Local\\Programs\\nodeterm'
+  const root = 'C:\\Users\\me\\AppData\\Local\\nodeterm\\session-host'
+  const staged = `${root}\\0.4.1-0123456789abcdef\\${STAGED_HOST_EXE}`
+  it.each([
+    ['staged copy', staged, 'staged'],
+    ['mixed case, forward slashes', staged.toUpperCase().replace(/\\/g, '/'), 'staged'],
+    ['sibling directory is not under the root', staged.replace('session-host\\', 'session-host-evil\\'), 'unknown'],
+    ['staged root but another image name', `${root}\\0.4.1-x\\helper.exe`, 'unknown'],
+    ['legacy hard-link host', `${install}\\nodeterm-session-host.exe`, 'install'],
+    ['fallback host name anywhere', 'D:\\Other\\nodeterm.exe', 'install'],
+    ['staged name inside the installation', `${install}\\${STAGED_HOST_EXE}`, 'install'],
+    ['something else entirely', 'C:\\Temp\\x.exe', 'unknown'],
+    ['no path', null, 'unknown'],
+    ['blank path', '  ', 'unknown']
+  ] as const)('%s', (_n, exe, want) => {
+    expect(classifyHostImage(exe, install, root)).toBe(want)
+  })
+  it('an absent staged root never yields staged', () => {
+    expect(classifyHostImage(staged, install, null)).toBe('unknown')
+  })
+})
+
+describe('resolveHostStaging', () => {
+  const install = 'C:\\Apps\\nodeterm'
+  const root = 'C:\\L\\nodeterm\\session-host'
+  const exe = `${root}\\v\\${STAGED_HOST_EXE}`
+  it('prefers the published exe and does not query', async () => {
+    let asked = false
+    const query = async (): Promise<ProcessInfo[]> => {
+      asked = true
+      return []
+    }
+    expect(await resolveHostStaging({ exe, pid: 9, installDir: install, stagedRoot: root, query })).toBe('staged')
+    expect(asked).toBe(false)
+  })
+  it('falls back to the process with that pid', async () => {
+    const query = async (): Promise<ProcessInfo[]> => [
+      { name: 'nodeterm.exe', path: `${install}\\nodeterm.exe`, pid: 8 },
+      { name: STAGED_HOST_EXE, path: exe, pid: 9 }
+    ]
+    expect(await resolveHostStaging({ pid: 9, installDir: install, stagedRoot: root, query })).toBe('staged')
+    expect(await resolveHostStaging({ pid: 8, installDir: install, stagedRoot: root, query })).toBe('install')
+    expect(await resolveHostStaging({ pid: 7, installDir: install, stagedRoot: root, query })).toBe('unknown')
+  })
+  it('a failed, throwing or pid-less lookup is unknown', async () => {
+    expect(await resolveHostStaging({ pid: 9, installDir: install, stagedRoot: root, query: async () => null })).toBe('unknown')
+    expect(
+      await resolveHostStaging({
+        pid: 9,
+        installDir: install,
+        stagedRoot: root,
+        query: async () => {
+          throw new Error('denied')
+        }
+      })
+    ).toBe('unknown')
+    expect(await resolveHostStaging({ pid: null, installDir: install, stagedRoot: root, query: async () => [] })).toBe('unknown')
   })
 })

@@ -13,6 +13,7 @@ import { ROW_DOWNLOAD_TITLE, useDownloads, type RowDownloadState } from '../lib/
 import { DownloadStrip } from './DownloadStrip'
 import { explorerOverlayClickCloses } from '../lib/explorerPin'
 import { isBrowserRuntime } from '../bridge/runtime'
+import { osRevealLabel } from '../lib/osReveal'
 import { IconClose, IconPin, IconReload } from './icons'
 
 export interface ExplorerPanelProps {
@@ -552,7 +553,7 @@ export function ExplorerPanel({
                       setMenu(null)
                     }}
                   >
-                    Reveal in Finder
+                    {osRevealLabel()}
                   </button>
                 </>
               )}

@@ -42,6 +42,21 @@ export interface ReverseForward {
   localPort: number
 }
 
+/**
+ * `-L 127.0.0.1:<port>:<addr>:<port>` — the only -L shape the builders produce (localFwdSpec in
+ * control-master.ts): a loopback listener here, a direct-tcpip channel to `toHost:toPort` there.
+ */
+export interface LocalForward {
+  bindHost: '127.0.0.1'
+  localPort: number
+  /** An IP literal, brackets already stripped from an IPv6 one. */
+  toHost: string
+  toPort: number
+}
+
+/** What `-O forward|cancel` names: a reverse (`-R`) or a local (`-L`) forward. */
+export type ForwardSpec = ({ kind: 'reverse' } & ReverseForward) | ({ kind: 'local' } & LocalForward)
+
 export type ParsedSsh =
   | { kind: 'master'; target: SshTarget; options: SshOptions; background: boolean }
   | { kind: 'control'; op: 'check' | 'exit'; target: SshTarget; options: SshOptions }
@@ -50,7 +65,7 @@ export type ParsedSsh =
       op: 'forward' | 'cancel'
       target: SshTarget
       options: SshOptions
-      forward: ReverseForward
+      forward: ForwardSpec
     }
   | { kind: 'exec'; target: SshTarget; options: SshOptions; tty: boolean; command?: string }
 
@@ -144,6 +159,20 @@ function parseReverse(spec: string): ReverseForward {
 }
 
 /**
+ * `127.0.0.1:<port>:<ipv4|[ipv6]>:<port>`, and nothing else. Re-validated here, at the parse site
+ * (CLAUDE.md rule 13), even though localFwdSpec already checked it: a bind address other than
+ * loopback would publish a dev server to the LAN, and a hostname target is not something any
+ * builder emits.
+ */
+function parseLocal(spec: string): LocalForward {
+  const m = /^127\.0\.0\.1:(\d+):(\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:]*:[0-9A-Fa-f:]*\]):(\d+)$/.exec(spec)
+  if (!m) throw new UnsupportedSshArgv(`-L ${spec}`)
+  const toHost = m[2].startsWith('[') ? m[2].slice(1, -1) : m[2]
+  if (!toHost.includes(':') && toHost.split('.').some((o) => Number(o) > 255)) throw new UnsupportedSshArgv(`-L ${spec}`)
+  return { bindHost: '127.0.0.1', localPort: parsePort(m[1], '-L port'), toHost, toPort: parsePort(m[3], '-L port') }
+}
+
+/**
  * Parse an ssh argv (without the program). The remote command is every argument after the
  * destination joined with single spaces — exactly what OpenSSH sends to the server, which runs it
  * through the user's login shell.
@@ -157,6 +186,7 @@ export function parseSshArgv(argv: string[]): ParsedSsh {
   let tty = false
   let op: string | undefined
   let reverse: ReverseForward | undefined
+  let local: LocalForward | undefined
   let i = 0
   const need = (flag: string): string => {
     const v = argv[++i]
@@ -185,6 +215,9 @@ export function parseSshArgv(argv: string[]): ParsedSsh {
       case '-R':
         reverse = parseReverse(need(a))
         break
+      case '-L':
+        local = parseLocal(need(a))
+        break
       case '-p':
         t.port = parsePort(need(a), '-p')
         break
@@ -207,15 +240,20 @@ export function parseSshArgv(argv: string[]): ParsedSsh {
     if (rest.length) throw new UnsupportedSshArgv(`command with -O ${op}`)
     if (op === 'check' || op === 'exit') {
       if (reverse) throw new UnsupportedSshArgv(`-R with -O ${op}`)
+      if (local) throw new UnsupportedSshArgv(`-L with -O ${op}`)
       return { kind: 'control', op, target, options: o }
     }
     if (op === 'forward' || op === 'cancel') {
-      if (!reverse) throw new UnsupportedSshArgv(`-O ${op} without -R`)
-      return { kind: 'control', op, target, options: o, forward: reverse }
+      // One forward per call, as every builder emits; both at once has no single answer.
+      if (reverse && local) throw new UnsupportedSshArgv(`-L with -R`)
+      if (local) return { kind: 'control', op, target, options: o, forward: { kind: 'local', ...local } }
+      if (!reverse) throw new UnsupportedSshArgv(`-O ${op} without -R or -L`)
+      return { kind: 'control', op, target, options: o, forward: { kind: 'reverse', ...reverse } }
     }
     throw new UnsupportedSshArgv(`-O ${op}`)
   }
   if (reverse) throw new UnsupportedSshArgv('-R outside -O forward/cancel')
+  if (local) throw new UnsupportedSshArgv('-L outside -O forward/cancel')
   if (master) {
     if (!noCommand || rest.length || tty) throw new UnsupportedSshArgv('-M without -N, or with a command')
     return { kind: 'master', target, options: o, background }

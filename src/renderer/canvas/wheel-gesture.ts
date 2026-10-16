@@ -20,6 +20,24 @@ export type MacWheelDestination = 'flow-pan' | 'native'
 export const trackpadRoutingEnabled = (mac: boolean, trackpadPan: boolean): boolean =>
   mac && trackpadPan
 
+/**
+ * Which viewers get the router at all (the first argument to `trackpadRoutingEnabled` — still
+ * named `mac` throughout this file for history). macOS and Windows: Chromium on Windows reports a
+ * precision touchpad as small/fractional pixel deltas whose `wheelDeltaY` is not a multiple of
+ * 120, and a notched mouse as `wheelDeltaY` = ±120·n — the same split the heuristics below already
+ * draw. Linux stays off (libinput/X11 deltas were never measured), so its row is hidden.
+ */
+export const trackpadRoutingSupported = (viewer: { mac: boolean; windows: boolean }): boolean =>
+  viewer.mac || viewer.windows
+
+/**
+ * Main-process gesture REPORTING is macOS-desktop only: it rides the gestureScrollBegin/End events
+ * macOS wraps every trackpad scroll in (main/trackpad-gesture.ts). Windows — desktop included —
+ * and every browser tab keep the delta-shape heuristics.
+ */
+export const wheelGestureReporting = (viewer: { mac: boolean; browser: boolean }): boolean =>
+  viewer.mac && !viewer.browser
+
 const TRACKPAD_SEQUENCE_MS = 500
 const MOUSE_WHEEL_NOTCH = 120
 const LARGE_PIXEL_DELTA = 40

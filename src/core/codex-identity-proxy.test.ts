@@ -7,6 +7,7 @@ import {
   accountScope,
   bindCodexThreadIdentity,
   codexLauncherDir,
+  codexLauncherPathDir,
   codexThreadIdentityHasLiveConflict,
   forgetCodexThreadIdentitiesForNode,
   codexThreadIdentityRoot,
@@ -105,6 +106,23 @@ describe('codex thread identity store', () => {
     // server keeps its state, and nothing behind CorePlatform can be swapped for it.
     expect(codexThreadIdentityRoot()).toBe(path.join(dir, 'codex-thread-nodes'))
     expect(codexLauncherDir()).toBe(path.join(dir, 'codex-bin'))
+  })
+
+  it('puts the launcher dir on a session PATH everywhere but Windows (gated off there, phase 1)', () => {
+    expect(codexLauncherPathDir('darwin')).toBe(path.join(dir, 'codex-bin'))
+    expect(codexLauncherPathDir('linux')).toBe(path.join(dir, 'codex-bin'))
+    expect(codexLauncherPathDir('win32')).toBeNull()
+  })
+
+  it('pty-manager gates BOTH launcher sites (the per-create rewrite and the PATH prepend) on it', () => {
+    // Source-level pin: a create() is too heavy to drive here, and the docs promise "no launcher
+    // write" on Windows — the per-spawn installCodexLauncher() call used to skip the gate.
+    const src = fs.readFileSync(path.join(__dirname, 'pty-manager.ts'), 'utf8')
+    const calls = [...src.matchAll(/installCodexLauncher\(\)/g)]
+    expect(calls.length).toBe(1)
+    const before = src.slice(Math.max(0, calls[0].index! - 400), calls[0].index!)
+    expect(before).toContain('codexLauncherPathDir() !== null')
+    expect(src).toMatch(/\?\s*codexLauncherPathDir\(\)\s*:\s*null/)
   })
 
   it('round-trips a record and resolves its owning node', () => {

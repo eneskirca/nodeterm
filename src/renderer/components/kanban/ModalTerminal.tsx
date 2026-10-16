@@ -31,7 +31,13 @@ import {
 import { useTerminalSearch } from '../../terminal/useTerminalSearch'
 import { useTerminalGlass } from '../../lib/useTerminalGlass'
 import { LocalTransport } from '../../terminal/local-transport'
-import { clipboardImages, droppedPaths, pasteHasText, pastedFiles } from '../../terminal/file-drop'
+import {
+  clipboardImages,
+  dropDialect,
+  droppedPaths,
+  pasteHasText,
+  pastedFiles
+} from '../../terminal/file-drop'
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
 import { attachCopyOnSelect } from '../../terminal/copy-on-select'
 import {
@@ -666,6 +672,18 @@ export function ModalTerminal({
     if (!term || !files.length) return
     // Clipboard bytes must be written before they have a path, which is not instant either.
     const needsWrite = files.some((f) => !window.nodeTerminal.getPathForFile(f))
+    const st = useAgentStatus.getState().byId[nodeId]
+    const paneAgent = spawn.agentId ?? st?.agentId
+    const agentPane = agentProcessInPane(paneAgent, st)
+    // MIRROR TerminalNode.dropDialectFor: spelled for the core that owns the pane, not this window.
+    const dialect = dropDialect({
+      corePlatform: corePlatformRef.current,
+      remote: !!spawn.sshRemoteTmux || !!spawn.ssh,
+      shell: spawn.shell || useSettings.getState().settings.defaultShell || undefined,
+      agentPane,
+      localDesktop: session.source === 'local' && !isBrowserRuntime(),
+      viewerWindows: isWindowsPlatform()
+    })
     let paths: string[]
     if (spawn.sshRemoteTmux) {
       // Uploads go over the master this card's PTY runs on — its scope, not the project's.
@@ -679,12 +697,12 @@ export function ModalTerminal({
     } else if (needsWrite) {
       setUploading(true)
       try {
-        paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '' })
+        paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
       } finally {
         setUploading(false)
       }
     } else {
-      paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '' })
+      paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
     }
     if (!paths.length) return
     // A drag-drop from another OS app doesn't bring our window forward (esp. macOS), so the
@@ -695,13 +713,11 @@ export function ModalTerminal({
     term.focus()
     // Same receipt as the canvas node (TerminalNode.insertFiles): attached only once the pane
     // shows it.
-    const st = useAgentStatus.getState().byId[nodeId]
-    const paneAgent = spawn.agentId ?? st?.agentId
     pasteWithImageReceipt(
       term,
       paths.join(' ') + ' ',
       paths,
-      agentProcessInPane(paneAgent, st) ? paneAgent : undefined,
+      agentPane ? paneAgent : undefined,
       pasteReceipt.report
     )
   }

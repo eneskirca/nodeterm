@@ -16,6 +16,7 @@ import type {
   DevPortsReport
 } from '../shared/dev-ports'
 import { collectLocalDevPorts, fetchRemoteDevPorts, type RemoteDevPortsRunner } from './dev-ports'
+import type { SessionHostListing } from './session-host-client'
 import {
   defaultLocalPortState,
   defaultLocalPortHeld,
@@ -26,6 +27,10 @@ import {
 export interface DevPortsServiceOptions {
   /** The app's tmux binary for the LOCAL scan — the same resolver session memory is given. */
   tmuxBin: () => string | null
+  /** Windows: the session host's listing — the pane tree there (`PtyManager.sessionHostListing()`). */
+  sessionHost?: () => Promise<SessionHostListing | null> | undefined
+  /** The platform the LOCAL scan runs on. Injectable for tests; defaults to this process's. */
+  platformName?: NodeJS.Platform
   /** This machine's scan. Injectable for tests. */
   local?: () => Promise<DevPortsReport>
   remote?: {
@@ -81,7 +86,15 @@ export function startDevPortsService(opts: DevPortsServiceOptions): {
       await registry.reconcile(query.projectId, report)
       return { ...report, forwards: registry.list(query.projectId) }
     }
-    return (opts.local ?? (() => collectLocalDevPorts({ tmuxBin: opts.tmuxBin })))()
+    return (
+      opts.local ??
+      (() =>
+        collectLocalDevPorts({
+          tmuxBin: opts.tmuxBin,
+          ...(opts.sessionHost ? { sessionHost: opts.sessionHost } : {}),
+          ...(opts.platformName ? { platformName: opts.platformName } : {})
+        }))
+    )()
   })
 
   platform().handle(

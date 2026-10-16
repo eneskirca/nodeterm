@@ -1131,3 +1131,13 @@ describe('mergeProjectVisuals (a project\'s own theme / font over the global set
     })
   })
 })
+
+describe('scrollback bounds are the shared rule (session host and renderer cannot drift)', () => {
+  it('re-exports the one definition from @shared/scrollback', async () => {
+    const shared = await import('@shared/scrollback')
+    const config = await import('./terminal-config')
+    expect(config.xtermScrollback).toBe(shared.xtermScrollback)
+    expect(config.XTERM_SCROLLBACK_MAX).toBe(shared.XTERM_SCROLLBACK_MAX)
+    expect(config.XTERM_SCROLLBACK_MIN).toBe(shared.XTERM_SCROLLBACK_MIN)
+  })
+})

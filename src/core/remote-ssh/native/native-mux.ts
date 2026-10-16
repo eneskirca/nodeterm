@@ -26,15 +26,21 @@
 //  - ProxyJump: each hop is its own SSH connection with its OWN `ssh -G` config (user, port,
 //    identity files, known hosts, agent), and the next hop — finally the target — runs over a
 //    direct-tcpip channel of the previous one, which is what OpenSSH's `ssh -W` jump process does.
-//    See `jumpChain` for how a chain and a hop's own ProxyJump are resolved. ProxyCommand is
-//    refused by name (it runs an arbitrary local program as the transport).
+//    See `jumpChain` for how a chain and a hop's own ProxyJump are resolved;
+//  - ProxyCommand: the target's (or the first jump hop's) socket is the command's stdio, as with
+//    OpenSSH (proxy-command.ts). ProxyUseFdpass is refused by name;
+//  - ForwardAgent: requested on PTY channels of the target connection only — never on a jump hop
+//    and never on the background exec/sftp channels, as OpenSSH's own mux helpers do not either.
 
 import net from 'net'
+import os from 'os'
 import type { Duplex } from 'stream'
 import fs from 'fs'
 import { Client, createAgent, utils, type Channel, type ClientChannel, type ConnectConfig, type UNIXConnectionDetails, type ParsedKey, type SFTPWrapper } from 'ssh2'
-import type { ParsedSsh, ReverseForward, SshOptions, SshTarget } from './ssh-argv'
-import { parseProxyJump, type HostQuery, type JumpSpec, type ResolvedHost } from './ssh-config'
+import type { LocalForward, ParsedSsh, ReverseForward, SshOptions, SshTarget } from './ssh-argv'
+import { parseProxyJump, resolveForwardAgent, type HostQuery, type JumpSpec, type ResolvedHost } from './ssh-config'
+import { WINDOWS_OPENSSH_AGENT_PIPE, resolveWindowsIdentityAgent } from './windows-agent-discovery'
+import { expandProxyTokens, proxyCommandSocket, type ProxySpawn } from './proxy-command'
 import { acceptNewHostKey } from './known-hosts'
 import { addKeyToAgent, type AgentAddResult } from './agent-add'
 
@@ -68,6 +74,12 @@ export interface NativeMuxDeps {
   addKeyToAgent?: typeof addKeyToAgent
   /** Test seam: the TCP (or proxy) socket to run the protocol over. */
   connectSocket?(host: string, port: number, timeoutMs: number): Promise<net.Socket>
+  /** Test seam: how a ProxyCommand is spawned (proxy-command.ts). */
+  spawnProxy?: ProxySpawn
+  /** Windows: the names under `\\.\pipe\`, for `IdentityAgent pageant` (windows-agent-discovery.ts). */
+  listWindowsPipes?(): string[]
+  /** Platform the agent rules follow; defaults to process.platform (a test seam). */
+  platform?: NodeJS.Platform
   log?(line: string): void
 }
 
@@ -75,7 +87,7 @@ export interface NativeMuxDeps {
 const AUTH_WAIT_MS = 5 * 60_000 + 30_000
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
-export const WINDOWS_OPENSSH_AGENT_PIPE = '\\\\.\\pipe\\openssh-ssh-agent'
+export { WINDOWS_OPENSSH_AGENT_PIPE }
 
 interface Conn {
   key: string
@@ -84,6 +96,11 @@ interface Conn {
   alive: boolean
   closed: Promise<string>
   forwards: Map<string, ReverseForward>
+  /** `-L` listeners this connection holds, by spec (see `localForwardKey`). They close with it,
+   *  as an OpenSSH master's listeners die with the master process. */
+  localForwards: Map<string, LocalListener>
+  /** `-L` specs whose listen is still in flight, so a concurrent duplicate shares its answer. */
+  localPending: Map<string, Promise<void>>
   target: SshTarget
   options: SshOptions
   /** Channels open on this connection right now. */
@@ -94,6 +111,34 @@ interface Conn {
    *  connection BORROWS its primary's chain, so only the primary owns (and ends) these. */
   jumps: Client[]
   ownsJumps: boolean
+  /** ProxyCommand streams this connection spawned; destroyed (the process killed) when it closes. */
+  proxies: Duplex[]
+  /** ForwardAgent resolved to an agent: PTY channels on this connection request forwarding. */
+  agentForward: boolean
+}
+
+interface LocalListener {
+  server: net.Server
+  /** Accepted connections, destroyed with the listener (a cancel ends what it was carrying). */
+  sockets: Set<net.Socket>
+}
+
+/** OpenSSH's mux reply for a local forward it could not set up (`mux_client_forward`). */
+export const LOCAL_FORWARD_FAILED = 'mux_client_forward: forwarding request failed: Port forwarding failed'
+
+function localForwardKey(f: LocalForward): string {
+  return `${f.bindHost}:${f.localPort}:${f.toHost}:${f.toPort}`
+}
+
+function closeLocalListener(l: LocalListener): void {
+  l.server.close()
+  for (const s of l.sockets) s.destroy()
+  l.sockets.clear()
+}
+
+function closeLocalForwards(c: Conn): void {
+  for (const l of c.localForwards.values()) closeLocalListener(l)
+  c.localForwards.clear()
 }
 
 /** How deep a first hop's own ProxyJump may recurse before we call it a loop. */
@@ -160,6 +205,8 @@ export class NativeMux {
    * would PERSIST it, so the key reaches that agent only on an explicit opt-in — agent-add.ts.)
    */
   private unlocked = new Map<string, ParsedKey>()
+  /** Warnings already logged (one per distinct line), so a reconnect loop does not flood the log. */
+  private warned = new Set<string>()
 
   constructor(private deps: NativeMuxDeps) {}
 
@@ -174,6 +221,7 @@ export class NativeMux {
     if (!c) return false
     this.conns.delete(controlPath)
     c.alive = false
+    closeLocalForwards(c)
     c.client.end()
     this.endOverflow(controlPath)
     await Promise.race([c.closed, new Promise((r) => setTimeout(r, 2000))])
@@ -185,6 +233,7 @@ export class NativeMux {
     for (const [cp, c] of this.conns) {
       this.conns.delete(cp)
       c.alive = false
+      closeLocalForwards(c)
       c.client.end()
       this.endOverflow(cp)
     }
@@ -359,10 +408,67 @@ export class NativeMux {
         if (!err) recordExit(ch)
         cb(err, ch)
       }
-      if (!ptyOpts) client.exec(p.command ?? '', done)
-      else if (p.command) client.exec(p.command, { pty: ptyOpts }, done)
-      else client.shell(ptyOpts, done)
+      if (!ptyOpts) return client.exec(p.command ?? '', done)
+      const owner = this.connOf(cp, client)
+      const open = (fwd: boolean): void => {
+        const cb = (err: Error | undefined, ch: ClientChannel): void => {
+          // ssh2 closes the channel when the server refuses agent forwarding (AllowAgentForwarding
+          // no). That must not cost the terminal: retry without it, and stop asking this connection.
+          if (err && fwd && /agent forwarding/i.test(err.message)) {
+            if (owner) owner.agentForward = false
+            this.warnOnce(`[native-ssh] ${p.target.user}@${p.target.host}: the server refused agent forwarding (ForwardAgent)`)
+            return open(false)
+          }
+          done(err, ch)
+        }
+        // ssh2 honors `agentForward` per channel; @types/ssh2 does not declare it.
+        const agentOpt = { agentForward: true } as Record<string, unknown>
+        if (p.command) client.exec(p.command, fwd ? { pty: ptyOpts, ...agentOpt } : { pty: ptyOpts }, cb)
+        else if (fwd) client.shell(ptyOpts, agentOpt, cb)
+        else client.shell(ptyOpts, cb)
+      }
+      open(owner?.agentForward === true)
     })
+  }
+
+  /** The connection (primary or overflow) of `controlPath` that owns `client`. */
+  private connOf(controlPath: string, client: Client): Conn | undefined {
+    return [this.conns.get(controlPath), ...(this.overflow.get(controlPath) ?? [])].find((c) => c?.client === client)
+  }
+
+  private warnOnce(line: string): void {
+    if (this.warned.has(line)) return
+    this.warned.add(line)
+    this.deps.log?.(line)
+  }
+
+  /**
+   * The agent a hop authenticates with: an explicit config value wins, `none` disables it, else
+   * the platform default. On Windows `IdentityAgent pageant` becomes the discovered Pageant pipe —
+   * never the bare string, which ssh2 would turn into a pagent.exe spawn.
+   */
+  private agentPathFor(configured: string | undefined): string | undefined {
+    if ((this.deps.platform ?? process.platform) === 'win32' && configured?.toLowerCase() === 'pageant') {
+      let pipes: string[] = []
+      try {
+        pipes = this.deps.listWindowsPipes?.() ?? []
+      } catch {
+        pipes = []
+      }
+      let user: string | undefined
+      try {
+        user = os.userInfo().username
+      } catch {
+        user = undefined
+      }
+      const r = resolveWindowsIdentityAgent(configured, pipes, user)
+      if (r.missing) {
+        this.warnOnce('[native-ssh] IdentityAgent pageant: no Pageant pipe found (Pageant 0.75+ or KeeAgent must be running)')
+        return undefined
+      }
+      return r.agent
+    }
+    return resolveAgentPath(configured, this.deps.defaultAgent?.())
   }
 
   /**
@@ -415,6 +521,85 @@ export class NativeMux {
     )
   }
 
+  /**
+   * `-O forward -L 127.0.0.1:<port>:<addr>:<port>`: a loopback listener here whose every accepted
+   * connection rides a direct-tcpip channel of the shared connection to `addr:port` on the host.
+   * A spec this connection already holds is acknowledged again, as an OpenSSH master acknowledges a
+   * duplicate forward — the port registry's adoption of a forward that survived a renderer reload
+   * ('maybe-ours') depends on that. A port someone else holds is OpenSSH's "Port forwarding failed".
+   */
+  async forwardLocal(controlPath: string, fwd: LocalForward): Promise<void> {
+    const conn = this.conns.get(controlPath)
+    if (!conn?.alive) throw new Error(noMasterMessage(controlPath))
+    const key = localForwardKey(fwd)
+    // A second request for a spec whose listen is still in flight shares that answer — otherwise it
+    // would race our own listener to EADDRINUSE and report "Port forwarding failed" for a forward
+    // that is in fact ours (the duplicate OpenSSH would simply acknowledge).
+    const inFlight = conn.localPending.get(key)
+    if (inFlight) return inFlight
+    const p = this.listenLocal(controlPath, conn, fwd, key)
+    conn.localPending.set(key, p)
+    try {
+      await p
+    } finally {
+      if (conn.localPending.get(key) === p) conn.localPending.delete(key)
+    }
+  }
+
+  private async listenLocal(controlPath: string, conn: Conn, fwd: LocalForward, key: string): Promise<void> {
+    await conn.ready
+    if (conn.localForwards.has(key)) return
+    const sockets = new Set<net.Socket>()
+    const server = net.createServer((sock) => {
+      sockets.add(sock)
+      sock.once('close', () => sockets.delete(sock))
+      sock.on('error', () => sock.destroy())
+      sock.pause()
+      if (!conn.alive) return void sock.destroy()
+      conn.client.forwardOut(sock.remoteAddress ?? '127.0.0.1', sock.remotePort ?? 0, fwd.toHost, fwd.toPort, (err, ch) => {
+        if (err) {
+          this.deps.log?.(`[native-ssh] -L ${fwd.localPort}: channel open failed to ${fwd.toHost}:${fwd.toPort}: ${err.message}`)
+          return void sock.destroy()
+        }
+        ch.on('error', () => sock.destroy())
+        ch.once('close', () => sock.destroy())
+        sock.once('close', () => ch.close())
+        sock.pipe(ch).pipe(sock)
+        sock.resume()
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', (e: NodeJS.ErrnoException) => {
+        this.deps.log?.(`[native-ssh] -L ${fwd.localPort}: ${e.code ?? e.message}`)
+        reject(new Error(LOCAL_FORWARD_FAILED))
+      })
+      // `exclusive`: never share the handle with a cluster worker; the port is ours alone.
+      server.listen({ host: fwd.bindHost, port: fwd.localPort, exclusive: true }, () => resolve())
+    })
+    // The connection may have gone (or another call won the same spec) while we were listening.
+    if (!conn.alive || conn.localForwards.has(key)) {
+      server.close()
+      if (!conn.alive) throw new Error(noMasterMessage(controlPath))
+      return
+    }
+    server.on('error', (e) => this.deps.log?.(`[native-ssh] -L ${fwd.localPort}: ${e.message}`))
+    conn.localForwards.set(key, { server, sockets })
+  }
+
+  /** `-O cancel -L …`: close the listener and what it carries. Not held = not an error (as ssh). */
+  async cancelLocal(controlPath: string, fwd: LocalForward): Promise<void> {
+    const conn = this.conns.get(controlPath)
+    const key = localForwardKey(fwd)
+    const l = conn?.localForwards.get(key)
+    if (!conn || !l) return
+    conn.localForwards.delete(key)
+    await new Promise<void>((resolve) => {
+      l.server.close(() => resolve())
+      for (const s of l.sockets) s.destroy()
+      l.sockets.clear()
+    })
+  }
+
   // ---------------------------------------------------------------------------------------------
 
   /** Drain an exec channel into an ExecResult (stdin written, timeout enforced). */
@@ -462,12 +647,16 @@ export class NativeMux {
       alive: true,
       closed,
       forwards: new Map(),
+      localForwards: new Map(),
+      localPending: new Map(),
       target,
       options,
       channels: 0,
       full: false,
       jumps: [],
-      ownsJumps: false
+      ownsJumps: false,
+      proxies: [],
+      agentForward: false
     }
     let lastError = ''
     client.on('error', (e: Error & { level?: string }) => {
@@ -476,8 +665,10 @@ export class NativeMux {
     })
     client.on('close', () => {
       conn.alive = false
+      closeLocalForwards(conn)
       // The jump connections belong to the target connection: they end with it.
       if (conn.ownsJumps) for (const j of conn.jumps) j.end()
+      for (const px of conn.proxies) px.destroy()
       if (this.conns.get(controlPath) === conn) {
         this.conns.delete(controlPath)
         // The group dies with its primary, as mux clients die with their ControlMaster.
@@ -514,8 +705,10 @@ export class NativeMux {
     via?: Conn
   ): Promise<void> {
     const host = await this.deps.resolveHost(target)
-    if (host.proxyCommand) {
-      throw new Error(`ssh: ProxyCommand is not supported by nodeterm's Windows SSH transport (host ${target.host})`)
+    if (!via && host.unsupported?.length) {
+      this.warnOnce(
+        `[native-ssh] ${target.host}: ~/.ssh/config options nodeterm's SSH transport does not support are ignored: ${host.unsupported.join(', ')}`
+      )
     }
     const timeoutMs = (options.connectTimeout ?? host.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT_MS / 1000) * 1000
     const connectSocket = this.deps.connectSocket ?? defaultConnectSocket
@@ -531,11 +724,11 @@ export class NativeMux {
       conn.jumps = built
       conn.ownsJumps = true
       try {
-        let next: Duplex = await connectSocket(
-          hops[0].host.hostname,
-          hops[0].host.port,
-          (options.connectTimeout ?? hops[0].host.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT_MS / 1000) * 1000
-        )
+        const firstTimeoutMs = (options.connectTimeout ?? hops[0].host.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT_MS / 1000) * 1000
+        // The first hop's own ProxyCommand starts the chain, as `ssh -W` on that hop would run it.
+        let next: Duplex = hops[0].host.proxyCommand
+          ? this.proxySocket(conn, hops[0].query, hops[0].host, firstTimeoutMs)
+          : await connectSocket(hops[0].host.hostname, hops[0].host.port, firstTimeoutMs)
         for (let i = 0; i < hops.length; i++) {
           const hop = hops[i]
           const jump = new Client()
@@ -551,14 +744,20 @@ export class NativeMux {
         for (const j of built) j.end()
         throw e
       }
+    } else if (host.proxyCommand) {
+      sock = this.proxySocket(conn, target, host, timeoutMs)
     } else {
       sock = await connectSocket(host.hostname, host.port, timeoutMs)
     }
     // A jump that drops takes the target with it: every channel then ends with 255 (the forwarded
     // stream closing already does this; ending explicitly does not depend on ssh2 noticing it).
     for (const j of conn.jumps) j.once('close', () => conn.client.end())
+    // ForwardAgent: the TARGET hop only (jump hops above never forward), with the UNFILTERED agent
+    // — OpenSSH forwards the whole agent even under IdentitiesOnly.
+    const forwardAgent = resolveForwardAgent(host.forwardAgent, this.agentPathFor(target.identityAgent ?? host.identityAgent))
+    conn.agentForward = forwardAgent !== undefined
     try {
-      await this.handshake(conn.client, sock, target, host, options, mode, '')
+      await this.handshake(conn.client, sock, target, host, options, mode, '', forwardAgent)
     } catch (e) {
       if (conn.ownsJumps) for (const j of conn.jumps) j.end()
       throw e
@@ -583,11 +782,6 @@ export class NativeMux {
       hops.push({ query: { user: resolved.user, host: spec.host, port: resolved.port }, host: resolved })
     }
     const first = hops[0]
-    if (first.host.proxyCommand) {
-      throw new Error(
-        `ssh: ProxyCommand is not supported by nodeterm's Windows SSH transport (jump host ${first.query.host})`
-      )
-    }
     if (first.host.proxyJump) {
       const key = `${first.host.user}@${first.host.hostname}:${first.host.port}`
       if (seen.has(key)) throw new Error(`ssh: ProxyJump loop at ${first.query.host}`)
@@ -595,6 +789,24 @@ export class NativeMux {
       return [...(await this.jumpChain(first.host, first.query.host, depth + 1, seen)), ...hops]
     }
     return hops
+  }
+
+  /** The ProxyCommand stream for `host` (tokens expanded), owned by `conn`. */
+  private proxySocket(conn: Conn, query: HostQuery & { user?: string }, host: ResolvedHost, timeoutMs: number): Duplex {
+    if (host.proxyUseFdpass) {
+      throw new Error(`ssh: ProxyUseFdpass is not supported by nodeterm's SSH transport (host ${query.host})`)
+    }
+    const cmd = expandProxyTokens(host.proxyCommand ?? '', {
+      hostname: host.hostname,
+      port: host.port,
+      user: host.user,
+      originalHost: query.host,
+      hostKeyAlias: host.hostKeyAlias
+    })
+    const sock = proxyCommandSocket(cmd, { timeoutMs, spawn: this.deps.spawnProxy })
+    conn.proxies.push(sock)
+    sock.on('error', (e) => this.deps.log?.(`[native-ssh] ${query.host}: ${e.message}`))
+    return sock
   }
 
   /** The SSH handshake over `sock`: host key (accept-new) and publickey auth, for one hop or the target. */
@@ -605,7 +817,9 @@ export class NativeMux {
     host: ResolvedHost,
     options: SshOptions,
     mode: { interactive: boolean },
-    prefix: string
+    prefix: string,
+    /** ForwardAgent's agent (target hop only): set as ssh2's `agent`, which agent channels use. */
+    forwardAgent?: string
   ): Promise<void> {
     // OpenSSH checks the key under the REAL host name (HostName) unless HostKeyAlias says otherwise.
     const knownAs = host.hostKeyAlias ?? host.hostname
@@ -638,7 +852,10 @@ export class NativeMux {
       },
       authHandler: (_methods: unknown, _partial: unknown, next: (a: unknown) => void) => {
         auth.next().then(next, () => next(false))
-      }
+      },
+      // Not `agentForward: true`: that would request forwarding on every background exec and SFTP
+      // channel too. Only `channel()`'s PTY channels ask (see there).
+      ...(forwardAgent ? { agent: forwardAgent } : {})
     } as ConnectConfig
     await new Promise<void>((resolve, reject) => {
       const onReady = (): void => {
@@ -718,7 +935,7 @@ export class NativeMux {
         return null
       }
     })
-    const agentPath = resolveAgentPath(target.identityAgent ?? host.identityAgent, this.deps.defaultAgent?.())
+    const agentPath = this.agentPathFor(target.identityAgent ?? host.identityAgent)
     const steps: (() => Promise<unknown | null>)[] = []
     // The key file behind the LAST method handed to ssh2 — on 'ready' that is the one that worked.
     let last: UnlockedOffer | null = null
