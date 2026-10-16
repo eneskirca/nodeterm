@@ -127,6 +127,7 @@ import {
 } from '../terminal/window-backgrounded'
 import { quantizeCharSize } from '../terminal/char-size-quantize'
 import { resyncDomRendererSpacing } from '../terminal/dom-renderer-spacing'
+import { patchViewportScrollSync } from '../terminal/viewport-scroll-sync'
 import {
   parkCap,
   parkWindowMs,
@@ -3218,6 +3219,7 @@ export function TerminalNode({
       if (term.element) container.appendChild(term.element)
       // A link tooltip showing when the terminal parked would otherwise reappear where it was.
       if (term.element) hideLinkHints(term.element)
+      patchViewportScrollSync(term)
       applyFit()
     } else {
       term.loadAddon(fit)
@@ -3227,6 +3229,7 @@ export function TerminalNode({
       // Renderer-parity: quantize the char measurement to the device-pixel grid, so a budget
       // grant/release swaps renderers without the text visibly reflowing (see the helper).
       quantizeCharSize(term)
+      patchViewportScrollSync(term)
       applyFit()
       // Reads the STORE, not the component's focusedRef: a parked terminal keeps the closure
       // from the instance that created it, and a ref from a dead instance never updates — the
