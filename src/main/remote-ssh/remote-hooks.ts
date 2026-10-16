@@ -1,14 +1,23 @@
-import { createHash, randomUUID } from 'crypto'
+import { createHash, randomInt, randomUUID } from 'crypto'
 import { parseEndpointEnv } from '../../core/agents/hook-endpoint-parse'
 import { legacyEndpointMigration } from './legacy-hook-endpoint'
 // Connection-time remote hook setup for SSH projects: opens the reverse unix-socket tunnel
-// (local loopback hook server → remote socket), writes the owner-only remote endpoint file,
+// (local loopback hook server → remote socket; loopback TCP on the host as the fallback when the
+// socket is unusable, e.g. Tailscale SSH), writes the owner-only remote endpoint file,
 // and installs the managed hook into the remote agent configs (claude + gemini JSON settings,
 // codex's hooks.json + config.toml trust, and grok's own file inside the host's hooks directory).
 // Every step fails open: any remote failure → setup returns null (or, for codex/grok, that agent
 // simply runs without status). Takes an INJECTED runner so the flow is unit-testable without real
 // ssh/electron.
-import { childArgs, hookForwardArgs, hookForwardCancelArgs, remoteEndpointFileContents } from '../../core/remote-ssh/control-master'
+import {
+  childArgs,
+  hookForwardArgs,
+  hookForwardCancelArgs,
+  hookTcpForwardArgs,
+  hookTcpForwardCancelArgs,
+  remoteEndpointFileContents,
+  remoteTcpEndpointFileContents
+} from '../../core/remote-ssh/control-master'
 import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, type ManagedHookEvent } from '@shared/agents/hook-events'
 import { GROK_EVENTS } from '../../core/agents/hooks/grok'
 import { GROK_HOOK_FILE, REMOTE_GROK_HOME_PROBE, resolveReportedGrokHome } from '../../core/agents/grok-paths'
@@ -254,10 +263,29 @@ function describeArtifact(a: AgentToolArtifact): string {
   return a.kind === 'file' ? a.path : `the ${a.target} instructions file (${a.label} block)`
 }
 
+/**
+ * Where a project's reverse hook tunnel lands on the host. `sock` is the normal path; `tcp` is the
+ * loopback fallback for hosts whose SSH server creates the stream-local socket as another user
+ * (Tailscale SSH: root, mode 0600), which the login user can never connect to.
+ */
+export type HookTunnel = { kind: 'sock'; sock: string } | { kind: 'tcp'; remotePort: number }
+
+/** The exact `-R` cancel for a tunnel — ssh matches a cancel against the opened spec verbatim. */
+function tunnelCancelArgs(conn: SshConnection, controlPath: string, t: HookTunnel, hookPort: number): string[] {
+  return t.kind === 'sock'
+    ? hookForwardCancelArgs(conn, controlPath, t.sock, hookPort)
+    : hookTcpForwardCancelArgs(conn, controlPath, t.remotePort, hookPort)
+}
+
+/** Remote loopback port range the TCP fallback draws from (above the usual dev-server ports). */
+export const TCP_FALLBACK_PORT_MIN = 41000
+export const TCP_FALLBACK_PORT_MAX = 60999
+const TCP_FALLBACK_ATTEMPTS = 3
+
 export class RemoteHooks {
   // Remember the absolute sock path + hook port used at setup per project so teardown cancels
   // the exact `-R` spec (teardown does not re-resolve $HOME).
-  private specs = new Map<string, { sock: string; port: number }>()
+  private specs = new Map<string, { tunnel: HookTunnel; port: number }>()
   /** Per HOST (user, host, port, remote $HOME — several projects share one host's files): what the
    *  last agent-tools check confirmed, and the backoff after failed ones. See agent-tools-freshness. */
   private agentToolsState = new Map<string, AgentToolsHostState>()
@@ -315,7 +343,7 @@ export class RemoteHooks {
     const spec = this.specs.get(projectId)
     if (!spec) return { alive: false, detail: 'no forward registered for this project in this app run' }
     if (!token) return { alive: false, detail: 'no hook token' }
-    return this.probeTunnel(conn, controlPath, spec.sock, token)
+    return this.probeTunnel(conn, controlPath, spec.tunnel, token)
   }
 
   async setup(
@@ -384,15 +412,32 @@ export class RemoteHooks {
         await this.r.run(childArgs(conn, controlPath, `mkdir -p ${posixQuote(remoteDir)}`))
         const fwd = await this.r.run(hookForwardArgs(conn, controlPath, sock, hook.port))
         if (fwd.code !== 0) continue
-        verified = await this.verifyTunnel(conn, controlPath, sock, hook.token)
+        verified = await this.verifyTunnel(conn, controlPath, { kind: 'sock', sock }, hook.token)
       }
+      let tunnel: HookTunnel = { kind: 'sock', sock }
       if (!verified) {
         await this.r.run(hookForwardCancelArgs(conn, controlPath, sock, hook.port)).catch(() => {})
+        // 1b. Loopback-TCP fallback. A socket that binds but never answers is not always a stale
+        // forward: under Tailscale SSH the socket is created by root with mode 0600, so the login
+        // user can never connect to it, however many times it is rebound. A loopback TCP listener
+        // has no file owner. Same end-to-end verification bar as the socket — only this run's hook
+        // server answering 204 counts — and a bind that fails (port taken) simply tries another.
+        const tcp = await this.setupTcpTunnel(conn, controlPath, hook)
+        if (!tcp) {
+          console.warn(
+            `[remote-hooks] reverse hook tunnel failed verification for ${projectId} (unix socket and loopback TCP) — remote agents run without status hooks`
+          )
+          return null
+        }
         console.warn(
-          `[remote-hooks] reverse hook tunnel failed verification for ${projectId} — remote agents run without status hooks`
+          `[remote-hooks] unix-socket hook tunnel failed verification for ${projectId}; using loopback TCP port ${tcp.remotePort} on the host instead`
         )
-        return null
+        tunnel = tcp
       }
+      const endpointContents = (): string =>
+        tunnel.kind === 'sock'
+          ? remoteEndpointFileContents(tunnel.sock, hook.token, hook.version, `${remoteDir}/node-tokens`)
+          : remoteTcpEndpointFileContents(tunnel.remotePort, hook.token, hook.version, `${remoteDir}/node-tokens`)
       const previous = this.specs.get(projectId)
       // Read the installation-qualified file BEFORE replacing it: its prior bearer can prove
       // ownership after a normal app quit removed the local endpoint advertisement.
@@ -405,7 +450,7 @@ export class RemoteHooks {
       // publish a new 0600 inode through an invocation-owned temp instead.
       const endpointWrite = remoteAtomicWrite(
         endpoint,
-        remoteEndpointFileContents(sock, hook.token, hook.version, `${remoteDir}/node-tokens`),
+        endpointContents(),
         { restrictPermissions: true, mode: '600', makeParent: false }
       )
       const endpointResult = await this.r.run(
@@ -413,7 +458,7 @@ export class RemoteHooks {
         endpointWrite.stdin
       )
       if (endpointResult.code !== 0) {
-        await this.r.run(hookForwardCancelArgs(conn, controlPath, sock, hook.port)).catch(() => {})
+        await this.r.run(tunnelCancelArgs(conn, controlPath, tunnel, hook.port)).catch(() => {})
         return null
       }
       const legacy = `${remoteDir}/hook-endpoint-${projectId}.env`
@@ -422,7 +467,7 @@ export class RemoteHooks {
           `test ! -L ${posixQuote(legacy)} && cat ${posixQuote(legacy)} 2>/dev/null`))
         if (old.code === 0 && old.stdout) {
           const migration = legacyEndpointMigration(legacy, old.stdout,
-            remoteEndpointFileContents(sock, hook.token, hook.version, `${remoteDir}/node-tokens`),
+            endpointContents(),
             [hook.token, previousToken ?? '', hookServer.getPreviousEndpointToken()])
           const migrated = migration && await this.r.run(childArgs(conn, controlPath, migration.command), migration.stdin)
           if (!migrated || migrated.code !== 0) {
@@ -433,9 +478,9 @@ export class RemoteHooks {
       } catch {
         console.warn('[remote-hooks] Legacy hook endpoint migration unavailable; restart affected agent sessions to adopt the new endpoint directly.')
       }
-      this.specs.set(projectId, { sock, port: hook.port })
+      this.specs.set(projectId, { tunnel, port: hook.port })
       if (previous) {
-        await this.r.run(hookForwardCancelArgs(conn, controlPath, previous.sock, previous.port)).catch(() => {})
+        await this.r.run(tunnelCancelArgs(conn, controlPath, previous.tunnel, previous.port)).catch(() => {})
       }
       // 3-6. Per-agent hook installs — CONCURRENT, because they are independent of each other.
       //
@@ -1497,28 +1542,56 @@ export class RemoteHooks {
   private async verifyTunnel(
     conn: SshConnection,
     controlPath: string,
-    sock: string,
+    tunnel: HookTunnel,
     token: string
   ): Promise<boolean> {
-    return (await this.probeTunnel(conn, controlPath, sock, token)).alive
+    return (await this.probeTunnel(conn, controlPath, tunnel, token)).alive
+  }
+
+  /**
+   * Open + verify the loopback-TCP fallback (see `hookTcpForwardArgs`). A random port in
+   * [TCP_FALLBACK_PORT_MIN, TCP_FALLBACK_PORT_MAX]; a forward the host refuses (port already bound —
+   * the mux master waits for the host's answer, so a refused bind exits non-zero) just tries another.
+   * Because WE hold the bind when the forward succeeds, the probe's bearer can only reach our own
+   * tunnel. Returns null when no attempt verifies; every failed spec is cancelled before returning.
+   */
+  private async setupTcpTunnel(
+    conn: SshConnection,
+    controlPath: string,
+    hook: { port: number; token: string }
+  ): Promise<{ kind: 'tcp'; remotePort: number } | null> {
+    for (let attempt = 0; attempt < TCP_FALLBACK_ATTEMPTS; attempt++) {
+      const remotePort = randomInt(TCP_FALLBACK_PORT_MIN, TCP_FALLBACK_PORT_MAX + 1)
+      const tunnel = { kind: 'tcp' as const, remotePort }
+      const fwd = await this.r.run(hookTcpForwardArgs(conn, controlPath, remotePort, hook.port)).catch(() => null)
+      if (!fwd || fwd.code !== 0) continue
+      if (await this.verifyTunnel(conn, controlPath, tunnel, hook.token)) return tunnel
+      await this.r.run(hookTcpForwardCancelArgs(conn, controlPath, remotePort, hook.port)).catch(() => {})
+    }
+    return null
   }
 
   /** `verifyTunnel` with the reason kept: the watchdog logs WHY a live tunnel stopped answering. */
   private async probeTunnel(
     conn: SshConnection,
     controlPath: string,
-    sock: string,
+    tunnel: HookTunnel,
     token: string
   ): Promise<{ alive: boolean; detail: string }> {
     try {
+      // Same request over either transport; only the curl target differs.
+      const target =
+        tunnel.kind === 'sock'
+          ? `--unix-socket ${posixQuote(tunnel.sock)} --config - http://localhost/verify`
+          : `--config - http://127.0.0.1:${tunnel.remotePort}/verify`
       const cmd =
-        `curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST --unix-socket ${posixQuote(sock)} ` +
+        `curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST ${target} ` +
         // `/verify` — the probe's OWN route, which answers 204 on the bearer alone and takes no
         // node identity at all. It used to POST `/hook/verify`, where it 204'd only as a side
         // effect of sending no payload; the identity label on `/hook/*` would have started judging
         // it there. `nodeId=verify` is kept in the body only so an OLDER desktop's script and this
         // one send the same bytes; the route reads nothing.
-        `--config - http://localhost/verify --data nodeId=verify`
+        `--data nodeId=verify`
       // ONE COPY OF THE QUOTING RULE. This used to build its own `header = "…"` line, escaping `\`
       // and `"` and ignoring the two line breaks — a second, weaker version of the rule that
       // `hook-curl-config-sh.ts` states for the generated sh clients. `curlHeaderConfigLine` is
@@ -1540,7 +1613,7 @@ export class RemoteHooks {
     this.specs.delete(projectId)
     if (!spec) return // nothing was set up (or already torn down)
     try {
-      await this.r.run(hookForwardCancelArgs(conn, controlPath, spec.sock, spec.port))
+      await this.r.run(tunnelCancelArgs(conn, controlPath, spec.tunnel, spec.port))
     } catch {
       /* fail open */
     }

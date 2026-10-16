@@ -869,6 +869,27 @@ export function hookForwardCancelArgs(conn: SshConnection, controlPath: string, 
   return ['-O', 'cancel', '-R', fwdSpec(remoteSock, hookPort), '-o', `ControlPath=${controlPath}`, ...portArgs(conn), target(conn)]
 }
 /**
+ * The loopback-TCP twin of `hookForwardArgs`: `-R 127.0.0.1:<remotePort>:127.0.0.1:<hookPort>`.
+ *
+ * Used ONLY as a fallback when the unix-socket forward binds but fails verification. Field case:
+ * Tailscale SSH. `tailscaled` serves the session as root and creates the `-R` stream-local socket
+ * owned by root with mode 0600, so the login user's `curl --unix-socket` can never connect and the
+ * project silently runs without hooks (no status badges, no session names, no canvas control). A
+ * loopback TCP listener carries no file ownership, and every generated client already speaks the
+ * `NODETERM_HOOK_PORT` transport. Bound to 127.0.0.1 explicitly so it is never exposed off-host.
+ */
+function tcpFwdSpec(remotePort: number, hookPort: number): string {
+  const okPort = (n: number): boolean => Number.isInteger(n) && n >= 1 && n <= 65535
+  if (!okPort(remotePort) || !okPort(hookPort)) throw new Error('invalid forward spec')
+  return `127.0.0.1:${remotePort}:127.0.0.1:${hookPort}`
+}
+export function hookTcpForwardArgs(conn: SshConnection, controlPath: string, remotePort: number, hookPort: number): string[] {
+  return ['-O', 'forward', '-R', tcpFwdSpec(remotePort, hookPort), '-o', `ControlPath=${controlPath}`, ...portArgs(conn), target(conn)]
+}
+export function hookTcpForwardCancelArgs(conn: SshConnection, controlPath: string, remotePort: number, hookPort: number): string[] {
+  return ['-O', 'cancel', '-R', tcpFwdSpec(remotePort, hookPort), '-o', `ControlPath=${controlPath}`, ...portArgs(conn), target(conn)]
+}
+/**
  * A dev-server LOCAL forward over the existing master (`ssh -O forward -L`): this machine's
  * `127.0.0.1:<localPort>` → the host's `<target>:<remotePort>`. The local side binds loopback ONLY
  * — never `*` or a LAN address, which would publish someone's unfinished app to the network the
@@ -949,6 +970,25 @@ export function remoteEndpointFileContents(
     `NODETERM_HOOK_VERSION=${posixQuote(version)}\n` +
     // The REMOTE token dir ($HOME/.nodeterm/node-tokens on the host), not ours. The host stores
     // per-node tokens only; it never holds a secret and can never mint.
+    `NODETERM_NODE_TOKEN_DIR=${posixQuote(tokenDir)}\n`
+  )
+}
+/**
+ * Endpoint file for the loopback-TCP fallback tunnel (`hookTcpForwardArgs`). `NODETERM_HOOK_SOCK` is
+ * written EMPTY on purpose: every client tries the socket first (`[ -n "$NODETERM_HOOK_SOCK" ]`), so
+ * a socket path inherited from a session env or an earlier endpoint must not shadow the port.
+ */
+export function remoteTcpEndpointFileContents(
+  remotePort: number,
+  token: string,
+  version: string,
+  tokenDir: string
+): string {
+  return (
+    `NODETERM_HOOK_SOCK=''\n` +
+    `NODETERM_HOOK_PORT=${posixQuote(String(remotePort))}\n` +
+    `NODETERM_HOOK_TOKEN=${posixQuote(token)}\n` +
+    `NODETERM_HOOK_VERSION=${posixQuote(version)}\n` +
     `NODETERM_NODE_TOKEN_DIR=${posixQuote(tokenDir)}\n`
   )
 }

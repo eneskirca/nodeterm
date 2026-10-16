@@ -2,7 +2,13 @@ import { allRemote, ALL_REMOTE_INTEGRATION } from './remote-hooks.test-plan'
 import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { describe, expect, it, vi } from 'vitest'
-import { RemoteHooks, type RemoteIntegrationPlan, openCodeInstructionsTarget } from './remote-hooks'
+import {
+  RemoteHooks,
+  type RemoteIntegrationPlan,
+  openCodeInstructionsTarget,
+  TCP_FALLBACK_PORT_MAX,
+  TCP_FALLBACK_PORT_MIN
+} from './remote-hooks'
 import { isSafeRemoteHome } from '../../core/remote-safety'
 import { hookServer } from '../../core/agents/hook-server'
 
@@ -240,11 +246,52 @@ describe('RemoteHooks.setup', () => {
   })
 
   it('refuses to advertise a tunnel that never verifies — no endpoint file, null result', async () => {
-    const { rh, calls } = harness({ verifyAnswers: ['000', '000'] })
+    // 2 unix-socket attempts + 3 loopback-TCP fallback attempts, all dead.
+    const { rh, calls } = harness({ verifyAnswers: ['000', '000', '000', '000', '000'] })
     const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
     expect(res).toBeNull()
     // The endpoint file must NOT be written: sessions would source a socket that answers nothing.
     expect(calls.map((c) => c.args.join(' ')).some((j) => j.includes('hook-endpoint-p1-'))).toBe(false)
+    // Every TCP spec the fallback opened was cancelled again.
+    const opened = calls.filter((c) => c.cmd.includes('-O forward -R 127.0.0.1:')).length
+    const cancelled = calls.filter((c) => c.cmd.includes('-O cancel -R 127.0.0.1:')).length
+    expect(opened).toBe(3)
+    expect(cancelled).toBe(3)
+  })
+
+  // Tailscale SSH creates the `-R` stream-local socket as root, mode 0600: it binds, but the login
+  // user can never connect, so the socket probe answers 000 on every attempt.
+  it('falls back to a loopback TCP forward when the unix socket binds but never answers', async () => {
+    const { rh, calls } = harness({ verifyAnswers: ['000', '000', '204'] })
+    const res = await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })
+    expect(res).not.toBeNull()
+    const tcpForward = calls.find((c) => c.cmd.includes('-O forward -R 127.0.0.1:'))
+    const remotePort = Number(tcpForward?.cmd.match(/-R 127\.0\.0\.1:(\d+):127\.0\.0\.1:51234/)?.[1])
+    expect(remotePort).toBeGreaterThanOrEqual(TCP_FALLBACK_PORT_MIN)
+    expect(remotePort).toBeLessThanOrEqual(TCP_FALLBACK_PORT_MAX)
+    // The TCP probe hits loopback on the host, bearer still on stdin only.
+    const tcpProbe = calls.filter((c) => c.cmd.includes('%{http_code}')).at(-1)
+    expect(tcpProbe?.cmd).toContain(`http://127.0.0.1:${remotePort}/verify`)
+    expect(tcpProbe?.cmd).not.toContain('--unix-socket')
+    expect(tcpProbe?.cmd).not.toContain('tok')
+    // The endpoint advertises the port and explicitly empties the socket (clients try SOCK first).
+    const endpoint = calls.find((c) => c.cmd.includes('hook-endpoint-p1-') && c.stdin?.includes('NODETERM_HOOK_PORT'))
+    expect(endpoint?.stdin).toContain(`NODETERM_HOOK_PORT='${remotePort}'`)
+    expect(endpoint?.stdin).toContain("NODETERM_HOOK_SOCK=''")
+    // Liveness and teardown follow the TCP spec, not a socket path.
+    const alive = await rh.tunnelAlive('p1', conn, '/s.sock', 'tok')
+    expect(alive.alive).toBe(true)
+    expect(calls.filter((c) => c.cmd.includes('%{http_code}')).at(-1)?.cmd).toContain(`127.0.0.1:${remotePort}/verify`)
+    await rh.teardown('p1', conn, '/s.sock')
+    expect(calls.at(-1)?.cmd).toContain(`-O cancel -R 127.0.0.1:${remotePort}:127.0.0.1:51234`)
+  })
+
+  it('keeps the unix socket when it verifies — no TCP forward is opened', async () => {
+    const { rh, calls } = harness()
+    expect(await rh.setup('p1', conn, '/s.sock', { port: 51234, token: 'tok', version: '1' })).not.toBeNull()
+    expect(calls.some((c) => c.cmd.includes('-R 127.0.0.1:'))).toBe(false)
+    const endpoint = calls.find((c) => c.cmd.includes('hook-endpoint-p1-') && c.stdin?.includes('NODETERM_HOOK_SOCK'))
+    expect(endpoint?.stdin).not.toContain('NODETERM_HOOK_PORT')
   })
 
   it('does not advertise an endpoint whose atomic credential publish returns non-zero', async () => {

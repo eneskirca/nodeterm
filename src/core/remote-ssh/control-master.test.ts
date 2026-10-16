@@ -28,8 +28,11 @@ import {
   remoteTmuxKillEverySocketArgs,
   hookForwardArgs,
   hookForwardCancelArgs,
+  hookTcpForwardArgs,
+  hookTcpForwardCancelArgs,
   remoteHookEnvArgs,
   remoteEndpointFileContents,
+  remoteTcpEndpointFileContents,
   scpArgs,
   scpDownArgs,
   remoteScpPath
@@ -492,6 +495,25 @@ describe('hook forwarding', () => {
     )
     expect(body).toContain("NODETERM_HOOK_SOCK='/home/u/App Support/hook.sock'\n")
     expect(body).toContain("NODETERM_NODE_TOKEN_DIR='/home/u/App Support/node-tokens'\n")
+  })
+  it('hookTcpForwardArgs binds the host side to loopback only, and its cancel mirrors it', () => {
+    expect(hookTcpForwardArgs(conn, '/s.sock', 45001, 51234)).toEqual([
+      '-O', 'forward', '-R', '127.0.0.1:45001:127.0.0.1:51234',
+      '-o', 'ControlPath=/s.sock', '-p', '2222', 'deploy@h.example.com'
+    ])
+    const cancel = hookTcpForwardCancelArgs(conn, '/s.sock', 45001, 51234)
+    expect(cancel.slice(0, 4)).toEqual(['-O', 'cancel', '-R', '127.0.0.1:45001:127.0.0.1:51234'])
+  })
+  it('hookTcpForwardArgs refuses a non-port value instead of building an ssh argument from it', () => {
+    expect(() => hookTcpForwardArgs(conn, '/s.sock', 0, 51234)).toThrow()
+    expect(() => hookTcpForwardArgs(conn, '/s.sock', 70000, 51234)).toThrow()
+    expect(() => hookTcpForwardArgs(conn, '/s.sock', 1.5, 51234)).toThrow()
+  })
+  it('remoteTcpEndpointFileContents advertises the port and empties the socket', () => {
+    expect(remoteTcpEndpointFileContents(45001, 'tok', '2', '/home/u/.nodeterm/node-tokens')).toBe(
+      "NODETERM_HOOK_SOCK=''\nNODETERM_HOOK_PORT='45001'\nNODETERM_HOOK_TOKEN='tok'\nNODETERM_HOOK_VERSION='2'\n" +
+        "NODETERM_NODE_TOKEN_DIR='/home/u/.nodeterm/node-tokens'\n"
+    )
   })
 })
 
