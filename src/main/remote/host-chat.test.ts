@@ -68,7 +68,7 @@ describe('host-chat page', () => {
     await expect(createHostChat(d).page('n1', {})).rejects.toThrow()
   })
   it('serves only chat-capable agents (resolved through the base harness), and reads nothing otherwise', async () => {
-    for (const agentId of ['antigravity', undefined]) {
+    for (const agentId of ['custom:unbased', undefined]) {
       const d = deps({ lookupNode: () => ({ agentId, sessionId: 'sid-1' }) })
       expect(await createHostChat(d).page('n1', {})).toBe('unsupported')
       expect(d.readTranscript).not.toHaveBeenCalled()
@@ -81,10 +81,12 @@ describe('host-chat page', () => {
       setCustomAgentBaseResolver(null)
     }
   })
-  it('serves gemini, handing its OWN agent id to the reader (which routes it off claude\'s resolver)', async () => {
-    const d = deps({ lookupNode: () => ({ agentId: 'gemini', sessionId: 'sid-1' }) })
-    expect(await createHostChat(d).page('n1', {})).toMatchObject({ version: 1 })
-    expect(d.readTranscript).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'gemini', sessionId: 'sid-1' }), {})
+  it('serves gemini and antigravity, handing each its OWN agent id to the reader (which routes it off claude\'s resolver)', async () => {
+    for (const agentId of ['gemini', 'antigravity'] as const) {
+      const d = deps({ lookupNode: () => ({ agentId, sessionId: 'sid-1' }) })
+      expect(await createHostChat(d).page('n1', {})).toMatchObject({ version: 1 })
+      expect(d.readTranscript).toHaveBeenCalledWith(expect.objectContaining({ agentId, sessionId: 'sid-1' }), {})
+    }
   })
   it('serves a codex node, passing its own agent id so core routes it to the codex reader', async () => {
     const d = deps({ lookupNode: () => ({ cwd: '/srv/app', agentId: 'codex', sessionId: 'sid-1', remote: true }) })

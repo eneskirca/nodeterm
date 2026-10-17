@@ -1027,13 +1027,17 @@ const antigravityToolName = (p: AntigravityPayload): string | undefined => {
 }
 
 /**
- * PURE — no state, on purpose. Three decisions carry the whole mapping:
+ * PURE — no state, on purpose. Four decisions carry the whole mapping:
  *
- * 1. `Stop` with `fullyIdle === false` is NOT terminal (→ `working`). `agy` stops its model loop
- *    between steps while a background tool still runs, then reports `fullyIdle:true` at the real
- *    end. Strict `=== false`: a payload missing the field reads as "finished", the safe direction
- *    for a badge that would otherwise stick. With this rule the `PostToolUse` that arrives AFTER
- *    such a Stop is simply the end of that background tool.
+ * 1. `Stop` always ends the turn (`state: 'done'`), matching Claude Code and every other CLI.
+ *    `agy` sets `fullyIdle === false` whenever ANY background command (`WaitMsBeforeAsync`,
+ *    `IsDaemon: true`, timer or subagent) is still alive after the turn ends and the `>` prompt
+ *    returns to the user. Keeping `state: 'working'` left the card stuck on `RUNNING` and blocked
+ *    `send` delivery for the life of any background process. Instead, `fullyIdle === false` stamps
+ *    `backgroundTaskIds` (just like Claude's `Stop` with a live `Bash(run_in_background: true)`) so
+ *    Eco hibernation and bulk restart do not kill the CLI while a background process runs; when a
+ *    background task finishes and wakes the agent, `agy` fires a new `PreInvocation` (`invocationNum: 0`)
+ *    which transitions back to `working` (`newTurn: true`).
  *
  * 2. NEEDS YOU is bracketed by the ask tool itself, never by adjacency. `PreToolUse` and
  *    `PostToolUse` do not alternate: a whole invocation can open and close between them (measured:
@@ -1083,12 +1087,12 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
     return null
   }
   if (ev === 'Stop') {
-    if (p.fullyIdle === false) return { ...base, kind: 'state', state: 'working' }
     return {
       ...base,
       kind: 'state',
       state: 'done',
-      ...(p.terminationReason === 'ERROR' ? { errored: true } : {})
+      ...(p.terminationReason === 'ERROR' ? { errored: true } : {}),
+      ...(p.fullyIdle === false ? { backgroundTaskIds: ['agy-bg'] } : {})
     }
   }
   return null

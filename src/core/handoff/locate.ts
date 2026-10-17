@@ -123,3 +123,34 @@ export async function locateGemini(sessionId: string): Promise<string | undefine
   }
   return undefined
 }
+
+export const ANTIGRAVITY_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
+/**
+ * antigravity (`agy`): `<home>/.gemini/antigravity-cli/brain/<sessionId>/.system_generated/logs/
+ * transcript_full.jsonl` (falling back to `transcript.jsonl`).
+ *
+ * Keyed strictly by `sessionId` (`conversationId` in hook payloads and `agy --conversation=<id>`)
+ * with no newest-file fallback: `brain/` holds every conversation on the machine, so a scan would
+ * hand back a stranger's session.
+ */
+export async function locateAntigravity(sessionId: string): Promise<string | undefined> {
+  if (!sessionId || !ANTIGRAVITY_SESSION_ID_RE.test(sessionId) || sessionId.includes('..')) {
+    return undefined
+  }
+  const brain = path.resolve(os.homedir(), '.gemini', 'antigravity-cli', 'brain')
+  const logsDir = path.resolve(brain, sessionId, '.system_generated', 'logs')
+  const rel = path.relative(brain, logsDir)
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined
+  for (const file of ['transcript_full.jsonl', 'transcript.jsonl']) {
+    const candidate = path.join(logsDir, file)
+    try {
+      const st = await fs.promises.lstat(candidate)
+      if (st.isFile()) return candidate
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined
+}
+

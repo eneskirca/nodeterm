@@ -48,6 +48,8 @@ import {
   isSafeGrokSessionId
 } from './agents/grok-paths'
 import { chatMessagesFromCopilot, COPILOT_EVENTS_FILE, copilotSessionStateRoots } from './copilot-chat'
+import { chatFromAntigravity } from './antigravity-chat'
+import { ANTIGRAVITY_SESSION_ID_RE } from './handoff/locate'
 import { untrustedLine } from './github/control-read'
 
 /** Candidates opened per root (newest by mtime). A root with thousands of old transcripts costs a
@@ -75,6 +77,7 @@ export interface RecentRoots {
   geminiTmp: string | null
   grokSessions: string | null
   copilot: string[]
+  antigravity?: string | null
 }
 
 type Parsed = Omit<RecentConversation, 'lastActiveAt' | 'accountId'> | null
@@ -119,7 +122,8 @@ export function defaultRecentRoots(req: RecentConversationsRequest = {}): Recent
     codex,
     geminiTmp: path.join(geminiHome, '.gemini', 'tmp'),
     grokSessions: grokSessionsDir(),
-    copilot: copilotSessionStateRoots()
+    copilot: copilotSessionStateRoots(),
+    antigravity: path.join(os.homedir(), '.gemini', 'antigravity-cli')
   }
 }
 
@@ -342,6 +346,15 @@ async function parseCopilot(c: Candidate, dirId: string): Promise<Parsed> {
   return { agentId: 'copilot', sessionId: dirId, cwd, ...t }
 }
 
+async function parseAntigravity(c: Candidate, sessionId: string, cwd: string | null): Promise<Parsed> {
+  if (!ANTIGRAVITY_SESSION_ID_RE.test(sessionId) || !validId(sessionId)) return null
+  const lines = await headLines(c)
+  const prompt = firstPrompt(chatFromAntigravity(lines.join('\n')).messages)
+  const t = titled(null, prompt)
+  if (t.titleSource === 'none') return null
+  return { agentId: 'antigravity', sessionId, cwd, ...t }
+}
+
 async function cached(c: Candidate, parse: () => Promise<Parsed>): Promise<Parsed> {
   const hit = cache.get(c.file)
   if (hit && hit.size === c.size && hit.mtimeMs === c.mtimeMs) return hit.parsed
@@ -477,6 +490,47 @@ async function copilotRows(root: string): Promise<Row[]> {
   return out
 }
 
+async function antigravityRows(root: string): Promise<Row[]> {
+  const brain = path.join(root, 'brain')
+  const ids = (await listDirs(brain)).filter((id) => ANTIGRAVITY_SESSION_ID_RE.test(id) && validId(id))
+  if (!ids.length) return []
+  const cwdBySession = new Map<string, string>()
+  const histCand = await statCandidate(path.join(root, 'history.jsonl'))
+  if (histCand && histCand.size > 0) {
+    try {
+      const text = await tailText(histCand, HEAD_BYTES)
+      for (const line of text.split('\n')) {
+        const o = parseJson(line)
+        if (!o || typeof o.conversationId !== 'string') continue
+        const cwd = safeCwd(o.workspace)
+        if (cwd) cwdBySession.set(o.conversationId, cwd)
+      }
+    } catch {
+      /* unreadable history.jsonl leaves cwd null */
+    }
+  }
+  const cands = await mapLimit(ids, STAT_CONCURRENCY, async (id) => {
+    const logs = path.join(brain, id, '.system_generated', 'logs')
+    return (
+      (await statCandidate(path.join(logs, 'transcript_full.jsonl'))) ??
+      (await statCandidate(path.join(logs, 'transcript.jsonl')))
+    )
+  })
+  const idByFile = new Map<string, string>()
+  ids.forEach((id, i) => {
+    const c = cands[i]
+    if (c) idByFile.set(c.file, id)
+  })
+  const out: Row[] = []
+  for (const c of newest(cands)) {
+    const id = idByFile.get(c.file)!
+    const cwd = cwdBySession.get(id) ?? null
+    const r = row(await cached(c, () => parseAntigravity(c, id, cwd)), c)
+    if (r) out.push(r)
+  }
+  return out
+}
+
 /** Newest first; the same (agent, session) seen twice keeps its NEWEST sighting. A tie — a codex
  *  rollout HARDLINKED into a second home by "Switch Codex account" is one inode, so both sightings
  *  carry the same mtime — goes to the MANAGED account's copy: that is the account the conversation
@@ -513,7 +567,8 @@ export async function listRecentConversations(
     ...roots.codex.map((r) => codexRows(r.home, r.accountId)),
     ...(roots.geminiTmp ? [geminiRows(roots.geminiTmp)] : []),
     ...(roots.grokSessions ? [grokRows(roots.grokSessions)] : []),
-    ...roots.copilot.map((r) => copilotRows(r))
+    ...roots.copilot.map((r) => copilotRows(r)),
+    ...(roots.antigravity ? [antigravityRows(roots.antigravity)] : [])
   ]
   const settled = await Promise.allSettled(jobs)
   const rows = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []))

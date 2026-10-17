@@ -26,7 +26,7 @@
 import { IPC } from '../shared/ipc'
 import { platform } from './platform'
 import type { ContextTail } from './context-tail'
-import { locateCodex, locateGemini } from './handoff/locate'
+import { locateAntigravity, locateCodex, locateGemini } from './handoff/locate'
 import { locateCursorChat } from './cursor-chat'
 import { resolveTranscript } from './transcript-ipc'
 import { SESSION_ID_RE } from './transcript-reader'
@@ -83,8 +83,8 @@ export interface ContextEnsureDeps {
  * - **claude** — `resolveTranscript`, including its `accountId`-scoped cwd fallback (correct here:
  *   the file genuinely is claude's, and the account scoping is what keeps a managed-account node
  *   off the system root).
- * - **codex / gemini** — `locateCodex` / `locateGemini`, keyed STRICTLY by session id with no cwd
- *   fallback, so neither can adopt a session that is not its own.
+ * - **codex / gemini / antigravity** — `locateCodex` / `locateGemini` / `locateAntigravity`, keyed
+ *   STRICTLY by session id with no cwd fallback, so none can adopt a session that is not its own.
  * - **grok** — none, and that is by construction rather than an omission. Grok's meter reads
  *   `signals.json` out of a session directory learned from a hook event (`grokSessionDirFor`),
  *   which is empty after a restart; `locateGrok` resolves a different file entirely
@@ -111,6 +111,8 @@ function localTranscriptFor(
     // search, let alone stand in for the id). A remote node never gets here: `ensureRemote` is terminal.
     case 'cursor':
       return locateCursorChat(q.sessionId)
+    case 'antigravity':
+      return locateAntigravity(q.sessionId)
     default:
       return Promise.resolve(undefined)
   }

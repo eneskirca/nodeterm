@@ -150,13 +150,19 @@ describe('assembleLaunchCommand — builtins (byte-identical to the historical p
       assembleLaunchCommand({ agentId: 'antigravity', initialPrompt: 'fix  it\nnow' }, ENV).command
     ).toBe("agy --prompt-interactive 'fix it now'")
     expect(assembleLaunchCommand({ agentId: 'antigravity' }, ENV).command).toBe('agy')
-    // No minted id and no permission flag: antigravity is in neither list yet.
+    // No minted id (antigravity does not mint session ids at launch), but permission and model flags apply.
     expect(
       assembleLaunchCommand(
-        { agentId: 'antigravity', sessionId: 'abc-123', sessionIdFlagSupported: true, permissionMode: 'plan' },
+        {
+          agentId: 'antigravity',
+          sessionId: 'abc-123',
+          sessionIdFlagSupported: true,
+          permissionMode: 'plan',
+          model: 'gemini-4-argon-medium'
+        },
         ENV
       ).command
-    ).toBe('agy')
+    ).toBe("agy --mode plan --model 'gemini-4-argon-medium'")
   })
   it('a custom agent built on Antigravity inherits its prompt flag', () => {
     setCustomAgentBaseResolver((id) => (id === 'custom:agy' ? 'antigravity' : undefined))

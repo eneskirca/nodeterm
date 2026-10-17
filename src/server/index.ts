@@ -560,7 +560,13 @@ export async function startServer(
   // rather than an unknown channel when canvas control is off.
   registerStationOutcomeIpc(platform, () => canvasControl?.stationOutcomes ?? null)
   registerStationHandoverIpc(platform, () => canvasControl?.stationHandovers ?? null)
-  const { contextTail, geminiContextTail, codexContextTail, cursorContextTail } = wireAgentStatus(platform, {
+  const {
+    contextTail,
+    geminiContextTail,
+    codexContextTail,
+    cursorContextTail,
+    antigravityContextTail
+  } = wireAgentStatus(platform, {
     onEvent: (event) => canvasControl?.onAgentEvent(event)
   })
   // Cursor NEEDS YOU, same seam as the desktop (core/agents/cursor-approval.ts).
@@ -610,6 +616,8 @@ export async function startServer(
           return geminiContextTail
         case 'cursor':
           return cursorContextTail
+        case 'antigravity':
+          return antigravityContextTail
         default:
           return undefined
       }

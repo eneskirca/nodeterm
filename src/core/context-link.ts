@@ -40,7 +40,13 @@ import {
   type ContextLinkVerb
 } from './context-link-render'
 import { hookServer } from './agents/hook-server'
-import { locateClaude, locateCodex, locateGemini, locateGrok } from './handoff/locate'
+import {
+  locateAntigravity,
+  locateClaude,
+  locateCodex,
+  locateGemini,
+  locateGrok
+} from './handoff/locate'
 import { cursorTranscriptText, locateCursorChat } from './cursor-chat'
 
 export { setNodeTranscript } from './context-link-core'
@@ -105,6 +111,7 @@ const LINK_LOCATORS = {
   codex: locateCodex,
   gemini: locateGemini,
   grok: locateGrok,
+  antigravity: locateAntigravity,
   cursor: (sessionId: string) => locateCursorChat(sessionId)
 }
 

@@ -65,8 +65,10 @@ describe('MODEL_SWITCH_CAPABLE', () => {
     // cursor: `--model <id>` (a root option, measured before and after `agent`). Its models are its
     // own catalogue, so it joins the list WITHOUT the gateway's models (OWN_MODEL_CATALOGUE).
     expect(canSwitchModel('cursor')).toBe(true)
+    expect(canSwitchModel('antigravity')).toBe(true)
     expect(hasGatewayModels('cursor')).toBe(false)
     expect(hasGatewayModels('grok')).toBe(false)
+    expect(hasGatewayModels('antigravity')).toBe(false)
     for (const id of ['claude', 'codex', 'copilot'] as const)
       expect(hasGatewayModels(id), id).toBe(true)
     for (const id of ['gemini', 'opencode', 'custom:plain'] as const) {
@@ -361,21 +363,20 @@ describe('antigravity capabilities', () => {
     expect(hasHooks('antigravity')).toBe(true)
   })
 
+  it('joins the measured transcript, context-link, canvas-control, model-switch, and permission-mode capabilities without joining claude-transcript readers', () => {
+    expect(hasUsage('antigravity')).toBe(true)
+    expect(canChat('antigravity')).toBe(true)
+    expect(readsClaudeShapedTranscript('antigravity')).toBe(false)
+    expect(canTransferFrom('antigravity')).toBe(true)
+    expect(canContextLink('antigravity')).toBe(true)
+    expect(canControlCanvas('antigravity')).toBe(true)
+    expect(hasPermissionMode('antigravity')).toBe(true)
+    expect(canSwitchModel('antigravity')).toBe(true)
+  })
+
   it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
     // No SessionEnd-shaped event exists among agy's five, so a DROPPED chip would be a coin flip.
     expect(reportsSessionEnd('antigravity')).toBe(false)
-    // No token count and no stated window anywhere measured (the TUI's "1.1k tokens" is per
-    // thought block, not context use) — rule 6: no trustworthy denominator, no meter. Joining would
-    // also switch on context.ensure and the find-bar index.
-    expect(hasUsage('antigravity')).toBe(false)
-    // No transcript parser or locator yet. The location is measured (the payload's transcriptPath,
-    // `brain/<conversationId>/…/transcript_full.jsonl`); the record shapes are only vendor prose,
-    // never captured. Joining CHAT_CAPABLE before that capture would render a guess on ⌘M and on
-    // the phone's Chat screen: docs/antigravity-agent.md §7.1 and §8.1.
-    expect(canChat('antigravity')).toBe(false)
-    expect(readsClaudeShapedTranscript('antigravity')).toBe(false)
-    expect(canTransferFrom('antigravity')).toBe(false)
-    expect(canContextLink('antigravity')).toBe(false)
     // `agy --conversation=<id>` resumes; the id is validated at the interpolation site
     // (SAFE_SESSION_ID) and a dead one is ignored by agy itself (it starts fresh). Not minted.
     expect(canResume('antigravity')).toBe(true)
@@ -388,12 +389,6 @@ describe('antigravity capabilities', () => {
     expect(canSubagent('antigravity')).toBe(false)
     expect(canRecur('antigravity')).toBe(false)
     expect(canBranch('antigravity')).toBe(false)
-    // Canvas control needs a shim + a discovery file; none is installed for agy.
-    expect(canControlCanvas('antigravity')).toBe(false)
-    // Permission flags exist (--mode, --dangerously-skip-permissions) but the approval-mode table
-    // has no antigravity row yet; model switching has no gateway mapping.
-    expect(hasPermissionMode('antigravity')).toBe(false)
-    expect(canSwitchModel('antigravity')).toBe(false)
     // Title lives in SQLite (unmeasured) and there is no rename command; read ⊇ write holds.
     expect(canReadTitle('antigravity')).toBe(false)
     expect(canRename('antigravity')).toBe(false)

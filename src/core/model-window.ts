@@ -69,3 +69,23 @@ export function geminiWindowFor(model: string | null): number | null {
   if (!model) return null
   return GEMMA_4_MODELS.has(model) ? GEMINI_GEMMA_4_TOKEN_LIMIT : GEMINI_DEFAULT_TOKEN_LIMIT
 }
+
+/**
+ * Context window for an Antigravity (`agy`) model id or display name (`modelName` in hook payloads
+ * or `Model Selection` in `USER_INPUT` steps).
+ *
+ * MEASURED catalogue (`agy models`, 1.2.7):
+ * - `gemini-4-argon-*`, `gemini-3.8-flash-*` ("Gemini 4 Argon ...", "Gemini 3.8 Flash ...") → 1M
+ * - `claude-opus-*`, `claude-sonnet-*` ("Claude Opus ...", "Claude Sonnet ...") → `staticWindowFor`
+ * - `gpt-oss-120b-*` ("GPT-OSS 120B ...") → 128k
+ * - Unknown or empty → `null` (never guess a denominator).
+ */
+export function antigravityWindowFor(model: string | null | undefined): number | null {
+  const m = model?.trim()
+  if (!m) return null
+  if (/^gemini\b|^gemini-/i.test(m)) return LARGE_WINDOW
+  if (/^claude\b|^claude-/i.test(m)) return staticWindowFor(m)
+  if (/^gpt-oss-120b\b|^gpt-oss-120b-/i.test(m)) return 128_000
+  return null
+}
+

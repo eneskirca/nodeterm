@@ -309,6 +309,147 @@ export function linesFromGrok(buf: string): string[] {
 /** How many lines of this buffer could not be parsed. Skipped, but never in silence. */
 linesFromGrok.skipped = (buf: string): number => grokParse(buf).skipped
 
+export interface AntigravityToolCall {
+  id?: string
+  name?: string
+  args?: Record<string, unknown> | string
+}
+
+export interface AntigravityChatLine {
+  step_index?: number
+  source?: string
+  type?: string
+  status?: string
+  created_at?: string
+  content?: string
+  thinking?: string
+  error?: string
+  input_tokens?: number
+  cache_read_tokens?: number
+  output_tokens?: number
+  tool_calls?: AntigravityToolCall[]
+}
+
+const ANTIGRAVITY_TOOL_ARG_KEYS = [
+  'CommandLine',
+  'AbsolutePath',
+  'TargetFile',
+  'query',
+  'Url',
+  'command',
+  'file_path',
+  'path',
+  'pattern',
+  'toolSummary'
+] as const
+
+/**
+ * Extract the human-typed prompt from an Antigravity `USER_INPUT` step's `content`.
+ *
+ * MEASURED on `agy` 1.2.7 (`transcript_full.jsonl`): `USER_INPUT.content` wraps what the person
+ * typed inside `<USER_REQUEST>\n...\n</USER_REQUEST>`, followed by `<ADDITIONAL_METADATA>...` and
+ * `<USER_SETTINGS_CHANGE>...` blocks. Only the `<USER_REQUEST>` body (or the text outside injected
+ * metadata blocks when unwrapped) is what the user actually said.
+ */
+export function extractAntigravityUserText(raw: string | undefined): string {
+  if (typeof raw !== 'string' || !raw) return ''
+  const reqMatch = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(raw)
+  if (reqMatch) return reqMatch[1].trim()
+  return raw
+    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
+    .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
+    .replace(/<CONTEXT_SUMMARY>[\s\S]*?<\/CONTEXT_SUMMARY>/g, '')
+    .trim()
+}
+
+/** Extract the `Model Selection` display name from a `USER_INPUT` step's `<USER_SETTINGS_CHANGE>`. */
+export function extractAntigravityModelSelection(raw: string | undefined): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined
+  const m = /setting `Model Selection` from [^\n]+? to ([^\n.]+)\./.exec(raw)
+  return m?.[1]?.trim() || undefined
+}
+
+export function extractAntigravityToolArg(
+  args: Record<string, unknown> | string | undefined,
+  maxLen: number = TOOL_ARG_MAX
+): string {
+  if (!args) return ''
+  if (typeof args === 'string') return args.slice(0, maxLen)
+  if (typeof args === 'object' && !Array.isArray(args)) {
+    for (const k of ANTIGRAVITY_TOOL_ARG_KEYS) {
+      const v = args[k]
+      if (typeof v === 'string' && v.trim()) return v.trim().slice(0, maxLen)
+    }
+    return JSON.stringify(args).slice(0, maxLen)
+  }
+  return ''
+}
+
+export function antigravityParse(buf: string): { lines: AntigravityChatLine[]; skipped: number } {
+  const lines: AntigravityChatLine[] = []
+  let skipped = 0
+  for (const raw of buf.split('\n')) {
+    const t = raw.trim()
+    if (!t) continue
+    const o = parseJson(t) as AntigravityChatLine | undefined
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      skipped++
+      continue
+    }
+    lines.push(o)
+  }
+  return { lines, skipped }
+}
+
+/**
+ * One whole Antigravity `transcript_full.jsonl` (or `transcript.jsonl`) -> display strings.
+ *
+ * MEASURED on `agy` 1.2.7 (Windows 11, 2026-10-14):
+ * - `USER_INPUT`: user prompt wrapped in `<USER_REQUEST>...</USER_REQUEST>` plus metadata tags
+ * - `PLANNER_RESPONSE`: assistant `content` and `tool_calls[]` (`{ id, name, args }`)
+ * - `GENERIC`: tool execution output (`content` or `error`) emitted after `PLANNER_RESPONSE`
+ * - `ERROR_MESSAGE`: turn/API error (`error`)
+ * - `SYSTEM_MESSAGE` / `CHECKPOINT`: harness-internal system or compaction step (omitted)
+ */
+export function linesFromAntigravity(buf: string): string[] {
+  const res: string[] = []
+  for (const o of antigravityParse(buf).lines) {
+    switch (o.type) {
+      case 'USER_INPUT': {
+        const t = extractAntigravityUserText(o.content)
+        if (t) res.push(`user: ${t}`)
+        break
+      }
+      case 'PLANNER_RESPONSE': {
+        const t = typeof o.content === 'string' ? o.content.trim() : ''
+        if (t) res.push(`assistant: ${t}`)
+        for (const c of o.tool_calls ?? []) {
+          if (!c || typeof c !== 'object') continue
+          const arg = extractAntigravityToolArg(c.args, TOOL_ARG_MAX)
+          res.push(`  $ ${c.name || 'tool'}${arg ? ` ${arg}` : ''}`)
+        }
+        break
+      }
+      case 'GENERIC': {
+        const raw = typeof o.content === 'string' && o.content ? o.content : typeof o.error === 'string' ? o.error : ''
+        const s = raw.split('\n').slice(0, 3).join(' ').slice(0, TOOL_RESULT_MAX).trim()
+        if (s) res.push(`  = ${s}`)
+        break
+      }
+      case 'ERROR_MESSAGE': {
+        const e = typeof o.error === 'string' ? o.error.trim() : ''
+        if (e) res.push(`assistant: [error] ${e}`)
+        break
+      }
+      default:
+        break
+    }
+  }
+  return res
+}
+
+linesFromAntigravity.skipped = (buf: string): number => antigravityParse(buf).skipped
+
 /** Parse a whole transcript buffer with the parser its agent's format needs. */
 export function renderTranscriptLines(agent: string | undefined, buf: string): string[] {
   if (agent === 'gemini') return linesFromGemini(buf)
@@ -316,6 +457,7 @@ export function renderTranscriptLines(agent: string | undefined, buf: string): s
   // cursor's transcript text is newline-delimited message JSON built from its SQLite store
   // (`cursorTranscriptText`), not a file on disk.
   if (agent === 'cursor') return linesFromCursor(buf)
+  if (agent === 'antigravity') return linesFromAntigravity(buf)
   const parse = agent === 'codex' ? linesFromCodex : linesFromClaude
   const lines: string[] = []
   for (const raw of buf.split('\n')) {

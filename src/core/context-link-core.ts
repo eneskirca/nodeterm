@@ -49,7 +49,7 @@ export async function resolveLinkTranscript(
 ): Promise<string> {
   if (link.note != null) return ''
   const agent = link.agentId ?? 'claude'
-  if (agent === 'claude') {
+  if (agent === 'claude' || agent === 'antigravity') {
     const hooked = deps.hooked(link.id)
     if (hooked) return hooked
   }

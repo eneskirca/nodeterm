@@ -15,14 +15,15 @@ import type { AgentId } from './agents/config'
  *              (`id`, `cwd`, `thread_source`); system and managed accounts.
  *  - gemini  — `~/.gemini/tmp/<project>/chats/session-*.jsonl` + the project's `.project_root`.
  *  - grok    — `$GROK_HOME/sessions/<url-encoded cwd>/<id>/`.
- *  - copilot — `<copilot home>/session-state/<id>/events.jsonl`, `session.start` `context.cwd`.
+ *  - copilot     — `<copilot home>/session-state/<id>/events.jsonl`, `session.start` `context.cwd`.
+ *  - antigravity — `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`
+ *                  + `~/.gemini/antigravity-cli/history.jsonl` (`conversationId`, `workspace`).
  *
  * Deliberately absent: opencode (its history is a SQLite database we never open; the only reader
  * is `opencode export`, one CLI spawn of ~1.5 s and ~320 MB per session — far too heavy for a
- * list) and antigravity (its transcript record shapes were never captured). An agent absent here
- * simply contributes no rows; nothing guesses at its layout.
+ * list). An agent absent here simply contributes no rows; nothing guesses at its layout.
  */
-export const RECENT_CONVERSATION_AGENTS = ['claude', 'codex', 'gemini', 'grok', 'copilot'] as const
+export const RECENT_CONVERSATION_AGENTS = ['claude', 'codex', 'gemini', 'grok', 'copilot', 'antigravity'] as const
 export type RecentConversationAgent = (typeof RECENT_CONVERSATION_AGENTS)[number]
 
 export function isRecentConversationAgent(id: AgentId | string): id is RecentConversationAgent {

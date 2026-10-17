@@ -17,8 +17,15 @@ import { renderClaudeTranscript } from './render-claude'
 import { renderCodexTranscript } from './render-codex'
 import { renderGeminiTranscript } from './render-gemini'
 import { renderGrokTranscript } from './render-grok'
+import { renderAntigravityTranscript } from './render-antigravity'
 import { budgetHandoff } from './budget'
-import { locateClaude, locateCodex, locateGemini, locateGrok } from '../../core/handoff/locate'
+import {
+  locateAntigravity,
+  locateClaude,
+  locateCodex,
+  locateGemini,
+  locateGrok
+} from '../../core/handoff/locate'
 import { cursorTranscriptText, locateCursorChat } from '../../core/cursor-chat'
 import { renderCursorTranscript } from './render-cursor'
 import { capabilityAgentId } from '../../shared/agents/config'
@@ -33,7 +40,8 @@ const RENDERERS: Record<string, Renderer> = {
   codex: renderCodexTranscript,
   gemini: renderGeminiTranscript,
   grok: renderGrokTranscript,
-  cursor: renderCursorTranscript
+  cursor: renderCursorTranscript,
+  antigravity: renderAntigravityTranscript
 }
 
 const LOCATORS: Record<string, Locator> = {
@@ -42,7 +50,8 @@ const LOCATORS: Record<string, Locator> = {
   gemini: locateGemini,
   grok: locateGrok,
   // (id, accountId?) is the shared shape; cursor's second parameter is a cwd, so it is not passed.
-  cursor: (sessionId) => locateCursorChat(sessionId)
+  cursor: (sessionId) => locateCursorChat(sessionId),
+  antigravity: locateAntigravity
 }
 
 /** Filesystem-safe handoff filename for a node + ISO-ish timestamp. Node ids are

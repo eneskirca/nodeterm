@@ -22,6 +22,7 @@ import { platform } from './platform'
 import { parseGrokChat } from './grok-chat'
 import type { RemoteGrokChat } from './remote-grok-chat'
 import { readGeminiChatTranscript } from './gemini-chat'
+import { readAntigravityChatTranscript } from './antigravity-chat'
 import { chatMessagesFromCodex, locateCodexRollout, parseCodexChatWindow } from './codex-chat'
 import { chatMessagesFromCopilot, locateCopilotTranscript, parseCopilotChatWindow } from './copilot-chat'
 import { readOpencodeChat, type OpencodeExportRun } from './opencode-chat'
@@ -392,6 +393,9 @@ export async function readChatTranscript(
   // reads gemini's file too. Its own locator, keyed strictly on the session id in the file header —
   // never claude's resolver, never a cwd — and local-only (`CHAT_LOCAL_ONLY`).
   if (agentId && capabilityAgentId(agentId) === 'gemini') return readGeminiChatTranscript({ sessionId, remoteOnly }, page)
+  if (agentId && capabilityAgentId(agentId) === 'antigravity') {
+    return readAntigravityChatTranscript({ sessionId, remoteOnly }, page)
+  }
   // Codex — the builtin or a custom agent whose base harness it is — is routed BEFORE the claude
   // path for the same reason as grok: a codex thread id never resolves under claude's tree, and the
   // cwd fallback would then answer with somebody else's claude session.

@@ -331,6 +331,8 @@ export function isSafeLocalTranscriptPath(
   // read at `~/.ssh/id_rsa`, and a home-wide allowance would hand that straight back.
   const geminiRoot = path.join(homeDir, '.gemini', 'tmp')
   if (abs === geminiRoot || abs.startsWith(geminiRoot + path.sep)) return true
+  const antigravityRoot = path.join(homeDir, '.gemini', 'antigravity-cli', 'brain')
+  if (abs === antigravityRoot || abs.startsWith(antigravityRoot + path.sep)) return true
   const codexRoot = path.join(codexHomeDir || path.join(homeDir, '.codex'), 'sessions')
   if (abs === codexRoot || abs.startsWith(codexRoot + path.sep)) return true
   // grok: `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/`. `sessions` and not `$GROK_HOME`,

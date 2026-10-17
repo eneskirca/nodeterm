@@ -37,6 +37,7 @@ let f: ReturnType<typeof fakePlatform>
 let claude: ReturnType<typeof fakeTail>
 let codex: ReturnType<typeof fakeTail>
 let gemini: ReturnType<typeof fakeTail>
+let antigravity: ReturnType<typeof fakeTail>
 
 // The registered listener is async; `CorePlatform.on` types its return as void (a cast is
 // fire-and-forget on the wire), so awaiting it here — which is what lets these tests assert on the
@@ -59,6 +60,8 @@ const tailFor = (agentId: string | undefined): ContextTail | undefined => {
       return codex
     case 'gemini':
       return gemini
+    case 'antigravity':
+      return antigravity
     default:
       return undefined
   }
@@ -81,6 +84,7 @@ beforeEach(() => {
   claude = fakeTail()
   codex = fakeTail()
   gemini = fakeTail()
+  antigravity = fakeTail()
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -132,6 +136,17 @@ describe('local rehydration, per agent', () => {
     registerContextEnsureIpc({ tailFor })
     await ensure({ agentId: 'gemini' })
     expect(gemini.tracked).toEqual([[SID, chat]])
+    expect(claude.tracked).toEqual([])
+  })
+
+  it('rehydrates an antigravity node from its own brain transcript, never claude’s', async () => {
+    const logs = path.join(home, '.gemini', 'antigravity-cli', 'brain', SID, '.system_generated', 'logs')
+    fs.mkdirSync(logs, { recursive: true })
+    const tf = path.join(logs, 'transcript_full.jsonl')
+    fs.writeFileSync(tf, '{}\n')
+    registerContextEnsureIpc({ tailFor })
+    await ensure({ agentId: 'antigravity' })
+    expect(antigravity.tracked).toEqual([[SID, tf]])
     expect(claude.tracked).toEqual([])
   })
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
 import {
+  antigravityModelsFrom,
   grokModelsFrom,
   cursorModelsFrom,
   normalizedAgentModel,
@@ -410,5 +411,33 @@ describe('cursorModelsFrom', () => {
   })
   it('keeps the first of a duplicated id', () => {
     expect(cursorModelsFrom('a - One\na - Two')).toEqual([{ id: 'a', name: 'One' }])
+  })
+})
+
+describe('antigravityModelsFrom — TSV discovery from `agy models`', () => {
+  const REAL = [
+    'gemini-4-argon-high\tGemini 4 Argon (High)',
+    'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
+    'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
+    'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)'
+  ].join('\n')
+
+  it('parses tab-separated id and display name rows', () => {
+    expect(antigravityModelsFrom(REAL)).toEqual([
+      { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+      { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+      { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)' },
+      { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (Thinking)' }
+    ])
+  })
+
+  it('routes antigravity to its own catalogue and appends --model', () => {
+    const GATEWAY = [{ id: 'anthropic/claude-x' }]
+    const AGY = antigravityModelsFrom(REAL)
+    expect(modelsForAgent(GATEWAY, 'antigravity', [], [], AGY)).toEqual(AGY)
+    expect(modelsForAgent(GATEWAY, 'antigravity')).toEqual([])
+    expect(withAgentModel('agy', 'antigravity', 'gemini-4-argon-medium')).toBe(
+      "agy --model 'gemini-4-argon-medium'"
+    )
   })
 })

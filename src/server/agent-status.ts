@@ -20,6 +20,7 @@ import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
 import { geminiContextParse } from '../core/gemini-session'
+import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
 import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
@@ -75,7 +76,13 @@ export interface WireAgentStatusOptions {
 export function wireAgentStatus(
   platform: ServerPlatform,
   opts: WireAgentStatusOptions = {}
-): { contextTail: ContextTail; geminiContextTail: ContextTail; codexContextTail: ContextTail; cursorContextTail: ContextTail } {
+): {
+  contextTail: ContextTail
+  geminiContextTail: ContextTail
+  codexContextTail: ContextTail
+  cursorContextTail: ContextTail
+  antigravityContextTail: ContextTail
+} {
   const hooks = opts.hooks ?? hookServer
   // nodeId → the agent session id of whichever hook-capable CLI runs in that node (claude's, and
   // since the grok branch below, grok's)
@@ -189,6 +196,10 @@ export function wireAgentStatus(
   const cursorContextTail = createContextTail(pushContextUpdate, {
     parse: cursorContextParse,
     readSource: readCursorContextSource
+  })
+  const antigravityContextTail = createContextTail(pushContextUpdate, {
+    parse: antigravityContextParse,
+    wholeFile: true
   })
 
   const emit = (e: NormalizedAgentEvent): void => {
@@ -398,6 +409,23 @@ export function wireAgentStatus(
       if (p.hook_event_name === 'SessionEnd' && p.session_id) tail.untrack(p.session_id)
       return
     }
+    if (agentId === 'antigravity') {
+      const p = payload as {
+        conversationId?: string
+        transcriptPath?: string
+        modelName?: string
+      }
+      rememberAntigravityModel(p.modelName)
+      const transcriptPath = safeTranscriptPath(p.transcriptPath)
+      if (p.conversationId && transcriptPath) {
+        antigravityContextTail.track(p.conversationId, transcriptPath)
+      }
+      if (nodeId && p.conversationId) nodeContextSession.set(nodeId, p.conversationId)
+      if (nodeId && p.conversationId && transcriptPath) {
+        setNodeTranscript(nodeId, p.conversationId, transcriptPath)
+      }
+      return
+    }
     if (agentId !== 'claude') return
     // Mirror the per-node "what it's doing now" activity line for the phone (mobile-usage-inbox).
     // Independent of the transcript-tailing below (no path needed), so it runs first.
@@ -489,6 +517,7 @@ export function wireAgentStatus(
       codexContextTail.untrack(sessionId)
       grokContextTail.untrack(sessionId)
       cursorContextTail.untrack(sessionId)
+      antigravityContextTail.untrack(sessionId)
       nodeContextSession.delete(nodeId)
     }
     const subs = nodeSubagents.get(nodeId)
@@ -500,8 +529,15 @@ export function wireAgentStatus(
   platform.on(IPC.ptyDestroy, (nodeId: string) => releaseNodeTails(nodeId))
   platform.on(IPC.ptyRecycle, (nodeId: string) => releaseNodeTails(nodeId))
 
-  // `codexContextTail` joins the two already returned so `src/server/index.ts` can register the
-  // context-meter rehydration over all three. Keeping a tail private here would mean a second
-  // instance somewhere else metering the same sessions twice.
-  return { contextTail, geminiContextTail, codexContextTail, cursorContextTail }
+  // `codexContextTail`, `cursorContextTail` and `antigravityContextTail` join the two already
+  // returned so `src/server/index.ts` can register the context-meter rehydration over all five.
+  // Keeping a tail private here would mean a second instance somewhere else metering the same
+  // sessions twice.
+  return {
+    contextTail,
+    geminiContextTail,
+    codexContextTail,
+    cursorContextTail,
+    antigravityContextTail
+  }
 }

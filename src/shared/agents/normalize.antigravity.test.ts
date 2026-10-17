@@ -112,14 +112,17 @@ describe('normalizeAntigravity over captured agy 1.2.3 payloads', () => {
     expect(run(pick('PostInvocation'))).toBeNull()
   })
 
-  it('Stop with fullyIdle:false is NOT terminal → working', () => {
-    expect(run(pick('Stop', (p) => p.fullyIdle === false))?.state).toBe('working')
+  it('Stop with fullyIdle:false → done with backgroundTaskIds (never sticks on RUNNING)', () => {
+    const out = run(pick('Stop', (p) => p.fullyIdle === false))
+    expect(out?.state).toBe('done')
+    expect(out?.backgroundTaskIds).toEqual(['agy-bg'])
   })
 
-  it('Stop with fullyIdle:true → done, not errored', () => {
+  it('Stop with fullyIdle:true → done, not errored, no backgroundTaskIds', () => {
     const out = run(pick('Stop', finalStopMatch))
     expect(out?.state).toBe('done')
     expect(out?.errored).toBeUndefined()
+    expect(out?.backgroundTaskIds).toBeUndefined()
   })
 
   it('a hook-terminated Stop (TERMINAL_CUSTOM_HOOK) is an ordinary end, not an error', () => {
@@ -153,12 +156,13 @@ describe('normalizeAntigravity — the rules the capture could not produce', () 
     }
   })
 
-  it('a Stop WITHOUT fullyIdle reads as finished (strict === false)', () => {
+  it('a Stop WITHOUT fullyIdle or with non-boolean fullyIdle reads as finished without backgroundTaskIds (strict === false)', () => {
     const rest: Record<string, unknown> = { ...finalStop.payload }
     delete rest.fullyIdle
-    expect(normalizeAntigravity(envFor('Stop', rest))?.state).toBe('done')
-    // A falsy-but-not-false oddity is also "finished"; only a literal false keeps it working.
-    expect(normalizeAntigravity(envFor('Stop', { ...rest, fullyIdle: 0 }))?.state).toBe('done')
+    expect(normalizeAntigravity(envFor('Stop', rest))).toMatchObject({ state: 'done' })
+    expect(normalizeAntigravity(envFor('Stop', rest))?.backgroundTaskIds).toBeUndefined()
+    // A falsy-but-not-false oddity is also "finished"; only a literal false stamps backgroundTaskIds.
+    expect(normalizeAntigravity(envFor('Stop', { ...rest, fullyIdle: 0 }))?.backgroundTaskIds).toBeUndefined()
     // An empty payload (agy sent no stdin; the script POSTs `{}`) still ends the badge.
     expect(normalizeAntigravity(envFor('Stop', {}))?.state).toBe('done')
   })
@@ -198,7 +202,7 @@ describe('normalizeAntigravity — measured event orders', () => {
   const states = (seq: [string, Record<string, unknown>][]) =>
     seq.map(([ev, p]) => normalizeAntigravity(envFor(ev, p))?.state ?? null)
 
-  it('background tool: the late PostToolUse neither ends nor restarts anything', () => {
+  it('background tool: intermediate Stop transitions to done (with backgroundTaskIds), and wakeup PreInvocation(0) starts a new working turn', () => {
     // log-bg.jsonl: the PostToolUse lands 27.5 s after `Stop fullyIdle:false`.
     const pre = pick('PreToolUse', toolIs('run_command')).payload
     const post = pick('PostToolUse', toolIs('run_command')).payload
@@ -216,7 +220,7 @@ describe('normalizeAntigravity — measured event orders', () => {
       ['PreInvocation', inv(0)],
       ['Stop', end]
     ]
-    expect(states(seq)).toEqual(['working', 'working', 'working', 'working', null, 'working', 'done'])
+    expect(states(seq)).toEqual(['working', 'working', 'working', 'done', null, 'working', 'done'])
     expect(seq.map(([ev, p]) => normalizeAntigravity(envFor(ev, p))?.newTurn ?? false)).toEqual([
       true,
       false,

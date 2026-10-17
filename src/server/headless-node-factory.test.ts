@@ -11,6 +11,7 @@ import { initPlatform, resetPlatformForTests } from '../core/platform'
 import { WorkspaceStore } from '../core/workspace-store'
 import { createCanvasAuthority } from '../core/canvas-authority'
 import { initCanvasSync, publishCanvasMutation, setReflectedListener } from '../core/canvas-sync'
+import { AGENT_HOOK_TARGETS } from '../shared/agents/config'
 import type { AgentState } from '../shared/agents/normalize'
 import { MAX_LAUNCH_LINE_BYTES } from '../shared/canonical-line'
 import { RUN_NOW_AFTER_REFUSAL } from '../shared/control-verbs'
@@ -1446,16 +1447,21 @@ describe('HeadlessNodeFactory', () => {
 
     it('refuses a station that could never report, and --run-now, before creating anything', async () => {
       const ws = await store.load({ sideline: false })
-      ws.projects[0].nodes.push({ ...terminal('term-agy', 'Agy'), agentId: 'antigravity' })
+      ws.projects[0].nodes.push({ ...terminal('term-hook-only', 'HookOnly'), agentId: 'custom:hook-only' })
       await store.save(ws)
-      ownership.record('term-agy', { sourceNodeId: 'term-source', projectId: 'project-1' })
+      ownership.record('term-hook-only', { sourceNodeId: 'term-source', projectId: 'project-1' })
       const before = (await store.load({ sideline: false })).projects[0].nodes.length
-      const r = await factory.openAgent(
-        'term-source',
-        { agent: 'claude', prompt: 'x', 'after-success': 'term-agy' },
-        true
-      )
-      expect(r).toMatchObject({ ok: false, error: expect.stringContaining('cannot report an outcome') })
+      ;(AGENT_HOOK_TARGETS as unknown as string[]).push('custom:hook-only')
+      try {
+        const r = await factory.openAgent(
+          'term-source',
+          { agent: 'claude', prompt: 'x', 'after-success': 'term-hook-only' },
+          true
+        )
+        expect(r).toMatchObject({ ok: false, error: expect.stringContaining('cannot report an outcome') })
+      } finally {
+        ;(AGENT_HOOK_TARGETS as unknown as string[]).pop()
+      }
       await expect(
         factory.openAgent(
           'term-source',
