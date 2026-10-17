@@ -3,6 +3,7 @@ import {
   bodyPressAcknowledges,
   focusLossOutcome,
   outsidePressReleases,
+  reclaimOnRelease,
   reclaimTarget
 } from '../lib/terminalFocusMode'
 
@@ -61,6 +62,9 @@ export function useClickToFocus(host: ClickToFocusHost): void {
     const root = h().root()
     if (!root) return
     let pressedInOwnNode = false
+    let pressedInReadableText = false
+    // Set by a `reclaim-on-release` focusout; settled by the press's pointerup (see focusLossOutcome).
+    let reclaimOnUp: HTMLElement | null = null
     let pressTimer: ReturnType<typeof setTimeout> | null = null
     let reclaimTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -76,9 +80,11 @@ export function useClickToFocus(host: ClickToFocusHost): void {
       const inNode = !!target && ownNode.contains(target)
       if (inNode) {
         pressedInOwnNode = true
+        pressedInReadableText = !!target?.closest('.term-chat__msgs')
         if (pressTimer) clearTimeout(pressTimer)
         pressTimer = setTimeout(() => {
           pressedInOwnNode = false
+          pressedInReadableText = false
           pressTimer = null
         }, 0)
       }
@@ -124,11 +130,16 @@ export function useClickToFocus(host: ClickToFocusHost): void {
         activeElement: document.activeElement,
         windowFocused: document.hasFocus(),
         pressedInOwnNode,
+        pressedInReadableText,
         lostIsCoveredXterm: h().mdMode() && e.target === h().xtermTextarea()
       })
       if (outcome === 'keep') return
       if (outcome === 'release') {
         release()
+        return
+      }
+      if (outcome === 'reclaim-on-release') {
+        reclaimOnUp = e.target instanceof HTMLElement ? e.target : null
         return
       }
       // 'reclaim': once the press's own focus change has settled, give the keyboard back to what
@@ -167,7 +178,22 @@ export function useClickToFocus(host: ClickToFocusHost): void {
       }
     }
 
+    const onPointerUp = () => {
+      const lost = reclaimOnUp
+      if (!lost) return
+      reclaimOnUp = null
+      const sel = window.getSelection()
+      if (
+        reclaimOnRelease({
+          selectionEmpty: !sel || sel.isCollapsed || sel.toString() === '',
+          lostStillInNode: lost.isConnected && root.contains(lost)
+        })
+      )
+        lost.focus()
+    }
+
     document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('pointerup', onPointerUp, true)
     document.addEventListener('focusin', onDocFocusIn, true)
     root.addEventListener('focusin', onFocusIn)
     root.addEventListener('focusout', onFocusOut)
@@ -175,6 +201,7 @@ export function useClickToFocus(host: ClickToFocusHost): void {
       if (pressTimer) clearTimeout(pressTimer)
       if (reclaimTimer) clearTimeout(reclaimTimer)
       document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('pointerup', onPointerUp, true)
       document.removeEventListener('focusin', onDocFocusIn, true)
       root.removeEventListener('focusin', onFocusIn)
       root.removeEventListener('focusout', onFocusOut)

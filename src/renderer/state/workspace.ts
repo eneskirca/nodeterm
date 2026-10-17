@@ -135,6 +135,8 @@ export interface NodeData {
   collapsed?: boolean
   /** Agent nodes only: when true, this node's subagent/loop fan-out cards are hidden. */
   hideFanout?: boolean
+  /** Terminal nodes: the ⌘M view is open — see CanvasNodeState.mdMode. */
+  mdMode?: boolean
   /** Terminal nodes: own font size (issue #915) — see CanvasNodeState.terminalFontSize. */
   terminalFontSize?: number
   /** Expanded height to restore when un-collapsing (kept out of the persisted size). */
@@ -2666,6 +2668,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         tags: n.tags,
         collapsed,
         hideFanout: n.hideFanout,
+        mdMode: n.mdMode,
         // Validated at the same seam as the icon below: project.json is hand-editable and shared,
         // and xterm must never be handed a font size outside the Settings range (issue #915).
         terminalFontSize: normalizeTerminalFontSize(n.terminalFontSize),
@@ -2764,6 +2767,8 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         tags: n.data.tags,
         collapsed: n.data.collapsed,
         hideFanout: n.data.hideFanout,
+        // Closed is written as absent, so every node that never opened the view saves as before.
+        mdMode: n.data.mdMode || undefined,
         // Re-validated on the way OUT, same reasoning as the icon below (issue #915).
         terminalFontSize: normalizeTerminalFontSize(n.data.terminalFontSize),
         // React Flow's node `data` is `Record<string, unknown>`, so the icon comes back out

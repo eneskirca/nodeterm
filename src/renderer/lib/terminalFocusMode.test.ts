@@ -4,6 +4,7 @@ import { join } from 'path'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import {
   focusLossOutcome,
+  reclaimOnRelease,
   bodyPressAcknowledges,
   outsidePressReleases,
   reclaimTarget,
@@ -104,6 +105,7 @@ describe('terminal focus mode (#757)', () => {
         activeElement: body,
         windowFocused: true,
         pressedInOwnNode: false,
+        pressedInReadableText: false,
         lostIsCoveredXterm: false,
         ...over
       })
@@ -128,6 +130,17 @@ describe('terminal focus mode (#757)', () => {
       expect(ev({ gained: ownWrapper, activeElement: ownWrapper, pressedInOwnNode: true })).toBe('reclaim')
       // A non-focusable wrapper sends focus to <body> instead; same press, same answer.
       expect(ev({ gained: null, activeElement: body, pressedInOwnNode: true })).toBe('reclaim')
+    })
+
+    it('defers the reclaim to the end of the press when it landed on readable text (⌘M chat selection)', () => {
+      // Reclaiming now would move the selection into the composer and cancel the drag.
+      expect(ev({ gained: null, activeElement: body, pressedInOwnNode: true, pressedInReadableText: true })).toBe(
+        'reclaim-on-release'
+      )
+      // The flag alone (no press on this node in this task) changes nothing.
+      expect(ev({ gained: null, activeElement: body, pressedInReadableText: true })).toBe('release')
+      // Focus moving to another element inside the node still wins.
+      expect(ev({ gained: header, activeElement: header, pressedInOwnNode: true, pressedInReadableText: true })).toBe('keep')
     })
 
     it('keeps it when the WINDOW lost focus (Cmd+Tab away): the terminal still owns the keyboard', () => {
@@ -248,6 +261,13 @@ describe('terminal focus mode (#757)', () => {
       for (const k of ['focus', 'hover', 'pointer', 'click', 'follows', 'x11']) {
         expect(src).toMatch(new RegExp(`focusFollowsPointer: \\{[^}]*'${k}'`))
       }
+    })
+  })
+  describe('reclaimOnRelease', () => {
+    it('gives the keyboard back only for a plain click, and only to an element still in the node', () => {
+      expect(reclaimOnRelease({ selectionEmpty: true, lostStillInNode: true })).toBe(true)
+      expect(reclaimOnRelease({ selectionEmpty: false, lostStillInNode: true })).toBe(false)
+      expect(reclaimOnRelease({ selectionEmpty: true, lostStillInNode: false })).toBe(false)
     })
   })
 })

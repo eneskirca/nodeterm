@@ -533,6 +533,10 @@ export interface CanvasNodeState {
   collapsed?: boolean
   /** Agent nodes only: when true, this node's subagent/loop fan-out cards are hidden. */
   hideFanout?: boolean
+  /** Terminal nodes: the ⌘M view (chat / markdown) is open. Persisted, so leaving a project and
+   *  coming back (or a reload) reopens the node the way the user left it instead of on the raw
+   *  terminal. Absent = closed. */
+  mdMode?: boolean
   /**
    * A user-chosen icon shown wherever this node is listed (canvas header, kanban card, sessions
    * sidebar): one emoji/character, or an image file. Absent = the node draws exactly as it did

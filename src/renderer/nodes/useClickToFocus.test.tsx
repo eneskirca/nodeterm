@@ -257,4 +257,56 @@ describe('useClickToFocus', () => {
     expect(calls).toContain('release')
     expect(calls).toContain('active:false')
   })
+
+  describe('⌘M chat: selecting message text', () => {
+    let msgs: HTMLDivElement
+    let text: HTMLParagraphElement
+    let composer: HTMLTextAreaElement
+    const release = () =>
+      act(() => {
+        text.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true, button: 0 }))
+      })
+    const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 5)) })
+    beforeEach(() => {
+      host.md = true
+      const chat = document.createElement('div')
+      chat.className = 'term-chat'
+      msgs = document.createElement('div')
+      msgs.className = 'term-chat__msgs'
+      text = document.createElement('p')
+      text.textContent = 'Gate GREEN on f8453360.'
+      msgs.append(text)
+      composer = document.createElement('textarea')
+      chat.append(msgs, composer)
+      body.append(chat)
+      act(() => composer.focus())
+      window.getSelection()?.removeAllRanges()
+    })
+
+    it('does not pull focus back to the composer while the press is still selecting', async () => {
+      press(text)
+      act(() => composer.blur()) // the press's default action: messages are not focusable
+      await settle()
+      expect(document.activeElement).not.toBe(composer)
+      expect(calls).not.toContain('release')
+    })
+
+    it('a press that SELECTED text keeps the selection (and the keyboard off the composer, so Ctrl+C copies)', async () => {
+      press(text)
+      act(() => composer.blur())
+      await settle()
+      window.getSelection()?.selectAllChildren(text)
+      release()
+      expect(window.getSelection()?.toString()).toBe('Gate GREEN on f8453360.')
+      expect(document.activeElement).not.toBe(composer)
+    })
+
+    it('a plain click on the messages hands the keyboard back to the composer when the press ends', async () => {
+      press(text)
+      act(() => composer.blur())
+      await settle()
+      release()
+      expect(document.activeElement).toBe(composer)
+    })
+  })
 })

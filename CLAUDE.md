@@ -1718,7 +1718,11 @@ number: change the table in that one module, never in one emulator.
   focuses its wrapper, MEASURED in Electron 42) hands it back to the element that lost it (the ⌘M
   composer) or the xterm (`reclaimTarget`), anything else — another node, a field, the empty canvas
   (`onPaneClick` blurs the xterm textarea, `shouldReleasePaneFocus`) — releases it and re-arms the
-  guard. One document capture `pointerdown` does the rest: outside the node it releases activity
+  guard. A press on the ⌘M chat's MESSAGE TEXT (`.term-chat__msgs`) is the start of a drag-selection, so
+  its reclaim waits for the press to end (`reclaim-on-release` → `reclaimOnRelease`): a plain click
+  still hands the keyboard back to the composer, but a press that selected text leaves the
+  selection (and Cmd/Ctrl+C) alone — reclaiming at once moved the selection into the textarea and
+  nothing in the chat could be highlighted or copied. One document capture `pointerdown` does the rest: outside the node it releases activity
   claimed WITHOUT focus (go-to-node under the ⌘M view, Canvas's own `setActive` on a jump — no
   focusout ever comes, `outsidePressReleases`), and a document capture `focusin` landing outside
   the node (its own wrapper counts as inside) does the same for KEYBOARD focus moves — ⌘M open,
@@ -1787,7 +1791,9 @@ number: change the table in that one module, never in one emulator.
   of a text field elsewhere; a lazy-loading or disabled composer takes it when it mounts/enables,
   and an exit cancels the request); leaving it restores focus
   only if the terminal had it on entry AND focus is now nowhere or still inside this node
-  (`terminal/useMdModeFocus.ts`). While the view is open, every "take the keyboard" path (hover
+  (`terminal/useMdModeFocus.ts`). The open view is PERSISTED (`CanvasNodeState.mdMode`, written only
+  when open), so a project switch or a reload brings the node back on the view it was left on.
+  While the view is open, every "take the keyboard" path (hover
   dwell, click, sidebar/notification jump) goes through `focusXtermUnlessCovered` and leaves the
   hidden xterm unfocused — the overlay sits inside the node body, so a dwell over it used to route
   keystrokes into a pane nobody could see. The body's file DROP / file PASTE handlers (which focus
