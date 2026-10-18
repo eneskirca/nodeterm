@@ -963,6 +963,16 @@ import {
   switchOutcomeNotice,
   type ClaudeSwitchOutcome
 } from './claude-account-switch'
+import {
+  FAILOVER_FORCE_REFRESH_MS,
+  FAILOVER_TICK_MS,
+  failoverLimitState,
+  planFailover,
+  resolveFailover,
+  sessionResetsAt,
+  type FailoverLimitState,
+  type FailoverNode
+} from './claude-failover'
 import type { CodexAccount } from '@shared/codex-account'
 import { useSystemCodexAccount } from '../state/systemCodexAccount'
 import { kanbanSessionsFrom, toKanbanSession } from './toKanbanSession'
@@ -8968,7 +8978,11 @@ export function Canvas() {
   // between the CLI's exit and the pane recycle. The respawn then launches under the target's
   // CLAUDE_CONFIG_DIR and its cold-restore `--resume` continues the SAME conversation — no /login.
   const runClaudeAccountSwitch = useCallback(
-    async (nodeId: string, targetAccountId: string | undefined): Promise<ClaudeSwitchOutcome> => {
+    async (
+      nodeId: string,
+      targetAccountId: string | undefined,
+      failover = false
+    ): Promise<ClaudeSwitchOutcome> => {
       const n = nodesRef.current.find((x) => x.id === nodeId)
       const st = useAgentStatus.getState().byId[nodeId]
       const accounts = useSettings.getState().settings.claudeAccounts
@@ -9019,7 +9033,9 @@ export function Canvas() {
           if (!copy.ok) return
           // Returned, not set here: the closure merges it into the SAME node update as its respawn
           // bump, so the respawn launches under the target's config dir (see `beforeRecycle`).
-          return { accountId: plan.targetAccountId }
+          // The failover mark rides along — present as `undefined` on a manual switch, which
+          // clears it, so only sessions the automatic failover moved are ever moved back.
+          return { accountId: plan.targetAccountId, claudeFailover: failover || undefined }
         })
       )
       if (copy?.ok) markDirty()
@@ -9120,6 +9136,95 @@ export function Canvas() {
     )
     return ready.length + busy.length
   }, [])
+
+  // Automatic Claude account failover (see `claude-failover.ts`): a 60 s tick reads the primary's
+  // usage (the usage service's own 5-min cache answers most ticks) and moves this canvas's local
+  // Claude sessions primary → secondary while the primary sits in its 5h limit, and back once it is
+  // free. Renderer-side because the switch choreography (quit → copy → rebind → recycle) lives
+  // here; both shells serve `usage.fetch` and `claudeAccounts.copySession`, so it runs on the
+  // desktop and in a Server Edition browser tab alike (there only while a tab is open).
+  const failoverBusy = useRef(false)
+  const failoverForcedAt = useRef(0)
+  useEffect(() => {
+    if (session.source === 'relay') return // a relay tab's sessions belong to the host
+    const tick = async (): Promise<void> => {
+      if (failoverBusy.current || bulkSwitchRunning.current) return
+      // Several Server Edition tabs share one server: only a visible tab acts, so two tabs do not
+      // both quit-and-switch the same session. The desktop window acts even when hidden.
+      if (isBrowserRuntime() && document.visibilityState !== 'visible') return
+      const settings = useSettings.getState().settings
+      const pair = resolveFailover(settings.claudeFailover, settings.claudeAccounts)
+      if (!pair) return
+      const project = useProjects.getState().getProject(useProjects.getState().activeProjectId)
+      if (!project || project.ssh) return // SSH hosts have their own accounts; not covered
+      const usageApi = window.nodeTerminal.usage
+      failoverBusy.current = true
+      try {
+        let primaryUsage = await usageApi.fetch(pair.primary)
+        let primaryState = failoverLimitState(primaryUsage)
+        // The cached snapshot outlives the reset — re-read once the window should have rolled over.
+        const resetsAt = sessionResetsAt(primaryUsage)
+        const now = Date.now()
+        if (
+          primaryState === 'session' &&
+          resetsAt !== null &&
+          now > resetsAt &&
+          now - failoverForcedAt.current > FAILOVER_FORCE_REFRESH_MS
+        ) {
+          failoverForcedAt.current = now
+          primaryUsage = await usageApi.refresh(pair.primary)
+          primaryState = failoverLimitState(primaryUsage)
+        }
+        const byId = useAgentStatus.getState().byId
+        const nodes: FailoverNode[] = nodesRef.current
+          .filter((n) => n.type === 'terminal')
+          .map((n) => ({
+            id: n.id,
+            agentId: restartAgentIdOf(n),
+            accountId: (n.data.accountId as string | undefined) || undefined,
+            hostKey: claudeSwitchHostKey(n),
+            failedOver: n.data.claudeFailover === true,
+            busy: byId[n.id]?.state === 'working' || byId[n.id]?.state === 'blocked'
+          }))
+        // The secondary is only read when it would be used: a failover candidate exists.
+        let secondaryState: FailoverLimitState = 'unknown'
+        if (
+          primaryState === 'session' &&
+          planFailover(pair, nodes, 'session', 'free').kind === 'failover'
+        ) {
+          secondaryState = failoverLimitState(await usageApi.fetch(pair.secondary))
+        }
+        const plan = planFailover(pair, nodes, primaryState, secondaryState)
+        if (plan.kind === 'none') return
+        const accounts = settings.claudeAccounts
+        const labelOf = (id: string | undefined): string =>
+          id === undefined
+            ? systemAccountDisplay(settings.systemAccountLabel, useSystemAccount.getState().email)
+            : (accounts.find((a) => a.id === id)?.label ?? id)
+        const to = plan.kind === 'failover' ? pair.secondary : pair.primary
+        const outcomes = (
+          await startBulkSwitch(plan.nodeIds, (id) =>
+            runClaudeAccountSwitch(id, to, plan.kind === 'failover')
+          )
+        ).map((o): ClaudeSwitchOutcome => o ?? { kind: 'not-restarted', outcome: 'exit-timeout' })
+        const summary = summarizeBulkSwitch(outcomes, 0, labelOf(to))
+        setNotice({
+          kind: summary.kind,
+          text:
+            (plan.kind === 'failover'
+              ? `${labelOf(pair.primary)} reached its 5-hour limit. `
+              : `${labelOf(pair.primary)} is out of its 5-hour limit. `) + summary.text
+        })
+      } catch {
+        // A failed read or switch decides nothing; the next tick tries again.
+      } finally {
+        failoverBusy.current = false
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), FAILOVER_TICK_MS)
+    return () => window.clearInterval(timer)
+  }, [runClaudeAccountSwitch, session.source])
 
   // Who the bulk restart would act on, right now: the ACTIVE project's canvas (nodesRef holds
   // exactly that). Read fresh at every call — agent state and session ids arrive asynchronously.

@@ -591,6 +591,9 @@ export interface CanvasNodeState {
    * and immutable for the node's lifetime. Undefined = system default (~/.claude).
    */
   accountId?: string
+  /** Moved onto its account by the automatic Claude failover; it is moved back to the primary
+   *  once that is out of its 5h limit. Cleared by any manual account switch. */
+  claudeFailover?: boolean
   /**
    * Agents in `SESSION_ID_CAPABLE` (claude): the session id nodeterm minted and launched this
    * node's CLI with (`--session-id`). Persisted so a cold restore can resume even when no hook
@@ -2200,6 +2203,9 @@ export interface Settings {
   agentLaunchCommands: Partial<Record<BuiltinAgentId, string>>
   /** Managed Claude accounts (config-dir isolated). See ClaudeAccount. */
   claudeAccounts: ClaudeAccount[]
+  /** Automatic Claude account failover (Settings → Accounts). Absent = off. See
+   *  `renderer/canvas/claude-failover.ts`. */
+  claudeFailover?: ClaudeFailoverSettings
   /** Managed Codex accounts (CODEX_HOME isolated, machine-scoped by `host`). See CodexAccount.
    *  Renderer-owned in settings.json exactly like `claudeAccounts`; main owns only fs lifecycle. */
   codexAccounts: CodexAccount[]
@@ -3254,6 +3260,18 @@ export interface ClaudeUsageOrganization {
   uuid?: string
   type?: string
   rateLimitTier?: string
+}
+
+/**
+ * Automatic Claude account failover: while `primary` is in its 5-hour session limit, local Claude
+ * sessions on it move to `secondary`, and move back once the primary is free. Each side is a
+ * managed account id or `'@system'` (the `~/.claude` login); `''` = unset. Machine-local
+ * (settings.json), hand-editable — read through `resolveFailover`, never trusted raw.
+ */
+export interface ClaudeFailoverSettings {
+  enabled: boolean
+  primary: string
+  secondary: string
 }
 
 /** Claude Code subscription usage snapshot for the bottom-left indicator. */

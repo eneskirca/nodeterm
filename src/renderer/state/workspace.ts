@@ -225,6 +225,8 @@ export interface NodeData {
    * Persisted so cold-restore resume reads the transcript from the right account dir.
    */
   accountId?: string
+  /** Moved here by the automatic Claude failover (see CanvasNodeState.claudeFailover). */
+  claudeFailover?: boolean
   /**
    * Agents in `SESSION_ID_CAPABLE` (claude): the session id nodeterm MINTED for this node and
    * launched the CLI with. Persisted so a resume is possible even when no hook ever delivered an
@@ -2700,6 +2702,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         // Same seam rule: a hostile value becomes no lineage (the node is kept).
         openedBy: safeOpenedBy(n.openedBy),
         accountId: n.accountId,
+        claudeFailover: n.claudeFailover === true ? true : undefined,
         agentSessionId: n.agentSessionId,
         // Same seam rule again: the launch loop iterates `after`, and a PR wait decides when a
         // command is typed into a pane. An unreadable hold becomes one that waits for ▶.
@@ -2797,6 +2800,7 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         issueRef: normalizeIssueRef(n.data.issueRef),
         openedBy: safeOpenedBy(n.data.openedBy),
         accountId: n.data.accountId,
+        claudeFailover: n.data.claudeFailover === true ? true : undefined,
         agentSessionId: n.data.agentSessionId,
         // Owning-core UI intent is durable. Relay snapshots opt out: their new UI command
         // uses a transient one-shot writer, never a whole-workspace persistence claim.
