@@ -18,7 +18,6 @@ class FakeDebugger implements DebuggerLike {
   attached = false
   detachCalls = 0
   hangNext = false
-  private detachListener: ((e: unknown, reason: string) => void) | null = null
   isAttached(): boolean {
     return this.attached
   }
@@ -36,9 +35,7 @@ class FakeDebugger implements DebuggerLike {
     }
     return Promise.resolve({ ok: true })
   }
-  on(event: 'detach' | 'message', listener: (...a: never[]) => void): void {
-    if (event === 'detach') this.detachListener = listener as (e: unknown, reason: string) => void
-  }
+  on(): void {}
 }
 
 const VIEWPORT: CdpContext = { viewport: { width: 1280, height: 800 } }

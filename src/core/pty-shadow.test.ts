@@ -639,7 +639,7 @@ describe('control-mode shadow clients for released sessions', () => {
   it('says nothing when a painter spawns with no control client to retire', async () => {
     const lines: string[] = []
     vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => void lines.push(a.join(' ')))
-    const m = await tmuxManager()
+    await tmuxManager()
 
     await create(ALICE) // the ordinary case: opening a terminal retires nothing
 

@@ -69,7 +69,7 @@ describe('browserCookies — allowed, but LOUDLY traced (Task 9.3)', () => {
     // One call that empties the jar for every site the profile has ever touched would name no domain,
     // so no useful trace line exists for it. This path only ever issues getCookies with an explicit,
     // single-domain url list.
-    const { s, sent } = fakeSession({ count: 2 })
+    const { sent } = fakeSession({ count: 2 })
     const getCookiesParams: unknown[] = []
     const spy: Sendable = {
       async send(method, params) {

@@ -280,7 +280,6 @@ export function ModalTerminal({
     // hold within THIS window. It makes the modal a second subscriber of the node's shared session.
     const viewerId = `modal-${nodeId}-${Math.random().toString(36).slice(2, 8)}`
     const transport = new LocalTransport(api, viewerId)
-    const s = useSettings.getState().settings
     // Appearance comes from the SAME source as the canvas node's terminal — this modal is a second
     // view of one session, and a card that renders it in different colours reads as a different
     // terminal. (It used to hardcode its own background, which is exactly what happened.)

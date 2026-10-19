@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import path from 'path'
 import {
   registerPeerSink,
   unregisterPeerSink,

@@ -71,7 +71,7 @@ describe('WhisperModelStore', () => {
 
   it('delete followed by immediate re-download does not kill the new download', async () => {
     const store = new WhisperModelStore({ dir, fetchFn: fakeFetch(new Uint8Array(64), { delayMs: 20, chunks: 4 }) })
-    const first = store.download('tiny')
+    void store.download('tiny') // the download the delete below lands on
     await new Promise((r) => setTimeout(r, 30))
     const del = store.delete('tiny') // not awaited before the re-download
     const second = store.download('tiny')

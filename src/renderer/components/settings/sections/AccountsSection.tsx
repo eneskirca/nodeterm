@@ -484,13 +484,6 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
       return next
     })
 
-  // The open project whose SSH host matches a remote account. Undefined for local accounts, or when
-  // no such project is open.
-  const projectIdForHost = (host?: string): string | undefined => {
-    if (!host) return undefined
-    return useProjects.getState().projects.find((p) => p.ssh && sshHostKey(p.ssh.server) === host)?.id
-  }
-
   // A remote account can only be created, logged into or deleted over a CONNECTED matching-host
   // project (live ControlMaster in useSshConn). Undefined ⇒ that host is not reachable right now,
   // and every remote action is disabled — never quietly run against this machine instead.

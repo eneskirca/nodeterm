@@ -7,7 +7,6 @@
 // would log out whatever CLI session owns it.
 import { promises as fs } from 'fs'
 import os from 'os'
-import path from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { IPC } from '../../shared/ipc'

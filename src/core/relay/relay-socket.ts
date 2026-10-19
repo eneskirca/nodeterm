@@ -133,7 +133,6 @@ const TAG_TUNNEL_BIN = 0x04
 
 const RPC_TIMEOUT_MS = 30_000
 const KEEPALIVE_INTERVAL_MS = 25_000
-const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15_000]
 
 type RpcEnvelope =
   | { kind: 'req'; id: string; method: string; params: unknown }
@@ -180,8 +179,6 @@ export function connectRelay(opts: ConnectRelayOptions): RelaySocket {
   let peerPubB64: string | null = opts.role === 'client' ? opts.theirPubB64 ?? null : null
   let state: State = 'connecting'
   let intentionallyClosed = false
-  let reconnectAttempt = 0
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null
   let requestCounter = 0
   let readyFired = false
@@ -293,7 +290,6 @@ export function connectRelay(opts: ConnectRelayOptions): RelaySocket {
       return
     }
     readyFired = true
-    reconnectAttempt = 0
     startKeepalive()
     opts.onReady()
   }
@@ -519,21 +515,6 @@ export function connectRelay(opts: ConnectRelayOptions): RelaySocket {
     opts.onClose()
   }
 
-  // (Internal same-token reconnect removed — see handleClose. The caller reconnects with a fresh
-  // token.)
-  function scheduleReconnect(): void {
-    if (reconnectTimer || intentionallyClosed) {
-      return
-    }
-    const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)]
-    reconnectAttempt += 1
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null
-      openConnection()
-    }, delay)
-    reconnectTimer.unref?.()
-  }
-
   function rejectAllPending(reason: string): void {
     const err = new Error(reason)
     for (const [id, waiter] of pending) {
@@ -607,10 +588,6 @@ export function connectRelay(opts: ConnectRelayOptions): RelaySocket {
     },
     close() {
       intentionallyClosed = true
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer)
-        reconnectTimer = null
-      }
       stopKeepalive()
       rejectAllPending('Relay socket closed.')
       state = 'closed'

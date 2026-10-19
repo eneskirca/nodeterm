@@ -413,7 +413,7 @@ skipWin('6. an EMPTY owner reference compares where tokens are kept, not what th
     async (which) => {
       const host = await sshHost({ ownerToken: false })
       const se = await serverEdition(host.home)
-      const sibling = await endpoint(path.join(host.home, '.nodeterm', 'b.sock'), 'desk-bearer', {
+      await endpoint(path.join(host.home, '.nodeterm', 'b.sock'), 'desk-bearer', {
         status: 200,
         body: 'owner reply'
       })

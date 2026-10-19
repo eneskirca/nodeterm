@@ -3159,24 +3159,16 @@ export class PtyManager {
     }
   }
 
-  /** Does the node's remote tmux session exist (over the project's ControlMaster)? Async so the
-   *  network round-trip never blocks the main event loop. A probe that FAILED for transport
-   *  reasons answers "exists": only tmux's own exit 1 is evidence of absence (probeSaysAbsent) —
-   *  a dead/reconnecting master read as "cold" typed a resume command into a live agent session.
+  /** Does the node's remote tmux session exist (over the project's ControlMaster)? A tri-state, so
+   *  a caller can act on the difference between "the host says it is not there" and "we could not
+   *  read the host": only tmux's own exit 1 is evidence of absence (probeSaysAbsent) — a
+   *  dead/reconnecting master read as "cold" typed a resume command into a live agent session.
+   *  Async so the network round-trip never blocks the main event loop.
    *
    *  ONE `list-sessions` per host per burst, not one `has-session` per node: a project switch
    *  mounts every node in the same tick, and N probe channels on top of N pty channels overruns a
    *  stock host's `MaxSessions`, which costs each excess child a full TCP+auth login. The whole
-   *  measurement is in `remote-session-index.ts`. The verdict contract is identical either way. */
-  private async remoteSessionExists(
-    sshRemote: NonNullable<PtyCreateOptions['sshRemote']>,
-    sessionId: string
-  ): Promise<boolean> {
-    return this.remoteSessions.exists(sshRemote.controlPath, sessionId, sshRemote.conn)
-  }
-
-  /** The tri-state behind `remoteSessionExists`, for the one caller that must act on the
-   *  difference between "the host says it is not there" and "we could not read the host". */
+   *  measurement is in `remote-session-index.ts`. */
   private async remoteSessionVerdict(
     sshRemote: NonNullable<PtyCreateOptions['sshRemote']>,
     sessionId: string
@@ -6352,11 +6344,10 @@ export class PtyManager {
    *
    * An SSH-project node has no LOCAL tmux session to target (its pty program is `ssh -t '<remote
    * attach>'`) — so if the node's LIVE session is registered with `sshRemote`, this runs the
-   * remote counterpart instead (`remoteTmuxPasteArgs`, over the project's ControlMaster),
-   * mirroring how `remoteSessionExists` reuses `findSsh()` + `runAsync`. A node with no live
-   * session at all (nothing mounted right now) still falls through to the local path and returns
-   * false there, same as before this change — reaching a currently-unmounted SSH node's remote
-   * session is not supported.
+   * remote counterpart instead (`remoteTmuxPasteArgs`, over the project's ControlMaster). A node
+   * with no live session at all (nothing mounted right now) still falls through to the local path
+   * and returns false there, same as before this change — reaching a currently-unmounted SSH
+   * node's remote session is not supported.
    *
    * ── DELIVERY: TMUX FRAMES THE PASTE, WE DO NOT ─────────────────────────────────────────────────
    *

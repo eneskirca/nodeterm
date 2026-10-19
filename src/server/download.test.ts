@@ -4,7 +4,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { Auth } from './auth'
-import { createHttpHandler, SESSION_COOKIE } from './http'
+import { createHttpHandler } from './http'
 import { contentDisposition, downloadName } from './download'
 import { DownloadTickets } from '../core/download-tickets'
 

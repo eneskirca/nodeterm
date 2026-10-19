@@ -622,7 +622,6 @@ export function UsageIndicator({
 
   // On an SSH project these are the HOST's limits — same shape, same labels, read somewhere else.
   const limits = scoped.pillLimits
-  const status = claudeUsage?.status ?? visibleRemote[0]?.usage.status ?? 'unavailable'
   const hasData = limits.length > 0 || enabled.length > 0
   const fetching = refreshing
   const providerError = visibleProviders.some((p) => p.status === 'error') ||

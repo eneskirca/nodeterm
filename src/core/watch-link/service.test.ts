@@ -18,7 +18,7 @@ import type { WatchLinkApi as ApiClient } from './api'
 import { WRONG_PER_LINK, type LinkHost, type LinkHostDeps, type LinkRuntimeStatus, type LinkViewer, type WatchPty } from './link-host'
 import type { WatchChatMessage } from '../../shared/watch-link/protocol'
 import type { ControlSupport, WatchLinkNotice, WatchLinkView } from '../../shared/watch-link-types'
-import { hashControlPassword, verifyControlPassword, type ControlPasswordHash } from './password'
+import { verifyControlPassword, type ControlPasswordHash } from './password'
 import { IPC } from '../../shared/ipc'
 import { fakePlatform } from '../platform-fake'
 

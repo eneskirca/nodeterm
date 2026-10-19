@@ -291,7 +291,6 @@ export interface PlacedNode {
   height?: number | null
 }
 
-const placedW = (n: PlacedNode): number => n.size?.width ?? (n.width as number) ?? 0
 const placedH = (n: PlacedNode): number => n.size?.height ?? (n.height as number) ?? 0
 
 /** A node's position in ROOT space: its own plus every ancestor frame's origin (a group child's

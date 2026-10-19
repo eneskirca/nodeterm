@@ -118,6 +118,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
 
   it('a current host costs ONE read and not a single write', async () => {
     await freshHost(['acc-1'])
+    info.mockClear() // the seeding refresh logged its own (real) rewrite
     const runner = hostRunner()
     const outcome = await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
     expect(outcome).toBe('current')
@@ -125,6 +126,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     // that only looked stale a write.
     expect(runner.calls).toHaveLength(1)
     expect(probes(runner)).toHaveLength(1)
+    expect(claimedRewrite()).toBe(false)
   })
 
   it('rewrites exactly the stale files', async () => {
@@ -224,6 +226,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     expect(await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
     expect(read(SHIM())).toBe('stale\n')
     expect(runner.calls).toHaveLength(1)
+    expect(claimedRewrite()).toBe(false)
   })
 
   it('the reuse branch costs nothing once the host is confirmed, and concurrent callers share one probe', async () => {

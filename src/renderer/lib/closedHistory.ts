@@ -1,4 +1,4 @@
-import type { CanvasNodeState, ClosedSessionEntry, Project } from '@shared/types'
+import type { ClosedSessionEntry, Project } from '@shared/types'
 import { canChat, createdAgentId } from '@shared/agents/config'
 import { flowToNodeStates, type CanvasNode } from '@renderer/state/workspace'
 import { snapshotNode, type ReopenNodeSnapshot, type RestorableNodeKind } from './reopenNode'

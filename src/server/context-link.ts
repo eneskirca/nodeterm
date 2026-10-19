@@ -19,7 +19,6 @@ import { initContextLink, setContextLinks } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
 import { sessionNameSweepEntries } from '../core/agent-status-mirror'
 import type { PtyManager } from '../core/pty-manager'
-import type { WorkspaceStore } from '../core/workspace-store'
 
 /**
  * How often to re-derive the map from live agent state. A save re-derives immediately (onPersist),

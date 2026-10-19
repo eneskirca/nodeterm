@@ -13,7 +13,7 @@ import { commitLaunch } from '../terminal/launch-attempt'
 import { isLaunchShell } from '@shared/agents/pane'
 import { createLaunchWriter, deliverInitialLaunch, launchCommand, registerLaunchWriter } from '../terminal/launch-command'
 import { trustsFreshShell } from '@shared/launch-trust'
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import {
   Handle,
@@ -193,7 +193,6 @@ import {
   decideHibernateExit,
   decideWakeResume,
   wakeRefusalReason,
-  wakeVerdictIsTransient,
   type WakeVerdict
 } from '../terminal/wake-identity'
 import {
@@ -325,7 +324,6 @@ import {
   capabilityAgentId,
   type AgentId
 } from '@shared/agents/config'
-import { withPermissionMode } from '@shared/agents/approval-mode'
 import { assembleResumeCommand } from '@shared/agents/launch'
 import { agentEnvSnapshot } from '@renderer/lib/agentEnv'
 import { normalizedAgentModel } from '@shared/agents/model-gateway'
@@ -345,7 +343,7 @@ import {
   terminalShortcutPolicy
 } from '../lib/keybindingOverrides'
 import { matchesShortcut } from '@shared/shortcut'
-import { hintLabel, isWindowsPlatform, isMacPlatform } from '@shared/platform-utils'
+import { isWindowsPlatform, isMacPlatform } from '@shared/platform-utils'
 import { ColumnPill } from '../components/kanban/ColumnPill'
 import { NodeCommentsPanel } from '../components/kanban/NodeCommentsPanel'
 import { AgentMascot } from './AgentMascot'

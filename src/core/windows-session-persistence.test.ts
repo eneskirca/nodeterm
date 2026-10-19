@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const manager = readFileSync(join(__dirname, 'pty-manager.ts'), 'utf8')
-const terminal = readFileSync(join(__dirname, '..', 'renderer', 'nodes', 'TerminalNode.tsx'), 'utf8')
 
 describe('Windows persistent-session integration', () => {
   it('always routes Windows sessions to the packaged session host', () => {

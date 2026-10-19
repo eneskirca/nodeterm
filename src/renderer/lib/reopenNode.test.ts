@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { snapshotNode, recreateNodeFromSnapshot, type ReopenNodeSnapshot } from './reopenNode'
 
 // createAgentNode reads settings/CLI-caps singletons — none of that matters for these tests,

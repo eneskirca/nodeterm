@@ -279,8 +279,6 @@ function glassOpacityMotion(css: string, scrims: string[]): string[] {
 
 describe('Liquid Glass: no translucent fill without a blur', () => {
   const CSS = readFileSync(join(__dirname, 'styles.css'), 'utf8').replace(/\r\n/g, '\n')
-  const PROBE = readFileSync(join(__dirname, '../../scripts/glass-trap-probe.mjs'), 'utf8').replace(/\r\n/g, '\n')
-  const SCRIMS = [...(/export const SCRIMS = \[([^\]]*)\]/.exec(PROBE)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
 
   it('every glass fill in styles.css is paired with a working blur', () => {
     expect(glassFillsWithoutBlur(CSS)).toEqual([])

@@ -1936,7 +1936,7 @@ describe('a git-shared project.json must not give two folders one project id', (
     expect(first.projects.map((p) => p.id)).toEqual(second.projects.map((p) => p.id))
     expect(new Set(first.projects.map((p) => p.id)).size).toBe(2)
     // Whichever write landed last, the file is intact JSON keyed to the entry that owns it.
-    const index = await readIndex()
+    expect((await readIndex()).entries.map((e: { id: string }) => e.id)).toEqual(first.projects.map((p) => p.id))
     const file = JSON.parse(await fs.readFile(path.join(otherRoot, '.nodeterm/project.json'), 'utf-8'))
     expect(file.nodes.map((n: { id: string }) => n.id)).toEqual(['term-b'])
   })

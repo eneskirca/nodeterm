@@ -298,18 +298,14 @@ import { isAsyncSubagentLaunch, isCursorPayload, grokRawFields, type NormalizedA
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { agentAccountColor } from '../shared/agents/account-color'
 import { capabilityAgentId } from '../shared/agents/config'
-import {
-  setRemoteTranscriptReader,
-  TITLE_TAIL_BYTES,
-  SESSION_ID_RE
-} from '../core/transcript-reader'
+import { setRemoteTranscriptReader, TITLE_TAIL_BYTES } from '../core/transcript-reader'
 import {
   locateRemoteTranscriptCommand,
   remoteTranscriptRoots
 } from '../core/remote-transcript-locate'
 import { readChatCatalog, registerChatCatalogIpc, type ChatCatalogDeps } from '../core/chat-catalog'
 import { registerRecentConversationsIpc } from '../core/recent-conversations'
-import { readChatTranscript, registerTranscriptIpc, resolveTranscript, type TranscriptIpcDeps } from '../core/transcript-ipc'
+import { readChatTranscript, registerTranscriptIpc, type TranscriptIpcDeps } from '../core/transcript-ipc'
 import { createReadRemoteGrokChat } from '../core/remote-grok-chat'
 import { createHostChat, mirrorChatSendRefusal } from './remote/host-chat'
 import type { ChatSendOutcome, HostChatReply, RendererChatStatus } from '../shared/mobile-chat'

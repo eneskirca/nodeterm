@@ -241,8 +241,7 @@ import {
 } from '../lib/addMenuSpec'
 import { planSetProjectFolder } from '../lib/setProjectFolder'
 import { effectiveAccountId, observationIsRemote, type ObservationOrigin } from '../lib/accountChip'
-import { reopenVariants } from '../lib/reopenVariants'
-import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
+import type { GatewayModel } from '@shared/agents/model-gateway'
 import { useModelGateway } from '../state/modelGateway'
 import { viewportAtZoom } from '../lib/zoomReset'
 import { containerOrigin, snapPointInRootSpace } from '../lib/gridSnap'
@@ -739,7 +738,7 @@ import {
 } from '../lib/closedHistory'
 import { projectSwitchHint } from '../lib/projectSwitchHint'
 import { uuid } from '../lib/uuid'
-import { CANVAS_LAYOUTS_CAP, findLayoutByName, type CanvasLayout } from '@shared/canvas-layout'
+import { findLayoutByName, type CanvasLayout } from '@shared/canvas-layout'
 import { applyLayout, captureLayout } from '../lib/canvasLayout'
 import {
   deleteLayoutMessage,
@@ -870,16 +869,11 @@ import {
   isWaivableVerb,
   waiveChoices,
   waivedNotice,
-  CONTROL_REQUEST_TIMEOUT_MS,
   type ConfirmWaiveChoice
 } from '@shared/control-confirm'
 import { useControlConfirm } from '../state/controlConfirm'
 import { controlConfirmDecision, waiveControlConfirmForProject } from '../state/controlConfirmGate'
-import {
-  bulkCloseMessage,
-  parseCloseTargets,
-  CLOSE_BULK_MAX
-} from '../lib/closeTargets'
+import { bulkCloseMessage, parseCloseTargets } from '../lib/closeTargets'
 import {
   canvasSyncTarget,
   followGoverned,
@@ -891,7 +885,6 @@ import {
 import {
   applyCanvasMutation,
   applyMutationToFlow,
-  agentLaunchOverride,
   claudeLaunchCommand,
   toggleCollapsed,
   endMaximizeOnUserGeometry,
@@ -963,7 +956,6 @@ import {
   switchOutcomeNotice,
   type ClaudeSwitchOutcome
 } from './claude-account-switch'
-import type { CodexAccount } from '@shared/codex-account'
 import { useSystemCodexAccount } from '../state/systemCodexAccount'
 import { kanbanSessionsFrom, toKanbanSession } from './toKanbanSession'
 import { boardVerbReply } from '../lib/boardVerb'
@@ -2038,7 +2030,6 @@ export function Canvas() {
     zoomIn,
     zoomOut,
     screenToFlowPosition,
-    setCenter,
     getZoom,
     getInternalNode,
     getNodes,

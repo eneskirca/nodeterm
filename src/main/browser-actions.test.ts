@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { BrowserSession } from './browser-lease'
 import type { DebuggerLike } from './browser-cdp-send'
 import type { CdpContext } from './browser-cdp-allowlist'
@@ -172,12 +172,6 @@ describe('--nav', () => {
 })
 
 describe('--read family', () => {
-  let spySends: { method: string; params: Record<string, unknown> }[]
-
-  beforeEach(() => {
-    spySends = []
-  })
-
   it('NO agent-derived character reaches an `expression` field — ever (Task 7.4)', async () => {
     const page = basePage({
       links: [{ href: 'https://example.com/pricing', text: 'Pricing' }],

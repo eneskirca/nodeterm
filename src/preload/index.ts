@@ -7,7 +7,6 @@ import type { RecentConversationsRequest } from '../shared/recent-conversations'
 import type { OpenLinkChoice, OpenLinkPrompt } from '../shared/open-link'
 import type {
   CanvasMutation,
-  CanvasState,
   NodeTerminalApi,
   Project,
   PtyCreateOptions,

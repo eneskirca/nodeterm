@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
+import type { ChatMessage } from '@shared/types'
 import type { AnswerPermissionPayload, ChatQuestion, HeldPermission } from '@shared/agents/permission-answer'
 import { useAgentStatus } from '../state/agentStatus'
 

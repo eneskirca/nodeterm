@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { registerSpeechIpc } from './register-ipc'
 import { SpeechService, type WhisperEngineHandle } from './speech-service'

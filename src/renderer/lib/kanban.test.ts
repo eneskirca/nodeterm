@@ -309,7 +309,7 @@ describe('board labels', () => {
 
   it('reorderLabels moves a label before another (null = end)', () => {
     let k = createLabel(createLabel(createLabel(board(), 'A', 'blue').k, 'B', 'green').k, 'C', 'red').k
-    const [a, b, c] = boardLabels(k).map((l) => l.id)
+    const [a, , c] = boardLabels(k).map((l) => l.id)
     expect(boardLabels(reorderLabels(k, c, a)).map((l) => l.name)).toEqual(['C', 'A', 'B'])
     expect(boardLabels(reorderLabels(k, a, null)).map((l) => l.name)).toEqual(['B', 'C', 'A'])
   })

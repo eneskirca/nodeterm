@@ -18,11 +18,7 @@ import type {
   UpdateIssueInput
 } from '../../shared/github-issues'
 import type { GitHubAvatarFetcher } from './avatar-fetcher'
-import {
-  GitHubCacheError,
-  type GitHubCompleteSnapshot,
-  type GitHubIssueCache
-} from './cache'
+import { type GitHubCompleteSnapshot, type GitHubIssueCache } from './cache'
 import { classifyGitHubFailure } from './failure'
 import type { GitHubRequestCoordinator } from './request-coordinator'
 import type { PullStatusRead } from './graphql-pulls'

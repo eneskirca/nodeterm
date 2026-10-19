@@ -10,11 +10,6 @@ import { shimCommand, shimDialectFor } from '@shared/agents/shim-invocation'
 import { capabilityAgentId, readsScreenDialogs } from '@shared/agents/config'
 import type { EmptyPromptRefusal } from '@shared/text-delivery'
 import { chatSendRefusal, type ChatGateStatus, type ChatSendRefusal } from './chatSendGate'
-import {
-  classifyLink,
-  planBridges,
-  type LinkEndpoint
-} from '@shared/canvas-link'
 
 // Kept as renderer-facing re-exports so existing canvas and tests retain one import surface while
 // Server Edition consumes the same pure planner directly from shared.

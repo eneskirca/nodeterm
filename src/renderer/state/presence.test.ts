@@ -597,7 +597,7 @@ describe('selectDino (the spectator picks THE authority broadcasting for a node)
   it('never returns my OWN broadcast, even if I am the authority for the node', async () => {
     vi.stubGlobal('localStorage', memStorage(STORED_ME))
     // My own peer (id 7) is broadcasting for dino-a in the table — I must not spectate myself.
-    const api = fakePresenceApi({
+    fakePresenceApi({
       clientId: 7,
       peers: [peer(7, { dino: { nodeId: 'dino-a', snap: snap() } })]
     })

@@ -13,7 +13,7 @@
  */
 
 import type { GlyphAtlas } from './atlas'
-import { CELL_STRIDE, packColor } from './cells'
+import { packColor } from './cells'
 import type { GridCursor } from './cursor'
 import type { GridHandle } from './engine'
 import type { CursorBlinkPhaseTarget, CursorBlinkSeam, TermInternals } from './addon'
