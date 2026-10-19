@@ -4008,20 +4008,11 @@ body,
 .term-chat__refresh:hover {
   background: rgba(var(--tint-rgb), 0.1);
 }
-/* Reasoning, collapsed by default and dimmed so it never reads as the answer. */
+/* Claude's thinking summary between tool calls: inline like the TUI, dimmed so it never reads as
+   the answer. */
 .term-chat__thinking {
   margin: 4px 0;
-  font-size: 12px;
-  color: rgba(var(--tint-rgb), 0.6);
-}
-.term-chat__thinking summary {
-  cursor: pointer;
-  font-style: italic;
-}
-.term-chat__thinking .term-chat__text {
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid rgba(var(--tint-rgb), 0.15);
+  color: var(--muted);
 }
 
 /* Transparent overlay that lets you pan across a terminal until you dwell/click. */

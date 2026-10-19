@@ -361,6 +361,14 @@ function systemPart(r: SystemRecord): Extract<ChatPart, { kind: 'tool' }> {
  *  a TITLE (recent conversations, the transcript index), where a code fence has no place. */
 export interface ChatParseOptions {
   expandPastes?: boolean
+  /**
+   * Emit a `thinking` part for each thinking block that carries readable text — the summaries
+   * claude's TUI prints between tool calls. Most thinking blocks carry only an encrypted
+   * `signature` and an empty `thinking` (measured: 137 of 913 on one machine had text); those, and
+   * every `redacted_thinking`, yield nothing either way. Off by default: the shared golden fixtures
+   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them.
+   */
+  thinking?: boolean
 }
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
   opts?.expandPastes === false ? text : expandPastedContent(text)
@@ -561,12 +569,18 @@ function parseChatRecords(
       for (const c of content as Array<{
         type?: string
         text?: string
+        thinking?: unknown
         name?: string
         id?: string
         input?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
+        else if (c.type === 'thinking') {
+          if (opts?.thinking && typeof c.thinking === 'string' && c.thinking.trim()) {
+            parts.push({ kind: 'thinking', text: c.thinking })
+          }
+        }
         else if (c.type === 'tool_use') {
           const part: Extract<ChatPart, { kind: 'tool' }> = {
             kind: 'tool',
@@ -656,6 +670,13 @@ export function parseChatMessages(rawLines: string[], opts?: ChatParseOptions): 
     false,
     opts
   ).messages
+}
+
+/** Claude's record parser with parse options bound — `parseChatWindow`'s third argument. */
+export function claudeChatRecordParser(
+  opts: ChatParseOptions
+): (records: Iterable<{ raw: string; offset: number }>, paged: true) => ChatRecordsOut {
+  return (records, paged) => parseChatRecords(records, paged, opts)
 }
 
 /** A paged chat read's answer, minus `found` (the caller knows whether anything resolved). */
