@@ -5865,6 +5865,18 @@ bridges enter live state only via `appendBridgeEdges`) and the server
     park is DROPPED, because it holds the session this recycle just killed and re-adopting it on
     return showed a dead pane on the old account. The cross-project board (GlobalKanbanView) does not offer it:
     its cards belong to other projects' canvases, whose nodes have no restart closure mounted.
+  - **Automatic failover (`settings.claudeFailover`, Settings → Accounts, default OFF)** — a
+    primary + secondary LOCAL account (`'@system'` = `~/.claude`). While the primary is in its
+    5-hour limit, the canvas's idle local Claude sessions on it are moved to the secondary through
+    the SAME `runClaudeAccountSwitch` choreography, and marked `data.claudeFailover` (persisted, so
+    the way back survives a restart); once the primary is free again exactly the marked sessions
+    move back. A manual switch clears the mark. Pure rules in `renderer/canvas/claude-failover.ts`:
+    only a fresh `ok` usage read decides; a weekly-limited primary, a limited/unreadable secondary,
+    a busy session, an SSH node or project → nothing moves. A 60 s Canvas tick reads the primary via
+    `usage.fetch` (the service's 5-min cache answers most ticks; one forced refresh past the reset,
+    at most every 2 min) and the secondary only when a move is due. Desktop + Server Edition (both
+    serve `usage.fetch` and `copySession`; in a browser only a VISIBLE tab acts, and only while a
+    tab is open); relay tabs never act; Mobile N/A. User-facing write-up: `docs/claude-account-failover.md`.
   - **`boundAccountId(accountId, agentId)` (`shared/agents/account-binding.ts`) is the ONE rule for
     whether a node is account-bound at all**, and it feeds `data.accountId` *and* the account color
     from a single decision — split them and a node carries an account it is not painted for, or is

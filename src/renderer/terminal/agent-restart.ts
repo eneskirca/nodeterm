@@ -647,11 +647,12 @@ export type AgentRestartFn = (
   beforeRecycle?: () => Promise<RecyclePatch | void>
 ) => Promise<RestartOutcome>
 
-/** What a `beforeRecycle` step may rebind on the node: its account (the account switch). A key
+/** What a `beforeRecycle` step may rebind on the node: its account (the account switch) and the
+ *  automatic-failover mark that rides with it. A key
  *  that is PRESENT is applied even as `undefined` — that is a move to the system account. Narrow
  *  on purpose: the same patch must also be expressible in a project's SERIALIZED node when the
  *  restart outlives its canvas (see `settleRecycledNode`). */
-export type RecyclePatch = { accountId?: string }
+export type RecyclePatch = { accountId?: string; claudeFailover?: boolean }
 
 /**
  * The last step of a recycling restart ("Restart agent and shell", and the account switch built on

@@ -32,8 +32,15 @@ import { SearchableRow } from '../SearchableRow'
 import { Button } from '@renderer/ui/Button'
 import { Input } from '@renderer/ui/Input'
 import { Switch } from '@renderer/ui/Switch'
+import { Select } from '@renderer/ui/Select'
 import { cn } from '@renderer/ui/cn'
 import { thisMachine, thisMachineCap } from '../../../lib/machineName'
+import { systemAccountDisplay } from '../../../state/workspace'
+import {
+  FAILOVER_SYSTEM_ACCOUNT,
+  failoverChoices,
+  resolveFailover
+} from '../../../canvas/claude-failover'
 
 const ROWS = {
   accounts: {
@@ -54,7 +61,11 @@ const ROWS = {
       'machine',
       'ssh',
       'host',
-      'remote'
+      'remote',
+      'failover',
+      'limit',
+      'primary',
+      'secondary'
     ]
   }
 }
@@ -424,6 +435,84 @@ function countNodesUsing(accountId: string): number {
       (sum, p) => sum + p.nodes.filter((n) => n.accountId === accountId).length,
       0
     )
+}
+
+/** Settings → Accounts → Automatic failover: primary + secondary local Claude account. */
+function ClaudeFailoverBlock({
+  accounts,
+  systemLabel
+}: {
+  accounts: ClaudeAccount[]
+  systemLabel: string
+}): React.JSX.Element {
+  const cfg = useSettings((s) => s.settings.claudeFailover)
+  const choices = failoverChoices(accounts)
+  const enabled = cfg?.enabled === true
+  const primary = typeof cfg?.primary === 'string' ? cfg.primary : ''
+  const secondary = typeof cfg?.secondary === 'string' ? cfg.secondary : ''
+  const update = (patch: Partial<{ enabled: boolean; primary: string; secondary: string }>): void =>
+    useSettings.getState().update({
+      claudeFailover: { enabled, primary, secondary, ...patch }
+    })
+  const valid = resolveFailover({ enabled: true, primary, secondary }, accounts) !== null
+  const options = (
+    <>
+      <option value="">Choose an account…</option>
+      <option value={FAILOVER_SYSTEM_ACCOUNT}>{systemLabel}</option>
+      {choices.map((a) => (
+        <option key={a.id} value={a.id}>
+          {a.label || a.email || a.id}
+        </option>
+      ))}
+    </>
+  )
+  return (
+    <section className="space-y-2 rounded-md border border-border/60 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[13px] font-medium text-text">Automatic Claude failover</p>
+          <p className="text-[12px] leading-relaxed text-muted">
+            While the primary account is in its 5-hour limit, Claude sessions running on it move to
+            the secondary account and continue the same conversation. Once the primary is free
+            again, they move back. If the primary hits its weekly limit or the secondary is limited
+            too, nothing moves. Busy sessions wait until their turn is done.
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          onChange={(v: boolean) => update({ enabled: v })}
+          ariaLabel="Automatic Claude failover"
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-[13px]">
+        <label className="flex items-center gap-2">
+          <span className="text-muted">Primary</span>
+          <Select
+            aria-label="Primary Claude account"
+            value={primary}
+            onChange={(e) => update({ primary: e.target.value })}
+          >
+            {options}
+          </Select>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-muted">Secondary</span>
+          <Select
+            aria-label="Secondary Claude account"
+            value={secondary}
+            onChange={(e) => update({ secondary: e.target.value })}
+          >
+            {options}
+          </Select>
+        </label>
+      </div>
+      {enabled && !valid ? (
+        <p className="text-[12px] text-[color:var(--warn)]">
+          Pick two different accounts on {thisMachine()} — failover is inactive until then.
+        </p>
+      ) : null}
+    </section>
+  )
 }
 
 export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.Element {
@@ -1229,6 +1318,11 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
               </MachinePanel>
             )
           })}
+
+          <ClaudeFailoverBlock
+            accounts={accounts}
+            systemLabel={systemAccountDisplay(systemLabelSetting, systemEmail)}
+          />
 
           {claudeStrays.length + codexStrays.length > 0 ? (
             <div className="space-y-2 rounded-md border border-[color:var(--warn)]/40 p-3">

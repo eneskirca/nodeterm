@@ -215,7 +215,7 @@ interface ProjectsState {
   rebindNode(
     projectId: string,
     nodeId: string,
-    patch: Pick<CanvasNodeState, 'agentId'> & Partial<Pick<CanvasNodeState, 'accountId'>>
+    patch: Pick<CanvasNodeState, 'agentId'> & Partial<Pick<CanvasNodeState, 'accountId' | 'claudeFailover'>>
   ): void
   /** Removes a node from a project. */
   removeNode(projectId: string, nodeId: string): void
