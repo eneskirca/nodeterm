@@ -3648,6 +3648,64 @@ body,
   font-size: 11px;
   opacity: 0.85;
 }
+/* A run of consecutive tool calls folded into one block (nodes/ChatToolGroup.tsx), closed by
+   default. Closed, it is one chip-sized line: a chevron, the count, the tools used. Open, the same
+   chips follow, indented under a hairline so they read as belonging to the line above. */
+.term-chat__tool-group {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.term-chat__tool-group > summary {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 8px;
+  cursor: pointer;
+  list-style: none;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
+  border-radius: 8px;
+}
+.term-chat__tool-group > summary::-webkit-details-marker {
+  display: none;
+}
+/* The chevron is drawn, not a glyph: '▸' at this size renders as a dot. */
+.term-chat__tool-group > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+.term-chat__tool-group[open] > summary::before {
+  transform: rotate(45deg);
+}
+/* Same sizing rule as the chip's name/argument pair: the count never wraps, the names take the rest
+   and ellipsize. */
+.term-chat__tool-group-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--accent);
+}
+.term-chat__tool-group-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.term-chat__tool-group-body {
+  margin: 4px 0 0 10px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(var(--tint-rgb), 0.12);
+}
 /* The agent's OWN dialog is on the pane's screen (ChatPanel's `screenBlock`): the sentence saying
    where to answer it, then the dialog's lines as the terminal shows them. Shaped like a tool card
    so it reads as part of the thread; monospace because the options are laid out in columns. */

@@ -14,7 +14,7 @@ import {
   screenBlockedSentence,
   type ScreenBlock
 } from '../lib/chatSendGate'
-import type { ChatMessage } from '@shared/types'
+import type { ChatMessage, ChatPart } from '@shared/types'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
 import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle, unseenAfter } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
@@ -56,6 +56,8 @@ import { ChatComposer } from './ChatComposer'
 import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
 import { assistantTurnEnds } from '../lib/chatThread'
+import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
+import { ChatToolGroup } from './ChatToolGroup'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
@@ -966,6 +968,8 @@ export function ChatPanel({
   // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
   // (a per-row timer would be a timer per turn for a label that changes once a minute).
   const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
+  // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts).
+  const toolGroups = useMemo(() => groupToolCalls(messages), [messages])
   // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
   const latestTurnEnd = useMemo(() => {
     let last = -1
@@ -977,6 +981,58 @@ export function ChatPanel({
     const t = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(t)
   }, [])
+
+  // One part of a message, as the thread draws it. Also used for the members of a folded tool block,
+  // which are drawn inside the block instead of at their own place (lib/chatToolGroups.ts).
+  const renderPart = (p: ChatPart, i: number, j: number, key: string | number = j): JSX.Element =>
+    p.kind === 'text' ? (
+      <MarkdownText key={key} text={p.text} />
+    ) : p.kind === 'thinking' ? (
+      // Claude's thinking summary — the "thinking out loud" line its TUI prints between
+      // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
+      <div key={key} className="term-chat__thinking">
+        <MarkdownText text={p.text} />
+      </div>
+    ) : p.body ? (
+      // A plan / question is the content itself, not plumbing: shown expanded, in full,
+      // flowing with the thread (no inner scroll box). The answer stays under it.
+      <div key={key} className="term-chat__tool-card">
+        <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
+        <MarkdownText text={p.body} />
+        {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+        {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
+          // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
+          // state, and every answer names the request this card was drawn for.
+          p.name === 'AskUserQuestion' && p.questions ? (
+            <QuestionAnswerControls
+              key={answerCard.pendingId}
+              questions={p.questions}
+              agentLabel={agentLabel}
+              chip={mdChip}
+              onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
+            />
+          ) : (
+            <PlanAnswerControls
+              key={answerCard.pendingId}
+              agentLabel={agentLabel}
+              chip={mdChip}
+              onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
+            />
+          )
+        )}
+        {updatingCard && updatingCard.message === i && updatingCard.part === j && (
+          <AnswerControlsUpdating chip={mdChip} />
+        )}
+      </div>
+    ) : (
+      <details key={key} className="term-chat__tool">
+        <summary>
+          <span className="term-chat__tool-name">{p.name}</span>
+          {p.arg && <span className="term-chat__tool-arg">{p.arg}</span>}
+        </summary>
+        {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+      </details>
+    )
 
   // A tail that yielded no message but has history behind it (all-metadata records, or a window a
   // single huge record filled) is STILL LOADING — the panel pages back by itself from here. Saying
@@ -1049,77 +1105,40 @@ export function ChatPanel({
               )}
             </div>
           )}
-          {messages.map((m, i) => (
-            // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
-            // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
-            // bubble) fall back to their position.
-            <div
-              key={m.key !== undefined ? `k${m.key}` : `i${i}`}
-              className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
-                queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
-              }`}
-            >
-              {m.parts.map((p, j) =>
-                p.kind === 'text' ? (
-                  <MarkdownText key={j} text={p.text} />
-                ) : p.kind === 'thinking' ? (
-                  // Claude's thinking summary — the "thinking out loud" line its TUI prints between
-                  // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
-                  <div key={j} className="term-chat__thinking">
-                    <MarkdownText text={p.text} />
-                  </div>
-                ) : p.body ? (
-                  // A plan / question is the content itself, not plumbing: shown expanded, in full,
-                  // flowing with the thread (no inner scroll box). The answer stays under it.
-                  <div key={j} className="term-chat__tool-card">
-                    <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
-                    <MarkdownText text={p.body} />
-                    {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
-                    {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
-                      // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
-                      // state, and every answer names the request this card was drawn for.
-                      p.name === 'AskUserQuestion' && p.questions ? (
-                        <QuestionAnswerControls
-                          key={answerCard.pendingId}
-                          questions={p.questions}
-                          agentLabel={agentLabel}
-                          chip={mdChip}
-                          onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
-                        />
-                      ) : (
-                        <PlanAnswerControls
-                          key={answerCard.pendingId}
-                          agentLabel={agentLabel}
-                          chip={mdChip}
-                          onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
-                        />
-                      )
-                    )}
-                    {updatingCard && updatingCard.message === i && updatingCard.part === j && (
-                      <AnswerControlsUpdating chip={mdChip} />
-                    )}
-                  </div>
-                ) : (
-                  <details key={j} className="term-chat__tool">
-                    <summary>
-                      <span className="term-chat__tool-name">{p.name}</span>
-                      {p.arg && <span className="term-chat__tool-arg">{p.arg}</span>}
-                    </summary>
-                    {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
-                  </details>
-                )
-              )}
-              {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
-              {turnEnds.has(i) && (
-                <ChatTurnActions
-                  copyText={turnEnds.get(i)!.copyText}
-                  at={turnEnds.get(i)!.at}
-                  now={now}
-                  latest={i === latestTurnEnd}
-                />
-              )}
-            </div>
-          ))}
+          {messages.map((m, i) => {
+            // A message whose every part is drawn inside an earlier message's tool block has nothing of
+            // its own to draw, unless it ends a turn (its action row) or is queued.
+            const folded = m.parts.length > 0 && m.parts.every((_, j) => toolGroups.absorbed.has(partPosition(i, j)))
+            if (folded && !turnEnds.has(i) && !queuedRef.current.has(m)) return null
+            return (
+              // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
+              // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
+              // bubble) fall back to their position.
+              <div
+                key={m.key !== undefined ? `k${m.key}` : `i${i}`}
+                className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+                  queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
+                }`}
+              >
+                {m.parts.map((p, j) => {
+                  const at = partPosition(i, j)
+                  const group = toolGroups.groupAt.get(at)
+                  if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
+                  if (toolGroups.absorbed.has(at)) return null
+                  return renderPart(p, i, j)
+                })}
+                {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
+                {turnEnds.has(i) && (
+                  <ChatTurnActions
+                    copyText={turnEnds.get(i)!.copyText}
+                    at={turnEnds.get(i)!.at}
+                    now={now}
+                    latest={i === latestTurnEnd}
+                  />
+                )}
+              </div>
+            )
+          })}
           {screenBlock && (
             <div className="term-chat__screen-block" role="status" aria-live="polite">
               <div className="term-chat__screen-block-title">

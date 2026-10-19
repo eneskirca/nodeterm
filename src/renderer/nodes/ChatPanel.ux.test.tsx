@@ -198,6 +198,34 @@ describe('ChatPanel rendering', () => {
     expect(answers).toEqual(['answer'])
   })
 
+  it('folds a run of tool calls into one closed block that holds every call', async () => {
+    await render()
+    const call = (name: string, arg: string): ChatMessage => ({ role: 'assistant', parts: [{ kind: 'tool', name, arg }] })
+
+    await resolveAt(0, [
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }] },
+      call('Bash', 'ls'),
+      call('Read', 'a.ts'),
+      call('Bash', 'pwd'),
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'now the fix' }] },
+      call('Edit', 'a.ts'),
+      { role: 'assistant', parts: [{ kind: 'text', text: 'done' }] }
+    ])
+
+    const groups = host.querySelectorAll('details.term-chat__tool-group')
+    expect(groups).toHaveLength(1)
+    const group = groups[0] as HTMLDetailsElement
+    expect(group.open).toBe(false)
+    expect(group.querySelector('summary')?.textContent).toBe('3 tool callsBash ×2, Read')
+    const inside = [...group.querySelectorAll('.term-chat__tool-arg')].map((e) => e.textContent)
+    expect(inside).toEqual(['ls', 'a.ts', 'pwd'])
+    // The lone Edit after the thinking line stays a plain chip, outside any block.
+    const loose = [...host.querySelectorAll('details.term-chat__tool')].filter((e) => !e.closest('.term-chat__tool-group'))
+    expect(loose.map((e) => e.querySelector('.term-chat__tool-name')?.textContent)).toEqual(['Edit'])
+    // The folded calls' own messages draw nothing of their own.
+    expect(host.querySelectorAll('.term-chat__msg')).toHaveLength(5)
+  })
+
   it('asks for thinking summaries on the tail read', async () => {
     await render()
 
