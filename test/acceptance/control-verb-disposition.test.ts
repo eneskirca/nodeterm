@@ -112,8 +112,8 @@ const REFUSERS = new Set([
   'spawn-team',
   // Parks the original session's terminal, which must be mounted.
   'branch',
-  // The worktree store is epoch-scoped to the active project.
-  'open-worktree',
+  // Removal reads the epoch-scoped worktree store (staleness/ownership) and can raise a
+  // delete-from-disk confirm; `open-worktree` moved to the stored-node set (one-shot git reads).
   'close-worktree',
   // Needs a mounted <webview> guest to drive.
   'browser'

@@ -399,6 +399,13 @@ describe('the off-screen disposition table (the verbs that used to travel)', () 
     }
   })
 
+  it('open-worktree is answered from the stored nodes (one-shot git reads, never the store)', () => {
+    // The checkout is the thing the caller asked for, so it is created NOW; only the bind and the
+    // reads move to the owner's stored copy. `close-worktree` stays refused: removal reads the
+    // worktree store's staleness/ownership answers and can raise a delete-from-disk confirm.
+    expect(offScreenDisposition('open-worktree')).toEqual({ kind: 'stored-node' })
+  })
+
   it('the verbs that still refuse each say WHY in their own words', () => {
     // A refusal an agent can act on beats hijacking the human's screen. The reasons are per verb
     // because the caller's next move differs: a `verify` can wait for the human, a `branch`
@@ -411,7 +418,7 @@ describe('the off-screen disposition table (the verbs that used to travel)', () 
     expect(why('branch')).toMatch(/parks the original/)
     expect(why('verify')).toMatch(/live canvas/)
     expect(why('spawn-team')).toMatch(/live canvas/)
-    expect(why('open-worktree')).toMatch(/worktree store/)
+    expect(why('close-worktree')).toMatch(/worktree store/)
     expect(why('browser')).toMatch(/webview/)
   })
 

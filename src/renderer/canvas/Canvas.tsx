@@ -782,6 +782,7 @@ import type {
   CanvasMutation,
   CanvasNodeState,
   ClosedSessionEntry,
+  GitApi,
   HostedSessionApi,
   NodeKind,
   PendingLaunch,
@@ -7081,8 +7082,10 @@ export function Canvas() {
    * panel's Run cannot do this — it runs at the project ROOT and attaches the PROJECT lane.)
    */
   const startWorktreeSetup = useCallback(
-    (groupId: string, worktreePath: string): void => {
-      const projectId = useProjects.getState().activeProjectId
+    // `ownerProjectId`: the off-screen `open-worktree` runs the OWNING project's setup script (the
+    // consent dialog is app-global). Absent = the active project, byte-identical to before.
+    (groupId: string, worktreePath: string, ownerProjectId?: string): void => {
+      const projectId = ownerProjectId ?? useProjects.getState().activeProjectId
       if (!projectId) return
       ensureSetupSubscription(projectId)
       // Pending BEFORE the invoke, and cleared on every ack path below. `run` resolves only once the
@@ -7698,10 +7701,13 @@ export function Canvas() {
   const worktreeCreateDeps = useCallback(
     (
       attach: CreateBoundWorktreeDeps['attach'] = (target, wt) =>
-        worktreeControlRef.current.attachWorktree(target, wt)
+        worktreeControlRef.current.attachWorktree(target, wt),
+      // The off-screen `open-worktree` passes the OWNING project's session git; every other caller
+      // (and the on-screen verb) keeps this canvas's api, byte-identical to before.
+      gitApi: GitApi = api.git
     ): CreateBoundWorktreeDeps => ({
       worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
-        api.git.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew),
+        gitApi.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew),
       activeProjectId: () => useProjects.getState().activeProjectId,
       attach
     }),
@@ -8094,7 +8100,8 @@ export function Canvas() {
     releaseWorktreeBinding,
     clearWorktreeBinding,
     requestRemoveWorktree,
-    cwdForNewNodeIn
+    cwdForNewNodeIn,
+    startWorktreeSetup
   })
   useEffect(() => {
     worktreeControlRef.current = {
@@ -8103,7 +8110,8 @@ export function Canvas() {
       releaseWorktreeBinding,
       clearWorktreeBinding,
       requestRemoveWorktree,
-      cwdForNewNodeIn
+      cwdForNewNodeIn,
+      startWorktreeSetup
     }
   })
 
@@ -14113,6 +14121,11 @@ export function Canvas() {
             const coldExistingInGroup = coldGroup.groupId
               ? coldGroupChildCount(coldNodes, coldGroup.groupId)
               : 0
+            // Same setup gate a LIVE open into a preparing worktree frame gets (`armAfter`): an
+            // off-screen `open-worktree` reply followed at once by `open-agent --group` lands while
+            // the frame's setup script is still pending/running, and the cold node must hold its
+            // launch for it rather than fire into an unprepared checkout on the project's next view.
+            const coldSetupHold = setupHoldGroup(coldGroup.groupId)
             const coldMade: CanvasNode[] = []
             for (let i = 0; i < coldCount; i++) {
               const built = coldTerminal
@@ -14146,10 +14159,17 @@ export function Canvas() {
               const node = withOpenedBy(
                 withSuccessHold(
                   withPrHold(
-                    held && coldAfterIds.length
+                    held && (coldAfterIds.length || coldSetupHold)
                       ? {
                           ...armed,
-                          data: { ...armed.data, pendingLaunch: { ...held, after: coldAfterIds } }
+                          data: {
+                            ...armed.data,
+                            pendingLaunch: {
+                              ...held,
+                              after: coldAfterIds,
+                              ...(coldSetupHold ? { awaitSetupGroup: coldSetupHold } : {})
+                            }
+                          }
                         }
                       : armed,
                     prHoldPre
@@ -15594,10 +15614,24 @@ export function Canvas() {
             // Mirrors createWorktreeAndGroup/attachWorktree minus the dialog: create the git
             // worktree (new branch off base), then wrap a bound group frame below the source
             // (or bind an existing empty group via --group).
-            const projStore = useProjects.getState()
-            const project = projStore.getProject(projStore.activeProjectId ?? '')
+            //
+            // OFF SCREEN (`offCanvas` set): same verb against the OWNING project — one-shot git
+            // reads in place of the worktree store (which is epoch-scoped to the ACTIVE project
+            // and would answer about another repo), `ctlNodes()` in place of the live array, and
+            // the bind written into the owner's stored nodes. The git worktree itself is created
+            // NOW either way: the checkout is the thing the caller asked for.
+            const project = ctlProject
             if (project?.ssh) {
               reply({ ok: false, error: WORKTREE_SSH_NOTICE })
+              return
+            }
+            // A stored owner must be THIS core's: a relay/hosted tab's worktrees live on the host
+            // (its git would run there while materializeShared/setup run here).
+            if (offCanvas && sessionForProject(project?.id ?? '').source !== 'local') {
+              reply({
+                ok: false,
+                error: 'open-worktree: this project belongs to another machine — its worktrees are managed there'
+              })
               return
             }
             const branch = sanitizeWorktreeBranch(args.branch ?? '')
@@ -15605,14 +15639,33 @@ export function Canvas() {
               reply({ ok: false, error: `open-worktree: invalid branch name "${args.branch}"` })
               return
             }
-            const { repoRoot, entries } = useWorktrees.getState()
+            // On screen: the warmed, epoch-scoped store (free, and byte-identical to before). Off
+            // screen: one-shot reads against the owner's cwd — `repoRoot` is where the worktree is
+            // added, `entries` only feed the DEFAULT base ref, and a failed list there refuses
+            // rather than guessing 'main' (a failed git read is never evidence; worktree-ops).
+            const owGit = offCanvas ? sessionForProject(project?.id ?? '').api.git : api.git
+            let repoRoot: string | null
+            let entries: WorktreeEntry[]
+            let entriesOk = true
+            if (offCanvas) {
+              repoRoot = project?.cwd ? await owGit.repoRoot(project.cwd).catch(() => null) : null
+              const list = repoRoot
+                ? await owGit
+                    .worktreeList(repoRoot)
+                    .catch(() => ({ ok: false, entries: [] as WorktreeEntry[] }))
+                : { ok: true, entries: [] as WorktreeEntry[] }
+              entries = list.entries
+              entriesOk = list.ok
+            } else {
+              ;({ repoRoot, entries } = useWorktrees.getState())
+            }
             if (!repoRoot) {
               reply({ ok: false, error: 'open-worktree: this project has no git repository (repo root unknown)' })
               return
             }
             let bindGroupId: string | null = null
             if (args.group) {
-              const g = nodesRef.current.find((nd) => nd.id === args.group)
+              const g = ctlNodes().find((nd) => nd.id === args.group)
               if (!g || g.type !== 'group' || g.data.worktree) {
                 reply({ ok: false, error: 'open-worktree: --group must name an existing group without a worktree' })
                 return
@@ -15621,7 +15674,10 @@ export function Canvas() {
             }
             // Project-level worktree defaults (basePath/baseRef) from the warmed launch-info cache,
             // same as the "New worktree" dialog. Fail-open: no cached entry → `effectiveWorktree*`
-            // reduce to entries/global exactly as before. An explicit `--base` still wins.
+            // reduce to entries/global exactly as before. An explicit `--base` still wins. Only the
+            // ACTIVE project's cache is warmed, so the off-screen owner is ensured first (bounded,
+            // never rejects — a timeout reads whatever is cached, i.e. the same fail-open).
+            if (offCanvas) await ensureProjectLaunchInfo(project?.id ?? '')
             const pw = projectLaunchInfoNow(project?.id ?? '')?.resolved.worktree
             const projectDefaults = { basePath: pw?.basePath?.value, baseRef: pw?.baseRef?.value }
             // `--base` takes a git ref OR a station id (issue #530): an id naming a node/group on
@@ -15631,7 +15687,7 @@ export function Canvas() {
             const baseRes = resolveWorktreeBase(
               args.base,
               branch,
-              nodesRef.current.map((nd) => ({
+              ctlNodes().map((nd) => ({
                 id: nd.id,
                 parentId: nd.parentId,
                 worktree: nd.data.worktree as GroupWorktree | undefined
@@ -15639,6 +15695,14 @@ export function Canvas() {
             )
             if (baseRes.kind === 'error') {
               reply({ ok: false, error: `open-worktree: ${baseRes.error}` })
+              return
+            }
+            if (baseRes.kind === 'default' && !entriesOk && !projectDefaults.baseRef?.trim()) {
+              reply({
+                ok: false,
+                error:
+                  'open-worktree: could not read the repository’s worktrees to derive the default base — pass --base'
+              })
               return
             }
             const baseRef =
@@ -15707,22 +15771,78 @@ export function Canvas() {
               })
               return
             }
+            // Off screen the bind is a STORED write into the owning project — `attachWorktree`
+            // edits the live array, which here shows another project. The frame (or the bound
+            // group's `worktree`) lands through the store's own writer and is mirrored into
+            // `offCanvas.nodes` so the rest of this dispatch (auto-layout, the reply decorator)
+            // sees it; the shared-paths materialization and the setup script run against the OWNER
+            // exactly as the live attach runs them, under the same pending bracket that closes the
+            // setup gate from the bind (a node cold-opened into the frame right after this reply
+            // holds its launch on it — `coldSetupHold`).
+            const storedAttach = (target: WorktreeAttachTarget, wt: GroupWorktree): string => {
+              const oc = offCanvas!
+              const st = useProjects.getState()
+              let gid = target.groupId
+              if (gid) {
+                const stored = st.getProject(oc.project.id)?.nodes.find((n) => n.id === gid)
+                if (stored) {
+                  st.applyOwnNodeMutation(oc.project.id, {
+                    op: 'upsert',
+                    node: { ...stored, worktree: wt }
+                  })
+                }
+                oc.nodes = oc.nodes.map((n) =>
+                  n.id === gid ? { ...n, data: { ...n.data, worktree: wt } } : n
+                )
+              } else {
+                const group = createGroupNode(
+                  target.at ?? { x: 0, y: 0 },
+                  target.size ?? WORKTREE_GROUP_SIZE,
+                  oc.nodes.length
+                )
+                group.data = { ...group.data, title: target.title ?? wt.branch, worktree: wt }
+                gid = group.id
+                st.applyOwnNodeMutation(oc.project.id, {
+                  op: 'upsert',
+                  node: flowToNodeStates([group])[0]
+                })
+                oc.nodes = [group, ...oc.nodes]
+              }
+              const setupGroupId = gid
+              useProjectSetup.getState().markGroupPending(setupGroupId)
+              void (async () => {
+                try {
+                  await sessionForProject(oc.project.id)
+                    .api.worktree.materializeShared(oc.project.id, wt.path)
+                    .catch(() => {})
+                  worktreeControlRef.current.startWorktreeSetup(setupGroupId, wt.path, oc.project.id)
+                } finally {
+                  useProjectSetup.getState().clearGroupPending(setupGroupId)
+                }
+              })()
+              void writeDisk()
+              return gid
+            }
             // The shared create-and-bind (lib/worktreeCreate), WITHOUT its project-changed refusal:
-            // this verb has always bound to the canvas on screen when git returns.
+            // on screen this verb has always bound to the canvas as it is when git returns, and off
+            // screen the attach reads the owner's store fresh at that moment, so a tab switch
+            // during the await changes nothing either way.
             const created = await createBoundWorktree(
-              worktreeControlRef.current.worktreeCreateDeps(),
+              offCanvas
+                ? worktreeControlRef.current.worktreeCreateDeps(storedAttach, owGit)
+                : worktreeControlRef.current.worktreeCreateDeps(),
               { repoPath: repoRoot, mode: 'new', branch, baseRef, path: wtPath },
               {
                 // A fresh frame takes the first free cell under the caller, like every other open.
                 // (This used to fan by the number of top-level frames on the canvas, which landed a
                 // frame on whatever terminal happened to sit at that offset.) The claim is keyed by
-                // a placeholder id — `attachWorktree` mints the real one — so it simply ages out.
-                // Asked only once git succeeded, against the canvas as it is then.
+                // a placeholder id — the attach mints the real one — so it simply ages out.
+                // Asked only once git succeeded, against the canvas (or stored copy) as it is then.
                 target: () => ({
                   groupId: bindGroupId,
                   at: bindGroupId
                     ? undefined
-                    : settleBelowSource(nodesRef.current as PlaceableNode[], ctlProject?.id ?? '', {
+                    : settleBelowSource(ctlNodes() as PlaceableNode[], ctlProject?.id ?? '', {
                         id: `pending-worktree-${requestId}`,
                         position: { x: 0, y: 0 },
                         ...WORKTREE_GROUP_SIZE
@@ -15735,6 +15855,7 @@ export function Canvas() {
               return
             }
             const groupId = created.groupId
+            if (offCanvas) offCanvas.created.push(groupId)
             reply({
               ok: true,
               message: `opened worktree ${branch} (off ${baseRef || 'the repo default branch'}${baseNote}) at ${wtPath} in group ${groupId}`,

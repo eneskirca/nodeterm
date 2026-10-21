@@ -237,7 +237,15 @@ const STORED_NODE_VERBS: ReadonlySet<string> = new Set([
   'color',
   'link',
   'board',
-  'assign'
+  'assign',
+  // Creates the git worktree NOW (one-shot `git.repoRoot`/`worktreeList` against the OWNING
+  // project's cwd — never the epoch-scoped worktree store, which answers for the project on
+  // screen) and binds the frame into the owner's stored nodes. The setup script runs against the
+  // owner's project id (its consent dialog is app-global), and a node cold-opened into the frame
+  // holds its launch on the same setup gate a live open gets. It was refused here once; an
+  // orchestrator that had to have the human open the tab before every worktree was the worse
+  // outcome — the same argument that moved the five layout verbs.
+  'open-worktree'
 ])
 
 export function answersFromStoredNodes(verb: string): boolean {
@@ -262,9 +270,10 @@ const OFF_SCREEN_REFUSALS: Readonly<Record<string, string>> = {
   // branchClaude parks the ORIGINAL node's live terminal and resumes it in the new one. Off screen
   // there is no live terminal to park.
   branch: 'branching parks the original session, which needs its terminal mounted',
-  // The worktree store is epoch-scoped to the ACTIVE project, so off canvas its repoRoot and
-  // staleness answers describe a different project's checkout.
-  'open-worktree': 'the worktree store only answers for the project on screen',
+  // `open-worktree` reads repoRoot off the owner with one-shot git calls (stored-node set above);
+  // CLOSING one cannot: removal reads the worktree store's staleness/ownership answers (epoch-scoped
+  // to the ACTIVE project) and may raise a delete-from-disk confirm about a checkout the user is
+  // not looking at.
   'close-worktree': 'the worktree store only answers for the project on screen',
   // The CDP driving in main needs a mounted <webview> guest. Placing a browser node
   // (`open-browser`) does not and is in OFF_CANVAS_VERBS; navigating one does.

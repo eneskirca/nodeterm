@@ -1285,7 +1285,7 @@ describe('the --project clause tells the truth about travel (review #363 I-1 + M
       }
       // Every refused verb is named AND carries its own reason — a bare list would tell an agent
       // that `branch` and `arrange` fail for the same cause, and they do not.
-      for (const v of ['verify', 'spawn-team', 'branch', 'open-worktree', 'close-worktree', 'browser']) {
+      for (const v of ['verify', 'spawn-team', 'branch', 'close-worktree', 'browser']) {
         const d = offScreenDisposition(v)
         expect(d.kind, v).toBe('refuse')
         if (d.kind !== 'refuse') continue
