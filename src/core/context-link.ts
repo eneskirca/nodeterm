@@ -44,6 +44,7 @@ import {
   locateAntigravity,
   locateClaude,
   locateCodex,
+  locateDevin,
   locateGemini,
   locateGrok
 } from './handoff/locate'
@@ -112,7 +113,9 @@ const LINK_LOCATORS = {
   gemini: locateGemini,
   grok: locateGrok,
   antigravity: locateAntigravity,
-  cursor: (sessionId: string) => locateCursorChat(sessionId)
+  cursor: (sessionId: string) => locateCursorChat(sessionId),
+  // devin: one JSON transcript per session, located strictly by session id.
+  devin: locateDevin
 }
 
 /** Agents whose "transcript path" is not a text file: the path names a store the agent's own reader

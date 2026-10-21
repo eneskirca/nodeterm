@@ -9,6 +9,7 @@
 import type { AgentId } from '@shared/agents/config'
 import claudeIcon from '../assets/claude.svg'
 import codexIcon from '../assets/codex-color.svg'
+import devinIcon from '../assets/devin.svg'
 import geminiIcon from '../assets/gemini-color.svg'
 import antigravityIcon from '../assets/antigravity-color.svg'
 import opencodeIcon from '../assets/opencode.svg'
@@ -24,6 +25,7 @@ import opencodeIcon from '../assets/opencode.svg'
 export const AGENT_LOGO: Partial<Record<string, string>> = {
   claude: claudeIcon,
   codex: codexIcon,
+  devin: devinIcon,
   gemini: geminiIcon,
   opencode: opencodeIcon,
   // Google's multi-colour arch. Multi-colour (a masked gradient), so an asset like gemini's — not an

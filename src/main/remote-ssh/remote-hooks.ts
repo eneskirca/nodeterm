@@ -18,7 +18,12 @@ import {
   remoteEndpointFileContents,
   remoteTcpEndpointFileContents
 } from '../../core/remote-ssh/control-master'
-import { CLAUDE_HOOK_EVENTS, GEMINI_HOOK_EVENTS, type ManagedHookEvent } from '@shared/agents/hook-events'
+import {
+  CLAUDE_HOOK_EVENTS,
+  DEVIN_HOOK_EVENTS,
+  GEMINI_HOOK_EVENTS,
+  type ManagedHookEvent
+} from '@shared/agents/hook-events'
 import { GROK_EVENTS } from '../../core/agents/hooks/grok'
 import { GROK_HOOK_FILE, REMOTE_GROK_HOME_PROBE, resolveReportedGrokHome } from '../../core/agents/grok-paths'
 import { isSafeNodeId, isSafeRemoteHome } from '../../core/remote-safety'
@@ -145,7 +150,8 @@ export interface RemoteRunner {
 // so remote gemini nodes reported nothing at all.
 const AGENT_TARGETS: { agentId: string; config: string; events: readonly ManagedHookEvent[] }[] = [
   { agentId: 'claude', config: '.claude/settings.json', events: CLAUDE_HOOK_EVENTS },
-  { agentId: 'gemini', config: '.gemini/settings.json', events: GEMINI_HOOK_EVENTS }
+  { agentId: 'gemini', config: '.gemini/settings.json', events: GEMINI_HOOK_EVENTS },
+  { agentId: 'devin', config: '.config/devin/config.json', events: DEVIN_HOOK_EVENTS }
 ]
 
 /** Where the host's instruction files live — one marker block per feature in each. */
@@ -196,6 +202,10 @@ const accountConfigDir = (home: string, accountId: string) => `${home}/.nodeterm
 const AGENTS_SKILLS_AGENTS: readonly string[] = ['codex', 'gemini', 'copilot', 'opencode', 'grok', 'cursor']
 const claudeSkillsRoot = (home: string) => `${home}/.claude`
 const agentsSkillsRoot = (home: string) => `${home}/.agents`
+// devin reads skills from its own config dir (`~/.config/devin/skills/<name>/SKILL.md`, the same
+// layout as claude's). Whether it also reads `~/.agents/skills` has not been measured, so it gets
+// its own root rather than joining AGENTS_SKILLS_AGENTS.
+const devinSkillsRoot = (home: string) => `${home}/.config/devin`
 
 /** The config roots (each gets `skills/<name>/SKILL.md`) one feature's skill goes into, for the
  *  agents this host may integrate with and that have the feature. */
@@ -203,6 +213,7 @@ function skillRoots(home: string, agents: ReadonlySet<string>, capable: (id: str
   const roots: string[] = []
   if (agents.has('claude') && capable('claude')) roots.push(claudeSkillsRoot(home))
   if (AGENTS_SKILLS_AGENTS.some((a) => agents.has(a) && capable(a))) roots.push(agentsSkillsRoot(home))
+  if (agents.has('devin') && capable('devin')) roots.push(devinSkillsRoot(home))
   return roots
 }
 
@@ -613,6 +624,7 @@ export class RemoteHooks {
         for (const id of accounts) removeRoots.push(accountConfigDir(home, id))
       }
       if (!AGENTS_SKILLS_AGENTS.some((a) => keep.has(a))) removeRoots.push(agentsSkillsRoot(home))
+      if (!keep.has('devin')) removeRoots.push(devinSkillsRoot(home))
       for (const root of removeRoots) {
         for (const [name, body] of [
           ['manage-nodeterm-canvas', buildCanvasSkillBody(canvasShimPath(home))],

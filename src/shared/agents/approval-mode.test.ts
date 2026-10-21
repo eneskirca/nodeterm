@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   approvalFlags,
   bypassSandboxCaveat,
@@ -12,6 +12,7 @@ import {
   ALL_PERMISSION_MODES,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODE_LABELS,
+  setCustomAgentBaseResolver,
   type AgentPermissionMode
 } from './config'
 
@@ -116,7 +117,10 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
     )
     // That codex has an equivalent, so the derived copy must NOT claim otherwise.
     expect(modeSupported('codex', 'manual', OLD_CODEX)).toBe(true)
-    expect(unsupportedModesNote(OLD_CODEX)).not.toContain(PERMISSION_MODE_LABELS.manual)
+    // Scoped to codex's own sentence: another agent (devin) may legitimately have a Manual gap.
+    expect(unsupportedModesNote(OLD_CODEX)).not.toMatch(
+      new RegExp(`${PERMISSION_MODE_LABELS.manual}[^.]*no Codex equivalent`)
+    )
   })
 
   /**
@@ -260,6 +264,68 @@ describe('approvalFlags: cursor', () => {
   })
 })
 
+describe('approvalFlags — devin maps the three modes the CLI accepts', () => {
+  it('emits --permission-mode for the documented values', () => {
+    expect(approvalFlags('devin', 'acceptEdits')).toEqual(['--permission-mode', 'accept-edits'])
+    expect(approvalFlags('devin', 'bypassPermissions')).toEqual(['--permission-mode', 'dangerous'])
+  })
+
+  // The regression this pins is a FALSE FRIEND, not a missing flag: devin's `auto` is an alias for
+  // `normal`, its own default, so `--permission-mode auto` emitted a flag that changed the command
+  // line and could not change the session — the setting looked broken because it selected the mode
+  // the session would have started in anyway. claude's `auto` means "Claude decides what is safe"
+  // (its own mode help), and the devin mode that means that is `smart`: a fast model judges each
+  // non-edit action, with high-risk categories always prompting.
+  it('maps auto to smart, never to devin\'s own auto (which is its default)', () => {
+    expect(approvalFlags('devin', 'auto')).toEqual(['--permission-mode', 'smart'])
+    expect(approvalFlags('devin', 'auto')).not.toContain('auto')
+    expect(approvalFlags('devin', 'auto')).not.toContain('normal')
+  })
+
+  it('does NOT claim manual — devin\'s default already auto-approves read-only tools', () => {
+    // Bare `devin` runs in `normal`, which auto-approves reads, so `manual` ("ask each time") has
+    // no devin equivalent at all. Unsupported rather than substituted.
+    expect(approvalFlags('devin', 'manual')).toEqual([])
+    expect(modeSupported('devin', 'manual')).toBe(false)
+  })
+
+  it('emits NO flag for plan, whose value the devin parser rejects', () => {
+    // devin has an in-session `/plan`, but `--permission-mode plan` is rejected at startup
+    // ("Invalid permission mode: plan"), and a rejected value kills the launch.
+    expect(approvalFlags('devin', 'plan')).toEqual([])
+    expect(modeSupported('devin', 'plan')).toBe(false)
+  })
+})
+
+describe('dialects resolve through the BASE harness', () => {
+  afterEach(() => setCustomAgentBaseResolver(null))
+
+  // A custom agent inherits its base's dialect — flag SPELLING and value vocabulary together.
+  // Before this, `dialectFor` keyed on the raw id, so a custom agent found no dialect and fell
+  // through to claude's `permissionModeFlag` spelling: `custom:my-devin` launched with
+  // `--permission-mode acceptEdits` (claude's camelCase value) instead of devin's `accept-edits`,
+  // and a gemini-based one with `--permission-mode` instead of `--approval-mode`.
+  it('a custom agent gets its base agent’s flag and values, not claude’s', () => {
+    setCustomAgentBaseResolver((id) =>
+      id === 'custom:d' ? 'devin' : id === 'custom:g' ? 'gemini' : id === 'custom:c' ? 'codex' : undefined
+    )
+    expect(approvalFlags('custom:d', 'acceptEdits')).toEqual(['--permission-mode', 'accept-edits'])
+    expect(approvalFlags('custom:g', 'acceptEdits')).toEqual(['--approval-mode', 'auto_edit'])
+    // OLD_CODEX: `untrusted` left codex's vocabulary in 0.149.0 (#785); the point here is the flag.
+    expect(approvalFlags('custom:c', 'manual', OLD_CODEX)).toEqual(['--ask-for-approval', 'untrusted'])
+  })
+
+  // …and the honesty half travels with it: a mode the base cannot express is unsupported for the
+  // custom agent too, so the UI does not promise it.
+  it('inherits the base’s unsupported modes', () => {
+    setCustomAgentBaseResolver((id) => (id === 'custom:d' ? 'devin' : undefined))
+    expect(modeSupported('custom:d', 'auto')).toBe(true)
+    expect(modeSupported('custom:d', 'manual')).toBe(false)
+    expect(modeSupported('custom:d', 'plan')).toBe(false)
+    expect(approvalFlags('custom:d', 'plan')).toEqual([])
+  })
+})
+
 describe('approvalFlags — an agent with no permission mode', () => {
   it('maps antigravity modes onto --mode and --dangerously-skip-permissions', () => {
     expect(approvalFlags('antigravity', 'manual')).toEqual([])
@@ -284,7 +350,7 @@ describe('approvalFlags — an agent with no permission mode', () => {
 describe('UI copy derived from the mapping', () => {
   it('names every agent whose start-up mode we can set', () => {
     const label = permissionModeAgentsLabel()
-    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Cursor', 'Antigravity'])
+    for (const name of ['Claude Code', 'Grok', 'Gemini', 'Codex', 'Cursor', 'Antigravity', 'Devin'])
       expect(label).toContain(name)
     expect(label).not.toContain('opencode')
   })
@@ -294,7 +360,7 @@ describe('UI copy derived from the mapping', () => {
     // the same drift the label helper exists to prevent, one level down. The ids are exported so the
     // caller can agree with them; this pins that they describe the SAME set the label does.
     const ids = permissionModeAgentIds({ exclude: ['claude'] })
-    expect(ids).toEqual(['grok', 'gemini', 'codex', 'cursor', 'antigravity'])
+    expect(ids).toEqual(['grok', 'gemini', 'codex', 'cursor', 'antigravity', 'devin'])
     const label = permissionModeAgentsLabel({ exclude: ['claude'] })
     for (const id of ids) expect(label.toLowerCase()).toContain(id)
     expect(label).not.toContain('Claude')
@@ -314,12 +380,15 @@ describe('UI copy derived from the mapping', () => {
     const note = unsupportedModesNote(OLD_CODEX)
     // codex on a CLI that still has `untrusted`: two gaps → plural verb.
     expect(note).toContain('Accept edits and Plan have no Codex equivalent')
-    // gemini: one gap → singular verb. Both sentences in one string, one per agent.
+    // gemini: one gap → singular verb.
     expect(note).toContain('Auto has no Gemini equivalent')
+    // devin: two gaps → plural verb (the label for manual is 'Ask each time').
+    expect(note).toContain('Ask each time and Plan have no Devin equivalent')
     // Number agreement on the possessive too: "Codex sessions start in Codex's own default",
     // never "in its own default".
     expect(note).toContain("Codex's own default")
     expect(note).toContain("Gemini's own default")
+    expect(note).toContain("Devin's own default")
     // claude and grok express all five, so neither may appear in a sentence about missing modes.
     expect(note).not.toContain('Claude Code')
     expect(note).not.toContain('Grok')
@@ -349,7 +418,8 @@ describe('UI copy derived from the mapping', () => {
     expect(note).toContain('only when the model chooses to')
     expect(note).toContain('0.149.0')
     // The same sentence must NOT appear for the CLI that can express it.
-    expect(unsupportedModesNote(OLD_CODEX)).not.toContain('Ask each time')
+    // Codex's sentence only — devin's own Manual gap is a different agent's fact.
+    expect(unsupportedModesNote(OLD_CODEX)).not.toMatch(/Ask each time[^.]*no Codex equivalent/)
     expect(unsupportedModesNote(OLD_CODEX)).not.toContain('0.149.0')
     // Gemini's gap is a different agent's fact and is unmoved by codex's vocabulary.
     for (const caps of [OLD_CODEX, NEW_CODEX])

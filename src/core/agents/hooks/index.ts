@@ -10,6 +10,7 @@ import { ensureGrokHomeProbed, grokHomeDir, grokHomeFallbackWasSilent } from '..
 import { installCopilotHooks, removeCopilotHooks } from './copilot'
 import { installAntigravityHooksWithProbe, removeAntigravityHooks } from './antigravity'
 import { installCursorHooks, removeCursorHooks } from './cursor'
+import { installDevinHooks, removeDevinHooks } from './devin'
 
 type HookInstaller = readonly [string, () => void]
 
@@ -26,7 +27,8 @@ export const MANAGED_HOOK_INSTALLERS: readonly HookInstaller[] = [
   // cmd.exe has an AutoRun (antigravity-autorun.ts).
   ['antigravity', () => void installAntigravityHooksWithProbe()],
   // Merges into the SHARED ~/.cursor/hooks.json (IDE + other tools), only where cursor-agent exists.
-  ['cursor', () => void installCursorHooks()]
+  ['cursor', () => void installCursorHooks()],
+  ['devin', installDevinHooks]
 ]
 
 export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
@@ -37,7 +39,8 @@ export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
   ['grok', removeGrokHooks],
   ['copilot', removeCopilotHooks],
   ['antigravity', () => removeAntigravityHooks()],
-  ['cursor', () => removeCursorHooks()]
+  ['cursor', () => removeCursorHooks()],
+  ['devin', removeDevinHooks]
 ]
 
 /**

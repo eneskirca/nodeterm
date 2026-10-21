@@ -34,6 +34,7 @@ import {
 } from './agents/hooks/claude'
 import { ensureCodexHooksCurrent, ensureCodexHooksForAccounts } from './agents/hooks/codex'
 import { copilotHomeDir } from './agents/hooks/copilot'
+import { devinConfigDir } from './agents/hooks/devin'
 import { managedHookScriptPath } from './agents/hooks/install-helper'
 import { opencodeConfigDir } from './agents/hooks/opencode'
 import { grokHomeDir } from './agents/grok-paths'
@@ -202,6 +203,10 @@ export function skillRootsFor(
     // its long-skill-list truncation drops.
     case 'cursor':
       return [path.join(home, '.cursor', 'skills')]
+    // devin reads skills from its own config dir (`~/.config/devin/skills/<name>/SKILL.md`,
+    // `%APPDATA%\devin\skills` on Windows), the same layout as claude's.
+    case 'devin':
+      return [path.join(devinConfigDir(), 'skills')]
     default:
       return []
   }
@@ -251,7 +256,8 @@ const HOOK_SCRIPTS: Partial<Record<IntegrationAgentId, string[]>> = {
   grok: ['grok.sh', 'grok-hook.cmd'],
   copilot: ['copilot.sh', 'copilot-hook.cmd'],
   antigravity: ['antigravity.sh', 'antigravity-hook.cmd'],
-  cursor: ['cursor.sh']
+  cursor: ['cursor.sh'],
+  devin: ['devin.sh']
 }
 
 export interface IntegrationLifecycle {

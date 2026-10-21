@@ -32,6 +32,11 @@ import {
  *    - grok:   `/quit` (its `/exit` is an alias).
  *    - gemini: `/quit` (alias `/exit`), measured in its bundled `docs/reference/commands.md:325`.
  *    - cursor: `/quit`, measured in its TUI.
+ *    - devin:  `/exit` (alias `/quit`), measured in its bundled
+ *              `share/devin/docs/reference/commands.mdx:439` (CLI 3000.4.25): "Exit the
+ *              application (alias: `/quit`)" — it takes NO arguments. Devin's destructive command
+ *              is a SEPARATE verb, `/rm-session <id>` ("Irreversibly delete a session and all its
+ *              data"), which nothing here may ever emit.
  *
  *  Bare is a safety rule, not a style: gemini's `/quit` also takes a `--delete` flag that exits AND
  *  *permanently deletes* the session's history and temporary files — the very conversation the
@@ -45,7 +50,8 @@ const EXIT_SEQUENCES: Record<string, string> = {
   // leaves text+Enter from ONE write unsubmitted, so the Enter is a separate write below.
   cursor: '/quit',
   copilot: '/exit',
-  opencode: '/exit'
+  opencode: '/exit',
+  devin: '/exit'
 }
 
 /** Agents quit with Ctrl-Cs rather than their typed exit, and how many — see `performExitPhase`.
@@ -307,7 +313,7 @@ export async function performExitPhase(d: {
   // would then be reported as an exit timeout.
   //
   // ASSUMPTION, unverified on a real build: Ctrl-U is "clear line" inside every TUI that still
-  // gets a typed exit (today gemini and cursor) — it is in every readline/ZLE prompt, and it is
+  // gets a typed exit (today gemini, cursor and devin) — it is in every readline/ZLE prompt, and it is
   // what command-delivery.ts already relies on for its rewrites. Each agent added to that table
   // inherits this assumption; only a device check retires it, per agent. If a TUI binds Ctrl-U to
   // something else this becomes one stray keystroke before the exit command — no worse than

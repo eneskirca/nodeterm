@@ -13,6 +13,7 @@ export type BuiltinAgentId =
   | 'copilot'
   | 'antigravity'
   | 'cursor'
+  | 'devin'
 // Open type — custom agents are any string ('custom:<uuid>'). Never restrict the set.
 export type AgentId = BuiltinAgentId | (string & {})
 
@@ -91,7 +92,8 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'opencode',
   'grok',
   'copilot',
-  'cursor'
+  'cursor',
+  'devin'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -203,6 +205,17 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     expectedProcess: 'cursor-agent',
     // The two env overrides `cursor-agent --help` names for auth and endpoint.
     vanillaEnvPattern: '^CURSOR_API_(KEY|ENDPOINT)$'
+  },
+  devin: {
+    label: 'Devin',
+    color: '#3969ca',
+    launchCmd: 'devin',
+    // Measured on devin 3000.4.25: usage is `devin [OPTIONS] [-- <PROMPT>...] [COMMAND]`,
+    // so the prompt is a positional after `--`. Without the separator a prompt like `list`,
+    // `auth`, `models`, `update` or `setup` is executed as a subcommand and never reaches the model.
+    promptInjectionMode: 'argv',
+    argvPromptSeparator: '--',
+    expectedProcess: 'devin'
   }
 }
 
@@ -221,7 +234,8 @@ export const AGENT_HOOK_TARGETS = [
   'grok',
   'copilot',
   'antigravity',
-  'cursor'
+  'cursor',
+  'devin'
 ] as const
 // antigravity: `agy --conversation=<id>` — the `=` spelling agy prints in its own exit hint
 // (`agy --conversation=%s`, 1.2.12 binary). The id is the hook payload's `conversationId`, recorded
@@ -243,7 +257,8 @@ export const RESUMABLE_AGENTS = [
   'grok',
   'copilot',
   'antigravity',
-  'cursor'
+  'cursor',
+  'devin'
 ] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
@@ -317,7 +332,8 @@ export const CONTEXT_LINK_CAPABLE = [
   'opencode',
   'grok',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
@@ -460,7 +476,8 @@ export const TRANSFER_SOURCE_CAPABLE = [
 //
 // cursor: `sessionEnd` fires on an orderly `/quit` (measured 2026.09.28, `reason: "completed"`), and
 // `CURSOR_HOOK_EVENTS` subscribes to it; both halves are needed, the list is inert without the event.
-export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'cursor'] as const
+// devin: `SessionEnd` is subscribed in DEVIN_HOOK_EVENTS and normalizeDevin maps it to `end`.
+export const SESSION_END_CAPABLE = ['claude', 'gemini', 'copilot', 'grok', 'cursor', 'devin'] as const
 // Agents that accept a node title being PUSHED back into the session — the write leg only. The
 // write is the same literal `/rename <name>` for both, which grok also accepts as `/title`.
 // The READ leg is TITLE_READ_CAPABLE below, which is a superset: an agent can name its own session
@@ -476,7 +493,14 @@ export const RENAME_CAPABLE = ['claude', 'grok', 'cursor'] as const
 // paste+Enter left `/rename x` unsubmitted; the same paste followed by a bare Enter, as a second
 // tmux invocation, renamed the chat. `submitsSeparately` is asked by `PtyManager.sendText`, the one
 // funnel every one-way write reaches.
-export const SEPARATE_SUBMIT_AGENTS = ['cursor'] as const
+//
+// devin: MEASURED on 3000.6.12, idle session. A CR arriving within roughly 50-80 ms of preceding
+// input is absorbed into that input, whether the text came as a bracketed paste, an unframed paste
+// or `send-keys -l`; the same CR >= ~80 ms later submits. It keys off TIMING, not the paste markers,
+// so the split's 150 ms gap (SEPARATE_SUBMIT_DELAY_MS) is what it needs. Without it the canvas
+// `write` verb, an agent message envelope, a note push and the restart's typed `/exit` all left
+// their text sitting unsubmitted in the composer.
+export const SEPARATE_SUBMIT_AGENTS = ['cursor', 'devin'] as const
 // Agents that load nodeterm's `get-linked-context` skill from `~/.claude/skills`, so a context link,
 // a note push or a verify brief can name the skill instead of spelling out the CLI. claude, and
 // cursor (measured: it lists that skill in its own `<agent_skills>`, docs/cursor-agent.md). grok
@@ -538,7 +562,8 @@ export const CANVAS_CONTROL_CAPABLE = [
   'grok',
   'copilot',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
 // Agents whose TOOL shell on Windows is POSIX: Claude Code runs its Bash tool (and its hooks)
 // through Git Bash, so `sh "<shim>.sh"` works there exactly as on macOS/Linux. Every other agent
@@ -555,8 +580,17 @@ export const POSIX_TOOL_SHELL_ON_WINDOWS = ['claude'] as const
 // way, so membership here is only half the story — the translation lives in ./approval-mode.ts.
 //
 // Membership does NOT mean every mode applies: BOTH new vocabularies are narrower than ours — codex
-// has no plan and no edit-specific mode, and gemini has nothing meaning "approve most things but not
-// edits", i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+// has no plan and no edit-specific mode, and gemini has nothing meaning what claude's `auto` means,
+// i.e. no `auto`. Those modes emit NO flag rather than a substituted nearest match.
+//
+// What claude's `auto` actually promises, from Claude Code's own mode help, is "Claude decides what
+// is safe" — a MODEL judging each action, recommended there "for long unattended tasks". An earlier
+// version of this comment described it as "approve most things but not edits", which is a different
+// (and narrower) claim; the gemini conclusion below is unaffected — `auto_edit` is a blanket
+// auto-approval of edits, not a judgement — but the imprecision cost real behaviour once. It is why
+// devin was first mapped `auto → auto` on a name match, selecting devin's OWN default (an alias for
+// `normal`, which judges nothing) instead of `smart`, the mode that actually delegates the decision
+// to a model. Match the SEMANTIC, never the spelling; see DEVIN_MODES in ./approval-mode.
 // `modeSupported` is what the UI asks so the user is told, instead of being shown "Plan" while
 // codex runs in on-request, or "Auto" while gemini auto-approves every edit. That last one is not
 // hypothetical: `auto` is DEFAULT_PERMISSION_MODE, so mapping it to gemini's `auto_edit` would have
@@ -577,11 +611,26 @@ export const PERMISSION_MODE_CAPABLE = [
   'gemini',
   'codex',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'devin'
 ] as const
+// Agents whose permission hook can honour a deterministic wait + decision JSON reply (issue #409).
+// This is a SUBSET of PERMISSION_MODE_CAPABLE: devin accepts --permission-mode but its hook is
+// NOT known to honour our decision output, so the env var is claude-only until that is measured.
+//
+// Membership is resolved through `capabilityAgentId` like every other capability, and that is
+// DELIBERATE rather than incidental: `pty-manager` previously compared the raw id against
+// 'claude', so a custom agent declaring `baseAgent: 'claude'` — which runs claude's binary and
+// therefore claude's hook script, and can honour the decision reply — was silently denied
+// NODETERM_PERM_WAIT_SECS. A custom agent based on devin (or on nothing) still gets nothing,
+// which is the narrowing this list exists for. Pinned in config.capabilities.test.ts.
+export const PERM_WAIT_CAPABLE = ['claude'] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
+// Devin is NOT here: its --model flag takes Devin-native slugs (swe-1-7, etc.) and the CLI has no
+// documented gateway base-url / api-key env. Routing a gateway model id into `devin --model` would
+// rewrite the launch line while the backend stayed on Devin's own servers.
 export const MODEL_SWITCH_CAPABLE = [
   'claude',
   'codex',
@@ -738,6 +787,8 @@ export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABL
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const usesPosixToolShellOnWindows = (id: AgentId): boolean => includes(POSIX_TOOL_SHELL_ON_WINDOWS, id)
 export const hasPermissionMode = (id: AgentId): boolean => includes(PERMISSION_MODE_CAPABLE, id)
+/** True only for agents whose permission hook is known to honour our deterministic wait + decision. */
+export const hasPermWait = (id: AgentId): boolean => includes(PERM_WAIT_CAPABLE, id)
 export const canSwitchModel = (id: AgentId): boolean => includes(MODEL_SWITCH_CAPABLE, id)
 /** Can the model GATEWAY's catalogue (its discovered ids, its default model) apply to this agent?
  *  `canSwitchModel` minus the agents that carry their own catalogue (OWN_MODEL_CATALOGUE). */
@@ -905,6 +956,7 @@ export function resumeCommandWith(
     case 'gemini':
     case 'grok':
     case 'cursor':
+    case 'devin':
       return `${launchCmd} --resume ${sid}`
     default:
       return null

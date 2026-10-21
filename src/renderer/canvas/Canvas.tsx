@@ -10683,6 +10683,7 @@ export function Canvas() {
       'node.newAgent.copilot': () => { addAgentNode('copilot'); return true },
       'node.newAgent.antigravity': () => { addAgentNode('antigravity'); return true },
       'node.newAgent.cursor': () => { addAgentNode('cursor'); return true },
+      'node.newAgent.devin': () => { addAgentNode('devin'); return true },
       'node.newSticky': () => { addSticky(); return true },
       'node.newBrowser': () => { addBrowser(); return true },
       // Opening the URL prompt IS claiming the chord — a cancelled prompt creates nothing, but the

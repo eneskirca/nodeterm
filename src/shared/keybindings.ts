@@ -81,6 +81,7 @@ export type CommandId =
   | 'node.newAgent.copilot'
   | 'node.newAgent.antigravity'
   | 'node.newAgent.cursor'
+  | 'node.newAgent.devin'
   | 'node.newSticky'
   | 'node.newBrowser'
   | 'node.newWebView'
@@ -209,6 +210,8 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: 'node.newAgent.antigravity', title: `New ${AGENT_CONFIG.antigravity.label} node`,
     group: 'Nodes', scope: 'canvas', defaultBindings: both() },
   { id: 'node.newAgent.cursor', title: `New ${AGENT_CONFIG.cursor.label} node`, group: 'Nodes',
+    scope: 'canvas', defaultBindings: both() },
+  { id: 'node.newAgent.devin', title: `New ${AGENT_CONFIG.devin.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },
   { id: 'node.newSticky', title: 'New sticky note', group: 'Nodes', scope: 'canvas',
     defaultBindings: both() },

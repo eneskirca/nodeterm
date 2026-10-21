@@ -183,6 +183,7 @@ import { ensureNodeToken, ensureRemoteNodeToken, sweepNodeToken } from './agents
 import { clearNode as clearNodeAgentStatus } from './agent-status-mirror'
 import {
   capabilityAgentId,
+  hasPermWait,
   submitsSeparately,
   hasSharedIdentity,
   readsScreenDialogs,
@@ -4337,10 +4338,10 @@ export class PtyManager {
     // session's hook env is injected via the remote tmux `-e` below (from the reverse-tunnel
     // endpoint file), so leave the local hook env out entirely here.
     // Deterministic hook-reply approvals (docs/hook-reply-approvals.md): arm the permission hook's
-    // wait-branch for claude sessions when the setting is on. `permWaitSecs > 0` injects
-    // NODETERM_PERM_WAIT_SECS; off / non-claude ⇒ 0 ⇒ absent ⇒ legacy behavior.
+    // wait-branch for sessions whose hook is known to honour the decision JSON reply (issue #409).
+    // `permWaitSecs > 0` injects NODETERM_PERM_WAIT_SECS; off / non-capable ⇒ 0 ⇒ absent.
     const permWaitSecs =
-      this.getSettings().hookReplyApprovals && options.agentId === 'claude'
+      this.getSettings().hookReplyApprovals && hasPermWait(options.agentId ?? 'claude')
         ? PERM_WAIT_SECS_DEFAULT
         : 0
     // Materialise this node's token BEFORE the session exists, so the very first hook event the
@@ -6469,11 +6470,14 @@ export class PtyManager {
    * Is a Cursor dialog (approval, AskQuestion, plan "Ready to build?") on screen? The split's bare
    * Enter must not answer one that opened during the gap. An empty or failed capture is not
    * evidence (the `sendChatPrompt` rule): the Enter goes as before.
-   * note: Cursor detectors only; SEPARATE_SUBMIT_AGENTS is cursor alone today.
+   * Cursor detectors only, so asked only of a cursor pane: another SEPARATE_SUBMIT_AGENTS member
+   * (devin) would pay two pane captures per write for detectors that can never match its screen.
    * note: fail-open on a blind capture: failing closed would block every send whenever the pane
    * cannot be read (e.g. ssh missing).
    */
   private async cursorDialogShowing(persistKey: string): Promise<boolean> {
+    const agent = this.agentForKey(persistKey)
+    if (!agent || capabilityAgentId(agent as AgentId) !== 'cursor') return false
     const screen = await this.captureSession(persistKey).catch(() => '')
     return cursorApprovalIn(screen) || cursorQuestionIn(screen) || cursorPlanPromptIn(screen)
   }
