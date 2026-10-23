@@ -2834,6 +2834,18 @@ body,
   -webkit-font-smoothing: auto;
 }
 
+/* xterm's DOM renderer sets an INLINE `width` (the grid) and `overflow: hidden` on every row. A
+   glyph's ink runs a fraction past its advance (Menlo's `m`, `w`), so the last column of a full row
+   lost its right edge — measured at DPR 1, canvas zoom 1.38: a 616px row held a 617px span and the
+   `m` of "t/m" was cut. Only the HORIZONTAL clip is lifted: the vertical one keeps underlines and
+   descenders out of the next row (`clip`, unlike `hidden`, does not turn the other axis's `visible`
+   into `auto`). The overhang lands in the host's right padding; `.term-node` still clips, so nothing
+   paints outside the node. !important because an inline style beats any selector. */
+.xterm-rows > div {
+  overflow-x: visible !important;
+  overflow-y: clip !important;
+}
+
 /* Shared glyph renderer (experimental, `glyphgrid`): a glyph-attached terminal becomes a
    transparent WINDOW onto the one GPU canvas, which sits between the React Flow background and the
    nodes (z-index 0 against the renderer's 4 — it cannot simply be raised above them, or a
