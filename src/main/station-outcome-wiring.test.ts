@@ -49,9 +49,9 @@ describe('desktop main', () => {
     expect(main).toMatch(/messagingDeps\.onHandover = \(ev\) => \{\s*stationOutcomes\.onHandover\(ev\)/)
   })
 
-  it('registers the read channel and pushes every change to the window', () => {
+  it('registers the read channel and pushes every change to every app window (pop-outs included)', () => {
     expect(main).toContain('registerStationOutcomeIpc(corePlatform, () => stationOutcomes)')
-    expect(main).toMatch(/new StationOutcomeStore\(\s*\(records\) =>\s*sendToMain\(IPC\.stationOutcomeChanged, records\)/)
+    expect(main).toMatch(/new StationOutcomeStore\(\s*\(records\) =>\s*sendToAppWindows\(IPC\.stationOutcomeChanged, records\)/)
   })
 
   it('persists the store and the delivery queue, and loads them after the status mirror (durable state)', () => {
@@ -70,7 +70,7 @@ describe('desktop main', () => {
     // A station's new session withdraws its report BEFORE the renderer hears the event.
     const withdraw = main.indexOf('stationOutcomes.onAgentEvent(enriched)')
     expect(withdraw).toBeGreaterThan(-1)
-    expect(withdraw).toBeLessThan(main.indexOf('sendToMain(IPC.agentStatus, enriched)'))
+    expect(withdraw).toBeLessThan(main.indexOf('sendToAppWindows(IPC.agentStatus, enriched)'))
     expect(main).toContain('flushAllDurableFactsSync()')
     // The restore waits for the workspace index, or a restore-time expiry reaches no sender. The boot
     // read is shared with the live links' init (which must not judge a node gone before it either).

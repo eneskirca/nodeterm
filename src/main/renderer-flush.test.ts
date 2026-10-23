@@ -71,8 +71,17 @@ describe('before-quit wiring (source guard)', () => {
     const src = readFileSync(join(__dirname, 'index.ts'), 'utf-8')
     // The renderer's save may queue a throttled mirror write after the parallel remote flush took
     // its snapshot; without the chained flush that write dies with the ControlMasters.
+    expect(src).toMatch(/flushAppRenderers\(\)\.then\(\(\) => remoteWorkspaceIO\.flush\(\)\)/)
+  })
+  it('flushes EVERY app window, pop-outs included, on quit and on restart-to-update', async () => {
+    const { readFileSync } = await import('fs')
+    const { join } = await import('path')
+    const src = readFileSync(join(__dirname, 'index.ts'), 'utf-8')
+    // Each window saves only what it owns (save scope), so flushing the main window alone left a
+    // pop-out's last debounce of edits behind.
     expect(src).toMatch(
-      /requestRendererFlush\(getMainWindow\(\)\?\.webContents, ipcMain\)\.then\(\(\) => remoteWorkspaceIO\.flush\(\)\)/
+      /function flushAppRenderers\(\): Promise<unknown> \{\s*return Promise\.all\(appWindowContents\(\)\.map\(\(wc\) => requestRendererFlush\(wc, ipcMain\)\)\)/
     )
+    expect(src).toMatch(/initUpdater\(\{[\s\S]*?flushRenderer: flushAppRenderers,/)
   })
 })

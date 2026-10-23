@@ -1,5 +1,6 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import type { NodeTerminalApi } from '@shared/types'
+import { isPopoutWindow } from './windows'
 import {
   nextFreeColor,
   peersOnProject,
@@ -500,6 +501,32 @@ function buildPresenceSession(api: NodeTerminalApi): PresenceSession {
         console.warn('[presence] no presence api — presence is off for this session')
       }
       return () => {}
+    }
+    // A pop-out project window (docs/popout-windows.md) is the SAME person as the main window, not a
+    // teammate: it never says hello, draws no cursor and sees no peers. Without this the hub answered
+    // its hello with the main window's own entry and the "Someone else is on this canvas" prompt
+    // came up in a window the user had just opened themselves (measured on the first sandbox run).
+    // It still LISTENS, passively: the peer table (seeded by `windows.presencePeers`, kept current
+    // by the join/leave/update diffs `broadcast` already delivers here) is what the canvas-sync
+    // gate reads to decide whether this window's edits are cast to teammates. `myId` stays null,
+    // so every drawn selector (facepile, cursors, the name prompt) answers nothing — including the
+    // main window's own entry, which is in the table.
+    if (isPopoutWindow()) {
+      if (live) return () => {}
+      const unPeer = api.presence.onPeer((diff) => store.getState().applyDiff(diff))
+      void api.windows?.presencePeers?.().then((peers) => {
+        if (live === passive) store.getState().applySync(peers)
+      }).catch(() => {})
+      const passive = {
+        stop: () => {
+          if (live !== passive) return
+          live = null
+          unPeer()
+          store.getState().reset()
+        }
+      }
+      live = passive
+      return passive.stop
     }
     if (live) return () => {}
 

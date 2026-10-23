@@ -12,9 +12,12 @@ type TabProject = Pick<Project, 'name' | 'cwd' | 'ssh' | 'relaySsh' | 'unavailab
 /**
  * The tab's location tooltip, or null when there is nothing to say (a cwd-less canvas has no
  * location). An SSH project names its host, because the same path means a different folder there.
- * An unavailable tab says why it cannot be opened instead, since that is what a click would hit.
+ * An unavailable tab says why it cannot be opened instead, since that is what a click would hit,
+ * and so does a ghosted tab whose project is open in its own window (`detached`): a click there
+ * brings that window forward.
  */
-export function projectTabTooltip(p: TabProject, source: SessionSource): string | null {
+export function projectTabTooltip(p: TabProject, source: SessionSource, detached = false): string | null {
+  if (detached) return `${p.name} is open in its own window — click to bring it forward`
   if (p.unavailable) {
     return source === 'local'
       ? `${p.cwd ?? 'project'} is unavailable (folder missing or unreachable)`

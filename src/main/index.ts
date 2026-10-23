@@ -191,6 +191,22 @@ import type { AnswerPermissionPayload } from '../shared/agents/permission-answer
 import { setMainWindow, getMainWindow, sendToMain, closeAction, createCrashReloadPolicy } from './main-window'
 import { WINDOW_VISIBILITY_EVENTS, windowVisibilitySignal } from './window-visibility'
 import {
+  detachedProjectIds,
+  menuTarget,
+  onDetachedChange,
+  popoutForProject,
+  popoutProjectOf,
+  registerPopout,
+  saveScopeFor,
+  sendToAppWindows,
+  windowShowingProject,
+  appWindowContents,
+  isAppWindow,
+  type PopoutWindowLike
+} from './popout-windows'
+import { popoutHash } from '../shared/popout-window'
+import { clearKeyState, keyStateOf, setKeyState } from './window-key-state'
+import {
   MENU_ITEM_ID_CLOSE,
   MENU_ITEM_ID_KANBAN,
   MENU_ITEM_ID_MINIMIZE,
@@ -542,14 +558,25 @@ settingsStore.onChange((s) => {
 // happens to click away and back. The three below are safe precisely because each one means that
 // page, and its mirror, are gone. `shortcutRecording` has no such constraint (the recorder
 // re-arms), so do not reason about the two bits interchangeably.
-let shortcutRecording = false
-let terminalFocused = false
-const clearRendererKeyState = (): void => {
-  shortcutRecording = false
-  terminalFocused = false
+// PER WINDOW since pop-out windows (`window-key-state.ts`): each window's intercepts read its own
+// bits, and the menu leg reads the FOCUSED app window's (see `syncMenuForStandDown`).
+// The main window's renderer id, kept here because `main-window.ts` forgets the window in its own
+// `closed` listener, which runs before ours. Only that page listens for `nodeterm://` links.
+let mainRendererId: number | null = null
+// Each app window's share of the unread badge (see the `appSetBadge` handler). `applyBadge` is
+// assigned once the handlers are registered; before that a page cannot have reported anything.
+const badgeShareBySender = new Map<number, number>()
+let applyBadge = (): void => {}
+const clearRendererKeyState = (webContentsId: number): void => {
+  clearKeyState(webContentsId)
+  // The page that reported this share is gone; a reloaded page reports its own again.
+  if (badgeShareBySender.delete(webContentsId)) applyBadge()
   // The same page death ends the `nodeterm://` link listener: hold links again until the next page
-  // says it is ready (a link must not be sent into a renderer that is not there to show it).
-  openLinks.notReady()
+  // says it is ready (a link must not be sent into a renderer that is not there to show it). Only
+  // the MAIN window's page counts: links are sent to it alone and only it may say `ready`
+  // (open-link-wiring.ts), so a pop-out closing or reloading must not hold links for a main
+  // window that is still listening.
+  if (webContentsId === mainRendererId) openLinks.notReady()
   // The menu leg follows the same state, so it must follow it here too — otherwise a crash or a
   // reload while stood down would leave Window ▸ Minimize disabled with nothing left to re-enable
   // it, i.e. ⌘M dead app-wide. Safe before any window exists: it no-ops without a menu.
@@ -562,7 +589,7 @@ const ptyManager = new PtyManager()
 // way agent-status events do (sendToMain — resolves the live window at send time).
 const whisperModels = new WhisperModelStore({
   dir: join(app.getPath('userData'), 'speech-models'),
-  onProgress: (id, pct) => sendToMain(IPC.speechProgress, { id, pct })
+  onProgress: (id, pct) => sendToAppWindows(IPC.speechProgress, { id, pct })
 })
 const speechService = new SpeechService({ models: whisperModels, isPremium })
 
@@ -630,6 +657,23 @@ const remoteWorkspaceIO = makeRemoteWorkspaceIO(
   (projectId) => workspaceStore.markUnmirrored(projectId)
 )
 const workspaceStore = new WorkspaceStore(remoteWorkspaceIO)
+// Pop-out project windows (docs/popout-windows.md): a save may only write the projects its
+// sending WINDOW owns — a pop-out its one project, everything else all but the popped-out ones —
+// and a pop-out's save is forwarded to the main window so its serialized copy of that project
+// never goes stale (the main window shows a ghosted tab for it and edits nothing).
+workspaceStore.setSaveScopeResolver(saveScopeFor)
+workspaceStore.onProjectSaved = (_projectId, project, scope) => {
+  if (scope?.kind === 'popout') sendToMain(IPC.windowPopoutProjectSaved, project)
+}
+/** The window that shows the project owning `nodeId` — its pop-out, else the main window. For
+ *  every per-node round trip main starts (a control request, a browser popup, a notification
+ *  click): the node's canvas is mounted in exactly one window, and only that window can answer. */
+const windowForNode = (nodeId: string | undefined): PopoutWindowLike | ReturnType<typeof getMainWindow> => {
+  const projectId = nodeId
+    ? workspaceStore.persistedCanvases().find((c) => c.nodes.some((n) => n.id === nodeId))?.id
+    : undefined
+  return windowShowingProject(projectId)
+}
 // Watch each local ref's project.json for outside edits (git pull, a teammate's commit).
 // Self-writes match the store's last-written cache and are ignored. Re-synced after every
 // store load/save via onPersist; disposed on quit next to ptyManager.killAll().
@@ -638,7 +682,7 @@ const workspaceWatcher = new WorkspaceWatcher({
   isSelfWrite: (p, c) => workspaceStore.isSelfWrite(p, c),
   onExternalChange: (filePath) => {
     void workspaceStore.readLocalRefByPath(filePath).then((changed) => {
-      if (changed) sendToMain(IPC.workspaceExternalChange, changed)
+      if (changed) sendToAppWindows(IPC.workspaceExternalChange, changed)
     })
   }
 })
@@ -719,7 +763,19 @@ const projectSetupService = new ProjectSetupService({
   // their screen. Same main-window-only push the ssh passphrase prompt uses; with the window closed
   // (macOS) the prompt is simply not delivered and the run rides out its expiry as `unanswered`,
   // which is the fail-closed direction.
-  sendConsent: (channel, payload) => sendToMain(channel, payload)
+  //
+  // With pop-out windows "this window" is the app window the user is in when the prompt is raised
+  // (a setup run starts from a worktree created there), else the main window. The dismissal goes
+  // to every app window: it names a request id, so a window that never showed it ignores it.
+  sendConsent: (channel, payload) => {
+    if (channel !== IPC.projectSetupConsentRequest) {
+      sendToAppWindows(channel, payload)
+      return
+    }
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused && !focused.isDestroyed() && isAppWindow(focused)) focused.webContents.send(channel, payload)
+    else sendToMain(channel, payload)
+  }
 })
 const projectSetupDeps: ProjectSetupHandlerDeps = {
   projectTargetInfo: (projectId) => workspaceStore.projectTargetInfo(projectId),
@@ -1037,7 +1093,9 @@ function buildAppMenu(win: BrowserWindow): void {
   const isMac = process.platform === 'darwin'
   const s = settingsStore.get()
   const send = (channel: string): void => {
-    if (!win.isDestroyed()) win.webContents.send(channel)
+    // Resolved at CLICK time: the focused app window, a pop-out included (menuTarget).
+    const target = menuTarget(BrowserWindow.getFocusedWindow(), win)
+    if (!target.isDestroyed()) target.webContents.send(channel)
   }
   // ONE object, placed into BOTH templates below (mac's app menu, off-mac's own `Settings` menu),
   // so `MENU_ITEM_ID_SETTINGS` resolves on every platform — which is why `menuItemIdsToSuspend`
@@ -1241,6 +1299,13 @@ function buildAppMenu(win: BrowserWindow): void {
 function syncMenuForStandDown(): void {
   const menu = Menu.getApplicationMenu()
   if (!menu) return
+  // The menu is one per app, so it follows the window the user is in (the focused app window, else
+  // the main window) — the same resolution menu clicks use (`menuTarget`).
+  const main = getMainWindow() as unknown as BrowserWindow | null
+  const target = main ? menuTarget(BrowserWindow.getFocusedWindow(), main) : null
+  const { shortcutRecording, terminalFocused } = keyStateOf(
+    target && !target.isDestroyed() ? target.webContents.id : null
+  )
   const enabled = !menuStandsDown(shortcutRecording, currentInterceptPolicy(), terminalFocused)
   for (const id of menuItemIdsToSuspend(interceptIsMac)) {
     const item = menu.getMenuItemById(id)
@@ -1257,16 +1322,220 @@ function syncMenuForStandDown(): void {
   }
 }
 
+/** The macOS trackpad-vs-mouse ledger for one window (see the comment at its call in
+ *  `createWindow`). Shared with pop-out windows: their canvas routes the wheel the same way. */
+function attachTrackpadGestureLedger(win: BrowserWindow): void {
+  // Attached on macOS ONLY (issue #535; pinned at source level by trackpad-gesture.test.ts).
+  if (process.platform === 'darwin') {
+    const trackpadLedger = new TrackpadGestureLedger()
+    const sendGesture = (active: boolean): void => {
+      if (!win.isDestroyed()) win.webContents.send(IPC.canvasTrackpadGesture, active)
+    }
+    win.webContents.on('input-event', (_event, input) => {
+      const active = trackpadLedger.observe(input.type)
+      if (active !== null) sendGesture(active)
+    })
+    // A gesture cannot survive a focus loss, and an End that never arrives (⌘Tab / hide / minimize
+    // mid-scroll) would otherwise leave the ledger stuck open for the life of the window — with
+    // wheel zoom silently dead until restart. `reset()` reports whether anything was actually
+    // open, so an ordinary blur between gestures sends nothing.
+    win.on('blur', () => {
+      if (trackpadLedger.reset()) sendGesture(false)
+    })
+  }
+}
+
+/** The renderer's own preferences: one definition for the main window and every pop-out, so a
+ *  pop-out can never be a less locked-down page than the main window. */
+function rendererWebPreferences(): Electron.WebPreferences {
+  return {
+    preload: join(__dirname, '../preload/index.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false,
+    // Enables the <webview> tag used by WebNode (embedded content stays locked down —
+    // no nodeintegration is set on the webview element itself).
+    webviewTag: true,
+    // Chromium's built-in PDF viewer is gated behind `plugins`, and without it an EditorNode
+    // showing a .pdf renders nothing at all. This is not the old NPAPI/Flash surface (that is
+    // long gone from Chromium) — in a current Electron the only thing it turns on is the PDF
+    // viewer. The browser (Server Edition) needs no equivalent: it has the viewer already.
+    plugins: true
+  }
+}
+
+/** Linux gets its window/taskbar icon from the bundled png (no app bundle supplies one there);
+ *  mac/win are untouched — an icon would do nothing useful and could clobber the bundled .icns. */
+function linuxWindowIcon(): string | undefined {
+  if (process.platform !== 'linux') return undefined
+  return app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png')
+}
+
+/** Lock every window to the app's own origin: external links go to the system browser, a
+ *  top-level navigation away from the app is refused (defense in depth), popups are denied. */
+const rendererIndexPath = join(__dirname, '../renderer/index.html')
+
+function lockNavigationToApp(win: BrowserWindow): void {
+  // Open external links in the system browser — only safe schemes (no file://, no custom
+  // protocol handlers). Reachable from remotely-fetched announcement URLs and rendered
+  // markdown links, so the allowlist mirrors the shellOpenExternal IPC handler.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSafeExternalUrl(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  // Main-frame navigation is allowed ONLY back to the entry document (reload / dev HMR); a safe
+  // external URL goes to the OS; everything else is blocked. "Any file://" used to be allowed, and
+  // a relative link in rendered markdown resolved to another file:// path and wiped the canvas —
+  // policy + reasoning in navigation-guard.ts.
+  const appEntryUrl = appEntryUrlFor(process.env['ELECTRON_RENDERER_URL'], rendererIndexPath)
+  win.webContents.on('will-navigate', (e, url) => {
+    const decision = decideMainFrameNavigation(url, appEntryUrl)
+    if (decision === 'allow') return
+    e.preventDefault()
+    if (decision === 'external') void shell.openExternal(url)
+  })
+}
+
+/**
+ * A pop-out asked to save before it closes: main sends `window:popout-flush`, the renderer
+ * commits its canvas + saves and answers `window:popout-flushed`. Bounded, because a renderer that
+ * is wedged (or already gone) must not hold the window open — the ack means "you may close me",
+ * and a save that did not land is the same debounced-autosave exposure the main window has on
+ * quit. Keyed by webContents id so two pop-outs closing at once cannot answer for each other.
+ */
+const POPOUT_FLUSH_TIMEOUT_MS = 2500
+const pendingPopoutFlush = new Map<number, () => void>()
+function requestPopoutFlush(win: BrowserWindow): Promise<void> {
+  return new Promise((resolve) => {
+    const id = win.webContents.id
+    const done = (): void => {
+      clearTimeout(timer)
+      pendingPopoutFlush.delete(id)
+      resolve()
+    }
+    const timer = setTimeout(done, POPOUT_FLUSH_TIMEOUT_MS)
+    pendingPopoutFlush.set(id, done)
+    win.webContents.send(IPC.windowPopoutFlush)
+  })
+}
+
+/** Ask EVERY app window's renderer to write its pending canvas edits (quit, restart-to-update).
+ *  Each window saves only what it owns (`saveScopeFor`), so flushing the main window alone left a
+ *  pop-out's last debounce of edits behind. Each request is capped and never rejects. */
+function flushAppRenderers(): Promise<unknown> {
+  return Promise.all(appWindowContents().map((wc) => requestRendererFlush(wc, ipcMain)))
+}
+
+/** Bring a pop-out to the front. Every caller is a CLICK — the ghosted tab, a sidebar row, a
+ *  notification (see window-raise.guard.test.ts, which counts these). */
+function raisePopout(win: PopoutWindowLike): void {
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+/**
+ * A pop-out project window: the same renderer, loaded with `#popout=<id>` so it boots as that
+ * one project (docs/popout-windows.md). It is a full app window — same preload, same
+ * lock-down, same keydown intercepts, same trackpad ledger — with three differences from
+ * `createWindow`: it does not become THE main window (main-window.ts still names one), it does
+ * not join presence (the user would see themselves twice in the facepile), and closing it hands
+ * the project back rather than hiding: `close` first asks the renderer to flush (bounded), then
+ * really closes, and the registry's `closed` handler is what returns ownership to the main window.
+ */
+function createPopoutWindow(projectId: string): BrowserWindow {
+  // Cascade from the main window, a size step down: visibly a second window, not a replacement.
+  const main = getMainWindow() as unknown as BrowserWindow | null
+  const base = main && !main.isDestroyed() ? main.getBounds() : { x: 80, y: 80, width: 1400, height: 900 }
+  const win = new BrowserWindow({
+    x: base.x + 48,
+    y: base.y + 48,
+    width: Math.max(900, Math.round(base.width * 0.85)),
+    height: Math.max(600, Math.round(base.height * 0.85)),
+    show: false,
+    backgroundColor: '#1e1e1e',
+    title: NT_MULTI ? 'node-terminal (test instance)' : 'node-terminal',
+    icon: linuxWindowIcon(),
+    ...macTitleBarOptions(process.platform, resolveTabBarHeight(settingsStore.get().tabBarHeight)),
+    webPreferences: rendererWebPreferences()
+  })
+  registerPopout(projectId, win)
+  const clientId = win.webContents.id
+  // Minimize / restore send the same "backgrounded" signal the main window's do, so a minimized
+  // pop-out's terminals count as offscreen and the reclaim levers can run there too
+  // (renderer/terminal/window-backgrounded.ts). A pop-out never hides itself (its close closes),
+  // so a raw `hide` — macOS occlusion — never counts: `hiddenByApp` stays false.
+  for (const ev of WINDOW_VISIBILITY_EVENTS) {
+    win.on(ev as 'hide', () => {
+      const signal = windowVisibilitySignal(ev, { hiddenByApp: false })
+      if (signal && !win.isDestroyed()) win.webContents.send(IPC.appWindowVisibility, signal)
+    })
+  }
+  win.on('closed', () => {
+    // Same reasoning as the main window's `closed`: a destroyed window sends no `pty:kill`, so
+    // its pty subscriptions must be dropped here or its sessions stay paused/attached forever.
+    ptyManager.dropClient(clientId)
+    pendingPopoutFlush.get(clientId)?.()
+    clearRendererKeyState(clientId) // its keyboard bits die with its page (same three sites as main)
+  })
+  const crashReload = createCrashReloadPolicy()
+  win.webContents.on('render-process-gone', (_event, details) => {
+    ptyManager.dropClient(clientId)
+    pendingPopoutFlush.get(clientId)?.()
+    clearRendererKeyState(clientId)
+    if (quitting || win.isDestroyed()) return
+    // The hash survives a reload, so the page comes back as the SAME pop-out. Past the budget the
+    // window closes and the project returns to the main window — a dead pop-out must not hold a
+    // project hostage the way a dead main window holds the app.
+    const action = crashReload(details.reason, Date.now())
+    if (action === 'reload') win.webContents.reload()
+    else if (action === 'give-up') win.destroy()
+  })
+  attachTrackpadGestureLedger(win)
+  // FIRST PAINT ONLY — `once`, never `on`, the #737 rule. The user tore a tab off to get this
+  // window, which is the user action the raise guard requires.
+  win.once('ready-to-show', () => win.show())
+  let flushed = false
+  win.on('close', (e) => {
+    // On quit every window closes and no renderer is asked to flush — neither this one nor the
+    // main window (the quit path flushes only the ssh mirrors and detaches the ptys), so a quit
+    // loses at most one autosave debounce of edits here, exactly as it does in the main window.
+    // Any other close asks the renderer to save first: a close that skipped it would lose that
+    // same debounce in a window the user deliberately closed.
+    if (quitting || flushed) return
+    e.preventDefault()
+    flushed = true
+    void requestPopoutFlush(win).finally(() => {
+      if (!win.isDestroyed()) win.close()
+    })
+  })
+  installKeydownIntercepts(
+    win,
+    currentInterceptBindings,
+    interceptIsMac,
+    () => keyStateOf(clientId).shortcutRecording,
+    () => policyStandsDown(currentInterceptPolicy(), keyStateOf(clientId).terminalFocused),
+    () => closeStandsDownInTerminal(interceptIsMac, keyStateOf(clientId).terminalFocused)
+  )
+  win.webContents.on('did-start-navigation', (details) => {
+    if (navigationClearsRecording(details)) clearRendererKeyState(clientId)
+  })
+  lockNavigationToApp(win)
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'] + popoutHash(projectId))
+  } else {
+    // `hash` is appended by Electron with its own '#'.
+    win.loadFile(rendererIndexPath, { hash: popoutHash(projectId).slice(1) })
+  }
+  return win
+}
+
 function createWindow(): BrowserWindow {
   // On Linux the window/taskbar icon is not supplied by an app bundle (unlike macOS),
   // so set it explicitly from the bundled png (extraResources). mac/win are untouched —
   // an icon there would do nothing useful and could clobber the bundled .icns.
-  const linuxIcon =
-    process.platform === 'linux'
-      ? app.isPackaged
-        ? join(process.resourcesPath, 'icon.png')
-        : join(__dirname, '../../build/icon.png')
-      : undefined
+  const linuxIcon = linuxWindowIcon()
   // Reopen where the user left off (issue: the window forgot its size/position every launch).
   // A throwaway NT_MULTI sandbox is deliberately excluded: it may share the real app's userData,
   // and a dev instance must not move the window of the app being developed.
@@ -1293,20 +1562,7 @@ function createWindow(): BrowserWindow {
     // The lights are centred on the user's tab-bar height (Settings → Appearance); a later change
     // re-centres them live through the `settingsStore.onChange` hook below.
     ...macTitleBarOptions(process.platform, resolveTabBarHeight(settingsStore.get().tabBarHeight)),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      // Enables the <webview> tag used by WebNode (embedded content stays locked down —
-      // no nodeintegration is set on the webview element itself).
-      webviewTag: true,
-      // Chromium's built-in PDF viewer is gated behind `plugins`, and without it an EditorNode
-      // showing a .pdf renders nothing at all. This is not the old NPAPI/Flash surface (that is
-      // long gone from Chromium) — in a current Electron the only thing it turns on is the PDF
-      // viewer. The browser (Server Edition) needs no equivalent: it has the viewer already.
-      plugins: true
-    }
+    webPreferences: rendererWebPreferences()
   })
 
   // Maximize BEFORE the first paint. The window is `show: false` until `ready-to-show`, so doing it
@@ -1334,6 +1590,7 @@ function createWindow(): BrowserWindow {
   // (The id is captured up front: reading `win.webContents` after 'closed' throws — the window and
   // its webContents are destroyed by then.)
   const presenceId = win.webContents.id
+  mainRendererId = presenceId
   presenceHub.join(presenceId, 'desktop')
   // The GitHub board's subscriptions, released on every way this page can go: closed, crashed,
   // or replaced by a reload (which reuses this webContents id with nothing subscribed).
@@ -1351,7 +1608,7 @@ function createWindow(): BrowserWindow {
     // can ever release either bit. Leaving one set would suppress ⌘W/⌘M/⌘0 for the NEXT window too
     // (the flags outlive the window; a dock reopen builds a fresh one). Same shape as the
     // dropClient above: state this window owned, released where its departure is observed.
-    clearRendererKeyState()
+    clearRendererKeyState(presenceId)
   })
   // A crashed/killed renderer is the same story, minus the window: drop its subscriptions so the
   // reloaded renderer reattaches to live sessions instead of inheriting the dead one's state.
@@ -1371,30 +1628,14 @@ function createWindow(): BrowserWindow {
   // scrolling on Windows and Linux too, so a touch-enabled non-mac machine paid per-gesture IPC
   // for a flag the renderer's router discards off macOS. Gating the attach makes the "desktop
   // macOS only" contract true by construction rather than by the consumer's good manners.
-  if (process.platform === 'darwin') {
-    const trackpadLedger = new TrackpadGestureLedger()
-    const sendGesture = (active: boolean): void => {
-      if (!win.isDestroyed()) win.webContents.send(IPC.canvasTrackpadGesture, active)
-    }
-    win.webContents.on('input-event', (_event, input) => {
-      const active = trackpadLedger.observe(input.type)
-      if (active !== null) sendGesture(active)
-    })
-    // A gesture cannot survive a focus loss, and an End that never arrives (⌘Tab / hide / minimize
-    // mid-scroll) would otherwise leave the ledger stuck open for the life of the window — with
-    // wheel zoom silently dead until restart. `reset()` reports whether anything was actually
-    // open, so an ordinary blur between gestures sends nothing.
-    win.on('blur', () => {
-      if (trackpadLedger.reset()) sendGesture(false)
-    })
-  }
+  attachTrackpadGestureLedger(win)
   const crashReload = createCrashReloadPolicy()
   win.webContents.on('render-process-gone', (_event, details) => {
     ptyManager.dropClient(presenceId)
     // A dead renderer sends no disarm and no focus-lost report. The reloaded page mounts no
     // recorder and no terminal, so without this the user would come back to an app where ⌘W does
     // nothing at all (recording) or minimizes the window (stood down).
-    clearRendererKeyState()
+    clearRendererKeyState(presenceId)
     if (quitting || win.isDestroyed()) return
     const action = crashReload(details.reason, Date.now())
     if (action === 'reload') {
@@ -1509,10 +1750,10 @@ function createWindow(): BrowserWindow {
     win,
     currentInterceptBindings,
     interceptIsMac,
-    () => shortcutRecording,
-    () => policyStandsDown(currentInterceptPolicy(), terminalFocused),
+    () => keyStateOf(presenceId).shortcutRecording,
+    () => policyStandsDown(currentInterceptPolicy(), keyStateOf(presenceId).terminalFocused),
     // The close leg's own, policy-independent stand-down (issue #383) — see the predicate's doc.
-    () => closeStandsDownInTerminal(interceptIsMac, terminalFocused)
+    () => closeStandsDownInTerminal(interceptIsMac, keyStateOf(presenceId).terminalFocused)
   )
 
   // The THIRD way the page that armed a recorder (or reported terminal focus) can go away: a
@@ -1523,29 +1764,10 @@ function createWindow(): BrowserWindow {
   // with the recorder still armed and the terminal still focused, and a subframe is not this page
   // at all.
   win.webContents.on('did-start-navigation', (details) => {
-    if (navigationClearsRecording(details)) clearRendererKeyState()
+    if (navigationClearsRecording(details)) clearRendererKeyState(presenceId)
   })
 
-  // Open external links in the system browser — only safe schemes (no file://, no custom
-  // protocol handlers). Reachable from remotely-fetched announcement URLs and rendered
-  // markdown links, so the allowlist mirrors the shellOpenExternal IPC handler.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
-
-  // Main-frame navigation is allowed ONLY back to the entry document (reload / dev HMR); a safe
-  // external URL goes to the OS; everything else is blocked. "Any file://" used to be allowed, and
-  // a relative link in rendered markdown resolved to another file:// path and wiped the canvas —
-  // policy + reasoning in navigation-guard.ts.
-  const rendererIndexPath = join(__dirname, '../renderer/index.html')
-  const appEntryUrl = appEntryUrlFor(process.env['ELECTRON_RENDERER_URL'], rendererIndexPath)
-  win.webContents.on('will-navigate', (e, url) => {
-    const decision = decideMainFrameNavigation(url, appEntryUrl)
-    if (decision === 'allow') return
-    e.preventDefault()
-    if (decision === 'external') void shell.openExternal(url)
-  })
+  lockNavigationToApp(win)
 
   // Load the electron-vite dev server if present, otherwise the built file.
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -1592,7 +1814,7 @@ app.whenReady().then(async () => {
     contents.setWindowOpenHandler(({ url }) => {
       const sourceNodeId = browserGuests.get(contents.id)?.nodeId
       if (sourceNodeId && /^https?:\/\//i.test(url)) {
-        sendToMain(IPC.browserNewWindow, { url, sourceNodeId })
+        windowForNode(sourceNodeId)?.webContents.send(IPC.browserNewWindow, { url, sourceNodeId })
       }
       return { action: 'deny' }
     })
@@ -1622,7 +1844,7 @@ app.whenReady().then(async () => {
           // Same route a popup takes: a new browser node, never a real window.
           openLinkInNode: (url) => {
             const sourceNodeId = browserGuests.get(contents.id)?.nodeId
-            if (sourceNodeId) sendToMain(IPC.browserNewWindow, { url, sourceNodeId })
+            if (sourceNodeId) windowForNode(sourceNodeId)?.webContents.send(IPC.browserNewWindow, { url, sourceNodeId })
           },
           copyText: (text) => clipboard.writeText(text),
           copyImage: () => contents.copyImageAt(params.x, params.y),
@@ -1878,14 +2100,77 @@ app.whenReady().then(async () => {
 
   ipcMain.on(IPC.appCloseWindow, () => BrowserWindow.getFocusedWindow()?.close())
 
+  // Pop-out project windows (docs/popout-windows.md). Raw ipcMain on purpose: these act on THIS
+  // machine's windows, never on a core, so a relay peer must not reach them. Every handler that
+  // raises a window is sender-guarded to an app window (the main one or a pop-out): a <webview>
+  // guest is a webContents in this process too, and "raise a window" must stay a click's power.
+  const isAppWindowSender = (senderId: number): boolean =>
+    getMainWindow()?.webContents.id === senderId || popoutProjectOf(senderId) !== null
+  ipcMain.handle(IPC.windowPopout, (event, projectId: unknown) => {
+    if (typeof projectId !== 'string' || !projectId) return { ok: false, error: 'no project id' }
+    // Only the main window tears tabs off: a pop-out shows one project and cannot hand one out.
+    if (getMainWindow()?.webContents.id !== event.sender.id) {
+      return { ok: false, error: 'only the main window can open a project in its own window' }
+    }
+    const existing = popoutForProject(projectId)
+    if (existing) {
+      raisePopout(existing)
+      return { ok: true }
+    }
+    // The new window is booted from the project as LAST SAVED (the store's memory slice), so the
+    // caller must have saved first — the renderer awaits its own writeDisk before asking.
+    if (!workspaceStore.lastSavedProject(projectId)) {
+      return { ok: false, error: 'the project has not been saved yet — try again in a moment' }
+    }
+    createPopoutWindow(projectId)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.windowFocusProject, (event, projectId: unknown) => {
+    if (!isAppWindowSender(event.sender.id) || typeof projectId !== 'string') return
+    const win = popoutForProject(projectId)
+    if (win) raisePopout(win)
+  })
+  ipcMain.handle(IPC.windowClosePopout, (event, projectId: unknown) => {
+    if (!isAppWindowSender(event.sender.id) || typeof projectId !== 'string') return
+    // `close`, not `destroy`: the window's own close handler runs the flush handshake first.
+    popoutForProject(projectId)?.close()
+  })
+  ipcMain.handle(IPC.windowFocusNode, (event, projectId: unknown, nodeId: unknown) => {
+    if (!isAppWindowSender(event.sender.id)) return
+    if (typeof projectId !== 'string' || typeof nodeId !== 'string' || !nodeId) return
+    const win = popoutForProject(projectId)
+    if (!win) return
+    raisePopout(win)
+    win.webContents.send(IPC.appFocusNode, nodeId)
+  })
+  ipcMain.handle(IPC.windowDetached, () => detachedProjectIds())
+  // A pop-out reads the peer table WITHOUT joining (it is the same person as the main window); the
+  // diffs after this reach it through `broadcast`. Pop-out senders only — nobody else needs it.
+  ipcMain.handle(IPC.windowPresencePeers, (event) =>
+    popoutProjectOf(event.sender.id) !== null ? presenceHub.peers() : [])
+  ipcMain.on(IPC.windowPopoutFlushed, (event) => pendingPopoutFlush.get(event.sender.id)?.())
+  // The main window mirrors the set (ghosted tabs, save scope is main's own business).
+  onDetachedChange((ids) => sendToMain(IPC.windowDetachedChange, ids))
+  // The menu's stand-down follows the FOCUSED app window's keyboard bits, so moving between the main
+  // window and a pop-out owes a sync — a window change is not a focus-mirror event in either page.
+  app.on('browser-window-focus', (_e, focused) => {
+    syncMenuForStandDown()
+    // Windows: the taskbar flash an unread rise raised on the MAIN window (`appSetBadge`) is for a
+    // user who is not looking at the app; coming back to it through a pop-out ends it too.
+    if (process.platform === 'win32' && isAppWindow(focused)) {
+      const main = getMainWindow() as unknown as BrowserWindow | null
+      if (main && !main.isDestroyed()) main.flashFrame(false)
+    }
+  })
+
   // Settings' shortcut recorder arming/disarming. Guarded on the sender being the live main window
   // (the same `getMainWindow()?.webContents.id !== event.sender.id` test `registerElectronGitHubControl`
   // uses): a <webview> guest — a browser node showing an arbitrary page — is a webContents in this
   // process too, and this bit disables the app's own keyboard shortcuts. Resolved at call time, not
   // captured, because the window can be closed and recreated on macOS.
   ipcMain.on(IPC.uiShortcutRecording, (event, active: boolean) => {
-    if (getMainWindow()?.webContents.id !== event.sender.id) return
-    shortcutRecording = active === true
+    if (!isAppWindowSender(event.sender.id)) return
+    setKeyState(event.sender.id, { shortcutRecording: active === true })
     // The menu leg follows recording too (`menuStandsDown`), so an arm/disarm owes a sync — that is
     // what lets ⌘M, ⌘⇧B, ⌘, and off-mac Ctrl+W reach the recorder instead of the menu item that
     // owns them. A recorder arms and disarms once per chord the user records, which is the right
@@ -1901,8 +2186,8 @@ app.whenReady().then(async () => {
   // itself the window's shortcuts by claiming a terminal is focused. `focused === true` so a
   // malformed payload reads as NOT focused, the fail-safe direction (intercepts on).
   ipcMain.on(IPC.uiTerminalFocus, (event, focused: boolean) => {
-    if (getMainWindow()?.webContents.id !== event.sender.id) return
-    terminalFocused = focused === true
+    if (!isAppWindowSender(event.sender.id)) return
+    setKeyState(event.sender.id, { terminalFocused: focused === true })
     // The mirror is change-deduped, so this fires only on a real focus transition — the right
     // cadence for a menu mutation, and the reason the sync is here rather than on the keystroke
     // path. It must be INSIDE the guard: a rejected sender must not move the menu either.
@@ -1949,10 +2234,23 @@ app.whenReady().then(async () => {
   // nothing. The decision is the pure `planBadge` (taskbar-badge.ts). The same count feeds the
   // background-mode tray's tooltip/menu (de-duplicated there, so a resend rebuilds nothing).
   let lastBadgeCount: number | null = null // null until the first report: that one is a baseline
-  ipcMain.on(IPC.appSetBadge, (_e, count: number) => {
-    const n = normalizeUnread(count)
+  ipcMain.on(IPC.appSetBadge, (e, count: number) => {
+    // Every app window reports the unread count of the nodes IT shows (a popped-out project's
+    // nodes count in its pop-out, `alertsHere`), so the badge is the SUM of the live windows'
+    // reports — a single last-writer value flipped between the two windows' counts. A window's
+    // share is dropped where its page ends (`clearRendererKeyState`, the same three sites).
+    const share = normalizeUnread(count)
+    if (share > 0) badgeShareBySender.set(e.sender.id, share)
+    else badgeShareBySender.delete(e.sender.id)
+    applyBadge()
+  })
+  applyBadge = (): void => {
+    let total = 0
+    for (const share of badgeShareBySender.values()) total += share
+    const n = normalizeUnread(total)
     const win = getMainWindow() as unknown as BrowserWindow | null
-    const plan = planBadge(process.platform, n, lastBadgeCount, !!win?.isFocused())
+    // "Unfocused" means no app window has focus: a focused pop-out is the user looking at the app.
+    const plan = planBadge(process.platform, n, lastBadgeCount, isAppWindow(BrowserWindow.getFocusedWindow()))
     lastBadgeCount = n
     trayState.unread = n
     backgroundTray?.update({ ...trayState })
@@ -1967,7 +2265,7 @@ app.whenReady().then(async () => {
       }
     }
     if (plan.flash && win && !win.isDestroyed()) win.flashFrame(true)
-  })
+  }
 
   // Show an OS notification — but only when the window is in the background. Clicking it
   // brings the app forward and asks the renderer to focus the originating node.
@@ -1976,16 +2274,20 @@ app.whenReady().then(async () => {
   // once already after an Electron upgrade invalidated the ncprefs signature record.
   ipcMain.handle(
     IPC.appNotify,
-    async (_e, payload: { title: string; body: string; nodeId: string; force?: boolean }) => {
-      const win = getMainWindow()
+    async (e, payload: { title: string; body: string; nodeId: string; force?: boolean }) => {
+      // The window that asked is the one showing the node (the renderer alerts only for projects
+      // it owns — a pop-out for its own), so ITS focus is the one that says "the user is looking".
+      // Asking the main window's instead notified a user sitting in the pop-out on that node.
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow()
       if (!win || !Notification.isSupported()) return 'skipped'
       // `force` (permission request / confirmation) shows even when focused; normal
       // completion notifications only show when the window is in the background.
       if (!payload.force && win.isFocused()) return 'skipped'
       const n = new Notification({ title: payload.title, body: payload.body })
       n.on('click', () => {
-        // Re-resolve at click time — the window may have been hidden/recreated since.
-        const w = getMainWindow()
+        // Re-resolve at click time — the window may have been hidden/recreated since, and the
+        // node's project may live in a pop-out window by now.
+        const w = windowForNode(payload.nodeId)
         if (!w) return
         if (w.isMinimized()) w.restore()
         w.show()
@@ -2296,7 +2598,7 @@ app.whenReady().then(async () => {
     pendingQuestionOf: (id) => mirrorEntry(id)?.pendingQuestion?.toolUseId,
     appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry),
     deliver: (notice) => deliverStationNotice(notice, messagingDeps),
-    publish: (views) => sendToMain(IPC.stationNoticeChanged, views),
+    publish: (views) => sendToAppWindows(IPC.stationNoticeChanged, views),
     // The memoized index scan, not `getNode` (which re-parses a project file per call): the sweep
     // asks this for every node it tracks.
     exists: (id) => workspaceStore.projectIdsForNode(id).length > 0
@@ -2313,7 +2615,7 @@ app.whenReady().then(async () => {
   // that made it; `loadFromDisk()` runs below, after the status mirror it compares against.
   const stationOutcomesFile = new DurableFactFile(OUTCOME_FACT, { userDataDir: corePlatform.userDataDir })
   const stationOutcomes = new StationOutcomeStore(
-    (records) => sendToMain(IPC.stationOutcomeChanged, records),
+    (records) => sendToAppWindows(IPC.stationOutcomeChanged, records),
     {
       durable: stationOutcomesFile,
       sessionOf: (id) => {
@@ -2332,7 +2634,7 @@ app.whenReady().then(async () => {
   // between the reports and the queue.
   const stationHandoversFile = new DurableFactFile(HANDOVER_FACT, { userDataDir: corePlatform.userDataDir })
   const stationHandovers = new StationHandoverTracker(
-    (records) => sendToMain(IPC.stationHandoverChanged, records),
+    (records) => sendToAppWindows(IPC.stationHandoverChanged, records),
     Date.now,
     stationHandoversFile
   )
@@ -2400,7 +2702,7 @@ app.whenReady().then(async () => {
   // told "no". Reordering it later only delays that answer; leaving it out would stall those
   // callers until their own timeout, so it is not optional.
   void refreshCodexIdentityCaps()
-  hookServer.setCodexIdentityListener((ev) => sendToMain(IPC.codexIdentity, ev))
+  hookServer.setCodexIdentityListener((ev) => sendToAppWindows(IPC.codexIdentity, ev))
   // A node still on a canvas is "live". A thread whose recorded owner is gone (node deleted, or a
   // workspace that no longer holds it) is free to be re-claimed; one whose owner is still there is
   // not, and the launcher then falls back rather than putting two clients on one conversation.
@@ -2476,7 +2778,10 @@ app.whenReady().then(async () => {
     onUpdateReady: (version) => {
       trayState.updateReady = version
       backgroundTray?.update({ ...trayState })
-    }
+    },
+    // Every app window, pop-outs included (the default flushes and asks the main window only).
+    flushRenderer: flushAppRenderers,
+    appFocused: () => isAppWindow(BrowserWindow.getFocusedWindow())
   })
   // Prepare-for-update (Windows session host, issue #829). The user confirmed the whole flow in
   // its own dialog, so the quit at its end skips the ordinary quit confirmation, like the
@@ -2571,7 +2876,7 @@ app.whenReady().then(async () => {
     }
   }
   const startNotchHud = (): void =>
-    initNotchHud({ getNodeTitle: displayTitleFor }, notchTunables())
+    initNotchHud({ getNodeTitle: displayTitleFor, windowForNode: (id) => windowForNode(id) }, notchTunables())
   if (win.isVisible()) startNotchHud()
   else win.once('show', startNotchHud)
   buildAppMenu(win)
@@ -2591,6 +2896,11 @@ app.whenReady().then(async () => {
     if (barHeight !== trafficLightBarHeight && process.platform === 'darwin' && !win.isDestroyed()) {
       trafficLightBarHeight = barHeight
       win.setWindowButtonPosition(trafficLightPositionFor(barHeight))
+      // Every pop-out draws the same tab bar from the same setting, so its lights move too.
+      for (const id of detachedProjectIds()) {
+        const p = popoutForProject(id) as unknown as BrowserWindow | null
+        p?.setWindowButtonPosition(trafficLightPositionFor(barHeight))
+      }
     }
   })
   // Keep awake while agents work (docs/superpowers/specs/2026-08-18-keep-awake-design.md): hold an
@@ -2947,7 +3257,7 @@ app.whenReady().then(async () => {
     for (const [nid, sid] of nodeContextSession) if (sid === sessionId) nodeId = nid
     if (!nodeId) return
     const ev = recordQuestionResult(nodeId, sessionId, toolUseId)
-    if (ev) sendToMain(IPC.agentStatus, ev)
+    if (ev) sendToAppWindows(IPC.agentStatus, ev)
   }
   /**
    * The transcript recorded an interrupt marker (Esc / Ctrl+C). Claude sends no hook for an
@@ -2980,7 +3290,7 @@ app.whenReady().then(async () => {
     // Through the lifecycle like every other event: in a session that sends native hooks the card
     // is keyed by the child's agent_id, and this tool-keyed end is re-keyed onto it (idempotent).
     for (const out of claudeSubagents.apply(taskDoneEvent)) {
-      sendToMain(IPC.agentStatus, out)
+      sendToAppWindows(IPC.agentStatus, out)
       recordAgentEvent(out)
     }
     subagentTail.finish(n.toolUseId)
@@ -2991,7 +3301,7 @@ app.whenReady().then(async () => {
   const cursorSubagents = createCursorSubagentTracker({
     tail: subagentTail,
     emit: (ev) => {
-      sendToMain(IPC.agentStatus, ev)
+      sendToAppWindows(IPC.agentStatus, ev)
       recordAgentEvent(ev)
     }
   })
@@ -3436,7 +3746,7 @@ app.whenReady().then(async () => {
       // A station that starts a DIFFERENT session drops the report its old one made — before the
       // renderer hears the event, so no `--after-success` can fire on it in between.
       stationOutcomes.onAgentEvent(enriched)
-      sendToMain(IPC.agentStatus, enriched)
+      sendToAppWindows(IPC.agentStatus, enriched)
       // Feed the macOS Notch HUD its prompt (ev.task on newTurn) + subagent grouping (no-op off/non-darwin).
       notchHudOnAgentEvent(enriched)
       // Agent messaging taps the SAME stream: the sender's newTurn resets its fan-out budget, and
@@ -3538,7 +3848,7 @@ app.whenReady().then(async () => {
   // try/catch is the backstop, not the primary.
   createMemoryPressureMonitor({
     onPressure: (severity) => {
-      sendToMain(IPC.appMemoryPressure, severity)
+      sendToAppWindows(IPC.appMemoryPressure, severity)
       if (severity === 'critical') void sessionReaper.sweep()
     }
   }).start()
@@ -3556,7 +3866,7 @@ app.whenReady().then(async () => {
   // would and widens no exemption — attached and in-grace sessions stay untouchable.
   const ptyPressure = createPtyPressureMonitor({
     onLevel: (reading) => {
-      sendToMain(IPC.ptyPressure, reading)
+      sendToAppWindows(IPC.ptyPressure, reading)
       if (reading.level === 'critical') void sessionReaper.sweep({ pressure: 'pty' })
     }
   })
@@ -3690,9 +4000,10 @@ app.whenReady().then(async () => {
   })
   // One handler pair for every phone read-ack arrival path: the local `.seen` sweep, the SSH hosts'
   // remote sweep below, and the relay's `inbox.ack` (relay-only hosts — see hostBridge.relayExtras).
+  // The unread clear goes to every app window: a popped-out project's node shows its own dot.
   const phoneReadAckHandlers: AckSweepHandlers = {
     ackDone,
-    onUnreadClear: (id) => sendToMain(IPC.agentUnreadClear, id)
+    onUnreadClear: (id) => sendToAppWindows(IPC.agentUnreadClear, id)
   }
   const ackSweeper = createAckSweeper({ handlers: phoneReadAckHandlers })
   let remoteAckSweepBusy = false
@@ -4400,7 +4711,7 @@ app.whenReady().then(async () => {
   // against its own 2s timeout. The renderer NEVER runs a CDP command; it answers existence + project
   // + capability only.
   const askRendererResolve = (sourceNodeId: string, browserNodeId: string): Promise<BrowserResolve> => {
-    const w = getMainWindow()
+    const w = windowForNode(sourceNodeId)
     if (!w || w.isDestroyed()) {
       return Promise.resolve({ ok: false, refusal: 'source node is not on an open canvas' })
     }
@@ -4642,7 +4953,9 @@ app.whenReady().then(async () => {
         now: () => Date.now()
       })
     }
-    const target = getMainWindow()
+    // The window whose canvas holds the source node: a popped-out project answers from its own
+    // window, everything else from the main one (docs/popout-windows.md).
+    const target = windowForNode(nodeId)
     if (!target) return { ok: false, error: 'window unavailable' }
     // What main does with the renderer's answer, as ONE step the forwarder runs on whichever answer
     // arrives: on time, or LATE — after the 120 s wait below gave up — before the request ledger
@@ -5210,7 +5523,7 @@ app.whenReady().then(async () => {
       void workspaceStore
         .refreshSshProject(projectId)
         .then((adopted) => {
-          if (adopted) sendToMain(IPC.workspaceExternalChange, adopted)
+          if (adopted) sendToAppWindows(IPC.workspaceExternalChange, adopted)
         })
         .catch(() => {})
     },
@@ -5393,7 +5706,7 @@ app.whenReady().then(async () => {
         void workspaceStore
           .refreshSshProject(projectId, { pushIfStanding: false })
           .then((adopted) => {
-            if (adopted) sendToMain(IPC.workspaceExternalChange, adopted)
+            if (adopted) sendToAppWindows(IPC.workspaceExternalChange, adopted)
           })
           .catch(() => { /* fail-open: the next tick retries */ })
           .finally(() => inFlight.delete(projectId))
@@ -5545,7 +5858,7 @@ app.on('before-quit', (e) => {
   // (OWNED_SHUTDOWN_TIMEOUT_MS) and never throws, so quit is never held by a device.
   const simulatorsDown = shutdownOwnedSimulators()
   const flush = Promise.allSettled([
-    requestRendererFlush(getMainWindow()?.webContents, ipcMain).then(() => remoteWorkspaceIO.flush()),
+    flushAppRenderers().then(() => remoteWorkspaceIO.flush()),
     remoteWorkspaceIO.flush(),
     ptyManager.killAll(),
     watchLinksStopped

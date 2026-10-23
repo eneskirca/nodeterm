@@ -28,6 +28,7 @@ import { buildCardMenuItems } from './cardMenu'
 import { useBoardLog } from '../../state/boardLog'
 import { boardLogEvents } from '../../lib/boardLogDiff'
 import { markWorkspaceDirty } from '../../state/workspaceDirty'
+import { useWindows } from '../../state/windows'
 import type { KanbanCreateChoice, KanbanSession } from './KanbanView'
 import type { NodeIcon } from '@shared/node-icon'
 import { columnCategory } from '@shared/kanban-category'
@@ -422,6 +423,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   const boardStyle = useBoardWallpaperStyle()
   const allProjects = useProjects(s => s.projects)
   const projects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
+  const detached = useWindows(s => s.detached)
   const liveRef = useRef(live)
   liveRef.current = live
   const [modal, setModal] = useState<{ projectId: string; nodeId: string; view?: 'md' } | null>(null)
@@ -539,6 +541,20 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
       </div>
       <div className="global-kanban__scroll">
         {projects.map((p, idx) => {
+          // A project popped out into its own window is edited there (docs/popout-windows.md): its
+          // lane names the window instead of offering cards whose edits this window may not make.
+          if (detached.has(p.id)) {
+            return (
+              <div key={p.id} id={`swimlane-${p.id}`} className="kanban-swimlane kanban-swimlane--collapsed" style={{ ['--swimlane-color' as string]: p.color || 'rgba(128,128,128,0.3)' }}>
+                <div className="kanban-swimlane__header">
+                  <span className="kanban-header__dot" style={{ background: p.color || '#444' }} />
+                  <span className="kanban-header__name">{`${idx+1}. ${p.name}`}</span>
+                  <span className="kanban-swimlane__count">Open in its own window</span>
+                  <button className="kanban-swimlane__window" onClick={() => void sessionForProject(p.id).api.windows.focusProject(p.id)}>Show window</button>
+                </div>
+              </div>
+            )
+          }
           const board = p.kanban ?? defaultKanban(p.id)
           const isLive = live !== null && live.projectId === p.id
           const sessions = isLive

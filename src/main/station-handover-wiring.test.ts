@@ -36,9 +36,9 @@ describe('desktop main', () => {
     expect(body).toContain('stationHandovers.noteControlAnswer(verb, args, answer, nodeId, requestAt)')
   })
 
-  it('registers the read channel and pushes every change to the window', () => {
+  it('registers the read channel and pushes every change to every app window (pop-outs included)', () => {
     expect(main).toContain('registerStationHandoverIpc(corePlatform, () => stationHandovers)')
-    expect(main).toMatch(/new StationHandoverTracker\(\s*\(records\) =>\s*sendToMain\(IPC\.stationHandoverChanged, records\)/)
+    expect(main).toMatch(/new StationHandoverTracker\(\s*\(records\) =>\s*sendToAppWindows\(IPC\.stationHandoverChanged, records\)/)
   })
 })
 

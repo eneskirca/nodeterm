@@ -54,7 +54,7 @@ const ALLOWED = new Map<string, { calls: number; why: string }>([
   [
     'index.ts',
     {
-      calls: 18,
+      calls: 22,
       why:
         '3 raiseForUserLaunch restore/show/focus (the user launched the app again, or clicked a nodeterm:// link — a link reaches us as a second launch or open-url); 1 first-paint ' +
         'show (once, never on — #737); 4 file-drop IPC restore/show/app.focus(steal)/focus, now ' +
@@ -64,7 +64,11 @@ const ALLOWED = new Map<string, { calls: number; why: string }>([
         'showMainWindowFromBackground restore/show/focus — reached only from a tray click / tray ' +
         '"Open nodeterm" / a click on the background-hint toast (Windows/Linux background mode); ' +
         "1 Notification.show() posting that one-time hint, raised by the user's own window close " +
-        '(a notification is not a window raise). The taskbar flashFrame(true) is attention, not a raise'
+        '(a notification is not a window raise). The taskbar flashFrame(true) is attention, not a ' +
+        'raise; 1 first-paint show of a POP-OUT window (once — the user tore a tab off to get it); ' +
+        '3 raisePopout restore/show/focus, reached only from sender-guarded IPC handlers whose ' +
+        'callers are clicks (the ghosted tab, a sidebar row, a notification forwarded to the ' +
+        'window that shows the node)'
     }
   ],
   [

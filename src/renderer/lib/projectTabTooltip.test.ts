@@ -29,4 +29,14 @@ describe('projectTabTooltip', () => {
       'Team disconnected, click to reconnect'
     )
   })
+
+  it('a ghosted tab says its project is open in its own window, whatever else is true', () => {
+    // A pop-out owns the project (docs/popout-windows.md); a click on the ghost raises that window.
+    expect(projectTabTooltip({ name: 'Beta', cwd: '/b' }, 'local', true)).toBe(
+      'Beta is open in its own window — click to bring it forward'
+    )
+    expect(projectTabTooltip({ name: 'Beta', cwd: '/gone', unavailable: true }, 'local', true)).toBe(
+      'Beta is open in its own window — click to bring it forward'
+    )
+  })
 })

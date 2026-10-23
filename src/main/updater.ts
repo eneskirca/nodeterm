@@ -116,6 +116,10 @@ export interface UpdaterHooks {
   /** Write the renderer's pending canvas edits; must never reject or hang (defaults to
    *  `requestRendererFlush`, capped at ~1 s). */
   flushRenderer?: () => Promise<unknown>
+  /** Whether an app window has focus (the update notification is only for a user who is not
+   *  looking at the app). Defaults to the main window's focus; with pop-out windows a focused
+   *  pop-out is the user looking at the app too. */
+  appFocused?: () => boolean
 }
 
 export interface UpdaterHandle {
@@ -356,7 +360,8 @@ export function initUpdater(hooks: UpdaterHooks = {}): UpdaterHandle {
     // Once per version (the gate) — a staged update used to re-notify every six hours.
     // Resolve the window HERE, not at init: a download can finish long after a close→dock-reopen.
     // No live window (closed on macOS) reads as "not focused", which is exactly when we notify.
-    if (d.notify && !getMainWindow()?.isFocused() && Notification.isSupported()) {
+    const appFocused = hooks.appFocused ?? (() => !!getMainWindow()?.isFocused())
+    if (d.notify && !appFocused() && Notification.isSupported()) {
       const n = new Notification({
         title: 'Update ready',
         body: `nodeterm ${info.version} is ready to install.`

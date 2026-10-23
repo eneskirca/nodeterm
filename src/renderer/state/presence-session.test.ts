@@ -87,3 +87,36 @@ describe('createPresenceSession — per-instance isolation', () => {
     expect(sb.selectFaces(sb.store.getState()).map((f) => f.clientId)).toEqual([])
   })
 })
+
+describe('a pop-out window listens to presence without joining it', () => {
+  it('never says hello, seeds the table from windows.presencePeers, applies diffs, keeps myId null', async () => {
+    const { setPopoutProjectIdForTests } = await import('./windows')
+    setPopoutProjectIdForTests('b')
+    try {
+      let peerCb: ((d: unknown) => void) | null = null
+      const a = fakeApi(7)
+      a.api.presence.onPeer = (cb: (d: unknown) => void) => {
+        peerCb = cb
+        return () => {}
+      }
+      const main = { clientId: 1 } as PeerState
+      const mate = { clientId: 2 } as PeerState
+      a.api.windows = { presencePeers: vi.fn(async () => [main]) }
+      const s = createPresenceSession(a.api)
+      const stop = s.connect()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(a.api.presence.hello).not.toHaveBeenCalled()
+      expect(Object.keys(s.store.getState().peers)).toEqual(['1'])
+      peerCb!({ op: 'join', peer: mate })
+      // Two entries = the main window + a teammate: the canvas-sync gate's "has peers".
+      expect(Object.keys(s.store.getState().peers).sort()).toEqual(['1', '2'])
+      expect(s.store.getState().myId).toBeNull()
+      expect(s.store.getState().needsName).toBe(false)
+      stop()
+      expect(s.store.getState().peers).toEqual({})
+    } finally {
+      setPopoutProjectIdForTests(null)
+    }
+  })
+})

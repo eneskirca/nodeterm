@@ -487,6 +487,39 @@ const api: NodeTerminalApi = {
     readAlertSound: (kind: AlertSoundKind) => ipcRenderer.invoke(IPC.filesReadAlertSound, kind),
     clearAlertSound: (kind: AlertSoundKind) => ipcRenderer.invoke(IPC.filesClearAlertSound, kind)
   },
+  windows: {
+    popout: (projectId) => ipcRenderer.invoke(IPC.windowPopout, projectId),
+    focusProject: (projectId) => ipcRenderer.invoke(IPC.windowFocusProject, projectId),
+    closePopout: (projectId) => ipcRenderer.invoke(IPC.windowClosePopout, projectId),
+    focusNode: (projectId, nodeId) => ipcRenderer.invoke(IPC.windowFocusNode, projectId, nodeId),
+    detached: () => ipcRenderer.invoke(IPC.windowDetached),
+    presencePeers: () => ipcRenderer.invoke(IPC.windowPresencePeers),
+    onDetachedChange: (listener) => {
+      const handler = (_e: unknown, ids: string[]) => listener(ids)
+      ipcRenderer.on(IPC.windowDetachedChange, handler)
+      return () => ipcRenderer.removeListener(IPC.windowDetachedChange, handler)
+    },
+    onProjectSaved: (listener) => {
+      const handler = (_e: unknown, project: Project) => listener(project)
+      ipcRenderer.on(IPC.windowPopoutProjectSaved, handler)
+      return () => ipcRenderer.removeListener(IPC.windowPopoutProjectSaved, handler)
+    },
+    onFlush: (listener) => {
+      // Main waits (bounded) for the ack; a listener that throws still acks, or the window would
+      // sit until main's timeout — the ack is "you may close me now", never "the save succeeded".
+      const handler = async (): Promise<void> => {
+        try {
+          await listener()
+        } catch (err) {
+          console.warn('[popout] flush before close failed', err)
+        } finally {
+          ipcRenderer.send(IPC.windowPopoutFlushed)
+        }
+      }
+      ipcRenderer.on(IPC.windowPopoutFlush, handler)
+      return () => ipcRenderer.removeListener(IPC.windowPopoutFlush, handler)
+    }
+  },
   updates: {
     onAvailable: (listener) => {
       const handler = (_e: unknown, info: UpdateInfo) => listener(info)

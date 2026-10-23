@@ -11,7 +11,7 @@
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { IPC } from '../shared/ipc'
-import { getMainWindow, sendToMain } from './main-window'
+import { getMainWindow } from './main-window'
 import {
   onNodeStateChange,
   onNodeNowChange,
@@ -82,6 +82,18 @@ export function sendToHud(channel: string, ...args: unknown[]): void {
 export interface NotchHudDeps {
   /** Sync in-memory node title (workspaceStore.getNodeTitle). */
   getNodeTitle: (nodeId: string) => string | undefined
+  /** The app window that shows the node — a pop-out for a popped-out project, else the main
+   *  window (index.ts `windowForNode`). Defaults to the main window. */
+  windowForNode?: (nodeId: string) => HudFocusTarget | null
+}
+
+/** The slice of an app window a row click raises and asks to focus the node. */
+export interface HudFocusTarget {
+  isMinimized(): boolean
+  restore(): void
+  show(): void
+  focus(): void
+  webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
 /** The user-tunable part of the HUD (Settings → Interface → Notch). Applied live, no restart. */
@@ -126,14 +138,16 @@ class NotchHudController {
     }
     this.onFocusNode = (_e, nodeId) => {
       if (typeof nodeId !== 'string' || !nodeId) return
-      // Reuse the notification-click focus path: bring the main window forward + ask the renderer to
-      // center the node, then clear its done highlight (a nodeterm-native "you looked at it").
-      const w = getMainWindow()
+      // Reuse the notification-click focus path: bring forward the window that SHOWS the node (a
+      // pop-out for a popped-out project — raising the main window there would bring two windows
+      // forward) + ask its renderer to center the node, then clear its done highlight (a
+      // nodeterm-native "you looked at it").
+      const w: HudFocusTarget | null = this.deps.windowForNode ? this.deps.windowForNode(nodeId) : getMainWindow()
       if (w) {
         if (w.isMinimized()) w.restore()
         w.show()
         w.focus()
-        sendToMain(IPC.appFocusNode, nodeId)
+        w.webContents.send(IPC.appFocusNode, nodeId)
       }
       this.model.noteFocus(nodeId)
       this.schedulePush()
