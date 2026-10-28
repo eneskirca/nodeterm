@@ -369,3 +369,44 @@ describe('ChatPanel progressive loading', () => {
     expect(host.textContent).toContain("Couldn't read the transcript.")
   })
 })
+
+describe('ChatPanel Page Up / Page Down', () => {
+  const press = async (target: Element, key: string): Promise<KeyboardEvent> => {
+    const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+    await act(async () => {
+      target.dispatchEvent(e)
+    })
+    return e
+  }
+  const composer = (): HTMLTextAreaElement =>
+    host.querySelector('.term-chat__composer-input') as HTMLTextAreaElement
+
+  it('pages the thread from the composer', async () => {
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), say(20, 'c')] })
+    const bottom = msgs().scrollTop
+
+    const up = await press(composer(), 'PageUp')
+
+    expect(up.defaultPrevented).toBe(true)
+    expect(msgs().scrollTop).toBe(bottom - 350)
+
+    await press(composer(), 'PageDown')
+
+    expect(msgs().scrollTop).toBe(bottom)
+  })
+
+  it('leaves Shift+Page Up to the composer (selection), without scrolling the thread', async () => {
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), say(20, 'c')] })
+    const bottom = msgs().scrollTop
+    const e = new KeyboardEvent('keydown', { key: 'PageUp', shiftKey: true, bubbles: true, cancelable: true })
+
+    await act(async () => {
+      composer().dispatchEvent(e)
+    })
+
+    expect(e.defaultPrevented).toBe(false)
+    expect(msgs().scrollTop).toBe(bottom)
+  })
+})
