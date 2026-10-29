@@ -5051,9 +5051,20 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     `--group`, which is why this set owes no worktree question; a verb joining it that does would,
     because `cwdForNewNodeIn` subtracts `staleGroupIds`, which is epoch-scoped to the ACTIVE
     project.
-  Everything else keeps travelling **on purpose**: `write`/`close`/`group`/`move`/`arrange`/
-  `align`/`verify`/`spawn-team`/`open-worktree` read live canvas state the serialized copy does not
-  carry (measured node sizes, worktree staleness, the React Flow edge arrays). **`browser` is the
+  The verbs that remain REFUSED off screen (`OFF_SCREEN_REFUSALS`) genuinely need the live canvas:
+  `verify`/`spawn-team` arm a graph against it, `branch` parks a mounted terminal, `close-worktree`
+  reads the epoch-scoped worktree store's staleness/ownership answers (and may raise a
+  delete-from-disk confirm). **`open-worktree` is a stored-node verb since 2026-10**: the checkout
+  is created NOW either way — off screen the repoRoot and the default-base entries come from
+  one-shot `git.repoRoot`/`worktreeList` calls against the OWNING project's cwd (never the
+  epoch-scoped store; a failed `worktreeList` refuses a default base rather than guessing `main`),
+  `--group`/`--base <stationId>` resolve against `ctlNodes()`, the bind is a stored write
+  (`applyOwnNodeMutation` of the frame or the bound group's `worktree`, mirrored into
+  `offCanvas.nodes`), and the shared-paths materialization + setup script run against the owner's
+  project id under the same `markGroupPending` bracket the live attach holds — a node cold-opened
+  `--group` into the frame carries `awaitSetupGroup` (the cold path now applies `setupHoldGroup`
+  too). A relay/hosted owner is refused (its git runs on the host while setup would run here).
+  **`browser` is the
   pair worth stating beside `open-browser`**: it NAVIGATES a mounted `<webview>` guest, which
   exists only while its project is on screen, so it travels; `open-browser` merely places the node
   and its guest is created when that project is next shown, exactly as a cold-opened terminal's PTY
@@ -8400,9 +8411,12 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     worktree" all create through it: `git worktree add` (a REJECTED call becomes a failure, never a
     throw out of the caller), then `attachWorktree`. The frame's place is asked only once git
     succeeded. `projectId` opts in to the "the canvas moved on during the await" refusal: the dialog
-    and the issue action pass it; `open-worktree` does not, and still binds to whatever is on screen
-    when git returns (unchanged, and a known gap). `git worktree add` is reached from ONE place
-    (`worktreeCreateDeps`), pinned by `canvas/issue-worktree.source.test.ts`. Three same-tick rules
+    and the issue action pass it; `open-worktree` does not — on screen it binds to whatever canvas
+    git returns to (unchanged, and a known gap), and off screen its stored attach reads the OWNER's
+    store fresh at that moment, so a tab switch during the await changes nothing. `git worktree add`
+    is reached from ONE place (`worktreeCreateDeps`, whose `gitApi` defaults to this canvas's
+    `api.git` and takes the owner session's for the off-screen verb), pinned by
+    `canvas/issue-worktree.source.test.ts`. Three same-tick rules
     the issue action rests on: `attachWorktree` writes the new frame into `nodesRef` beside its
     `setNodes`, so a caller can open a node INTO a frame it just made; it closes the frame's setup
     gate from the bind (`markGroupPending` before the `sharedPaths` materialize, released in a
