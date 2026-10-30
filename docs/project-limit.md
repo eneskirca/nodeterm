@@ -215,7 +215,9 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
   OS reads, `host:<hostname>`). The raw id
   never leaves `machine-id.ts`. Replies: `200 { token, free, epoch }`, `409 not_active`,
   `409 machine_mismatch` + `retryAfter` (unix seconds), `429` (10 per minute per address — retryable,
-  never final). Claims time out after 8 s and never reject.
+  never final). A claim's HTTP request times out after 8 s (body included); reading the machine id
+  before it can add up to ~10 s more when the OS tool hangs (two 5 s attempts). A claim never
+  rejects.
 - Allowance token: `base64url(payloadJSON).base64url(ed25519sig)`, payload
   `{ typ: 'project-allowance', deviceId, machine, allowance, epoch, iat }`, no expiry, signed with
   `PROJECT_ALLOWANCE_PRIVATE_KEY` — a key of its own, never the entitlement key (shipped clients do
@@ -461,7 +463,8 @@ Rough edges a user can notice (behaviour, not bypasses):
 
 - A second open pressed while a claim or the dialog is in flight is dropped (press again).
 - Under DO_NOT_TRACK, the limit moment at a known allowance waits for one claim before the dialog
-  (the "Checking…" panel after 300 ms; up to the 8 s claim timeout when offline).
+  (the "Checking…" panel after 300 ms; up to the 8 s request timeout when offline, plus up to
+  ~10 s for the machine-id read when the OS tool hangs).
 - When the dialog was raised by an agent's refusal, a Close makes room but nothing opens — the agent
   was already told no; ask it again.
 - At the limit, an agent's headless start of a node in a closed project runs without bringing the
