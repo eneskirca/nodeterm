@@ -10758,7 +10758,9 @@ The "auto-download off" setting is NOT here — that is PR #956's.
 **Backend check feed** (`src/core/check.ts`, successor to the static `announcements.json`): the
 **main process** calls `GET https://api.nodeterm.dev/v1/check?deviceId=&version=&os=&arch=&channel=stable&plan=`
 (so the renderer CSP stays `'self'`) on launch + every 6h, cached 5 min, returning `{ messages, update }`.
-`deviceId` is the anonymous install id the backend counts active installs by. **Only while Settings →
+The one cache exception: a reply fetched before the open-project count was known (launch reads the
+feed before the workspace index has loaded) is refetched once the count is, so the launch check is
+not left count-less for five minutes. `deviceId` is the anonymous install id the backend counts active installs by. **Only while Settings →
 Privacy → Telemetry is on** does the query also carry `openProjects=<n>` (the open-project count, a
 number only; the backend keeps each device's maximum for the project limit). The reply may also
 carry `limits: { projects: { free, epoch } }` while the free-tier project limit is on (absent = off);

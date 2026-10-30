@@ -321,9 +321,10 @@ jobs:
       #            release is ever blocked waiting for prose, and nobody has to be in the loop.
       #
       # DEGRADES, NEVER FAILS: if the generator throws for any reason (gh api down, a body
-      # shape we do not parse, a missing node), the step falls back to EXACTLY the plain
-      # `git log` list this release used to publish. A release that cannot publish because
-      # prose generation broke would be strictly worse than the list we are replacing.
+      # shape we do not parse, a missing node), the step falls back to the plain `git log` list
+      # this release used to publish — or to the compare link alone when a `no-release-notes` PR
+      # is in the range or the label lookup does not answer. A release that cannot publish
+      # because prose generation broke would be strictly worse than the list we are replacing.
       - name: Generate release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -346,11 +347,31 @@ jobs:
           if ! node scripts/release-notes.mjs --tag "$tag" --prev "$prev" \
                  --repo "$GITHUB_REPOSITORY" --out notes.md; then
             echo "::warning::structured release notes failed; falling back to the plain commit list"
+            # The plain list is commit subjects, and git knows nothing about the `no-release-notes`
+            # label — the fallback would publish exactly what the label keeps out. So the list is
+            # printed only when the label lookup ANSWERS and no labelled PR was merged in this
+            # range; otherwise the notes are the compare link alone. A failed lookup is not "no
+            # labelled PRs".
+            withheld=yes
+            if labelled=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?labels=no-release-notes&state=all&per_page=100" \
+                            --jq '.[] | select(.pull_request) | .number' 2>/dev/null); then
+              withheld=no
+              subjects=$(git log --format='%s' "$range")
+              for n in $labelled; do
+                if grep -qE "^Merge pull request #${n} |\(#${n}\)\$" <<<"$subjects"; then withheld=yes; break; fi
+              done
+            fi
+            if [ -n "$prev" ]; then link="https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${tag}"
+            else link="https://github.com/${GITHUB_REPOSITORY}/commits/${tag}"; fi
             {
               echo "## Changes${prev:+ since ${prev}}"
-              git log --no-merges --format='- %s' "$range" | grep -vE '^- chore\(release\)' | head -60
-              total=$(git log --no-merges --format='- %s' "$range" | grep -cvE '^- chore\(release\)' || true)
-              if [ "${total:-0}" -gt 60 ]; then echo "- …and $((total - 60)) more commits"; fi
+              if [ "$withheld" = yes ]; then
+                echo "Full list of changes: ${link}"
+              else
+                git log --no-merges --format='- %s' "$range" | grep -vE '^- chore\(release\)' | head -60
+                total=$(git log --no-merges --format='- %s' "$range" | grep -cvE '^- chore\(release\)' || true)
+                if [ "${total:-0}" -gt 60 ]; then echo "- …and $((total - 60)) more commits"; fi
+              fi
             } > notes.md
           fi
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
