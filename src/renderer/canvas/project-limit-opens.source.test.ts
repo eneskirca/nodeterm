@@ -38,6 +38,16 @@ function expectGateRightBefore(body: string, action: string, mutation: string, f
   return gate
 }
 
+/** In `body`, between the awaited gate at `gate` and `mutation`, the live canvas is committed again.
+ *  A path that committed before an await of its own (a probe, a question) needs it: the limit
+ *  dialog's Close switches the active canvas, and the post-gate switch would otherwise drop whatever
+ *  was written live into the newly active one. Synchronous, so a dormant open stays in one tick. */
+function expectCommitAfterGate(body: string, gate: number, mutation: string): void {
+  const awaited = body.indexOf(AWAIT_GATE, gate)
+  const mutated = body.indexOf(mutation, awaited)
+  expect(body.slice(awaited + AWAIT_GATE.length, mutated), mutation).toContain('commitActiveToStore()')
+}
+
 describe('project-limit gate placement in Canvas', () => {
   it('New project: the gate comes first, then the synchronous add', () => {
     const body = between('const addProject = useCallback(', '}, [commitActiveToStore, writeDisk])')
@@ -49,6 +59,7 @@ describe('project-limit gate placement in Canvas', () => {
     const body = between('const onRepoCloned = useCallback(', CALLBACK_END)
     const gate = expectGateRightBefore(body, "{ kind: 'new' }", 'useProjects.getState().adoptProject(')
     expect(body.indexOf('await api.workspace.probeFolder(clonedPath)')).toBeLessThan(gate)
+    expectCommitAfterGate(body, gate, 'useProjects.getState().adoptProject(')
   })
 
   it('SSH open: the gate comes after the handed-off question, immediately before openSshProject', () => {
@@ -63,6 +74,8 @@ describe('project-limit gate placement in Canvas', () => {
     expect(body.indexOf('await confirmHandedOffReopen(existing.id)')).toBeLessThan(reuse)
     const fresh = expectGateRightBefore(body, 'action', '.adoptProject({ ...probed, closed: false })', reuse + 1)
     expect(body.indexOf('await api.workspace.probeFolder(folder)')).toBeLessThan(fresh)
+    expectCommitAfterGate(body, reuse, '.openFolderProject(folder)')
+    expectCommitAfterGate(body, fresh, '.adoptProject({ ...probed, closed: false })')
     // A declined open says so to its caller (no toast here, and none there either).
     expect(body.match(/if \(g !== true && !\(await g\)\) return false/g)).toHaveLength(2)
   })
