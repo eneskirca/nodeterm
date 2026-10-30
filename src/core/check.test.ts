@@ -42,7 +42,9 @@ describe('fetchCheck — reports the plan', () => {
       status: 200,
       headers: { 'content-type': 'application/json' }
     })
-  const planOf = (call: number) => new URL(String(fetchMock.mock.calls[call][0])).searchParams.get('plan')
+  const paramsOf = (call: number) => new URL(String(fetchMock.mock.calls[call][0])).searchParams
+  const param = (call: number, key: string) => paramsOf(call).get(key)
+  const planOf = (call: number) => param(call, 'plan')
   // A fresh module graph per load (the cache is module state), so the platform must be set on the
   // SAME instance check.ts will import.
   const loadCheck = async () => {
@@ -99,5 +101,71 @@ describe('fetchCheck — reports the plan', () => {
     await fetchCheck()
     premium.value = true
     expect(await fetchCheck()).toEqual({ messages: [], update: { minSupported: '0.5.0', mandatory: false } })
+  })
+
+  // The open-project count rides the same call, but — unlike the install count above — only while
+  // the Settings → Privacy telemetry toggle is on, and only as a bare number. Its server side keeps
+  // the per-install maximum (the data the project-limit allowance is computed from).
+  describe('openProjects', () => {
+    beforeEach(() => fetchMock.mockResolvedValue(feed('x')))
+
+    it('sends openProjects when telemetry is on and the count is known', async () => {
+      const m = await loadCheck()
+      m.configureCheck({ openProjects: () => 7, telemetryEnabled: () => true })
+      await m.fetchCheck()
+      expect(param(0, 'openProjects')).toBe('7')
+    })
+
+    it('omits it when telemetry is off', async () => {
+      const m = await loadCheck()
+      m.configureCheck({ openProjects: () => 7, telemetryEnabled: () => false })
+      await m.fetchCheck()
+      expect(param(0, 'openProjects')).toBeNull()
+    })
+
+    it('omits it before the index is loaded', async () => {
+      const m = await loadCheck()
+      m.configureCheck({ openProjects: () => undefined, telemetryEnabled: () => true })
+      await m.fetchCheck()
+      expect(param(0, 'openProjects')).toBeNull()
+    })
+
+    it('omits it when never configured', async () => {
+      const m = await loadCheck()
+      await m.fetchCheck()
+      expect(param(0, 'openProjects')).toBeNull()
+    })
+
+    it('omits a count that is not a non-negative integer', async () => {
+      for (const n of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        fetchMock.mockClear()
+        const m = await loadCheck()
+        m.configureCheck({ openProjects: () => n, telemetryEnabled: () => true })
+        await m.fetchCheck()
+        expect(param(0, 'openProjects')).toBeNull()
+      }
+    })
+
+    it('sends a count of zero', async () => {
+      const m = await loadCheck()
+      m.configureCheck({ openProjects: () => 0, telemetryEnabled: () => true })
+      await m.fetchCheck()
+      expect(param(0, 'openProjects')).toBe('0')
+    })
+
+    it('sends nothing else new', async () => {
+      const m = await loadCheck()
+      m.configureCheck({ openProjects: () => 7, telemetryEnabled: () => true })
+      await m.fetchCheck()
+      expect([...paramsOf(0).keys()].sort()).toEqual([
+        'arch',
+        'channel',
+        'deviceId',
+        'openProjects',
+        'os',
+        'plan',
+        'version'
+      ])
+    })
   })
 })

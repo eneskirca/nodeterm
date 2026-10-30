@@ -19,8 +19,8 @@ export function PrivacySection({ isActive }: { isActive: boolean }): React.JSX.E
     <SettingsSection id="privacy" title="Privacy" isActive={isActive} searchEntries={ENTRIES}>
       <SearchableRow {...ROWS.telemetry}>
         <FieldRow
-          label="Send anonymous usage data (version/OS)"
-          description="No personal data; client IP is never stored. Used only to see which versions are in use. A lighter anonymous install count runs regardless; fully disable with the DO_NOT_TRACK environment variable."
+          label="Send anonymous usage data (version/OS, open-project count)"
+          description="No personal data; client IP is never stored. Used to see which versions are in use and how many projects people keep open (a number only — never names, paths or hosts). A lighter anonymous install count runs regardless; fully disable with the DO_NOT_TRACK environment variable."
           control={
             <Switch
               checked={telemetryEnabled}
