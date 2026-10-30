@@ -31,7 +31,7 @@ const EMPTY: CheckResult = { messages: [], update: { minSupported: null, mandato
 // server is targeted explicitly. Deliberately NOT gated on the in-app telemetry toggle: this
 // call always runs (content delivery + the anonymous install count), so an install still counts
 // even if the user never opts into the detailed telemetry ping. The env kill-switches above are
-// the hard off. The one field that IS gated on the toggle is `openProjects` (`openProjectsParam`).
+// the hard off. The one field that IS gated on the toggle is `openProjects` (`openProjectsQuery`).
 function allowed(): boolean {
   if (process.env.DO_NOT_TRACK || process.env.NODETERM_TELEMETRY_DISABLED) return false
   if (!platform().isPackaged && !process.env.NODETERM_API_BASE) return false
@@ -148,12 +148,27 @@ export function configureCheck(next: CheckDeps): void {
   deps = next
 }
 
-// `openProjects=<n>` only when configured, the telemetry toggle is on and `n` is a non-negative
-// integer. Nothing else is added.
-function openProjectsParam(): Record<string, string> {
-  if (!deps || deps.telemetryEnabled() !== true) return {}
-  const n = deps.openProjects()
-  return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? { openProjects: String(n) } : {}
+/** The open-project count for one read: `param` is `openProjects=<n>` only when configured, the
+ *  telemetry toggle is on and `n` is a non-negative integer (nothing else is added); `owed` = the
+ *  count was wanted (toggle on) but is not known yet — the index still loading at boot. Never
+ *  throws: a toggle that cannot be read is off, a count that cannot be read is unknown. */
+function openProjectsQuery(): { param: Record<string, string>; owed: boolean } {
+  let wanted = false
+  try {
+    wanted = !!deps && deps.telemetryEnabled() === true
+  } catch {
+    wanted = false
+  }
+  if (!deps || !wanted) return { param: {}, owed: false }
+  let n: number | undefined
+  try {
+    n = deps.openProjects()
+  } catch {
+    n = undefined
+  }
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0
+    ? { param: { openProjects: String(n) }, owed: false }
+    : { param: {}, owed: true }
 }
 
 type Plan = 'pro' | 'free'
@@ -161,14 +176,23 @@ type Plan = 'pro' | 'free'
 // The plan the response was fetched for. The backend aims messages at paid or free users by the
 // plan WE state (the feed is anonymous — it cannot look a device up), so an answer belongs to the
 // plan it was asked with: a purchase or a lapse must not be served the other plan's messages.
-let cache: { at: number; plan: Plan; data: CheckResult } | null = null
+// `countOwed`: the read went out while the count was wanted but unknown (see openProjectsQuery).
+let cache: { at: number; plan: Plan; data: CheckResult; countOwed: boolean } | null = null
 
 export async function fetchCheck(): Promise<CheckResult> {
   if (!allowed()) return EMPTY
   const now = Date.now()
   // Offline token verify, so it is cheap to read per call and already right at boot.
   const plan: Plan = isPremium() ? 'pro' : 'free'
-  if (cache && cache.plan === plan && now - cache.at < CACHE_MS) return cache.data
+  const count = openProjectsQuery()
+  // A reply fetched while the count was owed does not stand in for a read that can carry it: at boot
+  // the first reads (this module's own, the banner's, the update card's) can all run before the
+  // workspace index is loaded, and served from the cache that count-less reply would keep the count
+  // off the wire until the 6 h tick — for a session shorter than that, for good. So once the count
+  // is known this read refetches, and its reply replaces the cache. A reply that carried the count,
+  // or was fetched with the toggle off, is reused exactly as before.
+  const countNowKnown = cache?.countOwed === true && Object.hasOwn(count.param, 'openProjects')
+  if (cache && cache.plan === plan && now - cache.at < CACHE_MS && !countNowKnown) return cache.data
   // A failed read keeps the last good answer, except the messages it fetched for another plan.
   // The update policy does not depend on the plan, so it survives.
   const fallback = (): CheckResult =>
@@ -181,7 +205,7 @@ export async function fetchCheck(): Promise<CheckResult> {
       arch: process.arch,
       channel: 'stable',
       plan,
-      ...openProjectsParam()
+      ...count.param
     })
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 8000)
@@ -193,7 +217,7 @@ export async function fetchCheck(): Promise<CheckResult> {
     // A body that does not parse (a captive portal's HTML page) throws into the fallback below.
     const body: unknown = await res.json()
     const data = sanitize(body)
-    cache = { at: now, plan, data }
+    cache = { at: now, plan, data, countOwed: count.owed }
     // The one place an answer is given: a 2xx whose body parsed as JSON. Cached first, so a
     // listener that reads the feed again is served from the cache rather than re-fetching.
     emitAnswer(sanitizeLimits(body))

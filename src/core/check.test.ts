@@ -256,6 +256,88 @@ describe('fetchCheck — reports the plan', () => {
         'version'
       ])
     })
+
+    // At boot the first reads can run before the workspace index has loaded, so they go out with
+    // no count. Served from the cache, that reply would keep the count off the wire for 5 minutes
+    // and — the next read being the 6 h tick — for the whole of a short session.
+    describe('a reply fetched while the count was still unknown', () => {
+      const titles = async (m: Awaited<ReturnType<typeof loadCheck>>) =>
+        (await m.fetchCheck()).messages.map((x) => x.title)
+
+      beforeEach(() => {
+        let n = 0
+        fetchMock.mockImplementation(async () => feed(`read ${++n}`))
+      })
+
+      it('does not stand in for a read that can carry it: that read refetches and replaces the cache', async () => {
+        const m = await loadCheck()
+        let count: number | undefined
+        m.configureCheck({ openProjects: () => count, telemetryEnabled: () => true })
+        expect(await titles(m)).toEqual(['read 1'])
+        expect(param(0, 'openProjects')).toBeNull()
+
+        count = 4
+        expect(await titles(m)).toEqual(['read 2'])
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+        expect(param(1, 'openProjects')).toBe('4')
+
+        // The reply that carried the count is an ordinary cache entry again.
+        count = 5
+        expect(await titles(m)).toEqual(['read 2'])
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+      })
+
+      it('is reused while the count is still unknown, or no longer wanted', async () => {
+        const m = await loadCheck()
+        let count: number | undefined
+        let telemetry = true
+        m.configureCheck({ openProjects: () => count, telemetryEnabled: () => telemetry })
+        await m.fetchCheck()
+        expect(await titles(m)).toEqual(['read 1'])
+        telemetry = false
+        count = 4
+        expect(await titles(m)).toEqual(['read 1'])
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+      })
+
+      it('a failed refetch falls back to it and the next read tries again', async () => {
+        const m = await loadCheck()
+        let count: number | undefined
+        m.configureCheck({ openProjects: () => count, telemetryEnabled: () => true })
+        await m.fetchCheck()
+        count = 4
+        fetchMock.mockRejectedValueOnce(new Error('offline'))
+        expect(await titles(m)).toEqual(['read 1'])
+        expect(await titles(m)).toEqual(['read 2'])
+        expect(param(2, 'openProjects')).toBe('4')
+      })
+    })
+
+    it('a reply fetched with the count is reused within 5 minutes, whatever the count becomes', async () => {
+      let n = 0
+      fetchMock.mockImplementation(async () => feed(`read ${++n}`))
+      const m = await loadCheck()
+      let count = 4
+      m.configureCheck({ openProjects: () => count, telemetryEnabled: () => true })
+      await m.fetchCheck()
+      count = 9
+      expect((await m.fetchCheck()).messages.map((x) => x.title)).toEqual(['read 1'])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('a reply fetched with telemetry off is reused within 5 minutes, even once the count is wanted and known', async () => {
+      let n = 0
+      fetchMock.mockImplementation(async () => feed(`read ${++n}`))
+      const m = await loadCheck()
+      let count: number | undefined
+      let telemetry = false
+      m.configureCheck({ openProjects: () => count, telemetryEnabled: () => telemetry })
+      await m.fetchCheck()
+      telemetry = true
+      count = 4
+      expect((await m.fetchCheck()).messages.map((x) => x.title)).toEqual(['read 1'])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
   })
 
   // The project-limit latch (core/project-limit.ts) clears on `off`, so an answer may come only from

@@ -71,7 +71,7 @@ const API_BASE = process.env.NODETERM_API_BASE || 'https://api.nodeterm.dev'
 export const OFF_TRUST_MS = 24 * 60 * 60 * 1000
 /** The whole claim request, body included (see license.ts REQUEST_TIMEOUT_MS for why the body). */
 const CLAIM_TIMEOUT_MS = 8000
-/** The check feed is re-read on this cadence; it is cached, so it adds no traffic of its own. */
+/** The check feed is re-read on this cadence, through check.ts's 5-minute cache. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** The server's own bounds: FREE in 1..1000 (check.ts), a first-launch count in 0..10000 (claim
  *  route — anything larger is a 400, which would fail every claim). */
@@ -98,6 +98,10 @@ export interface ProjectLimitDeps {
   publicKeyPem?: string
   /** Deliver the new state to this machine's own windows — never to relay peers. */
   notify: (s: ProjectLimitState) => void
+  /** Settles once `openProjects` can answer (main: the boot workspace load). The init check read
+   *  waits for it, settled either way: read before it, the count is still unknown and that read
+   *  goes out without it. Absent = read at once. */
+  ready?: Promise<unknown>
 }
 
 export interface ProjectLimitHandle {
@@ -390,7 +394,10 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   const readCheck = (): void => {
     track(fetchCheck().catch(() => {}))
   }
-  readCheck()
+  // After the workspace load, whichever way it settles: the open-project count rides this read only
+  // once the index is known (check.ts), and the next read of our own is the 6 h tick.
+  if (deps.ready) track(deps.ready.finally(readCheck).catch(() => {}))
+  else readCheck()
   setInterval(() => {
     // Time alone can change the state (see pushIfChanged); the check below covers the server's word.
     pushIfChanged()

@@ -63,10 +63,16 @@ gate. How that is held, layer by layer:
   An install the limit was never switched on for has no token, so it never reads it; one that was
   switched off by an undo through the check feed keeps its token and still reads it at boot.
 - The only request a dormant install makes is `/v1/check`, the call it already made. Core also
-  reads it at boot and every 6 h, through the same 5-minute cache and the same build /
-  DO_NOT_TRACK guards. Core records the first-launch count once (the late-updater basis above, by
-  design); `project-limit.json` is otherwise written only when a server word changes the stored
-  state, not on every check.
+  reads it once the boot workspace load has settled (`initProjectLimit`'s `ready`) and every 6 h,
+  through the same 5-minute cache and the same build / DO_NOT_TRACK guards. That boot read is not
+  free: a reply fetched while the open-project count was wanted (telemetry on) but still unknown —
+  the index loading, which is when the banner's and the update card's first reads can run — does not
+  stand in for a later read that can carry the count; that read refetches and replaces the cache.
+  So a boot can cost one extra request, and the count reaches the server as soon as the index is
+  loaded instead of only on the 6 h tick (a session shorter than that would otherwise never report
+  it). Core records the first-launch count once (the late-updater basis above, by design);
+  `project-limit.json` is otherwise written only when a server word changes the stored state, not
+  on every check.
 - The agent `open-project` verb asks synchronously too while the limit is off; the headless start
   of a node in a closed project unhides exactly as before.
 

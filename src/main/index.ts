@@ -4887,10 +4887,13 @@ app.whenReady().then(async () => {
   // The free-tier open-project limit (core/project-limit.ts). Its state goes to THIS machine's
   // window only: sendToMain, never platform().broadcast, which also fans out to every relay peer
   // (the state carries this host's Pro and DO_NOT_TRACK facts). The Server Edition does not run it.
+  // Its first check read waits for the boot workspace load, the one the delivery queue waits on: read
+  // before the index is loaded, the open-project count is unknown and would not ride that read.
   const projectLimit = initProjectLimit({
     openProjects: () => workspaceStore.openProjectCount(),
     machineHash: readMachineHashResult,
-    notify: (s) => sendToMain(IPC.projectLimitChanged, s)
+    notify: (s) => sendToMain(IPC.projectLimitChanged, s),
+    ready: bootWorkspaceLoad
   })
   settingsStore.onChange(() => projectLimit.refresh())
   // DO_NOT_TRACK consent for license and allowance calls (spec §7.4): Settings → Privacy, read on

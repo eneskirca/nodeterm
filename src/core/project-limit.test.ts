@@ -133,6 +133,8 @@ async function boot(
     machineHash?: () => Promise<MachineHashResult>
     /** The allowance key passed to core: the test key unless given; `undefined` = the shipped key. */
     publicKeyPem?: string
+    /** Passed through as the `ready` dep (main: the boot workspace load). */
+    ready?: Promise<unknown>
     wait?: boolean
   } = {}
 ): Promise<Booted> {
@@ -154,6 +156,7 @@ async function boot(
         ? {}
         : { publicKeyPem: opts.publicKeyPem }
       : { publicKeyPem: ALLOWANCE_PUB }),
+    ...(opts.ready ? { ready: opts.ready } : {}),
     notify: (s) => notified.push(s)
   })
   booted = {
@@ -796,5 +799,30 @@ describe('project limit: wiring', () => {
     expect(checkCalls()).toBe(1)
     await vi.advanceTimersByTimeAsync(6 * HOUR)
     expect(checkCalls()).toBe(2)
+  })
+
+  // Main hands in the boot workspace load: read any earlier and the open-project count is still
+  // unknown, so that first read (and every cache hit on it) would go out without it.
+  it('the init read waits for `ready`, so it carries the count the workspace load made known', async () => {
+    let release: () => void = () => {}
+    const ready = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let count: number | undefined
+    const { check } = await boot({ ready, wait: false })
+    check.configureCheck({ openProjects: () => count, telemetryEnabled: () => true })
+    await flush()
+    expect(checkCalls()).toBe(0)
+
+    count = 4
+    release()
+    await booted.idle()
+    expect(checkCalls()).toBe(1)
+    expect(new URL(urls()[0]).searchParams.get('openProjects')).toBe('4')
+  })
+
+  it('a `ready` that rejects still lets the init read run', async () => {
+    await boot({ ready: Promise.reject(new Error('workspace load failed')) })
+    expect(checkCalls()).toBe(1)
   })
 })
