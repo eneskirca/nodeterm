@@ -857,3 +857,253 @@ describe('license detail + release', () => {
     expect(d.key).toBe('K')
   })
 })
+
+describe('license clock anchor + project-limit Pro grace + DO_NOT_TRACK consent', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  let fake: import('./platform-fake').FakePlatform
+
+  const DAY = 24 * HOUR
+  const DAY_S = 24 * 60 * 60
+  const file = (): string => path.join(h.userData, 'license.json')
+  function store(s: { token?: string; key?: string; lastSeen?: number }): void {
+    writeFileSync(file(), JSON.stringify(s))
+  }
+  /** A token signed by a key this install does NOT trust — the signature half of verify(). */
+  function forge(ttlSeconds: number): string {
+    const other = crypto.generateKeyPairSync('ed25519').privateKey
+    const payload = Buffer.from(
+      JSON.stringify({
+        deviceId: 'test-device',
+        tier: 'pro',
+        licenseId: 'lic_forged',
+        exp: Math.floor(Date.now() / 1000) + ttlSeconds
+      })
+    ).toString('base64url')
+    return `${payload}.${crypto.sign(null, Buffer.from(payload), other).toString('base64url')}`
+  }
+  const urls = (): string[] => fetchMock.mock.calls.map((c) => String(c[0]))
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'Date'] })
+    h.userData = mkdtempSync(path.join(tmpdir(), 'nt-license-grace-'))
+    writeFileSync(path.join(h.userData, 'device-id'), 'test-device')
+    delete process.env.DO_NOT_TRACK
+    delete process.env.NODETERM_TELEMETRY_DISABLED
+    process.env.NODETERM_API_BASE = 'http://127.0.0.1:1'
+    // Offline by default: the launch refresh keeps the stored token (offline grace).
+    fetchMock = vi.fn().mockRejectedValue(new Error('offline'))
+    vi.stubGlobal('fetch', fetchMock)
+    vi.resetModules()
+    const { initPlatform } = await import('./platform')
+    const { fakePlatform } = await import('./platform-fake')
+    fake = fakePlatform({ userDataDir: h.userData, isPackaged: false })
+    initPlatform(fake)
+  })
+
+  afterEach(async () => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    const { resetPlatformForTests } = await import('./platform')
+    resetPlatformForTests()
+    delete process.env.DO_NOT_TRACK
+    delete process.env.NODETERM_TELEMETRY_DISABLED
+    process.env.NODETERM_API_BASE = 'http://127.0.0.1:1'
+    rmSync(h.userData, { recursive: true, force: true })
+  })
+
+  describe('clockAnchorMs', () => {
+    it('is the wall clock when nothing later has been observed', async () => {
+      const { clockAnchorMs } = await import('./license')
+      expect(clockAnchorMs()).toBe(Date.now())
+      store({ lastSeen: Math.floor(Date.now() / 1000) - 5 * DAY_S })
+      expect(clockAnchorMs()).toBe(Date.now())
+    })
+
+    it('is the stored lastSeen when the wall clock is behind it (a rolled-back clock)', async () => {
+      const ahead = Math.floor(Date.now() / 1000) + 40 * DAY_S
+      store({ lastSeen: ahead })
+      const { clockAnchorMs } = await import('./license')
+      expect(clockAnchorMs()).toBe(ahead * 1000)
+    })
+  })
+
+  describe('proForProjectLimit', () => {
+    it('is the 30-day window', async () => {
+      const { PRO_LIMIT_GRACE_MS } = await import('./license')
+      expect(PRO_LIMIT_GRACE_MS).toBe(30 * 24 * 60 * 60 * 1000)
+    })
+
+    it('a live token is Pro for the limit and for everything else', async () => {
+      store({ token: mint(7 * DAY_S) })
+      const { isPremium, proForProjectLimit } = await import('./license')
+      expect(isPremium()).toBe(true)
+      expect(proForProjectLimit()).toBe(true)
+    })
+
+    it('a token that expired 10 days ago is Pro for the limit ONLY', async () => {
+      store({ token: mint(-10 * DAY_S, 'test-device', 5) })
+      const { initLicense, isPremium, licensedSeats, proForProjectLimit } = await import('./license')
+      expect(isPremium()).toBe(false)
+      expect(proForProjectLimit()).toBe(true)
+      // Every other Pro feature still reads the token as expired.
+      expect(licensedSeats()).toBe(0)
+      initLicense()
+      await refreshed()
+      const status = (await fake.handlers[IPC.licenseStatus]()) as LicenseStatus
+      expect(status.active).toBe(false)
+      expect(status.seats).toBe(0)
+    })
+
+    it('a token that expired 31 days ago is not Pro for anything', async () => {
+      store({ token: mint(-31 * DAY_S) })
+      const { isPremium, proForProjectLimit } = await import('./license')
+      expect(isPremium()).toBe(false)
+      expect(proForProjectLimit()).toBe(false)
+    })
+
+    it('measures the 30 days from the clock anchor, not the wall clock', async () => {
+      // 20 days past expiry by the wall clock (inside the window), but this install has already
+      // observed a time 40 days ahead — 60 days past expiry by the anchor. Rolling the clock back
+      // must not buy the window again.
+      store({ token: mint(-20 * DAY_S), lastSeen: Math.floor(Date.now() / 1000) + 40 * DAY_S })
+      const { proForProjectLimit } = await import('./license')
+      expect(proForProjectLimit()).toBe(false)
+    })
+
+    it('a token minted for another device is not Pro for the limit, expired or not', async () => {
+      store({ token: mint(-10 * DAY_S, 'other-device') })
+      const first = await import('./license')
+      expect(first.proForProjectLimit()).toBe(false)
+      store({ token: mint(7 * DAY_S, 'other-device') })
+      expect(first.proForProjectLimit()).toBe(false)
+    })
+
+    it('a token signed by any other key is not Pro for the limit', async () => {
+      store({ token: forge(-10 * DAY_S) })
+      const { proForProjectLimit } = await import('./license')
+      expect(proForProjectLimit()).toBe(false)
+    })
+
+    it('no stored token is not Pro for the limit', async () => {
+      const { proForProjectLimit } = await import('./license')
+      expect(proForProjectLimit()).toBe(false)
+    })
+
+    it('ends with the token a 2xx active:false deletes', async () => {
+      // The device-bound refresh drops the token on the server's "no longer entitled" answer, so a
+      // stored token is itself the proof that no such answer has arrived since (spec §6).
+      store({ token: mint(-10 * DAY_S) })
+      fetchMock.mockResolvedValue(jsonResponse({ active: false }))
+      const { initLicense, proForProjectLimit } = await import('./license')
+      expect(proForProjectLimit()).toBe(true)
+      initLicense()
+      await refreshed()
+      expect(proForProjectLimit()).toBe(false)
+    })
+  })
+
+  describe('isDntEnv', () => {
+    it('reads DO_NOT_TRACK and the telemetry kill switch, live', async () => {
+      const { isDntEnv } = await import('./license')
+      expect(isDntEnv()).toBe(false)
+      process.env.DO_NOT_TRACK = '1'
+      expect(isDntEnv()).toBe(true)
+      delete process.env.DO_NOT_TRACK
+      process.env.NODETERM_TELEMETRY_DISABLED = '1'
+      expect(isDntEnv()).toBe(true)
+    })
+  })
+
+  describe('licenseNetworkGate', () => {
+    it('is ok with no DO_NOT_TRACK, whatever consent says', async () => {
+      const { licenseNetworkGate } = await import('./license')
+      expect(licenseNetworkGate()).toBe('ok')
+    })
+
+    it('is disabled in an unpackaged build without NODETERM_API_BASE, even with DNT consent', async () => {
+      delete process.env.NODETERM_API_BASE
+      const { licenseNetworkGate, setLicenseNetworkConsent } = await import('./license')
+      expect(licenseNetworkGate()).toBe('disabled')
+      process.env.DO_NOT_TRACK = '1'
+      setLicenseNetworkConsent(() => true)
+      expect(licenseNetworkGate()).toBe('disabled')
+      // A packaged build talks to the default API.
+      const { initPlatform } = await import('./platform')
+      const { fakePlatform } = await import('./platform-fake')
+      initPlatform(fakePlatform({ userDataDir: h.userData, isPackaged: true }))
+      expect(licenseNetworkGate()).toBe('ok')
+    })
+
+    it('asks for consent under DO_NOT_TRACK or the kill switch, and reads it on every call', async () => {
+      process.env.DO_NOT_TRACK = '1'
+      const { licenseNetworkGate, setLicenseNetworkConsent } = await import('./license')
+      expect(licenseNetworkGate()).toBe('consent_required') // default: no consent
+      let consented = true
+      setLicenseNetworkConsent(() => consented)
+      expect(licenseNetworkGate()).toBe('ok')
+      consented = false // revoked in Settings → Privacy: takes effect at once
+      expect(licenseNetworkGate()).toBe('consent_required')
+      delete process.env.DO_NOT_TRACK
+      process.env.NODETERM_TELEMETRY_DISABLED = '1'
+      expect(licenseNetworkGate()).toBe('consent_required')
+    })
+
+    it('a consent callback that throws reads as no consent', async () => {
+      process.env.DO_NOT_TRACK = '1'
+      const { licenseNetworkGate, setLicenseNetworkConsent } = await import('./license')
+      setLicenseNetworkConsent(() => {
+        throw new Error('settings not loaded')
+      })
+      expect(licenseNetworkGate()).toBe('consent_required')
+    })
+  })
+
+  describe('license calls under DO_NOT_TRACK', () => {
+    it('without consent, the launch refresh makes no request and keeps the stored token', async () => {
+      process.env.DO_NOT_TRACK = '1'
+      store({ token: mint(7 * DAY_S) })
+      const { initLicense, isPremium } = await import('./license')
+      initLicense()
+      await refreshed()
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(isPremium()).toBe(true)
+    })
+
+    it('without consent, a key-paste refresh makes no request either', async () => {
+      process.env.NODETERM_TELEMETRY_DISABLED = '1'
+      store({ key: 'KEY-1', token: mint(7 * DAY_S) })
+      const { initLicense } = await import('./license')
+      initLicense()
+      await refreshed()
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('with consent, the device-bound refresh asks /v1/license/status and stores the token', async () => {
+      process.env.DO_NOT_TRACK = '1'
+      const token = mint(7 * DAY_S)
+      fetchMock.mockResolvedValue(jsonResponse({ active: true, token }))
+      const { initLicense, isPremium, setLicenseNetworkConsent } = await import('./license')
+      setLicenseNetworkConsent(() => true)
+      initLicense()
+      await refreshed()
+      expect(urls()).toEqual([
+        'http://127.0.0.1:1/v1/license/status?deviceId=test-device'
+      ])
+      expect(isPremium()).toBe(true)
+    })
+
+    it('with consent, the detail route runs too', async () => {
+      process.env.DO_NOT_TRACK = '1'
+      store({ token: mint(7 * DAY_S) })
+      const { initLicense, setLicenseNetworkConsent } = await import('./license')
+      initLicense()
+      await refreshed() // no consent yet → no request
+      expect(fetchMock).not.toHaveBeenCalled()
+      setLicenseNetworkConsent(() => true)
+      fetchMock.mockResolvedValue(jsonResponse({ key: 'K', used: 1, seats: 3, source: 'keygen' }))
+      const d = (await fake.handlers[IPC.licenseDetail]()) as LicenseDetail
+      expect(d.error).toBeNull()
+      expect(urls()).toEqual(['http://127.0.0.1:1/v1/license/detail'])
+    })
+  })
+})
