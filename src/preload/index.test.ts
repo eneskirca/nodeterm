@@ -149,3 +149,28 @@ describe('preload canvasAuthority (the desktop governs nothing)', () => {
     expect(h.on).not.toHaveBeenCalled()
   })
 })
+
+// The renderer's half of the project-limit contract. Main registers the handlers (core
+// project-limit); the preload must invoke exactly these channels with no arguments — the claim's
+// deviceId and machine hash are read by core itself, never supplied from the page.
+describe('preload projectLimit wiring', () => {
+  it('state and claim invoke their own channels with no arguments', async () => {
+    h.invoke.mockClear()
+    await api.projectLimit.state()
+    await api.projectLimit.claim()
+    expect(h.invoke.mock.calls).toEqual([[IPC.projectLimitState], [IPC.projectLimitClaim]])
+  })
+
+  it('onChange subscribes the change channel, forwards the state and unsubscribes', () => {
+    const got: unknown[] = []
+    const off = api.projectLimit.onChange((s) => got.push(s))
+    const call = h.on.mock.calls.find((c) => c[0] === IPC.projectLimitChanged)
+    expect(call).toBeTruthy()
+    const handler = call![1] as (e: unknown, payload: unknown) => void
+    const state = { active: true, pro: false, free: 5, allowance: 12, dnt: false }
+    handler({}, state)
+    expect(got).toEqual([state])
+    off()
+    expect(h.removeListener).toHaveBeenCalledWith(IPC.projectLimitChanged, handler)
+  })
+})

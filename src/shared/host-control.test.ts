@@ -57,6 +57,17 @@ describe('isHostOnlyChannel', () => {
     expect(isHostOnlyChannel(IPC.stationNoticeList)).toBe(true)
   })
 
+  it('covers the whole project-limit namespace — a relay peer must never read or claim the host’s allowance', () => {
+    // A claim spends the HOST's per-device allowance on the host's machine hash, and the state names
+    // the host's Pro and DNT facts. A relay tab keeps its own local preload for this namespace.
+    expect(isHostOnlyChannel(IPC.projectLimitState)).toBe(true)
+    expect(isHostOnlyChannel(IPC.projectLimitClaim)).toBe(true)
+    expect(isHostOnlyChannel(IPC.projectLimitChanged)).toBe(true)
+    expect(isHostOnlyChannel('projectLimit:claim')).toBe(true)
+    // A namespace, not a list: a verb added later is refused the day it is added.
+    expect(isHostOnlyChannel('projectLimit:something-new')).toBe(true)
+  })
+
   it('leaves the read-only/lifecycle channels alone — the gate is on ACTION, not on the namespace', () => {
     // Subscribing and receiving events costs a guest nothing the canvas does not already show;
     // running host code, and answering the host's own trust prompt, are the two acts being gated.

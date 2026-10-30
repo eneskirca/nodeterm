@@ -51,6 +51,11 @@ export const HOST_ONLY_CHANNEL_PREFIXES: readonly string[] = [
   // credentials into the account dir, removal deletes one), and account usage read with the
   // host's stored tokens.
   'license:',
+  // The free-tier open-project allowance: a claim spends THIS device's allowance under this
+  // machine's hash, and the state reports the host's Pro and DO_NOT_TRACK facts. A relay tab keeps
+  // its own local preload for the namespace (relay-api.ts spreads `...local`), so only a peer
+  // sending the raw request would ever reach these.
+  'projectLimit:',
   'claude-accounts:',
   'codex-accounts:',
   'usage:',

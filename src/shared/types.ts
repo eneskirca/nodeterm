@@ -30,6 +30,7 @@ import type { ProjectKanbanGitHub } from './github-issues'
 import type { KanbanPullAutoMove, KanbanPullLinks } from './kanban-pull-links'
 import type { BoardDispatch } from './board-dispatch'
 import type { CodexAccount } from './codex-account'
+import type { ClaimResult, ProjectLimitState } from './project-limit'
 import type { NotchAlign } from './notch-hud'
 import type { ProjectIcon, ProjectIconPickResult } from './project-icon'
 import type { AlertSoundKind, AlertSoundSaveResult, CustomAlertSounds } from './alert-sound'
@@ -4178,6 +4179,19 @@ export interface LicenseApi {
   releaseOthers(): Promise<LicenseDetail>
 }
 
+/** The free-tier open-project limit (src/shared/project-limit.ts; core computes the state). Desktop
+ *  only: the Server Edition's stub answers `INACTIVE_PROJECT_LIMIT` and claims `disabled` (spec §10),
+ *  and a relay tab keeps the local preload — the allowance is this machine's, never the host's. */
+export interface ProjectLimitApi {
+  /** The current state. Cheap and offline: it never waits on the network. */
+  state(): Promise<ProjectLimitState>
+  /** Claim this device's allowance from the server (lazily, at the limit moment). Never rejects
+   *  for a network or server failure — that is `ok: false` with the state as it stands. */
+  claim(): Promise<ClaimResult>
+  /** Fires with the new state whenever it changes. Returns unsubscribe. */
+  onChange(listener: (s: ProjectLimitState) => void): () => void
+}
+
 export type PhoneApprovalResult = {
   status: 'persisted' | 'approved' | 'saved-disconnected' | 'stale' | 'persistence-failed'
 }
@@ -4587,6 +4601,7 @@ export interface NodeTerminalApi {
   updates: UpdateApi
   announcements: AnnouncementsApi
   license: LicenseApi
+  projectLimit: ProjectLimitApi
   contextLink: ContextLinkApi
   boardLog: BoardLogApi
   logs: LogApi

@@ -371,6 +371,13 @@ export const IPC = {
   licenseUpgrade: 'license:upgrade',
   licenseDetail: 'license:detail',
   licenseRelease: 'license:release',
+  // Free-tier open-project limit (src/shared/project-limit.ts). renderer → main (invoke): the
+  // current `ProjectLimitState`, and a lazy allowance claim → `ClaimResult`. `projectLimitChanged`
+  // is main → renderer with the new state. Host-only (`projectLimit:` in HOST_ONLY_CHANNEL_PREFIXES):
+  // the allowance is this machine's, never a relay peer's to read or spend.
+  projectLimitState: 'projectLimit:state',
+  projectLimitClaim: 'projectLimit:claim',
+  projectLimitChanged: 'projectLimit:changed',
   appRestartToUpdate: 'app:restart-to-update',
   announcementsFetch: 'announcements:fetch',
   usageFetch: 'usage:fetch',
