@@ -74,7 +74,10 @@ async function mount(
       upgrade: vi.fn(async () => status)
     },
     clipboard: { writeText },
-    shell: { openExternal }
+    shell: { openExternal },
+    // ProCompare reads the open-project limit store, which subscribes at import time too. Its
+    // initial state is the inactive one, so the comparison renders the pre-limit copy here.
+    projectLimit: { state: vi.fn(), claim: vi.fn(), onChange: vi.fn(() => () => undefined) }
   }
   const { useEntitlement } = await import('../../../state/entitlement')
   const { LicenseSection } = await import('./LicenseSection')
