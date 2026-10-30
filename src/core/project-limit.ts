@@ -8,9 +8,13 @@
  * has passed by the clock anchor, with no server "off" in the last `OFF_TRUST_MS`). Dev builds are
  * never active; nor is a build without the key (before O1): it could verify no allowance, holding
  * every install at FREE, so it stays unlimited like a build from before the limit.
- * - The latch is the server's word. A check answer with `limits` sets it; a successful check
- *   without them, or a claim answering `not_active`, clears it. Nothing else does: a failed check
- *   gives no answer at all (check.ts `onCheckAnswer`), so being unreachable never turns it off.
+ * - The latch is the server's word. A check answer with `limits` sets it, and so does a successful
+ *   claim (a 200 whose token verifies — the token is stored with it); a successful check without
+ *   `limits`, or a claim answering `not_active`, clears it. Nothing else does: a failed check gives
+ *   no answer at all (check.ts `onCheckAnswer`), so being unreachable never turns it off. A
+ *   DO_NOT_TRACK install hears no check at all, which is why the renderer's gate claims once more at
+ *   its known allowance (lib/projectLimitGate.ts `reclaimsAtBlock`): that claim is how an undo
+ *   reaches a latched one.
  * - The deadline is compared against `clockAnchorMs()` (license.ts: the later of the wall clock and
  *   the largest instant this install has observed), so rolling the clock back cannot move an install
  *   from past the deadline to before it.
@@ -340,7 +344,8 @@ async function runClaim(): Promise<ClaimResult> {
   if (status === 409 && b.error === 'machine_mismatch') {
     return fail('machine_mismatch', isCount(b.retryAfter) && b.retryAfter > 0 ? b.retryAfter : undefined)
   }
-  // 429 (rate limited), 5xx, 400, 404 (claims disabled server-side), an unknown 409: never a final answer.
+  // 429 (rate limited), 5xx, 400, an unknown 409, any other status (a 404 included — a server with
+  // claims switched off answers 409 not_active, never 404): never a final answer.
   return fail('server')
 }
 

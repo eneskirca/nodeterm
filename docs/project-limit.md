@@ -86,12 +86,16 @@ active = packaged build AND allowance key configured
   no allowance, so every claim would fail and every install — legacy ones included — would be held
   at FREE. It stays unlimited instead, exactly like a build from before the limit existed (no claim,
   no dialog, no machine read).
-- **The latch is the server's word.** A check reply carrying `limits: { projects: { free, epoch } }`
-  sets it (and stores FREE and the epoch). It is cleared by exactly two answers: a successful,
-  *check-shaped* reply (a `messages` array and an `update` object) **without** `limits`, or a claim
-  answering `409 not_active`. A failed check, a non-2xx, an HTML captive portal, a JSON page that is
-  not a check reply, or a malformed `limits` is no answer and changes nothing — being unreachable
-  never turns the limit off.
+- **The latch is the server's word.** Two answers set it: a check reply carrying
+  `limits: { projects: { free, epoch } }` (it stores FREE and the epoch), and a successful claim (a
+  `200` whose token verifies — it stores FREE, the epoch and the token). It is cleared by exactly two
+  answers: a successful, *check-shaped* reply (a `messages` array and an `update` object)
+  **without** `limits`, or a claim answering `409 not_active` (which also deletes the token). A
+  failed check or claim, a non-2xx, an HTML captive portal, a JSON page that is not a check reply,
+  or a malformed `limits` is no answer and changes nothing — being unreachable never turns the
+  limit off. The latch outranks the deadline, so a latched install whose check feed does not run
+  (DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`) is turned off only by a claim — which is why the
+  gate claims once more at its known allowance (The limit moment, item 5).
 - **The embedded deadline** (`PROJECT_LIMIT_DEADLINE_MS`) covers a client whose check never runs
   (DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`, a blocked host). Past it the client treats the limit
   as on, which in practice only means "claim before opening beyond FREE"; a `not_active` answer
@@ -122,7 +126,9 @@ The rest of the state (`ProjectLimitState`):
 One open is then decided by `decideOpen(state, openCount)`: off or Pro → allow; fewer open than
 `effectiveLimit` (`max(allowance ?? free, free)` — an old allowance never undercuts a raised FREE)
 → allow; at the limit with no allowance yet → claim first; at or above a known allowance → block.
-Above it is reachable (a Pro lapse): the new open is blocked and **nothing is closed**.
+Above it is reachable (a Pro lapse): the new open is blocked and **nothing is closed**. Under
+DO_NOT_TRACK the gate turns one `block` per open into a claim first (The limit moment, item 5);
+`decideOpen` itself does not know about it.
 
 ## Where the gate sits
 
@@ -172,6 +178,15 @@ not above it.
    `settings.licenseNetworkConsent`, shown and revocable in Settings → Privacy only while DNT is set,
    never settable by an agent, and it covers license and claim calls only — never telemetry or the
    check feed.
+5. DO_NOT_TRACK (or `NODETERM_TELEMETRY_DISABLED`) at a **known** allowance → one claim before the
+   dialog (`reclaimsAtBlock` in the gate), once per open, with the same 300 ms panel. Such an install
+   hears no check feed, so this claim is the only way an undo (`not_active`), an epoch bump or a
+   raised FREE reaches it. `not_active` (or a larger allowance) → the open proceeds with no dialog;
+   the same allowance → the dialog of item 2, after exactly that one claim; a claim that cannot
+   reach the server → also item 2's dialog, not "Couldn't check" (the allowance is known and
+   verified offline); no consent → item 4, exactly as on a first claim. Every other install is
+   unchanged: at a known allowance it shows the dialog without claiming. The agent checks re-claim
+   the same way but never ask for consent (`consent_required` stays a refusal).
 
 While the limit is on, the Pro comparison (Settings) heads Core "Core — free" (not "free forever")
 with "Up to N open projects", lists "Unlimited open projects" under Pro, and the upgrade dialog adds
@@ -231,7 +246,11 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
 3. **The flip release needs owner step O1**: a frozen release is refused while
    `PROJECT_ALLOWANCE_PUBLIC_KEY` is empty (see O1 — and do it well before then).
 4. **After an undo**, unfreeze: a release with `FROZEN = false` and a deadline past the new plan
-   (see Undo below — without it, DO_NOT_TRACK installs stay gated).
+   (see Undo below). Without it the past deadline re-arms every DO_NOT_TRACK /
+   `NODETERM_TELEMETRY_DISABLED` install 24 h after each `not_active`. Even with it, a *latched* one
+   (it holds a token from an earlier claim) turns off only at its next limit moment, through the
+   re-claim, and one without consent stays gated until it consents — the latch outranks the
+   deadline.
 5. Keep both constants in their literal one-line form —
    `export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')` and
    `export const PROJECT_LIMIT_DEADLINE_FROZEN = true | false` — because the guard reads the source.
@@ -273,8 +292,9 @@ What enforces it:
 - **The unit test** (`src/core/project-allowance-token.test.ts`) accepts exactly `''` or an
   Ed25519 public-key PEM that differs from `ENTITLEMENT_PUBLIC_KEY` and is not a private key, so a
   half-pasted or wrong key goes red on the PR that pastes it. It is green on `main` either way.
-- **On the server**, without the private key the claim route does not exist (404) and `/v1/check`
-  never sends `limits`, whatever the cutoff says.
+- **On the server**, without the private key `POST /v1/limits/claim` answers every claim
+  `409 { error: 'not_active' }` and `/v1/check` never sends `limits`, whatever the cutoff says — so a
+  client that hears either turns the limit off.
 
 **A build shipped with `''` is never active** — it stays unlimited, like a build from before the
 limit (see How `active` is computed), even after the flip. So every release made before O1 adds to
@@ -365,15 +385,26 @@ The decision is enes's. Device check 10 below gathers the evidence.
      (offline, a blocked host) is back on until a check or claim answers again. At the limit it then
      uses its stored allowance token offline (an undo through the check feed keeps it); without one,
      its claim fails and it is held at FREE behind "Couldn't check".
-  3. **DO_NOT_TRACK installs with consent** (no check feed) claim at their next limit moment;
-     `not_active` turns them off for 24 h, and then the past deadline re-arms them. So every time
-     one reaches FREE more than 24 h after its last claim it claims again — offline, that claim
-     fails and it is held at FREE behind "Couldn't check".
+  3. **DO_NOT_TRACK installs with consent** (no check feed; `NODETERM_TELEMETRY_DISABLED` behaves
+     exactly like DO_NOT_TRACK here) claim at their next limit moment — one that holds an allowance
+     token (latched by its own earlier claim) too: the gate re-claims at its known allowance (The
+     limit moment, item 5), because that claim is the only way an undo reaches it. `not_active`
+     clears the latch and the token and turns it off for 24 h, and then the past deadline re-arms
+     it. So every time one reaches FREE more than 24 h after its last claim it claims again —
+     offline, that claim fails and it is held at FREE behind "Couldn't check". Until a claim gets
+     through, one with a token stays at its allowance (an offline re-claim there just shows the limit
+     dialog).
   4. **DO_NOT_TRACK installs without consent** never claim (the license network gate refuses before
-     any request): they stay at FREE behind the consent dialog until the user consents.
+     any request): at the limit they see the consent dialog and stay gated until the user consents —
+     at FREE, or at the allowance of a token they still hold (latched before consent was revoked, or
+     by the check feed before DO_NOT_TRACK was set). Consenting there claims, and an undo then turns
+     them off as in 3.
   5. **So a complete undo also ships a release** with `PROJECT_LIMIT_DEADLINE_FROZEN = false` and the
-     deadline bumped past the new plan; the guard applies again from then on. Installs that do not
-     update keep the behaviour in 2–4.
+     deadline bumped past the new plan; the guard applies again from then on. On it, an install that
+     is not latched is off at once. A latched DO_NOT_TRACK install is not — the latch outranks the
+     deadline — until its next limit moment: with consent that re-claim answers `not_active` and it
+     is off for good; without consent it stays gated until the user consents (4). Installs that do
+     not update keep the behaviour in 2–4.
   6. Nothing was ever closed, so there is nothing to restore. To re-flip at a new cutoff, **bump the
      epoch in the same save** (the admin card's "Bump epoch" box), so allowances issued under the old
      cutoff are recomputed.
@@ -407,6 +438,8 @@ Not gaps: blocking api.nodeterm.dev leaves an install at FREE after the deadline
 Rough edges a user can notice (behaviour, not bypasses):
 
 - A second open pressed while a claim or the dialog is in flight is dropped (press again).
+- Under DO_NOT_TRACK, the limit moment at a known allowance waits for one claim before the dialog
+  (the "Checking…" panel after 300 ms; up to the 8 s claim timeout when offline).
 - When the dialog was raised by an agent's refusal, a Close makes room but nothing opens — the agent
   was already told no; ask it again.
 - At the limit, an agent's headless start of a node in a closed project runs without bringing the
@@ -468,7 +501,11 @@ verification and reads as "Couldn't check your free allowance".
     row shows the consent and revoking it works.
 14. Machine move: copy userData to a second machine → its first claim rebinds; a third machine is
     told the date the allowance can move.
-15. Undo: clear the cutoff → the next check removes the gate; a DO_NOT_TRACK client with consent
-    clears on its next claim and, after 24 h, claims again at its next limit moment; one without
-    consent stays behind the consent dialog. Then a test build with `FROZEN = false` and a future
-    deadline clears both for good.
+15. Undo: clear the cutoff → the next check removes the gate. A DO_NOT_TRACK client with consent
+    that already holds an allowance token (claimed in 13, still latched): at its allowance the next
+    open makes one claim, which answers `not_active`, and the open proceeds with no dialog; after
+    24 h it claims again at its next limit moment. One without consent stays behind the consent
+    dialog until it consents. Repeat both with `NODETERM_TELEMETRY_DISABLED=1` instead of
+    DO_NOT_TRACK. Then a test build with `FROZEN = false` and a future deadline: a non-latched DNT
+    client is clear at once; a latched one clears for good at its next limit moment (with consent),
+    or stays behind the consent dialog (without).

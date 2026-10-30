@@ -20,10 +20,9 @@ export type OpenAction =
 const reopens = (p: Project): boolean => !!p.closed && !p.remote
 
 /**
- * Whether `a` makes a project OPEN that was not (spec §3,
- * docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md) — that is, whether the
- * project-limit gate must be asked before it. Activating a project that is already open is not an
- * open, so it never meets the gate.
+ * Whether `a` makes a project OPEN that was not (docs/project-limit.md, "Opening a project") —
+ * that is, whether the project-limit gate must be asked before it. Activating a project that is
+ * already open is not an open, so it never meets the gate.
  *
  * Each branch finds the project exactly as its store action will (the same matcher, in the same
  * order), so the answer is a prediction of what that action does to the open count, not a second

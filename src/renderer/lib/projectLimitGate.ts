@@ -3,6 +3,7 @@ import {
   decideOpen,
   effectiveLimit,
   type ClaimResult,
+  type OpenDecision,
   type ProjectLimitState
 } from '@shared/project-limit'
 import {
@@ -16,9 +17,9 @@ import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 
 /**
- * The one renderer gate in front of every way a project becomes open (spec §7,
- * docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md). It ANSWERS whether one new
- * open may proceed; it never closes, deletes or detaches anything (§2).
+ * The one renderer gate in front of every way a project becomes open (docs/project-limit.md, "The
+ * limit moment"). It ANSWERS whether one new open may proceed; it never closes, deletes or detaches
+ * anything.
  *
  * Two invariants the callers (Canvas's open paths, Task 18; the agent verb, Task 19) depend on:
  * - **Allowed is synchronous.** `gateProjectOpen()` returns the literal `true` in the same tick when
@@ -28,6 +29,15 @@ import { useSettings } from '../state/settings'
  * - **One loop at a time.** A request that arrives while a person's open is being decided (claiming,
  *   or a dialog up — a person's or an agent's) is refused, not queued: queued, it would re-decide on
  *   a count the first open has not added to yet and both would open past the limit.
+ *
+ * And one rule the server's undo depends on: **a DO_NOT_TRACK install re-claims at a known
+ * allowance.** Its check feed never runs, so the claim is the only server word it can hear — and a
+ * consenting one that claimed is latched with a token, where `decideOpen` answers `'block'`, not
+ * `'claim'`. Without one more claim there it would never hear `not_active` (the limit cleared), an
+ * epoch bump or a raised FREE, and the latch outranks the deadline, so not even an unfrozen release
+ * would reach it. `reclaimsAtBlock` is that rule: once per gate pass, only under DO_NOT_TRACK (any
+ * other install hears all of it on the check feed, and stays byte-identical), and only at the limit
+ * (under it the open stays synchronous and claims nothing).
  */
 
 /** §7's "brief spinner": raised only for a claim still in flight after this long. */
@@ -58,6 +68,11 @@ export interface ProjectOpenGate {
   gateProjectOpen(): true | Promise<boolean>
   checkAgentProjectOpen(): Promise<AgentOpenCheck>
   finishAgentProjectOpen<T>(opens: () => boolean, register: () => T): AgentOpenFinish<T> | Promise<AgentOpenFinish<T>>
+}
+
+/** A DO_NOT_TRACK install at a known allowance claims once more before it is refused (see above). */
+function reclaimsAtBlock(state: ProjectLimitState, d: OpenDecision): boolean {
+  return d === 'block' && state.dnt
 }
 
 /** The dialog that explains a failed claim. A repeated `consent_required` right after the user
@@ -116,17 +131,27 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
     try {
       let claimNext = false
       let consentGiven = false
+      /** A claim has been made during this gate pass, so the DNT re-claim is spent. */
+      let claimed = false
       for (;;) {
-        const d = decideOpen(deps.getState(), deps.openCount())
+        const state = deps.getState()
+        const d = decideOpen(state, deps.openCount())
         if (d === 'allow') return true
         let request: LimitDialogRequest = { mode: 'limit' }
-        // At most one claim per pass: when there is no allowance yet, or after Retry / consent.
-        if (d === 'claim' || claimNext) {
+        // At most one claim per pass: when there is no allowance yet, after Retry / consent, or —
+        // once per gate pass — a DO_NOT_TRACK install at its known allowance.
+        const reclaim = !claimed && reclaimsAtBlock(state, d)
+        if (d === 'claim' || claimNext || reclaim) {
           claimNext = false
+          claimed = true
           const r = await claimShowingCheck()
           // Decided on the claim's own answer — core's state right after it — with the live count.
           if (decideOpen(r.state, deps.openCount()) === 'allow') return true
-          if (!r.ok) request = dialogFor(r, consentGiven)
+          // A DNT re-claim (never one the user asked for: Retry and consent follow an earlier claim,
+          // which spent it) that failed at an allowance already known and verified offline is no
+          // news: today's limit dialog, not "Couldn't check". Missing consent is still asked for,
+          // exactly as on a first claim.
+          if (!r.ok && (!reclaim || r.error === 'consent_required')) request = dialogFor(r, consentGiven)
         }
         const outcome = await show(request)
         if (outcome === 'cancel') return false
@@ -177,7 +202,7 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
     let state = deps.getState()
     let d = decideOpen(state, deps.openCount())
     if (d === 'allow') return { ok: true }
-    if (d === 'claim') {
+    if (d === 'claim' || reclaimsAtBlock(state, d)) {
       // Never the consent dialog and never the spinner: nobody pressed anything. A claim that needs
       // consent simply leaves the state blocking.
       const r = await claim()
@@ -194,9 +219,10 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
    * FINAL decision and `register()` run in one tick — nothing can run between the count read here
    * and the write — so two agents at the edge cannot both pass on one count (plan Review Focus 5).
    *
-   * Synchronous whenever the limit decides at once (allow — every call while it is off — or block).
-   * Only a claim still due returns a promise, and it is due exactly when the early check did NOT
-   * claim: it saw room (4 of 5, no allowance yet) and an open landed before this point. That claim
+   * Synchronous whenever the limit decides at once (allow — every call while it is off — or block,
+   * except under DO_NOT_TRACK). Only a claim still due returns a promise, and it is due exactly when
+   * the early check did NOT claim: it saw room (4 of 5) and an open landed before this point —
+   * with no allowance yet, or under DO_NOT_TRACK at a known one (`reclaimsAtBlock`). That claim
    * is made here (never the consent dialog, never the spinner), and the decision is taken on its
    * own answer — the store may not have heard it yet, the rule both other paths follow — with the
    * live count, `register()` following in the same continuation. A legacy install whose allowance
@@ -214,7 +240,8 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
       return { ok: true, value: register() }
     }
     const state = deps.getState()
-    if (!opens() || decideOpen(state, deps.openCount()) !== 'claim') return decideAndRegister(state)
+    const d = decideOpen(state, deps.openCount())
+    if (!opens() || !(d === 'claim' || reclaimsAtBlock(state, d))) return decideAndRegister(state)
     return claim().then((r) => decideAndRegister(r.state))
   }
 

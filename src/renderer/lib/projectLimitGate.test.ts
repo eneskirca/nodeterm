@@ -344,6 +344,141 @@ describe('gateProjectOpen — the human open path', () => {
   })
 })
 
+describe('DO_NOT_TRACK installs re-claim at a known allowance (the undo has no other way in)', () => {
+  // A consenting DNT install that claimed is latched and holds a token, so `decideOpen` answers
+  // 'block' at its allowance — and its check feed never runs, so without a claim at the limit it
+  // would never hear `not_active` (an undo), an epoch bump or a raised FREE.
+  const DNT_CLAIMED_5: ProjectLimitState = { ...CLAIMED_5, dnt: true }
+  const DNT_OFF: ProjectLimitState = { ...INACTIVE, dnt: true }
+  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
+
+  it('person: one claim at the limit, and a not_active answer opens with no dialog', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim.mockResolvedValue({ ok: true, state: DNT_OFF })
+    const g = createProjectOpenGate(t.deps).gateProjectOpen()
+    expect(g).toBeInstanceOf(Promise)
+    await expect(g).resolves.toBe(true)
+    expect(t.claim).toHaveBeenCalledTimes(1)
+    expect(t.showDialog).not.toHaveBeenCalled()
+  })
+
+  it('person: the same allowance back shows the limit dialog after exactly one claim, never a loop', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim.mockResolvedValue({ ok: true, state: DNT_CLAIMED_5 })
+    const g = createProjectOpenGate(t.deps).gateProjectOpen()
+    await settle()
+    expect(t.claim).toHaveBeenCalledTimes(1)
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+    // A `proceed` with no room re-decides — still 'block' — and does not claim a second time.
+    t.answer('proceed')
+    await settle()
+    expect(t.claim).toHaveBeenCalledTimes(1)
+    expect(t.showDialog).toHaveBeenCalledTimes(2)
+    t.answer('cancel')
+    await expect(g).resolves.toBe(false)
+    expect(t.claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('person: a re-claim that cannot reach the server is today\'s limit dialog, not "Couldn\'t check"', async () => {
+    // The allowance is already known and verified offline (Review Focus 2): failing to hear an
+    // undo is no reason to tell the user their allowance could not be checked.
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim.mockResolvedValue({ ok: false, error: 'offline', state: DNT_CLAIMED_5 })
+    const g = createProjectOpenGate(t.deps).gateProjectOpen()
+    await settle()
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+    t.answer('cancel')
+    await expect(g).resolves.toBe(false)
+    expect(t.claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('person: without consent the re-claim asks for it, exactly like a first claim', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim
+      .mockResolvedValueOnce({ ok: false, error: 'consent_required', state: DNT_CLAIMED_5 })
+      .mockResolvedValueOnce({ ok: true, state: DNT_OFF })
+    const g = createProjectOpenGate(t.deps).gateProjectOpen()
+    await settle()
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'consent' }]])
+    t.answer('consent')
+    await expect(g).resolves.toBe(true)
+    expect(t.setConsent).toHaveBeenCalledTimes(1)
+    expect(t.claim).toHaveBeenCalledTimes(2)
+    expect(t.showDialog).toHaveBeenCalledTimes(1)
+  })
+
+  it('person: declining that consent resolves false and stores nothing', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim.mockResolvedValue({ ok: false, error: 'consent_required', state: DNT_CLAIMED_5 })
+    const g = createProjectOpenGate(t.deps).gateProjectOpen()
+    await settle()
+    t.answer('cancel')
+    await expect(g).resolves.toBe(false)
+    expect(t.setConsent).not.toHaveBeenCalled()
+    expect(t.claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('a non-DNT install at a known allowance never re-claims: it hears the undo on the check feed', async () => {
+    const t = harness(CLAIMED_5, 5)
+    const gate = createProjectOpenGate(t.deps)
+    const g = gate.gateProjectOpen()
+    await settle()
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+    t.answer('cancel')
+    await expect(g).resolves.toBe(false)
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: false, message: MESSAGE })
+    expect(gate.finishAgentProjectOpen(() => true, () => 'never')).toEqual({ ok: false, message: MESSAGE })
+    expect(t.claim).not.toHaveBeenCalled()
+  })
+
+  it('a DNT install under its allowance still opens synchronously, with no claim', () => {
+    const t = harness(DNT_CLAIMED_5, 4)
+    expect(createProjectOpenGate(t.deps).gateProjectOpen()).toBe(true)
+    expect(t.claim).not.toHaveBeenCalled()
+  })
+
+  it('agent check: one claim at the limit; not_active allows, the same allowance refuses, consent is never asked', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    t.claim.mockResolvedValueOnce({ ok: true, state: DNT_OFF })
+    const gate = createProjectOpenGate(t.deps)
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: true })
+    expect(t.claim).toHaveBeenCalledTimes(1)
+
+    t.claim.mockResolvedValueOnce({ ok: true, state: DNT_CLAIMED_5 })
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: false, message: MESSAGE })
+    expect(t.claim).toHaveBeenCalledTimes(2)
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+    t.answer('cancel')
+    await settle()
+
+    t.claim.mockResolvedValueOnce({ ok: false, error: 'consent_required', state: DNT_CLAIMED_5 })
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: false, message: MESSAGE })
+    expect(t.claim).toHaveBeenCalledTimes(3)
+    expect(t.showDialog.mock.calls.some(([r]) => r.mode === 'consent')).toBe(false)
+    expect(t.setConsent).not.toHaveBeenCalled()
+    expect(t.setChecking).not.toHaveBeenCalled()
+  })
+
+  it('agent write: one claim at the limit, registered on not_active, refused on the same allowance', async () => {
+    const t = harness(DNT_CLAIMED_5, 5)
+    const gate = createProjectOpenGate(t.deps)
+    const register = vi.fn(() => 'registered')
+    t.claim.mockResolvedValueOnce({ ok: true, state: DNT_OFF })
+    const off = gate.finishAgentProjectOpen(() => true, register)
+    expect(off).toBeInstanceOf(Promise)
+    await expect(off).resolves.toEqual({ ok: true, value: 'registered' })
+    expect(t.claim).toHaveBeenCalledTimes(1)
+
+    register.mockClear()
+    t.claim.mockResolvedValueOnce({ ok: false, error: 'consent_required', state: DNT_CLAIMED_5 })
+    await expect(gate.finishAgentProjectOpen(() => true, register)).resolves.toEqual({ ok: false, message: MESSAGE })
+    expect(t.claim).toHaveBeenCalledTimes(2)
+    expect(register).not.toHaveBeenCalled()
+    expect(t.setConsent).not.toHaveBeenCalled()
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+  })
+})
+
 describe('checkAgentProjectOpen — the agent open-project verb', () => {
   const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
 
