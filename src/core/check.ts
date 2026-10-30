@@ -73,8 +73,11 @@ export const sanitizeCheckForTest = sanitize
 
 /** What one successful read of the feed said about the open-project limit. The server adds
  *  `limits: { projects: { free, epoch } }` exactly while the limit is on and leaves the key absent
- *  otherwise, so `off` is the ABSENCE of the key. `unknown` = something was there that we could not
- *  read; it must change nothing (a malformed answer is not an "off"). */
+ *  otherwise, so `off` is the ABSENCE of the key — but only in a reply shaped like a check reply
+ *  (`messages` array + `update` object, which every 2xx from the route carries). `unknown` = anything
+ *  else: a malformed `limits`, or JSON that is not a check reply at all (`{}`, `{"status":"ok"}`, a
+ *  proxy's JSON page behind a followed redirect). It must change nothing: the latch reads `off` as
+ *  "clear", and a reply that did not come from the route must never be able to clear it. */
 export type LimitsAnswer = { kind: 'on'; free: number; epoch: number } | { kind: 'off' } | { kind: 'unknown' }
 
 const FREE_MIN = 1
@@ -83,10 +86,11 @@ const FREE_MAX = 1000
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 
 // Kept apart from `sanitize`, whose CheckResult its existing callers (banner, update card) depend on
-// exactly. A body that is not a JSON object is not a check reply at all, so it is `unknown`, never
-// `off`. A fresh object every call, so no answer aliases a module constant a listener could mutate.
+// exactly — and stricter than it: `sanitize` reads any JSON as an empty feed, which is harmless for a
+// banner, while here only a check-shaped reply says anything (see LimitsAnswer). A fresh object every
+// call, so no answer aliases a module constant a listener could mutate.
 function sanitizeLimits(data: unknown): LimitsAnswer {
-  if (!isRecord(data)) return { kind: 'unknown' }
+  if (!isRecord(data) || !Array.isArray(data.messages) || !isRecord(data.update)) return { kind: 'unknown' }
   if (!Object.hasOwn(data, 'limits')) return { kind: 'off' }
   const projects = isRecord(data.limits) ? data.limits.projects : undefined
   if (!isRecord(projects)) return { kind: 'unknown' }
@@ -121,8 +125,9 @@ function emitAnswer(answer: LimitsAnswer): void {
   for (const listener of [...answerListeners]) {
     try {
       listener(answer)
-    } catch {
+    } catch (err) {
       // A listener's bug is its own: fetchCheck's callers still get the answer they asked for.
+      console.warn('[check] answer listener failed', err)
     }
   }
 }

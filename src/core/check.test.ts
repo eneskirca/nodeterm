@@ -3,22 +3,33 @@ import { sanitizeCheckForTest as sanitize, sanitizeLimitsForTest as sanitizeLimi
 import { fakePlatform } from './platform-fake'
 
 // The server states the open-project limit by the PRESENCE of `limits` in a successful reply. The
-// latch that consumes this reads `off` as "clear", so only a missing key is an off: anything present
-// that we cannot read is `unknown`, which changes nothing.
+// latch that consumes this reads `off` as "clear", so only a missing key in a CHECK-SHAPED reply
+// (`messages` array + `update` object — every 2xx the route sends) is an off. Anything else — a
+// malformed `limits`, or JSON that is not a check reply at all — is `unknown`, which changes nothing.
 describe('/v1/check sanitize — limits', () => {
-  it('reads a reply without limits as off', () => {
-    expect(sanitizeLimits({ messages: [], update: { minSupported: null, mandatory: false } })).toEqual({ kind: 'off' })
-    expect(sanitizeLimits({})).toEqual({ kind: 'off' })
+  const reply = (extra: Record<string, unknown> = {}) => ({
+    messages: [],
+    update: { minSupported: null, mandatory: false },
+    ...extra
+  })
+
+  it('reads a check reply without limits as off', () => {
+    expect(sanitizeLimits(reply())).toEqual({ kind: 'off' })
+    expect(sanitizeLimits({ messages: [{ id: 'a', title: 'A' }], update: {} })).toEqual({ kind: 'off' })
   })
 
   it('reads a well-formed project limit as on, and nothing else from it', () => {
-    expect(sanitizeLimits({ limits: { projects: { free: 5, epoch: 1 } } })).toEqual({ kind: 'on', free: 5, epoch: 1 })
-    expect(sanitizeLimits({ limits: { projects: { free: 1, epoch: 7, extra: 'x' }, other: 1 } })).toEqual({
+    expect(sanitizeLimits(reply({ limits: { projects: { free: 5, epoch: 1 } } }))).toEqual({
+      kind: 'on',
+      free: 5,
+      epoch: 1
+    })
+    expect(sanitizeLimits(reply({ limits: { projects: { free: 1, epoch: 7, extra: 'x' }, other: 1 } }))).toEqual({
       kind: 'on',
       free: 1,
       epoch: 7
     })
-    expect(sanitizeLimits({ limits: { projects: { free: 1000, epoch: 2 } } })).toEqual({
+    expect(sanitizeLimits(reply({ limits: { projects: { free: 1000, epoch: 2 } } }))).toEqual({
       kind: 'on',
       free: 1000,
       epoch: 2
@@ -49,12 +60,32 @@ describe('/v1/check sanitize — limits', () => {
       { projects: { free: 5, epoch: 2 ** 53 } }
     ]
     for (const limits of malformed) {
-      expect(sanitizeLimits({ limits }), JSON.stringify(limits)).toEqual({ kind: 'unknown' })
+      expect(sanitizeLimits(reply({ limits })), JSON.stringify(limits)).toEqual({ kind: 'unknown' })
     }
   })
 
-  it('reads a body that is not a JSON object as unknown, never off', () => {
-    for (const body of [null, undefined, 'ok', 3, true, [], [{ limits: null }]]) {
+  // A 200 with `{"status":"ok"}`, an error object, or a proxy's JSON page behind a followed redirect
+  // carries no `limits` either — read past its shape, each would be a misfired off.
+  it('reads a body that is not a check reply as unknown, never off', () => {
+    const notAReply: unknown[] = [
+      null,
+      undefined,
+      'ok',
+      3,
+      true,
+      [],
+      [{ limits: null }],
+      {},
+      { status: 'ok' },
+      { error: 'internal' },
+      { messages: [] },
+      { update: {} },
+      { messages: {}, update: {} },
+      { messages: [], update: null },
+      { messages: [], update: [] },
+      { limits: { projects: { free: 5, epoch: 1 } } }
+    ]
+    for (const body of notAReply) {
       expect(sanitizeLimits(body), JSON.stringify(body)).toEqual({ kind: 'unknown' })
     }
   })
@@ -245,27 +276,31 @@ describe('fetchCheck — reports the plan', () => {
     afterEach(() => vi.useRealTimers())
 
     it('answers only on a 2xx JSON read', async () => {
-      const failures: Array<[string, () => Promise<Response>]> = [
-        ['500', async () => json({ error: 'internal' }, 500)],
-        ['429', async () => json({ error: 'rate_limited' }, 429)],
-        ['thrown fetch', async () => Promise.reject(new TypeError('fetch failed'))],
+      // [label, response, the calls the listener may see]. A 2xx JSON object that is not a check
+      // reply is still a read, but its answer is `unknown` — the one thing it must never say is off.
+      const cases: Array<[string, () => Promise<Response>, unknown[][]]> = [
+        ['500', async () => json({ error: 'internal' }, 500), []],
+        ['429', async () => json({ error: 'rate_limited' }, 429), []],
+        ['200 json, not a check reply', async () => json({ status: 'ok' }), [[{ kind: 'unknown' }]]],
+        ['thrown fetch', async () => Promise.reject(new TypeError('fetch failed')), []],
         [
           '200 text/html',
           async () =>
             new Response('<html><body>Sign in to the network</body></html>', {
               status: 200,
               headers: { 'content-type': 'text/html' }
-            })
+            }),
+          []
         ]
       ]
-      for (const [label, respond] of failures) {
+      for (const [label, respond, calls] of cases) {
         fetchMock.mockReset().mockImplementation(respond)
         const m = await loadCheck()
         const listener = vi.fn()
         m.onCheckAnswer(listener)
         expect(await m.fetchCheck(), label).toEqual({ messages: [], update: { minSupported: null, mandatory: false } })
         expect(fetchMock, label).toHaveBeenCalledTimes(1)
-        expect(listener, label).not.toHaveBeenCalled()
+        expect(listener.mock.calls, label).toEqual(calls)
       }
     })
 
@@ -284,6 +319,7 @@ describe('fetchCheck — reports the plan', () => {
     })
 
     it('a 2xx without limits answers off once', async () => {
+      // `feed` is a real check reply (`messages` array + `update` object): only that shape can say off.
       fetchMock.mockResolvedValue(feed('x'))
       const m = await loadCheck()
       const listener = vi.fn()
@@ -339,17 +375,23 @@ describe('fetchCheck — reports the plan', () => {
 
     it('a listener that throws does not break fetchCheck or the other listeners', async () => {
       fetchMock.mockResolvedValue(feed('x'))
-      const m = await loadCheck()
-      const after = vi.fn()
-      m.onCheckAnswer(() => {
-        throw new Error('listener bug')
-      })
-      m.onCheckAnswer(after)
-      expect((await m.fetchCheck()).messages.map((x) => x.title)).toEqual(['x'])
-      expect(after.mock.calls).toEqual([[{ kind: 'off' }]])
-      // The read was good: it is cached like any other, not retried as a failure.
-      await m.fetchCheck()
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const m = await loadCheck()
+        const after = vi.fn()
+        m.onCheckAnswer(() => {
+          throw new Error('listener bug')
+        })
+        m.onCheckAnswer(after)
+        expect((await m.fetchCheck()).messages.map((x) => x.title)).toEqual(['x'])
+        expect(after.mock.calls).toEqual([[{ kind: 'off' }]])
+        expect(warn).toHaveBeenCalledWith('[check] answer listener failed', expect.any(Error))
+        // The read was good: it is cached like any other, not retried as a failure.
+        await m.fetchCheck()
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+      } finally {
+        warn.mockRestore()
+      }
     })
 
     it('stops answering a listener once unsubscribed', async () => {
