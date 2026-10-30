@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { testTmpDir } from '../src/core/test-tmp'
 import {
+  EXCLUDE_LABEL,
+  dropExcluded,
+  parseExcludeList,
   SECTIONS,
   TYPE_SECTIONS,
   UNMAPPED_SECTION,
@@ -294,5 +301,57 @@ describe('truncation is never silent', () => {
     // The audience sections survive the cut — they are the point of the notes.
     expect(out).toContain('## New')
     expect(out).toContain('[#1000]')
+  })
+})
+
+describe('PRs labelled no-release-notes', () => {
+  it('names the label once', () => {
+    expect(EXCLUDE_LABEL).toBe('no-release-notes')
+  })
+
+  it('are left out entirely — not folded into Internal, not counted, not linked', () => {
+    const out = render({ exclude: [796, 806] })
+    expect(out).not.toContain('[#796]')
+    expect(out).not.toContain('notch')
+    expect(out).not.toContain('[#806]')
+    expect(out).not.toContain('settings doc claims')
+    // The internal fold counts what is left (the dependabot bump), not what was dropped.
+    expect(out).toContain('<summary><strong>Internal changes</strong> (1)')
+    // Everything else is untouched.
+    expect(out).toContain('[#801]')
+    expect(out).toContain('[#803]')
+    expect(out).toContain('[#697]')
+  })
+
+  it('drop nothing when no PR is labelled', () => {
+    expect(render({ exclude: [] })).toBe(render())
+    expect(render({ exclude: [12345] })).toBe(render())
+  })
+
+  it('dropExcluded matches on the PR number only', () => {
+    const entries = parseGeneratedBody(GENERATED).entries
+    expect(dropExcluded(entries, new Set([801])).map((e: { pr: number }) => e.pr)).toEqual([796, 795, 803, 806, 697])
+  })
+
+  it('parseExcludeList reads gh --jq output or a comma list, ignoring blanks', () => {
+    expect(parseExcludeList('1334\n1335\n\n')).toEqual([1334, 1335])
+    expect(parseExcludeList('1334,1335, 1336')).toEqual([1334, 1335, 1336])
+    expect(parseExcludeList('')).toEqual([])
+  })
+
+  it('the CLI drops them given --exclude, without asking GitHub for the label', () => {
+    const dir = testTmpDir('nt-release-notes-')
+    const bodyFile = path.join(dir, 'body.md')
+    fs.writeFileSync(bodyFile, GENERATED)
+    const r = spawnSync(
+      process.execPath,
+      [path.resolve(__dirname, 'release-notes.mjs'), '--tag', 'v0.3.8', '--prev', 'v0.3.7', '--repo', REPO,
+        '--body-file', bodyFile, '--root', dir, '--exclude', '796,806'],
+      { encoding: 'utf8', env: { ...process.env, PATH: '' } }
+    )
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('[#801]')
+    expect(r.stdout).not.toContain('[#796]')
+    expect(r.stdout).not.toContain('[#806]')
   })
 })

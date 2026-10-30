@@ -9,7 +9,7 @@ import { confirmKeyAction } from './confirm-key'
 import { useDialogStack } from './dialog-stack'
 
 /**
- * The free-tier limit moment (spec §7, option A): the dialog the open gate
+ * The free-tier limit moment (docs/project-limit.md): the dialog the open gate
  * (lib/projectLimitGate.ts) shows when a new open would go past the allowance, plus the brief
  * "Checking…" panel while a person's claim is in flight. Mounted once, in Canvas, beside
  * `UpgradeDialog`; it renders only what `useProjectLimit` asks for.

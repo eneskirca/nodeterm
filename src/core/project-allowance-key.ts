@@ -2,7 +2,7 @@
 // half of the backend's PROJECT_ALLOWANCE_PRIVATE_KEY (held only in the server env). It is NOT a
 // secret — it can only verify, not sign. If you rotate the server key, update this too.
 //
-// It is a DIFFERENT key from ENTITLEMENT_PUBLIC_KEY on purpose (spec §6): shipped clients accept any
+// It is a DIFFERENT key from ENTITLEMENT_PUBLIC_KEY on purpose: shipped clients accept any
 // entitlement-key signature that carries their deviceId and a live `exp`, checking neither `typ`
 // nor `tier`, so an allowance token signed with the entitlement key would read as Pro everywhere.
 //

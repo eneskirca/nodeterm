@@ -156,7 +156,7 @@ export const SETTINGS_VERB_FORBIDDEN = new Set<keyof Settings | keyof Project>([
   'agentMessagingDefault',
   // Telemetry.
   'telemetryEnabled',
-  // Consent to license and allowance calls while DO_NOT_TRACK is set (spec §7.4). A privacy decision:
+  // Consent to license and allowance calls while DO_NOT_TRACK is set. A privacy decision:
   // an agent that could grant it would turn the user's DO_NOT_TRACK into a suggestion. The `consent`
   // name class below catches it too; it is named here so the snapshot test pins it either way.
   'licenseNetworkConsent',

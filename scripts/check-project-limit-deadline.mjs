@@ -16,6 +16,12 @@
 // So a frozen release is refused while the key is empty, unreadable, not an Ed25519 public-key PEM,
 // or a PRIVATE key. An unfrozen release does not look at the key at all.
 //
+// The flip release also ships the Electron hardening fuses (src/main/electron-fuses.test.ts holds the
+// decision record): `package.json` `build.electronFuses` stays absent while the limit is dormant and
+// is added in the flip-preparation release, set to exactly `scripts/electron-fuses.json` — the one
+// definition both that test and this guard read. A frozen release is refused unless package.json
+// carries exactly that object; an unfrozen release does not look at the fuses either.
+//
 // It reads the SOURCE TEXT, not the compiled constant, so it runs before `npm ci` with node alone.
 // That is why the constants must keep their literal forms on one line:
 //   export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')
@@ -23,7 +29,7 @@
 // Anything else is reported as unreadable — never waved through. The test pins these readings to the
 // values the app actually compiles.
 //
-// Usage: node scripts/check-project-limit-deadline.mjs [path/to/project-limit.ts [path/to/project-allowance-key.ts]]
+// Usage: node scripts/check-project-limit-deadline.mjs [path/to/project-limit.ts [path/to/project-allowance-key.ts [path/to/package.json]]]
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,6 +38,7 @@ import { fileURLToPath } from 'node:url'
 const MIN_LEAD_MS = 30 * 24 * 60 * 60 * 1000
 const SOURCE = 'src/shared/project-limit.ts'
 const KEY_SOURCE = 'src/core/project-allowance-key.ts'
+const FUSES_SOURCE = 'scripts/electron-fuses.json'
 
 const DEADLINE_RE = /^export const PROJECT_LIMIT_DEADLINE_MS = Date\.parse\('([^']*)'\)\s*$/m
 const FROZEN_RE = /^export const PROJECT_LIMIT_DEADLINE_FROZEN = (true|false)\s*$/m
@@ -93,14 +100,94 @@ export function readAllowanceKey(source) {
 }
 
 /**
- * Why this pair of sources must not be released at `now`, or null when it may: the deadline first
- * (`deadlineProblem`), then — only for a frozen (flip) release — the allowance key.
+ * The fuses the flip release must ship (`scripts/electron-fuses.json`, next to this script), or null
+ * when that file cannot be read or is not a JSON object.
+ * @returns {Record<string, unknown> | null}
+ */
+export function readExpectedFuses() {
+  try {
+    const v = JSON.parse(fs.readFileSync(fileURLToPath(new URL('./electron-fuses.json', import.meta.url)), 'utf8'))
+    return isPlainObject(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** @param {unknown} v */
+function isPlainObject(v) {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * JSON deep equality; key order is not a difference.
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+function jsonEqual(a, b) {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]))
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ka = Object.keys(a)
+    const kb = Object.keys(b)
+    return ka.length === kb.length && ka.every((k) => Object.hasOwn(b, k) && jsonEqual(a[k], b[k]))
+  }
+  return Object.is(a, b)
+}
+
+/**
+ * Why this package.json's `build.electronFuses` is not the flip release's, or null when it is exactly
+ * `expected`.
+ * @param {string | null | undefined} packageSource the text of package.json; null/undefined = unreadable
+ * @param {Record<string, unknown> | null} expected `readExpectedFuses()`; null = unreadable
+ * @returns {string | null}
+ */
+export function fusesProblem(packageSource, expected) {
+  if (!expected) {
+    return `could not read ${FUSES_SOURCE} — the flip release ships exactly those fuses (docs/project-limit.md, Release checklist)`
+  }
+  let build
+  try {
+    const pkg = JSON.parse(packageSource ?? '')
+    if (!isPlainObject(pkg)) throw new Error('not an object')
+    build = pkg.build
+  } catch {
+    build = undefined
+  }
+  if (!isPlainObject(build)) {
+    return (
+      'could not read build.electronFuses from package.json — the flip release ships the hardening fuses ' +
+      '(docs/project-limit.md, Release checklist)'
+    )
+  }
+  if (!Object.hasOwn(build, 'electronFuses')) {
+    return (
+      'package.json has no build.electronFuses — the flip release ships the hardening fuses: set it to exactly ' +
+      `${FUSES_SOURCE} (docs/project-limit.md, Release checklist)`
+    )
+  }
+  if (!jsonEqual(build.electronFuses, expected)) {
+    return (
+      `package.json build.electronFuses differs from ${FUSES_SOURCE} — the flip release ships exactly those ` +
+      'fuses; a change to them is a decision for src/main/electron-fuses.test.ts (docs/project-limit.md, Release checklist)'
+    )
+  }
+  return null
+}
+
+/**
+ * Why these sources must not be released at `now`, or null when they may: the deadline first
+ * (`deadlineProblem`), then — only for a frozen (flip) release — the allowance key, then the fuses.
  * @param {string} source the text of src/shared/project-limit.ts
  * @param {string | null} keySource the text of src/core/project-allowance-key.ts; null = unreadable
  * @param {Date} now
+ * @param {string | null} [packageSource] the text of package.json; null/absent = unreadable
+ * @param {Record<string, unknown> | null} [expectedFuses] defaults to `readExpectedFuses()`, read only
+ *   for a frozen release
  * @returns {string | null}
  */
-export function releaseProblem(source, keySource, now) {
+export function releaseProblem(source, keySource, now, packageSource, expectedFuses) {
   const deadline = deadlineProblem(source, now)
   if (deadline) return deadline
   if (!readDeadline(source).frozen) return null
@@ -137,7 +224,7 @@ export function releaseProblem(source, keySource, now) {
       'public half of PROJECT_ALLOWANCE_PRIVATE_KEY before the flip release (docs/project-limit.md, O1)'
     )
   }
-  return null
+  return fusesProblem(packageSource, expectedFuses === undefined ? readExpectedFuses() : expectedFuses)
 }
 
 function fail(message) {
@@ -161,6 +248,7 @@ if (isMain) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const file = process.argv[2] ?? path.join(root, SOURCE)
   const keyFile = process.argv[3] ?? path.join(root, KEY_SOURCE)
+  const pkgFile = process.argv[4] ?? path.join(root, 'package.json')
   let source
   try {
     source = fs.readFileSync(file, 'utf8')
@@ -174,7 +262,14 @@ if (isMain) {
   } catch {
     keySource = null
   }
-  const problem = releaseProblem(source, keySource, new Date())
+  // Likewise: only a frozen release needs the fuses.
+  let packageSource = null
+  try {
+    packageSource = fs.readFileSync(pkgFile, 'utf8')
+  } catch {
+    packageSource = null
+  }
+  const problem = releaseProblem(source, keySource, new Date(), packageSource)
   if (problem) fail(problem)
   const { deadlineMs, frozen } = readDeadline(source)
   console.log(

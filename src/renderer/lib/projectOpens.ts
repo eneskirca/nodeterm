@@ -16,7 +16,7 @@ export type OpenAction =
   | { kind: 'reopen'; id: string }
   | { kind: 'register'; cwd: string }
 
-/** Un-closing `p` makes it open: it is closed, and not a relay tab (those never count, spec §3). */
+/** Un-closing `p` makes it open: it is closed, and not a relay tab (those never count). */
 const reopens = (p: Project): boolean => !!p.closed && !p.remote
 
 /**

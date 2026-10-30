@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
-// The limit dialog (spec §7, option A). The open gate (lib/projectLimitGate.ts) holds a promise for
-// every dialog it shows and refuses every other open while that promise is pending, so the one rule
-// above all others here: EVERY way out of the dialog goes through `resolveDialog`. A dialog that
-// vanishes any other way (or stays unsettled behind an unmounted component) latches every later
-// at-limit open to `false` for the rest of the session.
+// The limit dialog (docs/project-limit.md, The limit moment). The open gate
+// (lib/projectLimitGate.ts) holds a promise for every dialog it shows and refuses every other open
+// while that promise is pending, so the one rule above all others here: EVERY way out of the dialog
+// goes through `resolveDialog`. A dialog that vanishes any other way (or stays unsettled behind an
+// unmounted component) latches every later at-limit open to `false` for the rest of the session.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -283,7 +283,7 @@ describe('ProjectLimitDialog — error and mismatch', () => {
     const pending = show({ mode: 'error' })
     expect(text()).toContain('5 of 5 free projects are open')
     expect(text()).toContain("Couldn't check your free allowance with api.nodeterm.dev.")
-    // Close and Pro still work (§7.3).
+    // Close and Pro still work: a failed check never takes the ways out away.
     expect(rows()).toHaveLength(5)
     expect(button('Unlimited with Pro — $10/mo')).toBeTruthy()
     click(button('Retry'))

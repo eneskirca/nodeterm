@@ -40,10 +40,11 @@ import { useSettings } from '../state/settings'
  * (under it the open stays synchronous and claims nothing).
  */
 
-/** §7's "brief spinner": raised only for a claim still in flight after this long. */
+/** The limit moment's "brief spinner" (the "Checking…" panel): raised only for a claim still in
+ *  flight after this long. */
 export const CHECKING_DELAY_MS = 300
 
-/** An agent's refusal shows the user the limit dialog at most once in this window (§7.5: once per
+/** An agent's refusal shows the user the limit dialog at most once in this window (once per
  *  refusal burst, not per retry). Measured from when the dialog was last shown for an agent. */
 export const AGENT_DIALOG_QUIET_MS = 60_000
 
@@ -189,12 +190,14 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
   }
 
   /** Every agent refusal, from either check: the user is shown the dialog (under showForAgent's
-   *  rules) and the agent gets the one sentence (spec §7.5), so the two checks cannot word it twice. */
+   *  rules) and the agent gets the one sentence, so the two checks cannot word it twice. The sentence
+   *  is also the agent's only documentation of the limit — the canvas-control verb help says nothing
+   *  about it, so nothing reaches an agent while the limit is off — hence the "do not retry". */
   function refuseAgent(state: ProjectLimitState): Extract<AgentOpenCheck, { ok: false }> {
     showForAgent()
     return {
       ok: false,
-      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options`
+      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options — do not retry`
     }
   }
 

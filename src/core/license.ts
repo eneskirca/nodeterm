@@ -33,7 +33,7 @@ export function isDntEnv(): boolean {
   return !!(process.env.DO_NOT_TRACK || process.env.NODETERM_TELEMETRY_DISABLED)
 }
 
-// The user's consent to license calls while DO_NOT_TRACK is set (spec §7.4: a setting shown and
+// The user's consent to license calls while DO_NOT_TRACK is set (a setting shown and
 // revocable in Settings → Privacy, wired in by the shell). Unwired — the default, and any shell that
 // never wires it — there is no consent, which is the pre-consent behavior: no license call under DNT.
 let networkConsent: () => boolean = () => false
@@ -41,7 +41,7 @@ let networkConsent: () => boolean = () => false
 /**
  * Install the consent callback. It is read on EVERY gated call, so revoking consent takes effect at
  * once. Only callers of `licenseNetworkGate()` honor it — the license routes in this file, and the
- * project-limit claim (spec §7.4) — never telemetry or the check feed, which keep their own
+ * project-limit claim (docs/project-limit.md) — never telemetry or the check feed, which keep their own
  * unconditional DNT guard.
  */
 export function setLicenseNetworkConsent(fn: () => boolean): void {
@@ -302,11 +302,12 @@ export function isPremium(): boolean {
 export const PRO_LIMIT_GRACE_MS = 30 * 24 * 60 * 60 * 1000
 
 /**
- * Pro for the purposes of the free-tier open-project limit (spec §6), and for NOTHING else — every
- * other Pro feature gates on `isPremium()`. True when `isPremium()` is, or when the stored token
- * passes the same signature + deviceId verification and expired less than `PRO_LIMIT_GRACE_MS` ago
- * by the clock anchor. A paying user offline past the 7-day token TTL must not be blocked from
- * opening a project; the cost is that cancelling and then blocking the API buys at most 30 days.
+ * Pro for the purposes of the free-tier open-project limit (docs/project-limit.md), and for NOTHING
+ * else — every other Pro feature gates on `isPremium()`. True when `isPremium()` is, or when the
+ * stored token passes the same signature + deviceId verification and expired less than
+ * `PRO_LIMIT_GRACE_MS` ago by the clock anchor. A paying user offline past the 7-day token TTL must
+ * not be blocked from opening a project; the cost is that cancelling and then blocking the API buys
+ * at most 30 days.
  *
  * "No 2xx `active:false` since" needs no record of its own: the device-bound refresh deletes the
  * stored token on exactly that answer, so a token still on disk means the server has not said

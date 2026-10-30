@@ -63,10 +63,16 @@ gate. How that is held, layer by layer:
   An install the limit was never switched on for has no token, so it never reads it; one that was
   switched off by an undo through the check feed keeps its token and still reads it at boot.
 - The only request a dormant install makes is `/v1/check`, the call it already made. Core also
-  reads it at boot and every 6 h, through the same 5-minute cache and the same build /
-  DO_NOT_TRACK guards. Core records the first-launch count once (the late-updater basis above, by
-  design); `project-limit.json` is otherwise written only when a server word changes the stored
-  state, not on every check.
+  reads it once the boot workspace load has settled (`initProjectLimit`'s `ready`) and every 6 h,
+  through the same 5-minute cache and the same build / DO_NOT_TRACK guards. That boot read is not
+  free: a reply fetched while the open-project count was wanted (telemetry on) but still unknown —
+  the index loading, which is when the banner's and the update card's first reads can run — does not
+  stand in for a later read that can carry the count; that read refetches and replaces the cache.
+  So a boot can cost one extra request, and the count reaches the server as soon as the index is
+  loaded instead of only on the 6 h tick (a session shorter than that would otherwise never report
+  it). Core records the first-launch count once (the late-updater basis above, by design);
+  `project-limit.json` is otherwise written only when a server word changes the stored state, not
+  on every check.
 - The agent `open-project` verb asks synchronously too while the limit is off; the headless start
   of a node in a closed project unhides exactly as before.
 
@@ -153,9 +159,13 @@ if (g !== true && !(await g)) return
 - **The agent `open-project` verb** goes through `checkAgentProjectOpen` (early, before the folder
   probe) and `finishAgentProjectOpen` (the final decision and `registerProject` in one tick). A
   refusal is the plain sentence `free plan: N of N projects are open; the user has been shown the
-  options`, and the user sees the dialog at most once per minute of refusals. The agent-facing verb
-  help says not to retry. A headless start of a node in a CLOSED project at the limit starts the
-  session but does not unhide the project (the existing "reopen it from the welcome screen" reply).
+  options — do not retry`, and the user sees the dialog at most once per minute of refusals. The
+  guidance rides the refusal: the agent-facing verb help (`buildCanvasSkillBody` /
+  `buildCanvasControlInstructions`) says nothing about the limit, so nothing about it is printed to
+  agents while it is off, and the refusal — which exists only while it is on — is its documentation
+  (the agent-text-in-sync rule is met by the outcome text itself). A headless start of a node in a
+  CLOSED project at the limit starts the session but does not unhide the project (the existing
+  "reopen it from the welcome screen" reply).
 - A new way to open a project must call the gate. `src/renderer/canvas/project-limit-opens.source.test.ts`
   pins the five call sites.
 
@@ -209,7 +219,9 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
   OS reads, `host:<hostname>`). The raw id
   never leaves `machine-id.ts`. Replies: `200 { token, free, epoch }`, `409 not_active`,
   `409 machine_mismatch` + `retryAfter` (unix seconds), `429` (10 per minute per address — retryable,
-  never final). Claims time out after 8 s and never reject.
+  never final). A claim's HTTP request times out after 8 s (body included); reading the machine id
+  before it can add up to ~10 s more when the OS tool hangs (two 5 s attempts). A claim never
+  rejects.
 - Allowance token: `base64url(payloadJSON).base64url(ed25519sig)`, payload
   `{ typ: 'project-allowance', deviceId, machine, allowance, epoch, iat }`, no expiry, signed with
   `PROJECT_ALLOWANCE_PRIVATE_KEY` — a key of its own, never the entitlement key (shipped clients do
@@ -254,14 +266,23 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
 5. Keep both constants in their literal one-line form —
    `export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')` and
    `export const PROJECT_LIMIT_DEADLINE_FROZEN = true | false` — because the guard reads the source.
+6. **The Electron fuses ship with the flip-preparation release, not before.** `package.json` carries
+   no `build.electronFuses` while the limit is dormant: the fuses would be the one change a user of
+   a dormant release could notice (they unset `NODE_EXTRA_CA_CERTS`, see below). After the owner's
+   NODE_EXTRA_CA_CERTS decision and device Run 1, the flip-preparation release sets
+   `build.electronFuses` to exactly `scripts/electron-fuses.json` — the one definition, read by both
+   `src/main/electron-fuses.test.ts` (the decision record; it accepts absent or exactly that object)
+   and the guard, which refuses a **frozen** release whose `build.electronFuses` is absent or differs
+   from it. An unfrozen release is not checked.
 
 **The guard**: `scripts/check-project-limit-deadline.mjs` is the first step that runs in each build
 job of `.github/workflows/release.yml` — `release-mac`, `release-linux` and `release-win` — right
 after checkout and setup-node, before `npm ci` (plain node). It exits 1 when the deadline is less
 than 30 days away and not frozen, or when it cannot read the constants; and for a **frozen** (flip)
 release also when `PROJECT_ALLOWANCE_PUBLIC_KEY` (`src/core/project-allowance-key.ts`) is empty,
-unreadable, not an Ed25519 public-key PEM, or a private key. An unfrozen release never looks at the
-key. The three jobs run in
+unreadable, not an Ed25519 public-key PEM, or a private key, and when `package.json`'s
+`build.electronFuses` is not exactly `scripts/electron-fuses.json` (item 6). An unfrozen release
+never looks at the key or the fuses. The three jobs run in
 parallel and each creates the release on its first upload, so a refused tag fails all three before
 anything is built or uploaded: no release, not even a prerelease, and `publish` never runs. Bump the
 deadline, then move the tag to that commit (or tag the next version) and rerun.
@@ -269,7 +290,7 @@ deadline, then move the tag to that commit (or tag the next version) and rerun.
 so a change of literal form fails on the PR, not on release day, and pins the step's place in all
 three jobs. It never guards a frozen deadline's DATE — that is item 2's hazard.
 
-## Before Release B ships — owner decisions
+## Owner decisions before the limit can ship
 
 ### O1: the allowance key pair
 
@@ -302,10 +323,14 @@ the installs the limit will never reach until they update (Accepted gaps). The g
 key only at the flip release, because refusing every release before O1 would block unrelated
 releases; doing O1 early is the owner's call.
 
-### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before Release B)
+### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before the fuses ship)
 
-The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`package.json`
-`build.electronFuses`, the Release B hardening) makes Electron **unset** `NODE_OPTIONS` **and**
+The fuses ship with the flip-preparation release (Release checklist, item 6), so this decision is
+due before that release, not before Release B — which ships no fuses.
+
+The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`scripts/electron-fuses.json`,
+set as `package.json` `build.electronFuses` from the flip-preparation release on) makes Electron
+**unset** `NODE_OPTIONS` **and**
 `NODE_EXTRA_CA_CERTS` at process start, in GUI and RunAsNode mode alike (measured on Electron
 42.11.16). Consequences:
 
@@ -324,7 +349,7 @@ The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`package.json`
   main process (measured against an unfused control) — a one-line bypass of the gate on macOS and
   Windows.
 
-Options before Release B ships:
+Options before the flip-preparation release ships:
 
 - **(a)** Ship with the cost and say so in the release notes.
 - **(b)** First build child re-supply: read the values from the login-shell probe
@@ -351,9 +376,12 @@ The decision is enes's. Device check 10 below gathers the evidence.
   client — with the O1 public key pasted, or its installs stay unlimited even after the flip.
   Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release workflow
   refuses otherwise).
+- **Flip preparation — a release before O4:** after the NODE_EXTRA_CA_CERTS decision and device
+  Run 1, set `package.json` `build.electronFuses` to exactly `scripts/electron-fuses.json`
+  (Release checklist, item 6). The flip release is refused without them.
 - **O4 — flip day:**
-  1. In the release that accompanies the flip (or the first one after it), set
-     `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
+  1. In the release that accompanies the flip (or the first one after it — it must carry the fuses),
+     set `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
      a deadline a shipped release has already frozen, nothing warns you: ship a release that sets
      `FROZEN = false` and bumps the deadline before that date passes (Release checklist, item 2).
   2. Set the cutoff in the admin console's Project limit card (an ISO instant with an offset).
@@ -417,11 +445,11 @@ The decision is enes's. Device check 10 below gathers the evidence.
 3. Hand-editing `workspace.json` to un-close projects bypasses the gate; never clamped. The same
    class: a hand-edited future `offAt` in `project-limit.json` suppresses the deadline.
 4. A patched build (easy on Linux — Electron has no asar integrity there — re-signing needed on
-   macOS/Windows). After the license change (#1317) this is a license breach for production use,
-   not something the code prevents.
-5. Both legacy counts are client-reported and only capped at CAP. Before the cutoff anyone who reads
-   the public Release A change can mint a legacy device id with a CAP-sized allowance by calling
-   `/v1/check` by hand. This ends at the cutoff; the date is not announced in advance.
+   macOS/Windows once the fuses ship; before the flip-preparation release, easy everywhere). After
+   the license change (#1317) this is a license breach for production use, not something the code
+   prevents.
+5. Both legacy counts are client-reported and capped at CAP; the cap bounds what a pre-cutoff report
+   can claim.
 6. Rebinding lets one legacy `device-id` be shared slowly: each machine that rebinds keeps the token
    it already stored, so N machines take N × 30 days.
 7. A cancelled Pro user who blocks the API keeps unlimited opens for at most 30 days.
@@ -439,7 +467,8 @@ Rough edges a user can notice (behaviour, not bypasses):
 
 - A second open pressed while a claim or the dialog is in flight is dropped (press again).
 - Under DO_NOT_TRACK, the limit moment at a known allowance waits for one claim before the dialog
-  (the "Checking…" panel after 300 ms; up to the 8 s claim timeout when offline).
+  (the "Checking…" panel after 300 ms; up to the 8 s request timeout when offline, plus up to
+  ~10 s for the machine-id read when the OS tool hangs).
 - When the dialog was raised by an agent's refusal, a Close makes room but nothing opens — the agent
   was already told no; ask it again.
 - At the limit, an agent's headless start of a node in a closed project runs without bringing the
@@ -455,6 +484,10 @@ staging server must hold its private half: with a mismatched pair every claim's 
 verification and reads as "Couldn't check your free allowance".
 
 **Run 1 — packaged builds, no server needed**
+
+No release carries the fuses before the flip-preparation release, so Run 1 runs on packaged test
+builds made with `build.electronFuses` set to exactly `scripts/electron-fuses.json`; its results
+(with check 10's) are what that release waits for.
 
 1. macOS arm64 and x64, signed: the app launches; `npx @electron/fuses read --app <path>` shows
    `EnableEmbeddedAsarIntegrityValidation` and `OnlyLoadAppFromAsar` enabled, RunAsNode enabled,

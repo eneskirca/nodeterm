@@ -17,16 +17,17 @@ export function countOpenProjects(projects: readonly { closed?: boolean; remote?
 
 /**
  * The compiled FREE: how many open projects a non-Pro install may have before the server has said
- * otherwise. The server owns the real number (spec §4) and sends it on every check while the limit
+ * otherwise. The server owns the real number and sends it on every check while the limit
  * is on, so changing FREE never needs a release; this is only the value used until it has spoken.
  */
 export const PROJECT_LIMIT_DEFAULT_FREE = 5
 
 /**
- * The embedded deadline (spec §5): past this instant a client that never heard from the server —
- * DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`, a blocked host — treats the limit as on. In practice
- * that only means "ask the server (claim) before opening beyond FREE"; a `not_active` answer turns
- * it off again. Compared against the clock anchor, never the bare wall clock.
+ * The embedded deadline (docs/project-limit.md): past this instant a client that never heard from
+ * the server — DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`, a blocked host — treats the limit as
+ * on. In practice that only means "ask the server (claim) before opening beyond FREE"; a
+ * `not_active` answer turns it off again. Compared against the clock anchor, never the bare wall
+ * clock.
  *
  * RELEASE CHECKLIST: this is BUMPED IN EVERY RELEASE BEFORE THE FLIP, to a date past the planned
  * flip — otherwise DNT users are gated before anyone else. At the flip it is set to the flip date
@@ -53,12 +54,12 @@ export interface ProjectLimitState {
   free: number
   /** The allowance a verified, server-signed token grants this device; `null` = not claimed yet. */
   allowance: number | null
-  /** DO_NOT_TRACK is set: a claim (and a purchase) needs the user's consent first (spec §7.4). */
+  /** DO_NOT_TRACK is set: a claim (and a purchase) needs the user's consent first. */
   dnt: boolean
 }
 
 /**
- * The answer while the limit is off, and the Server Edition's permanent answer (spec §10): every
+ * The answer while the limit is off, and the Server Edition's permanent answer: every
  * open is allowed synchronously, nothing is claimed, nothing is shown.
  */
 export const INACTIVE_PROJECT_LIMIT: ProjectLimitState = {

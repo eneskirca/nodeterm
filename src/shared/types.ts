@@ -2361,7 +2361,7 @@ export interface Settings {
    *  install count also rides the /v1/check call and is NOT gated on this toggle — see core/check.ts. */
   telemetryEnabled: boolean
   /** The user's consent to license and free-project-allowance calls to api.nodeterm.dev while
-   *  DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED is set (spec §7.4). Default off: under DNT nothing
+   *  DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED is set. Default off: under DNT nothing
    *  license-related leaves the machine until the user says so. Covers ONLY the calls behind
    *  `licenseNetworkGate()` (core/license.ts) — never telemetry or the check feed, which stay off
    *  under DNT whatever this says. Read as `=== true` (main installs it via
@@ -4190,7 +4190,7 @@ export interface LicenseApi {
 }
 
 /** The free-tier open-project limit (src/shared/project-limit.ts; core computes the state). Desktop
- *  only: the Server Edition's stub answers `INACTIVE_PROJECT_LIMIT` and claims `disabled` (spec §10),
+ *  only: the Server Edition's stub answers `INACTIVE_PROJECT_LIMIT` and claims `disabled`,
  *  and a relay tab keeps the local preload — the allowance is this machine's, never the host's. */
 export interface ProjectLimitApi {
   /** The current state. Cheap and offline: it never waits on the network. */

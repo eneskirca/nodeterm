@@ -27,13 +27,27 @@ describe('project-limit wiring (source)', () => {
 
   it("main sends the state to its own window, with the workspace count and the OS-aware machine read", () => {
     expect(main).toMatch(
-      /initProjectLimit\(\{\s*openProjects: \(\) => workspaceStore\.openProjectCount\(\),\s*machineHash: readMachineHashResult,\s*notify: \(s\) => sendToMain\(IPC\.projectLimitChanged, s\)\s*\}\)/
+      /initProjectLimit\(\{\s*openProjects: \(\) => workspaceStore\.openProjectCount\(\),\s*machineHash: readMachineHashResult,\s*notify: \(s\) => sendToMain\(IPC\.projectLimitChanged, s\),\s*ready: bootWorkspaceLoad\s*\}\)/
     )
   })
 
-  it('a license change and a settings change both re-send it', () => {
-    expect(main).toMatch(/initLicense\(\(\) => \{\s*watchLinks\?\.onEntitlementChanged\(\)\s*projectLimit\.refresh\(\)\s*\}\)/)
-    expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.refresh\(\)\)/)
+  it('the first check read waits for the boot workspace load, which main starts once and earlier', () => {
+    // Read before the index is loaded, the open-project count is unknown and that read (and every
+    // cache hit on it) goes out without it. `ready` is the SAME promise the delivery queue waits on:
+    // a second load of its own would change when the index is read, not just who waits for it.
+    const load = main.indexOf('const bootWorkspaceLoad = workspaceStore.load({ sideline: false })')
+    expect(load).toBeGreaterThan(-1)
+    expect(main.indexOf('initProjectLimit({')).toBeGreaterThan(load)
+    expect(main.match(/const bootWorkspaceLoad = /g)).toHaveLength(1)
+  })
+
+  it('a license change and a settings change both push it, only when it changed', () => {
+    // pushIfChanged, not refresh: settings change on every save, and the windows need only news.
+    expect(main).toMatch(
+      /initLicense\(\(\) => \{\s*watchLinks\?\.onEntitlementChanged\(\)\s*projectLimit\.pushIfChanged\(\)\s*\}\)/
+    )
+    expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.pushIfChanged\(\)\)/)
+    expect(main).not.toMatch(/projectLimit\.refresh\(\)/)
   })
 
   it('DO_NOT_TRACK consent is the Privacy setting, read live, and installed before the first license call', () => {

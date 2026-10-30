@@ -6,9 +6,10 @@ import { opensProject } from './projectOpens'
 import { useProjects } from '../state/projects'
 
 /**
- * `opensProject` decides whether the project-limit gate is asked at all (spec §3: "Activating a
- * project that is already open is not an open"). Each case is checked against the store action the
- * call site runs right after it, so the prediction cannot drift from what the store does.
+ * `opensProject` decides whether the project-limit gate is asked at all (docs/project-limit.md,
+ * Definitions: "Activating a project that is already open is not an open"). Each case is checked
+ * against the store action the call site runs right after it, so the prediction cannot drift from
+ * what the store does.
  */
 
 const server = (over: Partial<SshServer> = {}): SshServer => ({

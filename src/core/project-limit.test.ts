@@ -133,6 +133,8 @@ async function boot(
     machineHash?: () => Promise<MachineHashResult>
     /** The allowance key passed to core: the test key unless given; `undefined` = the shipped key. */
     publicKeyPem?: string
+    /** Passed through as the `ready` dep (main: the boot workspace load). */
+    ready?: Promise<unknown>
     wait?: boolean
   } = {}
 ): Promise<Booted> {
@@ -154,6 +156,7 @@ async function boot(
         ? {}
         : { publicKeyPem: opts.publicKeyPem }
       : { publicKeyPem: ALLOWANCE_PUB }),
+    ...(opts.ready ? { ready: opts.ready } : {}),
     notify: (s) => notified.push(s)
   })
   booted = {
@@ -584,6 +587,31 @@ describe('project limit: claim', () => {
     }
   })
 
+  // The flip as a DO_NOT_TRACK install meets it: no check feed, so no server word and no latch —
+  // only the embedded deadline says the limit is on. Its claim is the one thing that reaches the
+  // server, so it must go out (gating the claim on the latch instead of `active` would hold it at
+  // FREE forever, and an undo could never reach it).
+  it('an unlatched install past the deadline claims, with and without the check feed', async () => {
+    vi.setSystemTime(AFTER)
+    const token = allowanceToken({ allowance: 9, epoch: 1 })
+    for (const dnt of [false, true]) {
+      if (dnt) process.env.DO_NOT_TRACK = '1'
+      rmSync(limitFile(), { force: true })
+      fetchMock.mockClear()
+      const { handle } = await boot()
+      if (dnt) (await import('./license')).setLicenseNetworkConsent(() => true)
+      expect(existsSync(limitFile()) ? readLimitFile().latched : undefined).toBeUndefined()
+      expect(handle.state()).toMatchObject({ active: true, allowance: null, dnt })
+      net.claim = reply(200, { token, free: 5, epoch: 1 })
+      expect(await handle.claim()).toEqual({
+        ok: true,
+        state: { active: true, pro: false, free: 5, allowance: 9, dnt }
+      })
+      expect(claimCalls()).toHaveLength(1)
+      expect(machineSpy).toHaveBeenCalled()
+    }
+  })
+
   it('an inactive install claims nothing: no request, no machine read', async () => {
     const { handle } = await boot()
     fetchMock.mockClear()
@@ -757,6 +785,22 @@ describe('project limit: wiring', () => {
     expect(notified.at(-1)).toEqual(handle.state())
   })
 
+  // What main's settings and license hooks call: either fires on every save of settings.json, so it
+  // sends only what the windows have not seen.
+  it('pushIfChanged() sends the state only when it differs from the last one sent', async () => {
+    const { handle } = await boot()
+    const n = notified.length
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n)
+
+    writeLicense({ token: entitlementToken(3600) })
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n + 1)
+    expect(notified.at(-1)).toMatchObject({ pro: true })
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n + 1)
+  })
+
   // Nothing but time changes these; the 6 h tick must push them (an app open for days, or one
   // that never hears from api.nodeterm.dev, would otherwise stay dormant until a restart).
   it('pushes the deadline crossing on the 6 h tick', async () => {
@@ -796,5 +840,30 @@ describe('project limit: wiring', () => {
     expect(checkCalls()).toBe(1)
     await vi.advanceTimersByTimeAsync(6 * HOUR)
     expect(checkCalls()).toBe(2)
+  })
+
+  // Main hands in the boot workspace load: read any earlier and the open-project count is still
+  // unknown, so that first read (and every cache hit on it) would go out without it.
+  it('the init read waits for `ready`, so it carries the count the workspace load made known', async () => {
+    let release: () => void = () => {}
+    const ready = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let count: number | undefined
+    const { check } = await boot({ ready, wait: false })
+    check.configureCheck({ openProjects: () => count, telemetryEnabled: () => true })
+    await flush()
+    expect(checkCalls()).toBe(0)
+
+    count = 4
+    release()
+    await booted.idle()
+    expect(checkCalls()).toBe(1)
+    expect(new URL(urls()[0]).searchParams.get('openProjects')).toBe('4')
+  })
+
+  it('a `ready` that rejects still lets the init read run', async () => {
+    await boot({ ready: Promise.reject(new Error('workspace load failed')) })
+    expect(checkCalls()).toBe(1)
   })
 })

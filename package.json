@@ -61,13 +61,6 @@
       "**/node_modules/sharp/**",
       "**/node_modules/@img/**"
     ],
-    "electronFuses": {
-      "runAsNode": true,
-      "enableNodeOptionsEnvironmentVariable": false,
-      "enableNodeCliInspectArguments": false,
-      "enableEmbeddedAsarIntegrityValidation": true,
-      "onlyLoadAppFromAsar": true
-    },
     "extraResources": [
       {
         "from": "build/icon.png",

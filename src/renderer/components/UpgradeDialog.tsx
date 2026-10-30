@@ -13,7 +13,8 @@ export function UpgradeDialog() {
   const isPremium = useEntitlement((s) => s.isPremium)
   const upgrade = useEntitlement((s) => s.upgrade)
   // While the free-tier project limit is on, unlimited open projects is part of what Pro adds
-  // (spec §8); while it is off there is no limit to lift, so the sentence does not mention one.
+  // (docs/project-limit.md); while it is off there is no limit to lift, so the sentence does not
+  // mention one.
   const limitActive = useProjectLimit((s) => s.state.active)
   if (!open || isPremium) return null
   return createPortal(

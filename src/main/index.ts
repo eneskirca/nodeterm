@@ -4887,24 +4887,28 @@ app.whenReady().then(async () => {
   // The free-tier open-project limit (core/project-limit.ts). Its state goes to THIS machine's
   // window only: sendToMain, never platform().broadcast, which also fans out to every relay peer
   // (the state carries this host's Pro and DO_NOT_TRACK facts). The Server Edition does not run it.
+  // Its first check read waits for the boot workspace load, the one the delivery queue waits on: read
+  // before the index is loaded, the open-project count is unknown and would not ride that read.
   const projectLimit = initProjectLimit({
     openProjects: () => workspaceStore.openProjectCount(),
     machineHash: readMachineHashResult,
-    notify: (s) => sendToMain(IPC.projectLimitChanged, s)
+    notify: (s) => sendToMain(IPC.projectLimitChanged, s),
+    ready: bootWorkspaceLoad
   })
-  settingsStore.onChange(() => projectLimit.refresh())
-  // DO_NOT_TRACK consent for license and allowance calls (spec §7.4): Settings → Privacy, read on
-  // every gated call so revoking it applies at once. Installed BEFORE initLicense, whose launch
-  // refresh runs immediately. Only `licenseNetworkGate()` callers read it — never telemetry or the
-  // check feed. (Giving consent does not trigger a refresh: license.ts exposes none, so the next
-  // license call is the 6 h refresh, an activate or an upgrade; a claim reads the gate itself.)
+  settingsStore.onChange(() => projectLimit.pushIfChanged())
+  // DO_NOT_TRACK consent for license and allowance calls (docs/project-limit.md): Settings →
+  // Privacy, read on every gated call so revoking it applies at once. Installed BEFORE initLicense,
+  // whose launch refresh runs immediately. Only `licenseNetworkGate()` callers read it — never
+  // telemetry or the check feed. (Giving consent does not trigger a refresh: license.ts exposes
+  // none, so the next license call is the 6 h refresh, an activate or an upgrade; a claim reads the
+  // gate itself.)
   setLicenseNetworkConsent(() => settingsStore.get().licenseNetworkConsent === true)
   // A license change (activate, refresh, a lapsed token replaced) re-arms every live link the API
   // refused: a link host whose 7-day entitlement expired under it stops minting until then (R41).
   // It can also change Pro for the project limit, which nothing else would tell the renderer.
   initLicense(() => {
     watchLinks?.onEntitlementChanged()
-    projectLimit.refresh()
+    projectLimit.pushIfChanged()
   })
   // Lazy getter: sshProjectManager is created just below, so a remote account op (which only runs
   // after the user has connected an SSH project) always sees the live manager.

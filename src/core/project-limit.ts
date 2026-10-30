@@ -31,8 +31,9 @@
  * machine check applies. A successful claim also caches the hash it sent, if it came from the OS.
  *
  * CLAIMS are lazy and never reject: one request shared by concurrent callers, an 8 s timeout over
- * the whole request including the body, and every failure folded into a `ClaimError`. While the
- * limit is off a claim asks nobody (no request, no machine read), whoever calls it.
+ * the whole request including the body (the machine read before it is bounded by machine-id.ts's
+ * own per-attempt timeout), and every failure folded into a `ClaimError`. While the limit is off a
+ * claim asks nobody (no request, no machine read), whoever calls it.
  *
  * `projectLimit:changed` goes to THIS machine's windows only, through the shell's `notify`. Never
  * `platform().broadcast`: on the desktop that fans out to every relay peer, and this state carries
@@ -71,7 +72,7 @@ const API_BASE = process.env.NODETERM_API_BASE || 'https://api.nodeterm.dev'
 export const OFF_TRUST_MS = 24 * 60 * 60 * 1000
 /** The whole claim request, body included (see license.ts REQUEST_TIMEOUT_MS for why the body). */
 const CLAIM_TIMEOUT_MS = 8000
-/** The check feed is re-read on this cadence; it is cached, so it adds no traffic of its own. */
+/** The check feed is re-read on this cadence, through check.ts's 5-minute cache. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 /** The server's own bounds: FREE in 1..1000 (check.ts), a first-launch count in 0..10000 (claim
  *  route — anything larger is a 400, which would fail every claim). */
@@ -98,6 +99,10 @@ export interface ProjectLimitDeps {
   publicKeyPem?: string
   /** Deliver the new state to this machine's own windows — never to relay peers. */
   notify: (s: ProjectLimitState) => void
+  /** Settles once `openProjects` can answer (main: the boot workspace load). The init check read
+   *  waits for it, settled either way: read before it, the count is still unknown and that read
+   *  goes out without it. Absent = read at once. */
+  ready?: Promise<unknown>
 }
 
 export interface ProjectLimitHandle {
@@ -105,8 +110,11 @@ export interface ProjectLimitHandle {
   state(): ProjectLimitState
   /** Ask the server for this device's allowance. Never rejects. */
   claim(): Promise<ClaimResult>
-  /** Re-send the state (a license or settings change can alter it with nothing here noticing). */
+  /** Re-send the state, unconditionally. */
   refresh(): void
+  /** Send the state only if it differs from the last one sent — what a license or settings change
+   *  calls (either can alter it with nothing here noticing, and settings change on every save). */
+  pushIfChanged(): void
 }
 
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v)
@@ -198,8 +206,8 @@ function compute(): ProjectLimitState {
   }
 }
 
-/** The count at the first launch of a limit-capable build (spec §4's late-updater basis): the first
- *  number `openProjects()` gives, kept for good. */
+/** The count at the first launch of a limit-capable build (the late-updater basis,
+ *  docs/project-limit.md): the first number `openProjects()` gives, kept for good. */
 function recordFirstLaunchOpenCount(): void {
   if (stored.firstLaunchOpenCount !== undefined) return
   let n: number | undefined
@@ -218,7 +226,8 @@ function state(): ProjectLimitState {
   return compute()
 }
 
-/** Send the state to this machine's windows, unconditionally (`refresh()`). */
+/** Send the state to this machine's windows, unconditionally (`refresh()`; also the boot-time
+ *  machine read landing, which can change what the windows were told at init). */
 function notify(): void {
   const s = state()
   lastSent = JSON.stringify(s)
@@ -368,7 +377,7 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   osMachine = null
   claimInFlight = null
   lastSent = JSON.stringify(compute())
-  const handle: ProjectLimitHandle = { state, claim, refresh: notify }
+  const handle: ProjectLimitHandle = { state, claim, refresh: notify, pushIfChanged }
   platform().handle(IPC.projectLimitState, () => handle.state())
   platform().handle(IPC.projectLimitClaim, () => handle.claim())
   onCheckAnswer(onAnswer)
@@ -390,7 +399,10 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   const readCheck = (): void => {
     track(fetchCheck().catch(() => {}))
   }
-  readCheck()
+  // After the workspace load, whichever way it settles: the open-project count rides this read only
+  // once the index is known (check.ts), and the next read of our own is the 6 h tick.
+  if (deps.ready) track(deps.ready.finally(readCheck).catch(() => {}))
+  else readCheck()
   setInterval(() => {
     // Time alone can change the state (see pushIfChanged); the check below covers the server's word.
     pushIfChanged()

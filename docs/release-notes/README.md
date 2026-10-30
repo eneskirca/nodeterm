@@ -18,7 +18,18 @@ that list by the conventional-commit type in the **PR title**:
 
 `TYPE_SECTIONS` in `scripts/release-notes.mjs` is the one copy of that table. A type nobody mapped —
 or a PR title with no conventional prefix at all — lands in **Improved**, visible, with its title
-intact. Nothing is ever dropped except the previous tag's `chore(release):` version bump.
+intact. Nothing is ever dropped except the previous tag's `chore(release):` version bump and PRs
+labelled **`no-release-notes`**.
+
+### Leaving a PR out: the `no-release-notes` label
+
+A PR carrying the `no-release-notes` label is left out of the generated notes entirely — not folded
+into Internal changes, not counted. It exists for work that ships switched off and must not be
+announced until it is switched on; ordinary internal work stays in the collapsed section. The
+generator looks the labelled PRs up on every run (`EXCLUDE_LABEL` in `scripts/release-notes.mjs`),
+and a failed lookup fails the generator rather than publishing notes that ignored the label. That
+failure, like any other, falls back to the plain `git log` list (see Failure), which knows nothing
+about labels — check the notes by hand if the job log shows that warning.
 
 ## Layer 2 — Highlights (optional, written by hand)
 
@@ -72,4 +83,4 @@ node scripts/release-notes.mjs --tag v0.3.8 --prev v0.3.7 --repo eneskirca/nodet
 
 It reads `docs/release-notes/<tag>.md` from the working directory (`--root` to point elsewhere) and
 prints to stdout unless given `--out`. `--body-file` substitutes a saved `generate-notes` body for
-the API call.
+the API call, and `--exclude <pr,pr>` the label lookup.

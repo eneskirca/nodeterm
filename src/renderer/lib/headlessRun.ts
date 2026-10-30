@@ -111,14 +111,14 @@ export function unhidesForHeadlessStart(
 }
 
 /**
- * `unhidesForHeadlessStart`, under the free-tier project limit
- * (docs/project-limit.md). Restoring a closed tab
- * makes a project open, so at the limit the tab simply stays in Recently closed: the session still
- * starts, nothing is refused and no dialog is shown (nobody pressed anything), and the reply keeps
- * its "reopen it from the welcome screen" hint — exactly the branch where the predicate says no.
- * A claim still due is a no as well: a headless start never claims. While the limit is off,
- * `decideOpen` always allows, so this answers what the predicate answers. A relay tab never counts
- * as open (spec §3), so un-closing one is not an open the limit has a say in.
+ * `unhidesForHeadlessStart`, under the free-tier project limit (docs/project-limit.md). Restoring a
+ * closed tab makes a project open, so at the limit the tab simply stays in Recently closed: the
+ * session still starts, nothing is refused and no dialog is shown (nobody pressed anything), and
+ * the reply keeps its "reopen it from the welcome screen" hint — exactly the branch where the
+ * predicate says no. A claim still due is a no as well: a headless start never claims. While the
+ * limit is off, `decideOpen` always allows, so this answers what the predicate answers. A relay tab
+ * never counts as open (docs/project-limit.md, Definitions), so un-closing one is not an open the
+ * limit has a say in.
  */
 export function shouldUnhideForHeadlessStart(
   project: { closed?: boolean; ssh?: Project['ssh']; remote?: Project['remote'] },

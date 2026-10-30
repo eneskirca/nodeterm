@@ -285,11 +285,12 @@ export function buildStubApi(): Omit<
       onChange: noopUnsub
     },
     projectLimit: {
-      // Spec §10: the Server Edition has no open-project gate, so it answers the dormant state and
-      // every open stays synchronous. Resolved, not rejected: unlike `license.getStatus`, this is
-      // read on the open path, and "inactive" is the true answer here rather than "unknown".
-      // `claim` answers `disabled` (this shell never talks to the license server) for the same
-      // reason: a refusal `ClaimResult` names, where an E_UNSUPPORTED throw is outside the contract.
+      // The Server Edition has no open-project gate (docs/project-limit.md), so it answers the
+      // dormant state and every open stays synchronous. Resolved, not rejected: unlike
+      // `license.getStatus`, this is read on the open path, and "inactive" is the true answer here
+      // rather than "unknown". `claim` answers `disabled` (this shell never talks to the license
+      // server) for the same reason: a refusal `ClaimResult` names, where an E_UNSUPPORTED throw is
+      // outside the contract.
       state: (): Promise<ProjectLimitState> => Promise.resolve(INACTIVE_PROJECT_LIMIT),
       claim: (): Promise<ClaimResult> =>
         Promise.resolve({ ok: false, error: 'disabled', state: INACTIVE_PROJECT_LIMIT }),

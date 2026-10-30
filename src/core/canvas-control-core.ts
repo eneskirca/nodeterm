@@ -989,7 +989,6 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  a denial is final, do not retry it. The user may have turned that dialog off for agents in',
     '  your project, in which case it simply applies. Local only (refused from an SSH project), and it never',
     '  focuses the new project\'s tab. The returned id is what `--project` accepts.',
-    '  On the free plan this can be refused when the open-project limit is reached. Do not retry: the user has already been shown the options.',
     '  Server Edition is narrower: it can only re-open an exact local project already saved in its',
     '  workspace (pass `--cwd` only); it never creates, adds, renames, recolors, or focuses one.',
     '- `show-image <path>` / `show-video <path>` — open a media file as a node.',
@@ -1583,7 +1582,6 @@ ${reportOutcomeDocLines().join('\n')}
   it. The user may have turned that dialog off for agents in your project, in which case it simply
   applies. Local only (refused from an SSH project), and it never focuses the new project's tab: use
   the returned id with \`--project\` to open sessions there.
-  On the free plan this can be refused when the open-project limit is reached. Do not retry: the user has already been shown the options.
   On Server Edition this is a restart-recovery operation only: pass \`--cwd\` for an exact local
   project already saved in that Server workspace. It never creates, adds, renames, recolors, or
   focuses a project; register a missing project in the UI first.

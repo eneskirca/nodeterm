@@ -7,7 +7,7 @@ import { INACTIVE_PROJECT_LIMIT, type ProjectLimitState } from '@shared/project-
 // The renderer's copy of core's project-limit state (src/core/project-limit.ts). Two things matter
 // here: it follows core — the hydrate read AND every `projectLimit:changed` push replace it — and a
 // failed read leaves it DORMANT. Inactive is the state in which every open behaves exactly as it did
-// before the limit existed (spec §2), so it is the only safe thing to hold when core cannot be asked.
+// before the limit existed, so it is the only safe thing to hold when core cannot be asked.
 
 const stateCall = vi.fn<() => Promise<ProjectLimitState>>()
 let pushed: ((s: ProjectLimitState) => void) | null = null

@@ -1,0 +1,7 @@
+{
+  "runAsNode": true,
+  "enableNodeOptionsEnvironmentVariable": false,
+  "enableNodeCliInspectArguments": false,
+  "enableEmbeddedAsarIntegrityValidation": true,
+  "onlyLoadAppFromAsar": true
+}

@@ -20,6 +20,12 @@
 // config would put every entry in one bucket, so the type comes from the conventional-commit
 // prefix in the PR title instead, through the single table below.
 //
+// ONE WAY TO LEAVE A PR OUT: the `no-release-notes` label (EXCLUDE_LABEL). A PR carrying it is
+// dropped entirely — not folded into Internal changes, not counted, not linked. It is for work that
+// ships switched off and must not be announced before it is switched on; everything else, internal
+// work included, stays in the notes. The labelled PRs are looked up per run (`gh api`), and a failed
+// lookup fails the generator rather than publishing notes that silently ignored the label.
+//
 // NON-ENGLISH / OUT-OF-CONTEXT SUBJECTS are deliberately NOT special-cased here. This layer
 // publishes what it is given, verbatim, in its mapped section; it never translates, rewrites
 // or drops a line, because a detector that guesses wrong either mangles a real entry or
@@ -75,6 +81,9 @@ export const TYPE_SECTIONS = {
  * either mapped or reworded, and it can only be read if it is on screen.
  */
 export const UNMAPPED_SECTION = 'improved'
+
+/** PRs carrying this label never reach the notes (see the header). */
+export const EXCLUDE_LABEL = 'no-release-notes'
 
 /** The version-bump commit for the PREVIOUS tag lands in every range. It is pure noise. */
 const RELEASE_BUMP_RE = /^chore\(release\)/i
@@ -180,6 +189,21 @@ export function parseGeneratedBody(body) {
   return { entries, newContributors, unparsed }
 }
 
+/** `entries` without the PRs numbered in `excluded` (an iterable of PR numbers). */
+export function dropExcluded(entries, excluded) {
+  const skip = new Set([...(excluded ?? [])].map(Number))
+  return entries.filter((entry) => !skip.has(entry.pr))
+}
+
+/** PR numbers from `gh --jq` output (one per line) or a hand-typed comma list. */
+export function parseExcludeList(text) {
+  return String(text ?? '')
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((n) => Number.isSafeInteger(n) && n > 0)
+}
+
 /** Group parsed entries into the section order above. Release-bump entries are dropped. */
 export function groupEntries(entries) {
   const groups = Object.fromEntries(SECTIONS.map((s) => [s.key, []]))
@@ -213,9 +237,9 @@ function compareUrl(repo, prev, tag) {
  * Render the whole body. Pure: every input is a value, so the tests exercise exactly what CI
  * publishes.
  */
-export function renderNotes({ tag, prev, repo, body, highlights }) {
+export function renderNotes({ tag, prev, repo, body, highlights, exclude }) {
   const { entries, newContributors, unparsed } = parseGeneratedBody(body)
-  const { groups } = groupEntries(entries)
+  const { groups } = groupEntries(dropExcluded(entries, exclude))
   for (const line of unparsed) groups[UNMAPPED_SECTION].push({ raw: line })
   const compare = compareUrl(repo, prev, tag)
 
@@ -284,6 +308,22 @@ function generatedBody({ repo, tag, prev }) {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
 }
 
+/** The numbers of every PR (open or closed) carrying EXCLUDE_LABEL. Throws when the lookup fails. */
+function excludedPrs({ repo }) {
+  const out = execFileSync(
+    'gh',
+    [
+      'api',
+      '--paginate',
+      `repos/${repo}/issues?labels=${EXCLUDE_LABEL}&state=all&per_page=100`,
+      '--jq',
+      '.[] | select(.pull_request) | .number'
+    ],
+    { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
+  )
+  return parseExcludeList(out)
+}
+
 export function highlightsPathFor(tag) {
   return `docs/release-notes/${tag}.md`
 }
@@ -305,17 +345,22 @@ function main() {
   const tag = args.tag
   const repo = args.repo
   if (!tag || !repo) {
-    console.error('usage: release-notes.mjs --tag <tag> --repo <owner/name> [--prev <tag>] [--out <file>] [--body-file <file>]')
+    console.error(
+      'usage: release-notes.mjs --tag <tag> --repo <owner/name> [--prev <tag>] [--out <file>] [--body-file <file>] [--exclude <pr,pr>]'
+    )
     process.exit(2)
   }
   const prev = args.prev && args.prev !== 'true' ? args.prev : ''
   const body = args['body-file'] ? readFileSync(args['body-file'], 'utf8') : generatedBody({ repo, tag, prev })
+  // `--exclude` stands in for the label lookup (tests, a hand run against a saved body).
+  const exclude = args.exclude !== undefined ? parseExcludeList(args.exclude === 'true' ? '' : args.exclude) : excludedPrs({ repo })
   const notes = renderNotes({
     tag,
     prev,
     repo,
     body,
-    highlights: readHighlights(tag, args.root)
+    highlights: readHighlights(tag, args.root),
+    exclude
   })
   if (args.out && args.out !== 'true') writeFileSync(args.out, notes)
   else process.stdout.write(notes)

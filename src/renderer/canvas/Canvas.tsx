@@ -6395,6 +6395,9 @@ export function Canvas() {
       // tab: the user chose Cancel.
       const g = opensProject(useProjects.getState().projects, { kind: 'new' }) ? gateProjectOpen() : true
       if (g !== true && !(await g)) return
+      // Again: a Close in the limit dialog switches the active canvas, and the switch below would
+      // drop whatever was written live into that one. Same tick as the gate when it allows at once.
+      commitActiveToStore()
       const project = probed
         ? useProjects.getState().adoptProject({ ...probed, closed: false })
         : useProjects.getState().addProject(name, clonedPath)
@@ -17892,6 +17895,9 @@ export function Canvas() {
         // The project limit is the LAST await before the store write (lib/projectLimitGate.ts).
         const g = opensProject(useProjects.getState().projects, { kind: 'folder', folder }) ? gateProjectOpen() : true
         if (g !== true && !(await g)) return false
+        // Again, after the awaits above: a Close in the limit dialog switches the active canvas, and
+        // the open below would drop whatever was written live into that one (as onRepoCloned).
+        commitActiveToStore()
         takeBack?.()
         useProjects.getState().openFolderProject(folder)
         // An `unavailable` placeholder never recovers on its own: a save emits a header-only ref
@@ -17916,6 +17922,7 @@ export function Canvas() {
         const action: OpenAction = probed ? { kind: 'new' } : { kind: 'folder', folder }
         const g = opensProject(useProjects.getState().projects, action) ? gateProjectOpen() : true
         if (g !== true && !(await g)) return false
+        commitActiveToStore()
         if (probed) useProjects.getState().adoptProject({ ...probed, closed: false })
         else useProjects.getState().openFolderProject(folder)
       }
@@ -20728,7 +20735,7 @@ export function Canvas() {
       )}
 
       <UpgradeDialog />
-      {/* The free-tier limit moment (spec §7). Close is the ordinary non-destructive close — never
+      {/* The free-tier limit moment (docs/project-limit.md). Close is the ordinary non-destructive close — never
           `endSessions`: the limit only ever blocks a NEW open, it never ends anything. */}
       <ProjectLimitDialog onCloseProject={(id) => performCloseProject(id)} />
       {liveLinkDialog && (
