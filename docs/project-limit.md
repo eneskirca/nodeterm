@@ -260,14 +260,23 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
 5. Keep both constants in their literal one-line form —
    `export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')` and
    `export const PROJECT_LIMIT_DEADLINE_FROZEN = true | false` — because the guard reads the source.
+6. **The Electron fuses ship with the flip-preparation release, not before.** `package.json` carries
+   no `build.electronFuses` while the limit is dormant: the fuses would be the one change a user of
+   a dormant release could notice (they unset `NODE_EXTRA_CA_CERTS`, see below). After the owner's
+   NODE_EXTRA_CA_CERTS decision and device Run 1, the flip-preparation release sets
+   `build.electronFuses` to exactly `scripts/electron-fuses.json` — the one definition, read by both
+   `src/main/electron-fuses.test.ts` (the decision record; it accepts absent or exactly that object)
+   and the guard, which refuses a **frozen** release whose `build.electronFuses` is absent or differs
+   from it. An unfrozen release is not checked.
 
 **The guard**: `scripts/check-project-limit-deadline.mjs` is the first step that runs in each build
 job of `.github/workflows/release.yml` — `release-mac`, `release-linux` and `release-win` — right
 after checkout and setup-node, before `npm ci` (plain node). It exits 1 when the deadline is less
 than 30 days away and not frozen, or when it cannot read the constants; and for a **frozen** (flip)
 release also when `PROJECT_ALLOWANCE_PUBLIC_KEY` (`src/core/project-allowance-key.ts`) is empty,
-unreadable, not an Ed25519 public-key PEM, or a private key. An unfrozen release never looks at the
-key. The three jobs run in
+unreadable, not an Ed25519 public-key PEM, or a private key, and when `package.json`'s
+`build.electronFuses` is not exactly `scripts/electron-fuses.json` (item 6). An unfrozen release
+never looks at the key or the fuses. The three jobs run in
 parallel and each creates the release on its first upload, so a refused tag fails all three before
 anything is built or uploaded: no release, not even a prerelease, and `publish` never runs. Bump the
 deadline, then move the tag to that commit (or tag the next version) and rerun.
@@ -275,7 +284,7 @@ deadline, then move the tag to that commit (or tag the next version) and rerun.
 so a change of literal form fails on the PR, not on release day, and pins the step's place in all
 three jobs. It never guards a frozen deadline's DATE — that is item 2's hazard.
 
-## Before Release B ships — owner decisions
+## Owner decisions before the limit can ship
 
 ### O1: the allowance key pair
 
@@ -308,10 +317,14 @@ the installs the limit will never reach until they update (Accepted gaps). The g
 key only at the flip release, because refusing every release before O1 would block unrelated
 releases; doing O1 early is the owner's call.
 
-### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before Release B)
+### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before the fuses ship)
 
-The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`package.json`
-`build.electronFuses`, the Release B hardening) makes Electron **unset** `NODE_OPTIONS` **and**
+The fuses ship with the flip-preparation release (Release checklist, item 6), so this decision is
+due before that release, not before Release B — which ships no fuses.
+
+The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`scripts/electron-fuses.json`,
+set as `package.json` `build.electronFuses` from the flip-preparation release on) makes Electron
+**unset** `NODE_OPTIONS` **and**
 `NODE_EXTRA_CA_CERTS` at process start, in GUI and RunAsNode mode alike (measured on Electron
 42.11.16). Consequences:
 
@@ -330,7 +343,7 @@ The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`package.json`
   main process (measured against an unfused control) — a one-line bypass of the gate on macOS and
   Windows.
 
-Options before Release B ships:
+Options before the flip-preparation release ships:
 
 - **(a)** Ship with the cost and say so in the release notes.
 - **(b)** First build child re-supply: read the values from the login-shell probe
@@ -357,9 +370,12 @@ The decision is enes's. Device check 10 below gathers the evidence.
   client — with the O1 public key pasted, or its installs stay unlimited even after the flip.
   Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release workflow
   refuses otherwise).
+- **Flip preparation — a release before O4:** after the NODE_EXTRA_CA_CERTS decision and device
+  Run 1, set `package.json` `build.electronFuses` to exactly `scripts/electron-fuses.json`
+  (Release checklist, item 6). The flip release is refused without them.
 - **O4 — flip day:**
-  1. In the release that accompanies the flip (or the first one after it), set
-     `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
+  1. In the release that accompanies the flip (or the first one after it — it must carry the fuses),
+     set `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
      a deadline a shipped release has already frozen, nothing warns you: ship a release that sets
      `FROZEN = false` and bumps the deadline before that date passes (Release checklist, item 2).
   2. Set the cutoff in the admin console's Project limit card (an ISO instant with an offset).
@@ -423,8 +439,9 @@ The decision is enes's. Device check 10 below gathers the evidence.
 3. Hand-editing `workspace.json` to un-close projects bypasses the gate; never clamped. The same
    class: a hand-edited future `offAt` in `project-limit.json` suppresses the deadline.
 4. A patched build (easy on Linux — Electron has no asar integrity there — re-signing needed on
-   macOS/Windows). After the license change (#1317) this is a license breach for production use,
-   not something the code prevents.
+   macOS/Windows once the fuses ship; before the flip-preparation release, easy everywhere). After
+   the license change (#1317) this is a license breach for production use, not something the code
+   prevents.
 5. Both legacy counts are client-reported and only capped at CAP. Before the cutoff anyone who reads
    the public Release A change can mint a legacy device id with a CAP-sized allowance by calling
    `/v1/check` by hand. This ends at the cutoff; the date is not announced in advance.
@@ -461,6 +478,10 @@ staging server must hold its private half: with a mismatched pair every claim's 
 verification and reads as "Couldn't check your free allowance".
 
 **Run 1 — packaged builds, no server needed**
+
+No release carries the fuses before the flip-preparation release, so Run 1 runs on packaged test
+builds made with `build.electronFuses` set to exactly `scripts/electron-fuses.json`; its results
+(with check 10's) are what that release waits for.
 
 1. macOS arm64 and x64, signed: the app launches; `npx @electron/fuses read --app <path>` shows
    `EnableEmbeddedAsarIntegrityValidation` and `OnlyLoadAppFromAsar` enabled, RunAsNode enabled,

@@ -6,8 +6,10 @@ import path from 'path'
 import { testTmpDir } from '../src/core/test-tmp'
 import { PROJECT_LIMIT_DEADLINE_FROZEN, PROJECT_LIMIT_DEADLINE_MS } from '../src/shared/project-limit'
 import { PROJECT_ALLOWANCE_PUBLIC_KEY } from '../src/core/project-allowance-key'
+import EXPECTED_FUSES from './electron-fuses.json'
 import {
   deadlineProblem,
+  fusesProblem,
   readAllowanceKey,
   readDeadline,
   releaseProblem
@@ -35,6 +37,16 @@ function keySource(value: string): string {
 }
 const EMPTY_KEY =
   'PROJECT_ALLOWANCE_PUBLIC_KEY is empty — paste the public half of PROJECT_ALLOWANCE_PRIVATE_KEY into src/core/project-allowance-key.ts before the flip release (docs/project-limit.md, O1)'
+
+/** A package.json whose `build` block carries `fuses` (`undefined` = no `electronFuses` key at all). */
+function pkgSource(fuses?: unknown): string {
+  const build: Record<string, unknown> = { appId: 'com.nodeterm.app', asar: true }
+  if (fuses !== undefined) build.electronFuses = fuses
+  return JSON.stringify({ name: 'node-terminal', build }, null, 2)
+}
+const FUSED = pkgSource(EXPECTED_FUSES)
+const NO_FUSES =
+  'package.json has no build.electronFuses — the flip release ships the hardening fuses: set it to exactly scripts/electron-fuses.json (docs/project-limit.md, Release checklist)'
 
 /** The two lines the guard reads, in the shape src/shared/project-limit.ts writes them, wrapped in
  *  the same kind of doc comment (which itself quotes the literal form — it must not be matched). */
@@ -112,13 +124,13 @@ describe('releaseProblem: the flip release also needs the allowance key (owner s
   const FROZEN = source('2026-01-01T00:00:00Z', true)
 
   it('refuses a frozen (flip) release while the key is empty', () => {
-    expect(releaseProblem(FROZEN, keySource(''), NOW)).toBe(EMPTY_KEY)
+    expect(releaseProblem(FROZEN, keySource(''), NOW, FUSED)).toBe(EMPTY_KEY)
   })
 
   it('passes a frozen release with an Ed25519 public key, as a template literal or a quoted string', () => {
-    expect(releaseProblem(FROZEN, keySource(PUBLIC_PEM), NOW)).toBeNull()
+    expect(releaseProblem(FROZEN, keySource(PUBLIC_PEM), NOW, FUSED)).toBeNull()
     const quoted = `export const PROJECT_ALLOWANCE_PUBLIC_KEY = '${PUBLIC_PEM.replace(/\n/g, '\\n')}'\n`
-    expect(releaseProblem(FROZEN, quoted, NOW)).toBeNull()
+    expect(releaseProblem(FROZEN, quoted, NOW, FUSED)).toBeNull()
   })
 
   it('does not check the key while the deadline is not frozen — not even an unreadable key file', () => {
@@ -151,6 +163,55 @@ describe('releaseProblem: the flip release also needs the allowance key (owner s
   })
 })
 
+describe('releaseProblem: the flip release also ships the Electron fuses', () => {
+  const FAR = source('2027-01-31T00:00:00Z', false)
+  const FROZEN = source('2026-01-01T00:00:00Z', true)
+  const KEY = keySource(PUBLIC_PEM)
+
+  it('refuses a frozen release whose package.json carries no fuses', () => {
+    expect(releaseProblem(FROZEN, KEY, NOW, pkgSource())).toBe(NO_FUSES)
+  })
+
+  it('passes a frozen release whose package.json carries exactly scripts/electron-fuses.json', () => {
+    expect(releaseProblem(FROZEN, KEY, NOW, FUSED)).toBeNull()
+    // Key order is not a difference.
+    const reversed = Object.fromEntries(Object.entries(EXPECTED_FUSES).reverse())
+    expect(releaseProblem(FROZEN, KEY, NOW, pkgSource(reversed))).toBeNull()
+  })
+
+  it('refuses a frozen release whose fuses differ in any way', () => {
+    const inverted = { ...EXPECTED_FUSES, enableNodeOptionsEnvironmentVariable: true }
+    const dropped: Record<string, unknown> = { ...EXPECTED_FUSES }
+    delete dropped.onlyLoadAppFromAsar
+    const added = { ...EXPECTED_FUSES, grantFileProtocolExtraPrivileges: false }
+    for (const fuses of [inverted, dropped, added, {}, null, true, 'yes']) {
+      expect(releaseProblem(FROZEN, KEY, NOW, pkgSource(fuses))).toMatch(
+        /^package\.json build\.electronFuses differs from scripts\/electron-fuses\.json/
+      )
+    }
+  })
+
+  it('fails closed on a frozen release whose package.json is unreadable or not JSON', () => {
+    for (const pkg of [null, undefined, '', 'not json', '[]']) {
+      expect(releaseProblem(FROZEN, KEY, NOW, pkg)).toMatch(/^could not read build\.electronFuses from package\.json/)
+    }
+  })
+
+  it('fails closed when the expected fuses cannot be read', () => {
+    expect(fusesProblem(FUSED, null)).toMatch(/^could not read scripts\/electron-fuses\.json/)
+  })
+
+  it('never looks at the fuses of an unfrozen release', () => {
+    for (const pkg of [pkgSource(), pkgSource({ runAsNode: false }), null, 'not json']) {
+      expect(releaseProblem(FAR, KEY, NOW, pkg)).toBeNull()
+    }
+  })
+
+  it('reports the key before the fuses', () => {
+    expect(releaseProblem(FROZEN, keySource(''), NOW, pkgSource())).toBe(EMPTY_KEY)
+  })
+})
+
 describe('the real src/shared/project-limit.ts', () => {
   // Pins the guard to the compiled constants, so a change of literal form fails on the PR that makes
   // it, not on release day.
@@ -164,17 +225,31 @@ describe('the real src/shared/project-limit.ts', () => {
   it('and the real src/core/project-allowance-key.ts reads as the key the app compiles', () => {
     expect(readAllowanceKey(REAL_KEY_SOURCE)).toBe(PROJECT_ALLOWANCE_PUBLIC_KEY)
   })
+
+  it('and the real package.json carries no fuses or exactly the expected ones (src/main/electron-fuses.test.ts)', () => {
+    const real = fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')
+    const build = JSON.parse(real).build ?? {}
+    if (Object.hasOwn(build, 'electronFuses')) expect(fusesProblem(real, EXPECTED_FUSES)).toBeNull()
+    else expect(fusesProblem(real, EXPECTED_FUSES)).toBe(NO_FUSES)
+  })
 })
 
 describe('the CLI the release workflow runs', () => {
-  /** Run the CLI on a limit source and a key source (`null` = point it at a key file that is not there). */
-  function run(src: string, key: string | null = keySource(PUBLIC_PEM)): { status: number | null; stderr: string } {
+  /** Run the CLI on a limit source, a key source and a package.json (`null` = point it at a file
+   *  that is not there). */
+  function run(
+    src: string,
+    key: string | null = keySource(PUBLIC_PEM),
+    pkg: string | null = FUSED
+  ): { status: number | null; stderr: string } {
     const dir = testTmpDir('nt-limit-deadline-')
     const file = path.join(dir, 'project-limit.ts')
     const keyFile = path.join(dir, 'project-allowance-key.ts')
+    const pkgFile = path.join(dir, 'package.json')
     fs.writeFileSync(file, src)
     if (key !== null) fs.writeFileSync(keyFile, key)
-    const r = spawnSync(process.execPath, [SCRIPT, file, keyFile], { encoding: 'utf8' })
+    if (pkg !== null) fs.writeFileSync(pkgFile, pkg)
+    const r = spawnSync(process.execPath, [SCRIPT, file, keyFile, pkgFile], { encoding: 'utf8' })
     return { status: r.status, stderr: r.stderr }
   }
 
@@ -193,11 +268,26 @@ describe('the CLI the release workflow runs', () => {
     expect(r.stderr).toContain('missing.ts')
   })
 
-  it('exits 0 for a far deadline (key unchecked) and for a frozen one with a real key', () => {
+  it('exits 0 for a far deadline (key and fuses unchecked) and for a frozen one with a real key and the fuses', () => {
     const far = source(new Date(Date.now() + 90 * DAY_MS).toISOString(), false)
     expect(run(far, keySource('')).status).toBe(0)
     expect(run(far, null).status).toBe(0)
+    expect(run(far, keySource(PUBLIC_PEM), pkgSource()).status).toBe(0)
+    expect(run(far, keySource(PUBLIC_PEM), null).status).toBe(0)
     expect(run(source('2026-01-01T00:00:00Z', true)).status).toBe(0)
+  })
+
+  it('exits 1 for a frozen release whose package.json has no fuses, other fuses, or is missing', () => {
+    const frozen = source('2026-01-01T00:00:00Z', true)
+    const absent = run(frozen, keySource(PUBLIC_PEM), pkgSource())
+    expect(absent.status).toBe(1)
+    expect(absent.stderr).toContain(NO_FUSES)
+    const other = run(frozen, keySource(PUBLIC_PEM), pkgSource({ ...EXPECTED_FUSES, runAsNode: false }))
+    expect(other.status).toBe(1)
+    expect(other.stderr).toContain('differs from scripts/electron-fuses.json')
+    const missing = run(frozen, keySource(PUBLIC_PEM), null)
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('could not read build.electronFuses from package.json')
   })
 
   it('exits 1 for a frozen release with an empty or missing key file', () => {

@@ -2,19 +2,29 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import type { Configuration } from 'electron-builder'
+import expectedFuses from '../../scripts/electron-fuses.json'
 
 /**
- * Release guard for the Electron fuses the packaged binary is flipped with (package.json
+ * The decision record for the Electron fuses the packaged binary is flipped with (package.json
  * `build.electronFuses`; electron-builder 26 hands them to `@electron/fuses` after packing and
- * right before signing). Spec §12 (free-tier project limit, Release B): the limit is enforced by
- * the code inside `app.asar`, so the shipped binary must refuse to run anything else.
+ * right before signing). The free-tier project limit (docs/project-limit.md) is enforced by the
+ * code inside `app.asar`, so once it can switch on the shipped binary must refuse to run anything
+ * else.
+ *
+ * WHEN THEY SHIP: not yet. Release B ships the limit dormant, and the fuses would be its one change a
+ * user could notice (NODE_EXTRA_CA_CERTS below), so `build.electronFuses` is ABSENT until the
+ * flip-preparation release — applied there after the owner's NODE_EXTRA_CA_CERTS decision and device
+ * Run 1 (docs/project-limit.md). The object they ship as is `scripts/electron-fuses.json`, the ONE
+ * definition: this test pins package.json to absent-or-exactly-it, and the release guard
+ * (`scripts/check-project-limit-deadline.mjs`) refuses a frozen (flip) release unless package.json
+ * carries exactly it.
  *
  *  - `enableEmbeddedAsarIntegrityValidation: true` + `onlyLoadAppFromAsar: true` — the app loads
  *    only from `app.asar`, and on macOS/Windows only an asar whose header hash matches the one
  *    electron-builder embedded at package time (Info.plist `ElectronAsarIntegrity` / the Windows
  *    integrity resource). An unpacked `resources/app/` beside it is never searched. Linux has no
- *    asar integrity support in Electron — accepted in §12, and §13 lists a patched Linux build as
- *    a known gap.
+ *    asar integrity support in Electron — accepted, and docs/project-limit.md lists a patched
+ *    Linux build among the accepted gaps.
  *  - `enableNodeOptionsEnvironmentVariable: false` — Electron UNSETS `NODE_OPTIONS` and
  *    `NODE_EXTRA_CA_CERTS` at process start, in GUI and in RunAsNode mode alike, so neither the
  *    app nor ANY process it spawns sees them (measured: an `sh` child reads both as unset).
@@ -62,28 +72,36 @@ import type { Configuration } from 'electron-builder'
  *    relay shared by every local Codex node.
  *
  * Flipping a fuse cannot be undone by the app at runtime and is only observable on a PACKAGED
- * build, so this object is pinned exactly: a fuse added, dropped or inverted must be a decision
+ * build, so the object is pinned exactly: a fuse added, dropped or inverted must be a decision
  * someone reads this comment for, not a drive-by edit.
  */
 type FuseOptions = NonNullable<Configuration['electronFuses']>
 
-// `satisfies` makes a misspelled key a typecheck error here, before electron-builder's own schema
-// rejects it at package time.
-const EXPECTED_FUSES = {
-  runAsNode: true,
-  enableNodeOptionsEnvironmentVariable: false,
-  enableNodeCliInspectArguments: false,
-  enableEmbeddedAsarIntegrityValidation: true,
-  onlyLoadAppFromAsar: true
-} satisfies FuseOptions
+// A key of the JSON that is not a fuse electron-builder knows is a typecheck error here, before
+// electron-builder's own schema rejects it at package time (and `satisfies` checks every value).
+type UnknownFuse = Exclude<keyof typeof expectedFuses, keyof FuseOptions>
+const noUnknownFuse: [UnknownFuse] extends [never] ? true : UnknownFuse = true
+const EXPECTED_FUSES = expectedFuses satisfies FuseOptions
 
 const PKG = path.resolve(__dirname, '../../package.json')
 
 describe('Electron fuses (package.json build.electronFuses)', () => {
   const build = JSON.parse(fs.readFileSync(PKG, 'utf8')).build ?? {}
 
-  it('flips exactly the hardening fuses of spec §12, RunAsNode kept on', () => {
-    expect(build.electronFuses).toEqual(EXPECTED_FUSES)
+  it('the shipped object flips exactly the hardening fuses, RunAsNode kept on', () => {
+    expect(noUnknownFuse).toBe(true)
+    expect(EXPECTED_FUSES).toEqual({
+      runAsNode: true,
+      enableNodeOptionsEnvironmentVariable: false,
+      enableNodeCliInspectArguments: false,
+      enableEmbeddedAsarIntegrityValidation: true,
+      onlyLoadAppFromAsar: true
+    })
+  })
+
+  it('package.json carries no fuses yet, or exactly that object', () => {
+    // Absent until the flip-preparation release (header); never a partial, edited or null set.
+    expect(Object.hasOwn(build, 'electronFuses') ? build.electronFuses : EXPECTED_FUSES).toEqual(EXPECTED_FUSES)
   })
 
   it('packages the app into an asar, which onlyLoadAppFromAsar requires', () => {
