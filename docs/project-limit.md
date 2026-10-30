@@ -442,9 +442,8 @@ The decision is enes's. Device check 10 below gathers the evidence.
    macOS/Windows once the fuses ship; before the flip-preparation release, easy everywhere). After
    the license change (#1317) this is a license breach for production use, not something the code
    prevents.
-5. Both legacy counts are client-reported and only capped at CAP. Before the cutoff anyone who reads
-   the public Release A change can mint a legacy device id with a CAP-sized allowance by calling
-   `/v1/check` by hand. This ends at the cutoff; the date is not announced in advance.
+5. Both legacy counts are client-reported and capped at CAP; the cap bounds what a pre-cutoff report
+   can claim.
 6. Rebinding lets one legacy `device-id` be shared slowly: each machine that rebinds keeps the token
    it already stored, so N machines take N × 30 days.
 7. A cancelled Pro user who blocks the API keeps unlimited opens for at most 30 days.
