@@ -91,6 +91,59 @@ describe('project-limit store', () => {
   })
 })
 
+describe('project-limit store — the limit dialog and the checking spinner', () => {
+  it('starts with no dialog and no spinner', async () => {
+    const useProjectLimit = await freshStore()
+    expect(useProjectLimit.getState().dialog).toBeNull()
+    expect(useProjectLimit.getState().checking).toBe(false)
+  })
+
+  it('a dialog request is held until resolveDialog settles it, and then it is gone', async () => {
+    const useProjectLimit = await freshStore()
+    const { showProjectLimitDialog } = await import('./projectLimit')
+    const outcome = showProjectLimitDialog({ mode: 'limit' })
+    expect(useProjectLimit.getState().dialog).toEqual({ mode: 'limit' })
+    useProjectLimit.getState().resolveDialog('proceed')
+    await expect(outcome).resolves.toBe('proceed')
+    expect(useProjectLimit.getState().dialog).toBeNull()
+  })
+
+  it('resolveDialog with nothing shown changes nothing', async () => {
+    const useProjectLimit = await freshStore()
+    useProjectLimit.getState().resolveDialog('cancel')
+    expect(useProjectLimit.getState().dialog).toBeNull()
+  })
+
+  it('a new request never strands the one it replaces: that one is cancelled', async () => {
+    const useProjectLimit = await freshStore()
+    const { showProjectLimitDialog } = await import('./projectLimit')
+    const first = showProjectLimitDialog({ mode: 'error' })
+    const second = showProjectLimitDialog({ mode: 'consent' })
+    await expect(first).resolves.toBe('cancel')
+    expect(useProjectLimit.getState().dialog).toEqual({ mode: 'consent' })
+    useProjectLimit.getState().resolveDialog('consent')
+    await expect(second).resolves.toBe('consent')
+  })
+
+  it('setProjectLimitChecking toggles the spinner flag', async () => {
+    const useProjectLimit = await freshStore()
+    const { setProjectLimitChecking } = await import('./projectLimit')
+    setProjectLimitChecking(true)
+    expect(useProjectLimit.getState().checking).toBe(true)
+    setProjectLimitChecking(false)
+    expect(useProjectLimit.getState().checking).toBe(false)
+  })
+
+  it('a push from core leaves an open dialog where it is', async () => {
+    const useProjectLimit = await freshStore()
+    const { showProjectLimitDialog } = await import('./projectLimit')
+    void showProjectLimitDialog({ mode: 'limit' })
+    pushed!(ACTIVE)
+    expect(useProjectLimit.getState().dialog).toEqual({ mode: 'limit' })
+    expect(useProjectLimit.getState().state).toEqual(ACTIVE)
+  })
+})
+
 describe('project-limit store wiring (source)', () => {
   it('the boot effect reads the state AFTER the projects store is hydrated from the workspace', () => {
     // Core records the first-launch open count on the first `state()` it answers once the workspace
