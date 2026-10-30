@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// The Core vs Pro comparison follows the free-tier open-project limit (spec §8, and the §2
-// anti-goal: the app must not say "unlimited / free forever" while the limit is on). Inactive — the
+// The Core vs Pro comparison follows the free-tier open-project limit (docs/project-limit.md; the
+// app must not say "unlimited / free forever" while the limit is on). Inactive — the
 // Server Edition's permanent answer, and every install until the flip — it is byte-identical to the
 // copy that shipped before the limit existed. Rendered through a real root, not
 // `renderToStaticMarkup`: a zustand hook reads the store's INITIAL state on the server render, so a

@@ -1,10 +1,10 @@
 /**
- * The `machine` claim of a project-allowance token (spec §6): a salted SHA-256 of the OS machine
- * id, so one legacy `device-id` file copied to many computers cannot carry one allowance to all of
- * them. It is a new stable identifier, which is why it is read LAZILY — only when an install first
- * claims an allowance — and why the raw id never leaves this module: not logged, not returned, not
- * sent. Only the hash goes to the server, and the server refuses anything that is not 64 lowercase
- * hex, so every path here — the fallback included — ends in `machineHashOf`.
+ * The `machine` claim of a project-allowance token (docs/project-limit.md): a salted SHA-256 of the
+ * OS machine id, so one legacy `device-id` file copied to many computers cannot carry one allowance
+ * to all of them. It is a new stable identifier, which is why it is read LAZILY — only when an
+ * install first claims an allowance — and why the raw id never leaves this module: not logged, not
+ * returned, not sent. Only the hash goes to the server, and the server refuses anything that is not
+ * 64 lowercase hex, so every path here — the fallback included — ends in `machineHashOf`.
  *
  * Only a hash that came from the OS is memoized. A failed read is retried once, and if that fails
  * too the `host:<hostname>` fallback is returned but NOT kept: a timeout or a spawn hiccup is not

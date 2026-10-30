@@ -1,6 +1,6 @@
 /**
- * Offline verification of the project-allowance token (spec §6) — how many open projects a free
- * install may keep, for one device, on one machine, under one policy epoch.
+ * Offline verification of the project-allowance token (docs/project-limit.md) — how many open
+ * projects a free install may keep, for one device, on one machine, under one policy epoch.
  *
  * Wire format, as nodeterm-server's `createAllowanceSigner` writes it: `${P}.${S}`, where
  * `P = base64url(JSON payload)` with keys `typ, deviceId, machine, allowance, epoch, iat` and

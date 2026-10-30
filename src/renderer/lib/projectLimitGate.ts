@@ -40,10 +40,11 @@ import { useSettings } from '../state/settings'
  * (under it the open stays synchronous and claims nothing).
  */
 
-/** §7's "brief spinner": raised only for a claim still in flight after this long. */
+/** The limit moment's "brief spinner" (the "Checking…" panel): raised only for a claim still in
+ *  flight after this long. */
 export const CHECKING_DELAY_MS = 300
 
-/** An agent's refusal shows the user the limit dialog at most once in this window (§7.5: once per
+/** An agent's refusal shows the user the limit dialog at most once in this window (once per
  *  refusal burst, not per retry). Measured from when the dialog was last shown for an agent. */
 export const AGENT_DIALOG_QUIET_MS = 60_000
 

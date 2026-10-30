@@ -20,8 +20,8 @@ const PRO = [
 ]
 
 /** Core vs Pro comparison. While the open-project limit is on, Core must not read "free forever" or
- *  an unqualified "unlimited" (spec §2/§8): it names the user's allowance, and Pro gains unlimited
- *  open projects. */
+ *  an unqualified "unlimited" (docs/project-limit.md): it names the user's allowance, and Pro gains
+ *  unlimited open projects. */
 export function ProCompare(): React.JSX.Element {
   const limitState = useProjectLimit((s) => s.state)
   const active = limitState.active

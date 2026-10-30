@@ -4896,11 +4896,12 @@ app.whenReady().then(async () => {
     ready: bootWorkspaceLoad
   })
   settingsStore.onChange(() => projectLimit.pushIfChanged())
-  // DO_NOT_TRACK consent for license and allowance calls (spec §7.4): Settings → Privacy, read on
-  // every gated call so revoking it applies at once. Installed BEFORE initLicense, whose launch
-  // refresh runs immediately. Only `licenseNetworkGate()` callers read it — never telemetry or the
-  // check feed. (Giving consent does not trigger a refresh: license.ts exposes none, so the next
-  // license call is the 6 h refresh, an activate or an upgrade; a claim reads the gate itself.)
+  // DO_NOT_TRACK consent for license and allowance calls (docs/project-limit.md): Settings →
+  // Privacy, read on every gated call so revoking it applies at once. Installed BEFORE initLicense,
+  // whose launch refresh runs immediately. Only `licenseNetworkGate()` callers read it — never
+  // telemetry or the check feed. (Giving consent does not trigger a refresh: license.ts exposes
+  // none, so the next license call is the 6 h refresh, an activate or an upgrade; a claim reads the
+  // gate itself.)
   setLicenseNetworkConsent(() => settingsStore.get().licenseNetworkConsent === true)
   // A license change (activate, refresh, a lapsed token replaced) re-arms every live link the API
   // refused: a link host whose 7-day entitlement expired under it stops minting until then (R41).

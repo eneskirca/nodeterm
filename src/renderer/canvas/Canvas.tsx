@@ -20735,7 +20735,7 @@ export function Canvas() {
       )}
 
       <UpgradeDialog />
-      {/* The free-tier limit moment (spec §7). Close is the ordinary non-destructive close — never
+      {/* The free-tier limit moment (docs/project-limit.md). Close is the ordinary non-destructive close — never
           `endSessions`: the limit only ever blocks a NEW open, it never ends anything. */}
       <ProjectLimitDialog onCloseProject={(id) => performCloseProject(id)} />
       {liveLinkDialog && (

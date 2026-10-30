@@ -991,7 +991,7 @@ describe('license clock anchor + project-limit Pro grace + DO_NOT_TRACK consent'
 
     it('ends with the token a 2xx active:false deletes', async () => {
       // The device-bound refresh drops the token on the server's "no longer entitled" answer, so a
-      // stored token is itself the proof that no such answer has arrived since (spec §6).
+      // stored token is itself the proof that no such answer has arrived since.
       store({ token: mint(-10 * DAY_S) })
       fetchMock.mockResolvedValue(jsonResponse({ active: false }))
       const { initLicense, proForProjectLimit } = await import('./license')

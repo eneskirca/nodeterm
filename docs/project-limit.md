@@ -163,8 +163,9 @@ if (g !== true && !(await g)) return
   guidance rides the refusal: the agent-facing verb help (`buildCanvasSkillBody` /
   `buildCanvasControlInstructions`) says nothing about the limit, so nothing about it is printed to
   agents while it is off, and the refusal — which exists only while it is on — is its documentation
-  (the agent-text-in-sync rule is met by the outcome text itself). A headless start of a node in a CLOSED project at the limit starts the
-  session but does not unhide the project (the existing "reopen it from the welcome screen" reply).
+  (the agent-text-in-sync rule is met by the outcome text itself). A headless start of a node in a
+  CLOSED project at the limit starts the session but does not unhide the project (the existing
+  "reopen it from the welcome screen" reply).
 - A new way to open a project must call the gate. `src/renderer/canvas/project-limit-opens.source.test.ts`
   pins the five call sites.
 

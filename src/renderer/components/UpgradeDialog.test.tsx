@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
 // The Pro upgrade prompt. Only live links open it today, yet its body never mentioned them, and it
-// still promised "unlimited remote access from your phone" months after the relay quota was removed
-// (spec §8). The body is pinned verbatim, and it names unlimited open projects only while the
-// free-tier limit is on (spec §2: no "unlimited" claim the limit would contradict — and, inactive,
-// no claim about a limit that does not exist).
+// still promised "unlimited remote access from your phone" months after the relay quota was removed.
+// The body is pinned verbatim, and it names unlimited open projects only while the free-tier limit
+// is on (docs/project-limit.md: no "unlimited" claim the limit would contradict — and, inactive, no
+// claim about a limit that does not exist).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'

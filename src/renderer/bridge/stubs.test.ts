@@ -101,9 +101,10 @@ describe('bridge stubs', () => {
   })
 
   it('the project limit is inactive on the Server Edition: no gate, no claim', async () => {
-    // Spec §10: the Server Edition has no gate. `state` answers the dormant default so every open
-    // stays synchronous, and `claim` answers `disabled` instead of rejecting — a gate that somehow
-    // reached it reads a typed refusal, never a thrown E_UNSUPPORTED it has no branch for.
+    // The Server Edition has no gate (docs/project-limit.md, Three surfaces). `state` answers the
+    // dormant default so every open stays synchronous, and `claim` answers `disabled` instead of
+    // rejecting — a gate that somehow reached it reads a typed refusal, never a thrown
+    // E_UNSUPPORTED it has no branch for.
     const s = buildStubApi()
     await expect(s.projectLimit.state()).resolves.toEqual(INACTIVE_PROJECT_LIMIT)
     await expect(s.projectLimit.claim()).resolves.toEqual({ ok: false, error: 'disabled', state: INACTIVE_PROJECT_LIMIT })

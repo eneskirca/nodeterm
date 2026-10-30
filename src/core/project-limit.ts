@@ -31,9 +31,9 @@
  * machine check applies. A successful claim also caches the hash it sent, if it came from the OS.
  *
  * CLAIMS are lazy and never reject: one request shared by concurrent callers, an 8 s timeout over
- * the whole request including the body (the machine read before it is bounded by machine-id.ts's own
- * per-attempt timeout), and every failure folded into a `ClaimError`. While the
- * limit is off a claim asks nobody (no request, no machine read), whoever calls it.
+ * the whole request including the body (the machine read before it is bounded by machine-id.ts's
+ * own per-attempt timeout), and every failure folded into a `ClaimError`. While the limit is off a
+ * claim asks nobody (no request, no machine read), whoever calls it.
  *
  * `projectLimit:changed` goes to THIS machine's windows only, through the shell's `notify`. Never
  * `platform().broadcast`: on the desktop that fans out to every relay peer, and this state carries
@@ -206,8 +206,8 @@ function compute(): ProjectLimitState {
   }
 }
 
-/** The count at the first launch of a limit-capable build (spec §4's late-updater basis): the first
- *  number `openProjects()` gives, kept for good. */
+/** The count at the first launch of a limit-capable build (the late-updater basis,
+ *  docs/project-limit.md): the first number `openProjects()` gives, kept for good. */
 function recordFirstLaunchOpenCount(): void {
   if (stored.firstLaunchOpenCount !== undefined) return
   let n: number | undefined
