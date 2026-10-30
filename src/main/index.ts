@@ -177,7 +177,7 @@ import {
 } from '../core/commit-message'
 import { initUpdater, type UpdaterHandle } from './updater'
 import { requestRendererFlush } from './renderer-flush'
-import { fetchCheck } from '../core/check'
+import { configureCheck, fetchCheck } from '../core/check'
 import {
   hookServer,
   OPEN_PROJECT_CONTROL_REFUSAL,
@@ -2054,6 +2054,12 @@ app.whenReady().then(async () => {
     if (target) void shell.openExternal(target)
   })
 
+  // The open-project count rides /v1/check only while the Settings → Privacy telemetry toggle is
+  // on, and only once the workspace index is known (core/check.ts). Both read per call.
+  configureCheck({
+    openProjects: () => workspaceStore.openProjectCount(),
+    telemetryEnabled: () => settingsStore.get().telemetryEnabled
+  })
   ipcMain.handle(IPC.announcementsFetch, async () => (await fetchCheck()).messages)
   ipcMain.handle(IPC.appUpdatePolicy, async () => (await fetchCheck()).update)
 

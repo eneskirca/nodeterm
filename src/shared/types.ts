@@ -2353,8 +2353,9 @@ export interface Settings {
    *  footprint across restarts. Independent of manual "Pause session", which always persists this
    *  way regardless of this setting. */
   agentHibernationPersistAcrossRestart: boolean
-  /** Send anonymous usage data (version/OS) to the telemetry backend. Opt-OUT (default on):
-   *  version/OS only, nothing personal, client IP never stored. Turn it off in Settings → Privacy
+  /** Send anonymous usage data: the version/OS telemetry ping, and the open-project count on the
+   *  /v1/check call (`openProjects`, a number only — never names, paths or hosts). Opt-OUT
+   *  (default on): nothing personal, client IP never stored. Turn it off in Settings → Privacy
    *  (or hard-disable with DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED). Note: a lighter anonymous
    *  install count also rides the /v1/check call and is NOT gated on this toggle — see core/check.ts. */
   telemetryEnabled: boolean

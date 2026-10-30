@@ -46,6 +46,7 @@ import { boardLabels, cardMeta } from '../shared/kanban-labels'
 import { localizeAdoptedNode } from '../shared/adopt-cwd'
 import { routeSshProjectNode, routeSshProjectNodes } from '../shared/ssh-project-nodes'
 import { clampProjectName, folderName } from '../shared/project-name'
+import { countOpenProjects } from '../shared/project-limit'
 import { SYSTEM_NODE_COLORS } from '../shared/node-colors'
 import { codedError } from './relay/admin-error'
 import { createLaunchClaimLedger } from './launch-claim-ledger'
@@ -2202,6 +2203,13 @@ export class WorkspaceStore {
     return (this.index?.entries ?? [])
       .filter((e) => e.ssh && !e.closed)
       .map((e) => ({ id: e.id, ssh: e.ssh as NonNullable<Project['ssh']> }))
+  }
+
+  /** How many projects of the loaded index are open (`countOpenProjects`), or undefined before the
+   *  index is loaded. The index never holds a relay tab (`splitWorkspace` drops them), and an
+   *  unavailable placeholder is an entry like any other — it is still an open tab. Sync. */
+  openProjectCount(): number | undefined {
+    return this.index ? countOpenProjects(this.index.entries) : undefined
   }
 
   /** Every project in the loaded index as a `nodeterm://open` link may name it (main/open-link.ts):

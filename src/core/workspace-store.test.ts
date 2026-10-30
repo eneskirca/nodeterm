@@ -2549,3 +2549,37 @@ describe('knownNodeIds — every node id in every project, or undefined when it 
     expect(new WorkspaceStore().knownNodeIdsStrict()).toBeUndefined() // not loaded: unknown to both
   })
 })
+
+describe('openProjectCount — open projects in the loaded index (the project-limit report)', () => {
+  it('is undefined before the index is loaded', () => {
+    expect(new WorkspaceStore().openProjectCount()).toBeUndefined()
+  })
+  it('counts the loaded entries that are not closed', async () => {
+    await new WorkspaceStore().save(ws([
+      project({ id: 'p-local', cwd: projRoot }),
+      project({ id: 'p-inline', nodes: [] }),
+      project({ id: 'p-closed', nodes: [], closed: true, closedAt: 1_700_000_000_000 })
+    ]))
+    const store = new WorkspaceStore()
+    await store.load()
+    expect(store.openProjectCount()).toBe(2)
+  })
+  // An index entry whose project file could not be read is still a tab on the user's screen.
+  it('counts an unavailable placeholder: it is still an open tab', async () => {
+    await new WorkspaceStore().save(ws([project({ id: 'p-local', cwd: projRoot }), project({ id: 'p-inline', nodes: [] })]))
+    await fs.rm(projRoot, { recursive: true, force: true })
+    const store = new WorkspaceStore()
+    const loaded = await store.load()
+    expect(loaded.projects.find((p) => p.id === 'p-local')?.unavailable).toBe(true)
+    expect(store.openProjectCount()).toBe(2)
+  })
+  // A relay tab is never written to the index, so it can never be counted from it.
+  it('never counts a relay tab', async () => {
+    const store = new WorkspaceStore()
+    await store.save(ws([project({ id: 'p-inline', nodes: [] }), project({ id: 'p-relay', nodes: [], remote: true })]))
+    expect(store.openProjectCount()).toBe(1)
+    const fresh = new WorkspaceStore()
+    await fresh.load()
+    expect(fresh.openProjectCount()).toBe(1)
+  })
+})

@@ -5,6 +5,9 @@
 // passive active-install counter — so the version distribution reflects EVERY install, not only
 // the (few) that also opt into the telemetry ping. It also states the plan (`pro` | `free`) so a
 // message can be aimed at paid or free users; the backend matches on it and does not store it.
+// While the Settings → Privacy telemetry toggle is on it also carries the open-project count
+// (`openProjects`, a bare number — never names, paths or hosts); the backend keeps the per-install
+// maximum, the data the project-limit allowance is computed from. See `configureCheck`.
 // Nothing personal is sent and the client IP is never stored server-side; a hard opt-out is still
 // DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED.
 import { platform } from './platform'
@@ -26,7 +29,7 @@ const EMPTY: CheckResult = { messages: [], update: { minSupported: null, mandato
 // server is targeted explicitly. Deliberately NOT gated on the in-app telemetry toggle: this
 // call always runs (content delivery + the anonymous install count), so an install still counts
 // even if the user never opts into the detailed telemetry ping. The env kill-switches above are
-// the hard off.
+// the hard off. The one field that IS gated on the toggle is `openProjects` (`openProjectsParam`).
 function allowed(): boolean {
   if (process.env.DO_NOT_TRACK || process.env.NODETERM_TELEMETRY_DISABLED) return false
   if (!platform().isPackaged && !process.env.NODETERM_API_BASE) return false
@@ -66,6 +69,30 @@ const NOTES_MAX = 16 * 1024
 /** Test seam: the sanitizer is the whole contract with the feed's shape. */
 export const sanitizeCheckForTest = sanitize
 
+export interface CheckDeps {
+  /** Open projects in the workspace index (`WorkspaceStore.openProjectCount`); undefined = unknown
+   *  (index not loaded yet, or never saved in v3 form), and an unknown count is never sent. */
+  openProjects: () => number | undefined
+  /** `settings.telemetryEnabled` — the count is sent only while it is exactly true. */
+  telemetryEnabled: () => boolean
+}
+
+// Set once by the shell at boot; read per call, so a toggle flip or a project open/close takes
+// effect on the next uncached fetch. Never configured = the count is never sent.
+let deps: CheckDeps | null = null
+
+export function configureCheck(next: CheckDeps): void {
+  deps = next
+}
+
+// `openProjects=<n>` only when configured, the telemetry toggle is on and `n` is a non-negative
+// integer. Nothing else is added.
+function openProjectsParam(): Record<string, string> {
+  if (!deps || deps.telemetryEnabled() !== true) return {}
+  const n = deps.openProjects()
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? { openProjects: String(n) } : {}
+}
+
 type Plan = 'pro' | 'free'
 
 // The plan the response was fetched for. The backend aims messages at paid or free users by the
@@ -90,7 +117,8 @@ export async function fetchCheck(): Promise<CheckResult> {
       os: process.platform,
       arch: process.arch,
       channel: 'stable',
-      plan
+      plan,
+      ...openProjectsParam()
     })
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 8000)
