@@ -51,10 +51,13 @@ export interface ProjectOpenGateDeps {
 
 export type AgentOpenCheck = { ok: true } | { ok: false; message: string }
 
+/** An agent registration run under the limit: what `register` returned, or the refusal. */
+export type AgentOpenFinish<T> = { ok: true; value: T } | { ok: false; message: string }
+
 export interface ProjectOpenGate {
   gateProjectOpen(): true | Promise<boolean>
   checkAgentProjectOpen(): Promise<AgentOpenCheck>
-  recheckAgentProjectOpen(): AgentOpenCheck
+  finishAgentProjectOpen<T>(opens: () => boolean, register: () => T): AgentOpenFinish<T> | Promise<AgentOpenFinish<T>>
 }
 
 /** The dialog that explains a failed claim. A repeated `consent_required` right after the user
@@ -162,7 +165,7 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
 
   /** Every agent refusal, from either check: the user is shown the dialog (under showForAgent's
    *  rules) and the agent gets the one sentence (spec §7.5), so the two checks cannot word it twice. */
-  function refuseAgent(state: ProjectLimitState): AgentOpenCheck {
+  function refuseAgent(state: ProjectLimitState): Extract<AgentOpenCheck, { ok: false }> {
     showForAgent()
     return {
       ok: false,
@@ -185,16 +188,37 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
     return refuseAgent(state)
   }
 
-  /** The agent verb's last word, asked in the same tick as its store write: the user's confirm
-   *  dialog sits between `checkAgentProjectOpen` and the registration, and another open may have
-   *  landed meanwhile. Synchronous by construction — it never claims; a claim still due is a
-   *  refusal (the early check had its chance to claim). */
-  function recheckAgentProjectOpen(): AgentOpenCheck {
+  /**
+   * The agent verb's last word, and its store write: the user's confirm dialog sits between
+   * `checkAgentProjectOpen` and the registration, and another open may have landed meanwhile. The
+   * FINAL decision and `register()` run in one tick — nothing can run between the count read here
+   * and the write — so two agents at the edge cannot both pass on one count (plan Review Focus 5).
+   *
+   * Synchronous whenever the limit decides at once (allow — every call while it is off — or block).
+   * Only a claim still due returns a promise, and it is due exactly when the early check did NOT
+   * claim: it saw room (4 of 5, no allowance yet) and an open landed before this point. That claim
+   * is made here (never the consent dialog, never the spinner), and the decision is taken on its
+   * own answer — the store may not have heard it yet, the rule both other paths follow — with the
+   * live count, `register()` following in the same continuation. A legacy install whose allowance
+   * is well above FREE is therefore registered, not refused at "5 of 5".
+   *
+   * `opens` is asked at the decision itself: a registration that no longer opens a project (it was
+   * opened meanwhile) is never refused.
+   */
+  function finishAgentProjectOpen<T>(
+    opens: () => boolean,
+    register: () => T
+  ): AgentOpenFinish<T> | Promise<AgentOpenFinish<T>> {
+    const decideAndRegister = (state: ProjectLimitState): AgentOpenFinish<T> => {
+      if (opens() && decideOpen(state, deps.openCount()) !== 'allow') return refuseAgent(state)
+      return { ok: true, value: register() }
+    }
     const state = deps.getState()
-    return decideOpen(state, deps.openCount()) === 'allow' ? { ok: true } : refuseAgent(state)
+    if (!opens() || decideOpen(state, deps.openCount()) !== 'claim') return decideAndRegister(state)
+    return claim().then((r) => decideAndRegister(r.state))
   }
 
-  return { gateProjectOpen, checkAgentProjectOpen, recheckAgentProjectOpen }
+  return { gateProjectOpen, checkAgentProjectOpen, finishAgentProjectOpen }
 }
 
 /** The gate's deps bound to the live stores and bridge. Exported for its tests. */
@@ -223,5 +247,5 @@ export const gateProjectOpen = liveGate.gateProjectOpen
 /** Whether an agent's `open-project` may proceed; a refusal carries the message to send back. */
 export const checkAgentProjectOpen = liveGate.checkAgentProjectOpen
 
-/** The synchronous re-check immediately before an agent's registration; same refusal message. */
-export const recheckAgentProjectOpen = liveGate.recheckAgentProjectOpen
+/** Run an agent's `open-project` registration under the limit, deciding and writing in one tick. */
+export const finishAgentProjectOpen = liveGate.finishAgentProjectOpen

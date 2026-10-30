@@ -288,7 +288,12 @@ import { SAS_COMPARE_HINT } from '@shared/remote/sas'
 import { promptDialog } from '../components/promptDialog'
 import { UpgradeDialog } from '../components/UpgradeDialog'
 import { ProjectLimitDialog } from '../components/ProjectLimitDialog'
-import { checkAgentProjectOpen, gateProjectOpen, recheckAgentProjectOpen } from '../lib/projectLimitGate'
+import {
+  checkAgentProjectOpen,
+  finishAgentProjectOpen,
+  gateProjectOpen,
+  type AgentOpenFinish
+} from '../lib/projectLimitGate'
 import { countOpenProjects, decideOpen } from '@shared/project-limit'
 import { opensProject, type OpenAction } from '../lib/projectOpens'
 import { LiveLinkDialog } from '../components/LiveLinkDialog'
@@ -13606,10 +13611,11 @@ export function Canvas() {
         // The free-tier project limit (lib/projectLimitGate.ts), asked only when this registration
         // makes a project open that was not (lib/projectOpens.ts), and asked twice: here, ahead of
         // the probe and the consent planning, where a limit with no allowance yet may still claim
-        // one; and again in opFinish, in the same tick as registerProject, because the user's
-        // confirm dialog sits between the two — two agents at the edge both pass here, and only the
-        // first to register passes there (plan Review Focus 5). An open the limit allows at once —
-        // every one, while it is off — awaits nothing here, so a path that was synchronous stays so.
+        // one; and again in opFinish, whose final decision shares one tick with registerProject,
+        // because the user's confirm dialog sits between the two — two agents at the edge both pass
+        // here, and only the first to register passes there (plan Review Focus 5). An open the limit
+        // allows at once — every one, while it is off — awaits nothing here or there, so a path that
+        // was synchronous stays so.
         const opOpens = (): boolean =>
           opensProject(useProjects.getState().projects, { kind: 'register', cwd: resolvedCwd })
         if (
@@ -13628,23 +13634,29 @@ export function Canvas() {
         // main-side — and reply with the id the caller can feed `--project`. Returns the reply's
         // sentence, so a WAIVED registration can announce exactly what it did — or null when the
         // project limit refused it at the last moment (already replied; nothing was registered).
-        const opFinish = (adoptProbed?: Project): string | null => {
-          const opLimit = opOpens() ? recheckAgentProjectOpen() : null
-          if (opLimit && !opLimit.ok) {
-            reply({ ok: false, error: opLimit.message })
+        // Exactly one reply either way. The registration runs inside finishAgentProjectOpen, right
+        // after its final decision and in the same tick; the result is synchronous unless the limit
+        // has to claim first (an open landed during the confirm dialog), the one promise branch.
+        const opFinish = (adoptProbed?: Project): string | null | Promise<string | null> => {
+          const settle = (f: AgentOpenFinish<string>): string | null => {
+            if (f.ok) return f.value
+            reply({ ok: false, error: f.message })
             return null
           }
-          const r = useProjects.getState().registerProject({
-            resolvedCwd,
-            name: args.name,
-            color: opColor,
-            ...(adoptProbed ? { probed: adoptProbed } : {})
+          const finished = finishAgentProjectOpen(opOpens, () => {
+            const r = useProjects.getState().registerProject({
+              resolvedCwd,
+              name: args.name,
+              color: opColor,
+              ...(adoptProbed ? { probed: adoptProbed } : {})
+            })
+            recordAttachConsent(sourceNodeId, r.project.id)
+            void writeDisk()
+            const done = openProjectReply(r.project, r.created, r.adopted)
+            reply({ ok: true, ...done })
+            return done.message
           })
-          recordAttachConsent(sourceNodeId, r.project.id)
-          void writeDisk()
-          const done = openProjectReply(r.project, r.created, r.adopted)
-          reply({ ok: true, ...done })
-          return done.message
+          return finished instanceof Promise ? finished.then(settle) : settle(finished)
         }
         // The probe only matters when no project owns this cwd yet (adopt-vs-create copy) — an
         // idempotent hit must not pay a folder read.
@@ -13663,7 +13675,7 @@ export function Canvas() {
         })
         if (opPlan.kind === 'silent') {
           // This caller already passed a human decision for this project (Q1): idempotent, quiet.
-          opFinish()
+          await opFinish()
           return
         }
         // What an answer adopts, decided once so the waived path and the confirmed path register
@@ -13677,7 +13689,7 @@ export function Canvas() {
         const opWaiver = controlConfirmDecision(verb, ctlProject?.id)
         if (opWaiver.via) {
           // A waived registration still announces itself, naming the waiver that let it through.
-          const opDone = opFinish(opAdopt)
+          const opDone = await opFinish(opAdopt)
           if (opDone === null) return
           setNotice({
             kind: 'info',
@@ -13704,7 +13716,7 @@ export function Canvas() {
           onExpire: () => reply({ ok: false, error: 'expired before the user answered' }),
           onConfirm: () => {
             setConfirm(null)
-            opFinish(opAdopt)
+            void opFinish(opAdopt)
           },
           onCancel: () => reply({ ok: false, error: 'denied by user' })
         })

@@ -122,19 +122,29 @@ describe('project-limit gate in the agent open-project verb (Task 19)', () => {
     }
   })
 
-  it('opFinish re-checks synchronously, ahead of registerProject, and refuses instead of registering', () => {
+  it('opFinish registers inside finishAgentProjectOpen: nothing between the final decision and registerProject', () => {
     const body = openProjectBlock()
     const finish = body.slice(body.indexOf('const opFinish'), body.indexOf('// The probe only matters'))
-    const recheck = finish.indexOf('const opLimit = opOpens() ? recheckAgentProjectOpen() : null')
-    expect(recheck).toBeGreaterThan(-1)
-    expect(finish.indexOf('registerProject(')).toBeGreaterThan(recheck)
-    expect(finish.slice(recheck)).toMatch(
-      /if \(opLimit && !opLimit\.ok\) \{\s+reply\(\{ ok: false, error: opLimit\.message \}\)\s+return null/
+    // The gate takes its final decision and calls this callback in the same tick
+    // (lib/projectLimitGate.test.ts proves that half). What only the source can show is that the
+    // callback is synchronous and its first statement is the store write — no await, no async
+    // callback, nothing in front of registerProject.
+    expect(finish).toMatch(
+      /finishAgentProjectOpen\(opOpens, \(\) => \{\s+const r = useProjects\.getState\(\)\.registerProject\(\{/
     )
-    // The confirm dialog sits before this point; nothing may sit between the re-check and the write.
-    expect(finish).not.toMatch(/\bawait\b|\.then\(/)
-    // A refused waived registration announces nothing: it was not registered.
-    expect(body).toMatch(/const opDone = opFinish\(opAdopt\)\s+if \(opDone === null\) return\s+setNotice\(/)
+    expect(finish.match(/registerProject\(/g)).toHaveLength(1)
+    const callback = finish.slice(finish.indexOf('finishAgentProjectOpen(opOpens'), finish.indexOf('return done.message'))
+    expect(callback).not.toMatch(/\bawait\b|\.then\(|\basync\b/)
+    // A refusal replies once, from the gate's message, and returns null; the claim branch is the
+    // only promise, settled the same way.
+    expect(finish).toMatch(/if \(f\.ok\) return f\.value\s+reply\(\{ ok: false, error: f\.message \}\)\s+return null/)
+    expect(finish).toContain('return finished instanceof Promise ? finished.then(settle) : settle(finished)')
+    // Every caller copes with the claim branch: the two in the handler await it, the dialog's
+    // confirm fires it. A refused waived registration announces nothing: it was not registered.
+    expect(body).toContain('await opFinish()\n          return')
+    expect(body).toMatch(/const opDone = await opFinish\(opAdopt\)\s+if \(opDone === null\) return\s+setNotice\(/)
+    expect(body).toMatch(/onConfirm: \(\) => \{\s+setConfirm\(null\)\s+void opFinish\(opAdopt\)\s+\}/)
+    expect(body.match(/opFinish\(/g)).toHaveLength(3)
   })
 
   it('a headless start into a closed project restores its tab only when the limit allows', () => {
