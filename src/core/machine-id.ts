@@ -126,29 +126,53 @@ export async function readMachineHashWith(deps: MachineIdDeps): Promise<string> 
   return (await readOsMachineHash(deps)) ?? fallbackHash(deps)
 }
 
+/** A machine hash and where it came from. `fromOs: false` = the `host:<hostname>` fallback. */
+export interface MachineHashResult {
+  hash: string
+  fromOs: boolean
+}
+
 let deps: MachineIdDeps = realDeps
 /** Settled to a hash that came from the OS — kept for the life of the process. */
-let memo: Promise<string> | null = null
+let memo: Promise<MachineHashResult> | null = null
 /** The attempt in progress, shared by concurrent callers; cleared when it settles. */
-let inFlight: Promise<string> | null = null
+let inFlight: Promise<MachineHashResult> | null = null
+/** `readMachineHash`'s view of each attempt, so one attempt always hands out one promise. */
+const hashOf = new WeakMap<Promise<MachineHashResult>, Promise<string>>()
 
-/** This machine's hash. An OS-read hash is memoized; the fallback is returned but not kept. */
-export function readMachineHash(): Promise<string> {
+/**
+ * This machine's hash, saying whether it came from the OS. An OS-read hash is memoized; the
+ * fallback is returned but not kept. The project limit verifies a stored token's machine only
+ * against an OS-read hash: a fallback is a guess, and judging a token by a guess would drop a
+ * legacy user to FREE on a transient read failure.
+ */
+export function readMachineHashResult(): Promise<MachineHashResult> {
   if (memo) return memo
   if (inFlight) return inFlight
   const d = deps
-  const attempt: Promise<string> = readOsMachineHash(d)
+  const attempt: Promise<MachineHashResult> = readOsMachineHash(d)
     .catch(() => null)
     .then((hash) => {
       // A test reset while this was in flight leaves it un-memoized.
       const current = inFlight === attempt
       if (current) inFlight = null
-      if (hash === null) return fallbackHash(d)
+      if (hash === null) return { hash: fallbackHash(d), fromOs: false }
       if (current) memo = attempt
-      return hash
+      return { hash, fromOs: true }
     })
   inFlight = attempt
   return attempt
+}
+
+/** This machine's hash. An OS-read hash is memoized; the fallback is returned but not kept. */
+export function readMachineHash(): Promise<string> {
+  const attempt = readMachineHashResult()
+  let hash = hashOf.get(attempt)
+  if (!hash) {
+    hash = attempt.then((r) => r.hash)
+    hashOf.set(attempt, hash)
+  }
+  return hash
 }
 
 /** Test seam: swap the OS readers (null restores the real ones) and drop the memo. */

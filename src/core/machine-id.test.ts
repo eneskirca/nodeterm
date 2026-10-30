@@ -4,6 +4,7 @@ import {
   parseIoregUuid,
   parseRegMachineGuid,
   readMachineHash,
+  readMachineHashResult,
   readMachineHashWith,
   setMachineIdDepsForTests,
   type MachineIdDeps
@@ -226,5 +227,39 @@ describe('readMachineHash', () => {
     await expect(readMachineHash()).resolves.toBe(OS_HASH)
     await expect(readMachineHash()).resolves.toBe(OS_HASH)
     expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL, IOREG_CALL])
+  })
+})
+
+// The project limit verifies a stored token's machine OFFLINE, and only against a hash it knows
+// came from the OS: a fallback must never become the yardstick (see core/project-limit.ts).
+describe('readMachineHashResult', () => {
+  afterEach(() => setMachineIdDepsForTests(null))
+
+  it('says the hash came from the OS when it did', async () => {
+    const { deps } = fakeOs('darwin', { exec: { [IOREG]: IOREG_SAMPLE } })
+    setMachineIdDepsForTests(deps)
+    await expect(readMachineHashResult()).resolves.toEqual({ hash: OS_HASH, fromOs: true })
+  })
+
+  it('says the hostname fallback is not from the OS, and asks the OS again next time', async () => {
+    const { deps, calls } = fakeOs('darwin', {
+      exec: { [IOREG]: [null, null, IOREG_SAMPLE] },
+      hostname: 'Mac-Studio.local'
+    })
+    setMachineIdDepsForTests(deps)
+    await expect(readMachineHashResult()).resolves.toEqual({ hash: FALLBACK_HASH, fromOs: false })
+    await expect(readMachineHashResult()).resolves.toEqual({ hash: OS_HASH, fromOs: true })
+    expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL, IOREG_CALL])
+  })
+
+  it('shares one read and one memo with readMachineHash', async () => {
+    const { deps, calls } = fakeOs('darwin', { exec: { [IOREG]: IOREG_SAMPLE } })
+    setMachineIdDepsForTests(deps)
+    const result = readMachineHashResult()
+    const hash = readMachineHash()
+    await expect(result).resolves.toEqual({ hash: OS_HASH, fromOs: true })
+    await expect(hash).resolves.toBe(OS_HASH)
+    await expect(readMachineHashResult()).resolves.toEqual({ hash: OS_HASH, fromOs: true })
+    expect(calls).toEqual([IOREG_CALL])
   })
 })

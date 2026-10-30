@@ -28,10 +28,14 @@ const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as nu
  * The token's `{ allowance, epoch }` when it is signed by `publicKeyPem`, is a project-allowance
  * token (`typ`), was minted for this `deviceId` and `machine` (and `epoch`, when given), and carries
  * a non-negative integer allowance — else null. Never throws.
+ *
+ * `machine: null` skips the machine match and nothing else: the caller has no OS-read machine hash
+ * yet (core/project-limit.ts trusts a stored token provisionally until it has one). It is an
+ * explicit null rather than an optional key so that no caller can skip the check by omission.
  */
 export function verifyAllowanceToken(
   token: string | undefined,
-  expect: { deviceId: string; machine: string; epoch?: number },
+  expect: { deviceId: string; machine: string | null; epoch?: number },
   publicKeyPem: string = PROJECT_ALLOWANCE_PUBLIC_KEY
 ): VerifiedAllowance | null {
   // A runtime guard, not a type one: the token comes off disk, where any JSON value can stand in.
@@ -47,7 +51,8 @@ export function verifyAllowanceToken(
     if (typeof payload !== 'object' || payload === null) return null
     const { typ, deviceId, machine, allowance, epoch } = payload as Record<string, unknown>
     if (typ !== PROJECT_ALLOWANCE_KIND) return null
-    if (deviceId !== expect.deviceId || machine !== expect.machine) return null
+    if (deviceId !== expect.deviceId) return null
+    if (expect.machine !== null && machine !== expect.machine) return null
     if (!isCount(allowance) || !isCount(epoch)) return null
     if (expect.epoch !== undefined && epoch !== expect.epoch) return null
     return { allowance, epoch }

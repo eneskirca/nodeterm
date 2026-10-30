@@ -376,6 +376,8 @@ import {
 import { remoteCodexUsageTargets } from '../core/usage/remote-codex-usage'
 import { remoteUsageTargets } from '../core/usage/remote-claude-usage'
 import { initLicense, isPremium, getStoredEntitlement } from '../core/license'
+import { initProjectLimit } from '../core/project-limit'
+import { readMachineHashResult } from '../core/machine-id'
 import { WhisperModelStore } from '../core/speech/whisper-models'
 import { SpeechService } from '../core/speech/speech-service'
 import { registerSpeechIpc } from '../core/speech/register-ipc'
@@ -4882,9 +4884,22 @@ app.whenReady().then(async () => {
     buildMirrorUsage(usageService.snapshot(), settingsStore.get().claudeAccounts ?? [], Date.now())
   )
   initTelemetry(() => settingsStore.get())
+  // The free-tier open-project limit (core/project-limit.ts). Its state goes to THIS machine's
+  // window only: sendToMain, never platform().broadcast, which also fans out to every relay peer
+  // (the state carries this host's Pro and DO_NOT_TRACK facts). The Server Edition does not run it.
+  const projectLimit = initProjectLimit({
+    openProjects: () => workspaceStore.openProjectCount(),
+    machineHash: readMachineHashResult,
+    notify: (s) => sendToMain(IPC.projectLimitChanged, s)
+  })
+  settingsStore.onChange(() => projectLimit.refresh())
   // A license change (activate, refresh, a lapsed token replaced) re-arms every live link the API
   // refused: a link host whose 7-day entitlement expired under it stops minting until then (R41).
-  initLicense(() => watchLinks?.onEntitlementChanged())
+  // It can also change Pro for the project limit, which nothing else would tell the renderer.
+  initLicense(() => {
+    watchLinks?.onEntitlementChanged()
+    projectLimit.refresh()
+  })
   // Lazy getter: sshProjectManager is created just below, so a remote account op (which only runs
   // after the user has connected an SSH project) always sees the live manager.
   initClaudeAccounts(() => sshProjectManager)

@@ -95,6 +95,29 @@ describe('verifyAllowanceToken', () => {
     expect(verifyAllowanceToken(mint(over), EXPECT, PUB)).toBeNull()
   })
 
+  // `machine: null` = no OS-read hash known yet (core/project-limit.ts): the token is trusted
+  // provisionally on everything but the machine. It must be an explicit null, never a missing key.
+  it('skips only the machine match when machine is null', () => {
+    const elsewhere = mint({ machine: machineHashOf('another-machine') })
+    expect(verifyAllowanceToken(elsewhere, { deviceId: DEVICE, machine: null }, PUB)).toEqual({ allowance: 12, epoch: 2 })
+    expect(verifyAllowanceToken(elsewhere, EXPECT, PUB)).toBeNull()
+  })
+
+  it.each([
+    ['wrong typ', { typ: 'entitlement' }],
+    ['wrong deviceId', { deviceId: 'device-2' }],
+    ['allowance -1', { allowance: -1 }],
+    ['no epoch', { epoch: undefined }]
+  ])('with machine null, still refuses a signed token with %s', (_label, over) => {
+    expect(verifyAllowanceToken(mint(over), { deviceId: DEVICE, machine: null }, PUB)).toBeNull()
+  })
+
+  it('with machine null, still checks the signature and the expected epoch', () => {
+    const other = crypto.generateKeyPairSync('ed25519').privateKey
+    expect(verifyAllowanceToken(mint({}, other), { deviceId: DEVICE, machine: null }, PUB)).toBeNull()
+    expect(verifyAllowanceToken(mint(), { deviceId: DEVICE, machine: null, epoch: 3 }, PUB)).toBeNull()
+  })
+
   it('refuses an entitlement-shaped token signed with the same key', () => {
     // Everything an allowance needs, minus the kind gate: proves `typ` is checked, not inferred.
     const entitlement = signRaw({
