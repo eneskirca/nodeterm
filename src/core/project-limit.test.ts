@@ -441,7 +441,9 @@ describe('project limit: claim', () => {
       reply(404, {}),
       reply(409, { error: 'something_new' }),
       notJson(200),
-      reply(200, {})
+      reply(200, {}),
+      reply(200, []), // JSON, but not an object
+      reply(200, 'ok')
     ]) {
       net.claim = r
       expect(await handle.claim()).toEqual({ ok: false, error: 'server', state: handle.state() })
@@ -531,6 +533,34 @@ describe('project limit: claim', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flush()
     expect(settled).toEqual({ ok: false, error: 'offline', state: handle.state() })
+  })
+
+  it('a body cut off mid-read is offline, not a server error', async () => {
+    const { handle } = await boot({ file: { latched: true, epoch: 1 }, openProjects: () => undefined })
+    // undici rejects the body read with `TypeError: terminated` when the connection drops mid-body.
+    for (const status of [200, 409, 500]) {
+      net.claim = () =>
+        Promise.resolve({
+          ok: status === 200,
+          status,
+          json: () => Promise.reject(new TypeError('terminated'))
+        })
+      expect(await handle.claim()).toEqual({ ok: false, error: 'offline', state: handle.state() })
+    }
+  })
+
+  it('an inactive install claims nothing: no request, no machine read', async () => {
+    const { handle } = await boot()
+    fetchMock.mockClear()
+    const r = await handle.claim()
+    expect(r).toEqual({ ok: true, state: handle.state() })
+    expect(r.state.active).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(machineSpy).not.toHaveBeenCalled()
+    // The network gate still answers first: DO_NOT_TRACK without consent is consent_required.
+    process.env.DO_NOT_TRACK = '1'
+    expect(await handle.claim()).toEqual({ ok: false, error: 'consent_required', state: handle.state() })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('never rejects, even when reading the machine fails', async () => {
@@ -690,6 +720,40 @@ describe('project limit: wiring', () => {
     handle.refresh()
     expect(notified.length).toBe(n + 1)
     expect(notified.at(-1)).toEqual(handle.state())
+  })
+
+  // Nothing but time changes these; the 6 h tick must push them (an app open for days, or one
+  // that never hears from api.nodeterm.dev, would otherwise stay dormant until a restart).
+  it('pushes the deadline crossing on the 6 h tick', async () => {
+    vi.setSystemTime(DEADLINE - HOUR)
+    const { handle } = await boot()
+    expect(handle.state().active).toBe(false)
+    await vi.advanceTimersByTimeAsync(6 * HOUR)
+    expect(notified.at(-1)?.active).toBe(true)
+  })
+
+  it('pushes an off answer going stale on the 6 h tick', async () => {
+    vi.setSystemTime(AFTER)
+    const { handle } = await boot({ file: { latched: false, offAt: AFTER - 20 * HOUR } })
+    expect(handle.state().active).toBe(false)
+    await vi.advanceTimersByTimeAsync(6 * HOUR)
+    expect(notified.at(-1)?.active).toBe(true)
+  })
+
+  it('pushes the Pro grace lapsing on the 6 h tick', async () => {
+    // Expired 30 days minus one hour ago: still Pro for the limit at boot, not six hours later.
+    writeLicense({ token: entitlementToken(-(30 * 24 * 3600 - 3600)) })
+    const { handle } = await boot()
+    expect(handle.state().pro).toBe(true)
+    await vi.advanceTimersByTimeAsync(6 * HOUR)
+    expect(notified.at(-1)?.pro).toBe(false)
+  })
+
+  it('a tick that changes nothing pushes nothing', async () => {
+    await boot()
+    const n = notified.length
+    await vi.advanceTimersByTimeAsync(6 * HOUR)
+    expect(notified.length).toBe(n)
   })
 
   it('reads the check feed at init and every 6 hours', async () => {

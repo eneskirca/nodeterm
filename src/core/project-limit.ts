@@ -26,11 +26,15 @@
  * claim also caches the hash it sent, if that one came from the OS.
  *
  * CLAIMS are lazy and never reject: one request shared by concurrent callers, an 8 s timeout over
- * the whole request including the body, and every failure folded into a `ClaimError`.
+ * the whole request including the body, and every failure folded into a `ClaimError`. While the
+ * limit is off a claim asks nobody (no request, no machine read), whoever calls it.
  *
  * `projectLimit:changed` goes to THIS machine's windows only, through the shell's `notify`. Never
  * `platform().broadcast`: on the desktop that fans out to every relay peer, and this state carries
  * the host's Pro and DO_NOT_TRACK facts (see HOST_ONLY_CHANNEL_PREFIXES for the inbound half).
+ * It is pushed whenever the state differs from the last one sent: after a server word, and on the
+ * 6 h tick for what time alone changes (the deadline passing, an "off" going stale, Pro's grace
+ * lapsing) — otherwise a long-running app would stay dormant past the deadline until a restart.
  *
  * PERSISTENCE: `<userData>/project-limit.json`, written through `writeFileAtomic`, only when
  * something changed. A missing, unparsable or hand-edited file never throws: each wrong-typed
@@ -111,6 +115,8 @@ let stored: Stored = {}
 /** The machine hash from a successful OS read; null = none yet (provisional trust, see header). */
 let osMachine: string | null = null
 let claimInFlight: Promise<ClaimResult> | null = null
+/** The JSON of the last state sent to the windows (seeded at init: the renderer reads it then). */
+let lastSent: string | null = null
 let writes: Promise<void> = Promise.resolve()
 /** Background reads and writes, so tests can wait for them (`__projectLimitIdleForTests`). */
 const pending = new Set<Promise<unknown>>()
@@ -203,16 +209,29 @@ function state(): ProjectLimitState {
   return compute()
 }
 
+/** Send the state to this machine's windows, unconditionally (`refresh()`). */
 function notify(): void {
-  deps.notify(state())
+  const s = state()
+  lastSent = JSON.stringify(s)
+  deps.notify(s)
+}
+
+/** Send the state only if it differs from the last one sent. Compared against what was SENT, not
+ *  against the state a moment ago, so a change that came with time alone — the anchor crossing the
+ *  deadline, an `offAt` going stale, Pro's grace lapsing — is pushed by the next call too. */
+function pushIfChanged(): void {
+  const s = state()
+  const json = JSON.stringify(s)
+  if (json === lastSent) return
+  lastSent = json
+  deps.notify(s)
 }
 
 /** Install `next`, save it when `save`, and tell this machine's windows if what they see changed. */
 function commit(next: Stored, save: boolean): Promise<void> {
-  const before = JSON.stringify(compute())
   stored = next
   const saved = save ? persist() : Promise.resolve()
-  if (JSON.stringify(compute()) !== before) notify()
+  pushIfChanged()
   return saved
 }
 
@@ -257,7 +276,10 @@ function fail(error: ClaimError, retryAfter?: number): ClaimResult {
 async function runClaim(): Promise<ClaimResult> {
   const gate = licenseNetworkGate()
   if (gate !== 'ok') return fail(gate)
-  recordFirstLaunchOpenCount()
+  // Dormant: there is no limit to claim an allowance against, so nothing is asked — no request and
+  // no machine read, whoever calls. After the gate, so `consent_required` / `disabled` still surface.
+  const now = state()
+  if (!now.active) return { ok: true, state: now }
   const deviceId = getDeviceId()
   const machine = await deps.machineHash()
   const count = stored.firstLaunchOpenCount
@@ -279,9 +301,10 @@ async function runClaim(): Promise<ClaimResult> {
     status = res.status
     try {
       body = await res.json()
-    } catch {
-      // A body cut off by the timeout is the network failing; one that is not JSON is the server's.
-      if (ctrl.signal.aborted) return fail('offline')
+    } catch (err) {
+      // Only a body that arrived and is not JSON is the server's. A body cut off by the timeout, or
+      // by the connection dropping mid-read (undici: `TypeError: terminated`), is the network failing.
+      if (ctrl.signal.aborted || !(err instanceof SyntaxError)) return fail('offline')
       body = undefined
     }
   } catch {
@@ -334,6 +357,7 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   stored = load()
   osMachine = null
   claimInFlight = null
+  lastSent = JSON.stringify(compute())
   const handle: ProjectLimitHandle = { state, claim, refresh: notify }
   platform().handle(IPC.projectLimitState, () => handle.state())
   platform().handle(IPC.projectLimitClaim, () => handle.claim())
@@ -357,7 +381,11 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
     track(fetchCheck().catch(() => {}))
   }
   readCheck()
-  setInterval(readCheck, CHECK_INTERVAL_MS).unref()
+  setInterval(() => {
+    // Time alone can change the state (see pushIfChanged); the check below covers the server's word.
+    pushIfChanged()
+    readCheck()
+  }, CHECK_INTERVAL_MS).unref()
   return handle
 }
 
