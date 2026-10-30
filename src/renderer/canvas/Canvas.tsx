@@ -791,6 +791,7 @@ import {
 import { scopeFromKey, usageScopeKey } from '../lib/usageScope'
 import { useSystemAccount } from '../state/systemAccount'
 import { useEntitlement } from '../state/entitlement'
+import { useProjectLimit } from '../state/projectLimit'
 import type { SshServer } from '@shared/ssh'
 import { sshHostKey } from '@shared/ssh'
 import type {
@@ -3293,6 +3294,10 @@ export function Canvas() {
       // persists the conversion, so the next load is a no-op.
       const projects = ws.projects.map(migrateProjectTags)
       useProjects.getState().hydrate({ ...ws, projects })
+      // The free-project limit state, read only now: core records the first-launch open count on
+      // the first read it answers with the workspace index loaded, which this load has guaranteed.
+      // Never rejects (a failed read stays dormant), and nothing here waits on it.
+      void useProjectLimit.getState().hydrate()
       // Drop status entries whose node is in no project (past a grace window) — the table is
       // persisted and otherwise grows forever. `orphanStatusIds` refuses to judge an incomplete
       // load (no projects, or an unreadable one), so a bad index read never costs a live node its

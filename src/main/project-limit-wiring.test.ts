@@ -36,6 +36,18 @@ describe('project-limit wiring (source)', () => {
     expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.refresh\(\)\)/)
   })
 
+  it('DO_NOT_TRACK consent is the Privacy setting, read live, and installed before the first license call', () => {
+    // Exactly `=== true`: a hand-edited settings.json holding "yes" or 1 is not consent. Read on every
+    // gated call (license.ts), so revoking it in Settings takes effect at once.
+    const wire = 'setLicenseNetworkConsent(() => settingsStore.get().licenseNetworkConsent === true)'
+    const at = main.indexOf(wire)
+    expect(at).toBeGreaterThan(-1)
+    // Before initLicense: its launch refresh runs immediately and must already see the consent.
+    expect(main.indexOf('initLicense(')).toBeGreaterThan(at)
+    // The Server Edition has no license layer to consent to.
+    expect(read('server/index.ts')).not.toMatch(/setLicenseNetworkConsent/)
+  })
+
   it('nothing broadcasts the channel, and the Server Edition does not run the module', () => {
     for (const p of ['main/index.ts', 'core/project-limit.ts', 'server/index.ts']) {
       expect(read(p)).not.toMatch(/broadcast\(IPC\.projectLimitChanged/)

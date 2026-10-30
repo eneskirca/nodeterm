@@ -2360,6 +2360,14 @@ export interface Settings {
    *  (or hard-disable with DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED). Note: a lighter anonymous
    *  install count also rides the /v1/check call and is NOT gated on this toggle — see core/check.ts. */
   telemetryEnabled: boolean
+  /** The user's consent to license and free-project-allowance calls to api.nodeterm.dev while
+   *  DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED is set (spec §7.4). Default off: under DNT nothing
+   *  license-related leaves the machine until the user says so. Covers ONLY the calls behind
+   *  `licenseNetworkGate()` (core/license.ts) — never telemetry or the check feed, which stay off
+   *  under DNT whatever this says. Read as `=== true` (main installs it via
+   *  `setLicenseNetworkConsent`), so a hand-edited non-boolean is no consent. Shown and revocable in
+   *  Settings → Privacy only while DNT is set. Never settable by an agent (SETTINGS_VERB_FORBIDDEN). */
+  licenseNetworkConsent: boolean
   /** Debug log panel (issue #78): captures the app's own console into an in-memory, redacted
    *  ring and unlocks the log viewer. Default off — a debugging tool, not a daily surface.
    *  Toggle in Settings → Application → Debug. */
@@ -2619,6 +2627,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
   // no telemetryEnabled key yet; anyone who already saved settings keeps their stored value.
   telemetryEnabled: true,
+  // Off: under DO_NOT_TRACK no license call runs until the user consents in Settings → Privacy.
+  licenseNetworkConsent: false,
   debugLogPanel: false,
   phoneAccessEnabled: true,
   mobilePushEnabled: true,

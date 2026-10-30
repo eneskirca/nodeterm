@@ -375,7 +375,7 @@ import {
 } from './window-state'
 import { remoteCodexUsageTargets } from '../core/usage/remote-codex-usage'
 import { remoteUsageTargets } from '../core/usage/remote-claude-usage'
-import { initLicense, isPremium, getStoredEntitlement } from '../core/license'
+import { initLicense, isPremium, getStoredEntitlement, setLicenseNetworkConsent } from '../core/license'
 import { initProjectLimit } from '../core/project-limit'
 import { readMachineHashResult } from '../core/machine-id'
 import { WhisperModelStore } from '../core/speech/whisper-models'
@@ -4893,6 +4893,12 @@ app.whenReady().then(async () => {
     notify: (s) => sendToMain(IPC.projectLimitChanged, s)
   })
   settingsStore.onChange(() => projectLimit.refresh())
+  // DO_NOT_TRACK consent for license and allowance calls (spec §7.4): Settings → Privacy, read on
+  // every gated call so revoking it applies at once. Installed BEFORE initLicense, whose launch
+  // refresh runs immediately. Only `licenseNetworkGate()` callers read it — never telemetry or the
+  // check feed. (Giving consent does not trigger a refresh: license.ts exposes none, so the next
+  // license call is the 6 h refresh, an activate or an upgrade; a claim reads the gate itself.)
+  setLicenseNetworkConsent(() => settingsStore.get().licenseNetworkConsent === true)
   // A license change (activate, refresh, a lapsed token replaced) re-arms every live link the API
   // refused: a link host whose 7-day entitlement expired under it stops minting until then (R41).
   // It can also change Pro for the project limit, which nothing else would tell the renderer.

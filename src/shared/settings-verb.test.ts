@@ -71,6 +71,7 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
       'hookIdentityStrict',
       'hookReplyApprovals',
       'keybindings',
+      'licenseNetworkConsent',
       'modelGateway',
       'modelGatewayDefaultModel',
       'phoneAccessEnabled',
@@ -87,6 +88,20 @@ describe('the allowlist is the gate, and the forbidden set outranks it', () => {
       [...SETTINGS_VERB_FORBIDDEN].filter((k) => !SETTINGS_VERB_FORBIDDEN_PATTERN.test(k)).sort()
     ).toEqual(['agentIssueReporting', 'agentMessagingDefault', 'boardDispatch', 'customAgents'])
     for (const key of SETTINGS_VERB_KEY_LIST) expect(SETTINGS_VERB_FORBIDDEN_PATTERN.test(key), key).toBe(false)
+  })
+
+  it('an agent can never grant network consent under DO_NOT_TRACK on the user\'s behalf', () => {
+    // `licenseNetworkConsent` lets license and allowance calls reach api.nodeterm.dev while
+    // DO_NOT_TRACK is set (spec §7.4). It is a privacy decision the user makes in Settings → Privacy;
+    // a CLI that could set it would turn the user's DO_NOT_TRACK into a suggestion. Named in the set
+    // AND caught by the `consent` name class, so neither fence alone carries it.
+    expect((SETTINGS_VERB_FORBIDDEN as ReadonlySet<string>).has('licenseNetworkConsent')).toBe(true)
+    expect(SETTINGS_VERB_FORBIDDEN_PATTERN.test('licenseNetworkConsent')).toBe(true)
+    for (const args of [{ get: 'licenseNetworkConsent' }, { set: 'licenseNetworkConsent', value: 'true' }]) {
+      expect(parseSettingsRequest(args)).toEqual({
+        error: expect.stringContaining('settings-key-forbidden: "licenseNetworkConsent"')
+      })
+    }
   })
 
   it('the name pattern catches forbidden classes nobody has named yet', () => {
