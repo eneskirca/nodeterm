@@ -49,7 +49,9 @@ describe('live-link wiring', () => {
     expect(s).toMatch(/const bootWorkspaceLoad = workspaceStore\.load\(\{ sideline: false \}\)/)
     expect(s).toMatch(/workspaceReady: \(\) => bootWorkspaceLoad/)
     expect(s).toMatch(/entitlement: getStoredEntitlement/)
-    expect(s).toMatch(/initLicense\(\(\) => watchLinks\?\.onEntitlementChanged\(\)\)/)
+    // The license callback is a block since it also re-sends the project-limit state
+    // (project-limit-wiring.test.ts pins that half); a license change must still re-arm the links.
+    expect(s).toMatch(/initLicense\(\(\) => \{[^}]*\bwatchLinks\?\.onEntitlementChanged\(\)[^}]*\}\)/)
     // A node in a HOST's tmux is watched on its host, or not at all — an SSH project's node AND a
     // remote-tmux node in a local project (final review, Minor 4): core's ONE rule, fed the shell's own
     // records — the SSH project, every persisted copy's binding with its project's server, the masters.
