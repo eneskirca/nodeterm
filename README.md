@@ -258,7 +258,7 @@ requests go first.
      renewing). If a sponsor cancels, raise the limit by one to reopen their spot. -->
 <table>
   <tr>
-    <td align="center" width="20%"><a href="https://locomotive.agency/"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/sponsors/locomotive-dark.png" /><img src="docs/assets/sponsors/locomotive.png" alt="LOCOMOTIVE Agency" width="136" /></picture></a></td>
+    <td align="center" width="20%"><a href="https://locomotive.agency/"><img src="docs/assets/sponsors/locomotive.png" alt="LOCOMOTIVE Agency" width="136" /></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
