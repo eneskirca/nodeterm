@@ -287,6 +287,7 @@ import { admitPendingPeer } from '../lib/pendingPeerAdmission'
 import { SAS_COMPARE_HINT } from '@shared/remote/sas'
 import { promptDialog } from '../components/promptDialog'
 import { UpgradeDialog } from '../components/UpgradeDialog'
+import { ProjectLimitDialog } from '../components/ProjectLimitDialog'
 import { LiveLinkDialog } from '../components/LiveLinkDialog'
 import { requireProOr } from '../state/upgradeGate'
 import { startWatchLinkSync, useWatchLinks } from '../state/watchLinks'
@@ -20634,6 +20635,9 @@ export function Canvas() {
       )}
 
       <UpgradeDialog />
+      {/* The free-tier limit moment (spec §7). Close is the ordinary non-destructive close — never
+          `endSessions`: the limit only ever blocks a NEW open, it never ends anything. */}
+      <ProjectLimitDialog onCloseProject={(id) => performCloseProject(id)} />
       {liveLinkDialog && (
         <LiveLinkDialog
           key={`${liveLinkDialog.projectId}:${liveLinkDialog.nodeId}`}

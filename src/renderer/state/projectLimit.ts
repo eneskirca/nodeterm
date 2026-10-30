@@ -30,7 +30,10 @@ export type DialogOutcome = 'proceed' | 'cancel' | 'retry' | 'consent'
 
 interface ProjectLimitStore {
   state: ProjectLimitState
-  /** The dialog the open gate (lib/projectLimitGate.ts) is waiting on, or `null`. At most one. */
+  /** The dialog the open gate (lib/projectLimitGate.ts) is waiting on, or `null`. At most one.
+   *  Close it ONLY through `resolveDialog`: the gate holds a promise for it and refuses every other
+   *  open while that is pending, so clearing this field any other way (`setState({ dialog: null })`)
+   *  leaves the promise unsettled and latches every later at-limit open to `false`. */
   dialog: LimitDialogRequest | null
   /** §7's "brief spinner": a person's claim is still in flight after `CHECKING_DELAY_MS`. */
   checking: boolean
