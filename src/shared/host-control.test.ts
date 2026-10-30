@@ -57,14 +57,16 @@ describe('isHostOnlyChannel', () => {
     expect(isHostOnlyChannel(IPC.stationNoticeList)).toBe(true)
   })
 
-  it('covers the whole project-limit namespace — a relay peer must never read or claim the host’s allowance', () => {
+  it('a relay peer cannot invoke projectLimit:state / projectLimit:claim (inbound requests)', () => {
     // A claim spends the HOST's per-device allowance on the host's machine hash, and the state names
-    // the host's Pro and DNT facts. A relay tab keeps its own local preload for this namespace.
+    // the host's Pro and DNT facts. This list only gates what a peer SENDS: the outbound
+    // `projectLimit:changed` push is a separate rule (sent to this machine's windows only, never via
+    // platform().broadcast), so it is deliberately not asserted here — a prefix match on it would
+    // protect nothing.
     expect(isHostOnlyChannel(IPC.projectLimitState)).toBe(true)
     expect(isHostOnlyChannel(IPC.projectLimitClaim)).toBe(true)
-    expect(isHostOnlyChannel(IPC.projectLimitChanged)).toBe(true)
     expect(isHostOnlyChannel('projectLimit:claim')).toBe(true)
-    // A namespace, not a list: a verb added later is refused the day it is added.
+    // A namespace, not a list: a request verb added later is refused the day it is added.
     expect(isHostOnlyChannel('projectLimit:something-new')).toBe(true)
   })
 

@@ -4188,7 +4188,8 @@ export interface ProjectLimitApi {
   /** Claim this device's allowance from the server (lazily, at the limit moment). Never rejects
    *  for a network or server failure — that is `ok: false` with the state as it stands. */
   claim(): Promise<ClaimResult>
-  /** Fires with the new state whenever it changes. Returns unsubscribe. */
+  /** Fires with the new state whenever it changes. Main sends it to this machine's windows only
+   *  (never broadcast to relay peers). Returns unsubscribe. */
   onChange(listener: (s: ProjectLimitState) => void): () => void
 }
 
