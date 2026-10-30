@@ -587,6 +587,31 @@ describe('project limit: claim', () => {
     }
   })
 
+  // The flip as a DO_NOT_TRACK install meets it: no check feed, so no server word and no latch —
+  // only the embedded deadline says the limit is on. Its claim is the one thing that reaches the
+  // server, so it must go out (gating the claim on the latch instead of `active` would hold it at
+  // FREE forever, and an undo could never reach it).
+  it('an unlatched install past the deadline claims, with and without the check feed', async () => {
+    vi.setSystemTime(AFTER)
+    const token = allowanceToken({ allowance: 9, epoch: 1 })
+    for (const dnt of [false, true]) {
+      if (dnt) process.env.DO_NOT_TRACK = '1'
+      rmSync(limitFile(), { force: true })
+      fetchMock.mockClear()
+      const { handle } = await boot()
+      if (dnt) (await import('./license')).setLicenseNetworkConsent(() => true)
+      expect(existsSync(limitFile()) ? readLimitFile().latched : undefined).toBeUndefined()
+      expect(handle.state()).toMatchObject({ active: true, allowance: null, dnt })
+      net.claim = reply(200, { token, free: 5, epoch: 1 })
+      expect(await handle.claim()).toEqual({
+        ok: true,
+        state: { active: true, pro: false, free: 5, allowance: 9, dnt }
+      })
+      expect(claimCalls()).toHaveLength(1)
+      expect(machineSpy).toHaveBeenCalled()
+    }
+  })
+
   it('an inactive install claims nothing: no request, no machine read', async () => {
     const { handle } = await boot()
     fetchMock.mockClear()
