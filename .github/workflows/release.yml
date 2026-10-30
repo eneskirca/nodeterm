@@ -30,6 +30,14 @@ jobs:
           # network blip — after every asset had uploaded — which skipped the publish gate and
           # stranded v0.2.23 as a prerelease. The ephemeral Linux runner below keeps its cache.
 
+      # The free-tier project limit's embedded deadline (PROJECT_LIMIT_DEADLINE_MS) must be bumped
+      # in every release before the flip, or DO_NOT_TRACK users are gated before anyone else. This
+      # refuses a tag whose deadline is under 30 days away (until it is frozen at the flip). Plain
+      # node, no npm ci, so a refused release fails in seconds. A failure here keeps `publish` (which
+      # needs this job) from promoting the tag. See docs/project-limit.md.
+      - name: Project-limit deadline guard
+        run: node scripts/check-project-limit-deadline.mjs
+
       # caffeinate on EVERY long-running step in this job, not just build+upload: the Air
       # sleeping during npm ci or the tmux compile cancels the step just the same (the
       # v0.3.1 attempt died mid tmux build). -dims only blocks idle sleep — a closed lid

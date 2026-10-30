@@ -1242,6 +1242,8 @@ disable it with its reason (`NEW_FILE_NO_CWD_HINT`,
 nothing, and a message that names the wrong cause ("not a git repository" for a project that has no
 folder to be one) sends the user hunting a problem that does not exist.
 
+**Opening a project goes through `gateProjectOpen` (`src/renderer/lib/projectLimitGate.ts`); a new way to open one must call it — see `docs/project-limit.md`.**
+
 **Agent features attach to base harness capabilities, not frontend allowlists.** A custom agent can
 inherit a builtin harness, so add the capability and its one shared leaf (`src/shared/agents`) and
 let every UI ask the helper. Repeating Claude/Codex/etc. cases in menus breaks that inheritance and

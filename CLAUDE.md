@@ -9933,6 +9933,23 @@ unix-socket forward and dev-server `-L` forward over it. POSIX keeps OpenSSH unt
   (`applyPhoneReadAck`, the ack sweeper's body), plus `fs.browse` (home-jailed, dirs only) and
   `pty.capture`; `host.info` lists them. All additive — an old phone keeps its old path.
 
+## Free-tier open-project limit (shipped dormant; the server switches it on)
+
+A non-Pro desktop install may keep FREE (a server value) projects open, a pre-cutoff install its
+signed allowance; Pro is unlimited. Design, runbook, checklist: **`docs/project-limit.md`**.
+- **One count**: `countOpenProjects` (`shared/project-limit.ts`) / `WorkspaceStore.openProjectCount`
+  — in the workspace, not `closed`, not a relay tab. Never write a second one.
+- **Never force-close.** The gate refuses a NEW open and nothing else; no project, node or tmux
+  session is ever closed, deleted or detached because of the limit, even above the allowance.
+- **Placement**: a human open calls `gateProjectOpen` (`renderer/lib/projectLimitGate.ts`) as the
+  LAST await before its synchronous store mutation, skipped when `opensProject(...)` is false;
+  allowed returns the literal `true` in the same tick, so while the limit is off every path stays
+  synchronous with no network, dialog or write. The agent `open-project` verb decides and writes in
+  one tick (`finishAgentProjectOpen`).
+- **Relay tabs are never gated or counted**; `projectLimit:*` is host-only and `projectLimit:changed`
+  reaches this machine's windows only. **The Server Edition has no gate** (stub answers inactive).
+- `PROJECT_LIMIT_DEADLINE_MS` is bumped every release until the flip — release.yml refuses < 30 days.
+
 ## `nodeterm://` links (another app asks to open a node)
 
 `nodeterm://open?agent=…&project=…|project-cwd=…&cwd=…&prompt=…|prompt-file=…&title=…&source=…`
@@ -10739,8 +10756,15 @@ Server Edition: no updater (stubs; `onInstalling`/`onFlushRequest` are documente
 The "auto-download off" setting is NOT here — that is PR #956's.
 
 **Backend check feed** (`src/core/check.ts`, successor to the static `announcements.json`): the
-**main process** calls `GET https://api.nodeterm.dev/v1/check?version=&os=&channel=stable` (so the
-renderer CSP stays `'self'`) on launch + every 6h, cached 5 min, returning `{ messages, update }`.
+**main process** calls `GET https://api.nodeterm.dev/v1/check?deviceId=&version=&os=&arch=&channel=stable&plan=`
+(so the renderer CSP stays `'self'`) on launch + every 6h, cached 5 min, returning `{ messages, update }`.
+`deviceId` is the anonymous install id the backend counts active installs by. **Only while Settings →
+Privacy → Telemetry is on** does the query also carry `openProjects=<n>` (the open-project count, a
+number only; the backend keeps each device's maximum for the project limit). The reply may also
+carry `limits: { projects: { free, epoch } }` while the free-tier project limit is on (absent = off);
+core hears it through `onCheckAnswer`, and only a CHECK-SHAPED reply (a `messages` array + an
+`update` object) without `limits` reads as off and clears the latch — anything else is `unknown` and
+changes nothing (see **Free-tier open-project limit**).
 Exposed split over two IPC handlers: `announcements.fetch()` → `messages`, `appUpdatePolicy` →
 `update`. `components/AnnouncementBanner.tsx` (stacked above `UpdateCard` under the tab bar in a
 `.top-banners` column) shows the newest message the user hasn't dismissed (dismissed `id`s persist
@@ -10755,7 +10779,9 @@ with: the 5-min cache is keyed by plan, a failed read after a plan change keeps 
 NOT the other plan's messages, and the banner re-asks when `useEntitlement.isPremium` flips — else a
 "try Pro" message stays up for six hours after the user pays. **Telemetry** (`src/main/telemetry.ts`) is a separate opt-out
 ping to `api.nodeterm.dev/v1/ping` (version/OS on launch + daily), gated on
-`settings.telemetryEnabled` + the same build/DNT guards; toggle in Settings → Privacy.
+`settings.telemetryEnabled` + the same build/DNT guards; toggle in Settings → Privacy. **That toggle
+gates the ping AND the check's `openProjects` count — never the check itself**, which runs whatever
+it says (only DNT / `NODETERM_TELEMETRY_DISABLED` / an unpackaged build stop it).
 
 ## Atomic writes (never a bare `fs.rename`)
 
