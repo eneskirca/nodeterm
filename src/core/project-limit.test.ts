@@ -785,6 +785,22 @@ describe('project limit: wiring', () => {
     expect(notified.at(-1)).toEqual(handle.state())
   })
 
+  // What main's settings and license hooks call: either fires on every save of settings.json, so it
+  // sends only what the windows have not seen.
+  it('pushIfChanged() sends the state only when it differs from the last one sent', async () => {
+    const { handle } = await boot()
+    const n = notified.length
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n)
+
+    writeLicense({ token: entitlementToken(3600) })
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n + 1)
+    expect(notified.at(-1)).toMatchObject({ pro: true })
+    handle.pushIfChanged()
+    expect(notified.length).toBe(n + 1)
+  })
+
   // Nothing but time changes these; the 6 h tick must push them (an app open for days, or one
   // that never hears from api.nodeterm.dev, would otherwise stay dormant until a restart).
   it('pushes the deadline crossing on the 6 h tick', async () => {

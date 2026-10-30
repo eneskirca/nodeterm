@@ -4895,7 +4895,7 @@ app.whenReady().then(async () => {
     notify: (s) => sendToMain(IPC.projectLimitChanged, s),
     ready: bootWorkspaceLoad
   })
-  settingsStore.onChange(() => projectLimit.refresh())
+  settingsStore.onChange(() => projectLimit.pushIfChanged())
   // DO_NOT_TRACK consent for license and allowance calls (spec §7.4): Settings → Privacy, read on
   // every gated call so revoking it applies at once. Installed BEFORE initLicense, whose launch
   // refresh runs immediately. Only `licenseNetworkGate()` callers read it — never telemetry or the
@@ -4907,7 +4907,7 @@ app.whenReady().then(async () => {
   // It can also change Pro for the project limit, which nothing else would tell the renderer.
   initLicense(() => {
     watchLinks?.onEntitlementChanged()
-    projectLimit.refresh()
+    projectLimit.pushIfChanged()
   })
   // Lazy getter: sshProjectManager is created just below, so a remote account op (which only runs
   // after the user has connected an SSH project) always sees the live manager.

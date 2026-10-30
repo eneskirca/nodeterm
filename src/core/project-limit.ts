@@ -31,7 +31,8 @@
  * machine check applies. A successful claim also caches the hash it sent, if it came from the OS.
  *
  * CLAIMS are lazy and never reject: one request shared by concurrent callers, an 8 s timeout over
- * the whole request including the body, and every failure folded into a `ClaimError`. While the
+ * the whole request including the body (the machine read before it is bounded by machine-id.ts's own
+ * per-attempt timeout), and every failure folded into a `ClaimError`. While the
  * limit is off a claim asks nobody (no request, no machine read), whoever calls it.
  *
  * `projectLimit:changed` goes to THIS machine's windows only, through the shell's `notify`. Never
@@ -109,8 +110,11 @@ export interface ProjectLimitHandle {
   state(): ProjectLimitState
   /** Ask the server for this device's allowance. Never rejects. */
   claim(): Promise<ClaimResult>
-  /** Re-send the state (a license or settings change can alter it with nothing here noticing). */
+  /** Re-send the state, unconditionally. */
   refresh(): void
+  /** Send the state only if it differs from the last one sent — what a license or settings change
+   *  calls (either can alter it with nothing here noticing, and settings change on every save). */
+  pushIfChanged(): void
 }
 
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v)
@@ -222,7 +226,8 @@ function state(): ProjectLimitState {
   return compute()
 }
 
-/** Send the state to this machine's windows, unconditionally (`refresh()`). */
+/** Send the state to this machine's windows, unconditionally (`refresh()`; also the boot-time
+ *  machine read landing, which can change what the windows were told at init). */
 function notify(): void {
   const s = state()
   lastSent = JSON.stringify(s)
@@ -372,7 +377,7 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   osMachine = null
   claimInFlight = null
   lastSent = JSON.stringify(compute())
-  const handle: ProjectLimitHandle = { state, claim, refresh: notify }
+  const handle: ProjectLimitHandle = { state, claim, refresh: notify, pushIfChanged }
   platform().handle(IPC.projectLimitState, () => handle.state())
   platform().handle(IPC.projectLimitClaim, () => handle.claim())
   onCheckAnswer(onAnswer)

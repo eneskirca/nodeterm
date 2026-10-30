@@ -41,9 +41,13 @@ describe('project-limit wiring (source)', () => {
     expect(main.match(/const bootWorkspaceLoad = /g)).toHaveLength(1)
   })
 
-  it('a license change and a settings change both re-send it', () => {
-    expect(main).toMatch(/initLicense\(\(\) => \{\s*watchLinks\?\.onEntitlementChanged\(\)\s*projectLimit\.refresh\(\)\s*\}\)/)
-    expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.refresh\(\)\)/)
+  it('a license change and a settings change both push it, only when it changed', () => {
+    // pushIfChanged, not refresh: settings change on every save, and the windows need only news.
+    expect(main).toMatch(
+      /initLicense\(\(\) => \{\s*watchLinks\?\.onEntitlementChanged\(\)\s*projectLimit\.pushIfChanged\(\)\s*\}\)/
+    )
+    expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.pushIfChanged\(\)\)/)
+    expect(main).not.toMatch(/projectLimit\.refresh\(\)/)
   })
 
   it('DO_NOT_TRACK consent is the Privacy setting, read live, and installed before the first license call', () => {
