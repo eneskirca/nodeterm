@@ -15,12 +15,26 @@ import type { Configuration } from 'electron-builder'
  *    integrity resource). An unpacked `resources/app/` beside it is never searched. Linux has no
  *    asar integrity support in Electron — accepted in §12, and §13 lists a patched Linux build as
  *    a known gap.
- *  - `enableNodeOptionsEnvironmentVariable: false` — `NODE_OPTIONS=--require x.js` (and
- *    `NODE_EXTRA_CA_CERTS`) are ignored. Nothing in the repo sets either for the app itself: its
- *    `NODE_OPTIONS` references are in `src/core/claude-accounts-core.ts`, which STRIPS it out of
- *    the env of agents we spawn — the opposite direction. The one thing given up: main-process
- *    `fetch` (license, check feed, claims) is Node's, not Chromium's, so a user who reached
- *    api.nodeterm.dev through a TLS-intercepting proxy via `NODE_EXTRA_CA_CERTS` no longer can.
+ *  - `enableNodeOptionsEnvironmentVariable: false` — Electron UNSETS `NODE_OPTIONS` and
+ *    `NODE_EXTRA_CA_CERTS` at process start, in GUI and in RunAsNode mode alike, so neither the
+ *    app nor ANY process it spawns sees them (measured: an `sh` child reads both as unset).
+ *    KEPT anyway: without it `NODE_OPTIONS=--require x.js` runs arbitrary code inside the main
+ *    process, measured against an unfused control below, and that bypasses the gate outright.
+ *    The cost, accepted and recorded with its mitigation decision in docs/project-limit.md:
+ *    - Main-process HTTPS is Node's `fetch` (no Electron `net` anywhere), so it loses a corporate
+ *      CA: `core/license.ts`, `check.ts`, `project-limit.ts` (claims), `main/telemetry.ts`,
+ *      `core/agent-env-ipc.ts` (gateway discovery), `core/usage/*`, `core/git-service.ts`,
+ *      `main/pairing-service.ts`, `main/remote/{host-service,standing-host}.ts`.
+ *    - Descendants lose both vars: the tmux server (from its next start), and with it every shell
+ *      and Node-based agent CLI in a terminal (claude, gemini, opencode, copilot), the
+ *      commit-message agent, and on Windows the session host and every ConPTY shell under it.
+ *    Affected: users whose LAUNCH env carries them (macOS `launchctl setenv` / MDM, Windows user
+ *    or system env vars, Linux environment.d or /etc/environment, or starting the app from a shell
+ *    that exports them). Not affected: users who only export them in a shell rc. A GUI-launched
+ *    app never had them, and every interactive shell re-applies them. Nothing in the repo sets
+ *    either for the app. `isReservedSpawnEnvKey` (`src/core/claude-accounts-core.ts`) is
+ *    unrelated: it refuses `NODE_OPTIONS` as a key in project spawn env and strips no inherited
+ *    value.
  *  - `enableNodeCliInspectArguments: false` — `--inspect*` and `SIGUSR1` no longer attach a
  *    debugger to the GUI main process. The repo's `--inspect` references are user run configs
  *    (`src/shared/run-config.ts`), passed to the user's own `node`, not to Electron.
