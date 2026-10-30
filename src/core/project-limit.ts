@@ -18,12 +18,12 @@
  * THE ALLOWANCE comes from a server-signed token, verified offline on every `state()`: signature
  * (the separate allowance key), `typ`, deviceId, epoch, and the MACHINE hash. The machine is judged
  * only against a hash that came from a SUCCESSFUL OS read (machine-id.ts `fromOs`), which `state()`
- * cannot wait for. So when a token is stored (never on a dormant install) init starts that read in
- * the background; until it lands, or if the OS read fails and only the hostname fallback is known,
- * the token is trusted provisionally on everything but the machine. A slow or failed boot-time read
- * must never drop a legacy user to FREE and push them into a claim (which could rebind their
- * allowance to the wrong hash). Once an OS hash is known the machine check applies. A successful
- * claim also caches the hash it sent, if that one came from the OS.
+ * cannot wait for. So when a token is stored (only after the limit was on; an undo via the check
+ * feed keeps it) init starts that read in the background; until it lands, or if the OS read fails
+ * and only the hostname fallback is known, the token is trusted provisionally on everything but the
+ * machine. A slow or failed boot-time read must never drop a legacy user to FREE and push them into
+ * a claim (which could rebind their allowance to the wrong hash). Once an OS hash is known the
+ * machine check applies. A successful claim also caches the hash it sent, if it came from the OS.
  *
  * CLAIMS are lazy and never reject: one request shared by concurrent callers, an 8 s timeout over
  * the whole request including the body, and every failure folded into a `ClaimError`. While the
@@ -363,7 +363,7 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   platform().handle(IPC.projectLimitClaim, () => handle.claim())
   onCheckAnswer(onAnswer)
 
-  // Only once a token is stored (post-flip): a dormant install never reads the machine id.
+  // Only with a stored token: the limit was on once (an undo via the check feed keeps the token).
   if (stored.token) {
     track(
       deps

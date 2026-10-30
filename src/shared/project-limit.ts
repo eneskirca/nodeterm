@@ -1,5 +1,5 @@
 /**
- * The free-tier open-project limit (docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md).
+ * The free-tier open-project limit (docs/project-limit.md).
  */
 
 /**

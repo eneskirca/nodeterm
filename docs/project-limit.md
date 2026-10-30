@@ -5,8 +5,8 @@ installs that existed before the switch-on keep the number they already worked w
 ships the whole mechanism **switched off** and the server turns it on: until the server sets a
 cutoff, no open path behaves differently from before this feature existed.
 
-Design (binding): [`docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md`](superpowers/specs/2026-10-29-free-tier-project-limit-design.md)
-(§n below refers to it). Implementation plan: `docs/superpowers/plans/2026-10-29-free-tier-project-limit.md`.
+The design record and the implementation plan are kept outside this repository; this page is the
+in-repo reference and states every rule a contributor or a release needs.
 
 Code: `src/shared/project-limit.ts` (the count, the decision, the deadline), `src/core/project-limit.ts`
 (on/off, the latch, the allowance, the claim), `src/core/license.ts` (clock anchor, Pro for the
@@ -16,7 +16,7 @@ limit, DO_NOT_TRACK consent), `src/core/machine-id.ts` + `src/core/project-allow
 `src/renderer/components/ProjectLimitDialog.tsx` (the limit moment). Server: nodeterm-server's
 `/v1/check`, `POST /v1/limits/claim` and the admin console's **Project limit** card.
 
-## Definitions (§3)
+## Definitions
 
 - **Open project**: a project in the workspace that is not `closed` and not a relay tab
   (`project.remote`). SSH projects, cwd-less canvases and unavailable placeholders count — each is
@@ -32,8 +32,16 @@ limit, DO_NOT_TRACK consent), `src/core/machine-id.ts` + `src/core/project-allow
   open is not an open. Creating a relay or team tab is never an open.
 - **Cutoff**: one server-side timestamp. It is both the legacy line (the open-project maximum a
   device reported *before* it is what grandfathers it) and the switch-on moment.
-- **Allowance**: how many open projects a non-Pro install may have. The server computes it at the
-  install's first claim (§4) and signs it into an allowance token.
+- **Allowance**: how many open projects a non-Pro install may have. The server computes it once
+  per epoch, at the install's first claim, and signs it into an allowance token:
+  - Pro (a valid entitlement): unlimited — decided on the client, no claim.
+  - Device first seen (by `/v1/check`) before the cutoff, with a reported maximum:
+    `max(FREE, min(maximum, CAP))`.
+  - Device first seen before the cutoff that never reported one (telemetry off, or an older build):
+    `max(FREE, min(firstLaunchOpenCount, CAP))` — the count at its first launch of a
+    limit-capable build (none sent counts as 0, i.e. FREE).
+  - Device first seen at or after the cutoff, or unknown to the server (never reached the check
+    feed — DO_NOT_TRACK, a very old build): FREE. No data is the most restrictive answer.
 - **FREE / CAP / epoch**: server values (admin card). FREE is the allowance of a new install (the
   client compiles `PROJECT_LIMIT_DEFAULT_FREE` only for before the server has said otherwise); CAP
   caps both client-reported legacy counts; the epoch is bumped to make every issued allowance be
@@ -48,15 +56,17 @@ gate. How that is held, layer by layer:
 - `gateProjectOpen()` returns the literal `true` in the same tick when `decideOpen` allows (no
   promise, no microtask), and an inactive state always allows. Each caller writes
   `if (g !== true && !(await g)) return`, so a dormant open never awaits.
-- Core's `claim()` returns `{ ok: true, state }` without a request and without reading the machine
-  id when the limit is off, whoever calls it.
-- The machine id is read only by a claim, or at boot when an allowance token is already stored —
-  never on a dormant install.
+- Core's `claim()` makes no request and reads no machine id while the limit is off, whoever calls
+  it: it answers `disabled` / `consent_required` when the license network gate refuses first, and
+  `{ ok: true, state }` otherwise.
+- The machine id is read only by a claim, or at boot when an allowance token is already stored.
+  An install the limit was never switched on for has no token, so it never reads it; one that was
+  switched off by an undo through the check feed keeps its token and still reads it at boot.
 - The only request a dormant install makes is `/v1/check`, the call it already made. Core also
   reads it at boot and every 6 h, through the same 5-minute cache and the same build /
-  DO_NOT_TRACK guards. Core records the first-launch count once (§6, by design);
-  `project-limit.json` is otherwise written only when a server word changes the stored state, not
-  on every check.
+  DO_NOT_TRACK guards. Core records the first-launch count once (the late-updater basis above, by
+  design); `project-limit.json` is otherwise written only when a server word changes the stored
+  state, not on every check.
 - The agent `open-project` verb asks synchronously too while the limit is off; the headless start
   of a node in a closed project unhides exactly as before.
 
@@ -79,9 +89,9 @@ active = packaged build AND (latched OR (anchor >= PROJECT_LIMIT_DEADLINE_MS AND
 - **The embedded deadline** (`PROJECT_LIMIT_DEADLINE_MS`) covers a client whose check never runs
   (DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`, a blocked host). Past it the client treats the limit
   as on, which in practice only means "claim before opening beyond FREE"; a `not_active` answer
-  turns it off again. It is compared against the **clock anchor** (`clockAnchorMs`: the later of the
-  wall clock and the latest instant this install has observed), so rolling the clock back does not
-  undo it.
+  turns it off again for 24 h (the next bullet), after which the next limit moment claims again. It
+  is compared against the **clock anchor** (`clockAnchorMs`: the later of the wall clock and the
+  latest instant this install has observed), so rolling the clock back does not undo it.
 - **A server "off"** (`offAt`) suppresses the deadline for `OFF_TRUST_MS` (24 h); a check that keeps
   answering off keeps refreshing it.
 - Changes are pushed to this machine's windows (`projectLimit:changed`) after every server word and
@@ -141,7 +151,7 @@ if (g !== true && !(await g)) return
 deletes or detaches a project, a node or a tmux session because of the limit — not at the limit,
 not above it.
 
-## The limit moment (§7)
+## The limit moment
 
 1. No token yet → claim. The "Checking your free allowance…" panel appears only if the claim is
    still in flight after 300 ms. If the claimed allowance permits the open, it proceeds with no
@@ -174,7 +184,8 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
 - `POST /v1/limits/claim` (only at the limit moment, only while active):
   `{ deviceId, machine, firstLaunchOpenCount }`. `machine` = lowercase hex SHA-256 of
   `'nodeterm-project-allowance-v1:' + rawMachineId.trim().toLowerCase()` (macOS `IOPlatformUUID`,
-  Linux `/etc/machine-id`, Windows `MachineGuid`; after two failed OS reads, the hostname). The raw id
+  Linux `/etc/machine-id`, then `/var/lib/dbus/machine-id`, Windows `MachineGuid`; after two failed
+  OS reads, `host:<hostname>`). The raw id
   never leaves `machine-id.ts`. Replies: `200 { token, free, epoch }`, `409 not_active`,
   `409 machine_mismatch` + `retryAfter` (unix seconds), `429` (10 per minute per address — retryable,
   never final). Claims time out after 8 s and never reject.
@@ -183,12 +194,12 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
   `PROJECT_ALLOWANCE_PRIVATE_KEY` — a key of its own, never the entitlement key (shipped clients do
   not check `typ` on an entitlement token, so one signed with that key would read as Pro).
 
-## Three surfaces (§10)
+## Three surfaces
 
 - **Desktop**: everything above.
 - **Server Edition**: no gate, no claim. The bridge stub answers `INACTIVE_PROJECT_LIMIT` and
   claims `disabled`; `src/server` never calls `initProjectLimit`. Running the Server Edition avoids
-  the limit — a documented gap (§13), enes's call.
+  the limit — an accepted gap (see below), enes's call.
 - **Mobile**: N/A — the phone opens no desktop projects. Relay tabs are excluded from the count, and
   `projectLimit:*` is host-only: a relay peer can neither call it nor receive `projectLimit:changed`
   (core sends it to this machine's windows only, never through `platform().broadcast`).
@@ -199,20 +210,34 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
 1. **Every release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS`** (`src/shared/project-limit.ts`)
    to a date past the planned flip. A deadline that passes before the flip gates DO_NOT_TRACK users
    before anyone else.
-2. **At the flip** (the release that precedes or accompanies it): set the deadline to the flip date
-   and `PROJECT_LIMIT_DEADLINE_FROZEN = true`. From then on the deadline is the flip date for good.
-3. Keep both constants in their literal one-line form —
+2. **At the flip**: set the deadline to the flip date and `PROJECT_LIMIT_DEADLINE_FROZEN = true`, in
+   the release that accompanies the flip or the first one after it. From then on the deadline is the
+   flip date for good.
+   - **Freezing switches the guard off, so nothing catches a slipped flip.** If a release freezes
+     the deadline and the flip then slips past that date, every install on it whose check feed does
+     not run (DO_NOT_TRACK, `NODETERM_TELEMETRY_DISABLED`, a blocked host) is gated from the frozen
+     date while the server still answers "not active": with consent it claims at FREE, is turned off
+     for 24 h, and claims again at its next limit moment after that; without consent it sits at FREE
+     behind the consent dialog. The recovery is a release that sets `FROZEN = false` and bumps the
+     deadline past the new plan — ship it before the frozen date passes.
+   - Freezing in the first release *after* the flip removes the hazard. Its cost: DO_NOT_TRACK
+     installs on the release before it stay ungated until that release's own deadline passes.
+3. **After an undo**, unfreeze: a release with `FROZEN = false` and a deadline past the new plan
+   (see Undo below — without it, DO_NOT_TRACK installs stay gated).
+4. Keep both constants in their literal one-line form —
    `export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')` and
    `export const PROJECT_LIMIT_DEADLINE_FROZEN = true | false` — because the guard reads the source.
 
-**The guard**: `scripts/check-project-limit-deadline.mjs` is the first step of the `release-mac` job
-in `.github/workflows/release.yml` (after checkout, before `npm ci`; plain node). It exits 1 when the
-deadline is less than 30 days away and not frozen, or when it cannot read the constants. A refused
-release fails that job, and `publish` (which needs it) never promotes the tag. The Linux and Windows
-jobs run in parallel and may still upload their assets to the tag's **prerelease**; it never becomes
-"latest". Bump the deadline, then delete that prerelease and re-tag, or tag the next version.
+**The guard**: `scripts/check-project-limit-deadline.mjs` is the first step that runs in each build
+job of `.github/workflows/release.yml` — `release-mac`, `release-linux` and `release-win` — right
+after checkout and setup-node, before `npm ci` (plain node). It exits 1 when the deadline is less
+than 30 days away and not frozen, or when it cannot read the constants. The three jobs run in
+parallel and each creates the release on its first upload, so a refused tag fails all three before
+anything is built or uploaded: no release, not even a prerelease, and `publish` never runs. Bump the
+deadline, then move the tag to that commit (or tag the next version) and rerun.
 `scripts/check-project-limit-deadline.test.ts` pins the guard's reading to the compiled constants,
-so a change of literal form fails on the PR, not on release day.
+so a change of literal form fails on the PR, not on release day, and pins the step's place in all
+three jobs. It never guards a frozen deadline — that is item 2's hazard.
 
 ## Before Release B ships — owner decisions
 
@@ -236,7 +261,7 @@ sends `limits`, whatever the cutoff says.
 ### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before Release B)
 
 The hardening fuse `enableNodeOptionsEnvironmentVariable: false` (`package.json`
-`build.electronFuses`, spec §12) makes Electron **unset** `NODE_OPTIONS` **and**
+`build.electronFuses`, the Release B hardening) makes Electron **unset** `NODE_OPTIONS` **and**
 `NODE_EXTRA_CA_CERTS` at process start, in GUI and RunAsNode mode alike (measured on Electron
 42.11.16). Consequences:
 
@@ -281,8 +306,10 @@ The decision is enes's. Device check 10 below gathers the evidence.
   client. Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release
   workflow refuses otherwise).
 - **O4 — flip day:**
-  1. In the release that precedes or accompanies the flip, set `PROJECT_LIMIT_DEADLINE_FROZEN = true`
-     and the deadline to the flip date.
+  1. In the release that accompanies the flip (or the first one after it), set
+     `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
+     a deadline a shipped release has already frozen, nothing warns you: ship a release that sets
+     `FROZEN = false` and bumps the deadline before that date passes (Release checklist, item 2).
   2. Set the cutoff in the admin console's Project limit card (an ISO instant with an offset).
   3. Same day on nodeterm-web: add a **Plans** section (the site has no pricing page today) —
      Core: `Up to 5 open projects (existing installs keep their current count)`; Pro `$10/mo`:
@@ -293,22 +320,39 @@ The decision is enes's. Device check 10 below gathers the evidence.
      - (a) The stored open-project maximum is **also used to compute an existing installation's
        free-project allowance** — added before any allowance is computed.
      - (b) The maximum used is the one **reported before the cutoff**.
-     - (c) The machine hash (spec §6): when an install reaches the free-project limit and asks for
-       its allowance, nodeterm sends a one-way, salted hash of the computer's hardware id (macOS
-       `IOPlatformUUID`, Linux `/etc/machine-id`, Windows `MachineGuid`) with its anonymous install
-       id, so the allowance stays with one computer. The raw id never leaves the machine; installs
-       that never reach the limit never send it.
+     - (c) The machine hash: when an install reaches the free-project limit and asks for its
+       allowance, nodeterm sends a one-way, salted hash of the computer's hardware id (macOS
+       `IOPlatformUUID`, Linux `/etc/machine-id` or `/var/lib/dbus/machine-id`, Windows
+       `MachineGuid`) with its anonymous install id, so the allowance stays with one computer. The
+       raw id never leaves the machine; installs that never reach the limit never send it.
      - (d) Deleting the per-installation check record also deletes the basis for a grandfathered
        allowance.
      - The DO_NOT_TRACK consent: under DO_NOT_TRACK nothing license-related is sent until the user
        allows it in the limit dialog or Settings → Privacy; that consent covers license and
        allowance checks only, never telemetry or the check feed, and can be revoked there.
-- **Undo:** clear the cutoff. Clients turn the limit off on their next successful check; DO_NOT_TRACK
-  clients (no check feed) on their next claim (`not_active`). Nothing was ever closed, so there is
-  nothing to restore. To re-flip at a new cutoff, **bump the epoch in the same save** (the admin
-  card's "Bump epoch" box), so allowances issued under the old cutoff are recomputed.
+- **Undo** — what each install does, as the code behaves:
+  1. Clear the cutoff in the admin card. From then on `/v1/check` sends no `limits` and every claim
+     answers `not_active`.
+  2. **Installs with a working check feed** turn the limit off on their next successful check (at
+     most 6 h away) and stay off while checks keep arriving, each one renewing the 24-hour "off".
+     After the flip the frozen deadline is in the past, so an install that hears nothing for 24 h
+     (offline, a blocked host) is back on until a check or claim answers again. At the limit it then
+     uses its stored allowance token offline (an undo through the check feed keeps it); without one,
+     its claim fails and it is held at FREE behind "Couldn't check".
+  3. **DO_NOT_TRACK installs with consent** (no check feed) claim at their next limit moment;
+     `not_active` turns them off for 24 h, and then the past deadline re-arms them. So every time
+     one reaches FREE more than 24 h after its last claim it claims again — offline, that claim
+     fails and it is held at FREE behind "Couldn't check".
+  4. **DO_NOT_TRACK installs without consent** never claim (the license network gate refuses before
+     any request): they stay at FREE behind the consent dialog until the user consents.
+  5. **So a complete undo also ships a release** with `PROJECT_LIMIT_DEADLINE_FROZEN = false` and the
+     deadline bumped past the new plan; the guard applies again from then on. Installs that do not
+     update keep the behaviour in 2–4.
+  6. Nothing was ever closed, so there is nothing to restore. To re-flip at a new cutoff, **bump the
+     epoch in the same save** (the admin card's "Bump epoch" box), so allowances issued under the old
+     cutoff are recomputed.
 
-## Accepted gaps (§13, and what the build added)
+## Accepted gaps (by design, and found while building)
 
 1. Builds released before Release B stay unlimited forever.
 2. The Server Edition is unlimited.
@@ -358,7 +402,9 @@ claim's token fails verification and reads as "Couldn't check your free allowanc
    a project icon upload works (sharp).
 2. macOS and Windows: a deliberately modified `app.asar` refuses to start; `NODE_OPTIONS=--require
    x.js` and `--inspect` are ignored by the GUI app (measured on Linux only).
-3. Windows (NSIS build): asar integrity on; the session host starts — from the staged runtime
+3. Windows (NSIS build): asar integrity on; terminals open (node-pty), dictation loads a model
+   (smart-whisper) and a project icon upload works (sharp) — all three load from
+   `app.asar.unpacked`; the session host starts — from the staged runtime
    (`nodeterm-sessionhost-v2.exe`, whose runtime smoke exits 42) and from the hard-link fallback
    `nodeterm-session-host.exe` — and a terminal survives an app restart (RunAsNode).
 4. macOS and Windows: the codex relay daemon starts and answers `/ping` (RunAsNode running a script
@@ -378,7 +424,8 @@ claim's token fails verification and reads as "Couldn't check your free allowanc
    `/v1/check` (no claim).
 9. DO_NOT_TRACK after the deadline (a test build with a past `PROJECT_LIMIT_DEADLINE_MS`, never a
    release): with no consent the limit moment shows "Connection needed"; with consent a claim runs,
-   answers `not_active`, and the gate clears.
+   answers `not_active`, and the gate clears (for 24 h; the next limit moment after that claims
+   again).
 10. Corporate CA (evidence for the NODE_EXTRA_CA_CERTS decision): with `NODE_EXTRA_CA_CERTS` set via
     `launchctl setenv` (macOS) / a user environment variable (Windows) and the staging server behind
     a CA only that file trusts, record what breaks: license status, a claim, `/v1/check`, and a
@@ -393,5 +440,7 @@ claim's token fails verification and reads as "Couldn't check your free allowanc
     row shows the consent and revoking it works.
 14. Machine move: copy userData to a second machine → its first claim rebinds; a third machine is
     told the date the allowance can move.
-15. Undo: clear the cutoff → the next check removes the gate; a DO_NOT_TRACK client clears on its
-    next claim.
+15. Undo: clear the cutoff → the next check removes the gate; a DO_NOT_TRACK client with consent
+    clears on its next claim and, after 24 h, claims again at its next limit moment; one without
+    consent stays behind the consent dialog. Then a test build with `FROZEN = false` and a future
+    deadline clears both for good.

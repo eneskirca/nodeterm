@@ -33,8 +33,10 @@ jobs:
       # The free-tier project limit's embedded deadline (PROJECT_LIMIT_DEADLINE_MS) must be bumped
       # in every release before the flip, or DO_NOT_TRACK users are gated before anyone else. This
       # refuses a tag whose deadline is under 30 days away (until it is frozen at the flip). Plain
-      # node, no npm ci, so a refused release fails in seconds. A failure here keeps `publish` (which
-      # needs this job) from promoting the tag. See docs/project-limit.md.
+      # node, no npm ci, so a refused release fails in seconds. It is the FIRST step that runs in
+      # every build job (mac, linux, win): those jobs do not wait for each other and each creates
+      # the release on its first upload, so a refused tag must stop all three before they build.
+      # See docs/project-limit.md.
       - name: Project-limit deadline guard
         run: node scripts/check-project-limit-deadline.mjs
 
@@ -174,6 +176,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Same guard as release-mac (see the comment there): first, so a refused tag uploads nothing.
+      - name: Project-limit deadline guard
+        run: node scripts/check-project-limit-deadline.mjs
+
       # electron-builder ships its own fpm, but the rpm target shells out to the system
       # rpmbuild ("Need executable 'rpmbuild' to convert dir to rpm"). Installed explicitly
       # rather than relying on whatever the runner image happens to carry.
@@ -228,6 +234,10 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+
+      # Same guard as release-mac (see the comment there): first, so a refused tag uploads nothing.
+      - name: Project-limit deadline guard
+        run: node scripts/check-project-limit-deadline.mjs
 
       # postinstall patches node-pty and rebuilds node-pty + smart-whisper against Electron's
       # ABI — the same install win-package-smoke.yml and the quality-windows CI job prove green.

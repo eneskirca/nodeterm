@@ -73,7 +73,18 @@ function fail(message) {
   process.exit(1)
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run only as a script — compared through realpaths. Node resolves the main module through
+// symlinks (on macOS /var is /private/var, which can put a whole checkout behind one), and a
+// path-string compare then read "not main" and exited 0 without checking anything.
+const isMain = (() => {
+  try {
+    return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+})()
+
+if (isMain) {
   const file =
     process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', SOURCE)
   let source

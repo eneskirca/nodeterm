@@ -122,12 +122,31 @@ describe('the CLI the release workflow runs', () => {
     expect(run(source('2026-01-01T00:00:00Z', true)).status).toBe(0)
   })
 
-  it('is the workflow step, after checkout and before npm ci, in the first build job', () => {
+  // Skipped on Windows: creating a symlink there needs a privilege CI runners do not grant.
+  it.skipIf(process.platform === 'win32')('still runs when invoked through a symlinked path', () => {
+    // Node resolves the main module through symlinks (macOS's /var → /private/var does it to a whole
+    // checkout), so a path-string entrypoint check read "not main" there and exited 0, checking nothing.
+    const dir = testTmpDir('nt-limit-deadline-')
+    const link = path.join(dir, 'guard.mjs')
+    fs.symlinkSync(SCRIPT, link)
+    const garbage = path.join(dir, 'project-limit.ts')
+    fs.writeFileSync(garbage, 'not the file')
+    const r = spawnSync(process.execPath, [link, garbage], { encoding: 'utf8' })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('could not read PROJECT_LIMIT_DEADLINE_MS')
+  })
+
+  it('is the first step that runs anything in every build job, right after checkout', () => {
+    // First in all three: a refused tag must build and upload nothing anywhere — the Linux and
+    // Windows jobs do not wait for the mac one, and each creates the release on its first upload.
     const wf = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/release.yml'), 'utf8')
-    const job = wf.slice(wf.indexOf('release-mac:'), wf.indexOf('release-linux:'))
-    const guard = job.indexOf('run: node scripts/check-project-limit-deadline.mjs')
-    expect(guard, 'release-mac runs the deadline guard').toBeGreaterThan(-1)
-    expect(guard).toBeGreaterThan(job.indexOf('uses: actions/checkout@'))
-    expect(guard).toBeLessThan(job.indexOf('run: caffeinate -dims npm ci'))
+    const jobs = ['release-mac', 'release-linux', 'release-win', 'publish']
+    for (let i = 0; i < 3; i++) {
+      const job = wf.slice(wf.indexOf(`\n  ${jobs[i]}:\n`), wf.indexOf(`\n  ${jobs[i + 1]}:\n`))
+      const guard = job.indexOf('run: node scripts/check-project-limit-deadline.mjs')
+      expect(guard, `${jobs[i]} runs the deadline guard`).toBeGreaterThan(-1)
+      expect(guard, `${jobs[i]}: after checkout`).toBeGreaterThan(job.indexOf('uses: actions/checkout@'))
+      expect(job.indexOf('run:'), `${jobs[i]}: no step runs before the guard`).toBe(guard)
+    }
   })
 })

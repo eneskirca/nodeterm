@@ -112,7 +112,7 @@ export function unhidesForHeadlessStart(
 
 /**
  * `unhidesForHeadlessStart`, under the free-tier project limit
- * (docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md). Restoring a closed tab
+ * (docs/project-limit.md). Restoring a closed tab
  * makes a project open, so at the limit the tab simply stays in Recently closed: the session still
  * starts, nothing is refused and no dialog is shown (nobody pressed anything), and the reply keeps
  * its "reopen it from the welcome screen" hint — exactly the branch where the predicate says no.

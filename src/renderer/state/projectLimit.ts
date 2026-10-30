@@ -3,7 +3,7 @@ import { INACTIVE_PROJECT_LIMIT, type ProjectLimitState } from '@shared/project-
 
 /**
  * The renderer's copy of the free-tier open-project limit state (core/project-limit.ts computes it;
- * docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md). Core is the authority: this
+ * docs/project-limit.md). Core is the authority: this
  * store only mirrors it — the boot read (`hydrate`) and every `projectLimit:changed` push replace
  * `state` wholesale. It starts, and stays on any failed read, at `INACTIVE_PROJECT_LIMIT`: the
  * dormant answer, under which every open behaves exactly as before the limit existed.
