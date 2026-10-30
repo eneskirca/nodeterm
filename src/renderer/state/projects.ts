@@ -492,6 +492,13 @@ export function sameSshEndpoint(a: NonNullable<Project['ssh']>, b: NonNullable<P
   )
 }
 
+/** The cwd `registerProject` dedupes by: trailing slashes stripped, so `/a/b/` and `/a/b` cannot
+ *  mint two tabs for one directory. Root stays '/': stripping it to '' would match every cwd-less
+ *  project. Exported so anything predicting registerProject's match uses this rule, not a copy. */
+export function registeredCwd(resolvedCwd: string): string {
+  return resolvedCwd.length > 1 ? resolvedCwd.replace(/\/+$/, '') : resolvedCwd
+}
+
 export const useProjects = create<ProjectsState>((set, get) => ({
   projects: [],
   activeProjectId: '',
@@ -1107,9 +1114,8 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   registerProject({ resolvedCwd, name, color, probed }) {
     // The same exact-match rule as `openFolderProject` (a folder maps to one project), with the
-    // trailing slash stripped so `/a/b/` and `/a/b` cannot mint two tabs for one directory.
-    // Root stays '/': stripping it to '' would match every cwd-less project.
-    const cwd = resolvedCwd.length > 1 ? resolvedCwd.replace(/\/+$/, '') : resolvedCwd
+    // trailing slash stripped (`registeredCwd`).
+    const cwd = registeredCwd(resolvedCwd)
     const existing = get().projects.find((p) => p.cwd === cwd)
     if (existing) {
       if (existing.closed) {

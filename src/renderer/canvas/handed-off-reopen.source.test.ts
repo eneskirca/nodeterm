@@ -25,10 +25,28 @@ describe('handed-off reopen guard in Canvas', () => {
     expect(ask).toContain('handedOffWarning(project, label)')
     expect(ask).toContain("confirmLabel: 'Open here anyway'")
     expect(ask).toContain('danger: true')
-    expect(ask).toMatch(/if \(ok\) \{\s+useProjects\.getState\(\)\.setHandedOffTo\(id, undefined\)/)
+    // The take-back is HANDED BACK, not run: a project-limit gate after the question may still
+    // decline the open, and a declined open must leave the mark in place.
+    expect(ask).toMatch(/if \(ok\) \{\s+return \(\) => \{\s+useProjects\.getState\(\)\.setHandedOffTo\(id, undefined\)/)
     // …and its agent nodes skip their next automatic resume (the team's server runs those
     // conversations): the decision is proven in terminal/handed-off-resume.test.ts.
     expect(ask).toMatch(/if \(ok\) \{[\s\S]*?skipNextColdResumeFor\(useProjects\.getState\(\)\.getProject\(id\)\?\.nodes \?\? \[\]\)/)
+    expect(ask.match(/setHandedOffTo\(/g)).toHaveLength(1)
+    // Every caller runs the take-back only once the project-limit gate has let the open through.
+    for (const [decl, gate] of [
+      ['const reopenProject = useCallback(', "{ kind: 'reopen', id }"],
+      ['const createSshProject = useCallback(', "{ kind: 'ssh', ssh }"],
+      ['const openOrAdoptFolder = useCallback(', "{ kind: 'folder', folder }"]
+    ]) {
+      const body = between(decl, CALLBACK_END)
+      const asked = body.indexOf('confirmHandedOffReopen(')
+      const gated = body.indexOf(`opensProject(useProjects.getState().projects, ${gate}) ? gateProjectOpen() : true`, asked)
+      expect(asked, decl).toBeGreaterThan(-1)
+      expect(gated, decl).toBeGreaterThan(asked)
+      const takeBackCall = /takeBack(\?\.)?\(\)/
+      expect(body.slice(0, gated).search(takeBackCall), decl).toBe(-1)
+      expect(body.slice(gated).search(takeBackCall), decl).toBeGreaterThan(-1)
+    }
     // The team label is display only: its lookup fails open to null.
     expect(ask).toMatch(/try \{\n\s+const list = await window\.nodeTerminal\.relayHosted\?\.bookmarks\(\)/)
   })

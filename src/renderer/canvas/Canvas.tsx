@@ -288,6 +288,8 @@ import { SAS_COMPARE_HINT } from '@shared/remote/sas'
 import { promptDialog } from '../components/promptDialog'
 import { UpgradeDialog } from '../components/UpgradeDialog'
 import { ProjectLimitDialog } from '../components/ProjectLimitDialog'
+import { gateProjectOpen } from '../lib/projectLimitGate'
+import { opensProject, type OpenAction } from '../lib/projectOpens'
 import { LiveLinkDialog } from '../components/LiveLinkDialog'
 import { requireProOr } from '../state/upgradeGate'
 import { startWatchLinkSync, useWatchLinks } from '../state/watchLinks'
@@ -6382,6 +6384,11 @@ export function Canvas() {
       // tab at all (plus an unhandled rejection) where the old code always created one. A failed
       // probe simply means "we learned nothing about this folder" → the virgin-folder path.
       const probed = await api.workspace.probeFolder(clonedPath).catch(() => null)
+      // The project limit (lib/projectLimitGate.ts) is the LAST await before the store write, so two
+      // opens at the edge cannot both pass on one count. Declined, the clone stays on disk with no
+      // tab: the user chose Cancel.
+      const g = opensProject(useProjects.getState().projects, { kind: 'new' }) ? gateProjectOpen() : true
+      if (g !== true && !(await g)) return
       const project = probed
         ? useProjects.getState().adoptProject({ ...probed, closed: false })
         : useProjects.getState().addProject(name, clonedPath)
@@ -10209,14 +10216,16 @@ export function Canvas() {
   )
 
   /** Ask before opening a project this desktop handed to a hosted team: the server's core writes
-   *  that canvas now, and opening it here too makes a second writer that overwrites it. True = go
-   *  ahead, and going ahead takes the project back — the mark is cleared, so this desktop saves and
-   *  mirrors it again (the caller saves), and its agent nodes skip their next automatic resume. A
-   *  project that was never handed off answers true. */
+   *  that canvas now, and opening it here too makes a second writer that overwrites it. Null = do
+   *  not open. Otherwise go ahead, calling the returned take-back immediately before the open:
+   *  going ahead takes the project back — the mark is cleared, so this desktop saves and mirrors it
+   *  again (the caller saves), and its agent nodes skip their next automatic resume. It is handed
+   *  back rather than run here so a project-limit gate that declines after this question leaves
+   *  the mark in place. A project that was never handed off answers a take-back that does nothing. */
   const confirmHandedOffReopen = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string): Promise<(() => void) | null> => {
       const marked = useProjects.getState().getProject(id)?.handedOffTo
-      if (!marked) return true
+      if (!marked) return () => {}
       const hostId = marked.hostId
       // The team's name from this device's bookmark of it. Only a label, so every failure (no
       // relay on this surface, an IPC error, no bookmark for that team) falls back to null.
@@ -10231,14 +10240,14 @@ export function Canvas() {
       }
       // Read again after the lookup: the project may have been deleted or taken back meanwhile.
       const project = useProjects.getState().getProject(id)
-      if (!project) return false
+      if (!project) return null
       const message = handedOffWarning(project, label)
-      if (!message) return true
+      if (!message) return () => {}
       // One actionable dialog at a time (`confirmFlags`): replacing an open one would drop its
       // answer. Say why nothing opened rather than doing nothing.
       if (confirmBusy()) {
         setNotice({ kind: 'error', text: `Answer the open dialog first, then open ${project.name} again.` })
-        return false
+        return null
       }
       const ok = await new Promise<boolean>((resolve) =>
         setConfirm({
@@ -10254,27 +10263,41 @@ export function Canvas() {
         })
       )
       if (ok) {
-        useProjects.getState().setHandedOffTo(id, undefined)
-        // Its agents would resume the conversations the team's server is running: each one skips
-        // its automatic cold-resume once, and says why (terminal/handed-off-resume.ts).
-        skipNextColdResumeFor(useProjects.getState().getProject(id)?.nodes ?? [])
+        return () => {
+          useProjects.getState().setHandedOffTo(id, undefined)
+          // Its agents would resume the conversations the team's server is running: each one skips
+          // its automatic cold-resume once, and says why (terminal/handed-off-resume.ts).
+          skipNextColdResumeFor(useProjects.getState().getProject(id)?.nodes ?? [])
+        }
       }
-      return ok
+      return null
     },
     [confirmBusy, setConfirm]
   )
 
   /** The reopen every human path uses (Welcome's and the sidebar's "Recently closed", ⇧⌘T, ⌘K,
    *  travel, "Open recent", Set folder…). A handed-off project asks first; any other reopens at
-   *  once, synchronously, exactly as before the question existed. Resolves false when the user
-   *  declined or the reopen was refused (a team tab), so a caller that staged follow-up work (a
-   *  focus, a resume) can drop it. */
+   *  once, synchronously, exactly as before the question existed — unless the project limit has to
+   *  decide (lib/projectLimitGate.ts: synchronous whenever it allows). Resolves false when the
+   *  user declined (either question) or the reopen was refused (a team tab), so a caller that
+   *  staged follow-up work (a focus, a resume) can drop it. The gate is the last await before
+   *  `reopenProjectUnchecked`, so two reopens at the edge cannot both pass on one count. */
   const reopenProject = useCallback(
     (id: string): Promise<boolean> => {
       if (!useProjects.getState().getProject(id)?.handedOffTo) {
-        return Promise.resolve(reopenProjectUnchecked(id))
+        const g = opensProject(useProjects.getState().projects, { kind: 'reopen', id }) ? gateProjectOpen() : true
+        if (g === true) return Promise.resolve(reopenProjectUnchecked(id))
+        return g.then((ok) => ok && reopenProjectUnchecked(id))
       }
-      return confirmHandedOffReopen(id).then((ok) => ok && reopenProjectUnchecked(id))
+      return confirmHandedOffReopen(id).then((takeBack) => {
+        if (!takeBack) return false
+        const g = opensProject(useProjects.getState().projects, { kind: 'reopen', id }) ? gateProjectOpen() : true
+        const open = (): boolean => {
+          takeBack()
+          return reopenProjectUnchecked(id)
+        }
+        return g === true ? open() : g.then((ok) => ok && open())
+      })
     },
     [confirmHandedOffReopen, reopenProjectUnchecked]
   )
@@ -17780,7 +17803,12 @@ export function Canvas() {
         const existing = useProjects
           .getState()
           .projects.find((p) => !!p.ssh && sameSshEndpoint(p.ssh, ssh))
-        if (existing?.handedOffTo && !(await confirmHandedOffReopen(existing.id))) return
+        const takeBack = existing?.handedOffTo ? await confirmHandedOffReopen(existing.id) : undefined
+        if (takeBack === null) return
+        // The project limit is the LAST await before the store write (lib/projectLimitGate.ts).
+        const g = opensProject(useProjects.getState().projects, { kind: 'ssh', ssh }) ? gateProjectOpen() : true
+        if (g !== true && !(await g)) return
+        takeBack?.()
         commitActiveToStore()
         useProjects.getState().openSshProject(input.label, ssh)
         // Same contract as onRepoCloned: the welcome screen waits behind the SSH dialog and
@@ -17792,7 +17820,11 @@ export function Canvas() {
     [commitActiveToStore, writeDisk, confirmHandedOffReopen]
   )
 
-  const addProject = useCallback(() => {
+  // Synchronous end to end while the project limit allows (its gate answers `true` in the same
+  // tick); otherwise it waits for the limit dialog and opens only if that makes room.
+  const addProject = useCallback(async (): Promise<void> => {
+    const g = opensProject(useProjects.getState().projects, { kind: 'new' }) ? gateProjectOpen() : true
+    if (g !== true && !(await g)) return
     commitActiveToStore()
     const project = useProjects.getState().addProject()
     useProjects.getState().setActive(project.id)
@@ -17803,9 +17835,10 @@ export function Canvas() {
    *  dialog and the drag-and-drop entry point: a folder maps to one project, and this is the
    *  ONE place that decides whether to reuse/reopen an already-registered project, adopt an
    *  existing `.nodeterm/project.json` (git clone, synced copy, another machine's project), or
-   *  create a brand-new one. */
+   *  create a brand-new one. Resolves false only when the project limit declined the open (the
+   *  user cancelled its dialog): nothing was opened, and the caller should say nothing either. */
   const openOrAdoptFolder = useCallback(
-    async (folder: string): Promise<void> => {
+    async (folder: string): Promise<boolean> => {
       commitActiveToStore()
       // A folder maps to one project: reuse the already-registered one first…
       // A relay tab carries the HOST's cwd: the same path on two machines must not route a local
@@ -17814,7 +17847,12 @@ export function Canvas() {
       if (existing) {
         // That reuse reopens the project, so one handed to a hosted team (an SSH project can carry
         // a local folder too, via "Set folder…") asks first, like every other reopen.
-        if (existing.handedOffTo && !(await confirmHandedOffReopen(existing.id))) return
+        const takeBack = existing.handedOffTo ? await confirmHandedOffReopen(existing.id) : undefined
+        if (takeBack === null) return true
+        // The project limit is the LAST await before the store write (lib/projectLimitGate.ts).
+        const g = opensProject(useProjects.getState().projects, { kind: 'folder', folder }) ? gateProjectOpen() : true
+        if (g !== true && !(await g)) return false
+        takeBack?.()
         useProjects.getState().openFolderProject(folder)
         // An `unavailable` placeholder never recovers on its own: a save emits a header-only ref
         // for it (never a file), so a deleted project.json stays deleted and every later load
@@ -17834,21 +17872,26 @@ export function Canvas() {
         // …else adopt the folder's own .nodeterm/project.json (git clone, synced copy,
         // another machine's project) — only a virgin folder gets a brand-new project.
         const probed = await api.workspace.probeFolder(folder)
+        // Adopting always appends a project; openFolderProject may still find one opened meanwhile.
+        const action: OpenAction = probed ? { kind: 'new' } : { kind: 'folder', folder }
+        const g = opensProject(useProjects.getState().projects, action) ? gateProjectOpen() : true
+        if (g !== true && !(await g)) return false
         if (probed) useProjects.getState().adoptProject({ ...probed, closed: false })
         else useProjects.getState().openFolderProject(folder)
       }
       void writeDisk()
+      return true
     },
     [commitActiveToStore, writeDisk, confirmHandedOffReopen]
   )
 
-  /** Returns true when a folder was picked (false on cancel), so callers like the welcome
-   *  screen can keep their overlay up until the picker actually resolves. */
+  /** Returns true when a folder was picked (false on cancel, of the picker or of the project
+   *  limit's dialog), so callers like the welcome screen can keep their overlay up until the
+   *  picker actually resolves. */
   const addProjectFromFolder = useCallback(async (): Promise<boolean> => {
     const folder = await window.nodeTerminal.dialog.selectFolder()
     if (!folder) return false
-    await openOrAdoptFolder(folder)
-    return true
+    return await openOrAdoptFolder(folder)
   }, [openOrAdoptFolder])
 
   // Drop a folder anywhere in the app (canvas background, Welcome screen, general chrome) → open
@@ -17874,9 +17917,10 @@ export function Canvas() {
         .filter((p): p is string => !!p)
       // Sequential, not Promise.all: each folder's commitActiveToStore/writeDisk must not race
       // the next folder's. The last resolved folder ends up active (openFolderProject's existing
-      // single-folder activation semantics).
+      // single-folder activation semantics). A declined open (the project limit's dialog
+      // cancelled) ends the batch: the rest would only raise that dialog again, once per folder.
       void (async () => {
-        for (const folder of paths) await openOrAdoptFolder(folder)
+        for (const folder of paths) if (!(await openOrAdoptFolder(folder))) break
       })()
     }
     window.addEventListener('dragover', onDragOver)
@@ -18484,7 +18528,8 @@ export function Canvas() {
           return
         case 'open-folder':
           void openOrAdoptFolder(plan.folder)
-            .then(() => {
+            .then((opened) => {
+              if (!opened) return // the project limit's dialog was cancelled: nothing to resume
               setWelcomeOpen(false)
               const landed = useProjects
                 .getState()
@@ -18553,7 +18598,8 @@ export function Canvas() {
       let projectId = accepted.projectId
       if (accepted.newProjectCwd) {
         const folder = comparablePath(accepted.newProjectCwd)
-        await openOrAdoptFolder(accepted.newProjectCwd)
+        // Declined at the project limit (its dialog cancelled): the user already chose; say nothing.
+        if (!(await openOrAdoptFolder(accepted.newProjectCwd))) return
         projectId = useProjects
           .getState()
           .projects.find((p) => !p.ssh && !p.remote && p.cwd && comparablePath(p.cwd) === folder)?.id
@@ -19203,7 +19249,7 @@ export function Canvas() {
         icon: <IconGroup />,
         run: () => setSpawnTeamDialog({})
       },
-      { id: 'new-project', label: 'New project', icon: <IconProject />, run: () => addProject() },
+      { id: 'new-project', label: 'New project', icon: <IconProject />, run: () => void addProject() },
       { id: 'clone-repo', label: 'Clone repository…', icon: <IconProject />, run: () => setCloneDialogOpen(true) },
       {
         id: 'new-remote',
@@ -20161,7 +20207,7 @@ export function Canvas() {
           <WelcomeScreen
             onNewProject={() => {
               setWelcomeOpen(false)
-              addProject()
+              void addProject()
             }}
             onOpenFolder={() => {
               // Keep the welcome screen up behind the native picker; dismiss it only once a
