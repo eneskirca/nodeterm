@@ -28,8 +28,9 @@ into Internal changes, not counted. It exists for work that ships switched off a
 announced until it is switched on; ordinary internal work stays in the collapsed section. The
 generator looks the labelled PRs up on every run (`EXCLUDE_LABEL` in `scripts/release-notes.mjs`),
 and a failed lookup fails the generator rather than publishing notes that ignored the label. That
-failure, like any other, falls back to the plain `git log` list (see Failure), which knows nothing
-about labels — check the notes by hand if the job log shows that warning.
+failure, like any other, takes the fallback (see Failure), and the fallback's commit list knows
+nothing about labels — so it is withheld, and the notes are the compare link alone, whenever a
+labelled PR was merged in the range or the lookup does not answer there either.
 
 ## Layer 2 — Highlights (optional, written by hand)
 
@@ -71,8 +72,10 @@ other change, or do not write it.
 ## Failure
 
 Any failure in the generator — `gh api` down, a body shape it cannot parse, no `node` on the runner
-— falls back to exactly the plain `git log` list releases used to publish, with a `::warning::` in
-the job log. **A release that cannot publish because prose generation broke would be strictly worse
+— falls back to the plain `git log` list releases used to publish, with a `::warning::` in the job
+log. The one exception is the label: when a `no-release-notes` PR was merged in the range, or the
+label lookup does not answer, the fallback publishes only the compare link, because commit subjects
+would announce exactly what the label keeps out. **A release that cannot publish because prose generation broke would be strictly worse
 than the list this replaces.**
 
 ## Testing it by hand
