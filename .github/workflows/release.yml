@@ -297,6 +297,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [release-mac, release-linux]
+    # A job-level block replaces the workflow's, so contents: write is restated. issues: read lets
+    # the release-notes generator look up the PRs labelled `no-release-notes` (labels live on the
+    # issues API); without it that lookup fails and the notes fall back to the plain commit list.
+    permissions:
+      contents: write
+      issues: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -308,7 +314,8 @@ jobs:
       #   Layer 1  scripts/release-notes.mjs asks GitHub's own generator for the PR-resolved
       #            list (PR number, PR title, author) and regroups it into New / Improved /
       #            Fixed, with test/refactor/chore/ci/build collapsed at the bottom — kept, not
-      #            deleted. Every entry links its PR, and any issue its title names.
+      #            deleted. Every entry links its PR, and any issue its title names. A PR
+      #            labelled `no-release-notes` is left out entirely (docs/release-notes/README.md).
       #   Layer 2  docs/release-notes/<TAG>.md, a hand-written Highlights block reviewed in the
       #            release PR, placed at the top. ABSENT FILE ⇒ THE GROUPED LIST ALONE. No
       #            release is ever blocked waiting for prose, and nobody has to be in the loop.
