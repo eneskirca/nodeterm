@@ -189,12 +189,14 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
   }
 
   /** Every agent refusal, from either check: the user is shown the dialog (under showForAgent's
-   *  rules) and the agent gets the one sentence (spec §7.5), so the two checks cannot word it twice. */
+   *  rules) and the agent gets the one sentence, so the two checks cannot word it twice. The sentence
+   *  is also the agent's only documentation of the limit — the canvas-control verb help says nothing
+   *  about it, so nothing reaches an agent while the limit is off — hence the "do not retry". */
   function refuseAgent(state: ProjectLimitState): Extract<AgentOpenCheck, { ok: false }> {
     showForAgent()
     return {
       ok: false,
-      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options`
+      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options — do not retry`
     }
   }
 

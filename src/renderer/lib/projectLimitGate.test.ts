@@ -350,7 +350,7 @@ describe('DO_NOT_TRACK installs re-claim at a known allowance (the undo has no o
   // would never hear `not_active` (an undo), an epoch bump or a raised FREE.
   const DNT_CLAIMED_5: ProjectLimitState = { ...CLAIMED_5, dnt: true }
   const DNT_OFF: ProjectLimitState = { ...INACTIVE, dnt: true }
-  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
+  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options — do not retry'
 
   it('person: one claim at the limit, and a not_active answer opens with no dialog', async () => {
     const t = harness(DNT_CLAIMED_5, 5)
@@ -480,7 +480,7 @@ describe('DO_NOT_TRACK installs re-claim at a known allowance (the undo has no o
 })
 
 describe('checkAgentProjectOpen — the agent open-project verb', () => {
-  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
+  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options — do not retry'
 
   it('allows when the open would be allowed for a person, without any dialog', async () => {
     const t = harness(INACTIVE, 9)
@@ -545,13 +545,13 @@ describe('checkAgentProjectOpen — the agent open-project verb', () => {
     const gate = createProjectOpenGate(t.deps)
     await expect(gate.checkAgentProjectOpen()).resolves.toEqual({
       ok: false,
-      message: 'free plan: 7 of 7 projects are open; the user has been shown the options'
+      message: 'free plan: 7 of 7 projects are open; the user has been shown the options — do not retry'
     })
   })
 })
 
 describe('finishAgentProjectOpen — the final decision and the agent registration, in one tick', () => {
-  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
+  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options — do not retry'
   const CLAIMED_12: ProjectLimitState = { ...AT_LIMIT, allowance: 12 }
 
   /** A register callback that counts its calls and, like registerProject, adds an open project. */
@@ -676,7 +676,7 @@ describe('finishAgentProjectOpen — the final decision and the agent registrati
     await expect(a).resolves.toEqual({ ok: true, value: 'registered #6' })
     await expect(b).resolves.toEqual({
       ok: false,
-      message: 'free plan: 6 of 6 projects are open; the user has been shown the options'
+      message: 'free plan: 6 of 6 projects are open; the user has been shown the options — do not retry'
     })
     expect(register).toHaveBeenCalledTimes(1)
   })
