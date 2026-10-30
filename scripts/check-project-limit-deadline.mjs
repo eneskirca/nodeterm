@@ -7,7 +7,13 @@
 // IN EVERY RELEASE to a date past the planned flip, or those users are gated before anyone else.
 // Nobody remembers a checklist item every release, so the release workflow runs this first and
 // refuses to build when the deadline is less than 30 days away. At the flip the deadline becomes the
-// flip date for good and `PROJECT_LIMIT_DEADLINE_FROZEN = true` switches this guard off.
+// flip date for good and `PROJECT_LIMIT_DEADLINE_FROZEN = true` switches the deadline check off.
+//
+// The FLIP release (frozen) also needs owner step O1 done: `PROJECT_ALLOWANCE_PUBLIC_KEY`
+// (src/core/project-allowance-key.ts) ships as '' until the owner pastes the public half of the
+// server's `PROJECT_ALLOWANCE_PRIVATE_KEY`, and with '' every allowance token verifies to nothing.
+// So a frozen release is refused while the key is empty, unreadable, not an Ed25519 public-key PEM,
+// or a PRIVATE key. An unfrozen release does not look at the key at all.
 //
 // It reads the SOURCE TEXT, not the compiled constant, so it runs before `npm ci` with node alone.
 // That is why the constants must keep their literal forms on one line:
@@ -16,16 +22,21 @@
 // Anything else is reported as unreadable — never waved through. The test pins these readings to the
 // values the app actually compiles.
 //
-// Usage: node scripts/check-project-limit-deadline.mjs [path/to/project-limit.ts]
+// Usage: node scripts/check-project-limit-deadline.mjs [path/to/project-limit.ts [path/to/project-allowance-key.ts]]
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const MIN_LEAD_MS = 30 * 24 * 60 * 60 * 1000
 const SOURCE = 'src/shared/project-limit.ts'
+const KEY_SOURCE = 'src/core/project-allowance-key.ts'
 
 const DEADLINE_RE = /^export const PROJECT_LIMIT_DEADLINE_MS = Date\.parse\('([^']*)'\)\s*$/m
 const FROZEN_RE = /^export const PROJECT_LIMIT_DEADLINE_FROZEN = (true|false)\s*$/m
+// '' / "" / a template literal (the shape entitlement-key.ts uses), optionally typed `: string`.
+const KEY_RE =
+  /^export const PROJECT_ALLOWANCE_PUBLIC_KEY(?:\s*:\s*string)?\s*=\s*(?:'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"|`([^`]*)`)/m
 
 /**
  * The deadline and the frozen flag as written in the source, or null when either is missing or not in
@@ -67,6 +78,67 @@ export function deadlineProblem(source, now) {
   return null
 }
 
+/**
+ * `PROJECT_ALLOWANCE_PUBLIC_KEY` as written in src/core/project-allowance-key.ts, or null when the
+ * constant is missing or not a plain string literal. Only `\n` escapes are decoded in a quoted form.
+ * @param {string} source
+ * @returns {string | null}
+ */
+export function readAllowanceKey(source) {
+  const m = KEY_RE.exec(source)
+  if (!m) return null
+  if (m[3] !== undefined) return m[3]
+  return (m[1] ?? m[2]).replace(/\\n/g, '\n')
+}
+
+/**
+ * Why this pair of sources must not be released at `now`, or null when it may: the deadline first
+ * (`deadlineProblem`), then — only for a frozen (flip) release — the allowance key.
+ * @param {string} source the text of src/shared/project-limit.ts
+ * @param {string | null} keySource the text of src/core/project-allowance-key.ts; null = unreadable
+ * @param {Date} now
+ * @returns {string | null}
+ */
+export function releaseProblem(source, keySource, now) {
+  const deadline = deadlineProblem(source, now)
+  if (deadline) return deadline
+  if (!readDeadline(source).frozen) return null
+  const key = keySource === null ? null : readAllowanceKey(keySource)
+  if (key === null) {
+    return (
+      `could not read PROJECT_ALLOWANCE_PUBLIC_KEY from ${KEY_SOURCE} — the flip release needs it ` +
+      '(docs/project-limit.md, O1)'
+    )
+  }
+  if (key === '') {
+    return (
+      'PROJECT_ALLOWANCE_PUBLIC_KEY is empty — paste the public half of PROJECT_ALLOWANCE_PRIVATE_KEY into ' +
+      `${KEY_SOURCE} before the flip release (docs/project-limit.md, O1)`
+    )
+  }
+  // Checked by text first: createPublicKey accepts a PRIVATE key too (it derives the public half).
+  if (/PRIVATE KEY/.test(key)) {
+    return (
+      `PROJECT_ALLOWANCE_PUBLIC_KEY in ${KEY_SOURCE} is a PRIVATE key — remove it, rotate the key pair, ` +
+      'and paste only the public half (docs/project-limit.md, O1)'
+    )
+  }
+  let ed25519 = false
+  try {
+    const k = crypto.createPublicKey(key)
+    ed25519 = /-----BEGIN PUBLIC KEY-----/.test(key) && k.type === 'public' && k.asymmetricKeyType === 'ed25519'
+  } catch {
+    ed25519 = false
+  }
+  if (!ed25519) {
+    return (
+      `PROJECT_ALLOWANCE_PUBLIC_KEY in ${KEY_SOURCE} is not an Ed25519 public key (SPKI PEM) — paste the ` +
+      'public half of PROJECT_ALLOWANCE_PRIVATE_KEY before the flip release (docs/project-limit.md, O1)'
+    )
+  }
+  return null
+}
+
 function fail(message) {
   // An annotation on the run summary when it runs in GitHub Actions, a plain line elsewhere.
   console.error(`${process.env.GITHUB_ACTIONS === 'true' ? '::error::' : ''}${message}`)
@@ -85,15 +157,23 @@ const isMain = (() => {
 })()
 
 if (isMain) {
-  const file =
-    process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', SOURCE)
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const file = process.argv[2] ?? path.join(root, SOURCE)
+  const keyFile = process.argv[3] ?? path.join(root, KEY_SOURCE)
   let source
   try {
     source = fs.readFileSync(file, 'utf8')
   } catch (err) {
     fail(`could not read ${file}: ${err instanceof Error ? err.message : String(err)}`)
   }
-  const problem = deadlineProblem(source, new Date())
+  // Unreadable is null, not a failure here: only a frozen release needs the key (releaseProblem).
+  let keySource = null
+  try {
+    keySource = fs.readFileSync(keyFile, 'utf8')
+  } catch {
+    keySource = null
+  }
+  const problem = releaseProblem(source, keySource, new Date())
   if (problem) fail(problem)
   const { deadlineMs, frozen } = readDeadline(source)
   console.log(

@@ -1,15 +1,40 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'fs'
 import path from 'path'
 import { testTmpDir } from '../src/core/test-tmp'
 import { PROJECT_LIMIT_DEADLINE_FROZEN, PROJECT_LIMIT_DEADLINE_MS } from '../src/shared/project-limit'
-// @ts-expect-error -- plain .mjs repo tooling, deliberately outside the typechecked projects.
-import { deadlineProblem, readDeadline } from './check-project-limit-deadline.mjs'
+import { PROJECT_ALLOWANCE_PUBLIC_KEY } from '../src/core/project-allowance-key'
+import {
+  deadlineProblem,
+  readAllowanceKey,
+  readDeadline,
+  releaseProblem
+  // @ts-expect-error -- plain .mjs repo tooling, deliberately outside the typechecked projects.
+} from './check-project-limit-deadline.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const SCRIPT = path.resolve(__dirname, 'check-project-limit-deadline.mjs')
 const REAL_SOURCE = fs.readFileSync(path.resolve(__dirname, '../src/shared/project-limit.ts'), 'utf8')
+const REAL_KEY_SOURCE = fs.readFileSync(path.resolve(__dirname, '../src/core/project-allowance-key.ts'), 'utf8')
+
+const keyPair = crypto.generateKeyPairSync('ed25519')
+const PUBLIC_PEM = keyPair.publicKey.export({ type: 'spki', format: 'pem' }).toString()
+const PRIVATE_PEM = keyPair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+
+/** src/core/project-allowance-key.ts as it ships before O1 (`''`) or after it (a template literal,
+ *  the shape entitlement-key.ts uses), with the header comment that mentions the constant. */
+function keySource(value: string): string {
+  const literal = value === '' ? "''" : `\`${value}\``
+  return [
+    '// The public half of PROJECT_ALLOWANCE_PRIVATE_KEY; see PROJECT_ALLOWANCE_PUBLIC_KEY below.',
+    `export const PROJECT_ALLOWANCE_PUBLIC_KEY: string = ${literal}`,
+    ''
+  ].join('\n')
+}
+const EMPTY_KEY =
+  'PROJECT_ALLOWANCE_PUBLIC_KEY is empty — paste the public half of PROJECT_ALLOWANCE_PRIVATE_KEY into src/core/project-allowance-key.ts before the flip release (docs/project-limit.md, O1)'
 
 /** The two lines the guard reads, in the shape src/shared/project-limit.ts writes them, wrapped in
  *  the same kind of doc comment (which itself quotes the literal form — it must not be matched). */
@@ -82,6 +107,50 @@ describe('deadlineProblem', () => {
   })
 })
 
+describe('releaseProblem: the flip release also needs the allowance key (owner step O1)', () => {
+  const FAR = source('2027-01-31T00:00:00Z', false)
+  const FROZEN = source('2026-01-01T00:00:00Z', true)
+
+  it('refuses a frozen (flip) release while the key is empty', () => {
+    expect(releaseProblem(FROZEN, keySource(''), NOW)).toBe(EMPTY_KEY)
+  })
+
+  it('passes a frozen release with an Ed25519 public key, as a template literal or a quoted string', () => {
+    expect(releaseProblem(FROZEN, keySource(PUBLIC_PEM), NOW)).toBeNull()
+    const quoted = `export const PROJECT_ALLOWANCE_PUBLIC_KEY = '${PUBLIC_PEM.replace(/\n/g, '\\n')}'\n`
+    expect(releaseProblem(FROZEN, quoted, NOW)).toBeNull()
+  })
+
+  it('does not check the key while the deadline is not frozen — not even an unreadable key file', () => {
+    expect(releaseProblem(FAR, keySource(''), NOW)).toBeNull()
+    expect(releaseProblem(FAR, null, NOW)).toBeNull()
+    expect(releaseProblem(FAR, 'garbage', NOW)).toBeNull()
+  })
+
+  it('fails closed on a frozen release whose key file is unreadable or has no key constant', () => {
+    for (const src of [null, '', 'garbage', 'export const SOMETHING_ELSE = 1\n']) {
+      expect(releaseProblem(FROZEN, src, NOW)).toMatch(/^could not read PROJECT_ALLOWANCE_PUBLIC_KEY/)
+    }
+  })
+
+  it('refuses a frozen release whose key is not an Ed25519 public-key PEM', () => {
+    const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' })
+    for (const value of ['not a pem', rsa.toString()]) {
+      expect(releaseProblem(FROZEN, keySource(value), NOW)).toMatch(/is not an Ed25519 public key/)
+    }
+  })
+
+  it('refuses a pasted PRIVATE key outright (it would parse: Node derives the public half)', () => {
+    expect(releaseProblem(FROZEN, keySource(PRIVATE_PEM), NOW)).toMatch(/PRIVATE key/)
+  })
+
+  it('still reports the deadline first, and deadlineProblem alone never looks at the key', () => {
+    const iso = new Date(NOW.getTime() + 10 * DAY_MS).toISOString()
+    expect(releaseProblem(source(iso, false), keySource(''), NOW)).toBe(late(iso))
+    expect(deadlineProblem(FROZEN, NOW)).toBeNull()
+  })
+})
+
 describe('the real src/shared/project-limit.ts', () => {
   // Pins the guard to the compiled constants, so a change of literal form fails on the PR that makes
   // it, not on release day.
@@ -91,15 +160,22 @@ describe('the real src/shared/project-limit.ts', () => {
       frozen: PROJECT_LIMIT_DEADLINE_FROZEN
     })
   })
+
+  it('and the real src/core/project-allowance-key.ts reads as the key the app compiles', () => {
+    expect(readAllowanceKey(REAL_KEY_SOURCE)).toBe(PROJECT_ALLOWANCE_PUBLIC_KEY)
+  })
 })
 
 describe('the CLI the release workflow runs', () => {
-  function run(src: string): { status: number | null; stderr: string; stdout: string } {
+  /** Run the CLI on a limit source and a key source (`null` = point it at a key file that is not there). */
+  function run(src: string, key: string | null = keySource(PUBLIC_PEM)): { status: number | null; stderr: string } {
     const dir = testTmpDir('nt-limit-deadline-')
     const file = path.join(dir, 'project-limit.ts')
+    const keyFile = path.join(dir, 'project-allowance-key.ts')
     fs.writeFileSync(file, src)
-    const r = spawnSync(process.execPath, [SCRIPT, file], { encoding: 'utf8' })
-    return { status: r.status, stderr: r.stderr, stdout: r.stdout }
+    if (key !== null) fs.writeFileSync(keyFile, key)
+    const r = spawnSync(process.execPath, [SCRIPT, file, keyFile], { encoding: 'utf8' })
+    return { status: r.status, stderr: r.stderr }
   }
 
   it('exits 1 with the message when the deadline is too close', () => {
@@ -117,9 +193,21 @@ describe('the CLI the release workflow runs', () => {
     expect(r.stderr).toContain('missing.ts')
   })
 
-  it('exits 0 for a far deadline and for a frozen one', () => {
-    expect(run(source(new Date(Date.now() + 90 * DAY_MS).toISOString(), false)).status).toBe(0)
+  it('exits 0 for a far deadline (key unchecked) and for a frozen one with a real key', () => {
+    const far = source(new Date(Date.now() + 90 * DAY_MS).toISOString(), false)
+    expect(run(far, keySource('')).status).toBe(0)
+    expect(run(far, null).status).toBe(0)
     expect(run(source('2026-01-01T00:00:00Z', true)).status).toBe(0)
+  })
+
+  it('exits 1 for a frozen release with an empty or missing key file', () => {
+    const frozen = source('2026-01-01T00:00:00Z', true)
+    const empty = run(frozen, keySource(''))
+    expect(empty.status).toBe(1)
+    expect(empty.stderr).toContain(EMPTY_KEY)
+    const missing = run(frozen, null)
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('could not read PROJECT_ALLOWANCE_PUBLIC_KEY')
   })
 
   // Skipped on Windows: creating a symlink there needs a privilege CI runners do not grant.

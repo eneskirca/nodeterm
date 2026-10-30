@@ -174,12 +174,26 @@ describe('verifyAllowanceToken', () => {
 })
 
 describe('PROJECT_ALLOWANCE_PUBLIC_KEY', () => {
-  // MERGE GUARD: red until owner step O1 pastes the production SPKI PEM into project-allowance-key.ts.
-  it('parses as an Ed25519 public key and differs from ENTITLEMENT_PUBLIC_KEY', () => {
-    const key = crypto.createPublicKey(PROJECT_ALLOWANCE_PUBLIC_KEY)
-    expect(key.type).toBe('public')
-    expect(key.asymmetricKeyType).toBe('ed25519')
-    const entitlement = crypto.createPublicKey(ENTITLEMENT_PUBLIC_KEY)
-    expect(key.export({ type: 'spki', format: 'der' }).equals(entitlement.export({ type: 'spki', format: 'der' }))).toBe(false)
+  // Owner step O1 pastes the production key. Until then it is '' — and the FLIP release is refused
+  // while it is (scripts/check-project-limit-deadline.mjs), so an empty key can be merged but never
+  // flipped on. Anything else in that constant must be the real thing.
+  it("is '' before owner step O1, else an Ed25519 public-key PEM distinct from ENTITLEMENT_PUBLIC_KEY", () => {
+    if (PROJECT_ALLOWANCE_PUBLIC_KEY !== '') {
+      // A pasted PRIVATE key also parses (createPublicKey derives the public half) — refuse it by text.
+      expect(PROJECT_ALLOWANCE_PUBLIC_KEY).toMatch(/-----BEGIN PUBLIC KEY-----/)
+      expect(PROJECT_ALLOWANCE_PUBLIC_KEY).not.toMatch(/PRIVATE KEY/)
+      const key = crypto.createPublicKey(PROJECT_ALLOWANCE_PUBLIC_KEY)
+      expect(key.type).toBe('public')
+      expect(key.asymmetricKeyType).toBe('ed25519')
+      const entitlement = crypto.createPublicKey(ENTITLEMENT_PUBLIC_KEY)
+      expect(
+        key.export({ type: 'spki', format: 'der' }).equals(entitlement.export({ type: 'spki', format: 'der' }))
+      ).toBe(false)
+    }
+  })
+
+  it('an empty key verifies nothing, not even a valid token (the pre-O1 state)', () => {
+    expect(verifyAllowanceToken(mint(), EXPECT, PUB)).not.toBeNull() // control: the token is valid
+    expect(verifyAllowanceToken(mint(), EXPECT, '')).toBeNull()
   })
 })

@@ -222,28 +222,33 @@ with "Up to N open projects", lists "Unlimited open projects" under Pro, and the
      deadline past the new plan — ship it before the frozen date passes.
    - Freezing in the first release *after* the flip removes the hazard. Its cost: DO_NOT_TRACK
      installs on the release before it stay ungated until that release's own deadline passes.
-3. **After an undo**, unfreeze: a release with `FROZEN = false` and a deadline past the new plan
+3. **The flip release needs owner step O1**: a frozen release is refused while
+   `PROJECT_ALLOWANCE_PUBLIC_KEY` is empty (see O1 — and do it well before then).
+4. **After an undo**, unfreeze: a release with `FROZEN = false` and a deadline past the new plan
    (see Undo below — without it, DO_NOT_TRACK installs stay gated).
-4. Keep both constants in their literal one-line form —
+5. Keep both constants in their literal one-line form —
    `export const PROJECT_LIMIT_DEADLINE_MS = Date.parse('<ISO instant>')` and
    `export const PROJECT_LIMIT_DEADLINE_FROZEN = true | false` — because the guard reads the source.
 
 **The guard**: `scripts/check-project-limit-deadline.mjs` is the first step that runs in each build
 job of `.github/workflows/release.yml` — `release-mac`, `release-linux` and `release-win` — right
 after checkout and setup-node, before `npm ci` (plain node). It exits 1 when the deadline is less
-than 30 days away and not frozen, or when it cannot read the constants. The three jobs run in
+than 30 days away and not frozen, or when it cannot read the constants; and for a **frozen** (flip)
+release also when `PROJECT_ALLOWANCE_PUBLIC_KEY` (`src/core/project-allowance-key.ts`) is empty,
+unreadable, not an Ed25519 public-key PEM, or a private key. An unfrozen release never looks at the
+key. The three jobs run in
 parallel and each creates the release on its first upload, so a refused tag fails all three before
 anything is built or uploaded: no release, not even a prerelease, and `publish` never runs. Bump the
 deadline, then move the tag to that commit (or tag the next version) and rerun.
 `scripts/check-project-limit-deadline.test.ts` pins the guard's reading to the compiled constants,
 so a change of literal form fails on the PR, not on release day, and pins the step's place in all
-three jobs. It never guards a frozen deadline — that is item 2's hazard.
+three jobs. It never guards a frozen deadline's DATE — that is item 2's hazard.
 
 ## Before Release B ships — owner decisions
 
-### O1: the allowance key pair (merge guard)
+### O1: the allowance key pair
 
-`PROJECT_ALLOWANCE_PUBLIC_KEY` in `src/core/project-allowance-key.ts` is `''` until the owner
+`PROJECT_ALLOWANCE_PUBLIC_KEY` in `src/core/project-allowance-key.ts` ships as `''` until the owner
 generates the key pair:
 
 ```sh
@@ -252,11 +257,27 @@ openssl genpkey -algorithm ed25519 -out allowance.pem && openssl pkey -in allowa
 
 The private key goes **only** into the server's Dokploy env as `PROJECT_ALLOWANCE_PRIVATE_KEY`; the
 public half (SPKI PEM) goes into `project-allowance-key.ts`. Delete the local `.pem` afterwards.
-Until then the test "PROJECT_ALLOWANCE_PUBLIC_KEY parses as an Ed25519 public key and differs from
-ENTITLEMENT_PUBLIC_KEY" (`src/core/project-allowance-token.test.ts`) is **red on purpose**, and
-every allowance token verifies to `null` (no allowance — a claim then reads as a server error). On
-the server, without the private key the claim route does not exist (404) and `/v1/check` never
-sends `limits`, whatever the cutoff says.
+
+What enforces it:
+
+- **The flip release.** The release guard refuses a frozen release while the key is `''`
+  (unreadable, not an Ed25519 public-key PEM, or a private key): "PROJECT_ALLOWANCE_PUBLIC_KEY is
+  empty — paste the public half of PROJECT_ALLOWANCE_PRIVATE_KEY into
+  src/core/project-allowance-key.ts before the flip release (docs/project-limit.md, O1)".
+- **The unit test** (`src/core/project-allowance-token.test.ts`) accepts exactly `''` or an
+  Ed25519 public-key PEM that differs from `ENTITLEMENT_PUBLIC_KEY` and is not a private key, so a
+  half-pasted or wrong key goes red on the PR that pastes it. It is green on `main` either way.
+- **On the server**, without the private key the claim route does not exist (404) and `/v1/check`
+  never sends `limits`, whatever the cutoff says.
+
+**Do O1 before the next release you expect people to still be running at the flip — not just
+before the flip release.** While the key is `''` every allowance token verifies to `null`. Nothing
+happens while the limit is off, but a build with an empty key that is still in use when the server
+switches the limit on fails every claim (the server's signed token does not verify, which reads as a
+server error): its installs — legacy ones included — are held at FREE behind "Couldn't check your
+free allowance" until they update. (Nothing is closed; new opens above FREE are refused.) The
+guard only enforces the key at the flip release, because refusing every release before O1 would
+block unrelated releases; so the timing is the owner's to keep.
 
 ### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before Release B)
 
@@ -296,15 +317,17 @@ The decision is enes's. Device check 10 below gathers the evidence.
   `telemetryEnabled: true`; the site says off by default. Either the site changes or the app default
   changes (a separate PR). Release A's count follows the toggle, so this also decides how many
   installs get a snapshot.
-- **O1 — before the client half merges:** the key pair (above).
+- **O1 — before the next release that may still be in use at the flip** (the flip release itself is
+  refused without it): the key pair (above).
 - **O2 — Release A:** merge and deploy the server snapshot recording, merge the privacy copy, then
   release the desktop report. Let it run 1–2 weeks; read the admin card's p50 / p90 / p99 and set
   CAP ≈ p99 (and revisit FREE).
 - **O3 — Release B:** confirm server#18 is deployed (`/v1/license/status` answers 502 when keygen is
   down — otherwise a keygen outage drops paying users into the limit); merge and deploy the server
   claims with `PROJECT_ALLOWANCE_PRIVATE_KEY` set **and the cutoff still unset**; release this
-  client. Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release
-  workflow refuses otherwise).
+  client — with the O1 public key pasted, or its installs will fail every claim after the flip.
+  Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release workflow
+  refuses otherwise).
 - **O4 — flip day:**
   1. In the release that accompanies the flip (or the first one after it), set
      `PROJECT_LIMIT_DEADLINE_FROZEN = true` and the deadline to the flip date. If the flip slips past
