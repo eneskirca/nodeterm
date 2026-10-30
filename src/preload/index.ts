@@ -553,6 +553,17 @@ const api: NodeTerminalApi = {
       return () => ipcRenderer.removeListener(IPC.licenseChanged, handler)
     }
   },
+  projectLimit: {
+    // No arguments on purpose: core reads the deviceId and machine hash itself, so nothing the page
+    // sends can name another device or machine.
+    state: () => ipcRenderer.invoke(IPC.projectLimitState),
+    claim: () => ipcRenderer.invoke(IPC.projectLimitClaim),
+    onChange: (listener) => {
+      const handler = (_e: unknown, s: Parameters<typeof listener>[0]) => listener(s)
+      ipcRenderer.on(IPC.projectLimitChanged, handler)
+      return () => ipcRenderer.removeListener(IPC.projectLimitChanged, handler)
+    }
+  },
   announcements: {
     fetch: () => ipcRenderer.invoke(IPC.announcementsFetch)
   },

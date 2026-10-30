@@ -7052,6 +7052,58 @@ body,
   gap: 8px;
 }
 
+/* Free-tier limit dialog (components/ProjectLimitDialog.tsx): the open projects, each with Close,
+   inside the `.confirm` shell — which owns the surface, the z-order (over the kanban board) and the
+   buttons. Only the title, the rows and the one-line notice need anything of their own. */
+.project-limit__title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.project-limit__list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.project-limit__row,
+.project-limit__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.project-limit__notice {
+  margin: 0 0 16px;
+}
+
+/* A long project name truncates instead of pushing its Close button out of the box. */
+.project-limit__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm.project-limit__checking {
+  width: auto;
+}
+
+.project-limit__checking .confirm__msg {
+  margin: 0;
+}
+
 .confirm__msg {
   margin: 0 0 16px;
   /* The scrollable region once the box hits its max-height, so the action buttons

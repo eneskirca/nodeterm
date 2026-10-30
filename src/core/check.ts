@@ -8,6 +8,8 @@
 // While the Settings → Privacy telemetry toggle is on it also carries the open-project count
 // (`openProjects`, a bare number — never names, paths or hosts); the backend keeps the per-install
 // maximum, the data the project-limit allowance is computed from. See `configureCheck`.
+// In the other direction, the reply says whether the open-project limit is on (`limits`, present
+// only while it is); that answer reaches core through `onCheckAnswer`, not through CheckResult.
 // Nothing personal is sent and the client IP is never stored server-side; a hard opt-out is still
 // DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED.
 import { platform } from './platform'
@@ -69,6 +71,67 @@ const NOTES_MAX = 16 * 1024
 /** Test seam: the sanitizer is the whole contract with the feed's shape. */
 export const sanitizeCheckForTest = sanitize
 
+/** What one successful read of the feed said about the open-project limit. The server adds
+ *  `limits: { projects: { free, epoch } }` exactly while the limit is on and leaves the key absent
+ *  otherwise, so `off` is the ABSENCE of the key — but only in a reply shaped like a check reply
+ *  (`messages` array + `update` object, which every 2xx from the route carries). `unknown` = anything
+ *  else: a malformed `limits`, or JSON that is not a check reply at all (`{}`, `{"status":"ok"}`, a
+ *  proxy's JSON page behind a followed redirect). It must change nothing: the latch reads `off` as
+ *  "clear", and a reply that did not come from the route must never be able to clear it. */
+export type LimitsAnswer = { kind: 'on'; free: number; epoch: number } | { kind: 'off' } | { kind: 'unknown' }
+
+const FREE_MIN = 1
+const FREE_MAX = 1000
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+// Kept apart from `sanitize`, whose CheckResult its existing callers (banner, update card) depend on
+// exactly — and stricter than it: `sanitize` reads any JSON as an empty feed, which is harmless for a
+// banner, while here only a check-shaped reply says anything (see LimitsAnswer). A fresh object every
+// call, so no answer aliases a module constant a listener could mutate.
+function sanitizeLimits(data: unknown): LimitsAnswer {
+  if (!isRecord(data) || !Array.isArray(data.messages) || !isRecord(data.update)) return { kind: 'unknown' }
+  if (!Object.hasOwn(data, 'limits')) return { kind: 'off' }
+  const projects = isRecord(data.limits) ? data.limits.projects : undefined
+  if (!isRecord(projects)) return { kind: 'unknown' }
+  const { free, epoch } = projects
+  if (typeof free !== 'number' || !Number.isInteger(free) || free < FREE_MIN || free > FREE_MAX) {
+    return { kind: 'unknown' }
+  }
+  // Safe integers only: the epoch is compared for equality against a stored token's.
+  if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) return { kind: 'unknown' }
+  return { kind: 'on', free, epoch }
+}
+
+/** Test seam: the limits half of the feed's shape. */
+export const sanitizeLimitsForTest = sanitizeLimits
+
+type AnswerListener = (a: LimitsAnswer) => void
+const answerListeners = new Set<AnswerListener>()
+
+/** Subscribe to the server's limit answer. Fired only after a 2xx response whose body parsed as
+ *  JSON, once per network read — never for a cache hit, a failed read or its fallback, because the
+ *  project-limit latch reads `off` as "clear" and a blocked network must not be able to say it.
+ *  Returns the unsubscribe. */
+export function onCheckAnswer(listener: AnswerListener): () => void {
+  answerListeners.add(listener)
+  return () => {
+    answerListeners.delete(listener)
+  }
+}
+
+function emitAnswer(answer: LimitsAnswer): void {
+  // A copy, so a listener that unsubscribes (or subscribes) mid-emit does not skew this round.
+  for (const listener of [...answerListeners]) {
+    try {
+      listener(answer)
+    } catch (err) {
+      // A listener's bug is its own: fetchCheck's callers still get the answer they asked for.
+      console.warn('[check] answer listener failed', err)
+    }
+  }
+}
+
 export interface CheckDeps {
   /** Open projects in the workspace index (`WorkspaceStore.openProjectCount`); undefined = unknown
    *  (index not loaded yet, or never saved in v3 form), and an unknown count is never sent. */
@@ -127,8 +190,13 @@ export async function fetchCheck(): Promise<CheckResult> {
       cache: 'no-cache'
     }).finally(() => clearTimeout(t))
     if (!res.ok) return fallback()
-    const data = sanitize(await res.json())
+    // A body that does not parse (a captive portal's HTML page) throws into the fallback below.
+    const body: unknown = await res.json()
+    const data = sanitize(body)
     cache = { at: now, plan, data }
+    // The one place an answer is given: a 2xx whose body parsed as JSON. Cached first, so a
+    // listener that reads the feed again is served from the cache rather than re-fetching.
+    emitAnswer(sanitizeLimits(body))
     return data
   } catch {
     return fallback()

@@ -28,12 +28,51 @@ const SEATS_CHECKOUT_URL = process.env.NODETERM_SEATS_CHECKOUT_URL || 'https://b
 // silently drop Pro. Re-refresh on the same 6h cadence as the check/update polls.
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000
 
-// Same gate as telemetry/check: never hit the prod API from a dev/unsigned build unless a
-// local server is targeted explicitly, and honor DO_NOT_TRACK / the kill switch.
+/** DO_NOT_TRACK or the telemetry kill switch is set (read live, like every other env guard here). */
+export function isDntEnv(): boolean {
+  return !!(process.env.DO_NOT_TRACK || process.env.NODETERM_TELEMETRY_DISABLED)
+}
+
+// The user's consent to license calls while DO_NOT_TRACK is set (spec §7.4: a setting shown and
+// revocable in Settings → Privacy, wired in by the shell). Unwired — the default, and any shell that
+// never wires it — there is no consent, which is the pre-consent behavior: no license call under DNT.
+let networkConsent: () => boolean = () => false
+
+/**
+ * Install the consent callback. It is read on EVERY gated call, so revoking consent takes effect at
+ * once. Only callers of `licenseNetworkGate()` honor it — the license routes in this file, and the
+ * project-limit claim (spec §7.4) — never telemetry or the check feed, which keep their own
+ * unconditional DNT guard.
+ */
+export function setLicenseNetworkConsent(fn: () => boolean): void {
+  networkConsent = fn
+}
+
+/** Why a license call may not run. The non-`ok` words are also `ClaimError`s (shared/project-limit). */
+export type LicenseNetworkGate = 'ok' | 'consent_required' | 'disabled'
+
+/**
+ * Whether a license call may reach the API. `disabled`: a dev/unsigned build never hits the prod API
+ * unless a local server is targeted explicitly (the same build rule as telemetry/check).
+ * `consent_required`: DO_NOT_TRACK / the kill switch is set and the user has not consented. A consent
+ * callback that throws reads as no consent — the direction that sends nothing.
+ */
+export function licenseNetworkGate(): LicenseNetworkGate {
+  if (!platform().isPackaged && !process.env.NODETERM_API_BASE) return 'disabled'
+  if (isDntEnv()) {
+    let consented = false
+    try {
+      consented = networkConsent()
+    } catch {
+      // fall through: no consent
+    }
+    return consented ? 'ok' : 'consent_required'
+  }
+  return 'ok'
+}
+
 function allowed(): boolean {
-  if (process.env.DO_NOT_TRACK || process.env.NODETERM_TELEMETRY_DISABLED) return false
-  if (!platform().isPackaged && !process.env.NODETERM_API_BASE) return false
-  return true
+  return licenseNetworkGate() === 'ok'
 }
 
 interface Stored {
@@ -61,6 +100,15 @@ async function save(s: Stored): Promise<void> {
   await fs.writeFile(file(), JSON.stringify(s), 'utf-8').catch(() => {})
 }
 
+/**
+ * The clock-rollback anchor (ms): the later of the wall clock and the largest timestamp this install
+ * has observed (`lastSeen`). Every expiry here is compared against it, never the bare wall clock, so
+ * setting the system clock back cannot revive an expired token.
+ */
+export function clockAnchorMs(): number {
+  return Math.max(Date.now(), (load().lastSeen ?? 0) * 1000)
+}
+
 interface Payload {
   deviceId: string
   tier: string
@@ -81,8 +129,9 @@ export const PRO_FREE_SEATS = 3
 // Beyond the signature, the token must be minted for THIS machine (a copied license.json
 // from another install must not validate), and its expiry is checked against the largest
 // timestamp we've ever observed — not just Date.now() — so rolling the system clock back
-// can't revive an expired token (see lastSeen).
-function verify(token: string | undefined): Payload | null {
+// can't revive an expired token (see clockAnchorMs). `graceMs` accepts a token that expired
+// less than that long ago; every caller but proForProjectLimit passes none.
+function verify(token: string | undefined, graceMs = 0): Payload | null {
   if (!token || !ENTITLEMENT_PUBLIC_KEY) return null
   const dot = token.indexOf('.')
   if (dot < 1) return null
@@ -93,8 +142,7 @@ function verify(token: string | undefined): Payload | null {
     if (!crypto.verify(null, Buffer.from(p), key, Buffer.from(s, 'base64url'))) return null
     const payload = JSON.parse(Buffer.from(p, 'base64url').toString('utf-8')) as Payload
     if (payload.deviceId !== getDeviceId()) return null
-    const now = Math.max(Date.now(), (load().lastSeen ?? 0) * 1000)
-    if (typeof payload.exp !== 'number' || payload.exp * 1000 <= now) return null
+    if (typeof payload.exp !== 'number' || payload.exp * 1000 <= clockAnchorMs() - graceMs) return null
     return payload
   } catch {
     return null
@@ -248,6 +296,24 @@ export function getStoredEntitlement(): string | null {
 /** True when a valid, unexpired Pro entitlement is stored (offline-verified). Gates premium features. */
 export function isPremium(): boolean {
   return verify(load().token) !== null
+}
+
+/** How long past its expiry a stored entitlement still counts as Pro — for the project limit only. */
+export const PRO_LIMIT_GRACE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * Pro for the purposes of the free-tier open-project limit (spec §6), and for NOTHING else — every
+ * other Pro feature gates on `isPremium()`. True when `isPremium()` is, or when the stored token
+ * passes the same signature + deviceId verification and expired less than `PRO_LIMIT_GRACE_MS` ago
+ * by the clock anchor. A paying user offline past the 7-day token TTL must not be blocked from
+ * opening a project; the cost is that cancelling and then blocking the API buys at most 30 days.
+ *
+ * "No 2xx `active:false` since" needs no record of its own: the device-bound refresh deletes the
+ * stored token on exactly that answer, so a token still on disk means the server has not said
+ * inactive since it was minted.
+ */
+export function proForProjectLimit(): boolean {
+  return isPremium() || verify(load().token, PRO_LIMIT_GRACE_MS) !== null
 }
 
 // Every refresh started so far (the launch one + whatever the 6h interval fired), chained. The

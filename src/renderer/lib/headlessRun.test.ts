@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CanvasNodeState, PendingLaunch, Project } from '@shared/types'
 import type { HeadlessLaunchResult } from '@shared/headless-launch'
+import type { ProjectLimitState } from '@shared/project-limit'
 import { coldOpenMessage } from './coldOpen'
 import {
   claimForHeadless,
@@ -9,6 +10,7 @@ import {
   mergeRunNow,
   planRunVerb,
   savePendingAnywhere,
+  shouldUnhideForHeadlessStart,
   startHeadless,
   unhidesForHeadlessStart,
   type HeadlessStartDeps,
@@ -278,6 +280,47 @@ describe('unhidesForHeadlessStart', () => {
     expect(unhidesForHeadlessStart({ closed: true, ssh: sshProject.ssh }, 'p1')).toBe(false)
     // The welcome screen: un-closing a project there would render a canvas with no active project.
     expect(unhidesForHeadlessStart({ closed: true }, '')).toBe(false)
+  })
+})
+
+describe('shouldUnhideForHeadlessStart — the free-tier project limit', () => {
+  const INACTIVE: ProjectLimitState = { active: false, pro: false, free: 5, allowance: null, dnt: false }
+  const CLAIMED_5: ProjectLimitState = { active: true, pro: false, free: 5, allowance: 5, dnt: false }
+  const NO_ALLOWANCE: ProjectLimitState = { ...CLAIMED_5, allowance: null }
+  const open = (n: number) => Array.from({ length: n }, () => ({}))
+  const closed = { closed: true }
+
+  it('while the limit is off it answers exactly what unhidesForHeadlessStart answers', () => {
+    for (const [p, active] of [
+      [closed, 'p1'],
+      [{ closed: false }, 'p1'],
+      [{ closed: true, ssh: sshProject.ssh }, 'p1'],
+      [closed, '']
+    ] as const) {
+      expect(shouldUnhideForHeadlessStart(p, active, INACTIVE, open(9))).toBe(unhidesForHeadlessStart(p, active))
+    }
+  })
+
+  it('at the limit the tab stays closed — the session still starts, nothing is refused', () => {
+    expect(shouldUnhideForHeadlessStart(closed, 'p1', CLAIMED_5, open(5))).toBe(false)
+    // No allowance yet: a claim would be due, and a headless start never claims or asks.
+    expect(shouldUnhideForHeadlessStart(closed, 'p1', NO_ALLOWANCE, open(5))).toBe(false)
+    // Closed projects are not open ones: they do not count towards the limit.
+    expect(shouldUnhideForHeadlessStart(closed, 'p1', CLAIMED_5, [...open(4), { closed: true }])).toBe(true)
+  })
+
+  it('under the limit, or Pro, it restores the tab', () => {
+    expect(shouldUnhideForHeadlessStart(closed, 'p1', CLAIMED_5, open(4))).toBe(true)
+    expect(shouldUnhideForHeadlessStart(closed, 'p1', { ...CLAIMED_5, pro: true }, open(9))).toBe(true)
+  })
+
+  it('a relay tab never counts, so un-closing one is not an open the limit refuses', () => {
+    expect(shouldUnhideForHeadlessStart({ closed: true, remote: true }, 'p1', CLAIMED_5, open(5))).toBe(true)
+  })
+
+  it('never restores what unhidesForHeadlessStart would not, whatever the limit says', () => {
+    expect(shouldUnhideForHeadlessStart({ closed: true, ssh: sshProject.ssh }, 'p1', CLAIMED_5, open(1))).toBe(false)
+    expect(shouldUnhideForHeadlessStart(closed, '', CLAIMED_5, open(1))).toBe(false)
   })
 })
 

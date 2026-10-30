@@ -51,6 +51,14 @@ export const HOST_ONLY_CHANNEL_PREFIXES: readonly string[] = [
   // credentials into the account dir, removal deletes one), and account usage read with the
   // host's stored tokens.
   'license:',
+  // The free-tier open-project allowance: refuses a relay peer's INBOUND `projectLimit:state` /
+  // `projectLimit:claim` requests — a claim spends THIS device's allowance under this machine's hash,
+  // and the state reports the host's Pro and DO_NOT_TRACK facts. A relay tab never sends them (it
+  // keeps its local preload; relay-api.ts spreads `...local`). This list gates inbound req/cast ONLY:
+  // the outbound `projectLimit:changed` push is kept off relay peers separately, by sending it to
+  // this machine's own windows only (core/project-limit.ts), never through `platform().broadcast`,
+  // which fans out to every relay peer.
+  'projectLimit:',
   'claude-accounts:',
   'codex-accounts:',
   'usage:',

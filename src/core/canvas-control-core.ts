@@ -559,10 +559,9 @@ const VERBS: ControlVerb[] = [
   'notify',
   'sticky',
   'browser',
-  // Issue #338 PR 1: registered in the model (parse + gates + the grant ledger run in main), but
-  // INERT until PR 2 adds the renderer dispatch case — today the renderer's `default:` answers
-  // `unknown verb: open-project`. Deliberately undocumented in the skill/instructions bodies until
-  // PR 2 makes it do something (spec §8: docs land in the same PR that makes the verb reachable).
+  // Issue #338: parse + gates + the grant ledger run in main; the renderer answers it from the
+  // projects store (Canvas's early `open-project` block) — create/adopt/find a project for a local
+  // cwd, confirmed by the user, never focused. Both agent-facing bodies document it.
   'open-project',
   // Read and ask to change the few settings on the allowlist (@shared/settings-verb). Every change
   // is confirmed by the user on the desktop; the Server Edition refuses `--set` by name.
@@ -990,6 +989,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  a denial is final, do not retry it. The user may have turned that dialog off for agents in',
     '  your project, in which case it simply applies. Local only (refused from an SSH project), and it never',
     '  focuses the new project\'s tab. The returned id is what `--project` accepts.',
+    '  On the free plan this can be refused when the open-project limit is reached. Do not retry: the user has already been shown the options.',
     '  Server Edition is narrower: it can only re-open an exact local project already saved in its',
     '  workspace (pass `--cwd` only); it never creates, adds, renames, recolors, or focuses one.',
     '- `show-image <path>` / `show-video <path>` — open a media file as a node.',
@@ -1583,6 +1583,7 @@ ${reportOutcomeDocLines().join('\n')}
   it. The user may have turned that dialog off for agents in your project, in which case it simply
   applies. Local only (refused from an SSH project), and it never focuses the new project's tab: use
   the returned id with \`--project\` to open sessions there.
+  On the free plan this can be refused when the open-project limit is reached. Do not retry: the user has already been shown the options.
   On Server Edition this is a restart-recovery operation only: pass \`--cwd\` for an exact local
   project already saved in that Server workspace. It never creates, adds, renames, recolors, or
   focuses a project; register a missing project in the UI first.

@@ -1706,6 +1706,33 @@ describe('open-project --name limit in the agent-facing text (issue #940)', () =
   })
 })
 
+describe('open-project at the free-tier project limit (project-limit plan, Task 19)', () => {
+  // Verbatim from the plan. The renderer refuses the verb at the limit with `free plan: N of N
+  // projects are open; the user has been shown the options` and has already shown the user the
+  // limit dialog, so an agent that retries only re-reads the same refusal.
+  const SENTENCE =
+    '  On the free plan this can be refused when the open-project limit is reached. Do not retry: the user has already been shown the options.'
+
+  it.each([
+    ['skill', buildCanvasSkillBody('/x/shim.sh')],
+    ['instructions', buildCanvasControlInstructions('/x/shim.sh')]
+  ])('%s body: the open-project entry says a limit refusal is final', (name, body) => {
+    expect(body, name).toContain('open-project limit')
+    expect(body, name).toContain('Do not retry')
+    const lines = body.split('\n')
+    const entry = lines.findIndex((l) => l.startsWith('- `open-project --cwd'))
+    expect(entry, `${name}: the open-project entry`).toBeGreaterThan(-1)
+    const nextEntry = lines.findIndex((l, i) => i > entry && l.startsWith('- '))
+    // The Server Edition never limits (its state is permanently inactive, spec §10), so the
+    // sentence sits in the desktop half of the entry, ahead of the Server Edition paragraph.
+    const serverEdition = lines.findIndex((l, i) => i > entry && l.includes('Server Edition'))
+    const at = lines.indexOf(SENTENCE)
+    expect(at, `${name}: the sentence, verbatim, on a line of its own`).toBeGreaterThan(entry)
+    expect(at, `${name}: inside the open-project entry`).toBeLessThan(nextEntry)
+    expect(at, `${name}: before the Server Edition paragraph`).toBeLessThan(serverEdition)
+  })
+})
+
 describe('one-way context links (issue #852) — agent-facing docs', () => {
   it('both canvas-control surfaces document link --one-way', () => {
     expect(buildCanvasControlInstructions('/x/nodeterm.sh')).toContain('--one-way')

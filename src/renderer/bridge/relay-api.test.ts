@@ -51,6 +51,7 @@ function fakeLocalApi() {
     githubControl: { NAME: 'local-github-control' },
     dialog: { NAME: 'local-dialog' },
     license: { NAME: 'local-license' },
+    projectLimit: { NAME: 'local-project-limit' },
     pty: { onData: ptyOnData },
     claude: { cliCaps: () => Promise.resolve({}), readTranscript: () => Promise.reject() },
     relayClient: { disconnect: vi.fn() }
@@ -96,6 +97,8 @@ describe('buildRelayApi', () => {
     expect(api.clipboard).toBe(local.clipboard)
     expect(api.settings).toBe(local.settings)
     expect(api.license).toBe(local.license)
+    // The free-project allowance is THIS machine's; the host refuses `projectLimit:*` from a peer.
+    expect(api.projectLimit).toBe(local.projectLimit)
     expect(api.githubControl).toBe(local.githubControl)
   })
 
