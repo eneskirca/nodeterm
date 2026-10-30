@@ -1,12 +1,13 @@
 /**
- * The free-tier open-project limit, desktop core (docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md
- * §5–§6). It decides whether the limit is on for this install and what its allowance is, and it
- * makes the claim. The renderer's gate asks for that state (`decideOpen` in shared/project-limit.ts)
+ * The free-tier open-project limit, desktop core (docs/project-limit.md). It decides whether the
+ * limit is on for this install and what its allowance is, and it makes the claim. The renderer's gate asks for that state (`decideOpen` in shared/project-limit.ts)
  * and claims only when it has to. Desktop only: the Server Edition never calls `initProjectLimit`
  * (its bridge answers `INACTIVE_PROJECT_LIMIT`).
  *
- * ON OR OFF. `active` = a packaged build AND (the latch OR the embedded deadline has passed by the
- * clock anchor, with no server "off" in the last `OFF_TRUST_MS`). Dev builds are never active.
+ * ON OR OFF. `active` = a packaged build AND an allowance key AND (the latch OR the embedded deadline
+ * has passed by the clock anchor, with no server "off" in the last `OFF_TRUST_MS`). Dev builds are
+ * never active; nor is a build without the key (before O1): it could verify no allowance, holding
+ * every install at FREE, so it stays unlimited like a build from before the limit.
  * - The latch is the server's word. A check answer with `limits` sets it; a successful check
  *   without them, or a claim answering `not_active`, clears it. Nothing else does: a failed check
  *   gives no answer at all (check.ts `onCheckAnswer`), so being unreachable never turns it off.
@@ -55,6 +56,7 @@ import { clockAnchorMs, isDntEnv, licenseNetworkGate, proForProjectLimit } from 
 import { getDeviceId } from './device-id'
 import { fetchCheck, onCheckAnswer, type LimitsAnswer } from './check'
 import { verifyAllowanceToken } from './project-allowance-token'
+import { PROJECT_ALLOWANCE_PUBLIC_KEY } from './project-allowance-key'
 import { writeFileAtomic } from './fs-atomic'
 import type { MachineHashResult } from './machine-id'
 
@@ -88,7 +90,7 @@ export interface ProjectLimitDeps {
   /** `readMachineHashResult` (machine-id.ts). Read lazily: only by a claim, or at init when a
    *  token is already stored. */
   machineHash: () => Promise<MachineHashResult>
-  /** The allowance public key; defaults to the shipped one. Tests pass their own. */
+  /** The allowance public key; defaults to the shipped one ('' = none: never active). */
   publicKeyPem?: string
   /** Deliver the new state to this machine's own windows — never to relay peers. */
   notify: (s: ProjectLimitState) => void
@@ -162,8 +164,11 @@ function persist(): Promise<void> {
   return track(writes)
 }
 
+/** The key allowance tokens are verified with; '' = none (before O1) = never active. */
+const allowanceKey = (): string => deps.publicKeyPem ?? PROJECT_ALLOWANCE_PUBLIC_KEY
+
 function isActive(): boolean {
-  if (!platform().isPackaged) return false
+  if (!platform().isPackaged || !allowanceKey()) return false
   if (stored.latched) return true
   const anchor = clockAnchorMs()
   return anchor >= PROJECT_LIMIT_DEADLINE_MS && !(stored.offAt !== undefined && anchor - stored.offAt < OFF_TRUST_MS)
@@ -174,7 +179,7 @@ function allowance(): number | null {
   const v = verifyAllowanceToken(
     stored.token,
     { deviceId: getDeviceId(), machine: osMachine, epoch: stored.epoch },
-    deps.publicKeyPem
+    allowanceKey()
   )
   return v ? v.allowance : null
 }
@@ -319,7 +324,7 @@ async function runClaim(): Promise<ClaimResult> {
     if (typeof token !== 'string' || !isFree(free) || !isEpoch(epoch)) return fail('server')
     // A 2xx is only an allowance if its token is one: signed, for this device, the machine we sent
     // and the epoch the reply states.
-    if (!verifyAllowanceToken(token, { deviceId, machine: machine.hash, epoch }, deps.publicKeyPem)) {
+    if (!verifyAllowanceToken(token, { deviceId, machine: machine.hash, epoch }, allowanceKey())) {
       return fail('server')
     }
     if (machine.fromOs) osMachine = machine.hash
@@ -364,7 +369,7 @@ export function initProjectLimit(d: ProjectLimitDeps): ProjectLimitHandle {
   onCheckAnswer(onAnswer)
 
   // Only with a stored token: the limit was on once (an undo via the check feed keeps the token).
-  if (stored.token) {
+  if (stored.token && allowanceKey()) {
     track(
       deps
         .machineHash()

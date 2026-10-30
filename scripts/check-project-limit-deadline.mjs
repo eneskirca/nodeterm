@@ -11,7 +11,8 @@
 //
 // The FLIP release (frozen) also needs owner step O1 done: `PROJECT_ALLOWANCE_PUBLIC_KEY`
 // (src/core/project-allowance-key.ts) ships as '' until the owner pastes the public half of the
-// server's `PROJECT_ALLOWANCE_PRIVATE_KEY`, and with '' every allowance token verifies to nothing.
+// server's `PROJECT_ALLOWANCE_PRIVATE_KEY`, and with '' the limit never switches on (core treats a
+// keyless build as unlimited, like one from before the limit).
 // So a frozen release is refused while the key is empty, unreadable, not an Ed25519 public-key PEM,
 // or a PRIVATE key. An unfrozen release does not look at the key at all.
 //

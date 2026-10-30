@@ -75,11 +75,17 @@ gate. How that is held, layer by layer:
 In core (`src/core/project-limit.ts`, `isActive`):
 
 ```
-active = packaged build AND (latched OR (anchor >= PROJECT_LIMIT_DEADLINE_MS AND NOT a server "off" in the last 24 h))
+active = packaged build AND allowance key configured
+         AND (latched OR (anchor >= PROJECT_LIMIT_DEADLINE_MS AND NOT a server "off" in the last 24 h))
 ```
 
 - **Packaged only.** `npm run dev` builds are never active, with or without `NODETERM_API_BASE`.
   The Server Edition never runs this module at all (see Three surfaces).
+- **Only with the allowance key.** A build whose `PROJECT_ALLOWANCE_PUBLIC_KEY` is `''` (shipped
+  before owner step O1) is never active, whatever the server or the deadline says: it could verify
+  no allowance, so every claim would fail and every install — legacy ones included — would be held
+  at FREE. It stays unlimited instead, exactly like a build from before the limit existed (no claim,
+  no dialog, no machine read).
 - **The latch is the server's word.** A check reply carrying `limits: { projects: { free, epoch } }`
   sets it (and stores FREE and the epoch). It is cleared by exactly two answers: a successful,
   *check-shaped* reply (a `messages` array and an `update` object) **without** `limits`, or a claim
@@ -270,14 +276,11 @@ What enforces it:
 - **On the server**, without the private key the claim route does not exist (404) and `/v1/check`
   never sends `limits`, whatever the cutoff says.
 
-**Do O1 before the next release you expect people to still be running at the flip — not just
-before the flip release.** While the key is `''` every allowance token verifies to `null`. Nothing
-happens while the limit is off, but a build with an empty key that is still in use when the server
-switches the limit on fails every claim (the server's signed token does not verify, which reads as a
-server error): its installs — legacy ones included — are held at FREE behind "Couldn't check your
-free allowance" until they update. (Nothing is closed; new opens above FREE are refused.) The
-guard only enforces the key at the flip release, because refusing every release before O1 would
-block unrelated releases; so the timing is the owner's to keep.
+**A build shipped with `''` is never active** — it stays unlimited, like a build from before the
+limit (see How `active` is computed), even after the flip. So every release made before O1 adds to
+the installs the limit will never reach until they update (Accepted gaps). The guard enforces the
+key only at the flip release, because refusing every release before O1 would block unrelated
+releases; doing O1 early is the owner's call.
 
 ### NODE_EXTRA_CA_CERTS / NODE_OPTIONS (owner's call before Release B)
 
@@ -325,7 +328,7 @@ The decision is enes's. Device check 10 below gathers the evidence.
 - **O3 — Release B:** confirm server#18 is deployed (`/v1/license/status` answers 502 when keygen is
   down — otherwise a keygen outage drops paying users into the limit); merge and deploy the server
   claims with `PROJECT_ALLOWANCE_PRIVATE_KEY` set **and the cutoff still unset**; release this
-  client — with the O1 public key pasted, or its installs will fail every claim after the flip.
+  client — with the O1 public key pasted, or its installs stay unlimited even after the flip.
   Every later release before the flip bumps `PROJECT_LIMIT_DEADLINE_MS` (the release workflow
   refuses otherwise).
 - **O4 — flip day:**
@@ -377,7 +380,8 @@ The decision is enes's. Device check 10 below gathers the evidence.
 
 ## Accepted gaps (by design, and found while building)
 
-1. Builds released before Release B stay unlimited forever.
+1. Builds released before Release B stay unlimited forever — and so do builds released without the
+   allowance public key (before owner step O1), which are never active.
 2. The Server Edition is unlimited.
 3. Hand-editing `workspace.json` to un-close projects bypasses the gate; never clamped. The same
    class: a hand-edited future `offAt` in `project-limit.json` suppresses the deadline.
@@ -412,9 +416,10 @@ Rough edges a user can notice (behaviour, not bypasses):
 
 Run on **packaged** builds (a dev build is never active). For the server runs, launch the app with
 `NODETERM_API_BASE=<staging URL>` in its environment (start the binary from a terminal — on macOS
-`<app>/Contents/MacOS/nodeterm`, not `open`, which drops the environment). The staging server must
-hold the private half of the public key compiled into that build (O1): with a mismatched pair every
-claim's token fails verification and reads as "Couldn't check your free allowance".
+`<app>/Contents/MacOS/nodeterm`, not `open`, which drops the environment). The build must carry an
+allowance public key — without one it is never active, and the server runs show nothing — and the
+staging server must hold its private half: with a mismatched pair every claim's token fails
+verification and reads as "Couldn't check your free allowance".
 
 **Run 1 — packaged builds, no server needed**
 

@@ -5,6 +5,7 @@ import path from 'path'
 import { IPC } from '../shared/ipc'
 import { PROJECT_LIMIT_DEADLINE_MS, type ClaimResult, type ProjectLimitState } from '../shared/project-limit'
 import { machineHashOf, type MachineHashResult } from './machine-id'
+import { PROJECT_ALLOWANCE_PUBLIC_KEY } from './project-allowance-key'
 import { makeFakeUserDataDir, type FakePlatform } from './platform-fake'
 
 // The Pro test needs a real entitlement token: license.ts verifies against this key.
@@ -130,6 +131,8 @@ async function boot(
     file?: unknown
     openProjects?: () => number | undefined
     machineHash?: () => Promise<MachineHashResult>
+    /** The allowance key passed to core: the test key unless given; `undefined` = the shipped key. */
+    publicKeyPem?: string
     wait?: boolean
   } = {}
 ): Promise<Booted> {
@@ -146,7 +149,11 @@ async function boot(
   const handle = mod.initProjectLimit({
     openProjects: opts.openProjects ?? (() => 3),
     machineHash: opts.machineHash ?? machineSpy,
-    publicKeyPem: ALLOWANCE_PUB,
+    ...('publicKeyPem' in opts
+      ? opts.publicKeyPem === undefined
+        ? {}
+        : { publicKeyPem: opts.publicKeyPem }
+      : { publicKeyPem: ALLOWANCE_PUB }),
     notify: (s) => notified.push(s)
   })
   booted = {
@@ -201,6 +208,34 @@ afterEach(async () => {
 })
 
 describe('project limit: on or off', () => {
+  it('is never active without the allowance key — latched, past the deadline, told "on" — and claims nothing', async () => {
+    // Such a build could verify no allowance: every claim would fail and every install, legacy ones
+    // included, would be held at FREE. It stays unlimited instead, like a build from before the limit.
+    vi.setSystemTime(AFTER)
+    const file = { latched: true, free: 5, epoch: 1, token: allowanceToken() }
+    const { handle } = await boot({ publicKeyPem: '', file })
+    expect(handle.state().active).toBe(false)
+    await answer(checkOn(5, 1))
+    expect(handle.state().active).toBe(false)
+    expect(notified.every((s) => !s.active)).toBe(true)
+    fetchMock.mockClear()
+    expect(await handle.claim()).toEqual({ ok: true, state: handle.state() })
+    expect(fetchMock).not.toHaveBeenCalled()
+    // Not even the boot-time machine read a stored token would otherwise start.
+    expect(machineSpy).not.toHaveBeenCalled()
+
+    // The control: the same install with a key is on.
+    const keyed = await boot({ file })
+    expect(keyed.handle.state().active).toBe(true)
+  })
+
+  it('reads the shipped key when none is passed', async () => {
+    vi.setSystemTime(AFTER)
+    const { handle } = await boot({ publicKeyPem: undefined, file: { latched: true } })
+    // '' until owner step O1, so off; on once the real key is pasted.
+    expect(handle.state().active).toBe(PROJECT_ALLOWANCE_PUBLIC_KEY !== '')
+  })
+
   it('is inactive in an unpackaged build even when latched', async () => {
     vi.setSystemTime(AFTER)
     const { handle } = await boot({ packaged: false, file: { latched: true, free: 5, epoch: 1 } })
