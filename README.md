@@ -247,7 +247,7 @@ your logo goes in this grid and on [nodeterm.dev](https://nodeterm.dev), and you
 requests go first.
 
 <p align="center">
-  <b>0 of 10 spots taken</b> · <a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04">Become a Founding Sponsor →</a>
+  <b>1 of 10 spots taken</b> · <a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04">Become a Founding Sponsor →</a>
 </p>
 
 <!-- Taking a spot: replace one open cell (in order, top-left first) with
@@ -258,7 +258,7 @@ requests go first.
      renewing). If a sponsor cancels, raise the limit by one to reopen their spot. -->
 <table>
   <tr>
-    <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
+    <td align="center" width="20%"><a href="https://locomotive.agency/"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/sponsors/locomotive-dark.png" /><img src="docs/assets/sponsors/locomotive.png" alt="LOCOMOTIVE Agency" width="136" /></picture></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
     <td align="center" width="20%"><a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04"><img src="docs/assets/sponsors/open-spot.svg" alt="Open Founding Sponsor spot" width="136" /></a></td>
