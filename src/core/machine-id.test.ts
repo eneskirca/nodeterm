@@ -87,10 +87,18 @@ describe('machineHashOf', () => {
   })
 })
 
-/** A fake OS: records every call; any command or file not in the tables fails like a missing tool. */
+/**
+ * A fake OS: records every call (sleeps included); any command or file not in the tables fails like
+ * a missing tool. An `exec` entry given as a list is a script, one outcome per call (`null` = the
+ * call fails), so a test can make the first read fail and a later one succeed.
+ */
 function fakeOs(
   platform: NodeJS.Platform,
-  opts: { exec?: Record<string, string>; files?: Record<string, string>; hostname?: string } = {}
+  opts: {
+    exec?: Record<string, string | (string | null)[]>
+    files?: Record<string, string>
+    hostname?: string
+  } = {}
 ) {
   const calls: string[] = []
   const deps: MachineIdDeps = {
@@ -98,8 +106,9 @@ function fakeOs(
     exec: async (cmd, args) => {
       const key = [cmd, ...args].join(' ')
       calls.push(`exec ${key}`)
-      const out = opts.exec?.[key]
-      if (out === undefined) throw new Error(`spawn ${cmd} ENOENT`)
+      const entry = opts.exec?.[key]
+      const out = Array.isArray(entry) ? entry.shift() : entry
+      if (out === undefined || out === null) throw new Error(`spawn ${cmd} EAGAIN`)
       return out
     },
     readFile: async (file) => {
@@ -108,18 +117,24 @@ function fakeOs(
       if (out === undefined) throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' })
       return out
     },
-    hostname: () => opts.hostname ?? 'test-host'
+    hostname: () => opts.hostname ?? 'test-host',
+    sleep: async (ms) => {
+      calls.push(`sleep ${ms}`)
+    }
   }
   return { deps, calls }
 }
 
+const IOREG = 'ioreg -rd1 -c IOPlatformExpertDevice'
+const IOREG_CALL = `exec ${IOREG}`
+const OS_HASH = machineHashOf('C0FFEE00-1234-4ABC-9DEF-0123456789AB')
+const FALLBACK_HASH = machineHashOf('host:Mac-Studio.local')
+
 describe('readMachineHashWith', () => {
   it('darwin: hashes the IOPlatformUUID from ioreg', async () => {
-    const { deps, calls } = fakeOs('darwin', {
-      exec: { 'ioreg -rd1 -c IOPlatformExpertDevice': IOREG_SAMPLE }
-    })
-    await expect(readMachineHashWith(deps)).resolves.toBe(machineHashOf('C0FFEE00-1234-4ABC-9DEF-0123456789AB'))
-    expect(calls).toEqual(['exec ioreg -rd1 -c IOPlatformExpertDevice'])
+    const { deps, calls } = fakeOs('darwin', { exec: { [IOREG]: IOREG_SAMPLE } })
+    await expect(readMachineHashWith(deps)).resolves.toBe(OS_HASH)
+    expect(calls).toEqual([IOREG_CALL])
   })
 
   it('win32: hashes the MachineGuid from reg query', async () => {
@@ -154,29 +169,62 @@ describe('readMachineHashWith', () => {
     await expect(readMachineHashWith(deps)).resolves.toBe(machineHashOf('fedcba9876543210fedcba9876543210'))
   })
 
+  it('retries a failed OS read once, after a short delay', async () => {
+    const { deps, calls } = fakeOs('darwin', { exec: { [IOREG]: [null, IOREG_SAMPLE] } })
+    await expect(readMachineHashWith(deps)).resolves.toBe(OS_HASH)
+    expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL])
+  })
+
   it.each([
     ['darwin, ioreg missing', fakeOs('darwin', { hostname: 'Mac-Studio.local' })],
-    ['darwin, ioreg without a UUID', fakeOs('darwin', { exec: { 'ioreg -rd1 -c IOPlatformExpertDevice': '' }, hostname: 'Mac-Studio.local' })],
+    ['darwin, ioreg without a UUID', fakeOs('darwin', { exec: { [IOREG]: '' }, hostname: 'Mac-Studio.local' })],
     ['win32, reg fails', fakeOs('win32', { hostname: 'Mac-Studio.local' })],
     ['linux, both files missing', fakeOs('linux', { hostname: 'Mac-Studio.local' })],
     ['an unknown platform', fakeOs('freebsd', { hostname: 'Mac-Studio.local' })]
   ])('%s: hashes host:<hostname>, never returns the raw fallback', async (_label, { deps }) => {
     const hash = await readMachineHashWith(deps)
-    expect(hash).toBe(machineHashOf('host:Mac-Studio.local'))
+    expect(hash).toBe(FALLBACK_HASH)
     expect(hash).toMatch(HEX64)
+  })
+
+  it('falls back only after both attempts failed', async () => {
+    const { deps, calls } = fakeOs('darwin', { hostname: 'Mac-Studio.local' })
+    await expect(readMachineHashWith(deps)).resolves.toBe(FALLBACK_HASH)
+    expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL])
   })
 })
 
 describe('readMachineHash', () => {
   afterEach(() => setMachineIdDepsForTests(null))
 
-  it('reads the OS once and memoizes the promise', async () => {
-    const { deps, calls } = fakeOs('linux', { files: { '/etc/machine-id': MACHINE_ID_FILE } })
+  it('memoizes a successful OS read: one exec across calls, concurrent callers share it', async () => {
+    const { deps, calls } = fakeOs('darwin', { exec: { [IOREG]: IOREG_SAMPLE } })
     setMachineIdDepsForTests(deps)
     const first = readMachineHash()
     expect(readMachineHash()).toBe(first)
-    await expect(first).resolves.toBe(machineHashOf('0123456789abcdef0123456789abcdef'))
-    await readMachineHash()
-    expect(calls).toEqual(['read /etc/machine-id'])
+    await expect(first).resolves.toBe(OS_HASH)
+    expect(readMachineHash()).toBe(first)
+    await expect(readMachineHash()).resolves.toBe(OS_HASH)
+    expect(calls).toEqual([IOREG_CALL])
+  })
+
+  it('a first read that fails then succeeds on retry returns the OS hash', async () => {
+    const { deps, calls } = fakeOs('darwin', { exec: { [IOREG]: [null, IOREG_SAMPLE] } })
+    setMachineIdDepsForTests(deps)
+    await expect(readMachineHash()).resolves.toBe(OS_HASH)
+    await expect(readMachineHash()).resolves.toBe(OS_HASH)
+    expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL])
+  })
+
+  it('does not memoize the fallback: a later call that reads the OS returns and keeps the OS hash', async () => {
+    const { deps, calls } = fakeOs('darwin', {
+      exec: { [IOREG]: [null, null, IOREG_SAMPLE] },
+      hostname: 'Mac-Studio.local'
+    })
+    setMachineIdDepsForTests(deps)
+    await expect(readMachineHash()).resolves.toBe(FALLBACK_HASH)
+    await expect(readMachineHash()).resolves.toBe(OS_HASH)
+    await expect(readMachineHash()).resolves.toBe(OS_HASH)
+    expect(calls).toEqual([IOREG_CALL, 'sleep 250', IOREG_CALL, IOREG_CALL])
   })
 })

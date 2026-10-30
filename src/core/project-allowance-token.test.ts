@@ -126,7 +126,11 @@ describe('verifyAllowanceToken', () => {
     ['empty signature', `${mint().split('.')[0]}.`],
     ['a signed non-object payload', signRaw(42)],
     ['a signed null payload', signRaw(null)],
-    ['a signed non-JSON payload', signText('not json')]
+    ['a signed non-JSON payload', signText('not json')],
+    // A hand-edited or corrupted token file can hand over any JSON value, whatever the type says.
+    ['a number', 123 as unknown as string],
+    ['an object', {} as unknown as string],
+    ['null', null as unknown as string]
   ])('returns null (never throws) for %s', (_label, token) => {
     expect(verifyAllowanceToken(token, EXPECT, PUB)).toBeNull()
   })

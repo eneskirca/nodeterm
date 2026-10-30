@@ -5,6 +5,14 @@
  * claims an allowance — and why the raw id never leaves this module: not logged, not returned, not
  * sent. Only the hash goes to the server, and the server refuses anything that is not 64 lowercase
  * hex, so every path here — the fallback included — ends in `machineHashOf`.
+ *
+ * Only a hash that came from the OS is memoized. A failed read is retried once, and if that fails
+ * too the `host:<hostname>` fallback is returned but NOT kept: a timeout or a spawn hiccup is not
+ * evidence that this machine has no id, and memoizing it would give the process the wrong identity.
+ * The stored token would then stop verifying, and a claim made in that state would rebind the
+ * allowance to the hostname hash. The next normal launch would then mismatch it, and the server's
+ * once-per-30-days rebind limit could hold the user at FREE on their own machine. So the next call
+ * asks the OS again.
  */
 import { execFile } from 'child_process'
 import { promises as fs } from 'fs'
@@ -14,6 +22,8 @@ import crypto from 'node:crypto'
 /** Part of the wire contract with nodeterm-server: changing it rebinds every claimed allowance. */
 const MACHINE_HASH_SALT = 'nodeterm-project-allowance-v1:'
 const EXEC_TIMEOUT_MS = 5000
+/** Wait before the one retry of a failed OS read. */
+const RETRY_DELAY_MS = 250
 
 const UUID = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 const IOREG_UUID_RE = new RegExp(`"IOPlatformUUID"\\s*=\\s*"(${UUID})"`)
@@ -48,6 +58,7 @@ export interface MachineIdDeps {
   exec(cmd: string, args: string[]): Promise<string>
   readFile(file: string): Promise<string>
   hostname(): string
+  sleep(ms: number): Promise<void>
 }
 
 const realDeps: MachineIdDeps = {
@@ -59,7 +70,8 @@ const realDeps: MachineIdDeps = {
       )
     }),
   readFile: (file) => fs.readFile(file, 'utf8'),
-  hostname: () => os.hostname()
+  hostname: () => os.hostname(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function readRawMachineId(deps: MachineIdDeps): Promise<string | null> {
@@ -88,10 +100,17 @@ async function readRawMachineId(deps: MachineIdDeps): Promise<string | null> {
   return null
 }
 
-/** The machine hash, read through `deps`. Never rejects: any failure hashes `host:<hostname>`. */
-export async function readMachineHashWith(deps: MachineIdDeps): Promise<string> {
-  const raw = await readRawMachineId(deps)
-  if (raw) return machineHashOf(raw)
+/** The hash of the OS machine id, retrying a failed read once; null when both attempts failed. */
+async function readOsMachineHash(deps: MachineIdDeps): Promise<string | null> {
+  let raw = await readRawMachineId(deps)
+  if (!raw) {
+    await deps.sleep(RETRY_DELAY_MS)
+    raw = await readRawMachineId(deps)
+  }
+  return raw ? machineHashOf(raw) : null
+}
+
+function fallbackHash(deps: MachineIdDeps): string {
   let host = ''
   try {
     host = deps.hostname()
@@ -101,17 +120,40 @@ export async function readMachineHashWith(deps: MachineIdDeps): Promise<string> 
   return machineHashOf('host:' + host)
 }
 
-let deps: MachineIdDeps = realDeps
-let memo: Promise<string> | null = null
+/** The machine hash, read through `deps` (no memo). Never rejects: two failed reads hash
+ *  `host:<hostname>`. */
+export async function readMachineHashWith(deps: MachineIdDeps): Promise<string> {
+  return (await readOsMachineHash(deps)) ?? fallbackHash(deps)
+}
 
-/** This machine's hash, read from the OS once per process (memoized). */
+let deps: MachineIdDeps = realDeps
+/** Settled to a hash that came from the OS — kept for the life of the process. */
+let memo: Promise<string> | null = null
+/** The attempt in progress, shared by concurrent callers; cleared when it settles. */
+let inFlight: Promise<string> | null = null
+
+/** This machine's hash. An OS-read hash is memoized; the fallback is returned but not kept. */
 export function readMachineHash(): Promise<string> {
-  memo ??= readMachineHashWith(deps)
-  return memo
+  if (memo) return memo
+  if (inFlight) return inFlight
+  const d = deps
+  const attempt: Promise<string> = readOsMachineHash(d)
+    .catch(() => null)
+    .then((hash) => {
+      // A test reset while this was in flight leaves it un-memoized.
+      const current = inFlight === attempt
+      if (current) inFlight = null
+      if (hash === null) return fallbackHash(d)
+      if (current) memo = attempt
+      return hash
+    })
+  inFlight = attempt
+  return attempt
 }
 
 /** Test seam: swap the OS readers (null restores the real ones) and drop the memo. */
 export function setMachineIdDepsForTests(next: MachineIdDeps | null): void {
   deps = next ?? realDeps
   memo = null
+  inFlight = null
 }

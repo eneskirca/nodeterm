@@ -34,7 +34,8 @@ export function verifyAllowanceToken(
   expect: { deviceId: string; machine: string; epoch?: number },
   publicKeyPem: string = PROJECT_ALLOWANCE_PUBLIC_KEY
 ): VerifiedAllowance | null {
-  if (!token || !publicKeyPem) return null
+  // A runtime guard, not a type one: the token comes off disk, where any JSON value can stand in.
+  if (typeof token !== 'string' || !token || !publicKeyPem) return null
   const dot = token.indexOf('.')
   if (dot < 1) return null
   const p = token.slice(0, dot)
