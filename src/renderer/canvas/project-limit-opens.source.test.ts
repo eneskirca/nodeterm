@@ -95,3 +95,55 @@ describe('project-limit gate placement in Canvas', () => {
     expect(between('const reopenProjectUnchecked = useCallback(', CALLBACK_END)).not.toContain('gateProjectOpen')
   })
 })
+
+/** The early-handled `open-project` block: from its guard to the next section rule. */
+function openProjectBlock(): string {
+  return between(`if (verb === 'open-project')`, '// ──')
+}
+
+describe('project-limit gate in the agent open-project verb (Task 19)', () => {
+  const OPENS = "opensProject(useProjects.getState().projects, { kind: 'register', cwd: resolvedCwd })"
+  const REFUSE = /if \(!opLimit\.ok\) \{\s+reply\(\{ ok: false, error: opLimit\.message \}\)\s+return/
+
+  it('asks before the probe and the consent planning, only for a registration that opens a project', () => {
+    const body = openProjectBlock()
+    expect(body).toContain(`const opOpens = (): boolean =>\n          ${OPENS}`)
+    const early = body.indexOf('await checkAgentProjectOpen()')
+    expect(early).toBeGreaterThan(-1)
+    expect(body.match(/\bcheckAgentProjectOpen\(\)/g)).toHaveLength(1)
+    // Guarded: no await at all when the registration opens nothing new, or when the limit allows
+    // at once (always while it is off) — so a path that was synchronous stays synchronous.
+    expect(body).toMatch(
+      /if \(\s*opOpens\(\) &&\s*decideOpen\(useProjectLimit\.getState\(\)\.state, countOpenProjects\(useProjects\.getState\(\)\.projects\)\) !==\s*'allow'\s*\) \{\s*const opLimit = await checkAgentProjectOpen\(\)/
+    )
+    expect(body.slice(early)).toMatch(REFUSE)
+    for (const later of ['api.workspace.probeFolder(resolvedCwd)', 'planOpenProject(', 'setConfirm({']) {
+      expect(body.indexOf(later), later).toBeGreaterThan(early)
+    }
+  })
+
+  it('opFinish re-checks synchronously, ahead of registerProject, and refuses instead of registering', () => {
+    const body = openProjectBlock()
+    const finish = body.slice(body.indexOf('const opFinish'), body.indexOf('// The probe only matters'))
+    const recheck = finish.indexOf('const opLimit = opOpens() ? recheckAgentProjectOpen() : null')
+    expect(recheck).toBeGreaterThan(-1)
+    expect(finish.indexOf('registerProject(')).toBeGreaterThan(recheck)
+    expect(finish.slice(recheck)).toMatch(
+      /if \(opLimit && !opLimit\.ok\) \{\s+reply\(\{ ok: false, error: opLimit\.message \}\)\s+return null/
+    )
+    // The confirm dialog sits before this point; nothing may sit between the re-check and the write.
+    expect(finish).not.toMatch(/\bawait\b|\.then\(/)
+    // A refused waived registration announces nothing: it was not registered.
+    expect(body).toMatch(/const opDone = opFinish\(opAdopt\)\s+if \(opDone === null\) return\s+setNotice\(/)
+  })
+
+  it('a headless start into a closed project restores its tab only when the limit allows', () => {
+    const body = between('startNodesHeadlessRef.current = async (project, nodes) => {', 'runQueuedNodeRef.current = ')
+    expect(body).toMatch(
+      /shouldUnhideForHeadlessStart\(\s*storedProject,\s*projectsNow\.activeProjectId,\s*useProjectLimit\.getState\(\)\.state,\s*projectsNow\.projects\s*\)/
+    )
+    expect(body).toContain('if (unhidden) projectsNow.unhideProject(project.id)')
+    // The limit-blind predicate is never consulted on its own by the canvas.
+    expect(src).not.toMatch(/\bunhidesForHeadlessStart\(/)
+  })
+})

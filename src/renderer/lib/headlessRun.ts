@@ -7,6 +7,7 @@
 import type { CanvasNodeState, PendingLaunch, Project, PtyCreateOptions } from '@shared/types'
 import type { HeadlessLaunchFailure, HeadlessLaunchResult } from '@shared/headless-launch'
 import { HEADLESS_COLS, HEADLESS_ROWS, localNodePtyOptions } from '@shared/node-pty-options'
+import { countOpenProjects, decideOpen, type ProjectLimitState } from '@shared/project-limit'
 import { COLD_OPEN_RUN_HINT } from './coldOpen'
 
 export type RunVerbPlan =
@@ -107,6 +108,26 @@ export function unhidesForHeadlessStart(
   activeProjectId: string
 ): boolean {
   return !!project.closed && !project.ssh && activeProjectId !== ''
+}
+
+/**
+ * `unhidesForHeadlessStart`, under the free-tier project limit
+ * (docs/superpowers/specs/2026-10-29-free-tier-project-limit-design.md). Restoring a closed tab
+ * makes a project open, so at the limit the tab simply stays in Recently closed: the session still
+ * starts, nothing is refused and no dialog is shown (nobody pressed anything), and the reply keeps
+ * its "reopen it from the welcome screen" hint — exactly the branch where the predicate says no.
+ * A claim still due is a no as well: a headless start never claims. While the limit is off,
+ * `decideOpen` always allows, so this answers what the predicate answers. A relay tab never counts
+ * as open (spec §3), so un-closing one is not an open the limit has a say in.
+ */
+export function shouldUnhideForHeadlessStart(
+  project: { closed?: boolean; ssh?: Project['ssh']; remote?: Project['remote'] },
+  activeProjectId: string,
+  limit: ProjectLimitState,
+  projects: readonly { closed?: boolean; remote?: boolean }[]
+): boolean {
+  if (!unhidesForHeadlessStart(project, activeProjectId)) return false
+  return !!project.remote || decideOpen(limit, countOpenProjects(projects)) === 'allow'
 }
 
 export interface HeadlessStartDeps {

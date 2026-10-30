@@ -288,7 +288,8 @@ import { SAS_COMPARE_HINT } from '@shared/remote/sas'
 import { promptDialog } from '../components/promptDialog'
 import { UpgradeDialog } from '../components/UpgradeDialog'
 import { ProjectLimitDialog } from '../components/ProjectLimitDialog'
-import { gateProjectOpen } from '../lib/projectLimitGate'
+import { checkAgentProjectOpen, gateProjectOpen, recheckAgentProjectOpen } from '../lib/projectLimitGate'
+import { countOpenProjects, decideOpen } from '@shared/project-limit'
 import { opensProject, type OpenAction } from '../lib/projectOpens'
 import { LiveLinkDialog } from '../components/LiveLinkDialog'
 import { requireProOr } from '../state/upgradeGate'
@@ -878,8 +879,8 @@ import {
   mergeRunNow,
   planRunVerb,
   savePendingAnywhere,
+  shouldUnhideForHeadlessStart,
   startHeadless,
-  unhidesForHeadlessStart,
   type HeadlessStartBatch
 } from '../lib/headlessRun'
 import {
@@ -13602,11 +13603,37 @@ export function Canvas() {
             return
           }
         }
+        // The free-tier project limit (lib/projectLimitGate.ts), asked only when this registration
+        // makes a project open that was not (lib/projectOpens.ts), and asked twice: here, ahead of
+        // the probe and the consent planning, where a limit with no allowance yet may still claim
+        // one; and again in opFinish, in the same tick as registerProject, because the user's
+        // confirm dialog sits between the two — two agents at the edge both pass here, and only the
+        // first to register passes there (plan Review Focus 5). An open the limit allows at once —
+        // every one, while it is off — awaits nothing here, so a path that was synchronous stays so.
+        const opOpens = (): boolean =>
+          opensProject(useProjects.getState().projects, { kind: 'register', cwd: resolvedCwd })
+        if (
+          opOpens() &&
+          decideOpen(useProjectLimit.getState().state, countOpenProjects(useProjects.getState().projects)) !==
+            'allow'
+        ) {
+          const opLimit = await checkAgentProjectOpen()
+          if (!opLimit.ok) {
+            reply({ ok: false, error: opLimit.message })
+            return
+          }
+        }
         // Apply one consent decision: register (create/adopt/idempotent hit) without activating,
         // persist, remember the (caller, project) pair for dialog dedupe — authorization stays
         // main-side — and reply with the id the caller can feed `--project`. Returns the reply's
-        // sentence, so a WAIVED registration can announce exactly what it did.
-        const opFinish = (adoptProbed?: Project): string => {
+        // sentence, so a WAIVED registration can announce exactly what it did — or null when the
+        // project limit refused it at the last moment (already replied; nothing was registered).
+        const opFinish = (adoptProbed?: Project): string | null => {
+          const opLimit = opOpens() ? recheckAgentProjectOpen() : null
+          if (opLimit && !opLimit.ok) {
+            reply({ ok: false, error: opLimit.message })
+            return null
+          }
           const r = useProjects.getState().registerProject({
             resolvedCwd,
             name: args.name,
@@ -13651,6 +13678,7 @@ export function Canvas() {
         if (opWaiver.via) {
           // A waived registration still announces itself, naming the waiver that let it through.
           const opDone = opFinish(opAdopt)
+          if (opDone === null) return
           setNotice({
             kind: 'info',
             text: waivedNotice(`Agent "${opTitle}" ${opDone}`, opWaiver.via, ctlProject?.name)
@@ -18803,12 +18831,19 @@ export function Canvas() {
       }
       // A closed project gets its tab back, never the focus (#925 spec §2.5): unhide BEFORE the
       // claim's disk write, so the same write persists it. When it does NOT (the welcome screen,
-      // an SSH project) is `unhidesForHeadlessStart`'s to say; the answer rides back in the batch,
-      // because the reply's "reopen it from the welcome screen" hint stays true unless it acted.
+      // an SSH project, the free-tier project limit) is `shouldUnhideForHeadlessStart`'s to say;
+      // the answer rides back in the batch, because the reply's "reopen it from the welcome
+      // screen" hint stays true unless it acted. At the limit the session still starts.
       const projectsNow = useProjects.getState()
       const storedProject = projectsNow.getProject(project.id)
       const unhidden =
-        !!storedProject && unhidesForHeadlessStart(storedProject, projectsNow.activeProjectId)
+        !!storedProject &&
+        shouldUnhideForHeadlessStart(
+          storedProject,
+          projectsNow.activeProjectId,
+          useProjectLimit.getState().state,
+          projectsNow.projects
+        )
       if (unhidden) projectsNow.unhideProject(project.id)
       const outcomes = await Promise.all(nodes.map((node) => startHeadless(deps, { project, node })))
       const started = outcomes.filter((o) => o.started).map((o) => o.id)

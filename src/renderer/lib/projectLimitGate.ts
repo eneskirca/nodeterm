@@ -54,6 +54,7 @@ export type AgentOpenCheck = { ok: true } | { ok: false; message: string }
 export interface ProjectOpenGate {
   gateProjectOpen(): true | Promise<boolean>
   checkAgentProjectOpen(): Promise<AgentOpenCheck>
+  recheckAgentProjectOpen(): AgentOpenCheck
 }
 
 /** The dialog that explains a failed claim. A repeated `consent_required` right after the user
@@ -159,6 +160,16 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
     void show({ mode: 'limit' }).catch(() => {})
   }
 
+  /** Every agent refusal, from either check: the user is shown the dialog (under showForAgent's
+   *  rules) and the agent gets the one sentence (spec §7.5), so the two checks cannot word it twice. */
+  function refuseAgent(state: ProjectLimitState): AgentOpenCheck {
+    showForAgent()
+    return {
+      ok: false,
+      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options`
+    }
+  }
+
   async function checkAgentProjectOpen(): Promise<AgentOpenCheck> {
     let state = deps.getState()
     let d = decideOpen(state, deps.openCount())
@@ -171,14 +182,19 @@ export function createProjectOpenGate(deps: ProjectOpenGateDeps): ProjectOpenGat
       d = decideOpen(state, deps.openCount())
       if (d === 'allow') return { ok: true }
     }
-    showForAgent()
-    return {
-      ok: false,
-      message: `free plan: ${deps.openCount()} of ${effectiveLimit(state)} projects are open; the user has been shown the options`
-    }
+    return refuseAgent(state)
   }
 
-  return { gateProjectOpen, checkAgentProjectOpen }
+  /** The agent verb's last word, asked in the same tick as its store write: the user's confirm
+   *  dialog sits between `checkAgentProjectOpen` and the registration, and another open may have
+   *  landed meanwhile. Synchronous by construction — it never claims; a claim still due is a
+   *  refusal (the early check had its chance to claim). */
+  function recheckAgentProjectOpen(): AgentOpenCheck {
+    const state = deps.getState()
+    return decideOpen(state, deps.openCount()) === 'allow' ? { ok: true } : refuseAgent(state)
+  }
+
+  return { gateProjectOpen, checkAgentProjectOpen, recheckAgentProjectOpen }
 }
 
 /** The gate's deps bound to the live stores and bridge. Exported for its tests. */
@@ -206,3 +222,6 @@ export const gateProjectOpen = liveGate.gateProjectOpen
 
 /** Whether an agent's `open-project` may proceed; a refusal carries the message to send back. */
 export const checkAgentProjectOpen = liveGate.checkAgentProjectOpen
+
+/** The synchronous re-check immediately before an agent's registration; same refusal message. */
+export const recheckAgentProjectOpen = liveGate.recheckAgentProjectOpen

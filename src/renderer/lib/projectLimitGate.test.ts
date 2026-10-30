@@ -415,6 +415,77 @@ describe('checkAgentProjectOpen — the agent open-project verb', () => {
   })
 })
 
+describe('recheckAgentProjectOpen — the synchronous re-check right before an agent registers', () => {
+  const MESSAGE = 'free plan: 5 of 5 projects are open; the user has been shown the options'
+
+  it('allows in the same tick, with no claim and no dialog, whenever a person would be allowed', () => {
+    for (const [state, open] of [
+      [INACTIVE, 9],
+      [PRO, 9],
+      [CLAIMED_5, 4],
+      [AT_LIMIT, 4]
+    ] as const) {
+      const t = harness(state, open)
+      const gate = createProjectOpenGate(t.deps)
+      // A plain object, not a promise: the caller registers in this very tick.
+      expect(gate.recheckAgentProjectOpen()).toEqual({ ok: true })
+      expect(t.claim).not.toHaveBeenCalled()
+      expect(t.showDialog).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses at the limit with the same message as the async check, and never claims', async () => {
+    const t = harness(CLAIMED_5, 5)
+    const gate = createProjectOpenGate(t.deps)
+    expect(gate.recheckAgentProjectOpen()).toEqual({ ok: false, message: MESSAGE })
+    t.answer('cancel')
+    await settle()
+    t.setNow(1_000_000 + AGENT_DIALOG_QUIET_MS)
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: false, message: MESSAGE })
+    // No allowance yet (a claim would be due): still refused synchronously, still no claim.
+    const u = harness(AT_LIMIT, 5)
+    expect(createProjectOpenGate(u.deps).recheckAgentProjectOpen()).toEqual({ ok: false, message: MESSAGE })
+    expect(u.claim).not.toHaveBeenCalled()
+    expect(t.claim).not.toHaveBeenCalled()
+  })
+
+  it('two agents at the edge end at the limit, not past it (Review Focus 5)', async () => {
+    const t = harness(CLAIMED_5, 4)
+    const gate = createProjectOpenGate(t.deps)
+    // Both pass the early check while the user is still answering their confirm dialogs.
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: true })
+    await expect(gate.checkAgentProjectOpen()).resolves.toEqual({ ok: true })
+    // The first confirm lands: re-checked, registered, the count moves.
+    expect(gate.recheckAgentProjectOpen()).toEqual({ ok: true })
+    t.setOpen(5)
+    // The second one is refused at the store write instead of making a sixth.
+    expect(gate.recheckAgentProjectOpen()).toEqual({ ok: false, message: MESSAGE })
+  })
+
+  it('shows the user the dialog under the same rules as the async check: once per quiet window', async () => {
+    const t = harness(CLAIMED_5, 5)
+    const gate = createProjectOpenGate(t.deps)
+    gate.recheckAgentProjectOpen()
+    expect(t.showDialog.mock.calls).toEqual([[{ mode: 'limit' }]])
+    t.answer('cancel')
+    await settle()
+    // Inside the window — whichever check refuses next — the user is not shown it again.
+    t.setNow(1_000_000 + AGENT_DIALOG_QUIET_MS - 1)
+    await gate.checkAgentProjectOpen()
+    gate.recheckAgentProjectOpen()
+    expect(t.showDialog).toHaveBeenCalledTimes(1)
+    // And never stacked on a dialog that is already up.
+    t.setNow(1_000_000 + AGENT_DIALOG_QUIET_MS)
+    const human = gate.gateProjectOpen()
+    await settle()
+    expect(t.showDialog).toHaveBeenCalledTimes(2)
+    gate.recheckAgentProjectOpen()
+    expect(t.showDialog).toHaveBeenCalledTimes(2)
+    t.answer('cancel')
+    await expect(human).resolves.toBe(false)
+  })
+})
+
 describe('the live bindings', () => {
   beforeEach(() => {
     h.claim.mockReset()
