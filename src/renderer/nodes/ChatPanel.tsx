@@ -1,6 +1,6 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
@@ -56,6 +56,7 @@ import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
 import { assistantTurnEnds } from '../lib/chatThread'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
+import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -807,6 +808,17 @@ export function ChatPanel({
     maybeLoadOlder()
   }
 
+  // Page Up / Page Down page the thread from anywhere in the panel, the composer included
+  // (lib/chatPageKeys.ts). `contains`: a React portal's keydown bubbles here too.
+  const onPageKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const el = msgsRef.current
+    if (!el || e.defaultPrevented || !(e.target instanceof Element) || !e.currentTarget.contains(e.target)) return
+    const direction = chatPageDirection(e, e.target)
+    if (direction === null) return
+    e.preventDefault()
+    pageChatThread(el, direction)
+  }
+
   // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
   // has them. Object identity is enough: `applyTail` carries an unconfirmed send as the same object.
   const queuedRef = useRef(new WeakSet<ChatMessage>())
@@ -957,7 +969,7 @@ export function ChatPanel({
   return (
     // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
     // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
-    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId}>
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPageKey}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
