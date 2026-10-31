@@ -247,6 +247,7 @@ import { NodeLabels } from '../components/kanban/NodeLabels'
 import { MdViewHintButton } from '../components/MdViewHintButton'
 import { mdViewHint } from '../lib/mdViewHint'
 import { transcriptSessionFor } from '../lib/transcriptSession'
+import { NodePromptBar } from './NodePromptBar'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
@@ -6705,6 +6706,8 @@ export function TerminalNode({
           onClose={() => setSearchOpen(false)}
         />
       )}
+
+      {!collapsed && <NodePromptBar nodeId={id} />}
 
       {!collapsed && (
         <NodeLabels

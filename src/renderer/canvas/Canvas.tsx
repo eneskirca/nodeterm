@@ -550,6 +550,7 @@ import { hostChatSend, hostChatSession, hostChatStatus } from '../lib/hostChatQu
 import { chatPaneRefusal } from '../lib/chatPaneGate'
 import { runQueuedNotice } from '../lib/boardRunQueued'
 import { useLaunchDelivery } from '../state/launchDelivery'
+import { recordSubmittedPrompt, useNodePrompts } from '../state/nodePrompts'
 import { useBrowserLease, drivingNodeIds } from '../state/browserLease'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
@@ -7421,6 +7422,7 @@ export function Canvas() {
         // back), so deletion must do both.
         useAgentStatus.getState().remove(n.id)
         useAgentNodes.getState().clearForParent(n.id)
+        useNodePrompts.getState().drop(n.id)
         useAgentNodes.getState().clearLoop(n.id)
         // Permanent deletion ends the node's keep-alive entry too — this funnel removes nodes by
         // setNodes, so handleNodesChange's remove branch never sees them.
@@ -16635,6 +16637,7 @@ export function Canvas() {
         const stored = nodes.find((n) => n.id === id)
         if (stored?.issueRef) logIssueRunEnded(projectId, stored)
         useAgentStatus.getState().remove(id)
+        useNodePrompts.getState().drop(id)
         // Unmount no longer clears the fan-out (issue #402), so a permanent removal must — the
         // node unmounted at the project switch with its cards kept in the store.
         useAgentNodes.getState().clearForParent(id)
@@ -16735,6 +16738,7 @@ export function Canvas() {
           // store still holds for the id (kept across unmounts since issue #402).
           useAgentStatus.getState().remove(nodeId)
           useAgentNodes.getState().clearForParent(nodeId)
+          useNodePrompts.getState().drop(nodeId)
           setConfirm(null)
         }
       })
@@ -17375,6 +17379,7 @@ export function Canvas() {
           // working card there loses it permanently (nothing rehydrates `byId`) while the agent
           // keeps running — and blinds Eco's live-subagent guard into hibernating its parent.
           if (e.newTurn) an.clearFinishedForParent(e.nodeId)
+          recordSubmittedPrompt(e)
           if (e.newTurn && e.task) {
             // Prompt-prefix fallback for /loop|/schedule|/cron when the natural-language
             // phrasing doesn't trigger the tool-based (recurring) detection.
@@ -19029,7 +19034,10 @@ export function Canvas() {
         // outlives the project entry (it is a file in the project's folder), so the run does not
         // stay open in the issue's history forever.
         if (n.issueRef) logIssueRunEnded(id, n)
-        if (!heldElsewhere.has(n.id)) useAgentStatus.getState().remove(n.id)
+        if (!heldElsewhere.has(n.id)) {
+          useAgentStatus.getState().remove(n.id)
+          useNodePrompts.getState().drop(n.id)
+        }
         useAgentNodes.getState().clearForParent(n.id)
       })
       // SSH project: the per-node `transport.destroy` above only ends the REMOTE session for
