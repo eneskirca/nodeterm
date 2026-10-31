@@ -1,6 +1,6 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
@@ -57,6 +57,7 @@ import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
 import { assistantTurnEnds } from '../lib/chatThread'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
+import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -436,6 +437,7 @@ export function ChatPanel({
     // history pages in on scroll-up, and a reload merges by key instead of discarding it.
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       maxBytes: CHAT_TAIL_PAGE_BYTES,
+      thinking: true,
       // A hook-driven refresh the user did not ask for: an expensive reader (opencode's export) may
       // space these out. An open, ↻, Retry or a held-request rebind is never marked.
       ...(live && !rebind ? { background: true } : {})
@@ -532,7 +534,8 @@ export function ChatPanel({
     }
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       before,
-      maxBytes: CHAT_OLDER_PAGE_BYTES
+      maxBytes: CHAT_OLDER_PAGE_BYTES,
+      thinking: true
     }).then(
       (res) => {
         if (token !== olderReqRef.current) return
@@ -820,6 +823,17 @@ export function ChatPanel({
     maybeLoadOlder()
   }
 
+  // Page Up / Page Down page the thread from anywhere in the panel, the composer included
+  // (lib/chatPageKeys.ts). `contains`: a React portal's keydown bubbles here too.
+  const onPageKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const el = msgsRef.current
+    if (!el || e.defaultPrevented || !(e.target instanceof Element) || !e.currentTarget.contains(e.target)) return
+    const direction = chatPageDirection(e, e.target)
+    if (direction === null) return
+    e.preventDefault()
+    pageChatThread(el, direction)
+  }
+
   const scrollToLatest = () => {
     const el = msgsRef.current
     if (!el) return
@@ -978,7 +992,7 @@ export function ChatPanel({
   return (
     // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
     // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
-    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId}>
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPageKey}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
@@ -1049,11 +1063,11 @@ export function ChatPanel({
                 p.kind === 'text' ? (
                   <MarkdownText key={j} text={p.text} />
                 ) : p.kind === 'thinking' ? (
-                  // Reasoning, not the answer: collapsed by default so it cannot be mistaken for it.
-                  <details key={j} className="term-chat__thinking">
-                    <summary>Thinking</summary>
+                  // Claude's thinking summary — the "thinking out loud" line its TUI prints between
+                  // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
+                  <div key={j} className="term-chat__thinking">
                     <MarkdownText text={p.text} />
-                  </details>
+                  </div>
                 ) : p.body ? (
                   // A plan / question is the content itself, not plumbing: shown expanded, in full,
                   // flowing with the thread (no inner scroll box). The answer stays under it.
