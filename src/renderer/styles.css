@@ -15657,6 +15657,106 @@ button.pull-checks__name {
   flex: 0 0 46px;
 }
 
+/* -- chat-view scene (⌘M on an agent node; the JS interval / the real keystroke flips .is-chat) --
+   The node is the agents scene's .onb-node held static; the two faces crossfade inside a fixed
+   body so the node never changes size, and the chat bubbles mirror .term-chat__msg--user /
+   --assistant (accent bubble right, tinted bubble left) so the tour draws what ⌘M shows. */
+.onb-scene--chat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+}
+.onb-cview__keys .onb-kbd {
+  animation: none;
+  transition: transform 0.12s ease, border-bottom-width 0.12s ease;
+}
+/* the chord "goes down" on every flip — the keys are what did it */
+.onb-cview__keys.is-chat .onb-kbd {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+.onb-cview__mode {
+  margin-left: auto;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.onb-cview__body {
+  position: relative;
+  height: 112px;
+}
+.onb-cview__face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px 10px;
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+.onb-cview__term {
+  opacity: 1;
+  transform: translateY(0);
+}
+.onb-cview__chat {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.onb-cview.is-chat .onb-cview__term {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.onb-cview.is-chat .onb-cview__chat {
+  opacity: 1;
+  transform: translateY(0);
+}
+.onb-cview__prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: Menlo, Monaco, monospace;
+  font-size: 10px;
+  color: rgba(235, 235, 245, 0.85);
+  margin-bottom: 2px;
+}
+.onb-cview__msg {
+  max-width: 82%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.onb-cview__msg--user {
+  align-self: flex-end;
+  background: var(--accent, #0a84ff);
+  color: #fff;
+}
+.onb-cview__msg--assistant {
+  align-self: flex-start;
+  width: 72%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.onb-cview__compose {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 6px;
+}
+.onb-cview__compose .onb-caret {
+  height: 11px;
+}
+
 /* -- notify scene -- */
 /* --- Step: the notch capsule (SceneNotch) ------------------------------------------------
    A laptop lid seen from the front: the black top bar carries the notch, the capsule grows out
@@ -16023,6 +16123,10 @@ button.pull-checks__name {
     max-width: 100%;
   }
   .onb-mini {
+    transition: none;
+  }
+  .onb-cview__face,
+  .onb-cview__keys .onb-kbd {
     transition: none;
   }
   .onb-phone,
