@@ -225,3 +225,8 @@ export function normalizePrWaitHold(value: unknown): PrWaitHold | undefined {
 export function formatPrWaits(hold: Pick<PrWaitHold, 'waits'>): string {
   return hold.waits.map((w) => `PR #${w.number} ${w.until}`).join(', ')
 }
+
+/** An invalid hold (read from a corrupt or hostile file) is already past its deadline. */
+export function prHoldExpired(hold: PrWaitHold, now: number): boolean {
+  return !!hold.invalid || now >= hold.deadlineAt
+}

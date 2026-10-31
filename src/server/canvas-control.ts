@@ -198,6 +198,7 @@ export async function initServerCanvasControl(
     agentIdOf: (nodeId) => mirrorEntry(nodeId)?.agentId,
     outcomeOf: (nodeId) => stationOutcomes.get(nodeId),
     handedOver: (nodeId) => stationHandovers.isHandedOver(nodeId),
+    handoverOf: (nodeId) => stationHandovers.list().find((r) => r.nodeId === nodeId),
     // NOT `workspaceExternalChange`. That channel means "somebody else wrote this file" and the
     // renderer answers it with `decideExternalChange`, which compares the whole project shell —
     // and `ropes` is part of it, so every headless spawn (one appended `ctrl-…` rope) read as a
@@ -292,6 +293,7 @@ export async function initServerCanvasControl(
     color: (sourceNodeId, args) => factory.color(sourceNodeId, args),
     sticky: (sourceNodeId, args) => factory.sticky(sourceNodeId, args),
     run: (sourceNodeId, args, verified) => factory.run(sourceNodeId, args, verified),
+    list: (sourceNodeId, args) => factory.list(sourceNodeId, args),
     // A station's report about ITSELF (core/station-outcome-store.ts, the same handler the desktop
     // runs). A report can release an armed dependent, so the factory re-evaluates its arms.
     reportOutcome: (sourceNodeId, args, verified) =>

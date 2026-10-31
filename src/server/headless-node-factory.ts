@@ -55,6 +55,10 @@ import { isRemoteSessionNode } from '../shared/worktree'
 import { issueLaunchPrompt, resolveIssueArg, type IssueRef } from '../shared/github-issue-ref'
 import { runEndedEvent, runStartedEvent } from '../shared/issue-runs'
 import type { BoardLogEntry } from '../shared/types'
+import { controlListingText, storedNodeListing } from '../shared/control-listing'
+import { listGeometryRequested } from '../shared/geometry-verbs'
+import type { StationHandoverRecord } from '../shared/station-handover'
+import type { StationOutcomeRecord as ListedOutcome } from '../shared/station-outcome'
 import { UNKNOWN_CODEX_CLI_CAPS } from '../shared/types'
 import type {
   BridgeLink,
@@ -140,6 +144,9 @@ export interface HeadlessNodeFactoryDeps {
    *  satisfied, whatever its state reads: its `done` is the PREVIOUS task's. Absent = nothing is
    *  ever handed over (the pre-tracker behaviour). */
   handedOver?(nodeId: string): boolean
+  /** The same station's hand-over record, for `list` to say WHAT it is held on (new work, or tasks
+   *  still running in its background). Absent = `list` names no hand-over wait. */
+  handoverOf?(nodeId: string): StationHandoverRecord | undefined
   env?: Record<string, string | undefined>
   now?: () => number
   /**
@@ -1266,6 +1273,70 @@ export class HeadlessNodeFactory {
         result: { groupId: grouped.groupId, grouped: resolvable, skipped }
       }
     })
+  }
+
+  /**
+   * `list`: the caller's canvas as the desktop's `list` answers it — the SAME rows and text
+   * (@shared/control-listing), built from the saved project and this edition's runtime facts (the
+   * status mirror, #521's errored turns, station reports and hand-overs). Two desktop-only facts are
+   * never claimed: DROPPED and a stalled delivery are measured by a browser tab, so a row falls back
+   * to the agent's mirrored state (or AGENT STATUS UNCONFIRMED), never a guessed one.
+   *
+   * Visibility follows this edition's ownership rule: the caller's own node and the nodes it spawned
+   * during this server run. Rows are judged against the WHOLE project (a dep the caller cannot see
+   * is still not "deleted"), then filtered.
+   */
+  async list(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply> {
+    const flagError = unsupportedFlags(args, new Set(['geometry', 'project']))
+    if (flagError) return { ok: false, error: `list: ${flagError}` }
+    const workspace = await this.readWorkspace()
+    const source = sourceProject(workspace, sourceNodeId)
+    if (!source) return { ok: false, error: 'source node is not in exactly one saved project' }
+    if (!sourceCanControl(source.node, this.deps.agentIdOf)) {
+      return { ok: false, error: 'source node is not a control-capable agent' }
+    }
+    if (args.project !== undefined && args.project !== source.project.id) {
+      return {
+        ok: false,
+        error: `list-project-refused: Server Edition lists only the caller's own project (${source.project.id})`
+      }
+    }
+    const nodes = source.project.nodes
+    const statuses: Record<string, { state?: AgentState; lastTurnError?: { at: number } }> = {}
+    const outcomes: Record<string, ListedOutcome> = {}
+    const handovers: Record<string, StationHandoverRecord> = {}
+    for (const n of nodes) {
+      const state = this.deps.stateOf(n.id)
+      statuses[n.id] = { state, ...(this.lastTurnErrored.has(n.id) ? { lastTurnError: { at: 0 } } : {}) }
+      const outcome = this.deps.outcomeOf?.(n.id)
+      if (outcome) outcomes[n.id] = outcome
+      const handover = this.deps.handoverOf?.(n.id)
+      if (handover) handovers[n.id] = handover
+    }
+    const rows = storedNodeListing(
+      nodes.map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        title: n.title,
+        pendingLaunch: n.pendingLaunch,
+        agentId: effectiveAgentId(n, this.deps.agentIdOf),
+        issueRef: n.issueRef,
+        position: n.position,
+        size: n.size,
+        parentId: n.parentId,
+        collapsed: n.collapsed
+      })),
+      statuses,
+      {},
+      this.now(),
+      outcomes,
+      handovers
+    ).filter((row) => row.id === sourceNodeId || this.ownsSpawn(sourceNodeId, row.id))
+    return {
+      ok: true,
+      result: rows,
+      message: controlListingText(rows, { geometry: listGeometryRequested(args) }) || '(no nodes)'
+    }
   }
 
   rename(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply> {

@@ -900,6 +900,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     'Verbs:',
     '- `list [--geometry on|off]` — current nodes (id, kind, title; the JSON rows also carry each node\'s',
     '  place and size — see `list --geometry` below). Start here when you need a node id.',
+    '  On the Server Edition it lists your own node and the nodes you opened during this server run.',
     '- `help` — print the verb list. Answered by the shim itself, so it works even if the app is down.',
     '- `open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--run-now]` — open N plain terminals. `--cmd` requires verified node identity.',
     '- `open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]` — open N Claude sessions.',
@@ -1467,6 +1468,7 @@ applies) and \`run\` reaches only nodes you opened during this server run.
 Verbs:
 - \`list [--geometry on|off]\` — list current nodes (id, kind, title; the JSON rows also carry each node's
   place and size — see \`list --geometry\` below). Start here when you need a node id.
+  On the Server Edition it lists your own node and the nodes you opened during this server run.
   A row ending **LAST TURN ERRORED** is a station whose last turn died on an API/model error:
   it is idle, but it produced nothing, so do not read its output or build on it. The marker
   is on the row on purpose — a fan-out of seven stations should cost one call to learn this,

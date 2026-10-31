@@ -408,6 +408,38 @@ describe('HeadlessNodeFactory', () => {
     expect(reloaded.projects).toHaveLength(1)
   })
 
+  it('list answers the desktop rows for the caller and the nodes it spawned, nothing else', async () => {
+    states['term-source'] = 'working'
+    states['term-upstream'] = 'done'
+    states['term-owned'] = 'blocked'
+    outcomes['term-upstream'] = { nodeId: 'term-upstream', outcome: 'succeeded', note: 'shipped', at: 1 }
+    const reply = await factory.list('term-source', {})
+    expect(reply.ok).toBe(true)
+    const rows = reply.result as Array<{ id: string; launchState?: string; outcome?: string }>
+    expect(rows.map((r) => r.id)).toEqual(['term-source', 'term-upstream', 'term-owned'])
+    expect(rows.find((r) => r.id === 'term-upstream')).toMatchObject({ launchState: 'idle', outcome: 'succeeded' })
+    expect(reply.message).toContain('term-source [terminal] Director — WORKING')
+    expect(reply.message).toContain('term-owned [terminal] Owned — NEEDS YOU')
+    expect(reply.message).toContain('REPORTED SUCCESS ("shipped")')
+
+    // A caller that spawned nothing sees only its own row; geometry rides the text form on request.
+    const own = await factory.list('term-upstream', { geometry: 'on' })
+    expect((own.result as Array<{ id: string }>).map((r) => r.id)).toEqual(['term-upstream'])
+    expect(own.message).toMatch(/term-upstream \[terminal\] Upstream @ -?\d+,-?\d+ \d+×\d+/)
+  })
+
+  it('list refuses another project, an unknown flag and a caller that is on no canvas', async () => {
+    await expect(factory.list('term-source', { project: 'other' })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('list-project-refused')
+    })
+    await expect(factory.list('term-source', { nodes: 'x' })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('--nodes is not supported')
+    })
+    await expect(factory.list('ghost', {})).resolves.toMatchObject({ ok: false })
+  })
+
   it('lets a verified caller close its own spawn, killing the pane before persisted edge removal and fanout', async () => {
     const opened = await factory.openAgent(
       'term-source',

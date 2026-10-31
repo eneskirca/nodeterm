@@ -21,9 +21,13 @@ import {
   formatPrWaits,
   parseAfterPrArg,
   parsePrDeadlineArg,
+  prHoldExpired,
   type PrWait,
   type PrWaitHold
 } from '@shared/pr-wait'
+
+// Moved to @shared/pr-wait so the Server Edition's `list` reads the same deadline rule.
+export { prHoldExpired }
 
 export type PrWaitState = 'met' | 'waiting' | 'unknown' | 'blocked'
 
@@ -90,11 +94,6 @@ export function evaluatePrWait(
     default:
       return report('unknown', 'check status not known yet')
   }
-}
-
-/** An invalid hold (read from a corrupt or hostile file) is already past its deadline. */
-export function prHoldExpired(hold: PrWaitHold, now: number): boolean {
-  return !!hold.invalid || now >= hold.deadlineAt
 }
 
 export function prHoldReports(hold: PrWaitHold, board: GitHubPullBoard | undefined): PrWaitReport[] {
