@@ -421,6 +421,7 @@ export function ChatPanel({
     // history pages in on scroll-up, and a reload merges by key instead of discarding it.
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       maxBytes: CHAT_TAIL_PAGE_BYTES,
+      thinking: true,
       // A hook-driven refresh the user did not ask for: an expensive reader (opencode's export) may
       // space these out. An open, ↻, Retry or a held-request rebind is never marked.
       ...(live && !rebind ? { background: true } : {})
@@ -517,7 +518,8 @@ export function ChatPanel({
     }
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       before,
-      maxBytes: CHAT_OLDER_PAGE_BYTES
+      maxBytes: CHAT_OLDER_PAGE_BYTES,
+      thinking: true
     }).then(
       (res) => {
         if (token !== olderReqRef.current) return
@@ -1025,11 +1027,11 @@ export function ChatPanel({
               p.kind === 'text' ? (
                 <MarkdownText key={j} text={p.text} />
               ) : p.kind === 'thinking' ? (
-                // Reasoning, not the answer: collapsed by default so it cannot be mistaken for it.
-                <details key={j} className="term-chat__thinking">
-                  <summary>Thinking</summary>
+                // Claude's thinking summary — the "thinking out loud" line its TUI prints between
+                // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
+                <div key={j} className="term-chat__thinking">
                   <MarkdownText text={p.text} />
-                </details>
+                </div>
               ) : p.body ? (
                 // A plan / question is the content itself, not plumbing: shown expanded, in full,
                 // flowing with the thread (no inner scroll box). The answer stays under it.
