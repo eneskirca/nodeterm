@@ -14289,6 +14289,85 @@ button.pull-checks__name {
 .term-node__mdhint:hover {
   background: rgba(var(--tint-rgb), 0.08);
   color: rgba(var(--tint-rgb), 0.75);
+
+/* ── Prompt bar: every prompt you typed into this node, stacked under its header
+   (nodes/NodePromptBar.tsx). Always visible; it grows a row per prompt up to the cap and scrolls
+   past it, so a long session cannot eat the terminal. Its own opaque background for the same reason
+   `.term-node__labelrow` has one: the shared glyph renderer makes the node root transparent. */
+.prompt-bar {
+  background: var(--panel);
+  padding: 2px 8px 5px;
+}
+.prompt-bar__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  max-height: 108px; /* five 20px rows and four 2px gaps, so no row is cut at the edge */
+  overflow-y: auto;
+  list-style: none;
+}
+.prompt-bar__item {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  height: 20px;
+  padding: 0 2px 0 8px;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid rgba(var(--tint-rgb), 0.1);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+}
+.prompt-bar__send {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.prompt-bar__send:hover,
+.prompt-bar__send:focus-visible {
+  color: var(--text-strong);
+  text-decoration: underline;
+  text-decoration-color: var(--muted-2);
+  text-underline-offset: 2px;
+}
+.prompt-bar__send--partial {
+  cursor: default;
+}
+.prompt-bar__sent {
+  flex-shrink: 0;
+  color: var(--success);
+  font-size: 10px;
+}
+.prompt-bar__remove {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.prompt-bar__remove:hover,
+.prompt-bar__remove:focus-visible {
+  background: rgba(var(--tint-rgb), 0.14);
+  color: var(--danger);
 }
 .kanban-meta__row--labels {
   position: relative;

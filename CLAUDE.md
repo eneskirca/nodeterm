@@ -4646,6 +4646,33 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     remote (`workspaceStore.sshProjectIdForNode`), so it answers built-ins + `partial` there instead of
     reading the server's own `~/.claude`. Adopting it in nodeterm mobile is an iOS
     follow-up.
+- **Node prompt bar** (`nodes/NodePromptBar.tsx`, `state/nodePrompts.ts`, `shared/node-prompts.ts`,
+  `lib/resendPrompt.ts`) — every prompt the person typed into an agent node, stacked under its header
+  and always visible, so a canvas of many sessions still says what each is for. Click a line to send
+  that prompt again; × removes it. Rules a refactor must keep:
+  - **Source is the `newTurn` + `task` hook event** the Canvas listener already gets, through the one
+    call `recordSubmittedPrompt` (tested against real normalizer output) (claude, copilot,
+    grok carry the prompt; codex and gemini do not, so they get no bar until their payloads are
+    measured). `rememberPrompt` drops only what a CLI or nodeterm injected (a closed list: subagent
+    `<task-notification>`, `<system-reminder>`, `[nodeterm] …` notes, `--- NODETERM MESSAGE`, and
+    housekeeping slash commands incl. the `/rename` and `/branch` nodeterm types itself). It keeps
+    everything else, "proceed" included — the person deletes what they do not want; we cannot undo a
+    line we guessed was noise.
+  - **Machine-local, never in `node.data`.** `project.json` is git-shared and a prompt is free text
+    that can hold a pasted token; the store is localStorage (`nodeterm.nodePrompts`), dropped with the
+    node at the same four sites as `useAgentStatus.remove`. Consequence: a session that predates the
+    feature starts empty, and a Server Edition browser has its own list.
+  - **Display copy ≠ resend copy.** `text` is one clipped line; `full` is the original (≤ 2000 chars,
+    kept only when it differs). A longer prompt is `partial` and is **never resent** — a truncated
+    prompt is a different request. Do not resend `text`.
+  - **Resend refuses where the keystrokes would not reach the agent's input** (`resendPrompt`): a
+    `blocked` node (typed text would ANSWER the permission prompt), a shell-owned pane (the prompt
+    would run as a shell command), or an unreadable pane (unknown is not safe). Each refusal is a
+    `nodeterm:toast`, never silent. There is no confirm: one click sends.
+  - **Fixed cap, not fixed height.** The stack grows a row per prompt to 5 rows (`max-height: 108px`)
+    then scrolls to the newest, so a new prompt resizes the terminal (a tmux redraw) until the cap.
+    The ids come from `newPromptId`, not `crypto.randomUUID()`, which does not exist on a Server
+    Edition served over plain HTTP.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events drive a transient `state/agentNodes.ts` store. For Claude they come from
   **Claude's own `SubagentStart`/`SubagentStop` hooks** whenever a session sends them (2026-09,
