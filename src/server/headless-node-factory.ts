@@ -1,4 +1,5 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import { isBusyAgentState, parseForceFlag, type ControlScope } from './control-scope'
 import { isLaunchShell } from '../shared/agents/pane'
 import { randomBytes, randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -55,6 +56,10 @@ import { isRemoteSessionNode } from '../shared/worktree'
 import { issueLaunchPrompt, resolveIssueArg, type IssueRef } from '../shared/github-issue-ref'
 import { runEndedEvent, runStartedEvent } from '../shared/issue-runs'
 import type { BoardLogEntry } from '../shared/types'
+import { controlListingText, storedNodeListing } from '../shared/control-listing'
+import { listGeometryRequested } from '../shared/geometry-verbs'
+import type { StationHandoverRecord } from '../shared/station-handover'
+import type { StationOutcomeRecord as ListedOutcome } from '../shared/station-outcome'
 import { UNKNOWN_CODEX_CLI_CAPS } from '../shared/types'
 import type {
   BridgeLink,
@@ -106,6 +111,8 @@ export interface HeadlessPty {
 export type HeadlessWorkspace = Pick<WorkspaceStore, 'load' | 'save'>
 
 export interface HeadlessNodeFactoryDeps {
+  /** Which nodes a caller may read and act on (control-scope.ts). Absent = `creator`. */
+  controlScope?: ControlScope
   workspaceStore: HeadlessWorkspace
   ptyManager: HeadlessPty
   settings(): Settings
@@ -140,6 +147,9 @@ export interface HeadlessNodeFactoryDeps {
    *  satisfied, whatever its state reads: its `done` is the PREVIOUS task's. Absent = nothing is
    *  ever handed over (the pre-tracker behaviour). */
   handedOver?(nodeId: string): boolean
+  /** The same station's hand-over record, for `list` to say WHAT it is held on (new work, or tasks
+   *  still running in its background). Absent = `list` names no hand-over wait. */
+  handoverOf?(nodeId: string): StationHandoverRecord | undefined
   env?: Record<string, string | undefined>
   now?: () => number
   /**
@@ -753,22 +763,48 @@ export class HeadlessNodeFactory {
     return this.ownership.ownerOf(nodeId)?.sourceNodeId === sourceNodeId
   }
 
-  /** A verified caller may mutate only a node it freshly created during this server run. */
-  private ownsMutation(sourceNodeId: string, nodeId: string): boolean {
-    return this.ownsSpawn(sourceNodeId, nodeId)
+  /** The operator's control scope (control-scope.ts). */
+  get controlScope(): ControlScope {
+    return this.deps.controlScope ?? 'creator'
+  }
+
+  /**
+   * Does `nodeId` belong to the caller's OWN project and nowhere else? The `project` scope's whole
+   * rule: the caller is in `project`, the node is too, and no other project holds that id (a node id
+   * repeats when one committed canvas is opened from two folders, and its tmux session is keyed by id
+   * alone, so it belongs to both).
+   */
+  private inCallerProject(sourceNodeId: string, nodeId: string, workspace: Workspace, project: Project): boolean {
+    if (!project.nodes.some((node) => node.id === sourceNodeId)) return false
+    const holders = nodeProjects(workspace, nodeId)
+    return holders.length === 1 && holders[0].id === project.id
+  }
+
+  /** A verified caller may mutate a node it freshly created during this server run — or, under the
+   *  `project` scope, any node of its own project (`inCallerProject`). */
+  private ownsMutation(sourceNodeId: string, nodeId: string, workspace: Workspace, project: Project): boolean {
+    if (this.ownsSpawn(sourceNodeId, nodeId)) return true
+    return this.controlScope === 'project' && this.inCallerProject(sourceNodeId, nodeId, workspace, project)
   }
 
   /** All-or-nothing ownership gate: validate every id before any canvas or session mutation. */
-  private unownedMutation(sourceNodeId: string, nodeIds: readonly string[]): string | undefined {
-    return nodeIds.find((nodeId) => !this.ownsMutation(sourceNodeId, nodeId))
+  private unownedMutation(
+    sourceNodeId: string,
+    nodeIds: readonly string[],
+    workspace: Workspace,
+    project: Project
+  ): string | undefined {
+    return nodeIds.find((nodeId) => !this.ownsMutation(sourceNodeId, nodeId, workspace, project))
   }
 
   private ownershipRefusal(verb: string, sourceNodeId: string, nodeId: string): ServerControlReply {
+    const reach =
+      this.controlScope === 'project'
+        ? 'nodes it spawned during this server run and nodes that are only in its own project'
+        : 'nodes it spawned during this server run'
     return {
       ok: false,
-      error:
-        `${verb}-not-owner: ${sourceNodeId} may modify only nodes it spawned during this server ` +
-        `run; ${nodeId} was not spawned by this caller`
+      error: `${verb}-not-owner: ${sourceNodeId} may modify only ${reach}; ${nodeId} is neither`
     }
   }
 
@@ -1010,8 +1046,15 @@ export class HeadlessNodeFactory {
     verified: boolean
   ): Promise<ServerControlReply> {
     return this.runExclusive(async () => {
-      const flagError = unsupportedFlags(args, new Set(['node']))
+      // `--force` exists only under the `project` scope (a busy node the caller did not open); under
+      // `creator` it stays an unknown flag, as it always was.
+      const flagError = unsupportedFlags(
+        args,
+        new Set(this.controlScope === 'project' ? ['node', 'force'] : ['node'])
+      )
       if (flagError) return { ok: false, error: `close: ${flagError}` }
+      const force = parseForceFlag(args.force)
+      if (typeof force === 'object') return { ok: false, error: force.error }
       if (!verified) {
         return {
           ok: false,
@@ -1031,30 +1074,52 @@ export class HeadlessNodeFactory {
 
       // Validate the WHOLE list before killing anything. A mixed owned/unowned request is one
       // refusal, never a partial destructive success whose surviving ids the caller must guess.
+      // Each id's project is resolved HERE (a factory stopped while the panes die clears the
+      // ownership ledger, and the steps below must still know where each node lives): the creator
+      // record's project for a node the caller spawned, else — under the `project` scope only — the
+      // caller's own project, which `ownsMutation` has checked is the node's only project.
       const frameIds = new Set<string>()
+      const ownerProject = new Map<string, string>()
       for (const id of ids) {
+        // (Under `creator` the caller never spawned itself, so it gets close-not-owner, as before.)
+        if (id === sourceNodeId && this.controlScope === 'project') {
+          return { ok: false, error: `close-self-refused: ${id} is the calling node; an agent never closes itself` }
+        }
         const ownership = this.ownership.ownerOf(id)
-        if (!ownership || ownership.sourceNodeId !== sourceNodeId) {
+        const spawned = !!ownership && ownership.sourceNodeId === sourceNodeId
+        if (!spawned && !this.ownsMutation(sourceNodeId, id, workspace, source.project)) {
+          return this.controlScope === 'project'
+            ? this.ownershipRefusal('close', sourceNodeId, id)
+            : {
+                ok: false,
+                error: `close-not-owner: ${sourceNodeId} did not spawn ${id} during this server run`
+              }
+        }
+        const projectId = spawned ? ownership!.projectId : source.project.id
+        ownerProject.set(id, projectId)
+        const project = workspace.projects.find((candidate) => candidate.id === projectId)
+        const target = project?.nodes.find((node) => node.id === id)
+        // No human confirms a close here, so a node the caller did not open is not ended mid-turn or
+        // under an open question without saying so: `--force yes` is that saying so.
+        if (!spawned && target?.kind !== 'group' && !force && isBusyAgentState(this.deps.stateOf(id))) {
           return {
             ok: false,
-            error: `close-not-owner: ${sourceNodeId} did not spawn ${id} during this server run`
+            error:
+              `close-busy: ${id} is working or waiting on a person; closing it ends that work. ` +
+              'Pass --force yes to close it anyway.'
           }
         }
-        const project = workspace.projects.find((candidate) => candidate.id === ownership.projectId)
-        const target = project?.nodes.find((node) => node.id === id)
         if (target?.kind === 'group') {
           const unownedChild = this.unownedMutation(
             sourceNodeId,
-            project!.nodes.filter((node) => node.parentId === id).map((node) => node.id)
+            project!.nodes.filter((node) => node.parentId === id).map((node) => node.id),
+            workspace,
+            source.project
           )
           if (unownedChild) return this.ownershipRefusal('close', sourceNodeId, unownedChild)
           frameIds.add(id)
         }
       }
-
-      // Each id's project, read NOW: a factory stopped while the panes die clears the ownership
-      // ledger, and the steps below must still know where each node lives.
-      const ownerProject = new Map(ids.map((id) => [id, this.ownership.ownerOf(id)!.projectId]))
 
       // Kill terminal panes first: the durable canvas must never lose a session whose outcome is
       // unknown. Frames have no PTY; closing one is the desktop `ungroup` transform followed by
@@ -1167,7 +1232,7 @@ export class HeadlessNodeFactory {
           }
         }
       }
-      const unowned = this.unownedMutation(sourceNodeId, [from, ...targets])
+      const unowned = this.unownedMutation(sourceNodeId, [from, ...targets], workspace, source.project)
       if (unowned) return this.ownershipRefusal('link', sourceNodeId, unowned)
 
       const byId = new Map(source.project.nodes.map((node) => [node.id, node]))
@@ -1230,7 +1295,7 @@ export class HeadlessNodeFactory {
       }
 
       const ids = (args.nodes ?? '').split(',').map((id) => id.trim()).filter(Boolean)
-      const unowned = this.unownedMutation(sourceNodeId, ids)
+      const unowned = this.unownedMutation(sourceNodeId, ids, workspace, source.project)
       if (unowned) return this.ownershipRefusal('group', sourceNodeId, unowned)
       const resolvable = ids.filter((id) => source.project.nodes.some((node) => node.id === id))
       if (!resolvable.length) {
@@ -1268,6 +1333,74 @@ export class HeadlessNodeFactory {
     })
   }
 
+  /**
+   * `list`: the caller's canvas as the desktop's `list` answers it — the SAME rows and text
+   * (@shared/control-listing), built from the saved project and this edition's runtime facts (the
+   * status mirror, #521's errored turns, station reports and hand-overs). Two desktop-only facts are
+   * never claimed: DROPPED and a stalled delivery are measured by a browser tab, so a row falls back
+   * to the agent's mirrored state (or AGENT STATUS UNCONFIRMED), never a guessed one.
+   *
+   * Visibility follows this edition's ownership rule: the caller's own node and the nodes it spawned
+   * during this server run. Rows are judged against the WHOLE project (a dep the caller cannot see
+   * is still not "deleted"), then filtered.
+   */
+  async list(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply> {
+    const flagError = unsupportedFlags(args, new Set(['geometry', 'project']))
+    if (flagError) return { ok: false, error: `list: ${flagError}` }
+    const workspace = await this.readWorkspace()
+    const source = sourceProject(workspace, sourceNodeId)
+    if (!source) return { ok: false, error: 'source node is not in exactly one saved project' }
+    if (!sourceCanControl(source.node, this.deps.agentIdOf)) {
+      return { ok: false, error: 'source node is not a control-capable agent' }
+    }
+    if (args.project !== undefined && args.project !== source.project.id) {
+      return {
+        ok: false,
+        error: `list-project-refused: Server Edition lists only the caller's own project (${source.project.id})`
+      }
+    }
+    const nodes = source.project.nodes
+    const statuses: Record<string, { state?: AgentState; lastTurnError?: { at: number } }> = {}
+    const outcomes: Record<string, ListedOutcome> = {}
+    const handovers: Record<string, StationHandoverRecord> = {}
+    for (const n of nodes) {
+      const state = this.deps.stateOf(n.id)
+      statuses[n.id] = { state, ...(this.lastTurnErrored.has(n.id) ? { lastTurnError: { at: 0 } } : {}) }
+      const outcome = this.deps.outcomeOf?.(n.id)
+      if (outcome) outcomes[n.id] = outcome
+      const handover = this.deps.handoverOf?.(n.id)
+      if (handover) handovers[n.id] = handover
+    }
+    const rows = storedNodeListing(
+      nodes.map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        title: n.title,
+        pendingLaunch: n.pendingLaunch,
+        agentId: effectiveAgentId(n, this.deps.agentIdOf),
+        issueRef: n.issueRef,
+        position: n.position,
+        size: n.size,
+        parentId: n.parentId,
+        collapsed: n.collapsed
+      })),
+      statuses,
+      {},
+      this.now(),
+      outcomes,
+      handovers
+    ).filter(
+      (row) =>
+        row.id === sourceNodeId ||
+        this.ownsMutation(sourceNodeId, row.id, workspace, source.project)
+    )
+    return {
+      ok: true,
+      result: rows,
+      message: controlListingText(rows, { geometry: listGeometryRequested(args) }) || '(no nodes)'
+    }
+  }
+
   rename(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply> {
     return this.runExclusive(async () => {
       const flagError = unsupportedFlags(args, new Set(['node', 'title']))
@@ -1289,7 +1422,7 @@ export class HeadlessNodeFactory {
       }
       const target = source.project.nodes.find((node) => node.id === id)
       if (!target) return { ok: false, error: `rename: no node with id ${id}` }
-      if (!this.ownsMutation(sourceNodeId, id)) {
+      if (!this.ownsMutation(sourceNodeId, id, workspace, source.project)) {
         return this.ownershipRefusal('rename', sourceNodeId, id)
       }
 
@@ -1305,8 +1438,8 @@ export class HeadlessNodeFactory {
     })
   }
 
-  /** `run --node <id>` (#925): deliver a node's retained launch now. Server v1 ownership applies:
-   *  only nodes the caller spawned during this server run. */
+  /** `run --node <id>` (#925): deliver a node's retained launch now. The control scope applies:
+   *  nodes the caller spawned during this server run, or (`project` scope) any node of its project. */
   run(sourceNodeId: string, args: Record<string, string>, verified: boolean): Promise<ServerControlReply> {
     return this.runExclusive(async () => {
       if (!verified) {
@@ -1315,17 +1448,28 @@ export class HeadlessNodeFactory {
       const flagError = unsupportedFlags(args, new Set(['node', 'project']))
       if (flagError) return { ok: false, error: `run: ${flagError}` }
       const id = (args.node ?? '').trim()
-      if (!this.ownsSpawn(sourceNodeId, id)) return this.ownershipRefusal('run', sourceNodeId, id)
+      const spawned = this.ownsSpawn(sourceNodeId, id)
+      if (!spawned && this.controlScope !== 'project') return this.ownershipRefusal('run', sourceNodeId, id)
       // Resolve through the ownership record, never by first id match: node ids repeat across
       // projects (a committed project.json opened from a second folder), and `attach()` is keyed
       // by id alone, so a stranger copy sorting first would be claimed while the owned session is
       // typed into. `close` resolves the same way. A `--project` naming any other project is the
-      // desktop's lookup inside the named project coming up empty.
-      const owner = this.ownership.ownerOf(id)!
+      // desktop's lookup inside the named project coming up empty. Under the `project` scope a node
+      // the caller did not spawn resolves to the caller's own project, which `ownsMutation` has
+      // checked is the only project holding that id.
       const noNode: ServerControlReply = { ok: false, error: `run: no node with id ${id}` }
-      if (args.project !== undefined && args.project !== owner.projectId) return noNode
+      let projectId = spawned ? this.ownership.ownerOf(id)!.projectId : undefined
+      if (projectId !== undefined && args.project !== undefined && args.project !== projectId) return noNode
       const workspace = await this.loadForEdit()
-      const project = workspace.projects.find((p) => p.id === owner.projectId)
+      if (projectId === undefined) {
+        const source = sourceProject(workspace, sourceNodeId)
+        if (!source || !this.ownsMutation(sourceNodeId, id, workspace, source.project)) {
+          return this.ownershipRefusal('run', sourceNodeId, id)
+        }
+        projectId = source.project.id
+        if (args.project !== undefined && args.project !== projectId) return noNode
+      }
+      const project = workspace.projects.find((p) => p.id === projectId)
       const node = project?.nodes.find((n) => n.id === id)
       if (!project || !node) return noNode
       const held = node.pendingLaunch
@@ -1383,7 +1527,7 @@ export class HeadlessNodeFactory {
       }
 
       const ids = [...new Set((args.node ?? '').split(',').map((id) => id.trim()).filter(Boolean))]
-      const unowned = this.unownedMutation(sourceNodeId, ids)
+      const unowned = this.unownedMutation(sourceNodeId, ids, workspace, source.project)
       if (unowned) return this.ownershipRefusal('color', sourceNodeId, unowned)
       const changed = ids
         .map((id) => source.project.nodes.find((node) => node.id === id))
@@ -1475,7 +1619,7 @@ export class HeadlessNodeFactory {
       if ('ok' in target) return target
       const after = this.resolveAfter(target, afterArg, verb)
       if (!Array.isArray(after)) return after
-      const unownedAfter = this.unownedMutation(sourceNodeId, after)
+      const unownedAfter = this.unownedMutation(sourceNodeId, after, workspace, target)
       if (unownedAfter) return this.ownershipRefusal(verb, sourceNodeId, unownedAfter)
       // A success wait is only as good as the station's ability to REPORT: only an agent with canvas
       // control has `report-outcome`, so waiting on anything else could only end at the deadline.
@@ -1807,7 +1951,7 @@ export class HeadlessNodeFactory {
         }
       }
       if (!node) return { ok: false, error: 'sticky: note disappeared while resolving it' }
-      if (!created && !this.ownsMutation(sourceNodeId, node.id)) {
+      if (!created && !this.ownsMutation(sourceNodeId, node.id, workspace, source.project)) {
         return this.ownershipRefusal('sticky', sourceNodeId, node.id)
       }
 

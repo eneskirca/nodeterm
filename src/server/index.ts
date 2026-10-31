@@ -830,6 +830,7 @@ export async function startServer(
   if (config.canvasControl === true) {
     try {
       canvasControl = await initServerCanvasControl({
+        controlScope: config.controlScope ?? 'creator',
         workspaceStore,
         ptyManager,
         settings: () => settingsStore.get(),
@@ -867,6 +868,13 @@ export async function startServer(
           `capability gates decide which agent may ask, not what may be asked for. Unset ` +
           `NODETERM_SERVER_CANVAS_CONTROL / drop --canvas-control to turn it off.`
       )
+      if (config.controlScope === 'project') {
+        console.log(
+          `⚠️  Canvas control scope: PROJECT. An agent may list, change, message and close ANY node ` +
+            `of its own project, not only the nodes it opened (a busy agent closes only with ` +
+            `--force yes). Unset NODETERM_SERVER_CONTROL_SCOPE / drop --control-scope for the default.`
+        )
+      }
     }
   }
 

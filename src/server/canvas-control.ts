@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import type { ControlScope } from './control-scope'
 import path from 'node:path'
 
 import {
@@ -56,6 +57,8 @@ import {
 } from '../core/github/control-read'
 
 export interface ServerCanvasControlDeps {
+  /** Which nodes a caller may read and act on (control-scope.ts). Absent = `creator`. */
+  controlScope?: ControlScope
   workspaceStore: WorkspaceStore
   ptyManager: PtyManager
   settings(): Settings
@@ -182,6 +185,7 @@ export async function initServerCanvasControl(
   stationOutcomes.loadFromDisk()
   stationHandovers.loadFromDisk()
   const factory = new HeadlessNodeFactory({
+    controlScope: deps.controlScope ?? 'creator',
     workspaceStore: deps.workspaceStore,
     ptyManager: deps.ptyManager,
     settings: deps.settings,
@@ -198,6 +202,7 @@ export async function initServerCanvasControl(
     agentIdOf: (nodeId) => mirrorEntry(nodeId)?.agentId,
     outcomeOf: (nodeId) => stationOutcomes.get(nodeId),
     handedOver: (nodeId) => stationHandovers.isHandedOver(nodeId),
+    handoverOf: (nodeId) => stationHandovers.list().find((r) => r.nodeId === nodeId),
     // NOT `workspaceExternalChange`. That channel means "somebody else wrote this file" and the
     // renderer answers it with `decideExternalChange`, which compares the whole project shell —
     // and `ropes` is part of it, so every headless spawn (one appended `ctrl-…` rope) read as a
@@ -234,8 +239,16 @@ export async function initServerCanvasControl(
     ),
     paneOwnerProject,
     heldLaunch: (projectId, nodeId) => deps.workspaceStore.heldLaunch(projectId, nodeId),
-    callerOwnsTarget: (sourceNodeId, targetNodeId) =>
-      factory.ownsSpawn(sourceNodeId, targetNodeId),
+    // The control scope (control-scope.ts): the caller's own spawns, or — under `project` — any
+    // node that, like the caller, is in exactly one project, the same one. Re-asked at flush, so a
+    // message queued before a node moved projects is refused then, not delivered.
+    callerOwnsTarget: (sourceNodeId, targetNodeId) => {
+      if (factory.ownsSpawn(sourceNodeId, targetNodeId)) return true
+      if (factory.controlScope !== 'project') return false
+      const src = deps.workspaceStore.projectIdsForNode(sourceNodeId)
+      const dst = deps.workspaceStore.projectIdsForNode(targetNodeId)
+      return src.length === 1 && dst.length === 1 && src[0] === dst[0]
+    },
     customAgents: () => deps.settings().customAgents,
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
     // A `send` / `reply` hands a station new work when it REACHES the pane (queued ⇒ "work pending"
@@ -292,6 +305,7 @@ export async function initServerCanvasControl(
     color: (sourceNodeId, args) => factory.color(sourceNodeId, args),
     sticky: (sourceNodeId, args) => factory.sticky(sourceNodeId, args),
     run: (sourceNodeId, args, verified) => factory.run(sourceNodeId, args, verified),
+    list: (sourceNodeId, args) => factory.list(sourceNodeId, args),
     // A station's report about ITSELF (core/station-outcome-store.ts, the same handler the desktop
     // runs). A report can release an armed dependent, so the factory re-evaluates its arms.
     reportOutcome: (sourceNodeId, args, verified) =>

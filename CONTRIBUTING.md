@@ -926,14 +926,17 @@ creator ledger is process-local and must never be rebuilt from `.nodeterm/projec
 hook history, or a surviving tmux name: all are writable or stale. A restart therefore clears
 ownership, performs no node/session adoption, and leaves durable queued launches dormant. Metadata
 mutations and message delivery validate every target before writing anything; missing proof is a
-named refusal. Validate Server upgrades against a disposable data directory and port. Restarting a
+named refusal. The operator may widen the reach to the caller's whole project
+(`--control-scope project`, `src/server/control-scope.ts`): every ownership check goes through
+`ownsMutation`, and `creator` must stay byte-identical. Validate Server upgrades against a disposable data directory and port. Restarting a
 shared live service is
 an explicit operator action, never a test or an automatic repair step.
 
 **A canvas-control verb you add in `Canvas.tsx` does not exist on the Server Edition.** The verbs
 run in the DESKTOP renderer's dispatch; the browser bridge never subscribes to `onAgentControl`, and
 the Server Edition answers `/control/*` itself (`src/server/control-unsupported.ts`), serving only
-`SERVER_V1_VERBS` through the headless node factory. Everything else — `list`, `arrange`, `move`,
+`SERVER_V1_VERBS` through the headless node factory (`list` answers with the desktop's own rows,
+`@shared/control-listing`). Everything else — `arrange`, `move`,
 `resize`, `place` included — gets the named permanent `control-unsupported-on-this-edition` refusal.
 So "it is in the renderer, so both shells have it" is false here; either add a headless action or
 leave the refusal, and pin which in `control-unsupported.test.ts`. A new verb's flag gate goes in

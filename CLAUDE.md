@@ -5297,7 +5297,7 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   that, `premaxRect` joined the stored geometry fields — before, an off-screen `arrange` restored a
   maximized node in memory and left its restore rect on disk. **Surfaces:** desktop only for the
   verbs. The Server Edition never reaches the renderer dispatch (its bridge's `onAgentControl` is a
-  noop and `createServerEditionControlHandler` serves no layout verb, `list` included), so all four
+  noop and `createServerEditionControlHandler` serves no layout verb), so `resize`/`place`/`arrange`/`move`
   take the named permanent `control-unsupported-on-this-edition` refusal. Relay tabs: an agent's
   call is answered by the HOST desktop's canvas, and the guest sees the result through canvas sync.
   Mobile N/A. Follow-up: `--width/--height` on the open verbs (today they ignore an unknown flag).
@@ -5550,7 +5550,10 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   delivery only. Its initial commands are persisted before attach/send and retained on failure;
   only acknowledged sends clear them. Boot ownership remains fail-closed. Desktop `list` (live
   and stored projects) names QUEUED / STARTING / LAUNCH FAILED / DROPPED / AGENT STATUS UNCONFIRMED, and every other agent row its state (WORKING / IDLE / NEEDS YOU: an unlabelled idle row and a row waiting on a person used to read the same)
-  rather than treating absence of a hook as success. Server v1 still explicitly refuses `list`.
+  rather than treating absence of a hook as success. The Server Edition answers `list` with the SAME rows
+  (`@shared/control-listing`, `HeadlessNodeFactory.list`): the caller's own node plus the nodes it opened
+  this server run (its ownership rule), its own project only; DROPPED and a stalled delivery are
+  renderer facts it never claims.
   **(8) An armed node must not cold-start its own agent** (found while fixing (7)). The mount-time
   cold-restore relaunch (`fresh && agentId && canResume(...)`) carries a second, independent
   refusal beside the `paused` one (`shouldColdResume`): `!data.pendingLaunch`. A first open is

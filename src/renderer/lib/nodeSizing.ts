@@ -1,5 +1,6 @@
 import type { NodeKind } from '@shared/types'
 import { STICKY_NODE_MIN_SIZE } from '@shared/default-node-size'
+import { COLLAPSED_HEIGHT } from '@shared/node-geometry'
 
 /**
  * Minimum width/height for each node kind. These are the single source of truth
@@ -29,8 +30,9 @@ export const NODE_MIN_SIZES: Record<NodeKind, { width: number; height: number }>
   whiteboard: { width: 320, height: 220 }
 }
 
-/** Height of a node when collapsed (header only). Re-exported by `state/workspace`. */
-export const COLLAPSED_HEIGHT = 40
+/** Height of a node when collapsed (header only). Re-exported by `state/workspace`; defined in
+ *  @shared/node-geometry so the control listing shares it. */
+export { COLLAPSED_HEIGHT }
 
 export interface Rect {
   x: number

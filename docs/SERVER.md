@@ -674,6 +674,20 @@ sticky updates, dependency targets, message delivery, and close validate their c
 before any write or PTY kill; an unowned member refuses the whole operation. Queued messages repeat
 the creator check at flush time in addition to the existing verified and per-project switch gates.
 
+**Wider reach: `--control-scope project`.** `NODETERM_SERVER_CONTROL_SCOPE=project` (or
+`--control-scope project`; default `creator`, an unknown value fails the boot) lets an agent act on
+every node that is only in its OWN project, whoever opened it and whether or not the server
+restarted since: `list` shows them all, and link, group, rename, color, sticky, run, message
+delivery and close accept them. It is an operator setting only — never settings.json and never the
+`settings` verb, so an agent cannot widen its own reach. Because nobody confirms a close on this
+edition, two rules stay: an agent never closes its own node, and a node it did not open whose agent
+is working or waiting on a person (NEEDS YOU) closes only with `close --force yes`. A node id held
+by two projects (one committed canvas opened from two folders) is refused, since its session
+belongs to both. What it does not widen: automatic input (an `--after` release, held launches at
+boot) still needs creator proof, and a message still needs the target pane's owner proven by a
+fresh spawn in this run (`unproven-target-owner` otherwise). In a project shared with a hosted team,
+`project` scope reaches teammates' nodes too. Boot prints a warning when it is on.
+
 The creator ledger is memory-only and is never reconstructed from a project file, title, hook
 record, or tmux session name. After a service restart it is empty, and boot performs no canvas-node
 or terminal-session adoption: it does not attach-or-create missing backends and does not send a

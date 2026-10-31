@@ -1853,3 +1853,15 @@ describe('canvas geometry from the CLI (issue #1288)', () => {
     expect(answered).toMatch(/\bplace\b/)
   })
 })
+
+describe('the Server Edition control scope in the agent bodies', () => {
+  it('both bodies render the same `project` scope paragraph, from one function', async () => {
+    const core = await import('../core/canvas-control-core')
+    const lines = core.serverControlScopeDocLines()
+    for (const body of [core.buildCanvasSkillBody('/x/nodeterm.sh'), core.buildCanvasControlInstructions('/x/nodeterm.sh')]) {
+      for (const line of lines) expect(body).toContain(line)
+    }
+    expect(lines.join(' ')).toContain('--control-scope project')
+    expect(lines.join(' ')).toContain('--force yes')
+  })
+})

@@ -216,6 +216,7 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     run: vi.fn(async () => ({ ok: true as const })),
     reportOutcome: vi.fn(async () => ({ ok: true as const, message: 'recorded' })),
     githubRead: vi.fn(async () => ({ ok: true as const, message: 'lane' })),
+    list: vi.fn(async () => ({ ok: true as const, message: 'rows' })),
     deliver: vi.fn(async () => ({ ok: true as const, message: 'queued' }))
   })
 
@@ -249,6 +250,22 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     await expect(handler({ verb: 'issues', nodeId: 'src', args: {}, verified: false }))
       .resolves.toMatchObject({ ok: false, error: expect.stringContaining('identity-refused') })
     expect(a.githubRead).toHaveBeenCalledTimes(2)
+  })
+
+  it('routes list to its action after the shared parse and the identity gate', async () => {
+    const a = actions()
+    const handler = createServerEditionControlHandler(a)
+    await expect(handler({ verb: 'list', nodeId: 'src', args: {}, verified: true }))
+      .resolves.toEqual({ ok: true, message: 'rows' })
+    expect(a.list).toHaveBeenCalledWith('src', {})
+    await handler({ verb: 'list', nodeId: 'src', args: { geometry: 'on' }, verified: true })
+    expect(a.list).toHaveBeenLastCalledWith('src', { geometry: 'on' })
+    // The shared geometry gate refuses a value `list --geometry` does not read.
+    await expect(handler({ verb: 'list', nodeId: 'src', args: { geometry: 'maybe' }, verified: true }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining('--geometry') })
+    await expect(handler({ verb: 'list', nodeId: 'src', args: {}, verified: false }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining('identity-refused') })
+    expect(a.list).toHaveBeenCalledTimes(2)
   })
 
   it('refuses the --after <id>:ok form and a malformed --after-success before any action', async () => {
@@ -463,7 +480,7 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
 
   it('keeps every deferred or unknown verb a clean permanent edition refusal', async () => {
     const handler = createServerEditionControlHandler(actions())
-    for (const verb of ['list', 'browser', 'write', 'not-a-verb']) {
+    for (const verb of ['browser', 'write', 'not-a-verb']) {
       const reply = await handler({ verb, nodeId: 'term-source', args: {}, verified: true })
       expect(reply, verb).toMatchObject({ ok: false, error: CONTROL_UNSUPPORTED_ERROR })
       expect(reply.message, verb).toContain('do not retry')
@@ -485,15 +502,14 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
   })
 
   // They run in the DESKTOP renderer's dispatch. This edition's browser bridge never subscribes to
-  // `onAgentControl`, and its headless handler serves no layout verb (`arrange`, `move`, `align`,
-  // `list` included), so they take the same named permanent refusal — never "Unknown verb", which
+  // `onAgentControl`, and its headless handler serves no layout verb (`arrange`, `move`, `align`),
+  // so they take the same named permanent refusal — never "Unknown verb", which
   // reads like a typo to retry, and never a dropped flag answered ok.
   it('refuses the geometry verbs by name, permanently (issue #1288)', async () => {
     const handler = createServerEditionControlHandler(actions())
     const calls: Array<[string, Record<string, string>]> = [
       ['resize', { nodes: 'a', width: '540' }],
       ['place', { nodes: 'a', x: '0', y: '0' }],
-      ['list', { geometry: 'on' }],
       ['arrange', { nodes: 'a,b', gap: '0' }]
     ]
     for (const [verb, args] of calls) {
@@ -541,6 +557,7 @@ describe('the enabled Server Edition handler, behind the request ledger', () => 
       openAgent,
       close: vi.fn(),
       link: vi.fn(),
+      list: vi.fn(),
       group: vi.fn(),
       rename: vi.fn(),
       color: vi.fn(),
