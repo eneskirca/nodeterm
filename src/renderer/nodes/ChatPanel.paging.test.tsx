@@ -410,3 +410,65 @@ describe('ChatPanel Page Up / Page Down', () => {
     expect(msgs().scrollTop).toBe(bottom)
   })
 })
+
+describe('ChatPanel scroll-to-latest button', () => {
+  const button = (): HTMLButtonElement | null => host.querySelector<HTMLButtonElement>('.term-chat__to-latest')
+  const three = [say(0, 'a'), say(10, 'b'), say(20, 'c')]
+
+  it('is hidden while the view follows the newest message', async () => {
+    await render()
+
+    await settle(0, { messages: three })
+
+    expect(button()).toBeNull()
+  })
+
+  it('appears once the user scrolls up, and brings the view back to the bottom', async () => {
+    await render()
+    await settle(0, { messages: three })
+    const bottom = msgs().scrollTop
+
+    await scrollTo(100)
+
+    expect(button()?.textContent).toBe('↓')
+    expect(button()?.getAttribute('aria-label')).toBe('Scroll to the latest message')
+
+    await act(async () => button()!.click())
+
+    expect(msgs().scrollTop).toBe(bottom)
+    expect(button()).toBeNull()
+  })
+
+  it('stays while the user reads history and a new message lands below', async () => {
+    await render()
+    await settle(0, { messages: three })
+    await scrollTo(100)
+    await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__refresh')!.click())
+
+    await settle(1, { messages: [...three, say(30, 'd')] })
+
+    expect(msgs().scrollTop).toBe(100)
+    expect(button()?.textContent).toBe('1 new message ↓')
+  })
+
+  it('does not appear for a thread shorter than the panel', async () => {
+    geo.perMsg = 100
+    await render()
+    await settle(0, { messages: three })
+
+    await scrollTo(0)
+
+    expect(button()).toBeNull()
+  })
+
+  it('keeps the keyboard where it was when pressed', async () => {
+    await render()
+    await settle(0, { messages: three })
+    await scrollTo(100)
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+
+    button()!.dispatchEvent(down)
+
+    expect(down.defaultPrevented).toBe(true)
+  })
+})

@@ -3364,6 +3364,26 @@ body,
   color: var(--muted);
   border-bottom: 1px solid rgba(var(--tint-rgb), 0.06);
 }
+/* Holds the scroller and the floating "scroll to latest" button, which must not scroll with it. */
+.term-chat__thread {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The Live chat drawer's "N new messages ↓" pill (.live-chat__more): same position and shape. */
+.term-chat__thread .confirm__btn.term-chat__to-latest {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .term-chat__msgs {
   flex: 1 1 auto;
   overflow-y: auto;

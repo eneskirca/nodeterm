@@ -1,5 +1,5 @@
 import { agentConfig, type AgentId } from '@shared/agents/config'
-import type { CustomAgent } from '@shared/types'
+import type { ChatMessage, CustomAgent } from '@shared/types'
 
 /**
  * Pure decisions behind the ⌘M chat panel (`nodes/ChatPanel.tsx`), kept out of the component so
@@ -22,6 +22,20 @@ export function chatKeyAction(e: { key: string; shiftKey: boolean; isComposing: 
 
 /** How close to the bottom (px) still counts as "following" the conversation. */
 export const CHAT_FOLLOW_THRESHOLD_PX = 48
+
+/**
+ * How many messages came in after `lastSeen`, the newest message on screen when the view stopped
+ * following. A keyed message is found by its key (a tail reload re-creates the objects), an unkeyed
+ * one by identity. Not found — the thread was replaced — counts as nothing new rather than a guess.
+ */
+export function unseenAfter(messages: readonly ChatMessage[], lastSeen: ChatMessage | null): number {
+  if (lastSeen === null) return 0
+  const at =
+    lastSeen.key !== undefined
+      ? messages.findIndex((m) => m.key === lastSeen.key)
+      : messages.indexOf(lastSeen)
+  return at === -1 ? 0 : messages.length - 1 - at
+}
 
 export function isNearBottom(
   el: { scrollTop: number; scrollHeight: number; clientHeight: number },
