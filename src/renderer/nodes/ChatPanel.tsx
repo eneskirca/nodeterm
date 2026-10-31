@@ -16,7 +16,7 @@ import {
 } from '../lib/chatSendGate'
 import type { ChatMessage } from '@shared/types'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
-import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle } from '../lib/chatPanel'
+import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle, unseenAfter } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
 import {
   CHAT_OLDER_PAGE_BYTES,
@@ -32,6 +32,7 @@ import {
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError } from '@shared/chat-page'
 import { Spinner } from '../components/Spinner'
+import { newMessagesLabel } from '../lib/liveChatLook'
 import {
   CHAT_LIVE_RELOAD_MIN_MS,
   CHAT_OPTIMISTIC_WORKING_MS,
@@ -227,6 +228,9 @@ export function ChatPanel({
   const identity = JSON.stringify([nodeId, sessionId ?? null, readCwd ?? null, accountId ?? null, agentId])
   const [thread, setThread] = useState<ChatThread>(() => emptyThread(identity))
   const messages = thread.messages
+  // For the "scroll to latest" pill's count, read from a stable callback (markFollowing, below).
+  const messagesRef = useRef<readonly ChatMessage[]>(messages)
+  messagesRef.current = messages
   // Read by the async handlers, which must decide against the thread as it is NOW, not as it was
   // when the read was issued.
   const threadRef = useRef(thread)
@@ -338,6 +342,17 @@ export function ChatPanel({
   // bottom (updated on every scroll), and did they just send (they expect to see it land).
   const nearBottomRef = useRef(true)
   const justSentRef = useRef(false)
+  // The same fact as state, for the "scroll to latest" pill: it shows exactly while the view has
+  // stopped following, i.e. while a new message would land out of sight. `lastSeenRef` is the newest
+  // message on screen when following stopped; the pill counts what came in after it.
+  const [following, setFollowing] = useState(true)
+  const lastSeenRef = useRef<ChatMessage | null>(null)
+  const markFollowing = useCallback((v: boolean) => {
+    nearBottomRef.current = v
+    if (v) lastSeenRef.current = null
+    else if (lastSeenRef.current === null) lastSeenRef.current = messagesRef.current.at(-1) ?? null
+    setFollowing(v)
+  }, [])
   // Token for the older-page fetch. A TAIL load bumps it too: a tail read can reset the thread
   // (see applyTail), and an older page computed against the previous cursor must not land on it.
   const olderReqRef = useRef(0)
@@ -747,11 +762,11 @@ export function ChatPanel({
     }
     if (shouldFollowOnLoad({ wasNearBottom: nearBottomRef.current, justSent: justSentRef.current })) {
       el.scrollTop = el.scrollHeight
-      nearBottomRef.current = true
+      markFollowing(true)
     }
     justSentRef.current = false
     // `activity` / `screenBlock`: a row appearing at the end grows the thread like a message does.
-  }, [messages, olderState, activity, screenBlock])
+  }, [messages, olderState, activity, screenBlock, markFollowing])
 
   const maybeLoadOlder = useCallback(() => {
     const el = msgsRef.current
@@ -801,8 +816,15 @@ export function ChatPanel({
 
   const onScroll = () => {
     const el = msgsRef.current
-    if (el) nearBottomRef.current = isNearBottom(el)
+    if (el) markFollowing(isNearBottom(el))
     maybeLoadOlder()
+  }
+
+  const scrollToLatest = () => {
+    const el = msgsRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    markFollowing(true)
   }
 
   // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
@@ -950,6 +972,7 @@ export function ChatPanel({
   const initialLoading =
     messages.length === 0 &&
     (loadState === 'loading' || (loadState === 'ok' && historyPending && olderState !== 'error'))
+  const unseen = following ? 0 : unseenAfter(messages, lastSeenRef.current)
   const showEmpty = messages.length === 0 && loadState !== 'loading' && !(loadState === 'ok' && historyPending)
 
   return (
@@ -975,135 +998,152 @@ export function ChatPanel({
           {FALLBACK_SESSION_NOTE}
         </div>
       )}
-      <div className="term-chat__msgs" ref={msgsRef} onScroll={onScroll}>
-        {initialLoading && (
-          <ChatLoadingStatus text={EMPTY_TEXT.loading.title} />
-        )}
-        {messages.length > 0 && olderState === 'loading' && (
-          <div className="term-chat__older" role="status">
-            <Spinner />
-            <span>Loading earlier messages…</span>
-          </div>
-        )}
-        {olderState === 'error' && (
-          <div className="term-chat__older term-chat__older--error">
-            <span>Couldn't load earlier messages.</span>
-            <button className="term-chat__retry" onClick={loadOlder}>
-              Retry
-            </button>
-          </div>
-        )}
-        {/* Only a PAGED thread (keyed messages) can know it reached the start; grok's capped
-            whole-file read says nothing about what lies before it. */}
-        {olderState === 'idle' && thread.olderCursor === null && messages.some((m) => m.key !== undefined) && (
-          <div className="term-chat__older term-chat__older--start">Beginning of conversation</div>
-        )}
-        {showEmpty && (
-          <div className="term-chat__empty">
-            <div>{EMPTY_TEXT[loadState].title.replace('{agent}', agentLabel)}</div>
-            {EMPTY_TEXT[loadState].detail && (
-              <div className="term-chat__empty-detail">{EMPTY_TEXT[loadState].detail}</div>
-            )}
-            {loadState !== 'unsupported' && loadState !== 'remoteUnsupported' && loadState !== 'ambiguous' && loadState !== 'ok' && (
-              <button className="term-chat__retry" onClick={() => load()}>
+      <div className="term-chat__thread">
+        <div className="term-chat__msgs" ref={msgsRef} onScroll={onScroll}>
+          {initialLoading && (
+            <ChatLoadingStatus text={EMPTY_TEXT.loading.title} />
+          )}
+          {messages.length > 0 && olderState === 'loading' && (
+            <div className="term-chat__older" role="status">
+              <Spinner />
+              <span>Loading earlier messages…</span>
+            </div>
+          )}
+          {olderState === 'error' && (
+            <div className="term-chat__older term-chat__older--error">
+              <span>Couldn't load earlier messages.</span>
+              <button className="term-chat__retry" onClick={loadOlder}>
                 Retry
               </button>
-            )}
-          </div>
-        )}
-        {messages.map((m, i) => (
-          // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
-          // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
-          // bubble) fall back to their position.
-          <div
-            key={m.key !== undefined ? `k${m.key}` : `i${i}`}
-            className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
-              queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
-            }`}
-          >
-            {m.parts.map((p, j) =>
-              p.kind === 'text' ? (
-                <MarkdownText key={j} text={p.text} />
-              ) : p.kind === 'thinking' ? (
-                // Reasoning, not the answer: collapsed by default so it cannot be mistaken for it.
-                <details key={j} className="term-chat__thinking">
-                  <summary>Thinking</summary>
-                  <MarkdownText text={p.text} />
-                </details>
-              ) : p.body ? (
-                // A plan / question is the content itself, not plumbing: shown expanded, in full,
-                // flowing with the thread (no inner scroll box). The answer stays under it.
-                <div key={j} className="term-chat__tool-card">
-                  <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
-                  <MarkdownText text={p.body} />
-                  {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
-                  {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
-                    // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
-                    // state, and every answer names the request this card was drawn for.
-                    p.name === 'AskUserQuestion' && p.questions ? (
-                      <QuestionAnswerControls
-                        key={answerCard.pendingId}
-                        questions={p.questions}
-                        agentLabel={agentLabel}
-                        chip={mdChip}
-                        onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
-                      />
-                    ) : (
-                      <PlanAnswerControls
-                        key={answerCard.pendingId}
-                        agentLabel={agentLabel}
-                        chip={mdChip}
-                        onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
-                      />
-                    )
-                  )}
-                  {updatingCard && updatingCard.message === i && updatingCard.part === j && (
-                    <AnswerControlsUpdating chip={mdChip} />
-                  )}
-                </div>
-              ) : (
-                <details key={j} className="term-chat__tool">
-                  <summary>
-                    <span className="term-chat__tool-name">{p.name}</span>
-                    {p.arg && <span className="term-chat__tool-arg">{p.arg}</span>}
-                  </summary>
-                  {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
-                </details>
-              )
-            )}
-            {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
-            {turnEnds.has(i) && (
-              <ChatTurnActions
-                copyText={turnEnds.get(i)!.copyText}
-                at={turnEnds.get(i)!.at}
-                now={now}
-                latest={i === latestTurnEnd}
-              />
-            )}
-          </div>
-        ))}
-        {screenBlock && (
-          <div className="term-chat__screen-block" role="status" aria-live="polite">
-            <div className="term-chat__screen-block-title">
-              {screenBlockedSentence(screenBlock.kind, agentLabel, mdChip)}
             </div>
-            {screenBlock.text !== null && <pre className="term-chat__screen-block-text">{screenBlock.text}</pre>}
-          </div>
-        )}
-        {activity && (
-          // One live region for both sentences, so working → waiting changes its text instead of
-          // remounting it (a remounted role=status is announced again). The words are the
-          // composer placeholder's own (`chatComposerPlaceholder`), so the two never disagree.
-          <div className="term-chat__activity" role="status" aria-live="polite">
-            {activity === 'working' && <Spinner />}
-            {chatComposerPlaceholder({
-              readonly: false,
-              refusal: activity,
-              agentLabel,
-              chip: mdChip,
-              answerOnCard: answerCard !== null
-            })}
-          </div>
+          )}
+          {/* Only a PAGED thread (keyed messages) can know it reached the start; grok's capped
+              whole-file read says nothing about what lies before it. */}
+          {olderState === 'idle' && thread.olderCursor === null && messages.some((m) => m.key !== undefined) && (
+            <div className="term-chat__older term-chat__older--start">Beginning of conversation</div>
+          )}
+          {showEmpty && (
+            <div className="term-chat__empty">
+              <div>{EMPTY_TEXT[loadState].title.replace('{agent}', agentLabel)}</div>
+              {EMPTY_TEXT[loadState].detail && (
+                <div className="term-chat__empty-detail">{EMPTY_TEXT[loadState].detail}</div>
+              )}
+              {loadState !== 'unsupported' && loadState !== 'remoteUnsupported' && loadState !== 'ambiguous' && loadState !== 'ok' && (
+                <button className="term-chat__retry" onClick={() => load()}>
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {messages.map((m, i) => (
+            // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
+            // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
+            // bubble) fall back to their position.
+            <div
+              key={m.key !== undefined ? `k${m.key}` : `i${i}`}
+              className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+                queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
+              }`}
+            >
+              {m.parts.map((p, j) =>
+                p.kind === 'text' ? (
+                  <MarkdownText key={j} text={p.text} />
+                ) : p.kind === 'thinking' ? (
+                  // Reasoning, not the answer: collapsed by default so it cannot be mistaken for it.
+                  <details key={j} className="term-chat__thinking">
+                    <summary>Thinking</summary>
+                    <MarkdownText text={p.text} />
+                  </details>
+                ) : p.body ? (
+                  // A plan / question is the content itself, not plumbing: shown expanded, in full,
+                  // flowing with the thread (no inner scroll box). The answer stays under it.
+                  <div key={j} className="term-chat__tool-card">
+                    <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
+                    <MarkdownText text={p.body} />
+                    {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+                    {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
+                      // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
+                      // state, and every answer names the request this card was drawn for.
+                      p.name === 'AskUserQuestion' && p.questions ? (
+                        <QuestionAnswerControls
+                          key={answerCard.pendingId}
+                          questions={p.questions}
+                          agentLabel={agentLabel}
+                          chip={mdChip}
+                          onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
+                        />
+                      ) : (
+                        <PlanAnswerControls
+                          key={answerCard.pendingId}
+                          agentLabel={agentLabel}
+                          chip={mdChip}
+                          onSubmit={(a) => answerHeld(answerCard.pendingId, a)}
+                        />
+                      )
+                    )}
+                    {updatingCard && updatingCard.message === i && updatingCard.part === j && (
+                      <AnswerControlsUpdating chip={mdChip} />
+                    )}
+                  </div>
+                ) : (
+                  <details key={j} className="term-chat__tool">
+                    <summary>
+                      <span className="term-chat__tool-name">{p.name}</span>
+                      {p.arg && <span className="term-chat__tool-arg">{p.arg}</span>}
+                    </summary>
+                    {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+                  </details>
+                )
+              )}
+              {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
+              {turnEnds.has(i) && (
+                <ChatTurnActions
+                  copyText={turnEnds.get(i)!.copyText}
+                  at={turnEnds.get(i)!.at}
+                  now={now}
+                  latest={i === latestTurnEnd}
+                />
+              )}
+            </div>
+          ))}
+          {screenBlock && (
+            <div className="term-chat__screen-block" role="status" aria-live="polite">
+              <div className="term-chat__screen-block-title">
+                {screenBlockedSentence(screenBlock.kind, agentLabel, mdChip)}
+              </div>
+              {screenBlock.text !== null && <pre className="term-chat__screen-block-text">{screenBlock.text}</pre>}
+            </div>
+          )}
+          {activity && (
+            // One live region for both sentences, so working → waiting changes its text instead of
+            // remounting it (a remounted role=status is announced again). The words are the
+            // composer placeholder's own (`chatComposerPlaceholder`), so the two never disagree.
+            <div className="term-chat__activity" role="status" aria-live="polite">
+              {activity === 'working' && <Spinner />}
+              {chatComposerPlaceholder({
+                readonly: false,
+                refusal: activity,
+                agentLabel,
+                chip: mdChip,
+                answerOnCard: answerCard !== null
+              })}
+            </div>
+          )}
+        </div>
+        {!following && messages.length > 0 && (
+          // The Live chat drawer's "N new messages ↓" pill (LiveChatDrawer.tsx), plus a bare "↓" while
+          // nothing new has come in: here the thread is also read back from deep in its history.
+          <button
+            type="button"
+            className="confirm__btn primary term-chat__to-latest"
+            title="Scroll to the latest message"
+            aria-label={unseen > 0 ? undefined : 'Scroll to the latest message'}
+            // Keep the keyboard where it was (the composer): a click here is not a reason to leave it.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={scrollToLatest}
+          >
+            {unseen > 0 ? `${newMessagesLabel(unseen)} ↓` : '↓'}
+          </button>
         )}
       </div>
       {!readOnly && (
