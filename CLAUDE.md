@@ -4426,7 +4426,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the dialog check `sendChatPrompt` makes is seconds old by then, and an Enter into a dialog that
   opened meanwhile would ANSWER it — the text stays in the composer and the caller hears
   `pasted-not-submitted`. The panel ignores a second Enter while a send is in flight (the draft is
-  cleared only once it lands).
+  cleared only once it lands). **"The text arrived" is read from the COMPOSER, never counted
+  across the screen** (`TypedSurface.draftOf` → `readClaudeDraft`, on a styled capture so the dim
+  placeholder is not draft text): the draft must end with the message's tail and differ from the
+  draft before typing. Typing also clears the placeholder and shortens the status line ("· ← for
+  agents" goes away), so a one-letter answer like `a` appeared once more in the box and once less
+  elsewhere; the screen-wide count never rose and every such send ended `pasted-not-submitted` with
+  the answer sitting in the box. The screen-wide count stays only as the fallback for a poll with
+  no readable input box (a draft too tall for the box reader).
   **The agent's OWN dialogs are read off the screen** (`shared/agents/claude-screen.ts`, claude
   only — `SCREEN_DIALOG_READABLE`). The folder-trust prompt, `/model` and one-time setup questions
   fire NO hook, so the state gate above reads `done` while one owns the keyboard, and a paste into
