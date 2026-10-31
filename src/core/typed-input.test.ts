@@ -9,6 +9,8 @@ import {
   typedStdin,
   type TypedSurface
 } from './typed-input'
+import { readClaudeDraft } from '../shared/agents/claude-screen'
+import composer from '../shared/agents/__fixtures__/claude/composer-capture.json'
 
 describe('typedLines', () => {
   it('splits on every line-ending style and keeps blank lines', () => {
@@ -140,6 +142,50 @@ describe('typeThenSubmitWhenSettled', () => {
 
     expect(result).toBe(true)
     expect(surface.canSubmit).toHaveBeenCalledTimes(1)
+    expect(surface.submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('submits a one-letter answer whose letter typing also removes elsewhere on screen', async () => {
+    // Real Claude Code captures: typing clears the placeholder and shortens the status line, which
+    // loses the `a` in "← for agents". Counting `a` across the screen never rose, so the Enter was
+    // withheld with the answer sitting in the box.
+    const before = composer.screens.empty
+    const after = composer.screens.draft.replace('heb ik getest', 'a')
+    let captures = 0
+    const submit = vi.fn(async () => true)
+
+    const result = await typeThenSubmitWhenSettled('a', {
+      capture: async () => (captures++ === 0 ? before : after),
+      type: async () => true,
+      submit,
+      draftOf: readClaudeDraft
+    }, noWait)
+
+    expect(result).toBe(true)
+    expect(submit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not take a draft that already ended with the answer as the answer arriving', async () => {
+    const leftover = composer.screens.draft.replace('heb ik getest', 'a')
+    const submit = vi.fn(async () => true)
+
+    const result = await typeThenSubmitWhenSettled('a', {
+      capture: async () => leftover,
+      type: async () => true,
+      submit,
+      draftOf: readClaudeDraft
+    }, noWait)
+
+    expect(result).toBe('pasted-not-submitted')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('falls back to counting on screen when the composer cannot be read', async () => {
+    const surface = { ...fakeSurface({ lag: 1 }), draftOf: () => null }
+
+    const result = await typeThenSubmitWhenSettled('hello there', surface, noWait)
+
+    expect(result).toBe(true)
     expect(surface.submit).toHaveBeenCalledTimes(1)
   })
 
