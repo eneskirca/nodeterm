@@ -343,7 +343,7 @@ describe('LicenseSection — existing App Store purchase (#787)', () => {
   it('offers pairing before checkout and beside the key input without promising recovery', async () => {
     await mount(FREE)
     const messages = [...host.querySelectorAll('p')].filter((p) =>
-      p.textContent?.includes('Already have Pro from the App Store?')
+      p.textContent?.includes('Already have Pro from the App Store or Google Play?')
     )
     expect(messages).toHaveLength(2)
     expect(messages[0].closest('details')).toBeNull()
