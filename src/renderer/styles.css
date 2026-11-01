@@ -11448,6 +11448,13 @@ button.group-node__setup:disabled {
    controls cluster (top-right), so column headers never sit under those icons. */
 .kanban-header {
   flex: 0 0 auto;
+  /* Above the board (issue #1350): the Filter / Views menus are absolutely positioned INSIDE this
+     strip, and under Liquid Glass the strip AND every `.kanban-col` carry a backdrop-filter, which
+     makes each of them its own stacking context. A menu's z-index then only ranks it inside the
+     strip, and the columns — later siblings at the same `auto` level — painted over it. Ranking
+     the strip itself above the board is the only order a child cannot escape from. */
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 10px;

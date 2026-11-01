@@ -49,3 +49,21 @@ describe('Card modal ⌘M view stacking (issue #389 resize handles)', () => {
     expect(overlay).toBeGreaterThanOrEqual(upload)
   })
 })
+
+describe('Header menus over the columns (issue #1350)', () => {
+  const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+
+  it('ranks the header strip above the board, so its Filter / Views menus cannot sink under a column', () => {
+    // Under Liquid Glass both the strip and every column carry a backdrop-filter (the glass chrome
+    // rule below), i.e. each is a stacking context; a menu's own z-index cannot leave the strip,
+    // so the strip must outrank the columns itself.
+    const header = bare.match(/\n\.kanban-header\s*{([^}]*)}/)
+    expect(header, '.kanban-header rule').toBeTruthy()
+    expect(header![1]).toMatch(/position:\s*relative;/)
+    const z = Number(/z-index:\s*(\d+)/.exec(header![1])?.[1])
+    expect(z).toBeGreaterThanOrEqual(1)
+    expect(bare).toMatch(/\.kanban-header,\s*\.kanban-col,[\s\S]{0,400}backdrop-filter/)
+    // The columns themselves stay unranked: equal `auto` is what let a later column win.
+    expect(bare.match(/\n\.kanban-col\s*{([^}]*)}/)![1]).not.toMatch(/z-index/)
+  })
+})
