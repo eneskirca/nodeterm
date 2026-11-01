@@ -8338,6 +8338,23 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     what a column layout discards); mobile N/A - *nodeterm mobile* attaches to tmux sessions over
     the transport protocol and has no canvas, so surfacing a layout means extending that protocol
     (follow-up in the iOS repo).
+- **Directional focus (⌘←/→/↑/↓, `node.focus*`)** — the multiplexer gesture (Ghostty `goto_split`,
+  tmux `select-pane -L`) on a canvas with no split tree: `lib/directionalFocus.ts` ranks candidates
+  by geometry (same-row/column overlap first, then diagonal with a sideways penalty; no wrap). The
+  ONE decision — where to land AND how — is the pure `planDirectionalMove`, and the "how" has two
+  answers that must not be merged: on the canvas the move **travels** (`focusNodeById`: frame +
+  keyboard + read-ack), origin = the node the keyboard is in, else the selection, else the first
+  press ADOPTS the node nearest the view center. In **focus mode** (⌘⇧F, issue #78) the move
+  **swaps the focused node** (`useFocusNode.focus(next)`) — the flow pane is `display:none` there,
+  so a travel would frame a node on a 0-sized pane (the origin-jump bug) while the user kept
+  staring at the old terminal; before this, moving between two focused terminals was ⌘⇧F, ⌘→, ⌘⇧F.
+  Three details carry it: the origin is the FOCUSED id (the reparent detaches the node root from
+  its `.react-flow__node` wrapper, so the keyboard origin reads null there); candidates are
+  TERMINALS only (the one kind focus mode can show — `focusTargetId`); and the keyboard is handed
+  over explicitly (`useTerminalFocus.request`), because the reparent gives focus back to whichever
+  xterm had it, i.e. the OLD node. Selection follows the swap so leaving focus mode lands on the
+  node the user was in. An edge with nowhere to go is a CLAIMED no-op in both modes — declining
+  would hand ⌘→ to the terminal, which is not "nothing".
 - **Command palette** (`CommandPalette.tsx`): ⌘/Ctrl+K; `Canvas.buildCommands` (create,
   switch project, jump to node by title/tag, open file…).
 - **Explorer** (`ExplorerPanel.tsx`, 🗂 / ⌘⇧E): lazy file tree of the active project `cwd`

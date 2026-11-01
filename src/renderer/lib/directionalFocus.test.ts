@@ -5,6 +5,7 @@ import {
   isFocusTarget,
   nextNodeInDirection,
   nodeNearestPoint,
+  planDirectionalMove,
   type DirectionalNode
 } from './directionalFocus'
 
@@ -220,5 +221,63 @@ describe('FLOW_NODE_CLASS', () => {
   it('still exists in the installed xyflow dist', () => {
     const dist = readFileSync('node_modules/@xyflow/react/dist/esm/index.js', 'utf8')
     expect(dist.includes(FLOW_NODE_CLASS)).toBe(true)
+  })
+})
+
+/**
+ * The same chord, two very different moves. On the canvas ⌘→ TRAVELS: the camera frames the
+ * neighbour. In focus mode (one terminal fills the window) there is no camera to move — the flow
+ * pane is display:none — so ⌘→ SWAPS the focused node for its neighbour and the user never leaves
+ * focus mode. Before this the only way between two focused terminals was ⌘⇧F, ⌘→, ⌘⇧F.
+ */
+describe('planDirectionalMove', () => {
+  const terminals = [
+    node('a', 0, 0, { type: 'terminal' }),
+    node('b', 300, 0, { type: 'terminal' }),
+    node('note', 600, 0, { type: 'sticky' }),
+    node('c', 900, 0, { type: 'terminal' })
+  ]
+  const ctx = { focusedId: null, keyboardId: null, selectedId: null, viewCenter: null }
+
+  it('in focus mode, swaps focus to the neighbouring TERMINAL, skipping what focus mode cannot show', () => {
+    expect(planDirectionalMove(terminals, 'right', { ...ctx, focusedId: 'b' })).toEqual({
+      kind: 'swap-focus',
+      id: 'c'
+    })
+    expect(planDirectionalMove(terminals, 'left', { ...ctx, focusedId: 'b' })).toEqual({
+      kind: 'swap-focus',
+      id: 'a'
+    })
+  })
+
+  it('in focus mode, the origin is the FOCUSED node, whatever the keyboard or selection say', () => {
+    // The reparent detaches the node root from its xyflow wrapper, so the keyboard origin reads
+    // as null or as a stale node; neither may decide the move.
+    expect(
+      planDirectionalMove(terminals, 'right', { ...ctx, focusedId: 'a', keyboardId: 'c', selectedId: 'c' })
+    ).toEqual({ kind: 'swap-focus', id: 'b' })
+  })
+
+  it('in focus mode, the edge is a claimed no-op: nothing to swap to, and no travel either', () => {
+    expect(planDirectionalMove(terminals, 'right', { ...ctx, focusedId: 'c' })).toBeNull()
+  })
+
+  it('on the canvas, travels from the keyboard node, else the selected one', () => {
+    expect(planDirectionalMove(terminals, 'right', { ...ctx, keyboardId: 'a', selectedId: 'c' })).toEqual({
+      kind: 'travel',
+      id: 'b'
+    })
+    expect(planDirectionalMove(terminals, 'left', { ...ctx, selectedId: 'c' })).toEqual({
+      kind: 'travel',
+      id: 'note'
+    })
+  })
+
+  it('on the canvas with no origin, seeds from the node nearest the view center', () => {
+    expect(planDirectionalMove(terminals, 'right', { ...ctx, viewCenter: { x: 950, y: 50 } })).toEqual({
+      kind: 'travel',
+      id: 'c'
+    })
+    expect(planDirectionalMove(terminals, 'right', ctx)).toBeNull()
   })
 })

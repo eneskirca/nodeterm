@@ -264,8 +264,7 @@ import { installLockedMiddleGuard, installModifierPan } from '../lib/modifierPan
 import {
   FLOW_NODE_CLASS,
   isFocusTarget,
-  nextNodeInDirection,
-  nodeNearestPoint,
+  planDirectionalMove,
   type FocusDirection
 } from '../lib/directionalFocus'
 import { UpdateCard } from '../components/UpdateCard'
@@ -10587,29 +10586,41 @@ export function Canvas() {
   const moveNodeFocus = useCallback(
     (dir: FocusDirection): boolean => {
       const nodes = nodesRef.current
-      const from =
-        document.activeElement?.closest(`.${FLOW_NODE_CLASS}`)?.getAttribute('data-id') ??
-        nodes.find((n) => n.selected && isFocusTarget(n))?.id ??
-        null
-      // Nothing focused, nothing selected: the first press ADOPTS the node nearest the view center
-      // instead of moving from it. Walking from an origin the user never chose lands somewhere
-      // arbitrary; adopting is the "you are here" a multiplexer's first move gives you for free.
-      if (!from) {
-        const center = viewCenter()
-        const seed = center ? nodeNearestPoint(nodes, center) : null
-        if (!seed) return false
-        focusNodeRef.current(seed)
-        return true
-      }
-      const next = nextNodeInDirection(nodes, from, dir)
-      if (next) focusNodeRef.current(next)
+      // Which node to land on, and HOW, is the pure `planDirectionalMove`: on the canvas the move
+      // travels (from the keyboard's node, else the selection, else — first press — the node
+      // nearest the view center is ADOPTED rather than moved from); in focus mode it SWAPS the
+      // focused node for its neighbour, because the flow pane is display:none there and a travel
+      // would frame a node on a hidden, 0-sized pane (the origin-jump bug) while the user stays
+      // staring at the old terminal. Before this, moving between two focused terminals took
+      // ⌘⇧F, ⌘→, ⌘⇧F.
+      const move = planDirectionalMove(nodes, dir, {
+        focusedId: useFocusNode.getState().focusedId,
+        keyboardId: document.activeElement?.closest(`.${FLOW_NODE_CLASS}`)?.getAttribute('data-id') ?? null,
+        selectedId: nodes.find((n) => n.selected && isFocusTarget(n))?.id ?? null,
+        viewCenter: viewCenter() ?? null
+      })
       // Claimed even at the edge of the canvas, where there is nothing to move to. Declining
       // would offer ⌘→ back to the focused terminal instead, and whatever it does there it is
       // not "nothing" — a navigation key with nowhere to go should do nothing, not something
-      // else.
+      // else. The one unclaimed case is a canvas with no node to seed from.
+      if (!move) return !!useFocusNode.getState().focusedId || nodes.some(isFocusTarget)
+      if (move.kind === 'travel') {
+        focusNodeRef.current(move.id)
+        return true
+      }
+      // Swap inside focus mode: the store change reparents the new node into the focus surface
+      // (TerminalNode's layout effect) and sends the old one home. The keyboard does NOT follow on
+      // its own — the reparent hands focus back to whichever xterm had it, i.e. the old node —
+      // so it is requested explicitly, the way every "go to node" path does. Selection follows
+      // too, so leaving focus mode later lands the camera on the node the user was in.
+      useFocusNode.getState().focus(move.id)
+      setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === move.id })))
+      useTerminalFocus.getState().request(move.id)
+      useAgentStatus.getState().setActive(move.id, true)
+      useAgentStatus.getState().clearUnread(move.id)
       return true
     },
-    [viewCenter]
+    [viewCenter, setNodes]
   )
 
   /**

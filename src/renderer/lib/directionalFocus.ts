@@ -176,3 +176,48 @@ const better = (a: Score, b: Score): boolean =>
       : a.perp !== b.perp
         ? a.perp < b.perp
         : a.id < b.id
+
+/** What a directional move should do: swap the focus-mode node, or travel the camera. */
+export type DirectionalMove = { kind: 'swap-focus' | 'travel'; id: string }
+
+export interface DirectionalMoveContext {
+  /** Focus mode's node (`useFocusNode.focusedId`), or null on the plain canvas. */
+  focusedId: string | null
+  /** The node the KEYBOARD is in (the `.react-flow__node` ancestor of the active element). */
+  keyboardId: string | null
+  /** The single selected focus target, if any. */
+  selectedId: string | null
+  /** The view center in world coordinates, for seeding a canvas with no origin; null = unknown. */
+  viewCenter: { x: number; y: number } | null
+}
+
+/**
+ * The one decision behind ⌘←/→/↑/↓, in both places the chord can fire:
+ *
+ *  - **Focus mode** — one terminal fills the window and the flow pane is display:none, so there is
+ *    no camera to move; the move SWAPS the focused node for its neighbour and the user stays in
+ *    focus mode (before this, going from one focused terminal to the next was ⌘⇧F, ⌘→, ⌘⇧F). The
+ *    origin is the focused node itself — the reparent detaches its root from the xyflow wrapper,
+ *    so the keyboard origin reads as null there — and the candidates are TERMINALS only, the one
+ *    kind focus mode can show (`focusTargetId`). A null at the edge is still a claimed chord.
+ *  - **Canvas** — the origin is the node the keyboard is in, else the selected node, else (first
+ *    press) the node nearest the view center is ADOPTED rather than moved from; the move TRAVELS.
+ */
+export function planDirectionalMove(
+  nodes: readonly DirectionalNode[],
+  dir: FocusDirection,
+  ctx: DirectionalMoveContext
+): DirectionalMove | null {
+  if (ctx.focusedId) {
+    const terminals = nodes.filter((n) => n.type === 'terminal')
+    const next = nextNodeInDirection(terminals, ctx.focusedId, dir)
+    return next ? { kind: 'swap-focus', id: next } : null
+  }
+  const from = ctx.keyboardId ?? ctx.selectedId
+  if (!from) {
+    const seed = ctx.viewCenter ? nodeNearestPoint(nodes, ctx.viewCenter) : null
+    return seed ? { kind: 'travel', id: seed } : null
+  }
+  const next = nextNodeInDirection(nodes, from, dir)
+  return next ? { kind: 'travel', id: next } : null
+}
